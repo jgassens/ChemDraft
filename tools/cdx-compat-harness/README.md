@@ -153,7 +153,7 @@ a round-trip PASS or ground-truth agreement; exports and other routes still run.
   exhausted search cannot excuse a changed graph. Connectivity and per-atom H changes
   are separate `connectivity` failures, never covered by bond-order diagnostics.
 - **FAIL:** at least one measured chemistry feature changed silently. A definite silent loss
-  takes precedence over unfinished graph checks in the same leg, another route or initial import.
+  takes precedence over inconclusive checks in the same leg, another route or initial import.
 - **DRAWN-DIFFERENTLY:** a molecule's identity, charge placement, bond orders or stereo drawing
   differ, but a guarded identity check finds the same species. Private differences carry
   `classification: "same-species-different-drawing"` and the deciding `identityCheck`.
@@ -186,10 +186,11 @@ a round-trip PASS or ground-truth agreement; exports and other routes still run.
   produces WARNED. Expanded molecular chemistry is still compared independently: an equal formula
   cannot excuse a changed species. These drawing losses do not claim a resonance identity proof.
 - **ERROR:** a round-trip conversion or chemistry summary could not be completed.
-  A bounded exact graph check that cannot finish also prevents PASS: private results
-  retain `undetermined` feature checks, and public reports count these separately from
-  chemistry failures. These checks yield ERROR only when there is no definite silent FAIL;
-  conversion errors and incomplete chemistry summaries still yield ERROR.
+  An unfinished exact graph check, ambiguous placement, or missing wavy endpoint evidence
+  also prevents PASS. Private results retain named `undetermined` checks. Public reports count
+  these by category, including in the Markdown table for inconclusive placement and endpoint
+  checks. Inconclusive checks yield ERROR when there is no definite silent FAIL.
+  Conversion errors and incomplete chemistry summaries still yield ERROR.
   Equal connectivity/H values are accepted before sigma evidence;
   equal stereo-preserving RDKit canonical SMILES suppress connectivity and bond-order
   differences. Otherwise an exact element/charge/isotope/H/bond-order mapping is
@@ -252,16 +253,21 @@ final count cannot hide an intermediate loss. Counts are relative to the source;
 counts cannot identify individual objects when counts happen to compensate. Missing legacy
 survival data and skipped routes are excluded from measured-stage denominators.
 Usage, repeat count, repeat unit, member targets and crossing bonds are chemistry. Kind and label
-are drawing differences. Corresponding bracket pairs match by glyph position. Crossing records
-retain their attachment and resolved inner atom. Reports count pairs unchanged through every
+are drawing differences. Each bracket pair matches by both glyph placements without relying on
+their order. Whole-molecule members use canonical structure and placement. Crossing records retain
+their attachment and distinguish resolved inner atoms, unresolved source IDs, and absent IDs.
+Reports count pairs unchanged through every
 measured leg and files where a leg loses pairs. Legacy summaries without bracket data are excluded
 from route survival counts.
 
-Non-text colours are compared by drawing position and style role, including colours assigned to
-individual bonds and atom labels. Wavy single bonds retain the order of their drawn endpoints so
-the unknown stereo mark stays on the same atom. The report follows those bonds through each leg.
-Legacy summaries lack directed endpoint evidence and retain the count fallback for one-bond
-molecules when both sides only recorded counts.
+Non-text colours compare by drawing position and style role. Bond colours use the effective value
+after a bond-specific override and a molecule-wide default are applied. Colour and SRU contents
+are measured after placement matching. The placement tolerance accounts for CDXML's four
+decimal places and CDX's fixed-point units in native drawing coordinates.
+Wavy single bonds retain the order of their drawn endpoints, including isotope and neighbour
+evidence. The report awards survival credit only with a unique directed match through each leg,
+including for single-bond molecules. Rescoring a legacy summary without its full atom and bond
+placement evidence leaves its wavy displays inconclusive. A fresh run records that evidence.
 The CDXML baseline section compares shared IDs' CDXML routes, flags worse chemistry verdicts or added drawing-loss
 categories, and reports new IDs separately. Reports do not assert compatibility beyond their corpus.
 
@@ -269,7 +275,7 @@ Round-trip comparison pairs canonical identities (SMILES plus dummy labels), usi
 to distinguish repeated identities, then `compatibility.originalId` source identities. Remaining native
 molecules are paired only when each is the other's unique closest candidate on the same page,
 within one measured bond length (30 drawing units for an unbonded molecule), with identical
-heavy-atom element multisets. Equal distances remain ambiguous. Native object IDs are used only
+heavy-atom element multisets. Distances within the format tolerance and competing placements remain ambiguous. Native object IDs are used only
 after geometry, since dropping a page object can shift those positional IDs. Residual molecules
 without a matching native ID remain added/removed. Private differences for a best-match pair include element and visible atom-label
 multiset additions/removals and net bond-count additions/removals. New summaries store the drawing

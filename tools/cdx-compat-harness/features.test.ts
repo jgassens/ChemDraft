@@ -165,7 +165,7 @@ describe("synthetic bracket pair survival", () => {
     const doc = createEmptyDocument();
     // This checkout's schema predates these fields; their shapes match the native product schema.
     const bracket = (id: string) => Object.assign(BracketObjectSchema.parse({ id, type: "bracket", x: 0, y: 0, width: 10, height: 20, bracketKind: "square", label: "n", containedObjectIds: ["member"] }), { pairId: "pair", bracketUsage: "multiple", repeatCount: 3, repeatUnit: true as boolean | undefined, crossingBondIds: [{ objectId: "member", bondId: "bond" }, { objectId: "member", bondId: "bond2" }] });
-    const a = bracket("a"), b = bracket("b");
+    const a = bracket("a"), b = { ...bracket("b"), x: 30 };
     const orphan = BracketObjectSchema.parse({ id: "orphan", type: "bracket", x: 0, y: 0, width: 10, height: 20, bracketKind: "square" });
     doc.pages[0].objects = [a, b, orphan];
     const before = await describeDocument(doc, []);
@@ -197,6 +197,54 @@ describe("synthetic bracket pair survival", () => {
     doc.pages[0].objects = [];
     expect(compare(before, await describeDocument(doc, []), []).verdict).toBe("FAIL");
     expect(compare(before, await describeDocument(doc, []), [warning({ code: "cdxml.bracket_payload_only", message: "Native brackets have no CDXML equivalent", objectId: "b" })]).verdict).toBe("WARNED");
+  });
+
+  it("detects an unresolved InnerAtomID dropped by visible export", async () => {
+    const document = await openXml(wrap(graph + sru(20, 30, 11, 100, 999, 101, 11)));
+    const before = await describeDocument(document, []);
+    const exported = await interchange(document, "cdxml");
+    expect(exported.warnings).toContainEqual(expect.objectContaining({ category: "cdxml.bracket_inner_atom_dropped" }));
+    const reopened = (await open(exported.bytes)).document!;
+    const after = await describeDocument(reopened, []);
+    expect(compare(before, after, exported.warnings)).toMatchObject({
+      verdict: "FAIL", differences: [{ feature: "bracket-crossing-bonds", warned: false }]
+    });
+    expect(before.brackets![0].crossings?.flat()).toContainEqual(expect.objectContaining({ inner: { unresolved: "999" } }));
+  });
+
+  it("marks coincident SRUs exchanging targets inconclusive", async () => {
+    const describe = async (xml: string) => describeDocument(await openXml(wrap(graph + xml)), []);
+    const before = await describe(sru(20, 30, 11, 100, 11, 101, 11) + sru(30, 30, 12, 101, 12, 102, 12));
+    const after = await describe(sru(20, 30, 12, 101, 12, 102, 12) + sru(30, 30, 11, 100, 11, 101, 11));
+    expect(compare(before, after, [])).toMatchObject({
+      verdict: "ERROR", undetermined: expect.arrayContaining([{ feature: "bracket-placement" }])
+    });
+  });
+
+  it("detects a whole-fragment SRU retarget between different structures with the same bounds", async () => {
+    const fragments = molecule([[6, 20, 30], [7, 40, 30]], [[0, 1]]) +
+      '<fragment id="90"><n id="91" Element="6" p="20 30"/><n id="92" Element="8" p="40 30"/><b id="93" B="91" E="92" Order="1"/></fragment>';
+    const xml = wrap(fragments + sru(20, 30, 2, 100, 10, 100, 10));
+    const before = await describeDocument(await openXml(xml), []);
+    const after = await describeDocument(await openXml(xml.replace('BracketedObjectIDs="2"', 'BracketedObjectIDs="90"')), []);
+    const bounds = (value: typeof before) => {
+      const member = value.brackets![0].members![0];
+      if (!("object" in member)) throw new Error("Expected a resolved fragment member");
+      const { x, y, width, height } = member.object;
+      return [x, y, width, height];
+    };
+    expect(bounds(after)).toEqual(bounds(before));
+    expect(compare(before, after, [])).toMatchObject({ verdict: "FAIL", differences: [{ feature: "bracket-members" }] });
+  });
+
+  it("preserves attachment identity when binary rounding ties the glyph centre x coordinates", async () => {
+    const pair = sru(20, 30, 11, 100, 11, 101, 11)
+      .replace('BoundingBox="34 50 30 10"', 'BoundingBox="34.000001 50 30.000001 10"')
+      .replace('BoundingBox="46 10 50 50"', 'BoundingBox="30 70 34 110"');
+    const document = await openXml(wrap(graph + pair));
+    const before = await describeDocument(document, []);
+    const binary = (await open((await interchange(document, "cdx")).bytes)).document!;
+    expect(compare(before, await describeDocument(binary, []), [])).toMatchObject({ verdict: "PASS", differences: [] });
   });
 });
 
@@ -1031,6 +1079,18 @@ describe("synthetic format features", () => {
     }
   }, 30000);
 
+  it.each([false, true])("preserves a wavy site through CDXML rounding near the old overlap threshold (page offset: %s)", async offset => {
+    const x = offset ? 100 : 0, y = offset ? 200 : 0;
+    const xml = wrap(molecule([[6, x + 20.00004, y + 30], [6, x + 20.00078, y + 30], [8, x + 40, y + 30]],
+      [[0, 2, "1", "Wavy"], [1, 2]])).replace('BoundingBox="0 0 612 792"', `BoundingBox="${x} ${y} ${x + 612} ${y + 792}"`);
+    const document = (await open(Buffer.from(xml))).document!;
+    const before = await describeDocument(document, []);
+    const reopened = (await open((await interchange(document, "cdxml")).bytes)).document!;
+    const after = await describeDocument(reopened, []);
+    expect(before.molecules[0].displays.wavy).toBe(1);
+    expect(compare(before, after, [])).toMatchObject({ verdict: "PASS", differences: [], drawingLoss: [] });
+  });
+
   it("fails when a wavy single bond display is removed after reopening", async () => {
     const source = await open(Buffer.from(wrap(molecule([[6, 20, 10], [6, 40, 30]], [[0, 1, "1", "Wavy"]]))));
     const before = await describeDocument(source.document!, []);
@@ -1151,6 +1211,36 @@ describe("synthetic format features", () => {
     const after = await describeDocument(document, []);
     expect(after.drawing.colours).toEqual(before.drawing.colours);
     expect(compare(before, after, []).drawingLoss).toEqual(["colours"]);
+  });
+
+  it("marks a colour swap between precision-equivalent line placements inconclusive", async () => {
+    const colours = '<colortable><color r="1" g="0" b="0"/><color r="0" g="0" b="1"/></colortable>';
+    const xml = wrap('<graphic id="2" GraphicType="Line" BoundingBox="10 10 30 15" color="2"/>' +
+      '<graphic id="3" GraphicType="Line" BoundingBox="10.0004 10 30.0004 15" color="3"/>').replace("<page", colours + "<page");
+    const document = (await open(Buffer.from(xml))).document!;
+    const before = await describeDocument(document, []);
+    const [red, blue] = document.pages[0].objects;
+    expect(red.style.strokeColor).toBe("#ff0000");
+    expect(blue.style.strokeColor).toBe("#0000ff");
+    [red.style, blue.style] = [blue.style, red.style];
+    const after = await describeDocument(document, []);
+    expect(after.drawing.colours).toEqual(before.drawing.colours);
+    expect(compare(before, after, [])).toMatchObject({ verdict: "ERROR", undetermined: [{ feature: "colour-placement" }] });
+  });
+
+  it("preserves a molecule-wide bond colour reopened as an effective per-bond colour", async () => {
+    const document = (await open(Buffer.from(wrap(molecule([[6, 20, 30], [8, 40, 30]], [[0, 1]]))))).document!;
+    const graph = document.pages[0].objects[0];
+    if (graph.type !== "molecule") throw new Error("Expected a molecule");
+    graph.style.bondColor = "#ff0000";
+    const before = await describeDocument(document, []);
+    for (const format of ["cdxml", "cdx"] as const) {
+      const reopened = (await open((await interchange(document, format)).bytes)).document!;
+      const graph = reopened.pages[0].objects[0];
+      if (graph.type !== "molecule") throw new Error("Expected a molecule");
+      expect(graph.style.bondColors).toEqual({ [graph.bonds[0].id]: "#ff0000" });
+      expect(compare(before, await describeDocument(reopened, []), [])).toMatchObject({ verdict: "PASS", drawingLoss: [] });
+    }
   });
 
   it("reports colours swapping between bonds after their IDs and order change", async () => {

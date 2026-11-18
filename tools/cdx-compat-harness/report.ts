@@ -1,8 +1,8 @@
 import { appendOutput as appendFile, writeOutput as writeFile, prepareOutput } from "./safety";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { bracketDifferences, chemistryFeatures, compareSurvival, drawingFeatures, pairBrackets, pairWavyMolecules, publicSanitizationReason, type MoleculeSummary, type Result, type Summary } from "./model";
-import { matchedItems, sameDirectedBond, type BondSite } from "./placement";
+import { chemistryFeatures, compareBracket, comparePlacements, compareSurvival, drawingFeatures, lacksWavyDirection, matchWavyBonds, pairBrackets, pairWavyMolecules, publicSanitizationReason, undeterminedFeatures, type MoleculeSummary, type Result, type Summary } from "./model";
+import type { BondSite } from "./placement";
 import { stepArrowLosses, type SurvivalCounts } from "./survival";
 import { lines, results } from "./io";
 import { publicGroup } from "./runner";
@@ -15,7 +15,7 @@ export function verdict(result: Result): string {
   if (result.status !== "ok") return result.status;
   const comparisons = [...result.roundTrips, initialComparison(result)].filter(r => r !== undefined);
   if (comparisons.some(r => r.verdict === "FAIL")) return "FAIL";
-  if (!result.roundTrips.some(r => r.verdict !== "SKIPPED") || comparisons.some(r => r.verdict === "ERROR")) return "error";
+  if (!result.roundTrips.some(r => r.verdict !== "SKIPPED") || comparisons.some(r => r.verdict === "ERROR" || r.undetermined?.length)) return "error";
   if (comparisons.some(r => r.verdict === "WARNED")) return "WARNED";
   return comparisons.some(r => r.verdict === "DRAWN-DIFFERENTLY") ? "DRAWN-DIFFERENTLY" : "PASS";
 }
@@ -79,33 +79,30 @@ function cdxmlScore(value: Result): number {
 function countWavySurvivors(summary: Summary, trips: Result["roundTrips"], originals: MoleculeSummary[]): number {
   const routes = trips.filter(trip => trip.verdict !== "SKIPPED");
   if (!routes.length) return 0;
-  const surviving = new Map(originals.map(m => [m, m.wavyBonds]));
+  const surviving = new Map(originals.flatMap(m => m.wavyBonds && !lacksWavyDirection(m) ? [[m, m.wavyBonds] as const] : []));
   for (const trip of routes) {
+    if (trip.legs?.some(leg => leg.before.molecules.some(lacksWavyDirection))) return 0;
     const stages = trip.legs?.length ? trip.legs.map(leg => leg.after) : [trip.summary];
     if (stages.length !== (trip.route === "cdx-cdxml-cdx" ? 3 : 1)) return 0;
     let before = summary.molecules;
     const tracked = new Map([...surviving].map(([m, bonds]) => [m, {
-      molecule: m, bonds: bonds?.map(bond => [bond, bond] as [BondSite, BondSite])
+      molecule: m, bonds: bonds.map(bond => [bond, bond] as [BondSite, BondSite])
     }]));
     for (const stage of stages) {
       if (!stage?.molecules) return 0;
-      const matches = pairWavyMolecules(before, stage.molecules, [...tracked.values()].map(item => item.molecule));
+      const matches = pairWavyMolecules(before, stage.molecules);
       for (const [original, item] of tracked) {
         const after = matches.get(item.molecule);
-        const bonds = item.bonds;
-        const next = bonds && after?.wavyBonds
-          ? new Map(matchedItems(bonds.map(([, prior]) => prior), after.wavyBonds, sameDirectedBond)) : undefined;
-        const kept = next && bonds?.flatMap(([start, prior]): [BondSite, BondSite][] => {
-          const current = next.get(prior);
+        const next = after && !lacksWavyDirection(after) ? matchWavyBonds(item.molecule, after) : undefined;
+        const kept = next && !next.ambiguous ? item.bonds.flatMap(([start, prior]): [BondSite, BondSite][] => {
+          const current = next.paired.get(prior);
           return current ? [[start, current]] : [];
-        });
-        // Old summaries can identify the bond only when the molecule has a single bond.
-        const legacySurvival = !bonds && !after?.wavyBonds && original.bonds === 1 && after?.bonds === 1 && original.smiles === after.smiles;
-        if (!after?.displays?.wavy || (!kept?.length && !legacySurvival)) {
+        }) : [];
+        if (!after || !kept.length) {
           tracked.delete(original);
         } else {
           item.molecule = after;
-          item.bonds = kept ?? bonds;
+          item.bonds = kept;
         }
       }
       if (!tracked.size) return 0;
@@ -113,11 +110,11 @@ function countWavySurvivors(summary: Summary, trips: Result["roundTrips"], origi
     }
     for (const original of surviving.keys()) {
       const item = tracked.get(original);
-      if (item) surviving.set(original, item.bonds?.map(([start]) => start));
+      if (item) surviving.set(original, item.bonds.map(([start]) => start));
       else surviving.delete(original);
     }
   }
-  return [...surviving].reduce((total, [original, bonds]) => total + (bonds?.length ?? original.displays.wavy), 0);
+  return [...surviving.values()].reduce((total, bonds) => total + bonds.length, 0);
 }
 
 export async function report(out: string, baseline?: string): Promise<void> {
@@ -158,7 +155,7 @@ export async function report(out: string, baseline?: string): Promise<void> {
   const byGroup: Record<string, Rate> = Object.create(null);
   const byEra: Record<string, Rate> = Object.create(null);
   const failures = counters(chemistryFeatures), warnedLosses = counters(chemistryFeatures), drawingLoss = counters(drawingFeatures);
-  const undetermined = counters(["connectivity", "bond-order"]);
+  const undetermined = counters(undeterminedFeatures);
   const warningCategories: Record<string, number> = Object.create(null);
   const errorCounts: Record<string, Record<string, number>> = Object.create(null);
   const rdkitErrors: Record<string, number> = Object.create(null);
@@ -194,6 +191,17 @@ export async function report(out: string, baseline?: string): Promise<void> {
         addSurvival(route, source, row.summary!.survival!, stages as SurvivalCounts[]);
       }
     }
+    // Older stored verdicts could award PASS from wavy display counts alone.
+    for (const trip of row.roundTrips) {
+      if (trip.verdict === "SKIPPED") continue;
+      const summaries = [row.summary, trip.summary, ...(trip.legs ?? []).flatMap(leg => [leg.before, leg.after])];
+      if (summaries.some(summary => summary?.molecules.some(lacksWavyDirection))) {
+        if (!trip.undetermined?.some(check => check.feature === "wavy-direction")) {
+          (trip.undetermined ??= []).push({ feature: "wavy-direction" });
+        }
+        if (trip.verdict !== "FAIL") trip.verdict = "ERROR";
+      }
+    }
     const originalBrackets = row.summary?.brackets ?? [];
     brackets.pairs += originalBrackets.length;
     brackets.unpaired += row.summary?.unpairedBrackets ?? 0;
@@ -209,13 +217,17 @@ export async function report(out: string, baseline?: string): Promise<void> {
       const stages = trip.legs?.length ? trip.legs.map(leg => leg.after) : [trip.summary];
       if (stages.some(stage => !stage.brackets)) continue;
       let remaining = new Set(originalBrackets);
-      let previous = originalBrackets, lost = false;
+      let previous = row.summary, lost = false;
       for (const stage of stages) {
-        const pairs = pairBrackets(previous, stage.brackets!);
-        if (pairs.some(pair => !pair.after)) lost = true;
-        remaining = new Set(pairs.flatMap(({ before, after }) =>
-          before && after && remaining.has(before) && !bracketDifferences(before, after).length ? [after] : []));
-        previous = stage.brackets!;
+        const pairs = pairBrackets(previous.brackets!, stage.brackets!);
+        if (pairs.some(pair => !pair.ambiguous && !pair.after)) lost = true;
+        const placement = comparePlacements(previous, stage);
+        remaining = new Set(pairs.flatMap(({ before, after }) => {
+          if (!before || !after || !remaining.has(before)) return [];
+          const comparison = compareBracket(before, after, placement);
+          return comparison.differences.length || comparison.ambiguous.length ? [] : [after];
+        }));
+        previous = stage;
       }
       route.survivingUnchanged += remaining.size;
       if (lost) route.filesLosingPairs++;
@@ -256,7 +268,7 @@ export async function report(out: string, baseline?: string): Promise<void> {
       if (warned.has(feature)) bump(warnedLosses[feature], id);
     }
     for (const feature of drawingFeatures) if (drawings.has(feature)) bump(drawingLoss[feature], id);
-    for (const feature of ["connectivity", "bond-order"]) if (unresolved.has(feature)) bump(undetermined[feature], id);
+    for (const feature of undeterminedFeatures) if (unresolved.has(feature)) bump(undetermined[feature], id);
     const categories = new Set([...row.warnings, ...row.roundTrips.flatMap(t => t.warnings)].map(w => w.category));
     for (const key of categories) {
       const safe = /^(?:cdx|cdxml|summary|roundtrip|worker|harness)\.[a-z_]{1,80}$/.test(key) ? key : "warning.unclassified";
@@ -335,7 +347,11 @@ export async function report(out: string, baseline?: string): Promise<void> {
     for (const [key, value] of Object.entries(dimension)) await appendFile(mdPath, `${key} | ${value.total} | ${value.pass} | ${value.warned} | ${value.fail} | ${value.drawnDifferently} | ${value.error} | ${(100 * value.passRate).toFixed(1)}%\n`);
     await appendFile(mdPath, "\n");
   }
-  for (const [label, counts] of [["DRAWN-DIFFERENTLY", sameSpecies], ["Chemistry FAIL", failures], ["Undetermined graph checks", undetermined], ["Warned chemistry losses", warnedLosses], ["DRAWING-LOSS", drawingLoss]] as const) {
+  const { connectivity, "bond-order": bondOrder, ...inconclusivePlacement } = undetermined;
+  for (const [label, counts] of [["DRAWN-DIFFERENTLY", sameSpecies], ["Chemistry FAIL", failures],
+    ["Undetermined graph checks", { connectivity, "bond-order": bondOrder }],
+    ["Inconclusive placement and endpoint checks", inconclusivePlacement],
+    ["Warned chemistry losses", warnedLosses], ["DRAWING-LOSS", drawingLoss]] as const) {
     await appendFile(mdPath, `## ${label}\n\nCategory | Files | Rate | Example IDs\n--- | --- | --- | ---\n`);
     for (const [key, value] of Object.entries(counts)) {
       const denominator = label === "DRAWING-LOSS" ? drawingDenominator : totals.total;

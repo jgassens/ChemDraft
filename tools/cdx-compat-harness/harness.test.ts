@@ -861,20 +861,68 @@ process.once('message', job => {
     }
   });
 
-  it("reports original wavy single bonds and those surviving every leg", async () => {
+  it("marks a legacy one-bond wavy count inconclusive after endpoint reversal", async () => {
     const { root, sources, out } = await setup();
     const original = join(sources, "synthetic.cdxml"), list = join(root, "list.txt");
-    await writeFile(original, syntheticXml);
+    const xml = syntheticXml.replace('Order="1"/>', 'Order="1" Display="Wavy"/>');
+    await writeFile(original, xml);
     await writeFile(list, original);
-    const molecule = await chemistry.describeStructure("CC");
-    molecule.displays.wavy = 1;
-    const summary = { ...emptySummary(), molecules: [molecule] };
+    const describe = async (source: string) => chemistry.describeDocument((await codec.open(Buffer.from(source))).document!, []);
+    const summary = await describe(xml);
+    const after = await describe(xml.replace('B="10" E="11"', 'B="11" E="10"'));
+    for (const entry of [summary, after]) {
+      delete entry.molecules[0].wavyBonds;
+      delete entry.molecules[0].sites;
+    }
+    expect(compare(summary, after, [])).toMatchObject({
+      verdict: "ERROR", undetermined: [expect.objectContaining({ feature: "wavy-direction" })]
+    });
     await run(defaults(list, out), async () => ({ result: {
       ...successful(), summary,
-      roundTrips: [{ route: "cdxml", verdict: "PASS", warnings: [], differences: [], drawingLoss: [], summary: structuredClone(summary), ms: 1 }]
+      roundTrips: [{ route: "cdxml", verdict: "PASS", warnings: [], differences: [], drawingLoss: [], summary: after, ms: 1 }]
     } }));
     await report(out);
-    expect(await readFile(join(out, "report.md"), "utf8")).toContain("Wavy single bonds: 1 in originals; 1 survived every leg.");
+    const markdown = await readFile(join(out, "report.md"), "utf8");
+    expect(markdown).toContain("Wavy single bonds: 1 in originals; 0 survived every leg.");
+    expect(markdown).toContain("## Inconclusive placement and endpoint checks");
+    const publicReport = JSON.parse(await readFile(join(out, "report.json"), "utf8"));
+    expect(publicReport.totals).toMatchObject({ pass: 0, error: 1 });
+    expect(publicReport.undetermined["wavy-direction"].count).toBe(1);
+  });
+
+  it.each([false, true])("requires directed sites on both sides of a multi-bond legacy comparison (both missing: %s)", async both => {
+    const xml = syntheticXml.replace('<b id="20" B="10" E="11" Order="1"/>',
+      '<n id="12" Element="6" p="60 30"/><b id="20" B="10" E="11" Order="1" Display="Wavy"/><b id="21" B="11" E="12" Order="1"/>');
+    const before = await chemistry.describeDocument((await codec.open(Buffer.from(xml))).document!, []);
+    const after = await chemistry.describeDocument((await codec.open(Buffer.from(xml))).document!, []);
+    delete after.molecules[0].wavyBonds;
+    if (both) delete before.molecules[0].wavyBonds;
+    expect(compare(before, after, [])).toMatchObject({
+      verdict: "ERROR", undetermined: [expect.objectContaining({ feature: "wavy-direction" })]
+    });
+  });
+
+  it.each([true, false])("withholds survival credit for retargets between overlapping atoms (distinct isotopes: %s)", async isotopes => {
+    const { sources, out } = await setup();
+    const xml = syntheticXml.replace('id="10" Element="6"', `id="10" Element="6"${isotopes ? ' Isotope="12"' : ""}`)
+      .replace('<b id="20" B="10" E="11" Order="1"/>',
+        `<n id="12" Element="6" p="20 30"${isotopes ? ' Isotope="13"' : ""}/><b id="20" B="10" E="11" Order="1" Display="Wavy"/><b id="21" B="12" E="11" Order="1"/>`);
+    const describe = async (source: string) => chemistry.describeDocument((await codec.open(Buffer.from(source))).document!, []);
+    const summary = await describe(xml);
+    const after = await describe(xml.replace(' Display="Wavy"', "").replace('B="12" E="11" Order="1"', 'B="12" E="11" Order="1" Display="Wavy"'));
+    const comparison = compare(summary, after, []);
+    expect(after.molecules[0].smiles).toBe(summary.molecules[0].smiles);
+    expect(after.molecules[0].displays.wavy).toBe(1);
+    if (isotopes) expect(comparison).toMatchObject({ verdict: "FAIL", differences: [{ feature: "stereo-display" }] });
+    else expect(comparison).toMatchObject({ verdict: "ERROR", undetermined: [expect.objectContaining({ feature: "wavy-placement" })] });
+    const original = join(sources, "synthetic.cdxml"), list = join(sources, "..", "list.txt");
+    await writeFile(original, xml);
+    await writeFile(list, original);
+    await run(defaults(list, out), async () => ({ result: { ...successful(), summary, roundTrips: [
+      { route: "cdxml", ...comparison, warnings: [], summary: after, ms: 1 }
+    ] } }));
+    await report(out);
+    expect(await readFile(join(out, "report.md"), "utf8")).toContain("Wavy single bonds: 1 in originals; 0 survived every leg.");
   });
 
   it.each(["missing summary", "missing display", "retargeted display", "legacy chain"])("requires positive wavy-bond evidence on every leg with %s", async kind => {
@@ -988,6 +1036,25 @@ process.once('message', job => {
     expect(pairs.map(pair => pair.after?.pairing?.centroid)).toEqual(before.map(item => item.pairing.centroid));
   });
 
+  it("stops after two candidates in a coincident canonical bucket", async () => {
+    const molecule = await chemistry.describeStructure("CC");
+    const count = 200;
+    let reads = 0;
+    const make = (offset: number) => Array.from({ length: count }, (_, i) => ({
+      ...molecule,
+      get originalId() { reads++; return String(offset + i); },
+      pairing: { page: 0, centroid: [0, 0] as [number, number], bondLength: 30, elements: ["C", "C"], labels: [], bonds: 1 }
+    }));
+    const before = make(0), after = make(count);
+    const pairs = pairMolecules(before, after);
+    expect.soft(reads).toBeLessThan(count * 20);
+    expect(pairs).toHaveLength(count * 2);
+    expect(pairs.every(pair => pair.ambiguous && (!pair.before || !pair.after))).toBe(true);
+    expect(compare({ ...emptySummary(), molecules: before }, { ...emptySummary(), molecules: after }, [])).toMatchObject({
+      verdict: "ERROR", undetermined: expect.arrayContaining([expect.objectContaining({ feature: "molecule-placement" })])
+    });
+  });
+
   it("reports bracket usage and per-route survival across intermediate legs", async () => {
     const { root, sources, out } = await setup();
     const original = join(sources, "synthetic.cdxml"), list = join(root, "list.txt");
@@ -1003,6 +1070,30 @@ process.once('message', job => {
     await report(out);
     expect(JSON.parse(await readFile(join(out, "report.json"), "utf8")).brackets).toMatchObject({ pairs: 1, unpaired: 1, byUsage: { sru: 1 }, routes: { cdxml: { survivingUnchanged: 1, filesLosingPairs: 0 }, "cdx-cdxml-cdx": { survivingUnchanged: 0, filesLosingPairs: 1 } } });
     expect(await readFile(join(out, "report.md"), "utf8")).toContain("Brackets: 1 pairs after import");
+  });
+
+  it("withholds unchanged SRU survival credit for coincident pairs after rescore", async () => {
+    const { root, sources, out } = await setup();
+    const original = join(sources, "synthetic.cdxml"), list = join(root, "list.txt");
+    await writeFile(original, syntheticXml);
+    await writeFile(list, original);
+    const bracket: NonNullable<Summary["brackets"]>[number] = {
+      bracketKind: "square", bracketUsage: "sru", repeatCount: 2, label: "n", repeatUnit: true,
+      memberCount: 1, crossingBondCount: 0,
+      placements: [{ page: 0, type: "bracket", x: 10, y: 10 }, { page: 0, type: "bracket", x: 40, y: 10 }]
+    };
+    const other = { ...structuredClone(bracket), repeatCount: 3 };
+    const summary = { ...emptySummary(), brackets: [bracket, other] };
+    const after = { ...summary, brackets: [other, bracket] };
+    await run(defaults(list, out), async () => ({ result: { ...successful(), summary, roundTrips: [
+      { route: "cdxml", verdict: "PASS", warnings: [], differences: [], drawingLoss: [], summary: after, ms: 1 }
+    ] } }));
+    await main(["rescore", "--out", out]);
+    await report(out);
+    const publicReport = JSON.parse(await readFile(join(out, "report.json"), "utf8"));
+    expect(publicReport.totals).toMatchObject({ pass: 0, error: 1 });
+    expect(publicReport.undetermined["bracket-placement"].count).toBe(1);
+    expect(publicReport.brackets.routes.cdxml).toEqual({ survivingUnchanged: 0, filesLosingPairs: 0 });
   });
 
   it("rejects output beside an original before creating it", async () => {
