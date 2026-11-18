@@ -435,9 +435,14 @@ Use the upstream BSD-3-Clause terms for the adapted Avogadro source. Add source 
 with the upstream file names, commit, original copyright, SPDX identifier, and a short
 list of the Rust changes. Credit the Avogadro project and thank Geoff Hutchison for port
 guidance in the implementation PR and project attribution. Cite Rappé et al. for UFF
-and use the upstream optimizer's references, “Guénolé 2020” for FIRE2 and
-“Echeverri Restrepo et al. 2023” for ABC-FIRE. Full titles and DOIs are
-to be filled in before the attribution doc ships.
+and use the upstream optimizer's references: FIRE2: J. Guénolé, W. G. Nöhring, A. Vaid,
+F. Houllé, Z. Xie, A. Prakash, E. Bitzek, "Assessment and optimization of the fast
+inertial relaxation engine (FIRE) for energy minimization in atomistic simulations and
+its implementation in LAMMPS," Computational Materials Science 175, 109584 (2020),
+https://doi.org/10.1016/j.commatsci.2020.109584; ABC-FIRE: S. Echeverri Restrepo,
+P. Andric, "ABC-FIRE: Accelerated Bias-Corrected Fast Inertial Relaxation Engine,"
+Computational Materials Science 218, 111978 (2023),
+https://doi.org/10.1016/j.commatsci.2022.111978.
 Preserve the no-endorsement language. ChemDraft's core remains Apache-2.0.
 Upstream `LICENSE`, `avogadro/calc/energyoptimizer.h:41`,
 `avogadro/calc/energyoptimizer.cpp:276` and `AGENTS.md` §4.7.
@@ -606,4 +611,4 @@ unrelated active slice.
 6. Split the bridge and default PRs and define the packaged latency benchmark.
 7. Update the protocol README in the bridge PR and link this plan when the slice is activated.
 8. Attribute the web build's unreleased status to the owner-relayed maintainer comments.
-9. Quote the optimizer's author/year references and defer full titles and DOIs to attribution closeout.
+9. Add the full optimizer citations, verified against the DOI records.
