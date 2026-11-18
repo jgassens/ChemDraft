@@ -257,17 +257,22 @@ are drawing differences. Each bracket pair matches by both glyph placements with
 their order. Whole-molecule members use canonical structure and placement. Crossing records retain
 their attachment and distinguish resolved inner atoms, unresolved source IDs, and absent IDs.
 Reports count pairs unchanged through every
-measured leg and files where a leg loses pairs. Legacy summaries without bracket data are excluded
-from route survival counts.
+measured leg and files where a leg loses pairs. Stored brackets need glyph placements and, for
+resolved targets, placement IDs, molecular structure and atom or bond sites as applicable.
 
 Non-text colours compare by drawing position and style role. Bond colours use the effective value
 after a bond-specific override and a molecule-wide default are applied. Colour and SRU contents
 are measured after placement matching. The placement tolerance accounts for CDXML's four
-decimal places and CDX's fixed-point units in native drawing coordinates.
+decimal places and CDX's fixed-point units in native drawing coordinates. Placement candidates
+include uncoloured objects and are indexed by their origins and extents using that tolerance.
 Wavy single bonds retain the order of their drawn endpoints, including isotope and neighbour
-evidence. The report awards survival credit only with a unique directed match through each leg,
-including for single-bond molecules. Rescoring a legacy summary without its full atom and bond
-placement evidence leaves its wavy displays inconclusive. A fresh run records that evidence.
+evidence. Neighbour comparisons require a one-to-one correspondence. Distinct correspondences
+within tolerance are inconclusive. The report awards survival credit only with a unique directed
+match through each leg, including for single-bond molecules.
+Reports and rescore mark bracket, colour or wavy checks as undetermined when a stored summary
+lacks the necessary placements or endpoint evidence. The affected checks block PASS and withhold
+survival credit. Re-run the harness to capture the missing evidence because rescore cannot
+reconstruct it.
 The CDXML baseline section compares shared IDs' CDXML routes, flags worse chemistry verdicts or added drawing-loss
 categories, and reports new IDs separately. Reports do not assert compatibility beyond their corpus.
 

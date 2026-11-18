@@ -1,7 +1,7 @@
 import { appendOutput as appendFile, writeOutput as writeFile, prepareOutput } from "./safety";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { chemistryFeatures, compareBracket, comparePlacements, compareSurvival, drawingFeatures, lacksWavyDirection, matchWavyBonds, pairBrackets, pairWavyMolecules, publicSanitizationReason, undeterminedFeatures, type MoleculeSummary, type Result, type Summary } from "./model";
+import { chemistryFeatures, compareBracket, comparePlacements, compareSurvival, drawingFeatures, lacksBracketPlacements, lacksWavyDirection, matchWavyBonds, missingComparisonEvidence, missingStoredEvidence, pairBrackets, pairWavyMolecules, publicSanitizationReason, undeterminedFeatures, type MoleculeSummary, type Result, type Summary } from "./model";
 import type { BondSite } from "./placement";
 import { stepArrowLosses, type SurvivalCounts } from "./survival";
 import { lines, results } from "./io";
@@ -76,6 +76,21 @@ function cdxmlScore(value: Result): number {
   return v === "PASS" ? 0 : v === "DRAWN-DIFFERENTLY" ? 1 : v === "WARNED" ? 2 : v === "FAIL" ? 3 : 4;
 }
 
+function checkStoredEvidence(row: Result) {
+  for (const trip of row.roundTrips) {
+    if (trip.verdict === "SKIPPED") continue;
+    const before = row.summary ?? trip.summary, after = trip.summary ?? row.summary;
+    const missing: ReturnType<typeof missingComparisonEvidence> = before && after ? missingComparisonEvidence(before, after) : new Set();
+    for (const leg of trip.legs ?? []) for (const feature of missingComparisonEvidence(leg.before, leg.after)) missing.add(feature);
+    for (const feature of missing) {
+      if (!trip.undetermined?.some(check => check.feature === feature && check.reason === missingStoredEvidence)) {
+        (trip.undetermined ??= []).push({ feature, reason: missingStoredEvidence });
+      }
+      if (trip.verdict !== "FAIL") trip.verdict = "ERROR";
+    }
+  }
+}
+
 function countWavySurvivors(summary: Summary, trips: Result["roundTrips"], originals: MoleculeSummary[]): number {
   const routes = trips.filter(trip => trip.verdict !== "SKIPPED");
   if (!routes.length) return 0;
@@ -124,6 +139,7 @@ export async function report(out: string, baseline?: string): Promise<void> {
     await rm(baselineIndex, { recursive: true, force: true });
     await mkdir(baselineIndex, { mode: 0o700 });
     for await (const row of results(baseline, true)) if (row.format === "cdxml" && /^[0-9a-f]{12}$/.test(row.id)) {
+      checkStoredEvidence(row);
       await writeFile(join(baselineIndex, row.id), JSON.stringify({ score: cdxmlScore(row), drawing: row.roundTrips.filter(t => t.route === "cdxml").flatMap(t => t.drawingLoss) }), { mode: 0o600 });
     }
   }
@@ -156,6 +172,7 @@ export async function report(out: string, baseline?: string): Promise<void> {
   const byEra: Record<string, Rate> = Object.create(null);
   const failures = counters(chemistryFeatures), warnedLosses = counters(chemistryFeatures), drawingLoss = counters(drawingFeatures);
   const undetermined = counters(undeterminedFeatures);
+  const missingEvidence: Counter = { count: 0, examples: [] };
   const warningCategories: Record<string, number> = Object.create(null);
   const errorCounts: Record<string, Record<string, number>> = Object.create(null);
   const rdkitErrors: Record<string, number> = Object.create(null);
@@ -179,6 +196,7 @@ export async function report(out: string, baseline?: string): Promise<void> {
   const brackets = { pairs: 0, unpaired: 0, byUsage: { sru: 0, multiple: 0, generic: 0, unknown: 0, absent: 0 }, routes: Object.fromEntries(["cdx", "cdxml", "cdx-cdxml-cdx"].map(route => [route, { survivingUnchanged: 0, filesLosingPairs: 0 }])) as Record<string, { survivingUnchanged: number; filesLosingPairs: number }> };
   const survival = { source: emptyCounts(), afterImport: survivalStage(), routes: {} as Record<string, ReturnType<typeof survivalStage>> };
   for await (const row of results(out, true)) {
+    checkStoredEvidence(row);
     const source = row.sourceSurvival;
     if (source) {
       addCounts(survival.source, source);
@@ -189,17 +207,6 @@ export async function report(out: string, baseline?: string): Promise<void> {
         if (stages.some(s => !s)) continue;
         const route = survival.routes[trip.route] ??= survivalStage();
         addSurvival(route, source, row.summary!.survival!, stages as SurvivalCounts[]);
-      }
-    }
-    // Older stored verdicts could award PASS from wavy display counts alone.
-    for (const trip of row.roundTrips) {
-      if (trip.verdict === "SKIPPED") continue;
-      const summaries = [row.summary, trip.summary, ...(trip.legs ?? []).flatMap(leg => [leg.before, leg.after])];
-      if (summaries.some(summary => summary?.molecules.some(lacksWavyDirection))) {
-        if (!trip.undetermined?.some(check => check.feature === "wavy-direction")) {
-          (trip.undetermined ??= []).push({ feature: "wavy-direction" });
-        }
-        if (trip.verdict !== "FAIL") trip.verdict = "ERROR";
       }
     }
     const originalBrackets = row.summary?.brackets ?? [];
@@ -215,7 +222,7 @@ export async function report(out: string, baseline?: string): Promise<void> {
       const route = brackets.routes[trip.route];
       if (!route || trip.verdict === "SKIPPED" || !trip.summary || !row.summary?.brackets || !trip.summary.brackets) continue;
       const stages = trip.legs?.length ? trip.legs.map(leg => leg.after) : [trip.summary];
-      if (stages.some(stage => !stage.brackets)) continue;
+      if (lacksBracketPlacements(row.summary) || stages.some(stage => !stage.brackets || lacksBracketPlacements(stage))) continue;
       let remaining = new Set(originalBrackets);
       let previous = row.summary, lost = false;
       for (const stage of stages) {
@@ -225,7 +232,7 @@ export async function report(out: string, baseline?: string): Promise<void> {
         remaining = new Set(pairs.flatMap(({ before, after }) => {
           if (!before || !after || !remaining.has(before)) return [];
           const comparison = compareBracket(before, after, placement);
-          return comparison.differences.length || comparison.ambiguous.length ? [] : [after];
+          return comparison.differences.length || comparison.ambiguous.length || comparison.missing.length ? [] : [after];
         }));
         previous = stage;
       }
@@ -240,6 +247,7 @@ export async function report(out: string, baseline?: string): Promise<void> {
     for (const trip of row.roundTrips) countSanitization(trip.summary, roundTripSanitization);
     for (const error of resultErrors(row)) countError(error);
     const outcome = verdict(row), id = idSafe(row.id);
+    if (row.roundTrips.some(trip => trip.undetermined?.some(check => check.reason === missingStoredEvidence))) bump(missingEvidence, id);
     addRate(totals, outcome);
     addDimension(byFormat, row.format === "cdx" || row.format === "cdxml" ? row.format : "unknown", outcome);
     addDimension(byGroup, groupSafe(row.group), outcome);
@@ -306,6 +314,7 @@ export async function report(out: string, baseline?: string): Promise<void> {
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; groundTruth = undefined; }
   const safeReport = {
     totals, byFormat, byGroup, byEra, sameSpecies, identityPasses, comparisonInternalErrors, crashes, timeouts, failures, warnedLosses, undetermined, errorCounts, rdkitErrors, sanitization, roundTripSanitization,
+    ...(missingEvidence.count ? { missingStoredEvidence: { ...missingEvidence, reason: missingStoredEvidence } } : {}),
     drawingLoss: Object.fromEntries(Object.entries(drawingLoss).map(([key, counter]) => [key, { ...counter, rate: drawingDenominator ? counter.count / drawingDenominator : 0 }])),
     drawingDenominator, warningCategories, brackets, survival, ...(baseline ? { cdxmlRegression: regression } : {}), ...(groundTruth ? { groundTruth } : {})
   };
@@ -348,6 +357,7 @@ export async function report(out: string, baseline?: string): Promise<void> {
     await appendFile(mdPath, "\n");
   }
   const { connectivity, "bond-order": bondOrder, ...inconclusivePlacement } = undetermined;
+  if (missingEvidence.count) await appendFile(mdPath, `${missingEvidence.count} file(s). ${missingStoredEvidence}\n\n`);
   for (const [label, counts] of [["DRAWN-DIFFERENTLY", sameSpecies], ["Chemistry FAIL", failures],
     ["Undetermined graph checks", { connectivity, "bond-order": bondOrder }],
     ["Inconclusive placement and endpoint checks", inconclusivePlacement],

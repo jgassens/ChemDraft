@@ -10,6 +10,7 @@ import { BracketObjectSchema, createEmptyDocument, deserializeDocument, serializ
 import { readFile } from "node:fs/promises";
 import { testResonance } from "./resonance";
 import { compareSigma } from "./sigma";
+import { placementTolerance } from "./placement";
 
 const summary = (molecules: MoleculeSummary[]): Summary => ({ molecules, reactions: [], standaloneAbbreviations: [], standaloneRGroups: [], drawing: { arrows: [], brackets: [], "text-styling": 0, colours: [], pages: 1, "other-graphics": [] } });
 const wrap = (content: string) => `<CDXML CreationProgram="ChemDraft"><page id="1" BoundingBox="0 0 612 792">${content}</page></CDXML>`;
@@ -245,6 +246,26 @@ describe("synthetic bracket pair survival", () => {
     const before = await describeDocument(document, []);
     const binary = (await open((await interchange(document, "cdx")).bytes)).document!;
     expect(compare(before, await describeDocument(binary, []), [])).toMatchObject({ verdict: "PASS", differences: [] });
+  });
+
+  it.each([
+    ["preserves an SRU atom when rounding and reversed enumeration require reassigning a neighbour", 1.07, "PASS"],
+    ["marks an SRU atom inconclusive when rounding permits distinct neighbour assignments", 0.97, "ERROR"]
+  ] as const)("%s", async (_name, separation, verdict) => {
+    const xml = wrap(molecule([[7, 20, 30], [9, 40, 30], [9, 50, 30]], [[0, 1], [0, 2]]) +
+      sru(20, 30, 10, 100, 10, 101, 10).replace(/<crossingbond[^>]+\/>/g, ""));
+    const document = await openXml(xml);
+    const fragment = document.pages[0].objects.find(object => object.type === "molecule")!;
+    const [, first, second] = fragment.atoms;
+    second.x = first.x + separation * placementTolerance;
+    const before = await describeDocument(document, []);
+    first.x += 0.02 * placementTolerance;
+    second.x -= 0.10 * placementTolerance;
+    fragment.bonds.reverse();
+    const after = await describeDocument(document, []);
+    expect(compare(before, after, [])).toMatchObject({ verdict, differences: [],
+      ...(verdict === "ERROR" ? { undetermined: [{ feature: "bracket-members" }] } : {})
+    });
   });
 });
 

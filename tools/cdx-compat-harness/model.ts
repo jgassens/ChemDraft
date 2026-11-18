@@ -150,7 +150,7 @@ export interface RoundTrip {
   warnings: Warning[];
   differences: Difference[];
   /** Incomplete comparisons are neither measured losses nor equality. */
-  undetermined?: { feature: typeof undeterminedFeatures[number]; molecule?: { before?: string; after?: string } }[];
+  undetermined?: { feature: typeof undeterminedFeatures[number]; molecule?: { before?: string; after?: string }; reason?: typeof missingStoredEvidence }[];
   drawingLoss: DrawingFeature[];
   summary?: Summary;
   comparisonInternalErrors?: number;
@@ -162,6 +162,7 @@ export interface RoundTrip {
 }
 export const undeterminedFeatures = ["connectivity", "bond-order", "molecule-placement", "colour-placement",
   "wavy-placement", "wavy-direction", "bracket-placement", "bracket-members", "bracket-crossing-bonds"] as const;
+export const missingStoredEvidence = "Missing stored placement or endpoint evidence. Re-run the harness because rescore cannot reconstruct it.";
 export interface Result {
   truthSru?: { molecules: MoleculeSummary[]; notes: string[] };
   sourceSurvival?: import("./survival").SurvivalCounts;
@@ -337,31 +338,55 @@ function placementPairs<T>(before: readonly T[], after: readonly T[], same: (a: 
   });
 }
 
-const placementScope = (p: Placement) => ({ ...p, scope: JSON.stringify([p.page, p.type, p.graphicKind ?? ""]) });
+const placementKind = (p: Placement) => JSON.stringify([p.page, p.type, p.graphicKind]);
+const placementScope = (p: Placement) => ({ ...p, scope: JSON.stringify([placementKind(p), p.structure]) });
 const placementKey = (p: Placement) => JSON.stringify([p.page, p.id]);
 type PlacementComparison = ReturnType<typeof comparePlacements>;
 
-export function comparePlacements(before: Summary, after: Summary) {
-  const left = before.placements ?? before.nonTextColours ?? [];
-  const right = after.placements ?? after.nonTextColours ?? [];
-  const matches = placementPairs(left, right, samePlacement, placementScope);
-  const leftById = new Map(left.filter(p => p.id !== undefined).map(p => [placementKey(p), p]));
-  const rightById = new Map(right.filter(p => p.id !== undefined).map(p => [placementKey(p), p]));
-  const leftGraphs = new Map(before.molecules.map(m => [m.objectId, m.sites]));
-  const rightGraphs = new Map(after.molecules.map(m => [m.objectId, m.sites]));
+const hasAtomEvidence = (site: AtomSite) => Array.isArray(site.neighbours);
+const hasBondEvidence = (bond: BondSite) => bond.length === 2 && bond.every(hasAtomEvidence);
+const hasSiteInventory = (sites?: MoleculeSites) =>
+  !!sites?.atoms?.length && Array.isArray(sites.bonds) && sites.atoms.every(hasAtomEvidence) && sites.bonds.every(hasBondEvidence);
+
+function placementEvidence(summary: Summary) {
+  const placements = summary.placements ?? [];
+  const incompleteKinds = new Set(placements.filter(p => p.id === undefined ||
+    p.type === "molecule" && p.structure === undefined).map(placementKind));
+  const byId = new Map(placements.map(p => [placementKey(p), p]));
+  const graphs = new Map(summary.molecules.filter(m => hasSiteInventory(m.sites)).map(m => [m.objectId, m.sites]));
+  const hasCandidates = (ref: Placement) => !!summary.placements && !incompleteKinds.has(placementKind(ref));
   return {
+    placements, byId, hasCandidates,
+    hasObject(ref: Placement) {
+      const object = byId.get(placementKey(ref));
+      return ref.id !== undefined && hasCandidates(ref) && !!object &&
+        (ref.type !== "molecule" || ref.structure !== undefined) && samePlacement(ref, object);
+    },
+    graph: (ref: Placement) => graphs.get(ref.id)
+  };
+}
+
+export function comparePlacements(before: Summary, after: Summary) {
+  const left = placementEvidence(before), right = placementEvidence(after);
+  const matches = placementPairs(left.placements, right.placements, samePlacement, placementScope);
+  return {
+    left, right,
     objects(a: Placement, b: Placement): SiteComparison {
-      const x = leftById.get(placementKey(a)), y = rightById.get(placementKey(b));
-      if (!x || !y) return samePlacement(a, b) ? "match" : "changed";
+      if (!left.hasObject(a) || !right.hasObject(b)) return "ambiguous";
+      const x = left.byId.get(placementKey(a))!, y = right.byId.get(placementKey(b))!;
       if (matches.ambiguousBefore.has(x) || matches.ambiguousAfter.has(y)) return "ambiguous";
       return matches.paired.get(x) === y ? "match" : "changed";
     },
     ambiguous(a: Placement, side: "before" | "after") {
-      const site = (side === "before" ? leftById : rightById).get(placementKey(a));
+      const site = (side === "before" ? left : right).byId.get(placementKey(a));
       return site !== undefined && (side === "before" ? matches.ambiguousBefore : matches.ambiguousAfter).has(site);
     },
+    match(a: Placement) {
+      const site = left.byId.get(placementKey(a));
+      return site && matches.paired.get(site);
+    },
     graph: (object: Placement, side: "before" | "after") =>
-      (side === "before" ? leftGraphs : rightGraphs).get(object.id)
+      (side === "before" ? left : right).graph(object)
   };
 }
 
@@ -389,9 +414,7 @@ function compareReferences<T>(before: T[], after: T[], identity: (a: T, b: T) =>
 const byValue = (a: unknown, b: unknown): SiteComparison => jsonEqual(a, b) ? "match" : "changed";
 
 function nonTextColoursComparison(before: Summary, after: Summary, placement: PlacementComparison): SiteComparison {
-  if (!before.nonTextColours || !after.nonTextColours) return "match"; // Legacy palette-only summaries.
-  const palette = (item: NonTextColourSummary) => item.colours ?? sorted([...new Set(item.roles?.map(colour => colour.value))]);
-  const left = before.nonTextColours, right = after.nonTextColours;
+  const left = before.nonTextColours ?? [], right = after.nonTextColours ?? [];
   const ambiguous = (item: NonTextColourSummary, side: "before" | "after") => {
     if (placement.ambiguous(item, side)) return true;
     const graph = placement.graph(item, side);
@@ -400,73 +423,119 @@ function nonTextColoursComparison(before: Summary, after: Summary, placement: Pl
       (bond && compareBondSite(bond, bond, graph, graph) === "ambiguous"));
   };
   if (left.some(item => ambiguous(item, "before")) || right.some(item => ambiguous(item, "after"))) return "ambiguous";
-  // Match objects before looking at colour. Missing colour on an uncoloured match is a loss.
-  const matches = placementPairs(left, right, samePlacement, placementScope);
-  if (matches.ambiguousBefore.size || matches.ambiguousAfter.size) return "ambiguous";
-  let changed = matches.paired.size !== left.length || matches.paired.size !== right.length;
-  for (const [a, b] of matches.paired) {
+  // Look up each colour on the match from the full inventory, including uncoloured objects.
+  const rightById = new Map(right.map(p => [placementKey(p), p]));
+  let matched = 0, changed = false;
+  for (const a of left) {
+    const object = placement.match(a);
+    const b = object && rightById.get(placementKey(object));
+    if (!b) continue;
+    matched++;
     const leftGraph = placement.graph(a, "before"), rightGraph = placement.graph(b, "after");
-    const result = a.roles && b.roles ? compareReferences(a.roles, b.roles, (x, y) => {
+    const result = compareReferences(a.roles!, b.roles!, (x, y) => {
       if (!jsonEqual(x.role, y.role)) return "changed";
       if (x.atom && y.atom) return compareAtomSite(x.atom, y.atom, leftGraph, rightGraph);
       if (x.bond && y.bond) return compareBondSite(x.bond, y.bond, leftGraph, rightGraph);
       return byValue([x.atom, x.bond], [y.atom, y.bond]);
-    }, (x, y) => byValue(x.value, y.value)) : byValue(palette(a), palette(b));
+    }, (x, y) => byValue(x.value, y.value));
     if (result === "ambiguous") return "ambiguous";
     if (result === "changed") changed = true;
   }
-  return changed ? "changed" : "match";
+  return changed || matched !== left.length || matched !== right.length ? "changed" : "match";
 }
 
-function compareMember(a: BracketMember, b: BracketMember, placement?: PlacementComparison): SiteComparison {
+function compareMember(a: BracketMember, b: BracketMember, placement: PlacementComparison): SiteComparison {
   if ("unresolved" in a || "unresolved" in b) return byValue(a, b);
-  const objects = placement?.objects(a.object, b.object) ?? (samePlacement(a.object, b.object) ? "match" : "changed");
+  const objects = placement.objects(a.object, b.object);
   if (objects !== "match") return objects;
-  return a.atom && b.atom ? compareAtomSite(a.atom, b.atom, placement?.graph(a.object, "before"), placement?.graph(b.object, "after"))
+  return a.atom && b.atom ? compareAtomSite(a.atom, b.atom, placement.graph(a.object, "before"), placement.graph(b.object, "after"))
     : byValue(a.atom, b.atom);
 }
 
-function compareCrossingBond(a: BracketCrossing, b: BracketCrossing, placement?: PlacementComparison): SiteComparison {
+function compareCrossingBond(a: BracketCrossing, b: BracketCrossing, placement: PlacementComparison): SiteComparison {
   if ("unresolved" in a || "unresolved" in b) {
     return byValue("unresolved" in a ? a.unresolved : null, "unresolved" in b ? b.unresolved : null);
   }
-  const objects = placement?.objects(a.object, b.object) ?? (samePlacement(a.object, b.object) ? "match" : "changed");
+  const objects = placement.objects(a.object, b.object);
   if (objects !== "match") return objects;
-  return compareBondSite(a.bond, b.bond, placement?.graph(a.object, "before"), placement?.graph(b.object, "after"));
+  return compareBondSite(a.bond, b.bond, placement.graph(a.object, "before"), placement.graph(b.object, "after"));
 }
 
-function compareInner(a: BracketCrossing, b: BracketCrossing, placement?: PlacementComparison): SiteComparison {
+function compareInner(a: BracketCrossing, b: BracketCrossing, placement: PlacementComparison): SiteComparison {
   if (!a.inner || !b.inner || "unresolved" in a.inner || "unresolved" in b.inner) return byValue(a.inner, b.inner);
   return compareAtomSite(a.inner, b.inner,
-    "object" in a ? placement?.graph(a.object, "before") : undefined,
-    "object" in b ? placement?.graph(b.object, "after") : undefined);
+    "object" in a ? placement.graph(a.object, "before") : undefined,
+    "object" in b ? placement.graph(b.object, "after") : undefined);
 }
 
 function glyphAlignments(a: BracketSummary, b: BracketSummary): (0 | 1)[] {
   const left = a.placements, right = b.placements;
-  if (!left || !right) return [0]; // A single legacy pair has no recorded glyphs.
+  if (!left || !right) return [];
   return ([0, 1] as const).filter(index => samePlacement(left[0], right[index]) && samePlacement(left[1], right[1 - index]));
 }
 
-export function compareBracket(a: BracketSummary, b: BracketSummary, placement?: PlacementComparison) {
+function missingBracketEvidence(bracket: BracketSummary, evidence: ReturnType<typeof placementEvidence>) {
+  const missing: ("bracket-members" | "bracket-crossing-bonds")[] = [];
+  if (!bracket.members || bracket.members.length < bracket.memberCount || bracket.members.some(member =>
+    "object" in member && (!evidence.hasObject(member.object) ||
+      !!member.atom && (!hasAtomEvidence(member.atom) || !evidence.graph(member.object))))) missing.push("bracket-members");
+  const crossings = bracket.crossings?.flat() ?? [];
+  if (!bracket.crossings || crossings.length < bracket.crossingBondCount || crossings.some(crossing =>
+    "object" in crossing && (!evidence.hasObject(crossing.object) || !evidence.graph(crossing.object) ||
+      !hasBondEvidence(crossing.bond) || !!crossing.inner && !("unresolved" in crossing.inner) && !hasAtomEvidence(crossing.inner)))) {
+    missing.push("bracket-crossing-bonds");
+  }
+  return missing;
+}
+
+const hasDrawingItems = (items: unknown) => Array.isArray(items) && items.length > 0;
+export const lacksBracketPlacements = (summary: Summary) => summary.brackets
+  ? summary.brackets.some(bracket => !bracket.placements)
+  : hasDrawingItems(summary.drawing.brackets);
+
+function lacksColourEvidence(summary: Summary, evidence: ReturnType<typeof placementEvidence>, other: ReturnType<typeof placementEvidence>) {
+  return !summary.placements || !summary.nonTextColours || summary.nonTextColours.some(item =>
+    !evidence.hasObject(item) || !other.hasCandidates(item) || !item.roles || item.roles.some(({ atom, bond }) =>
+      (!!atom && !hasAtomEvidence(atom) || !!bond && !hasBondEvidence(bond) || !!(atom || bond) && !evidence.graph(item))));
+}
+
+/** Stored evidence must be sufficient both when comparing and when reading an old verdict. */
+export function missingComparisonEvidence(before: Summary, after: Summary,
+  left = placementEvidence(before), right = placementEvidence(after)) {
+  const features = new Set<typeof undeterminedFeatures[number]>();
+  for (const [summary, evidence] of [[before, left], [after, right]] as const) {
+    if (lacksBracketPlacements(summary)) features.add("bracket-placement");
+    for (const bracket of summary.brackets ?? []) for (const feature of missingBracketEvidence(bracket, evidence)) features.add(feature);
+    if (summary.molecules.some(lacksWavyDirection)) features.add("wavy-direction");
+  }
+  const hasColour = (summary: Summary) => summary.nonTextColours?.length ||
+    !summary.nonTextColours && hasDrawingItems(summary.drawing.colours);
+  if ((hasColour(before) || hasColour(after)) && (lacksColourEvidence(before, left, right) || lacksColourEvidence(after, right, left))) {
+    features.add("colour-placement");
+  }
+  return features;
+}
+
+export function compareBracket(a: BracketSummary, b: BracketSummary, placement: PlacementComparison) {
   const differences: { feature: Feature; before: unknown; after: unknown }[] = [];
   const ambiguous: ("bracket-members" | "bracket-crossing-bonds")[] = [];
+  const missing = [...missingBracketEvidence(a, placement.left), ...missingBracketEvidence(b, placement.right)];
   const alignment = glyphAlignments(a, b)[0];
   const fields = [["bracket-usage", "bracketUsage"], ["bracket-repeat-count", "repeatCount"], ["bracket-repeat-unit", "repeatUnit"],
     ["bracket-members", "memberCount"], ["bracket-crossing-bonds", "crossingBondCount"], ["bracket-drawing", "bracketKind"], ["bracket-drawing", "label"]] as const;
   for (const [feature, field] of fields) {
     let left: unknown = a[field], right: unknown = b[field];
     if (left === right && field === "memberCount") {
+      if (missing.includes("bracket-members")) continue;
       if (a.members && b.members) {
         const status = compareReferences(a.members, b.members, (x, y) => compareMember(x, y, placement));
         if (status === "match") continue;
         if (status === "ambiguous") { ambiguous.push("bracket-members"); continue; }
         left = a.members; right = b.members;
-      } else if (a.memberKeys && b.memberKeys) {
-        left = a.memberKeys; right = b.memberKeys;
       }
     }
     if (left === right && field === "crossingBondCount") {
+      if (missing.includes("bracket-crossing-bonds")) continue;
       if (a.crossings && b.crossings) {
         const ordered = [b.crossings[alignment], b.crossings[1 - alignment]];
         const statuses = a.crossings.map((attachment, i) => compareReferences(attachment, ordered[i],
@@ -475,13 +544,11 @@ export function compareBracket(a: BracketSummary, b: BracketSummary, placement?:
         if (statuses.includes("ambiguous")) ambiguous.push("bracket-crossing-bonds");
         if (!statuses.includes("changed")) continue;
         left = a.crossings; right = ordered;
-      } else if (a.crossingBondKeys && b.crossingBondKeys) {
-        left = a.crossingBondKeys; right = b.crossingBondKeys;
       }
     }
     if (!jsonEqual(left, right)) differences.push({ feature, before: left, after: right });
   }
-  return { differences, ambiguous };
+  return { differences, ambiguous, missing };
 }
 
 export function pairBrackets(before: BracketSummary[], after: BracketSummary[]) {
@@ -489,12 +556,11 @@ export function pairBrackets(before: BracketSummary[], after: BracketSummary[]) 
   const { paired, ambiguousBefore, ambiguousAfter } = pairUnique(before, after, same, items => {
     const glyphs = items.flatMap(bracket => bracket.placements?.map((site, i, sites) => ({ bracket, site, other: sites[1 - i] })) ?? []);
     const index = positionIndex(glyphs, glyph => placementScope(glyph.site));
-    const legacy = items.filter(bracket => !bracket.placements).slice(0, 2);
     return bracket => {
-      if (!bracket.placements) return items.slice(0, 2);
+      if (!bracket.placements) return [];
       const [first, second] = bracket.placements;
       const matches = index(placementScope(first), ({ site, other }) => samePlacement(first, site) && samePlacement(second, other));
-      return [...matches.map(glyph => glyph.bracket), ...legacy].slice(0, 2);
+      return matches.map(glyph => glyph.bracket);
     };
   });
   for (const a of before) if (a.placements && glyphAlignments(a, a).length > 1) ambiguousBefore.add(a);
@@ -592,7 +658,7 @@ export function pairWavyMolecules(before: MoleculeSummary[], after: MoleculeSumm
 }
 
 export const lacksWavyDirection = (m: MoleculeSummary) => (m.displays?.wavy ?? 0) > 0 &&
-  (!m.sites || m.wavyBonds?.length !== m.displays.wavy);
+  (!hasSiteInventory(m.sites) || !m.sites?.bonds.length || m.wavyBonds?.length !== m.displays.wavy || !m.wavyBonds.every(hasBondEvidence));
 
 /** Track marked bonds using all native sites as candidates, including unmarked bonds. */
 export function matchWavyBonds(before: MoleculeSummary, after: MoleculeSummary) {
@@ -733,14 +799,16 @@ function pairedValues(left: MoleculeSummary, right: MoleculeSummary, feature: Fe
 /** Callers supply diagnostics from this conversion leg, never baseline import warnings. */
 export function compare(before: Summary, after: Summary, warnings: Warning[], options: { exactGraphBudget?: number } = {}): Comparison {
   const differences: Difference[] = [];
-  const undetermined: NonNullable<Comparison["undetermined"]> = [];
   const placement = comparePlacements(before, after);
+  const missing = missingComparisonEvidence(before, after, placement.left, placement.right);
+  const undetermined: NonNullable<Comparison["undetermined"]> = [...missing]
+    .filter(feature => feature !== "wavy-direction").map(feature => ({ feature, reason: missingStoredEvidence }));
   const moleculePairs = pairMolecules(before.molecules, after.molecules).map(pair => {
     const a = pair.before, b = pair.after;
     const molecule = { before: a?.objectId, after: b?.objectId };
     if (pair.ambiguous) undetermined.push({ feature: "molecule-placement", molecule });
     if ([a, b].some(m => m && lacksWavyDirection(m))) {
-      undetermined.push({ feature: "wavy-direction", molecule });
+      undetermined.push({ feature: "wavy-direction", molecule, reason: missingStoredEvidence });
     } else if (a && b && (a.displays?.wavy || b.displays?.wavy)) {
       const wavy = matchWavyBonds(a, b);
       if (wavy.ambiguous) undetermined.push({ feature: "wavy-placement", molecule });
@@ -832,7 +900,8 @@ export function compare(before: Summary, after: Summary, warnings: Warning[], op
     if (!jsonEqual(a, b)) differences.push({ feature, before: a, after: b, warned: feature === "reaction-roles" && warningsCover(before.reactions, after.reactions, reactionValue, warnings, feature) });
   }
   const changes: { feature: Feature; before: unknown; after: unknown; ids: string[] }[] = [];
-  for (const { before: a, after: b, ambiguous } of pairBrackets(before.brackets ?? [], after.brackets ?? [])) {
+  const bracketPairs = missing.has("bracket-placement") ? [] : pairBrackets(before.brackets ?? [], after.brackets ?? []);
+  for (const { before: a, after: b, ambiguous } of bracketPairs) {
     const ids = [...(a?.objectIds ?? []), ...(b?.objectIds ?? [])];
     if (ambiguous) undetermined.push({ feature: "bracket-placement" });
     else if (!a || !b) changes.push({ feature: "bracket-pair", before: a ? bracketValue(a) : null, after: b ? bracketValue(b) : null, ids });
@@ -849,8 +918,8 @@ export function compare(before: Summary, after: Summary, warnings: Warning[], op
   const survival = before.survival && after.survival ? compareSurvival(before.survival, after.survival, warnings) : undefined;
   differences.push(...(survival?.differences ?? []));
   const guarded = guardDifferences(differences);
-  const colours = nonTextColoursComparison(before, after, placement);
-  if (colours === "ambiguous") undetermined.push({ feature: "colour-placement" });
+  const colours = missing.has("colour-placement") ? "ambiguous" : nonTextColoursComparison(before, after, placement);
+  if (colours === "ambiguous" && !missing.has("colour-placement")) undetermined.push({ feature: "colour-placement" });
   const drawingLoss = drawingFeatures.filter(feature => !jsonEqual(before.drawing[feature], after.drawing[feature])
     || (feature === "colours" && colours === "changed"));
   for (const feature of survival?.drawingLoss ?? []) if (!drawingLoss.includes(feature)) drawingLoss.push(feature);
