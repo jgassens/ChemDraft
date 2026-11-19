@@ -1,8 +1,12 @@
 import {
+  adoptDerivedDocument,
   applyPatch,
+  isDativeBond,
   type ApplyPatchOptions,
   type ChemDraftDocument,
-  type DocumentObject
+  type DocumentObject,
+  type DocumentPatch,
+  type MoleculeObject
 } from "@chemdraft/chem-core";
 import {
   AppliedPatchReceiptSchema,
@@ -10,7 +14,7 @@ import {
   type NormalizedProposedDocumentPatch
 } from "@chemdraft/plugin-api";
 import { rebasePluginPatch, writePatchOps } from "@chemdraft/plugin-host";
-import { selectionBounds, translateInsertedDocumentObjects } from "../documentWorkflow";
+import { refreshPluginMoleculeChemistry, selectionBounds, translateInsertedDocumentObjects } from "../documentWorkflow";
 import { choosePlacement, objectRect, overlaps as boundsOverlap, pageContentRect, RELATIVE_GAP, unionRects } from "../assistant/placement";
 import type { ViewportRect } from "@chemdraft/viewport-engine";
 
@@ -24,6 +28,53 @@ export interface PluginPatchPlacementOptions extends ApplyPatchOptions {
 export interface AppliedPluginDocumentPatch {
   document: ChemDraftDocument;
   receipt: AppliedPatchReceipt;
+}
+
+/** Compare the applied graph with its starting graph, excluding coordinates and decoration. */
+export function refreshPluginPatchChemistry(
+  before: ChemDraftDocument, after: ChemDraftDocument, rebasedPatch: DocumentPatch, writeScopeObjectIds: readonly string[]
+): ChemDraftDocument {
+  const originals = new Set(before.pages.flatMap(page => page.objects));
+  const survivors = new Set(after.pages.flatMap(page => page.objects));
+  const scope = new Set(writeScopeObjectIds);
+  const previous = new Map<string, MoleculeObject[]>();
+  for (const object of originals) {
+    // Leave out-of-scope changes to the final write guard. Match unchanged object references
+    // first, then remaining occurrences in order because old documents may contain duplicate IDs.
+    if (object.type !== "molecule" || !scope.has(object.id) || survivors.has(object)) continue;
+    const matches = previous.get(object.id) ?? [];
+    matches.push(object);
+    previous.set(object.id, matches);
+  }
+  // An insertion already has a source representation. Compare against its authored graph so
+  // subsequent edits in the same batch are refreshed too.
+  for (const op of writePatchOps(rebasedPatch)) {
+    if (op.op === "addObject" && op.object.type === "molecule") previous.set(op.object.id, [op.object]);
+  }
+  let changed = false;
+  const pages = after.pages.map(page => {
+    const objects = page.objects.map(object => {
+      if (object.type !== "molecule" || originals.has(object)) return object;
+      const old = previous.get(object.id)?.shift();
+      if (!old || pluginMoleculeGraph(old) === pluginMoleculeGraph(object)) return object;
+      changed = true;
+      return refreshPluginMoleculeChemistry(object);
+    });
+    return objects.some((object, i) => object !== page.objects[i]) ? { ...page, objects } : page;
+  });
+  return changed ? adoptDerivedDocument(after, { ...after, pages }) : after;
+}
+
+function pluginMoleculeGraph(molecule: MoleculeObject): string {
+  return JSON.stringify([
+    molecule.atoms.map(atom => [atom.id, atom.element, atom.formalCharge, atom.isotope, atom.markRadicals,
+      atom.schemeAbbreviation, atom.labelLiteral, atom.hydrogenCount, atom.labelBondSide?.side, atom.labelBondSide?.atomId]),
+    molecule.bonds.map(bond => {
+      const style = bond.display?.bondStyle;
+      return [bond.id, bond.fromAtomId, bond.toAtomId, bond.order, bond.stereo, isDativeBond(bond),
+        style === "wedge" || style === "hashed" || style === "wavy" ? style : undefined];
+    })
+  ]);
 }
 
 /**

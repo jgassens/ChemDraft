@@ -222,6 +222,7 @@ import { createPersistentPluginStorage } from "./plugins/pluginStorage";
 import {
   applyAcceptedPluginProposal,
   applyPluginDocumentPatch,
+  refreshPluginPatchChemistry,
   placeInsertedObjectsInFreeSpace,
   createPluginWriteGate,
   describePatchFailure,
@@ -1834,7 +1835,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.18.21.11-codex";
+const CURRENT_BUILD_STAMP = "11.19.00.30-codex";
 const TABLE_DRAFT_RECOVERY_WARNING = "session.tableDraftDropped";
 
 function clearTableDraftRecoveryWarnings(report: OpenWarningsReport | undefined): OpenWarningsReport | undefined {
@@ -13059,13 +13060,13 @@ export function MainWindow({
             });
           }
         }
-        const prepared = normalizeCommittedDocument(placed);
+        const authoredPatch = rebasePluginPatch(before, patch).patch;
+        const prepared = refreshPluginPatchChemistry(before, normalizeCommittedDocument(placed), authoredPatch, writeScopeObjectIds);
         let committed = prepared;
         const pending = commitWithPageFit(before, prepared, (document, fitBaseline) => {
           // User-approved page fitting is a host edit. Replay its exact transform on the baseline
           // so it grants no scope for a plugin's own movement or normalization side effects.
           const baseline = fitBaseline(before);
-          const authoredPatch = rebasePluginPatch(before, patch).patch;
           let cleanup: ReturnType<typeof finishScopedRepeatUnitCleanup>;
           const assertFinalDocument = (document: ChemDraftDocument) => {
             assertPluginDocumentWriteScope(baseline, document, patch, writeScopeObjectIds);

@@ -8,10 +8,13 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AssistantCapabilityPermissions, PluginPanelReportSchema, ProposedDocumentPatchSchema, type PluginCommandContext, type PluginAssistantToolResult } from "@chemdraft/plugin-api";
 import { applyPatch, createEmptyDocument, DocumentStylePreset, nativeDrawingStyleFromObjectStyle, type BracketObject, type ChemDraftDocument, type DocumentObject, type ElectronMarkObject, type MoleculeObject } from "@chemdraft/chem-core";
+import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import { applyMoleculeTargetBondLength, createSmilesMolecule, inspectHydrogenNormalizedIdentity, pastedStructureDepictionFromMolfile, resolveStructureTemplateName, setReactionArrowConditions } from "@chemdraft/document-workflow-core";
+import * as identifiers from "@chemdraft/rdkit-adapter/identifiers";
 import { ensureRdkit, generateSmiles2DMolfile, setRdkitModuleLoader } from "../../../packages/rdkit-adapter/src/conformer";
 import { applyChargeToolAtPoint, createNativeArtLineGraphicObject, normalizeCommittedDocument } from "./documentWorkflow";
 import * as workflow from "./documentWorkflow";
+import { moleculeSmiles } from "./moleculeSmiles";
 import { getAssistantHistoryPort } from "./assistant/historyPort";
 import { getAssistantTransactions } from "./assistant/assistantTransaction";
 import { buildMoveObjects, inspectMolecule } from "./assistant/writeBuilder";
@@ -60,14 +63,18 @@ const select = vi.fn<(context: PluginCommandContext) => Promise<void>>();
 let root: Root;
 let container: HTMLDivElement;
 
+function loadTestRdkit() {
+  // jsdom rewrites import.meta.url to HTTP, so load the real vendored WASM by filesystem path.
+  const glue = resolve("packages/rdkit-adapter/vendor/RDKit_minimal.js");
+  const factory = new Function("require", "__dirname", `${readFileSync(glue, "utf8")}\n;return initRDKitModule;`)(
+    createRequire(glue), resolve("packages/rdkit-adapter/vendor"));
+  setRdkitModuleLoader(() => factory({ wasmBinary: new Uint8Array(readFileSync(resolve("packages/rdkit-adapter/vendor/RDKit_minimal.wasm"))) }));
+}
+
 describe("assistant writes through mounted desktop normalization", () => {
   let chemistry: AssistantToolContext["chemistry"];
   beforeEach(() => {
-    // jsdom rewrites import.meta.url to HTTP, so load the real vendored WASM by filesystem path.
-    const glue = resolve("packages/rdkit-adapter/vendor/RDKit_minimal.js");
-    const factory = new Function("require", "__dirname", `${readFileSync(glue, "utf8")}\n;return initRDKitModule;`)(
-      createRequire(glue), resolve("packages/rdkit-adapter/vendor"));
-    setRdkitModuleLoader(() => factory({ wasmBinary: new Uint8Array(readFileSync(resolve("packages/rdkit-adapter/vendor/RDKit_minimal.wasm"))) }));
+    loadTestRdkit();
     vi.stubGlobal("localStorage", new MemoryStorage());
     vi.stubGlobal("ResizeObserver", TestResizeObserver);
     vi.stubGlobal("CSS", { escape: (value: string) => value });
@@ -310,6 +317,80 @@ describe("plugin direct writes through mounted desktop normalization", () => {
       atomAssociation: "explicit", anchor: { kind: "atom", objectId: molecule.id, atomId: atom.id },
       x: atom.x + 12, y: atom.y - 12, width: 18, height: 18, rotation: 0, style: {} };
   }
+
+  it.each(["molfile-v2000", "smiles"] as const)("refreshes stored and exported chemistry after a plugin graph edit to %s", async format => {
+    loadTestRdkit();
+    const fixture = testContext();
+    const drawing = applyPatch(fixture.context.getDocument()!, { op: "batch", patches: [
+      { op: "updateObject", objectId: fixture.molecule.id, changes: {
+        structureFormat: format, structure: format === "smiles" ? "CC" : fixture.molecule.structure
+      } },
+      { op: "setSelection", objectIds: [fixture.molecule.id] }
+    ] });
+    const port = await mount(drawing);
+    const molecule = port.read("initial")!.pages[0]!.objects[0]! as MoleculeObject;
+    expect(molecule.structureFormat).toBe(format);
+    expect(molecule.chemistry?.formula).toBe("C2H6");
+    expect(molecule.compatibility?.unknown.smiles).toBe("CC");
+    const invoke = registerWrite(context => context.documents.applyPatch!({ reason: "Change carbon to oxygen", patch: {
+      op: "updateObject", objectId: molecule.id,
+      changes: { atoms: molecule.atoms.map((atom, i) => i === 1 ? { ...atom, element: "O" } : atom) }
+    } }));
+    await act(async () => { await expect(invoke()).resolves.toMatchObject({ applied: true }); });
+    const after = port.read("initial")!;
+    const changed = after.pages[0]!.objects[0]! as MoleculeObject;
+    const computeIdentifiers = vi.spyOn(identifiers, "computeStructureIdentifiers");
+    const engineSmiles = await act(() => workflow.copyAsSmiles(after));
+    expect(computeIdentifiers).toHaveBeenCalled();
+    const fallbackSmiles = await moleculeSmiles(changed, 0, [], undefined);
+    const stored = changed.structureFormat === "smiles"
+      ? changed.structure
+      : parseMolfileGraph(changed.structure).atoms.map(atom => atom.element).join("");
+    expect({ stored, cached: changed.compatibility?.unknown.smiles, formula: changed.chemistry?.formula,
+      engineSmiles, fallbackSmiles }).toEqual({
+      stored: "CO", cached: "CO", formula: "CH4O", engineSmiles: "CO", fallbackSmiles: "CO"
+    });
+  });
+
+  it.each(["coordinates", "style"] as const)("preserves stored chemistry bytes after a plugin changes only %s", async field => {
+    const fixture = testContext();
+    const port = await mount(applyPatch(fixture.context.getDocument()!, { op: "setSelection", objectIds: [fixture.molecule.id] }));
+    const molecule = port.read("initial")!.pages[0]!.objects[0]! as MoleculeObject;
+    const chemistryBytes = (object: MoleculeObject) =>
+      JSON.stringify([object.structureFormat, object.structure, object.chemistry, object.compatibility]);
+    const changes = field === "coordinates"
+      ? { atoms: molecule.atoms.map(atom => ({ ...atom, x: atom.x + 10 })) }
+      : { style: { ...molecule.style, bondLengthPx: 35 },
+          bonds: molecule.bonds.map(bond => ({ ...bond, display: { ...bond.display, bondStyle: "bold" as const } })) };
+    const invoke = registerWrite(context => context.documents.applyPatch!({ reason: `Change ${field}`, patch: {
+      op: "updateObject", objectId: molecule.id, changes
+    } }));
+    await act(async () => { await expect(invoke()).resolves.toMatchObject({ applied: true }); });
+    const changed = port.read("initial")!.pages[0]!.objects[0]! as MoleculeObject;
+    expect(changed).toMatchObject(changes);
+    expect(chemistryBytes(changed)).toBe(chemistryBytes(molecule));
+  });
+
+  it("refuses the whole plugin batch when stored chemistry cannot be refreshed", async () => {
+    const fixture = testContext();
+    const port = await mount(applyPatch(fixture.context.getDocument()!, {
+      op: "setSelection", objectIds: [fixture.molecule.id, fixture.text.id]
+    }));
+    const before = port.read("initial")!;
+    const bond = fixture.molecule.bonds[0]!;
+    const invoke = registerWrite(context => context.documents.applyPatch!({ reason: "Edit structure and text", patch: {
+      op: "batch", patches: [
+        { op: "updateObject", objectId: fixture.text.id, changes: { text: "Changed text" } },
+        { op: "updateObject", objectId: fixture.molecule.id, changes: { bonds: [{ ...bond, order: "unknown" }] } }
+      ]
+    } }));
+    await act(async () => {
+      await expect(invoke()).rejects.toThrow(`Plugin write refused: cannot refresh stored chemistry for molecule "${fixture.molecule.id}": Cannot write SMILES: bond ${bond.id} has an unknown bond order.`);
+    });
+    expect(port.read("initial")).toBe(before);
+    await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "edit.undo" } })); });
+    expect(port.read("initial")).toBe(before);
+  });
 
   describe.each(["macos", "windows"] as const)("plugin writes during an open text edit on %s", platform => {
     beforeEach(() => {

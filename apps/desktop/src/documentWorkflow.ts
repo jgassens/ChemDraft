@@ -21473,10 +21473,29 @@ function nativeMoleculeAfterPartDelete(
   return refreshNativeSingleBondGraph(molecule, atoms, bonds);
 }
 
+/** The same stored chemistry as a canvas graph edit, with a refusal if it cannot be written. */
+export function refreshPluginMoleculeChemistry(molecule: MoleculeObject): MoleculeObject {
+  try {
+    if (!isEditableNativeMoleculeGraph(molecule)) throw new Error("The molecule has no editable atom and bond graph.");
+    const { atoms, structure, structureFormat, chemistry } =
+      refreshNativeSingleBondGraph(molecule, molecule.atoms, molecule.bonds, true);
+    const { compatibility } = molecule;
+    return {
+      ...molecule, atoms, structure, structureFormat, chemistry,
+      ...(compatibility && Object.hasOwn(compatibility.unknown, "smiles") ? {
+        compatibility: { ...compatibility, unknown: { ...compatibility.unknown, smiles: structure } }
+      } : {})
+    };
+  } catch (error) {
+    throw new Error(`Plugin write refused: cannot refresh stored chemistry for molecule "${molecule.id}": ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 function refreshNativeSingleBondGraph(
   molecule: MoleculeObject,
   atoms: readonly MoleculeAtom[],
-  bonds: readonly MoleculeBond[]
+  bonds: readonly MoleculeBond[],
+  requireStoredChemistry = false
 ): MoleculeObject {
   // Clear import hints before deriving labels, formula, validation and the stored structure.
   atoms = clearChangedAtomHydrogenHints(molecule, atoms, bonds);
@@ -21484,6 +21503,7 @@ function refreshNativeSingleBondGraph(
   // side-dependent label ("SCN") was written with, so later moves, rotations and flips keep it.
   atoms = withNativeLabelBondSides({ atoms: [...atoms], bonds: [...bonds] }).atoms;
   const storedSmiles = tryNativeSingleBondGraphSmiles(atoms, bonds);
+  if (requireStoredChemistry && "refused" in storedSmiles) throw new Error(storedSmiles.refused);
   return normalizeNativeMoleculeGeometry({
     ...molecule,
     // `structure` is re-derived as SMILES here, so the format must say so. Leaving an imported
