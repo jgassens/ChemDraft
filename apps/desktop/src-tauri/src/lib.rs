@@ -6780,6 +6780,9 @@ fn show_toolset_popover_window(
         return Err("Only toolset popovers may reveal popover content".into());
     }
     if utility_windows_suspended() {
+        #[cfg(windows)]
+        log::debug!(target: "chemdraft::windows_activation",
+            "popover acceptance refused label={} reason=utility-windows-suspended", window.label());
         return Ok(false);
     }
     let source = match (kind.as_deref(), flyout_opening) {
@@ -6829,7 +6832,18 @@ fn show_toolset_popover_window(
     // Keep its visibility state in sync (a raw ShowWindow alone breaks later hide()).
     window.show().map_err(|error| error.to_string())?;
     raise_among_owned_windows(&window)?;
-    Ok(window.is_visible().unwrap_or(false))
+    let visibility = window.is_visible();
+    #[cfg(windows)]
+    if !matches!(visibility, Ok(true)) {
+        let reason = if visibility.is_err() {
+            "visibility-query-failed"
+        } else {
+            "native-window-hidden"
+        };
+        log::debug!(target: "chemdraft::windows_activation",
+            "popover acceptance refused label={} reason={reason}", window.label());
+    }
+    Ok(visibility.unwrap_or(false))
 }
 
 /// Hide the tooltip window. Deliberately a sync command like `show_toolset_tooltip_window`: both

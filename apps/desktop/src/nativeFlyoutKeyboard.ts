@@ -117,9 +117,14 @@ export function installNativeFlyoutKeyboard(platform: ShortcutPlatform = detectD
   const blur = () => {
     activationKeys.clear();
     const requestedAt = toolsetPopoverTimestamp();
+    // Windows can hand focus back to WebView2 during native open, before the palette
+    // sends its already-stamped content. Scope blur to the openings we know about.
+    const targets = platform === "windows"
+      ? [...openings.latest.values()].filter(opening => opening.openedAt <= requestedAt)
+      : undefined;
     const dismiss = () => {
       // App deactivation can hide a native utility without a renderer close notice.
-      if (!disposed) updateOpenings(dismissFlyoutOpenings(openings, { requestedAt }));
+      if (!disposed) updateOpenings(dismissFlyoutOpenings(openings, { requestedAt, openings: targets }));
     };
     const opening = latestLiveFlyoutOpening(openings);
     if (opening?.flyoutId === undefined) {

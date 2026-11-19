@@ -10,7 +10,7 @@ import { createPhase4Document, insertNativeSingleBondMolecule, selectDocumentObj
 import { getAssistantHistoryPort } from "./assistant/historyPort";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 import {
-  dismissToolsetPopovers, newToolsetPopoverOpening, sendPaletteCommand, sendToolsetFlyoutKey, setToolsetPopoverContent,
+  dismissToolsetPopovers, newToolsetPopoverOpening, openToolsetPopoverWindow, sendPaletteCommand, sendToolsetFlyoutKey, setToolsetPopoverContent,
   toolsetPopoverTimestamp,
   type ToolsetPopoverContentPayload, type ToolsetPopoverDismissPayload, type ToolsetFlyoutKey,
   type ToolsetFlyoutSession, type AcceptedToolsetPopoverOpening
@@ -167,6 +167,56 @@ describe.each(["macos", "windows"] as const)("native flyout keyboard routing (%s
     });
     expect(highlighted()?.dataset.commandId).toBe(opened.flyout.commands.find(command => command.enabled)?.id);
     expect(current()).toBe(before);
+  });
+
+  it.skipIf(platform !== "windows")("keeps a mouse opening stamped before the Windows blur and queues its first arrow until shown", async () => {
+    const before = current();
+    let finishShow!: (shown: boolean) => void;
+    native.show.mockImplementationOnce(() => new Promise(resolve => { finishShow = resolve; }));
+    vi.mocked(openToolsetPopoverWindow).mockImplementationOnce(async () => {
+      // Native open configures the prewarmed HWND and can hand focus back to WebView2
+      // before the palette sends its already-stamped flyout content to the document.
+      expect(setToolsetPopoverContent).not.toHaveBeenCalled();
+      window.dispatchEvent(new FocusEvent("blur"));
+    });
+    const opened = await mouseOpen();
+    const first = opened.flyout.commands.find(command => command.enabled)!;
+    expect((await key("ArrowDown")).defaultPrevented).toBe(true);
+    expect(sendToolsetFlyoutKey).not.toHaveBeenCalled();
+    expect(current()).toBe(before);
+
+    await act(async () => finishShow(true));
+    expect(highlighted()?.dataset.commandId).toBe(first.id);
+    expect((await key("ArrowUp")).defaultPrevented).toBe(true);
+    const last = opened.flyout.commands.filter(command => command.enabled).at(-1)!;
+    expect(highlighted()?.dataset.commandId).toBe(last.id);
+    expect((await key("Enter")).defaultPrevented).toBe(true);
+    expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith(last.id, { flyoutOpening: {
+      toolsetId: opened.toolsetId, flyoutId: opened.flyout.flyoutId, openedAt: opened.openedAt, generation: opened.generation
+    } });
+    expect(current()).toBe(before);
+  });
+
+  it.skipIf(platform !== "windows")("retires the blurred opening without discarding a replacement in flight", async () => {
+    const opened = await mouseOpen();
+    vi.stubGlobal("__TAURI__", {});
+    const replacement = newToolsetPopoverOpening();
+    let resolveFocus!: (label: string | null) => void;
+    native.focusedLabel.mockReturnValue(new Promise(resolve => { resolveFocus = resolve; }));
+    await act(async () => window.dispatchEvent(new FocusEvent("blur")));
+    expect((await key("Enter")).defaultPrevented).toBe(true);
+
+    const flyout = { ...opened.flyout, flyoutId: "replacement" };
+    await act(async () => setToolsetPopoverContent(opened.toolsetId, { ...opened, ...replacement, flyout }));
+    expect((await key("ArrowDown")).defaultPrevented).toBe(true);
+    expect(sendToolsetFlyoutKey).not.toHaveBeenCalled();
+
+    await act(async () => resolveFocus(null));
+    expect(sendToolsetFlyoutKey).toHaveBeenCalledExactlyOnceWith({
+      toolsetId: opened.toolsetId, flyoutId: flyout.flyoutId, ...replacement, key: "ArrowDown"
+    });
+    expect(sendPaletteCommand).not.toHaveBeenCalled();
+    expect(highlighted()?.dataset.commandId).toBe(flyout.commands.find(command => command.enabled)?.id);
   });
 
   it.each([null, "other-document"])("releases routing when native focus moves away (%s)", async label => {
