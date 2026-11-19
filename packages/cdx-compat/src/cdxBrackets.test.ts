@@ -64,6 +64,28 @@ function bracketState(document: ChemDraftDocument) {
 
 describe.each([false, true])("binary bracket interchange (symbolic IDs=%s)", symbolicIds => {
   describe.each([false, true])("native payload=%s", embedNativePayload => {
+    it("preserves ambiguous glyph usage when CDX cannot encode a vendor value", () => {
+      const xml = source('RepeatCount="3"', symbolicIds)
+        .replace('BoundingBox="60 80 66 120"', 'BoundingBox="60 80 66 120" BracketUsage="VendorPolymer"')
+        .replace('BoundingBox="124 80 130 120"', 'BoundingBox="124 80 130 120" BracketUsage="MultipleGroup"');
+      const original = openChemDraftPayload(xml).document!;
+      const closing = original.pages[0].objects.find(object => object.type === "bracket" && object.side === "close")!;
+      const expected = bracketState(original);
+      expect(expected.map(bracket => [bracket.usage, bracket.count])).toEqual([["unknown", 3], ["unknown", 3]]);
+
+      const exported = exportDocumentToCdx(original, { embedNativePayload });
+      const decoded = readCdx(exported.bytes);
+      expect(elements(decoded, "bracketedgroup")[0].attrs).toMatchObject({ BracketUsage: "Unspecified", RepeatCount: "3" });
+      expect(elements(decoded, "graphic").map(graphic => graphic.attrs.BracketUsage)).toContain("MultipleGroup");
+      expect(bracketState(importCdx(exported.bytes).document!)).toEqual(expected);
+      delete decoded.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE];
+      expect(bracketState(openChemDraftPayload(cdxElementToCdxml(decoded)).document!)).toEqual(expected);
+      expect(exported.warnings).toContainEqual(expect.objectContaining({
+        code: "cdx.bracket_usage_conflict_unencodable", sourceObjectId: closing.id,
+        message: expect.stringContaining("VendorPolymer")
+      }));
+    });
+
     it.each([1_000_000_000, Number.MAX_SAFE_INTEGER])("preserves a MultipleGroup repeat count of %s", count => {
       const original = openChemDraftPayload(source(`BracketUsage="MultipleGroup" RepeatCount="${count}"`, symbolicIds)).document!;
       const expected = bracketState(original);

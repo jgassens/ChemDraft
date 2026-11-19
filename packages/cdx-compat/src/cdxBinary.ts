@@ -57,6 +57,28 @@ for (const [tag, name, kind, list, idReference] of PROPS) {
   if (name && !byName.has(name)) byName.set(name, p);
 }
 for (const [tag, name] of Object.entries(OBJECTS)) objectTag.set(name, Number(tag));
+
+function namedEnumValue(property: Prop, text: string): number | undefined {
+  const values = property.values!;
+  return values.get(text) ?? [...values].find(([name]) => name.toLowerCase() === text.toLowerCase())?.[1]
+    ?? (/^-?\d+$/.test(text) ? Number(text) : undefined);
+}
+
+function binaryEnumValue(property: Prop, text: string): number | undefined {
+  const value = namedEnumValue(property, text.trim());
+  const small = property.kind === "e8";
+  return value === undefined || value < (small ? -128 : -32768) || value > (small ? 255 : 65535) ? undefined : value;
+}
+
+/** The BracketUsage spelling that a binary round trip produces. */
+export function cdxBracketUsageName(text: string): string | undefined {
+  const property = byName.get("BracketUsage")!;
+  const value = binaryEnumValue(property, text);
+  if (value === undefined) return undefined;
+  const unsigned = value & 0xffff;
+  return property.names!.get(unsigned) ?? String(unsigned);
+}
+
 const charsets = new Map(CHARSETS.split(",").map((pair) => { const k = pair.indexOf("="); return [Number(pair.slice(0, k)), pair.slice(k + 1)] as const; }));
 const charsetCode = new Map([...charsets].map(([code, name]) => [name, code]));
 // The style records' four parts, as CDXML splits them (LabelFont, LabelFace, LabelSize, LabelColor).
@@ -721,16 +743,18 @@ export function writeCdx(root: CdxElement, warnings: CdxWarning[] = []): Uint8Ar
     if (range && (!isInteger || i < range[0] || i > range[1])) return undefined;
     if (["coord", "p2", "p3", "rect", "angle", "curve"].includes(p.kind) && list.some((x) => x !== undefined && (fixed(x) < -2147483648 || fixed(x) > 2147483647))) return undefined;
     if (p.kind === "charge" && r !== undefined && (r < -128 || r >= 128)) return undefined;
-    const named = (s: string) => p.values!.get(s) ?? [...p.values!].find(([nm]) => nm.toLowerCase() === s.toLowerCase())?.[1] ?? (/^-?\d+$/.test(s) ? Number(s) : undefined);
     switch (p.kind) {
       case "flag": return /^(yes|true)$/.test(v) ? new Uint8Array(0) : undefined;
       case "bool": return le(1, /^(yes|true)$/.test(v) ? 1 : 0);
       case "i8": return Number.isFinite(i) ? le(1, i) : undefined;
       case "i16": case "u16": return Number.isFinite(i) ? le(2, i) : undefined;
       case "i32": return Number.isFinite(i) ? le(4, i) : undefined;
-      case "e8": case "e16": { const x = named(v.trim()), small = p.kind === "e8"; return x === undefined || x < (small ? -128 : -32768) || x > (small ? 255 : 65535) ? undefined : le(small ? 1 : 2, x); }
+      case "e8": case "e16": {
+        const code = binaryEnumValue(p, v);
+        return code === undefined ? undefined : le(p.kind === "e8" ? 1 : 2, code);
+      }
       case "b8": case "b16": {
-        const bits = v.trim().split(/\s+/).map(named);
+        const bits = v.trim().split(/\s+/).map(text => namedEnumValue(p, text));
         return bits.some((x) => x === undefined) ? undefined : le(p.kind === "b8" ? 1 : 2, bits.reduce((s: number, x) => s | x!, 0));
       }
       case "order": {

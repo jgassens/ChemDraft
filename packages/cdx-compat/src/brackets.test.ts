@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { applyPatch, createEmptyDocument, resolveRepeatUnitAtomMembership, serializeDocument, type BracketObject, type MoleculeObject } from "@chemdraft/chem-core";
+import { applyPatch, createEmptyDocument, resolveRepeatUnitAtomMembership, serializeDocument, type BracketObject, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { transformPointForObject } from "@chemdraft/layout-engine";
 import { ChemDraftDocumentSchema as Released111DocumentSchema } from "../../chem-core/src/__fixtures__/v1.1.1/schemas";
 import { exportDocumentToCdxml, exportDocumentToCdx, importCdx, openChemDraftPayload } from "./index";
@@ -26,6 +26,21 @@ const geometry = (objects: BracketObject[]) => objects.map(({ bracketKind, side,
 const binary = (source: string) => writeCdx(cdxElementFromOrderedTree(new XMLParser({ preserveOrder: true,
   ignoreAttributes: false, attributeNamePrefix: "", parseAttributeValue: false, trimValues: false }).parse(source)));
 
+function importedGlyphPair(openingUsage: string, closingUsage: string, groupAttributes: string) {
+  const { document } = openChemDraftPayload(`<CDXML><page id="1" BoundingBox="0 0 612 792">
+    <fragment id="2"><n id="3" p="120 114" Element="6"/></fragment>
+    <graphic id="5" GraphicType="Bracket" BracketType="Square" BoundingBox="195 90 183 138" BracketUsage="${closingUsage}"/>
+    <graphic id="4" GraphicType="Bracket" BracketType="Square" BoundingBox="87 138 75 90" BracketUsage="${openingUsage}"/>
+    <bracketedgroup id="6" BracketedObjectIDs="2" ${groupAttributes}>
+      <bracketattachment id="7" GraphicID="5"/>
+      <bracketattachment id="8" GraphicID="4"/>
+    </bracketedgroup>
+  </page></CDXML>`);
+  const brackets = document!.pages[0].objects.filter(object => object.type === "bracket");
+  expect(brackets).toHaveLength(2);
+  return { document: document!, brackets };
+}
+
 function rotatedPartialUnit(rotation: number) {
   const document = pair("square", "n");
   const frame = { ...document.pages[0].objects[0], x: 10, y: 10, width: 64, height: 20, rotation };
@@ -45,6 +60,109 @@ function rotatedPartialUnit(rotation: number) {
 }
 
 describe("native bracket group interchange", () => {
+  it.each(["count", "label"])("keeps a legacy glyph conflict after a %s edit", edit => {
+    const { document, brackets } = importedGlyphPair("SRU", "AnyPolymer", 'RepeatCount="3" SRULabel="n"');
+    for (const bracket of brackets) {
+      // Simulate the native state and snapshot written before glyph conflicts were detected.
+      bracket.bracketUsage = "sru";
+      bracket.repeatUnit = true;
+      if (bracket.side === "close") bracket.label = "n";
+      bracket.compatibility!.unknown.cdxmlBracketState = JSON.stringify(["sru", true, 3, bracket.label]);
+      if (edit === "count") bracket.repeatCount = 4;
+      else if (bracket.side === "close") bracket.label = "m";
+    }
+
+    const exported = exportDocumentToCdxml(document, { embedNativePayload: false });
+    const group = exported.contents.match(/<bracketedgroup\b[^>]*>/)?.[0];
+    expect(group).toBeDefined();
+    expect(group).not.toContain("BracketUsage=");
+    expect(group).toContain(`RepeatCount="${edit === "count" ? 4 : 3}"`);
+    expect(group).toContain(`SRULabel="${edit === "label" ? "m" : "n"}"`);
+    expect(exported.contents.match(/<graphic\b[^>]*>/g)).toEqual([
+      expect.stringContaining('BracketUsage="AnyPolymer"'), expect.stringContaining('BracketUsage="SRU"')
+    ]);
+    expect(exported.warnings).toContainEqual(expect.objectContaining({
+      code: "cdxml.bracket_usage_conflict", sourceObjectId: brackets.find(bracket => bracket.side === "close")!.id
+    }));
+    const reopened = openChemDraftPayload(exported.contents);
+    expect(reopened.document!.pages[0].objects.filter(object => object.type === "bracket").map(bracket => bracket.bracketUsage))
+      .toEqual(["unknown", "unknown"]);
+  });
+
+  it("keeps the source SRULabel after editing the count of a conflicting pair", () => {
+    const { document, brackets } = importedGlyphPair("SRU", "AnyPolymer", 'RepeatCount="3" SRULabel="n"');
+    expect(brackets.map(bracket => bracket.label)).toEqual([undefined, undefined]);
+    brackets.forEach(bracket => { bracket.repeatCount = 4; });
+
+    const exported = exportDocumentToCdxml(document, { embedNativePayload: false });
+    const group = exported.contents.match(/<bracketedgroup\b[^>]*>/)?.[0];
+    expect(group).toContain('RepeatCount="4"');
+    expect(group).toContain('SRULabel="n"');
+  });
+
+  it("keeps the imported interpretation of case-only usage spellings when the glyphs cross", () => {
+    const { document, brackets } = importedGlyphPair("sru", "SRU", 'RepeatCount="3"');
+    expect(brackets.map(bracket => bracket.bracketUsage)).toEqual(["unknown", "unknown"]);
+    brackets.find(bracket => bracket.side === "open")!.x += 200;
+
+    const exported = exportDocumentToCdxml(document, { embedNativePayload: false });
+    expect(exported.contents.match(/<bracketedgroup\b[^>]*>/)?.[0]).toContain('BracketUsage="sru"');
+    const binaryExport = exportDocumentToCdx(document, { embedNativePayload: false });
+    expect(binaryExport.warnings).toContainEqual(expect.objectContaining({
+      code: "cdx.bracket_usage_spelling_normalized", sourceObjectId: brackets.find(bracket => bracket.side === "close")!.id
+    }));
+    for (const reopened of [openChemDraftPayload(exported.contents), importCdx(binaryExport.bytes)]) {
+      expect(reopened.document!.pages[0].objects.filter(object => object.type === "bracket").map(bracket => bracket.bracketUsage))
+        .toEqual(["unknown", "unknown"]);
+    }
+  });
+
+  it.each(["CDXML", "CDX"])("keeps conflicting glyph usage unknown on an unedited visible %s round trip", format => {
+    const brackets = (document: ChemDraftDocument) => document.pages[0].objects.filter(object => object.type === "bracket");
+    const openingBox = "87 138 75 90";
+    const closingBox = "195 90 183 138";
+    for (const multipleOnLeft of [false, true]) {
+      const groupCount = multipleOnLeft ? "" : ' RepeatCount="3"';
+      const source = `<CDXML><page id="1" BoundingBox="0 0 612 792">
+        <fragment id="2"><n id="3" p="120 114" Element="6"/></fragment>
+        <graphic id="5" GraphicType="Bracket" BracketType="Square" BoundingBox="${multipleOnLeft ? openingBox : closingBox}"
+          BracketUsage="MultipleGroup" RepeatCount="3"/>
+        <graphic id="4" GraphicType="Bracket" BracketType="Square" BoundingBox="${multipleOnLeft ? closingBox : openingBox}"
+          BracketUsage="AnyPolymer"/>
+        <bracketedgroup id="6" BracketedObjectIDs="2"${groupCount}>
+          <bracketattachment id="7" GraphicID="5"/>
+          <bracketattachment id="8" GraphicID="4"/>
+        </bracketedgroup>
+      </page></CDXML>`;
+      const imported = format === "CDXML" ? openChemDraftPayload(source) : importCdx(binary(source));
+      const original = brackets(imported.document!);
+      expect(original.map(bracket => bracket.bracketUsage)).toEqual(["unknown", "unknown"]);
+      expect(imported.warnings).toContainEqual(expect.objectContaining({ code: "cdxml.bracket_usage_conflict", sourceObjectId: "6" }));
+
+      const exported = format === "CDXML"
+        ? exportDocumentToCdxml(imported.document!, { embedNativePayload: false })
+        : exportDocumentToCdx(imported.document!, { embedNativePayload: false });
+      const reopened = "contents" in exported ? openChemDraftPayload(exported.contents) : importCdx(exported.bytes);
+      expect(brackets(reopened.document!).map(bracket => [bracket.bracketUsage, bracket.repeatCount]))
+        .toEqual(original.map(bracket => [bracket.bracketUsage, bracket.repeatCount]));
+
+      const xml = "contents" in exported ? exported.contents : cdxElementToCdxml(readCdx(exported.bytes));
+      const group = xml.match(/<bracketedgroup\b[^>]*>/)?.[0];
+      expect(group).toBeDefined();
+      expect(group).not.toContain("BracketUsage=");
+      expect(group?.includes('RepeatCount="3"')).toBe(!multipleOnLeft);
+      const glyphs = xml.match(/<graphic\b[^>]*>/g);
+      expect(glyphs).toHaveLength(2);
+      expect(glyphs?.[0]).toContain('BracketUsage="MultipleGroup"');
+      expect(glyphs?.[0]).toContain('RepeatCount="3"');
+      expect(glyphs?.[1]).toContain(format === "CDXML" ? 'BracketUsage="AnyPolymer"' : 'BracketUsage="Anypolymer"');
+      expect(exported.warnings).toContainEqual(expect.objectContaining({
+        code: "cdxml.bracket_usage_conflict",
+        sourceObjectId: original.find(bracket => bracket.side === "close")!.id
+      }));
+    }
+  });
+
   it.each([90, 37])("exports and reimports the enclosed subset in the renderer's %s degree frame", rotation => {
     const { document, molecule, brackets } = rotatedPartialUnit(rotation);
     expect(resolveRepeatUnitAtomMembership(brackets, document.pages[0].objects)).toMatchObject({

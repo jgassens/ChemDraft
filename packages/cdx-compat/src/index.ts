@@ -47,6 +47,7 @@ import { PROPS } from "./cdxTags";
 import { equalPrintMargins, fitPageSetup, importPageSetup, pagePrintMargins, type VisiblePageSetup } from "./pageSetup";
 import {
   CDX_NATIVE_ENVELOPE_ATTRIBUTE,
+  cdxBracketUsageName,
   cdxElementFromOrderedTree,
   cdxElementToCdxml,
   hex,
@@ -1388,7 +1389,8 @@ function exportVisibleObject(
       message: `Bracket ${object.id} has unsupported ${object.bracketKind} shape, rotation or tilt; its glyph is approximated by an axis-aligned ${object.bracketKind === "round" ? "round" : object.bracketKind === "curly" ? "curly" : "square"} bounding box.`,
       sourceObjectId: object.id
     });
-    if (!exportableBracketPair(object, objectsById)) {
+    const pair = findExportableBracketPair(object, objectsById);
+    if (!pair) {
       const records = object.compatibility?.unknown.cdxmlBracketCrossings;
       if (Array.isArray(records)) for (const record of records) if (isRecord(record)) {
         const attrs = preservedCurveAttributes(record.attributes);
@@ -1396,7 +1398,7 @@ function exportVisibleObject(
           message: `Bracket crossing BondID "${attrs.BondID}" has no complete bracket pair and is NOT written.` });
       }
     }
-    return exportBracketGlyph(object, context, allocator);
+    return exportBracketGlyph(object, context, allocator, pair);
   }
   if (object.type === "reaction") {
     return "";
@@ -1530,28 +1532,85 @@ function hasUnmappedBracketStyle(attributes: Record<string, unknown>): boolean {
     attributes.LineWidth !== undefined && Number(attributes.LineWidth) !== cssPxToCdxml(1.5);
 }
 
-function exportableBracketPair(object: BracketObject, objects: ReadonlyMap<string, DocumentObject>): boolean {
-  const pair = [...objects.values()].filter((item): item is BracketObject => item.type === "bracket" &&
-    !!object.pairId && item.pairId === object.pairId);
+function isCompleteBracketPair(pair: readonly BracketObject[]): boolean {
   return pair.length === 2 &&
     pair.some(item => item.side === "open") && pair.some(item => item.side === "close");
+}
+
+function findExportableBracketPair(object: BracketObject, objects: ReadonlyMap<string, DocumentObject>): BracketObject[] | undefined {
+  if (!object.pairId) return undefined;
+  const pair = [...objects.values()].filter((item): item is BracketObject => item.type === "bracket" &&
+    item.pairId === object.pairId);
+  return isCompleteBracketPair(pair) ? pair : undefined;
 }
 
 function bracketSourceState(object: BracketObject): string {
   return JSON.stringify([object.bracketUsage, object.repeatUnit, object.repeatCount, object.label]);
 }
 
-function bracketUsageAttribute(pair: BracketObject[]): string | undefined {
+function savedBracketSourceState(object: BracketObject): { usage: unknown; repeatUnit: unknown; label: unknown } | undefined {
+  const stored = object.compatibility?.unknown.cdxmlBracketState;
+  if (typeof stored !== "string") return undefined;
+  try {
+    const source: unknown = JSON.parse(stored);
+    if (!Array.isArray(source) || source.length !== 4) return undefined;
+    const [usage, repeatUnit, , label] = source;
+    return { usage, repeatUnit, label };
+  } catch {
+    return undefined;
+  }
+}
+
+type BracketBounds = Pick<BracketObject, "x" | "y" | "width" | "height">;
+
+function compareBracketGeometry(a: BracketBounds, b: BracketBounds): number {
+  return (a.x + a.width / 2) - (b.x + b.width / 2) || (a.y + a.height / 2) - (b.y + b.height / 2) ||
+    a.x - b.x || a.y - b.y || a.width - b.width || a.height - b.height;
+}
+
+function bracketBoundsInFrame(box: BracketBounds, rotation: number): BracketBounds {
+  // Swap page extents about the centre to recover the upright frame of a wide glyph.
+  return rotation % 180 === 90 ? { x: box.x + (box.width - box.height) / 2,
+    y: box.y + (box.height - box.width) / 2, width: box.height, height: box.width } : box;
+}
+
+function retainedBracketUsage(raw: unknown): string | undefined {
+  return isRecord(raw) ? preservedCurveAttributes(raw.attributes).BracketUsage : undefined;
+}
+
+function resolveSourceBracketUsage(
+  pair: readonly BracketObject[], groupUsage: string | undefined
+): { name?: string; conflictingGlyphUsages?: string[]; caseOnlyGlyphUsages?: boolean } {
+  if (groupUsage !== undefined) return { name: groupUsage };
+  const glyphs = pair.flatMap(bracket => {
+    const raw = bracket.compatibility?.unknown.cdxmlBracket;
+    const attrs = isRecord(raw) ? preservedCurveAttributes(raw.attributes) : {};
+    if (!attrs.BracketUsage) return [];
+    // Import chose by source geometry. Later moves must not change its interpretation.
+    return [{ name: attrs.BracketUsage, bounds: bracketBoundsInFrame(parseBoundingBox(attrs.BoundingBox),
+      bracketFrameFromAttributes(attrs).rotation) }];
+  }).sort((a, b) => compareBracketGeometry(a.bounds, b.bounds));
+  const names = glyphs.map(glyph => glyph.name);
+  const [name, other] = names;
+  if (name && other && name.toLowerCase() !== other.toLowerCase()) return { conflictingGlyphUsages: names };
+  return { name, caseOnlyGlyphUsages: other !== undefined && name !== other };
+}
+
+function retainedBracketUsageConflict(pair: readonly BracketObject[], conflictingGlyphUsages: string[] | undefined): string[] | undefined {
+  // Older imports may record a known usage. Only edits to usage or repeatUnit resolve the conflict.
+  return conflictingGlyphUsages && pair.every(object => {
+    const source = savedBracketSourceState(object);
+    return source !== undefined && source.usage === (object.bracketUsage ?? null) &&
+      source.repeatUnit === (object.repeatUnit ?? null);
+  })
+    ? conflictingGlyphUsages : undefined;
+}
+
+function bracketUsageAttribute(pair: BracketObject[], sourceUsage: string | undefined): string | undefined {
   const usage = pair.find(object => object.bracketUsage && object.bracketUsage !== "generic")?.bracketUsage;
   if (usage === "multiple") return "MultipleGroup";
   if (usage === "sru" || pair.some(object => object.repeatUnit)) return "SRU";
-  if (usage === "unknown") {
-    const raw = pair[0].compatibility?.unknown.bracketedGroup;
-    const attrs = isRecord(raw) ? preservedCurveAttributes(raw.attributes) : {};
-    const graphic = pair.map(object => object.compatibility?.unknown.cdxmlBracket)
-      .find(raw => isRecord(raw) && isRecord(raw.attributes) && raw.attributes.BracketUsage);
-    return attrs.BracketUsage ?? (isRecord(graphic) ? preservedCurveAttributes(graphic.attributes).BracketUsage : undefined) ?? "Unspecified";
-  }
+  if (usage === "unknown") return sourceUsage ?? "Unspecified";
   return undefined;
 }
 
@@ -1570,7 +1629,8 @@ function preservedBracketChildren(value: unknown, excluded: readonly string[] = 
   }).join("");
 }
 
-function exportBracketGlyph(object: BracketObject, context: VisibleExportContext, allocator: IdAllocator): string {
+function exportBracketGlyph(object: BracketObject, context: VisibleExportContext, allocator: IdAllocator,
+  pair: readonly BracketObject[] | undefined): string {
   const raw = object.compatibility?.unknown.cdxmlBracket;
   const attrs = isRecord(raw) ? preservedCurveAttributes(raw.attributes) : {};
   const unchangedGeometry = object.compatibility?.unknown.cdxmlBracketGeometry === bracketGeometryKey(object);
@@ -1588,8 +1648,14 @@ function exportBracketGlyph(object: BracketObject, context: VisibleExportContext
     if (index !== undefined) attrs.color = String(index);
   }
   if (object.compatibility?.unknown.cdxmlBracketState !== bracketSourceState(object)) {
-    const usage = bracketUsageAttribute([object]);
-    if (usage) attrs.BracketUsage = usage; else delete attrs.BracketUsage;
+    const rawGroup = pair?.find(bracket => bracket.side === "close")?.compatibility?.unknown.bracketedGroup;
+    const conflict = pair && retainedBracketUsageConflict(pair,
+      resolveSourceBracketUsage(pair, retainedBracketUsage(rawGroup)).conflictingGlyphUsages);
+    if (!conflict) {
+      const sourceUsage = retainedBracketUsage(object.compatibility?.unknown.bracketedGroup) ?? (attrs.BracketUsage || undefined);
+      const usage = bracketUsageAttribute([object], sourceUsage);
+      if (usage) attrs.BracketUsage = usage; else delete attrs.BracketUsage;
+    }
   }
   const children = isRecord(raw) ? preservedBracketChildren(raw.children) : "";
   return children ? `<graphic ${xmlAttributes(attrs)}>${children}</graphic>` : `<graphic ${xmlAttributes(attrs)}/>`;
@@ -1604,11 +1670,32 @@ function exportBracketPairs(page: DocumentPage, context: VisibleExportContext, a
   const groups: string[] = [];
   const objectsById = new Map(page.objects.map(object => [object.id, object]));
   for (const pair of pairs.values()) {
-    if (!exportableBracketPair(pair[0], objectsById)) continue;
+    if (!isCompleteBracketPair(pair)) continue;
     const closing = pair.find(object => object.side === "close")!;
     const raw = closing.compatibility?.unknown.bracketedGroup;
     const attrs = isRecord(raw) ? preservedCurveAttributes(raw.attributes) : {};
     const unchanged = pair.every(object => object.compatibility?.unknown.cdxmlBracketState === bracketSourceState(object));
+    const sourceUsage = resolveSourceBracketUsage(pair, attrs.BracketUsage);
+    const usageConflict = retainedBracketUsageConflict(pair, sourceUsage.conflictingGlyphUsages);
+    const usage = usageConflict ? undefined : bracketUsageAttribute(pair, sourceUsage.name);
+    let visibleUsage = usage;
+    if (usageConflict) warnings.push({ code: "cdxml.bracket_usage_conflict", sourceObjectId: closing.id,
+      message: `Bracket ${closing.id} has conflicting glyph BracketUsage values ${usageConflict.map(name => `"${name}"`).join(" and ")}. Visible export leaves group usage unspecified.` });
+    if (context.format === "CDX" && usageConflict) {
+      const [first, second] = usageConflict.map(cdxBracketUsageName);
+      if (first === undefined || second === undefined || first === second) {
+        visibleUsage = "Unspecified";
+        warnings.push({ code: "cdx.bracket_usage_conflict_unencodable", sourceObjectId: closing.id,
+          message: `Bracket ${closing.id} glyph BracketUsage values ${usageConflict.map(name => `"${name}"`).join(" and ")} cannot be encoded as distinct CDX usages. The group writes Unspecified to preserve the ambiguity and retain the repeat count.` });
+      }
+    } else if (context.format === "CDX" && sourceUsage.caseOnlyGlyphUsages && usage) {
+      const binaryUsage = cdxBracketUsageName(usage);
+      if (binaryUsage !== usage && (binaryUsage === "SRU" || binaryUsage === "MultipleGroup")) {
+        visibleUsage = "Unspecified";
+        warnings.push({ code: "cdx.bracket_usage_spelling_normalized", sourceObjectId: closing.id,
+          message: `Bracket ${closing.id} BracketUsage "${usage}" normalizes to "${binaryUsage}" in CDX. The group writes Unspecified to preserve its imported usage.` });
+      }
+    }
     const membershipUnchanged = pair.every(object => object.compatibility?.unknown.cdxmlBracketMembership === JSON.stringify(object.containedObjectIds));
     const requestedMembers = [...new Set(pair.flatMap(object => object.containedObjectIds))];
     const membership = resolveRepeatUnitAtomMembership(pair, page.objects, { atomPosition: transformPointForObject });
@@ -1641,20 +1728,24 @@ function exportBracketPairs(page: DocumentPage, context: VisibleExportContext, a
       return [];
     });
     const exportedMembers = [...new Set([...preservedMembers, ...(membershipUnchanged && attrs.BracketedObjectIDs !== undefined ? [] : members)])];
-    if (bracketUsageAttribute(pair) && membership.unresolved) {
+    if ((usage || usageConflict) && membership.unresolved) {
       warnings.push({ code: "cdxml.bracket_membership_unresolved", sourceObjectId: closing.id,
         message: `Repeat unit membership for bracket ${closing.id} cannot be resolved: ${membership.reason}; visible ${context.format} writes only known members and retained source references, without guessing enclosure.` });
     }
     if (exportedMembers.length) attrs.BracketedObjectIDs = exportedMembers.join(" ");
     else delete attrs.BracketedObjectIDs;
     attrs.id = attrs.id ? allocator.sourceId(attrs.id) : allocator.next();
-    const usage = bracketUsageAttribute(pair);
-    if (usage) attrs.BracketUsage = usage; else delete attrs.BracketUsage;
+    if (visibleUsage) attrs.BracketUsage = visibleUsage; else delete attrs.BracketUsage;
     const invalidRepeatCount = closing.compatibility?.unknown.cdxmlBracketInvalidRepeatCount;
     const hasInvalidRepeatCount = invalidRepeatCount !== undefined;
     if (!hasInvalidRepeatCount) {
       if (usage === "SRU" && (closing.label !== "" || attrs.SRULabel !== undefined || !unchanged)) attrs.SRULabel = closing.label ?? "n";
-      else if (!unchanged) delete attrs.SRULabel;
+      else if (usageConflict) {
+        if (savedBracketSourceState(closing)?.label !== (closing.label ?? null)) {
+          if (closing.label === undefined) delete attrs.SRULabel;
+          else attrs.SRULabel = closing.label;
+        }
+      } else if (!unchanged) delete attrs.SRULabel;
     }
     const count = pair.find(object => object.repeatCount !== undefined)?.repeatCount;
     if (count !== undefined) {
@@ -3562,16 +3653,13 @@ function importPageObjects(
       continue;
     }
     const brackets = pair as BracketObject[];
-    const compareGeometry = (a: BracketObject, b: BracketObject) =>
-      (a.x + a.width / 2) - (b.x + b.width / 2) || (a.y + a.height / 2) - (b.y + b.height / 2) ||
-      a.x - b.x || a.y - b.y || a.width - b.width || a.height - b.height;
-    if (compareGeometry(brackets[0], brackets[1]) === 0) {
+    if (compareBracketGeometry(brackets[0], brackets[1]) === 0) {
       warnings.push({ code: "cdxml.bracket_sides_ambiguous",
         message: `Bracket group ${group.attributes.id ?? "(unknown)"} has indistinguishable glyph geometry; imported sides are retained and the group, including its label, remains compatibility data.` });
       objects.push(importUnknownCompatibilityObject(group, pageIndex, objectIndex++, sourceFormat));
       continue;
     }
-    brackets.sort(compareGeometry);
+    brackets.sort(compareBracketGeometry);
     // Only a point-like (or missing/malformed) source box needs the pair-position heuristic.
     brackets.forEach((bracket, index) => {
       if (!importedBracketFacing(bracket)) bracket.side = index === 0 ? "open" : "close";
@@ -3583,10 +3671,12 @@ function importPageObjects(
       brackets[0].side = "open";
       brackets[1].side = "close";
     }
-    const usageName = group.attributes.BracketUsage ?? brackets.map(bracket => bracket.compatibility?.unknown.cdxmlBracket)
-      .flatMap(raw => isRecord(raw) ? [preservedCurveAttributes(raw.attributes).BracketUsage] : []).find(Boolean);
-    let bracketUsage: BracketObject["bracketUsage"] = usageName === "SRU" ? "sru" : usageName === "MultipleGroup" ? "multiple" : usageName === undefined ? "generic" : "unknown";
-    if (bracketUsage === "unknown") warnings.push({ code: "cdxml.bracket_usage_unknown",
+    const { name: usageName, conflictingGlyphUsages } = resolveSourceBracketUsage(brackets, group.attributes.BracketUsage);
+    let bracketUsage: BracketObject["bracketUsage"] = conflictingGlyphUsages ? "unknown" :
+      usageName === "SRU" ? "sru" : usageName === "MultipleGroup" ? "multiple" : usageName === undefined ? "generic" : "unknown";
+    if (conflictingGlyphUsages) warnings.push({ code: "cdxml.bracket_usage_conflict", sourceObjectId: group.attributes.id,
+      message: `${sourceFormat} bracket group ${group.attributes.id ?? "(unknown)"} has conflicting glyph BracketUsage values ${conflictingGlyphUsages.map(name => `"${name}"`).join(" and ")}. Group usage is unknown.` });
+    else if (bracketUsage === "unknown") warnings.push({ code: "cdxml.bracket_usage_unknown",
       message: `${sourceFormat} bracket group ${group.attributes.id ?? "(unknown)"} has unknown BracketUsage "${usageName}"; no multiplier is interpreted.` });
     const additional = Object.keys(group.attributes).filter(key => !["id", "BracketUsage", "BracketedObjectIDs", "SRULabel", "RepeatCount"].includes(key));
     if (additional.length || group.children.some(child => { const element = elementView(child); return element && element.name !== "bracketattachment"; })) {
@@ -4747,10 +4837,7 @@ function importGraphic(
         message: "Bracket styling that has no native mapping was preserved in compatibility metadata; the default native glyph style is displayed." });
     }
     const facing = bracketFrameFromAttributes(element.attributes);
-    // The stored frame is local to the upright glyph. Swap page extents about its centre
-    // before rotating a wide source bracket, rather than rotating its already-wide frame.
-    const frame = facing.rotation % 180 === 90 ? { x: box.x + (box.width - box.height) / 2,
-      y: box.y + (box.height - box.width) / 2, width: box.height, height: box.width } : box;
+    const frame = bracketBoundsInFrame(box, facing.rotation);
     const bracketKind = element.attributes.BracketType === "Round" ? "round" : element.attributes.BracketType === "Curly" ? "curly" : "square";
     const bracket: BracketObject = { id: `cdxml_bracket_${pageIndex + 1}_${objectIndex}`, type: "bracket", ...frame, ...facing, style: {},
       bracketKind,

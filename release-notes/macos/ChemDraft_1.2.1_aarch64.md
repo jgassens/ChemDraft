@@ -17,6 +17,7 @@ ChemDraft 1.2.1 improves drawing, file exchange and dialogs, and fixes problems 
 ### Chemistry and files
 
 - **Rectangles.** Filled rectangles with rounded corners or a shadow keep their fill in CDX and CDXML; shaded rectangles keep their gloss fill. See the color limitation below.
+- **Polymer brackets.** When a CDX or CDXML file leaves a bracket group's type unspecified and its two brackets specify different types, ChemDraft keeps the type unspecified and warns on import and export, instead of changing it on a round trip.
 - **Reaction arrows.** Reaction arrows keep their direction in CDX and CDXML. One-headed equilibrium arrows and older hollow arrows open unchanged.
 - **MOL and SDF.** Export uses standard MDL coordinate units. If scaling would change the structure, ChemDraft refuses the export and explains why; if it cannot check stereochemistry after scaling, it keeps your drawing's coordinates and shows a warning.
 - **Opening files.** Choosing several files opens each one, and a file that fails to open is named in the message.

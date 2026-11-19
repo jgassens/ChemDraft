@@ -345,6 +345,11 @@ function toolsetPopoverWindowLabel(toolsetId: string): string {
   return `toolset-popover-${toolsetId.replaceAll(".", "-")}`;
 }
 
+function toolsetWindowLabel(toolsetId: string): string {
+  // Match toolset_window_label in the native window manager.
+  return `toolset-${toolsetId.replace(/[^a-zA-Z0-9]/gu, "-")}`;
+}
+
 /** A DOM blur has no related target when focus crosses native webviews. */
 export async function isToolsetPopoverFocusTransfer(toolsetId: string, includeOwner: boolean): Promise<boolean> {
   if (!isDesktopRuntime()) return false;
@@ -352,8 +357,8 @@ export async function isToolsetPopoverFocusTransfer(toolsetId: string, includeOw
     import("@tauri-apps/api/core"), import("@tauri-apps/api/window")
   ]);
   const focused = await invoke<string | null>("list_toolset_window_states", { foregroundOnly: true });
-  return focused !== null &&
-    (focused === toolsetPopoverWindowLabel(toolsetId) || (includeOwner && focused === getCurrentWindow().label));
+  return focused !== null && (focused === toolsetPopoverWindowLabel(toolsetId) ||
+    (includeOwner && (focused === getCurrentWindow().label || focused === toolsetWindowLabel(toolsetId))));
 }
 
 /** OS deactivation and native hides need not pass through the renderer's close notification. */
@@ -593,6 +598,19 @@ export interface ToolsetFlyoutKey extends ToolsetFlyoutSession {
 }
 const TOOLSET_FLYOUT_KEY_EVENT = "chemdraft://toolset-flyout-key";
 const TOOLSET_FLYOUT_CLOSED_EVENT = "chemdraft://toolset-flyout-closed";
+const TOOLSET_FLYOUT_OPENING_EVENT = "chemdraft://toolset-flyout-opening";
+
+/** Palette → keyboard router: identify the opening before native IPC can delay its content. */
+export async function notifyToolsetFlyoutOpening(opening: ToolsetFlyoutSession): Promise<void> {
+  if (!isDesktopRuntime()) return;
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit(TOOLSET_FLYOUT_OPENING_EVENT, opening);
+}
+
+export async function listenForToolsetFlyoutOpening(handler: (opening: ToolsetFlyoutSession) => void): Promise<Unlisten> {
+  if (!isDesktopRuntime()) return () => undefined;
+  return listenTauriEvent<ToolsetFlyoutSession>(TOOLSET_FLYOUT_OPENING_EVENT, event => handler(event.payload));
+}
 
 export async function sendToolsetFlyoutKey(payload: ToolsetFlyoutKey): Promise<void> {
   if (!isDesktopRuntime()) return;

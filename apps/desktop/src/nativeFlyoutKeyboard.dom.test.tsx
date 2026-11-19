@@ -71,8 +71,8 @@ const accepted = (event: string, payload: unknown) =>
   event === contentEvent && (payload as { accepted?: true }).accepted === true;
 const sendKeys = () => native.emit.mock.calls.filter(([event]) => event === flyoutKeyEvent)
   .map(([, payload]) => payload as ToolsetFlyoutKey);
-const press = async (key: string) => {
-  const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+const press = async (key: string, type = "keydown") => {
+  const event = new KeyboardEvent(type, { key, bubbles: true, cancelable: true });
   await act(async () => document.body.dispatchEvent(event));
   return event.defaultPrevented;
 };
@@ -143,10 +143,21 @@ describe.each(["macos", "windows"] as const)("keyboard routing with reordered po
     });
     expect(highlighted()).toBeUndefined();
     expect(native.routeCommand).not.toHaveBeenCalled();
+    const keysBeforeShow = sendKeys().length;
     await act(async () => {
       finishShow(true);
-      await vi.waitFor(() => expect(native.routeCommand).toHaveBeenCalledOnce());
+      await vi.waitFor(() => {
+        if (platform === "windows") expect(sendKeys().slice(keysBeforeShow).map(({ key }) => key)).toEqual(["ArrowDown"]);
+        else expect(native.routeCommand).toHaveBeenCalledOnce();
+      });
     });
+    if (platform === "windows") {
+      expect(highlighted()).toBe("rings");
+      expect(native.routeCommand).not.toHaveBeenCalled();
+      await press("Enter", "keyup");
+      expect(await press("Enter")).toBe(true);
+    }
+    expect(native.routeCommand).toHaveBeenCalledOnce();
   });
 
   it("consumes navigation and replays keys in order when acceptance is delayed", async () => {
@@ -157,7 +168,12 @@ describe.each(["macos", "windows"] as const)("keyboard routing with reordered po
     expect(await press("Enter")).toBe(true);
     expect(sendKeys()).toEqual([]);
     await act(async () => native.queued.splice(0).forEach(deliver => deliver()));
-    expect(sendKeys().map(({ key }) => key)).toEqual(["ArrowDown", "Enter"]);
+    expect(sendKeys().map(({ key }) => key)).toEqual(platform === "windows" ? ["ArrowDown"] : ["ArrowDown", "Enter"]);
+    if (platform === "windows") {
+      expect(native.routeCommand).not.toHaveBeenCalled();
+      await press("Enter", "keyup");
+      expect(await press("Enter")).toBe(true);
+    }
     expect(native.routeCommand).toHaveBeenCalledOnce();
   });
 
