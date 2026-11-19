@@ -120,8 +120,8 @@ export function installNativeFlyoutKeyboard(platform: ShortcutPlatform = detectD
     event.preventDefault();
     event.stopImmediatePropagation();
     if (activation) activationKeys.add(event.key);
-    // Enter or Space pressed before the native reveal must never choose from it.
-    if (plain && (arrow || !awaitingAcceptance)) {
+    // Activation requires a fresh press even if a blur cleared activationKeys.
+    if (plain && (arrow || (!awaitingAcceptance && !event.repeat))) {
       queue.keys.push(event.key);
       void flush(queue);
     }

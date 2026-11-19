@@ -288,13 +288,16 @@ describe.each(["macos", "windows"] as const)("native flyout keyboard routing (%s
     expect(sendPaletteCommand).not.toHaveBeenCalled();
   });
 
-  it.skipIf(platform !== "windows")("keeps a flyout opening when its owning palette takes foreground before acceptance", async () => {
+  it.skipIf(platform !== "windows")("replays navigation without activating a held Enter after a blur to the owning palette", async () => {
     const before = current();
     let finishShow!: (shown: boolean) => void;
     native.show.mockImplementationOnce(() => new Promise(resolve => { finishShow = resolve; }));
     const opened = await mouseOpen(async () => {
       expect(setToolsetPopoverContent).toHaveBeenCalledOnce();
       expect(native.acceptedNotice).not.toHaveBeenCalled();
+      expect((await key("ArrowDown")).defaultPrevented).toBe(true);
+      expect((await key("Enter")).defaultPrevented).toBe(true);
+      expect(sendToolsetFlyoutKey).not.toHaveBeenCalled();
       vi.stubGlobal("__TAURI__", {});
       native.focusedLabel.mockReturnValue("toolset-core-main");
       await act(async () => window.dispatchEvent(new FocusEvent("blur")));
@@ -304,9 +307,17 @@ describe.each(["macos", "windows"] as const)("native flyout keyboard routing (%s
       await act(async () => finishShow(true));
     });
 
-    expect((await key("ArrowDown")).defaultPrevented).toBe(true);
-    expect(highlighted()?.dataset.commandId).toBe(opened.flyout.commands.find(command => command.enabled)?.id);
+    expect(highlighted()?.dataset.commandId).toBe("tool.benzene");
+    expect((await key("Enter", { repeat: true })).defaultPrevented).toBe(true);
+    expect(sendPaletteCommand).not.toHaveBeenCalled();
+    expect(highlighted()?.dataset.commandId).toBe("tool.benzene");
     expect(current()).toBe(before);
+
+    await key("Enter", {}, "keyup");
+    expect((await key("Enter")).defaultPrevented).toBe(true);
+    expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith("tool.benzene", { flyoutOpening: {
+      toolsetId: opened.toolsetId, flyoutId: opened.flyout.flyoutId, openedAt: opened.openedAt, generation: opened.generation
+    } });
   });
 
   it.each([null, "other-document"])("releases routing when native focus moves away (%s)", async label => {
