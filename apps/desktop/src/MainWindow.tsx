@@ -1835,7 +1835,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.19.00.30-codex";
+const CURRENT_BUILD_STAMP = "11.19.00.31-codex";
 const TABLE_DRAFT_RECOVERY_WARNING = "session.tableDraftDropped";
 
 function clearTableDraftRecoveryWarnings(report: OpenWarningsReport | undefined): OpenWarningsReport | undefined {
@@ -12979,8 +12979,11 @@ export function MainWindow({
   // to the session's snapshot as well was the alternative, but every session keeps its snapshot in a
   // different shape; one predicate is easier to keep true than two dozen snapshot rewrites.
   const pluginWriteGateRef = useRef<PluginWriteGate | undefined>(undefined);
+  const pluginChemistryPendingRef = useRef(false);
   useEffect(() => {
-    const gate = createPluginWriteGate({ isGestureActive: isSnapshotSessionActive });
+    const gate = createPluginWriteGate({
+      isGestureActive: () => pluginChemistryPendingRef.current || isSnapshotSessionActive()
+    });
     pluginWriteGateRef.current = gate;
     // Sessions end on a release; check right after the canvas handlers have committed (window listeners
     // run after React's). The gate's own timer covers endings that are not a release (a double-click).
@@ -13061,7 +13064,20 @@ export function MainWindow({
           }
         }
         const authoredPatch = rebasePluginPatch(before, patch).patch;
-        const prepared = refreshPluginPatchChemistry(before, normalizeCommittedDocument(placed), authoredPatch, writeScopeObjectIds);
+        const refreshed = refreshPluginPatchChemistry(before, normalizeCommittedDocument(placed), authoredPatch, writeScopeObjectIds);
+        const isCurrent = () => mountedRef.current && !quitInteractionRef.current && documentIdentityRef.current === documentIdentity &&
+          assistantDocumentContentUnchanged(before, documentRef.current, { checkBracketIdentity: true });
+        let prepared: ChemDraftDocument;
+        if (refreshed instanceof Promise) {
+          pluginChemistryPendingRef.current = true;
+          try { prepared = await refreshed; } finally { pluginChemistryPendingRef.current = false; }
+          signal?.throwIfAborted();
+          if (!isCurrent() || isSnapshotSessionActive()) {
+            throw new Error("The drawing changed while refreshing stored chemistry; try the plugin command again.");
+          }
+        } else {
+          prepared = refreshed;
+        }
         let committed = prepared;
         const pending = commitWithPageFit(before, prepared, (document, fitBaseline) => {
           // User-approved page fitting is a host edit. Replay its exact transform on the baseline
@@ -13080,8 +13096,7 @@ export function MainWindow({
           cleanup?.record();
         }, { // Allocate request consent only if page fitting actually needs a question.
           get consent() { return assistantTxId ? assistantTransactions.pageEnlargementConsent(assistantTxId, shortcutPlatform) : consent; }, signal,
-          isCurrent: () => mountedRef.current && !quitInteractionRef.current && documentIdentityRef.current === documentIdentity &&
-          assistantDocumentContentUnchanged(before, documentRef.current, { checkBracketIdentity: true }) });
+          isCurrent });
         if (pending) {
           pageFitPendingRef.current += 1;
           try { await pending; } finally { pageFitPendingRef.current -= 1; }

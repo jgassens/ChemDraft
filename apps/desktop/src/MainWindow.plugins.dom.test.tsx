@@ -352,6 +352,118 @@ describe("plugin direct writes through mounted desktop normalization", () => {
     });
   });
 
+  it.each(["readable stereo", "unreadable stereo", "a concurrent canvas edit"] as const)("handles a chiral ligand edit with %s", async scenario => {
+    loadTestRdkit();
+    const blank = createEmptyDocument();
+    const pageId = blank.pages[0]!.id;
+    const source = "C[C@@](F)(Cl)I";
+    const molecule = createSmilesMolecule(blank, { x: 250, y: 250 },
+      pastedStructureDepictionFromMolfile(await generateSmiles2DMolfile(source)), source);
+    expect(molecule.bonds.some(bond => ["wedge", "hashed"].includes(bond.display?.bondStyle ?? ""))).toBe(true);
+    const port = await mount(applyPatch(blank, { op: "batch", patches: [
+      { op: "addObject", pageId, object: molecule },
+      { op: "setSelection", pageId, objectIds: [molecule.id] }
+    ] }));
+    const before = port.read("initial")!;
+    expect(await workflow.copyAsSmiles(before)).toBe(source);
+    const methyl = molecule.atoms.find(atom => atom.element === "C" &&
+      molecule.bonds.filter(bond => bond.fromAtomId === atom.id || bond.toAtomId === atom.id).length === 1)!;
+    const invoke = registerWrite(context => context.documents.applyPatch!({ reason: "Change methyl to amino", patch: {
+      op: "updateObject", objectId: molecule.id,
+      changes: { atoms: molecule.atoms.map(atom => atom.id === methyl.id ? { ...atom, element: "N" } : atom) }
+    } }));
+    if (scenario === "unreadable stereo") {
+      vi.spyOn(identifiers, "computeStructureIdentifiers").mockResolvedValue({ smiles: "NC(F)(Cl)I" });
+      await act(async () => {
+        await expect(invoke()).rejects.toThrow(/Plugin write refused: cannot refresh stored chemistry.*stereochemistry/i);
+      });
+      expect(port.read("initial")).toBe(before);
+      return;
+    }
+    if (scenario === "a concurrent canvas edit") {
+      let start!: () => void;
+      let resume!: () => void;
+      const reading = new Promise<void>(resolve => { start = resolve; });
+      const paused = new Promise<void>(resolve => { resume = resolve; });
+      const compute = identifiers.computeStructureIdentifiers;
+      vi.spyOn(identifiers, "computeStructureIdentifiers").mockImplementationOnce(async (...args) => {
+        start();
+        await paused;
+        return compute(...args);
+      });
+      const userEdit = applyPatch(before, { op: "moveObject", objectId: molecule.id, x: molecule.x + 12, y: molecule.y });
+      await act(async () => {
+        const write = invoke();
+        await Promise.race([reading, write]);
+        port.push("initial", before, userEdit, "Move molecule");
+        resume();
+        await expect(write).rejects.toThrow("The drawing changed while refreshing stored chemistry");
+      });
+      expect(port.read("initial")).toBe(userEdit);
+      return;
+    }
+    await act(async () => { await expect(invoke()).resolves.toMatchObject({ applied: true }); });
+    const after = port.read("initial")!;
+    const changed = after.pages[0]!.objects[0]! as MoleculeObject;
+    const exported = await workflow.copyAsSmiles(after);
+    expect(exported).toBe("N[C@@](F)(Cl)I");
+    expect(changed).toMatchObject({
+      structure: exported, structureFormat: "smiles", compatibility: { unknown: { smiles: exported } }
+    });
+  });
+
+  it("refreshes the actual surviving molecule after removing an earlier occurrence of its id", async () => {
+    const fixture = testContext();
+    const { molecule: survivor } = fixture;
+    const changedAtoms = survivor.atoms.map((atom, i) => i === 1 ? { ...atom, element: "O" } : atom);
+    const removed = { ...survivor, atoms: changedAtoms };
+    const drawing = fixture.context.getDocument()!;
+    drawing.pages[0]!.objects = [removed, survivor];
+    const port = await mount(applyPatch(drawing, { op: "setSelection", objectIds: [survivor.id] }));
+    const invoke = registerWrite(context => context.documents.applyPatch!({ reason: "Replace duplicate", patch: {
+      op: "batch", patches: [
+        { op: "removeObject", objectId: survivor.id },
+        { op: "updateObject", objectId: survivor.id, changes: { atoms: changedAtoms } }
+      ]
+    } }));
+    await act(async () => { await expect(invoke()).resolves.toMatchObject({ applied: true }); });
+    expect(port.read("initial")!.pages[0]!.objects).toMatchObject([{
+      atoms: changedAtoms, structure: "CO", chemistry: { formula: "CH4O" }, compatibility: { unknown: { smiles: "CO" } }
+    }]);
+  });
+
+  it("inserts a SMILES-only molecule with the atom and bond defaults from chem-core", async () => {
+    const blank = createEmptyDocument();
+    const port = await mount(blank);
+    const { atoms: _atoms, bonds: _bonds, ...molecule } = testContext().molecule;
+    const invoke = registerWrite(context => context.documents.applyPatch!({ reason: "Insert SMILES", patch: {
+      op: "addObject", pageId: blank.pages[0]!.id,
+      object: { ...molecule, structure: "CC", structureFormat: "smiles" }
+    } }));
+    await act(async () => { await expect(invoke()).resolves.toMatchObject({ applied: true }); });
+    expect(port.read("initial")!.pages[0]!.objects).toMatchObject([{ structure: "CC", atoms: [], bonds: [] }]);
+  });
+
+  it("preserves stored chemistry when a plugin reorders the graph arrays", async () => {
+    loadTestRdkit();
+    const blank = createEmptyDocument();
+    const pageId = blank.pages[0]!.id;
+    const molecule = createSmilesMolecule(blank, { x: 250, y: 250 },
+      pastedStructureDepictionFromMolfile(await generateSmiles2DMolfile("CCO")), "CCO");
+    const port = await mount(applyPatch(blank, { op: "batch", patches: [
+      { op: "addObject", pageId, object: molecule },
+      { op: "setSelection", pageId, objectIds: [molecule.id] }
+    ] }));
+    const before = port.read("initial")!.pages[0]!.objects[0]! as MoleculeObject;
+    const atoms = [...before.atoms].reverse();
+    const bonds = [...before.bonds].reverse();
+    const invoke = registerWrite(context => context.documents.applyPatch!({ reason: "Reorder graph", patch: {
+      op: "updateObject", objectId: before.id, changes: { atoms, bonds }
+    } }));
+    await act(async () => { await expect(invoke()).resolves.toMatchObject({ applied: true }); });
+    expect(port.read("initial")!.pages[0]!.objects[0]).toEqual({ ...before, atoms, bonds });
+  });
+
   it.each(["coordinates", "style"] as const)("preserves stored chemistry bytes after a plugin changes only %s", async field => {
     const fixture = testContext();
     const port = await mount(applyPatch(fixture.context.getDocument()!, { op: "setSelection", objectIds: [fixture.molecule.id] }));

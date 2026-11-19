@@ -267,6 +267,7 @@ import {
   nativeLabelReadingDependsOnBondSide,
   withNativeDocumentLabelBondSides,
   withNativeLabelBondSides,
+  moleculeHasSmilesStereo,
   nativeMoleculeUnspellableLabels,
   nativeReactionArrowMinExtentPx,
   nativeSingleBondGraphMetadata,
@@ -21474,11 +21475,28 @@ function nativeMoleculeAfterPartDelete(
 }
 
 /** The same stored chemistry as a canvas graph edit, with a refusal if it cannot be written. */
-export function refreshPluginMoleculeChemistry(molecule: MoleculeObject): MoleculeObject {
+export async function refreshPluginMoleculeChemistry(molecule: MoleculeObject): Promise<MoleculeObject> {
   try {
     if (!isEditableNativeMoleculeGraph(molecule)) throw new Error("The molecule has no editable atom and bond graph.");
-    const { atoms, structure, structureFormat, chemistry } =
-      refreshNativeSingleBondGraph(molecule, molecule.atoms, molecule.bonds, true);
+    const refreshed = refreshNativeSingleBondGraph(molecule, molecule.atoms, molecule.bonds, true);
+    const { atoms, structureFormat, chemistry } = refreshed;
+    let structure = refreshed.structure;
+    if (moleculeHasSmilesStereo(refreshed)) {
+      // Read the updated drawing through the same engine path as Copy As SMILES.
+      const { loadStructureIdentifiers, moleculeSmiles } = await import("./moleculeSmiles");
+      const warnings: ExportWarning[] = [];
+      structure = await moleculeSmiles(refreshed, 0, warnings, await loadStructureIdentifiers());
+      const wedgedAtomIds = new Set(refreshed.bonds
+        .filter(bond => bond.display?.bondStyle === "wedge" || bond.display?.bondStyle === "hashed")
+        .map(bond => bond.fromAtomId));
+      // RDKit can return valid SMILES without assigning every drawn center.
+      const assignedCenters = structure.match(/@+/g)?.length ?? 0;
+      if (!structure || warnings.some(warning => warning.code === "export.smiles_stereo_dropped") ||
+          assignedCenters < wedgedAtomIds.size) {
+        const centers = wedgedAtomIds.size ? ` at wedged atoms ${[...wedgedAtomIds].join(", ")}` : "";
+        throw new Error(`Cannot derive stereochemistry from the drawing${centers}.`);
+      }
+    }
     const { compatibility } = molecule;
     return {
       ...molecule, atoms, structure, structureFormat, chemistry,

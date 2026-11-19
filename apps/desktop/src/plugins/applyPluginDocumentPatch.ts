@@ -1,6 +1,7 @@
 import {
   adoptDerivedDocument,
   applyPatch,
+  applyPatches,
   isDativeBond,
   type ApplyPatchOptions,
   type ChemDraftDocument,
@@ -33,47 +34,51 @@ export interface AppliedPluginDocumentPatch {
 /** Compare the applied graph with its starting graph, excluding coordinates and decoration. */
 export function refreshPluginPatchChemistry(
   before: ChemDraftDocument, after: ChemDraftDocument, rebasedPatch: DocumentPatch, writeScopeObjectIds: readonly string[]
-): ChemDraftDocument {
-  const originals = new Set(before.pages.flatMap(page => page.objects));
-  const survivors = new Set(after.pages.flatMap(page => page.objects));
+): ChemDraftDocument | Promise<ChemDraftDocument> {
   const scope = new Set(writeScopeObjectIds);
-  const previous = new Map<string, MoleculeObject[]>();
-  for (const object of originals) {
-    // Leave out-of-scope changes to the final write guard. Match unchanged object references
-    // first, then remaining occurrences in order because old documents may contain duplicate IDs.
-    if (object.type !== "molecule" || !scope.has(object.id) || survivors.has(object)) continue;
-    const matches = previous.get(object.id) ?? [];
-    matches.push(object);
-    previous.set(object.id, matches);
-  }
-  // An insertion already has a source representation. Compare against its authored graph so
-  // subsequent edits in the same batch are refreshed too.
-  for (const op of writePatchOps(rebasedPatch)) {
-    if (op.op === "addObject" && op.object.type === "molecule") previous.set(op.object.id, [op.object]);
-  }
-  let changed = false;
-  const pages = after.pages.map(page => {
-    const objects = page.objects.map(object => {
-      if (object.type !== "molecule" || originals.has(object)) return object;
-      const old = previous.get(object.id)?.shift();
-      if (!old || pluginMoleculeGraph(old) === pluginMoleculeGraph(object)) return object;
-      changed = true;
-      return refreshPluginMoleculeChemistry(object);
-    });
-    return objects.some((object, i) => object !== page.objects[i]) ? { ...page, objects } : page;
+  const positionOps = writePatchOps(rebasedPatch).filter(op => {
+    if (op.op === "addObject") scope.add(op.object.id);
+    return op.op === "addObject" || op.op === "addAnnotation" || op.op === "removeObject" ||
+      op.op === "removeAnnotation" || op.op === "reorderObject" || op.op === "setObjectOrder";
   });
-  return changed ? adoptDerivedDocument(after, { ...after, pages }) : after;
+  // Replay the batch's positions with chem-core to keep each survivor's original graph, even
+  // when removals or reordering change which occurrence a duplicate id addresses. Insertions
+  // get the same schema defaults and atom normalization as their actual batch counterparts.
+  const baseline = applyPatches(before, positionOps, {
+    preserveRepeatUnitBrackets: true, deferGroupCleanup: true, now: after.updatedAt
+  });
+  const refreshes: (() => Promise<void>)[] = [];
+  const pages = after.pages.map((page, pageIndex) => {
+    const originalPage = baseline.pages[pageIndex];
+    if (originalPage?.id !== page.id) return page;
+    let objects = page.objects;
+    page.objects.forEach((object, index) => {
+      const old = originalPage.objects[index];
+      // Leave out-of-scope normalization to the final write guard.
+      if (object === old || object.type !== "molecule" || !scope.has(object.id) ||
+          old?.type !== "molecule" || old.id !== object.id ||
+          pluginMoleculeGraph(old) === pluginMoleculeGraph(object)) return;
+      if (objects === page.objects) objects = [...objects];
+      refreshes.push(async () => { objects[index] = await refreshPluginMoleculeChemistry(object); });
+    });
+    return objects === page.objects ? page : { ...page, objects };
+  });
+  if (!refreshes.length) return after;
+  return Promise.all(refreshes.map(refresh => refresh())).then(() => adoptDerivedDocument(after, { ...after, pages }));
 }
 
 function pluginMoleculeGraph(molecule: MoleculeObject): string {
   return JSON.stringify([
-    molecule.atoms.map(atom => [atom.id, atom.element, atom.formalCharge, atom.isotope, atom.markRadicals,
-      atom.schemeAbbreviation, atom.labelLiteral, atom.hydrogenCount, atom.labelBondSide?.side, atom.labelBondSide?.atomId]),
+    molecule.atoms.map(atom => JSON.stringify([atom.id, atom.element, atom.formalCharge, atom.isotope, atom.markRadicals,
+      atom.schemeAbbreviation, atom.labelLiteral, atom.hydrogenCount, atom.labelBondSide?.side, atom.labelBondSide?.atomId])).sort(),
     molecule.bonds.map(bond => {
       const style = bond.display?.bondStyle;
-      return [bond.id, bond.fromAtomId, bond.toAtomId, bond.order, bond.stereo, isDativeBond(bond),
-        style === "wedge" || style === "hashed" || style === "wavy" ? style : undefined];
-    })
+      const stereoStyle = style === "wedge" || style === "hashed" || style === "wavy" ? style : undefined;
+      const dative = isDativeBond(bond);
+      const endpoints = [bond.fromAtomId, bond.toAtomId];
+      if (!stereoStyle && !dative) endpoints.sort();
+      return JSON.stringify([endpoints, bond.order, bond.stereo, dative, stereoStyle]);
+    }).sort()
   ]);
 }
 

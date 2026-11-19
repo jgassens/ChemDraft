@@ -343,7 +343,7 @@ export function engineSmilesAtomWarnings(
 }
 
 /** The native graph writer has neither tetrahedral nor double-bond stereo notation. */
-function moleculeHasSmilesStereo(molecule: MoleculeObject): boolean {
+export function moleculeHasSmilesStereo(molecule: MoleculeObject): boolean {
   const heavyAtomIds = new Set(molecule.atoms
     .filter((atom) => !["H", "D", "T"].includes(atom.element))
     .map((atom) => atom.id));
