@@ -9,13 +9,13 @@ use objc2_app_kit::{NSAlert, NSAlertStyle, NSApplication};
 use objc2_foundation::{NSString, NSTimer};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, Write},
     net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream},
     os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
     path::{Path, PathBuf},
-    sync::{mpsc, Arc, Mutex},
+    sync::{mpsc, Arc, Condvar, Mutex},
     thread,
     time::{Duration, Instant},
 };
@@ -25,6 +25,7 @@ const LOCK_FILE: &str = "single-instance.lock";
 const MAX_MESSAGE_BYTES: usize = 256 * 1024;
 const HANDOFF_TIMEOUT: Duration = Duration::from_secs(2);
 const TAKEOVER_TIMEOUT: Duration = Duration::from_secs(10);
+const FILE_RECEIPT_TIMEOUT: Duration = Duration::from_secs(10);
 const LOCK_RETRY: Duration = Duration::from_millis(20);
 const OPEN_QUIET_PERIOD: Duration = Duration::from_millis(300);
 const OPEN_COLLECTION_CAP: Duration = Duration::from_secs(5);
@@ -38,6 +39,8 @@ struct Endpoint {
 #[derive(Debug, Deserialize, Serialize)]
 struct Launch {
     token: [u8; 32],
+    #[serde(default)]
+    receipt_progress: bool,
     #[serde(flatten)]
     request: LaunchRequest,
 }
@@ -141,6 +144,11 @@ pub enum Acknowledgement {
 // The legacy primary writes just 1 when scheduling its callback. A confirmed primary writes
 // both bytes in one reply, keeping older secondaries compatible after the actual open.
 const CONFIRMED_OPEN_VERSION: u8 = 2;
+// Only sent to a secondary that advertised receipt_progress. Old clients still receive
+// the original terminal acknowledgements, and old primaries ignore the request field.
+const OPEN_IN_PROGRESS: u8 = 4;
+const OPEN_FAILED_WITH_DETAILS: u8 = 5;
+const OPEN_HEARTBEAT: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
 pub struct RendererReceipt {
@@ -149,13 +157,25 @@ pub struct RendererReceipt {
 }
 
 #[derive(Deserialize)]
-pub struct OpenConfirmation {
-    pub receipt: RendererReceipt,
-    pub opened: bool,
+#[serde(untagged)]
+pub enum OpenConfirmation {
+    Finished {
+        receipt: RendererReceipt,
+        opened: bool,
+    },
+    Waiting {
+        receipt: RendererReceipt,
+        waiting: bool,
+    },
+}
+
+pub enum ReplyEvent {
+    Tracking,
+    Finished(Acknowledgement, Option<String>),
 }
 
 pub enum Reply {
-    Secondary(mpsc::Sender<Acknowledgement>),
+    Secondary(mpsc::Sender<ReplyEvent>),
     Takeover(LaunchRequest),
 }
 
@@ -163,7 +183,7 @@ impl Reply {
     pub fn finish(self, result: Acknowledgement, error: &str) {
         match self {
             Self::Secondary(sender) => {
-                let _ = sender.send(result);
+                let _ = sender.send(ReplyEvent::Finished(result, None));
             }
             Self::Takeover(launch) if result != Acknowledgement::Accepted => {
                 show_launch_error(&launch, error);
@@ -171,122 +191,272 @@ impl Reply {
             Self::Takeover(_) => {}
         }
     }
+
+    pub fn fail(self, message: String) {
+        match self {
+            Self::Secondary(sender) => {
+                let _ = sender.send(ReplyEvent::Finished(Acknowledgement::Failed, Some(message)));
+            }
+            Self::Takeover(_) => show_launch_error_message(&message),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum FileOutcome {
+    Opened,
+    Rejected,
+    Unconfirmed,
+}
+
+struct PendingFile {
+    path: String,
+    outcome: Option<FileOutcome>,
 }
 
 struct PendingBatch {
-    outstanding: HashSet<usize>,
+    files: Vec<PendingFile>,
+    next: usize,
+    deadline: Instant,
+    paused: Option<(usize, Instant)>,
+    read_errors: Vec<String>,
     reply: Reply,
+}
+
+impl PendingBatch {
+    fn deadline(&self) -> Option<Instant> {
+        self.paused.is_none().then_some(self.deadline)
+    }
+
+    fn set_waiting(&mut self, file: usize, waiting: bool, now: Instant) {
+        // A prompt can belong to an installed file and still hold up the next file.
+        if waiting && file <= self.next && self.paused.is_none() {
+            self.paused = Some((file, now));
+        } else if !waiting && self.paused.is_some_and(|(owner, _)| owner == file) {
+            let (_, since) = self.paused.take().unwrap();
+            self.deadline += now - since;
+        }
+    }
+
+    fn record(&mut self, file: usize, outcome: FileOutcome, now: Instant) {
+        let Some(pending) = self.files.get_mut(file) else {
+            return;
+        };
+        // An actual receipt can settle an unconfirmed file while later files are pending.
+        if matches!(
+            pending.outcome,
+            Some(FileOutcome::Opened | FileOutcome::Rejected)
+        ) {
+            return;
+        }
+        pending.outcome = Some(outcome);
+        if file == self.next {
+            while self
+                .files
+                .get(self.next)
+                .is_some_and(|file| file.outcome.is_some())
+            {
+                self.next += 1;
+            }
+            self.deadline = now + FILE_RECEIPT_TIMEOUT;
+            if let Some((_, since)) = &mut self.paused {
+                *since = now;
+            }
+        }
+    }
+
+    fn finish(mut self, delivery_error: Option<&str>) {
+        for file in self.files {
+            let reason = match file.outcome {
+                Some(FileOutcome::Opened) => continue,
+                Some(FileOutcome::Rejected) => "The document window could not open",
+                Some(FileOutcome::Unconfirmed) => {
+                    "The document window did not confirm opening in time"
+                }
+                None => delivery_error.unwrap_or("The document window did not confirm opening"),
+            };
+            self.read_errors.push(format!("{reason}: {}", file.path));
+        }
+        if self.read_errors.is_empty() {
+            self.reply.finish(Acknowledgement::Accepted, "");
+        } else {
+            self.reply.fail(self.read_errors.join("\n"));
+        }
+    }
 }
 
 #[derive(Default)]
 pub struct RendererOpens {
     next: u32,
     batches: HashMap<u32, PendingBatch>,
+    changed: Arc<Condvar>,
 }
 
 impl RendererOpens {
-    fn track(&mut self, payloads: &mut [crate::NativeOpenDocumentPayload], reply: Reply) -> u32 {
+    fn track(
+        &mut self,
+        payloads: &mut [crate::NativeOpenDocumentPayload],
+        read_errors: Vec<String>,
+        reply: Reply,
+        now: Instant,
+    ) -> u32 {
         let id = self.next;
         self.next = self.next.checked_add(1).expect("exhausted handoff IDs");
-        for (file, payload) in payloads.iter_mut().enumerate() {
-            payload.receipt = Some(RendererReceipt { batch: id, file });
-        }
+        let files = payloads
+            .iter_mut()
+            .enumerate()
+            .map(|(file, payload)| {
+                payload.receipt = Some(RendererReceipt { batch: id, file });
+                PendingFile {
+                    path: payload.path.clone(),
+                    outcome: None,
+                }
+            })
+            .collect();
         self.batches.insert(
             id,
             PendingBatch {
-                outstanding: (0..payloads.len()).collect(),
+                files,
+                next: 0,
+                deadline: now + FILE_RECEIPT_TIMEOUT,
+                paused: None,
+                read_errors,
                 reply,
             },
         );
         id
     }
 
-    fn consume(
-        &mut self,
-        receipt: RendererReceipt,
-        opened: bool,
-    ) -> Option<(Reply, Acknowledgement)> {
-        let batch = self.batches.get_mut(&receipt.batch)?;
-        if !batch.outstanding.remove(&receipt.file) || (opened && !batch.outstanding.is_empty()) {
-            return None;
-        }
-        let result = if opened {
-            Acknowledgement::Accepted
-        } else {
-            Acknowledgement::Failed
+    fn update(&mut self, confirmation: OpenConfirmation, now: Instant) -> Option<PendingBatch> {
+        let receipt = match confirmation {
+            OpenConfirmation::Finished { receipt, .. }
+            | OpenConfirmation::Waiting { receipt, .. } => receipt,
         };
-        Some((self.remove(receipt.batch)?, result))
+        let batch = self.batches.get_mut(&receipt.batch)?;
+        match confirmation {
+            OpenConfirmation::Finished { opened, .. } => batch.record(
+                receipt.file,
+                if opened {
+                    FileOutcome::Opened
+                } else {
+                    FileOutcome::Rejected
+                },
+                now,
+            ),
+            OpenConfirmation::Waiting { waiting, .. } => {
+                batch.set_waiting(receipt.file, waiting, now)
+            }
+        }
+        self.changed.notify_all();
+        self.take_finished(receipt.batch)
     }
 
-    fn remove(&mut self, id: u32) -> Option<Reply> {
-        self.batches.remove(&id).map(|batch| batch.reply)
+    fn expire(&mut self, id: u32, now: Instant) -> Option<PendingBatch> {
+        let batch = self.batches.get_mut(&id)?;
+        if batch.deadline().is_some_and(|deadline| now >= deadline) {
+            batch.record(batch.next, FileOutcome::Unconfirmed, now);
+        }
+        self.take_finished(id)
+    }
+
+    fn take_finished(&mut self, id: u32) -> Option<PendingBatch> {
+        let batch = self.batches.get(&id)?;
+        (batch.next == batch.files.len()).then(|| self.batches.remove(&id).unwrap())
     }
 }
 
 pub fn track_renderer_open(
     app: &AppHandle,
     payloads: &mut [crate::NativeOpenDocumentPayload],
+    read_errors: Vec<String>,
     reply: Reply,
-) -> u32 {
-    let id = app
-        .state::<Mutex<RendererOpens>>()
-        .lock()
-        .unwrap()
-        .track(payloads, reply);
-    let app = app.clone();
-    let tick = RcBlock::new(move |_| {
+) -> Option<u32> {
+    if let Reply::Secondary(sender) = &reply {
+        let _ = sender.send(ReplyEvent::Tracking);
+    }
+    let id = app.state::<Mutex<RendererOpens>>().lock().unwrap().track(
+        payloads,
+        read_errors,
+        reply,
+        Instant::now(),
+    );
+    let handle = app.clone();
+    // Keep the deadline running even if AppKit's main run loop stalls.
+    if let Err(error) = thread::Builder::new()
+        .name("file-open-receipt".into())
+        .spawn(move || {
+            let state = handle.state::<Mutex<RendererOpens>>();
+            let mut opens = state.lock().unwrap();
+            let changed = opens.changed.clone();
+            loop {
+                let now = Instant::now();
+                if let Some(batch) = opens.expire(id, now) {
+                    drop(opens);
+                    if matches!(&batch.reply, Reply::Takeover(_)) {
+                        let _ = handle.run_on_main_thread(move || batch.finish(None));
+                    } else {
+                        batch.finish(None);
+                    }
+                    break;
+                }
+                let Some(batch) = opens.batches.get(&id) else {
+                    break;
+                };
+                opens = if let Some(deadline) = batch.deadline() {
+                    changed
+                        .wait_timeout(opens, deadline.saturating_duration_since(now))
+                        .unwrap()
+                        .0
+                } else {
+                    changed.wait(opens).unwrap()
+                };
+            }
+        })
+    {
         fail_renderer_open(
-            &app,
+            app,
             id,
-            "The document window did not confirm every file open in time.",
+            &format!("Could not track the document window's file opens: {error}"),
         );
-    });
-    // Main run loop, including during cold-start takeover. Bound both the receipt lifetime and
-    // the time before a promoted secondary with an unresponsive renderer shows its own alert.
-    unsafe {
-        NSTimer::scheduledTimerWithTimeInterval_repeats_block(
-            TAKEOVER_TIMEOUT.as_secs_f64(),
-            false,
-            &tick,
-        )
-    };
-    id
+        return None;
+    }
+    Some(id)
 }
 
 pub fn fail_renderer_open(app: &AppHandle, id: u32, error: &str) {
-    let reply = app
-        .state::<Mutex<RendererOpens>>()
-        .lock()
-        .unwrap()
-        .remove(id);
-    if let Some(reply) = reply {
-        reply.finish(Acknowledgement::Failed, error);
+    let state = app.state::<Mutex<RendererOpens>>();
+    let mut opens = state.lock().unwrap();
+    let batch = opens.batches.remove(&id);
+    opens.changed.notify_all();
+    drop(opens);
+    if let Some(batch) = batch {
+        batch.finish(Some(error));
     }
 }
 
-pub fn renderer_consumed(app: &AppHandle, receipt: RendererReceipt, opened: bool) {
-    let reply = app
+pub fn renderer_consumed(app: &AppHandle, confirmation: OpenConfirmation) {
+    let batch = app
         .state::<Mutex<RendererOpens>>()
         .lock()
         .unwrap()
-        .consume(receipt, opened);
-    if let Some((reply, result)) = reply {
-        reply.finish(
-            result,
-            "The document window could not open every requested file.",
-        );
+        .update(confirmation, Instant::now());
+    if let Some(batch) = batch {
+        batch.finish(None);
     }
 }
 
 pub fn renderer_exiting(app: &AppHandle) {
-    let batches = std::mem::take(&mut app.state::<Mutex<RendererOpens>>().lock().unwrap().batches);
+    let state = app.state::<Mutex<RendererOpens>>();
+    let mut opens = state.lock().unwrap();
+    let batches = std::mem::take(&mut opens.batches);
+    opens.changed.notify_all();
+    drop(opens);
     for batch in batches.into_values() {
         // Disconnect remote waiters so they can take over. Only local requests need an alert here.
-        if let Reply::Takeover(launch) = batch.reply {
-            show_launch_error(
-                &launch,
-                "ChemDraft quit before its document window confirmed the open.",
-            );
+        if matches!(&batch.reply, Reply::Takeover(_)) {
+            batch.finish(Some(
+                "ChemDraft quit before its document window confirmed the open",
+            ));
         }
     }
 }
@@ -307,28 +477,42 @@ pub fn plugin(
                         let result = connection.and_then(|mut stream| {
                             stream.set_read_timeout(Some(HANDOFF_TIMEOUT))?;
                             stream.set_write_timeout(Some(HANDOFF_TIMEOUT))?;
-                            receive_launch(&mut stream, &endpoint.token, |launch| {
-                                if crate::QUIT.refuses_macos_launch() {
-                                    return Ok(Acknowledgement::Refused);
-                                }
-                                let app = app_handle.clone();
-                                let callback = callback.clone();
-                                let (send_reply, reply) = mpsc::channel();
-                                let deadline = Instant::now() + TAKEOVER_TIMEOUT;
-                                app_handle
-                                    .run_on_main_thread(move || {
-                                        // Skip work still queued after the IPC worker timed out.
-                                        if Instant::now() < deadline {
-                                            callback(&app, launch, Reply::Secondary(send_reply));
-                                        }
-                                    })
-                                    .map_err(io::Error::other)?;
-                                reply
-                                    .recv_timeout(
-                                        deadline.saturating_duration_since(Instant::now()),
-                                    )
-                                    .map_err(io::Error::other)
-                            })
+                            let launch = read_launch(&mut stream, &endpoint.token)?;
+                            if crate::QUIT.refuses_macos_launch() {
+                                return write_reply(&mut stream, Acknowledgement::Refused, None);
+                            }
+                            let app = app_handle.clone();
+                            let callback = callback.clone();
+                            let (send_reply, reply) = mpsc::channel();
+                            let deadline = Instant::now() + TAKEOVER_TIMEOUT;
+                            // A user prompt may keep this connection open. Keep accepting other
+                            // launches, including refusals while a save-before-quit prompt is up.
+                            thread::Builder::new()
+                                .name("single-instance-reply".into())
+                                .spawn(move || {
+                                    if let Err(error) = await_reply(
+                                        &mut stream,
+                                        reply,
+                                        launch.receipt_progress,
+                                        deadline,
+                                    ) {
+                                        eprintln!(
+                                            "ChemDraft single-instance handoff failed: {error}"
+                                        );
+                                    }
+                                })?;
+                            app_handle
+                                .run_on_main_thread(move || {
+                                    // Skip work still queued after the IPC worker timed out.
+                                    if Instant::now() < deadline {
+                                        callback(
+                                            &app,
+                                            launch.request,
+                                            Reply::Secondary(send_reply),
+                                        );
+                                    }
+                                })
+                                .map_err(io::Error::other)
                         });
                         if let Err(error) = result {
                             eprintln!("ChemDraft single-instance handoff failed: {error}");
@@ -341,6 +525,36 @@ pub fn plugin(
             Ok(())
         })
         .build()
+}
+
+fn await_reply(
+    stream: &mut impl Write,
+    reply: mpsc::Receiver<ReplyEvent>,
+    progress: bool,
+    deadline: Instant,
+) -> io::Result<()> {
+    let mut tracking = false;
+    loop {
+        let wait = if tracking {
+            OPEN_HEARTBEAT
+        } else {
+            deadline.saturating_duration_since(Instant::now())
+        };
+        match reply.recv_timeout(wait) {
+            Ok(ReplyEvent::Tracking) if progress => {
+                tracking = true;
+                stream.write_all(&[OPEN_IN_PROGRESS])?;
+            }
+            Ok(ReplyEvent::Tracking) => {}
+            Ok(ReplyEvent::Finished(ack, details)) => {
+                return write_reply(stream, ack, details.as_deref().filter(|_| progress));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) if tracking => {
+                stream.write_all(&[OPEN_IN_PROGRESS])?
+            }
+            Err(error) => return Err(io::Error::other(error)),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -603,16 +817,23 @@ impl SecondaryLaunch {
                         crate::open_macos_launch(app, &launch, Reply::Takeover(launch.clone()));
                         return;
                     }
-                    Err(error) => Some(error.to_string()),
+                    Err(error) => Some(launch_error_message(&launch, &error.to_string())),
                 }
             }
             Ok(Resolution::Forwarded) => None,
-            Err(error) => Some(error.to_string()),
+            Err(error)
+                if error
+                    .get_ref()
+                    .is_some_and(|cause| cause.is::<ConfirmedOpenFailure>()) =>
+            {
+                Some(error.to_string())
+            }
+            Err(error) => Some(launch_error_message(&launch, &error.to_string())),
         };
 
         if let Some(error) = error {
             self.state.lock().unwrap().exit_code = 1;
-            show_launch_error(&launch, &error);
+            show_launch_error_message(&error);
         }
 
         let mut state = self.state.lock().unwrap();
@@ -657,7 +878,10 @@ fn launch_error_message(launch: &LaunchRequest, error: &str) -> String {
 }
 
 pub fn show_launch_error(launch: &LaunchRequest, error: &str) {
-    let message = launch_error_message(launch, error);
+    show_launch_error_message(&launch_error_message(launch, error));
+}
+
+fn show_launch_error_message(message: &str) {
     eprintln!("ChemDraft could not complete the document open: {message}");
     let mtm = MainThreadMarker::new().expect("launch error is shown on the main thread");
     let app = NSApplication::sharedApplication(mtm);
@@ -668,7 +892,7 @@ pub fn show_launch_error(launch: &LaunchRequest, error: &str) {
     alert.setMessageText(&NSString::from_str(
         "ChemDraft could not complete the document open",
     ));
-    alert.setInformativeText(&NSString::from_str(&message));
+    alert.setInformativeText(&NSString::from_str(message));
     alert.runModal();
 }
 
@@ -682,6 +906,17 @@ enum Resolution {
     Forwarded,
 }
 
+#[derive(Debug)]
+struct ConfirmedOpenFailure(String);
+
+impl std::fmt::Display for ConfirmedOpenFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ConfirmedOpenFailure {}
+
 fn connect(endpoint: &Endpoint, timeout: Duration) -> io::Result<TcpStream> {
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, endpoint.port));
     let stream = TcpStream::connect_timeout(&address, timeout.min(HANDOFF_TIMEOUT))?;
@@ -690,7 +925,17 @@ fn connect(endpoint: &Endpoint, timeout: Duration) -> io::Result<TcpStream> {
     Ok(stream)
 }
 
-fn resolve_launch_with<S: Read + Write>(
+trait HandoffStream: Read + Write {
+    fn set_progress_read_timeout(&self) -> io::Result<()>;
+}
+
+impl HandoffStream for TcpStream {
+    fn set_progress_read_timeout(&self) -> io::Result<()> {
+        self.set_read_timeout(Some(TAKEOVER_TIMEOUT))
+    }
+}
+
+fn resolve_launch_with<S: HandoffStream>(
     directory: &Path,
     launch: &LaunchRequest,
     wait: Duration,
@@ -730,6 +975,13 @@ fn resolve_launch_with<S: Read + Write>(
                                     "the running copy could not open every requested document",
                                 ));
                             }
+                            Err(error)
+                                if error
+                                    .get_ref()
+                                    .is_some_and(|cause| cause.is::<ConfirmedOpenFailure>()) =>
+                            {
+                                return Err(error);
+                            }
                             Err(error) => last_error = error,
                         }
                     }
@@ -744,7 +996,7 @@ fn resolve_launch_with<S: Read + Write>(
 }
 
 fn send_launch(
-    stream: &mut (impl Read + Write),
+    stream: &mut impl HandoffStream,
     endpoint: &Endpoint,
     launch: &LaunchRequest,
 ) -> io::Result<Acknowledgement> {
@@ -753,6 +1005,7 @@ fn send_launch(
         &mut frame,
         &Launch {
             token: endpoint.token,
+            receipt_progress: true,
             request: launch.clone(),
         },
     )?;
@@ -766,6 +1019,16 @@ fn send_launch(
     stream.write_all(&frame)?;
     let mut acknowledgement = [0];
     stream.read_exact(&mut acknowledgement)?;
+    if acknowledgement[0] == OPEN_IN_PROGRESS {
+        // The original deadline still bounds connection and refusal retry. Once the primary
+        // takes receipt tracking, only a dead connection should time out at the socket layer.
+        // If the peer already sent the terminal reply and closed, macOS can reject the timeout
+        // change. Buffered reply bytes are still readable with the original timeout.
+        let _ = stream.set_progress_read_timeout();
+        while acknowledgement[0] == OPEN_IN_PROGRESS {
+            stream.read_exact(&mut acknowledgement)?;
+        }
+    }
     match acknowledgement[0] {
         1 => {
             let mut version = [0];
@@ -779,15 +1042,25 @@ fn send_launch(
         }
         2 => Ok(Acknowledgement::Refused),
         3 => Ok(Acknowledgement::Failed),
+        OPEN_FAILED_WITH_DETAILS => {
+            let mut size = [0; 4];
+            stream.read_exact(&mut size)?;
+            let size = u32::from_le_bytes(size) as usize;
+            if size > MAX_MESSAGE_BYTES {
+                return Err(io::Error::other(
+                    "second-launch reply exceeds the handoff limit",
+                ));
+            }
+            let mut bytes = vec![0; size];
+            stream.read_exact(&mut bytes)?;
+            let details = String::from_utf8(bytes).map_err(io::Error::other)?;
+            Err(io::Error::other(ConfirmedOpenFailure(details)))
+        }
         _ => Err(io::Error::other("invalid second-launch acknowledgement")),
     }
 }
 
-fn receive_launch(
-    stream: &mut (impl Read + Write),
-    token: &[u8; 32],
-    deliver: impl FnOnce(LaunchRequest) -> io::Result<Acknowledgement>,
-) -> io::Result<()> {
+fn read_launch(stream: &mut impl Read, token: &[u8; 32]) -> io::Result<Launch> {
     let mut size = [0; 4];
     stream.read_exact(&mut size)?;
     let size = u32::from_le_bytes(size) as usize;
@@ -805,9 +1078,21 @@ fn receive_launch(
             "invalid handoff token",
         ));
     }
-    let acknowledgement = deliver(launch.request)?;
+    Ok(launch)
+}
+
+fn write_reply(
+    stream: &mut impl Write,
+    acknowledgement: Acknowledgement,
+    details: Option<&str>,
+) -> io::Result<()> {
     if acknowledgement == Acknowledgement::Accepted {
         stream.write_all(&[acknowledgement as u8, CONFIRMED_OPEN_VERSION])
+    } else if let Some(details) = details {
+        let details = &details[..details.floor_char_boundary(MAX_MESSAGE_BYTES)];
+        stream.write_all(&[OPEN_FAILED_WITH_DETAILS])?;
+        stream.write_all(&(details.len() as u32).to_le_bytes())?;
+        stream.write_all(details.as_bytes())
     } else {
         stream.write_all(&[acknowledgement as u8])
     }
@@ -822,6 +1107,21 @@ mod single_instance_tests {
         process::Command,
         sync::atomic::{AtomicU64, Ordering},
     };
+
+    impl HandoffStream for UnixStream {
+        fn set_progress_read_timeout(&self) -> io::Result<()> {
+            self.set_read_timeout(Some(HANDOFF_TIMEOUT))
+        }
+    }
+
+    fn receive_launch(
+        stream: &mut (impl Read + Write),
+        token: &[u8; 32],
+        deliver: impl FnOnce(LaunchRequest) -> io::Result<Acknowledgement>,
+    ) -> io::Result<()> {
+        let launch = read_launch(stream, token)?;
+        write_reply(stream, deliver(launch.request)?, None)
+    }
 
     // Anonymous sockets exercise the framed protocol in restricted test hosts without requiring
     // permission to listen on a TCP port. Production binds only IPv4 loopback.
@@ -1203,28 +1503,253 @@ mod single_instance_tests {
             let mut opens = RendererOpens::default();
             let mut files = vec![payload.clone(); 2];
             let (sender, ack) = mpsc::channel();
-            opens.track(&mut files, Reply::Secondary(sender));
+            let now = Instant::now();
+            opens.track(&mut files, Vec::new(), Reply::Secondary(sender), now);
             let queue = crate::PendingOpenDocument::default();
             queue.record(files, true).unwrap();
             let drained = queue.drain().unwrap();
             let first = drained[0].receipt.unwrap();
             let second = drained[1].receipt.unwrap();
-            assert!(opens.consume(first, true).is_none());
+            let opened = |receipt, opened| OpenConfirmation::Finished { receipt, opened };
+            assert!(opens.update(opened(first, true), now).is_none());
             assert!(
-                opens.consume(first, true).is_none(),
+                opens.update(opened(first, true), now).is_none(),
                 "duplicate confirmation"
             );
-            assert_eq!(ack.try_recv(), Err(mpsc::TryRecvError::Empty));
-            let (reply, result) = opens.consume(second, last_opened).unwrap();
+            assert!(matches!(ack.try_recv(), Err(mpsc::TryRecvError::Empty)));
+            let batch = opens.update(opened(second, last_opened), now).unwrap();
             let expected = if last_opened {
                 Acknowledgement::Accepted
             } else {
                 Acknowledgement::Failed
             };
-            reply.finish(result, "renderer outcome");
-            assert_eq!(ack.try_recv(), Ok(expected));
-            assert!(opens.consume(second, true).is_none(), "late confirmation");
+            batch.finish(None);
+            assert!(
+                matches!(ack.try_recv(), Ok(ReplyEvent::Finished(result, _)) if result == expected)
+            );
+            assert!(
+                opens.update(opened(second, true), now).is_none(),
+                "late confirmation"
+            );
         }
+    }
+
+    fn track_two_files(
+        now: Instant,
+    ) -> (
+        RendererOpens,
+        u32,
+        [RendererReceipt; 2],
+        mpsc::Receiver<ReplyEvent>,
+    ) {
+        let mut files =
+            ["first.cdxml", "second.cdxml"].map(|name| crate::NativeOpenDocumentPayload {
+                receipt: None,
+                path: format!("/drawings/{name}"),
+                display_name: name.into(),
+                contents: "<CDXML/>".into(),
+                bytes: None,
+            });
+        let mut opens = RendererOpens::default();
+        let (sender, reply) = mpsc::channel();
+        let id = opens.track(&mut files, Vec::new(), Reply::Secondary(sender), now);
+        (opens, id, files.map(|file| file.receipt.unwrap()), reply)
+    }
+
+    #[test]
+    fn single_instance_later_file_confirms_after_earlier_page_fit_prompt() {
+        let start = Instant::now();
+        let (mut opens, id, [first, second], reply) = track_two_files(start);
+        let installed = start + Duration::from_secs(8);
+        assert!(opens
+            .update(
+                OpenConfirmation::Finished {
+                    receipt: first,
+                    opened: true
+                },
+                installed
+            )
+            .is_none());
+        assert!(opens
+            .update(
+                OpenConfirmation::Waiting {
+                    receipt: first,
+                    waiting: true
+                },
+                installed
+            )
+            .is_none());
+        let answered = installed + TAKEOVER_TIMEOUT * 3;
+        assert!(opens.expire(id, answered).is_none());
+        assert!(opens
+            .update(
+                OpenConfirmation::Waiting {
+                    receipt: first,
+                    waiting: false
+                },
+                answered
+            )
+            .is_none());
+        let second_opened = answered + Duration::from_secs(9);
+        assert!(opens.expire(id, second_opened).is_none());
+        opens
+            .update(
+                OpenConfirmation::Finished {
+                    receipt: second,
+                    opened: true,
+                },
+                second_opened,
+            )
+            .unwrap()
+            .finish(None);
+        assert!(matches!(
+            reply.try_recv(),
+            Ok(ReplyEvent::Finished(Acknowledgement::Accepted, None))
+        ));
+    }
+
+    #[test]
+    fn single_instance_missing_later_receipt_names_only_that_file() {
+        let start = Instant::now();
+        let (mut opens, id, [first, _], reply) = track_two_files(start);
+        assert!(opens
+            .update(
+                OpenConfirmation::Finished {
+                    receipt: first,
+                    opened: true
+                },
+                start
+            )
+            .is_none());
+        assert!(opens
+            .update(
+                OpenConfirmation::Waiting {
+                    receipt: first,
+                    waiting: true
+                },
+                start
+            )
+            .is_none());
+        let answered = start + TAKEOVER_TIMEOUT * 3;
+        assert!(opens.expire(id, answered).is_none());
+        assert!(opens
+            .update(
+                OpenConfirmation::Waiting {
+                    receipt: first,
+                    waiting: false
+                },
+                answered
+            )
+            .is_none());
+        opens
+            .expire(id, answered + TAKEOVER_TIMEOUT)
+            .unwrap()
+            .finish(None);
+        let ReplyEvent::Finished(Acknowledgement::Failed, Some(message)) =
+            reply.try_recv().unwrap()
+        else {
+            panic!("expected the unconfirmed file in the failure reply");
+        };
+        assert_eq!(
+            message,
+            "The document window did not confirm opening in time: /drawings/second.cdxml"
+        );
+    }
+
+    #[test]
+    fn single_instance_prompt_pauses_only_the_unused_time_of_the_current_file() {
+        let start = Instant::now();
+        let (mut opens, id, [first, second], reply) = track_two_files(start);
+        let before_prompt = Duration::from_secs(7);
+        assert!(opens
+            .update(
+                OpenConfirmation::Waiting {
+                    receipt: first,
+                    waiting: true
+                },
+                start + before_prompt
+            )
+            .is_none());
+        let answered = start + TAKEOVER_TIMEOUT * 3;
+        assert!(opens.expire(id, answered).is_none());
+        assert!(opens
+            .update(
+                OpenConfirmation::Waiting {
+                    receipt: first,
+                    waiting: false
+                },
+                answered
+            )
+            .is_none());
+        let deadline = answered + FILE_RECEIPT_TIMEOUT - before_prompt;
+        assert!(opens
+            .expire(id, deadline - Duration::from_millis(1))
+            .is_none());
+        assert_eq!(opens.batches[&id].next, 0);
+        assert!(opens.expire(id, deadline).is_none());
+        assert_eq!(opens.batches[&id].next, 1);
+        assert!(opens
+            .update(
+                OpenConfirmation::Finished {
+                    receipt: first,
+                    opened: true
+                },
+                deadline + Duration::from_secs(1)
+            )
+            .is_none());
+        opens
+            .update(
+                OpenConfirmation::Finished {
+                    receipt: second,
+                    opened: true,
+                },
+                deadline + Duration::from_secs(2),
+            )
+            .unwrap()
+            .finish(None);
+        assert!(matches!(
+            reply.try_recv(),
+            Ok(ReplyEvent::Finished(Acknowledgement::Accepted, None))
+        ));
+    }
+
+    #[test]
+    fn single_instance_progress_reply_keeps_failure_details_and_legacy_terminal_bytes() {
+        let endpoint = Endpoint {
+            port: 0,
+            token: [3; 32],
+        };
+        let (mut client, mut stream) = streams();
+        let server = thread::spawn(move || {
+            assert!(read_launch(&mut stream, &[3; 32]).unwrap().receipt_progress);
+            let (sender, receiver) = mpsc::channel();
+            sender.send(ReplyEvent::Tracking).unwrap();
+            sender
+                .send(ReplyEvent::Finished(
+                    Acknowledgement::Failed,
+                    Some("Second file only".into()),
+                ))
+                .unwrap();
+            await_reply(&mut stream, receiver, true, Instant::now()).unwrap();
+        });
+        let error = send_launch(&mut client, &endpoint, &LaunchRequest::default()).unwrap_err();
+        server.join().unwrap();
+        assert_eq!(error.to_string(), "Second file only");
+        assert!(error
+            .get_ref()
+            .is_some_and(|cause| cause.is::<ConfirmedOpenFailure>()));
+
+        let (sender, receiver) = mpsc::channel();
+        sender.send(ReplyEvent::Tracking).unwrap();
+        sender
+            .send(ReplyEvent::Finished(
+                Acknowledgement::Failed,
+                Some("Second file only".into()),
+            ))
+            .unwrap();
+        let mut wire = Vec::new();
+        await_reply(&mut wire, receiver, false, Instant::now()).unwrap();
+        assert_eq!(wire, [Acknowledgement::Failed as u8]);
     }
 
     #[test]
@@ -1492,6 +2017,7 @@ mod single_instance_tests {
             } else {
                 let request = serde_json::to_vec(&Launch {
                     token: [2; 32],
+                    receipt_progress: false,
                     request: LaunchRequest::default(),
                 })
                 .unwrap();

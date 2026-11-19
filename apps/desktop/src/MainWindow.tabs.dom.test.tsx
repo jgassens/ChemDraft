@@ -146,8 +146,8 @@ vi.mock("./window-manager/tauriEvents", async (original) => {
 vi.mock("@tauri-apps/api/core", async (original) => ({
   ...await original<typeof import("@tauri-apps/api/core")>(),
   isTauri: () => native.suspendUtilities,
-  invoke: vi.fn(async (command: string, options?: { suspended?: boolean }) => {
-    if (command === "take_pending_open_document") return native.drainOpenDocuments();
+  invoke: vi.fn(async (command: string, options?: { suspended?: boolean; confirmation?: unknown }) => {
+    if (command === "take_pending_open_document") return options?.confirmation ? [] : native.drainOpenDocuments();
     if (command === "read_clipboard_payload") return native.clipboardPending ?? { types: [], textItems: [] };
     if (command === "suspend_toolset_windows") {
       if (native.suspendFailure && options?.suspended) throw new Error("Native utility hide refused");
@@ -1485,6 +1485,31 @@ describe("documents in one window", () => {
       const label = pendingPrompt!.prompt.choices.find(candidate => candidate.id === choice)!.label;
       await modalButton(label);
     }
+
+    it("reports each forwarded file and pauses the batch while the page-fit prompt is open", async () => {
+      const first = { batch: 7, file: 0 };
+      const second = { batch: 7, file: 1 };
+      const third = { batch: 7, file: 2 };
+      native.drainOpenDocuments.mockResolvedValueOnce([
+        { path: "/drawings/first.cdxml", displayName: "first.cdxml", contents: oversized, receipt: first },
+        { path: "/drawings/second.chemdraft", displayName: "second.chemdraft", contents: fileContents("Second"), receipt: second },
+        { path: "/drawings/third.chemdraft", displayName: "third.chemdraft", contents: "invalid", receipt: third }
+      ]);
+      const confirmations = () => vi.mocked(nativeInvoke).mock.calls.flatMap(([command, args]) =>
+        command === "take_pending_open_document" && args && "confirmation" in args ? [args.confirmation] : []);
+
+      await remount();
+      expectPageFit("first.cdxml");
+      expect(confirmations()).toEqual([{ receipt: first, opened: true }, { receipt: first, waiting: true }]);
+      expect(tabs().map(tab => tab.textContent)).toEqual(["first.cdxml"]);
+
+      await dismissPageFit("keep");
+      expect(confirmations()).toEqual([
+        { receipt: first, opened: true }, { receipt: first, waiting: true }, { receipt: first, waiting: false },
+        { receipt: second, opened: true }, { receipt: third, opened: false }
+      ]);
+      expect(tabs().map(tab => tab.textContent)).toEqual(["first.cdxml", "second.chemdraft"]);
+    });
 
     it("keeps one box open across tab switches and applies each queued file's own answer", async () => {
       const shown: NativePromptOptions[] = [];

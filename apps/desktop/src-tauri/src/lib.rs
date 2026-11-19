@@ -3212,18 +3212,16 @@ fn open_macos_launch(
         reply.finish(Acknowledgement::Refused, "ChemDraft is quitting.");
         return;
     }
-    let (mut opened, mut errors) = read_opened_documents(forwarded_document_payloads(launch));
-    if !errors.is_empty() {
-        if !opened.is_empty() {
-            if let Err(error) = deliver_opened_document(app, opened) {
-                errors.push(error);
-            }
+    let (mut opened, errors) = read_opened_documents(forwarded_document_payloads(launch));
+    if opened.is_empty() {
+        if errors.is_empty() {
+            reply.finish(Acknowledgement::Accepted, "");
+        } else {
+            reply.fail(errors.join("\n"));
         }
-        reply.finish(Acknowledgement::Failed, &errors.join("\n"));
-    } else if opened.is_empty() {
-        reply.finish(Acknowledgement::Accepted, "");
-    } else {
-        let id = macos_single_instance::track_renderer_open(app, &mut opened, reply);
+    } else if let Some(id) =
+        macos_single_instance::track_renderer_open(app, &mut opened, errors, reply)
+    {
         if let Err(error) = deliver_opened_document(app, opened) {
             macos_single_instance::fail_renderer_open(app, id, &error);
         }
@@ -8724,11 +8722,7 @@ fn take_pending_open_document(
         return Err("Only the document window can take or confirm file opens.".into());
     }
     if let Some(confirmation) = confirmation {
-        macos_single_instance::renderer_consumed(
-            window.app_handle(),
-            confirmation.receipt,
-            confirmation.opened,
-        );
+        macos_single_instance::renderer_consumed(window.app_handle(), confirmation);
         return Ok(Vec::new());
     }
     state.drain()

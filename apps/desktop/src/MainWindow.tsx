@@ -1478,6 +1478,7 @@ type ResolvedOpenDocument = {
 };
 type OpenDocumentContentsOptions = {
   onOpened?: () => void;
+  onWaiting?: (waiting: boolean) => Promise<void>;
   /** Restore-session path: the contents hold edits never written to `path`. */
   dirty?: boolean;
   /** Replaces the "Opened …" status line (e.g. "Restored last session — …"). */
@@ -1644,6 +1645,7 @@ type ImportedPageFitPromptState = ImportedPageFitRecommendation & {
   displayName: string;
   /** Identifies this open operation even when consecutive files have the same basename. */
   requestId: string;
+  onShowing?: () => Promise<void>;
 };
 type SelectionClipboardSourceAction = "copy" | "cut" | "external";
 
@@ -1834,7 +1836,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.18.21.11-codex";
+const CURRENT_BUILD_STAMP = "11.18.23.55-codex";
 const TABLE_DRAFT_RECOVERY_WARNING = "session.tableDraftDropped";
 
 function clearTableDraftRecoveryWarnings(report: OpenWarningsReport | undefined): OpenWarningsReport | undefined {
@@ -2777,14 +2779,15 @@ export function MainWindow({
   const nativeDocumentNoticeOpenRef = useRef(false);
   // Open and restore share both the version predicate and this startup ordering on both platforms.
   const notifyInstalledDocumentCompatibility = useCallback((
-    opened: ReturnType<typeof openNativeDocument>, installed: ChemDraftDocument
+    opened: ReturnType<typeof openNativeDocument>, installed: ChemDraftDocument,
+    onWaiting?: OpenDocumentContentsOptions["onWaiting"]
   ) => notifyNativeDocumentCompatibility(opened, installed, shortcutPlatform, async notice => {
     await nativeToolsetStartup.promise;
     if (!mountedRef.current) return;
     nativeDocumentNoticeOpenRef.current = true;
     setNativeDocumentNoticeOpen(true);
     try {
-      await nativePrompt(notice, undefined, undefined, undefined, shortcutPlatform);
+      await promptDuringDocumentOpen(notice, onWaiting, shortcutPlatform);
     } finally {
       nativeDocumentNoticeOpenRef.current = false;
       if (mountedRef.current) setNativeDocumentNoticeOpen(false);
@@ -10256,7 +10259,7 @@ export function MainWindow({
       return;
     }
     const opened = openNativeDocument(contents);
-    const resolvedOpen = await resolveOpenResultDocument(opened);
+    const resolvedOpen = await resolveOpenResultDocument(opened, options?.onWaiting);
     await waitUntilReady();
     if (!resolvedOpen) {
       throw new Error(formatOpenFailure(opened.warnings));
@@ -10281,7 +10284,14 @@ export function MainWindow({
     if (browserKey) browserFileKeysRef.current.set(id, browserKey);
     resetDocumentHistory(resolvedOpen.document, { path, dirty });
     clearDocumentInteractionState({ clearSpin3dModelCache: true });
-    tabPageFitRef.current = fitRecommendation ? { ...fitRecommendation, displayName, requestId: crypto.randomUUID() } : undefined;
+    const pageFit = { showing: false, settled: false };
+    const onWaiting = options?.onWaiting;
+    const onShowing = onWaiting ? async () => {
+      if (pageFit.showing || pageFit.settled) return;
+      pageFit.showing = true;
+      await onWaiting(true);
+    } : undefined;
+    tabPageFitRef.current = fitRecommendation ? { ...fitRecommendation, displayName, requestId: crypto.randomUUID(), onShowing } : undefined;
     const pageFitSettled = fitRecommendation ? importedPageFitGateRef.current.wait(id) : undefined;
     setPageFitPrompt(tabPageFitRef.current);
     const sourceLabel = typeof contents === "string"
@@ -10298,7 +10308,9 @@ export function MainWindow({
     options?.onOpened?.();
     perfHook(() => reportOutcome?.("installed"));
     await pageFitSettled;
-    await notifyInstalledDocumentCompatibility(opened, resolvedOpen.document);
+    pageFit.settled = true;
+    if (pageFit.showing) await onWaiting?.(false);
+    await notifyInstalledDocumentCompatibility(opened, resolvedOpen.document, onWaiting);
   }, [activateDocumentTab, addDocumentTab, clearDocumentInteractionState, notifyInstalledDocumentCompatibility, resetDocumentHistory, snapshotDocumentTab]);
   const openDocumentContentsNowRef = useRef(openDocumentContentsNow);
   openDocumentContentsNowRef.current = openDocumentContentsNow;
@@ -10339,17 +10351,26 @@ export function MainWindow({
       // Confirm at tab installation, before optional page-fit and compatibility dialogs.
       // A rejected parse or an early return (e.g. unfinished table edit) fails the receipt.
       let reported = false;
-      const report = (opened: boolean) => {
-        if (!receipt || reported) return;
-        reported = true;
-        void confirmNativeOpen(receipt, opened).catch(error =>
-          setStatus(`Could not confirm opening ${displayName}: ${String(error)}`));
+      let sent = Promise.resolve();
+      const send = (update: { opened: boolean } | { waiting: boolean }) => {
+        if (receipt) {
+          sent = sent.then(() => confirmNativeOpen(receipt, update)).catch(error =>
+            setStatus(`Could not confirm opening ${displayName}: ${String(error)}`));
+        }
+        return sent;
       };
-      const options = receipt ? { onOpened: () => report(true) } : undefined;
-      return openDocumentContents(contents, displayName, path, options).then(
+      const report = (opened: boolean) => {
+        if (!receipt || reported) return sent;
+        reported = true;
+        return send({ opened });
+      };
+      const options = receipt ? { onOpened: () => { void report(true); }, onWaiting: (waiting: boolean) => send({ waiting }) } : undefined;
+      const result = openDocumentContents(contents, displayName, path, options).then(
         (): DocumentOpenResult => ({ displayName }),
         (error: unknown): DocumentOpenResult => ({ displayName, error })
       ).finally(() => report(false));
+      if (receipt) documentOpenQueueRef.current = result.catch(() => undefined);
+      return result;
     });
     // Reserve the summary's place before any later batch. Each open includes its page-fit and
     // compatibility prompts, so keeping an imported page finishes successfully before we count it.
@@ -24083,7 +24104,8 @@ function ImportedPageFitPrompt({ recommendation, onKeep, onResize }: ImportedPag
       { id: "resize", label: `Use ${recommendedLabel} Page` },
       { id: "keep", label: "Cancel", cancel: true }
     ]
-  }, (choice) => { if (choice === "resize") onResize(); else onKeep(); }, recommendation.requestId);
+  }, (choice) => { if (choice === "resize") onResize(); else onKeep(); }, recommendation.requestId,
+  false, undefined, recommendation.onShowing);
   if (!prompt.visible) return null;
 
   return (
@@ -33570,7 +33592,25 @@ function NativeFreeformBondPreview({
   );
 }
 
-async function resolveOpenResultDocument(result: ReturnType<typeof openNativeDocument>): Promise<ResolvedOpenDocument | undefined> {
+async function promptDuringDocumentOpen(
+  prompt: Parameters<typeof nativePrompt>[0],
+  onWaiting?: OpenDocumentContentsOptions["onWaiting"],
+  platform?: ShortcutPlatform
+): Promise<string> {
+  let showing = false;
+  try {
+    return await nativePrompt(prompt, undefined, undefined, onWaiting ? () => {
+      showing = true;
+      return onWaiting(true);
+    } : undefined, platform);
+  } finally {
+    if (showing) await onWaiting?.(false);
+  }
+}
+
+async function resolveOpenResultDocument(
+  result: ReturnType<typeof openNativeDocument>, onWaiting?: OpenDocumentContentsOptions["onWaiting"]
+): Promise<ResolvedOpenDocument | undefined> {
   if (result.document) {
     return { document: result.document, source: result.source };
   }
@@ -33579,7 +33619,7 @@ async function resolveOpenResultDocument(result: ReturnType<typeof openNativeDoc
   }
 
   if (result.conflict.visibleDocument) {
-    const importVisible = await nativePrompt({
+    const importVisible = await promptDuringDocumentOpen({
       title: "Modified visible CDXML",
       message: "This file's visible CDXML was modified outside ChemDraft. Import the edited visible CDXML subset, or restore the embedded ChemDraft document instead?",
       kind: "warning",
@@ -33589,7 +33629,7 @@ async function resolveOpenResultDocument(result: ReturnType<typeof openNativeDoc
         { id: "embedded", label: "Restore Embedded" },
         { id: "cancel", label: "Cancel", cancel: true }
       ]
-    }) === "visible";
+    }, onWaiting) === "visible";
     return importVisible
       ? {
           document: result.conflict.visibleDocument,
@@ -33603,12 +33643,12 @@ async function resolveOpenResultDocument(result: ReturnType<typeof openNativeDoc
         };
   }
 
-  const restoreEmbedded = await nativePrompt({
+  const restoreEmbedded = await promptDuringDocumentOpen({
     title: "Restore embedded document?",
     message: "This file's visible CDXML was modified outside ChemDraft, but ChemDraft could not import a visible subset. Restore the embedded ChemDraft document?",
     kind: "warning",
     choices: [{ id: "restore", label: "Restore Embedded" }, { id: "cancel", label: "Cancel", cancel: true }]
-  }) === "restore";
+  }, onWaiting) === "restore";
   return restoreEmbedded
     ? {
         document: result.conflict.embeddedDocument,
@@ -34111,9 +34151,9 @@ async function readNativeBinaryFile(path: string): Promise<Uint8Array> {
   return readFile(path);
 }
 
-async function confirmNativeOpen(receipt: NativeOpenReceipt, opened: boolean): Promise<void> {
+async function confirmNativeOpen(receipt: NativeOpenReceipt, update: { opened: boolean } | { waiting: boolean }): Promise<void> {
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("take_pending_open_document", { confirmation: { receipt, opened } });
+  await invoke("take_pending_open_document", { confirmation: { receipt, ...update } });
 }
 
 async function takePendingNativeOpenDocuments(): Promise<NativeOpenDocumentPayload[]> {
