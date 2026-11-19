@@ -19,11 +19,13 @@ import {
 // Keep the real request/snapshot renderers and commands; replace only cross-window IPC.
 const native = vi.hoisted(() => ({
   content: new Set<(payload: ToolsetPopoverContentPayload) => void>(),
+  opening: new Set<(opening: ToolsetFlyoutSession) => void>(),
   accepted: new Set<(opening: AcceptedToolsetPopoverOpening) => void>(),
   acceptedNotice: vi.fn(),
   release: new Set<(payload: { toolsetId: string; releasedAt: number }) => void>(),
   keys: new Set<(payload: ToolsetFlyoutKey) => void>(),
   closed: new Set<(payload: ToolsetFlyoutSession) => void>(),
+  popoverClosed: new Set<(opening: AcceptedToolsetPopoverOpening) => void>(),
   dismiss: new Set<(payload?: ToolsetPopoverDismissPayload) => void>(),
   show: vi.fn(async () => true), hide: vi.fn(async () => {}), focus: vi.fn(async () => {}),
   isVisible: vi.fn(async () => true),
@@ -59,6 +61,8 @@ vi.mock("./window-manager", async importOriginal => {
     ...actual,
     isToolsetPopoverVisible: native.isVisible,
     listenForToolsetPopoverContent: (handler: (payload: ToolsetPopoverContentPayload) => void) => subscribe(native.content, handler),
+    listenForToolsetFlyoutOpening: (handler: (opening: ToolsetFlyoutSession) => void) => subscribe(native.opening, handler),
+    notifyToolsetFlyoutOpening: async (opening: ToolsetFlyoutSession) => native.opening.forEach(handler => handler(opening)),
     listenForAcceptedToolsetPopoverContent: (handler: (opening: AcceptedToolsetPopoverOpening) => void) => subscribe(native.accepted, handler),
     notifyToolsetPopoverContentAccepted: async (opening: AcceptedToolsetPopoverOpening) => {
       native.acceptedNotice(opening);
@@ -67,6 +71,9 @@ vi.mock("./window-manager", async importOriginal => {
     listenForToolsetPopoverRelease: (handler: (payload: { toolsetId: string; releasedAt: number }) => void) => subscribe(native.release, handler),
     listenForToolsetFlyoutKeys: (handler: (payload: ToolsetFlyoutKey) => void) => subscribe(native.keys, handler),
     listenForToolsetFlyoutClosed: (handler: (payload: ToolsetFlyoutSession) => void) => subscribe(native.closed, handler),
+    listenForToolsetPopoverClosed: (handler: (opening: AcceptedToolsetPopoverOpening) => void) => subscribe(native.popoverClosed, handler),
+    notifyToolsetPopoverClosed: async (toolsetId: string, openedAt: number, generation?: number) =>
+      native.popoverClosed.forEach(handler => handler({ toolsetId, openedAt, generation })),
     listenForToolsetPopoverDismiss: (handler: (payload?: ToolsetPopoverDismissPayload) => void) => subscribe(native.dismiss, handler),
     setToolsetPopoverContent: vi.fn(async (toolsetId, content, anchor) => {
       native.content.forEach(handler => handler({ toolsetId, ...content, anchor }));
@@ -111,7 +118,8 @@ describe.each(["macos", "windows"] as const)("native flyout keyboard routing (%s
   });
   afterEach(async () => {
     await act(async () => root.unmount()); host.remove();
-    expect(native.content.size + native.accepted.size + native.release.size + native.keys.size + native.closed.size + native.dismiss.size).toBe(0);
+    expect(native.content.size + native.opening.size + native.accepted.size + native.release.size + native.keys.size +
+      native.closed.size + native.popoverClosed.size + native.dismiss.size).toBe(0);
     vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals();
   });
   async function key(value: string, init: KeyboardEventInit = {}, type = "keydown") {
@@ -120,7 +128,7 @@ describe.each(["macos", "windows"] as const)("native flyout keyboard routing (%s
     return event;
   }
   const highlighted = () => host.querySelector<HTMLButtonElement>('[data-test-popover] [data-keyboard-highlighted="true"]');
-  async function mouseOpen(beforeRelease?: () => Promise<void>) {
+  async function mouseHold(beforeRelease?: () => Promise<void>) {
     const button = host.querySelector<HTMLButtonElement>('[data-test-owner] [data-command-id="tool.benzene"]')!;
     expect(button).not.toBeNull();
     // DOM pointer events exercise the real hold timer and request/snapshot path.
@@ -143,6 +151,9 @@ describe.each(["macos", "windows"] as const)("native flyout keyboard routing (%s
         native.release.forEach(handler => handler({ toolsetId: "core.main", releasedAt: toolsetPopoverTimestamp() }));
       }
     });
+  }
+  async function mouseOpen(beforeRelease?: () => Promise<void>) {
+    await mouseHold(beforeRelease);
     const [toolsetId, content, anchor] = vi.mocked(setToolsetPopoverContent).mock.calls.at(-1)!;
     expect(toolsetId).toBe("core.main");
     if (content.kind !== "flyout") throw new Error("Expected ring flyout snapshot");
@@ -169,23 +180,34 @@ describe.each(["macos", "windows"] as const)("native flyout keyboard routing (%s
     expect(current()).toBe(before);
   });
 
-  it.skipIf(platform !== "windows")("keeps a mouse opening stamped before the Windows blur and queues its first arrow until shown", async () => {
+  it.skipIf(platform !== "windows")("holds navigation during the native-open await and only replays the arrow", async () => {
     const before = current();
+    let finishOpen!: () => void;
     let finishShow!: (shown: boolean) => void;
     native.show.mockImplementationOnce(() => new Promise(resolve => { finishShow = resolve; }));
-    vi.mocked(openToolsetPopoverWindow).mockImplementationOnce(async () => {
+    vi.mocked(openToolsetPopoverWindow).mockImplementationOnce(() => new Promise(resolve => { finishOpen = resolve; }));
+    const opened = await mouseOpen(async () => {
       // Native open configures the prewarmed HWND and can hand focus back to WebView2
       // before the palette sends its already-stamped flyout content to the document.
+      expect(openToolsetPopoverWindow).toHaveBeenCalledOnce();
       expect(setToolsetPopoverContent).not.toHaveBeenCalled();
-      window.dispatchEvent(new FocusEvent("blur"));
+      vi.stubGlobal("__TAURI__", {});
+      native.focusedLabel.mockReturnValue("main");
+      await act(async () => window.dispatchEvent(new FocusEvent("blur")));
+      for (const value of ["ArrowDown", "Enter", "Home", "End"]) {
+        expect((await key(value)).defaultPrevented).toBe(true);
+      }
+      expect(current()).toBe(before);
+      expect(sendToolsetFlyoutKey).not.toHaveBeenCalled();
+      expect(setToolsetPopoverContent).not.toHaveBeenCalled();
+      await act(async () => finishOpen());
     });
-    const opened = await mouseOpen();
     const first = opened.flyout.commands.find(command => command.enabled)!;
-    expect((await key("ArrowDown")).defaultPrevented).toBe(true);
     expect(sendToolsetFlyoutKey).not.toHaveBeenCalled();
-    expect(current()).toBe(before);
 
     await act(async () => finishShow(true));
+    expect(vi.mocked(sendToolsetFlyoutKey).mock.calls.map(([payload]) => payload.key)).toEqual(["ArrowDown"]);
+    expect(sendPaletteCommand).not.toHaveBeenCalled();
     expect(highlighted()?.dataset.commandId).toBe(first.id);
     expect((await key("ArrowUp")).defaultPrevented).toBe(true);
     const last = opened.flyout.commands.filter(command => command.enabled).at(-1)!;
@@ -197,7 +219,44 @@ describe.each(["macos", "windows"] as const)("native flyout keyboard routing (%s
     expect(current()).toBe(before);
   });
 
-  it.skipIf(platform !== "windows")("retires the blurred opening without discarding a replacement in flight", async () => {
+  it.skipIf(platform !== "windows")("releases held keys when native open rejects", async () => {
+    const before = current();
+    let refuseOpen!: (reason: Error) => void;
+    vi.mocked(openToolsetPopoverWindow).mockImplementationOnce(() => new Promise((_, reject) => { refuseOpen = reject; }));
+    await mouseHold(async () => {
+      expect(openToolsetPopoverWindow).toHaveBeenCalledOnce();
+      expect((await key("ArrowDown")).defaultPrevented).toBe(true);
+      expect(current()).toBe(before);
+      await act(async () => refuseOpen(new Error("Native open refused")));
+    });
+    expect(setToolsetPopoverContent).not.toHaveBeenCalled();
+    await key("ArrowDown");
+    expect(current()).not.toBe(before);
+    expect(sendToolsetFlyoutKey).not.toHaveBeenCalled();
+    expect(sendPaletteCommand).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(platform !== "windows")("releases held keys on timeout and routes fresh keys after late acceptance", async () => {
+    const before = current();
+    let finishOpen!: () => void;
+    vi.mocked(openToolsetPopoverWindow).mockImplementationOnce(() => new Promise(resolve => { finishOpen = resolve; }));
+    const opened = await mouseOpen(async () => {
+      expect(openToolsetPopoverWindow).toHaveBeenCalledOnce();
+      expect((await key("ArrowDown")).defaultPrevented).toBe(true);
+      expect((await key("Enter")).defaultPrevented).toBe(true);
+      expect(current()).toBe(before);
+      await act(async () => vi.advanceTimersByTimeAsync(1_000));
+      await key("ArrowDown");
+      expect(current()).not.toBe(before);
+      await act(async () => finishOpen());
+    });
+    expect(sendToolsetFlyoutKey).not.toHaveBeenCalled();
+    expect(sendPaletteCommand).not.toHaveBeenCalled();
+    await key("ArrowDown");
+    expect(highlighted()?.dataset.commandId).toBe(opened.flyout.commands.find(command => command.enabled)?.id);
+  });
+
+  it.skipIf(platform !== "windows").each([null, "other-document"])("drops queued keys for a replacement stamped before foreground loss (%s)", async label => {
     const opened = await mouseOpen();
     vi.stubGlobal("__TAURI__", {});
     const replacement = newToolsetPopoverOpening();
@@ -208,15 +267,46 @@ describe.each(["macos", "windows"] as const)("native flyout keyboard routing (%s
 
     const flyout = { ...opened.flyout, flyoutId: "replacement" };
     await act(async () => setToolsetPopoverContent(opened.toolsetId, { ...opened, ...replacement, flyout }));
+    expect(native.acceptedNotice).toHaveBeenLastCalledWith({ toolsetId: opened.toolsetId, flyoutId: flyout.flyoutId, ...replacement });
     expect((await key("ArrowDown")).defaultPrevented).toBe(true);
+    expect((await key("Enter")).defaultPrevented).toBe(true);
     expect(sendToolsetFlyoutKey).not.toHaveBeenCalled();
 
-    await act(async () => resolveFocus(null));
-    expect(sendToolsetFlyoutKey).toHaveBeenCalledExactlyOnceWith({
-      toolsetId: opened.toolsetId, flyoutId: flyout.flyoutId, ...replacement, key: "ArrowDown"
-    });
+    await act(async () => resolveFocus(label));
     expect(sendPaletteCommand).not.toHaveBeenCalled();
+    expect(sendToolsetFlyoutKey).not.toHaveBeenCalled();
+    expect(highlighted()).toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(new FocusEvent("focus"));
+      await vi.advanceTimersByTimeAsync(1);
+      await setToolsetPopoverContent(opened.toolsetId, { ...opened, ...newToolsetPopoverOpening(), flyout });
+    });
+    expect(highlighted()).toBeNull();
+    await key("ArrowDown");
     expect(highlighted()?.dataset.commandId).toBe(flyout.commands.find(command => command.enabled)?.id);
+    expect(sendPaletteCommand).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(platform !== "windows")("keeps a flyout opening when its owning palette takes foreground before acceptance", async () => {
+    const before = current();
+    let finishShow!: (shown: boolean) => void;
+    native.show.mockImplementationOnce(() => new Promise(resolve => { finishShow = resolve; }));
+    const opened = await mouseOpen(async () => {
+      expect(setToolsetPopoverContent).toHaveBeenCalledOnce();
+      expect(native.acceptedNotice).not.toHaveBeenCalled();
+      vi.stubGlobal("__TAURI__", {});
+      native.focusedLabel.mockReturnValue("toolset-core-main");
+      await act(async () => window.dispatchEvent(new FocusEvent("blur")));
+      expect(native.focusedLabel).toHaveBeenCalledOnce();
+      native.focusedLabel.mockReturnValue("main");
+      await act(async () => window.dispatchEvent(new FocusEvent("focus")));
+      await act(async () => finishShow(true));
+    });
+
+    expect((await key("ArrowDown")).defaultPrevented).toBe(true);
+    expect(highlighted()?.dataset.commandId).toBe(opened.flyout.commands.find(command => command.enabled)?.id);
+    expect(current()).toBe(before);
   });
 
   it.each([null, "other-document"])("releases routing when native focus moves away (%s)", async label => {

@@ -72,6 +72,8 @@ import {
   listenForToolsetPopoverContentRequests,
   listenForToolsetTextStyle,
   loadToolsetLayoutState,
+  notifyToolsetFlyoutOpening,
+  notifyToolsetPopoverClosed,
   requestToolsetCustomizeMode,
   requestToolsetCommandSpecs,
   requestToolsetDefinitions,
@@ -962,8 +964,23 @@ export function PaletteWindow({
 
   const openFlyoutPopover = (request: ToolbarFlyoutRequest) => {
     const sequence = ++popoverRequestRef.current;
-    const content: ToolsetPopoverContent = { kind: "flyout", flyout: request.flyout, ...newToolsetPopoverOpening() };
-    enqueuePopoverOperation(async () => { await openPopover(request.anchor, "flyout", content, sequence); });
+    const opening = newToolsetPopoverOpening();
+    const content: ToolsetPopoverContent = { kind: "flyout", flyout: request.flyout, ...opening };
+    const pending = platform === "windows" && request.flyout.variant !== "bondStereo"
+      ? notifyToolsetFlyoutOpening({ toolsetId: toolset.id, flyoutId: request.flyout.flyoutId, ...opening }).catch(() => undefined)
+      : undefined;
+    enqueuePopoverOperation(async () => {
+      if (pending) await pending;
+      let opened = false;
+      try {
+        opened = await openPopover(request.anchor, "flyout", content, sequence);
+      } finally {
+        if (pending && !opened) {
+          if (lastPopoverPayloadRef.current?.content === content) lastPopoverPayloadRef.current = undefined;
+          await notifyToolsetPopoverClosed(toolset.id, opening.openedAt, opening.generation);
+        }
+      }
+    });
   };
 
   // Build this palette's popover window hidden, ahead of the first flyout/color press. The cold
