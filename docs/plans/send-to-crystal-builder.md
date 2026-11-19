@@ -19,7 +19,7 @@ Approved in principle, with these conditions:
    is listed and revocable in Preferences or the plugin's settings; (c) a different app, or a changed
    app path or bundle ID, asks again; (d) the loss message box shows every time something would be
    lost. This settles owner question 2.
-4. **Keep §7:** the XYZ handoff warns about or refuses charge, stereo, and abbreviation loss, per the
+4. **Keep §7:** the handoff warns about or refuses charge, stereo, and abbreviation loss, per the
    table in Decision 1.
 
 ## Context
@@ -54,27 +54,62 @@ Two facts shape everything:
 
 ## Decision 1: what to send
 
-**Recommendation: a 3D XYZ file, built from the host's existing `chemistry.embed3d` (RDKit ETKDGv3,
-seed 42) followed by `chemistry.minimize3d` (MMFF94s, `interfragment: false`).** One file per send.
+**Recommendation (revised 2026-11-18 after reading Crystal Builder's source): a CIF holding one
+molecule in a P1 vacuum box, with Crystal Builder's own bond table.** Coordinates come from the
+host's existing `chemistry.embed3d` (RDKit ETKDGv3, seed 42) followed by `chemistry.minimize3d`
+(MMFF94s, `interfragment: false`). One file per send.
+
+Why a bonded CIF:
+
+- **It carries bonds, including bonds to `X`.** Crystal Builder never guesses a bond to `X`
+  (`xtal/core/bonding.py`: `X` is its one dummy element, and distance perception skips dummies on
+  purpose). A drawn bond is kept, though, and its CIF reader (`xtal/io/cif_reader.py`, `read_bonds`)
+  takes a `_geom_bond` loop as the bond graph when the loop has the `_xtal_bond_kind` column, which is
+  what its own writer emits. XYZ has no bonds, so an `X` arrives floating and the linker cannot be
+  saved as a building block. Tested both ways below.
+- **It carries bond orders** (`_xtal_bond_order`), so the bond-order loss in the old XYZ plan is gone.
+- **`.cif` is a registered document type** on Crystal Builder, so double-click and "open with" work
+  the normal way.
+- **The box is not invented crystallography.** It is the same thing Crystal Builder does to any
+  cell-less molecule: P1, 5 Å of vacuum on each side (`xtal/io/xyz.py`, `_padded_box`). The file says
+  so in `_audit_creation_method` and a comment: `isolated molecule in a vacuum box, not a crystal
+  structure`.
+
+Format, matching Crystal Builder 1.1.1's writer: cell lengths, angles 90°, `P 1`, one symop
+`x,y,z`; an `_atom_site` loop (label, type symbol, fractional x y z) with unique labels; then
+
+```
+loop_
+_geom_bond_atom_site_label_1
+_geom_bond_atom_site_label_2
+_geom_bond_site_symmetry_2
+_xtal_bond_order
+_xtal_bond_kind
+C1 C2 1_555 1.500 explicit
+C2 X11 1_555 1.000 explicit
+```
+
+Risk: `_xtal_bond_*` are Crystal Builder's private tags, read from source, not a documented contract.
+A later release could change them. The plugin keeps a fixture test of the exact text, and the
+hands-on list re-checks it against each new Crystal Builder release. A plain `_geom_bond` loop
+without `_xtal_bond_kind` is ignored by design (it is usually a distance table), so the tag is required.
 
 Why not the others:
 
+- **XYZ**: no bonds; `X` atoms come in unbonded, and the window refuses to save the linker. It is
+  still fine headlessly (`bb_dir`), but the one-click demo is in the window.
 - **SMILES**: no documented file or CLI route into Crystal Builder; it would depend on an optional
   extra on the user's install, and Crystal Builder would redo the 3D embedding out of our sight.
-- **CIF**: ChemDraft has no unit-cell object. Wrapping a molecule in an invented box would fabricate
-  crystallography. CIF comes later, only once a cell can actually be drawn (Phase 4).
-- **XYZ** is on Crystal Builder's supported list, is plain text, and uses API we already ship
-  (`Plugin3DModel`: elements plus Angstrom coordinates). No new chemistry code in the host.
 
-The file's comment line records provenance: source SMILES, net charge, `ETKDGv3 seed 42; MMFF94s;
-gas-phase local minimum, not a crystal structure`, and the ChemDraft version (extended-XYZ keys if
-Crystal Builder tolerates them, otherwise a plain comment; question A3 below).
+Provenance goes in CIF comment lines and `_audit_*` items: source SMILES, net charge, `ETKDGv3 seed
+42; MMFF94s; gas-phase local minimum, not a crystal structure`, and the ChemDraft version.
 
 ### What is lost, and how the user is told (AGENTS.md §7)
 
-| Item | What happens in XYZ | Handling |
+| Item | What happens in the CIF | Handling |
 |---|---|---|
-| Bond orders, aromaticity | Not stored; Crystal Builder re-derives bonds from distances | Always disclosed: first-run consent text, status line after each send, comment line |
+| Bonds and bond orders | Kept in the bond table (aromatic bonds as order 1.5) | None needed |
+| Vacuum box | A P1 box with 5 Å of vacuum, as Crystal Builder makes for any molecule | Always disclosed in the file and the status line: not a crystal structure |
 | 2D layout, labels, text, colors | Dropped | Always disclosed (same places) |
 | Implicit hydrogens | Become explicit atoms | Always disclosed |
 | Formal charges | Per-atom charges not stored; net charge goes in the comment line | **Warn before send**, naming the atoms |
@@ -90,8 +125,8 @@ Crystal Builder tolerates them, otherwise a plain comment; question A3 below).
 
 "Warn before send" means a native message box listing the specific losses, with **Send** and
 **Cancel**. With nothing specific to warn about, the send proceeds without a box (after the one-time
-consent in Decision 3) and the status line says `Sent to Crystal Builder as a 3D XYZ model (bond
-orders are not stored in XYZ)`. Nothing is ever dropped silently.
+consent in Decision 3) and the status line says `Sent to Crystal Builder as a 3D model in a
+vacuum box (not a crystal structure)`. Nothing is ever dropped silently.
 
 ## Decision 1b: two sends, and marking connection points in ChemDraft
 
@@ -116,8 +151,8 @@ selection with `X` on send, and says so in the pre-send box (§7: the drawn docu
 
 | Command | Accepts | Sends |
 |---|---|---|
-| **Send as MOF Linker** (main) | One molecule with at least two `X` atoms, each bonded to exactly one heavy atom by a single bond | XYZ with `X` atoms at the connection positions; comment line adds `connection points: n` |
-| **Send as Molecule** | Any molecule with no `X` atoms | Plain 3D XYZ, as in Decision 1 |
+| **Send as MOF Linker** (main) | One molecule with at least two `X` atoms, each bonded to exactly one heavy atom by a single bond | Bonded CIF with `X` atoms at the connection positions, each bonded to its anchor; a comment adds `connection points: n` |
+| **Send as Molecule** | Any molecule with no `X` atoms | Bonded CIF, as in Decision 1 |
 
 Linker refusals, each naming the problem: fewer than two `X` atoms ("Mark at least two connection
 points: draw an atom labelled X where the linker bonds to a metal node"); an `X` bonded to zero, two
@@ -125,7 +160,7 @@ or more atoms, or by a multiple bond; `X` in a molecule of several components.
 
 **How the 3D model is built with `X` present** (pure plugin code, no host change): the force field
 cannot type a dummy atom, so the plugin gives `embed3d` a SMILES in which each `X` becomes an explicit
-`[H]`, minimizes as usual, then writes those atoms back out as `X` in the XYZ. Atom order is stable
+`[H]`, minimizes as usual, then writes those atoms back out as `X` in the CIF, bonded to their anchors. Atom order is stable
 across embedding and minimization (`chemistry3d.ts`), so the mapping is exact. The `X` sits at a C–H
 distance (about 1.1 Å) along the bond to its anchor. Tested: the builder accepts 1.09 Å as well as
 PORMAKE's own 0.75 Å, so no rescaling is needed. How an
@@ -151,16 +186,13 @@ headlessly through its bundled `xtal` CLI and, for the window, through backgroun
 | A3 Names (macOS) | Bundle ID `org.crystalbuilder.CrystalBuilder`; ad-hoc signed; Intel build is x86_64 only; macOS 12.3 or later; `xtal` ships in `Contents/MacOS` | `Info.plist`, `codesign -dv` |
 | A4 File types | Registers `.cif` and `.xtalproj` only, not `.xyz`. `open -a` opens the `.xyz` anyway, so registration is not needed for the handoff | `Info.plist`, launch test |
 | A6 Linker, headless | **Works.** A plain XYZ with `X` atoms and no bond table, used through `bb_dir`, builds MOF-5 (pcu, node N16): C24H12O13Zn4, identical to the stock linker. Accepted with X at 0.75 Å and 1.09 Å, and with slightly non-planar geometry | `xtal run mof.build -p topology=pcu -p nodes=N16 -p edges=<name> -p bb_dir=<dir>` |
-| A6 Linker, in the window | **Does not work yet.** When the XYZ is opened in the window, the `X` atoms get no bonds, so Structure → Building blocks → Save as a building block refuses: "X1 is a connection point with no bonds… this cell holds 3 separate pieces". Same with PORMAKE's own bond-table XYZ, and after Recalculate bonds | Background app control on the scratch copy; nothing saved |
+| A6 Linker XYZ, in the window | **Refused.** Opened from XYZ, the `X` atoms get no bonds, so Structure → Building blocks → Save as a building block refuses: "X1 is a connection point with no bonds… this cell holds 3 separate pieces". Same with PORMAKE's own bond-table XYZ, and after Recalculate bonds. This is by design in Crystal Builder's source, not a bug | Background app control on the scratch copy; nothing saved |
+| A6 Linker CIF with bond table, in the window | **Works.** The same C6H4 + 2 `X` linker, written as a P1 CIF with a `_geom_bond` loop carrying `_xtal_bond_kind explicit`: each `X` comes in with one bond to its carbon; Save as a building block reports "2-connected — it will appear in the MOF builder's picker", and writes a PORMAKE block with both `X`–C bonds. The same CIF without the bond loop gives the `X` atoms 0 bonds | `xtal bonds` on both CIFs; `open -a` then Save as a building block on the scratch copy |
 
 What this changes:
 
-- **Phase 2 can ship the molecule send as planned**, and the linker send produces a file the MOF
-  builder accepts headlessly.
-- **The one-click demo in the window needs one small change on Crystal Builder's side**: its XYZ
-  reader bonding each `X` to its nearest atom, or a format that carries bonds into the window. That
-  is the remaining question for the author (A6, reworded). Until then the honest demo is: send, then
-  in Crystal Builder select each `X` and its anchor and use Add bond, then Save as a building block.
+- **The send format is a bonded CIF, not XYZ** (Decision 1, revised). The one-click demo works in
+  the window with no change on Crystal Builder's side, so **nothing needs to be asked of its author**.
 - Still unverified: everything on **Windows** (tab behavior, installed executable and folder names);
   run from the Windows session against the official `setup.exe`.
 
@@ -280,7 +312,7 @@ Windows installer comes only from the GitHub workflow; the Windows session tests
 | Task | Output | Done when |
 |---|---|---|
 | 0.1 Owner approves this plan; summary goes to the master session | Master session's OK | OK received |
-| 0.2 Note to Crystal Builder's author (owner sends; conductor drafts) | Answers to A1–A6 below | Answers recorded in this document |
+| 0.2 ~~Note to Crystal Builder's author~~ | Dropped 2026-11-18: every question was answered by testing and reading its source | Done |
 | 0.3 One read-only code map (single worker) | Short note: how a user-invoked command is told apart from an assistant-invoked one in `plugin-host`; what SMILES the selection snapshot carries for abbreviations, R-groups, and an atom labelled `X`, and whether the selection exposes per-atom labels and bonds; the consent store's shape | Note attached; no files changed |
 
 ### Phase 1: host capability (ChemDraft repo, branch `feat/app-handoff` off `origin/main` after 1.2)
@@ -304,7 +336,7 @@ quitting ChemDraft leaves the other app running.
 | Task | Owned paths | Acceptance and tests | Review |
 |---|---|---|---|
 | 2A Scaffold | manifest, `src/index.ts`, `src/workerEntry.ts`, LICENSE, README | Manifest parses; boundary rule holds (only `@chemdraft/plugin-api`) | Kimi |
-| 2B XYZ writer | `src/xyz.ts` + test | Pure function, `Plugin3DModel` → text; fixed decimals, CRLF-free, atom count and order equal the model; comment line carries SMILES, net charge, method | Kimi |
+| 2B CIF writer | `src/cif.ts` + test | Pure function, `Plugin3DModel` plus bonds → text in the Decision 1 format: P1 box with 5 Å vacuum, unique labels, `_geom_bond` loop with `_xtal_bond_order` and `_xtal_bond_kind explicit`; fixed decimals, LF only, atom count and order equal the model; provenance comments. Golden-file test of the exact text for the terephthalate linker (guards the private-tag risk) | Kimi |
 | 2C Loss audit | `src/lossAudit.ts` + test | Pure function returning refusals and warnings exactly per the table in Decision 1, per send mode; fixtures: charged, isotopic, radical, unspecified stereo, salt, abbreviation, R-group, reaction member, metal complex, X atoms in a molecule send | Kimi |
 | 2C2 Connection points | `src/connectionPoints.ts` + test | Pure functions: find `X` atoms and their anchors; validate per Decision 1b (fewer than two, wrong valence, multiple bond, several components each refused with its message); X→`[H]` SMILES rewrite; map embedded atoms back to `X` by index. Fixtures: terephthalate linker (benzene ring with X in place of each COOH, PORMAKE E14 cut), a tritopic linker with 3 X, a molecule with 1 X (refused), X on a double bond (refused) | Kimi |
 | 2D Command flow | `src/send.ts` + test with a mocked context | Both send commands: empty selection, cancelled picker, declined consent, embed failure, minimize failure, linker refusals, and success each produce the specified message; one send per command | Kimi |
@@ -313,7 +345,8 @@ quitting ChemDraft leaves the other app running.
 
 Hands-on, both platforms, with Crystal Builder installed by the owner (agents do not install it):
 a benzene ring with `X` in place of each COOH (terephthalate) sent as a MOF linker, then built into MOF-5 with node N16 in Crystal
-Builder's MOF builder (the demo; confirm the connection points are recognized without re-marking);
+Builder's MOF builder (the demo; Save as a building block must report "2-connected" with no
+re-marking or hand-drawn bonds);
 the same molecule without `X` (linker send refused with its message); benzene as a molecule; a charged species; a molecule with one unspecified
 center; a salt; an abbreviation; an R-group (refused); a ferrocene-like complex (expect an honest
 refusal or warning); confirm the structure appears in Crystal Builder and matches atom count and
@@ -350,28 +383,18 @@ For the owner:
    `document.write` permission), or keep "draw an atom labelled X" as the only way? Recommended: ship
    without it first; add it if the demo feels clumsy.
 
-For Crystal Builder's author (owner relays):
-
-A1–A4 were answered on macOS by testing (see "Test results" under Decision 1b); only intent and
-Windows details remain:
-
-- A1. Answered (macOS): opens as a molecule in a padded box; extended keys tolerated.
-- A2. Answered (macOS): new tab in the running window. Windows: confirm the same.
-- A3. Answered (macOS): `org.crystalbuilder.CrystalBuilder`. Ask: will it stay stable, and what are the
-  Windows executable and install folder names?
-- A4. Answered: `.xyz` is not registered, and the handoff does not need it. No ask.
-- A5. Is the window MCP server (`open(path)`, `mof.build`) stable enough to build Phase 4 on?
-- A6. Reworded after testing: a linker XYZ with `X` atoms works headlessly through `bb_dir`, but
-  opened in the window its `X` atoms are unbonded and Save as a building block refuses it. Would the
-  author bond each `X` to its nearest atom on XYZ read (or accept a pull request), or name a format
-  that carries those bonds into the window?
+For Crystal Builder's author: **none.** No email is needed (owner, 2026-11-18). A1–A4 and A6 were
+answered by testing on macOS and by reading its MIT source (see "Test results" under Decision 1b).
+The Windows details (tab behavior, executable and folder names) are checked by the Windows session
+against the official installer, and the app is picked by the user anyway. A5 (the window MCP server)
+matters only for Phase 4 and can be read from its source when Phase 4 starts.
 
 ## Verification
 
 - Per task: the task's own test files only (`pnpm vitest run <files>`, `cargo test <module>`).
 - Per phase, when the machine is free: the full gauntlet in AGENTS.md §14, on CI's three hosts.
 - Hands-on lists above, on macOS and Windows; the report names any platform not run as unverified.
-- Chemistry check (§7): for each fixture, atom count and formula in the XYZ equal the drawn
+- Chemistry check (§7): for each fixture, atom count, formula, and bond count in the CIF equal the drawn
   molecule's with explicit hydrogens; every loss in the table produces its warning or refusal.
 
 ## After approval (conductor's next steps, no code)
