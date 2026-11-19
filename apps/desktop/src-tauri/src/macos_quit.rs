@@ -1,6 +1,6 @@
 //! AppKit's Dock/AppleScript quit reaches applicationShouldTerminate before Tao's Exit event.
 //! Add only this missing optional delegate method; leave Tao's existing delegate intact.
-use super::macos_single_instance::SecondaryLaunch;
+use super::macos_single_instance::{renderer_exiting, SecondaryLaunch};
 use objc2::runtime::{AnyClass, AnyObject, Bool, Sel};
 use objc2::MainThreadMarker;
 use objc2_app_kit::NSApplicationTerminateReply;
@@ -58,26 +58,39 @@ pub fn reply_to_termination<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     flow: &'static super::QuitFlow,
 ) {
+    let report_app = app.clone();
+    let queue_native_reply = |reply: super::AppkitReplyTask| {
+        let block = block2::RcBlock::new(move || reply());
+        // SAFETY: Foundation copies the sendable block and runs it on the main queue.
+        unsafe {
+            objc2_foundation::NSOperationQueue::mainQueue().addOperationWithBlock(&block);
+        }
+    };
     if let Err(error) = super::dispatch_appkit_reply_with(
         flow,
-        MainThreadMarker::new().is_some(),
-        |reply| app.run_on_main_thread(move || reply()),
-        |reply| {
-            let block = block2::RcBlock::new(move || reply());
-            // SAFETY: The block captures only a Send + Sync task. Foundation copies it
-            // and executes it on the main queue, independently of Tauri's event proxy.
-            unsafe {
-                objc2_foundation::NSOperationQueue::mainQueue().addOperationWithBlock(&block);
-            }
-        },
-        || {
+        false,
+        // The quit reply can show an open alert. Run it outside Tao's callback.
+        |reply| app.run_on_main_thread(move || queue_native_reply(reply)),
+        queue_native_reply,
+        move || {
             let mtm =
                 MainThreadMarker::new().expect("AppKit quit reply must run on the main thread");
+            renderer_exiting(&report_app);
             objc2_app_kit::NSApplication::sharedApplication(mtm)
                 .replyToApplicationShouldTerminate(true);
         },
     ) {
         eprintln!("Could not dispatch AppKit termination reply via Tauri; queued native fallback: {error}");
+    }
+}
+
+pub fn report_interrupted_opens(app: &tauri::AppHandle) {
+    if !APP
+        .get()
+        .and_then(|(_, secondary)| secondary.as_deref())
+        .is_some_and(SecondaryLaunch::interrupt_for_exit)
+    {
+        renderer_exiting(app);
     }
 }
 
@@ -134,5 +147,6 @@ unsafe extern "C" fn should_terminate(
         }
         super::AppkitQuitDecision::TerminateNow => {}
     }
+    renderer_exiting(app);
     NSApplicationTerminateReply::TerminateNow
 }

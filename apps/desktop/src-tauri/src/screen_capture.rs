@@ -121,6 +121,8 @@ pub(crate) fn relaunch_app(app: AppHandle) {
     crate::APP_QUITTING.store(true, Ordering::SeqCst);
     app.state::<crate::ocsr_engine::OcsrEngineState>()
         .shutdown();
+    #[cfg(target_os = "macos")]
+    crate::macos_single_instance::renderer_exiting(&app);
     app.request_restart();
 }
 

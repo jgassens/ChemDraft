@@ -1819,7 +1819,7 @@ pub fn run() {
         }
         app
     };
-    app.run(move |app, event| {
+    let on_event = move |app: &tauri::AppHandle, event| {
         #[cfg(target_os = "macos")]
         if secondary
             .as_ref()
@@ -1854,8 +1854,6 @@ pub fn run() {
             RunEvent::Exit => {
                 // AppKit quit decisions are handled before this final cleanup.
                 APP_QUITTING.store(true, Ordering::SeqCst);
-                #[cfg(target_os = "macos")]
-                macos_single_instance::renderer_exiting(app);
                 panel_full_size::restore_all(app);
                 app.state::<ocsr_engine::OcsrEngineState>().shutdown();
                 external_tools::shutdown(app);
@@ -1882,7 +1880,18 @@ pub fn run() {
             }
             _ => {}
         }
-    });
+    };
+    #[cfg(target_os = "macos")]
+    {
+        let handle = app.handle().clone();
+        let code = app.run_return(on_event);
+        // Menu-driven exits stop the run loop without AppKit's termination handshake.
+        // Show any pending alerts after Tao releases its event callback.
+        macos_quit::report_interrupted_opens(&handle);
+        std::process::exit(code);
+    }
+    #[cfg(not(target_os = "macos"))]
+    app.run(on_event);
 }
 
 #[cfg(target_os = "macos")]

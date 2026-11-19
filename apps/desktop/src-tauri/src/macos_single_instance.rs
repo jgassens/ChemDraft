@@ -6,7 +6,7 @@
 use block2::RcBlock;
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSAlert, NSAlertStyle, NSApplication};
-use objc2_foundation::{NSString, NSTimer};
+use objc2_foundation::{NSOperationQueue, NSString, NSTimer};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -26,6 +26,7 @@ const MAX_MESSAGE_BYTES: usize = 256 * 1024;
 const HANDOFF_TIMEOUT: Duration = Duration::from_secs(2);
 const TAKEOVER_TIMEOUT: Duration = Duration::from_secs(10);
 const FILE_RECEIPT_TIMEOUT: Duration = Duration::from_secs(10);
+const FILE_RECEIPT_PAUSE_BUDGET: Duration = Duration::from_secs(600);
 const LOCK_RETRY: Duration = Duration::from_millis(20);
 const OPEN_QUIET_PERIOD: Duration = Duration::from_millis(300);
 const OPEN_COLLECTION_CAP: Duration = Duration::from_secs(5);
@@ -219,13 +220,19 @@ struct PendingBatch {
     next: usize,
     deadline: Instant,
     paused: Option<(usize, Instant)>,
+    pause_remaining: Duration,
     read_errors: Vec<String>,
     reply: Reply,
 }
 
 impl PendingBatch {
-    fn deadline(&self) -> Option<Instant> {
-        self.paused.is_none().then_some(self.deadline)
+    fn deadline(&self) -> Instant {
+        self.paused
+            .map_or(self.deadline, |(_, since)| since + self.pause_remaining)
+    }
+
+    fn is_finished(&self) -> bool {
+        self.next == self.files.len()
     }
 
     fn set_waiting(&mut self, file: usize, waiting: bool, now: Instant) {
@@ -234,7 +241,9 @@ impl PendingBatch {
             self.paused = Some((file, now));
         } else if !waiting && self.paused.is_some_and(|(owner, _)| owner == file) {
             let (_, since) = self.paused.take().unwrap();
-            self.deadline += now - since;
+            let elapsed = now - since;
+            self.pause_remaining -= elapsed;
+            self.deadline += elapsed;
         }
     }
 
@@ -258,15 +267,14 @@ impl PendingBatch {
             {
                 self.next += 1;
             }
-            self.deadline = now + FILE_RECEIPT_TIMEOUT;
-            if let Some((_, since)) = &mut self.paused {
-                *since = now;
-            }
+            // A new file gets its full deadline on the receipt clock, which freezes at pause start.
+            self.deadline = self.paused.map_or(now, |(_, since)| since) + FILE_RECEIPT_TIMEOUT;
         }
     }
 
-    fn finish(mut self, delivery_error: Option<&str>) {
-        for file in self.files {
+    fn failure_message(&self, delivery_error: Option<&str>) -> Option<String> {
+        let mut errors = self.read_errors.clone();
+        for file in &self.files {
             let reason = match file.outcome {
                 Some(FileOutcome::Opened) => continue,
                 Some(FileOutcome::Rejected) => "The document window could not open",
@@ -275,12 +283,16 @@ impl PendingBatch {
                 }
                 None => delivery_error.unwrap_or("The document window did not confirm opening"),
             };
-            self.read_errors.push(format!("{reason}: {}", file.path));
+            errors.push(format!("{reason}: {}", file.path));
         }
-        if self.read_errors.is_empty() {
-            self.reply.finish(Acknowledgement::Accepted, "");
+        (!errors.is_empty()).then(|| errors.join("\n"))
+    }
+
+    fn finish(self, delivery_error: Option<&str>) {
+        if let Some(message) = self.failure_message(delivery_error) {
+            self.reply.fail(message);
         } else {
-            self.reply.fail(self.read_errors.join("\n"));
+            self.reply.finish(Acknowledgement::Accepted, "");
         }
     }
 }
@@ -320,6 +332,7 @@ impl RendererOpens {
                 next: 0,
                 deadline: now + FILE_RECEIPT_TIMEOUT,
                 paused: None,
+                pause_remaining: FILE_RECEIPT_PAUSE_BUDGET,
                 read_errors,
                 reply,
             },
@@ -333,6 +346,9 @@ impl RendererOpens {
             | OpenConfirmation::Waiting { receipt, .. } => receipt,
         };
         let batch = self.batches.get_mut(&receipt.batch)?;
+        if batch.is_finished() || (batch.paused.is_some() && now >= batch.deadline()) {
+            return None;
+        }
         match confirmation {
             OpenConfirmation::Finished { opened, .. } => batch.record(
                 receipt.file,
@@ -353,15 +369,29 @@ impl RendererOpens {
 
     fn expire(&mut self, id: u32, now: Instant) -> Option<PendingBatch> {
         let batch = self.batches.get_mut(&id)?;
-        if batch.deadline().is_some_and(|deadline| now >= deadline) {
-            batch.record(batch.next, FileOutcome::Unconfirmed, now);
+        if now >= batch.deadline() {
+            if batch.paused.is_some() {
+                // An abandoned prompt can block every remaining file.
+                for file in &mut batch.files[batch.next..] {
+                    file.outcome.get_or_insert(FileOutcome::Unconfirmed);
+                }
+                batch.next = batch.files.len();
+            } else {
+                batch.record(batch.next, FileOutcome::Unconfirmed, now);
+            }
+        }
+        if matches!(&batch.reply, Reply::Takeover(_)) {
+            // Keep the expired batch available to shutdown until AppKit shows its alert.
+            return None;
         }
         self.take_finished(id)
     }
 
     fn take_finished(&mut self, id: u32) -> Option<PendingBatch> {
         let batch = self.batches.get(&id)?;
-        (batch.next == batch.files.len()).then(|| self.batches.remove(&id).unwrap())
+        batch
+            .is_finished()
+            .then(|| self.batches.remove(&id).unwrap())
     }
 }
 
@@ -392,24 +422,24 @@ pub fn track_renderer_open(
                 let now = Instant::now();
                 if let Some(batch) = opens.expire(id, now) {
                     drop(opens);
-                    if matches!(&batch.reply, Reply::Takeover(_)) {
-                        let _ = handle.run_on_main_thread(move || batch.finish(None));
-                    } else {
-                        batch.finish(None);
-                    }
+                    batch.finish(None);
                     break;
                 }
                 let Some(batch) = opens.batches.get(&id) else {
                     break;
                 };
-                opens = if let Some(deadline) = batch.deadline() {
-                    changed
-                        .wait_timeout(opens, deadline.saturating_duration_since(now))
-                        .unwrap()
-                        .0
-                } else {
-                    changed.wait(opens).unwrap()
-                };
+                if batch.is_finished() {
+                    drop(opens);
+                    let alert = RcBlock::new(move || show_expired_takeover(&handle, id));
+                    // SAFETY: Foundation copies the sendable block and runs it on the main
+                    // queue. If the operation never runs, the batch is still in RendererOpens.
+                    unsafe {
+                        NSOperationQueue::mainQueue().addOperationWithBlock(&alert);
+                    }
+                    break;
+                }
+                let wait = batch.deadline().saturating_duration_since(now);
+                opens = changed.wait_timeout(opens, wait).unwrap().0;
             }
         })
     {
@@ -445,19 +475,32 @@ pub fn renderer_consumed(app: &AppHandle, confirmation: OpenConfirmation) {
     }
 }
 
-pub fn renderer_exiting(app: &AppHandle) {
+fn show_expired_takeover(app: &AppHandle, id: u32) {
+    let state = app.state::<Mutex<RendererOpens>>();
+    let message = state
+        .lock()
+        .unwrap()
+        .batches
+        .get(&id)
+        .and_then(|batch| batch.failure_message(None));
+    if let Some(message) = message {
+        show_launch_error_message(&message);
+        state.lock().unwrap().batches.remove(&id);
+    }
+}
+
+pub fn renderer_exiting<R: tauri::Runtime>(app: &AppHandle<R>) {
     let state = app.state::<Mutex<RendererOpens>>();
     let mut opens = state.lock().unwrap();
-    let batches = std::mem::take(&mut opens.batches);
+    let mut batches = std::mem::take(&mut opens.batches);
     opens.changed.notify_all();
     drop(opens);
+    // Disconnect every remote waiter before showing any local alert.
+    batches.retain(|_, batch| matches!(&batch.reply, Reply::Takeover(_)));
     for batch in batches.into_values() {
-        // Disconnect remote waiters so they can take over. Only local requests need an alert here.
-        if matches!(&batch.reply, Reply::Takeover(_)) {
-            batch.finish(Some(
-                "ChemDraft quit before its document window confirmed the open",
-            ));
-        }
+        batch.finish(Some(
+            "ChemDraft quit before its document window confirmed the open",
+        ));
     }
 }
 
@@ -675,9 +718,6 @@ impl SecondaryLaunch {
         event: &RunEvent,
         start_primary: StartPrimary,
     ) -> bool {
-        if matches!(event, RunEvent::Exit) {
-            return self.interrupt_for_exit();
-        }
         let mut state = self.state.lock().unwrap();
         if state.promoted {
             return false;
@@ -1654,6 +1694,79 @@ mod single_instance_tests {
             message,
             "The document window did not confirm opening in time: /drawings/second.cdxml"
         );
+    }
+
+    #[test]
+    fn single_instance_renderer_loss_during_pause_reports_the_unconfirmed_file() {
+        let start = Instant::now();
+        let (mut opens, id, [first, _], reply) = track_two_files(start);
+        assert!(opens
+            .update(
+                OpenConfirmation::Finished {
+                    receipt: first,
+                    opened: true,
+                },
+                start,
+            )
+            .is_none());
+        assert!(opens
+            .update(
+                OpenConfirmation::Waiting {
+                    receipt: first,
+                    waiting: true,
+                },
+                start,
+            )
+            .is_none());
+
+        // The renderer disappears without sending waiting: false.
+        let bound = start + Duration::from_secs(600);
+        assert!(opens.expire(id, bound - Duration::from_millis(1)).is_none());
+        opens
+            .expire(id, bound)
+            .expect("the abandoned pause must expire")
+            .finish(None);
+        let ReplyEvent::Finished(Acknowledgement::Failed, Some(message)) =
+            reply.try_recv().unwrap()
+        else {
+            panic!("expected the unconfirmed file in the terminal reply");
+        };
+        assert_eq!(
+            message,
+            "The document window did not confirm opening in time: /drawings/second.cdxml"
+        );
+    }
+
+    #[test]
+    fn single_instance_expired_takeover_is_reportable_when_exit_preempts_the_alert() {
+        let start = Instant::now();
+        let mut opens = RendererOpens::default();
+        let mut files = [crate::NativeOpenDocumentPayload {
+            receipt: None,
+            path: "/drawings/takeover.cdxml".into(),
+            display_name: "takeover.cdxml".into(),
+            contents: "<CDXML/>".into(),
+            bytes: None,
+        }];
+        let id = opens.track(
+            &mut files,
+            Vec::new(),
+            Reply::Takeover(LaunchRequest::default()),
+            start,
+        );
+        let _ = opens.expire(id, start + FILE_RECEIPT_TIMEOUT);
+
+        // Shutdown takes the outstanding batches before the queued alert runs.
+        let batches = std::mem::take(&mut opens.batches);
+        let batch = batches
+            .get(&id)
+            .expect("shutdown must still report this batch");
+        assert!(matches!(&batch.reply, Reply::Takeover(_)));
+        assert!(matches!(
+            batch.files[0].outcome,
+            Some(FileOutcome::Unconfirmed)
+        ));
+        assert_eq!(batch.files[0].path, "/drawings/takeover.cdxml");
     }
 
     #[test]

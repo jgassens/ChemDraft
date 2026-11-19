@@ -37,7 +37,7 @@ describe("document window launch placement", () => {
     expect(delivery).toMatch(/if delivery == OpenDocumentDelivery::PendingOnly[\s\S]*?return Ok\(\(\)\);/);
     expect(delivery.indexOf("return Ok(());")).toBeLessThan(delivery.indexOf("ensure_main_window_visible(app)"));
     expect(delivery.indexOf("ensure_main_window_visible(app)")).toBeLessThan(delivery.indexOf("emit_open_document_to_main(app"));
-    const events = between("app.run(move |app, event|", "fn start_macos_primary(");
+    const events = between("let on_event = move |app:", "fn start_macos_primary(");
     expect(events).toMatch(/RunEvent::Reopen[\s\S]*?ensure_main_window_visible\(app\)/);
     expect(events).toMatch(/RunEvent::Opened[\s\S]*?handle_opened_document_urls\(app, urls\)/);
     const startup = between("pub fn run() {", "fn start_macos_primary(");
