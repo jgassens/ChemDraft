@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { crc32, deflateSync } from "node:zlib";
 import { Resvg } from "@resvg/resvg-js";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MAX_IMAGE_OBJECT_BYTES, readPngInfo } from "@chemdraft/chem-core";
 import { CHEMDRAFT_PNG_SELECTION_KEYWORD, pngWithChemDraftSelection, readChemDraftSelectionFromPng } from "./index";
 
@@ -116,9 +116,28 @@ describe("PNG selection carrier", () => {
     ["iTXt", Buffer.from(`${keyword}\0\x02\0\0\0{}`)],
     ["iTXt", Buffer.from(`${keyword}\0\0\0missing terminators`)],
     ["zTXt", Buffer.from(`${keyword}\0\x01`)],
+    ["zTXt", Buffer.concat([Buffer.from(`${keyword}\0\0`), Buffer.of(1, 2, 3)])],
     ["zTXt", Buffer.concat([Buffer.from(`${keyword}\0\0`), deflateSync(Buffer.of(0xff))])],
   ] as const)("rejects malformed %s carrier data", async (type, data) => {
     expect(await readChemDraftSelectionFromPng(insertChunks(png, pngChunk(type, data)))).toMatchObject({ kind: "invalid" });
+  });
+
+  it.each([
+    ["missing DecompressionStream", undefined, /lacks DecompressionStream/],
+    ["unsupported format", class { constructor() { throw new TypeError("Unsupported format"); } }, /does not support.*deflate/],
+  ] as const)("reports %s as unsupported only for compressed carriers", async (_label, decoder, reason) => {
+    const compressed = pngChunk("zTXt", Buffer.concat([Buffer.from(`${keyword}\0\0`), deflateSync("{}")]));
+    vi.stubGlobal("DecompressionStream", decoder);
+    try {
+      expect(await readChemDraftSelectionFromPng(insertChunks(png, compressed))).toEqual({
+        kind: "unsupported", reason: expect.stringMatching(reason),
+      });
+      expect(await readChemDraftSelectionFromPng(pngWithChemDraftSelection(png, "{}"))).toEqual({
+        kind: "found", chunk: "iTXt", json: "{}",
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("enforces the 25 MB limit on the input and the inflated carrier independently", async () => {

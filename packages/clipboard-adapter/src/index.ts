@@ -1,8 +1,9 @@
 import { MAX_IMAGE_OBJECT_BYTES, normalizeAtomIsotope, isSvgImageSource, readSvgInfo, validatePngImage, validateSvgImage, imagePixelLimitError } from "@chemdraft/chem-core";
 export { CHEMDRAFT_PNG_SELECTION_KEYWORD, pngWithChemDraftSelection, readChemDraftSelectionFromPng } from "./pngSelection";
 export type { CarrierReadResult } from "./pngSelection";
-export { flatOpcBinaryParts, pptxSlidePictureMedia, readZip } from "./officePackage";
-export type { FlatOpcBinaryPart, OfficeZipEntry } from "./officePackage";
+export { decodeBase64Bounded, UnsupportedDecompressionError } from "./carrierBytes";
+export { flatOpcBinaryParts, pptxSlidePictureMedia, readZip, readZipFromBase64 } from "./officePackage";
+export type { FlatOpcBinaryPart, OfficeZipCaps, OfficeZipEntry } from "./officePackage";
 
 export type ClipboardPayloadKind = "svg" | "png" | "text/plain" | "smiles" | "mol" | "rxn" | "cdxml" | "cdx";
 

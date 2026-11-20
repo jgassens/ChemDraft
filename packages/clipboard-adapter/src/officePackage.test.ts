@@ -1,12 +1,13 @@
 import { crc32, deflateRawSync } from "node:zlib";
 import { describe, expect, it, vi } from "vitest";
-import { flatOpcBinaryParts, pptxSlidePictureMedia, readZip } from "./index";
+import { decodeBase64Bounded, flatOpcBinaryParts, pptxSlidePictureMedia, readZip, readZipFromBase64 } from "./index";
 
 interface TestEntry {
   name: string;
   data: Buffer;
   deflate?: boolean;
-  descriptor?: boolean;
+  descriptor?: "signed" | "unsigned" | "missing";
+  flags?: number;
   declaredLength?: number;
   checksum?: number;
   extra?: Buffer;
@@ -16,12 +17,12 @@ function makeZip(entries: TestEntry[]): Buffer {
   const locals: Buffer[] = [];
   const records: Buffer[] = [];
   let offset = 0;
-  for (const { name, data, deflate, descriptor, declaredLength = data.length,
+  for (const { name, data, deflate, descriptor, flags: extraFlags = 0, declaredLength = data.length,
     checksum = crc32(data), extra = Buffer.alloc(0) } of entries) {
     const filename = Buffer.from(name);
     const body = deflate ? deflateRawSync(data) : data;
     const method = deflate ? 8 : 0;
-    const flags = descriptor ? 8 : 0;
+    const flags = extraFlags | (descriptor ? 8 : 0);
 
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50);
@@ -49,12 +50,13 @@ function makeZip(entries: TestEntry[]): Buffer {
     record.writeUInt16LE(extra.length, 30);
     record.writeUInt32LE(offset, 42);
 
-    const trailer = Buffer.alloc(descriptor ? 16 : 0);
-    if (descriptor) {
-      trailer.writeUInt32LE(0x08074b50);
-      trailer.writeUInt32LE(checksum, 4);
-      trailer.writeUInt32LE(body.length, 8);
-      trailer.writeUInt32LE(declaredLength, 12);
+    const trailer = Buffer.alloc(descriptor === "signed" ? 16 : descriptor === "unsigned" ? 12 : 0);
+    if (trailer.length) {
+      const start = trailer.length - 12;
+      if (start) trailer.writeUInt32LE(0x08074b50);
+      trailer.writeUInt32LE(checksum, start);
+      trailer.writeUInt32LE(body.length, start + 4);
+      trailer.writeUInt32LE(declaredLength, start + 8);
     }
     locals.push(local, filename, extra, body, trailer);
     records.push(record, filename, extra);
@@ -75,14 +77,38 @@ describe("Office ZIP reader", () => {
   const data = Buffer.from("A package part with UTF-8 text ° and arbitrary bytes.\0");
   const entry = { name: "ppt/media/image.png", data };
 
-  it("reads stored and deflated entries, using the central sizes for data descriptors", async () => {
+  it("reads stored and deflated entries with signed and unsigned data descriptors", async () => {
     const entries = [entry, { ...entry, name: "ppt/slides/slide1.xml", deflate: true },
-      { ...entry, name: "ppt/slides/_rels/slide1.xml.rels", deflate: true, descriptor: true }];
+      { ...entry, name: "ppt/slides/_rels/slide1.xml.rels", deflate: true, descriptor: "signed" },
+      { ...entry, name: "ppt/media/second.png", descriptor: "unsigned" }] satisfies TestEntry[];
     const archive = Buffer.concat([Buffer.of(0), makeZip(entries)]).subarray(1);
     expect((await readZip(archive)).map(({ name, data }) => ({ name, data: Buffer.from(data) }))).toEqual(
       entries.map(({ name, data }) => ({ name, data })),
     );
   });
+
+  it("reads Office.js base64 and checks the archive length before parsing or decoding", async () => {
+    const archive = makeZip([entry]);
+    const base64 = archive.toString("base64");
+    const [decoded] = await readZipFromBase64(base64, { maxArchiveBytes: archive.length });
+    expect({ name: decoded.name, data: Buffer.from(decoded.data) }).toEqual(entry);
+    await expect(readZipFromBase64(base64, { maxArchiveBytes: archive.length - 1 })).rejects.toThrow(/byte limit/);
+    await expect(readZip(Buffer.of(0), { maxArchiveBytes: 0 })).rejects.toThrow(/archive exceeds/);
+  });
+
+  it("refuses a missing data descriptor before the next entry", async () => {
+    const archive = makeZip([{ ...entry, descriptor: "missing" }, { ...entry, name: "ppt/media/next.png" }]);
+    await expect(readZip(archive)).rejects.toThrow(/Missing or truncated ZIP data descriptor/);
+  });
+
+  it.each([["CRC", 12], ["compressed size", 8], ["inflated size", 4]] as const)(
+    "refuses a data descriptor with mismatched %s", async (_field, fromDirectory) => {
+      const archive = makeZip([{ ...entry, deflate: true, descriptor: "signed" }]);
+      const directory = archive.readUInt32LE(archive.length - 6);
+      archive[directory - fromDirectory] ^= 1;
+      await expect(readZip(archive)).rejects.toThrow(/data descriptor CRC or size mismatch/);
+    },
+  );
 
   it("can inflate on early Node 20 builds without the deflate-raw stream format", async () => {
     class GzipOnlyStream extends DecompressionStream {
@@ -95,6 +121,21 @@ describe("Office ZIP reader", () => {
     try {
       const [result] = await readZip(makeZip([{ ...entry, deflate: true }]));
       expect(Buffer.from(result.data)).toEqual(data);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([
+    ["missing DecompressionStream", undefined, /lacks DecompressionStream/],
+    ["unsupported format", class { constructor() { throw new TypeError("Unsupported format"); } }, /does not support/],
+  ] as const)("reports %s as unsupported for deflated entries", async (_label, decoder, reason) => {
+    vi.stubGlobal("DecompressionStream", decoder);
+    try {
+      await expect(readZip(makeZip([entry]))).resolves.toHaveLength(1);
+      await expect(readZip(makeZip([{ ...entry, deflate: true }]))).rejects.toMatchObject({
+        code: "unsupported-decompression", message: expect.stringMatching(reason),
+      });
     } finally {
       vi.unstubAllGlobals();
     }
@@ -134,10 +175,38 @@ describe("Office ZIP reader", () => {
     await expect(readZip(tooBig)).rejects.toThrow(/200 MB/);
   });
 
+  it("refuses patched data flags and requires bit 11 for UTF-8 names", async () => {
+    const name = "ppt/media/café.png";
+    await expect(readZip(makeZip([{ ...entry, flags: 0x20 }]))).rejects.toThrow(/Patched ZIP data/);
+    await expect(readZip(makeZip([{ ...entry, name }]))).rejects.toThrow(/Non-ASCII ZIP entry name/);
+    await expect(readZip(makeZip([{ ...entry, name, flags: 0x800 }]))).resolves.toMatchObject([{ name }]);
+    const archive = makeZip([{ ...entry, flags: 0x800 }]);
+    const directory = archive.readUInt32LE(archive.length - 6);
+    archive[30] = archive[directory + 46] = 0xff;
+    await expect(readZip(archive)).rejects.toThrow(/Invalid UTF-8 ZIP entry name/);
+  });
+
   it("rejects both longer and shorter inflated results than advertised", async () => {
-    const deflated = { ...entry, deflate: true, descriptor: true };
+    const deflated = { ...entry, deflate: true, descriptor: "signed" } satisfies TestEntry;
     await expect(readZip(makeZip([{ ...deflated, declaredLength: 1 }]))).rejects.toThrow(/exceeds the declared size/);
     await expect(readZip(makeZip([{ ...deflated, declaredLength: data.length + 1 }]))).rejects.toThrow(/size mismatch/);
+  });
+});
+
+describe("bounded base64 decoding", () => {
+  it("allows exact limits and optional padding", () => {
+    expect(decodeBase64Bounded("", 0)).toEqual(new Uint8Array(0));
+    expect(decodeBase64Bounded("/+A=", 2)).toEqual(Uint8Array.of(255, 224));
+    expect(decodeBase64Bounded("/+A", 2)).toEqual(Uint8Array.of(255, 224));
+  });
+
+  it("checks both encoded length and exact decoded size", () => {
+    expect(() => decodeBase64Bounded("xxxxxxxx!", 3)).toThrow(/3-byte limit/);
+    expect(() => decodeBase64Bounded("AAAA", 2)).toThrow(/2-byte limit/);
+  });
+
+  it.each(["A", "AB=", "A===", "AB=C", "AB-_", "AB C"])("rejects malformed compact base64 %s", (base64) => {
+    expect(() => decodeBase64Bounded(base64, 12)).toThrow(/Invalid base64/);
   });
 });
 
@@ -145,6 +214,7 @@ const presentation = "http://schemas.openxmlformats.org/presentationml/2006/main
 const drawing = "http://schemas.openxmlformats.org/drawingml/2006/main";
 const officeRelationships = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const packageRelationships = "http://schemas.openxmlformats.org/package/2006/relationships";
+const markupCompatibility = "http://schemas.openxmlformats.org/markup-compatibility/2006";
 
 describe("PowerPoint picture media lookup", () => {
   const slide = `<?xml version="1.0"?>
@@ -191,7 +261,72 @@ describe("PowerPoint picture media lookup", () => {
     expect(pptxSlidePictureMedia(slide, relationships.replace("/image\"", "/slide\""), 3)).toBeNull();
     expect(pptxSlidePictureMedia(slide, relationships.replace("../media/image1.png", "../../word/media/image1.png"), 3)).toBeNull();
   });
+
+  function picture(id: number, relationship: string): string {
+    return `<p:pic><p:nvPicPr><p:cNvPr id="${id}"/></p:nvPicPr>
+      <p:blipFill><a:blip r:embed="${relationship}"/></p:blipFill></p:pic>`;
+  }
+
+  function alternate(branches: string, tail = ""): string {
+    return `<p:sld xmlns:p="${presentation}" xmlns:a="${drawing}" xmlns:r="${officeRelationships}"
+      xmlns:mc="${markupCompatibility}" xmlns:p14="http://schemas.microsoft.com/office/powerpoint/2010/main">
+      <mc:AlternateContent>${branches}</mc:AlternateContent>${tail}
+    </p:sld>`;
+  }
+
+  it("uses the first Choice whose scoped namespace URIs are all understood", () => {
+    const xml = alternate(`
+      <mc:Choice Requires="p p14">${picture(3, "rId4")}</mc:Choice>
+      <mc:Choice Requires="draw r" xmlns:draw="${drawing}">${picture(3, "rId2")}</mc:Choice>
+      <mc:Choice Requires="p">${picture(3, "rId3")}</mc:Choice>
+      <mc:Fallback>${picture(3, "rId3")}</mc:Fallback>`);
+    expect(pptxSlidePictureMedia(xml, relationships, 3)).toBe("ppt/media/image1.png");
+  });
+
+  it("uses the fallback when all choices require unsupported namespaces", () => {
+    const xml = alternate(`
+      <mc:Choice Requires="p14">${picture(3, "rId2")}</mc:Choice>
+      <mc:Choice Requires="a" xmlns:a="urn:unsupported">${picture(3, "rId2")}</mc:Choice>
+      <mc:Fallback>${picture(3, "rId3")}</mc:Fallback>`);
+    expect(pptxSlidePictureMedia(xml, relationships, 3)).toBe("ppt/media/group & child.png");
+  });
+
+  it("treats selected branches under a picture's properties as transparent", () => {
+    const xml = alternate(`<mc:Choice Requires="p">
+      <p:pic><p:nvPicPr><p:cNvPr id="3"/></p:nvPicPr><p:blipFill>
+        <mc:AlternateContent>
+          <mc:Choice Requires="p14"><a:blip r:embed="rId3"/></mc:Choice>
+          <mc:Fallback><a:blip r:embed="rId2"/></mc:Fallback>
+        </mc:AlternateContent>
+      </p:blipFill></p:pic>
+    </mc:Choice>`);
+    expect(pptxSlidePictureMedia(xml, relationships, 3)).toBe("ppt/media/image1.png");
+  });
+
+  it("rejects a target ID in multiple effective branches", () => {
+    const xml = alternate(
+      `<mc:Choice Requires="p">${picture(3, "rId2")}</mc:Choice>`,
+      alternate(`<mc:Choice Requires="p14">${picture(4, "rId4")}</mc:Choice>
+        <mc:Fallback>${picture(3, "rId3")}</mc:Fallback>`),
+    );
+    expect(() => pptxSlidePictureMedia(xml, relationships, 3)).toThrow(/Duplicate shape ID/);
+  });
+
+  it("fails closed on an undeclared Requires prefix", () => {
+    const xml = alternate(`<mc:Choice Requires="missing">${picture(3, "rId2")}</mc:Choice>`);
+    expect(() => pptxSlidePictureMedia(xml, relationships, 3)).toThrow(/Undeclared .* prefix: missing/);
+  });
 });
+
+const flatOpc = "http://schemas.microsoft.com/office/2006/xmlPackage";
+
+function flatOpcBinary(content: string): string {
+  return `<pkg:package xmlns:pkg="${flatOpc}">
+    <pkg:part pkg:name="/word/media/image.png" pkg:contentType="image/png">
+      <pkg:binaryData>${content}</pkg:binaryData>
+    </pkg:part>
+  </pkg:package>`;
+}
 
 describe("Flat OPC binary parts", () => {
   it("reads multiple ordered parts with wrapped base64 and ignores XML-only parts", () => {
@@ -210,5 +345,58 @@ describe("Flat OPC binary parts", () => {
       { name: "/word/media/a&b.png", contentType: "image/png", bytes: Uint8Array.of(0x89, 80, 78, 71, 13, 10, 26, 10) },
       { name: "/word/media/b.jpeg", contentType: "image/jpeg", bytes: Uint8Array.of(0xff, 0xd8, 0xff) },
     ]);
+  });
+
+  it("combines text and CDATA while discarding comments and processing instructions", () => {
+    const xml = flatOpcBinary("&#x51;<!-- invalid &example; base64 --><?sample &invalid?><![CDATA[U]]>&#74;\tD");
+    expect(flatOpcBinaryParts(xml)[0].bytes).toEqual(Uint8Array.of(65, 66, 67));
+  });
+
+  it("normalizes literal attribute whitespace and preserves referenced characters", () => {
+    const xml = flatOpcBinary("QQ==").replace("image.png", "one\r\ntwo&#9;&#x1F4C4;.png");
+    expect(flatOpcBinaryParts(xml)[0].name).toBe("/word/media/one two\t📄.png");
+  });
+
+  it("treats markup-like CDATA as literal text and rejects elements inside binaryData", () => {
+    expect(() => flatOpcBinaryParts(flatOpcBinary("<![CDATA[&#65;]]>"))).toThrow(/Invalid base64/);
+    expect(() => flatOpcBinaryParts(flatOpcBinary("QU<nested/>JD"))).toThrow(/Unexpected element inside .*binaryData/);
+  });
+});
+
+describe("bounded Office XML scanning", () => {
+  it.each([
+    ["size", () => " ".repeat(20 * 1024 * 1024 + 1), /20 MiB input length/],
+    ["elements", () => `<x>${"<x/>".repeat(200_000)}</x>`, /200000 element limit/],
+    ["depth", () => `${"<x>".repeat(256)}<x/>${"</x>".repeat(256)}`, /nesting limit/],
+    ["attributes", () => `<x ${Array.from({ length: 257 }, (_, i) => `a${i}="v"`).join(" ")}/>`, /attributes per element/],
+  ] as const)("enforces the %s limit in both Office readers", (_label, fixture, error) => {
+    const xml = fixture();
+    expect(() => flatOpcBinaryParts(xml)).toThrow(error);
+    expect(() => pptxSlidePictureMedia(xml, "<relationships/>", 1)).toThrow(error);
+  });
+
+  it("validates relationship XML even when the picture has no relationship to look up", () => {
+    expect(() => pptxSlidePictureMedia("<slide/>", "<relationships>&unknown;</relationships>", 1)).toThrow(/entity reference/);
+  });
+
+  it.each([
+    ['<x a="&unknown;"/>', /entity reference/],
+    ["<x>&amp</x>", /entity reference/],
+    ["<x>&#;</x>", /character reference/],
+    ["<x>&#xD800;</x>", /character reference/],
+    ["<x>&#1114112;</x>", /character reference/],
+    ['<x a="1" a="2"/>', /Duplicate Office XML attribute/],
+    ['<x xmlns="urn:a" xmlns="urn:b"/>', /Duplicate Office XML attribute/],
+    ['<x xmlns:a="urn:a" xmlns:a="urn:b"/>', /Duplicate Office XML attribute/],
+    ['<x xmlns:a="urn:a" xmlns:b="urn:a" a:id="1" b:id="2"/>', /Duplicate Office XML attribute/],
+    ['<x a="unescaped <"/>', /Unescaped/],
+    ["<x:root/>", /Undeclared Office XML namespace prefix/],
+    ["<x/><y/>", /Multiple Office XML root elements/],
+    ["<x><!--invalid -- comment--></x>", /Malformed Office XML comment/],
+    ["<x><![CDATA[unclosed</x>", /Unclosed Office XML CDATA/],
+    ["<!DOCTYPE x><x/>", /Unsupported Office XML declaration/],
+  ] as const)("rejects malformed XML %s", (xml, error) => {
+    expect(() => flatOpcBinaryParts(xml)).toThrow(error);
+    expect(() => pptxSlidePictureMedia(xml, "<relationships/>", 1)).toThrow(error);
   });
 });

@@ -1,5 +1,5 @@
 import { MAX_IMAGE_OBJECT_BYTES, readPngInfo, validatePngImage } from "@chemdraft/chem-core";
-import { crc32, inflateBounded } from "./carrierBytes";
+import { crc32, createDecompressionStream, inflateBounded, UnsupportedDecompressionError } from "./carrierBytes";
 
 /** Uncompressed UTF-8 iTXt: the same versioned JSON as the private clipboard flavor. */
 export const CHEMDRAFT_PNG_SELECTION_KEYWORD = "application/x-chemdraft-selection+json";
@@ -52,6 +52,7 @@ export function pngWithChemDraftSelection(png: Uint8Array, selectionJson: string
 export type CarrierReadResult =
   | { kind: "found"; json: string; chunk: "iTXt" | "zTXt" }
   | { kind: "absent" }
+  | { kind: "unsupported"; reason: string }
   | { kind: "invalid"; reason: string };
 
 function carrierText(chunk: "iTXt" | "zTXt", data: Uint8Array) {
@@ -73,7 +74,10 @@ function carrierText(chunk: "iTXt" | "zTXt", data: Uint8Array) {
   return { compressed: flag === 1, bytes: data.subarray(offset) };
 }
 
-/** Read the selection's exact UTF-8 text, leaving JSON validation to the caller. */
+/**
+ * Read the selection's exact UTF-8 text, leaving JSON validation to the caller.
+ * zTXt is accepted only as the legacy, nonstandard UTF-8 carrier from earlier ChemDraft spikes.
+ */
 export async function readChemDraftSelectionFromPng(png: Uint8Array): Promise<CarrierReadResult> {
   if (png.length > MAX_IMAGE_OBJECT_BYTES) return { kind: "invalid", reason: "PNG exceeds the 25 MB picture limit." };
   // Validates the signature and chunk framing through IEND, including required image chunks.
@@ -101,13 +105,13 @@ export async function readChemDraftSelectionFromPng(png: Uint8Array): Promise<Ca
   try {
     const { compressed, bytes } = carrierText(chunk, data);
     const text = compressed
-      ? await inflateBounded([bytes], new DecompressionStream("deflate"), MAX_IMAGE_OBJECT_BYTES,
+      ? await inflateBounded([bytes], createDecompressionStream("deflate"), MAX_IMAGE_OBJECT_BYTES,
         "PNG selection exceeds the 25 MB inflated limit.")
       : bytes;
-    // Older zTXt carriers also used UTF-8, despite the PNG specification's Latin-1 convention.
     const json = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(text);
     return { kind: "found", chunk, json };
   } catch (error) {
+    if (error instanceof UnsupportedDecompressionError) return { kind: "unsupported", reason: error.message };
     const reason = error instanceof Error ? error.message : String(error);
     return { kind: "invalid", reason: `Invalid PNG ${chunk} selection: ${reason}` };
   }
