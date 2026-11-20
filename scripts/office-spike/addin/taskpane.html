@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ChemDraft probe</title>
+  <style>
+    body { font: 14px/1.45 system-ui, sans-serif; margin: 1rem; }
+    h1 { font-size: 1.25rem; }
+    h2 { font-size: 1rem; margin-top: 1.25rem; }
+    button { font: inherit; text-align: left; padding: .4rem .6rem; }
+    #routes { display: grid; gap: .35rem; margin-block: .75rem; }
+    #results { padding-inline-start: 1.5rem; }
+    #results li { margin-block: .6rem; overflow-wrap: anywhere; }
+    pre { font-size: .8rem; margin: .25rem 0; white-space: pre-wrap; }
+    textarea { box-sizing: border-box; width: 100%; }
+  </style>
+  <script id="office-js" async src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+  <script type="module" src="./probe.js"></script>
+</head>
+<body>
+  <h1>ChemDraft probe</h1>
+  <p id="status" role="status">Waiting for Office.js…</p>
+  <div id="routes"></div>
+  <h2>Results</h2>
+  <button id="copy" type="button" disabled>Copy results</button>
+  <p id="copy-status" role="status"></p>
+  <textarea id="copy-text" aria-label="Results JSON" rows="8" readonly hidden></textarea>
+  <ol id="results"></ol>
+</body>
+</html>

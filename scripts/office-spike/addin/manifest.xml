@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Hosting base URL: replace every https://chemdraft.ai/office-spike/ with the HTTPS directory serving this add-in. -->
+<OfficeApp xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
+           xsi:type="TaskPaneApp">
+  <Id>a2e64bf2-341b-44a7-94a7-11cade83dc57</Id>
+  <Version>1.0.0.0</Version>
+  <ProviderName>ChemDraft</ProviderName>
+  <DefaultLocale>en-US</DefaultLocale>
+  <DisplayName DefaultValue="ChemDraft probe"/>
+  <Description DefaultValue="Measure picture byte retention and replacement in Word and PowerPoint."/>
+  <IconUrl DefaultValue="https://chemdraft.ai/office-spike/icon-32.png"/>
+  <HighResolutionIconUrl DefaultValue="https://chemdraft.ai/office-spike/icon-80.png"/>
+  <SupportUrl DefaultValue="https://chemdraft.ai/office-spike/"/>
+  <Hosts>
+    <Host Name="Document"/>
+    <Host Name="Presentation"/>
+  </Hosts>
+  <DefaultSettings>
+    <SourceLocation DefaultValue="https://chemdraft.ai/office-spike/taskpane.html"/>
+  </DefaultSettings>
+  <Permissions>ReadWriteDocument</Permissions>
+  <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
+                    xsi:type="VersionOverridesV1_0">
+    <Hosts>
+      <Host xsi:type="Document">
+        <DesktopFormFactor>
+          <FunctionFile resid="Probe.Url"/>
+          <ExtensionPoint xsi:type="PrimaryCommandSurface">
+            <OfficeTab id="TabHome">
+              <Group id="Probe.Word">
+                <Label resid="Probe.Label"/>
+                <Icon>
+                  <bt:Image size="16" resid="Probe.Icon16"/>
+                  <bt:Image size="32" resid="Probe.Icon32"/>
+                  <bt:Image size="80" resid="Probe.Icon80"/>
+                </Icon>
+                <Control xsi:type="Button" id="Probe.Word.Open">
+                  <Label resid="Probe.Label"/>
+                  <Supertip>
+                    <Title resid="Probe.Label"/>
+                    <Description resid="Probe.Description"/>
+                  </Supertip>
+                  <Icon>
+                    <bt:Image size="16" resid="Probe.Icon16"/>
+                    <bt:Image size="32" resid="Probe.Icon32"/>
+                    <bt:Image size="80" resid="Probe.Icon80"/>
+                  </Icon>
+                  <Action xsi:type="ShowTaskpane">
+                    <TaskpaneId>ChemdraftProbe</TaskpaneId>
+                    <SourceLocation resid="Probe.Url"/>
+                  </Action>
+                </Control>
+              </Group>
+            </OfficeTab>
+          </ExtensionPoint>
+        </DesktopFormFactor>
+      </Host>
+      <Host xsi:type="Presentation">
+        <DesktopFormFactor>
+          <FunctionFile resid="Probe.Url"/>
+          <ExtensionPoint xsi:type="PrimaryCommandSurface">
+            <OfficeTab id="TabHome">
+              <Group id="Probe.PowerPoint">
+                <Label resid="Probe.Label"/>
+                <Icon>
+                  <bt:Image size="16" resid="Probe.Icon16"/>
+                  <bt:Image size="32" resid="Probe.Icon32"/>
+                  <bt:Image size="80" resid="Probe.Icon80"/>
+                </Icon>
+                <Control xsi:type="Button" id="Probe.PowerPoint.Open">
+                  <Label resid="Probe.Label"/>
+                  <Supertip>
+                    <Title resid="Probe.Label"/>
+                    <Description resid="Probe.Description"/>
+                  </Supertip>
+                  <Icon>
+                    <bt:Image size="16" resid="Probe.Icon16"/>
+                    <bt:Image size="32" resid="Probe.Icon32"/>
+                    <bt:Image size="80" resid="Probe.Icon80"/>
+                  </Icon>
+                  <Action xsi:type="ShowTaskpane">
+                    <TaskpaneId>ChemdraftProbe</TaskpaneId>
+                    <SourceLocation resid="Probe.Url"/>
+                  </Action>
+                </Control>
+              </Group>
+            </OfficeTab>
+          </ExtensionPoint>
+        </DesktopFormFactor>
+      </Host>
+    </Hosts>
+    <Resources>
+      <bt:Images>
+        <bt:Image id="Probe.Icon16" DefaultValue="https://chemdraft.ai/office-spike/icon-16.png"/>
+        <bt:Image id="Probe.Icon32" DefaultValue="https://chemdraft.ai/office-spike/icon-32.png"/>
+        <bt:Image id="Probe.Icon80" DefaultValue="https://chemdraft.ai/office-spike/icon-80.png"/>
+      </bt:Images>
+      <bt:Urls>
+        <bt:Url id="Probe.Url" DefaultValue="https://chemdraft.ai/office-spike/taskpane.html"/>
+      </bt:Urls>
+      <bt:ShortStrings>
+        <bt:String id="Probe.Label" DefaultValue="ChemDraft probe"/>
+      </bt:ShortStrings>
+      <bt:LongStrings>
+        <bt:String id="Probe.Description" DefaultValue="Open the picture byte and replacement probe."/>
+      </bt:LongStrings>
+    </Resources>
+  </VersionOverrides>
+</OfficeApp>
