@@ -4,7 +4,7 @@ Status: plan approved by the owner 2026-11-10; revised 2026-11-20 for the one-co
 return trip (owner direction below), and again the same afternoon after the hand-built "MOF-5" turned
 out to be the wrong structure because it was built on one cell (see "MOF-5 correctness" under Test
 results; open question 9, now answered). The new `runCompanion` method widens the security contract, so the
-master session's OK and the Kimi review (condition 3) cover it too. No code until the master session OKs it. Target: after ChemDraft 1.2 ships (1.2 has priority; nothing here touches
+master session's OK and the Kimi review (condition 3) cover it too. The master session OKed the revised plan, including the `runCompanion` security contract scoped to official catalog plugins (2026-11-20); the usual gates apply when code starts. Questions 3–6 are still with the owner. Target: after ChemDraft 1.2 ships (1.2 has priority; nothing here touches
 `release/1.2-rc` or `main`). Final home of this document: `docs/plans/send-to-crystal-builder.md` on
 local branch `plan/crystal-builder` (see "After approval").
 
@@ -516,8 +516,9 @@ The picture-only fallback was considered and dropped (owner, 2026-11-20).
 
 For the owner:
 
-1. **Release target.** Ship the host capability in the first release after 1.2 (API 0.1.26)? Recommended: yes.
-2. **How often to ask.** Consent once per plugin and app, then a message box only when something
+1. ~~**Release target.**~~ **Answered (owner, 2026-11-20): ship the host capability in 1.3** (API 0.1.26).
+2. ~~**How often to ask.**~~ **Answered (owner, 2026-11-20): consent once per plugin and app, then a
+   message box only when something specific would be lost.** Consent once per plugin and app, then a message box only when something
    specific would be lost (recommended), or a confirmation on every send?
 3. **Minimize or not.** Send the MMFF94s-minimized geometry (recommended) or raw ETKDG coordinates?
 4. **Names.** Are `jgassens/ChemDraft-CrystalBuilder-Plugin`, `org.chemdraft.handoff.crystalBuilder`,
@@ -532,7 +533,8 @@ For the owner:
    visualization" non-goal (PLAN.md §5) is lifted for one native `crystal3d` object that can be moved,
    rotated, and exported. The picture-only fallback is dropped. The PLAN.md §5 wording changes in
    Phase 5's first pull request (task 5A), not before, since nothing touches `main` until 1.2 ships.
-8. **`runCompanion` scope.** The new host method runs a tool inside an app the user picked, from a
+8. ~~**`runCompanion` scope.**~~ **Answered (owner, 2026-11-20): official catalog plugins only in 1.3,**
+   opened up later after a clean release. Original question: The new host method runs a tool inside an app the user picked, from a
    template fixed in the plugin's manifest. It is general (any plugin could declare one) but tightly
    bounded (rule 11). Accept it as general, or allow it only for official catalog plugins at first?
    Recommended: official catalog plugins only in 1.3, opened up after a release without problems.
