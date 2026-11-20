@@ -188,8 +188,19 @@ picture and says so in the pane.
 
 ### 5. Mac: distribution, and the managed-tenant risk
 
-The add-in is the Mac route only (owner, 2026-11-20). It is also what Office on the web would run,
-but the web is not a target.
+The add-in is the Mac route only (owner, 2026-11-20). It is also what Office on the web would run, but the web is not a target.
+
+
+**Owner decision, 2026-11-20 16:24: both routes.**
+
+1. **ChemDraft installs the add-in** into Word's and PowerPoint's local developer (`wef`) folders on
+   explicit user request: an *Install Office Add-in* / *Remove Office Add-in* command, never silent,
+   removable, macOS only. The help text says Microsoft describes this route as for testing and that
+   Microsoft may change it. Measured on 2026-11-20: it works even when an organization has turned the
+   add-in store off.
+2. **Store listing and IT-admin deployment**: prepare the AppSource listing materials and an IT-admin
+   deployment guide (centralized deployment manifest and steps). Submission to the store waits for
+   the owner.
 
 | Route | Who | Notes |
 | --- | --- | --- |
