@@ -882,7 +882,8 @@ import {
   type ToolbarPaletteGroupModel
 } from "./toolsets";
 import { MenuBar } from "./MenuBar";
-import { buildAppMenuModel, structureSearchMenuItems, PLUGIN_MANAGER_COMMAND_ID, PLUGIN_UPDATES_COMMAND_ID } from "./appMenu";
+import { buildAppMenuModel, officeObjectFileMenu, structureSearchMenuItems, PLUGIN_MANAGER_COMMAND_ID, PLUGIN_UPDATES_COMMAND_ID } from "./appMenu";
+import { OFFICE_CLOSE_COMMAND_ID, OFFICE_UPDATE_COMMAND_ID, officeObjectIdFromSearch, useOfficeObject } from "./officeObject";
 import { registerVibeCodeStarter, VIBE_CODE_SAVE_COMMAND_ID } from "./commands/vibeCodeStarter";
 import {
   editHistoryDirection,
@@ -2144,11 +2145,15 @@ export function MainWindow({
   initialDocument,
   initialActiveToolCommandId,
   shortcutPlatform,
-  nativePalette = shouldDefaultToNativePalettes()
+  nativePalette: requestedNativePalette
 }: MainWindowProps) {
+  const [officeObjectId] = useState(() => typeof window === "undefined" ? undefined : officeObjectIdFromSearch(window.location.search));
+  // Native palettes are owned by the main document window. The embedded editor puts its drawing
+  // commands in its own top toolbar, where they act on the embedded document.
+  const nativePalette = !officeObjectId && (requestedNativePalette ?? shouldDefaultToNativePalettes());
   useEffect(() => installBrowserReloadGuard(shortcutPlatform), [shortcutPlatform]);
-  useEffect(() => installNativeFlyoutKeyboard(shortcutPlatform), [shortcutPlatform]);
-  useEffect(() => installMainWindowPalettePendingKeys(), []);
+  useEffect(() => officeObjectId ? undefined : installNativeFlyoutKeyboard(shortcutPlatform), [officeObjectId, shortcutPlatform]);
+  useEffect(() => officeObjectId ? undefined : installMainWindowPalettePendingKeys(), [officeObjectId]);
   useInAppModalUtilitySuspension();
   // Plugin commands may settle after the document window has unmounted.
   const mountedRef = useRef(true);
@@ -2908,7 +2913,7 @@ export function MainWindow({
     width: 0,
     height: 0
   }));
-  const [status, setStatus] = useState("Blank native document");
+  const [status, setStatus] = useState(officeObjectId ? "Opening Office structure…" : "Blank native document");
   const tableDraftStatusRef = useRef<{ announced: string; original: string } | undefined>(undefined);
   // Keep import findings and the latest save findings independent for this tab.
   // Replacing the document drops both (resetDocumentHistory).
@@ -3437,8 +3442,16 @@ export function MainWindow({
       canRedo,
       hasMultipleTabs: documentTabs.length > 1,
       hasMoleculeFragmentSelection: selectedNativeMoleculeParts.length > 0
-    })),
-    [canRedo, canUndo, document, documentTabs.length, selectedMolecule, selectedNativeMoleculeParts]
+    })).map(action => {
+      if (!officeObjectId) return action;
+      if (action.id === "document.save") return { ...action, title: "Save Office Structure", shortcut: "CmdOrCtrl+S" };
+      if (action.id === "document.closeTab") return { ...action, title: "Close", enabled: true, disabledReason: undefined };
+      if (["document.new", "document.open", "document.saveAs"].includes(action.id)) {
+        return { ...action, enabled: false, disabledReason: "This window edits one embedded Office structure." };
+      }
+      return action;
+    }),
+    [canRedo, canUndo, document, documentTabs.length, officeObjectId, selectedMolecule, selectedNativeMoleculeParts]
   );
   const compoundLayoutsEnabledRef = useRef(compoundLayoutsEnabled);
   compoundLayoutsEnabledRef.current = compoundLayoutsEnabled;
@@ -10251,6 +10264,7 @@ export function MainWindow({
     options?: OpenDocumentContentsOptions,
     reportOutcome?: (outcome: "queued" | "resumed" | "already-open" | "installed") => void
   ) => {
+    if (officeObjectId) throw new Error("Open files in the main ChemDraft window while editing an Office structure.");
     assertDocumentSize(contents.length);
     const waitUntilReady = async () => {
       while (closeTabPromptRef.current || quitInteractionRef.current || keptDrawingsPromptRef.current || (isDesktopRuntime() && !documentSessionHydratedRef.current)) {
@@ -10319,7 +10333,7 @@ export function MainWindow({
     perfHook(() => reportOutcome?.("installed"));
     await pageFitSettled;
     await notifyInstalledDocumentCompatibility(opened, resolvedOpen.document);
-  }, [activateDocumentTab, addDocumentTab, clearDocumentInteractionState, notifyInstalledDocumentCompatibility, resetDocumentHistory, snapshotDocumentTab]);
+  }, [activateDocumentTab, addDocumentTab, clearDocumentInteractionState, notifyInstalledDocumentCompatibility, officeObjectId, resetDocumentHistory, snapshotDocumentTab]);
   const openDocumentContentsNowRef = useRef(openDocumentContentsNow);
   openDocumentContentsNowRef.current = openDocumentContentsNow;
   const documentOpenQueueRef = useRef<Promise<unknown>>(Promise.resolve());
@@ -10671,7 +10685,7 @@ export function MainWindow({
     void coordinator.openReactionConditions(tabId, { title, arrowId, draft }).catch(error => setStatus(`Reaction conditions could not open: ${String(error)}`));
   };
   useEffect(() => {
-    if (!isDesktopRuntime()) return;
+    if (officeObjectId || !isDesktopRuntime()) return;
     const coordinator = new DialogCoordinator(nativeDialogTransport, {
       fixAtomProblem: (tabId, action, version) => fixAtomProblemRef.current(tabId, action, version),
       vibeCodeGuideAction: action => vibeGuideActionRef.current(action),
@@ -10695,7 +10709,7 @@ export function MainWindow({
     });
     dialogCoordinatorRef.current = coordinator;
     return () => { dialogCoordinatorRef.current = undefined; void coordinator.dispose(); };
-  }, []);
+  }, [officeObjectId]);
 
   const openDroppedDocumentPaths = useCallback(async (paths: readonly string[]) => {
     await openDocumentBatch(paths.map(path => ({
@@ -10756,7 +10770,7 @@ export function MainWindow({
   }, [openDocumentContents]);
 
   useEffect(() => {
-    if (!isDesktopRuntime()) {
+    if (officeObjectId || !isDesktopRuntime()) {
       return undefined;
     }
 
@@ -10785,12 +10799,13 @@ export function MainWindow({
       consumeBatch: openNativePayloads,
       onError: error => setStatus(`Could not check pending open files: ${error instanceof Error ? error.message : String(error)}`)
     });
-  }, [openDocumentBatch]);
+  }, [officeObjectId, openDocumentBatch]);
 
   // Restore every tab before processing startup file opens (see documentSession.ts). If a user
   // already started editing while the read was pending, keep that work active and append the restored
   // tabs. Unreadable tabs stay in the envelope; an unreadable envelope keeps autosave closed.
   useEffect(() => {
+    if (officeObjectId) return undefined;
     if (documentSessionHydratedRef.current) {
       return undefined;
     }
@@ -10928,7 +10943,7 @@ export function MainWindow({
     return () => {
       active = false;
     };
-  }, [installDocumentTab, notifyInstalledDocumentCompatibility, snapshotDocumentTab, startWithFreshDocument]);
+  }, [installDocumentTab, notifyInstalledDocumentCompatibility, officeObjectId, snapshotDocumentTab, startWithFreshDocument]);
 
   // Write the working document + file association to the session file now. Reads refs only, so it
   // is stable and safe to call from the debounce below and from the quit flush. Gated on hydration
@@ -11012,14 +11027,14 @@ export function MainWindow({
   // Autosave (debounced) so a relaunch — or a crash — resumes the last edited state with no
   // explicit save.
   useEffect(() => {
-    if (!isDesktopRuntime()) {
+    if (officeObjectId || !isDesktopRuntime()) {
       return undefined;
     }
     const handle = window.setTimeout(() => {
       if (!quitCommittedRef.current) void writeDocumentSessionNow();
     }, DOCUMENT_SESSION_SAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
-  }, [document, fileState, documentTabs, activeDocumentTabId, viewport, openWarningsReport, saveWarningsReport, sessionStartupCompleted, writeDocumentSessionNow]);
+  }, [document, fileState, documentTabs, activeDocumentTabId, viewport, officeObjectId, openWarningsReport, saveWarningsReport, sessionStartupCompleted, writeDocumentSessionNow]);
 
 
   const lockCommittedQuit = useCallback(() => {
@@ -11064,7 +11079,7 @@ export function MainWindow({
   // Menu Quit / Cmd+Q on macOS, or closing the document window / File ▸ Exit elsewhere: Rust asks
   // for the pending autosave first so an edit inside the debounce window survives relaunch.
   useEffect(() => {
-    if (!isDesktopRuntime()) {
+    if (officeObjectId || !isDesktopRuntime()) {
       return undefined;
     }
     let unlisten: (() => void) | undefined;
@@ -11089,7 +11104,7 @@ export function MainWindow({
       disposed = true;
       unlisten?.();
     };
-  }, [lockCommittedQuit, writeQuitSession]);
+  }, [lockCommittedQuit, officeObjectId, writeQuitSession]);
 
   const cancelQuitRequest = useCallback(async (requestId: number) => {
     const reply = await cancelQuit(requestId);
@@ -11105,7 +11120,7 @@ export function MainWindow({
   }, [lockCommittedQuit]);
 
   useEffect(() => {
-    if (!isDesktopRuntime()) return;
+    if (officeObjectId || !isDesktopRuntime()) return;
     let disposed = false;
     const listeners: (() => void)[] = [];
     const keep = (listener: () => void) => { if (disposed) listener(); else listeners.push(listener); };
@@ -11160,7 +11175,7 @@ export function MainWindow({
       if (!disposed) await setQuitPromptEnabled(loadAskToSaveBeforeQuit());
     })().catch((error: unknown) => { setStatus("Quit preference unavailable: " + String(error)); });
     return () => { disposed = true; listeners.forEach((listener) => listener()); };
-  }, [snapshotDocumentTab, writeQuitSession, cancelQuitRequest, lockCommittedQuit]);
+  }, [snapshotDocumentTab, writeQuitSession, cancelQuitRequest, lockCommittedQuit, officeObjectId]);
 
   useEffect(() => {
     if (closeTabPrompt || !pendingQuitAfterCloseRef.current) return;
@@ -11207,7 +11222,7 @@ export function MainWindow({
 
   // The launch check: at most once a day, after startup has settled (same cadence as Sparkle's).
   useEffect(() => {
-    if (!appUpdatesSupported({ isDesktop: isDesktopRuntime(), platform: detectDesktopShortcutPlatform() })) {
+    if (officeObjectId || !appUpdatesSupported({ isDesktop: isDesktopRuntime(), platform: detectDesktopShortcutPlatform() })) {
       return undefined;
     }
     const handle = window.setTimeout(() => {
@@ -11216,7 +11231,7 @@ export function MainWindow({
       }
     }, AUTO_CHECK_DELAY_MS);
     return () => window.clearTimeout(handle);
-  }, []);
+  }, [officeObjectId]);
 
   // Bug and crash reports (problemReports.ts): an email draft the user reviews and sends themselves.
   const sendProblemReport = useCallback(async (kind: ProblemReportKind, brief: string, details?: string) => {
@@ -11483,6 +11498,17 @@ export function MainWindow({
 
   const saveCurrentDocument = useCallback((forceSaveAs: boolean) =>
     saveDocumentTabById(activeDocumentTabIdRef.current, forceSaveAs), [saveDocumentTabById]);
+
+  const officeObject = useOfficeObject(officeObjectId, {
+    installDocument: (opened) => {
+      resetDocumentHistory(opened);
+      clearDocumentInteractionState({ clearSpin3dModelCache: true });
+      return documentRef.current;
+    },
+    readDocument: documentForFlush,
+    setStatus,
+    invokeClose: () => { void invokeCommandRef.current(OFFICE_CLOSE_COMMAND_ID); }
+  });
 
   // Own a native suspension through the modal and its nested Save As panels.
   useEffect(() => {
@@ -12158,10 +12184,18 @@ export function MainWindow({
       register({ id: activateDocumentTabCommandId(tab.id), title: `Activate ${tab.title}`, icon: "open", source: "core" },
         () => activateDocumentTab(tab.id));
       register({ id: closeDocumentTabCommandId(tab.id), title: `Close ${tab.title}`, icon: "close", source: "core" },
-        () => requestCloseDocumentTab(tab.id));
+        async () => {
+          if (officeObjectId) await registry.invoke(OFFICE_CLOSE_COMMAND_ID);
+          else requestCloseDocumentTab(tab.id);
+        });
     });
+    register(officeObject.update, () => officeObject.run("update"));
+    register(officeObject.close, () => officeObject.run("close"));
     quickActions.forEach((action) => {
-      register(action, async () => {
+      const spec = officeObjectId && action.id === "document.save"
+        ? { ...action, enabled: officeObject.update.enabled, disabledReason: officeObject.update.disabledReason }
+        : action;
+      register(spec, async () => {
         if (action.id === convertTextToAtomLabelCommandId) {
           const result = selectedTextToAtomLabelResult(documentRef.current);
           if (result.disabledReason) {
@@ -12182,7 +12216,10 @@ export function MainWindow({
           if (result.message) setStatus(result.message);
           return;
         }
-        if (action.id === "document.closeTab") requestCloseDocumentTab();
+        if (action.id === "document.closeTab") {
+          if (officeObjectId) await registry.invoke(OFFICE_CLOSE_COMMAND_ID);
+          else requestCloseDocumentTab();
+        }
         if (action.id === "document.nextTab") cycleDocumentTab(1);
         if (action.id === "document.previousTab") cycleDocumentTab(-1);
         if (action.id === "document.new") {
@@ -12207,7 +12244,8 @@ export function MainWindow({
           await openDocumentFromNativePicker();
         }
         if (action.id === "document.save") {
-          await saveCurrentDocument(false);
+          if (officeObjectId) await registry.invoke(OFFICE_UPDATE_COMMAND_ID);
+          else await saveCurrentDocument(false);
         }
         if (action.id === "document.saveAs") {
           await saveCurrentDocument(true);
@@ -12859,6 +12897,7 @@ export function MainWindow({
     return bindings;
   }, [
     isSnapshotSessionActive, replacePresentDocument, prepareDocumentCommit, selectedNativeMoleculeParts,
+    officeObject, officeObjectId,
     customSwatchActions, tableActions, activeTableCell, bracketActions, clearScheduledTextEditorFocus,
     activateDocumentTab,
     newDocumentTab,
@@ -13150,9 +13189,9 @@ export function MainWindow({
     ...pluginRuntime.pluginMenuItems
   ], availablePluginUpdateCount), [availablePluginUpdateCount, bracketMenuItems, pluginRuntime.pluginMenuItems, structureSearchEnabled, hasSearchableStructure]);
   useEffect(() => {
-    if (!isTauriHost()) return;
+    if (officeObjectId || !isTauriHost()) return;
     void syncPluginNativeMenuItems(nativePluginMenuItems);
-  }, [nativePluginMenuItems]);
+  }, [nativePluginMenuItems, officeObjectId]);
 
   // Staleness (D-09): an open panel's report carries the source fingerprint it was computed against;
   // if the live molecule no longer matches (edited or removed), flag the panel as out of date.
@@ -14849,7 +14888,8 @@ export function MainWindow({
         void invokeCommandRef.current(textFormatCommand);
         return;
       }
-      if (commandId !== "document.save" && commandId !== "document.saveAs") return;
+      if (commandId !== "document.save" && commandId !== "document.saveAs" &&
+          !(officeObjectId && commandId === "document.closeTab")) return;
       // Cancel the browser/native accelerator fallback as well, so macOS cannot save twice.
       // Cmd+Q remains the native app.quit accelerator, which requests the shared draft flush;
       // Windows registers no Quit accelerator. Neither needs a second JS command binding.
@@ -14858,7 +14898,7 @@ export function MainWindow({
     };
     window.addEventListener("keydown", commandFromInlineEditor, true);
     return () => window.removeEventListener("keydown", commandFromInlineEditor, true);
-  }, [shortcutRegistry, shortcutPlatform]);
+  }, [officeObjectId, shortcutRegistry, shortcutPlatform]);
 
   useEffect(() => {
     const invokeCanvasKeyCommand = (commandId: string, rehitAfterEdit: boolean) => {
@@ -15525,6 +15565,7 @@ export function MainWindow({
   }, [effectiveNativePalette]);
 
   useEffect(() => {
+    if (officeObjectId) return;
     let active = true;
     let unlisten: (() => void) | undefined;
     let unlistenState: (() => void) | undefined;
@@ -15669,7 +15710,7 @@ export function MainWindow({
       unlistenCancel?.();
       unlistenInspector?.();
     };
-  }, []);
+  }, [officeObjectId]);
 
   // A freshly created palette window asks for the current layout state (its disk copy can be stale
   // while the save chain is flushing); answer with the live state so it never renders an old layout.
@@ -15860,10 +15901,11 @@ export function MainWindow({
   // following this later React update, so the Tauri page-load hook separately reasserts the same
   // baked label on the native NSWindow title bar. See AGENTS.md.
   useEffect(() => {
+    if (officeObjectId) return;
     const tab = documentTabs.find((candidate) => candidate.id === activeDocumentTabId);
     const name = fileState.path ? nativePathBasename(fileState.path) : tab?.title ?? document.title;
     window.document.title = `${name}${fileState.dirty ? " •" : ""} — ChemDraft${__WORKTREE_LABEL__ ? ` — ${__WORKTREE_LABEL__}` : ""}`;
-  }, [activeDocumentTabId, document.title, documentTabs, fileState]);
+  }, [activeDocumentTabId, document.title, documentTabs, fileState, officeObjectId]);
 
   const handleOpenFile = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -22469,7 +22511,7 @@ export function MainWindow({
 
   // The browser build has no native OS menu, so it renders the shared app-menu model in-viewport.
   // On the Tauri desktop build the native menu owns this, so the in-window bar stays hidden.
-  const showAppMenuBar = !isDesktopRuntime();
+  const showAppMenuBar = !!officeObjectId || !isDesktopRuntime();
   const appMenuSections = useMemo(
     () =>
       buildAppMenuModel({
@@ -22739,7 +22781,21 @@ export function MainWindow({
         onChange={handleMoleculeTemplateFile}
       />
 
-      {showAppMenuBar ? <MenuBar sections={appMenuSections} onInvoke={invoke} /> : null}
+      {officeObjectId ? (
+        <header>
+          <MenuBar sections={[officeObjectFileMenu(officeObject.update, officeObject.close,
+            shortcutPlatform ?? detectDesktopShortcutPlatform())]} onInvoke={invoke} />
+          {officeObject.update.enabled && visibleToolsetIds.has(DEFAULT_TOOLSET_ID) ? (
+            <div className="command-bar">
+              <ToolPalette title="Drawing tools" mode="floating" orientation="horizontal" activeTool={activeTool}
+                itemGroups={getToolsetPaletteGroups(DEFAULT_TOOLSET_ID, toolsetRegistry, shellCommandsById,
+                  compoundLayoutsEnabled, compoundLayoutSettings).map(group => group.items.filter(item =>
+                    item.primary.type === "command" && isDrawingToolCommand(item.primary.command.id)))}
+                onInvoke={invoke} />
+            </div>
+          ) : null}
+        </header>
+      ) : showAppMenuBar ? <MenuBar sections={appMenuSections} onInvoke={invoke} /> : null}
 
       {pluginManagerOpen ? (
         <PluginManagerDialog
@@ -22818,7 +22874,7 @@ export function MainWindow({
 
 
 
-      {!effectiveNativePalette
+      {!effectiveNativePalette && !officeObjectId
         ? visibleFloatingToolsets.map((toolset) => {
             const position = webPalettePositions[toolset.id] ?? defaultToolsetPosition(toolset.id, toolsetRegistry);
             const customizingThis = customizeMainToolbarActive && toolset.id === DEFAULT_TOOLSET_ID;
@@ -22975,8 +23031,8 @@ export function MainWindow({
           </section>
         </div>
       ) : null}
-      <section className="workspace workspace-with-tabs">
-        <div className="document-tab-strip">
+      <section className={officeObjectId ? "workspace" : "workspace workspace-with-tabs"}>
+        {!officeObjectId ? <div className="document-tab-strip">
           <div className="document-tab-list" role="tablist" aria-label="Open documents">
             {documentTabs.map((tab) => {
               const active = tab.id === activeDocumentTabId;
@@ -22996,11 +23052,12 @@ export function MainWindow({
           </div>
           <button type="button" className="document-tab-new" aria-label="New tab" title="New tab"
             onClick={() => void invoke("document.new")}><span aria-hidden="true">+</span></button>
-        </div>
+        </div> : null}
         <div className="document-viewport">
         <section
           ref={canvasRegionRef}
           tabIndex={-1}
+          inert={!!officeObjectId && officeObject.update.enabled === false}
           className={["canvas-region", rulersVisible ? "rulers-visible" : ""].filter(Boolean).join(" ")}
           aria-label="Document workspace"
           onPointerLeave={() => { pointerInsideCanvasRef.current = false; }}

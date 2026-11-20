@@ -14739,7 +14739,8 @@ export function selectionClipboardPlainText(
 }
 
 export function parseSelectionClipboardPayload(
-  text: string
+  text: string,
+  { allowEmpty = false }: { allowEmpty?: boolean } = {}
 ): ChemDraftSelectionClipboardPayload | undefined {
   try {
     const payload = JSON.parse(text) as Partial<ChemDraftSelectionClipboardPayload>;
@@ -14765,7 +14766,7 @@ export function parseSelectionClipboardPayload(
       pages: [{ ...empty.pages[0]!, objects: payload.objects }]
     });
     const objects = read.document.pages[0]!.objects;
-    if (objects.length === 0 || objects.length !== payload.objects.length) {
+    if ((!allowEmpty && objects.length === 0) || objects.length !== payload.objects.length) {
       return undefined;
     }
 

@@ -28,7 +28,7 @@ export interface NativePromptOptions {
   kind: "info" | "warning" | "error";
   choices: readonly NativePromptChoice[];
   /** Tauri parents message boxes to the invoking window on both desktop platforms. */
-  owner?: "document";
+  owner?: "document" | "office-object";
   /** Prompts in the same queue wait for the actual box to close, even if its caller aborts. */
   serializationKey?: string;
 }
@@ -133,12 +133,21 @@ async function showNativePrompt(prompt: NativePromptOptions, fallback: NativePro
     if (prompt.owner === "document" && getCurrentWindow().label !== "main") {
       throw new Error(`A document-owned prompt must be invoked from the main window on ${platform}.`);
     }
-    result = await withNativeUtilitySuspension(async () => {
+    const showMessage = async () => {
       if (signal?.aborted) return cancel.label;
       const response = message(prompt.message, { title: prompt.title, kind: prompt.kind, buttons });
       await onShowing?.();
       return response;
-    });
+    };
+    if (prompt.owner === "office-object") {
+      if (!getCurrentWindow().label.startsWith("office-object-")) {
+        throw new Error("An Office prompt must be invoked from its embedded drawing window.");
+      }
+      // The floating utility windows belong to the main window, which alone can suspend them.
+      result = await showMessage();
+    } else {
+      result = await withNativeUtilitySuspension(showMessage);
+    }
   } catch (error) {
     if (signal?.aborted) return cancel.id;
     console.error("Native prompt failed", error);

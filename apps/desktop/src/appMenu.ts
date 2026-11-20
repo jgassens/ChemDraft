@@ -5,6 +5,7 @@ import { STRUCTURE_SEARCH_DEFAULT_ENABLED } from "./structureSearchSettings";
 import { convertTextToAtomLabelCommandId, nativeStylePresetActions } from "./commands";
 import { formatShortcutLabel } from "./toolsets";
 import { VIBE_CODE_STARTER_COMMAND_ID, vibeCodeStarterCommand } from "./commands/vibeCodeStarter";
+import type { CommandSpec } from "./commands";
 
 /**
  * Declarative model for the in-viewport application menu bar.
@@ -192,6 +193,19 @@ function command(
     enabled: options.enabled ?? true,
     checked: options.checked,
     nativePredefined: options.nativePredefined
+  };
+}
+
+/** The embedded editor has its own File menu in its document window. */
+export function officeObjectFileMenu(update: CommandSpec, close: CommandSpec, platform?: ShortcutPlatform): AppMenuSection {
+  return {
+    id: "file",
+    label: "File",
+    items: [
+      { ...command("document.save", "Save", { enabled: update.enabled }), shortcut: formatMenuShortcut("Cmd+S", platform) },
+      command(update.id, update.title, { enabled: update.enabled }),
+      { ...command(close.id, close.title, { enabled: close.enabled }), shortcut: formatMenuShortcut("Cmd+W", platform) }
+    ]
   };
 }
 
