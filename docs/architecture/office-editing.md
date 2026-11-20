@@ -9,9 +9,14 @@ A user edits a ChemDraft structure without leaving Word or PowerPoint, on macOS 
 document keeps working when it moves between the two.
 
 Every structure ChemDraft puts into Office is a high-DPI PNG carrying the ChemDraft drawing in a
-zTXt chunk (the **carrier**). Phase 0 showed that this PNG is saved byte-identical by Word and
-PowerPoint on both platforms and survives Mac↔Windows moves. Everything below reads and writes that
-carrier; nothing depends on a second copy of the drawing.
+text chunk inside the PNG (the **carrier**; today an uncompressed iTXt chunk with the keyword
+`application/x-chemdraft-selection+json`, written by `packages/clipboard-adapter/src/pngSelection.ts`).
+Phase 0 showed that this PNG is saved byte-identical by Word and PowerPoint on both platforms and
+survives Mac↔Windows moves. Everything below reads and writes that carrier; nothing depends on a
+second copy of the drawing.
+
+ChemDraft can write the carrier today but cannot read it back: no paste path reads the carrier, GVML
+or EMF+ yet. Slice 1 adds the reader.
 
 ## Words used here
 
@@ -26,147 +31,178 @@ carrier; nothing depends on a second copy of the drawing.
 
 ## Answers
 
-### 1. Task-pane add-in that edits the selected picture: yes, on both platforms
+### 1. Task-pane add-in that edits the selected picture: the best route, pending one measurement
 
-This is the core of the design. The pane hosts ChemDraft's web editor (the same build as the web
-app). The user selects a structure picture; the pane reads its carrier, opens it in the editor, and
-on **Update** replaces the picture in place.
+The pane hosts ChemDraft's editor. The user selects a structure picture; the pane reads its carrier,
+opens it in the editor, and on **Update** puts the edited picture where the old one was.
+
+Microsoft documents the APIs below, but **does not promise that any read route returns the picture's
+stored bytes unchanged**, and the carrier lives in those bytes. Slice 1 therefore starts with a
+feasibility gate (see Slices) and the add-in is built only if it passes.
 
 | Step | Word | PowerPoint |
 | --- | --- | --- |
 | Find the selected picture | `document.getSelection()`; `inlinePictures` for inline pictures, the OOXML of the range for floating ones | `presentation.getSelectedShapes()` (PowerPointApi 1.5) |
-| Read the original PNG bytes | `range.getOoxml()` returns the selection as a flat Office package with each picture's original bytes in `pkg:binaryData` | `slide.exportAsBase64()` (PowerPointApi 1.8) returns the slide as a one-slide .pptx; the add-in unzips it and follows the shape's `r:embed` to `ppt/media/…` |
-| Check the carrier | Same reader the desktop app uses for paste; refuse a picture whose carrier is missing or invalid | Same |
-| Replace in place | `insertOoxml(…, "Replace")` with the new PNG and the old size, wrapping and position; `insertInlinePictureFromBase64(…, "Replace")` for inline pictures if OOXML loses anything | `setSelectedDataAsync` with `coercionType: Image` and the old shape's left, top, width and height, then delete the old shape |
-| Mark ChemDraft pictures | Picture alt-text description holds a short marker; the carrier stays the source of truth | Shape tag `CHEMDRAFT` (PowerPointApi 1.3) as a fast filter; the carrier stays the source of truth |
-| Undo | One Office undo step per update where Office allows; verified per platform | Same |
+| Read the stored PNG (first choice) | `range.getOoxml()`: a flat Office package with each picture in `pkg:binaryData` | `slide.exportAsBase64()` (PowerPointApi 1.8): the slide as a one-slide .pptx; follow the shape's `r:embed` to `ppt/media/…` |
+| Read the stored PNG (fallback) | `Office.context.document.getFileAsync(Office.FileType.Compressed)`: the whole .docx in slices, on web, Windows and Mac, including older perpetual Office | Same, for the whole .pptx |
+| Check the carrier | New reader in `clipboard-adapter`, beside the writer; refuse a picture whose carrier is missing or invalid | Same |
+| Replace (first choice) | `insertOoxml(…, "Replace")` with the new PNG and the old size, wrapping and position; `insertInlinePictureFromBase64(…, "Replace")` for inline pictures | `shape.fill.setImage(base64)` (PowerPointApi 1.8): changes the image of the existing shape, so its ID, tags, group, rotation and z-order stay |
+| Replace (fallback) | — | Insert with `setSelectedDataAsync` (`coercionType: Image`, old left/top/width/height), restore z-order with `shape.setZOrder` (1.8) and the tag, then delete the old shape |
+| Refuse | Pictures the measurements show cannot be replaced faithfully | Grouped, cropped or rotated pictures unless `fill.setImage` handles them; never silently drop shape state |
+| Mark ChemDraft pictures | Alt-text description holds a short marker; the carrier stays the source of truth | Shape tag `CHEMDRAFT` (PowerPointApi 1.3) as a fast filter; the carrier stays the source of truth |
 
-Not used, and why:
+PowerPointApi 1.8 is available in PowerPoint on the web, Windows Microsoft 365 version 2504 and
+later, and Mac 16.96 and later; not in volume-licensed perpetual or LTSC versions. Those get the
+`getFileAsync` read route and the insert fallback, or a clear "needs a newer PowerPoint" message.
 
-- `InlinePicture.getBase64ImageSrc()` (Word) and `Shape.getImageAsBase64()` (PowerPoint) are not
-  documented to return the stored bytes, and the PowerPoint one renders a new image, which has no
-  carrier. They are only a fallback to measure.
-- `ShapeCollection.addPicture` (PowerPoint) is still preview-only; Microsoft says not to use preview
-  APIs in production. Switch to it when it is in a released set, because it can replace a picture
-  without going through the selection.
+Not used:
 
-Size rule: the new PNG is written at the same physical size the old picture showed at (or scaled
-by the same factor if the user resized it), so a fixed figure does not jump.
+- `InlinePicture.getBase64ImageSrc()` (Word) and `Shape.getImageAsBase64()` (PowerPoint, 1.10)
+  render or re-encode; neither is documented to return the stored bytes.
+- `ShapeCollection.addPicture` (PowerPoint) is still preview-only, and Microsoft says not to use
+  preview APIs in production.
+
+Size rule: the new PNG is written at the same physical size the old picture showed at (or scaled by
+the same factor if the user resized it), so a figure does not jump.
 
 Chemistry rule (AGENTS.md §7): the pane round-trips the drawing through the same `chem-core`
 serializer as the desktop app, and slice 1 tests compare canonical SMILES before and after an
-edit-free open/update.
+edit-free open and update.
 
-### 2. PowerPoint content add-in on the slide: possible, not recommended as the main path
+### 2. PowerPoint content add-in on the slide: possible, not recommended
 
 A content add-in can show the editor directly on the slide and edit there. Office saves a snapshot
 picture with it (`AllowSnapshot`, on by default), which is what anyone without the add-in sees, and
 what desktop PowerPoint prints and exports. Against it:
 
 - PowerPoint only; Word has no content add-ins.
-- Reported blank output when printing or exporting to PDF from PowerPoint on the web.
+- Users report blank output when printing or exporting to PDF from PowerPoint on the web.
 - The object is not a picture: copying it into Word, email or another program gives the snapshot,
-  without a carrier, so the structure stops being editable the moment it leaves the slide.
-- Every viewer without the add-in sees a static snapshot rather than our high-DPI carrier PNG.
-
-Kept as a possible later option for live slides; the picture plus task pane covers both apps with
-one design.
+  without a carrier, so the structure stops being editable once it leaves the slide.
+- Viewers without the add-in see a static snapshot rather than our high-DPI carrier PNG.
 
 ### 3. Selecting a structure opens it automatically: yes, once the pane is open
 
 `DocumentSelectionChanged` fires in Word and PowerPoint on all three platforms. While the pane is
 open, selecting a ChemDraft picture loads it into the editor with no click, and selecting anything
-else shows "Select a ChemDraft structure". That is the closest an add-in gets to double-click:
-Office.js has no double-click hook, and since a February 2026 change an add-in can no longer open its
-own pane without a user action. The ribbon gets an **Edit Structure** button that opens the pane.
+else shows "Select a ChemDraft structure". Office.js has no double-click hook, so this is the closest
+an add-in gets. The pane opens from an **Edit Structure** ribbon button; `showAsTaskpane` is also
+available for store add-ins, while the auto-open-with-document setting is being restricted by
+Microsoft, so the design does not rely on it.
 
-### 4. Windows double-click: yes, through a ChemDraft OLE server
+### 4. Windows double-click: yes, through a ChemDraft OLE server, with known blockers
 
 On Windows ChemDraft can register its own OLE class (`ChemDraft.Structure`, its own CLSID; never
-another program's class and never `.cdxml`). Office stores the object as a native data stream plus
-a cached picture. Double-click calls ChemDraft, which opens the structure in an editing window and
-writes the result back to the object when the user saves or closes it (open editing, not in-place
-editing inside the Office window).
+another program's class and never `.cdxml`), per user, as an out-of-process server (`LocalServer32`,
+which works for both 32- and 64-bit Office). Office stores the object as a native data stream plus
+a cached picture. Double-click asks ChemDraft to open the structure in an editing window and write
+the result back when the user saves or closes it (open editing, not editing inside the Office
+window).
 
-The cached picture is written as an EMF holding our carrier PNG in an EMF+ image record, the form
-Phase 0 already showed PowerPoint keeps and our reader understands, so the object still carries the
-drawing.
+Plan for the cached picture: an EMF holding our carrier PNG in an EMF+ image record, the form Phase
+0 saw PowerPoint use. **Unproven:** ChemDraft has no EMF writer yet, and whether Office keeps, prints
+and refreshes such a cache is unmeasured.
 
-**macOS has no third-party OLE.** Office for Mac embeds only Microsoft's own object types; other
-objects show as their cached picture and double-click reports a missing server. So on a Mac:
+Blockers to handle with a clear message, and test:
+
+- **Protected View** opens documents read-only; activation does not work there.
+- **Policy**: the Microsoft 365 Apps security baseline can turn off OLE active content in
+  PowerPoint, and Office can block individual OLE classes (the COM "kill bit" list).
+
+**macOS has no third-party OLE.** Office for Mac embeds only Microsoft's own object types (Microsoft
+documents this thinly; the Mac Office forums and other vendors' support pages agree). Other objects
+show as their cached picture and double-click reports a missing server. So on a Mac:
 
 - The OLE object displays its cached picture.
-- The add-in still edits it: the object's package (`oleObject*.bin`) is inside the Word OOXML and the
-  PowerPoint slide export, so the add-in reads our native stream from it. On update it replaces the
-  object with a carrier picture, because Office.js cannot create an OLE object on PowerPoint, and
-  says so in the pane. In Word it can write the OLE object back through OOXML; slice 2 measures
-  whether Word accepts that.
+- The add-in may still edit it: the object's package (`oleObject*.bin`) is part of the Word OOXML,
+  the PowerPoint slide export and the `getFileAsync` file, so the add-in can read our native stream
+  from it if those routes return it intact (measured in slice 2). On update it replaces the object
+  with a carrier picture, because Office.js cannot create an OLE object in PowerPoint, and says so in
+  the pane. In Word it may write the OLE object back through OOXML; slice 2 measures whether Word
+  accepts that.
 
 ### 5. Distribution and where the add-in's code lives
 
 | Route | Who | Notes |
 | --- | --- | --- |
-| Microsoft AppSource (store) | Everyone | The production route. Free listing; Microsoft validates the add-in. Users add it from Office's Add-ins button, on any platform, and it follows their Microsoft account. |
-| Installed by ChemDraft | Preview and testing | ChemDraft can write the manifest where Office looks for developer add-ins: the `wef` folder in Word's and PowerPoint's containers on macOS, `HKCU\Software\Microsoft\Office\16.0\Wef\Developer` on Windows. Microsoft describes this as sideloading for testing; fine for previews, not the release route. Behind a preference, off by default. |
-| Organization deployment | Labs and companies | The Microsoft 365 admin can push it to everyone. Works with the same manifest. |
+| Microsoft AppSource (store) | Everyone | The production route. Free listing; Microsoft validates the add-in. Users add it from Office's Add-ins button on any platform, and it follows their Microsoft account. |
+| Installed by ChemDraft, Windows, after AppSource listing | Windows users of the app | Microsoft supports a Windows installer registering a published store add-in (`WefAutoInstallAddins`). The ChemDraft installer can offer this. |
+| Installed by ChemDraft, preview | Testing | The developer locations: the `wef` folder in Word's and PowerPoint's containers on macOS, `HKCU\Software\Microsoft\Office\16.0\Wef\Developer` on Windows. Microsoft describes this as sideloading for testing. Behind a preference, off by default; never the release route. |
+| Organization deployment | Labs and companies | The Microsoft 365 admin pushes it to everyone, on Windows, Mac and the web, subject to tenant requirements. |
 
-- **Manifest**: the add-in-only XML manifest. The unified manifest cannot be sideloaded on Mac or the
-  web.
+- **Manifest**: the add-in-only XML manifest, because it works in every Office version we want,
+  including perpetual Office, and with the simple preview install above. (The unified manifest is
+  now supported on the web and on Word and PowerPoint for Mac 16.103 and later; it can be adopted
+  later.)
 - **Hosting**: the pane's web code is served over HTTPS from `https://chemdraft.ai/office/<version>/`,
-  versioned so a document opened by an older add-in keeps working. It contains no secrets and makes
-  no other network calls: the editor, chemistry engines and carrier reader are all bundled.
-- **Offline**: Office needs to reach the hosting site to load the pane; offline behavior is not
-  guaranteed (Office may use its cache). Without the pane the user still has the desktop route:
-  copy the picture into ChemDraft (paste reads GVML and the carrier), edit, and copy back.
+  versioned so older documents keep working with the add-in version that is installed. The editor,
+  chemistry engines and carrier reader are bundled with it.
+- **Network**: Office.js itself must be loaded from Microsoft's CDN (Microsoft says not to bundle it),
+  so the pane needs `appsforoffice.microsoft.com` and `chemdraft.ai`, and nothing else. If Office.js
+  does not load within 10 seconds the pane says the network may be blocking it.
+- **Offline**: Office needs both sites to load the pane; offline behavior is not guaranteed (Office
+  may use its cache). Without the pane, the planned desktop route is: copy the picture into ChemDraft,
+  edit, copy back. That needs the paste-side carrier reader (slice 1) and GVML reading (slice 3).
 - **AGENTS.md §13 allowlists**: the add-in runs inside Office, not inside the ChemDraft app, so it
-  adds nothing to `src-tauri/capabilities/`. The app gains no network path. Writing the manifest
-  (preview route) is a local file or registry write behind a preference.
-- **Plugin or core**: the add-in is a separate product surface built from shared packages
-  (`chem-core`, `layout-engine`, `export-engine`, the carrier reader). It lives in its own workspace
-  package `apps/office-addin`, importing packages and never `apps/desktop` (same rule as the CLI).
+  adds nothing to `src-tauri/capabilities/`. The app gains no network path. Installing the manifest
+  is a local file or registry write behind a preference.
+- **Where the code lives**: the editor is part of `apps/desktop`, and packages must not import
+  `apps/`. So the pane is a second web entry of the desktop app's web build (`office.html`), running
+  the same editor in an "Office host" mode, with the Word and PowerPoint adapters in
+  `apps/desktop/src/office/`. The carrier reader and the OOXML and .pptx lookups are pure functions
+  in `packages/clipboard-adapter`, shared with the desktop paste path. The manifest lives in
+  `apps/desktop/office/`.
 
 ## Recommendation
 
-1. **Build the task-pane add-in first (slice 1).** It is the only route that gives direct editing on
-   Mac, Windows and the web, in both apps, with one code base, and it works on every carrier PNG
-   already in users' documents.
-2. **Add the Windows OLE server second (slice 2)** for true double-click on Windows, writing the same
-   carrier so the add-in can edit those objects on a Mac.
-3. **Then paste of embedded objects and .pptx import (slice 3)**: read the "Embedded Object" clipboard
-   format and OLE packages in documents, on both platforms.
+1. **Run the slice 1 feasibility gate first.** If Word and PowerPoint return the stored PNG intact on
+   Mac and Windows through one of the read routes, and PowerPoint can replace a picture faithfully,
+   build the task-pane add-in. It is the only route that gives direct editing on Mac, Windows and the
+   web, in both apps, with one code base.
+2. **Add the Windows OLE server second** for true double-click on Windows, after measuring the EMF
+   cache and the Protected View and policy cases.
+3. **Then paste of embedded objects and .pptx import (slice 3).**
 4. Do not build a PowerPoint content add-in now.
+
+If the gate fails on a platform, the fallback there is the desktop route (copy into ChemDraft, edit,
+paste back) with the OLE server on Windows; the owner decides before more is built.
 
 ## Slices
 
-### Slice 1: task-pane add-in, both platforms
+### Slice 1a: feasibility gate
 
-- `apps/office-addin`: manifest, pane UI (editor, Update, Cancel, status line), Word and PowerPoint
-  adapters behind one interface, selection-change loading.
-- A shared, pure carrier package (read and write PNG zTXt/iTXt, OOXML picture lookup, slide-export
-  lookup), used by the add-in and by the desktop paste path. Moved out of the app, not copied.
-- Tests: carrier round trip; canonical SMILES before and after open/update; OOXML and pptx fixtures
-  for inline, floating, resized and grouped pictures; a refusal for pictures without a carrier.
-- Measurements on both platforms, recorded in this file: whether `getOoxml` returns the original
-  PNG bytes; whether replacement keeps size, position, wrapping and z-order; undo behavior; Word and
-  PowerPoint on Mac and Windows, and on the web.
-- Preview install: the ChemDraft preference that writes the developer manifest, on both platforms.
+A minimal add-in (no editor) with buttons that, for the selected picture, read the PNG through each
+route and report its SHA-256 and whether the carrier is valid, and replace it with a fixed test PNG.
+Run on Word and PowerPoint, Mac and Windows (the web if time allows), against carrier PNGs pasted by
+ChemDraft, and record here:
+
+- `getOoxml`, `exportAsBase64` and `getFileAsync`: stored PNG byte-identical, yes or no.
+- PowerPoint `fill.setImage`: carrier kept after save and reopen; ID, tag, group, crop, rotation and
+  z-order kept; number of undo steps.
+- Word `insertOoxml` and `insertInlinePictureFromBase64` Replace: size, wrapping, position kept; undo.
+- The insert-and-delete fallback: what it loses.
+
+### Slice 1b: the add-in (only if 1a passes)
+
+- Carrier reader (iTXt, and zTXt for older carriers) and OOXML and .pptx lookups in
+  `clipboard-adapter`, with tests; the desktop paste path reads the carrier from a PNG.
+- `office.html` entry, Office host mode, pane UI (editor, Update, Cancel, status line), Word and
+  PowerPoint adapters behind one interface, selection-change loading.
+- Tests: carrier round trip; canonical SMILES before and after open and update; OOXML and .pptx
+  fixtures for inline, floating, resized and grouped pictures; refusal for pictures without a
+  carrier.
+- Preview install preference on both platforms; manifest validation.
 
 ### Slice 2: Windows OLE server
 
-- Out-of-process COM server in the Tauri app (Windows only, with the macOS side a documented no-op),
-  registered per user by the installer; open editing; EMF cached picture with the carrier.
-- Mac: add-in reads OLE packages; measure what Word for Mac shows and keeps.
+- Out-of-process COM server in the Tauri app (Windows only; on macOS the menu and registration code
+  are absent, compiled out with a matching `cfg` side), registered per user by the installer; open
+  editing; EMF cached picture with the carrier.
+- Tests and measurements: default settings, Protected View, the security baseline, 32- and 64-bit
+  Office; cache rendering, printing and refresh.
+- Mac: the add-in reads OLE packages; measure what Word for Mac shows and keeps.
 
 ### Slice 3: embedded objects and .pptx import
 
-- Paste of the "Embedded Object" clipboard format (Windows) and GVML (both) holding a ChemDraft OLE
-  package; import structures from a .pptx or .docx file.
-
-## Open questions to measure in slice 1
-
-- Does Word's `getOoxml` return the stored PNG byte-identical on Mac and Windows?
-- Does PowerPoint's `exportAsBase64` keep the original media, and is it fast enough on large decks
-  (it exports one slide)?
-- Can a PowerPoint picture be replaced in a single undo step, or does select-insert-delete take two?
-- Is PowerPointApi 1.8 available in the Office versions we target (Microsoft 365 current channel on
-  both platforms)? If not, the fallback for reading is not yet known.
+- Paste of the "Embedded Object" clipboard format (Windows) and of GVML (both platforms) holding a
+  ChemDraft carrier or OLE package; import structures from a .pptx or .docx file.
