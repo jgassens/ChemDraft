@@ -38,7 +38,7 @@ Crystal Builder; see the 2026-11-20 row under "Test results"), the owner asked f
 2. **The reverse must be possible, and comes last.** Export a MOF unit cell from Crystal Builder and
    bring it into ChemDraft as a 3D object that can be moved and rotated on the page. This is Phase 5,
    scheduled after the one-click send ships. It needs a new native object in `chem-core` and touches
-   the charter's "3D molecular visualization" non-goal (PLAN.md §5), so it waits on owner question 7.
+   the charter's "3D molecular visualization" non-goal (PLAN.md §5), which the owner lifted for this object on 2026-11-20 (question 7).
 
 ## Context
 
@@ -456,7 +456,7 @@ Remove Plugins** on macOS and Windows; update check finds a newer release. Kimi 
 
 Goal: a MOF built in Crystal Builder comes back into ChemDraft as **one object on the page that can be
 moved, rotated in 3D, and exported**, not flattened into a 2D drawing. Starts only after Phase 3 ships
-and owner question 7 is answered.
+(owner question 7 answered yes, 2026-11-20).
 
 Why it is its own phase:
 
@@ -472,15 +472,13 @@ Recommended shape (if the owner says yes):
 
 | Piece | Where | What |
 |---|---|---|
-| 5A Native object | `chem-core` (type, Zod schema, migration), `plugin-api` type, version bump | `crystal3d`: atoms (element, label, fractional or Cartesian Å), bonds with periodic image offsets, cell (a, b, c, α, β, γ), space group as read, repeat (1–4 per axis), a view rotation, and provenance (file name, source app, formula). Read-only chemistry: analyzers return `unsupported` ("periodic structure") |
+| 5A Native object | `chem-core` (type, Zod schema, migration), `plugin-api` type, version bump, PLAN.md §5 non-goal wording | `crystal3d`: atoms (element, label, fractional or Cartesian Å), bonds with periodic image offsets, cell (a, b, c, α, β, γ), space group as read, repeat (1–4 per axis), a view rotation, and provenance (file name, source app, formula). Read-only chemistry: analyzers return `unsupported` ("periodic structure") |
 | 5B Drawing and rotation | `layout-engine` (projection, depth cues, cell edges; §9 says this math lives there only), `apps/desktop/src/interaction/` (drag-rotate, reusing the Spin 3D `ScreenPlacement` contract) | Shown as a ball-and-stick or stick projection with the cell box; move like any object; drag inside it to rotate; typed angles; repeat cells; the rotation is saved |
 | 5C Import | plugin importer contribution (`.cif`), host open dialog | The user exports or saves a CIF in Crystal Builder and opens or drops it in ChemDraft; one labelled undo entry, new object selected (§4.4). Malformed CIF fails with a specific message (§13) |
 | 5D Export | `export-engine` | SVG and PDF draw the current projection exactly as the canvas does; CDXML writes the projection as graphics with a warning that the 3D cell is not kept; the native `.chemdraft` file keeps everything; **Send back to Crystal Builder** re-sends the stored CIF unchanged |
 | 5E Optional automation | plugin | "Bring back from Crystal Builder" after a 2H build: the host already holds the output CIF from `runCompanion`, so one command inserts it as a `crystal3d` object, with no file dialog |
 
-Fallback if the owner keeps the non-goal: a plugin panel (its own native window, §12) that shows the
-cell in 3D and inserts a **picture** of the current view on the page, clearly an image, not chemistry.
-Rotatable on the page it would not be.
+The picture-only fallback was considered and dropped (owner, 2026-11-20).
 
 ## Open questions
 
@@ -498,10 +496,10 @@ For the owner:
    `document.write` permission), or keep "draw an atom labelled X" as the only way? Recommended: ship
    without it first; add it if the demo feels clumsy. (2026-11-20: less needed now; the automatic
    cut in Decision 1b covers the common case.)
-7. **A 3D object in the core (Phase 5).** Lift the "3D molecular visualization" non-goal (PLAN.md §5)
-   enough to add one native `crystal3d` object that can be moved, rotated, and exported? Recommended:
-   yes, for the release after the one-command build ships, because a framework cannot be shown
-   honestly as a 2D drawing. If no: the picture-only fallback in Phase 5.
+7. ~~**A 3D object in the core (Phase 5).**~~ **Answered yes (owner, 2026-11-20):** the "3D molecular
+   visualization" non-goal (PLAN.md §5) is lifted for one native `crystal3d` object that can be moved,
+   rotated, and exported. The picture-only fallback is dropped. The PLAN.md §5 wording changes in
+   Phase 5's first pull request (task 5A), not before, since nothing touches `main` until 1.2 ships.
 8. **`runCompanion` scope.** The new host method runs a tool inside an app the user picked, from a
    template fixed in the plugin's manifest. It is general (any plugin could declare one) but tightly
    bounded (rule 11). Accept it as general, or allow it only for official catalog plugins at first?
