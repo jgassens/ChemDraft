@@ -542,8 +542,9 @@ For the owner:
    `orientation=alternating` to `mof.build` for nets whose nodes sit on a bipartite lattice, with
    MOF-5 as its test. The builder stays the one place that builds frameworks, and the plugin only
    passes a parameter. This reverses the "no contact with the author" decision for this one item.
-   (b) The plugin corrects the output itself, as the 2026-11-20 script did. Fast, but ChemDraft would
-   then own crystallography code for another program's output.
+   ~~(b) The plugin corrects the output itself.~~ **Rejected (owner, 2026-11-20):** it would need a
+   hand-written fix for each net and node whose default build is wrong, so the plugin would have to
+   know how to build MOFs. The plugin builds nothing; Crystal Builder builds, the plugin only checks.
    (c) Drop the Zn → pcu/N16 suggestion until (a) lands; the user can still build pcu by hand, and the
    target check keeps it from being called MOF-5.
    Recommended: (a), with (c) as the state at 2H if (a) has not merged by then.
