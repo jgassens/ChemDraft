@@ -88,7 +88,9 @@ function presentationReport(name, bytes, expected) {
     if (bytes.length < 4) throw new Error('Truncated clipboard format marker');
     const marker = bytes.readUInt32LE(0);
     let at = 4;
-    if (marker === 0xffffffff || marker === 0xfffffffe) {
+    if (marker === 0) {
+      throw new Error('OLEPresentationStream ClipboardFormat marker 0 is invalid');
+    } else if (marker === 0xffffffff || marker === 0xfffffffe) {
       if (bytes.length < 8) throw new Error('Truncated standard clipboard format');
       const id = bytes.readUInt32LE(at);
       clipboardFormat = { id, name: clipboardFormats[id] ?? null };

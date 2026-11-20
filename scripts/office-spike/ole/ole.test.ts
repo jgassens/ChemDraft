@@ -489,6 +489,18 @@ describe('Office packages', () => {
     expect(truncated.error).toBeNull();
   });
 
+  it('rejects an OLEPresentationStream with ClipboardFormat marker zero', () => {
+    const invalid = Buffer.from(cachedPresentation(14, Buffer.from('data')));
+    invalid.writeUInt32LE(0, 0);
+    const [object] = inspectOle(writeZip([
+      ['word/embeddings/oleObject0.bin', compoundWithCache(invalid)],
+    ])).oleObjects;
+    expect(object.presentations).toMatchObject([{
+      name: '\x02OlePres000', clipboardFormat: null, preview: null,
+      error: 'OLEPresentationStream ClipboardFormat marker 0 is invalid',
+    }]);
+  });
+
   it('distinguishes missing OLE markup targets and a dangling preview relationship', () => {
     const manifest = JSON.parse(readFileSync(join(output, 'manifest.json'), 'utf8'));
     const edited = Buffer.from('{"changed":true}');
