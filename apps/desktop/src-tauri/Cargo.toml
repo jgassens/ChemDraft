@@ -16,6 +16,7 @@ tauri-build = { version = "2", features = [] }
 # Already locked through Tauri; permanent, opt-in native activation diagnostics.
 log = "=0.4.30"
 base64 = "0.22"
+cfb = "=0.7.3"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 flate2 = "1"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "gif", "tiff"] }

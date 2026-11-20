@@ -26,6 +26,8 @@ mod network_error;
 #[cfg(test)]
 mod network_test_http;
 mod ocsr_engine;
+#[cfg(any(windows, test))]
+mod office_ole;
 mod opsin;
 mod panel_full_size;
 mod panel_window;
