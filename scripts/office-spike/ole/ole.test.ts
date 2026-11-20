@@ -314,22 +314,37 @@ describe('Office packages', () => {
 
     const rel = xml(posix.join(posix.dirname(part), '_rels', posix.basename(part) + '.rels'));
     const body = xml(part);
+    const assertWordPictureShapeType = (markup: string) => {
+      const shapetype = markup.match(/<v:shapetype\b[^>]*id="_x0000_t75"[\s\S]*?<\/v:shapetype>/)?.[0];
+      expect(shapetype).toBeDefined();
+      expect(shapetype).toMatch(/<v:shapetype\b[^>]*stroked="f"[^>]*filled="f"/);
+      expect(shapetype).toContain('path="m@4@5l@4@11@9@11@9@5xe" o:preferrelative="t" o:spt="75"');
+      const formulas = [...shapetype!.matchAll(/<v:f\b([^>]*)\/>/g)];
+      expect(formulas).toHaveLength(12);
+      expect(formulas.every(([, attrs]) => /\beqn="[^"]+"/.test(attrs))).toBe(true);
+      expect(formulas.some(([, attrs]) => /\beq=/.test(attrs))).toBe(false);
+      expect(shapetype).toContain('<v:path o:extrusionok="f" gradientshapeok="t" o:connecttype="rect"/>');
+      expect(shapetype).toContain('<o:lock v:ext="edit" aspectratio="t"/>');
+    };
     const prefix = base === 'ppt' ? '../' : '';
     const imageId = base === 'ppt' ? 3 : 1;
     expect(rel).toMatch(`Id="rId${imageId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="${prefix}media/image1.emf"`);
     expect(rel).toMatch(`Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject" Target="${prefix}embeddings/oleObject1.bin"`);
     if (base === 'word') {
+      assertWordPictureShapeType(body);
       expect(body).toMatch(/<w:object\b[\s\S]*<v:shape\b[\s\S]*<v:imagedata r:id="rId1"[\s\S]*<\/v:shape>/);
       expect(body).toMatch(/<o:OLEObject Type="Embed" ProgID="ChemDraft\.Structure\.Probe"[^>]*r:id="rId2"/);
       expect(types).toContain('PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"');
       expect(rel).toContain('/settings" Target="settings.xml"');
       expect(xml('word/settings.xml')).toMatch(/<w:compat>\s*<w:compatSetting w:name="compatibilityMode" w:uri="http:\/\/schemas.microsoft.com\/office\/word" w:val="15"\/>\s*<\/w:compat>/);
     } else {
+      const vml = xml('ppt/drawings/vmlDrawing1.vml');
+      assertWordPictureShapeType(vml);
       expect(body).toMatch(/<p:graphicFrame>[\s\S]*<a:graphicData uri="[^"]+\/ole">/);
       expect(body).toMatch(/<mc:Choice Requires="v"><p:oleObj[^>]*r:id="rId2"[^>]*spid="_x0000_s1025"><p:embed\/>/);
       expect(body).toMatch(/<mc:Fallback><p:oleObj[^>]*r:id="rId2"[^>]*progId="ChemDraft\.Structure\.Probe"><p:embed\/><p:pic>[\s\S]*<a:blip r:embed="rId3"/);
       expect(rel).toMatch(/relationships\/vmlDrawing" Target="\.\.\/drawings\/vmlDrawing1\.vml"/);
-      expect(xml('ppt/drawings/vmlDrawing1.vml')).toMatch(/<v:shape id="_x0000_s1025"[^>]*>\s*<v:imagedata o:relid="rId1"/);
+      expect(vml).toMatch(/<v:shape id="_x0000_s1025"[^>]*>\s*<v:imagedata o:relid="rId1"/);
       expect(xml('ppt/drawings/_rels/vmlDrawing1.vml.rels')).toMatch(/Id="rId1"[^>]*Target="\.\.\/media\/image1\.emf"/);
     }
 

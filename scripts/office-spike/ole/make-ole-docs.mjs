@@ -34,13 +34,13 @@ ${defaults.map(([ext, type]) => `<Default Extension="${ext}" ContentType="${type
 ${overrides.map(([part, type]) => `<Override PartName="/${part}" ContentType="${type}"/>`).join('\n')}
 </Types>`);
 
-const pictureShapeType = `<v:shapetype id="_x0000_t75" coordsize="21600,21600" o:spt="75" o:preferrelative="t"
-path="m@4@5l@4@11@9@11@9@5xe" filled="f" stroked="f">
+const pictureShapeType = `<v:shapetype id="_x0000_t75" coordsize="21600,21600" stroked="f" filled="f"
+path="m@4@5l@4@11@9@11@9@5xe" o:preferrelative="t" o:spt="75">
 <v:stroke joinstyle="miter"/>
 <v:formulas>${['if lineDrawn pixelLineWidth 0', 'sum @0 1 0', 'sum 0 0 @1', 'prod @2 1 2',
   'prod @3 21600 pixelWidth', 'prod @3 21600 pixelHeight', 'sum @0 0 1', 'prod @6 1 2',
   'prod @7 21600 pixelWidth', 'sum @8 21600 0', 'prod @7 21600 pixelHeight', 'sum @10 21600 0']
-  .map(eq => `<v:f eq="${eq}"/>`).join('')}</v:formulas>
+  .map(eqn => `<v:f eqn="${eqn}"/>`).join('')}</v:formulas>
 <v:path o:extrusionok="f" gradientshapeok="t" o:connecttype="rect"/>
 <o:lock v:ext="edit" aspectratio="t"/>
 </v:shapetype>`;
