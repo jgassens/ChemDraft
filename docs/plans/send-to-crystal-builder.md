@@ -1,6 +1,8 @@
 # Send to Crystal Builder: plugin plan
 
-Status: plan approved by the owner 2026-11-10; no code until the master session OKs it. Target: after ChemDraft 1.2 ships (1.2 has priority; nothing here touches
+Status: plan approved by the owner 2026-11-10; revised 2026-11-20 for the one-command build and the
+return trip (owner direction below). The new `runCompanion` method widens the security contract, so the
+master session's OK and the Kimi review (condition 3) cover it too. No code until the master session OKs it. Target: after ChemDraft 1.2 ships (1.2 has priority; nothing here touches
 `release/1.2-rc` or `main`). Final home of this document: `docs/plans/send-to-crystal-builder.md` on
 local branch `plan/crystal-builder` (see "After approval").
 
@@ -21,6 +23,22 @@ Approved in principle, with these conditions:
    lost. This settles owner question 2.
 4. **Keep §7:** the handoff warns about or refuses charge, stereo, and abbreviation loss, per the
    table in Decision 1.
+
+## Owner direction (2026-11-20): one click, and a way back
+
+After a hand-run demo (terephthalic acid and a Zn₄O core drawn in ChemDraft 1.2.1, built into MOF-5 in
+Crystal Builder; see the 2026-11-20 row under "Test results"), the owner asked for two changes:
+
+1. **Much more automated.** The demo took about ten manual steps: draw `X` atoms, embed 3D, write a
+   CIF, open it, save a building block, open the MOF builder, pick net, node and linker, build. The
+   target is **one command**: select the drawn acid (and, optionally, the drawn metal ions), choose
+   **Build MOF in Crystal Builder…**, confirm the suggested net and node, and the finished framework
+   opens in Crystal Builder's window. Decision 1b (automatic cut), Decision 3 (`runCompanion`), and
+   task 2H carry this.
+2. **The reverse must be possible, and comes last.** Export a MOF unit cell from Crystal Builder and
+   bring it into ChemDraft as a 3D object that can be moved and rotated on the page. This is Phase 5,
+   scheduled after the one-click send ships. It needs a new native object in `chem-core` and touches
+   the charter's "3D molecular visualization" non-goal (PLAN.md §5), so it waits on owner question 7.
 
 ## Context
 
@@ -143,16 +161,38 @@ building blocks (confirmed by test, below).
 the carboxylates (node N16 is Zn4O(CO2)6 with 6 X), and the matching linker E14 is bare C6H4 with an
 `X` on each ring carbon that bore a CO2. So for terephthalic acid the user draws a benzene ring with
 `X` in place of each COOH, not an `X` on the carboxyl carbon (which would double the carboxylates).
-The plugin's help and refusal messages say this, with the terephthalate picture. A convenience for
-later (not in Phase 2): **"Cut at carboxylates"**, where the plugin replaces each COOH or COO⁻ in the
-selection with `X` on send, and says so in the pre-send box (§7: the drawn document is not changed).
+The plugin's help and refusal messages say this, with the terephthalate picture.
 
-**Two commands:**
+**Automatic cut (in Phase 2, revised 2026-11-20; it is the default).** Chemists draw the real acid, as
+the owner's demo did, so the plugin cuts it itself: each COOH or COO⁻ on a carbon becomes one `X` at
+the midpoint of the ring C–carboxyl C bond (Crystal Builder's own rule for its E14 block, used in the
+demo), and the pre-send box says "2 carboxylic acids cut to connection points (X) for the Zn₄O node".
+The drawn document is not changed (§7). Hand-drawn `X` atoms still work and take precedence: if the
+selection has any `X`, no automatic cut happens. Other connecting groups (pyridyl N, azolates,
+phosphonates) are refused by name in Phase 2, not guessed.
+
+**Three commands:**
 
 | Command | Accepts | Sends |
 |---|---|---|
-| **Send as MOF Linker** (main) | One molecule with at least two `X` atoms, each bonded to exactly one heavy atom by a single bond | Bonded CIF with `X` atoms at the connection positions, each bonded to its anchor; a comment adds `connection points: n` |
+| **Build MOF in Crystal Builder…** (main, added 2026-11-20) | One linker (drawn acid or hand-marked `X`), optionally with drawn metal ions or a metal-oxo core beside it | Suggests a net and node (table below) in one native dialog; then the host writes the linker block, runs Crystal Builder's own `xtal run mof.build` headlessly (Decision 3, `runCompanion`), and opens the finished framework in Crystal Builder's window. Status line: formula, cell, net, and Crystal Builder's fit numbers |
+| **Send as MOF Linker** | One molecule with at least two `X` atoms, each bonded to exactly one heavy atom by a single bond | Bonded CIF with `X` atoms at the connection positions, each bonded to its anchor; a comment adds `connection points: n` |
 | **Send as Molecule** | Any molecule with no `X` atoms | Bonded CIF, as in Decision 1 |
+
+**Suggesting the net and node.** The plugin ships a small table, so the dialog opens filled in and one
+click builds:
+
+| Drawn beside the linker | Linker | Suggested | Result |
+|---|---|---|---|
+| Zn²⁺ ions (any count), with or without O²⁻ | ditopic carboxylate | net `pcu`, node `N16` (Zn₄O(CO₂)₆) | MOF-5 family (IRMOF) |
+| nothing | ditopic carboxylate | same, labelled "suggested; no metal drawn" | as above |
+| Cu²⁺ | tritopic carboxylate | net `tbo`, Cu paddlewheel node (catalog id from the Phase 0 code map) | HKUST-1 |
+| anything else | any | no suggestion; the user picks from Crystal Builder's node list | — |
+
+Drawn ions only pick the node; they are never sent as atoms, because a 2D drawing of four loose
+ions is not the cluster's geometry (the 2026-11-20 demo showed this). The dialog says so: "Node N16
+(Zn₄O) from Crystal Builder's library, matching the Zn²⁺ you drew". The user can change net,
+node, and repeat (1×1×1 default) before building.
 
 Linker refusals, each naming the problem: fewer than two `X` atoms ("Mark at least two connection
 points: draw an atom labelled X where the linker bonds to a metal node"); an `X` bonded to zero, two
@@ -187,6 +227,7 @@ headlessly through its bundled `xtal` CLI and, for the window, through backgroun
 | A4 File types | Registers `.cif` and `.xtalproj` only, not `.xyz`. `open -a` opens the `.xyz` anyway, so registration is not needed for the handoff | `Info.plist`, launch test |
 | A6 Linker, headless | **Works.** A plain XYZ with `X` atoms and no bond table, used through `bb_dir`, builds MOF-5 (pcu, node N16): C24H12O13Zn4, identical to the stock linker. Accepted with X at 0.75 Å and 1.09 Å, and with slightly non-planar geometry | `xtal run mof.build -p topology=pcu -p nodes=N16 -p edges=<name> -p bb_dir=<dir>` |
 | A6 Linker XYZ, in the window | **Refused.** Opened from XYZ, the `X` atoms get no bonds, so Structure → Building blocks → Save as a building block refuses: "X1 is a connection point with no bonds… this cell holds 3 separate pieces". Same with PORMAKE's own bond-table XYZ, and after Recalculate bonds. This is by design in Crystal Builder's source, not a bug | Background app control on the scratch copy; nothing saved |
+| End-to-end by hand, ChemDraft 1.2.1 (2026-11-20) | **Works.** Terephthalic acid pasted into ChemDraft 1.2.1 as SMILES and copied out as MOL V2000 (12 atoms, 12 bonds); cut to C₆H₄ + 2 `X` by the automatic-cut rule (X at the ring C–carboxyl C midpoint), with fixed ring geometry because the plugin's `embed3d` is reachable only from a plugin; `xtal run mof.build -p topology=pcu -p nodes=N16 -p edges=<block> -p bb_dir=<dir> -o out.cif` built C24H12O13Zn4, a = 12.936 Å cubic, fit RMSD 0.000 Å, net confirmed pcu; `open -a` showed it in the window. Zn²⁺ and O²⁻ drawn as ions only named the node; they could not become the cluster | Hand run on the Intel iMac; files in the session scratchpad |
 | A6 Linker CIF with bond table, in the window | **Works.** The same C6H4 + 2 `X` linker, written as a P1 CIF with a `_geom_bond` loop carrying `_xtal_bond_kind explicit`: each `X` comes in with one bond to its carbon; Save as a building block reports "2-connected — it will appear in the MOF builder's picker", and writes a PORMAKE block with both `X`–C bonds. The same CIF without the bond loop gives the `X` atoms 0 bonds | `xtal bonds` on both CIFs; `open -a` then Save as a building block on the scratch copy |
 
 What this changes:
@@ -203,7 +244,7 @@ What this changes:
 | Route | Verdict | Reason |
 |---|---|---|
 | (a) Temp file + "open with this app" | **Use now** | Works on every Crystal Builder install with no setup; no network; the plugin never sees a path; the same launch shape on macOS and Windows |
-| (b) `xtal` CLI | Reject | It has no command that loads a file into the window. We would spawn a second binary for no gain |
+| (b) `xtal` CLI | **Use for the build step** (revised 2026-11-20) | It cannot load a file into the window, but it builds headlessly (`xtal run mof.build … -o out.cif --json`), and (a) then opens the result. That is what makes the one-command build possible without the MCP server. It ships inside the app the user picked (`Contents/MacOS/xtal` on macOS; the Windows name is checked by the Windows session) |
 | (c) localhost MCP/HTTP | **Later, with the author** (Phase 4) | Off by default; needs `network.fetch` to localhost plus reading another app's token file; its doc is a design record, not verified shipped behavior. It is the right route for "open in the already-running window" and for calling its MOF builder, but only once the author confirms a stable contract |
 
 Platform parity for (a):
@@ -242,7 +283,35 @@ interface PluginAppsAPI {
     warnings?: string[];     // ≤ 20 lines, ≤ 300 chars each; shown in the pre-send message box
   }): Promise<{ status: "sent" } | { status: "declined" } |
               { status: "failed"; code: "app-missing" | "app-changed" | "launch-failed" | "write-failed"; message: string }>;
+  /** Added 2026-11-20 for the one-command build. Run a companion tool shipped inside the chosen app,
+   *  using a command template the plugin DECLARED IN ITS MANIFEST, then optionally open its output. */
+  runCompanion(request: {
+    appId: string;
+    template: string;                 // id of a manifest-declared template, e.g. "mofBuild"
+    params: Record<string, string>;   // each checked against the template's declared enum or pattern
+    inputs?: { name: string; extension: PluginHandoffExtension; text: string }[]; // written to a host temp dir
+    openOutput?: boolean;             // open the declared output file with the app afterwards
+  }): Promise<{ status: "done"; stdout: string /* ≤ 1 MB, JSON if the template says so */; opened: boolean } |
+              { status: "declined" } |
+              { status: "failed"; code: "app-missing" | "app-changed" | "tool-missing" | "bad-param" | "timeout" | "exit-nonzero" | "write-failed"; message: string }>;
 }
+```
+
+The manifest declares each template in full, so consent can show it and review can read it:
+
+```json
+"companions": [{
+  "id": "mofBuild",
+  "tool": { "macos": "Contents/MacOS/xtal", "windows": "xtal.exe" },
+  "args": ["run", "mof.build", "-p", "topology={topology}", "-p", "nodes={node}",
+           "-p", "edges={edge}", "-p", "bb_dir={inputDir}", "-p", "repeat={repeat}",
+           "-o", "{outputFile:cif}", "--json"],
+  "params": { "topology": { "pattern": "^[a-z]{3}(-[a-z0-9]+)?$" },
+              "node": { "pattern": "^[A-Za-z0-9_]{1,32}$" },
+              "edge": { "pattern": "^[A-Za-z0-9_]{1,32}$" },
+              "repeat": { "pattern": "^[1-4]x[1-4]x[1-4]$" } },
+  "timeoutSeconds": 120
+}]
 ```
 
 Rules the host enforces (each one gets a test):
@@ -253,10 +322,12 @@ Rules the host enforces (each one gets a test):
 2. **Explicit user action only.** Methods work only while one of the plugin's own commands is
    running, and that command must have been invoked by the user (menu, toolbar, shortcut). Analyzers,
    background work, and commands invoked by an assistant or MCP tool call are refused.
-3. **One send per command invocation.** A refused or declined call does not use up the allowance
-   (same rule as `dialogs.promptText`).
-4. **The plugin never supplies a path, argv, environment, or verb.** It supplies text, a base name,
-   and an allowlisted extension. The host renders the fixed command line.
+3. **One send per command invocation** (`sendFile` or `runCompanion`, not both). A refused or
+   declined call does not use up the allowance (same rule as `dialogs.promptText`).
+4. **The plugin never supplies a path, free argv, environment, or verb at run time.** It supplies
+   text, a base name, an allowlisted extension, and for `runCompanion` only the id of a template fixed
+   in its manifest plus parameter values checked against that template (rule 11). The host renders
+   the command line.
 5. **Consent per plugin and per app**, once, in a native message box that names the plugin (name and
    id), the app's display name and location, and says the plugin will start that app and give it a
    file each time its command runs. Stored like external-tool consent
@@ -273,6 +344,16 @@ Rules the host enforces (each one gets a test):
 9. **Web build and other hosts**: the capability rejects with a plain error and the same shape.
 10. **No new Rust dependency**: `std::process::Command` plus the existing `tauri-plugin-dialog`. No
     shell or opener plugin is added, so no broad "open anything" surface appears in the webview.
+11. **`runCompanion` runs only what the manifest declared** (added 2026-11-20). The tool path is
+    resolved inside the chosen app's folder (bundle on macOS, install folder on Windows), with `..`,
+    symlinks out of it, and absolute paths refused. Arguments are the declared template only; every
+    `{param}` fills one whole argument, matches its declared enum or pattern, and can never add an
+    argument. `{inputDir}` and `{outputFile:ext}` are host paths in the handoff temp folder. No shell,
+    no environment from the plugin, a hard timeout that kills the process tree, stdout capped at 1 MB,
+    stderr kept for the error message. Windows: `CREATE_NO_WINDOW`, so no console flashes.
+12. **Consent names the template.** The one-time consent box for a companion shows the tool's name
+    and the declared command line with its placeholders ("xtal run mof.build … -o <output>.cif"). A
+    changed template in a plugin update asks again.
 
 Every `#[cfg(target_os = "macos")]` gets its `cfg(windows)` side in the same change. The command line
 is built by one pure function that takes the platform as a parameter, so both branches are tested
@@ -283,7 +364,8 @@ from one host (§1, §14).
 - **Plugin repository**: `jgassens/ChemDraft-CrystalBuilder-Plugin`, MIT code license, no bundled
   data (so no `dataLicenses`). Imports only `@chemdraft/plugin-api`.
 - **Plugin id**: `org.chemdraft.handoff.crystalBuilder`. Display name: "Send to Crystal Builder".
-- **Commands**: `plugin.crystalBuilder.sendLinker` (main, "Send as MOF Linker"),
+- **Commands**: `plugin.crystalBuilder.buildMof` (main, "Build MOF in Crystal Builder…", menu
+  `menu.crystalBuilder.buildMof`), `plugin.crystalBuilder.sendLinker` ("Send as MOF Linker"),
   `plugin.crystalBuilder.sendMolecule` ("Send as Molecule"), `plugin.crystalBuilder.chooseApp`
   (re-pick); optional later `plugin.crystalBuilder.markConnectionPoints` (task 2G).
   **Menus**: `menu.crystalBuilder.sendLinker`, `menu.crystalBuilder.sendMolecule`,
@@ -314,14 +396,15 @@ Windows installer comes only from the GitHub workflow; the Windows session tests
 | 0.1 Owner approves this plan; summary goes to the master session | Master session's OK | OK received |
 | 0.2 ~~Note to Crystal Builder's author~~ | Dropped 2026-11-18: every question was answered by testing and reading its source | Done |
 | 0.3 One read-only code map (single worker) | Short note: how a user-invoked command is told apart from an assistant-invoked one in `plugin-host`; what SMILES the selection snapshot carries for abbreviations, R-groups, and an atom labelled `X`, and whether the selection exposes per-atom labels and bonds; the consent store's shape | Note attached; no files changed |
+| 0.4 Crystal Builder source map (same single worker, after 0.3) | Short note from its MIT source: the node and net ids in `xtal/mof/catalog.py` (Zn₄O = N16 confirmed; the Cu paddlewheel id); what `mof.build --json` prints (fit numbers, formula, output path) and its exit codes; whether `bb_dir` accepts a CIF block or only PORMAKE XYZ; the Windows `xtal` executable name and location in the installer | Note attached; no files changed |
 
 ### Phase 1: host capability (ChemDraft repo, branch `feat/app-handoff` off `origin/main` after 1.2)
 
 | Task | Owned paths | Acceptance and tests | Review |
 |---|---|---|---|
-| 1A API contract | `packages/plugin-api/src/index.ts` (+ new `appHandoff.ts`, `appHandoff.test.ts`), header comment | Schemas for the three methods; permission added and marked dangerous; manifest refuses `apps.handoff` without `native.execute`; version 0.1.26. Tests: name sanitizing cases, extension allowlist, 5 MB and warning limits, permission pairing | Kimi |
+| 1A API contract | `packages/plugin-api/src/index.ts` (+ new `appHandoff.ts`, `appHandoff.test.ts`), header comment | Schemas for the four methods and the manifest `companions` block; permission added and marked dangerous; manifest refuses `apps.handoff` without `native.execute`, and refuses a template whose placeholder is undeclared or sits inside a larger argument; version 0.1.26. Tests: name sanitizing cases, extension allowlist, 5 MB and warning limits, permission pairing, template and param-pattern validation | Kimi |
 | 1B Host gate | `packages/plugin-host/src/**` (capability wiring + tests) | Absent without both permissions; rejects outside the plugin's own command; rejects assistant-invoked commands; one send per invocation, refused calls not counted; worker and in-process paths behave the same | Kimi |
-| 1C Native side | `apps/desktop/src-tauri/src/app_handoff/**`, `lib.rs` registration, `capabilities/app-handoff.json` (window `main` only) | Pure command-line builder tested for macOS and Windows from one host; picker accepts only `.app` / `.exe`; temp path and cleanup tests (backslashes, 8.3 paths, reserved names); consent store with revoke and clear-on-uninstall; app-changed detection; serde/Zod wire fixtures like `externalToolsWire.test.ts`; clippy clean on both `cfg` sides | Kimi |
+| 1C Native side | `apps/desktop/src-tauri/src/app_handoff/**`, `lib.rs` registration, `capabilities/app-handoff.json` (window `main` only) | Pure command-line builder tested for macOS and Windows from one host; companion runner per rule 11 (tool resolved inside the app folder, symlink and `..` escapes refused, timeout kills the tree, 1 MB stdout cap, no console window on Windows), tested with a stub tool on both platforms; picker accepts only `.app` / `.exe`; temp path and cleanup tests (backslashes, 8.3 paths, reserved names); consent store with revoke and clear-on-uninstall; app-changed detection; serde/Zod wire fixtures like `externalToolsWire.test.ts`; clippy clean on both `cfg` sides | Kimi |
 | 1D Desktop wiring | `apps/desktop/src/appHandoff/**`, plugin runtime hookup, Plugin Manager consent rows | Native message boxes for consent and warnings (no in-viewport dialog, §12); status-line success; specific errors; consent visible and revocable | Kimi |
 | 1E Docs and closeout | `docs/plugin-architecture/AUTHORING.md` (new section + version table row), AGENTS.md §4.1 version line, `docs/manual-stress-checklist.md`, `docs/plans/PLANS.md`, build stamp | Docs match the code; a short AUTHORING example ("send a text file to an app the user picked"); gauntlet green | Kimi |
 
@@ -339,11 +422,16 @@ quitting ChemDraft leaves the other app running.
 | 2B CIF writer | `src/cif.ts` + test | Pure function, `Plugin3DModel` plus bonds → text in the Decision 1 format: P1 box with 5 Å vacuum, unique labels, `_geom_bond` loop with `_xtal_bond_order` and `_xtal_bond_kind explicit`; fixed decimals, LF only, atom count and order equal the model; provenance comments. Golden-file test of the exact text for the terephthalate linker (guards the private-tag risk) | Kimi |
 | 2C Loss audit | `src/lossAudit.ts` + test | Pure function returning refusals and warnings exactly per the table in Decision 1, per send mode; fixtures: charged, isotopic, radical, unspecified stereo, salt, abbreviation, R-group, reaction member, metal complex, X atoms in a molecule send | Kimi |
 | 2C2 Connection points | `src/connectionPoints.ts` + test | Pure functions: find `X` atoms and their anchors; validate per Decision 1b (fewer than two, wrong valence, multiple bond, several components each refused with its message); X→`[H]` SMILES rewrite; map embedded atoms back to `X` by index. Fixtures: terephthalate linker (benzene ring with X in place of each COOH, PORMAKE E14 cut), a tritopic linker with 3 X, a molecule with 1 X (refused), X on a double bond (refused) | Kimi |
+| 2C3 Automatic cut | `src/carboxylateCut.ts` + test | Pure function: each COOH / COO⁻ on carbon → one `X` at the ring C–carboxyl C midpoint, per Decision 1b; skipped when the selection already has `X`; other connecting groups refused by name. Fixtures: terephthalic acid → C₆H₄X₂ matching the 2026-11-20 block; disodium terephthalate; trimesic acid → 3 X; nicotinic acid (pyridyl refused) | Kimi |
+| 2H Build MOF command | `src/buildMof.ts`, `src/nodeSuggest.ts` + tests, manifest `companions.mofBuild` | Node and net suggestion per the Decision 1b table (drawn Zn²⁺ → N16/pcu; Cu²⁺ + tritopic → paddlewheel/tbo; else no suggestion); one native dialog to confirm or change net, node, repeat; then one `runCompanion` call with the linker block as input and `openOutput: true`; the status line reports formula, cell, net, and fit from `--json`. Mocked-context tests: success, user cancels, tool missing, timeout, nonzero exit with Crystal Builder's message passed through, net mismatch reported | Kimi |
 | 2D Command flow | `src/send.ts` + test with a mocked context | Both send commands: empty selection, cancelled picker, declined consent, embed failure, minimize failure, linker refusals, and success each produce the specified message; one send per command | Kimi |
 | 2E Package and release | package zip, checksum, release body markers | Installs by hand through Add plugin from package on both platforms | Kimi |
 | 2G (optional, owner question 6) Mark Connection Points | `src/markConnectionPoints.ts` + test; manifest adds `document.write` | Selected anchors get `X` atoms at bond length along the open direction, through `documents.applyPatch`, one labelled undo entry, new atoms selected (§4.4); anchors with no free valence refused by name; chemistry of the anchor molecule otherwise unchanged (§7 test: canonical SMILES with X removed equals the original) | Kimi |
 
 Hands-on, both platforms, with Crystal Builder installed by the owner (agents do not install it):
+**the one-command demo first**: draw terephthalic acid and four Zn²⁺, select both, Build MOF in
+Crystal Builder…, accept the suggested pcu/N16, and MOF-5 (C24H12O13Zn4, a ≈ 12.9 Å) opens in the
+window with no other clicks; then
 a benzene ring with `X` in place of each COOH (terephthalate) sent as a MOF linker, then built into MOF-5 with node N16 in Crystal
 Builder's MOF builder (the demo; Save as a building block must report "2-connected" with no
 re-marking or hand-drawn bonds);
@@ -358,14 +446,41 @@ One task: catalog entry, the four capability URLs, `pluginUpdates.test.ts`, AUTH
 paragraph, move the slice to `docs/shipped/README.md`. Acceptance: one-click install from **Add or
 Remove Plugins** on macOS and Windows; update check finds a newer release. Kimi review; gauntlet.
 
-### Phase 4: later, with the author (not scheduled)
+### Phase 4: later (not scheduled)
 
-- "Open in the running window" and "build a MOF from this linker in one step" (pick a net and node
-  in ChemDraft, call `mof.build`) through Crystal Builder's MCP `open(path)` and `mof.build`, once the
-  author confirms a stable contract and token handling. The linker send in Phase 2 already carries the
-  connection points; this only removes the steps inside Crystal Builder.
-- CIF export when ChemDraft can draw a unit cell.
-- Return trip: a fragment from Crystal Builder back onto the ChemDraft page (through proposals).
+- The one-command build moved into Phase 2 (task 2H) on 2026-11-20, through the `xtal` CLI, so the
+  MCP server is no longer needed for it. Crystal Builder's MCP `open(path)` stays a possible later
+  route only if a file open ever fails to reach the running window on Windows.
+
+### Phase 5: the return trip, a unit cell as a 3D object (last; owner 2026-11-20)
+
+Goal: a MOF built in Crystal Builder comes back into ChemDraft as **one object on the page that can be
+moved, rotated in 3D, and exported**, not flattened into a 2D drawing. Starts only after Phase 3 ships
+and owner question 7 is answered.
+
+Why it is its own phase:
+
+- **ChemDraft has no lasting 3D object.** Spin 3D rotates a molecule and flattens it back; nothing 3D
+  is stored in the document (checked on `origin/main`, 2026-11-20). No CIF reader exists either.
+- **A framework is not a molecule.** It is periodic: bonds cross the cell edge, and there is no
+  SMILES. Flattening it into ordinary atoms and bonds would invent a finite molecule and break §7, so
+  that route is refused.
+- **The charter lists "3D molecular visualization" as a non-goal** (PLAN.md §5). Adding a 3D object
+  to the core is an owner decision (question 7).
+
+Recommended shape (if the owner says yes):
+
+| Piece | Where | What |
+|---|---|---|
+| 5A Native object | `chem-core` (type, Zod schema, migration), `plugin-api` type, version bump | `crystal3d`: atoms (element, label, fractional or Cartesian Å), bonds with periodic image offsets, cell (a, b, c, α, β, γ), space group as read, repeat (1–4 per axis), a view rotation, and provenance (file name, source app, formula). Read-only chemistry: analyzers return `unsupported` ("periodic structure") |
+| 5B Drawing and rotation | `layout-engine` (projection, depth cues, cell edges; §9 says this math lives there only), `apps/desktop/src/interaction/` (drag-rotate, reusing the Spin 3D `ScreenPlacement` contract) | Shown as a ball-and-stick or stick projection with the cell box; move like any object; drag inside it to rotate; typed angles; repeat cells; the rotation is saved |
+| 5C Import | plugin importer contribution (`.cif`), host open dialog | The user exports or saves a CIF in Crystal Builder and opens or drops it in ChemDraft; one labelled undo entry, new object selected (§4.4). Malformed CIF fails with a specific message (§13) |
+| 5D Export | `export-engine` | SVG and PDF draw the current projection exactly as the canvas does; CDXML writes the projection as graphics with a warning that the 3D cell is not kept; the native `.chemdraft` file keeps everything; **Send back to Crystal Builder** re-sends the stored CIF unchanged |
+| 5E Optional automation | plugin | "Bring back from Crystal Builder" after a 2H build: the host already holds the output CIF from `runCompanion`, so one command inserts it as a `crystal3d` object, with no file dialog |
+
+Fallback if the owner keeps the non-goal: a plugin panel (its own native window, §12) that shows the
+cell in 3D and inserts a **picture** of the current view on the page, clearly an image, not chemistry.
+Rotatable on the page it would not be.
 
 ## Open questions
 
@@ -381,7 +496,16 @@ For the owner:
    not exist on this machine. Should the workers run from the MacBook, with this session only conducting?
 6. **Mark Connection Points command.** Ship the optional one-click marker (task 2G, adds the dangerous
    `document.write` permission), or keep "draw an atom labelled X" as the only way? Recommended: ship
-   without it first; add it if the demo feels clumsy.
+   without it first; add it if the demo feels clumsy. (2026-11-20: less needed now; the automatic
+   cut in Decision 1b covers the common case.)
+7. **A 3D object in the core (Phase 5).** Lift the "3D molecular visualization" non-goal (PLAN.md §5)
+   enough to add one native `crystal3d` object that can be moved, rotated, and exported? Recommended:
+   yes, for the release after the one-command build ships, because a framework cannot be shown
+   honestly as a 2D drawing. If no: the picture-only fallback in Phase 5.
+8. **`runCompanion` scope.** The new host method runs a tool inside an app the user picked, from a
+   template fixed in the plugin's manifest. It is general (any plugin could declare one) but tightly
+   bounded (rule 11). Accept it as general, or allow it only for official catalog plugins at first?
+   Recommended: official catalog plugins only in 1.3, opened up after a release without problems.
 
 For Crystal Builder's author: **none.** No email is needed (owner, 2026-11-18). A1–A4 and A6 were
 answered by testing on macOS and by reading its MIT source (see "Test results" under Decision 1b).
@@ -396,6 +520,8 @@ matters only for Phase 4 and can be read from its source when Phase 4 starts.
 - Hands-on lists above, on macOS and Windows; the report names any platform not run as unverified.
 - Chemistry check (§7): for each fixture, atom count, formula, and bond count in the CIF equal the drawn
   molecule's with explicit hydrogens; every loss in the table produces its warning or refusal.
+- One-command build check: terephthalic acid + Zn²⁺ gives C24H12O13Zn4, cubic a ≈ 12.9 Å, net pcu,
+  the same as the 2026-11-20 hand run; the cut linker equals the hand-run block atom for atom.
 
 ## After approval (conductor's next steps, no code)
 
