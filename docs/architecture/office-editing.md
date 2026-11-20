@@ -58,15 +58,14 @@ feasibility gate (see Slices) and the add-in is built only if it passes.
 | Read the stored PNG (first choice) | `range.getOoxml()`: a flat Office package with each picture in `pkg:binaryData` | `slide.exportAsBase64()` (PowerPointApi 1.8): the slide as a one-slide .pptx; follow the shape's `r:embed` to `ppt/media/…` |
 | Read the stored PNG (fallback) | `Office.context.document.getFileAsync(Office.FileType.Compressed)`: the whole .docx in slices, on web, Windows and Mac, including older perpetual Office | Same, for the whole .pptx |
 | Check the carrier | New reader in `clipboard-adapter`, beside the writer; refuse a picture whose carrier is missing or invalid | Same |
-| Replace (first choice) | `insertOoxml(…, "Replace")` with the new PNG and the old size, wrapping and position; `insertInlinePictureFromBase64(…, "Replace")` for inline pictures | `shape.fill.setImage(base64)` (PowerPointApi 1.8): changes the image of the existing shape, so its ID, tags, group, rotation and z-order stay |
-| Replace (fallback) | — | Insert with `setSelectedDataAsync` (`coercionType: Image`, old left/top/width/height), restore z-order with `shape.setZOrder` (1.8) and the tag, then delete the old shape |
-| Refuse | Pictures the measurements show cannot be replaced faithfully | Grouped, cropped or rotated pictures unless `fill.setImage` handles them; never silently drop shape state |
+| Replace (first choice) | `insertOoxml(…, "Replace")` with the new PNG, its own extent and the old width, wrapping and position (measured: keeps a floating picture's placement, one undo step) | Insert with `setSelectedDataAsync`, restore z-order, rotation and name, delete the old shape (measured: works, three undo steps). `shape.fill.setImage` does **not** replace a picture: it sets the shape's fill |
+| Refuse | Pictures the measurements show cannot be replaced faithfully | Grouped or cropped pictures, and rotated ones if rotation cannot be restored; never silently drop shape state |
 | Mark ChemDraft pictures | Alt-text description holds a short marker; the carrier stays the source of truth | Shape tag `CHEMDRAFT` (PowerPointApi 1.3) as a fast filter; the carrier stays the source of truth |
 
 PowerPointApi 1.8 is available in PowerPoint on the web, Windows Microsoft 365 version 2504 and
-later, and Mac 16.96 and later; not in volume-licensed perpetual or LTSC versions. The
-insert-and-delete fallback also needs 1.8 (for `setZOrder`), so it is only for 1.8 hosts where
-`fill.setImage` turns out not to work. PowerPoint versions without 1.8 can still read a structure
+later, and Mac 16.96 and later; not in volume-licensed perpetual or LTSC versions. Replacement in
+PowerPoint is insert-and-delete, which needs 1.8 (for `setZOrder`; `fill.setImage` was measured not
+to replace a picture). PowerPoint versions without 1.8 can still read a structure
 (through `getFileAsync`) but get a clear "updating needs a newer PowerPoint" message instead of a
 replacement that loses stacking order.
 
@@ -277,6 +276,30 @@ account type Office is signed in with:
 - The insert-and-delete fallback: what it loses.
 
 The Windows run was dropped when the owner chose OLE for Windows.
+
+**Results, 2026-11-20, Intel iMac, Word and PowerPoint for Mac 16.115.1, signed in with an
+organization (university) Microsoft 365 account.** Raw results are kept with the project's
+private runbooks.
+
+- The developer-installed add-in loaded in both apps although the organization had turned the add-in
+  store off ("The add-in store has been disabled… contact your IT administrator"). A store listing
+  therefore cannot reach such users; organization deployment or the ChemDraft-installed route can.
+- **Reading passes.** `getOoxml` and `getFileAsync` (Word) and `exportAsBase64` and `getFileAsync`
+  (PowerPoint) returned the stored carrier PNG byte-identical, before and after save and reopen.
+  `getBase64ImageSrc` also matched, but works only on inline pictures; Word for Mac inserts pictures
+  floating (square wrap) by default.
+- **Word replacement passes with `insertOoxml(…, "Replace")`**: it kept a floating picture's anchor,
+  wrapping and offsets exactly, in one undo step. It stretched the new picture into the old frame,
+  so the add-in writes the new picture's own extent (keeping the old width) in the OOXML it inserts.
+  `insertInlinePictureFromBase64(…, "Replace")` works only on inline pictures (one undo step, kept
+  the width and took the new aspect ratio).
+- **PowerPoint `shape.fill.setImage` fails as a replacement**: it reported success but set the
+  shape's background fill (`p:spPr/a:blipFill`); the picture the slide shows (`p:blipFill`) was
+  unchanged after save and reopen. Do not use it for pictures.
+- **PowerPoint insert-and-delete works with known losses**: the picture was replaced visibly and the
+  carrier kept; position, size and z-order were restored; the shape ID and name changed; **rotation
+  was lost**; it took **three undo steps**. Slice 1b restores rotation and name after inserting
+  (if the API allows; measured then) and stretches nothing: it sets the new picture's own aspect.
 
 ### Slice 1b: the Mac add-in (needs slice 0 and a passed 1a)
 
