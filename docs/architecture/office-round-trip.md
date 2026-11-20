@@ -151,6 +151,11 @@ EMF.
 
 ## Decisions
 
+> **Superseded in part, 2026-11-20.** The owner ruled that Windows edits structures through
+> ChemDraft's own embedded OLE object, not an add-in, and that the add-in is the Mac route only. See
+> [office-editing.md](office-editing.md). The carrier and paste-back decisions below still apply;
+> the Windows add-in items and the PNG-only Windows Copy are replaced by that design.
+
 On 2026-10-30, the owner decided that ChemDraft will give Office a high-DPI PNG with a zTXt or iTXt
 carrier on both platforms: documents travel between macOS and Windows, where the measured PDF pasted
 on macOS appeared as Office for Mac's 72 dpi fallback bitmap.

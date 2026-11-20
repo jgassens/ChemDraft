@@ -5,24 +5,28 @@ Status: design, 2026-11-20. Builds on the Phase 0 measurements in
 
 ## Goal
 
-A user edits a ChemDraft structure without leaving Word or PowerPoint, on macOS and Windows, and the
-document keeps working when it moves between the two.
+A user edits a ChemDraft structure in Word or PowerPoint on macOS and Windows, and the document keeps
+working when it moves between the two. On Windows the structure opens in ChemDraft and goes back into
+the document on save; on a Mac it is edited in a panel inside Office.
 
-Every structure ChemDraft puts into Office is a high-DPI PNG carrying the ChemDraft drawing in a
-text chunk inside the PNG (the **carrier**; today an uncompressed iTXt chunk with the keyword
-`application/x-chemdraft-selection+json`, written by `packages/clipboard-adapter/src/pngSelection.ts`).
-Phase 0 showed that this PNG is saved byte-identical by Word and PowerPoint on both platforms and
-survives Mac↔Windows moves. Everything below reads and writes that carrier; nothing depends on a
-second copy of the drawing.
+Two containers carry the drawing:
+
+- The **carrier PNG**: a high-DPI PNG with the ChemDraft drawing in a text chunk (today an
+  uncompressed iTXt chunk with the keyword `application/x-chemdraft-selection+json`, written by
+  `packages/clipboard-adapter/src/pngSelection.ts`). Phase 0 showed Word and PowerPoint save it
+  byte-identical on both platforms and across Mac↔Windows moves. This is what the Mac route edits.
+- The **Windows OLE object** (section 4): a native stream holding the same JSON, plus a preview that
+  embeds a carrier PNG. The native stream is the source of truth for the object; the preview's copy
+  lets a Mac or the paste-back route recover the drawing.
 
 ChemDraft can write the carrier today but cannot read it back: no paste path reads the carrier, GVML
-or EMF+ yet. Slice 1 adds the reader.
+or EMF+ yet. Slice 0 adds the reader that every later slice uses.
 
 ## Owner decision, 2026-11-20
 
 - **Windows**: a ChemDraft structure is ChemDraft's own embedded OLE object. Double-click opens it in
-  ChemDraft and saving writes it back. No add-in, so nothing an organization's add-in settings can
-  block. (Section 4.)
+  ChemDraft and saving writes it back. No add-in, so an organization's add-in settings cannot block
+  it; Office's OLE settings still can (section 4).
 - **Mac**: Office for Mac has no third-party OLE, so the Mac route is the task-pane add-in (sections
   1–3, 5), with a paste-back fallback for organizations that switch add-ins off.
 
@@ -104,8 +108,9 @@ Microsoft, so the design does not rely on it.
 ### 4. Windows: ChemDraft's own embedded object (the Windows route)
 
 On Windows, a ChemDraft structure in Word or PowerPoint is an **embedded OLE object** of ChemDraft's
-own class. Double-click opens it in ChemDraft; saving or closing that window writes it back. Nothing
-depends on Office add-ins, so an organization that turns add-ins off does not turn this off.
+own class. Double-click opens it in ChemDraft; saving or closing that window writes it back. It does
+not depend on Office add-ins. It can still be blocked by Office's OLE settings (see "Blockers"),
+which PowerPoint's managed-security defaults do.
 
 **Class and registration**
 
@@ -113,62 +118,71 @@ depends on Office add-ins, so an organization that turns add-ins off does not tu
   generated once for ChemDraft and never changed. It is shown as "ChemDraft Structure" in Insert →
   Object. ChemDraft never registers, claims or converts another program's class, ProgID, CLSID or
   file type, and never `.cdxml` (AGENTS.md §1).
-- Server: out of process (`LocalServer32` pointing at `chemdraft.exe` with an `-Embedding`
-  argument), so 32- and 64-bit Office both use it; COM's built-in marshaling for the standard OLE
-  interfaces carries calls between them. The keys also carry `Insertable`, `DefaultIcon`, `AuxUserType`,
-  `MiscStatus` and the `verb` list (Edit, Open).
+- Server: out of process (`LocalServer32` pointing at `chemdraft.exe`; COM itself adds `-Embedding`
+  when it starts the server, and the server then registers its class factory). An out-of-process
+  server works with 32- and 64-bit Office. The server implements `IOleObject`, `IDataObject` and
+  `IPersistStorage`, which COM marshals between processes. Drawing the object inside Office is done by
+  Office's in-process default handler from the object's cache (`IOleCache`, `IViewObject2` live in
+  Office's process and never cross to ChemDraft).
+- Registry keys: `Insertable`, `DefaultIcon`, `AuxUserType`, `MiscStatus` and two verbs, Edit
+  (primary) and Open, both opening the structure in a ChemDraft window.
 - Where: the per-user installer writes under `HKCU\Software\Classes`; the all-users installer writes
-  under `HKLM\Software\Classes`. Uninstall removes exactly these keys. A ChemDraft (dev) build
-  registers its own separate CLSID, so a branch build never takes over the stable app's objects
-  (AGENTS.md §15.2).
-- Click-to-Run Office sees both HKCU and HKLM classes; slice 2 confirms this on the target Office
-  builds.
+  under `HKLM\Software\Classes`. Uninstall removes only the keys that installation wrote.
+- Dev builds: their own CLSID **and** their own ProgIDs and display name ("ChemDraft (dev)
+  Structure"), so a branch build never shadows or removes the stable app's registration (HKCU entries
+  take priority over HKLM in Windows' merged view, AGENTS.md §15.2).
 
 **How users make one**
 
-- ChemDraft's Copy adds the OLE clipboard formats (`Embed Source`, `Object Descriptor`) beside the
-  carrier PNG, so a plain Paste into Word or PowerPoint inserts a ChemDraft object. Paste Special →
-  Picture still gives the carrier PNG.
+- ChemDraft's Copy puts an OLE data object on the clipboard (`OleSetClipboard`, then
+  `OleFlushClipboard` so it outlives ChemDraft) offering `Embed Source`, `Object Descriptor` and an
+  EMF picture (`CF_ENHMETAFILE`), which Office uses to fill the new object's cache, plus the carrier
+  PNG. Microsoft lets the container choose; whether a plain Paste in Word and PowerPoint picks the
+  embedded object is an acceptance test in slice 2, not a given. Paste Special lists both.
 - Insert → Object → ChemDraft Structure opens an empty structure in ChemDraft.
-- A carrier PNG already in a document (for example from a Mac) can be turned into an object by
-  copying it into ChemDraft and copying back (slice 3 adds the GVML reader for that).
+- A carrier PNG already in a document (for example from a Mac) becomes an object by copying it into
+  ChemDraft and copying back (slice 3).
 
 **What the object holds**
 
 - Native data: one stream, `ChemDraftDocument`, in the object's storage, holding the same versioned
-  JSON as the carrier. ChemDraft reads it back exactly; round-trip tests compare canonical SMILES
-  (AGENTS.md §7).
-- Preview picture: what Office shows and prints, and what every machine without ChemDraft sees.
-  Office's OLE picture cache accepts only Windows picture formats, so the preview is an **EMF that
-  contains the high-DPI carrier PNG** in an EMF+ image record (the form Phase 0 found PowerPoint
-  writing itself). It shows sharp, prints at full resolution, and still carries the drawing for any
-  reader that knows where to look.
+  JSON as the carrier. Round-trip tests compare canonical SMILES (AGENTS.md §7).
+- Preview: what Office shows and prints, and what machines without ChemDraft see. Office's OLE cache
+  takes Windows picture formats, so the preview is an **EMF holding the carrier PNG in an EMF+ image
+  record, plus ordinary GDI records drawing the same image** (EMF+-only content is invisible to plain
+  GDI). In the saved file Office also keeps a separate preview image part (Word: `v:imagedata` in
+  `word/media`; PowerPoint: a `p:pic` under `p:oleObj` in `ppt/media`) beside the OLE package.
+- **Goal, not yet measured:** that Office keeps this preview through save and reopen in both places,
+  shows it sharply, prints it at full resolution, and refreshes it after an edit. Slice 2 measures
+  this before building the rest.
 
-**What other machines see**
+**What other machines see (expected; to be measured)**
 
 | Machine | Shows | Double-click |
 | --- | --- | --- |
 | Windows with ChemDraft | Preview | Opens in ChemDraft, writes back |
-| Windows without ChemDraft | Preview | Office says the program that created the object is not available; the document is otherwise fine |
-| Mac (any) | Preview (EMF; Office for Mac draws EMF+) | Office for Mac reports a missing server: Mac Office has no third-party OLE |
-| Office on the web | Preview | Nothing |
+| Windows without ChemDraft | Preview | Office says the program that created the object is not available |
+| Mac | The saved preview image, if Office for Mac draws it (measured in slice 2) | Missing server: Mac Office has no third-party OLE |
+| Word for the web | Possibly a placeholder; cannot be edited, moved or resized | Nothing |
+| PowerPoint for the web | The preview; cannot be edited | Nothing |
 
-On a Mac the Mac route (section 1) edits such an object: the add-in reads `ChemDraftDocument` from
-the object's package (`oleObject*.bin`) in the document file, if the read measurements in slice 1a
-show the package arrives intact. In Word it writes the object back through OOXML if Word accepts
-that (measured in slice 2); in PowerPoint, where Office.js cannot create an OLE object, it replaces
-the object with a carrier picture and says so in the pane.
+On a Mac the add-in can edit such an object if it can read `ChemDraftDocument` from the object's
+package (`oleObject*.bin`) and, in Word, write the object back. Both are measured in slice 2b. In
+PowerPoint, where Office.js cannot create an OLE object, the add-in replaces the object with a carrier
+picture and says so in the pane.
 
 **Blockers to handle and test**
 
+- **PowerPoint OLE policy.** Microsoft's current Microsoft 365 Apps security baseline sets "OLE Active
+  Content" to *disabled* by default in PowerPoint. Many managed (university and company) machines
+  therefore block activating OLE objects in PowerPoint. Slice 2 measures exactly what that setting
+  stops (double-click editing in normal view, or only activation during a slide show) before the
+  Windows route is called done for PowerPoint. Word has no such baseline default.
 - **Protected View** (files from the internet or email open read-only): activation is unavailable
-  until the user enables editing. ChemDraft is not involved until then, so there is nothing to
-  handle beyond documenting it.
-- **Policy**: the Microsoft 365 Apps security baseline can turn off OLE activation in PowerPoint,
-  and Office can block individual classes (the COM "kill bit" list). The object then shows its
-  preview only. The help page explains it; ChemDraft's paste-back route still works.
-- **Unproven**: ChemDraft has no EMF writer yet, and whether Office keeps, prints and refreshes the
-  EMF preview is unmeasured. Slice 2 starts by measuring it.
+  until the user enables editing.
+- **Per-class blocks**: Office can block individual classes (the COM "kill bit" list). The object then
+  shows its preview only.
+- In every blocked case the paste-back route (slice 3) still works.
 
 ### 5. Mac: distribution, and the managed-tenant risk
 
@@ -227,14 +241,21 @@ open on either platform with their structures still editable there.
 
 ## Recommendation
 
-1. **Windows: build the OLE object (slice 2)**, starting with the EMF preview measurement.
-2. **Mac: run the slice 1a gate on the iMac, then build the add-in (slice 1b)** if Word and
-   PowerPoint for Mac return the stored PNG intact.
-3. **Both: the paste-back route and the carrier reader (slice 3)**, which is also the fallback when
-   a managed tenant disables add-ins.
-4. Do not build a PowerPoint content add-in now.
+1. **Shared first: the carrier reader (slice 0).** Every route reads carriers.
+2. **Windows: the OLE object (slice 2)**, starting with the preview and PowerPoint-policy measurements.
+3. **Mac: the slice 1a gate on the iMac, then the add-in (slice 1b)** if Word and PowerPoint for Mac
+   return the stored PNG intact.
+4. **Both: paste-back and embedded-object import (slice 3)**, also the fallback wherever add-ins or
+   OLE are switched off.
+5. Do not build a PowerPoint content add-in now.
 
 ## Slices
+
+### Slice 0: carrier reader (shared)
+
+- Reader for the iTXt carrier (and zTXt for older carriers) beside the writer in
+  `packages/clipboard-adapter`, with OOXML-picture and .pptx-media lookups as pure functions; tests
+  for round trip, canonical SMILES, malformed and missing carriers.
 
 ### Slice 1a: Mac feasibility gate
 
@@ -242,8 +263,8 @@ A minimal add-in (no editor), in `scripts/office-spike/addin/`, hosted at
 `https://chemdraft.ai/office-spike/`. For the selected picture it reads the PNG through each route and
 reports its SHA-256, and replaces it with a fixed test PNG. The test pictures are carrier PNGs whose
 SHA-256 is known, so a matching hash proves the carrier survived; the gate needs no carrier reader.
-Run on Word and PowerPoint for Mac (the Intel iMac), and record here, with the Office version and
-the account type Office is signed in with:
+Run on Word and PowerPoint for Mac (the Intel iMac), and record here, with the Office version and the
+account type Office is signed in with:
 
 - `getOoxml`, `exportAsBase64` and `getFileAsync`: stored PNG byte-identical, yes or no.
 - PowerPoint `fill.setImage`: carrier kept after save and reopen; ID, tag, group, crop, rotation and
@@ -253,33 +274,39 @@ the account type Office is signed in with:
 
 The Windows run was dropped when the owner chose OLE for Windows.
 
-### Slice 1b: the Mac add-in (only if 1a passes)
+### Slice 1b: the Mac add-in (needs slice 0 and a passed 1a)
 
 - `office.html` entry, Office host mode, pane UI (editor, Update, Cancel, status line), Word and
-  PowerPoint adapters behind one interface, selection-change loading; reads ChemDraft OLE packages
-  too.
-- Tests: carrier round trip; canonical SMILES before and after open and update; OOXML and .pptx
-  fixtures for inline, floating, resized and grouped pictures; refusal for pictures without a
-  carrier.
+  PowerPoint adapters behind one interface, selection-change loading.
+- Tests: canonical SMILES before and after open and update; OOXML and .pptx fixtures for inline,
+  floating, resized and grouped pictures; refusal for pictures without a carrier.
 - Preview install preference (macOS only, with the matching `cfg` side compiled out on Windows);
   manifest validation.
 
 ### Slice 2: Windows OLE object
 
-- First: EMF writer (EMF+ image record holding the carrier PNG, plus a plain GDI fallback record) and
-  a measurement that Word and PowerPoint keep, show, print and refresh it, and how Mac Office shows
-  it.
+- First, measurements: an EMF writer (EMF+ image record with the carrier PNG, plus GDI records) and a
+  hand-made ChemDraft object, checked in Word and PowerPoint for preview kept through save and reopen
+  (both the OLE cache and the OOXML preview part), sharp display, full-resolution print, refresh after
+  edit; what Mac Office shows; and what the PowerPoint "OLE Active Content" baseline setting blocks.
+  Report to the owner before building further if PowerPoint OLE is blocked in normal editing.
 - Out-of-process COM server in the Tauri app (Windows only; on macOS the code is compiled out with a
-  matching `cfg` side), implementing the standard embedding interfaces for open editing; registration
-  in both installers and removal on uninstall; dev builds use their own CLSID.
-- Copy adds `Embed Source` and `Object Descriptor`; Insert → Object works.
-- Tests: storage round trip with canonical SMILES; registration keys; Rust unit tests for the
-  storage and EMF writers; measurements on 64-bit Microsoft 365, Protected View and the security
-  baseline.
+  matching `cfg` side) for open editing; registration in both installers, removal on uninstall, dev
+  builds with their own CLSID and ProgIDs.
+- Copy offers the OLE data object; Insert → Object works.
+- Acceptance matrix: 64- and 32-bit Office; per-user and all-users registration; Insert → Object,
+  plain Paste, Paste Special, double-click, save-back, save and reopen, uninstall; Protected View; the
+  security baseline. Rust unit tests for storage and EMF writing; storage round trip with canonical
+  SMILES.
+
+### Slice 2b: Mac editing of Windows objects
+
+- With real objects from slice 2: do `getOoxml`, `exportAsBase64` and `getFileAsync` return
+  `oleObject*.bin` intact on Mac; can Word for Mac take the object back through `insertOoxml`. If not,
+  the Mac add-in converts such an object to a carrier picture and says so.
 
 ### Slice 3: paste-back and embedded objects, both platforms
 
-- Carrier reader (iTXt, and zTXt for older carriers) in `clipboard-adapter`, with tests; paste reads
-  the carrier from GVML, EMF+ and PNG clipboard data.
+- Paste reads the carrier from GVML, EMF+ and PNG clipboard data (using slice 0).
 - Paste of the "Embedded Object" clipboard format (Windows) and of ChemDraft OLE packages; import
   structures from a .pptx or .docx file.
