@@ -1,11 +1,14 @@
 import { useEffect, useState, type ReactNode } from "react";
 import packageInfo from "../../package.json";
-import contributors from "./contributors.json";
-import type { AboutProvenance } from "./provenanceTypes";
+import contributorData from "./contributors.json";
+import testerData from "./testers.json";
+import type { AboutContributor, AboutProvenance, AboutTesters } from "./provenanceTypes";
 import "./about.css";
 
 declare const __ABOUT_PROVENANCE__: AboutProvenance;
 
+const contributors: AboutContributor[] = contributorData;
+const testers: AboutTesters = testerData;
 const repository = "https://github.com/jgassens/ChemDraft";
 const sections = ["ChemDraft", "Contributors", "Open-source components and provenance"] as const;
 
@@ -77,10 +80,19 @@ export function AboutWindow({ version, buildStamp, error, onReady, onCopy, onClo
           <h2 id="about-section-1" tabIndex={-1}>Contributors</h2>
           <ul className="about-credits">
             {contributors.map(({ name, handle, contribution }) => <li key={name}>
-              <strong>{name}</strong>{" "}<ExternalLink href={"https://github.com/" + handle}>@{handle}</ExternalLink>
+              <strong>{name}</strong>{handle && <>{" "}<ExternalLink href={"https://github.com/" + handle}>@{handle}</ExternalLink></>}
               <p>{contribution}</p>
             </li>)}
           </ul>
+          <details className="about-group">
+            <summary>Bug reports and testing ({testers.handles.length})</summary>
+            <p>Thank you to everyone who reported problems or commented on the project's GitHub issues.</p>
+            <ul className="about-handles">
+              {testers.handles.map(handle => <li key={handle}>
+                <ExternalLink href={"https://github.com/" + handle}>@{handle}</ExternalLink>
+              </li>)}
+            </ul>
+          </details>
           <p>ChemDraft was developed with AI coding assistants.</p>
         </section>
         <section aria-labelledby="about-section-2">
@@ -89,14 +101,18 @@ export function AboutWindow({ version, buildStamp, error, onReady, onCopy, onClo
             <ExternalLink href={repository + "/blob/main/NOTICE"}>Full notices and license texts</ExternalLink>
             <ExternalLink href={repository + "/blob/main/docs/architecture/dependency-inventory.md"}>Dependency inventory</ExternalLink>
           </p>
-          <ul className="about-credits">
-            {components.map(component => <li key={component.name}>
-              <h3><ExternalLink href={component.sourceUrl}>{component.name}</ExternalLink></h3>
-              <p className="about-version">{component.version} · {component.license}</p>
-              <p>{component.purpose}</p>
-              {component.licenseText && <button type="button" onClick={() => showLicense(component.licenseText!, component.name + " license")}>Read the license</button>}
-            </li>)}
-          </ul>
+          <details className="about-group">
+            <summary>Packages, versions, licenses and copyright holders ({components.length})</summary>
+            <ul className="about-credits">
+              {components.map(component => <li key={component.name}>
+                <h3><ExternalLink href={component.sourceUrl}>{component.name}</ExternalLink></h3>
+                <p className="about-version">{component.version} · {component.license}</p>
+                <p className="about-holders">Authors and copyright holders: {component.holders.join("; ")}</p>
+                <p>{component.purpose}</p>
+                {component.licenseText && <button type="button" onClick={() => showLicense(component.licenseText!, component.name + " license")}>Read the license</button>}
+              </li>)}
+            </ul>
+          </details>
         </section>
       </div>
     </>}

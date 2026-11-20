@@ -88,3 +88,18 @@
   border-bottom: 1px solid color-mix(in srgb, CanvasText 15%, Canvas);
   padding: 0.55rem 0;
 }
+
+.about-group > summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 0.35rem 0;
+}
+
+.about-handles {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  margin: 0;
+  padding: 0;
+}

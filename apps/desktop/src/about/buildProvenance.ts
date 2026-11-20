@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { URL } from "node:url";
+import { SEE_LICENSE, noticeStatements, resolveHolders, type LibraryRef } from "./holders";
 import type { AboutComponent, AboutProvenance } from "./provenanceTypes";
 
 const root = new URL("../../../../", import.meta.url);
@@ -50,7 +51,17 @@ export function readNoticeRows(source: string): NoticeRow[] {
     ...source.matchAll(/^ {4}(\S.+?\)) {2,}((?:Apache|BSD|MIT).+)$/gm),
     ...source.matchAll(/^ {2}(\S[^\n]+)\n {2}(https:\/\/\S+ -- .+)$/gm)
   ];
-  return rows.concat(nested.map(match => ({ heading: match[1]!, body: match[2]! })));
+  // A table row's holder can wrap onto following lines, which are indented deeper than the row.
+  const wrapped = (match: RegExpMatchArray) => {
+    const lines = source.slice(match.index! + match[0].length).split("\n").slice(1);
+    const extra: string[] = [];
+    for (const line of lines) {
+      if (!/^ {30,}\S/.test(line)) break;
+      extra.push(line.trim());
+    }
+    return [match[2]!, ...extra].join(" ");
+  };
+  return rows.concat(nested.map(match => ({ heading: match[1]!, body: match[0].startsWith("    ") ? wrapped(match) : match[2]! })));
 }
 
 interface Manifest {
@@ -111,7 +122,7 @@ function componentFromInventory(
   row: InventoryRow,
   npm: Map<string, Set<string>>,
   cargo: Map<string, Set<string>>
-): AboutComponent {
+): { component: AboutComponent; libraries: LibraryRef[] } {
   // Rows that name multiple packages stay together, with each locked version identified.
   const libraries = row.name.split(/ [+\/] /).map(name => name.split(" ")[0]!)
     .filter(name => npm.has(name) || cargo.has(name));
@@ -122,13 +133,20 @@ function componentFromInventory(
   const name = libraries[0];
   const packageUrl = name ? (npm.has(name) ? "https://www.npmjs.com/package/" : "https://crates.io/crates/") + name : undefined;
   const source = row.notes.match(/(?:^|[.;] )Source: \x60?(https:\/\/[^\s\x60,;)]+)/)?.[1];
-  return {
+  const component: AboutComponent = {
     name: row.name,
     version: documentedVersion(row) ?? (locked || "Version unavailable in the source records"),
     license: row.license,
+    holders: [SEE_LICENSE],
     purpose: row.purpose,
     sourceUrl: (source ?? packageUrl ?? row.notes.match(/https:\/\/[^\s\x60,;)]+/)?.[0] ?? inventoryUrl).replace(/\.$/, ""),
     licenseText: row.notes.match(/License text: \x60([^\x60]+)\x60/)?.[1]
+  };
+  return {
+    component,
+    libraries: libraries.map(library => ({
+      kind: npm.has(library) ? "npm" : "cargo", name: library, versions: [...(npm.get(library) ?? cargo.get(library) ?? [])]
+    }))
   };
 }
 
@@ -190,6 +208,8 @@ export function buildAboutProvenance(): AboutProvenance & {
   }
   const inventoryCoverage = new Map<string, string>();
   const components = new Map<string, AboutComponent>();
+  const libraryRefs = new Map<string, LibraryRef[]>();
+  const noticeHolders = new Map<string, string[]>();
   const npmCoverage = new Map<string, string>();
   for (const row of inventory) {
     const exclusion = inventoryExclusion(row);
@@ -197,8 +217,9 @@ export function buildAboutProvenance(): AboutProvenance & {
       inventoryCoverage.set(row.name, exclusion);
       continue;
     }
-    const component = componentFromInventory(row, npm, cargo);
-      components.set(row.name, component);
+    const { component, libraries } = componentFromInventory(row, npm, cargo);
+    components.set(row.name, component);
+    libraryRefs.set(component.name, libraries);
     inventoryCoverage.set(row.name, component.name);
     for (const dependency of npmNames) {
       if (row.name.split(/ [+\/] /).some(part => part === dependency || part.startsWith(dependency + " "))) {
@@ -236,6 +257,7 @@ export function buildAboutProvenance(): AboutProvenance & {
         name: heading,
         version: "Snapshot used to train the shipped pKa model",
         license: heading.startsWith("Dwar-iBond") ? "Dataset license unresolved" : license,
+        holders: [SEE_LICENSE],
         purpose: "Training data for the shipped pKa model. See NOTICE for provenance and attribution.",
         sourceUrl: trainingSet[1]!
       });
@@ -247,10 +269,16 @@ export function buildAboutProvenance(): AboutProvenance & {
     const component = components.get(key) ?? [...components.values()].find(component => component.name.startsWith(key + " "));
     if (!component) throw new Error("Missing About attribution for NOTICE entry: " + heading);
     noticeCoverage.set(heading, component.name);
+    // The heading and the entry's first paragraph carry its curated copyright statement.
+    const statements = noticeStatements(heading + " " + body.trimStart().split(/\n\s*\n/)[0]!);
+    if (statements.length) noticeHolders.set(component.name, [...(noticeHolders.get(component.name) ?? []), ...statements]);
     const licensePath = body.match(/Full licen[cs]e text: ([\w./-]+)/)?.[1];
     if (licensePath) component.licenseText ??= licensePath;
     const source = body.match(/(?:^|\n) {2}Source: (https:\/\/[^\s,;)]+)/)?.[1];
     if (source) component.sourceUrl = source.replace(/\.$/, "");
+  }
+  for (const component of components.values()) {
+    component.holders = resolveHolders(noticeHolders.get(component.name) ?? [], libraryRefs.get(component.name) ?? []);
   }
   const licensePaths = new Set(["LICENSE", ...[...components.values()].flatMap(c => c.licenseText ? [c.licenseText] : [])]);
   const licenseTexts = Object.fromEntries([...licensePaths].map(path => [path, readAboutSource(path)]));

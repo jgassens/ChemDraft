@@ -9,6 +9,13 @@
     ]
   },
   {
+    "name": "Clemens Kaussler",
+    "contribution": "Detailed drawing and NMR bug reports and testing, and the Ilm-NMR-P31 phosphorus NMR data.",
+    "sources": [
+      "owner email, 2026-11-18"
+    ]
+  },
+  {
     "name": "Emily Osborn",
     "handle": "EmOsborn7",
     "contribution": "Compound layouts, formatted reaction conditions, electron-mark sizing and editing, and wavy art-line controls.",
