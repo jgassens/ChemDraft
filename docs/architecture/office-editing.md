@@ -141,7 +141,8 @@ which PowerPoint's managed-security defaults do.
   embedded object is an acceptance test in slice 2, not a given. Paste Special lists both.
 - Insert → Object → ChemDraft Structure opens an empty structure in ChemDraft.
 - A carrier PNG already in a document (for example from a Mac) becomes an object by copying it into
-  ChemDraft and copying back (slice 3).
+  ChemDraft (reading the carrier from the clipboard, slice 3) and copying back as an object
+  (slice 2).
 
 **What the object holds**
 
@@ -182,7 +183,9 @@ picture and says so in the pane.
   until the user enables editing.
 - **Per-class blocks**: Office can block individual classes (the COM "kill bit" list). The object then
   shows its preview only.
-- In every blocked case the paste-back route (slice 3) still works.
+- When OLE is blocked by policy or a per-class block, the paste-back route (slice 3) still works once
+  the document is open for editing; in Protected View nothing can change the document until the
+  user enables editing.
 
 ### 5. Mac: distribution, and the managed-tenant risk
 
