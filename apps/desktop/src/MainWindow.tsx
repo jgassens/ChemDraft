@@ -883,7 +883,7 @@ import {
 } from "./toolsets";
 import { MenuBar } from "./MenuBar";
 import { buildAppMenuModel, officeObjectFileMenu, structureSearchMenuItems, PLUGIN_MANAGER_COMMAND_ID, PLUGIN_UPDATES_COMMAND_ID } from "./appMenu";
-import { OFFICE_CLOSE_COMMAND_ID, OFFICE_UPDATE_COMMAND_ID, officeObjectIdFromSearch, useOfficeObject } from "./officeObject";
+import { OFFICE_CLOSE_COMMAND_ID, OFFICE_UPDATE_COMMAND_ID, officeCommandAvailability, officeObjectIdFromSearch, useOfficeObject } from "./officeObject";
 import { registerVibeCodeStarter, VIBE_CODE_SAVE_COMMAND_ID } from "./commands/vibeCodeStarter";
 import {
   editHistoryDirection,
@@ -2148,12 +2148,12 @@ export function MainWindow({
   nativePalette: requestedNativePalette
 }: MainWindowProps) {
   const [officeObjectId] = useState(() => typeof window === "undefined" ? undefined : officeObjectIdFromSearch(window.location.search));
-  // Native palettes are owned by the main document window. The embedded editor puts its drawing
-  // commands in its own top toolbar, where they act on the embedded document.
-  const nativePalette = !officeObjectId && (requestedNativePalette ?? shouldDefaultToNativePalettes());
+  // Desktop palettes float beside their document. Keep an inline fallback for an Office window
+  // if its native palettes fail to open.
+  const nativePalette = requestedNativePalette ?? shouldDefaultToNativePalettes();
   useEffect(() => installBrowserReloadGuard(shortcutPlatform), [shortcutPlatform]);
-  useEffect(() => officeObjectId ? undefined : installNativeFlyoutKeyboard(shortcutPlatform), [officeObjectId, shortcutPlatform]);
-  useEffect(() => officeObjectId ? undefined : installMainWindowPalettePendingKeys(), [officeObjectId]);
+  useEffect(() => installNativeFlyoutKeyboard(shortcutPlatform), [shortcutPlatform]);
+  useEffect(() => installMainWindowPalettePendingKeys(), []);
   useInAppModalUtilitySuspension();
   // Plugin commands may settle after the document window has unmounted.
   const mountedRef = useRef(true);
@@ -3530,7 +3530,7 @@ export function MainWindow({
   useEffect(() => {
     keybindingSchemeRef.current = keybindingScheme;
     // The native macOS menu carries its own accelerators; keep them in step with the scheme.
-    void pushKeybindingSchemeToNativeMenu(keybindingScheme);
+    if (!officeObjectId) void pushKeybindingSchemeToNativeMenu(keybindingScheme);
   }, [keybindingScheme]);
   useEffect(() => {
     let disposed = false;
@@ -3576,10 +3576,13 @@ export function MainWindow({
         compoundLayoutsEnabled, compoundLayoutSettings,
         structureSearchEnabled,
         hasSearchableStructure
-      }).map(command => customSwatchActions.find(action => action.id === command.id) ?? command).filter(command => command.id !== "arrow.conditions" || isDesktopRuntime()),
+      }).map(command => {
+        const spec = customSwatchActions.find(action => action.id === command.id) ?? command;
+        return officeObjectId ? officeCommandAvailability(spec, createToolsetToggleCommandId(molecularInspectorToolsetId)) : spec;
+      }).filter(command => command.id !== "arrow.conditions" || isDesktopRuntime()),
       keybindingScheme
     ),
-    [baseToolbarCommands, customSwatches, customSwatchActions, activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId, canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, selectedNativeMoleculeParts, toolsetRegistry, compoundLayoutsEnabled, compoundLayoutSettings, structureSearchEnabled, hasSearchableStructure]
+    [baseToolbarCommands, customSwatches, customSwatchActions, activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId, canRedo, canUndo, document, documentTabs.length, keybindingScheme, officeObjectId, openWarnings, selectedMolecule, selectedNativeMoleculeParts, toolsetRegistry, compoundLayoutsEnabled, compoundLayoutSettings, structureSearchEnabled, hasSearchableStructure]
   );
   const shellCommandsById = useMemo(
     () => createShellCommandMap(shellCommandSpecs),
@@ -4205,7 +4208,7 @@ export function MainWindow({
         // Record which toolsets we've resolved visibility for. A startup save may merge onto a
         // validated layout or create a file when there was none.
         resolvedToolsetIdsRef.current = new Set(toolbarCatalog.registry().listToolsets().map((toolset) => toolset.id));
-        layoutSaveEnabledRef.current = true;
+        layoutSaveEnabledRef.current = !officeObjectId;
         layoutHydratedRef.current = true;
         setNativeToolsetLayoutReady(true);
       })
@@ -4226,7 +4229,7 @@ export function MainWindow({
     return () => {
       active = false;
     };
-  }, [nativePalette, toolbarCatalog]);
+  }, [nativePalette, officeObjectId, toolbarCatalog]);
 
   // Persist palette visibility whenever it changes so the set of open palettes is restored next
   // launch. Gated on layoutHydratedRef so the first render's default set can't overwrite the saved
@@ -4649,17 +4652,18 @@ export function MainWindow({
   // current visible set onto every toggle item after each change (no-op in the browser).
   // This is what keeps View > Toolbars accurate now that Rust no longer toggles windows.
   useEffect(() => {
+    if (officeObjectId) return;
     for (const toolset of toolsetRegistry.listToolsets()) {
       void setMenuChecked(createToolsetToggleCommandId(toolset.id), visibleToolsetIds.has(toolset.id));
     }
-  }, [toolsetRegistry, visibleToolsetIds]);
+  }, [officeObjectId, toolsetRegistry, visibleToolsetIds]);
 
   // Push the Toolbars menu STRUCTURE (which toolsets + their titles) to the native menu whenever the
   // toolset set changes, so the menu comes from the TS registry rather than Rust's manifest copy —
   // this is what lets Rust stop parsing the manifest. Rebuilding resets checkmarks, so include the
   // current visibility; between rebuilds the checkmark effect above keeps them in sync in place.
   useEffect(() => {
-    if (!nativePalette && !isDesktopRuntime()) {
+    if (officeObjectId || (!nativePalette && !isDesktopRuntime())) {
       return;
     }
     const entries = toolsetRegistry.listToolsets().map((toolset) => ({
@@ -4671,7 +4675,7 @@ export function MainWindow({
     // Cmd+N then immediate Cmd+W can hide the window before it arrives, with two tabs still live;
     // autosave keeps both tabs, so nothing is lost.
     void setToolbarsMenu(entries, rulersVisible, crosshairsVisible, documentTabs.length > 1).catch(() => undefined);
-  }, [crosshairsVisible, documentTabs.length, nativePalette, rulersVisible, toolsetRegistry, visibleToolsetIds]);
+  }, [crosshairsVisible, documentTabs.length, nativePalette, officeObjectId, rulersVisible, toolsetRegistry, visibleToolsetIds]);
 
   const deleteHoveredNativeTarget = useCallback(() => {
     const currentDocument = documentRef.current;
@@ -10685,7 +10689,7 @@ export function MainWindow({
     void coordinator.openReactionConditions(tabId, { title, arrowId, draft }).catch(error => setStatus(`Reaction conditions could not open: ${String(error)}`));
   };
   useEffect(() => {
-    if (officeObjectId || !isDesktopRuntime()) return;
+    if (!isDesktopRuntime()) return;
     const coordinator = new DialogCoordinator(nativeDialogTransport, {
       fixAtomProblem: (tabId, action, version) => fixAtomProblemRef.current(tabId, action, version),
       vibeCodeGuideAction: action => vibeGuideActionRef.current(action),
@@ -10706,7 +10710,7 @@ export function MainWindow({
         if (kind === "export") exportGrantsRef.current.delete(tabId);
         if (kind === "atomProblem" && atomProblemTargetRef.current?.tabId === tabId) atomProblemTargetRef.current = undefined;
       }
-    });
+    }, { ownerWindowId: officeObjectId ? "office-object-" + officeObjectId : undefined });
     dialogCoordinatorRef.current = coordinator;
     return () => { dialogCoordinatorRef.current = undefined; void coordinator.dispose(); };
   }, [officeObjectId]);
@@ -11255,6 +11259,7 @@ export function MainWindow({
 
   // Crash reports: an error caught this session, or a crash note the native side left last time.
   useEffect(() => {
+    if (officeObjectId) return;
     const desktop = isDesktopRuntime();
     const offerCrashReport = async (brief: string, details: string, earlierRun: boolean) => {
       if (await askToSendCrashReport(desktop, brief, earlierRun)) {
@@ -11285,7 +11290,7 @@ export function MainWindow({
         );
       }
     });
-  }, []);
+  }, [officeObjectId]);
 
   const updateUnrestoredTabNotices = useCallback((previousCount: number) => {
     const previousNotice = unrestoredTabsNotice(previousCount);
@@ -11509,6 +11514,15 @@ export function MainWindow({
     setStatus,
     invokeClose: () => { void invokeCommandRef.current(OFFICE_CLOSE_COMMAND_ID); }
   });
+
+  const officeUpdateTitle = officeObject.update.enabled ? officeObject.update.title : undefined;
+  useEffect(() => {
+    if (!officeObjectId || !officeUpdateTitle || !isDesktopRuntime()) return;
+    const entries = toolsetRegistry.listToolsets()
+      .filter(toolset => toolset.id !== molecularInspectorToolsetId)
+      .map(toolset => ({ toolsetId: toolset.id, title: toolset.title, visible: visibleToolsetIds.has(toolset.id) }));
+    void setToolbarsMenu(entries, rulersVisible, crosshairsVisible, false, officeUpdateTitle);
+  }, [crosshairsVisible, officeObjectId, officeUpdateTitle, rulersVisible, toolsetRegistry, visibleToolsetIds]);
 
   // Own a native suspension through the modal and its nested Save As panels.
   useEffect(() => {
@@ -11927,7 +11941,7 @@ export function MainWindow({
     const bindings = new Map<string, { spec: CommandSpec; run: () => Promise<void> }>();
     const register = (definition: CommandSpec, handler?: () => void | Promise<void>) => {
       bindings.set(definition.id, {
-        spec: definition,
+        spec: officeObjectId ? officeCommandAvailability(definition, createToolsetToggleCommandId(molecularInspectorToolsetId)) : definition,
         run: async () => {
           if (!isSelectionNudgeCommand(definition.id)) arrowNudgeBurstRef.current = undefined;
           await handler?.();
@@ -12193,7 +12207,7 @@ export function MainWindow({
     register(officeObject.close, () => officeObject.run("close"));
     quickActions.forEach((action) => {
       const spec = officeObjectId && action.id === "document.save"
-        ? { ...action, enabled: officeObject.update.enabled, disabledReason: officeObject.update.disabledReason }
+        ? { ...action, title: officeObject.update.title, enabled: officeObject.update.enabled, disabledReason: officeObject.update.disabledReason }
         : action;
       register(spec, async () => {
         if (action.id === convertTextToAtomLabelCommandId) {
@@ -13062,6 +13076,7 @@ export function MainWindow({
   // reach the host through refs, so it is never rebuilt when they change (see usePluginRuntime).
   const nameResolutionStatusRef = useRef<string | undefined>(undefined);
   const pluginRuntime = usePluginRuntime({
+    disabled: !!officeObjectId,
     onPluginUpdateStatus: setStatus,
     onNameResolutionStatus: text => {
       nameResolutionStatusRef.current = text;
@@ -13512,14 +13527,14 @@ export function MainWindow({
   // Core analysis snapshots use the same request/replay bridge and native window host as plugin
   // reports. Browser builds retain the in-app/toolset surfaces below.
   useEffect(() => {
-    if (!isDesktopRuntime()) return;
+    if (officeObjectId || !isDesktopRuntime()) return;
     publishAnalysisWindow(MOLECULAR_INSPECTOR_WINDOW_ID, "Molecular Inspector", {
       kind: "molecularInspector",
       report: analysisReport,
       busy: analysisBusy,
       stale: analysisReportIsStale
     });
-  }, [analysisBusy, analysisReport, analysisReportIsStale, publishAnalysisWindow]);
+  }, [analysisBusy, analysisReport, analysisReportIsStale, officeObjectId, publishAnalysisWindow]);
 
   useEffect(() => {
     if (!isDesktopRuntime() || !pluginDiagnosticsOpen) return;
@@ -14214,7 +14229,7 @@ export function MainWindow({
   // the corner of the screen. Written on load, after every hot update, and whenever the window comes
   // back to the front — the three moments at which the answer can have changed.
   useEffect(() => {
-    if (!isDesktopRuntime()) {
+    if (officeObjectId || !isDesktopRuntime()) {
       return;
     }
     const loadedAt = new Date();
@@ -14244,7 +14259,7 @@ export function MainWindow({
       window.removeEventListener("focus", onFocus);
       hot?.off?.("vite:afterUpdate", onHotUpdate);
     };
-  }, []);
+  }, [officeObjectId]);
 
   useEffect(() => {
     const targetsCanvasClipboard = (event: Event, key: string) =>
@@ -15485,7 +15500,7 @@ export function MainWindow({
   // window state. If none can be opened, fall back to in-window web palettes so the app is
   // never left with no toolbars.
   useEffect(() => {
-    if (!effectiveNativePalette) {
+    if (!effectiveNativePalette || (officeObjectId && !officeUpdateTitle)) {
       return;
     }
     // Native palette windows exist only in the desktop runtime, which is also the only place native
@@ -15548,7 +15563,7 @@ export function MainWindow({
     return () => {
       cancelled = true;
     };
-  }, [effectiveNativePalette, nativeToolsetLayoutReady, nativeToolsetsSuspendedForLaunchPrompt, nativeDocumentNoticeOpen, toolsetRegistry, toolsetWindowGeometry]);
+  }, [effectiveNativePalette, nativeToolsetLayoutReady, nativeToolsetsSuspendedForLaunchPrompt, nativeDocumentNoticeOpen, officeObjectId, officeUpdateTitle, toolsetRegistry, toolsetWindowGeometry]);
 
   // A pointer-down anywhere in the document window dismisses any open palette popover (the colour
   // picker floats in its own window; "click elsewhere closes it"). Native palettes only — in the
@@ -15565,7 +15580,6 @@ export function MainWindow({
   }, [effectiveNativePalette]);
 
   useEffect(() => {
-    if (officeObjectId) return;
     let active = true;
     let unlisten: (() => void) | undefined;
     let unlistenState: (() => void) | undefined;
@@ -22465,6 +22479,7 @@ export function MainWindow({
   }, [createAgentSnapshot]);
 
   useEffect(() => {
+    if (officeObjectId) return;
     let disposed = false;
     let installedBridge: Window[typeof AGENT_BRIDGE_GLOBAL_NAME] | undefined;
 
@@ -22497,6 +22512,7 @@ export function MainWindow({
       }
     };
   }, [
+    officeObjectId,
     createAgentSnapshot,
     debugAgentArtObject,
     dispatchAgentPointer,
@@ -22511,7 +22527,7 @@ export function MainWindow({
 
   // The browser build has no native OS menu, so it renders the shared app-menu model in-viewport.
   // On the Tauri desktop build the native menu owns this, so the in-window bar stays hidden.
-  const showAppMenuBar = !!officeObjectId || !isDesktopRuntime();
+  const showAppMenuBar = !isDesktopRuntime();
   const appMenuSections = useMemo(
     () =>
       buildAppMenuModel({
@@ -22764,7 +22780,7 @@ export function MainWindow({
       data-can-undo={canUndo ? "true" : "false"}
       data-can-redo={canRedo ? "true" : "false"}
     >
-      <input
+      {!officeObjectId ? <><input
         ref={fileInputRef}
         type="file"
         accept=".chemdraft,.cdx,.cdxml,.xml,.json,chemical/x-cdx,chemical/x-cdxml,application/xml,text/xml,application/json,application/vnd.chemdraft+json"
@@ -22779,12 +22795,12 @@ export function MainWindow({
         className="native-file-input"
         aria-label="Import Molecule Inspector template"
         onChange={handleMoleculeTemplateFile}
-      />
+      /></> : null}
 
-      {officeObjectId ? (
+      {officeObjectId && (showAppMenuBar || !effectiveNativePalette) ? (
         <header>
-          <MenuBar sections={[officeObjectFileMenu(officeObject.update, officeObject.close,
-            shortcutPlatform ?? detectDesktopShortcutPlatform())]} onInvoke={invoke} />
+          {showAppMenuBar ? <MenuBar sections={[officeObjectFileMenu(officeObject.update, officeObject.close,
+            shortcutPlatform ?? detectDesktopShortcutPlatform())]} onInvoke={invoke} /> : null}
           {officeObject.update.enabled && visibleToolsetIds.has(DEFAULT_TOOLSET_ID) ? (
             <div className="command-bar">
               <ToolPalette title="Drawing tools" mode="floating" orientation="horizontal" activeTool={activeTool}
@@ -22795,7 +22811,7 @@ export function MainWindow({
             </div>
           ) : null}
         </header>
-      ) : showAppMenuBar ? <MenuBar sections={appMenuSections} onInvoke={invoke} /> : null}
+      ) : !officeObjectId && showAppMenuBar ? <MenuBar sections={appMenuSections} onInvoke={invoke} /> : null}
 
       {pluginManagerOpen ? (
         <PluginManagerDialog

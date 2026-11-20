@@ -35,15 +35,19 @@ describe("dialog capabilities", () => {
     expect(host.permissions.slice().sort()).toEqual([
       "allow-dialog-request", "allow-dialog-send"
     ]);
+    const officeHost = capabilities.find(({ name }) => name === "office-dialog-host.json")!.capability;
+    expect(officeHost.windows).toEqual(["reactionConditions", "pageSize", "arrangementSpacing", "insertTable",
+      "customColor", "structureTemplates", "atomProblem"].map(kind => "dialog-office-object-*-" + kind + "-*"));
+    expect(officeHost.permissions).toEqual(["allow-dialog-request", "allow-dialog-send"]);
     const owner = capabilities.find(({ name }) => name === "dialog-owner.json")!.capability;
     expect(owner.windows).toEqual(["main"]);
     expect(owner.permissions.slice().sort()).toEqual(["allow-dialog-close", "allow-dialog-open", "allow-dialog-publish"]);
   });
   it("grant dialog permissions, aliases included, to the document window alone", () => {
     const granted = capabilities.filter(({ capability }) => dialogPermissions(capability).length > 0);
-    expect(granted.map(({ name }) => name)).toEqual(["document-dialogs.json"]);
+    expect(granted.map(({ name }) => name)).toEqual(["document-dialogs.json", "office-object.json"]);
     for (const { name, capability } of granted) {
-      expect(capability.windows, name).toEqual(DIALOG_WINDOWS);
+      expect(capability.windows, name).toEqual(name === "office-object.json" ? ["office-object-*"] : DIALOG_WINDOWS);
       expect(capability.webviews, name).toBeUndefined();
       expect((capability as { remote?: unknown }).remote, name).toBeUndefined();
     }
@@ -53,6 +57,9 @@ describe("dialog capabilities", () => {
     const { capability } = capabilities.find(({ name }) => name === "document-dialogs.json")!;
     expect(dialogPermissions(capability).sort()).toEqual(["dialog:allow-message", "dialog:allow-open", "dialog:allow-save"]);
     expect((capability as { platforms?: unknown }).platforms).toBeUndefined();
+    const office = capabilities.find(({ name }) => name === "office-object.json")!.capability;
+    expect(dialogPermissions(office)).toEqual(["dialog:allow-message"]);
+    expect((office as { platforms?: unknown }).platforms).toEqual(["windows"]);
   });
 
   it("grants native prompt toolset suspension to the document window alone", () => {

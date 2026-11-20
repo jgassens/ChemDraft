@@ -1,14 +1,39 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "office-object",
-  "description": "The local embedded editor receives its selection and publishes updates to its own Office object.",
-  "platforms": ["windows"],
-  "windows": ["office-object-*"],
+  "description": "Allow an embedded Office document window to edit, copy, and update its drawing and manage its own native utilities.",
+  "platforms": [
+    "windows"
+  ],
+  "windows": [
+    "office-object-*"
+  ],
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-unlisten",
+    "core:event:allow-emit",
     "core:event:allow-emit-to",
+    "core:window:allow-set-title",
+    "core:window:allow-get-all-windows",
+    "core:window:allow-is-visible",
+    "dialog:allow-message",
     "allow-office-object-update",
-    "allow-office-object-close"
+    "allow-office-object-close",
+    "allow-read-clipboard-payload",
+    "allow-write-clipboard-items",
+    "allow-rasterize-svg",
+    "allow-list-system-fonts",
+    "allow-popup-canvas-context-menu",
+    "allow-document-canvas-occlusion",
+    "allow-dialog-open",
+    "allow-dialog-publish",
+    "allow-dialog-close",
+    "allow-set-toolbars-menu",
+    "allow-open-toolset-window",
+    "allow-close-toolset-window",
+    "allow-list-toolset-window-states",
+    "allow-open-toolset-popover",
+    "allow-close-toolset-popover",
+    "allow-window-logical-position"
   ]
 }

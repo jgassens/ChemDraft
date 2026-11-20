@@ -130,8 +130,13 @@ async function showNativePrompt(prompt: NativePromptOptions, fallback: NativePro
     await Promise.resolve();
     // React StrictMode replays mount effects. Its first request must not open a second OS box.
     if (signal?.aborted) return cancel.id;
-    if (prompt.owner === "document" && getCurrentWindow().label !== "main") {
-      throw new Error(`A document-owned prompt must be invoked from the main window on ${platform}.`);
+    const windowLabel = getCurrentWindow().label;
+    const officeWindow = /^office-object-\d{1,20}$/.test(windowLabel);
+    if (prompt.owner === "document" && windowLabel !== "main" && !officeWindow) {
+      throw new Error(`A document-owned prompt must be invoked from a document window on ${platform}.`);
+    }
+    if (prompt.owner === "office-object" && !officeWindow) {
+      throw new Error("An Office prompt must be invoked from its embedded drawing window.");
     }
     const showMessage = async () => {
       if (signal?.aborted) return cancel.label;
@@ -139,11 +144,8 @@ async function showNativePrompt(prompt: NativePromptOptions, fallback: NativePro
       await onShowing?.();
       return response;
     };
-    if (prompt.owner === "office-object") {
-      if (!getCurrentWindow().label.startsWith("office-object-")) {
-        throw new Error("An Office prompt must be invoked from its embedded drawing window.");
-      }
-      // The floating utility windows belong to the main window, which alone can suspend them.
+    if (officeWindow) {
+      // The native box is modal to the calling object window.
       result = await showMessage();
     } else {
       result = await withNativeUtilitySuspension(showMessage);

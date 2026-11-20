@@ -13,7 +13,7 @@ import { isDrawingSettings, DRAWING_SETTINGS_STORAGE_KEY, loadDrawingSettings, t
 import { ELECTRON_MARK_EDITING_STORAGE_KEY, loadDirectElectronMarkEditing } from "../electronMarkEditingSettings";
 import { isKeybindingSettings, type KeybindingScheme, type KeybindingSettings } from "../keybindingSettings";
 import { migrateLegacyToolsetIds } from "../toolbars/legacyToolsetIds";
-import { listenCurrentWindowEvent, listenTauriEvent, safeTauriWindowListen } from "./tauriEvents";
+import { listenCurrentWindowEvent, listenTauriEvent as listenNativeEvent, safeTauriWindowListen } from "./tauriEvents";
 import {
   compareToolsetPopoverOpenings, type AcceptedToolsetPopoverOpening, type ToolsetPopoverDismissPayload,
   type ToolsetPopoverOpening, type ToolsetFlyoutClosedNotice
@@ -21,6 +21,32 @@ import {
 
 export { compareToolsetPopoverOpenings } from "./flyoutOpeningRule";
 export type { AcceptedToolsetPopoverOpening, ToolsetPopoverDismissPayload, ToolsetPopoverOpening } from "./flyoutOpeningRule";
+
+function officeOwner(): string | undefined {
+  if (typeof window === "undefined") return undefined;
+  const params = new URLSearchParams(window.location.search);
+  const owner = params.get("officeOwner") ?? `office-object-${params.get("officeObject")}`;
+  return /^office-object-\d{1,20}$/.test(owner) ? owner : undefined;
+}
+
+function toolsetEventName(name: string): string {
+  const owner = officeOwner();
+  return owner && /^chemdraft:\/\/(?:toolset-|palette-|bond-stereo-popover-|dismiss-toolset-)/.test(name)
+    ? `${name}/${owner}` : name;
+}
+
+const listenTauriEvent: typeof listenNativeEvent = (name, handler) =>
+  listenNativeEvent(toolsetEventName(name), handler);
+
+async function emitNativeEvent<T>(name: string, payload?: T): Promise<void> {
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit(toolsetEventName(name), payload);
+}
+
+function ownedToolsetWindowLabel(label: string): string {
+  const owner = officeOwner();
+  return owner ? `office-utility-${owner}--${label}` : label;
+}
 
 export const PALETTE_COMMAND_EVENT = "chemdraft://palette-command";
 export const PALETTE_COMMAND_PREVIEW_EVENT = "chemdraft://palette-command-preview";
@@ -253,8 +279,7 @@ function observePopoverOpeningRelease(toolsetId: string): void {
   const release = () => {
     stop();
     const releasedAt = toolsetPopoverTimestamp();
-    void import("@tauri-apps/api/event").then(({ emit }) =>
-      emit(TOOLSET_POPOVER_RELEASE_EVENT, { toolsetId, releasedAt })).catch(() => undefined);
+    void emitNativeEvent(TOOLSET_POPOVER_RELEASE_EVENT, { toolsetId, releasedAt }).catch(() => undefined);
   };
   const timeout = window.setTimeout(stop, 30_000);
   stopPopoverRelease = stop;
@@ -393,8 +418,7 @@ interface ToolsetPopoverClosedPayload { toolsetId: string; openedAt: number; gen
 
 export async function notifyToolsetPopoverClosed(toolsetId: string, openedAt: number, generation?: number): Promise<void> {
   if (!isDesktopRuntime()) return;
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_POPOVER_CLOSED_EVENT, { toolsetId, openedAt, ...(generation === undefined ? {} : { generation }) }).catch(() => undefined);
+  await emitNativeEvent(TOOLSET_POPOVER_CLOSED_EVENT, { toolsetId, openedAt, ...(generation === undefined ? {} : { generation }) }).catch(() => undefined);
 }
 
 export async function listenForToolsetPopoverClosed(handler: (payload: ToolsetPopoverClosedPayload) => void): Promise<Unlisten> {
@@ -442,8 +466,7 @@ export async function dismissToolsetPopovers(requestedAt?: number, reason?: "esc
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_POPOVER_DISMISS_EVENT, requestedAt === undefined ? undefined : {
+  await emitNativeEvent(TOOLSET_POPOVER_DISMISS_EVENT, requestedAt === undefined ? undefined : {
     requestedAt, ...(reason ? { reason } : {}), ...(openings ? { openings } : {})
   }).catch(() => undefined);
 }
@@ -525,8 +548,7 @@ export async function setToolsetPopoverContent(
   if (!previous || compareToolsetPopoverOpenings(content, previous) >= 0) {
     latestToolsetPopoverOpenings.set(toolsetId, { openedAt: content.openedAt, generation: content.generation });
   }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<ToolsetPopoverContentPayload>(TOOLSET_POPOVER_CONTENT_EVENT, { toolsetId, anchor, ...content }).catch(
+  await emitNativeEvent<ToolsetPopoverContentPayload>(TOOLSET_POPOVER_CONTENT_EVENT, { toolsetId, anchor, ...content }).catch(
     () => undefined
   );
 }
@@ -545,8 +567,7 @@ export async function listenForToolsetPopoverContent(
 /** Popover → keyboard router: publish the identity that the renderer actually accepted. */
 export async function notifyToolsetPopoverContentAccepted(opening: AcceptedToolsetPopoverOpening): Promise<void> {
   if (!isDesktopRuntime()) return;
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<ToolsetPopoverContentNotice>(TOOLSET_POPOVER_CONTENT_EVENT, { ...opening, accepted: true });
+  await emitNativeEvent<ToolsetPopoverContentNotice>(TOOLSET_POPOVER_CONTENT_EVENT, { ...opening, accepted: true });
 }
 
 export async function listenForAcceptedToolsetPopoverContent(
@@ -567,8 +588,7 @@ export async function requestToolsetPopoverContent(toolsetId: string): Promise<v
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_POPOVER_CONTENT_REQUEST_EVENT, { toolsetId }).catch(() => undefined);
+  await emitNativeEvent(TOOLSET_POPOVER_CONTENT_REQUEST_EVENT, { toolsetId }).catch(() => undefined);
 }
 
 export async function listenForToolsetPopoverContentRequests(
@@ -603,8 +623,7 @@ const TOOLSET_FLYOUT_OPENING_EVENT = "chemdraft://toolset-flyout-opening";
 /** Palette → keyboard router: identify the opening before native IPC can delay its content. */
 export async function notifyToolsetFlyoutOpening(opening: ToolsetFlyoutSession): Promise<void> {
   if (!isDesktopRuntime()) return;
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_FLYOUT_OPENING_EVENT, opening);
+  await emitNativeEvent(TOOLSET_FLYOUT_OPENING_EVENT, opening);
 }
 
 export async function listenForToolsetFlyoutOpening(handler: (opening: ToolsetFlyoutSession) => void): Promise<Unlisten> {
@@ -614,8 +633,7 @@ export async function listenForToolsetFlyoutOpening(handler: (opening: ToolsetFl
 
 export async function sendToolsetFlyoutKey(payload: ToolsetFlyoutKey): Promise<void> {
   if (!isDesktopRuntime()) return;
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_FLYOUT_KEY_EVENT, payload);
+  await emitNativeEvent(TOOLSET_FLYOUT_KEY_EVENT, payload);
 }
 
 export async function listenForToolsetFlyoutKeys(handler: (payload: ToolsetFlyoutKey) => void): Promise<Unlisten> {
@@ -625,8 +643,7 @@ export async function listenForToolsetFlyoutKeys(handler: (payload: ToolsetFlyou
 
 export async function notifyToolsetFlyoutClosed(payload: ToolsetFlyoutClosedNotice): Promise<void> {
   if (!isDesktopRuntime()) return;
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_FLYOUT_CLOSED_EVENT, payload);
+  await emitNativeEvent(TOOLSET_FLYOUT_CLOSED_EVENT, payload);
 }
 
 export async function listenForToolsetFlyoutClosed(handler: (payload: ToolsetFlyoutClosedNotice) => void): Promise<Unlisten> {
@@ -648,8 +665,7 @@ export async function sendBondStereoPopoverAction(payload: BondStereoPopoverActi
     }
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(BOND_STEREO_POPOVER_ACTION_EVENT, payload);
+  await emitNativeEvent(BOND_STEREO_POPOVER_ACTION_EVENT, payload);
 }
 
 export async function listenForBondStereoPopoverActions(handler: (payload: BondStereoPopoverAction) => void): Promise<Unlisten> {
@@ -689,8 +705,7 @@ export async function broadcastSpin3dSettings(settings: Spin3dSettings): Promise
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<Spin3dSettings>(SPIN3D_SETTINGS_EVENT, settings);
+  await emitNativeEvent<Spin3dSettings>(SPIN3D_SETTINGS_EVENT, settings);
 }
 
 export async function listenForSpin3dSettings(handler: (settings: Spin3dSettings) => void): Promise<Unlisten> {
@@ -724,8 +739,7 @@ export async function broadcastKeybindingSettings(settings: KeybindingSettings):
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<KeybindingSettings>(KEYBINDING_SETTINGS_EVENT, settings);
+  await emitNativeEvent<KeybindingSettings>(KEYBINDING_SETTINGS_EVENT, settings);
 }
 
 export async function listenForKeybindingSettings(
@@ -762,7 +776,7 @@ export async function listToolsetWindowStates(): Promise<ToolsetWindowState[]> {
 }
 
 export async function loadToolsetLayoutState(): Promise<unknown | undefined> {
-  if (!isDesktopRuntime()) {
+  if (!isDesktopRuntime() || officeOwner()) {
     return undefined;
   }
 
@@ -861,8 +875,7 @@ export async function listenForQuitPromptRequest(handler: (requestId: number) =>
 export async function broadcastQuitSettings(enabled: boolean): Promise<void> {
   dispatchDomToolsetEvent(QUIT_SETTINGS_EVENT, enabled);
   if (isDesktopRuntime()) {
-    const { emit } = await import("@tauri-apps/api/event");
-    await emit(QUIT_SETTINGS_EVENT, enabled);
+    await emitNativeEvent(QUIT_SETTINGS_EVENT, enabled);
   }
 }
 export async function listenForQuitSettings(handler: (enabled: boolean) => void): Promise<Unlisten> {
@@ -878,8 +891,7 @@ export async function listenForQuitSettings(handler: (enabled: boolean) => void)
 export async function broadcastExportPreviewSettings(enabled: boolean): Promise<void> {
   dispatchDomToolsetEvent(EXPORT_PREVIEW_SETTINGS_EVENT, enabled);
   if (isDesktopRuntime()) {
-    const { emit } = await import("@tauri-apps/api/event");
-    await emit(EXPORT_PREVIEW_SETTINGS_EVENT, enabled);
+    await emitNativeEvent(EXPORT_PREVIEW_SETTINGS_EVENT, enabled);
   }
 }
 export async function listenForExportPreviewSettings(handler: (enabled: boolean) => void, nativeEvents = false): Promise<Unlisten> {
@@ -939,14 +951,15 @@ export async function setToolbarsMenu(
   // items; pass their current state so the rebuild preserves the checkmarks instead of forcing them on.
   rulersVisible: boolean,
   crosshairsVisible: boolean,
-  hasMultipleDocumentTabs = false
+  hasMultipleDocumentTabs = false,
+  officeUpdateTitle?: string
 ): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
 
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("set_toolbars_menu", { entries, rulersVisible, crosshairsVisible, hasMultipleDocumentTabs }).catch(() => undefined);
+  await invoke("set_toolbars_menu", { entries, rulersVisible, crosshairsVisible, hasMultipleDocumentTabs, ...(officeUpdateTitle ? { officeUpdateTitle } : {}) }).catch(() => undefined);
 }
 
 /**
@@ -1040,8 +1053,7 @@ async function deliverToolsetCommandEvent(eventName: string, commandId: string):
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<ToolsetCommandPayload>(eventName, payload);
+  await emitNativeEvent<ToolsetCommandPayload>(eventName, payload);
 }
 
 /** What a detached palette asks the main window to do on its behalf. */
@@ -1054,8 +1066,7 @@ export async function sendPaletteInspectorAction(action: PaletteInspectorAction)
   if (!isDesktopRuntime()) {
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<PaletteInspectorAction>(PALETTE_INSPECTOR_ACTION_EVENT, action);
+  await emitNativeEvent<PaletteInspectorAction>(PALETTE_INSPECTOR_ACTION_EVENT, action);
 }
 
 export async function broadcastToolsetActiveTool(commandId: string): Promise<void> {
@@ -1065,8 +1076,7 @@ export async function broadcastToolsetActiveTool(commandId: string): Promise<voi
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<ToolsetActiveToolPayload>(TOOLSET_ACTIVE_TOOL_EVENT, payload);
+  await emitNativeEvent<ToolsetActiveToolPayload>(TOOLSET_ACTIVE_TOOL_EVENT, payload);
 }
 
 export async function requestToolsetActiveTool(): Promise<void> {
@@ -1075,8 +1085,7 @@ export async function requestToolsetActiveTool(): Promise<void> {
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_ACTIVE_TOOL_REQUEST_EVENT);
+  await emitNativeEvent(TOOLSET_ACTIVE_TOOL_REQUEST_EVENT);
 }
 
 export async function broadcastToolsetTextStyle(payload: ToolsetTextStylePayload): Promise<void> {
@@ -1085,8 +1094,7 @@ export async function broadcastToolsetTextStyle(payload: ToolsetTextStylePayload
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<ToolsetTextStylePayload>(TOOLSET_TEXT_STYLE_EVENT, payload);
+  await emitNativeEvent<ToolsetTextStylePayload>(TOOLSET_TEXT_STYLE_EVENT, payload);
 }
 
 export async function requestToolsetTextStyle(): Promise<void> {
@@ -1095,8 +1103,7 @@ export async function requestToolsetTextStyle(): Promise<void> {
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_TEXT_STYLE_REQUEST_EVENT);
+  await emitNativeEvent(TOOLSET_TEXT_STYLE_REQUEST_EVENT);
 }
 
 export async function startPaletteWindowDrag(grabX: number, grabY: number): Promise<void> {
@@ -1232,7 +1239,7 @@ export async function showCurrentToolsetPopoverWindow(
 export async function focusCurrentWindowAndWebview(
   options: { onlyIfAppActive?: boolean } = {}
 ): Promise<void> {
-  if (!isDesktopRuntime()) {
+  if (!isDesktopRuntime() || officeOwner()) {
     return;
   }
 
@@ -1364,8 +1371,7 @@ export async function broadcastToolsetLayoutState(layoutState: unknown): Promise
   if (!isDesktopRuntime()) {
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_LAYOUT_STATE_EVENT, layoutState);
+  await emitNativeEvent(TOOLSET_LAYOUT_STATE_EVENT, layoutState);
 }
 
 export async function listenForToolsetLayoutState(
@@ -1384,8 +1390,7 @@ export async function requestToolsetLayoutState(): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_LAYOUT_STATE_REQUEST_EVENT);
+  await emitNativeEvent(TOOLSET_LAYOUT_STATE_REQUEST_EVENT);
 }
 
 export async function listenForToolsetLayoutStateRequests(handler: () => void): Promise<Unlisten> {
@@ -1422,8 +1427,7 @@ export async function broadcastToolsetCommandSpecs(commands: readonly CommandSpe
     dispatchDomToolsetEvent(TOOLSET_COMMAND_SPECS_EVENT, payload);
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<ToolsetCommandSpecsPayload>(TOOLSET_COMMAND_SPECS_EVENT, payload);
+  await emitNativeEvent<ToolsetCommandSpecsPayload>(TOOLSET_COMMAND_SPECS_EVENT, payload);
 }
 
 export async function listenForToolsetCommandSpecs(
@@ -1449,8 +1453,7 @@ export async function requestToolsetCommandSpecs(): Promise<void> {
     dispatchDomToolsetEvent(TOOLSET_COMMAND_SPECS_REQUEST_EVENT, {});
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_COMMAND_SPECS_REQUEST_EVENT);
+  await emitNativeEvent(TOOLSET_COMMAND_SPECS_REQUEST_EVENT);
 }
 
 export async function listenForToolsetCommandSpecsRequests(handler: () => void): Promise<Unlisten> {
@@ -1487,8 +1490,7 @@ export async function broadcastToolsetDefinitions(toolsets: readonly ToolsetDefi
     dispatchDomToolsetEvent(TOOLSET_DEFINITIONS_EVENT, payload);
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<ToolsetDefinitionsPayload>(TOOLSET_DEFINITIONS_EVENT, payload);
+  await emitNativeEvent<ToolsetDefinitionsPayload>(TOOLSET_DEFINITIONS_EVENT, payload);
 }
 
 export async function listenForToolsetDefinitions(
@@ -1514,8 +1516,7 @@ export async function requestToolsetDefinitions(): Promise<void> {
     dispatchDomToolsetEvent(TOOLSET_DEFINITIONS_REQUEST_EVENT, {});
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_DEFINITIONS_REQUEST_EVENT);
+  await emitNativeEvent(TOOLSET_DEFINITIONS_REQUEST_EVENT);
 }
 
 export async function listenForToolsetDefinitionsRequests(handler: () => void): Promise<Unlisten> {
@@ -1581,8 +1582,7 @@ export async function sendToolsetLayoutEdit(payload: ToolsetLayoutEditPayload): 
     dispatchDomToolsetEvent(TOOLSET_LAYOUT_EDIT_EVENT, payload);
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<ToolsetLayoutEditPayload>(TOOLSET_LAYOUT_EDIT_EVENT, payload);
+  await emitNativeEvent<ToolsetLayoutEditPayload>(TOOLSET_LAYOUT_EDIT_EVENT, payload);
 }
 
 export async function listenForToolsetLayoutEdits(
@@ -1608,8 +1608,7 @@ export async function broadcastToolsetCustomizeMode(payload: ToolsetCustomizeMod
   if (!isDesktopRuntime()) {
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<ToolsetCustomizeModePayload>(TOOLSET_CUSTOMIZE_MODE_EVENT, payload);
+  await emitNativeEvent<ToolsetCustomizeModePayload>(TOOLSET_CUSTOMIZE_MODE_EVENT, payload);
 }
 
 export async function listenForToolsetCustomizeMode(
@@ -1640,8 +1639,7 @@ export async function requestToolsetCustomizeMode(): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_CUSTOMIZE_MODE_REQUEST_EVENT);
+  await emitNativeEvent(TOOLSET_CUSTOMIZE_MODE_REQUEST_EVENT);
 }
 
 export async function listenForToolsetCustomizeModeRequests(handler: () => void): Promise<Unlisten> {
@@ -1674,8 +1672,7 @@ export async function showPaletteFloatingTooltip(payload: PaletteTooltipPayload)
   if (!isDesktopRuntime()) {
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(PALETTE_TOOLTIP_SHOW_EVENT, payload);
+  await emitNativeEvent(PALETTE_TOOLTIP_SHOW_EVENT, payload);
 }
 
 /** Global-logical bounds of one attached monitor. Mirrors the Rust side's
@@ -1710,8 +1707,7 @@ export async function hidePaletteFloatingTooltip(): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(PALETTE_TOOLTIP_HIDE_EVENT);
+  await emitNativeEvent(PALETTE_TOOLTIP_HIDE_EVENT);
 }
 
 export async function listenForPaletteTooltipShow(
@@ -1860,8 +1856,7 @@ export const DRAWING_SETTINGS_EVENT = "chemdraft://drawing-settings";
 export async function broadcastDrawingSettings(settings: DrawingSettings): Promise<void> {
   dispatchDomToolsetEvent(DRAWING_SETTINGS_EVENT, settings);
   if (!isDesktopRuntime()) return;
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<DrawingSettings>(DRAWING_SETTINGS_EVENT, settings);
+  await emitNativeEvent<DrawingSettings>(DRAWING_SETTINGS_EVENT, settings);
 }
 
 export async function listenForDrawingSettings(handler: (settings: DrawingSettings) => void): Promise<Unlisten> {
@@ -1885,8 +1880,7 @@ export const ELECTRON_MARK_EDITING_SETTINGS_EVENT = "chemdraft://electron-mark-e
 export async function broadcastElectronMarkEditingSettings(enabled: boolean): Promise<void> {
   dispatchDomToolsetEvent(ELECTRON_MARK_EDITING_SETTINGS_EVENT, enabled);
   if (!isDesktopRuntime()) return;
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(ELECTRON_MARK_EDITING_SETTINGS_EVENT, enabled);
+  await emitNativeEvent(ELECTRON_MARK_EDITING_SETTINGS_EVENT, enabled);
 }
 
 export async function listenForElectronMarkEditingSettings(handler: (enabled: boolean) => void): Promise<Unlisten> {
@@ -1913,8 +1907,7 @@ export async function broadcastCompoundLayoutSettings(settings: CompoundLayoutSe
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<CompoundLayoutSettings>(COMPOUND_LAYOUT_SETTINGS_EVENT, settings);
+  await emitNativeEvent<CompoundLayoutSettings>(COMPOUND_LAYOUT_SETTINGS_EVENT, settings);
 }
 
 export async function listenForCompoundLayoutSettings(

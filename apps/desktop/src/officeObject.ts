@@ -18,6 +18,21 @@ import { safeTauriWindowListen } from "./window-manager/tauriEvents";
 export const OFFICE_UPDATE_COMMAND_ID = "office.updateEmbeddedObject";
 export const OFFICE_CLOSE_COMMAND_ID = "office.closeEmbeddedObject";
 
+const standaloneCommands = new Set([
+  "document.new", "document.open", "document.saveAs", "export.open",
+  "view.customizeToolbars", "view.customizeMainToolbar", "view.togglePreferences", "view.toggle3dDebugger",
+  "help.reportBug", "app.checkForUpdates", "drawnStructureSettings.template.import", "drawnStructureSettings.template.export",
+  "structure.spin3d", "structure.openInteractive3d", "structure.cleanup3d", "analyze.molecularProperties"
+]);
+
+export function officeCommandAvailability(spec: CommandSpec, molecularInspectorToggle: string): CommandSpec {
+  if (!standaloneCommands.has(spec.id) && spec.id !== molecularInspectorToggle &&
+      !/^(?:plugins\.|search\.|document\..*UnrestoredTabs)/.test(spec.id)) {
+    return spec;
+  }
+  return { ...spec, enabled: false, disabledReason: "This command is available in the main ChemDraft window." };
+}
+
 interface OfficeObjectOpen {
   objectId: string;
   json: string;

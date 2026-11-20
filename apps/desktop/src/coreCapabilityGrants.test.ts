@@ -30,7 +30,7 @@ describe("core capability grants", () => {
     }));
     const owners = grants.filter(({ capability }) => capability.permissions.some(permission =>
       (typeof permission === "string" ? permission : permission.identifier) === "allow-popup-canvas-context-menu"));
-    expect(owners.map(({ name }) => name)).toEqual(["canvas-context-menu.json"]);
+    expect(owners.map(({ name }) => name)).toEqual(["canvas-context-menu.json", "office-object.json"]);
     const owner = owners[0]!.capability;
     expect(owner.windows).toEqual(["main"]);
     expect(owner.webviews).toBeUndefined();
@@ -48,6 +48,43 @@ describe("core capability grants", () => {
     expect(permission).toContain('commands.allow = ["popup_canvas_context_menu"]');
     expect(permission).toContain('identifier = "deny-popup-canvas-context-menu"');
     expect(permission).toContain('commands.deny = ["popup_canvas_context_menu"]');
+  });
+
+  it("isolates embedded document and utility windows from the standalone editor grants", () => {
+    const directory = new URL("../src-tauri/capabilities/", import.meta.url);
+    const grants = readdirSync(directory).filter(name => name.endsWith(".json")).map(name =>
+      JSON.parse(readFileSync(new URL(name, directory), "utf8")) as {
+        identifier: string; windows: string[]; platforms?: string[]; remote?: unknown;
+        permissions: (string | { identifier: string })[];
+      });
+    const embedded = [
+      ["office-object-17", "office-object"],
+      ["office-utility-office-object-17--toolset-core-main", "office-toolset"],
+      ["office-utility-office-object-17--toolset-popover-core-main", "office-toolset"],
+      ["office-utility-office-object-17--toolset-tooltip", "office-tooltip"],
+      ["dialog-office-object-17-pageSize-1", "office-dialog-host"]
+    ];
+    for (const [label, identifier] of embedded) {
+      const matching = grants.filter(grant => grant.windows.some(pattern =>
+        new RegExp("^" + pattern.replaceAll("*", ".*") + "$").test(label)));
+      expect(matching.map(grant => grant.identifier), label).toEqual([identifier]);
+      expect(matching[0]!.platforms).toEqual(["windows"]);
+      expect(matching[0]!.remote).toBeUndefined();
+      for (const permission of matching[0]!.permissions) {
+        expect(permission).toBeTypeOf("string");
+        expect(permission).not.toMatch(/^(?:fs:|http:|updater:|shell:|core:default$)|dialog:allow-(?:open|save)|install|external-tool|structure-search|document-session|save-toolset/);
+      }
+    }
+    expect(grants.find(grant => grant.identifier === "office-object")!.permissions).toEqual([
+      "core:event:allow-listen", "core:event:allow-unlisten", "core:event:allow-emit", "core:event:allow-emit-to",
+      "core:window:allow-set-title", "core:window:allow-get-all-windows", "core:window:allow-is-visible",
+      "dialog:allow-message", "allow-office-object-update", "allow-office-object-close",
+      "allow-read-clipboard-payload", "allow-write-clipboard-items", "allow-rasterize-svg", "allow-list-system-fonts",
+      "allow-popup-canvas-context-menu", "allow-document-canvas-occlusion",
+      "allow-dialog-open", "allow-dialog-publish", "allow-dialog-close", "allow-set-toolbars-menu",
+      "allow-open-toolset-window", "allow-close-toolset-window", "allow-list-toolset-window-states",
+      "allow-open-toolset-popover", "allow-close-toolset-popover", "allow-window-logical-position"
+    ]);
   });
 
   it("pins perf recording grants and restricts completion forwarding to main and shared dialogs", () => {
@@ -172,6 +209,7 @@ describe("core capability grants", () => {
       });
     expect(grants.filter((grant) => grant.permissions.includes("allow-start-window-drag"))
       .map((grant) => grant.windows)).toEqual([
+      ["office-utility-office-object-*--toolset-core-*", "office-utility-office-object-*--toolset-popover-*"],
       ["toolset-core-*", "toolset-plugin-*", "toolset-user-*", "plugin-panel-*"]
     ]);
     expect(grants.some((grant) => grant.permissions.includes("core:window:allow-start-dragging"))).toBe(false);

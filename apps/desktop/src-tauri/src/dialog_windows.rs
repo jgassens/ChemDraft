@@ -944,7 +944,9 @@ impl Message {
                 MAX_BYTES
             }
             || self.protocol_version != 1
-            || self.owner_window_id != super::MAIN_WINDOW_LABEL
+            || !super::is_document_window(&self.owner_window_id)
+            || (self.owner_window_id != super::MAIN_WINDOW_LABEL
+                && !office_dialog_kind(&self.dialog_kind))
             || kind_spec(&self.dialog_kind).is_err()
             || !token(&self.document_tab_id)
             || !token(&self.session_id)
@@ -1344,17 +1346,48 @@ static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(|| Mutex::new(Registr
 
 pub(crate) fn is_dialog_label(label: &str) -> bool {
     label == super::PREFERENCES_WINDOW_LABEL
-        || label
-            .strip_prefix("dialog-main-")
-            .and_then(|s| s.split_once('-'))
-            .is_some_and(|(kind, slot)| {
-                kind != "preferences"
-                    && kind_spec(kind).is_ok()
-                    && !slot.is_empty()
-                    && slot.len() <= 20
-                    && slot.bytes().all(|c| c.is_ascii_digit())
-            })
+        || dialog_label_parts(label).is_some_and(|(owner, kind, slot)| {
+            kind != "preferences"
+                && kind_spec(kind).is_ok()
+                && (owner == super::MAIN_WINDOW_LABEL || office_dialog_kind(kind))
+                && !slot.is_empty()
+                && slot.len() <= 20
+                && slot.bytes().all(|c| c.is_ascii_digit())
+        })
 }
+
+fn office_dialog_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "reactionConditions"
+            | "pageSize"
+            | "arrangementSpacing"
+            | "insertTable"
+            | "customColor"
+            | "structureTemplates"
+            | "atomProblem"
+    )
+}
+
+fn dialog_label_parts(label: &str) -> Option<(&str, &str, &str)> {
+    let (owner, kind, slot) = if let Some(rest) = label.strip_prefix("dialog-main-") {
+        let (kind, slot) = rest.split_once('-')?;
+        (super::MAIN_WINDOW_LABEL, kind, slot)
+    } else {
+        let (owner_and_kind, slot) = label.strip_prefix("dialog-")?.rsplit_once('-')?;
+        let (owner, kind) = owner_and_kind.rsplit_once('-')?;
+        if !super::is_office_document_window(owner) {
+            return None;
+        }
+        (owner, kind, slot)
+    };
+    Some((owner, kind, slot))
+}
+
+pub(crate) fn dialog_owner_label(label: &str) -> &str {
+    dialog_label_parts(label).map_or(super::MAIN_WINDOW_LABEL, |(owner, _, _)| owner)
+}
+
 fn authorize(
     session: &Session,
     sender: &str,
@@ -1431,7 +1464,7 @@ fn preview_delivery_chunks(text: &str, request_id: &str) -> Vec<Value> {
 }
 fn send_host(session: &Session, message: &Message) -> Result<(), String> {
     if message.is_preview() {
-        let text = serde_json::to_string(&json!({ "senderWindowId": super::MAIN_WINDOW_LABEL, "windowLabel": session.registration.window_label, "message": message })).map_err(|e| e.to_string())?;
+        let text = serde_json::to_string(&json!({ "senderWindowId": session.snapshot.owner_window_id, "windowLabel": session.registration.window_label, "message": message })).map_err(|e| e.to_string())?;
         let channel = session
             .host_channel
             .as_ref()
@@ -1450,7 +1483,11 @@ fn send_host(session: &Session, message: &Message) -> Result<(), String> {
         .host_channel
         .as_ref()
         .ok_or("Dialog host channel missing")?
-        .send(delivery(session, super::MAIN_WINDOW_LABEL, message)?)
+        .send(delivery(
+            session,
+            &session.snapshot.owner_window_id,
+            message,
+        )?)
         .map_err(|e| e.to_string())
 }
 /// Reserve before forwarding: request-ID dedup alone cannot prevent two distinct Apply requests.
@@ -1586,7 +1623,8 @@ fn register(
         return Err("Too many dialog windows are open".into());
     }
     if registry.sessions.values().any(|s| {
-        s.snapshot.document_tab_id == message.document_tab_id
+        s.snapshot.owner_window_id == message.owner_window_id
+            && s.snapshot.document_tab_id == message.document_tab_id
             && s.snapshot.dialog_kind == message.dialog_kind
     }) {
         return Err("A dialog for this drawing is already open".into());
@@ -1594,7 +1632,10 @@ fn register(
     registry.next_slot += 1;
     let registration = Registration {
         host_id: format!("h{:016x}", registry.next_slot),
-        window_label: format!("dialog-main-{}-{}", message.dialog_kind, registry.next_slot),
+        window_label: format!(
+            "dialog-{}-{}-{}",
+            message.owner_window_id, message.dialog_kind, registry.next_slot
+        ),
     };
     registry.sessions.insert(
         registration.host_id.clone(),
@@ -1625,9 +1666,7 @@ pub(crate) async fn dialog_open(
     message: Message,
     channel: Channel<Value>,
 ) -> Result<Registration, String> {
-    if window.label() != super::MAIN_WINDOW_LABEL
-        || app.get_webview_window(super::MAIN_WINDOW_LABEL).is_none()
-    {
+    if !super::is_document_window(window.label()) || window.label() != message.owner_window_id {
         return Err("Unknown dialog owner".into());
     }
     let _creation = super::lock_window_creation()?;
@@ -1940,7 +1979,7 @@ pub(crate) async fn dialog_close(
         let registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(session) = registry.sessions.get(&host_id) {
             authorize(session, window.label(), true, None)?;
-        } else if window.label() != super::MAIN_WINDOW_LABEL {
+        } else if !super::is_document_window(window.label()) {
             return Err("Unknown dialog owner".into());
         }
     }
@@ -1955,7 +1994,7 @@ fn notify_closed(session: &Session, reason: &str) {
     let mut closed = session.snapshot.clone();
     closed.message_type = "closed".into();
     closed.data = json!({"reason": reason});
-    let _ = send_owner(session, super::MAIN_WINDOW_LABEL, &closed);
+    let _ = send_owner(session, &session.snapshot.owner_window_id, &closed);
 }
 fn close_session<R: Runtime>(app: &tauri::AppHandle<R>, host_id: &str, reason: &str) {
     let session = REGISTRY
@@ -1983,6 +2022,20 @@ pub(crate) fn dismiss_owned<R: Runtime>(app: &tauri::AppHandle<R>, reason: &str)
         if let Some(window) = app.get_webview_window(&session.registration.window_label) {
             let _ = window.destroy();
         }
+    }
+}
+
+pub(crate) fn dismiss_office_dialogs<R: Runtime>(app: &tauri::AppHandle<R>, owner: &str) {
+    let hosts: Vec<_> = REGISTRY
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .sessions
+        .iter()
+        .filter(|(_, session)| session.snapshot.owner_window_id == owner)
+        .map(|(host, _)| host.clone())
+        .collect();
+    for host in hosts {
+        close_session(app, &host, "ownerClose");
     }
 }
 
@@ -2157,7 +2210,7 @@ fn show_on_main<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
     }
     let owner = window
         .app_handle()
-        .get_webview_window(super::MAIN_WINDOW_LABEL)
+        .get_webview_window(dialog_owner_label(window.label()))
         .ok_or("Dialog owner is hidden")?;
     prepare_owner_for_dialog(dialog_owner_reveal_decision(&owner), || {
         owner.unminimize().map_err(|e| e.to_string())
@@ -2519,7 +2572,7 @@ fn native_normal_geometry<R: Runtime>(
     let hwnd = window.hwnd().ok()?.0 as _;
     let owner = window
         .app_handle()
-        .get_webview_window(super::MAIN_WINDOW_LABEL)?;
+        .get_webview_window(dialog_owner_label(window.label()))?;
     let owner_hwnd = owner.hwnd().ok()?.0 as _;
     // SAFETY: these handles belong to live Tauri windows; every output is initialized and sized.
     unsafe {
@@ -2625,7 +2678,7 @@ fn native_normal_geometry<R: Runtime>(
 ) -> Option<PhysicalNormalFrame> {
     let owner = window
         .app_handle()
-        .get_webview_window(super::MAIN_WINDOW_LABEL)?;
+        .get_webview_window(dialog_owner_label(window.label()))?;
     if window.is_minimized().ok()?
         || window.is_maximized().ok()?
         || owner.is_minimized().ok()?
@@ -3037,7 +3090,7 @@ fn place_content_window_from_frame<R: Runtime>(
     let current_frame = mode != PlacementMode::Initial;
     let app = window.app_handle();
     let owner = app
-        .get_webview_window(super::MAIN_WINDOW_LABEL)
+        .get_webview_window(dialog_owner_label(window.label()))
         .ok_or("Unknown dialog owner")?;
     let monitor = crate::monitor_query::current_monitor(&owner)
         .map_err(|e| e.to_string())?
@@ -3767,7 +3820,7 @@ fn sample_preferences_position<R: Runtime>(
         window.is_visible().unwrap_or(false),
         window.is_minimized().unwrap_or(true)
             || app
-                .get_webview_window(super::MAIN_WINDOW_LABEL)
+                .get_webview_window(dialog_owner_label(window.label()))
                 .is_none_or(|owner| {
                     owner.is_minimized().unwrap_or(true) || !owner.is_visible().unwrap_or(false)
                 }),
@@ -3839,7 +3892,7 @@ fn persist_move<R: Runtime>(window: &tauri::WebviewWindow<R>, resized: bool) {
         window.is_visible().unwrap_or(false),
         window.is_minimized().unwrap_or(true)
             || app
-                .get_webview_window(super::MAIN_WINDOW_LABEL)
+                .get_webview_window(dialog_owner_label(window.label()))
                 .is_none_or(|owner| {
                     owner.is_minimized().unwrap_or(true) || !owner.is_visible().unwrap_or(false)
                 }),

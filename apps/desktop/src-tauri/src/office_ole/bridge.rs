@@ -194,8 +194,16 @@ pub(super) fn open_window(
                             .post(&id, super::server::Action::Destroyed);
                     }
                 });
-                if opened.send(Ok(())).is_err() {
-                    // DoVerb timed out while WebView2 was starting.
+                let result = crate::install_office_document_menu(
+                    &window,
+                    &[],
+                    crate::ViewMenuState::default(),
+                    None,
+                )
+                .map_err(|error| error.to_string());
+                let failed = result.is_err();
+                if opened.send(result).is_err() || failed {
+                    // Menu installation failed or DoVerb timed out while WebView2 was starting.
                     let _ = window.destroy();
                 }
             }

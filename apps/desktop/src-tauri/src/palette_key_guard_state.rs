@@ -65,10 +65,15 @@ impl Guard {
         }
     }
 
+    pub fn blocks_for(&self, now: u64, belongs_to_owner: impl FnOnce(&str) -> bool) -> bool {
+        self.pending.as_ref().is_some_and(|p| {
+            now.saturating_sub(p.started) < TIMEOUT_MS && belongs_to_owner(&p.label)
+        })
+    }
+
+    #[cfg(any(target_os = "macos", windows, test))]
     pub fn blocks(&self, now: u64) -> bool {
-        self.pending
-            .as_ref()
-            .is_some_and(|p| now.saturating_sub(p.started) < TIMEOUT_MS)
+        self.blocks_for(now, |_| true)
     }
 
     fn clear(&mut self) -> Option<(String, Event)> {

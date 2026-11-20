@@ -145,7 +145,7 @@ export function parseDialogMessage(value: unknown): DialogMessage | undefined {
   try {
     if (new TextEncoder().encode(JSON.stringify(value)).length > (record(value) && value.dialogKind === "export" && value.type === "result" && record(value.data) && value.data.status === "preview" ? DIALOG_PREVIEW_MAX_BYTES : DIALOG_MAX_BYTES)) return undefined;
     if (!record(value) || !keys(value, ["protocolVersion", "ownerWindowId", "documentTabId", "dialogKind", "sessionId", "requestId", "snapshotRevision", "type", "data"])) return undefined;
-    if (value.protocolVersion !== 1 || value.ownerWindowId !== "main" || typeof value.dialogKind !== "string" || !["pageSize", "arrangementSpacing", "reactionConditions", "export", "engineInstall", "toolInstall", "insertTable", "customColor", "structureTemplates", "atomProblem", "vibeCodeGuide"].includes(value.dialogKind) ||
+    if (value.protocolVersion !== 1 || (value.ownerWindowId !== "main" && (typeof value.ownerWindowId !== "string" || !/^office-object-\d{1,20}$/.test(value.ownerWindowId))) || typeof value.dialogKind !== "string" || !["pageSize", "arrangementSpacing", "reactionConditions", "export", "engineInstall", "toolInstall", "insertTable", "customColor", "structureTemplates", "atomProblem", "vibeCodeGuide"].includes(value.dialogKind) ||
         !token(value.documentTabId) || !token(value.sessionId) || !token(value.requestId) ||
         !Number.isSafeInteger(value.snapshotRevision) || Number(value.snapshotRevision) < 1 || !record(value.data)) return undefined;
     const d = value.data;

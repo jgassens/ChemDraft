@@ -9,6 +9,7 @@ import {
   flattenAppMenuCommands,
   formatMenuShortcut,
   nativeRoutedCommandIds,
+  officeObjectFileMenu,
   PLUGIN_MANAGER_COMMAND_ID,
   PLUGIN_UPDATES_COMMAND_ID,
   pluginUpdatesAvailableMenuItem,
@@ -61,6 +62,16 @@ function parseNativeMenuCommandIds(): string[] {
 }
 
 describe("app menu model", () => {
+  it("labels the embedded document's Save action with its container and routes Close to the object", () => {
+    const update = { id: "office.updateEmbeddedObject", title: "Update Report.docx", source: "core", icon: "save", enabled: true } as const;
+    const close = { id: "office.closeEmbeddedObject", title: "Close", source: "core", icon: "close", enabled: true } as const;
+    expect(flattenAppMenuCommands([officeObjectFileMenu(update, close, "windows")])).toEqual([
+      expect.objectContaining({ commandId: update.id, label: "Update Report.docx", shortcut: "Ctrl+S", enabled: true }),
+      expect.objectContaining({ commandId: close.id, label: "Close", shortcut: "Ctrl+W", enabled: true })
+    ]);
+    expect(officeObjectFileMenu({ ...update, enabled: false }, close, "windows").items[0]).toMatchObject({ enabled: false });
+  });
+
   it.each(["macos", "windows"] as const)("keeps a separate plugin alias block after the drawing styles on %s", platform => {
     const context = { ...EMPTY_CONTEXT, platform };
     const base = buildAppMenuModel(context).find(section => section.id === "structure")!;
@@ -400,7 +411,7 @@ describe("native Window and full-screen menus", () => {
   it("builds one native full-screen item in View with the current document state on macOS", () => {
     expect(source.match(/PredefinedMenuItem::fullscreen\(/g)).toHaveLength(1);
     const builder = source.split("fn create_app_menu_for_toolsets<R: Runtime>")[1]!.split("/// Close Window")[0]!;
-    expect(builder).toContain("let view_menu = create_view_menu(app, entries, view_state, scheme)?;");
+    expect(builder).toMatch(/let view_menu = create_view_menu\([\s\S]*?office_update_title\.is_some\(\),\s*\)\?;/);
     expect(builder).toMatch(/#\[cfg\(target_os = "macos"\)\]\s*let fullscreen = \{/);
     expect(builder).toMatch(/let is_fullscreen = main_ns_window\(app\)\s*\.is_some_and\(\|window\| window\.styleMask\(\)\.contains\(NSWindowStyleMask::FullScreen\)\)/);
     expect(builder).toContain("PredefinedMenuItem::fullscreen(app, Some(fullscreen_menu_title(is_fullscreen)))");
@@ -446,8 +457,8 @@ describe("Preferences placement", () => {
   it("keeps native Preferences in the macOS application menu and Windows File menu", () => {
     const source = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
     const builder = source.split("fn create_app_menu_for_toolsets<R: Runtime>")[1]!.split("/// Close Window")[0]!;
-    const fileMenu = builder.split('"File",')[1]!.split('"Edit",')[0]!;
-    expect(fileMenu).toContain('#[cfg(not(target_os = "macos"))]\n                    &preferences_menu_item(app)?');
+    const fileMenu = builder.split("let file_menu =")[1]!.split("let edit_menu =")[0]!;
+    expect(fileMenu).toMatch(/#\[cfg\(not\(target_os = "macos"\)\)\]\s*&preferences_menu_item\(app\)\?/);
     expect(fileMenu.indexOf('"export.open"')).toBeLessThan(fileMenu.indexOf("&preferences_menu_item(app)?"));
     expect(source).toContain('#[cfg(target_os = "macos")]\nfn create_native_app_menu<R: Runtime>');
     const appMenu = source.split("fn create_native_app_menu<R: Runtime>")[1]!.split("fn create_page_setup_menu")[0]!;

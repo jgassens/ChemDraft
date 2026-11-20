@@ -63,7 +63,7 @@ export class DialogCoordinator {
     vibeCodeGuideAction?(action: "saveStarter" | "openPluginManager"): void | Promise<void>;
     onError(message: string): void;
     onSettled?(tabId: string, reason: DialogCloseReason, kind?: DialogKind): void;
-  }, private options: { readyTimeoutMs?: number } = {}) {}
+  }, private options: { readyTimeoutMs?: number; ownerWindowId?: string } = {}) {}
 
   reportError(message: string): void { this.owner.onError(message); }
 
@@ -197,7 +197,7 @@ export class DialogCoordinator {
       }
       return;
     }
-    const snapshot: Session["snapshot"] = { protocolVersion: 1, ownerWindowId: "main", documentTabId: tabId,
+    const snapshot: Session["snapshot"] = { protocolVersion: 1, ownerWindowId: this.options.ownerWindowId ?? "main", documentTabId: tabId,
       dialogKind: kind, sessionId: crypto.randomUUID(), requestId: crypto.randomUUID(), snapshotRevision: 1, type: "snapshot", data } as Session["snapshot"];
     if (perfProbe) perfHook(() => perfProbe?.expectCompletion("dialog-open", snapshot.sessionId));
     const title = kind === "customColor" ? "Custom Color" : kind === "vibeCodeGuide" ? VIBE_CODE_GUIDE.title : kind === "reactionConditions" ? "Reaction conditions" : kind === "atomProblem" ? "Atom problem" : kind === "insertTable" ? "Insert Table" : kind === "structureTemplates" ? "Templates" : kind === "engineInstall" ? "Engine installation" : kind === "toolInstall" ? "Tool installation" : kind === "export" ? "Export" : kind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size";

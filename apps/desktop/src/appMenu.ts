@@ -202,9 +202,8 @@ export function officeObjectFileMenu(update: CommandSpec, close: CommandSpec, pl
     id: "file",
     label: "File",
     items: [
-      { ...command("document.save", "Save", { enabled: update.enabled }), shortcut: formatMenuShortcut("Cmd+S", platform) },
-      command(update.id, update.title, { enabled: update.enabled }),
-      { ...command(close.id, close.title, { enabled: close.enabled }), shortcut: formatMenuShortcut("Cmd+W", platform) }
+      { ...command(update.id, update.title, { enabled: update.enabled, accelerator: "Cmd+S" }), shortcut: formatMenuShortcut("Cmd+S", platform) },
+      { ...command(close.id, close.title, { enabled: close.enabled, accelerator: "Cmd+W" }), shortcut: formatMenuShortcut("Cmd+W", platform) }
     ]
   };
 }

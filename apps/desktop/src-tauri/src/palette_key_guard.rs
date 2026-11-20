@@ -33,8 +33,9 @@ fn publish<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: Option<(String, 
         // The page echoes the click sequence with its classification/release. Main
         // drops only editing keydowns until this sequence is cleared or expires.
         // A clear carries the pending owner's label, even when main/app loss ended it.
-        let _ = app.emit_to(super::super::MAIN_WINDOW_LABEL, EVENT, event);
-        if !label.is_empty() && label != super::super::MAIN_WINDOW_LABEL {
+        let owner = crate::toolset_document_label(&label);
+        let _ = app.emit_to(owner, EVENT, event);
+        if !label.is_empty() && label != owner {
             let _ = app.emit_to(label.as_str(), EVENT, event);
         }
     }
@@ -74,8 +75,11 @@ pub(crate) fn observe_document_pointer_release<R: tauri::Runtime>(app: &tauri::A
     });
 }
 
-pub(super) fn blocks_document() -> bool {
-    GUARD.lock().unwrap().blocks(now())
+pub(super) fn blocks_document(owner: &str) -> bool {
+    GUARD
+        .lock()
+        .unwrap()
+        .blocks_for(now(), |label| crate::toolset_document_label(label) == owner)
 }
 
 #[cfg(any(target_os = "macos", windows))]
@@ -108,7 +112,8 @@ pub(super) fn pointer<R: tauri::Runtime>(app: &tauri::AppHandle<R>, label: Optio
 
 #[cfg(any(target_os = "macos", windows))]
 fn is_palette(label: &str) -> bool {
-    label.starts_with("toolset-") && super::super::is_input_focus_window_label(label)
+    crate::toolset_window_parts(label).1.starts_with("toolset-")
+        && super::super::is_input_focus_window_label(label)
 }
 
 #[cfg(target_os = "macos")]
@@ -152,7 +157,7 @@ pub(super) fn install<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> Re
                     .map(|s| s.to_string())
                     .unwrap_or_default();
                 if label.as_deref() == Some(super::super::MAIN_WINDOW_LABEL)
-                    && blocks_document()
+                    && blocks_document(super::super::MAIN_WINDOW_LABEL)
                     && state::editing_key(
                         &key,
                         modifiers.contains(NSEventModifierFlags::Command),

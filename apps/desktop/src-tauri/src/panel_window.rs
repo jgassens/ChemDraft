@@ -147,11 +147,17 @@ pub(crate) fn palette_blocks_forwarded_shortcut(
     ctrl: bool,
     alt: bool,
 ) -> bool {
-    key_guard::blocks_forwarded_shortcut(key_guard::blocks_document(), key, meta, ctrl, alt)
+    key_guard::blocks_forwarded_shortcut(
+        key_guard::blocks_document(super::MAIN_WINDOW_LABEL),
+        key,
+        meta,
+        ctrl,
+        alt,
+    )
 }
 
-pub(crate) fn palette_blocks_menu(document_target: bool, command: &str) -> bool {
-    key_guard::blocks_menu(key_guard::blocks_document(), document_target, command)
+pub(crate) fn palette_blocks_menu(document: &str, command: &str) -> bool {
+    key_guard::blocks_menu(key_guard::blocks_document(document), true, command)
 }
 
 /// Pointer observation alone does not alter window styles or input leases.
@@ -291,7 +297,7 @@ pub(crate) fn return_focus_after_interaction<R: tauri::Runtime>(
     {
         if let Some(document) = window
             .app_handle()
-            .get_webview_window(super::MAIN_WINDOW_LABEL)
+            .get_webview_window(super::toolset_document_label(window.label()))
         {
             if focus_return::should_return(
                 requested,
@@ -781,7 +787,10 @@ pub(crate) fn install_input_focus<R: tauri::Runtime>(
         drag_finished: std::rc::Rc::new(move || {
             // The palette's title/background press ended its lease without returning focus.
             // Hand back only after Tao's drag loop; guard any newer lease or foreground owner.
-            if drag_target.label().starts_with("toolset-") {
+            if super::toolset_window_parts(drag_target.label())
+                .1
+                .starts_with("toolset-")
+            {
                 if let Err(error) = return_focus_after_interaction(&drag_target, true) {
                     eprintln!("Could not return palette keyboard focus after drag: {error}");
                 }
