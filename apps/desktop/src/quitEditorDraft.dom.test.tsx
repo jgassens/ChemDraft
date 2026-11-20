@@ -51,6 +51,7 @@ vi.mock("@tauri-apps/plugin-fs", async original => ({
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 describe.each(["macos", "windows"] as const)("quit with an open editor (%s)", platform => {
+  const committedQuitRequestId = 7;
   let container: HTMLDivElement, root: Root;
   let pendingPrompt: { prompt: NativePromptOptions; resolve: (id: string) => void } | undefined;
   let restorePrompt: () => void;
@@ -96,7 +97,7 @@ describe.each(["macos", "windows"] as const)("quit with an open editor (%s)", pl
     // Preserve focus in the editor: a prior blur would hide the dirty-ref ordering bug.
     await act(async () => {
       if (loadAskToSaveBeforeQuit()) await native.promptQuit!(1);
-      else await native.quitFlush!("committed", 7);
+      else await native.quitFlush!("committed", committedQuitRequestId);
     });
   }
 
@@ -241,7 +242,10 @@ describe.each(["macos", "windows"] as const)("quit with an open editor (%s)", pl
     native.saveSession.mockRejectedValueOnce(failure);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     await requestQuit();
-    expect(native.saveSession).toHaveBeenCalledExactlyOnceWith(expect.anything(), { strict: true });
+    expect(native.saveSession).toHaveBeenCalledExactlyOnceWith(expect.anything(), {
+      strict: true,
+      quitRequestId: committedQuitRequestId
+    });
     expect(native.quit).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith("Could not save the session before quitting", failure);
   });
