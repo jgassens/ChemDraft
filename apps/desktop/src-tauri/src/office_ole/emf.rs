@@ -1,12 +1,21 @@
 use std::io::{Cursor, Read};
 
 use flate2::Crc;
-use image::{codecs::png::PngDecoder, DynamicImage, ImageDecoder, ImageError, Limits};
+use image::{codecs::png::PngDecoder, DynamicImage, ImageError, Limits};
 
 use super::OleError;
 
-pub(super) const MAX_PNG_BYTES: usize = 25 * 1024 * 1024;
-const MAX_IMAGE_SIDE: u32 = 8000;
+const MIB: usize = 1024 * 1024;
+pub(super) const MAX_PNG_BYTES: usize = 25 * MIB;
+const MAX_IMAGE_SIDE: u32 = 6000;
+// A 40 MiB DIB can require an 80 MiB RGBA16 decode buffer. With the input PNG,
+// the large allocations total 121 MiB while decoding (leaving room for decoder
+// overhead), 145 MiB during conversion, and 129 MiB during EMF assembly.
+const MAX_DIB_BYTES: usize = 40 * MIB;
+const MAX_EMF_BYTES: usize = 64 * MIB;
+const MAX_DECODE_ALLOC: u64 = 16 * MIB as u64;
+// The PNG decoder's byte accounting doesn't include its per-text-chunk bookkeeping.
+const MAX_TEXT_CHUNKS: usize = 4096;
 const DEFAULT_DPI: u32 = 96;
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 
@@ -39,36 +48,41 @@ pub(super) fn preview_with_extent(
     if png.len() > MAX_PNG_BYTES {
         return Err(OleError("Preview PNG exceeds 25 MiB".into()));
     }
-    let mut limits = Limits::default();
-    limits.max_image_width = Some(MAX_IMAGE_SIDE);
-    limits.max_image_height = Some(MAX_IMAGE_SIDE);
-    let decoder =
-        PngDecoder::with_limits(Cursor::new(png), limits).map_err(|error| match error {
-            ImageError::Limits(ref limit)
-                if limit.kind() == image::error::LimitErrorKind::DimensionError =>
-            {
-                OleError("Preview PNG exceeds 8000 pixels on a side".into())
-            }
-            _ => decode_error(error),
-        })?;
-    let (width, height) = decoder.dimensions();
-    let dpi = png_dpi(png, selection)?;
+
+    let chunks = png
+        .strip_prefix(PNG_SIGNATURE)
+        .ok_or_else(|| OleError("Invalid preview PNG signature".into()))?;
+    let (width, height) = png_dimensions(chunks)?;
+    // Each side has been checked, so even the largest product fits in a 32-bit usize.
+    let pixel_bytes = width as usize * height as usize * 4;
+    if pixel_bytes > MAX_DIB_BYTES {
+        return Err(OleError("Preview PNG exceeds the 40 MiB DIB limit".into()));
+    }
+    let object_size = PLUS_HEADER_SIZE + 28 + png.len().next_multiple_of(4);
+    let picture_size =
+        COMMENT_HEADER_SIZE + PLUS_HEADER_SIZE + 16 + object_size + PLUS_HEADER_SIZE + 40;
+    let dib_size = DIB_OFFSET + pixel_bytes;
+    let plus_eof_size = COMMENT_HEADER_SIZE + PLUS_HEADER_SIZE;
+    let total_size = HEADER_SIZE + picture_size + dib_size + plus_eof_size + EOF_SIZE;
+    if total_size > MAX_EMF_BYTES {
+        return Err(OleError("Preview EMF exceeds 64 MiB".into()));
+    }
+
+    let dpi = png_dpi(chunks, selection)?;
     let micrometers = [
         device_micrometers(width, dpi[0])?,
         device_micrometers(height, dpi[1])?,
     ];
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_IMAGE_SIDE);
+    limits.max_image_height = Some(MAX_IMAGE_SIDE);
+    limits.max_alloc = Some(MAX_DECODE_ALLOC);
+    let decoder = PngDecoder::with_limits(Cursor::new(png), limits).map_err(decode_error)?;
     let pixels = DynamicImage::from_decoder(decoder)
         .map_err(decode_error)?
         .into_rgba8();
     let width = width as i32;
     let height = height as i32;
-
-    let object_size = PLUS_HEADER_SIZE + 28 + png.len().next_multiple_of(4);
-    let picture_size =
-        COMMENT_HEADER_SIZE + PLUS_HEADER_SIZE + 16 + object_size + PLUS_HEADER_SIZE + 40;
-    let dib_size = DIB_OFFSET + pixels.as_raw().len();
-    let plus_eof_size = COMMENT_HEADER_SIZE + PLUS_HEADER_SIZE;
-    let total_size = HEADER_SIZE + picture_size + dib_size + plus_eof_size + EOF_SIZE;
     let mut emf = Vec::with_capacity(total_size);
 
     let header = emr(&mut emf, EMR_HEADER, HEADER_SIZE);
@@ -115,18 +129,37 @@ pub(super) fn preview_with_extent(
 }
 
 fn decode_error(error: ImageError) -> OleError {
+    if matches!(&error, ImageError::Limits(limit)
+        if limit.kind() == image::error::LimitErrorKind::InsufficientMemory)
+    {
+        return OleError("Preview PNG exceeds the 16 MiB decode allocation limit".into());
+    }
     OleError(format!("Could not decode preview PNG: {error}"))
+}
+
+fn png_dimensions(chunks: &[u8]) -> Result<(u32, u32), OleError> {
+    let dimensions = chunks
+        .strip_prefix(b"\0\0\0\x0dIHDR")
+        .and_then(|header| header.first_chunk::<8>())
+        .ok_or_else(|| OleError("Invalid or truncated preview PNG IHDR".into()))?;
+    let width = u32::from_be_bytes(dimensions[..4].try_into().unwrap());
+    let height = u32::from_be_bytes(dimensions[4..].try_into().unwrap());
+    if width == 0 || height == 0 {
+        return Err(OleError("Preview PNG dimensions must be nonzero".into()));
+    }
+    if width > MAX_IMAGE_SIDE || height > MAX_IMAGE_SIDE {
+        return Err(OleError("Preview PNG exceeds 6000 pixels on a side".into()));
+    }
+    Ok((width, height))
 }
 
 // The image decoder exposes pixels but does not expose pHYs. Walk the chunk boundaries
 // through IEND so the carrier preserved in the EMF+ record is complete.
-fn png_dpi(png: &[u8], selection: Option<&str>) -> Result<[u32; 2], OleError> {
-    let mut chunks = png
-        .strip_prefix(PNG_SIGNATURE)
-        .ok_or_else(|| OleError("Invalid preview PNG signature".into()))?;
+fn png_dpi(mut chunks: &[u8], selection: Option<&str>) -> Result<[u32; 2], OleError> {
     let mut dpi = None;
     let mut saw_idat = false;
     let mut saw_selection = false;
+    let mut text_chunks = 0;
     while let Some((header, remaining)) = chunks.split_at_checked(8) {
         let size = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
         let kind = &header[4..8];
@@ -144,8 +177,12 @@ fn png_dpi(png: &[u8], selection: Option<&str>) -> Result<[u32; 2], OleError> {
             return Err(OleError(format!("Invalid preview PNG {name} checksum")));
         }
 
-        if let Some(json) = selection {
-            if matches!(kind, b"iTXt" | b"zTXt") {
+        if matches!(kind, b"tEXt" | b"iTXt" | b"zTXt") {
+            text_chunks += 1;
+            if text_chunks > MAX_TEXT_CHUNKS {
+                return Err(OleError("Preview PNG exceeds 4096 text chunks".into()));
+            }
+            if let Some(json) = selection.filter(|_| kind != b"tEXt") {
                 if let Some(text) = data.strip_prefix(b"application/x-chemdraft-selection+json\0") {
                     if saw_selection || !carrier_matches(kind, text, json)? {
                         return Err(OleError(
@@ -240,7 +277,7 @@ fn device_micrometers(pixels: u32, dpi: u32) -> Result<i32, OleError> {
             "Preview PNG DPI is too high for the EMF frame".into(),
         ));
     }
-    // At the pixel limit and one DPI this is at most 203,200,000 micrometers.
+    // At the pixel limit and one DPI this is at most 152,400,000 micrometers.
     Ok(micrometers as i32)
 }
 
@@ -340,6 +377,8 @@ fn put<const N: usize>(bytes: &mut [u8], offset: usize, value: [u8; N]) {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
     use image::{codecs::png::PngEncoder, ExtendedColorType, ImageEncoder};
 
     use super::*;
@@ -380,6 +419,33 @@ mod tests {
             assert_eq!(u32_at(record, 8) as usize, record.len() - 12);
         }
         records
+    }
+
+    fn grayscale_png(width: u32, height: u32) -> Vec<u8> {
+        let mut png = Vec::new();
+        let data = vec![0; (width * height) as usize];
+        PngEncoder::new(&mut png)
+            .write_image(&data, width, height, ExtendedColorType::L8)
+            .unwrap();
+        png
+    }
+
+    fn write_chunk(png: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+        png.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        png.extend_from_slice(kind);
+        png.extend_from_slice(data);
+        let mut crc = Crc::new();
+        crc.update(kind);
+        crc.update(data);
+        png.extend_from_slice(&crc.sum().to_be_bytes());
+    }
+
+    fn add_chunks_before_idat(png: &[u8], write_chunks: impl FnOnce(&mut Vec<u8>)) -> Vec<u8> {
+        let (header, rest) = png.split_at(33); // Signature and IHDR.
+        let mut with_chunks = header.to_vec();
+        write_chunks(&mut with_chunks);
+        with_chunks.extend_from_slice(rest);
+        with_chunks
     }
 
     #[test]
@@ -478,21 +544,119 @@ mod tests {
     }
 
     #[test]
-    fn rejects_oversize_and_truncated_pngs() {
-        let too_large = vec![0; MAX_PNG_BYTES + 1];
+    fn handles_extreme_png_physical_densities() {
+        let png = grayscale_png(2, 1);
+        let extent_at_default = preview_with_extent(&png, None).unwrap().1;
+        let with_density = |x: u32, y: u32, unit: u8| {
+            let mut data = [0; 9];
+            put(&mut data, 0, x.to_be_bytes());
+            put(&mut data, 4, y.to_be_bytes());
+            data[8] = unit;
+            add_chunks_before_idat(&png, |output| write_chunk(output, b"pHYs", &data))
+        };
+        for png in [with_density(0, 0, 1), with_density(u32::MAX, 1, 0)] {
+            let (emf, extent) = preview_with_extent(&png, None).unwrap();
+            assert_eq!(extent, extent_at_default);
+            let records = records(&emf, 8);
+            let plus = plus_records(records[1]);
+            assert_eq!([u32_at(plus[0], 20), u32_at(plus[0], 24)], [96, 96]);
+        }
+        let huge = with_density(0, u32::MAX, 1);
+        assert_eq!(
+            preview_emf(&huge).unwrap_err().to_string(),
+            "Preview PNG DPI is too high for the EMF frame"
+        );
+        let invalid = with_density(0, 0, 2);
+        assert_eq!(
+            preview_emf(&invalid).unwrap_err().to_string(),
+            "Invalid preview PNG pHYs chunk"
+        );
+    }
+
+    #[test]
+    fn converts_16_bit_rgba_to_32_bit_dib() {
+        let pixels: Vec<u8> = [u16::MAX, 0x8080, 0x0101, u16::MAX, 0, 0, 0, 0]
+            .into_iter()
+            .flat_map(u16::to_ne_bytes)
+            .collect();
+        let mut png = Vec::new();
+        PngEncoder::new(&mut png)
+            .write_image(&pixels, 2, 1, ExtendedColorType::Rgba16)
+            .unwrap();
+        let emf = preview_emf(&png).unwrap();
+        let dib = records(&emf, 8)[2];
+        assert_eq!(&dib[DIB_OFFSET..], &[1, 128, 255, 0, 255, 255, 255, 0]);
+    }
+
+    #[test]
+    fn converts_indexed_png_with_transparency_to_32_bit_dib() {
+        let mut png = PNG_SIGNATURE.to_vec();
+        write_chunk(&mut png, b"IHDR", &[0, 0, 0, 2, 0, 0, 0, 1, 1, 3, 0, 0, 0]);
+        write_chunk(&mut png, b"PLTE", &[11, 22, 33, 44, 55, 66]);
+        write_chunk(&mut png, b"tRNS", &[255, 0]);
+        let mut idat = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+        idat.write_all(&[0, 0b0100_0000]).unwrap(); // Unfiltered palette indices 0 and 1.
+        write_chunk(&mut png, b"IDAT", &idat.finish().unwrap());
+        write_chunk(&mut png, b"IEND", &[]);
+        let emf = preview_emf(&png).unwrap();
+        let dib = records(&emf, 8)[2];
+        assert_eq!(&dib[DIB_OFFSET..], &[33, 22, 11, 0, 255, 255, 255, 0]);
+    }
+
+    #[test]
+    fn rejects_oversize_pngs_before_decoding_pixels() {
+        let mut too_large = grayscale_png(1, 1);
+        too_large.resize(MAX_PNG_BYTES + 1, 0);
         assert!(preview_emf(&too_large)
             .unwrap_err()
             .to_string()
             .contains("25 MiB"));
-        let mut too_wide = Vec::new();
-        let width = MAX_IMAGE_SIDE + 1;
-        PngEncoder::new(&mut too_wide)
-            .write_image(&vec![0; width as usize], width, 1, ExtendedColorType::L8)
-            .unwrap();
-        assert!(preview_emf(&too_wide)
+        for (width, height) in [(MAX_IMAGE_SIDE + 1, 1), (1, MAX_IMAGE_SIDE + 1)] {
+            assert!(preview_emf(&grayscale_png(width, height))
+                .unwrap_err()
+                .to_string()
+                .contains("6000 pixels"));
+        }
+        // These dimensions put the DIB twenty bytes over its cap.
+        assert_eq!(1935 * 5419 * 4, MAX_DIB_BYTES + 20);
+        assert!(preview_emf(&grayscale_png(1935, 5419))
             .unwrap_err()
             .to_string()
-            .contains("8000"));
+            .contains("40 MiB DIB"));
+
+        let mut too_large = grayscale_png(4096, 2560); // Exactly a 40 MiB DIB.
+                                                       // Pad the carrier to yield a valid input size but an EMF one DWORD over its cap.
+        too_large.resize(MAX_EMF_BYTES - MAX_DIB_BYTES - 412 + 4, 0);
+        assert!(preview_emf(&too_large)
+            .unwrap_err()
+            .to_string()
+            .contains("64 MiB"));
+    }
+
+    #[test]
+    fn bounds_png_decoder_metadata_allocations() {
+        let base = grayscale_png(1, 1);
+        let mut text = vec![b'x'; MAX_DECODE_ALLOC as usize + 1];
+        text[1] = 0;
+        let png = add_chunks_before_idat(&base, |output| write_chunk(output, b"tEXt", &text));
+        assert!(preview_emf(&png)
+            .unwrap_err()
+            .to_string()
+            .contains("16 MiB decode allocation limit"));
+
+        let png = add_chunks_before_idat(&base, |output| {
+            for _ in 0..=MAX_TEXT_CHUNKS {
+                write_chunk(output, b"tEXt", b"x\0y");
+            }
+        });
+        assert!(preview_emf(&png)
+            .unwrap_err()
+            .to_string()
+            .contains("4096 text chunks"));
+    }
+
+    #[test]
+    fn rejects_truncated_png() {
         let truncated = &CARRIER[..CARRIER.len() - 1];
         assert!(preview_emf(truncated)
             .unwrap_err()

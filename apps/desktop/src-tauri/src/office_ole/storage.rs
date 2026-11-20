@@ -11,6 +11,8 @@ const COMP_OBJ: &str = "\x01CompObj";
 const OLE: &str = "\x01Ole";
 pub(super) const DOCUMENT: &str = "ChemDraftDocument";
 const COMP_OBJ_HEADER_SIZE: usize = 28;
+const COMP_OBJ_BYTE_ORDER_VERSION: u32 = 0xfffe_0001;
+const COMP_OBJ_OLE_VERSION: u32 = 0x0000_0a03;
 const OLE_STREAM_VERSION: u32 = 0x0200_0001;
 const OLE_STREAM_SIZE: usize = 20;
 
@@ -70,6 +72,7 @@ pub(crate) fn read_object_storage(bytes: &[u8]) -> Result<ObjectContents, OleErr
         return Err(OleError("OLE compound file has no root CLSID".into()));
     }
 
+    let clsid_le = clsid.to_bytes_le();
     let clsid = format!("{{{clsid:X}}}");
     let classes = [
         OleClass::STABLE,
@@ -86,13 +89,22 @@ pub(crate) fn read_object_storage(bytes: &[u8]) -> Result<ObjectContents, OleErr
     let document = read_stream(&mut storage, DOCUMENT, MAX_DOCUMENT_BYTES, "25 MiB")?;
     let json = decode_document(document)?;
     let comp_obj = read_stream(&mut storage, COMP_OBJ, MAX_METADATA_BYTES, "64 KiB")?;
-    let prog_id = read_prog_id(&comp_obj)?;
+    let prog_id = read_prog_id(&comp_obj, clsid_le)?;
     if !prog_id.eq_ignore_ascii_case(class.prog_id) {
         return Err(OleError(format!(
             "CompObj ProgID does not match ChemDraft storage class {clsid}"
         )));
     }
     let ole = read_stream(&mut storage, OLE, MAX_METADATA_BYTES, "64 KiB")?;
+    validate_embedded_ole(&ole)?;
+    Ok(ObjectContents {
+        clsid,
+        prog_id,
+        json,
+    })
+}
+
+fn validate_embedded_ole(ole: &[u8]) -> Result<(), OleError> {
     if ole.len() < OLE_STREAM_SIZE || ole[..4] != OLE_STREAM_VERSION.to_le_bytes() {
         return Err(OleError("Invalid OLEStream header in \\x01Ole".into()));
     }
@@ -101,11 +113,20 @@ pub(crate) fn read_object_storage(bytes: &[u8]) -> Result<ObjectContents, OleErr
             "OLEStream in \\x01Ole describes a linked object".into(),
         ));
     }
-    Ok(ObjectContents {
-        clsid,
-        prog_id,
-        json,
-    })
+    if ole[12..16] != [0; 4] {
+        return Err(OleError("OLEStream Reserved1 must be zero".into()));
+    }
+    if ole[16..20] != [0; 4] {
+        return Err(OleError(
+            "Embedded OLEStream must have an empty reserved moniker".into(),
+        ));
+    }
+    if ole.len() != OLE_STREAM_SIZE {
+        return Err(OleError(
+            "Unexpected trailing fields in embedded OLEStream".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn check_storage_size(bytes: &[u8]) -> Result<(), OleError> {
@@ -139,8 +160,8 @@ fn validate_json(json: &str) -> Result<(), OleError> {
 
 fn comp_obj_stream(class: &OleClass, clsid_le: [u8; 16]) -> Result<Vec<u8>, OleError> {
     let mut bytes = Vec::new();
-    bytes.extend_from_slice(&0xfffe_0001u32.to_le_bytes());
-    bytes.extend_from_slice(&0x0000_0a03u32.to_le_bytes());
+    bytes.extend_from_slice(&COMP_OBJ_BYTE_ORDER_VERSION.to_le_bytes());
+    bytes.extend_from_slice(&COMP_OBJ_OLE_VERSION.to_le_bytes());
     bytes.extend_from_slice(&u32::MAX.to_le_bytes());
     bytes.extend_from_slice(&clsid_le);
     write_ansi_field(&mut bytes, class.user_type, "AnsiUserType")?;
@@ -190,10 +211,22 @@ fn read_stream<F: Read + Seek>(
     Ok(bytes)
 }
 
-fn read_prog_id(comp_obj: &[u8]) -> Result<String, OleError> {
-    let mut fields = comp_obj
-        .get(COMP_OBJ_HEADER_SIZE..)
+fn read_prog_id(comp_obj: &[u8], root_clsid: [u8; 16]) -> Result<String, OleError> {
+    let (header, mut fields) = comp_obj
+        .split_at_checked(COMP_OBJ_HEADER_SIZE)
         .ok_or_else(|| OleError("Truncated CompObj header in \\x01CompObj".into()))?;
+    if header[..4] != COMP_OBJ_BYTE_ORDER_VERSION.to_le_bytes() {
+        return Err(OleError("Invalid CompObj byte order or version".into()));
+    }
+    if header[4..8] != COMP_OBJ_OLE_VERSION.to_le_bytes() {
+        return Err(OleError("Unsupported CompObj OLE version".into()));
+    }
+    let clsid = &header[12..];
+    if clsid != [0; 16] && clsid != root_clsid {
+        return Err(OleError(
+            "CompObj CLSID does not match the root CLSID".into(),
+        ));
+    }
     read_ansi_field(&mut fields, "AnsiUserType")?;
     let (clipboard_format, rest) = fields
         .split_at_checked(4)
@@ -304,6 +337,90 @@ mod tests {
             read_object_storage(&repacked).unwrap(),
             read_object_storage(&original).unwrap()
         );
+    }
+
+    fn with_stream_edit(name: &str, edit: impl FnOnce(&mut Vec<u8>)) -> Vec<u8> {
+        let original = write_object_storage(SMALL_JSON, &OleClass::PROBE).unwrap();
+        let mut storage = CompoundFile::open(Cursor::new(original)).unwrap();
+        let mut bytes = read_stream(&mut storage, name, MAX_METADATA_BYTES, "64 KiB").unwrap();
+        edit(&mut bytes);
+        let mut stream = storage.create_stream(name).unwrap();
+        stream.write_all(&bytes).unwrap();
+        stream.flush().unwrap();
+        drop(stream);
+        storage.into_inner().into_inner()
+    }
+
+    #[test]
+    fn validates_comp_obj_version_and_optional_clsid() {
+        for (offset, expected) in [
+            (0, "Invalid CompObj byte order or version"),
+            (4, "Unsupported CompObj OLE version"),
+            (12, "CompObj CLSID does not match the root CLSID"),
+        ] {
+            let bytes = with_stream_edit(COMP_OBJ, |stream| stream[offset] ^= 1);
+            assert_eq!(
+                read_object_storage(&bytes).unwrap_err().to_string(),
+                expected
+            );
+        }
+        let bytes = with_stream_edit(COMP_OBJ, |stream| stream[12..28].fill(0));
+        let contents = read_object_storage(&bytes).unwrap();
+        assert_eq!(contents.clsid, OleClass::PROBE.clsid);
+        assert_eq!(contents.prog_id, OleClass::PROBE.prog_id);
+    }
+
+    #[test]
+    fn validates_embedded_ole_stream_fields() {
+        for (offset, expected) in [
+            (0, "Invalid OLEStream header in \\x01Ole"),
+            (4, "OLEStream in \\x01Ole describes a linked object"),
+            (12, "OLEStream Reserved1 must be zero"),
+            (16, "Embedded OLEStream must have an empty reserved moniker"),
+        ] {
+            let bytes = with_stream_edit(OLE, |stream| stream[offset] ^= 1);
+            assert_eq!(
+                read_object_storage(&bytes).unwrap_err().to_string(),
+                expected
+            );
+        }
+        let bytes = with_stream_edit(OLE, |stream| stream.extend_from_slice(&[0; 4]));
+        assert_eq!(
+            read_object_storage(&bytes).unwrap_err().to_string(),
+            "Unexpected trailing fields in embedded OLEStream"
+        );
+    }
+
+    #[test]
+    fn rejects_cfb_sector_chain_loop() {
+        let mut bytes = write_object_storage(SMALL_JSON, &OleClass::PROBE).unwrap();
+        // V3 header offsets 48 and 76 hold the first directory and FAT sector IDs.
+        let directory_id = u32::from_le_bytes(bytes[48..52].try_into().unwrap());
+        let fat_id = u32::from_le_bytes(bytes[76..80].try_into().unwrap());
+        let entry = (fat_id as usize + 1) * 512 + directory_id as usize * 4;
+        assert_eq!(&bytes[entry..entry + 4], &0xffff_fffeu32.to_le_bytes());
+        bytes[entry..entry + 4].copy_from_slice(&directory_id.to_le_bytes());
+        let error = read_object_storage(&bytes).unwrap_err().to_string();
+        assert!(
+            error.contains("Directory chain includes duplicate sector index"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_oversized_cfb_stream_declaration() {
+        let mut bytes = write_object_storage(SMALL_JSON, &OleClass::PROBE).unwrap();
+        let directory_id = u32::from_le_bytes(bytes[48..52].try_into().unwrap());
+        let directory = (directory_id as usize + 1) * 512;
+        let document_name: Vec<u8> = DOCUMENT.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let entry = bytes[directory..directory + 512]
+            .chunks_exact_mut(128)
+            .find(|entry| entry.starts_with(&document_name))
+            .unwrap();
+        // Change the declared stream length while keeping the actual file small.
+        entry[120..128].copy_from_slice(&(MAX_DOCUMENT_BYTES as u64 + 1).to_le_bytes());
+        let error = read_object_storage(&bytes).unwrap_err().to_string();
+        assert_eq!(error, "OLE stream \"ChemDraftDocument\" exceeds 25 MiB");
     }
 
     #[test]
