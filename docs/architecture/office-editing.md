@@ -52,8 +52,11 @@ feasibility gate (see Slices) and the add-in is built only if it passes.
 | Mark ChemDraft pictures | Alt-text description holds a short marker; the carrier stays the source of truth | Shape tag `CHEMDRAFT` (PowerPointApi 1.3) as a fast filter; the carrier stays the source of truth |
 
 PowerPointApi 1.8 is available in PowerPoint on the web, Windows Microsoft 365 version 2504 and
-later, and Mac 16.96 and later; not in volume-licensed perpetual or LTSC versions. Those get the
-`getFileAsync` read route and the insert fallback, or a clear "needs a newer PowerPoint" message.
+later, and Mac 16.96 and later; not in volume-licensed perpetual or LTSC versions. The
+insert-and-delete fallback also needs 1.8 (for `setZOrder`), so it is only for 1.8 hosts where
+`fill.setImage` turns out not to work. PowerPoint versions without 1.8 can still read a structure
+(through `getFileAsync`) but get a clear "updating needs a newer PowerPoint" message instead of a
+replacement that loses stacking order.
 
 Not used:
 
@@ -172,7 +175,9 @@ paste back) with the OLE server on Windows; the owner decides before more is bui
 ### Slice 1a: feasibility gate
 
 A minimal add-in (no editor) with buttons that, for the selected picture, read the PNG through each
-route and report its SHA-256 and whether the carrier is valid, and replace it with a fixed test PNG.
+route and report its SHA-256, and replace it with a fixed test PNG. The test pictures are carrier
+PNGs whose SHA-256 is known, so a matching hash proves the carrier survived; the gate needs no
+carrier reader.
 Run on Word and PowerPoint, Mac and Windows (the web if time allows), against carrier PNGs pasted by
 ChemDraft, and record here:
 
