@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "office-object",
+  "description": "The local embedded editor receives its selection and publishes updates to its own Office object.",
+  "platforms": ["windows"],
+  "windows": ["office-object-*"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:event:allow-emit-to",
+    "allow-office-object-update",
+    "allow-office-object-close"
+  ]
+}

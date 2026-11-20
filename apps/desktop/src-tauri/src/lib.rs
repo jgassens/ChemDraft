@@ -26,7 +26,6 @@ mod network_error;
 #[cfg(test)]
 mod network_test_http;
 mod ocsr_engine;
-#[cfg(any(windows, test))]
 mod office_ole;
 mod opsin;
 mod panel_full_size;
@@ -1300,13 +1299,14 @@ pub fn run() {
     // First, before GTK opens the display: see monitor_query.rs.
     #[cfg(target_os = "linux")]
     monitor_query::init_xlib_threads();
+    let mut context = tauri::generate_context!();
+    let office_launch = office_ole::launch::Launch::configure(&mut context);
     let perf_enabled = agent_bridge_status().enabled;
     windows_activation_log::init(perf_enabled);
     let perf_log = perf_log::PerfLog::new(perf_enabled);
-    let builder = tauri::Builder::default();
+    let builder = tauri::Builder::default().manage(office_launch);
 
     // Both guards run before any webview or app setup can touch session/settings files.
-    let context = tauri::generate_context!();
     #[cfg(target_os = "macos")]
     let (context, primary_lock, secondary) = {
         let mut context = context;
@@ -1685,9 +1685,17 @@ pub fn run() {
                     return Ok(());
                 }
             }
+            if app
+                .state::<office_ole::launch::Launch>()
+                .setup(app.handle())?
+            {
+                return Ok(());
+            }
             setup_primary_app(app.handle())
         })
         .invoke_handler(tauri::generate_handler![
+            office_ole::bridge::office_object_update,
+            office_ole::bridge::office_object_close,
             canvas_context_menu::popup_canvas_context_menu,
             file_warnings_window::file_warnings_open,
             file_warnings_window::file_warnings_request,
@@ -1840,6 +1848,12 @@ pub fn run() {
         match event {
             RunEvent::MainEventsCleared => canvas_context_menu::events_cleared(app),
             RunEvent::ExitRequested { code, api, .. } => {
+                if app.state::<office_ole::launch::Launch>().keep_running(code) {
+                    // The last editor can close while Office still owns an object or factory lock.
+                    // The STA posts an explicit exit(0) on the final COM process release.
+                    api.prevent_exit();
+                    return;
+                }
                 if windows_session_end::in_progress() {
                     // A queued app quit can arrive while WM_ENDSESSION is pumping WebView2.
                     api.prevent_exit();
@@ -1862,6 +1876,7 @@ pub fn run() {
                 }
             }
             RunEvent::Exit => {
+                office_ole::launch::shutdown(app);
                 // AppKit quit decisions are handled before this final cleanup.
                 APP_QUITTING.store(true, Ordering::SeqCst);
                 #[cfg(target_os = "macos")]
@@ -3175,7 +3190,13 @@ fn second_launch_action(quitting: bool, setup_completed: bool) -> SecondLaunchAc
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
-fn handle_second_launch<R: Runtime>(app: &tauri::AppHandle<R>, argv: Vec<String>, cwd: String) {
+fn handle_second_launch(app: &tauri::AppHandle, argv: Vec<String>, cwd: String) {
+    if app
+        .state::<office_ole::launch::Launch>()
+        .consume_second_launch(app, &argv)
+    {
+        return;
+    }
     let _ = handle_second_launch_with(app, || {
         handle_opened_document_args(app, argv.into_iter().skip(1), Path::new(&cwd))
     });

@@ -2,34 +2,17 @@ use std::io::{Cursor, Read, Seek, Write};
 
 use cfb::{CompoundFile, Version};
 
-use super::OleError;
+use super::{OleClass, OleError};
 
 const MAX_STORAGE_BYTES: usize = 50 * 1024 * 1024;
-const MAX_DOCUMENT_BYTES: usize = 25 * 1024 * 1024;
+pub(super) const MAX_DOCUMENT_BYTES: usize = 25 * 1024 * 1024;
 const MAX_METADATA_BYTES: usize = 64 * 1024;
 const COMP_OBJ: &str = "\x01CompObj";
 const OLE: &str = "\x01Ole";
-const DOCUMENT: &str = "ChemDraftDocument";
+pub(super) const DOCUMENT: &str = "ChemDraftDocument";
 const COMP_OBJ_HEADER_SIZE: usize = 28;
 const OLE_STREAM_VERSION: u32 = 0x0200_0001;
 const OLE_STREAM_SIZE: usize = 20;
-
-pub(crate) struct OleClass {
-    pub(crate) clsid: &'static str,
-    pub(crate) prog_id: &'static str,
-    pub(crate) user_type: &'static str,
-}
-
-impl OleClass {
-    /// The unregistered measurement class. Stable and dev classes are added with the server.
-    pub(crate) const fn probe() -> Self {
-        Self {
-            clsid: "{9555AC51-4097-416B-8588-E2BA35E8AF94}",
-            prog_id: "ChemDraft.Structure.Probe",
-            user_type: "ChemDraft Structure (probe)",
-        }
-    }
-}
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct ObjectContents {
@@ -38,11 +21,9 @@ pub(crate) struct ObjectContents {
     pub(crate) json: String,
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // Used by the upcoming OLE clipboard producer.
 pub(crate) fn write_object_storage(json: &str, class: &OleClass) -> Result<Vec<u8>, OleError> {
-    if json.len() > MAX_DOCUMENT_BYTES {
-        return Err(OleError("ChemDraftDocument exceeds 25 MiB".into()));
-    }
-    validate_json(json)?;
+    let document = document_bytes(json)?;
 
     // The Office probe uses V3 compound files with 512-byte sectors.
     let mut storage = CompoundFile::create_with_version(Version::V3, Cursor::new(Vec::new()))
@@ -64,7 +45,7 @@ pub(crate) fn write_object_storage(json: &str, class: &OleClass) -> Result<Vec<u
     for (name, bytes) in [
         (OLE, ole.as_slice()),
         (COMP_OBJ, &comp_obj),
-        (DOCUMENT, json.as_bytes()),
+        (DOCUMENT, document),
     ] {
         let mut stream = storage
             .create_new_stream(name)
@@ -79,6 +60,7 @@ pub(crate) fn write_object_storage(json: &str, class: &OleClass) -> Result<Vec<u
     Ok(bytes)
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // Whole-file companion to the live IStorage adapter.
 pub(crate) fn read_object_storage(bytes: &[u8]) -> Result<ObjectContents, OleError> {
     check_storage_size(bytes)?;
     let mut storage = CompoundFile::open(Cursor::new(bytes))
@@ -88,13 +70,28 @@ pub(crate) fn read_object_storage(bytes: &[u8]) -> Result<ObjectContents, OleErr
         return Err(OleError("OLE compound file has no root CLSID".into()));
     }
 
+    let clsid = format!("{{{clsid:X}}}");
+    let classes = [
+        OleClass::STABLE,
+        OleClass::DEV,
+        #[cfg(test)]
+        OleClass::PROBE,
+    ];
+    let class = classes
+        .iter()
+        .find(|class| class.clsid == clsid)
+        .ok_or_else(|| OleError(format!("Unknown ChemDraft storage CLSID {clsid}")))?;
+
     // Office may change the layout or add cache streams during save.
     let document = read_stream(&mut storage, DOCUMENT, MAX_DOCUMENT_BYTES, "25 MiB")?;
-    let json = String::from_utf8(document)
-        .map_err(|error| OleError(format!("ChemDraftDocument is not UTF-8: {error}")))?;
-    validate_json(&json)?;
+    let json = decode_document(document)?;
     let comp_obj = read_stream(&mut storage, COMP_OBJ, MAX_METADATA_BYTES, "64 KiB")?;
     let prog_id = read_prog_id(&comp_obj)?;
+    if !prog_id.eq_ignore_ascii_case(class.prog_id) {
+        return Err(OleError(format!(
+            "CompObj ProgID does not match ChemDraft storage class {clsid}"
+        )));
+    }
     let ole = read_stream(&mut storage, OLE, MAX_METADATA_BYTES, "64 KiB")?;
     if ole.len() < OLE_STREAM_SIZE || ole[..4] != OLE_STREAM_VERSION.to_le_bytes() {
         return Err(OleError("Invalid OLEStream header in \\x01Ole".into()));
@@ -105,7 +102,7 @@ pub(crate) fn read_object_storage(bytes: &[u8]) -> Result<ObjectContents, OleErr
         ));
     }
     Ok(ObjectContents {
-        clsid: format!("{{{clsid:X}}}"),
+        clsid,
         prog_id,
         json,
     })
@@ -116,6 +113,22 @@ fn check_storage_size(bytes: &[u8]) -> Result<(), OleError> {
         return Err(OleError("OLE compound file exceeds 50 MiB".into()));
     }
     Ok(())
+}
+
+/// The compound-file writer and COM IStorage adapter use identical native stream bytes.
+pub(super) fn document_bytes(json: &str) -> Result<&[u8], OleError> {
+    if json.len() > MAX_DOCUMENT_BYTES {
+        return Err(OleError("ChemDraftDocument exceeds 25 MiB".into()));
+    }
+    validate_json(json)?;
+    Ok(json.as_bytes())
+}
+
+pub(super) fn decode_document(bytes: Vec<u8>) -> Result<String, OleError> {
+    let json = String::from_utf8(bytes)
+        .map_err(|error| OleError(format!("ChemDraftDocument is not UTF-8: {error}")))?;
+    document_bytes(&json)?;
+    Ok(json)
 }
 
 fn validate_json(json: &str) -> Result<(), OleError> {
@@ -217,6 +230,21 @@ mod tests {
     const SMALL_JSON: &str = "{\r\n  \"text\": \"β-D-glucose, café, 🧪\"\r\n}\n";
 
     #[test]
+    fn document_stream_helpers_preserve_text_and_reject_invalid_input() {
+        let bytes = document_bytes(SMALL_JSON).unwrap();
+        assert_eq!(bytes, SMALL_JSON.as_bytes());
+        assert_eq!(decode_document(bytes.to_vec()).unwrap(), SMALL_JSON);
+        assert!(decode_document(vec![0xff])
+            .unwrap_err()
+            .to_string()
+            .contains("UTF-8"));
+        assert!(decode_document(b"{}!".to_vec())
+            .unwrap_err()
+            .to_string()
+            .contains("JSON"));
+    }
+
+    #[test]
     fn round_trips_utf8_json_in_mini_and_regular_streams() {
         let class = OleClass::probe();
         let large = format!(r#"{{"text":"{}"}}"#, "é".repeat(3000));
@@ -232,7 +260,7 @@ mod tests {
 
     #[test]
     fn writes_probe_comp_obj_and_embedded_ole_streams() {
-        let bytes = write_object_storage(SMALL_JSON, &OleClass::probe()).unwrap();
+        let bytes = write_object_storage(SMALL_JSON, &OleClass::PROBE).unwrap();
         let mut storage = CompoundFile::open(Cursor::new(&bytes)).unwrap();
         assert_eq!(storage.version(), Version::V3);
         let ole = read_stream(&mut storage, OLE, MAX_METADATA_BYTES, "64 KiB").unwrap();
@@ -252,7 +280,7 @@ mod tests {
 
     #[test]
     fn reads_repacked_storage_with_a_different_stream_order() {
-        let class = OleClass::probe();
+        let class = OleClass::PROBE;
         let original = write_object_storage(SMALL_JSON, &class).unwrap();
         let mut source = CompoundFile::open(Cursor::new(&original)).unwrap();
         let mut repacked = CompoundFile::create(Cursor::new(Vec::new())).unwrap();
@@ -279,14 +307,26 @@ mod tests {
     }
 
     #[test]
+    fn refuses_unknown_storage_class_before_reading_its_document() {
+        let original = write_object_storage(SMALL_JSON, &OleClass::DEV).unwrap();
+        let mut cfb = CompoundFile::open(Cursor::new(original)).unwrap();
+        cfb.set_storage_clsid("/", "00000000-0000-0000-0000-000000000001".parse().unwrap())
+            .unwrap();
+        assert!(read_object_storage(cfb.into_inner().get_ref())
+            .unwrap_err()
+            .to_string()
+            .contains("Unknown ChemDraft storage CLSID"));
+    }
+
+    #[test]
     fn rejects_missing_document_and_invalid_text() {
-        let bytes = write_object_storage(SMALL_JSON, &OleClass::probe()).unwrap();
+        let bytes = write_object_storage(SMALL_JSON, &OleClass::PROBE).unwrap();
         let mut storage = CompoundFile::open(Cursor::new(bytes)).unwrap();
         storage.remove_stream(DOCUMENT).unwrap();
         let missing = read_object_storage(storage.into_inner().get_ref()).unwrap_err();
         assert!(missing.to_string().contains("ChemDraftDocument"));
 
-        let bytes = write_object_storage(SMALL_JSON, &OleClass::probe()).unwrap();
+        let bytes = write_object_storage(SMALL_JSON, &OleClass::PROBE).unwrap();
         let mut storage = CompoundFile::open(Cursor::new(bytes)).unwrap();
         for (document, diagnostic) in [(&b"\xff"[..], "UTF-8"), (&b"{ "[..], "JSON")] {
             let mut stream = storage.create_stream(DOCUMENT).unwrap();
@@ -304,7 +344,7 @@ mod tests {
 
     #[test]
     fn rejects_oversize_and_non_cfb_inputs() {
-        let class = OleClass::probe();
+        let class = OleClass::PROBE;
         let too_large = " ".repeat(MAX_DOCUMENT_BYTES + 1);
         let error = write_object_storage(&too_large, &class).unwrap_err();
         assert!(error.to_string().contains("25 MiB"));

@@ -13,6 +13,8 @@ fn main() {
     ensure_opsin_runtime_dir();
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
+            "office_object_update",
+            "office_object_close",
             "popup_canvas_context_menu",
             "file_warnings_open",
             "file_warnings_request",

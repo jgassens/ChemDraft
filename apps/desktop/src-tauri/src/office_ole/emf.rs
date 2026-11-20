@@ -1,11 +1,11 @@
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 
 use flate2::Crc;
 use image::{codecs::png::PngDecoder, DynamicImage, ImageDecoder, ImageError, Limits};
 
 use super::OleError;
 
-const MAX_PNG_BYTES: usize = 25 * 1024 * 1024;
+pub(super) const MAX_PNG_BYTES: usize = 25 * 1024 * 1024;
 const MAX_IMAGE_SIDE: u32 = 8000;
 const DEFAULT_DPI: u32 = 96;
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
@@ -27,7 +27,15 @@ const DIB_OFFSET: usize = 120;
 const EOF_SIZE: usize = 20;
 
 /// Write an EMF+ dual preview with the original carrier PNG and a GDI fallback.
+#[cfg_attr(not(test), allow(dead_code))] // Standalone preview writer for the clipboard producer.
 pub(crate) fn preview_emf(png: &[u8]) -> Result<Vec<u8>, OleError> {
+    Ok(preview_with_extent(png, None)?.0)
+}
+
+pub(super) fn preview_with_extent(
+    png: &[u8],
+    selection: Option<&str>,
+) -> Result<(Vec<u8>, [i32; 2]), OleError> {
     if png.len() > MAX_PNG_BYTES {
         return Err(OleError("Preview PNG exceeds 25 MiB".into()));
     }
@@ -44,7 +52,7 @@ pub(crate) fn preview_emf(png: &[u8]) -> Result<Vec<u8>, OleError> {
             _ => decode_error(error),
         })?;
     let (width, height) = decoder.dimensions();
-    let dpi = png_dpi(png)?;
+    let dpi = png_dpi(png, selection)?;
     let micrometers = [
         device_micrometers(width, dpi[0])?,
         device_micrometers(height, dpi[1])?,
@@ -66,8 +74,9 @@ pub(crate) fn preview_emf(png: &[u8]) -> Result<Vec<u8>, OleError> {
     let header = emr(&mut emf, EMR_HEADER, HEADER_SIZE);
     put(header, 16, (width - 1).to_le_bytes());
     put(header, 20, (height - 1).to_le_bytes());
-    put(header, 32, ((micrometers[0] + 5) / 10).to_le_bytes()); // Frame in 0.01 mm.
-    put(header, 36, ((micrometers[1] + 5) / 10).to_le_bytes());
+    let extent = micrometers.map(|um| (um + 5) / 10); // HIMETRIC, shared with IOleObject.
+    put(header, 32, extent[0].to_le_bytes());
+    put(header, 36, extent[1].to_le_bytes());
     put(header, 40, *b" EMF");
     put(header, 44, 0x0001_0000u32.to_le_bytes()); // EMF version.
     put(header, 48, (total_size as u32).to_le_bytes());
@@ -102,7 +111,7 @@ pub(crate) fn preview_emf(png: &[u8]) -> Result<Vec<u8>, OleError> {
     let eof = emr(&mut emf, EMR_EOF, EOF_SIZE);
     put(eof, 12, 16u32.to_le_bytes()); // Offset of the empty palette.
     put(eof, 16, (EOF_SIZE as u32).to_le_bytes());
-    Ok(emf)
+    Ok((emf, extent))
 }
 
 fn decode_error(error: ImageError) -> OleError {
@@ -111,12 +120,13 @@ fn decode_error(error: ImageError) -> OleError {
 
 // The image decoder exposes pixels but does not expose pHYs. Walk the chunk boundaries
 // through IEND so the carrier preserved in the EMF+ record is complete.
-fn png_dpi(png: &[u8]) -> Result<[u32; 2], OleError> {
+fn png_dpi(png: &[u8], selection: Option<&str>) -> Result<[u32; 2], OleError> {
     let mut chunks = png
         .strip_prefix(PNG_SIGNATURE)
         .ok_or_else(|| OleError("Invalid preview PNG signature".into()))?;
     let mut dpi = None;
     let mut saw_idat = false;
+    let mut saw_selection = false;
     while let Some((header, remaining)) = chunks.split_at_checked(8) {
         let size = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
         let kind = &header[4..8];
@@ -134,6 +144,19 @@ fn png_dpi(png: &[u8]) -> Result<[u32; 2], OleError> {
             return Err(OleError(format!("Invalid preview PNG {name} checksum")));
         }
 
+        if let Some(json) = selection {
+            if matches!(kind, b"iTXt" | b"zTXt") {
+                if let Some(text) = data.strip_prefix(b"application/x-chemdraft-selection+json\0") {
+                    if saw_selection || !carrier_matches(kind, text, json)? {
+                        return Err(OleError(
+                            "Preview PNG selection differs from ChemDraftDocument or occurs twice"
+                                .into(),
+                        ));
+                    }
+                    saw_selection = true;
+                }
+            }
+        }
         match kind {
             b"pHYs" => {
                 if data.len() != 9 || dpi.is_some() || saw_idat || data[8] > 1 {
@@ -163,6 +186,11 @@ fn png_dpi(png: &[u8]) -> Result<[u32; 2], OleError> {
                         "Invalid preview PNG IEND or trailing bytes".into(),
                     ));
                 }
+                if selection.is_some() && !saw_selection {
+                    return Err(OleError(
+                        "Preview PNG is missing the ChemDraft selection carrier".into(),
+                    ));
+                }
                 return Ok(dpi.unwrap_or([DEFAULT_DPI; 2]));
             }
             _ => {}
@@ -172,6 +200,37 @@ fn png_dpi(png: &[u8]) -> Result<[u32; 2], OleError> {
     Err(OleError(
         "Truncated preview PNG or missing IEND chunk".into(),
     ))
+}
+
+fn carrier_matches(kind: &[u8], text: &[u8], json: &str) -> Result<bool, OleError> {
+    let invalid = || OleError("Malformed ChemDraft PNG text chunk".into());
+    let (compressed, data) = if kind == b"zTXt" {
+        (true, text.strip_prefix(&[0]).ok_or_else(invalid)?)
+    } else {
+        let (flags, fields) = text.split_at_checked(2).ok_or_else(invalid)?;
+        if flags[0] > 1 || flags[1] != 0 {
+            return Err(invalid());
+        }
+        let mut fields = fields.splitn(3, |&byte| byte == 0);
+        (flags[0] != 0, fields.nth(2).ok_or_else(invalid)?)
+    };
+    if !compressed {
+        return Ok(data == json.as_bytes());
+    }
+    // Compare a chunk at a time and stop at the caller's already bounded document size.
+    let mut reader = flate2::read::ZlibDecoder::new(data);
+    let mut buffer = [0; 8192];
+    let mut remaining = json.as_bytes();
+    loop {
+        let count = reader.read(&mut buffer).map_err(|_| invalid())?;
+        if count == 0 {
+            return Ok(remaining.is_empty());
+        }
+        let Some(rest) = remaining.strip_prefix(&buffer[..count]) else {
+            return Ok(false);
+        };
+        remaining = rest;
+    }
 }
 
 fn device_micrometers(pixels: u32, dpi: u32) -> Result<i32, OleError> {
