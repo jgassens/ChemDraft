@@ -10,7 +10,8 @@ use objc2_app_kit::{
     NSAlertThirdButtonReturn, NSApplicationTerminateReply, NSWindow,
 };
 use objc2_foundation::{
-    NSNotificationCenter, NSOperationQueue, NSRunLoop, NSRunLoopCommonModes, NSString, NSTimer,
+    NSDate, NSDefaultRunLoopMode, NSNotificationCenter, NSOperationQueue, NSRunLoop,
+    NSRunLoopCommonModes, NSString, NSTimer,
 };
 use std::cell::RefCell;
 use std::ffi::c_char;
@@ -18,10 +19,12 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, OnceLock,
 };
+use std::time::Duration;
 
 static APP: OnceLock<(tauri::AppHandle, Option<Arc<SecondaryLaunch>>)> = OnceLock::new();
 
 static POWER_OFF: AtomicBool = AtomicBool::new(false);
+static SYSTEM_FLUSH_STARTED: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
     static QUIT_SHEET: RefCell<Option<(u64, Retained<NSAlert>)>> = const { RefCell::new(None) };
@@ -33,17 +36,50 @@ pub fn power_off_in_progress() -> bool {
 
 fn workspace_will_power_off() {
     POWER_OFF.store(true, Ordering::SeqCst);
-    let Some((app, _)) = APP.get() else { return };
+    let Some((app, secondary)) = APP.get() else {
+        return;
+    };
     if !super::QUIT.appkit_reply.lock().unwrap().awaiting_delivery() {
         return;
     }
-    // A power-off can supersede an ordinary Dock Quit while AppKit is already
-    // waiting. Complete that handshake immediately instead of leaving it pending.
-    super::APP_QUITTING.store(true, Ordering::SeqCst);
-    super::finish_exit_opens(app, QuitKind::System, || {});
-    *super::QUIT.appkit_reply.lock().unwrap() = super::AppkitReplyState::Delivered;
+    // A power-off can supersede an ordinary Dock Quit while AppKit is already waiting.
+    finish_system_termination(app, secondary.clone());
     let main = MainThreadMarker::new().expect("workspace observer uses the main queue");
     objc2_app_kit::NSApplication::sharedApplication(main).replyToApplicationShouldTerminate(true);
+}
+
+fn finish_system_termination(app: &tauri::AppHandle, secondary: Option<Arc<SecondaryLaunch>>) {
+    if SYSTEM_FLUSH_STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    // The committed system callback now owns any outstanding reply. A queued ordinary
+    // reply could run in the nested WebKit pump below.
+    *super::QUIT.appkit_reply.lock().unwrap() = super::AppkitReplyState::Delivered;
+    let recorder = app.clone();
+    super::flush_system_session(
+        app,
+        |remaining| {
+            let slice = remaining.min(Duration::from_millis(5));
+            let until = NSDate::dateWithTimeIntervalSinceNow(slice.as_secs_f64());
+            // SAFETY: AppKit calls us on the main thread. This services WebKit IPC with
+            // a short deadline, without accepting AppKit input events.
+            unsafe { NSRunLoop::mainRunLoop().runMode_beforeDate(NSDefaultRunLoopMode, &until) };
+            true
+        },
+        || {
+            // SAFETY: The OS already committed to termination. Skip teardown if a nested
+            // native callback stalls past the hard limit.
+            unsafe { libc::_exit(0) }
+        },
+        move || match secondary.and_then(|launch| launch.record_interrupted_launch(&recorder, true))
+        {
+            Some(Err(error)) => eprintln!("Could not record document opens for relaunch: {error}"),
+            Some(Ok(())) => {}
+            None => {
+                super::finish_exit_opens(&recorder, QuitKind::System, || {});
+            }
+        },
+    );
 }
 
 /// Own the quit sheet so a Finder open can dismiss precisely this alert, even when another
@@ -284,8 +320,10 @@ unsafe extern "C" fn should_terminate(
     let kind = shutdown::quit_kind(QuitPlatform::Macos, reason, power_off_in_progress(), false);
     if kind == QuitKind::System {
         POWER_OFF.store(true, Ordering::SeqCst);
-        super::APP_QUITTING.store(true, Ordering::SeqCst);
-    } else if super::RECORD_ERROR_ALERT_ACTIVE.load(Ordering::SeqCst) {
+        finish_system_termination(app, secondary.clone());
+        return NSApplicationTerminateReply::TerminateNow;
+    }
+    if super::open_notice_active() {
         return NSApplicationTerminateReply::TerminateCancel;
     }
     if let Some(result) = secondary
@@ -294,10 +332,11 @@ unsafe extern "C" fn should_terminate(
     {
         let proceed = shutdown::finish_opens(
             kind,
+            None,
             |_| result,
             || {},
             |message| {
-                super::schedule_open_notice(app, message, true, None);
+                super::schedule_open_notice(app, message, true, None, || {});
             },
         );
         return if proceed {
@@ -306,12 +345,6 @@ unsafe extern "C" fn should_terminate(
             NSApplicationTerminateReply::TerminateCancel
         };
     }
-    if kind == QuitKind::System {
-        super::finish_exit_opens(app, kind, || {});
-        *super::QUIT.appkit_reply.lock().unwrap() = super::AppkitReplyState::Delivered;
-        return NSApplicationTerminateReply::TerminateNow;
-    }
-
     let reply_pending = super::QUIT.appkit_reply.lock().unwrap().awaiting_delivery();
     match super::appkit_quit_decision(
         true,

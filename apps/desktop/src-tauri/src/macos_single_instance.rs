@@ -155,13 +155,13 @@ pub enum Reply {
 }
 
 impl Reply {
-    pub fn finish(self, result: Acknowledgement, error: &str) {
+    pub fn finish(self, result: Acknowledgement, on_takeover_failure: impl FnOnce(LaunchRequest)) {
         match self {
             Self::Secondary(sender) => {
                 let _ = sender.send(result);
             }
             Self::Takeover(launch) if result != Acknowledgement::Accepted => {
-                show_launch_error(&launch, error);
+                on_takeover_failure(launch);
             }
             Self::Takeover(_) => {}
         }
@@ -171,7 +171,7 @@ impl Reply {
 struct PendingBatch {
     outstanding: HashSet<usize>,
     paths: Vec<String>,
-    reply: Reply,
+    reply: Option<Reply>,
 }
 
 #[derive(Default)]
@@ -195,7 +195,7 @@ impl RendererOpens {
                     .iter()
                     .map(|payload| payload.path.clone())
                     .collect(),
-                reply,
+                reply: Some(reply),
             },
         );
         id
@@ -207,19 +207,52 @@ impl RendererOpens {
         opened: bool,
     ) -> Option<(Reply, Acknowledgement)> {
         let batch = self.batches.get_mut(&receipt.batch)?;
-        if !batch.outstanding.remove(&receipt.file) || (opened && !batch.outstanding.is_empty()) {
+        if !batch.outstanding.contains(&receipt.file) {
             return None;
         }
-        let result = if opened {
-            Acknowledgement::Accepted
+        if !opened {
+            return Some((self.fail(receipt.batch)?, Acknowledgement::Failed));
+        }
+        batch.outstanding.remove(&receipt.file);
+        if batch.outstanding.is_empty() {
+            Some((
+                self.batches.remove(&receipt.batch)?.reply?,
+                Acknowledgement::Accepted,
+            ))
         } else {
-            Acknowledgement::Failed
-        };
-        Some((self.remove(receipt.batch)?, result))
+            None
+        }
     }
 
-    fn remove(&mut self, id: u32) -> Option<Reply> {
-        self.batches.remove(&id).map(|batch| batch.reply)
+    fn fail(&mut self, id: u32) -> Option<Reply> {
+        let reply = self.batches.get_mut(&id)?.reply.take()?;
+        if matches!(reply, Reply::Secondary(_)) {
+            // The other process owns these paths until it receives an acknowledgement.
+            self.batches.remove(&id);
+        }
+        Some(reply)
+    }
+
+    fn persist_with(
+        &mut self,
+        mut paths: Vec<String>,
+        record: impl FnOnce(&[String]) -> Result<(), String>,
+    ) -> Result<(), String> {
+        for batch in self.batches.values() {
+            if !matches!(batch.reply, Some(Reply::Secondary(_))) {
+                paths.extend(
+                    batch
+                        .paths
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| batch.outstanding.contains(index))
+                        .map(|(_, path)| path.clone()),
+                );
+            }
+        }
+        record(&paths)?;
+        self.batches.clear();
+        Ok(())
     }
 }
 
@@ -254,13 +287,11 @@ pub fn track_renderer_open(
 }
 
 pub fn fail_renderer_open(app: &AppHandle, id: u32, error: &str) {
-    let reply = app
-        .state::<Mutex<RendererOpens>>()
-        .lock()
-        .unwrap()
-        .remove(id);
+    let reply = app.state::<Mutex<RendererOpens>>().lock().unwrap().fail(id);
     if let Some(reply) = reply {
-        reply.finish(Acknowledgement::Failed, error);
+        reply.finish(Acknowledgement::Failed, |launch| {
+            crate::report_open_failure(app, launch_error_message(&launch, error));
+        });
     }
 }
 
@@ -271,35 +302,29 @@ pub fn renderer_consumed(app: &AppHandle, receipt: RendererReceipt, opened: bool
         .unwrap()
         .consume(receipt, opened);
     if let Some((reply, result)) = reply {
-        reply.finish(
-            result,
-            "The document window could not open every requested file.",
-        );
+        reply.finish(result, |launch| {
+            crate::report_open_failure(
+                app,
+                launch_error_message(
+                    &launch,
+                    "The document window could not open every requested file.",
+                ),
+            );
+        });
     }
 }
 
 pub fn renderer_exiting<R: tauri::Runtime>(
     app: &AppHandle<R>,
-    mut paths: Vec<String>,
+    paths: Vec<String>,
     notice: bool,
 ) -> Result<(), String> {
-    let state = app.state::<Mutex<RendererOpens>>();
-    let mut renderer = state.lock().unwrap();
-    for batch in renderer.batches.values() {
-        if matches!(batch.reply, Reply::Takeover(_)) {
-            paths.extend(
-                batch
-                    .paths
-                    .iter()
-                    .enumerate()
-                    .filter(|(index, _)| batch.outstanding.contains(index))
-                    .map(|(_, path)| path.clone()),
-            );
-        }
-    }
-    crate::record_pending_opens(app, &paths, notice)?;
-    renderer.batches.clear();
-    Ok(())
+    app.state::<Mutex<RendererOpens>>()
+        .try_lock()
+        .map_err(|error| error.to_string())?
+        .persist_with(paths, |paths| {
+            crate::record_pending_opens(app, paths, notice)
+        })
 }
 
 pub fn plugin(
@@ -382,6 +407,22 @@ type StartPrimary = fn(&AppHandle<Wry>, InstanceLock) -> Result<(), Box<dyn std:
 struct Handoff {
     launch: LaunchRequest,
     result: mpsc::Receiver<io::Result<Resolution>>,
+    resolved: Option<io::Result<Resolution>>,
+}
+
+impl Handoff {
+    fn poll(&mut self) -> Option<&io::Result<Resolution>> {
+        if self.resolved.is_none() {
+            self.resolved = match self.result.try_recv() {
+                Ok(result) => Some(result),
+                Err(mpsc::TryRecvError::Disconnected) => Some(Err(io::Error::other(
+                    "the single-instance handoff worker stopped",
+                ))),
+                Err(mpsc::TryRecvError::Empty) => None,
+            };
+        }
+        self.resolved.as_ref()
+    }
 }
 
 struct SecondaryState {
@@ -395,19 +436,19 @@ struct SecondaryState {
 }
 
 impl SecondaryState {
-    fn take_interrupted_launch(&mut self) -> LaunchRequest {
-        let late = std::mem::take(&mut self.collection).launch;
-        let unconfirmed = self.promoting.take().or_else(|| {
-            let handoff = self.handoff.take()?;
-            // The IPC worker may already have a confirmed reply that the timer has yet to poll.
-            (!matches!(handoff.result.try_recv(), Ok(Ok(Resolution::Forwarded))))
-                .then_some(handoff.launch)
+    fn interrupted_launch(&mut self) -> LaunchRequest {
+        let late = &self.collection.launch;
+        let unconfirmed = self.promoting.as_ref().or_else(|| {
+            let handoff = self.handoff.as_mut()?;
+            // Cache the reply so a veto can resume the same handoff, including a won lock.
+            (!matches!(handoff.poll(), Some(Ok(Resolution::Forwarded)))).then_some(&handoff.launch)
         });
-        if let Some(mut launch) = unconfirmed {
-            launch.urls.extend(late.urls);
+        if let Some(launch) = unconfirmed {
+            let mut launch = launch.clone();
+            launch.urls.extend_from_slice(&late.urls);
             launch
         } else {
-            late
+            late.clone()
         }
     }
 }
@@ -461,9 +502,7 @@ impl SecondaryLaunch {
         if state.promoted {
             return None;
         }
-        state.terminating = true;
-        let launch = state.take_interrupted_launch();
-        drop(state);
+        let launch = state.interrupted_launch();
         let mut paths: Vec<_> = launch
             .urls
             .iter()
@@ -487,10 +526,11 @@ impl SecondaryLaunch {
                 .map(|path| path.to_string_lossy().into_owned())
                 .collect::<Vec<_>>(),
         );
-        if result.is_err() {
-            let mut state = self.state.lock().unwrap();
-            state.terminating = false;
-            state.collection.launch = launch;
+        if result.is_ok() {
+            state.terminating = true;
+            state.collection = OpenCollection::default();
+            state.handoff = None;
+            state.promoting = None;
         }
         Some(result)
     }
@@ -571,21 +611,20 @@ impl SecondaryLaunch {
             return;
         }
         let now = Instant::now();
-        if let Some(handoff) = state.handoff.take() {
-            let result = match handoff.result.try_recv() {
-                Ok(result) => result,
-                Err(mpsc::TryRecvError::Disconnected) => Err(io::Error::other(
-                    "the single-instance handoff worker stopped",
-                )),
-                Err(mpsc::TryRecvError::Empty) => {
-                    state.handoff = Some(handoff);
-                    drop(state);
-                    self.schedule(app, start_primary, now + LOCK_RETRY);
-                    return;
-                }
-            };
+        if let Some(handoff) = state.handoff.as_mut() {
+            if handoff.poll().is_none() {
+                drop(state);
+                self.schedule(app, start_primary, now + LOCK_RETRY);
+                return;
+            }
+            let handoff = state.handoff.take().unwrap();
             drop(state);
-            self.complete(app, start_primary, handoff.launch, result);
+            self.complete(
+                app,
+                start_primary,
+                handoff.launch,
+                handoff.resolved.unwrap(),
+            );
             return;
         }
 
@@ -616,7 +655,11 @@ impl SecondaryLaunch {
                 let _ = send.send(result);
             }) {
             Ok(_) => {
-                self.state.lock().unwrap().handoff = Some(Handoff { launch, result });
+                self.state.lock().unwrap().handoff = Some(Handoff {
+                    launch,
+                    result,
+                    resolved: None,
+                });
                 self.schedule(app, start_primary, now + LOCK_RETRY);
             }
             Err(error) => self.complete(app, start_primary, launch, Err(error)),
@@ -676,7 +719,7 @@ impl SecondaryLaunch {
     }
 }
 
-fn launch_error_message(launch: &LaunchRequest, error: &str) -> String {
+pub(super) fn launch_error_message(launch: &LaunchRequest, error: &str) -> String {
     let mut files = Vec::new();
     for url in launch.urls.iter().filter(|url| url.scheme() == "file") {
         let path = url
@@ -1272,49 +1315,174 @@ mod single_instance_tests {
             } else {
                 Acknowledgement::Failed
             };
-            reply.finish(result, "renderer outcome");
+            reply.finish(result, |_| panic!("a forwarded launch has a sender"));
             assert_eq!(ack.try_recv(), Ok(expected));
             assert!(opens.consume(second, true).is_none(), "late confirmation");
         }
     }
 
     #[test]
+    fn single_instance_takeover_failure_keeps_unopened_paths_until_persisted() {
+        for timeout in [false, true] {
+            let mut opens = RendererOpens::default();
+            let mut payloads = ["opened.cdx", "failed.cdx", "unfinished.cdx"].map(|path| {
+                crate::NativeOpenDocumentPayload {
+                    path: path.into(),
+                    display_name: path.into(),
+                    contents: String::new(),
+                    bytes: None,
+                    receipt: None,
+                    error: None,
+                }
+            });
+            let batch = opens.track(&mut payloads, Reply::Takeover(LaunchRequest::default()));
+            let receipt = |file| RendererReceipt { batch, file };
+            assert!(opens.consume(receipt(0), true).is_none());
+            let reply = if timeout {
+                opens.fail(batch)
+            } else {
+                opens.consume(receipt(1), false).map(|(reply, result)| {
+                    assert_eq!(result, Acknowledgement::Failed);
+                    reply
+                })
+            };
+            assert!(matches!(reply, Some(Reply::Takeover(_))));
+            assert!(opens.fail(batch).is_none()); // Only one failure reaches shutdown.
+            assert_eq!(
+                opens.persist_with(vec![], |paths| {
+                    assert_eq!(paths, ["failed.cdx", "unfinished.cdx"]);
+                    Err("disk full".into())
+                }),
+                Err("disk full".into())
+            );
+            assert!(opens.consume(receipt(2), true).is_none());
+            opens
+                .persist_with(vec![], |paths| {
+                    assert_eq!(paths, ["failed.cdx"]);
+                    Ok(())
+                })
+                .unwrap();
+            assert!(opens.batches.is_empty());
+        }
+    }
+
+    #[test]
     fn single_instance_exit_accounts_for_collected_in_flight_and_late_files() {
-        let secondary = SecondaryLaunch::new(Ok(PathBuf::new()));
-        let mut state = secondary.state.lock().unwrap();
         let early = Url::parse("file:///early.cdx").unwrap();
         let late = Url::parse("file:///late.cdxml").unwrap();
         let launch = LaunchRequest {
             urls: vec![early.clone()],
             ..Default::default()
         };
-        state.collection.launch = launch.clone();
-        assert_eq!(
-            state.take_interrupted_launch().urls,
-            std::slice::from_ref(&early)
-        );
-        for confirmed in [false, true] {
+        for source in ["collection", "handoff", "forwarded", "promotion"] {
+            let secondary = SecondaryLaunch::new(Ok(PathBuf::new()));
+            let mut state = secondary.state.lock().unwrap();
             let (sender, result) = mpsc::channel();
-            state.handoff = Some(Handoff {
-                launch: launch.clone(),
-                result,
-            });
+            state.collection.launch = LaunchRequest::default();
+            match source {
+                "collection" => state.collection.launch = launch.clone(),
+                "promotion" => state.promoting = Some(launch.clone()),
+                _ => {
+                    state.handoff = Some(Handoff {
+                        launch: launch.clone(),
+                        result,
+                        resolved: None,
+                    });
+                    if source == "forwarded" {
+                        sender.send(Ok(Resolution::Forwarded)).unwrap();
+                    }
+                }
+            }
             state
                 .collection
                 .append(std::slice::from_ref(&late), Instant::now());
-            if confirmed {
-                sender.send(Ok(Resolution::Forwarded)).unwrap();
-            }
-            let expected = if confirmed {
-                vec![late.clone()]
+            drop(state);
+            let expected = if source == "forwarded" {
+                vec!["/late.cdxml"]
             } else {
-                vec![early.clone(), late.clone()]
+                vec!["/early.cdx", "/late.cdxml"]
             };
-            assert_eq!(state.take_interrupted_launch().urls, expected);
-            assert!(state.take_interrupted_launch().urls.is_empty());
+            secondary
+                .record_interrupted_launch_with(|paths| {
+                    assert_eq!(paths, expected);
+                    Ok(())
+                })
+                .unwrap()
+                .unwrap();
+            let state = secondary.state.lock().unwrap();
+            assert!(state.terminating);
+            assert!(state.collection.deadline().is_none());
+            assert!(state.collection.launch.urls.is_empty());
+            assert!(state.handoff.is_none());
+            assert!(state.promoting.is_none());
         }
-        state.promoting = Some(launch);
-        assert_eq!(state.take_interrupted_launch().urls, [early]);
+    }
+
+    #[test]
+    fn failed_interrupted_launch_record_preserves_collection_and_handoff_or_promotion() {
+        let directory = Directory::new();
+        let first = Url::parse("file:///first.cdx").unwrap();
+        let late = Url::parse("file:///late.cdx").unwrap();
+        let now = Instant::now();
+        for stage in ["collection", "handoff", "promotion"] {
+            let secondary = SecondaryLaunch::new(Ok(directory.0.clone()));
+            let request = LaunchRequest {
+                urls: vec![first.clone()],
+                ..Default::default()
+            };
+            let mut state = secondary.state.lock().unwrap();
+            let (sender, result) = mpsc::channel();
+            state.collection = OpenCollection {
+                started: Some(now),
+                ..Default::default()
+            };
+            match stage {
+                "collection" => state.collection.launch = request,
+                "handoff" => {
+                    state.handoff = Some(Handoff {
+                        launch: request,
+                        result,
+                        resolved: None,
+                    });
+                    let guard = InstanceLock::acquire(&directory.0).unwrap().unwrap();
+                    sender.send(Ok(Resolution::Primary(guard))).unwrap();
+                }
+                _ => state.promoting = Some(request),
+            }
+            let last_open = now + Duration::from_millis(100);
+            state
+                .collection
+                .append(std::slice::from_ref(&late), last_open);
+            let deadline = state.collection.deadline();
+            drop(state);
+            assert_eq!(
+                secondary.record_interrupted_launch_with(|paths| {
+                    assert_eq!(paths, ["/first.cdx", "/late.cdx"]);
+                    Err("disk full".into())
+                }),
+                Some(Err("disk full".into()))
+            );
+            let state = secondary.state.lock().unwrap();
+            assert!(!state.terminating);
+            assert_eq!(state.collection.started, Some(now));
+            assert_eq!(state.collection.last_open, Some(last_open));
+            assert_eq!(state.collection.deadline(), deadline);
+            match stage {
+                "collection" => {
+                    assert_eq!(state.collection.launch.urls, [first.clone(), late.clone()])
+                }
+                "handoff" => {
+                    let handoff = state.handoff.as_ref().unwrap();
+                    assert_eq!(handoff.launch.urls, std::slice::from_ref(&first));
+                    assert!(matches!(handoff.resolved, Some(Ok(Resolution::Primary(_)))));
+                    assert!(InstanceLock::acquire(&directory.0).unwrap().is_none());
+                }
+                _ => assert_eq!(
+                    state.promoting.as_ref().unwrap().urls,
+                    std::slice::from_ref(&first)
+                ),
+            }
+        }
     }
 
     #[test]

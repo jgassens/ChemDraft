@@ -1,5 +1,5 @@
 //! Tao delivers Exit directly from WM_ENDSESSION on its hidden event target.
-//! Observe committed system shutdown before forwarding it.
+//! Flush the committed session and record pending opens before forwarding it.
 
 #[cfg(not(windows))]
 pub(super) fn install(_app: &tauri::AppHandle) -> Result<(), String> {
@@ -12,22 +12,26 @@ pub(super) fn in_progress() -> bool {
 }
 
 #[cfg(windows)]
-pub(super) use windows::{in_progress, install};
+pub(super) use windows::{in_progress, install, terminate_process};
 
 #[cfg(windows)]
 mod windows {
-    use crate::{finish_exit_opens, shutdown_kind, APP_QUITTING};
+    use crate::{finish_exit_opens, flush_system_session, QuitKind};
     use std::{
         ptr::null_mut,
         sync::atomic::{AtomicBool, Ordering},
+        thread,
+        time::Duration,
     };
     use windows_sys::Win32::{
         Foundation::{HWND, LPARAM, LRESULT, WPARAM},
-        System::Threading::GetCurrentThreadId,
+        System::Threading::{GetCurrentProcess, GetCurrentThreadId, TerminateProcess},
         UI::{
             Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
             WindowsAndMessaging::{
-                EnumThreadWindows, GetClassNameW, WM_ENDSESSION, WM_NCDESTROY, WM_QUERYENDSESSION,
+                DispatchMessageW, EnumThreadWindows, GetClassNameW, PeekMessageW, PostQuitMessage,
+                MSG, PM_QS_POSTMESSAGE, PM_QS_SENDMESSAGE, PM_REMOVE, WM_ENDSESSION, WM_NCDESTROY,
+                WM_QUERYENDSESSION, WM_QUIT,
             },
         },
     };
@@ -91,10 +95,12 @@ mod windows {
                 if ENDING.swap(true, Ordering::SeqCst) {
                     return 0; // The outer callback will forward the committed message to Tao.
                 }
-                APP_QUITTING.store(true, Ordering::SeqCst);
-                // SAFETY: The subclass owns the handle until WM_NCDESTROY.
-                let app = unsafe { &*(data as *const tauri::AppHandle) };
-                finish_exit_opens(app, shutdown_kind(false), || {});
+                // SAFETY: Clone the installed handle before pumping messages that can destroy it.
+                let app = unsafe { (&*(data as *const tauri::AppHandle)).clone() };
+                let recorder = app.clone();
+                flush_system_session(&app, pump_webview, terminate_process, move || {
+                    finish_exit_opens(&recorder, QuitKind::System, || {});
+                });
             }
             WM_NCDESTROY => {
                 // SAFETY: Remove this callback before releasing the handle allocated in install.
@@ -107,5 +113,37 @@ mod windows {
         }
         // SAFETY: Forward on the same thread and through the live subclass chain.
         unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
+    }
+
+    fn pump_webview(remaining: Duration) -> bool {
+        let mut message = MSG::default();
+        // SAFETY: Pump this thread's posted/sent work. Hardware input is unnecessary.
+        let available = unsafe {
+            PeekMessageW(
+                &mut message,
+                null_mut(),
+                0,
+                0,
+                PM_REMOVE | PM_QS_POSTMESSAGE | PM_QS_SENDMESSAGE,
+            )
+        };
+        if available == 0 {
+            thread::sleep(remaining.min(Duration::from_millis(5)));
+        } else if message.message == WM_QUIT {
+            // SAFETY: Preserve a quit already pending for the outer event loop.
+            unsafe { PostQuitMessage(message.wParam as i32) };
+            return false;
+        } else {
+            // SAFETY: PeekMessageW initialized this message for the current thread.
+            unsafe { DispatchMessageW(&message) };
+        }
+        true
+    }
+
+    pub(crate) fn terminate_process() {
+        // Skip DLL detach handlers. WebView2 teardown can stall or raise a dialog.
+        // SAFETY: GetCurrentProcess returns a pseudo-handle for this process.
+        unsafe { TerminateProcess(GetCurrentProcess(), 0) };
+        std::process::exit(0);
     }
 }

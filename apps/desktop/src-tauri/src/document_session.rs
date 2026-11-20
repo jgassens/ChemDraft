@@ -7,7 +7,7 @@ pub(crate) mod pending_opens {
         collections::HashSet,
         fs::{self, File, OpenOptions},
         io,
-        path::Path,
+        path::{Path, PathBuf},
     };
 
     const FILENAME: &str = "pending-opens.json";
@@ -110,24 +110,51 @@ pub(crate) mod pending_opens {
         write(&file, &pending, notice)
     }
 
-    pub(crate) fn take_notice(directory: &Path) -> Result<Option<String>, String> {
+    pub(crate) struct Notice {
+        directory: PathBuf,
+        paths: Vec<String>,
+    }
+
+    impl Notice {
+        pub(crate) fn message(&self) -> String {
+            format!(
+                "These files were not opened before ChemDraft quit:\n\n{}",
+                self.paths.join("\n")
+            )
+        }
+
+        pub(crate) fn acknowledge(self) -> Result<(), String> {
+            let _guard = lock(&self.directory)?;
+            let file = self.directory.join(FILENAME);
+            let mut entries = read(&file)?;
+            let before = entries.len();
+            entries.retain(
+                |entry| !matches!(entry, Entry::Notice { path } if self.paths.contains(path)),
+            );
+            if entries.len() != before {
+                write(&file, &entries, false)?;
+            }
+            Ok(())
+        }
+    }
+
+    pub(crate) fn read_notice(directory: &Path) -> Result<Option<Notice>, String> {
         let file = directory.join(FILENAME);
         if !file.try_exists().map_err(|error| error.to_string())? {
             return Ok(None);
         }
         let _guard = lock(directory)?;
-        let (retries, notices): (Vec<_>, Vec<_>) = read(&file)?
+        let paths: Vec<_> = read(&file)?
             .into_iter()
-            .partition(|entry| matches!(entry, Entry::Replay(_)));
-        if notices.is_empty() {
-            return Ok(None);
-        }
-        write(&file, &retries, false)?;
-        let paths: Vec<_> = notices.iter().map(Entry::path).collect();
-        Ok(Some(format!(
-            "These files were not opened before ChemDraft quit:\n\n{}",
-            paths.join("\n")
-        )))
+            .filter_map(|entry| match entry {
+                Entry::Notice { path } => Some(path),
+                Entry::Replay(_) => None,
+            })
+            .collect();
+        Ok((!paths.is_empty()).then(|| Notice {
+            directory: directory.to_owned(),
+            paths,
+        }))
     }
 
     #[derive(Default)]
@@ -405,6 +432,7 @@ mod tests {
             pending_opens::append(&files.0, &["retry.cdx".into()], false).unwrap();
             assert!(crate::shutdown::finish_opens(
                 kind,
+                None,
                 |notice| pending_opens::append(
                     &files.0,
                     &["one.cdx".into(), "two.cdx".into(), "two.cdx".into()],
@@ -413,10 +441,11 @@ mod tests {
                 || panic!("system quit cannot be vetoed"),
                 |_| panic!("the notice belongs to the next launch"),
             ));
-            let notice = pending_opens::take_notice(&files.0).unwrap().unwrap();
-            assert!(notice.ends_with("one.cdx\ntwo.cdx"));
-            assert_eq!(notice.matches("two.cdx").count(), 1);
-            assert_eq!(pending_opens::take_notice(&files.0).unwrap(), None);
+            let notice = pending_opens::read_notice(&files.0).unwrap().unwrap();
+            assert!(notice.message().ends_with("one.cdx\ntwo.cdx"));
+            assert_eq!(notice.message().matches("two.cdx").count(), 1);
+            notice.acknowledge().unwrap();
+            assert!(pending_opens::read_notice(&files.0).unwrap().is_none());
             let mut retry = pending_opens::Replay::default();
             let mut paths = Vec::new();
             retry
@@ -424,6 +453,26 @@ mod tests {
                 .unwrap();
             assert_eq!(paths, ["retry.cdx"]);
         }
+    }
+
+    #[test]
+    fn undisplayed_notice_survives_relaunch_and_acknowledgement_keeps_new_entries() {
+        let files = Files::new();
+        pending_opens::append(&files.0, &["first.cdx".into(), "second.cdx".into()], true).unwrap();
+        let queued = pending_opens::read_notice(&files.0).unwrap().unwrap();
+        drop(queued); // The process exited before displaying the alert.
+        let shown = pending_opens::read_notice(&files.0).unwrap().unwrap();
+        assert!(shown.message().ends_with("first.cdx\nsecond.cdx"));
+        pending_opens::append(&files.0, &["third.cdx".into()], true).unwrap();
+        pending_opens::append(&files.0, &["second.cdx".into()], false).unwrap();
+        shown.acknowledge().unwrap();
+        let next = pending_opens::read_notice(&files.0).unwrap().unwrap();
+        assert!(next.message().ends_with("third.cdx"));
+        let mut replayed = Vec::new();
+        pending_opens::Replay::default()
+            .start(&files.0, |_, path| replayed.push(path.to_owned()))
+            .unwrap();
+        assert_eq!(replayed, ["second.cdx"]);
     }
 
     #[test]
