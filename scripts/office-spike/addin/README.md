@@ -9,7 +9,8 @@ replacement routes.
 Serve this directory as static files over HTTPS using a certificate trusted by both test machines.
 Keep the files together. If you use a different URL, replace every occurrence of
 `https://chemdraft.ai/office-spike/` in `manifest.xml` with the HTTPS directory URL, including the
-trailing slash. No build is required. The task pane loads Office.js from Microsoft's CDN and the
+trailing slash. The host serves extensionless HTML URLs, so the manifest uses `/taskpane` for
+`taskpane.html`. No build is required. The task pane loads Office.js from Microsoft's CDN and the
 replacement PNG from the task pane's own origin.
 
 ### Mac

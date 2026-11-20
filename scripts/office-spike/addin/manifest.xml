@@ -18,7 +18,7 @@
     <Host Name="Presentation"/>
   </Hosts>
   <DefaultSettings>
-    <SourceLocation DefaultValue="https://chemdraft.ai/office-spike/taskpane.html"/>
+    <SourceLocation DefaultValue="https://chemdraft.ai/office-spike/taskpane"/>
   </DefaultSettings>
   <Permissions>ReadWriteDocument</Permissions>
   <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
@@ -98,7 +98,7 @@
         <bt:Image id="Probe.Icon80" DefaultValue="https://chemdraft.ai/office-spike/icon-80.png"/>
       </bt:Images>
       <bt:Urls>
-        <bt:Url id="Probe.Url" DefaultValue="https://chemdraft.ai/office-spike/taskpane.html"/>
+        <bt:Url id="Probe.Url" DefaultValue="https://chemdraft.ai/office-spike/taskpane"/>
       </bt:Urls>
       <bt:ShortStrings>
         <bt:String id="Probe.Label" DefaultValue="ChemDraft probe"/>
