@@ -86,6 +86,7 @@ const native = vi.hoisted(() => ({
   picker: vi.fn<() => Promise<string | string[] | null>>(),
   pendingOpenDocuments: [] as Array<{ path: string; displayName: string; contents: string; bytes?: number[] }>,
   drainOpenDocuments: vi.fn<() => Promise<unknown>>(),
+  confirmOpen: vi.fn<(confirmation: { receipt: { replay: number }; opened: boolean }) => void>(),
   savePicker: vi.fn<() => Promise<string | null>>(),
   readFile: vi.fn<(path: string) => Promise<Uint8Array>>(),
   writeFile: vi.fn<(path: string, contents: string) => Promise<void>>(),
@@ -163,8 +164,14 @@ vi.mock("./window-manager/tauriEvents", async (original) => {
 vi.mock("@tauri-apps/api/core", async (original) => ({
   ...await original<typeof import("@tauri-apps/api/core")>(),
   isTauri: () => native.suspendUtilities,
-  invoke: vi.fn(async (command: string, options?: { suspended?: boolean }) => {
-    if (command === "take_pending_open_document") return native.drainOpenDocuments();
+  invoke: vi.fn(async (command: string, options?: { suspended?: boolean; confirmation?: Parameters<typeof native.confirmOpen>[0] }) => {
+    if (command === "take_pending_open_document") {
+      if (options?.confirmation) {
+        native.confirmOpen(options.confirmation);
+        return [];
+      }
+      return native.drainOpenDocuments();
+    }
     if (command === "read_clipboard_payload") return native.clipboardPending ?? { types: [], textItems: [] };
     if (command === "suspend_toolset_windows") {
       if (native.suspendFailure && options?.suspended) throw new Error("Native utility hide refused");
@@ -2802,6 +2809,81 @@ describe("documents in one window", () => {
     await quitButton("Discard");
     expect(native.saveSession).toHaveBeenCalled();
     expect(native.quit).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["prompt", "Save", "Discard"] as const)("opens a Finder file when an open cancels quit during %s", async (stage) => {
+    act(() => root!.unmount());
+    await mount(undefined, false, "macos");
+    await paste("Keep the original drawing");
+    saveAskToSaveBeforeQuit(true);
+    await flush();
+
+    let finishWrite!: () => void;
+    const pauseWrite = () => new Promise<void>(resolve => { finishWrite = resolve; });
+    if (stage === "Save") {
+      native.savePicker.mockResolvedValueOnce("/tmp/original-on-quit.chemdraft");
+      native.writeFile.mockImplementationOnce(pauseWrite);
+      await quitButton("Save");
+    } else if (stage === "Discard") {
+      native.saveSession.mockImplementationOnce(pauseWrite);
+      native.quit.mockResolvedValueOnce(false);
+      await quitButton("Discard");
+    }
+
+    native.drainOpenDocuments.mockImplementation(async () => {
+      const [, args] = vi.mocked(nativeInvoke).mock.lastCall ?? [];
+      return (args as { readyForDeferredOpens?: boolean } | undefined)?.readyForDeferredOpens
+        ? native.pendingOpenDocuments.splice(0) : [];
+    });
+    await act(async () => {
+      // Rust has cancelled the matching request and delivered the normal OS open notification.
+      native.events.get("chemdraft://quit-cancelled-for-open")?.(1);
+      native.events.get("chemdraft://open-document")!({
+        path: "/tmp/finder.chemdraft", displayName: "finder.chemdraft", contents: fileContents("Finder document")
+      });
+    });
+    if (stage !== "prompt") {
+      expect(tabs()).toHaveLength(1);
+      expect(native.pendingOpenDocuments).toHaveLength(1);
+      await act(async () => finishWrite());
+    } else {
+      // A stale choice from the dismissed native prompt cannot start a save or a quit.
+      await quitButton("Discard");
+    }
+    expect(tabs()).toHaveLength(2);
+    expect(bridge().snapshot().file.path).toBe("/tmp/finder.chemdraft");
+    await activate(0);
+    expect(drawnText()).toContain("Keep the original drawing");
+    expect(bridge().snapshot().file.dirty).toBe(stage !== "Save");
+    await paste("Editable after the open cancelled quit");
+    expect(drawnText()).toContain("Editable after the open cancelled quit");
+    if (stage !== "Discard") expect(native.quit).not.toHaveBeenCalled();
+  });
+
+  it("confirms each replay after its tab is installed or its open failure is displayed", async () => {
+    let hydrate!: (session: unknown) => void;
+    native.load.mockImplementationOnce(() => new Promise(resolve => { hydrate = resolve; }));
+    act(() => root!.unmount());
+    vi.mocked(nativeInvoke).mockClear();
+    await mount(undefined, false, "macos");
+    expect(nativeInvoke).not.toHaveBeenCalledWith("take_pending_open_document", { readyForDeferredOpens: true });
+    const observed: unknown[] = [];
+    native.confirmOpen.mockImplementationOnce(confirmation => {
+      observed.push([confirmation, bridge().snapshot().file.path]);
+    }).mockImplementationOnce(confirmation => {
+      observed.push([confirmation, container.querySelector('[role="status"]')?.textContent]);
+    });
+    native.drainOpenDocuments.mockResolvedValueOnce([
+      { path: "/tmp/replayed.chemdraft", displayName: "replayed.chemdraft", contents: fileContents("Replayed"), receipt: { replay: 0 } },
+      { path: "/tmp/missing.chemdraft", displayName: "missing.chemdraft", contents: "", error: "No such file or directory", receipt: { replay: 1 } }
+    ]);
+    await act(async () => hydrate(undefined));
+    expect(nativeInvoke).toHaveBeenCalledWith("take_pending_open_document", { readyForDeferredOpens: true });
+    expect(observed).toEqual([
+      [{ receipt: { replay: 0 }, opened: true }, "/tmp/replayed.chemdraft"],
+      [{ receipt: { replay: 1 }, opened: false }, "Opened 1 of 2 files. Could not open missing.chemdraft: No such file or directory"]
+    ]);
+    expect(tabs()).toHaveLength(1);
   });
 
   it("opt-in Save writes every dirty tab before quitting", async () => {

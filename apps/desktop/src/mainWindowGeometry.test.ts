@@ -34,9 +34,9 @@ describe("document window launch placement", () => {
 
   it("keeps early OS opens queued for setup and reveals later opens", () => {
     const delivery = between("fn deliver_opened_document<", "fn open_document_payload_from_url(");
-    expect(delivery).toMatch(/if delivery == OpenDocumentDelivery::PendingOnly[\s\S]*?return Ok\(\(\)\);/);
-    expect(delivery.indexOf("return Ok(());")).toBeLessThan(delivery.indexOf("ensure_main_window_visible(app)"));
-    expect(delivery.indexOf("ensure_main_window_visible(app)")).toBeLessThan(delivery.indexOf("emit_open_document_to_main(app"));
+    expect(delivery).toMatch(/state\.record\([\s\S]*?if delivery == OpenDocumentDelivery::PendingOnly \{[^}]*return Ok\(\(\)\);\s*\}\s*show_and_emit_open_document\(app\)/);
+    const revealOpen = between("fn show_and_emit_open_document<", "fn emit_toolset_window_state_to_main<");
+    expect(revealOpen).toMatch(/ensure_main_window_visible\(app\)[\s\S]*app\.emit_to\(MAIN_WINDOW_LABEL, OPEN_DOCUMENT_EVENT/);
     const events = between("app.run(move |app, event|", "fn start_macos_primary(");
     expect(events).toMatch(/RunEvent::Reopen[\s\S]*?ensure_main_window_visible\(app\)/);
     expect(events).toMatch(/RunEvent::Opened[\s\S]*?handle_opened_document_urls\(app, urls\)/);

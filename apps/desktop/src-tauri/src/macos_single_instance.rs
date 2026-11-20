@@ -150,8 +150,15 @@ pub struct RendererReceipt {
 
 #[derive(Deserialize)]
 pub struct OpenConfirmation {
-    pub receipt: RendererReceipt,
+    pub receipt: OpenReceipt,
     pub opened: bool,
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum OpenReceipt {
+    Handoff(RendererReceipt),
+    Replay { replay: usize },
 }
 
 pub enum Reply {
@@ -175,6 +182,7 @@ impl Reply {
 
 struct PendingBatch {
     outstanding: HashSet<usize>,
+    paths: Vec<String>,
     reply: Reply,
 }
 
@@ -189,12 +197,16 @@ impl RendererOpens {
         let id = self.next;
         self.next = self.next.checked_add(1).expect("exhausted handoff IDs");
         for (file, payload) in payloads.iter_mut().enumerate() {
-            payload.receipt = Some(RendererReceipt { batch: id, file });
+            payload.receipt = Some(OpenReceipt::Handoff(RendererReceipt { batch: id, file }));
         }
         self.batches.insert(
             id,
             PendingBatch {
                 outstanding: (0..payloads.len()).collect(),
+                paths: payloads
+                    .iter()
+                    .map(|payload| payload.path.clone())
+                    .collect(),
                 reply,
             },
         );
@@ -278,18 +290,27 @@ pub fn renderer_consumed(app: &AppHandle, receipt: RendererReceipt, opened: bool
     }
 }
 
-pub fn renderer_exiting(app: &AppHandle) {
-    let batches = std::mem::take(&mut app.state::<Mutex<RendererOpens>>().lock().unwrap().batches);
-    for batch in batches.into_values() {
-        // Disconnect remote waiters so they can take over. Log unconfirmed local requests.
-        if let Reply::Takeover(launch) = batch.reply {
-            report_launch_error(
-                &launch,
-                "ChemDraft quit before its document window confirmed the open.",
-                LaunchErrorPresentation::LogOnly,
+pub fn renderer_exiting<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    mut paths: Vec<String>,
+) -> Result<(), String> {
+    let state = app.state::<Mutex<RendererOpens>>();
+    let mut renderer = state.lock().unwrap();
+    for batch in renderer.batches.values() {
+        if matches!(batch.reply, Reply::Takeover(_)) {
+            paths.extend(
+                batch
+                    .paths
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| batch.outstanding.contains(index))
+                    .map(|(_, path)| path.clone()),
             );
         }
     }
+    crate::record_pending_opens(app, &paths)?;
+    renderer.batches.clear();
+    Ok(())
 }
 
 pub fn plugin(
@@ -434,39 +455,45 @@ impl SecondaryLaunch {
         }
     }
 
-    // AppKit termination can bypass ExitRequested. Warn synchronously before allowing it,
-    // including a request in flight and opens collected while waiting for its reply.
-    pub fn interrupt_for_exit(&self) -> bool {
-        self.interrupt_for_exit_with(show_launch_error)
+    // AppKit termination can bypass ExitRequested. Preserve unconfirmed and late opens.
+    pub fn record_interrupted_launch(&self, app: &AppHandle) -> Option<Result<(), String>> {
+        self.record_interrupted_launch_with(|paths| crate::record_pending_opens(app, paths))
     }
 
-    fn handle_exit(
+    fn record_interrupted_launch_with(
         &self,
-        report: impl FnOnce(&LaunchRequest, &str, LaunchErrorPresentation),
-    ) -> bool {
-        // Tao holds its event callback mutex during Exit. A modal can reenter it via openURLs.
-        self.interrupt_for_exit_with(|launch, error| {
-            report(launch, error, LaunchErrorPresentation::LogOnly);
-        })
-    }
-
-    fn interrupt_for_exit_with(&self, report: impl FnOnce(&LaunchRequest, &str)) -> bool {
+        record: impl FnOnce(&[String]) -> Result<(), String>,
+    ) -> Option<Result<(), String>> {
         let mut state = self.state.lock().unwrap();
         if state.promoted {
-            return false;
+            return None;
         }
         state.terminating = true;
         let launch = state.take_interrupted_launch();
         drop(state);
-        if launch.urls.iter().any(|url| url.scheme() == "file")
-            || launch.argv.iter().skip(1).any(|arg| !arg.starts_with('-'))
+        let mut paths: Vec<_> = launch
+            .urls
+            .iter()
+            .filter_map(|url| url.to_file_path().ok())
+            .collect();
+        let cwd = Path::new(&launch.cwd);
+        for arg in launch
+            .argv
+            .iter()
+            .skip(1)
+            .filter(|arg| !arg.starts_with('-'))
         {
-            report(
-                &launch,
-                "ChemDraft quit before it could confirm the document open.",
-            );
+            let path = cwd.join(arg);
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
         }
-        true
+        Some(record(
+            &paths
+                .into_iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+        ))
     }
 
     // Keep one Tauri event loop. When we take over, run normal startup in this windowless app.
@@ -477,7 +504,12 @@ impl SecondaryLaunch {
         start_primary: StartPrimary,
     ) -> bool {
         if matches!(event, RunEvent::Exit) {
-            return self.handle_exit(report_launch_error);
+            return self.record_interrupted_launch(app).is_some_and(|result| {
+                if let Err(error) = result {
+                    eprintln!("Could not record document opens for relaunch: {error}");
+                }
+                true
+            });
         }
         let mut state = self.state.lock().unwrap();
         if state.promoted {
@@ -605,7 +637,7 @@ impl SecondaryLaunch {
                 let startup = start_primary(app, guard);
                 let mut state = self.state.lock().unwrap();
                 if state.terminating {
-                    return; // The termination alert already accounted for this batch.
+                    return; // The termination recorder already accounted for this batch.
                 }
                 state.promoting = None;
                 launch
@@ -672,20 +704,8 @@ fn launch_error_message(launch: &LaunchRequest, error: &str) -> String {
 }
 
 pub fn show_launch_error(launch: &LaunchRequest, error: &str) {
-    report_launch_error(launch, error, LaunchErrorPresentation::Alert);
-}
-
-enum LaunchErrorPresentation {
-    LogOnly,
-    Alert,
-}
-
-fn report_launch_error(launch: &LaunchRequest, error: &str, presentation: LaunchErrorPresentation) {
     let message = launch_error_message(launch, error);
     eprintln!("ChemDraft could not complete the document open: {message}");
-    if matches!(presentation, LaunchErrorPresentation::LogOnly) {
-        return;
-    }
     let mtm = MainThreadMarker::new().expect("launch error is shown on the main thread");
     let app = NSApplication::sharedApplication(mtm);
     #[allow(deprecated)]
@@ -1234,8 +1254,11 @@ mod single_instance_tests {
             let queue = crate::PendingOpenDocument::default();
             queue.record(files, true).unwrap();
             let drained = queue.drain().unwrap();
-            let first = drained[0].receipt.unwrap();
-            let second = drained[1].receipt.unwrap();
+            let [OpenReceipt::Handoff(first), OpenReceipt::Handoff(second)] =
+                [drained[0].receipt.unwrap(), drained[1].receipt.unwrap()]
+            else {
+                panic!("expected handoff receipts");
+            };
             assert!(opens.consume(first, true).is_none());
             assert!(
                 opens.consume(first, true).is_none(),
@@ -1294,22 +1317,21 @@ mod single_instance_tests {
     }
 
     #[test]
-    fn single_instance_exit_logs_unconfirmed_files_without_a_modal() {
+    fn single_instance_exit_records_unconfirmed_files_without_a_modal() {
         let secondary = SecondaryLaunch::new(Ok(PathBuf::new()));
         secondary.state.lock().unwrap().collection.launch = LaunchRequest {
             urls: vec![Url::parse("file:///unconfirmed.cdx").unwrap()],
             ..Default::default()
         };
-        let mut logged = None;
-        assert!(secondary.handle_exit(|launch, error, presentation| {
-            assert!(matches!(presentation, LaunchErrorPresentation::LogOnly));
-            logged = Some(launch_error_message(launch, error));
-            report_launch_error(launch, error, presentation);
-        }));
-        assert_eq!(
-            logged.as_deref(),
-            Some("ChemDraft quit before it could confirm the document open.\n\nRequested files:\n/unconfirmed.cdx")
-        );
+        let mut recorded = Vec::new();
+        assert!(secondary
+            .record_interrupted_launch_with(|paths| {
+                recorded.extend_from_slice(paths);
+                Ok(())
+            })
+            .unwrap()
+            .is_ok());
+        assert_eq!(recorded, ["/unconfirmed.cdx"]);
         assert!(secondary.state.lock().unwrap().terminating);
     }
 

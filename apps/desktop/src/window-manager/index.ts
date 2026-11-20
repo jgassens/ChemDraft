@@ -810,7 +810,7 @@ let pendingDocumentSessionWrite: Promise<void> = Promise.resolve();
 
 /** Autosave ignores a failed write (the previous session stays); `strict` rejects instead, for callers
  *  that are about to end the process and must know the document reached disk. */
-export async function saveDocumentSession(state: unknown, options?: { strict?: boolean }): Promise<void> {
+export async function saveDocumentSession(state: unknown, options?: { strict?: boolean; quitRequestId?: number }): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
@@ -818,7 +818,7 @@ export async function saveDocumentSession(state: unknown, options?: { strict?: b
   // Native writes run off the main thread. Keep the final quit snapshot behind older autosaves.
   const write = pendingDocumentSessionWrite.then(async () => {
     const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("save_document_session", { state });
+    await invoke("save_document_session", { state, quitRequestId: options?.quitRequestId });
   });
   pendingDocumentSessionWrite = write.catch(() => undefined);
   await (options?.strict ? write : write.catch(() => undefined));
@@ -850,6 +850,7 @@ export async function confirmQuitAfterFlush(requestId: number): Promise<void> {
 }
 
 export const QUIT_PROMPT_REQUEST_EVENT = "chemdraft://prompt-before-quit";
+const QUIT_CANCELLED_FOR_OPEN_EVENT = "chemdraft://quit-cancelled-for-open";
 const EXPORT_PREVIEW_SETTINGS_EVENT = "chemdraft://export-preview-settings";
 const QUIT_SETTINGS_EVENT = "chemdraft://quit-settings";
 export async function listenForQuitPromptRequest(handler: (requestId: number) => Promise<void>): Promise<Unlisten> {
@@ -857,6 +858,9 @@ export async function listenForQuitPromptRequest(handler: (requestId: number) =>
   return listenCurrentWindowEvent<number>(QUIT_PROMPT_REQUEST_EVENT, (event) => {
     if (Number.isSafeInteger(event.payload) && event.payload > 0) void handler(event.payload).catch(() => {});
   });
+}
+export async function listenForQuitCancelledForOpen(handler: (requestId: number) => void): Promise<Unlisten> {
+  return listenCurrentWindowEvent<number>(QUIT_CANCELLED_FOR_OPEN_EVENT, ({ payload }) => handler(payload));
 }
 export async function broadcastQuitSettings(enabled: boolean): Promise<void> {
   dispatchDomToolsetEvent(QUIT_SETTINGS_EVENT, enabled);
@@ -912,10 +916,14 @@ export async function setQuitPromptEnabled(enabled: boolean): Promise<void> {
 }
 export const prepareQuitPrompt = (id: number): Promise<boolean> => quitPromptCommand("prepare_quit_prompt", id);
 export const reportQuitPromptShowing = (id: number): Promise<boolean> => quitPromptCommand("quit_prompt_showing", id);
+export async function showMacosQuitPrompt(requestId: number): Promise<string> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke("quit_prompt_showing", { requestId, showNative: true });
+}
 export type QuitCancelOutcome = "cancelled" | "superseded" | "committed";
 export const cancelQuit = (id: number): Promise<QuitCancelOutcome> => quitPromptCommand("cancel_quit", id);
 export const resumeQuitAfterPrompt = (id: number): Promise<boolean> => quitPromptCommand("resume_quit_after_prompt", id);
-export const confirmPromptedQuit = (id: number): Promise<void> => quitPromptCommand("confirm_prompted_quit", id);
+export const confirmPromptedQuit = (id: number): Promise<boolean> => quitPromptCommand("confirm_prompted_quit", id);
 export async function requestQuitAfterClose(): Promise<void> {
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("request_quit_after_close");

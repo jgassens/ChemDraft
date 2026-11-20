@@ -2,6 +2,107 @@
 use serde_json::Value;
 use std::{fs, path::Path};
 
+#[cfg(target_os = "macos")]
+pub(crate) mod pending_opens {
+    use std::{
+        fs::{self, File, OpenOptions},
+        io,
+        os::unix::{fs::OpenOptionsExt, io::AsRawFd},
+        path::Path,
+    };
+
+    const FILENAME: &str = "pending-opens.json";
+
+    // A windowless secondary can record while the primary is appending or replaying.
+    // Keep a stable lock inode, since the JSON file's inode changes on each rename.
+    fn lock(directory: &Path) -> io::Result<File> {
+        fs::create_dir_all(directory)?;
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(directory.join("pending-opens.lock"))?;
+        // SAFETY: The descriptor remains open for the lifetime of the returned guard.
+        while unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::Interrupted {
+                return Err(error);
+            }
+        }
+        Ok(file)
+    }
+
+    fn read(path: &Path) -> Result<Option<Vec<String>>, String> {
+        super::super::read_optional_file(path)?
+            .map(|json| serde_json::from_str(&json).map_err(|error| error.to_string()))
+            .transpose()
+    }
+
+    pub(crate) fn append(directory: &Path, paths: &[String]) -> Result<(), String> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let _guard = lock(directory).map_err(|error| error.to_string())?;
+        let file = directory.join(FILENAME);
+        let mut pending = read(&file)?.unwrap_or_default();
+        pending.extend_from_slice(paths);
+        let json = serde_json::to_string(&pending).map_err(|error| error.to_string())?;
+        super::super::write_file_atomic(&file, &json)
+    }
+
+    #[derive(Default)]
+    pub(crate) struct Replay(Option<Vec<Option<String>>>);
+
+    impl Replay {
+        pub(crate) fn start(
+            &mut self,
+            directory: &Path,
+            mut deliver: impl FnMut(usize, &str),
+        ) -> Result<(), String> {
+            if self.0.is_some() {
+                return Ok(());
+            }
+            let file = directory.join(FILENAME);
+            let paths = if file.try_exists().map_err(|error| error.to_string())? {
+                let _guard = lock(directory).map_err(|error| error.to_string())?;
+                read(&file)?.unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            for (receipt, path) in paths.iter().enumerate() {
+                deliver(receipt, path);
+            }
+            self.0 = Some(paths.into_iter().map(Some).collect());
+            Ok(())
+        }
+
+        pub(crate) fn confirm(&mut self, directory: &Path, receipt: usize) -> Result<(), String> {
+            let Some(slot) = self.0.as_mut().and_then(|paths| paths.get_mut(receipt)) else {
+                return Ok(());
+            };
+            let Some(path) = slot.as_deref() else {
+                return Ok(());
+            };
+            let _guard = lock(directory).map_err(|error| error.to_string())?;
+            let file = directory.join(FILENAME);
+            let mut paths = read(&file)?.unwrap_or_default();
+            if let Some(index) = paths.iter().position(|pending| pending == path) {
+                paths.remove(index);
+                if paths.is_empty() {
+                    fs::remove_file(file).map_err(|error| error.to_string())?;
+                } else {
+                    let json = serde_json::to_string(&paths).map_err(|error| error.to_string())?;
+                    super::super::write_file_atomic(&file, &json)?;
+                }
+            }
+            *slot = None;
+            Ok(())
+        }
+    }
+}
+
 /// Match the readable tab envelope in documentSession.ts. Cosmetic metadata is optional. Do not
 /// treat the outer active-tab mirror, document contents, or arbitrary nested objects as file grants.
 fn readable_tab(tab: &Value) -> bool {
@@ -163,6 +264,55 @@ mod tests {
             let _ = fs::remove_dir_all(&self.0);
         }
     }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_open_quit_replay_retains_each_path_until_confirmed() {
+        let files = Files::new();
+        let available = files.file("present.chemdraft");
+        let missing = files.0.join("missing.chemdraft");
+        let file = files.0.join("pending-opens.json");
+        let paths = [&available, &missing].map(|path| path.to_str().unwrap().to_owned());
+        pending_opens::append(&files.0, &paths).unwrap();
+
+        let mut replay = pending_opens::Replay::default();
+        let mut opened = Vec::new();
+        replay
+            .start(&files.0, |receipt, path| {
+                opened.push((receipt, crate::read_document_payload(Path::new(path))));
+            })
+            .unwrap();
+        assert_eq!(opened.len(), 2);
+        assert_eq!(opened[0].1.path, paths[0]);
+        assert_eq!(opened[0].1.contents, "saved drawing");
+        assert!(opened[0].1.error.is_none());
+        assert_eq!(opened[1].1.display_name, "missing.chemdraft");
+        assert!(opened[1].1.error.is_some());
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            serde_json::to_string(&paths).unwrap()
+        );
+        replay
+            .start(&files.0, |_, _| panic!("already sent to this renderer"))
+            .unwrap();
+
+        // A later request for the same path must survive this receipt and its duplicate.
+        pending_opens::append(&files.0, &paths[..1]).unwrap();
+        replay.confirm(&files.0, opened[0].0).unwrap();
+        replay.confirm(&files.0, opened[0].0).unwrap();
+        let mut next_launch = pending_opens::Replay::default();
+        let mut remaining = Vec::new();
+        next_launch
+            .start(&files.0, |_, path| remaining.push(path.to_owned()))
+            .unwrap();
+        assert_eq!(remaining, [paths[1].clone(), paths[0].clone()]);
+        // The missing file's failure is confirmed by the next renderer.
+        next_launch.confirm(&files.0, 0).unwrap();
+        assert!(file.exists());
+        next_launch.confirm(&files.0, 1).unwrap();
+        assert!(!file.exists());
+    }
+
     fn tab(path: &Path) -> Value {
         json!({ "version": 1, "contents": "drawing", "payloadHash": "hash", "blank": false,
             "displayName": "drawing", "dirty": true, "savedAt": "now", "path": path })

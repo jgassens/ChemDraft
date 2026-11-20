@@ -308,8 +308,8 @@
     "name": "quit_prompt_showing",
     "async": true,
     "generics": "",
-    "parameters": "window: tauri::WebviewWindow, request_id: u64,",
-    "returnType": "Result<bool, String>"
+    "parameters": "window: tauri::WebviewWindow, request_id: u64, show_native: Option<bool>,",
+    "returnType": "Result<QuitPromptResponse, String>"
   },
   {
     "file": "lib.rs",
@@ -341,7 +341,7 @@
     "async": true,
     "generics": "",
     "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, request_id: u64,",
-    "returnType": "Result<(), String>"
+    "returnType": "Result<bool, String>"
   },
   {
     "file": "lib.rs",
@@ -404,7 +404,7 @@
     "name": "save_document_session",
     "async": true,
     "generics": "",
-    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, state: serde_json::Value,",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, state: serde_json::Value, quit_request_id: Option<u64>,",
     "returnType": "Result<(), String>"
   },
   {
@@ -758,6 +758,14 @@
     "generics": "",
     "parameters": "process_session_id: String, sessions: tauri::State<'_, Engine3dSidecarSessions>,",
     "returnType": "Result<Engine3dSidecarSessionOutput, String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "take_pending_open_document",
+    "async": false,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, state: tauri::State<'_, PendingOpenDocument>, confirmation: Option<macos_single_instance::OpenConfirmation>, ready_for_deferred_opens: Option<bool>,",
+    "returnType": "Result<Vec<NativeOpenDocumentPayload>, String>"
   },
   {
     "file": "lib.rs",

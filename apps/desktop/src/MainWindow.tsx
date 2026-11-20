@@ -838,6 +838,8 @@ import {
   listenForQuitFlushRequest,
   confirmQuitAfterFlush,
   listenForQuitPromptRequest,
+  listenForQuitCancelledForOpen,
+  showMacosQuitPrompt,
   listenForQuitSettings,
   setQuitPromptEnabled,
   prepareQuitPrompt,
@@ -2050,10 +2052,7 @@ const nativeOpenDocumentEvent = "chemdraft://open-document";
 // while still allowing a deliberate later re-open.
 const NATIVE_OPEN_DEDUPE_WINDOW_MS = 1500;
 
-interface NativeOpenReceipt {
-  batch: number;
-  file: number;
-}
+type NativeOpenReceipt = { batch: number; file: number } | { replay: number };
 
 interface NativeOpenDocumentPayload {
   receipt?: NativeOpenReceipt;
@@ -2061,6 +2060,7 @@ interface NativeOpenDocumentPayload {
   displayName: string;
   contents: string;
   bytes?: number[];
+  error?: string;
 }
 
 interface DocumentOpenRequest {
@@ -2162,6 +2162,7 @@ export function MainWindow({
   tourMode,
   nativePalette = shouldDefaultToNativePalettes()
 }: MainWindowProps) {
+  const macos = (shortcutPlatform ?? detectDesktopShortcutPlatform()) === "macos";
   useEffect(() => installBrowserReloadGuard(shortcutPlatform), [shortcutPlatform]);
   useEffect(() => installNativeFlyoutKeyboard(shortcutPlatform), [shortcutPlatform]);
   useEffect(() => installMainWindowPalettePendingKeys(), []);
@@ -2612,6 +2613,7 @@ export function MainWindow({
   const [quitPromptOpen, setQuitPromptOpen] = useState<number>();
   const [quitPromptReady, setQuitPromptReady] = useState<number>();
   const quitRequestRef = useRef<number | undefined>(undefined);
+  const quitCancelledForOpenRef = useRef<number | undefined>(undefined);
   const quitPromptBusyRef = useRef(false);
   const [quitSaveBusy, setQuitSaveBusy] = useState(false);
   const [closeTabPrompt, setCloseTabPrompt] = useState<string>();
@@ -2619,8 +2621,9 @@ export function MainWindow({
   const quitMutationFrozenRef = useRef(false);
   const quitCommittedRef = useRef(false);
   const committedQuitDraftRef = useRef<{ tabId: string; document: ChemDraftDocument; dirty: boolean;
-    warning?: OpenWarning } | undefined>(undefined);
+    warning?: OpenWarning; requestId?: number } | undefined>(undefined);
   const [quitCommitted, setQuitCommitted] = useState(false);
+  const notifyNativeOpenQueueRef = useRef<(() => void) | undefined>(undefined);
   const pendingQuitAfterCloseRef = useRef(false);
   const [quitAfterCloseReady, setQuitAfterCloseReady] = useState(0);
   const [keptDrawingsPrompt, setKeptDrawingsPrompt] = useState<"notice">();
@@ -10399,7 +10402,9 @@ export function MainWindow({
   }, []);
 
   const openDocumentBatch = useCallback((requests: readonly DocumentOpenRequest[]): Promise<void> => {
+    const failedReplayConfirmations: (() => void)[] = [];
     const results = requests.map(({ contents, displayName, path, receipt }) => {
+      const replayed = receipt && "replay" in receipt;
       // Confirm at tab installation, before optional page-fit and compatibility dialogs.
       // A rejected parse or an early return (e.g. unfinished table edit) fails the receipt.
       let opened = false;
@@ -10417,14 +10422,24 @@ export function MainWindow({
         (): DocumentOpenResult => opened ? { displayName }
           : { displayName, error: refusal ?? "Finish or cancel the current edit and try again." },
         (error: unknown): DocumentOpenResult => ({ displayName, error })
-      ).finally(() => { if (!opened) confirm(false); });
+      ).finally(() => {
+        if (!opened) {
+          if (replayed) failedReplayConfirmations.push(() => confirm(false));
+          else confirm(false);
+        }
+      });
     });
     // Reserve the summary's place before any later batch. Each open includes its page-fit and
     // compatibility prompts, so keeping an imported page finishes successfully before we count it.
     const finished = documentOpenQueueRef.current.then(async () => {
       const summary = formatDocumentOpenBatchStatus(await Promise.all(results));
       if (summary) {
-        setStatus(summary);
+        if (failedReplayConfirmations.length) {
+          flushSync(() => setStatus(summary));
+          for (const confirm of failedReplayConfirmations) confirm();
+        } else {
+          setStatus(summary);
+        }
         if (!documentSessionHydratedRef.current) shellOpenFailureRef.current = summary;
       }
     });
@@ -10809,6 +10824,7 @@ export function MainWindow({
     const openNativePayloads = (payloads: readonly NativeOpenDocumentPayload[]) => {
       const requests = payloads.flatMap<DocumentOpenRequest>(payload => {
         try {
+          if (payload.error !== undefined) throw new Error(payload.error);
           const contents = decodeNativeDocumentContents(payload);
           const payloadKey = `${payload.path}\n${sha256Utf8Hex(documentContentsKey(contents))}`;
           const now = Date.now();
@@ -10826,13 +10842,20 @@ export function MainWindow({
     };
 
     return listenAndDrainNativeOpenQueue({
-      subscribe: listenForNativeOpenDocuments,
-      drain: takePendingNativeOpenDocuments,
+      subscribe: async changed => {
+        const unlisten = await listenForNativeOpenDocuments(changed);
+        notifyNativeOpenQueueRef.current = changed;
+        return () => {
+          if (notifyNativeOpenQueueRef.current === changed) notifyNativeOpenQueueRef.current = undefined;
+          unlisten();
+        };
+      },
+      drain: () => takePendingNativeOpenDocuments(macos && documentSessionHydratedRef.current && !quitPromptBusyRef.current),
       consumeBatch: openNativePayloads,
       onDrainActivity: busy => { nativeOpenDrainBusyRef.current = busy; },
       onError: error => setStatus(`Could not check pending open files: ${error instanceof Error ? error.message : String(error)}`)
     });
-  }, [openDocumentBatch]);
+  }, [macos, openDocumentBatch]);
 
   // Restore every tab before processing startup file opens (see documentSession.ts). If a user
   // already started editing while the read was pending, keep that work active and append the restored
@@ -10961,6 +10984,7 @@ export function MainWindow({
       .finally(async () => {
         if (active) {
           documentSessionHydratedRef.current = true;
+          if (macos) notifyNativeOpenQueueRef.current?.();
           if (startWithFreshDocument) setSessionStartupCompleted(true);
           perfHook(() => perfCanvasReady());
           if (unrestoredSessionTabsRef.current.length && !startWithFreshDocument) {
@@ -10975,14 +10999,14 @@ export function MainWindow({
     return () => {
       active = false;
     };
-  }, [installDocumentTab, notifyInstalledDocumentCompatibility, snapshotDocumentTab, startWithFreshDocument]);
+  }, [installDocumentTab, notifyInstalledDocumentCompatibility, snapshotDocumentTab, startWithFreshDocument, macos]);
 
   // Write the working document + file association to the session file now. Reads refs only, so it
   // is stable and safe to call from the debounce below and from the quit flush. Gated on hydration
   // so the startup blank can't clobber the previous session before the restore above has read it.
   // Quit and the updater use strict mode so neither treats a failed write as a saved session.
   // This includes the hydration gate when skipping the write would lose work.
-  const writeDocumentSessionNow = useCallback(async (options?: { strict?: boolean }) => {
+  const writeDocumentSessionNow = useCallback(async (options?: { strict?: boolean; quitRequestId?: number }) => {
     const committedDraft = committedQuitDraftRef.current;
     if (!documentSessionHydratedRef.current || !documentSessionSaveEnabledRef.current) {
       snapshotDocumentTab(false);
@@ -11046,7 +11070,7 @@ export function MainWindow({
       const envelope = buildDocumentTabsSession(tabs,
         documentTabsRef.current.findIndex((tab) => tab.id === activeDocumentTabIdRef.current));
       if (unrestoredSessionTabsRef.current.length) envelope.unrestoredTabs = unrestoredSessionTabsRef.current;
-      await saveDocumentSession(envelope, { strict: options?.strict });
+      await saveDocumentSession(envelope, options);
       skippedSessionRestoreRef.current = false;
     } catch (error) {
       if (options?.strict) {
@@ -11069,8 +11093,11 @@ export function MainWindow({
   }, [document, fileState, documentTabs, activeDocumentTabId, viewport, openWarningsReport, saveWarningsReport, sessionStartupCompleted, writeDocumentSessionNow]);
 
 
-  const lockCommittedQuit = useCallback(() => {
-    if (quitCommittedRef.current) return;
+  const lockCommittedQuit = useCallback((requestId?: number) => {
+    if (quitCommittedRef.current) {
+      if (requestId === undefined && committedQuitDraftRef.current) committedQuitDraftRef.current.requestId = undefined;
+      return;
+    }
     // Capture private drafts before the UI lock or dialog disposal can change editor focus.
     const tabId = activeDocumentTabIdRef.current;
     const current = objectResizeDragRef.current?.startDocument ?? documentRef.current;
@@ -11090,7 +11117,7 @@ export function MainWindow({
     const dirty = baseline
       ? baseline !== document && !assistantDocumentContentUnchanged(baseline, document)
       : fileStateRef.current.dirty || (current !== document && !assistantDocumentContentUnchanged(current, document));
-    committedQuitDraftRef.current = { tabId, document, dirty, warning };
+    committedQuitDraftRef.current = { tabId, document, dirty, warning, requestId };
     quitCommittedRef.current = true;
     quitInteractionRef.current = true;
     quitMutationFrozenRef.current = true;
@@ -11099,12 +11126,15 @@ export function MainWindow({
     flushSync(() => setQuitCommitted(true));
   }, [clearScheduledTextEditorFocus, documentForFlush]);
 
-  const writeQuitSession = useCallback(async (confirm: () => Promise<void>) => {
+  const writeQuitSession = useCallback(async (confirm: () => Promise<void | boolean>, requestId?: number) => {
+    let cancelled = false;
     try {
-      await writeDocumentSessionNow({ strict: true });
-      await confirm();
+      await writeDocumentSessionNow({ strict: true, quitRequestId: requestId });
+      cancelled = (await confirm()) === false && requestId !== undefined;
     } finally {
-      void dialogCoordinatorRef.current?.dispose("quit").catch(() => undefined);
+      if (!cancelled && (requestId === undefined || quitCancelledForOpenRef.current !== requestId)) {
+        void dialogCoordinatorRef.current?.dispose("quit").catch(() => undefined);
+      }
     }
   }, [writeDocumentSessionNow]);
 
@@ -11138,18 +11168,50 @@ export function MainWindow({
     };
   }, [lockCommittedQuit, writeQuitSession]);
 
+  const unlockCancelledQuit = useCallback((requestId: number) => {
+    if (quitRequestRef.current !== requestId ||
+        (quitCommittedRef.current && committedQuitDraftRef.current?.requestId !== requestId)) return;
+    quitInteractionRef.current = false;
+    quitMutationFrozenRef.current = false;
+    if (quitCommittedRef.current) {
+      quitCommittedRef.current = false;
+      committedQuitDraftRef.current = undefined;
+      setQuitCommitted(false);
+    }
+    setQuitPromptOpen(current => current === requestId ? undefined : current);
+    if (macos) notifyNativeOpenQueueRef.current?.();
+    if (!closeTabPromptRef.current && !keptDrawingsPromptRef.current && documentSessionHydratedRef.current) {
+      for (const resume of pendingDocumentOpensRef.current.splice(0)) resume();
+    }
+  }, [macos]);
+
   const cancelQuitRequest = useCallback(async (requestId: number) => {
     const reply = await cancelQuit(requestId);
     if (reply === "committed") lockCommittedQuit();
     const outcome = quitCommittedRef.current ? "committed" : reply;
-    if (quitRequestRef.current !== requestId || outcome === "superseded") return outcome;
-    if (outcome === "cancelled") {
-      quitInteractionRef.current = false;
-      quitMutationFrozenRef.current = false;
+    if (quitRequestRef.current === requestId) {
+      if (outcome === "cancelled") unlockCancelledQuit(requestId);
+      if (outcome === "committed") setQuitPromptOpen(current => current === requestId ? undefined : current);
     }
-    setQuitPromptOpen(current => current === requestId ? undefined : current);
     return outcome;
-  }, [lockCommittedQuit]);
+  }, [lockCommittedQuit, unlockCancelledQuit]);
+
+  useEffect(() => {
+    if (!isDesktopRuntime() || !macos) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listenForQuitCancelledForOpen(requestId => {
+      if (disposed) return;
+      quitCancelledForOpenRef.current = requestId;
+      // Save As and an in-flight write keep their existing lifetime. The quit callback
+      // releases the open queue after they return.
+      if (!quitPromptBusyRef.current) unlockCancelledQuit(requestId);
+    }).then(cleanup => {
+      if (disposed) cleanup();
+      else unlisten = cleanup;
+    }).catch(() => {});
+    return () => { disposed = true; unlisten?.(); };
+  }, [macos, unlockCancelledQuit]);
 
   useEffect(() => {
     if (!isDesktopRuntime()) return;
@@ -11158,7 +11220,11 @@ export function MainWindow({
     const keep = (listener: () => void) => { if (disposed) listener(); else listeners.push(listener); };
     void (async () => {
       keep(await listenForQuitPromptRequest(async (requestId) => {
-        if (disposed || quitCommittedRef.current ||
+        if (macos && quitPromptBusyRef.current && quitCancelledForOpenRef.current === quitRequestRef.current) {
+          await cancelQuit(requestId);
+          return;
+        }
+        if (disposed || quitCancelledForOpenRef.current === requestId || quitCommittedRef.current ||
             (quitRequestRef.current !== undefined && requestId <= quitRequestRef.current)) return;
         quitRequestRef.current = requestId;
         setQuitPromptOpen(undefined);
@@ -11180,16 +11246,22 @@ export function MainWindow({
               ? fileStateRef.current.dirty : documentTabSnapshotsRef.current.get(tab.id)?.file.dirty);
             if (dirty) {
               if (await prepareQuitPrompt(requestId) && quitRequestRef.current === requestId &&
-                  !disposed && !quitCommittedRef.current) {
+                  !disposed && quitCancelledForOpenRef.current !== requestId && !quitCommittedRef.current) {
                 setQuitPromptOpen(requestId);
                 return;
               }
             } else {
               quitMutationFrozenRef.current = true;
               if (await resumeQuitAfterPrompt(requestId) && quitRequestRef.current === requestId &&
-                  !disposed && !quitCommittedRef.current) {
-                lockCommittedQuit();
-                await writeQuitSession(() => confirmPromptedQuit(requestId));
+                  !disposed && quitCancelledForOpenRef.current !== requestId && !quitCommittedRef.current) {
+                quitPromptBusyRef.current = true;
+                lockCommittedQuit(requestId);
+                try {
+                  await writeQuitSession(() => confirmPromptedQuit(requestId), macos ? requestId : undefined);
+                } finally {
+                  quitPromptBusyRef.current = false;
+                  if (quitCancelledForOpenRef.current === requestId) unlockCancelledQuit(requestId);
+                }
                 return;
               }
             }
@@ -11207,7 +11279,7 @@ export function MainWindow({
       if (!disposed) await setQuitPromptEnabled(loadAskToSaveBeforeQuit());
     })().catch((error: unknown) => { setStatus("Quit preference unavailable: " + String(error)); });
     return () => { disposed = true; listeners.forEach((listener) => listener()); };
-  }, [snapshotDocumentTab, writeQuitSession, cancelQuitRequest, lockCommittedQuit]);
+  }, [snapshotDocumentTab, writeQuitSession, cancelQuitRequest, lockCommittedQuit, macos, unlockCancelledQuit]);
 
   useEffect(() => {
     if (closeTabPrompt || !pendingQuitAfterCloseRef.current) return;
@@ -11568,13 +11640,14 @@ export function MainWindow({
       if (quitRequestRef.current === requestId) {
         quitPromptBusyRef.current = false;
         setQuitSaveBusy(false);
+        if (quitCancelledForOpenRef.current === requestId) unlockCancelledQuit(requestId);
       }
     }
-  }, [cancelQuitRequest]);
+  }, [cancelQuitRequest, unlockCancelledQuit]);
 
   const finishPromptedQuit = useCallback(async (save: boolean) => {
     const requestId = quitRequestRef.current;
-    if (requestId === undefined || quitPromptBusyRef.current) return;
+    if (requestId === undefined || quitPromptBusyRef.current || quitCancelledForOpenRef.current === requestId) return;
     quitPromptBusyRef.current = true;
     quitMutationFrozenRef.current = true;
     setQuitSaveBusy(true);
@@ -11586,6 +11659,7 @@ export function MainWindow({
           if (file?.dirty && !await saveDocumentTabById(tab.id, false)) {
             return await cancelQuitPrompt(requestId);
           }
+          if (quitCancelledForOpenRef.current === requestId) return;
         }
         if (documentTabsRef.current.some((tab) => tab.id === activeDocumentTabIdRef.current
           ? fileStateRef.current.dirty : documentTabSnapshotsRef.current.get(tab.id)?.file.dirty)) {
@@ -11597,8 +11671,9 @@ export function MainWindow({
       if (!await resumeQuitAfterPrompt(requestId)) {
         return await cancelQuitPrompt(requestId);
       }
-      lockCommittedQuit();
-      await writeQuitSession(() => confirmPromptedQuit(requestId));
+      if (quitCancelledForOpenRef.current === requestId) return;
+      lockCommittedQuit(requestId);
+      await writeQuitSession(() => confirmPromptedQuit(requestId), macos ? requestId : undefined);
     } catch (error) {
       setStatus("Quit failed: " + (error instanceof Error ? error.message : String(error)));
       return await cancelQuitPrompt(requestId);
@@ -11606,14 +11681,16 @@ export function MainWindow({
       if (quitRequestRef.current === requestId) {
         quitPromptBusyRef.current = false;
         setQuitSaveBusy(false);
+        if (quitCancelledForOpenRef.current === requestId) unlockCancelledQuit(requestId);
       }
     }
-  }, [saveDocumentTabById, writeQuitSession, cancelQuitPrompt, lockCommittedQuit]);
+  }, [saveDocumentTabById, writeQuitSession, cancelQuitPrompt, lockCommittedQuit, macos, unlockCancelledQuit]);
 
   const quitPrompt = useNativePrompt({
     title: "Save changes before quitting?",
     message: "Your documents have unsaved changes.",
     kind: "warning",
+    showNative: macos && quitPromptOpen !== undefined ? () => showMacosQuitPrompt(quitPromptOpen) : undefined,
     choices: [
       { id: "save", label: "Save" },
       { id: "discard", label: "Don't Save", destructive: true },
@@ -34256,9 +34333,10 @@ async function confirmNativeOpen(receipt: NativeOpenReceipt, opened: boolean): P
   await invoke("take_pending_open_document", { confirmation: { receipt, opened } });
 }
 
-async function takePendingNativeOpenDocuments(): Promise<NativeOpenDocumentPayload[]> {
+async function takePendingNativeOpenDocuments(readyForDeferredOpens: boolean): Promise<NativeOpenDocumentPayload[]> {
   const { invoke } = await import("@tauri-apps/api/core");
-  const payloads = await invoke<NativeOpenDocumentPayload[]>("take_pending_open_document");
+  const payloads = await invoke<NativeOpenDocumentPayload[]>("take_pending_open_document",
+    readyForDeferredOpens ? { readyForDeferredOpens } : undefined);
   return payloads.filter(isNativeOpenDocumentPayload);
 }
 
@@ -34275,6 +34353,8 @@ function isNativeOpenDocumentPayload(value: unknown): value is NativeOpenDocumen
     typeof (value as NativeOpenDocumentPayload).path === "string" &&
     typeof (value as NativeOpenDocumentPayload).displayName === "string" &&
     typeof (value as NativeOpenDocumentPayload).contents === "string" &&
+    ((value as NativeOpenDocumentPayload).error === undefined ||
+      typeof (value as NativeOpenDocumentPayload).error === "string") &&
     ((value as NativeOpenDocumentPayload).bytes === undefined ||
       Array.isArray((value as NativeOpenDocumentPayload).bytes))
   );

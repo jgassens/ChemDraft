@@ -193,6 +193,8 @@ const EXIT_WATCHDOG: Duration = Duration::from_secs(2);
 static QUIT: QuitFlow = QuitFlow::new(&APP_QUITTING, QUIT_FLUSH_GRACE, EXIT_WATCHDOG);
 static ASK_TO_SAVE_ON_QUIT: AtomicBool = AtomicBool::new(false);
 const QUIT_PROMPT_REQUEST_EVENT: &str = "chemdraft://prompt-before-quit";
+#[cfg(target_os = "macos")]
+const QUIT_CANCELLED_FOR_OPEN_EVENT: &str = "chemdraft://quit-cancelled-for-open";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum QuitPromptPhase {
@@ -313,6 +315,16 @@ struct QuitFlow {
 struct QuitFlush {
     id: u64,
     confirmed: bool,
+    #[cfg(any(target_os = "macos", test))]
+    write: QuitFlushWrite,
+}
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum QuitFlushWrite {
+    Idle,
+    Writing,
+    Written,
 }
 
 impl QuitFlow {
@@ -357,6 +369,8 @@ impl QuitFlow {
         *flush = Some(QuitFlush {
             id,
             confirmed: false,
+            #[cfg(any(target_os = "macos", test))]
+            write: QuitFlushWrite::Idle,
         });
         (id, true)
     }
@@ -386,6 +400,48 @@ impl QuitFlow {
         }
         current.confirmed = true;
         true
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    fn write_prompted_flush(
+        &self,
+        request_id: u64,
+        write: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        {
+            let mut flush = self.flush.lock().unwrap();
+            let Some(current) = flush.as_mut().filter(|current| {
+                current.id == request_id && current.write == QuitFlushWrite::Idle
+            }) else {
+                return Ok(());
+            };
+            if self.quitting.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            current.write = QuitFlushWrite::Writing;
+        }
+        let result = write();
+        if let Some(current) = self.flush.lock().unwrap().as_mut() {
+            if current.id == request_id && current.write == QuitFlushWrite::Writing {
+                current.write = QuitFlushWrite::Idle;
+            }
+        }
+        result
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    fn publish_prompted_flush(
+        &self,
+        request_id: u64,
+        publish: impl FnOnce() -> std::io::Result<()>,
+    ) -> std::io::Result<bool> {
+        let mut flush = self.flush.lock().unwrap();
+        let Some(current) = flush.as_mut().filter(|current| current.id == request_id) else {
+            return Ok(false);
+        };
+        publish()?;
+        current.write = QuitFlushWrite::Written;
+        Ok(true)
     }
 
     #[cfg(any(windows, test))]
@@ -517,6 +573,10 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
     }
 
     fn exit(&self) {
+        #[cfg(target_os = "macos")]
+        if let Err(error) = persist_macos_opens(self) {
+            eprintln!("Could not record document opens for relaunch: {error}");
+        }
         tauri::AppHandle::exit(self, 0);
     }
 
@@ -697,19 +757,29 @@ fn arm_prompt_grace<H: QuitHost>(
 ) {
     let timer_host = host.clone();
     host.schedule_after(flow.flush_grace, move || {
-        let expired = {
-            let prompt = flow.prompt.lock().unwrap();
-            if *prompt == (request_id, phase) && !flow.quitting.load(Ordering::SeqCst) {
-                // Serialize expiration with Cancel, then release the lock before dispatching exit.
-                flow.quitting.store(true, Ordering::SeqCst);
-                true
-            } else {
-                false
-            }
-        };
-        if expired {
-            quit_now_with(flow, &timer_host, QuitReason::GraceExpired);
+        let mut prompt = flow.prompt.lock().unwrap();
+        if *prompt != (request_id, phase) || flow.quitting.load(Ordering::SeqCst) {
+            return;
         }
+        #[cfg(any(target_os = "macos", test))]
+        let flush = flow.flush.lock().unwrap();
+        #[cfg(any(target_os = "macos", test))]
+        if flush.is_some_and(|current| {
+            current.id == request_id && current.write == QuitFlushWrite::Writing
+        }) {
+            drop(flush);
+            drop(prompt);
+            arm_prompt_grace(flow, &timer_host, request_id, phase);
+            return;
+        }
+        // Claim the timeout against both Cancel and the start of a final write. An unanswered
+        // request is no longer a prompt that a Finder open can cancel.
+        prompt.1 = QuitPromptPhase::Idle;
+        flow.quitting.store(true, Ordering::SeqCst);
+        #[cfg(any(target_os = "macos", test))]
+        drop(flush);
+        drop(prompt);
+        quit_now_with(flow, &timer_host, QuitReason::GraceExpired);
     });
 }
 
@@ -837,13 +907,35 @@ enum QuitCancelOutcome {
     Committed,
 }
 
-fn cancel_quit_with(flow: &QuitFlow, request_id: u64) -> QuitCancelOutcome {
+fn cancel_quit_with(flow: &QuitFlow, request_id: u64, for_open: bool) -> QuitCancelOutcome {
     let mut prompt = flow.prompt.lock().unwrap();
-    if prompt.1 == QuitPromptPhase::Flushing || flow.in_progress() {
+    if !for_open && (prompt.1 == QuitPromptPhase::Flushing || flow.in_progress()) {
+        return QuitCancelOutcome::Committed;
+    }
+    #[cfg(any(target_os = "macos", test))]
+    if for_open && *flow.appkit_reply.lock().unwrap() != AppkitReplyState::Idle {
         return QuitCancelOutcome::Committed;
     }
     if request_id == 0 || prompt.0 != request_id {
         return QuitCancelOutcome::Superseded;
+    }
+    if prompt.1 == QuitPromptPhase::Flushing {
+        #[cfg(any(target_os = "macos", test))]
+        if for_open {
+            let mut flush = flow.flush.lock().unwrap();
+            if flush.is_some_and(|flush| {
+                flush.id == request_id && flush.write != QuitFlushWrite::Written && !flush.confirmed
+            }) {
+                *flush = None;
+                flow.requested.store(false, Ordering::SeqCst);
+                prompt.1 = QuitPromptPhase::Idle;
+                return QuitCancelOutcome::Cancelled;
+            }
+        }
+        return QuitCancelOutcome::Committed;
+    }
+    if for_open && flow.in_progress() {
+        return QuitCancelOutcome::Committed;
     }
     prompt.1 = QuitPromptPhase::Idle;
     QuitCancelOutcome::Cancelled
@@ -887,14 +979,33 @@ async fn prepare_quit_prompt(
     })?
 }
 
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum QuitPromptResponse {
+    Showing(bool),
+    #[cfg(target_os = "macos")]
+    Choice(&'static str),
+}
+
 #[tauri::command]
 async fn quit_prompt_showing(
     window: tauri::WebviewWindow,
     request_id: u64,
-) -> Result<bool, String> {
+    show_native: Option<bool>,
+) -> Result<QuitPromptResponse, String> {
     authorize_quit_window(window.label())?;
+    #[cfg(target_os = "macos")]
+    if show_native == Some(true) {
+        return macos_quit::show_prompt(window, request_id)
+            .await
+            .map(QuitPromptResponse::Choice);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = show_native;
     let visible = window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(true);
-    Ok(acknowledge_quit_prompt(&QUIT, request_id, visible))
+    Ok(QuitPromptResponse::Showing(acknowledge_quit_prompt(
+        &QUIT, request_id, visible,
+    )))
 }
 
 #[tauri::command]
@@ -903,7 +1014,7 @@ async fn cancel_quit(
     request_id: u64,
 ) -> Result<QuitCancelOutcome, String> {
     authorize_quit_window(window.label())?;
-    Ok(cancel_quit_with(&QUIT, request_id))
+    Ok(cancel_quit_with(&QUIT, request_id, false))
 }
 
 #[tauri::command]
@@ -931,8 +1042,13 @@ async fn confirm_prompted_quit(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     request_id: u64,
-) -> Result<(), String> {
-    quit_after_flush(app, window, request_id).await
+) -> Result<bool, String> {
+    authorize_quit_window(window.label())?;
+    let confirmed = QUIT.confirm_flush(request_id);
+    if confirmed {
+        complete_quit_flush_with(&QUIT, &app, QuitReason::FlushConfirmed);
+    }
+    Ok(confirmed)
 }
 
 const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
@@ -1122,17 +1238,25 @@ struct ToolsetCommandPayload {
 struct NativeOpenDocumentPayload {
     #[cfg(target_os = "macos")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    receipt: Option<macos_single_instance::RendererReceipt>,
+    receipt: Option<macos_single_instance::OpenReceipt>,
     path: String,
     display_name: String,
     contents: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     bytes: Option<Vec<u8>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 #[derive(Default)]
 struct PendingOpenDocument {
     payloads: Mutex<Vec<NativeOpenDocumentPayload>>,
+    #[cfg(target_os = "macos")]
+    replayed: Mutex<document_session::pending_opens::Replay>,
+    #[cfg(target_os = "macos")]
+    paths_after_cancel: Mutex<Vec<PathBuf>>,
+    #[cfg(target_os = "macos")]
+    late_opens_to_retry: Mutex<Vec<String>>,
     // Window existence is not a readiness signal: macOS may close every window after setup.
     setup_completed: AtomicBool,
 }
@@ -1892,7 +2016,19 @@ pub fn run() {
                     api.prevent_exit();
                     request_quit(app);
                 } else {
+                    #[cfg(target_os = "macos")]
+                    if code != Some(tauri::RESTART_EXIT_CODE)
+                        && macos_quit::defer_exit_for_record_alert({
+                            let app = app.clone();
+                            move || app.exit(code.unwrap_or(0))
+                        })
+                    {
+                        api.prevent_exit();
+                        return;
+                    }
                     APP_QUITTING.store(true, Ordering::SeqCst);
+                    #[cfg(target_os = "macos")]
+                    persist_macos_opens_before_exit(app);
                     panel_full_size::restore_all(app);
                     app.state::<ocsr_engine::OcsrEngineState>().shutdown();
                     external_tools::shutdown(app);
@@ -1904,7 +2040,9 @@ pub fn run() {
                 // AppKit quit decisions are handled before this final cleanup.
                 APP_QUITTING.store(true, Ordering::SeqCst);
                 #[cfg(target_os = "macos")]
-                macos_single_instance::renderer_exiting(app);
+                if let Err(error) = persist_macos_opens(app) {
+                    eprintln!("Could not record document opens for relaunch: {error}");
+                }
                 panel_full_size::restore_all(app);
                 app.state::<ocsr_engine::OcsrEngineState>().shutdown();
                 external_tools::shutdown(app);
@@ -3538,6 +3676,19 @@ fn read_optional_file(path: &Path) -> Result<Option<String>, String> {
 /// debounce can overlap the next one, and a shared temp name would let writer A's rename publish
 /// writer B's half-written bytes, which is exactly the torn file this helper exists to prevent.
 fn write_file_atomic(path: &Path, contents: &str) -> Result<(), String> {
+    write_file_atomic_with(path, contents, |tmp, path| {
+        #[cfg(windows)]
+        return replace_with_windows_retry(|| fs::rename(tmp, path), std::thread::sleep);
+        #[cfg(not(windows))]
+        fs::rename(tmp, path)
+    })
+}
+
+fn write_file_atomic_with(
+    path: &Path,
+    contents: &str,
+    replace: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
@@ -3553,12 +3704,8 @@ fn write_file_atomic(path: &Path, contents: &str) -> Result<(), String> {
         let _ = fs::remove_file(&tmp);
         error.to_string()
     })?;
-    #[cfg(windows)]
-    let replaced = replace_with_windows_retry(|| fs::rename(&tmp, path), std::thread::sleep);
-    #[cfg(not(windows))]
-    let replaced = fs::rename(&tmp, path);
-    replaced.map_err(|error| {
-        let _ = fs::remove_file(&tmp);
+    replace(&tmp, path).map_err(|error| {
+        let _ = fs::remove_file(tmp);
         error.to_string()
     })
 }
@@ -4206,10 +4353,28 @@ async fn save_document_session(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     state: serde_json::Value,
+    quit_request_id: Option<u64>,
 ) -> Result<(), String> {
     if window.label() != MAIN_WINDOW_LABEL {
         return Err("Only the main document window can persist the document session".into());
     }
+    #[cfg(target_os = "macos")]
+    if let Some(request_id) = quit_request_id {
+        return QUIT.write_prompted_flush(request_id, || {
+            let path = document_session_path(&app)?;
+            let contents =
+                serde_json::to_string_pretty(&state).map_err(|error| error.to_string())?;
+            // Only the final rename and cancellation need to exclude each other.
+            write_file_atomic_with(&path, &contents, |tmp, path| {
+                if !QUIT.publish_prompted_flush(request_id, || fs::rename(tmp, path))? {
+                    fs::remove_file(tmp)?;
+                }
+                Ok(())
+            })
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = quit_request_id;
     let path = document_session_path(&app)?;
     let contents = serde_json::to_string_pretty(&state).map_err(|error| error.to_string())?;
     write_file_atomic(&path, &contents)
@@ -8850,19 +9015,67 @@ fn take_pending_open_document(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, PendingOpenDocument>,
     confirmation: Option<macos_single_instance::OpenConfirmation>,
+    ready_for_deferred_opens: Option<bool>,
 ) -> Result<Vec<NativeOpenDocumentPayload>, String> {
     if !is_document_window(window.label()) {
         return Err("Only the document window can take or confirm file opens.".into());
     }
     if let Some(confirmation) = confirmation {
-        macos_single_instance::renderer_consumed(
-            window.app_handle(),
-            confirmation.receipt,
-            confirmation.opened,
-        );
+        match confirmation.receipt {
+            macos_single_instance::OpenReceipt::Handoff(receipt) => {
+                macos_single_instance::renderer_consumed(
+                    window.app_handle(),
+                    receipt,
+                    confirmation.opened,
+                );
+            }
+            macos_single_instance::OpenReceipt::Replay { replay } => {
+                let directory = window
+                    .app_handle()
+                    .path()
+                    .app_data_dir()
+                    .map_err(|error| error.to_string())?;
+                state.replayed.lock().unwrap().confirm(&directory, replay)?;
+            }
+        }
         return Ok(Vec::new());
     }
-    state.drain()
+    if QUIT.in_progress() {
+        return Ok(Vec::new());
+    }
+    let mut pending = state.drain()?;
+    if ready_for_deferred_opens != Some(true) {
+        return Ok(pending);
+    }
+    let read_path = |path: &Path| {
+        let payload = read_document_payload(path);
+        if payload.error.is_none() {
+            allow_opened_document_in_scope(window.app_handle(), path);
+        }
+        payload
+    };
+    let paths = std::mem::take(&mut *state.paths_after_cancel.lock().unwrap());
+    pending.extend(paths.iter().map(|path| read_path(path)));
+    let replay = window
+        .app_handle()
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())
+        .and_then(|directory| {
+            state
+                .replayed
+                .lock()
+                .unwrap()
+                .start(&directory, |replay, path| {
+                    let mut payload = read_path(Path::new(path));
+                    payload.receipt = Some(macos_single_instance::OpenReceipt::Replay { replay });
+                    pending.push(payload);
+                })
+        });
+    if let Err(error) = replay {
+        eprintln!("Could not replay document opens from the previous launch: {error}");
+    }
+    Ok(pending)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -9094,9 +9307,155 @@ fn handle_opened_document_urls<R: Runtime>(
     app: &tauri::AppHandle<R>,
     urls: Vec<tauri::Url>,
 ) -> Result<(), String> {
-    deliver_opened_documents(opened_document_payloads_from_urls(urls), |payload| {
-        deliver_opened_document(app, payload)
-    })
+    #[cfg(target_os = "macos")]
+    {
+        let paths = urls
+            .iter()
+            .filter_map(|url| opened_document_path(url).transpose())
+            .filter_map(|result| result.inspect_err(|error| eprintln!("{error}")).ok())
+            .collect();
+        let cancelled = std::cell::Cell::new(false);
+        open_macos_paths_with(
+            &QUIT,
+            paths,
+            |request_id| {
+                cancelled.set(true);
+                let _ = app.emit_to(MAIN_WINDOW_LABEL, QUIT_CANCELLED_FOR_OPEN_EVENT, request_id);
+                macos_quit::dismiss_prompt(request_id);
+            },
+            |paths| {
+                let state = app.state::<PendingOpenDocument>();
+                let mut deferred = state.paths_after_cancel.lock().unwrap();
+                if cancelled.get() || !deferred.is_empty() {
+                    // A Save may still be writing the very file that was requested. The
+                    // renderer drains these paths only after the save or session write returns.
+                    deferred.extend(paths);
+                    drop(deferred);
+                    return show_and_emit_open_document(app);
+                }
+                drop(deferred);
+                deliver_opened_documents(document_payloads_from_paths(paths), |payload| {
+                    deliver_opened_document(app, payload)
+                })
+            },
+            |paths| {
+                let state = app.state::<PendingOpenDocument>();
+                let paths = paths
+                    .into_iter()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect();
+                append_late_opens(&state.late_opens_to_retry, paths, |pending| {
+                    record_pending_opens(app, pending)
+                })
+                .inspect_err(|error| {
+                    macos_quit::report_record_error(error);
+                })
+            },
+        )
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        deliver_opened_documents(opened_document_payloads_from_urls(urls), |payload| {
+            deliver_opened_document(app, payload)
+        })
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn open_macos_paths_with(
+    flow: &QuitFlow,
+    paths: Vec<PathBuf>,
+    cancelled: impl FnOnce(u64),
+    open: impl FnOnce(Vec<PathBuf>) -> Result<(), String>,
+    record: impl FnOnce(Vec<PathBuf>) -> Result<(), String>,
+) -> Result<(), String> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let (request_id, phase) = *flow.prompt.lock().unwrap();
+    if phase != QuitPromptPhase::Idle {
+        match cancel_quit_with(flow, request_id, true) {
+            QuitCancelOutcome::Cancelled => cancelled(request_id),
+            QuitCancelOutcome::Committed => return record(paths),
+            QuitCancelOutcome::Superseded => {}
+        }
+    }
+    if flow.in_progress() {
+        record(paths)
+    } else {
+        open(paths)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn record_pending_opens<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    paths: &[String],
+) -> Result<(), String> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    document_session::pending_opens::append(&directory, paths)
+        .map_err(|error| format!("{error}\n\nRequested files:\n{}", paths.join("\n")))
+}
+
+#[cfg(target_os = "macos")]
+fn append_late_opens(
+    queue: &Mutex<Vec<String>>,
+    paths: Vec<String>,
+    append: impl FnOnce(&[String]) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut pending = queue.lock().unwrap();
+    pending.extend(paths);
+    append(&pending)?;
+    pending.clear();
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn persist_macos_opens<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    let state = app.state::<PendingOpenDocument>();
+    if let Err(error) = append_late_opens(&state.late_opens_to_retry, Vec::new(), |paths| {
+        record_pending_opens(app, paths)
+    }) {
+        eprintln!("Could not retry recording document opens for relaunch: {error}");
+    }
+    let mut payloads = state.payloads.lock().map_err(|error| error.to_string())?;
+    let mut deferred = state.paths_after_cancel.lock().unwrap();
+    let paths = payloads
+        .iter()
+        .filter(|payload| payload.receipt.is_none())
+        .map(|payload| payload.path.clone())
+        .chain(
+            deferred
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned()),
+        )
+        .collect();
+    macos_single_instance::renderer_exiting(app, paths)?;
+    payloads.clear();
+    deferred.clear();
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn persist_macos_opens_before_exit<R: Runtime>(app: &tauri::AppHandle<R>) {
+    if let Err(error) = persist_macos_opens(app) {
+        macos_quit::report_record_error(&error);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn document_payloads_from_paths(
+    paths: Vec<PathBuf>,
+) -> impl Iterator<Item = Result<NativeOpenDocumentPayload, String>> {
+    paths
+        .into_iter()
+        .map(|path| open_document_payload_from_path(&path))
 }
 
 /// Document paths passed on the command line (Windows/Linux shell opens, and argv forwarded from a
@@ -9162,15 +9521,7 @@ fn deliver_opened_document<R: Runtime>(
     app: &tauri::AppHandle<R>,
     payloads: Vec<NativeOpenDocumentPayload>,
 ) -> Result<(), String> {
-    // The file was read here in Rust, which no fs scope governs — but Save writes it back through
-    // the fs plugin's writeTextFile, which only allows $HOME/$DOCUMENT/$DESKTOP/$DOWNLOAD/$TEMP. A
-    // document double-clicked on another drive or a share (D:\…, \\server\…) opened fine and then
-    // could not be saved in place. Grant this one file, exactly as the dialog plugin does for a
-    // file the user picks.
-    for payload in &payloads {
-        allow_opened_document_in_scope(app, Path::new(&payload.path));
-    }
-
+    allow_opened_documents(app, &payloads);
     let state = app.state::<PendingOpenDocument>();
     let delivery = state.record(
         payloads,
@@ -9183,10 +9534,21 @@ fn deliver_opened_document<R: Runtime>(
         return Ok(());
     }
 
-    if let Err(error) = ensure_main_window_visible(app) {
-        eprintln!("Could not show ChemDraft main window for opened document: {error}");
+    show_and_emit_open_document(app)
+}
+
+fn allow_opened_documents<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    payloads: &[NativeOpenDocumentPayload],
+) {
+    // The file was read here in Rust, which no fs scope governs — but Save writes it back through
+    // the fs plugin's writeTextFile, which only allows $HOME/$DOCUMENT/$DESKTOP/$DOWNLOAD/$TEMP. A
+    // document double-clicked on another drive or a share (D:\…, \\server\…) opened fine and then
+    // could not be saved in place. Grant this one file, exactly as the dialog plugin does for a
+    // file the user picks.
+    for payload in payloads {
+        allow_opened_document_in_scope(app, Path::new(&payload.path));
     }
-    emit_open_document_to_main(app)
 }
 
 /// Read every file before delivering the OS request as one atomic queue append. A concurrent drain
@@ -9234,13 +9596,19 @@ fn opened_document_payloads_from_urls(
 fn open_document_payload_from_url(
     url: &tauri::Url,
 ) -> Result<Option<NativeOpenDocumentPayload>, String> {
+    opened_document_path(url)?
+        .map(|path| open_document_payload_from_path(&path))
+        .transpose()
+}
+
+#[cfg(any(test, target_os = "macos", target_os = "ios", target_os = "android"))]
+fn opened_document_path(url: &tauri::Url) -> Result<Option<PathBuf>, String> {
     if url.scheme() != "file" {
         return Ok(None);
     }
-    let path = url
-        .to_file_path()
-        .map_err(|_| format!("Opened URL is not a local file path: {url}"))?;
-    open_document_payload_from_path(&path).map(Some)
+    url.to_file_path()
+        .map(Some)
+        .map_err(|_| format!("Opened URL is not a local file path: {url}"))
 }
 
 /// Text documents use the same byte-order-mark rule as documentText.ts. Binary CDX is dispatched
@@ -9270,16 +9638,39 @@ fn decode_document_text(bytes: &[u8]) -> String {
 const MAX_OPEN_DOCUMENT_BYTES: u64 = 64 * 1024 * 1024;
 
 fn open_document_payload_from_path(path: &Path) -> Result<NativeOpenDocumentPayload, String> {
-    use std::io::Read;
+    let payload = read_document_payload(path);
+    match payload.error {
+        Some(error) => Err(format!("Could not open {}: {error}", payload.display_name)),
+        None => Ok(payload),
+    }
+}
+
+fn read_document_payload(path: &Path) -> NativeOpenDocumentPayload {
     let display_name = path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("Untitled.chemdraft")
-        .to_string();
-    let read_error = |error| format!("Could not open {display_name}: {error}");
+        .to_owned();
+    let (contents, bytes, error) = match read_document_contents(path) {
+        Ok((contents, bytes)) => (contents, bytes, None),
+        Err(error) => (String::new(), None, Some(error)),
+    };
+    NativeOpenDocumentPayload {
+        #[cfg(target_os = "macos")]
+        receipt: None,
+        path: path.to_string_lossy().into_owned(),
+        display_name,
+        contents,
+        bytes,
+        error,
+    }
+}
+
+fn read_document_contents(path: &Path) -> Result<(String, Option<Vec<u8>>), String> {
+    use std::io::Read;
+    let read_error = |error: std::io::Error| error.to_string();
     let file = fs::File::open(path).map_err(read_error)?;
-    let too_big =
-        || format!("Could not open {display_name}: Document exceeds the 64 MB size limit");
+    let too_big = || "Document exceeds the 64 MB size limit".to_owned();
     if file.metadata().map_err(read_error)?.len() > MAX_OPEN_DOCUMENT_BYTES {
         return Err(too_big());
     }
@@ -9291,18 +9682,10 @@ fn open_document_payload_from_path(path: &Path) -> Result<NativeOpenDocumentPayl
     if data.len() as u64 > MAX_OPEN_DOCUMENT_BYTES {
         return Err(too_big());
     }
-    let (contents, bytes) = if data.starts_with(b"VjCD0100") {
+    Ok(if data.starts_with(b"VjCD0100") {
         (String::new(), Some(data))
     } else {
         (decode_document_text(&data), None)
-    };
-    Ok(NativeOpenDocumentPayload {
-        #[cfg(target_os = "macos")]
-        receipt: None,
-        path: path.to_string_lossy().to_string(),
-        display_name,
-        contents,
-        bytes,
     })
 }
 
@@ -9326,7 +9709,10 @@ fn allow_opened_document_in_scope<R: Runtime>(app: &tauri::AppHandle<R>, path: &
     }
 }
 
-fn emit_open_document_to_main<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+fn show_and_emit_open_document<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    if let Err(error) = ensure_main_window_visible(app) {
+        eprintln!("Could not show ChemDraft main window for opened document: {error}");
+    }
     // Events only signal that the queue changed. The window subscribes before its first drain,
     // then serializes drains, so an event overlapping a drain cannot deliver a file twice.
     app.emit_to(MAIN_WINDOW_LABEL, OPEN_DOCUMENT_EVENT, ())
@@ -12608,6 +12994,7 @@ mod tests {
             display_name: "cold-open.chemdraft".into(),
             contents: "<CDXML/>".into(),
             bytes: None,
+            error: None,
         }
     }
 
@@ -13874,11 +14261,17 @@ mod tests {
         host.fire_timer();
         assert_eq!(host.app.calls(), ["prompt", "timer armed"]);
         assert!(!flow.quitting.load(Ordering::SeqCst));
-        assert_eq!(cancel_quit_with(flow, id), QuitCancelOutcome::Cancelled);
+        assert_eq!(
+            cancel_quit_with(flow, id, false),
+            QuitCancelOutcome::Cancelled
+        );
         let id = request_prompted_quit_with(flow, &host).unwrap();
         assert!(acknowledge_quit_prompt(flow, id, true));
         assert!(request_appkit_quit_with(flow, &host));
-        assert_eq!(cancel_quit_with(flow, id), QuitCancelOutcome::Committed);
+        assert_eq!(
+            cancel_quit_with(flow, id, false),
+            QuitCancelOutcome::Committed
+        );
         assert!(!resume_prompted_quit_with(flow, &host, id));
         host.fire_timer(); // The superseded prompt's timer cannot decide the quit.
         assert!(!flow.quitting.load(Ordering::SeqCst));
@@ -13904,7 +14297,10 @@ mod tests {
         thread::sleep(Duration::from_millis(600));
         assert_eq!(host.calls(), ["ask to flush"]);
         assert!(!flow.quitting.load(Ordering::SeqCst));
-        assert_eq!(cancel_quit_with(flow, id), QuitCancelOutcome::Cancelled);
+        assert_eq!(
+            cancel_quit_with(flow, id, false),
+            QuitCancelOutcome::Cancelled
+        );
         assert!(!prompt_waits_for_user(flow));
         assert!(lock_window_creation_with(flow).is_ok());
     }
@@ -13915,15 +14311,211 @@ mod tests {
         let host = StuckAppHost::new(true);
         let first = request_prompted_quit_with(flow, &host).unwrap();
         assert!(acknowledge_quit_prompt(flow, first, true));
-        assert_eq!(cancel_quit_with(flow, first), QuitCancelOutcome::Cancelled);
+        assert_eq!(
+            cancel_quit_with(flow, first, false),
+            QuitCancelOutcome::Cancelled
+        );
         // A lost cancellation reply may be retried, but must never affect a newer request.
-        assert_eq!(cancel_quit_with(flow, first), QuitCancelOutcome::Cancelled);
+        assert_eq!(
+            cancel_quit_with(flow, first, false),
+            QuitCancelOutcome::Cancelled
+        );
         let next = request_prompted_quit_with(flow, &host).unwrap();
-        assert_eq!(cancel_quit_with(flow, first), QuitCancelOutcome::Superseded);
+        assert_eq!(
+            cancel_quit_with(flow, first, false),
+            QuitCancelOutcome::Superseded
+        );
         assert!(!acknowledge_quit_prompt(flow, first, true));
         assert!(acknowledge_quit_prompt(flow, next, true));
         thread::sleep(Duration::from_millis(600));
         assert!(!flow.quitting.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn macos_open_quit_during_prompt_aborts_and_delivers() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        let host = ControlledQuitHost::new();
+        let id = request_prompted_quit_with(flow, &host).unwrap();
+        assert!(acknowledge_quit_prompt(flow, id, true));
+        assert_open_aborts_prompted_quit(flow, id);
+        assert!(!resume_prompted_quit_with(flow, &host, id));
+        host.fire_timer();
+        assert!(!flow.quitting.load(Ordering::SeqCst));
+        assert!(request_prompted_quit_with(flow, &host).is_some());
+    }
+
+    fn assert_open_aborts_prompted_quit(flow: &QuitFlow, id: u64) {
+        let cancelled = std::cell::Cell::new(false);
+        let path = PathBuf::from("/Finder document.chemdraft");
+        let mut delivered = Vec::new();
+        open_macos_paths_with(
+            flow,
+            vec![path.clone()],
+            |request_id| {
+                assert_eq!(request_id, id);
+                cancelled.set(true);
+            },
+            |paths| {
+                assert!(cancelled.get());
+                assert!(!flow.in_progress());
+                delivered = paths;
+                Ok(())
+            },
+            |_| panic!("an abortable quit must deliver the open in this launch"),
+        )
+        .unwrap();
+        assert_eq!(delivered, [path]);
+    }
+
+    #[test]
+    fn macos_open_quit_during_save_can_abort_before_the_save_finishes() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        let host = ControlledQuitHost::new();
+        let id = request_prompted_quit_with(flow, &host).unwrap();
+        assert!(acknowledge_quit_prompt(flow, id, true));
+        // Save keeps the prompt phase until the document write returns. Its subsequent resume
+        // may arrive, but cannot revive the request after the renderer has finished writing.
+        assert_open_aborts_prompted_quit(flow, id);
+        assert!(!resume_prompted_quit_with(flow, &host, id));
+        assert!(!flow.confirm_flush(id));
+    }
+
+    #[test]
+    fn macos_open_quit_after_save_completes_aborts_before_session_publish() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        let host = ControlledQuitHost::new();
+        let id = request_prompted_quit_with(flow, &host).unwrap();
+        assert!(acknowledge_quit_prompt(flow, id, true));
+        assert_prompted_flush_can_abort(flow, &host, id);
+    }
+
+    #[test]
+    fn macos_open_quit_after_discard_aborts_before_session_publish() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        let host = ControlledQuitHost::new();
+        let id = request_prompted_quit_with(flow, &host).unwrap();
+        assert!(acknowledge_quit_prompt(flow, id, true));
+        assert_prompted_flush_can_abort(flow, &host, id);
+    }
+
+    #[test]
+    fn macos_open_quit_discard_grace_waits_for_the_final_write() {
+        for open_before_publish in [true, false] {
+            let flow = test_quit_flow(NEVER, NEVER);
+            let host = ControlledQuitHost::new();
+            let id = request_prompted_quit_with(flow, &host).unwrap();
+            assert!(acknowledge_quit_prompt(flow, id, true));
+            assert!(resume_prompted_quit_with(flow, &host, id));
+            host.fire_timer(); // Retire the original prompt timer.
+            flow.write_prompted_flush(id, || {
+                host.fire_timer(); // Expire the flush grace while the snapshot write is active.
+                assert!(!flow.quitting.load(Ordering::SeqCst));
+                assert!(!flow.watchdog_armed.load(Ordering::SeqCst));
+                if open_before_publish {
+                    assert_open_aborts_prompted_quit(flow, id);
+                }
+                assert_eq!(
+                    flow.publish_prompted_flush(id, || Ok(())).unwrap(),
+                    !open_before_publish
+                );
+                Ok(())
+            })
+            .unwrap();
+            host.fire_timer();
+            assert_eq!(flow.quitting.load(Ordering::SeqCst), !open_before_publish);
+        }
+    }
+
+    fn assert_prompted_flush_can_abort(
+        flow: &'static QuitFlow,
+        host: &ControlledQuitHost,
+        id: u64,
+    ) {
+        assert!(resume_prompted_quit_with(flow, host, id));
+        assert_open_aborts_prompted_quit(flow, id);
+        assert!(!flow
+            .publish_prompted_flush(id, || panic!("do not publish a cancelled flush"))
+            .unwrap());
+        assert!(!flow.confirm_flush(id));
+        host.fire_timer();
+        host.fire_timer();
+        assert!(!flow.quitting.load(Ordering::SeqCst));
+        let next = request_prompted_quit_with(flow, host).unwrap();
+        assert!(resume_prompted_quit_with(flow, host, next));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_open_quit_after_final_session_publish_only_records_paths() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        let host = ControlledQuitHost::new();
+        let id = request_prompted_quit_with(flow, &host).unwrap();
+        assert!(resume_prompted_quit_with(flow, &host, id));
+        flow.publish_prompted_flush(id, || Ok(())).unwrap();
+        let directory =
+            std::env::temp_dir().join(format!("chemdraft-late-opens-{}", std::process::id()));
+        let pending = directory.join("pending-opens.json");
+        let missing = directory.join("does not exist.chemdraft");
+        let also_missing = directory.join("broken link.chemdraft");
+        fs::create_dir_all(&directory).unwrap();
+        std::os::unix::fs::symlink(&missing, &also_missing).unwrap();
+        for path in [&missing, &also_missing] {
+            open_macos_paths_with(
+                flow,
+                vec![path.clone()],
+                |_| panic!("the session was already published"),
+                |_| panic!("do not read a requested file during exit"),
+                |paths| {
+                    document_session::pending_opens::append(
+                        &directory,
+                        &paths
+                            .iter()
+                            .map(|path| path.to_str().unwrap().to_owned())
+                            .collect::<Vec<_>>(),
+                    )
+                },
+            )
+            .unwrap();
+        }
+        let recorded: Vec<PathBuf> = serde_json::from_slice(&fs::read(&pending).unwrap()).unwrap();
+        assert_eq!(recorded, [missing, also_missing]);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_open_quit_retries_a_failed_late_append_without_dropping_paths() {
+        let queue = Mutex::new(Vec::new());
+        let paths = vec!["/one.chemdraft".into(), "/two.chemdraft".into()];
+        assert_eq!(
+            append_late_opens(&queue, paths.clone(), |_| Err("disk full".into())),
+            Err("disk full".into())
+        );
+        assert_eq!(*queue.lock().unwrap(), paths);
+        append_late_opens(&queue, Vec::new(), |pending| {
+            assert_eq!(pending, paths);
+            Ok(())
+        })
+        .unwrap();
+        assert!(queue.lock().unwrap().is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_open_quit_exit_uses_recorders_without_alerts() {
+        let main_source = include_str!("lib.rs");
+        let (_, exit) = main_source.split_once("RunEvent::Exit => {").unwrap();
+        let exit = exit.split_once("RunEvent::Reopen").unwrap().0;
+        assert!(exit.contains("persist_macos_opens(app)"));
+        assert!(!exit.contains("report_record_error"));
+
+        let secondary_source = include_str!("macos_single_instance.rs");
+        let (_, exit) = secondary_source
+            .split_once("if matches!(event, RunEvent::Exit) {")
+            .unwrap();
+        let exit = exit.split_once("if state.promoted").unwrap().0;
+        assert!(exit.contains("record_interrupted_launch(app)"));
+        assert!(!exit.contains("show_launch_error"));
     }
 
     #[test]
@@ -13934,7 +14526,10 @@ mod tests {
             let id = request_prompted_quit_with(flow, &host).unwrap();
             assert!(acknowledge_quit_prompt(flow, id, true));
             assert!(resume_prompted_quit_with(flow, &host, id));
-            assert_eq!(cancel_quit_with(flow, id), QuitCancelOutcome::Committed);
+            assert_eq!(
+                cancel_quit_with(flow, id, false),
+                QuitCancelOutcome::Committed
+            );
             assert!(!resume_prompted_quit_with(flow, &host, id));
             assert!(lock_window_creation_with(flow).is_err());
             assert_eq!(
@@ -14474,18 +15069,27 @@ mod tests {
             assert!(flow.refuses_macos_launch());
             assert!(acknowledge_quit_prompt(flow, id, true));
             assert!(flow.refuses_macos_launch());
-            assert_eq!(cancel_quit_with(flow, 0), QuitCancelOutcome::Superseded);
+            assert_eq!(
+                cancel_quit_with(flow, 0, false),
+                QuitCancelOutcome::Superseded
+            );
             assert!(flow.refuses_macos_launch());
             assert!(
                 !flow.in_progress(),
                 "Save As must still be usable during the prompt"
             );
             if cancel {
-                assert_eq!(cancel_quit_with(flow, id), QuitCancelOutcome::Cancelled);
+                assert_eq!(
+                    cancel_quit_with(flow, id, false),
+                    QuitCancelOutcome::Cancelled
+                );
                 assert!(!flow.refuses_macos_launch());
             } else {
                 assert!(resume_prompted_quit_with(flow, &host, id));
-                assert_eq!(cancel_quit_with(flow, id), QuitCancelOutcome::Committed);
+                assert_eq!(
+                    cancel_quit_with(flow, id, false),
+                    QuitCancelOutcome::Committed
+                );
                 assert!(flow.refuses_macos_launch());
             }
         }

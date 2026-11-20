@@ -31,6 +31,8 @@ export interface NativePromptOptions {
   owner?: "document";
   /** Prompts in the same queue wait for the actual box to close, even if its caller aborts. */
   serializationKey?: string;
+  /** Native prompts that need programmatic dismissal can own the OS alert. */
+  showNative?: () => Promise<string>;
 }
 export type NativePromptFallback = (prompt: NativePromptOptions) => Promise<string>;
 export type NativePromptProvider = (prompt: NativePromptOptions, fallback: NativePromptFallback) => Promise<string>;
@@ -132,6 +134,9 @@ async function showNativePrompt(prompt: NativePromptOptions, fallback: NativePro
     if (signal?.aborted) return cancel.id;
     if (prompt.owner === "document" && getCurrentWindow().label !== "main") {
       throw new Error(`A document-owned prompt must be invoked from the main window on ${platform}.`);
+    }
+    if (prompt.showNative) {
+      return await withNativeUtilitySuspension(() => signal?.aborted ? Promise.resolve(cancel.id) : prompt.showNative!());
     }
     result = await withNativeUtilitySuspension(async () => {
       if (signal?.aborted) return cancel.label;

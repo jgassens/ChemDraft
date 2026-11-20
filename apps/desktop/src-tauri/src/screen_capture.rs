@@ -119,6 +119,8 @@ pub(crate) fn open_screen_capture_settings() -> Result<(), ScreenCaptureCommandE
 #[tauri::command]
 pub(crate) fn relaunch_app(app: AppHandle) {
     crate::APP_QUITTING.store(true, Ordering::SeqCst);
+    #[cfg(target_os = "macos")]
+    crate::persist_macos_opens_before_exit(&app);
     app.state::<crate::ocsr_engine::OcsrEngineState>()
         .shutdown();
     app.request_restart();
