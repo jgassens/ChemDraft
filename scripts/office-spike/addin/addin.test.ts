@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { deflateRawSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import { crc32 } from "../png.mjs";
-import { extractBinaryParts, findSlidePictureMedia, readZip } from "./zip.js";
+import { checkArchiveLength, extractBinaryParts, findSlidePictureMedia, MAX_ARCHIVE_BYTES, readZip } from "./zip.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const carriers = join(here, "..", "..", "..", "packages", "fixtures", "office", "carriers");
@@ -118,6 +118,13 @@ const relsXml = `<Relationships xmlns="${PR}">
 </Relationships>`;
 
 describe("browser Office ZIP reader", () => {
+  it("enforces archive length limits before and after base64 decoding", () => {
+    for (const [limit, base64] of [[MAX_ARCHIVE_BYTES, false], [Math.ceil(MAX_ARCHIVE_BYTES / 3) * 4, true]] as const) {
+      expect(() => checkArchiveLength(limit - 1, base64)).not.toThrow();
+      expect(() => checkArchiveLength(limit, base64)).not.toThrow();
+      expect(() => checkArchiveLength(limit + 1, base64)).toThrow(/200 MB/);
+    }
+  });
   it("reads stored and deflated DOCX parts and verifies the carrier fixture hash", async () => {
     const documentXml = `<w:document xmlns:w="${W}"><w:body><w:p/></w:body></w:document>`;
     const docx = makeZip([

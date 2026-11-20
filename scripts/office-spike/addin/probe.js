@@ -1,4 +1,4 @@
-import { decodeBase64, extractBinaryParts, findSlidePictureMedia, readZip } from "./zip.js";
+import { checkArchiveLength, decodeBase64, extractBinaryParts, findSlidePictureMedia, MAX_ARCHIVE_BYTES, readZip } from "./zip.js";
 
 const status = document.querySelector("#status");
 const routes = document.querySelector("#routes");
@@ -7,7 +7,6 @@ const copy = document.querySelector("#copy");
 const rows = [];
 const utf8 = new TextEncoder();
 const xmlText = new TextDecoder();
-const MAX_FILE_BYTES = 200 * 1024 * 1024;
 const FILE_SLICE_BYTES = 1024 * 1024;
 
 function requireSet(set, version = "1.1") {
@@ -56,7 +55,7 @@ async function listDocumentMedia(evidence, prefix) {
   let bytes;
   try {
     evidence.details.archiveByteLength = file.size;
-    if (!Number.isSafeInteger(file.size) || file.size < 1 || file.size > MAX_FILE_BYTES) {
+    if (!Number.isSafeInteger(file.size) || file.size < 1 || file.size > MAX_ARCHIVE_BYTES) {
       throw new Error("Compressed Office file has invalid size or exceeds 200 MB");
     }
     if (!Number.isSafeInteger(file.sliceCount) || file.sliceCount < 1 || file.sliceCount > file.size) {
@@ -99,7 +98,7 @@ async function wordSelectionOoxml(evidence) {
 }
 
 async function wordInlineImages(evidence) {
-  requireSet("WordApi");
+  requireSet("WordApi", "1.2");
   evidence.details.byteSource = "InlinePicture image API control";
   await Word.run(async (context) => {
     const pictures = context.document.getSelection().inlinePictures.load("items");
@@ -244,7 +243,7 @@ function shapeState(shape, zOrder = true) {
   return {
     id, name, type, left, top, width, height,
     rotation: Office.context.requirements.isSetSupported(POWERPOINT_API, "1.10") ? shape.rotation : null,
-    zOrderPosition: zOrder ? shape.zOrderPosition : null,
+    zOrderPosition: zOrder ? shape.zOrderPosition : "unavailable (needs PowerPointApi 1.8)",
     tags: shape.tags.items.map(({ key, value }) => ({ key, value })),
   };
 }
@@ -273,7 +272,6 @@ async function powerpointShapeDetails(evidence) {
     evidence.details.shapes = shapes.map((shape) => shapeState(shape, hasZOrder));
     evidence.details.byteSource = "UTF-8 JSON of shapes";
     evidence.bytes = utf8.encode(JSON.stringify(evidence.details.shapes));
-    requireSet(POWERPOINT_API, Z_ORDER_VERSION);
   });
 }
 
@@ -287,7 +285,9 @@ async function powerpointSlideExport(evidence) {
     return { shapeIds: shapes.map((shape) => shape.id), slideId: slide.id, base64: result.value };
   });
   evidence.details.slideId = exported.slideId;
+  checkArchiveLength(exported.base64.length, true);
   const bytes = decodeBase64(exported.base64);
+  checkArchiveLength(bytes.length);
   evidence.details.archiveByteLength = bytes.length;
   const entries = await readZip(bytes);
   const slide = only(entries.filter(({ name }) => /^ppt\/slides\/[^/]+\.xml$/.test(name)), "exported slide XML part");

@@ -5,6 +5,15 @@ const ZIP64_SIZE = 0xffffffff;
 const ENCRYPTED = 0x2041;
 const utf8 = new TextDecoder();
 
+export const MAX_ARCHIVE_BYTES = 200 * 1024 * 1024;
+
+export function checkArchiveLength(length, base64 = false) {
+  const limit = base64 ? Math.ceil(MAX_ARCHIVE_BYTES / 3) * 4 : MAX_ARCHIVE_BYTES;
+  if (!Number.isSafeInteger(length) || length < 0 || length > limit) {
+    throw new Error("Office archive exceeds 200 MB or has an invalid size");
+  }
+}
+
 const crcTable = Uint32Array.from({ length: 256 }, (_, index) => {
   let crc = index;
   for (let bit = 0; bit < 8; bit++) {
