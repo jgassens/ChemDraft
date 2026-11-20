@@ -541,16 +541,13 @@ For the owner:
    its default settings gives real MOF-5 (Test results, "MOF-5 correctness"). The suggestion row asks
    for `repeat=2x2x2`; the target check stays. Plugin-side correction stays rejected (owner): the
    plugin builds nothing.
-10. **A stable API proposal to Crystal Builder's author (owner idea, 2026-11-20).** Crystal Builder
-   already has a typed agent layer (`xtal/agent/`), `xtal capabilities --json` (which reports only
-   the app version, 1.1.1), `xtal run … --json`, `xtal inspect`, and `xtal mcp --window|--headless`.
-   What it does not promise is stability. Options: (a) propose a versioned contract on what exists
-   (a contract version in every JSON reply, documented reply shapes and exit codes, deprecation
-   notice before a breaking change, same behavior on Windows), so the plugin can declare "needs
-   Crystal Builder API 1.x"; (b) no proposal, pin the plugin to tested Crystal Builder versions.
-   Recommended: (a); the owner sends it, nothing goes to the author from an agent.
+10. ~~**A stable API proposal to Crystal Builder's author.**~~ **Answered (owner, 2026-11-20): no
+   contact.** Crystal Builder already builds the frameworks correctly, so there is nothing to ask for.
+   The plugin pins the Crystal Builder versions it was tested with (1.1.1 now): it reads the version
+   from `xtal capabilities --json`, refuses an untested version with a plain message naming the
+   tested ones, and the release checklist re-runs the target checks before adding a new version.
 
-For Crystal Builder's author: **nothing required.** No email is needed for the plan (owner, 2026-11-18); question 10 is an optional proposal the owner sends. A1–A4 and A6 were
+For Crystal Builder's author: **nothing required.** No email is needed for the plan (owner, 2026-11-18); question 10 was answered no contact (owner, 2026-11-20). A1–A4 and A6 were
 answered by testing on macOS and by reading its MIT source (see "Test results" under Decision 1b).
 The Windows details (tab behavior, executable and folder names) are checked by the Windows session
 against the official installer, and the app is picked by the user anyway. A5 (the window MCP server)
