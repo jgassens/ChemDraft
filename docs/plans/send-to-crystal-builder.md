@@ -2,7 +2,8 @@
 
 Status: plan approved by the owner 2026-11-10; revised 2026-11-20 for the one-command build and the
 return trip (owner direction below), and again the same afternoon after the hand-built "MOF-5" turned
-out to be the wrong structure (see "MOF-5 correctness" under Test results; open question 9). The new `runCompanion` method widens the security contract, so the
+out to be the wrong structure because it was built on one cell (see "MOF-5 correctness" under Test
+results; open question 9, now answered). The new `runCompanion` method widens the security contract, so the
 master session's OK and the Kimi review (condition 3) cover it too. No code until the master session OKs it. Target: after ChemDraft 1.2 ships (1.2 has priority; nothing here touches
 `release/1.2-rc` or `main`). Final home of this document: `docs/plans/send-to-crystal-builder.md` on
 local branch `plan/crystal-builder` (see "After approval").
@@ -185,7 +186,7 @@ click builds:
 
 | Drawn beside the linker | Linker | Suggested | Result |
 |---|---|---|---|
-| Zn²⁺ ions (any count), with or without O²⁻ | ditopic carboxylate | net `pcu`, node `N16` (Zn₄O(CO₂)₆), **alternating node orientation, 2×2×2** (see below) | MOF-5 family (IRMOF) |
+| Zn²⁺ ions (any count), with or without O²⁻ | ditopic carboxylate | net `pcu`, node `N16` (Zn₄O(CO₂)₆), **`repeat=2x2x2`** (see below) | MOF-5 family (IRMOF) |
 | nothing | ditopic carboxylate | same, labelled "suggested; no metal drawn" | as above |
 | Cu²⁺ | tritopic carboxylate | net `tbo`, Cu paddlewheel node (catalog id from the Phase 0 code map) | HKUST-1, only after it passes the same target check |
 | anything else | any | no suggestion; the user picks from Crystal Builder's node list | — |
@@ -195,24 +196,23 @@ ions is not the cluster's geometry (the 2026-11-20 demo showed this). The dialog
 (Zn₄O) from Crystal Builder's library, matching the Zn²⁺ you drew". The user can change net,
 node, and repeat before building.
 
-**A suggested build must reproduce its target, or it is not named after it (added 2026-11-20).** The
-pcu/N16 build with Crystal Builder's default (`orientation=consistent`, 1×1×1) is *not* MOF-5: every
-Zn₄O cluster has the same orientation, so the two carboxylates of each linker lie in perpendicular
-planes and every benzene ring is twisted 45° from both (Crystal Builder detects P222; see "MOF-5
-correctness" below). Real MOF-5 alternates the cluster orientation on neighboring sites: Fm-3m,
-a ≈ 25.8 Å, Z = 8, 424 atoms, linkers flat. So each row of the suggestion table carries a **target
-record** (space group, cell edge within 2%, Z, formula, maximum ring–carboxylate twist 10°), and after
-every build the plugin runs Crystal Builder's own `xtal inspect` on the output (a second fixed
+**A suggested build must reproduce its target, or it is not named after it (added 2026-11-20).** A
+pcu/N16 build on **one** cell (`repeat=1x1x1`) is *not* MOF-5: one cell holds one Zn₄O site, so the
+clusters cannot alternate, the two carboxylates of each linker end up in perpendicular planes, and
+every benzene ring is twisted 45° from both (P222, a = 12.94 Å; Crystal Builder's own report shows
+it as "Joint twist left 6.000", and its manual, `docs/manual/frameworks/orientation.md`, says one
+pcu cell cannot alternate). Built on **2×2×2**, Crystal Builder's default `orientation=consistent`
+alternates the clusters itself and gives real MOF-5: Fm-3m, a = 25.87 Å, Z = 8, 424 atoms, twist
+0.00°. So the MOF-5 row asks for `repeat=2x2x2`, and each row of the suggestion table also carries a
+**target record** (space group, cell edge within 2%, Z, formula, maximum ring–carboxylate twist 10°).
+After every build the plugin runs Crystal Builder's own `xtal inspect` on the output (a second fixed
 companion template, `inspect`) and compares:
 
 - **Match:** the status line names the material ("MOF-5: Fm-3m, a = 25.87 Å, 424 atoms").
 - **No match:** the framework still opens, but the status line says what it is and why it is not the
   target, for example "Zn₄O–terephthalate pcu net, P222, a = 12.94 Å: linkers twisted 45°, not MOF-5".
   A material name never appears for a structure that failed its check (§7, §8: no fabricated claims).
-
-How the alternating orientation is obtained is open question 9: Crystal Builder 1.1.1's
-`mof.build` offers only `orientation=consistent` or `as-found`, and `repeat=2x2x2` alone keeps one
-orientation.
+  If the user changes the repeat to 1×1×1, this is what they see.
 
 Linker refusals, each naming the problem: fewer than two `X` atoms ("Mark at least two connection
 points: draw an atom labelled X where the linker bonds to a metal node"); an `X` bonded to zero, two
@@ -248,7 +248,7 @@ headlessly through its bundled `xtal` CLI and, for the window, through backgroun
 | A6 Linker, headless | **Works.** A plain XYZ with `X` atoms and no bond table, used through `bb_dir`, builds MOF-5 (pcu, node N16): C24H12O13Zn4, identical to the stock linker. Accepted with X at 0.75 Å and 1.09 Å, and with slightly non-planar geometry | `xtal run mof.build -p topology=pcu -p nodes=N16 -p edges=<name> -p bb_dir=<dir>` |
 | A6 Linker XYZ, in the window | **Refused.** Opened from XYZ, the `X` atoms get no bonds, so Structure → Building blocks → Save as a building block refuses: "X1 is a connection point with no bonds… this cell holds 3 separate pieces". Same with PORMAKE's own bond-table XYZ, and after Recalculate bonds. This is by design in Crystal Builder's source, not a bug | Background app control on the scratch copy; nothing saved |
 | End-to-end by hand, ChemDraft 1.2.1 (2026-11-20) | **Works.** Terephthalic acid pasted into ChemDraft 1.2.1 as SMILES and copied out as MOL V2000 (12 atoms, 12 bonds); cut to C₆H₄ + 2 `X` by the automatic-cut rule (X at the ring C–carboxyl C midpoint), with fixed ring geometry because the plugin's `embed3d` is reachable only from a plugin; `xtal run mof.build -p topology=pcu -p nodes=N16 -p edges=<block> -p bb_dir=<dir> -o out.cif` built C24H12O13Zn4, a = 12.936 Å cubic, fit RMSD 0.000 Å, net confirmed pcu; `open -a` showed it in the window. Zn²⁺ and O²⁻ drawn as ions only named the node; they could not become the cluster. **The structure was later found not to be MOF-5 (next row)** | Hand run on the Intel iMac; files in the session scratchpad |
-| MOF-5 correctness (2026-11-20, rehearsal) | **The default build is wrong; the alternating cell is right.** Rebuilt from a fresh drawing: every Zn is ZnO₄ (1.92–1.94 Å) and every linker is intact, but each ring is twisted 45.0° from both of its carboxylates, and `xtal symmetry` gives P222, not Fm-3m; the 12.936 Å cell holds one cluster orientation. The owner saw it in the window and called it "a box full of nonsense". A script that keeps Crystal Builder's own N16 cluster, inverts it on alternate sites of a 2×2×2 cell, and lays each ring in its carboxylate plane gives a = 25.872 Å, Z = 8, 424 atoms (Zn₃₂O₁₀₄C₁₉₂H₉₆), one framework, 0.00° twist, closest contact 1.08 Å (C–H); `xtal inspect` detects Fm-3m at 0.01 Å (R3m at the strictest tolerance, from rounded coordinates). Positions are idealized, not minimized | `mof5_alternate.py`, `xtal symmetry`, `xtal inspect`; Intel iMac |
+| MOF-5 correctness (2026-11-20, rehearsal) | **One cell is wrong; Crystal Builder's own 2×2×2 build is right.** Rebuilt from a fresh drawing: every Zn is ZnO₄ (1.92–1.94 Å) and every linker is intact, but each ring is twisted 45.0° from both of its carboxylates, and `xtal symmetry` gives P222, not Fm-3m; the 12.936 Å cell holds one cluster orientation. The owner saw it in the window and called it "a box full of nonsense". A script that keeps Crystal Builder's own N16 cluster, inverts it on alternate sites of a 2×2×2 cell, and lays each ring in its carboxylate plane gives a = 25.872 Å, Z = 8, 424 atoms (Zn₃₂O₁₀₄C₁₉₂H₉₆), one framework, 0.00° twist, closest contact 1.08 Å (C–H); `xtal inspect` detects Fm-3m at 0.01 Å (R3m at the strictest tolerance, from rounded coordinates). Positions are idealized, not minimized. **Then, after reading Crystal Builder's manual:** the same `xtal run mof.build` with only `-p repeat=2x2x2` added, no script, gives a = 25.871 Å, Z = 8, 424 atoms, 48 joints bonded, every ring 0.00° from its carboxylates, Fm-3m at 0.01 Å. The 45° twist came from building one cell, not from a fault in Crystal Builder; the script is not needed | `mof5_alternate.py`, `xtal run mof.build … repeat=2x2x2`, `xtal symmetry`, `xtal inspect`; Intel iMac |
 | A6 Linker CIF with bond table, in the window | **Works.** The same C6H4 + 2 `X` linker, written as a P1 CIF with a `_geom_bond` loop carrying `_xtal_bond_kind explicit`: each `X` comes in with one bond to its carbon; Save as a building block reports "2-connected — it will appear in the MOF builder's picker", and writes a PORMAKE block with both `X`–C bonds. The same CIF without the bond loop gives the `X` atoms 0 bonds | `xtal bonds` on both CIFs; `open -a` then Save as a building block on the scratch copy |
 
 What this changes:
@@ -428,7 +428,7 @@ Windows installer comes only from the GitHub workflow; the Windows session tests
 | 0.1 Owner approves this plan; summary goes to the master session | Master session's OK | OK received |
 | 0.2 ~~Note to Crystal Builder's author~~ | Dropped 2026-11-18: every question was answered by testing and reading its source | Done |
 | 0.3 One read-only code map (single worker) | Short note: how a user-invoked command is told apart from an assistant-invoked one in `plugin-host`; what SMILES the selection snapshot carries for abbreviations, R-groups, and an atom labelled `X`, and whether the selection exposes per-atom labels and bonds; the consent store's shape | Note attached; no files changed |
-| 0.4 Crystal Builder source map (same single worker, after 0.3) | Short note from its MIT source: the node and net ids in `xtal/mof/catalog.py` (Zn₄O = N16 confirmed; the Cu paddlewheel id); what `mof.build --json` prints (fit numbers, formula, output path) and its exit codes; whether `bb_dir` accepts a CIF block or only PORMAKE XYZ; how `orientation` is implemented and where an `alternating` choice would go (input to open question 9); what `xtal inspect --json` prints for space group, Z, and coordination; the Windows `xtal` executable name and location in the installer | Note attached; no files changed |
+| 0.4 Crystal Builder source map (same single worker, after 0.3) | Short note from its MIT source: the node and net ids in `xtal/mof/catalog.py` (Zn₄O = N16 confirmed; the Cu paddlewheel id); what `mof.build --json` prints (fit numbers, formula, output path) and its exit codes; whether `bb_dir` accepts a CIF block or only PORMAKE XYZ; which nets need a repeat above 1×1×1 before their nodes can alternate (as pcu/N16 needs 2×2×2), so each suggestion row sets its repeat; what `xtal inspect --json` prints for space group, Z, and coordination; the Windows `xtal` executable name and location in the installer | Note attached; no files changed |
 
 ### Phase 1: host capability (ChemDraft repo, branch `feat/app-handoff` off `origin/main` after 1.2)
 
@@ -455,7 +455,7 @@ quitting ChemDraft leaves the other app running.
 | 2C Loss audit | `src/lossAudit.ts` + test | Pure function returning refusals and warnings exactly per the table in Decision 1, per send mode; fixtures: charged, isotopic, radical, unspecified stereo, salt, abbreviation, R-group, reaction member, metal complex, X atoms in a molecule send | Kimi |
 | 2C2 Connection points | `src/connectionPoints.ts` + test | Pure functions: find `X` atoms and their anchors; validate per Decision 1b (fewer than two, wrong valence, multiple bond, several components each refused with its message); X→`[H]` SMILES rewrite; map embedded atoms back to `X` by index. Fixtures: terephthalate linker (benzene ring with X in place of each COOH, PORMAKE E14 cut), a tritopic linker with 3 X, a molecule with 1 X (refused), X on a double bond (refused) | Kimi |
 | 2C3 Automatic cut | `src/carboxylateCut.ts` + test | Pure function: each COOH / COO⁻ on carbon → one `X` at the ring C–carboxyl C midpoint, per Decision 1b; skipped when the selection already has `X`; other connecting groups refused by name. Fixtures: terephthalic acid → C₆H₄X₂ matching the 2026-11-20 block; disodium terephthalate; trimesic acid → 3 X; nicotinic acid (pyridyl refused) | Kimi |
-| 2H Build MOF command | `src/buildMof.ts`, `src/nodeSuggest.ts` + tests, manifest `companions.mofBuild` | Node and net suggestion per the Decision 1b table (drawn Zn²⁺ → N16/pcu with alternating orientation per open question 9; Cu²⁺ + tritopic → paddlewheel/tbo; else no suggestion); one native dialog to confirm or change net, node, repeat; then one `runCompanion` call with the linker block as input and `openOutput: true`, then the `inspect` template on the output; `src/targetCheck.ts` compares it with the row's target record (space group, cell within 2%, Z, formula, ring–carboxylate twist ≤ 10°) and names the material only on a match. Mocked-context tests: success, user cancels, tool missing, timeout, nonzero exit with Crystal Builder's message passed through, net mismatch reported; **the 2026-11-20 twisted P222 build (fixture) must not be called MOF-5, and the Fm-3m cell must be** | Kimi |
+| 2H Build MOF command | `src/buildMof.ts`, `src/nodeSuggest.ts` + tests, manifest `companions.mofBuild` | Node and net suggestion per the Decision 1b table (drawn Zn²⁺ → N16/pcu, `repeat=2x2x2`; Cu²⁺ + tritopic → paddlewheel/tbo; else no suggestion); one native dialog to confirm or change net, node, repeat; then one `runCompanion` call with the linker block as input and `openOutput: true`, then the `inspect` template on the output; `src/targetCheck.ts` compares it with the row's target record (space group, cell within 2%, Z, formula, ring–carboxylate twist ≤ 10°) and names the material only on a match. Mocked-context tests: success, user cancels, tool missing, timeout, nonzero exit with Crystal Builder's message passed through, net mismatch reported; **the 2026-11-20 twisted P222 build (fixture) must not be called MOF-5, and the Fm-3m cell must be** | Kimi |
 | 2D Command flow | `src/send.ts` + test with a mocked context | Both send commands: empty selection, cancelled picker, declined consent, embed failure, minimize failure, linker refusals, and success each produce the specified message; one send per command | Kimi |
 | 2E Package and release | package zip, checksum, release body markers | Installs by hand through Add plugin from package on both platforms | Kimi |
 | 2G (optional, owner question 6) Mark Connection Points | `src/markConnectionPoints.ts` + test; manifest adds `document.write` | Selected anchors get `X` atoms at bond length along the open direction, through `documents.applyPatch`, one labelled undo entry, new atoms selected (§4.4); anchors with no free valence refused by name; chemistry of the anchor molecule otherwise unchanged (§7 test: canonical SMILES with X removed equals the original) | Kimi |
@@ -536,20 +536,21 @@ For the owner:
    template fixed in the plugin's manifest. It is general (any plugin could declare one) but tightly
    bounded (rule 11). Accept it as general, or allow it only for official catalog plugins at first?
    Recommended: official catalog plugins only in 1.3, opened up after a release without problems.
-9. **How to get the alternating Zn₄O orientation (added 2026-11-20).** Crystal Builder's builder
-   cannot make real MOF-5 today. Options:
-   (a) **Fix it upstream** (recommended): a small pull request to Crystal Builder (MIT) adding
-   `orientation=alternating` to `mof.build` for nets whose nodes sit on a bipartite lattice, with
-   MOF-5 as its test. The builder stays the one place that builds frameworks, and the plugin only
-   passes a parameter. This reverses the "no contact with the author" decision for this one item.
-   ~~(b) The plugin corrects the output itself.~~ **Rejected (owner, 2026-11-20):** it would need a
-   hand-written fix for each net and node whose default build is wrong, so the plugin would have to
-   know how to build MOFs. The plugin builds nothing; Crystal Builder builds, the plugin only checks.
-   (c) Drop the Zn → pcu/N16 suggestion until (a) lands; the user can still build pcu by hand, and the
-   target check keeps it from being called MOF-5.
-   Recommended: (a), with (c) as the state at 2H if (a) has not merged by then.
+9. ~~**How to get the alternating Zn₄O orientation.**~~ **Answered (2026-11-20): no change to
+   Crystal Builder is needed.** Its manual says one pcu cell cannot alternate, and a 2×2×2 build with
+   its default settings gives real MOF-5 (Test results, "MOF-5 correctness"). The suggestion row asks
+   for `repeat=2x2x2`; the target check stays. Plugin-side correction stays rejected (owner): the
+   plugin builds nothing.
+10. **A stable API proposal to Crystal Builder's author (owner idea, 2026-11-20).** Crystal Builder
+   already has a typed agent layer (`xtal/agent/`), `xtal capabilities --json` (which reports only
+   the app version, 1.1.1), `xtal run … --json`, `xtal inspect`, and `xtal mcp --window|--headless`.
+   What it does not promise is stability. Options: (a) propose a versioned contract on what exists
+   (a contract version in every JSON reply, documented reply shapes and exit codes, deprecation
+   notice before a breaking change, same behavior on Windows), so the plugin can declare "needs
+   Crystal Builder API 1.x"; (b) no proposal, pin the plugin to tested Crystal Builder versions.
+   Recommended: (a); the owner sends it, nothing goes to the author from an agent.
 
-For Crystal Builder's author: **none.** No email is needed (owner, 2026-11-18). A1–A4 and A6 were
+For Crystal Builder's author: **nothing required.** No email is needed for the plan (owner, 2026-11-18); question 10 is an optional proposal the owner sends. A1–A4 and A6 were
 answered by testing on macOS and by reading its MIT source (see "Test results" under Decision 1b).
 The Windows details (tab behavior, executable and folder names) are checked by the Windows session
 against the official installer, and the app is picked by the user anyway. A5 (the window MCP server)
@@ -564,9 +565,9 @@ matters only for Phase 4 and can be read from its source when Phase 4 starts.
   molecule's with explicit hydrogens; every loss in the table produces its warning or refusal.
 - One-command build check: terephthalic acid + Zn²⁺ gives MOF-5 as Crystal Builder itself reports it:
   `xtal inspect` detects Fm-3m (at 0.01 Å), a = 25.8–25.9 Å, Z = 8, 424 atoms, one framework, every
-  ring within 10° of its carboxylates. Equal atoms to the corrected 2026-11-20 cell
-  (`MOF5_alternating.cif`). A pcu build at a ≈ 12.9 Å is a failure, whatever its fit numbers say:
-  fit RMSD 0.000 and "net confirmed pcu" both passed on the wrong structure.
+  ring within 10° of its carboxylates, as the 2026-11-20 `repeat=2x2x2` build gave. A pcu build at
+  a ≈ 12.9 Å is a failure, whatever its fit numbers say: fit RMSD 0.000 and "net confirmed pcu"
+  both passed on the wrong structure.
 - Every other target in the suggestion table is checked the same way before its row ships.
 
 ## After approval (conductor's next steps, no code)
