@@ -4,7 +4,7 @@ Status: plan approved by the owner 2026-11-10; revised 2026-11-20 for the one-co
 return trip (owner direction below), and again the same afternoon after the hand-built "MOF-5" turned
 out to be the wrong structure because it was built on one cell (see "MOF-5 correctness" under Test
 results; open question 9, now answered). The new `runCompanion` method widens the security contract, so the
-master session's OK and the Kimi review (condition 3) cover it too. The master session OKed the revised plan, including the `runCompanion` security contract scoped to official catalog plugins (2026-11-20); the usual gates apply when code starts. Questions 3–6 are still with the owner. Target: after ChemDraft 1.2 ships (1.2 has priority; nothing here touches
+master session's OK and the Kimi review (condition 3) cover it too. The master session OKed the revised plan, including the `runCompanion` security contract scoped to official catalog plugins (2026-11-20); the usual gates apply when code starts. Every open question is answered (2026-11-20). Target: after ChemDraft 1.2 ships (1.2 has priority; nothing here touches
 `release/1.2-rc` or `main`). Final home of this document: `docs/plans/send-to-crystal-builder.md` on
 local branch `plan/crystal-builder` (see "After approval").
 
@@ -403,8 +403,8 @@ from one host (§1, §14).
   **Menus**: `menu.crystalBuilder.sendLinker`, `menu.crystalBuilder.sendMolecule`,
   `menu.crystalBuilder.chooseApp`, location `plugins`.
 - **Permissions**: `selection.read`, `chemistry.compute`, `apps.handoff`, `native.execute`,
-  `plugin.storage`, `ui.menu`. `apiVersion: "^0.1.26"`. Nothing else: no network, no clipboard, no
-  filesystem, no document write. (Only the optional task 2G would add `document.write`.)
+  `plugin.storage`, `ui.menu`, and `document.write` (task 2G, Mark Connection Points; owner
+  2026-11-20). `apiVersion: "^0.1.26"`. Nothing else: no network, no clipboard, no filesystem.
 - **Release assets**: `crystal-builder-handoff-X.Y.Z.zip` and `.zip.sha256`, with the two release-body
   markers (`ChemDraft-Plugin-API: ^0.1.26`, `ChemDraft-Min-App:` the first app version with 0.1.26).
 - **Host catalog**: one entry in `OFFICIAL_PLUGIN_CATALOG` (`apps/desktop/src/plugins/pluginUpdates.ts`)
@@ -458,7 +458,7 @@ quitting ChemDraft leaves the other app running.
 | 2H Build MOF command | `src/buildMof.ts`, `src/nodeSuggest.ts` + tests, manifest `companions.mofBuild` | Node and net suggestion per the Decision 1b table (drawn Zn²⁺ → N16/pcu, `repeat=2x2x2`; Cu²⁺ + tritopic → paddlewheel/tbo; else no suggestion); one native dialog to confirm or change net, node, repeat; then one `runCompanion` call with the linker block as input and `openOutput: true`, then the `inspect` template on the output; `src/targetCheck.ts` compares it with the row's target record (space group, cell within 2%, Z, formula, ring–carboxylate twist ≤ 10°) and names the material only on a match. Mocked-context tests: success, user cancels, tool missing, timeout, nonzero exit with Crystal Builder's message passed through, net mismatch reported; **the 2026-11-20 twisted P222 build (fixture) must not be called MOF-5, and the Fm-3m cell must be** | Kimi |
 | 2D Command flow | `src/send.ts` + test with a mocked context | Both send commands: empty selection, cancelled picker, declined consent, embed failure, minimize failure, linker refusals, and success each produce the specified message; one send per command | Kimi |
 | 2E Package and release | package zip, checksum, release body markers | Installs by hand through Add plugin from package on both platforms | Kimi |
-| 2G (optional, owner question 6) Mark Connection Points | `src/markConnectionPoints.ts` + test; manifest adds `document.write` | Selected anchors get `X` atoms at bond length along the open direction, through `documents.applyPatch`, one labelled undo entry, new atoms selected (§4.4); anchors with no free valence refused by name; chemistry of the anchor molecule otherwise unchanged (§7 test: canonical SMILES with X removed equals the original) | Kimi |
+| 2G Mark Connection Points (in Phase 2, owner 2026-11-20) | `src/markConnectionPoints.ts` + test; manifest adds `document.write` | Selected anchors get `X` atoms at bond length along the open direction, through `documents.applyPatch`, one labelled undo entry, new atoms selected (§4.4); anchors with no free valence refused by name; chemistry of the anchor molecule otherwise unchanged (§7 test: canonical SMILES with X removed equals the original) | Kimi |
 
 Hands-on, both platforms, with Crystal Builder installed by the owner (agents do not install it):
 **the one-command demo first**: draw terephthalic acid and four Zn²⁺, select both, Build MOF in
@@ -520,12 +520,16 @@ For the owner:
 2. ~~**How often to ask.**~~ **Answered (owner, 2026-11-20): consent once per plugin and app, then a
    message box only when something specific would be lost.** Consent once per plugin and app, then a message box only when something
    specific would be lost (recommended), or a confirmation on every send?
-3. **Minimize or not.** Send the MMFF94s-minimized geometry (recommended) or raw ETKDG coordinates?
-4. **Names.** Are `jgassens/ChemDraft-CrystalBuilder-Plugin`, `org.chemdraft.handoff.crystalBuilder`,
+3. ~~**Minimize or not.**~~ **Answered (owner, 2026-11-20): MMFF94s-minimized.** Send the MMFF94s-minimized geometry (recommended) or raw ETKDG coordinates?
+4. ~~**Names.**~~ **Answered (owner, 2026-11-20): the proposed names.** Crystal Builder's author is not
+   contacted (question 10). Are `jgassens/ChemDraft-CrystalBuilder-Plugin`, `org.chemdraft.handoff.crystalBuilder`,
    and "Send to Crystal Builder" acceptable, and does the author agree to their app's name in our catalog?
-5. **Agent tooling on this iMac.** `agentctl`, `~/.agentctl/`, and `~/programming/chemdraw-wt/` do
+5. ~~**Agent tooling on this iMac.**~~ **Answered (owner, 2026-11-20): install agentctl on the iMac so
+   workers run here and the MacBook is offloaded.** A short setup plan goes to the master session
+   before anything is installed; logins are the owner's to do. Original question: `agentctl`, `~/.agentctl/`, and `~/programming/chemdraw-wt/` do
    not exist on this machine. Should the workers run from the MacBook, with this session only conducting?
-6. **Mark Connection Points command.** Ship the optional one-click marker (task 2G, adds the dangerous
+6. ~~**Mark Connection Points command.**~~ **Answered (owner, 2026-11-20): ship it in Phase 2 (task 2G,
+   with `document.write`).** Original question: Ship the optional one-click marker (task 2G, adds the dangerous
    `document.write` permission), or keep "draw an atom labelled X" as the only way? Recommended: ship
    without it first; add it if the demo feels clumsy. (2026-11-20: less needed now; the automatic
    cut in Decision 1b covers the common case.)
