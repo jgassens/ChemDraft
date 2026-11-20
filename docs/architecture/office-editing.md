@@ -258,7 +258,8 @@ open on either platform with their structures still editable there.
 
 - Reader for the iTXt carrier (and zTXt for older carriers) beside the writer in
   `packages/clipboard-adapter`, with OOXML-picture and .pptx-media lookups as pure functions; tests
-  for round trip, canonical SMILES, malformed and missing carriers.
+  for a byte-exact round trip, malformed and missing carriers, and bounds on untrusted input. The
+  canonical-SMILES check runs in slice 3, where the recovered JSON is parsed into a document.
 
 ### Slice 1a: Mac feasibility gate
 
