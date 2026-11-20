@@ -2,54 +2,132 @@
 use serde_json::Value;
 use std::{fs, path::Path};
 
-#[cfg(target_os = "macos")]
 pub(crate) mod pending_opens {
     use std::{
+        collections::HashSet,
         fs::{self, File, OpenOptions},
         io,
-        os::unix::{fs::OpenOptionsExt, io::AsRawFd},
         path::Path,
     };
 
     const FILENAME: &str = "pending-opens.json";
+    const LIMIT: usize = 50;
 
-    // A windowless secondary can record while the primary is appending or replaying.
-    // Keep a stable lock inode, since the JSON file's inode changes on each rename.
-    fn lock(directory: &Path) -> io::Result<File> {
-        fs::create_dir_all(directory)?;
-        let file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(directory.join("pending-opens.lock"))?;
-        // SAFETY: The descriptor remains open for the lifetime of the returned guard.
-        while unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            let error = io::Error::last_os_error();
-            if error.kind() != io::ErrorKind::Interrupted {
-                return Err(error);
+    struct PendingLock(File);
+
+    impl Drop for PendingLock {
+        fn drop(&mut self) {
+            // Explicitly release the lock even if a concurrent child launch inherited the
+            // descriptor between fork and exec.
+            let _ = self.0.unlock();
+        }
+    }
+
+    // Lock a stable inode because the JSON file is replaced on every update.
+    fn lock(directory: &Path) -> Result<PendingLock, String> {
+        fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+        let mut options = OpenOptions::new();
+        options.write(true).read(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        }
+        let file = options
+            .open(directory.join("pending-opens.lock"))
+            .map_err(|error| error.to_string())?;
+        // Shutdown must never wait on another writer.
+        file.try_lock()
+            .map_err(|error| format!("Could not lock pending opens: {error:?}"))?;
+        Ok(PendingLock(file))
+    }
+
+    // Strings are the existing retry-on-launch format. OS shutdowns leave a native notice.
+    #[derive(serde::Deserialize, serde::Serialize)]
+    #[serde(untagged)]
+    enum Entry {
+        Replay(String),
+        Notice { path: String },
+    }
+
+    impl Entry {
+        fn path(&self) -> &str {
+            match self {
+                Self::Replay(path) | Self::Notice { path } => path,
             }
         }
-        Ok(file)
     }
 
-    fn read(path: &Path) -> Result<Option<Vec<String>>, String> {
-        super::super::read_optional_file(path)?
+    fn read(file: &Path) -> Result<Vec<Entry>, String> {
+        super::super::read_optional_file(file)?
             .map(|json| serde_json::from_str(&json).map_err(|error| error.to_string()))
             .transpose()
+            .map(Option::unwrap_or_default)
     }
 
-    pub(crate) fn append(directory: &Path, paths: &[String]) -> Result<(), String> {
+    fn write(file: &Path, entries: &[Entry], immediate: bool) -> Result<(), String> {
+        if entries.is_empty() {
+            return match fs::remove_file(file) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+                result => result.map_err(|error| error.to_string()),
+            };
+        }
+        let json = serde_json::to_string(entries).map_err(|error| error.to_string())?;
+        if immediate {
+            super::super::write_file_atomic_with(file, &json, |temp, target| {
+                fs::rename(temp, target)
+            })
+        } else {
+            super::super::write_file_atomic(file, &json)
+        }
+    }
+
+    pub(crate) fn append(directory: &Path, paths: &[String], notice: bool) -> Result<(), String> {
         if paths.is_empty() {
             return Ok(());
         }
-        let _guard = lock(directory).map_err(|error| error.to_string())?;
+        let _guard = lock(directory)?;
         let file = directory.join(FILENAME);
-        let mut pending = read(&file)?.unwrap_or_default();
-        pending.extend_from_slice(paths);
-        let json = serde_json::to_string(&pending).map_err(|error| error.to_string())?;
-        super::super::write_file_atomic(&file, &json)
+        let mut pending = read(&file)?;
+        pending.extend(paths.iter().cloned().map(|path| {
+            if notice {
+                Entry::Notice { path }
+            } else {
+                Entry::Replay(path)
+            }
+        }));
+        let mut seen = HashSet::new();
+        pending.reverse();
+        pending.retain(|entry| seen.insert(entry.path().to_owned()));
+        pending.reverse();
+        let dropped = pending.len().saturating_sub(LIMIT);
+        if dropped > 0 {
+            eprintln!(
+                "ChemDraft: dropping {dropped} oldest pending document opens (limit {LIMIT})"
+            );
+            pending.drain(..dropped);
+        }
+        write(&file, &pending, notice)
+    }
+
+    pub(crate) fn take_notice(directory: &Path) -> Result<Option<String>, String> {
+        let file = directory.join(FILENAME);
+        if !file.try_exists().map_err(|error| error.to_string())? {
+            return Ok(None);
+        }
+        let _guard = lock(directory)?;
+        let (retries, notices): (Vec<_>, Vec<_>) = read(&file)?
+            .into_iter()
+            .partition(|entry| matches!(entry, Entry::Replay(_)));
+        if notices.is_empty() {
+            return Ok(None);
+        }
+        write(&file, &retries, false)?;
+        let paths: Vec<_> = notices.iter().map(Entry::path).collect();
+        Ok(Some(format!(
+            "These files were not opened before ChemDraft quit:\n\n{}",
+            paths.join("\n")
+        )))
     }
 
     #[derive(Default)]
@@ -65,9 +143,15 @@ pub(crate) mod pending_opens {
                 return Ok(());
             }
             let file = directory.join(FILENAME);
-            let paths = if file.try_exists().map_err(|error| error.to_string())? {
-                let _guard = lock(directory).map_err(|error| error.to_string())?;
-                read(&file)?.unwrap_or_default()
+            let paths: Vec<_> = if file.try_exists().map_err(|error| error.to_string())? {
+                let _guard = lock(directory)?;
+                read(&file)?
+                    .into_iter()
+                    .filter_map(|entry| match entry {
+                        Entry::Replay(path) => Some(path),
+                        Entry::Notice { .. } => None,
+                    })
+                    .collect()
             } else {
                 Vec::new()
             };
@@ -85,17 +169,13 @@ pub(crate) mod pending_opens {
             let Some(path) = slot.as_deref() else {
                 return Ok(());
             };
-            let _guard = lock(directory).map_err(|error| error.to_string())?;
+            let _guard = lock(directory)?;
             let file = directory.join(FILENAME);
-            let mut paths = read(&file)?.unwrap_or_default();
-            if let Some(index) = paths.iter().position(|pending| pending == path) {
-                paths.remove(index);
-                if paths.is_empty() {
-                    fs::remove_file(file).map_err(|error| error.to_string())?;
-                } else {
-                    let json = serde_json::to_string(&paths).map_err(|error| error.to_string())?;
-                    super::super::write_file_atomic(&file, &json)?;
-                }
+            let mut entries = read(&file)?;
+            let before = entries.len();
+            entries.retain(|entry| !matches!(entry, Entry::Replay(pending) if pending == path));
+            if entries.len() != before {
+                write(&file, &entries, false)?;
             }
             *slot = None;
             Ok(())
@@ -265,7 +345,6 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn macos_open_quit_replay_retains_each_path_until_confirmed() {
         let files = Files::new();
@@ -273,7 +352,7 @@ mod tests {
         let missing = files.0.join("missing.chemdraft");
         let file = files.0.join("pending-opens.json");
         let paths = [&available, &missing].map(|path| path.to_str().unwrap().to_owned());
-        pending_opens::append(&files.0, &paths).unwrap();
+        pending_opens::append(&files.0, &paths, false).unwrap();
 
         let mut replay = pending_opens::Replay::default();
         let mut opened = Vec::new();
@@ -296,8 +375,8 @@ mod tests {
             .start(&files.0, |_, _| panic!("already sent to this renderer"))
             .unwrap();
 
-        // A later request for the same path must survive this receipt and its duplicate.
-        pending_opens::append(&files.0, &paths[..1]).unwrap();
+        // Duplicate requests are coalesced by path and satisfied by the same receipt.
+        pending_opens::append(&files.0, &paths[..1], false).unwrap();
         replay.confirm(&files.0, opened[0].0).unwrap();
         replay.confirm(&files.0, opened[0].0).unwrap();
         let mut next_launch = pending_opens::Replay::default();
@@ -305,12 +384,80 @@ mod tests {
         next_launch
             .start(&files.0, |_, path| remaining.push(path.to_owned()))
             .unwrap();
-        assert_eq!(remaining, [paths[1].clone(), paths[0].clone()]);
+        assert_eq!(remaining, [paths[1].clone()]);
         // The missing file's failure is confirmed by the next renderer.
         next_launch.confirm(&files.0, 0).unwrap();
-        assert!(file.exists());
-        next_launch.confirm(&files.0, 1).unwrap();
         assert!(!file.exists());
+    }
+
+    #[test]
+    fn system_open_notices_list_each_file_once_and_preserve_replay_entries() {
+        for (platform, reason, ending) in [
+            (
+                crate::QuitPlatform::Macos,
+                u32::from_be_bytes(*b"shut"),
+                false,
+            ),
+            (crate::QuitPlatform::Windows, 0, true),
+        ] {
+            let files = Files::new();
+            let kind = crate::shutdown::quit_kind(platform, reason, ending, false);
+            pending_opens::append(&files.0, &["retry.cdx".into()], false).unwrap();
+            assert!(crate::shutdown::finish_opens(
+                kind,
+                |notice| pending_opens::append(
+                    &files.0,
+                    &["one.cdx".into(), "two.cdx".into(), "two.cdx".into()],
+                    notice,
+                ),
+                || panic!("system quit cannot be vetoed"),
+                |_| panic!("the notice belongs to the next launch"),
+            ));
+            let notice = pending_opens::take_notice(&files.0).unwrap().unwrap();
+            assert!(notice.ends_with("one.cdx\ntwo.cdx"));
+            assert_eq!(notice.matches("two.cdx").count(), 1);
+            assert_eq!(pending_opens::take_notice(&files.0).unwrap(), None);
+            let mut retry = pending_opens::Replay::default();
+            let mut paths = Vec::new();
+            retry
+                .start(&files.0, |_, path| paths.push(path.to_owned()))
+                .unwrap();
+            assert_eq!(paths, ["retry.cdx"]);
+        }
+    }
+
+    #[test]
+    fn pending_open_updates_replace_complete_json_and_keep_the_newest_fifty_unique_paths() {
+        let files = Files::new();
+        let file = files.0.join("pending-opens.json");
+        let paths: Vec<_> = (0..55).map(|index| format!("{index}.cdx")).collect();
+        pending_opens::append(&files.0, &paths[..10], false).unwrap();
+        let old = fs::File::open(&file).unwrap();
+        let mut incoming = paths[10..].to_vec();
+        incoming.push(paths[0].clone()); // A repeat refreshes the path's place in the queue.
+        pending_opens::append(&files.0, &incoming, false).unwrap();
+        let prior: Vec<String> = serde_json::from_reader(old).unwrap();
+        assert_eq!(prior, paths[..10]);
+        let current: Vec<String> = serde_json::from_slice(&fs::read(file).unwrap()).unwrap();
+        assert_eq!(current.len(), 50);
+        assert_eq!(current[..49], paths[6..]);
+        assert_eq!(current[49], paths[0]);
+        assert!(files.0.read_dir().unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .path()
+                .extension()
+                .is_some_and(|ext| ext == "tmp")
+        }));
+    }
+
+    #[test]
+    fn a_failed_update_keeps_the_previous_pending_open_file() {
+        let files = Files::new();
+        let file = files.file("pending-opens.json");
+        let original = fs::read(&file).unwrap(); // An unreadable older journal.
+        assert!(pending_opens::append(&files.0, &["new.cdx".into()], true).is_err());
+        assert_eq!(fs::read(&file).unwrap(), original);
     }
 
     fn tab(path: &Path) -> Value {

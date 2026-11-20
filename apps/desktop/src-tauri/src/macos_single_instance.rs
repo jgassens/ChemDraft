@@ -3,6 +3,7 @@
 //! tauri-plugin-single-instance 2.4.5's macOS implementation starts its listener asynchronously,
 //! unlinks the socket before binding, and continues startup on errors. Concurrent launches can
 //! therefore both enter setup. An advisory lock is the authority here; IPC is only the handoff.
+use crate::OpenReceipt;
 use block2::RcBlock;
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSAlert, NSAlertStyle, NSApplication};
@@ -148,19 +149,6 @@ pub struct RendererReceipt {
     file: usize,
 }
 
-#[derive(Deserialize)]
-pub struct OpenConfirmation {
-    pub receipt: OpenReceipt,
-    pub opened: bool,
-}
-
-#[derive(Clone, Copy, Deserialize, Serialize)]
-#[serde(untagged)]
-pub enum OpenReceipt {
-    Handoff(RendererReceipt),
-    Replay { replay: usize },
-}
-
 pub enum Reply {
     Secondary(mpsc::Sender<Acknowledgement>),
     Takeover(LaunchRequest),
@@ -293,6 +281,7 @@ pub fn renderer_consumed(app: &AppHandle, receipt: RendererReceipt, opened: bool
 pub fn renderer_exiting<R: tauri::Runtime>(
     app: &AppHandle<R>,
     mut paths: Vec<String>,
+    notice: bool,
 ) -> Result<(), String> {
     let state = app.state::<Mutex<RendererOpens>>();
     let mut renderer = state.lock().unwrap();
@@ -308,7 +297,7 @@ pub fn renderer_exiting<R: tauri::Runtime>(
             );
         }
     }
-    crate::record_pending_opens(app, &paths)?;
+    crate::record_pending_opens(app, &paths, notice)?;
     renderer.batches.clear();
     Ok(())
 }
@@ -456,8 +445,12 @@ impl SecondaryLaunch {
     }
 
     // AppKit termination can bypass ExitRequested. Preserve unconfirmed and late opens.
-    pub fn record_interrupted_launch(&self, app: &AppHandle) -> Option<Result<(), String>> {
-        self.record_interrupted_launch_with(|paths| crate::record_pending_opens(app, paths))
+    pub fn record_interrupted_launch(
+        &self,
+        app: &AppHandle,
+        notice: bool,
+    ) -> Option<Result<(), String>> {
+        self.record_interrupted_launch_with(|paths| crate::record_pending_opens(app, paths, notice))
     }
 
     fn record_interrupted_launch_with(
@@ -488,12 +481,18 @@ impl SecondaryLaunch {
                 paths.push(path);
             }
         }
-        Some(record(
+        let result = record(
             &paths
                 .into_iter()
                 .map(|path| path.to_string_lossy().into_owned())
                 .collect::<Vec<_>>(),
-        ))
+        );
+        if result.is_err() {
+            let mut state = self.state.lock().unwrap();
+            state.terminating = false;
+            state.collection.launch = launch;
+        }
+        Some(result)
     }
 
     // Keep one Tauri event loop. When we take over, run normal startup in this windowless app.
@@ -504,12 +503,14 @@ impl SecondaryLaunch {
         start_primary: StartPrimary,
     ) -> bool {
         if matches!(event, RunEvent::Exit) {
-            return self.record_interrupted_launch(app).is_some_and(|result| {
-                if let Err(error) = result {
-                    eprintln!("Could not record document opens for relaunch: {error}");
-                }
-                true
-            });
+            return self
+                .record_interrupted_launch(app, true)
+                .is_some_and(|result| {
+                    if let Err(error) = result {
+                        eprintln!("Could not record document opens for relaunch: {error}");
+                    }
+                    true
+                });
         }
         let mut state = self.state.lock().unwrap();
         if state.promoted {

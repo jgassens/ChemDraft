@@ -2498,7 +2498,7 @@ describe("documents in one window", () => {
     expect(native.quit).toHaveBeenCalledOnce();
   });
 
-  it.each(["Save", "Discard"])("re-arms native grace before a stalled %s session write", async (choice) => {
+  it.each(["Save", "Discard"])("starts the quit cap and tags the final %s write with its request ID", async (choice) => {
     await paste("Dirty drawing");
     saveAskToSaveBeforeQuit(true);
     native.savePicker.mockResolvedValueOnce("/tmp/stall-save.chemdraft");
@@ -2508,6 +2508,7 @@ describe("documents in one window", () => {
     await quitButton(choice);
     expect(native.resumeQuit).toHaveBeenCalledWith(1);
     expect(native.resumeQuit.mock.invocationCallOrder[0]).toBeLessThan(native.saveSession.mock.invocationCallOrder.at(-1)!);
+    expect(native.saveSession).toHaveBeenLastCalledWith(expect.anything(), { strict: true, quitRequestId: 1 });
     expect(native.quit).not.toHaveBeenCalled();
     await act(async () => { finish(); });
     expect(native.quit).toHaveBeenCalledTimes(1);
@@ -2860,12 +2861,34 @@ describe("documents in one window", () => {
     if (stage !== "Discard") expect(native.quit).not.toHaveBeenCalled();
   });
 
-  it("confirms each replay after its tab is installed or its open failure is displayed", async () => {
+  it.each(["macos", "windows"] as const)("unlocks a committed %s quit after the native persistence veto", async (platform) => {
+    act(() => root!.unmount());
+    await mount(undefined, false, platform);
+    await paste("Unsaved before quit");
+    const requestId = ++native.quitId;
+    await act(async () => { await native.quitFlush!("committed", requestId); });
+    expect(native.saveSession).toHaveBeenLastCalledWith(expect.anything(), { strict: true, quitRequestId: requestId });
+    await command("document.new");
+    expect(tabs()).toHaveLength(1);
+
+    await act(async () => {
+      native.events.get("chemdraft://quit-cancelled-for-open")!(requestId);
+      native.events.get("chemdraft://open-document")!({
+        path: "/tmp/queued.chemdraft", displayName: "queued.chemdraft", contents: fileContents("Queued file")
+      });
+    });
+    expect(tabs()).toHaveLength(2);
+    expect(bridge().snapshot().file.path).toBe("/tmp/queued.chemdraft");
+    await paste("Still editable after veto");
+    expect(drawnText()).toContain("Still editable after veto");
+  });
+
+  it.each(["macos", "windows"] as const)("confirms each %s replay after its tab is installed or its open failure is displayed", async (platform) => {
     let hydrate!: (session: unknown) => void;
     native.load.mockImplementationOnce(() => new Promise(resolve => { hydrate = resolve; }));
     act(() => root!.unmount());
     vi.mocked(nativeInvoke).mockClear();
-    await mount(undefined, false, "macos");
+    await mount(undefined, false, platform);
     expect(nativeInvoke).not.toHaveBeenCalledWith("take_pending_open_document", { readyForDeferredOpens: true });
     const observed: unknown[] = [];
     native.confirmOpen.mockImplementationOnce(confirmation => {

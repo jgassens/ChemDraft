@@ -764,23 +764,7 @@
     "name": "take_pending_open_document",
     "async": false,
     "generics": "",
-    "parameters": "window: tauri::WebviewWindow, state: tauri::State<'_, PendingOpenDocument>, confirmation: Option<macos_single_instance::OpenConfirmation>, ready_for_deferred_opens: Option<bool>,",
-    "returnType": "Result<Vec<NativeOpenDocumentPayload>, String>"
-  },
-  {
-    "file": "lib.rs",
-    "name": "take_pending_open_document",
-    "async": false,
-    "generics": "",
-    "parameters": "window: tauri::WebviewWindow, state: tauri::State<'_, PendingOpenDocument>, confirmation: Option<macos_single_instance::OpenConfirmation>,",
-    "returnType": "Result<Vec<NativeOpenDocumentPayload>, String>"
-  },
-  {
-    "file": "lib.rs",
-    "name": "take_pending_open_document",
-    "async": false,
-    "generics": "",
-    "parameters": "state: tauri::State<'_, PendingOpenDocument>,",
+    "parameters": "window: tauri::WebviewWindow, state: tauri::State<'_, PendingOpenDocument>, confirmation: Option<OpenConfirmation>, ready_for_deferred_opens: Option<bool>,",
     "returnType": "Result<Vec<NativeOpenDocumentPayload>, String>"
   },
   {

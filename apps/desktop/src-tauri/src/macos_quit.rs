@@ -1,6 +1,7 @@
 //! AppKit's Dock/AppleScript quit reaches applicationShouldTerminate before Tao's Exit event.
 //! Add only this missing optional delegate method; leave Tao's existing delegate intact.
 use super::macos_single_instance::SecondaryLaunch;
+use crate::shutdown::{self, QuitKind, QuitPlatform};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Bool, Sel};
 use objc2::MainThreadMarker;
@@ -8,45 +9,41 @@ use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSAlertSecondButtonReturn, NSAlertStyle,
     NSAlertThirdButtonReturn, NSApplicationTerminateReply, NSWindow,
 };
-use objc2_foundation::NSString;
+use objc2_foundation::{
+    NSNotificationCenter, NSOperationQueue, NSRunLoop, NSRunLoopCommonModes, NSString, NSTimer,
+};
 use std::cell::RefCell;
 use std::ffi::c_char;
-use std::sync::{Arc, OnceLock};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, OnceLock,
+};
 
 static APP: OnceLock<(tauri::AppHandle, Option<Arc<SecondaryLaunch>>)> = OnceLock::new();
 
+static POWER_OFF: AtomicBool = AtomicBool::new(false);
+
 thread_local! {
     static QUIT_SHEET: RefCell<Option<(u64, Retained<NSAlert>)>> = const { RefCell::new(None) };
-    static RECORD_ERROR_ALERTS: RefCell<RecordErrorAlerts> = RefCell::default();
 }
 
-#[derive(Default)]
-struct RecordErrorAlerts {
-    pending: usize,
-    exits: Vec<Box<dyn FnOnce()>>,
+pub fn power_off_in_progress() -> bool {
+    POWER_OFF.load(Ordering::SeqCst)
 }
 
-impl RecordErrorAlerts {
-    fn defer_exit(&mut self, exit: impl FnOnce() + 'static) -> bool {
-        if self.pending == 0 {
-            return false;
-        }
-        self.exits.push(Box::new(exit));
-        true
+fn workspace_will_power_off() {
+    POWER_OFF.store(true, Ordering::SeqCst);
+    let Some((app, _)) = APP.get() else { return };
+    if !super::QUIT.appkit_reply.lock().unwrap().awaiting_delivery() {
+        return;
     }
-
-    fn finish_alert(&mut self) -> Vec<Box<dyn FnOnce()>> {
-        self.pending -= 1;
-        if self.pending == 0 {
-            std::mem::take(&mut self.exits)
-        } else {
-            Vec::new()
-        }
-    }
-}
-
-pub fn defer_exit_for_record_alert(exit: impl FnOnce() + 'static) -> bool {
-    RECORD_ERROR_ALERTS.with_borrow_mut(|alerts| alerts.defer_exit(exit))
+    // A power-off can supersede an ordinary Dock Quit while AppKit is already
+    // waiting. Complete that handshake immediately instead of leaving it pending.
+    super::APP_QUITTING.store(true, Ordering::SeqCst);
+    super::finish_exit_opens(app, QuitKind::System, || {});
+    *super::QUIT.appkit_reply.lock().unwrap() = super::AppkitReplyState::Delivered;
+    let main = MainThreadMarker::new().expect("workspace observer uses the main queue");
+    objc2_app_kit::NSApplication::sharedApplication(main).replyToApplicationShouldTerminate(true);
 }
 
 /// Own the quit sheet so a Finder open can dismiss precisely this alert, even when another
@@ -132,26 +129,19 @@ pub fn dismiss_prompt(request_id: u64) {
     }
 }
 
-pub fn report_record_error(error: &str) {
-    let message = format!("Could not record document opens for relaunch: {error}");
-    eprintln!("{message}");
-    RECORD_ERROR_ALERTS.with_borrow_mut(|alerts| alerts.pending += 1);
-    let alert = block2::RcBlock::new(move |_| {
-        super::macos_single_instance::show_launch_error(&Default::default(), &message);
-        for exit in RECORD_ERROR_ALERTS.with_borrow_mut(RecordErrorAlerts::finish_alert) {
-            exit();
+pub fn after_quit_callback(task: impl FnOnce() + 'static) {
+    assert!(MainThreadMarker::new().is_some());
+    let task = RefCell::new(Some(task));
+    let block = block2::RcBlock::new(move |_| {
+        if let Some(task) = task.take() {
+            task();
         }
     });
-    // A timer runs outside Tao's event callback, where a modal alert could deadlock.
+    // SAFETY: On AppKit's main thread. The run loop retains the one-shot timer.
+    // Common modes let this run after the veto, including from a nested panel loop.
     unsafe {
-        objc2_foundation::NSTimer::scheduledTimerWithTimeInterval_repeats_block(0.0, false, &alert)
-    };
-}
-
-fn deliver_after_record_alerts(reply: super::AppkitReplyTask) {
-    let deferred = reply.clone();
-    if !defer_exit_for_record_alert(move || deferred()) {
-        reply();
+        let timer = NSTimer::timerWithTimeInterval_repeats_block(0.0, false, &block);
+        NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
     }
 }
 
@@ -197,6 +187,21 @@ pub fn install(
             return Err("AppKit delegate already implements applicationShouldTerminate:".into());
         }
     }
+    // The workspace notification also covers a power-off request without a current Apple event.
+    // SAFETY: NSWorkspace owns its notification center for the life of the process and the
+    // notification center keeps the registered block alive.
+    unsafe {
+        let workspace: *const AnyObject =
+            objc2::msg_send![objc2::class!(NSWorkspace), sharedWorkspace];
+        let center: &NSNotificationCenter = objc2::msg_send![workspace, notificationCenter];
+        let callback = block2::RcBlock::new(|_| workspace_will_power_off());
+        std::mem::forget(center.addObserverForName_object_queue_usingBlock(
+            Some(&NSString::from_str("NSWorkspaceWillPowerOffNotification")),
+            None,
+            Some(&NSOperationQueue::mainQueue()),
+            &callback,
+        ));
+    }
     Ok(())
 }
 
@@ -209,14 +214,14 @@ pub fn reply_to_termination<R: tauri::Runtime>(
         false,
         |reply| {
             if MainThreadMarker::new().is_some() {
-                deliver_after_record_alerts(reply);
+                after_quit_callback(move || reply());
                 Ok(())
             } else {
-                app.run_on_main_thread(move || deliver_after_record_alerts(reply))
+                app.run_on_main_thread(move || reply())
             }
         },
         |reply| {
-            let block = block2::RcBlock::new(move || deliver_after_record_alerts(reply.clone()));
+            let block = block2::RcBlock::new(move || reply());
             // SAFETY: The block captures only a Send + Sync task. Foundation copies it
             // and executes it on the main queue, independently of Tauri's event proxy.
             unsafe {
@@ -228,9 +233,17 @@ pub fn reply_to_termination<R: tauri::Runtime>(
             move || {
                 let mtm =
                     MainThreadMarker::new().expect("AppKit quit reply must run on the main thread");
-                super::persist_macos_opens_before_exit(&app);
-                objc2_app_kit::NSApplication::sharedApplication(mtm)
-                    .replyToApplicationShouldTerminate(true);
+                if *flow.appkit_reply.lock().unwrap() != super::AppkitReplyState::Claimed {
+                    return;
+                }
+                let application = objc2_app_kit::NSApplication::sharedApplication(mtm);
+                if super::finish_exit_opens(&app, super::shutdown_kind(false), || {
+                    *flow.appkit_reply.lock().unwrap() = super::AppkitReplyState::Idle;
+                    application.replyToApplicationShouldTerminate(false);
+                }) {
+                    *flow.appkit_reply.lock().unwrap() = super::AppkitReplyState::Delivered;
+                    application.replyToApplicationShouldTerminate(true);
+                }
             }
         },
     ) {
@@ -246,18 +259,6 @@ unsafe extern "C" fn should_terminate(
     let Some((app, secondary)) = APP.get() else {
         return NSApplicationTerminateReply::TerminateNow;
     };
-    if let Some(result) = secondary
-        .as_ref()
-        .and_then(|launch| launch.record_interrupted_launch(app))
-    {
-        if let Err(error) = result {
-            super::macos_single_instance::show_launch_error(
-                &Default::default(),
-                &format!("Could not record document opens for relaunch: {error}"),
-            );
-        }
-        return NSApplicationTerminateReply::TerminateNow;
-    }
     // SAFETY: Called by AppKit on its main thread. Foundation owns the current Apple event and
     // descriptors for this call; nil is checked before sending descriptor messages.
     let reason = unsafe {
@@ -267,7 +268,12 @@ unsafe extern "C" fn should_terminate(
         if event.is_null() {
             0
         } else {
-            let descriptor: *const AnyObject = objc2::msg_send![event, attributeDescriptorForKeyword: u32::from_be_bytes(*b"why?")];
+            let keyword = u32::from_be_bytes(*b"why?");
+            let mut descriptor: *const AnyObject =
+                objc2::msg_send![event, paramDescriptorForKeyword: keyword];
+            if descriptor.is_null() {
+                descriptor = objc2::msg_send![event, attributeDescriptorForKeyword: keyword];
+            }
             if descriptor.is_null() {
                 0
             } else {
@@ -275,13 +281,43 @@ unsafe extern "C" fn should_terminate(
             }
         }
     };
+    let kind = shutdown::quit_kind(QuitPlatform::Macos, reason, power_off_in_progress(), false);
+    if kind == QuitKind::System {
+        POWER_OFF.store(true, Ordering::SeqCst);
+        super::APP_QUITTING.store(true, Ordering::SeqCst);
+    } else if super::RECORD_ERROR_ALERT_ACTIVE.load(Ordering::SeqCst) {
+        return NSApplicationTerminateReply::TerminateCancel;
+    }
+    if let Some(result) = secondary
+        .as_ref()
+        .and_then(|launch| launch.record_interrupted_launch(app, kind != QuitKind::User))
+    {
+        let proceed = shutdown::finish_opens(
+            kind,
+            |_| result,
+            || {},
+            |message| {
+                super::schedule_open_notice(app, message, true, None);
+            },
+        );
+        return if proceed {
+            NSApplicationTerminateReply::TerminateNow
+        } else {
+            NSApplicationTerminateReply::TerminateCancel
+        };
+    }
+    if kind == QuitKind::System {
+        super::finish_exit_opens(app, kind, || {});
+        *super::QUIT.appkit_reply.lock().unwrap() = super::AppkitReplyState::Delivered;
+        return NSApplicationTerminateReply::TerminateNow;
+    }
+
     let reply_pending = super::QUIT.appkit_reply.lock().unwrap().awaiting_delivery();
     match super::appkit_quit_decision(
-        cfg!(target_os = "macos"),
-        super::ASK_TO_SAVE_ON_QUIT.load(std::sync::atomic::Ordering::SeqCst),
-        super::APP_QUITTING.load(std::sync::atomic::Ordering::SeqCst),
+        true,
+        super::ASK_TO_SAVE_ON_QUIT.load(Ordering::SeqCst),
+        super::APP_QUITTING.load(Ordering::SeqCst),
         reply_pending,
-        reason,
     ) {
         super::AppkitQuitDecision::Prompt => {
             super::request_quit(app);
@@ -293,42 +329,14 @@ unsafe extern "C" fn should_terminate(
             }
         }
         super::AppkitQuitDecision::WaitForReply => {
+            super::enforce_quit_deadline(&super::QUIT, app);
             return NSApplicationTerminateReply::TerminateLater;
         }
         super::AppkitQuitDecision::TerminateNow => {}
     }
-    if RECORD_ERROR_ALERTS.with_borrow(|alerts| alerts.pending != 0) {
-        *super::QUIT.appkit_reply.lock().unwrap() = super::AppkitReplyState::Claimed;
-        reply_to_termination(app, &super::QUIT);
-        return NSApplicationTerminateReply::TerminateLater;
-    }
-    super::persist_macos_opens_before_exit(app);
-    NSApplicationTerminateReply::TerminateNow
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::cell::Cell;
-    use std::rc::Rc;
-
-    #[test]
-    fn macos_open_quit_defers_exit_until_the_record_error_alert_finishes() {
-        let mut alerts = RecordErrorAlerts {
-            pending: 2,
-            ..Default::default()
-        };
-        let exited = Rc::new(Cell::new(false));
-        assert!(alerts.defer_exit({
-            let exited = exited.clone();
-            move || exited.set(true)
-        }));
-        assert!(alerts.finish_alert().is_empty());
-        assert!(!exited.get());
-        for exit in alerts.finish_alert() {
-            exit();
-        }
-        assert!(exited.get());
-        assert!(!alerts.defer_exit(|| panic!("exit no longer needs deferral")));
+    if super::finish_exit_opens(app, kind, || {}) {
+        NSApplicationTerminateReply::TerminateNow
+    } else {
+        NSApplicationTerminateReply::TerminateCancel
     }
 }

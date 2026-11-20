@@ -824,8 +824,8 @@ export async function saveDocumentSession(state: unknown, options?: { strict?: b
   await (options?.strict ? write : write.catch(() => undefined));
 }
 
-/** Rust sends the committed phase once quit is irreversible. The listener flushes the session
- *  autosave and then calls `confirmQuitAfterFlush`; Rust quits anyway after a short grace period. */
+/** The listener flushes the final session snapshot and confirms its request ID. Native code
+ * starts grace at write entry and enforces a separate hard deadline for the entire flush. */
 export const QUIT_FLUSH_REQUEST_EVENT = "chemdraft://flush-before-quit";
 export type QuitFlushPhase = "committed";
 type QuitFlushRequest = { phase: QuitFlushPhase; requestId: number };

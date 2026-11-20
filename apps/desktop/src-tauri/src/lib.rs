@@ -39,6 +39,7 @@ mod plugin_starter;
 mod problem_reports;
 mod screen_capture;
 mod shortcut_recording_menu;
+mod shutdown;
 mod structure_search;
 mod utility_suspension;
 #[cfg(test)]
@@ -73,6 +74,7 @@ use std::{
 
 use download_diagnosis::diagnose_download_host;
 use plugin_starter::plugin_starter_computer;
+use shutdown::{FlushWrite, QuitKind, QuitPlatform};
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu},
     webview::PageLoadEvent,
@@ -179,12 +181,13 @@ static APP_QUITTING: AtomicBool = AtomicBool::new(false);
 
 /// Application-menu Quit on macOS, File ▸ Exit elsewhere.
 const APP_QUIT_COMMAND_ID: &str = "app.quit";
-/// Sent with the `committed` phase once native quit can no longer be cancelled. The document
-/// window flushes its session and answers with `quit_after_flush`. Mirrors `QUIT_FLUSH_REQUEST_EVENT` in
+/// The document window flushes its final snapshot and answers with `quit_after_flush`.
+/// Mirrors `QUIT_FLUSH_REQUEST_EVENT` in
 /// apps/desktop/src/window-manager/index.ts.
 const QUIT_FLUSH_REQUEST_EVENT: &str = "chemdraft://flush-before-quit";
-/// How long a quit waits for the document window's flush before quitting anyway.
+/// Grace after the native session write starts.
 const QUIT_FLUSH_GRACE: Duration = Duration::from_secs(3);
+const QUIT_WRITE_BUDGET: Duration = Duration::from_secs(7);
 /// How long the event loop gets to end the app once a quit is decided, before the process ends
 /// itself (Windows; see `QuitHost::force_exit`).
 const EXIT_WATCHDOG: Duration = Duration::from_secs(2);
@@ -193,7 +196,7 @@ const EXIT_WATCHDOG: Duration = Duration::from_secs(2);
 static QUIT: QuitFlow = QuitFlow::new(&APP_QUITTING, QUIT_FLUSH_GRACE, EXIT_WATCHDOG);
 static ASK_TO_SAVE_ON_QUIT: AtomicBool = AtomicBool::new(false);
 const QUIT_PROMPT_REQUEST_EVENT: &str = "chemdraft://prompt-before-quit";
-#[cfg(target_os = "macos")]
+static RECORD_ERROR_ALERT_ACTIVE: AtomicBool = AtomicBool::new(false);
 const QUIT_CANCELLED_FOR_OPEN_EVENT: &str = "chemdraft://quit-cancelled-for-open";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -219,7 +222,6 @@ fn appkit_quit_decision(
     enabled: bool,
     quitting: bool,
     reply_pending: bool,
-    reason: u32,
 ) -> AppkitQuitDecision {
     if !is_macos {
         return AppkitQuitDecision::TerminateNow;
@@ -231,14 +233,10 @@ fn appkit_quit_decision(
         return AppkitQuitDecision::TerminateNow;
     }
     if enabled {
-        // System termination must never wait for a save prompt.
-        return if reason == 0 || reason == u32::from_be_bytes(*b"quit") {
-            AppkitQuitDecision::Prompt
-        } else {
-            AppkitQuitDecision::DeferReply
-        };
+        AppkitQuitDecision::Prompt
+    } else {
+        AppkitQuitDecision::DeferReply
     }
-    AppkitQuitDecision::DeferReply
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -275,7 +273,10 @@ fn dispatch_appkit_reply_with<E>(
         let reply = reply.lock().unwrap().take();
         if let Some(reply) = reply {
             reply();
-            *flow.appkit_reply.lock().unwrap() = AppkitReplyState::Delivered;
+            let mut state = flow.appkit_reply.lock().unwrap();
+            if *state == AppkitReplyState::Claimed {
+                *state = AppkitReplyState::Delivered;
+            }
         }
     });
     if on_main_thread {
@@ -298,12 +299,14 @@ struct QuitFlow {
     quitting: &'static AtomicBool,
     /// Set once the exit watchdog is running, so it is started at most once.
     watchdog_armed: AtomicBool,
-    /// Confirmation joins final frame writes once, inside the original flush grace.
+    /// Confirmation joins final frame writes once, within the flush deadline.
     position_drain_started: AtomicBool,
     /// Generation and visible-prompt flag, serialized with timeout/cancel decisions.
     prompt: Mutex<(u64, QuitPromptPhase)>,
     next_request_id: AtomicU64,
     flush: Mutex<Option<QuitFlush>>,
+    attempt: AtomicU64,
+    deadline: Mutex<Option<Instant>>,
     /// Claiming a reply and delivering it on the main thread are separate transitions.
     #[cfg(any(target_os = "macos", test))]
     appkit_reply: Mutex<AppkitReplyState>,
@@ -315,16 +318,7 @@ struct QuitFlow {
 struct QuitFlush {
     id: u64,
     confirmed: bool,
-    #[cfg(any(target_os = "macos", test))]
-    write: QuitFlushWrite,
-}
-
-#[cfg(any(target_os = "macos", test))]
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum QuitFlushWrite {
-    Idle,
-    Writing,
-    Written,
+    write: FlushWrite,
 }
 
 impl QuitFlow {
@@ -332,11 +326,12 @@ impl QuitFlow {
         self.requested.load(Ordering::SeqCst) || self.quitting.load(Ordering::SeqCst)
     }
 
-    // The user can still use save dialogs while the prompt is up, but a second launch
-    // must wait for cancellation or take over after a confirmed quit.
+    // A secondary waits for cancellation or takes over after a confirmed quit.
     #[cfg(target_os = "macos")]
     fn refuses_macos_launch(&self) -> bool {
-        self.prompt.lock().unwrap().1 != QuitPromptPhase::Idle || self.in_progress()
+        shutdown_kind(false) != QuitKind::User
+            || self.prompt.lock().unwrap().1 != QuitPromptPhase::Idle
+            || self.in_progress()
     }
 
     const fn new(
@@ -349,6 +344,8 @@ impl QuitFlow {
             prompt: Mutex::new((0, QuitPromptPhase::Idle)),
             next_request_id: AtomicU64::new(1),
             flush: Mutex::new(None),
+            attempt: AtomicU64::new(0),
+            deadline: Mutex::new(None),
             #[cfg(any(target_os = "macos", test))]
             appkit_reply: Mutex::new(AppkitReplyState::Idle),
             quitting,
@@ -359,7 +356,11 @@ impl QuitFlow {
         }
     }
 
-    /// Menu, window-close, and OS termination all share one committed flush.
+    fn flush_budget(&self) -> Duration {
+        self.flush_grace.saturating_add(QUIT_WRITE_BUDGET)
+    }
+
+    /// Menus, document close, and Dock Quit share one final session write.
     fn begin_flush(&self, prompt_id: Option<u64>) -> (u64, bool) {
         let mut flush = self.flush.lock().unwrap();
         if let Some(existing) = *flush {
@@ -369,8 +370,7 @@ impl QuitFlow {
         *flush = Some(QuitFlush {
             id,
             confirmed: false,
-            #[cfg(any(target_os = "macos", test))]
-            write: QuitFlushWrite::Idle,
+            write: FlushWrite::AwaitingSnapshot,
         });
         (id, true)
     }
@@ -402,54 +402,70 @@ impl QuitFlow {
         true
     }
 
-    #[cfg(any(target_os = "macos", test))]
-    fn write_prompted_flush(
-        &self,
+    fn write_final_flush<H: QuitHost>(
+        &'static self,
+        host: &H,
         request_id: u64,
         write: impl FnOnce() -> Result<(), String>,
     ) -> Result<(), String> {
-        {
+        let attempt = {
             let mut flush = self.flush.lock().unwrap();
             let Some(current) = flush.as_mut().filter(|current| {
-                current.id == request_id && current.write == QuitFlushWrite::Idle
+                current.id == request_id && current.write == FlushWrite::AwaitingSnapshot
             }) else {
                 return Ok(());
             };
             if self.quitting.load(Ordering::SeqCst) {
                 return Ok(());
             }
-            current.write = QuitFlushWrite::Writing;
-        }
-        let result = write();
-        if let Some(current) = self.flush.lock().unwrap().as_mut() {
-            if current.id == request_id && current.write == QuitFlushWrite::Writing {
-                current.write = QuitFlushWrite::Idle;
+            current.write = FlushWrite::Writing;
+            self.attempt.load(Ordering::SeqCst)
+        };
+        let timer_host = host.clone();
+        host.schedule_after(self.flush_grace, move || {
+            let grace_elapsed = self.flush.lock().unwrap().is_some_and(|current| {
+                current.id == request_id && current.write.grace_can_end_quit()
+            });
+            if grace_elapsed {
+                quit_attempt_now_with(self, &timer_host, attempt, QuitReason::GraceExpired);
             }
+        });
+        let result = write();
+        if let Some(current) = self
+            .flush
+            .lock()
+            .unwrap()
+            .as_mut()
+            .filter(|current| current.id == request_id)
+        {
+            current.write = if result.is_ok() {
+                FlushWrite::Finished
+            } else {
+                FlushWrite::Failed
+            };
         }
         result
     }
 
-    #[cfg(any(target_os = "macos", test))]
-    fn publish_prompted_flush(
+    fn publish_final_flush(
         &self,
         request_id: u64,
         publish: impl FnOnce() -> std::io::Result<()>,
     ) -> std::io::Result<bool> {
-        let mut flush = self.flush.lock().unwrap();
-        let Some(current) = flush.as_mut().filter(|current| current.id == request_id) else {
-            return Ok(false);
-        };
+        {
+            let mut flush = self.flush.lock().unwrap();
+            let Some(current) = flush.as_mut().filter(|current| current.id == request_id) else {
+                return Ok(false);
+            };
+            if self.quitting.load(Ordering::SeqCst) {
+                return Ok(false);
+            }
+            // Claim publication against Finder cancellation. The rename must never hold
+            // a mutex that the deadline needs.
+            current.write = FlushWrite::Publishing;
+        }
         publish()?;
-        current.write = QuitFlushWrite::Written;
         Ok(true)
-    }
-
-    #[cfg(any(windows, test))]
-    fn flush_confirmed(&self, request_id: u64) -> bool {
-        self.flush
-            .lock()
-            .unwrap()
-            .is_some_and(|flush| flush.id == request_id && flush.confirmed)
     }
 }
 
@@ -479,8 +495,8 @@ enum QuitReason {
     GraceExpired,
     /// There was no document window to ask.
     NoDocument,
-    /// The user asked again while the macOS quit was waiting for its flush.
-    RepeatedRequest,
+    /// The whole flush budget elapsed, including renderer scheduling and disk writes.
+    FlushDeadline,
 }
 
 impl QuitReason {
@@ -489,7 +505,9 @@ impl QuitReason {
             Self::FlushConfirmed => "after the session flush was confirmed",
             Self::GraceExpired => "after the flush grace expired (session flush not confirmed)",
             Self::NoDocument => "with no document window to flush",
-            Self::RepeatedRequest => "after a repeated quit request (session flush not confirmed)",
+            Self::FlushDeadline => {
+                "after the hard flush deadline expired (session flush not confirmed)"
+            }
         }
     }
 }
@@ -538,16 +556,23 @@ trait QuitHost: Clone + Send + 'static {
 impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
     fn ask_document_to_flush(&self) -> bool {
         let app = self.clone();
+        let attempt = QUIT.attempt.load(Ordering::SeqCst);
         // Queue the request after applicationShouldTerminate returns TerminateLater.
         self.dispatch_worker(move || {
             let request = app.clone();
             if let Err(error) = app.run_on_main_thread(move || {
+                if QUIT.attempt.load(Ordering::SeqCst) != attempt
+                    || QUIT.quitting.load(Ordering::SeqCst)
+                    || shutdown_kind(false) != QuitKind::User
+                {
+                    return;
+                }
                 if !matches!(request_document_quit_flush(&request), Ok(Some(_))) {
                     complete_quit_flush_with(&QUIT, &request, QuitReason::NoDocument);
                 }
             }) {
                 eprintln!("Could not dispatch session flush: {error}");
-                // The independent grace still completes the quit.
+                // The independent hard deadline still completes the quit.
             }
         });
         true
@@ -573,10 +598,6 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
     }
 
     fn exit(&self) {
-        #[cfg(target_os = "macos")]
-        if let Err(error) = persist_macos_opens(self) {
-            eprintln!("Could not record document opens for relaunch: {error}");
-        }
         tauri::AppHandle::exit(self, 0);
     }
 
@@ -597,6 +618,7 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
     #[cfg(windows)]
     fn force_exit(&self, waited: Duration, reason: QuitReason) {
         eprintln!("{}", forced_exit_message(reason, waited));
+        finish_exit_opens(self, QuitKind::Irreversible, || {});
         self.state::<ocsr_engine::OcsrEngineState>()
             .kill_for_forced_exit();
         self.state::<naming_engine::NamingEngineState>()
@@ -628,10 +650,14 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
 
 /// Quit without losing the last edits. The session autosave is an 800 ms debounce in the
 /// webview, so exiting straight away dropped anything edited in
-/// the last moment. Ask the document window to flush first; it confirms through `quit_after_flush`,
-/// and a grace timer quits regardless if the webview can't answer.
+/// the last moment. Ask the document window to flush first. It confirms through
+/// `quit_after_flush`, and a hard deadline covers missing or stalled replies.
 fn request_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
-    if windows_session_end::in_progress() {
+    if shutdown_kind(false) != QuitKind::User || RECORD_ERROR_ALERT_ACTIVE.load(Ordering::SeqCst) {
+        return;
+    }
+    if QUIT.requested.load(Ordering::SeqCst) {
+        enforce_quit_deadline(&QUIT, app);
         return;
     }
     if ASK_TO_SAVE_ON_QUIT.load(Ordering::SeqCst) {
@@ -648,7 +674,7 @@ fn request_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
         }
         request_prompted_quit_with(&QUIT, app);
     } else {
-        request_quit_with(&QUIT, app, cfg!(target_os = "macos"));
+        request_quit_with(&QUIT, app);
     }
 }
 
@@ -659,25 +685,38 @@ fn prompt_waits_for_user(flow: &QuitFlow) -> bool {
     )
 }
 
-// Preference-off and system termination share the original #99 flush handshake.
-fn request_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, force_repeated_quit: bool) {
+// Preference-off quits and AppKit's ordinary Dock Quit share the committed flush.
+fn request_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H) {
     if flow.requested.swap(true, Ordering::SeqCst) {
-        if force_repeated_quit {
-            quit_now_with(flow, host, QuitReason::RepeatedRequest);
-        }
+        enforce_quit_deadline(flow, host);
         return;
     }
-    arm_quit_flush_grace(flow, host);
+    let attempt = flow.attempt.fetch_add(1, Ordering::SeqCst) + 1;
+    arm_quit_deadline(flow, host, attempt);
     if !host.ask_document_to_flush() {
-        quit_now_with(flow, host, QuitReason::NoDocument);
+        quit_attempt_now_with(flow, host, attempt, QuitReason::NoDocument);
     }
 }
 
-fn arm_quit_flush_grace<H: QuitHost>(flow: &'static QuitFlow, host: &H) {
+fn arm_quit_deadline<H: QuitHost>(flow: &'static QuitFlow, host: &H, attempt: u64) {
+    let budget = flow.flush_budget();
+    *flow.deadline.lock().unwrap() = Some(Instant::now() + budget);
     let timer_host = host.clone();
-    host.schedule_after(flow.flush_grace, move || {
-        expire_quit_flush_with(flow, &timer_host);
+    host.schedule_after(budget, move || {
+        quit_attempt_now_with(flow, &timer_host, attempt, QuitReason::FlushDeadline);
     });
+}
+
+fn enforce_quit_deadline<H: QuitHost>(flow: &'static QuitFlow, host: &H) {
+    let attempt = flow.attempt.load(Ordering::SeqCst);
+    if flow
+        .deadline
+        .lock()
+        .unwrap()
+        .is_some_and(|deadline| Instant::now() >= deadline)
+    {
+        quit_attempt_now_with(flow, host, attempt, QuitReason::FlushDeadline);
+    }
 }
 
 /// Read native frames on the main thread and queue their writes for the bounded drain.
@@ -693,23 +732,20 @@ fn capture_quit_window_frames<R: Runtime>(app: &tauri::AppHandle<R>) {
 
 /// Session confirmation has priority; only then join geometry workers. The deadline never joins.
 fn complete_quit_flush_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, reason: QuitReason) {
-    if windows_session_end::in_progress()
+    if shutdown_kind(false) != QuitKind::User
         || flow.position_drain_started.swap(true, Ordering::SeqCst)
     {
         return;
     }
+    let attempt = flow.attempt.load(Ordering::SeqCst);
     let drain_host = host.clone();
     host.dispatch_worker(move || {
         drain_host.drain_pending_position_writes();
-        quit_now_with(flow, &drain_host, reason);
+        quit_attempt_now_with(flow, &drain_host, attempt, reason);
     });
 }
 
-fn expire_quit_flush_with<H: QuitHost>(flow: &'static QuitFlow, host: &H) {
-    quit_now_with(flow, host, QuitReason::GraceExpired);
-}
-
-/// AppKit keeps the original Dock/AppleScript/system termination request open while we flush.
+/// AppKit keeps the original Dock or AppleScript quit request open while we flush.
 /// If a menu quit already requested a flush, reuse it and its existing deadline.
 /// False means another quit was already decided, so the delegate must return TerminateNow.
 #[cfg(any(target_os = "macos", test))]
@@ -723,9 +759,9 @@ fn request_appkit_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H) -> b
     }
     *reply = AppkitReplyState::Pending;
     drop(reply);
-    // Logout supersedes a pending ordinary save prompt, including its timers and late answers.
+    // A quit without a save prompt can supersede an outstanding prompt and its timers.
     flow.prompt.lock().unwrap().1 = QuitPromptPhase::Flushing;
-    request_quit_with(flow, host, false);
+    request_quit_with(flow, host);
     true
 }
 
@@ -744,42 +780,27 @@ fn request_prompted_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H) ->
     if !host.ask_document_to_prompt(request_id) {
         quit_now_with(flow, host, QuitReason::NoDocument);
     } else {
-        arm_prompt_grace(flow, host, request_id, QuitPromptPhase::AwaitingWindow);
+        arm_prompt_readiness_timeout(flow, host, request_id);
     }
     Some(request_id)
 }
 
-fn arm_prompt_grace<H: QuitHost>(
-    flow: &'static QuitFlow,
-    host: &H,
-    request_id: u64,
-    phase: QuitPromptPhase,
-) {
+fn arm_prompt_readiness_timeout<H: QuitHost>(flow: &'static QuitFlow, host: &H, request_id: u64) {
     let timer_host = host.clone();
-    host.schedule_after(flow.flush_grace, move || {
+    host.schedule_after(flow.flush_budget(), move || {
         let mut prompt = flow.prompt.lock().unwrap();
-        if *prompt != (request_id, phase) || flow.quitting.load(Ordering::SeqCst) {
+        if *prompt != (request_id, QuitPromptPhase::AwaitingWindow)
+            || flow.quitting.load(Ordering::SeqCst)
+        {
             return;
         }
-        #[cfg(any(target_os = "macos", test))]
-        let flush = flow.flush.lock().unwrap();
-        #[cfg(any(target_os = "macos", test))]
-        if flush.is_some_and(|current| {
-            current.id == request_id && current.write == QuitFlushWrite::Writing
-        }) {
-            drop(flush);
-            drop(prompt);
-            arm_prompt_grace(flow, &timer_host, request_id, phase);
-            return;
-        }
-        // Claim the timeout against both Cancel and the start of a final write. An unanswered
-        // request is no longer a prompt that a Finder open can cancel.
+        // This is the prompt readiness timeout, before the renderer accepted the request.
+        // Queue new opens as soon as we claim the timed-out prompt.
+        let attempt = flow.attempt.load(Ordering::SeqCst);
+        flow.requested.store(true, Ordering::SeqCst);
         prompt.1 = QuitPromptPhase::Idle;
-        flow.quitting.store(true, Ordering::SeqCst);
-        #[cfg(any(target_os = "macos", test))]
-        drop(flush);
         drop(prompt);
-        quit_now_with(flow, &timer_host, QuitReason::GraceExpired);
+        quit_attempt_now_with(flow, &timer_host, attempt, QuitReason::FlushDeadline);
     });
 }
 
@@ -800,68 +821,79 @@ fn resume_prompted_quit_with<H: QuitHost>(
         return false;
     }
     prompt.1 = QuitPromptPhase::Flushing;
+    let attempt = flow.attempt.fetch_add(1, Ordering::SeqCst) + 1;
     flow.requested.store(true, Ordering::SeqCst);
-    drop(prompt);
-    arm_prompt_grace(flow, host, request_id, QuitPromptPhase::Flushing);
+    arm_quit_deadline(flow, host, attempt);
     true
 }
 
 /// The session is written, or its grace has run out. Reply to a deferred AppKit termination;
 /// otherwise arm the exit watchdog here and nowhere else, then request event-loop exit.
 fn quit_now_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, reason: QuitReason) {
-    if windows_session_end::in_progress() {
-        // WM_ENDSESSION is waiting for the document. Let Windows own teardown.
+    let attempt = flow.attempt.load(Ordering::SeqCst);
+    quit_attempt_now_with(flow, host, attempt, reason);
+}
+
+fn quit_attempt_now_with<H: QuitHost>(
+    flow: &'static QuitFlow,
+    host: &H,
+    attempt: u64,
+    reason: QuitReason,
+) {
+    if shutdown_kind(false) != QuitKind::User {
+        return; // The OS owns teardown.
+    }
+    let prompt = flow.prompt.lock().unwrap();
+    if flow.attempt.load(Ordering::SeqCst) != attempt || flow.quitting.load(Ordering::SeqCst) {
         return;
     }
     #[cfg(any(target_os = "macos", test))]
-    {
-        let mut reply = flow.appkit_reply.lock().unwrap();
-        // Confirmation and deadline race for this transition. Late confirmations/timeouts
-        // must neither reply again nor fall through to AppHandle::exit.
+    let mut reply = flow.appkit_reply.lock().unwrap();
+    #[cfg(any(target_os = "macos", test))]
+    let appkit = {
         match *reply {
             AppkitReplyState::Claimed | AppkitReplyState::Delivered => return,
             AppkitReplyState::Pending => {
-                // A menu repeat must not complete AppKit's handshake before the flush/deadline.
-                if reason == QuitReason::RepeatedRequest {
-                    return;
-                }
                 *reply = AppkitReplyState::Claimed;
-                // Let Tao's applicationWillTerminate -> RunEvent::Exit do normal cleanup.
-                // Any ExitRequested in between must also pass without requesting a new flush.
-                flow.quitting.store(true, Ordering::SeqCst);
-                drop(reply);
-                if reason == QuitReason::NoDocument {
-                    // This path can run inside applicationShouldTerminate. Dispatch from a
-                    // worker so its TerminateLater return precedes the main-thread YES.
-                    let host = host.clone();
-                    thread::spawn(move || host.reply_to_appkit_termination(flow));
-                } else {
-                    host.reply_to_appkit_termination(flow);
-                }
-                return;
+                true
             }
-            AppkitReplyState::Idle => {
-                flow.quitting.store(true, Ordering::SeqCst);
-            }
+            AppkitReplyState::Idle => false,
         }
-    }
-    // Raised first so the palette teardown that follows isn't recorded as user closes.
-    #[cfg(not(any(target_os = "macos", test)))]
+    };
+    let flush = flow.flush.lock().unwrap();
     flow.quitting.store(true, Ordering::SeqCst);
+    drop(flush);
+    #[cfg(any(target_os = "macos", test))]
+    drop(reply);
+    drop(prompt);
+    #[cfg(any(target_os = "macos", test))]
+    if appkit && reason != QuitReason::FlushDeadline {
+        host.reply_to_appkit_termination(flow);
+        return;
+    }
     if !flow.watchdog_armed.swap(true, Ordering::SeqCst) {
         let timer_host = host.clone();
         let wait = flow.exit_watchdog;
         host.schedule_after(wait, move || {
-            timer_host.force_exit(wait, reason);
+            if flow.attempt.load(Ordering::SeqCst) == attempt
+                && flow.quitting.load(Ordering::SeqCst)
+            {
+                timer_host.force_exit(wait, reason);
+            }
         });
+    }
+    #[cfg(any(target_os = "macos", test))]
+    if appkit {
+        host.reply_to_appkit_termination(flow);
+        return;
     }
     host.exit();
 }
 
 /// The document window's answer to `QUIT_FLUSH_REQUEST_EVENT`: its session is written, quit now.
 /// `async`, so it runs on a worker: a sync command runs on the main thread, and when a window build
-/// held that thread the answer waited too, so the quit (and the exit watchdog) started only when the
-/// 3 s grace ran out. Deciding here posts the exit request or AppKit reply to the main thread.
+/// held that thread the answer waited too. Deciding here posts the exit request or AppKit reply
+/// to the main thread.
 #[tauri::command]
 async fn quit_after_flush(
     app: tauri::AppHandle,
@@ -924,9 +956,14 @@ fn cancel_quit_with(flow: &QuitFlow, request_id: u64, for_open: bool) -> QuitCan
         if for_open {
             let mut flush = flow.flush.lock().unwrap();
             if flush.is_some_and(|flush| {
-                flush.id == request_id && flush.write != QuitFlushWrite::Written && !flush.confirmed
+                flush.id == request_id
+                    && flush.write.can_cancel_for_open()
+                    && !flush.confirmed
+                    && !flow.quitting.load(Ordering::SeqCst)
             }) {
                 *flush = None;
+                flow.attempt.fetch_add(1, Ordering::SeqCst);
+                *flow.deadline.lock().unwrap() = None;
                 flow.requested.store(false, Ordering::SeqCst);
                 prompt.1 = QuitPromptPhase::Idle;
                 return QuitCancelOutcome::Cancelled;
@@ -1233,12 +1270,27 @@ struct ToolsetCommandPayload {
     command_id: String,
 }
 
+#[derive(Clone, Copy, serde::Deserialize, serde::Serialize)]
+#[serde(untagged)]
+enum OpenReceipt {
+    #[cfg(target_os = "macos")]
+    Handoff(macos_single_instance::RendererReceipt),
+    Replay {
+        replay: usize,
+    },
+}
+
+#[derive(serde::Deserialize)]
+struct OpenConfirmation {
+    receipt: OpenReceipt,
+    opened: bool,
+}
+
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct NativeOpenDocumentPayload {
-    #[cfg(target_os = "macos")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    receipt: Option<macos_single_instance::OpenReceipt>,
+    receipt: Option<OpenReceipt>,
     path: String,
     display_name: String,
     contents: String,
@@ -1251,12 +1303,8 @@ struct NativeOpenDocumentPayload {
 #[derive(Default)]
 struct PendingOpenDocument {
     payloads: Mutex<Vec<NativeOpenDocumentPayload>>,
-    #[cfg(target_os = "macos")]
     replayed: Mutex<document_session::pending_opens::Replay>,
-    #[cfg(target_os = "macos")]
-    paths_after_cancel: Mutex<Vec<PathBuf>>,
-    #[cfg(target_os = "macos")]
-    late_opens_to_retry: Mutex<Vec<String>>,
+    deferred_paths: Mutex<Vec<PathBuf>>,
     // Window existence is not a readiness signal: macOS may close every window after setup.
     setup_completed: AtomicBool,
 }
@@ -1290,6 +1338,33 @@ impl PendingOpenDocument {
     fn drain(&self) -> Result<Vec<NativeOpenDocumentPayload>, String> {
         let mut pending = self.payloads.lock().map_err(|error| error.to_string())?;
         Ok(std::mem::take(&mut *pending))
+    }
+    fn persist_with(
+        &self,
+        persist: impl FnOnce(Vec<String>) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let mut payloads = self
+            .payloads
+            .try_lock()
+            .map_err(|error| error.to_string())?;
+        let mut deferred = self
+            .deferred_paths
+            .try_lock()
+            .map_err(|error| error.to_string())?;
+        let paths = payloads
+            .iter()
+            .filter(|payload| payload.receipt.is_none())
+            .map(|payload| payload.path.clone())
+            .chain(
+                deferred
+                    .iter()
+                    .map(|path| path.to_string_lossy().into_owned()),
+            )
+            .collect();
+        persist(paths)?;
+        payloads.clear();
+        deferred.clear();
+        Ok(())
     }
 }
 
@@ -1666,8 +1741,10 @@ pub fn run() {
                     // document window quits — after the document flushes its pending autosave.
                     #[cfg(not(target_os = "macos"))]
                     WindowEvent::CloseRequested { api, .. } => {
-                        api.prevent_close();
-                        request_quit(window.app_handle());
+                        if shutdown_kind(false) == QuitKind::User {
+                            api.prevent_close();
+                            request_quit(window.app_handle());
+                        }
                     }
                     WindowEvent::Destroyed => {
                         // The close button only hides the main window, so its actual destruction
@@ -2003,32 +2080,18 @@ pub fn run() {
         match event {
             RunEvent::MainEventsCleared => canvas_context_menu::events_cleared(app),
             RunEvent::ExitRequested { code, api, .. } => {
-                if windows_session_end::in_progress() {
-                    // A queued app quit can arrive while WM_ENDSESSION is pumping WebView2.
-                    api.prevent_exit();
-                } else if should_flush_exit_request(
-                    cfg!(target_os = "macos"),
-                    code,
-                    APP_QUITTING.load(Ordering::SeqCst),
-                ) {
-                    // AppHandle::exit and last-window destruction are preventable. The exit
-                    // posted by quit_now is allowed through because APP_QUITTING is then true.
+                let kind = shutdown_kind(code == Some(tauri::RESTART_EXIT_CODE));
+                if kind == QuitKind::User
+                    && should_flush_exit_request(
+                        cfg!(target_os = "macos"),
+                        code,
+                        APP_QUITTING.load(Ordering::SeqCst),
+                    )
+                {
                     api.prevent_exit();
                     request_quit(app);
-                } else {
-                    #[cfg(target_os = "macos")]
-                    if code != Some(tauri::RESTART_EXIT_CODE)
-                        && macos_quit::defer_exit_for_record_alert({
-                            let app = app.clone();
-                            move || app.exit(code.unwrap_or(0))
-                        })
-                    {
-                        api.prevent_exit();
-                        return;
-                    }
+                } else if finish_exit_opens(app, kind, || api.prevent_exit()) {
                     APP_QUITTING.store(true, Ordering::SeqCst);
-                    #[cfg(target_os = "macos")]
-                    persist_macos_opens_before_exit(app);
                     panel_full_size::restore_all(app);
                     app.state::<ocsr_engine::OcsrEngineState>().shutdown();
                     external_tools::shutdown(app);
@@ -2037,12 +2100,8 @@ pub fn run() {
                 }
             }
             RunEvent::Exit => {
-                // AppKit quit decisions are handled before this final cleanup.
                 APP_QUITTING.store(true, Ordering::SeqCst);
-                #[cfg(target_os = "macos")]
-                if let Err(error) = persist_macos_opens(app) {
-                    eprintln!("Could not record document opens for relaunch: {error}");
-                }
+                finish_exit_opens(app, QuitKind::Irreversible, || {});
                 panel_full_size::restore_all(app);
                 app.state::<ocsr_engine::OcsrEngineState>().shutdown();
                 external_tools::shutdown(app);
@@ -2145,6 +2204,17 @@ fn setup_primary_app(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::E
     app.state::<PendingOpenDocument>()
         .setup_completed
         .store(true, Ordering::SeqCst);
+
+    match app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())
+        .and_then(|directory| document_session::pending_opens::take_notice(&directory))
+    {
+        Ok(Some(notice)) => schedule_open_notice(app, notice, false, None),
+        Ok(None) => {}
+        Err(error) => eprintln!("Could not read the pending document opens notice: {error}"),
+    }
 
     // Off macOS a document opened from the shell arrives as a launch argument. Keep the
     // existing queue-and-emit behavior, now that setup and the config window are ready.
@@ -3336,7 +3406,7 @@ enum SecondLaunchAction {
     /// This process is quitting. Opening a document into it, or showing (even rebuilding) the
     /// document window, would be lost with the process and would hold the main thread the quit is
     /// waiting on. macOS refuses the handoff so the second process can wait for the lock.
-    /// Windows keeps the single-instance plugin's WM_COPYDATA behavior.
+    /// Windows stages forwarded paths for the final pending-opens write.
     IgnoreWhileQuitting,
 }
 
@@ -3353,9 +3423,25 @@ fn second_launch_action(quitting: bool, setup_completed: bool) -> SecondLaunchAc
 
 #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
 fn handle_second_launch<R: Runtime>(app: &tauri::AppHandle<R>, argv: Vec<String>, cwd: String) {
-    let _ = handle_second_launch_with(app, || {
-        handle_opened_document_args(app, argv.into_iter().skip(1), Path::new(&cwd))
-    });
+    let state = app.state::<PendingOpenDocument>();
+    let quitting = QUIT.in_progress()
+        || QUIT.prompt.lock().unwrap().1 != QuitPromptPhase::Idle
+        || shutdown_kind(false) != QuitKind::User;
+    let action = second_launch_action(quitting, state.setup_completed.load(Ordering::SeqCst));
+    let args = argv.into_iter().skip(1);
+    let cwd = Path::new(&cwd);
+    if action == SecondLaunchAction::IgnoreWhileQuitting {
+        // Preserve even a requested drawing that the running app can no longer read.
+        queue_quit_opens(
+            app,
+            args.filter(|arg| !arg.starts_with('-'))
+                .map(|arg| cwd.join(arg))
+                .filter(|path| has_document_extension(path) || is_openable_document_path(path))
+                .collect(),
+        );
+        return;
+    }
+    handle_second_launch_with(app, action, || handle_opened_document_args(app, args, cwd));
 }
 
 #[cfg(target_os = "macos")]
@@ -3447,33 +3533,20 @@ fn forwarded_document_payloads(
 #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
 fn handle_second_launch_with<R: Runtime>(
     app: &tauri::AppHandle<R>,
+    action: SecondLaunchAction,
     open: impl FnOnce() -> Result<(), String>,
-) -> Option<Result<(), String>> {
-    let setup_completed = app
-        .state::<PendingOpenDocument>()
-        .setup_completed
-        .load(Ordering::SeqCst);
-    let action = second_launch_action(quit_in_progress(), setup_completed);
-    if action == SecondLaunchAction::IgnoreWhileQuitting {
-        eprintln!(
-            "ChemDraft: a second launch arrived while quitting; ignored (this process is exiting)"
-        );
-        return None;
-    }
-    let result = open();
-    if let Err(error) = &result {
+) {
+    if let Err(error) = open() {
         eprintln!("Could not open ChemDraft document from a second launch: {error}");
     }
-    if action == SecondLaunchAction::OpenOnly {
-        return Some(result);
+    if action == SecondLaunchAction::OpenAndShow {
+        if let Err(error) = ensure_main_window_visible(app) {
+            eprintln!("Could not show ChemDraft main window for a second launch: {error}");
+        }
+        if let Err(error) = focus_main_document_window_impl(app, MainWindowFocusMode::Force) {
+            eprintln!("Could not focus ChemDraft document window for a second launch: {error}");
+        }
     }
-    if let Err(error) = ensure_main_window_visible(app) {
-        eprintln!("Could not show ChemDraft main window for a second launch: {error}");
-    }
-    if let Err(error) = focus_main_document_window_impl(app, MainWindowFocusMode::Force) {
-        eprintln!("Could not focus ChemDraft document window for a second launch: {error}");
-    }
-    Some(result)
 }
 
 /// Whether a quit has begun: off macOS a document-window close requests one, and the exit itself
@@ -3676,12 +3749,14 @@ fn read_optional_file(path: &Path) -> Result<Option<String>, String> {
 /// debounce can overlap the next one, and a shared temp name would let writer A's rename publish
 /// writer B's half-written bytes, which is exactly the torn file this helper exists to prevent.
 fn write_file_atomic(path: &Path, contents: &str) -> Result<(), String> {
-    write_file_atomic_with(path, contents, |tmp, path| {
-        #[cfg(windows)]
-        return replace_with_windows_retry(|| fs::rename(tmp, path), std::thread::sleep);
-        #[cfg(not(windows))]
-        fs::rename(tmp, path)
-    })
+    write_file_atomic_with(path, contents, replace_atomic_file)
+}
+
+fn replace_atomic_file(tmp: &Path, path: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    return replace_with_windows_retry(|| fs::rename(tmp, path), std::thread::sleep);
+    #[cfg(not(windows))]
+    fs::rename(tmp, path)
 }
 
 fn write_file_atomic_with(
@@ -4358,23 +4433,20 @@ async fn save_document_session(
     if window.label() != MAIN_WINDOW_LABEL {
         return Err("Only the main document window can persist the document session".into());
     }
-    #[cfg(target_os = "macos")]
     if let Some(request_id) = quit_request_id {
-        return QUIT.write_prompted_flush(request_id, || {
+        return QUIT.write_final_flush(&app, request_id, || {
             let path = document_session_path(&app)?;
             let contents =
                 serde_json::to_string_pretty(&state).map_err(|error| error.to_string())?;
             // Only the final rename and cancellation need to exclude each other.
             write_file_atomic_with(&path, &contents, |tmp, path| {
-                if !QUIT.publish_prompted_flush(request_id, || fs::rename(tmp, path))? {
+                if !QUIT.publish_final_flush(request_id, || replace_atomic_file(tmp, path))? {
                     fs::remove_file(tmp)?;
                 }
                 Ok(())
             })
         });
     }
-    #[cfg(not(target_os = "macos"))]
-    let _ = quit_request_id;
     let path = document_session_path(&app)?;
     let contents = serde_json::to_string_pretty(&state).map_err(|error| error.to_string())?;
     write_file_atomic(&path, &contents)
@@ -9007,14 +9079,12 @@ fn engine3d_target_triple() -> &'static str {
     }
 }
 
-// Receipts travel on the same document-window IPC as the destructive drain. A receipt call
-// never drains the next batch, which may still be waiting for its queue-change notification.
-#[cfg(target_os = "macos")]
+// A receipt call never drains the next batch, which may be waiting for its queue notification.
 #[tauri::command]
 fn take_pending_open_document(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, PendingOpenDocument>,
-    confirmation: Option<macos_single_instance::OpenConfirmation>,
+    confirmation: Option<OpenConfirmation>,
     ready_for_deferred_opens: Option<bool>,
 ) -> Result<Vec<NativeOpenDocumentPayload>, String> {
     if !is_document_window(window.label()) {
@@ -9022,14 +9092,13 @@ fn take_pending_open_document(
     }
     if let Some(confirmation) = confirmation {
         match confirmation.receipt {
-            macos_single_instance::OpenReceipt::Handoff(receipt) => {
-                macos_single_instance::renderer_consumed(
-                    window.app_handle(),
-                    receipt,
-                    confirmation.opened,
-                );
-            }
-            macos_single_instance::OpenReceipt::Replay { replay } => {
+            #[cfg(target_os = "macos")]
+            OpenReceipt::Handoff(receipt) => macos_single_instance::renderer_consumed(
+                window.app_handle(),
+                receipt,
+                confirmation.opened,
+            ),
+            OpenReceipt::Replay { replay } => {
                 let directory = window
                     .app_handle()
                     .path()
@@ -9038,6 +9107,8 @@ fn take_pending_open_document(
                 state.replayed.lock().unwrap().confirm(&directory, replay)?;
             }
         }
+        #[cfg(not(target_os = "macos"))]
+        let _ = confirmation.opened;
         return Ok(Vec::new());
     }
     if QUIT.in_progress() {
@@ -9054,7 +9125,7 @@ fn take_pending_open_document(
         }
         payload
     };
-    let paths = std::mem::take(&mut *state.paths_after_cancel.lock().unwrap());
+    let paths = std::mem::take(&mut *state.deferred_paths.lock().unwrap());
     pending.extend(paths.iter().map(|path| read_path(path)));
     let replay = window
         .app_handle()
@@ -9068,7 +9139,7 @@ fn take_pending_open_document(
                 .unwrap()
                 .start(&directory, |replay, path| {
                     let mut payload = read_path(Path::new(path));
-                    payload.receipt = Some(macos_single_instance::OpenReceipt::Replay { replay });
+                    payload.receipt = Some(OpenReceipt::Replay { replay });
                     pending.push(payload);
                 })
         });
@@ -9076,14 +9147,6 @@ fn take_pending_open_document(
         eprintln!("Could not replay document opens from the previous launch: {error}");
     }
     Ok(pending)
-}
-
-#[cfg(not(target_os = "macos"))]
-#[tauri::command]
-fn take_pending_open_document(
-    state: tauri::State<'_, PendingOpenDocument>,
-) -> Result<Vec<NativeOpenDocumentPayload>, String> {
-    state.drain()
 }
 
 /// Tauri restart cannot be prevented (ExitRequestApi::prevent_exit ignores RESTART_EXIT_CODE).
@@ -9314,6 +9377,10 @@ fn handle_opened_document_urls<R: Runtime>(
             .filter_map(|url| opened_document_path(url).transpose())
             .filter_map(|result| result.inspect_err(|error| eprintln!("{error}")).ok())
             .collect();
+        if shutdown_kind(false) != QuitKind::User {
+            queue_quit_opens(app, paths);
+            return Ok(());
+        }
         let cancelled = std::cell::Cell::new(false);
         open_macos_paths_with(
             &QUIT,
@@ -9325,7 +9392,7 @@ fn handle_opened_document_urls<R: Runtime>(
             },
             |paths| {
                 let state = app.state::<PendingOpenDocument>();
-                let mut deferred = state.paths_after_cancel.lock().unwrap();
+                let mut deferred = state.deferred_paths.lock().unwrap();
                 if cancelled.get() || !deferred.is_empty() {
                     // A Save may still be writing the very file that was requested. The
                     // renderer drains these paths only after the save or session write returns.
@@ -9339,17 +9406,8 @@ fn handle_opened_document_urls<R: Runtime>(
                 })
             },
             |paths| {
-                let state = app.state::<PendingOpenDocument>();
-                let paths = paths
-                    .into_iter()
-                    .map(|path| path.to_string_lossy().into_owned())
-                    .collect();
-                append_late_opens(&state.late_opens_to_retry, paths, |pending| {
-                    record_pending_opens(app, pending)
-                })
-                .inspect_err(|error| {
-                    macos_quit::report_record_error(error);
-                })
+                queue_quit_opens(app, paths);
+                Ok(())
             },
         )
     }
@@ -9387,66 +9445,154 @@ fn open_macos_paths_with(
     }
 }
 
-#[cfg(target_os = "macos")]
+fn shutdown_kind(irreversible: bool) -> QuitKind {
+    #[cfg(target_os = "macos")]
+    let system_ending = macos_quit::power_off_in_progress();
+    #[cfg(not(target_os = "macos"))]
+    let system_ending = false;
+    shutdown::quit_kind(
+        QuitPlatform::current(),
+        0,
+        system_ending || windows_session_end::in_progress(),
+        irreversible,
+    )
+}
+
 fn record_pending_opens<R: Runtime>(
     app: &tauri::AppHandle<R>,
     paths: &[String],
+    notice: bool,
 ) -> Result<(), String> {
     if paths.is_empty() {
         return Ok(());
+    }
+    if notice {
+        eprintln!(
+            "ChemDraft: recording unopened documents at shutdown:\n{}",
+            paths.join("\n")
+        );
     }
     let directory = app
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    document_session::pending_opens::append(&directory, paths)
+    document_session::pending_opens::append(&directory, paths, notice)
         .map_err(|error| format!("{error}\n\nRequested files:\n{}", paths.join("\n")))
 }
 
-#[cfg(target_os = "macos")]
-fn append_late_opens(
-    queue: &Mutex<Vec<String>>,
-    paths: Vec<String>,
-    append: impl FnOnce(&[String]) -> Result<(), String>,
-) -> Result<(), String> {
-    let mut pending = queue.lock().unwrap();
-    pending.extend(paths);
-    append(&pending)?;
-    pending.clear();
-    Ok(())
+fn queue_quit_opens<R: Runtime>(app: &tauri::AppHandle<R>, paths: Vec<PathBuf>) {
+    app.state::<PendingOpenDocument>()
+        .deferred_paths
+        .lock()
+        .unwrap()
+        .extend(paths);
 }
 
-#[cfg(target_os = "macos")]
-fn persist_macos_opens<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
-    let state = app.state::<PendingOpenDocument>();
-    if let Err(error) = append_late_opens(&state.late_opens_to_retry, Vec::new(), |paths| {
-        record_pending_opens(app, paths)
-    }) {
-        eprintln!("Could not retry recording document opens for relaunch: {error}");
-    }
-    let mut payloads = state.payloads.lock().map_err(|error| error.to_string())?;
-    let mut deferred = state.paths_after_cancel.lock().unwrap();
-    let paths = payloads
-        .iter()
-        .filter(|payload| payload.receipt.is_none())
-        .map(|payload| payload.path.clone())
-        .chain(
-            deferred
-                .iter()
-                .map(|path| path.to_string_lossy().into_owned()),
-        )
-        .collect();
-    macos_single_instance::renderer_exiting(app, paths)?;
-    payloads.clear();
-    deferred.clear();
-    Ok(())
+fn persist_quit_opens<R: Runtime>(app: &tauri::AppHandle<R>, notice: bool) -> Result<(), String> {
+    app.state::<PendingOpenDocument>().persist_with(|paths| {
+        #[cfg(target_os = "macos")]
+        return macos_single_instance::renderer_exiting(app, paths, notice);
+        #[cfg(not(target_os = "macos"))]
+        record_pending_opens(app, &paths, notice)
+    })
 }
 
-#[cfg(target_os = "macos")]
-fn persist_macos_opens_before_exit<R: Runtime>(app: &tauri::AppHandle<R>) {
-    if let Err(error) = persist_macos_opens(app) {
-        macos_quit::report_record_error(&error);
+fn reset_failed_quit(flow: &QuitFlow) -> u64 {
+    let mut prompt = flow.prompt.lock().unwrap();
+    let id = flow
+        .flush
+        .lock()
+        .unwrap()
+        .take()
+        .map_or(prompt.0, |flush| flush.id);
+    prompt.1 = QuitPromptPhase::Idle;
+    flow.attempt.fetch_add(1, Ordering::SeqCst);
+    *flow.deadline.lock().unwrap() = None;
+    flow.position_drain_started.store(false, Ordering::SeqCst);
+    flow.watchdog_armed.store(false, Ordering::SeqCst);
+    flow.requested.store(false, Ordering::SeqCst);
+    flow.quitting.store(false, Ordering::SeqCst);
+    id
+}
+
+fn notify_failed_quit<R: Runtime>(app: &tauri::AppHandle<R>, id: u64) {
+    #[cfg(target_os = "macos")]
+    macos_quit::dismiss_prompt(id);
+    let _ = app.emit_to(MAIN_WINDOW_LABEL, QUIT_CANCELLED_FOR_OPEN_EVENT, id);
+    if let Err(error) = show_and_emit_open_document(app) {
+        eprintln!("Could not notify the document window of queued opens: {error}");
     }
+}
+
+fn finish_exit_opens<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    kind: QuitKind,
+    veto: impl FnOnce(),
+) -> bool {
+    let cancelled = std::cell::Cell::new(None);
+    shutdown::finish_opens(
+        kind,
+        |notice| persist_quit_opens(app, notice),
+        || {
+            veto();
+            cancelled.set(Some(reset_failed_quit(&QUIT)));
+        },
+        |message| schedule_open_notice(app, message, true, cancelled.get()),
+    )
+}
+
+fn dispatch_open_notice<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    task: impl FnOnce(&tauri::AppHandle<R>) + Send + 'static,
+) {
+    let app = app.clone();
+    #[cfg(target_os = "macos")]
+    macos_quit::after_quit_callback(move || task(&app));
+    #[cfg(not(target_os = "macos"))]
+    thread::spawn(move || {
+        let handle = app.clone();
+        if let Err(error) = app.run_on_main_thread(move || task(&handle)) {
+            eprintln!("Could not dispatch pending document open notice: {error}");
+        }
+    });
+}
+
+fn schedule_open_notice<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    message: String,
+    error: bool,
+    cancelled: Option<u64>,
+) {
+    RECORD_ERROR_ALERT_ACTIVE.store(true, Ordering::SeqCst);
+    dispatch_open_notice(app, move |app| {
+        if shutdown_kind(false) != QuitKind::User {
+            RECORD_ERROR_ALERT_ACTIVE.store(false, Ordering::SeqCst);
+            return;
+        }
+        if let Some(id) = cancelled {
+            notify_failed_quit(app, id);
+        }
+        #[cfg(target_os = "macos")]
+        if error {
+            macos_single_instance::show_launch_error(&Default::default(), &message);
+            RECORD_ERROR_ALERT_ACTIVE.store(false, Ordering::SeqCst);
+            return;
+        }
+        use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+        app.dialog()
+            .message(message)
+            .title(if error {
+                "ChemDraft could not complete the document open"
+            } else {
+                "Files not opened"
+            })
+            .kind(if error {
+                MessageDialogKind::Error
+            } else {
+                MessageDialogKind::Warning
+            })
+            .show(|_| RECORD_ERROR_ALERT_ACTIVE.store(false, Ordering::SeqCst));
+    });
 }
 
 #[cfg(target_os = "macos")]
@@ -9656,7 +9802,6 @@ fn read_document_payload(path: &Path) -> NativeOpenDocumentPayload {
         Err(error) => (String::new(), None, Some(error)),
     };
     NativeOpenDocumentPayload {
-        #[cfg(target_os = "macos")]
         receipt: None,
         path: path.to_string_lossy().into_owned(),
         display_name,
@@ -12988,7 +13133,6 @@ mod tests {
 
     fn opened_document_test_payload() -> NativeOpenDocumentPayload {
         NativeOpenDocumentPayload {
-            #[cfg(target_os = "macos")]
             receipt: None,
             path: "cold-open.chemdraft".into(),
             display_name: "cold-open.chemdraft".into(),
@@ -13858,7 +14002,11 @@ mod tests {
         }
 
         fn fire_timer(&self) {
-            let (_, task) = self.timers.lock().unwrap().remove(0);
+            self.fire_timer_at(0);
+        }
+
+        fn fire_timer_at(&self, index: usize) {
+            let (_, task) = self.timers.lock().unwrap().remove(index);
             task();
         }
 
@@ -14057,7 +14205,7 @@ mod tests {
                 if appkit {
                     assert!(request_appkit_quit_with(flow, &host));
                 } else {
-                    request_quit_with(flow, &host, false);
+                    request_quit_with(flow, &host);
                 }
                 host.emit_flush_request();
                 complete_quit_flush_with(flow, &host, QuitReason::FlushConfirmed);
@@ -14136,12 +14284,15 @@ mod tests {
     }
 
     #[test]
-    fn quit_deadline_precedes_the_flush_and_dialogs_settle_after_confirmation() {
+    fn hard_deadline_precedes_the_flush_and_dialogs_settle_after_confirmation() {
         let flow = test_quit_flow(QUIT_FLUSH_GRACE, EXIT_WATCHDOG);
         let host = ControlledQuitHost::new();
         assert!(request_appkit_quit_with(flow, &host)); // TerminateLater
         assert_eq!(host.app.calls(), ["timer armed"]);
-        assert_eq!(host.timers.lock().unwrap()[0].0, QUIT_FLUSH_GRACE);
+        assert_eq!(
+            host.timers.lock().unwrap()[0].0,
+            QUIT_FLUSH_GRACE + QUIT_WRITE_BUDGET
+        );
         host.emit_flush_request();
         assert_eq!(host.app.calls(), ["timer armed", "ask to flush"]);
         complete_quit_flush_with(flow, &host, QuitReason::FlushConfirmed);
@@ -14184,7 +14335,7 @@ mod tests {
             if appkit {
                 assert!(request_appkit_quit_with(flow, &host));
             } else {
-                request_quit_with(flow, &host, false); // Windows document close
+                request_quit_with(flow, &host); // Windows document close
             }
             assert_eq!(host.app.calls(), ["timer armed"]);
             host.emit_flush_request();
@@ -14194,16 +14345,15 @@ mod tests {
             assert!(!drain.is_finished());
             host.fire_timer();
             assert!(flow.quitting.load(Ordering::SeqCst));
-            if appkit {
-                assert_eq!(host.app.calls().last(), Some(&"reply YES"));
-                assert!(!flow.watchdog_armed.load(Ordering::SeqCst));
-            } else {
-                assert_eq!(host.app.calls().last(), Some(&"exit"));
-                assert_eq!(host.timers.lock().unwrap()[0].0, EXIT_WATCHDOG);
-                host.fire_timer();
-                assert_eq!(host.app.calls().last(), Some(&"force exit"));
-                assert_eq!(host.app.forced_reason(), Some(QuitReason::GraceExpired));
-            }
+            assert_eq!(
+                host.app.calls().last(),
+                Some(&if appkit { "reply YES" } else { "exit" })
+            );
+            assert!(flow.watchdog_armed.load(Ordering::SeqCst));
+            assert_eq!(host.timers.lock().unwrap()[0].0, EXIT_WATCHDOG);
+            host.fire_timer();
+            assert_eq!(host.app.calls().last(), Some(&"force exit"));
+            assert_eq!(host.app.forced_reason(), Some(QuitReason::FlushDeadline));
             assert!(!drain.is_finished());
             release.send(()).unwrap();
             drain.join().unwrap();
@@ -14221,70 +14371,33 @@ mod tests {
     }
 
     #[test]
-    fn opt_in_system_quits_flush_then_reply_without_a_prompt() {
+    fn macos_os_termination_reasons_take_priority_over_quit_preferences() {
         for reason in [*b"logo", *b"rlgo", *b"rest", *b"shut", *b"rrst", *b"rsdn"] {
             assert_eq!(
-                appkit_quit_decision(true, true, false, false, u32::from_be_bytes(reason)),
-                AppkitQuitDecision::DeferReply
+                shutdown::quit_kind(
+                    QuitPlatform::Macos,
+                    u32::from_be_bytes(reason),
+                    false,
+                    false
+                ),
+                QuitKind::System
             );
-            let flow = test_quit_flow(QUIT_FLUSH_GRACE, EXIT_WATCHDOG);
-            let host = ControlledQuitHost::new();
-            assert!(request_appkit_quit_with(flow, &host));
-            host.emit_flush_request();
-            complete_quit_flush_with(flow, &host, QuitReason::FlushConfirmed);
-            host.take_worker()();
-            assert_eq!(
-                host.app.calls(),
-                [
-                    "timer armed",
-                    "ask to flush",
-                    "dialogs settled",
-                    "drain positions",
-                    "reply YES"
-                ]
-            );
-            host.fire_timer();
-            assert_eq!(host.app.calls().last(), Some(&"reply YES"));
         }
-    }
-
-    #[test]
-    fn ordinary_opt_in_quit_keeps_its_prompt_and_system_quit_retires_it() {
         assert_eq!(
-            appkit_quit_decision(true, true, false, false, 0),
-            AppkitQuitDecision::Prompt
+            shutdown::quit_kind(
+                QuitPlatform::Macos,
+                u32::from_be_bytes(*b"quit"),
+                false,
+                false
+            ),
+            QuitKind::User
         );
-        let flow = test_quit_flow(QUIT_FLUSH_GRACE, EXIT_WATCHDOG);
-        let host = ControlledQuitHost::new();
-        let id = request_prompted_quit_with(flow, &host).unwrap();
-        assert!(acknowledge_quit_prompt(flow, id, true));
-        host.fire_timer();
-        assert_eq!(host.app.calls(), ["prompt", "timer armed"]);
-        assert!(!flow.quitting.load(Ordering::SeqCst));
-        assert_eq!(
-            cancel_quit_with(flow, id, false),
-            QuitCancelOutcome::Cancelled
-        );
-        let id = request_prompted_quit_with(flow, &host).unwrap();
-        assert!(acknowledge_quit_prompt(flow, id, true));
-        assert!(request_appkit_quit_with(flow, &host));
-        assert_eq!(
-            cancel_quit_with(flow, id, false),
-            QuitCancelOutcome::Committed
-        );
-        assert!(!resume_prompted_quit_with(flow, &host, id));
-        host.fire_timer(); // The superseded prompt's timer cannot decide the quit.
-        assert!(!flow.quitting.load(Ordering::SeqCst));
-        host.emit_flush_request();
-        complete_quit_flush_with(flow, &host, QuitReason::FlushConfirmed);
-        host.take_worker()();
-        assert_eq!(host.app.calls().last(), Some(&"reply YES"));
     }
 
     #[test]
     fn visible_prompt_pauses_grace_without_blocking_save_as_or_utility_suspension() {
-        let flow = test_quit_flow(Duration::from_millis(400), Duration::from_millis(20));
-        let host = StuckAppHost::new(true);
+        let flow = test_quit_flow(QUIT_FLUSH_GRACE, EXIT_WATCHDOG);
+        let host = ControlledQuitHost::new();
         assert!(!acknowledge_quit_prompt(flow, 1, true));
         let id = request_prompted_quit_with(flow, &host).unwrap();
         assert!(!acknowledge_quit_prompt(flow, id, false));
@@ -14294,8 +14407,8 @@ mod tests {
         assert!(prompt_waits_for_user(flow));
         assert!(request_prompted_quit_with(flow, &host).is_none());
         assert!(lock_window_creation_with(flow).is_ok());
-        thread::sleep(Duration::from_millis(600));
-        assert_eq!(host.calls(), ["ask to flush"]);
+        host.fire_timer();
+        assert_eq!(host.app.calls(), ["prompt", "timer armed"]);
         assert!(!flow.quitting.load(Ordering::SeqCst));
         assert_eq!(
             cancel_quit_with(flow, id, false),
@@ -14307,8 +14420,8 @@ mod tests {
 
     #[test]
     fn cancel_then_new_quit_ignores_old_cancel_ack_and_timer() {
-        let flow = test_quit_flow(Duration::from_millis(400), Duration::from_millis(20));
-        let host = StuckAppHost::new(true);
+        let flow = test_quit_flow(QUIT_FLUSH_GRACE, EXIT_WATCHDOG);
+        let host = ControlledQuitHost::new();
         let first = request_prompted_quit_with(flow, &host).unwrap();
         assert!(acknowledge_quit_prompt(flow, first, true));
         assert_eq!(
@@ -14327,7 +14440,8 @@ mod tests {
         );
         assert!(!acknowledge_quit_prompt(flow, first, true));
         assert!(acknowledge_quit_prompt(flow, next, true));
-        thread::sleep(Duration::from_millis(600));
+        host.fire_timer();
+        host.fire_timer();
         assert!(!flow.quitting.load(Ordering::SeqCst));
     }
 
@@ -14399,31 +14513,66 @@ mod tests {
     }
 
     #[test]
-    fn macos_open_quit_discard_grace_waits_for_the_final_write() {
-        for open_before_publish in [true, false] {
-            let flow = test_quit_flow(NEVER, NEVER);
+    fn grace_starts_only_after_snapshot_handoff_and_does_not_rearm_during_a_stalled_rename() {
+        for appkit in [false, true] {
+            let flow = test_quit_flow(QUIT_FLUSH_GRACE, EXIT_WATCHDOG);
             let host = ControlledQuitHost::new();
-            let id = request_prompted_quit_with(flow, &host).unwrap();
-            assert!(acknowledge_quit_prompt(flow, id, true));
-            assert!(resume_prompted_quit_with(flow, &host, id));
-            host.fire_timer(); // Retire the original prompt timer.
-            flow.write_prompted_flush(id, || {
-                host.fire_timer(); // Expire the flush grace while the snapshot write is active.
-                assert!(!flow.quitting.load(Ordering::SeqCst));
-                assert!(!flow.watchdog_armed.load(Ordering::SeqCst));
-                if open_before_publish {
-                    assert_open_aborts_prompted_quit(flow, id);
-                }
-                assert_eq!(
-                    flow.publish_prompted_flush(id, || Ok(())).unwrap(),
-                    !open_before_publish
-                );
+            if appkit {
+                assert!(request_appkit_quit_with(flow, &host));
+                host.emit_flush_request();
+            } else {
+                request_quit_with(flow, &host);
+                host.emit_flush_request();
+            }
+            let id = flow.begin_flush(None).0;
+            let timers = host.timers.lock().unwrap();
+            assert_eq!(timers.len(), 1);
+            assert_eq!(timers[0].0, QUIT_FLUSH_GRACE + QUIT_WRITE_BUDGET);
+            drop(timers);
+            assert!(!flow.quitting.load(Ordering::SeqCst));
+            flow.write_final_flush(&host, id, || {
+                assert!(flow
+                    .publish_final_flush(id, || {
+                        let timers = host.timers.lock().unwrap();
+                        assert_eq!(timers.len(), 2);
+                        assert_eq!(timers[1].0, QUIT_FLUSH_GRACE);
+                        drop(timers);
+                        host.fire_timer_at(1); // Grace expires while rename is stalled.
+                        assert!(!flow.quitting.load(Ordering::SeqCst));
+                        assert_eq!(host.timers.lock().unwrap().len(), 1);
+                        host.fire_timer(); // The original cap decides the quit.
+                        assert!(flow.quitting.load(Ordering::SeqCst));
+                        assert!(flow.watchdog_armed.load(Ordering::SeqCst));
+                        assert_eq!(
+                            host.app.calls().last(),
+                            Some(&if appkit { "reply YES" } else { "exit" })
+                        );
+                        host.fire_timer();
+                        assert_eq!(host.app.forced_reason(), Some(QuitReason::FlushDeadline));
+                        assert!(host.timers.lock().unwrap().is_empty());
+                        Ok(())
+                    })
+                    .unwrap());
                 Ok(())
             })
             .unwrap();
-            host.fire_timer();
-            assert_eq!(flow.quitting.load(Ordering::SeqCst), !open_before_publish);
         }
+    }
+
+    #[test]
+    fn finder_open_can_cancel_a_discard_while_waiting_for_the_native_write() {
+        let flow = test_quit_flow(QUIT_FLUSH_GRACE, EXIT_WATCHDOG);
+        let host = ControlledQuitHost::new();
+        let id = request_prompted_quit_with(flow, &host).unwrap();
+        assert!(acknowledge_quit_prompt(flow, id, true));
+        assert!(resume_prompted_quit_with(flow, &host, id));
+        host.fire_timer(); // The original window readiness timeout has no authority now.
+        assert!(!flow.quitting.load(Ordering::SeqCst));
+        assert_open_aborts_prompted_quit(flow, id);
+        flow.write_final_flush(&host, id, || panic!("do not start a cancelled write"))
+            .unwrap();
+        host.fire_timer();
+        assert!(!flow.quitting.load(Ordering::SeqCst));
     }
 
     fn assert_prompted_flush_can_abort(
@@ -14434,7 +14583,7 @@ mod tests {
         assert!(resume_prompted_quit_with(flow, host, id));
         assert_open_aborts_prompted_quit(flow, id);
         assert!(!flow
-            .publish_prompted_flush(id, || panic!("do not publish a cancelled flush"))
+            .publish_final_flush(id, || panic!("do not publish a cancelled flush"))
             .unwrap());
         assert!(!flow.confirm_flush(id));
         host.fire_timer();
@@ -14451,7 +14600,7 @@ mod tests {
         let host = ControlledQuitHost::new();
         let id = request_prompted_quit_with(flow, &host).unwrap();
         assert!(resume_prompted_quit_with(flow, &host, id));
-        flow.publish_prompted_flush(id, || Ok(())).unwrap();
+        flow.publish_final_flush(id, || Ok(())).unwrap();
         let directory =
             std::env::temp_dir().join(format!("chemdraft-late-opens-{}", std::process::id()));
         let pending = directory.join("pending-opens.json");
@@ -14472,6 +14621,7 @@ mod tests {
                             .iter()
                             .map(|path| path.to_str().unwrap().to_owned())
                             .collect::<Vec<_>>(),
+                        false,
                     )
                 },
             )
@@ -14482,22 +14632,26 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
-    fn macos_open_quit_retries_a_failed_late_append_without_dropping_paths() {
-        let queue = Mutex::new(Vec::new());
-        let paths = vec!["/one.chemdraft".into(), "/two.chemdraft".into()];
-        assert_eq!(
-            append_late_opens(&queue, paths.clone(), |_| Err("disk full".into())),
+    fn failed_quit_persistence_leaves_the_open_requests_queued_for_retry() {
+        let pending = PendingOpenDocument::default();
+        pending
+            .deferred_paths
+            .lock()
+            .unwrap()
+            .push(PathBuf::from("queued.cdx"));
+        let error = pending.persist_with(|paths| {
+            assert_eq!(paths, ["queued.cdx"]);
             Err("disk full".into())
-        );
-        assert_eq!(*queue.lock().unwrap(), paths);
-        append_late_opens(&queue, Vec::new(), |pending| {
-            assert_eq!(pending, paths);
-            Ok(())
-        })
-        .unwrap();
-        assert!(queue.lock().unwrap().is_empty());
+        });
+        assert_eq!(error, Err("disk full".into()));
+        pending
+            .persist_with(|paths| {
+                assert_eq!(paths, ["queued.cdx"]);
+                Ok(())
+            })
+            .unwrap();
+        assert!(pending.deferred_paths.lock().unwrap().is_empty());
     }
 
     #[cfg(target_os = "macos")]
@@ -14506,49 +14660,50 @@ mod tests {
         let main_source = include_str!("lib.rs");
         let (_, exit) = main_source.split_once("RunEvent::Exit => {").unwrap();
         let exit = exit.split_once("RunEvent::Reopen").unwrap().0;
-        assert!(exit.contains("persist_macos_opens(app)"));
-        assert!(!exit.contains("report_record_error"));
+        assert!(exit.contains("finish_exit_opens(app, QuitKind::Irreversible"));
+        assert!(!exit.contains("schedule_open_notice"));
 
         let secondary_source = include_str!("macos_single_instance.rs");
         let (_, exit) = secondary_source
             .split_once("if matches!(event, RunEvent::Exit) {")
             .unwrap();
         let exit = exit.split_once("if state.promoted").unwrap().0;
-        assert!(exit.contains("record_interrupted_launch(app)"));
+        assert!(exit.contains("record_interrupted_launch(app, true)"));
         assert!(!exit.contains("show_launch_error"));
     }
 
     #[test]
-    fn stalled_flush_after_save_or_discard_is_bounded_and_arms_one_watchdog() {
-        for _choice in ["Save", "Discard"] {
-            let flow = test_quit_flow(Duration::from_millis(400), Duration::from_millis(20));
-            let host = StuckAppHost::new(true);
-            let id = request_prompted_quit_with(flow, &host).unwrap();
-            assert!(acknowledge_quit_prompt(flow, id, true));
-            assert!(resume_prompted_quit_with(flow, &host, id));
-            assert_eq!(
-                cancel_quit_with(flow, id, false),
-                QuitCancelOutcome::Committed
-            );
-            assert!(!resume_prompted_quit_with(flow, &host, id));
-            assert!(lock_window_creation_with(flow).is_err());
-            assert_eq!(
-                host.wait_for_calls(3),
-                ["ask to flush", "exit", "force exit"]
-            );
-            assert!(flow.watchdog_armed.load(Ordering::SeqCst));
-        }
+    fn unanswered_prompted_flush_uses_the_cap_and_arms_one_watchdog() {
+        let flow = test_quit_flow(QUIT_FLUSH_GRACE, EXIT_WATCHDOG);
+        let host = ControlledQuitHost::new();
+        let id = request_prompted_quit_with(flow, &host).unwrap();
+        assert!(acknowledge_quit_prompt(flow, id, true));
+        assert!(resume_prompted_quit_with(flow, &host, id));
+        assert_eq!(
+            cancel_quit_with(flow, id, false),
+            QuitCancelOutcome::Committed
+        );
+        assert!(!resume_prompted_quit_with(flow, &host, id));
+        assert!(lock_window_creation_with(flow).is_err());
+        host.fire_timer(); // Prompt readiness timer was superseded.
+        assert!(!flow.quitting.load(Ordering::SeqCst));
+        host.fire_timer(); // Cap applies even if the renderer never hands over a snapshot.
+        assert_eq!(host.app.calls().last(), Some(&"exit"));
+        assert!(flow.watchdog_armed.load(Ordering::SeqCst));
+        host.fire_timer();
+        assert_eq!(host.app.forced_reason(), Some(QuitReason::FlushDeadline));
     }
 
     #[test]
     fn unanswered_opt_in_window_still_quits() {
-        let flow = test_quit_flow(Duration::from_millis(400), Duration::from_millis(20));
-        let host = StuckAppHost::new(true);
+        let flow = test_quit_flow(QUIT_FLUSH_GRACE, EXIT_WATCHDOG);
+        let host = ControlledQuitHost::new();
         request_prompted_quit_with(flow, &host);
-        assert_eq!(
-            host.wait_for_calls(3),
-            ["ask to flush", "exit", "force exit"]
-        );
+        assert_eq!(host.timers.lock().unwrap()[0].0, flow.flush_budget());
+        host.fire_timer(); // An unresponsive renderer gets the hard cap, not write grace.
+        assert_eq!(host.app.calls().last(), Some(&"exit"));
+        host.fire_timer();
+        assert_eq!(host.app.forced_reason(), Some(QuitReason::FlushDeadline));
     }
 
     #[test]
@@ -14579,7 +14734,7 @@ mod tests {
     }
 
     #[test]
-    fn session_end_joins_an_existing_flush_and_ignores_unmatched_acknowledgements() {
+    fn flush_joins_an_existing_request_and_ignores_unmatched_acknowledgements() {
         for prompted in [false, true] {
             let flow = test_quit_flow(NEVER, NEVER);
             let host = ControlledQuitHost::new();
@@ -14594,16 +14749,14 @@ mod tests {
             };
             assert_eq!(flow.begin_flush(None), (request_id, false));
             assert!(!flow.confirm_flush(request_id + 1));
-            assert!(!flow.flush_confirmed(request_id));
             assert!(flow.confirm_flush(request_id));
             assert!(!flow.confirm_flush(request_id));
-            assert!(flow.flush_confirmed(request_id));
             assert_eq!(flow.begin_flush(None), (request_id, false));
         }
     }
 
     #[test]
-    fn session_end_requests_a_fresh_flush_after_an_emit_failure() {
+    fn flush_emits_a_fresh_request_after_a_dispatch_failure() {
         let flow = test_quit_flow(NEVER, NEVER);
         let mut failed_id = 0;
         assert_eq!(
@@ -14627,69 +14780,27 @@ mod tests {
     }
 
     #[test]
-    fn session_end_watchdog_forces_exit_only_if_the_flush_stalls() {
-        let host = StuckAppHost::new(true);
-        let (disarm, watchdog) = mpsc::channel();
-        windows_session_end::watch_flush(watchdog, Duration::ZERO, &host);
-        assert_eq!(host.calls(), ["force exit"]);
-        assert_eq!(host.forced_reason(), Some(QuitReason::GraceExpired));
-        drop(disarm);
-
-        let host = StuckAppHost::new(true);
-        let (disarm, watchdog) = mpsc::channel();
-        drop(disarm);
-        windows_session_end::watch_flush(watchdog, Duration::ZERO, &host);
-        assert!(host.calls().is_empty());
-    }
-
-    #[test]
-    fn appkit_quit_checks_platform_preference_and_pending_reply() {
-        for reason in [0, u32::from_be_bytes(*b"quit")] {
+    fn ordinary_appkit_quit_checks_preference_and_pending_reply() {
+        assert_eq!(
+            appkit_quit_decision(true, false, false, false),
+            AppkitQuitDecision::DeferReply
+        );
+        assert_eq!(
+            appkit_quit_decision(true, true, false, false),
+            AppkitQuitDecision::Prompt
+        );
+        for enabled in [false, true] {
             assert_eq!(
-                appkit_quit_decision(true, false, false, false, reason),
-                AppkitQuitDecision::DeferReply
-            );
-            assert_eq!(
-                appkit_quit_decision(true, true, false, false, reason),
-                AppkitQuitDecision::Prompt
-            );
-            assert_eq!(
-                appkit_quit_decision(true, true, false, true, reason),
+                appkit_quit_decision(true, enabled, false, true),
                 AppkitQuitDecision::WaitForReply
             );
             assert_eq!(
-                appkit_quit_decision(true, false, false, true, reason),
-                AppkitQuitDecision::WaitForReply
-            );
-            for enabled in [false, true] {
-                for pending in [false, true] {
-                    assert_eq!(
-                        appkit_quit_decision(true, enabled, true, pending, reason),
-                        if pending {
-                            AppkitQuitDecision::WaitForReply
-                        } else {
-                            AppkitQuitDecision::TerminateNow
-                        }
-                    );
-                    assert_eq!(
-                        appkit_quit_decision(false, enabled, false, pending, reason),
-                        AppkitQuitDecision::TerminateNow
-                    );
-                }
-            }
-        }
-        for reason in [*b"logo", *b"rlgo", *b"rest", *b"shut", *b"rrst", *b"rsdn"] {
-            assert_eq!(
-                appkit_quit_decision(true, false, false, false, u32::from_be_bytes(reason)),
-                AppkitQuitDecision::DeferReply
+                appkit_quit_decision(true, enabled, true, false),
+                AppkitQuitDecision::TerminateNow
             );
             assert_eq!(
-                appkit_quit_decision(true, false, false, true, u32::from_be_bytes(reason)),
-                AppkitQuitDecision::WaitForReply
-            );
-            assert_eq!(
-                appkit_quit_decision(true, true, false, false, u32::from_be_bytes(reason)),
-                AppkitQuitDecision::DeferReply
+                appkit_quit_decision(false, enabled, false, true),
+                AppkitQuitDecision::TerminateNow
             );
         }
     }
@@ -14706,8 +14817,7 @@ mod tests {
                     true,
                     false,
                     flow.quitting.load(Ordering::SeqCst),
-                    flow.appkit_reply.lock().unwrap().awaiting_delivery(),
-                    0
+                    flow.appkit_reply.lock().unwrap().awaiting_delivery()
                 ),
                 AppkitQuitDecision::WaitForReply
             );
@@ -14716,7 +14826,7 @@ mod tests {
         }
         quit_now_with(flow, &host, QuitReason::FlushConfirmed);
         quit_now_with(flow, &host, QuitReason::FlushConfirmed);
-        expire_quit_flush_with(flow, &host);
+        quit_now_with(flow, &host, QuitReason::GraceExpired);
         assert_eq!(host.calls(), ["ask to flush", "reply YES"]);
         assert!(!flow.watchdog_armed.load(Ordering::SeqCst));
         assert!(!should_flush_exit_request(
@@ -14729,8 +14839,7 @@ mod tests {
                 true,
                 false,
                 flow.quitting.load(Ordering::SeqCst),
-                flow.appkit_reply.lock().unwrap().awaiting_delivery(),
-                0
+                flow.appkit_reply.lock().unwrap().awaiting_delivery()
             ),
             AppkitQuitDecision::TerminateNow
         );
@@ -14743,8 +14852,8 @@ mod tests {
         request_appkit_quit_with(flow, &host);
         assert_eq!(host.calls(), ["ask to flush"]);
         // Fire the production timeout callback without waiting on a clock.
-        expire_quit_flush_with(flow, &host);
-        expire_quit_flush_with(flow, &host);
+        quit_now_with(flow, &host, QuitReason::GraceExpired);
+        quit_now_with(flow, &host, QuitReason::GraceExpired);
         // A renderer finishing after the deadline must not reply again or post an exit.
         quit_now_with(flow, &host, QuitReason::FlushConfirmed);
         assert_eq!(host.calls(), ["ask to flush", "reply YES"]);
@@ -14754,8 +14863,7 @@ mod tests {
                 true,
                 false,
                 flow.quitting.load(Ordering::SeqCst),
-                flow.appkit_reply.lock().unwrap().awaiting_delivery(),
-                0
+                flow.appkit_reply.lock().unwrap().awaiting_delivery()
             ),
             AppkitQuitDecision::TerminateNow
         );
@@ -14790,9 +14898,9 @@ mod tests {
     fn appkit_quit_reuses_an_existing_menu_flush() {
         let flow = test_quit_flow(NEVER, NEVER);
         let host = StuckAppHost::new(true);
-        request_quit_with(flow, &host, true);
+        request_quit_with(flow, &host);
         assert!(request_appkit_quit_with(flow, &host));
-        request_quit_with(flow, &host, true);
+        request_quit_with(flow, &host);
         assert_eq!(host.calls(), ["ask to flush"]);
         assert!(!flow.quitting.load(Ordering::SeqCst));
         quit_now_with(flow, &host, QuitReason::FlushConfirmed);
@@ -14839,7 +14947,7 @@ mod tests {
 
         let host = StuckAppHost::new(true);
         quit_now_with(flow, &host, QuitReason::FlushConfirmed);
-        expire_quit_flush_with(flow, &host);
+        quit_now_with(flow, &host, QuitReason::GraceExpired);
         assert!(host.calls().is_empty());
 
         let fallback = fallback_task.into_inner().unwrap().unwrap();
@@ -14880,6 +14988,41 @@ mod tests {
     }
 
     #[test]
+    fn appkit_veto_releases_the_reply_state_for_a_future_quit() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        *flow.appkit_reply.lock().unwrap() = AppkitReplyState::Claimed;
+        dispatch_appkit_reply_with(
+            flow,
+            true,
+            |_| -> Result<(), ()> { panic!("already on the main thread") },
+            |_| panic!("already on the main thread"),
+            move || *flow.appkit_reply.lock().unwrap() = AppkitReplyState::Idle,
+        )
+        .unwrap();
+        assert_eq!(*flow.appkit_reply.lock().unwrap(), AppkitReplyState::Idle);
+        assert!(request_appkit_quit_with(flow, &StuckAppHost::new(true)));
+    }
+
+    #[test]
+    fn failed_open_persistence_disarms_the_old_watchdog_and_allows_a_new_quit() {
+        let flow = test_quit_flow(QUIT_FLUSH_GRACE, EXIT_WATCHDOG);
+        let host = ControlledQuitHost::new();
+        request_quit_with(flow, &host);
+        host.emit_flush_request();
+        let id = flow.begin_flush(None).0;
+        host.fire_timer(); // Hard deadline queues exit and starts the watchdog.
+        assert!(flow.watchdog_armed.load(Ordering::SeqCst));
+        assert_eq!(reset_failed_quit(flow), id);
+        assert!(!flow.in_progress());
+        assert!(!flow.confirm_flush(id));
+        host.fire_timer(); // The old watchdog must leave the running app alone.
+        assert!(host.app.forced_reason().is_none());
+        request_quit_with(flow, &host);
+        host.emit_flush_request();
+        assert_ne!(flow.begin_flush(None).0, id);
+    }
+
+    #[test]
     fn appkit_quit_does_not_defer_an_already_decided_menu_exit() {
         let flow = test_quit_flow(NEVER, NEVER);
         let host = StuckAppHost::new(true);
@@ -14892,7 +15035,7 @@ mod tests {
     fn a_requested_quit_only_asks_for_the_flush_until_it_is_confirmed() {
         let flow = test_quit_flow(NEVER, Duration::from_millis(20));
         let host = StuckAppHost::new(true);
-        request_quit_with(flow, &host, false);
+        request_quit_with(flow, &host);
         thread::sleep(Duration::from_millis(300));
         // Nothing is decided and no watchdog runs while the document has not answered.
         assert_eq!(host.calls(), ["ask to flush"]);
@@ -14904,7 +15047,7 @@ mod tests {
     fn a_confirmed_flush_quits_and_the_watchdog_ends_an_app_that_does_not_exit() {
         let flow = test_quit_flow(NEVER, Duration::from_millis(20));
         let host = StuckAppHost::new(true);
-        request_quit_with(flow, &host, false);
+        request_quit_with(flow, &host);
         // quit_after_flush: the session is written
         quit_now_with(flow, &host, QuitReason::FlushConfirmed);
         assert!(flow.quitting.load(Ordering::SeqCst));
@@ -14917,25 +15060,26 @@ mod tests {
     }
 
     #[test]
-    fn an_unanswered_flush_quits_after_its_grace() {
-        // A grace long enough that preemption between the request and the first check cannot let it
-        // run out first.
-        let flow = test_quit_flow(Duration::from_millis(400), Duration::from_millis(20));
-        let host = StuckAppHost::new(true);
-        request_quit_with(flow, &host, false);
-        assert_eq!(host.calls(), ["ask to flush"]);
-        assert_eq!(
-            host.wait_for_calls(3),
-            ["ask to flush", "exit", "force exit"]
-        );
-        assert_eq!(host.forced_reason(), Some(QuitReason::GraceExpired));
+    fn an_unconfirmed_native_write_quits_after_grace_without_waiting_for_the_cap() {
+        let flow = test_quit_flow(QUIT_FLUSH_GRACE, EXIT_WATCHDOG);
+        let host = ControlledQuitHost::new();
+        request_quit_with(flow, &host);
+        host.emit_flush_request();
+        let id = flow.begin_flush(None).0;
+        flow.write_final_flush(&host, id, || Ok(())).unwrap();
+        host.fire_timer_at(1);
+        assert_eq!(host.app.calls().last(), Some(&"exit"));
+        host.fire_timer_at(1);
+        assert_eq!(host.app.forced_reason(), Some(QuitReason::GraceExpired));
+        host.fire_timer(); // Cap has no effect once the quit is decided.
+        assert_eq!(host.app.calls().last(), Some(&"force exit"));
     }
 
     #[test]
     fn with_no_document_window_to_ask_the_quit_is_decided_at_once() {
         let flow = test_quit_flow(NEVER, Duration::from_millis(20));
         let host = StuckAppHost::new(false);
-        request_quit_with(flow, &host, false);
+        request_quit_with(flow, &host);
         assert_eq!(host.calls(), ["ask to flush", "exit"]);
         assert_eq!(
             host.wait_for_calls(3),
@@ -14948,12 +15092,13 @@ mod tests {
     fn repeated_closes_and_confirmations_ask_once_and_arm_one_watchdog() {
         let flow = test_quit_flow(NEVER, Duration::from_millis(20));
         let host = StuckAppHost::new(true);
-        request_quit_with(flow, &host, false);
-        request_quit_with(flow, &host, false);
+        request_quit_with(flow, &host);
+        request_quit_with(flow, &host);
         quit_now_with(flow, &host, QuitReason::FlushConfirmed);
         quit_now_with(flow, &host, QuitReason::FlushConfirmed);
-        // Asked once, two exits (each confirmation asks the event loop again), one forced exit.
-        let calls = host.wait_for_calls(4);
+        // One attempt owns both the exit request and the watchdog.
+        let calls = host.wait_for_calls(3);
+        assert_eq!(calls, ["ask to flush", "exit", "force exit"]);
         thread::sleep(Duration::from_millis(200));
         let calls_later = host.calls();
         assert_eq!(calls, calls_later);
@@ -14971,19 +15116,20 @@ mod tests {
     }
 
     #[test]
-    fn a_second_mac_quit_bypasses_the_flush_wait_without_asking_again() {
-        let flow = test_quit_flow(NEVER, Duration::from_millis(20));
-        let host = StuckAppHost::new(true);
-        request_quit_with(flow, &host, true);
-        assert_eq!(host.calls(), ["ask to flush"]);
+    fn repeated_quits_enforce_an_elapsed_cap_even_if_its_timer_has_not_run() {
+        let flow = test_quit_flow(NEVER, EXIT_WATCHDOG);
+        let host = ControlledQuitHost::new();
+        request_quit_with(flow, &host);
+        host.emit_flush_request();
+        request_quit_with(flow, &host);
         assert!(!flow.quitting.load(Ordering::SeqCst));
-        request_quit_with(flow, &host, true);
+        *flow.deadline.lock().unwrap() = Some(Instant::now());
+        request_quit_with(flow, &host);
         assert!(flow.quitting.load(Ordering::SeqCst));
-        assert_eq!(
-            host.wait_for_calls(3),
-            ["ask to flush", "exit", "force exit"]
-        );
-        assert_eq!(host.forced_reason(), Some(QuitReason::RepeatedRequest));
+        assert_eq!(host.app.calls().last(), Some(&"exit"));
+        host.fire_timer();
+        host.fire_timer();
+        assert_eq!(host.app.forced_reason(), Some(QuitReason::FlushDeadline));
     }
 
     #[test]
