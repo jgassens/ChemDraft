@@ -104,6 +104,7 @@ export interface Summary {
   standaloneAbbreviations: unknown[];
   standaloneRGroups: unknown[];
   drawing: Record<DrawingFeature, unknown>;
+  textRunColours?: string[][];
 }
 export interface Difference {
   feature: Feature;
@@ -592,6 +593,7 @@ export function compare(before: Summary, after: Summary, warnings: Warning[], op
   differences.push(...(survival?.differences ?? []));
   const guarded = guardDifferences(differences);
   const drawingLoss = drawingFeatures.filter(feature => !jsonEqual(before.drawing[feature], after.drawing[feature]));
+  if (before.textRunColours && after.textRunColours && !jsonEqual(before.textRunColours, after.textRunColours) && !drawingLoss.includes("colours")) drawingLoss.push("colours");
   for (const feature of survival?.drawingLoss ?? []) if (!drawingLoss.includes(feature)) drawingLoss.push(feature);
   const incomplete = !!before.summaryErrors?.length || !!after.summaryErrors?.length;
   const verdict = chemistryVerdict(guarded.differences, undetermined.length > 0);
