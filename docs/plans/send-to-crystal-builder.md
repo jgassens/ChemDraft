@@ -4,7 +4,7 @@ Status: plan approved by the owner 2026-11-10; revised 2026-11-20 for the one-co
 return trip (owner direction below), and again the same afternoon after the hand-built "MOF-5" turned
 out to be the wrong structure because it was built on one cell (see "MOF-5 correctness" under Test
 results; open question 9, now answered). The new `runCompanion` method widens the security contract, so the
-master session's OK and the Kimi review (condition 3) cover it too. The master session OKed the revised plan, including the `runCompanion` security contract scoped to official catalog plugins (2026-11-20); the usual gates apply when code starts. Every open question is answered (2026-11-20). Target: after ChemDraft 1.2 ships (1.2 has priority; nothing here touches
+master session's OK and the Kimi review (condition 3) cover it too. The master session OKed the revised plan, including the `runCompanion` security contract scoped to official catalog plugins (2026-11-20); the usual gates apply when code starts. Every open question is answered (2026-11-20). Target: after ChemDraft 1.2.2 ships (1.2.x has priority; nothing here touches
 `release/1.2-rc` or `main`). Final home of this document: `docs/plans/send-to-crystal-builder.md` on
 local branch `plan/crystal-builder` (see "After approval").
 
@@ -12,9 +12,11 @@ local branch `plan/crystal-builder` (see "After approval").
 
 Approved in principle, with these conditions:
 
-1. **No code until 1.2 ships.** This is 1.3 work; plugin API 0.1.26 lands with 1.3, not 1.2 or
-   1.2.1, unless the owner says otherwise.
-2. **Build phase runs from a MacBook session** (agentctl lives there).
+1. **No code until 1.2.2 ships** (master session, 2026-11-20). This is 1.3 work. Main is already at
+   plugin API 0.1.26 (request-bound tools, PR #418), so this capability takes the **next patch
+   version, 0.1.27 as of main 8125b66a**; the worker re-reads `PluginApiVersion` when Phase 1 starts.
+2. ~~**Build phase runs from a MacBook session.**~~ **Changed (owner, 2026-11-20): workers run on the
+   Intel iMac** through agentctl, installed there 2026-11-20 (smoke test: run `imac-smoke-0-3`).
 3. **Before any code:** one Kimi high review of this plan, after the 1.2 big review, focused on the
    `apps.handoff` security contract: user consent, no path or argument injection, the app picked by
    the user and never by the plugin, and macOS/Windows parity.
@@ -159,6 +161,18 @@ label: visible, saved with the document, editable, undoable, and it needs no new
 PORMAKE, which Crystal Builder's MOF builder uses, marks connection points with `X` atoms in its
 building blocks (confirmed by test, below).
 
+**The host marks `X` atoms distinctly in the selection (added 2026-11-20 after task 0.3).**
+`selection.read` returns a V2000 molfile, and on main an atom labelled `X` is written as `R#` with an
+`M  RGP` line and a "not an element symbol" warning, exactly like a real R-group
+(`chem-core/src/molfile.ts`, via `apps/desktop/src/plugins/selectionSnapshot.ts`). A plugin therefore
+cannot tell a connection point from an R-group, and must not guess. The fix is in the host, as an
+additive API change in the same 0.1.27 bump: `PluginSelectedMolecule` gains
+`connectionPoints: { atom: number; anchor: number; bondOrder: number }[]` (1-based molfile atom
+indices), listing exactly the atoms whose drawn label is `X`, with their one neighbor and bond order (`anchor: 0` when the `X` has no neighbor or more than one, so the plugin refuses it by name).
+The molfile itself is unchanged for existing plugins; the warning for a listed atom names it as a
+connection point instead of "not an element symbol". Real R-groups never appear in the list. Task
+1A defines it, task 1F implements it, and the plugin reads only this field (task 2C2).
+
 **Where the X goes follows PORMAKE's cut, not the acid.** PORMAKE's carboxylate nodes already contain
 the carboxylates (node N16 is Zn4O(CO2)6 with 6 X), and the matching linker E14 is bare C6H4 with an
 `X` on each ring carbon that bore a CO2. So for terephthalic acid the user draws a benzene ring with
@@ -284,7 +298,7 @@ Platform parity for (a):
 
 ## Decision 3: the host gap (smallest general capability)
 
-New API, `PluginApiVersion` 0.1.25 → **0.1.26** (additive, patch bump per §4.1). Sketch for workers;
+New API, `PluginApiVersion` 0.1.26 → **0.1.27** (additive, patch bump per §4.1; the next free patch when Phase 1 starts). Sketch for workers;
 exact names are settled in review.
 
 ```ts
@@ -352,7 +366,18 @@ Rules the host enforces (each one gets a test):
    is absent without both, and every method re-checks both.
 2. **Explicit user action only.** Methods work only while one of the plugin's own commands is
    running, and that command must have been invoked by the user (menu, toolbar, shortcut). Analyzers,
-   background work, and commands invoked by an assistant or MCP tool call are refused.
+   background work, and commands invoked by an assistant or MCP tool call are refused. Task 0.3
+   found that main has **no invocation-source flag**: every user path reaches `host.invokeCommand`
+   with no source, and assistant and request tools enter through separate methods
+   (`invokeAssistantTool`, `invokeRequestTool`) that set a host-private `tool: true`. So the host
+   gains a **host-set source**: `invokeCommand(commandId, { source: "user" })`, passed only by the
+   app's own menu, toolbar, shortcut, and panel/overlay dispatch after a real UI event, and stored
+   on the host-private active invocation. It is never read from plugin input (the existing
+   `PluginCommandInput.source`, `"panel" | "overlay"`, stays separate and is not trusted for this),
+   never settable by a plugin, and absent on every other path. Handoff methods require it positively;
+   "not a tool call" is not enough. Tests show that `invokeAssistantTool`, `invokeRequestTool`, the
+   agent bridge, MCP-driven calls, and a plugin invoking its own command programmatically cannot
+   produce it, and that a plugin passing `source` in its input is ignored.
 3. **One send per command invocation** (`sendFile` or `runCompanion`, not both). A refused or
    declined call does not use up the allowance (same rule as `dialogs.promptText`). The one exception
    is a declared `after` template, which may follow its parent once and reads only the parent's output.
@@ -362,9 +387,23 @@ Rules the host enforces (each one gets a test):
    the command line.
 5. **Consent per plugin and per app**, once, in a native message box that names the plugin (name and
    id), the app's display name and location, and says the plugin will start that app and give it a
-   file each time its command runs. Stored like external-tool consent
-   (`src-tauri/src/external_tools/consent.rs` is the pattern), listed and revocable in the Plugin
-   Manager, cleared on uninstall.
+   file each time its command runs. Task 0.3 found the external-tools store can't hold this (its
+   `ToolId` is a closed Claude/Codex enum, rows use `deny_unknown_fields`, and the UI strings are
+   hard-coded), so apps get a **new, separate store**, and the external-tools schema is not widened
+   (no downgrade risk for older builds reading that file). `app_local_data_dir()/app-handoff/consents.json`:
+   a top-level object with `schemaVersion: 1` and `rows: [{ pluginId, appId, appPath, granted, at }]`,
+   keyed by (pluginId, appId), written atomically like `consent.rs` (temp, sync, rename; 0o600 on Unix,
+   the Windows equivalent checked by the Windows session); unknown fields are kept on read and
+   rewrite, so a newer file never breaks an older build. Behavior, each with a test:
+   - **Uninstall:** every row for the plugin is deleted.
+   - **Disable:** rows are kept; while disabled, the plugin's commands don't run, so nothing is sent.
+     Re-enabling restores the same consent.
+   - **Update:** rows are kept if the new version still declares `apps.handoff` and `native.execute`,
+     and its `companions` templates are unchanged; if the permission is dropped the rows are deleted;
+     if any template changed, consent is asked again (the box shows the new command).
+   - **App changed or missing** (rule 6): that row stops counting and consent is asked again.
+   - **Revoke** in the Plugin Manager sets `granted: false`; the row is listed until the plugin is
+     uninstalled.
 6. **The app is re-confirmed if it changes**: the host records path, size, modified time, and on
    macOS the bundle identifier. A mismatch returns `app-changed` and asks again.
 7. **Temp files are the host's**: `<app cache>/handoff/<pluginId>/<random>/<name>.<ext>`, built with
@@ -404,9 +443,9 @@ from one host (§1, §14).
   `menu.crystalBuilder.chooseApp`, location `plugins`.
 - **Permissions**: `selection.read`, `chemistry.compute`, `apps.handoff`, `native.execute`,
   `plugin.storage`, `ui.menu`, and `document.write` (task 2G, Mark Connection Points; owner
-  2026-11-20). `apiVersion: "^0.1.26"`. Nothing else: no network, no clipboard, no filesystem.
+  2026-11-20). `apiVersion: "^0.1.27"`. Nothing else: no network, no clipboard, no filesystem.
 - **Release assets**: `crystal-builder-handoff-X.Y.Z.zip` and `.zip.sha256`, with the two release-body
-  markers (`ChemDraft-Plugin-API: ^0.1.26`, `ChemDraft-Min-App:` the first app version with 0.1.26).
+  markers (`ChemDraft-Plugin-API: ^0.1.27`, `ChemDraft-Min-App:` the first app version with 0.1.27).
 - **Host catalog**: one entry in `OFFICIAL_PLUGIN_CATALOG` (`apps/desktop/src/plugins/pluginUpdates.ts`)
   and four exact URLs in `apps/desktop/src-tauri/capabilities/plugin-updates.json` (latest,
   `?per_page=20`, `.zip`, `.zip.sha256`); `pluginUpdates.test.ts` guards them.
@@ -430,14 +469,15 @@ Windows installer comes only from the GitHub workflow; the Windows session tests
 | 0.3 One read-only code map (single worker) | Short note: how a user-invoked command is told apart from an assistant-invoked one in `plugin-host`; what SMILES the selection snapshot carries for abbreviations, R-groups, and an atom labelled `X`, and whether the selection exposes per-atom labels and bonds; the consent store's shape | Note attached; no files changed |
 | 0.4 Crystal Builder source map (same single worker, after 0.3) | Short note from its MIT source: the node and net ids in `xtal/mof/catalog.py` (Zn₄O = N16 confirmed; the Cu paddlewheel id); what `mof.build --json` prints (fit numbers, formula, output path) and its exit codes; whether `bb_dir` accepts a CIF block or only PORMAKE XYZ; which nets need a repeat above 1×1×1 before their nodes can alternate (as pcu/N16 needs 2×2×2), so each suggestion row sets its repeat; what `xtal inspect --json` prints for space group, Z, and coordination; the Windows `xtal` executable name and location in the installer | Note attached; no files changed |
 
-### Phase 1: host capability (ChemDraft repo, branch `feat/app-handoff` off `origin/main` after 1.2)
+### Phase 1: host capability (ChemDraft repo, branch `feat/app-handoff` off `origin/main` after 1.2.2 ships)
 
 | Task | Owned paths | Acceptance and tests | Review |
 |---|---|---|---|
-| 1A API contract | `packages/plugin-api/src/index.ts` (+ new `appHandoff.ts`, `appHandoff.test.ts`), header comment | Schemas for the four methods and the manifest `companions` block; permission added and marked dangerous; manifest refuses `apps.handoff` without `native.execute`, and refuses a template whose placeholder is undeclared or sits inside a larger argument; version 0.1.26. Tests: name sanitizing cases, extension allowlist, 5 MB and warning limits, permission pairing, template and param-pattern validation | Kimi |
-| 1B Host gate | `packages/plugin-host/src/**` (capability wiring + tests) | Absent without both permissions; rejects outside the plugin's own command; rejects assistant-invoked commands; one send per invocation, refused calls not counted; worker and in-process paths behave the same | Kimi |
-| 1C Native side | `apps/desktop/src-tauri/src/app_handoff/**`, `lib.rs` registration, `capabilities/app-handoff.json` (window `main` only) | Pure command-line builder tested for macOS and Windows from one host; companion runner per rule 11 (tool resolved inside the app folder, symlink and `..` escapes refused, timeout kills the tree, 1 MB stdout cap, no console window on Windows), tested with a stub tool on both platforms; picker accepts only `.app` / `.exe`; temp path and cleanup tests (backslashes, 8.3 paths, reserved names); consent store with revoke and clear-on-uninstall; app-changed detection; serde/Zod wire fixtures like `externalToolsWire.test.ts`; clippy clean on both `cfg` sides | Kimi |
-| 1D Desktop wiring | `apps/desktop/src/appHandoff/**`, plugin runtime hookup, Plugin Manager consent rows | Native message boxes for consent and warnings (no in-viewport dialog, §12); status-line success; specific errors; consent visible and revocable | Kimi |
+| 1A API contract | `packages/plugin-api/src/index.ts` (+ new `appHandoff.ts`, `appHandoff.test.ts`), header comment | Schemas for the four methods and the manifest `companions` block; permission added and marked dangerous; manifest refuses `apps.handoff` without `native.execute`, and refuses a template whose placeholder is undeclared or sits inside a larger argument; version 0.1.27. Tests: name sanitizing cases, extension allowlist, 5 MB and warning limits, permission pairing, template and param-pattern validation | Kimi |
+| 1B Host gate | `packages/plugin-host/src/**` (capability wiring + tests), app dispatch sites in `apps/desktop/src/` that pass `source: "user"` | Host-set `source: "user"` on `invokeCommand` per rule 2, with spoofing tests (assistant tool, request tool, agent bridge, MCP, programmatic self-invocation, `source` in plugin input); absent without both permissions; rejects outside the plugin's own command; rejects every invocation without the user source; one send per invocation, refused calls not counted; worker and in-process paths behave the same | Kimi |
+| 1C Native side | `apps/desktop/src-tauri/src/app_handoff/**`, `lib.rs` registration, `capabilities/app-handoff.json` (window `main` only) | Pure command-line builder tested for macOS and Windows from one host; companion runner per rule 11 (tool resolved inside the app folder, symlink and `..` escapes refused, timeout kills the tree, 1 MB stdout cap, no console window on Windows), tested with a stub tool on both platforms; picker accepts only `.app` / `.exe`; temp path and cleanup tests (backslashes, 8.3 paths, reserved names); new `app_handoff` consent store per rule 5 (separate file, `schemaVersion`, unknown fields kept), with tests for uninstall, disable, update with and without template changes, permission dropped, app changed, and revoke; the external-tools store untouched; app-changed detection; serde/Zod wire fixtures like `externalToolsWire.test.ts`; clippy clean on both `cfg` sides | Kimi |
+| 1D Desktop wiring | `apps/desktop/src/appHandoff/**`, plugin runtime hookup, Plugin Manager consent rows (own section, not the AI-tool rows) | Native message boxes for consent and warnings (no in-viewport dialog, §12); status-line success; specific errors; consent visible and revocable | Kimi |
+| 1F Connection points in the selection | `apps/desktop/src/plugins/selectionSnapshot.ts`, `packages/plugin-api/src/index.ts` (field), `chem-core` molfile warning text | `connectionPoints` per Decision 1b: lists exactly the atoms labelled `X` with anchor and bond order; molfile bytes unchanged for existing plugins; tests: X only, R1 only, X and R1 together, X with two neighbors (listed with `anchor: 0` so the plugin refuses it by name), `X` inside an abbreviation, a document saved and reopened | Kimi |
 | 1E Docs and closeout | `docs/plugin-architecture/AUTHORING.md` (new section + version table row), AGENTS.md §4.1 version line, `docs/manual-stress-checklist.md`, `docs/plans/PLANS.md`, build stamp | Docs match the code; a short AUTHORING example ("send a text file to an app the user picked"); gauntlet green | Kimi |
 
 Hands-on, both platforms (owner's MacBook for macOS UI; the Intel iMac checks only processor-specific
@@ -453,7 +493,7 @@ quitting ChemDraft leaves the other app running.
 | 2A Scaffold | manifest, `src/index.ts`, `src/workerEntry.ts`, LICENSE, README | Manifest parses; boundary rule holds (only `@chemdraft/plugin-api`) | Kimi |
 | 2B CIF writer | `src/cif.ts` + test | Pure function, `Plugin3DModel` plus bonds → text in the Decision 1 format: P1 box with 5 Å vacuum, unique labels, `_geom_bond` loop with `_xtal_bond_order` and `_xtal_bond_kind explicit`; fixed decimals, LF only, atom count and order equal the model; provenance comments. Golden-file test of the exact text for the terephthalate linker (guards the private-tag risk) | Kimi |
 | 2C Loss audit | `src/lossAudit.ts` + test | Pure function returning refusals and warnings exactly per the table in Decision 1, per send mode; fixtures: charged, isotopic, radical, unspecified stereo, salt, abbreviation, R-group, reaction member, metal complex, X atoms in a molecule send | Kimi |
-| 2C2 Connection points | `src/connectionPoints.ts` + test | Pure functions: find `X` atoms and their anchors; validate per Decision 1b (fewer than two, wrong valence, multiple bond, several components each refused with its message); X→`[H]` SMILES rewrite; map embedded atoms back to `X` by index. Fixtures: terephthalate linker (benzene ring with X in place of each COOH, PORMAKE E14 cut), a tritopic linker with 3 X, a molecule with 1 X (refused), X on a double bond (refused) | Kimi |
+| 2C2 Connection points | `src/connectionPoints.ts` + test | Pure functions: find `X` atoms and their anchors; validate per Decision 1b (fewer than two, wrong valence, multiple bond, several components each refused with its message); read connection points only from `connectionPoints` (never by guessing which `R#` is an `X`); rewrite them to H for embedding; map embedded atoms back to `X` by index. Fixture: a molecule with one `X` and one real `R1` (the `R1` is refused as an R-group, the `X` accepted). Fixtures: terephthalate linker (benzene ring with X in place of each COOH, PORMAKE E14 cut), a tritopic linker with 3 X, a molecule with 1 X (refused), X on a double bond (refused) | Kimi |
 | 2C3 Automatic cut | `src/carboxylateCut.ts` + test | Pure function: each COOH / COO⁻ on carbon → one `X` at the ring C–carboxyl C midpoint, per Decision 1b; skipped when the selection already has `X`; other connecting groups refused by name. Fixtures: terephthalic acid → C₆H₄X₂ matching the 2026-11-20 block; disodium terephthalate; trimesic acid → 3 X; nicotinic acid (pyridyl refused) | Kimi |
 | 2H Build MOF command | `src/buildMof.ts`, `src/nodeSuggest.ts` + tests, manifest `companions.mofBuild` | Node and net suggestion per the Decision 1b table (drawn Zn²⁺ → N16/pcu, `repeat=2x2x2`; Cu²⁺ + tritopic → paddlewheel/tbo; else no suggestion); one native dialog to confirm or change net, node, repeat; then one `runCompanion` call with the linker block as input and `openOutput: true`, then the `inspect` template on the output; `src/targetCheck.ts` compares it with the row's target record (space group, cell within 2%, Z, formula, ring–carboxylate twist ≤ 10°) and names the material only on a match. Mocked-context tests: success, user cancels, tool missing, timeout, nonzero exit with Crystal Builder's message passed through, net mismatch reported; **the 2026-11-20 twisted P222 build (fixture) must not be called MOF-5, and the Fm-3m cell must be** | Kimi |
 | 2D Command flow | `src/send.ts` + test with a mocked context | Both send commands: empty selection, cancelled picker, declined consent, embed failure, minimize failure, linker refusals, and success each produce the specified message; one send per command | Kimi |
@@ -516,7 +556,7 @@ The picture-only fallback was considered and dropped (owner, 2026-11-20).
 
 For the owner:
 
-1. ~~**Release target.**~~ **Answered (owner, 2026-11-20): ship the host capability in 1.3** (API 0.1.26).
+1. ~~**Release target.**~~ **Answered (owner, 2026-11-20): ship the host capability in 1.3** (API 0.1.27; main took 0.1.26 for request-bound tools).
 2. ~~**How often to ask.**~~ **Answered (owner, 2026-11-20): consent once per plugin and app, then a
    message box only when something specific would be lost.** Consent once per plugin and app, then a message box only when something
    specific would be lost (recommended), or a confirmation on every send?
