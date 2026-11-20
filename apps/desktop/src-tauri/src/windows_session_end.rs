@@ -98,9 +98,13 @@ mod windows {
                 // SAFETY: Clone the installed handle before pumping messages that can destroy it.
                 let app = unsafe { (&*(data as *const tauri::AppHandle)).clone() };
                 let recorder = app.clone();
-                flush_system_session(&app, pump_webview, terminate_process, move || {
-                    finish_exit_opens(&recorder, QuitKind::System, || {});
-                });
+                let _watchdog =
+                    flush_system_session(&app, pump_webview, terminate_process, move || {
+                        finish_exit_opens(&recorder, QuitKind::System, || {});
+                    });
+                // SAFETY: Forward through the live subclass chain with the watchdog still armed.
+                // Tao dispatches Exit synchronously in this call.
+                return unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
             }
             WM_NCDESTROY => {
                 // SAFETY: Remove this callback before releasing the handle allocated in install.

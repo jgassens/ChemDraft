@@ -2,9 +2,9 @@
 #[cfg(any(windows, target_os = "macos", test))]
 use std::{sync::mpsc, time::Duration};
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_os = "macos", test))]
 pub(super) const FLUSH_BUDGET: Duration = Duration::from_secs(2);
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_os = "macos", test))]
 pub(super) const HARD_LIMIT: Duration = Duration::from_secs(3);
 
 #[cfg(any(windows, target_os = "macos", test))]

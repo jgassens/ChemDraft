@@ -47,13 +47,20 @@ pub(crate) mod pending_opens {
     #[serde(untagged)]
     enum Entry {
         Replay(String),
-        Notice { path: String },
+        Notice(NoticeEntry),
+    }
+
+    #[derive(PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+    struct NoticeEntry {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<[u8; 16]>,
     }
 
     impl Entry {
         fn path(&self) -> &str {
             match self {
-                Self::Replay(path) | Self::Notice { path } => path,
+                Self::Replay(path) | Self::Notice(NoticeEntry { path, .. }) => path,
             }
         }
     }
@@ -89,9 +96,16 @@ pub(crate) mod pending_opens {
         let _guard = lock(directory)?;
         let file = directory.join(FILENAME);
         let mut pending = read(&file)?;
+        let id = if notice {
+            let mut id = [0; 16];
+            getrandom::fill(&mut id).map_err(|error| error.to_string())?;
+            Some(id)
+        } else {
+            None
+        };
         pending.extend(paths.iter().cloned().map(|path| {
             if notice {
-                Entry::Notice { path }
+                Entry::Notice(NoticeEntry { path, id })
             } else {
                 Entry::Replay(path)
             }
@@ -112,14 +126,18 @@ pub(crate) mod pending_opens {
 
     pub(crate) struct Notice {
         directory: PathBuf,
-        paths: Vec<String>,
+        entries: Vec<NoticeEntry>,
     }
 
     impl Notice {
         pub(crate) fn message(&self) -> String {
             format!(
                 "These files were not opened before ChemDraft quit:\n\n{}",
-                self.paths.join("\n")
+                self.entries
+                    .iter()
+                    .map(|entry| entry.path.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n")
             )
         }
 
@@ -129,7 +147,7 @@ pub(crate) mod pending_opens {
             let mut entries = read(&file)?;
             let before = entries.len();
             entries.retain(
-                |entry| !matches!(entry, Entry::Notice { path } if self.paths.contains(path)),
+                |entry| !matches!(entry, Entry::Notice(notice) if self.entries.contains(notice)),
             );
             if entries.len() != before {
                 write(&file, &entries, false)?;
@@ -144,16 +162,16 @@ pub(crate) mod pending_opens {
             return Ok(None);
         }
         let _guard = lock(directory)?;
-        let paths: Vec<_> = read(&file)?
+        let entries: Vec<_> = read(&file)?
             .into_iter()
             .filter_map(|entry| match entry {
-                Entry::Notice { path } => Some(path),
+                Entry::Notice(notice) => Some(notice),
                 Entry::Replay(_) => None,
             })
             .collect();
-        Ok((!paths.is_empty()).then(|| Notice {
+        Ok((!entries.is_empty()).then(|| Notice {
             directory: directory.to_owned(),
-            paths,
+            entries,
         }))
     }
 
@@ -176,7 +194,7 @@ pub(crate) mod pending_opens {
                     .into_iter()
                     .filter_map(|entry| match entry {
                         Entry::Replay(path) => Some(path),
-                        Entry::Notice { .. } => None,
+                        Entry::Notice(_) => None,
                     })
                     .collect()
             } else {
@@ -453,6 +471,30 @@ mod tests {
                 .unwrap();
             assert_eq!(paths, ["retry.cdx"]);
         }
+    }
+
+    #[test]
+    fn acknowledging_a_notice_preserves_a_new_notice_for_the_same_path() {
+        let files = Files::new();
+        let paths = ["same.cdx".into()];
+        let check_replacement = || {
+            let old = pending_opens::read_notice(&files.0).unwrap().unwrap();
+            pending_opens::append(&files.0, &paths, true).unwrap();
+            old.acknowledge().unwrap();
+            let new = pending_opens::read_notice(&files.0).unwrap().unwrap();
+            assert!(new.message().ends_with("same.cdx"));
+            new.acknowledge().unwrap();
+            assert!(pending_opens::read_notice(&files.0).unwrap().is_none());
+        };
+
+        pending_opens::append(&files.0, &paths, true).unwrap();
+        check_replacement();
+        fs::write(
+            files.0.join("pending-opens.json"),
+            r#"[{"path":"same.cdx"}]"#,
+        )
+        .unwrap();
+        check_replacement();
     }
 
     #[test]

@@ -374,6 +374,15 @@ impl QuitFlow {
         self.flush_grace.saturating_add(QUIT_WRITE_BUDGET)
     }
 
+    #[cfg(any(windows, target_os = "macos", test))]
+    fn system_flush_deadline(&self, started: Instant) -> Instant {
+        let deadline = started + shutdown::FLUSH_BUDGET;
+        self.deadline
+            .lock()
+            .unwrap()
+            .map_or(deadline, |existing| existing.min(deadline))
+    }
+
     /// Menus, document close, and Dock Quit share one final session write.
     fn begin_flush(&self, prompt_id: Option<u64>) -> (u64, bool) {
         let mut flush = self.flush.lock().unwrap();
@@ -519,8 +528,9 @@ fn flush_system_session(
     pump: impl FnMut(Duration) -> bool,
     on_stall: impl FnOnce() + Send + 'static,
     record: impl FnOnce() + Send + 'static,
-) {
+) -> mpsc::Sender<()> {
     let started = Instant::now();
+    let flush_deadline = QUIT.system_flush_deadline(started);
     let (recorded, recording) = mpsc::channel();
     let recorder = Mutex::new(Some(record));
     let record_opens = Arc::new(move || {
@@ -533,31 +543,33 @@ fn flush_system_session(
     });
     let (disarm, watchdog) = mpsc::channel();
     let fallback_record = record_opens.clone();
-    thread::spawn(move || {
-        // A nested native callback may stall. Give the journal a chance to record even
-        // then, on a worker that cannot delay the independent hard stop.
-        if watchdog.recv_timeout(shutdown::FLUSH_BUDGET.saturating_sub(started.elapsed()))
-            == Err(mpsc::RecvTimeoutError::Timeout)
-        {
-            thread::spawn(move || fallback_record());
-            shutdown::watch_flush(
-                watchdog,
-                shutdown::HARD_LIMIT.saturating_sub(started.elapsed()),
-                on_stall,
-            );
-        }
-    });
     flush_system_session_with(
         &QUIT,
-        started + shutdown::FLUSH_BUDGET,
-        || request_document_quit_flush(app).map_err(|error| error.to_string()),
+        flush_deadline,
+        || {
+            thread::spawn(move || {
+                // A nested native callback may stall. Give the journal a chance to record even
+                // then, on a worker that cannot delay the independent hard stop.
+                if watchdog.recv_timeout(flush_deadline.saturating_duration_since(Instant::now()))
+                    == Err(mpsc::RecvTimeoutError::Timeout)
+                {
+                    thread::spawn(move || fallback_record());
+                    shutdown::watch_flush(
+                        watchdog,
+                        shutdown::HARD_LIMIT.saturating_sub(started.elapsed()),
+                        on_stall,
+                    );
+                }
+            });
+            request_document_quit_flush(app).map_err(|error| error.to_string())
+        },
         pump,
         || {
             record_opens();
             let _ = recording.recv_timeout(shutdown::HARD_LIMIT.saturating_sub(started.elapsed()));
         },
     );
-    drop(disarm);
+    disarm
 }
 
 #[cfg(any(windows, target_os = "macos", test))]
@@ -568,7 +580,8 @@ fn flush_system_session_with(
     mut pump: impl FnMut(Duration) -> bool,
     record: impl FnOnce(),
 ) {
-    flow.system_flushing.store(true, Ordering::SeqCst);
+    flow.system_flushing
+        .store(Instant::now() < deadline, Ordering::SeqCst);
     flow.quitting.store(true, Ordering::SeqCst);
     match request() {
         Ok(Some(id)) => {
@@ -10095,13 +10108,25 @@ fn allow_opened_document_in_scope<R: Runtime>(app: &tauri::AppHandle<R>, path: &
 }
 
 fn show_and_emit_open_document<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
-    let reveal = ensure_main_window_visible(app).map_err(|error| {
-        format!("Could not show ChemDraft main window for opened document: {error}")
-    });
+    show_and_emit_open_document_with(
+        || ensure_main_window_visible(app),
+        || {
+            app.emit_to(MAIN_WINDOW_LABEL, OPEN_DOCUMENT_EVENT, ())
+                .map_err(|error| error.to_string())
+        },
+    )
+}
+
+fn show_and_emit_open_document_with(
+    reveal: impl FnOnce() -> Result<(), String>,
+    signal: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if let Err(error) = reveal() {
+        eprintln!("Could not show ChemDraft main window for opened document: {error}");
+    }
     // Events only signal that the queue changed. The window subscribes before its first drain,
     // then serializes drains, so an event overlapping a drain cannot deliver a file twice.
-    let signal = app.emit_to(MAIN_WINDOW_LABEL, OPEN_DOCUMENT_EVENT, ());
-    reveal.and(signal.map_err(|error| error.to_string()))
+    signal()
 }
 
 fn emit_toolset_window_state_to_main<R: Runtime>(
@@ -13441,6 +13466,30 @@ mod tests {
     }
 
     #[test]
+    fn reveal_failure_does_not_fail_a_signalled_document_open() {
+        let state = PendingOpenDocument::default();
+        state.setup_completed.store(true, Ordering::SeqCst);
+        state
+            .record(vec![opened_document_test_payload()], true)
+            .unwrap();
+        let reveal = || Err("focus denied".into());
+        let mut notified = false;
+        assert_eq!(
+            show_and_emit_open_document_with(reveal, || {
+                notified = true;
+                Ok(())
+            }),
+            Ok(())
+        );
+        assert!(notified);
+        assert_eq!(state.drain().unwrap().len(), 1);
+        assert_eq!(
+            show_and_emit_open_document_with(reveal, || Err("notification failed".into())),
+            Err("notification failed".into())
+        );
+    }
+
+    #[test]
     fn pending_open_documents_append_before_setup_and_drain_in_order() {
         let state = PendingOpenDocument::default();
         for name in ["first.chemdraft", "second.chemdraft", "third.chemdraft"] {
@@ -15006,6 +15055,39 @@ mod tests {
             );
             assert!(recorded.get());
         }
+    }
+
+    #[test]
+    fn system_session_flush_uses_the_earlier_deadline_when_it_joins_user_quit() {
+        let flow = test_quit_flow(QUIT_FLUSH_GRACE, EXIT_WATCHDOG);
+        let start = Instant::now();
+        let os_deadline = start + shutdown::FLUSH_BUDGET;
+        assert_eq!(flow.system_flush_deadline(start), os_deadline);
+
+        let user_request = flow.begin_flush(None).0;
+        for existing in [
+            start,
+            start + Duration::from_millis(250),
+            start + QUIT_WRITE_BUDGET,
+        ] {
+            *flow.deadline.lock().unwrap() = Some(existing);
+            assert_eq!(flow.system_flush_deadline(start), existing.min(os_deadline));
+        }
+        *flow.deadline.lock().unwrap() = Some(start);
+        flush_system_session_with(
+            flow,
+            flow.system_flush_deadline(start),
+            || {
+                assert!(!flow.final_write_allowed());
+                let joined = flow.request_flush(|_| -> Result<(), String> {
+                    panic!("reuse the user quit request")
+                })?;
+                assert_eq!(joined, user_request);
+                Ok(Some(joined))
+            },
+            |_| panic!("the original deadline has elapsed"),
+            || {},
+        );
     }
 
     #[cfg(target_os = "macos")]

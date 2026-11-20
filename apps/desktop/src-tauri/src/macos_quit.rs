@@ -17,7 +17,7 @@ use std::cell::RefCell;
 use std::ffi::c_char;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, OnceLock,
+    mpsc, Arc, OnceLock,
 };
 use std::time::Duration;
 
@@ -25,6 +25,9 @@ static APP: OnceLock<(tauri::AppHandle, Option<Arc<SecondaryLaunch>>)> = OnceLoc
 
 static POWER_OFF: AtomicBool = AtomicBool::new(false);
 static SYSTEM_FLUSH_STARTED: AtomicBool = AtomicBool::new(false);
+// AppKit dispatches Exit after the delegate returns TerminateNow. Keep the hard stop armed
+// for the lifetime of the process once the OS has committed to termination.
+static SYSTEM_WATCHDOG: OnceLock<mpsc::Sender<()>> = OnceLock::new();
 
 thread_local! {
     static QUIT_SHEET: RefCell<Option<(u64, Retained<NSAlert>)>> = const { RefCell::new(None) };
@@ -56,7 +59,7 @@ fn finish_system_termination(app: &tauri::AppHandle, secondary: Option<Arc<Secon
     // reply could run in the nested WebKit pump below.
     *super::QUIT.appkit_reply.lock().unwrap() = super::AppkitReplyState::Delivered;
     let recorder = app.clone();
-    super::flush_system_session(
+    let watchdog = super::flush_system_session(
         app,
         |remaining| {
             let slice = remaining.min(Duration::from_millis(5));
@@ -80,6 +83,7 @@ fn finish_system_termination(app: &tauri::AppHandle, secondary: Option<Arc<Secon
             }
         },
     );
+    let _ = SYSTEM_WATCHDOG.set(watchdog);
 }
 
 /// Own the quit sheet so a Finder open can dismiss precisely this alert, even when another

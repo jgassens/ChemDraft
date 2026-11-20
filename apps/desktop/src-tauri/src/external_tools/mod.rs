@@ -21,6 +21,7 @@ mod wire_tests;
 use crate::{
     assistant_mcp::session::{self, BindError, RunBinding},
     local_engine::InstallError,
+    shutdown::QuitKind,
 };
 use catalog::{identifier, Effort, RenderedRun, ToolId};
 use run::{KillReason, ToolRun};
@@ -334,7 +335,12 @@ impl ExternalToolsState {
         }
         Ok(entry.run.clone())
     }
+    #[cfg(test)]
     pub fn shutdown(&self) {
+        self.shutdown_for(QuitKind::User);
+    }
+
+    fn shutdown_for(&self, kind: QuitKind) {
         self.cancel_install.store(true, Ordering::SeqCst);
         let (runs, dirs) = {
             let mut state = self.inner.lock().unwrap();
@@ -348,18 +354,63 @@ impl ExternalToolsState {
                 state.conversations.values().cloned().collect::<Vec<_>>(),
             )
         };
-        for run in &runs {
-            run.cancel(KillReason::AppExit);
-        }
-        self.codex_processes.shutdown();
-        for run in &runs {
-            run.wait_finished(Duration::from_secs(5));
-        }
-        for dir in dirs {
-            let _ = fs::remove_dir_all(dir);
+        let codex_runs = self.codex_processes.take_for_shutdown();
+        if stop_runs(
+            kind,
+            runs.iter().chain(&codex_runs),
+            |run, immediate| run.cancel_for_shutdown(immediate),
+            |run, timeout| {
+                run.wait_finished(timeout);
+            },
+        ) {
+            for dir in dirs {
+                let _ = fs::remove_dir_all(dir);
+            }
         }
     }
 }
+
+fn stop_runs<'a, T: 'a>(
+    kind: QuitKind,
+    runs: impl Iterator<Item = &'a T> + Clone,
+    cancel: impl Fn(&T, bool),
+    wait: impl Fn(&T, Duration),
+) -> bool {
+    let system = kind == QuitKind::System;
+    for run in runs.clone() {
+        cancel(run, system);
+    }
+    // The system callback has one hard deadline. Supervisors can kill their process trees
+    // immediately, and the next launch already sweeps any leftover conversation directories.
+    if system {
+        return false;
+    }
+    for run in runs {
+        wait(run, Duration::from_secs(5));
+    }
+    true
+}
+
+#[test]
+fn os_logoff_with_slow_external_tools_stays_inside_the_hard_cap() {
+    use crate::shutdown::{quit_kind, QuitPlatform, FLUSH_BUDGET, HARD_LIMIT};
+    use std::cell::Cell;
+
+    for platform in [QuitPlatform::Macos, QuitPlatform::Windows] {
+        let kind = quit_kind(platform, 0, true, false);
+        let elapsed = Cell::new(FLUSH_BUDGET);
+        let tools = [Cell::new(false), Cell::new(false)];
+        assert!(!stop_runs(
+            kind,
+            tools.iter(),
+            |tool, immediate| tool.set(immediate),
+            |_, timeout| elapsed.set(elapsed.get() + timeout),
+        ));
+        assert!(tools.iter().all(Cell::get));
+        assert!(elapsed.get() < HARD_LIMIT);
+    }
+}
+
 pub(crate) fn valid_plugin_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
@@ -1172,7 +1223,8 @@ pub async fn external_tool_conversation_clear<R: Runtime>(
 }
 
 pub fn shutdown<R: Runtime>(app: &tauri::AppHandle<R>) {
-    app.state::<ExternalToolsState>().shutdown();
+    app.state::<ExternalToolsState>()
+        .shutdown_for(crate::shutdown_kind(false));
 }
 
 pub fn setup<R: Runtime>(app: &tauri::AppHandle<R>) {

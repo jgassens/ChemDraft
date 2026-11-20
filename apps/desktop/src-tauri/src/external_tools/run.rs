@@ -93,6 +93,7 @@ struct Buffer {
     dropped: u64,
     status: RunStatus,
     cancel: Option<KillReason>,
+    force_cancel: bool,
     polled_finished_at: Option<Instant>,
     finished_at: Option<Instant>,
     captured_bytes: usize,
@@ -148,18 +149,10 @@ struct CodexProcessList {
     runs: Vec<Arc<ToolRun>>,
 }
 impl CodexProcesses {
-    pub(super) fn shutdown(&self) {
-        let runs = {
-            let mut list = self.0.lock().unwrap();
-            list.shutting_down = true;
-            std::mem::take(&mut list.runs)
-        };
-        for run in &runs {
-            run.cancel(KillReason::AppExit);
-        }
-        for run in &runs {
-            run.wait_finished(Duration::from_secs(5));
-        }
+    pub(super) fn take_for_shutdown(&self) -> Vec<Arc<ToolRun>> {
+        let mut list = self.0.lock().unwrap();
+        list.shutting_down = true;
+        std::mem::take(&mut list.runs)
     }
 }
 // Keep credential-file lifetime within the bound run, including failed spawns.
@@ -320,6 +313,7 @@ impl ToolRun {
                 dropped: 0,
                 status: RunStatus::Running,
                 cancel: None,
+                force_cancel: false,
                 polled_finished_at: None,
                 finished_at: None,
                 captured_bytes: 0,
@@ -364,14 +358,14 @@ impl ToolRun {
             let pid = child.id();
             let mut interrupt_at = None;
             let status = loop {
-                let reason = {
+                let (reason, force_cancel) = {
                     let mut b = shared.buffer.lock().unwrap();
                     if b.cancel.is_none() && started.elapsed() >= timeout {
                         b.cancel = Some(KillReason::Timeout);
                     }
-                    b.cancel
+                    (b.cancel, b.force_cancel)
                 };
-                if reason.is_some() && interrupt_at.is_none() {
+                if !force_cancel && reason.is_some() && interrupt_at.is_none() {
                     #[cfg(unix)]
                     // SAFETY: the child has not been reaped and owns this process group.
                     unsafe {
@@ -379,8 +373,13 @@ impl ToolRun {
                     }
                     interrupt_at = Some(Instant::now());
                 }
-                if interrupt_at.is_some_and(|at| at.elapsed() >= Duration::from_secs(2)) {
-                    platform::kill_process_tree(pid);
+                if force_cancel
+                    || interrupt_at.is_some_and(|at| at.elapsed() >= Duration::from_secs(2))
+                {
+                    // For immediate Windows cleanup, every descendant is already in the job.
+                    if !cfg!(windows) || !force_cancel {
+                        platform::kill_process_tree(pid);
+                    }
                     #[cfg(windows)]
                     job.terminate();
                     let _ = child.kill();
@@ -551,9 +550,16 @@ impl ToolRun {
         }
     }
     pub fn cancel(&self, reason: KillReason) {
+        self.cancel_with(reason, false);
+    }
+    pub(super) fn cancel_for_shutdown(&self, immediate: bool) {
+        self.cancel_with(KillReason::AppExit, immediate);
+    }
+    fn cancel_with(&self, reason: KillReason, immediate: bool) {
         let mut b = self.shared.buffer.lock().unwrap();
-        if b.status.is_running() && b.cancel.is_none() {
-            b.cancel = Some(reason);
+        if b.status.is_running() && (b.cancel.is_none() || immediate) {
+            b.cancel.get_or_insert(reason);
+            b.force_cancel |= immediate;
             self.shared.changed.notify_all();
         }
     }
