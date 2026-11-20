@@ -102,7 +102,7 @@ describe('PNG decoding and dual EMF', () => {
       expect(kind).toBe('EMF+ image object[0]');
       images.push(data);
     })).toEqual([]);
-    expect(images).toEqual([png]);
+    expect(images).toEqual([Buffer.concat([png, Buffer.alloc((4 - png.length % 4) % 4)])]);
 
     const records: Buffer[] = [];
     for (let at = 0; at < emf.length;) {
@@ -112,25 +112,30 @@ describe('PNG decoding and dual EMF', () => {
       expect(at + size).toBeLessThanOrEqual(emf.length);
       records.push(emf.subarray(at, at += size));
     }
-    const [header, comment, dib, eof] = records;
-    expect(records.map(bytes => bytes.readUInt32LE())).toEqual([1, 70, 81, 14]);
+    const [header, comment, dib, plusEof, eof] = records;
+    expect(records.map(bytes => bytes.readUInt32LE())).toEqual([1, 70, 81, 70, 14]);
     expect(header.readUInt32LE(48)).toBe(emf.length);
     expect(header.readUInt32LE(52)).toBe(records.length);
     expect([header.readInt32LE(16), header.readInt32LE(20)]).toEqual([599, 670]);
     expect([header.readInt32LE(32), header.readInt32LE(36)]).toEqual([15875, 17754]);
-    expect(comment.readUInt32LE(8)).toBe(comment.length - 12);
-    expect(comment.toString('ascii', 12, 16)).toBe('EMF+');
-
-    const plus: Buffer[] = [];
-    for (let at = 16; at < comment.length;) {
-      const size = comment.readUInt32LE(at + 4);
-      const length = comment.readUInt32LE(at + 8);
-      expect(size).toBe(12 + Math.ceil(length / 4) * 4);
-      expect(at + size).toBeLessThanOrEqual(comment.length);
-      expect(comment.subarray(at + 12 + length, at + size)).toEqual(Buffer.alloc(size - 12 - length));
-      plus.push(comment.subarray(at, at += size));
+    function plusRecords(comment: Buffer) {
+      expect(comment.readUInt32LE(8)).toBe(comment.length - 12);
+      expect(comment.toString('ascii', 12, 16)).toBe('EMF+');
+      const plus: Buffer[] = [];
+      for (let at = 16; at < comment.length;) {
+        const size = comment.readUInt32LE(at + 4);
+        const dataSize = comment.readUInt32LE(at + 8);
+        expect(size).toBeGreaterThanOrEqual(12);
+        expect(dataSize).toBe(size - 12);
+        expect(dataSize % 4).toBe(0);
+        expect(at + size).toBeLessThanOrEqual(comment.length);
+        plus.push(comment.subarray(at, at += size));
+      }
+      return plus;
     }
-    expect(plus.map(bytes => bytes.readUInt16LE())).toEqual([0x4001, 0x4008, 0x401a, 0x4002]);
+    const plus = plusRecords(comment);
+    expect(plus.map(bytes => bytes.readUInt16LE())).toEqual([0x4001, 0x4008, 0x401a]);
+    expect(plusRecords(plusEof).map(bytes => bytes.readUInt16LE())).toEqual([0x4002]);
     expect(plus[0].readUInt16LE(2)).toBe(1);
     expect(plus[1].readUInt16LE(2)).toBe(0x0500);
     expect(plus[1].readUInt32LE(36)).toBe(1);
@@ -139,6 +144,21 @@ describe('PNG decoding and dual EMF', () => {
     expect([plus[2].readFloatLE(44), plus[2].readFloatLE(48)]).toEqual([600, 671]);
     expect(dib.readUInt32LE(60)).toBe(dib.length - 120);
     expect(eof.readUInt32LE(16)).toBe(eof.length);
+  });
+
+  it.each([0, 1, 2, 3])('hashes the PNG through IEND with %i bytes of EMF+ padding', padding => {
+    const samples = [0, 1, 2, 3, 4, 5];
+    const unpadded = filteredPng(0, 1, samples, 0);
+    const decoy = Buffer.from('probe\0IEND');
+    const extraSize = (4 - (unpadded.length + 12 + decoy.length + padding) % 4) % 4;
+    const carrier = filteredPng(0, 1, samples, 0, [chunk('tEXt', Buffer.concat([decoy, Buffer.alloc(extraSize, 0x20)]))]);
+    const emf = previewEmf({ png: carrier, widthPx: 3, heightPx: 2, dpi: 96 });
+    emfFindings(emf, (bytes: Buffer) => {
+      expect(bytes.length - carrier.length).toBe(padding);
+      bytes.fill(0xaa, carrier.length);
+    });
+    const { previews } = inspectOle(writeZip([['word/media/image1.emf', emf]]));
+    expect(previews[0]).toMatchObject({ error: null, emfPlusPngs: [{ size: carrier.length, sha256: sha256(carrier) }] });
   });
 
   it('writes top-down 32-bit BI_RGB BGRX pixels on white with SRCCOPY', () => {
@@ -225,6 +245,38 @@ describe('compound storage', () => {
 
 const output = join(temp, 'generated');
 
+function cachedPresentation(format: number | string, data: Buffer, targetDevice = Buffer.alloc(0)) {
+  const clipboard = typeof format === 'number' ? Buffer.alloc(8) : Buffer.concat([
+    Buffer.alloc(4), Buffer.from(format + '\0', 'latin1'),
+  ]);
+  if (typeof format === 'number') {
+    clipboard.writeUInt32LE(0xffffffff);
+    clipboard.writeUInt32LE(format, 4);
+  } else {
+    clipboard.writeUInt32LE(clipboard.length - 4);
+  }
+  const targetDeviceSize = Buffer.alloc(4);
+  targetDeviceSize.writeUInt32LE(targetDevice.length + 4);
+  const header = Buffer.alloc(28);
+  header.writeUInt32LE(1); // DVASPECT_CONTENT.
+  header.writeInt32LE(-1, 4); // Lindex.
+  header.writeUInt32LE(2540, 16); // Width, in hundredths of a millimeter.
+  header.writeUInt32LE(2540, 20); // Height.
+  header.writeUInt32LE(data.length, 24);
+  return Buffer.concat([clipboard, targetDeviceSize, targetDevice, header, data]);
+}
+
+function compoundWithCache(presentation: Buffer) {
+  const name = '\x02OlePres000';
+  const cfb = writeCfb(presentation);
+  // Reuse the third stream's sectors. The replacement still sorts to the right of CompObj.
+  const directoryEntry = 512 + 3 * 128;
+  cfb.fill(0, directoryEntry, directoryEntry + 64);
+  const nameLength = cfb.write(name, directoryEntry, 'utf16le');
+  cfb.writeUInt16LE(nameLength + 2, directoryEntry + 64);
+  return cfb;
+}
+
 describe('Office packages', () => {
   beforeAll(() => {
     const run = spawnSync(process.execPath, ['scripts/office-spike/ole/make-ole-docs.mjs', '--out', output], { encoding: 'utf8' });
@@ -269,6 +321,9 @@ describe('Office packages', () => {
     if (base === 'word') {
       expect(body).toMatch(/<w:object\b[\s\S]*<v:shape\b[\s\S]*<v:imagedata r:id="rId1"[\s\S]*<\/v:shape>/);
       expect(body).toMatch(/<o:OLEObject Type="Embed" ProgID="ChemDraft\.Structure\.Probe"[^>]*r:id="rId2"/);
+      expect(types).toContain('PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"');
+      expect(rel).toContain('/settings" Target="settings.xml"');
+      expect(xml('word/settings.xml')).toMatch(/<w:compat>\s*<w:compatSetting w:name="compatibilityMode" w:uri="http:\/\/schemas.microsoft.com\/office\/word" w:val="15"\/>\s*<\/w:compat>/);
     } else {
       expect(body).toMatch(/<p:graphicFrame>[\s\S]*<a:graphicData uri="[^"]+\/ole">/);
       expect(body).toMatch(/<mc:Choice Requires="v"><p:oleObj[^>]*r:id="rId2"[^>]*spid="_x0000_s1025"><p:embed\/>/);
@@ -280,20 +335,87 @@ describe('Office packages', () => {
 
     const result = spawnSync(process.execPath, ['scripts/office-spike/ole/inspect-ole.mjs', path, '--json'], { encoding: 'utf8' });
     expect(result.status, result.stderr).toBe(0);
-    expect(JSON.parse(result.stdout)).toMatchObject({
-      oleObjectPresent: true, probeClassPresent: true, missingRelatedParts: [],
+    const report = JSON.parse(result.stdout);
+    expect(report).toMatchObject({
+      oleObjectPresent: true, liveEmbeddingPresent: true, probeClassPresent: true,
+      orphanParts: [], missingRelatedParts: [],
       oleObjects: [{
-        part: `${base}/embeddings/oleObject1.bin`, clsid: CLSID, matchesManifest: true, error: null,
+        part: `${base}/embeddings/oleObject1.bin`, clsid: CLSID, matchesManifest: true, error: null, orphan: false,
         references: [{ part, id: 'rId2' }],
         streams: expect.arrayContaining([{ name: DOCUMENT_STREAM, size: document.length }]),
+        presentations: [],
         document: { sha256: sha256(document), matchesManifest: true },
       }],
       previews: [{
         part: `${base}/media/image1.emf`, type: 'emf', state: 'unchanged-emf', error: null,
+        orphan: false, usedByLiveEmbedding: true,
         originalEmf: true, originalPngInEmfPlus: true, emfPlusPngs: [{ sha256: sha256(png) }],
         references: expect.arrayContaining([{ part, id: `rId${imageId}` }]),
       }],
     });
+    const preview = { part, id: `rId${imageId}`, target: `${base}/media/image1.emf`, exists: true };
+    const common = { part, id: 'rId2', target: `${base}/embeddings/oleObject1.bin`, live: true };
+    expect(report.embeddings).toMatchObject(base === 'word'
+      ? [{ ...common, branches: [], previews: [preview] }]
+      : [
+        { ...common, branches: [{ kind: 'choice', requires: ['v'] }],
+          previews: [{ ...preview, part: 'ppt/drawings/vmlDrawing1.vml', id: 'rId1' }] },
+        { ...common, branches: [{ kind: 'fallback' }], previews: [preview] },
+      ]);
+  });
+
+  it.each([
+    { file: 'ole-word.docx', base: 'word', part: 'word/document.xml', markup: /<w:object\b[\s\S]*?<\/w:object>/ },
+    { file: 'ole-ppt.pptx', base: 'ppt', part: 'ppt/slides/slide1.xml', markup: /<p:graphicFrame>[\s\S]*?<\/p:graphicFrame>/ },
+  ])('flags retained parts when $file has no OLE markup', ({ file, base, part, markup }) => {
+    const entries = readZip(readFileSync(join(output, file)));
+    const report = inspectOle(writeZip(entries.map(({ name, data }: { name: string; data: Buffer }) =>
+      [name, name === part ? data.toString('utf8').replace(markup, '') : data])));
+    expect(report).toMatchObject({
+      oleObjectPresent: true, liveEmbeddingPresent: false, embeddings: [],
+      orphanParts: [`${base}/embeddings/oleObject1.bin`, `${base}/media/image1.emf`],
+      missingRelatedParts: [],
+      oleObjects: [{ orphan: true, references: [{ part, id: 'rId2' }] }],
+      previews: [{ orphan: true, usedByLiveEmbedding: false }],
+    });
+  });
+
+  it('associates distinct PowerPoint choice, fallback, and ordinary pictures by their markup', () => {
+    const entries = readZip(readFileSync(join(output, 'ole-ppt.pptx')));
+    const pngPreview = filteredPng(0, 1, [0, 1, 2, 3, 4, 5], 0);
+    const edited = entries.map(({ name, data }: { name: string; data: Buffer }) => {
+      if (name === 'ppt/slides/slide1.xml') {
+        // Exercise alternate prefixes, a picture-only fallback, and a decoy outside the OLE frame.
+        const slide = data.toString('utf8')
+          .replace(/<mc:Fallback><p:oleObj[^>]*><p:embed\/>/, '<mc:Fallback>')
+          .replace('</p:oleObj></mc:Fallback>', '</mc:Fallback>')
+          .replace('</p:spTree>', '<p:pic><p:blipFill><a:blip rel:embed="rId6"/></p:blipFill></p:pic></p:spTree>')
+          .replace(/xmlns:r=|\br:(?=id=|embed=)/g, match => match === 'xmlns:r=' ? 'xmlns:rel=' : 'rel:');
+        return [name, slide];
+      }
+      if (name === 'ppt/slides/_rels/slide1.xml.rels') {
+        return [name, data.toString('utf8').replace(
+          /(<Relationship Id="rId3"[^\n]*?)\.\.\/media\/image1\.emf/,
+          '$1../media/fallback.png',
+        ).replace('</Relationships>',
+          '<Relationship Id="rId6" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/ordinary.png"/></Relationships>')];
+      }
+      return [name, data];
+    });
+    const report = inspectOle(writeZip([
+      ...edited, ['ppt/media/fallback.png', pngPreview], ['ppt/media/ordinary.png', pngPreview],
+    ]));
+    expect(report.embeddings).toMatchObject([{
+      live: true, branches: [{ kind: 'choice' }], previews: [
+        { id: 'rId1', target: 'ppt/media/image1.emf', branches: [{ kind: 'choice' }] },
+        { id: 'rId3', target: 'ppt/media/fallback.png', branches: [{ kind: 'fallback' }] },
+      ],
+    }]);
+    expect(report.previews).toMatchObject([
+      { part: 'ppt/media/image1.emf', usedByLiveEmbedding: true },
+      { part: 'ppt/media/fallback.png', usedByLiveEmbedding: true },
+      { part: 'ppt/media/ordinary.png', usedByLiveEmbedding: false, orphan: false },
+    ]);
   });
 
   it('distinguishes a changed EMF that kept the carrier, a lost object, and a replaced preview', () => {
@@ -317,19 +439,66 @@ describe('Office packages', () => {
     });
   });
 
-  it('reports a retained probe with different JSON and a dangling preview relationship', () => {
+  it('parses OlePres streams and compares their declared EMF data against the baseline', () => {
+    const manifest = JSON.parse(readFileSync(join(output, 'manifest.json'), 'utf8'));
+    const emf = readFileSync(join(output, 'preview.emf'));
+    const changed = Buffer.from(emf);
+    changed.writeInt32LE(601, 72);
+    const replacement = filteredPng(0, 1, [0, 1, 2, 3, 4, 5], 0);
+    const rerendered = previewEmf({ png: replacement, widthPx: 3, heightPx: 2, dpi: 96 });
+    const cases = [
+      [cachedPresentation(14, emf), emf.length, 'unchanged-emf', true, true],
+      [cachedPresentation(14, changed, Buffer.alloc(8)), changed.length, 'changed-emf-carrier-kept', false, true],
+      [cachedPresentation(14, rerendered), rerendered.length, 'changed-or-re-rendered', false, false],
+    ] as const;
+    const [same, edited, raster, named, truncated] = inspectOle(writeZip([
+      ...cases.map(([stream], index) => [`word/embeddings/oleObject${index}.bin`, compoundWithCache(stream)]),
+      ['word/embeddings/oleObject3.bin', compoundWithCache(cachedPresentation('PNG', replacement))],
+      ['word/embeddings/oleObject4.bin', compoundWithCache(cachedPresentation(14, rerendered).subarray(0, -1))],
+    ]), manifest).oleObjects;
+    for (const [index, object] of [same, edited, raster].entries()) {
+      const [stream, size, state, originalEmf, originalPngInEmfPlus] = cases[index];
+      expect(object.streams).toContainEqual({ name: '\x02OlePres000', size: stream.length });
+      expect(object.presentations).toMatchObject([{
+        name: '\x02OlePres000', clipboardFormat: { id: 14, name: 'CF_ENHMETAFILE' }, size, error: null,
+        preview: { state, originalEmf, originalPngInEmfPlus },
+      }]);
+    }
+    expect(named.presentations).toMatchObject([{
+      clipboardFormat: { id: null, name: 'PNG' }, size: replacement.length, preview: null, error: null,
+    }]);
+    expect(truncated.presentations).toMatchObject([{
+      clipboardFormat: { id: 14, name: 'CF_ENHMETAFILE' }, size: rerendered.length,
+      preview: null, error: 'Truncated presentation data',
+    }]);
+    expect(truncated.error).toBeNull();
+  });
+
+  it('distinguishes missing OLE markup targets and a dangling preview relationship', () => {
     const manifest = JSON.parse(readFileSync(join(output, 'manifest.json'), 'utf8'));
     const edited = Buffer.from('{"changed":true}');
     const report = inspectOle(writeZip([
       ['word/embeddings/oleObject2.bin', writeCfb(edited)],
+      ['word/document.xml', `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<w:body><w:p><w:r><w:object>
+<o:OLEObject Type="Embed" r:id="rId1"/><o:OLEObject Type="Embed" r:id="rId3"/>
+</w:object></w:r></w:p></w:body></w:document>`],
       ['word/_rels/document.xml.rels', Buffer.from(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject" Target="embeddings/missing.bin"/>
 <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject" Target="embeddings/oleObject2.bin"/>
 <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="/word/media/image3.emf"/>
 </Relationships>`) ],
     ]), manifest);
     expect(report).toMatchObject({
-      oleObjectPresent: true, probeClassPresent: true, previews: [], missingRelatedParts: ['word/media/image3.emf'],
-      oleObjects: [{ matchesManifest: false, document: { present: true, sha256: sha256(edited), matchesManifest: false } }],
+      oleObjectPresent: true, liveEmbeddingPresent: false, probeClassPresent: true, previews: [],
+      missingRelatedParts: ['word/embeddings/missing.bin', 'word/media/image3.emf'],
+      embeddings: [
+        { id: 'rId1', target: 'word/embeddings/missing.bin', live: false },
+        { id: 'rId3', target: null, live: false },
+      ],
+      oleObjects: [{ matchesManifest: false, orphan: true,
+        document: { present: true, sha256: sha256(edited), matchesManifest: false } }],
     });
   });
 });

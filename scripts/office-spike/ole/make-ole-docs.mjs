@@ -59,10 +59,18 @@ ${pictureShapeType}
 <w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>
 </w:body></w:document>`);
   return [
-    ['[Content_Types].xml', types([], [['word/document.xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml']])],
+    ['[Content_Types].xml', types([], [
+      ['word/document.xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml'],
+      ['word/settings.xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml'],
+    ])],
     ['_rels/.rels', rels([[1, 'officeDocument', 'word/document.xml']])],
     ['word/document.xml', document],
-    ['word/_rels/document.xml.rels', rels([[1, 'image', 'media/image1.emf'], [2, 'oleObject', 'embeddings/oleObject1.bin']])],
+    ['word/_rels/document.xml.rels', rels([
+      [1, 'image', 'media/image1.emf'], [2, 'oleObject', 'embeddings/oleObject1.bin'], [3, 'settings', 'settings.xml'],
+    ])],
+    ['word/settings.xml', xml(`<w:settings xmlns:w="${w}"><w:compat>
+<w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/>
+</w:compat></w:settings>`)],
     ['word/media/image1.emf', emf],
     ['word/embeddings/oleObject1.bin', object],
   ];

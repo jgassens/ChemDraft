@@ -4,8 +4,10 @@ import { dirname, join, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { emfFindings } from '../emf.mjs';
+import { chunks } from '../png.mjs';
 import { MAX_INFLATED, readZip } from '../zip.mjs';
 import { CLSID, DOCUMENT_STREAM, readCfb } from './cfb-writer.mjs';
+import { inspectOleMarkup } from './ole-markup.mjs';
 
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const pngSignature = '89504e470d0a1a0a';
@@ -27,41 +29,23 @@ function imageType(bytes, name) {
   return { jpg: 'jpeg', tif: 'tiff' }[extension] ?? (extension || 'unknown');
 }
 
-function xmlText(text) {
-  const values = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
-  return text.replace(/&(amp|lt|gt|quot|apos|#x[\da-fA-F]+|#\d+);/g, (entity, key) => {
-    if (key[0] !== '#') return values[key];
-    const code = key[1] === 'x' ? parseInt(key.slice(2), 16) : Number(key.slice(1));
-    return code <= 0x10ffff ? String.fromCodePoint(code) : entity;
-  });
-}
-
-function relatedParts(entries) {
-  const objects = new Map(), images = new Map();
-  for (const { name, data } of entries) {
-    const relation = /^(.*\/)?_rels\/([^/]+)\.rels$/.exec(name);
-    if (!relation) continue;
-    const part = (relation[1] ?? '') + relation[2];
-    const xml = data.toString('utf8').replace(/<!--[\s\S]*?-->/g, '');
-    for (const [, element] of xml.matchAll(/<(?:[\w.-]+:)?Relationship\b([^>]*?)\/?\s*>/g)) {
-      const attrs = Object.fromEntries(
-        [...element.matchAll(/([\w:]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)]
-          .map(([, key, double, single]) => [key, xmlText(double ?? single)]),
-      );
-      if (!attrs.Target || attrs.TargetMode === 'External') continue;
-      const destination = attrs.Type?.endsWith('/oleObject') ? objects : attrs.Type?.endsWith('/image') ? images : null;
-      if (!destination) continue;
-      const uri = decodeURIComponent(attrs.Target.split('#')[0]);
-      const target = uri.startsWith('/') ? posix.normalize(uri).slice(1) : posix.join(posix.dirname(part), uri);
-      if (!destination.has(target)) destination.set(target, []);
-      destination.get(target).push({ part, id: attrs.Id });
+function pngThroughIend(bytes) {
+  for (let at = 8; at + 12 <= bytes.length;) {
+    const length = bytes.readUInt32BE(at);
+    const end = at + 12 + length;
+    if (end > bytes.length) break;
+    if (bytes.toString('ascii', at + 4, at + 8) === 'IEND') {
+      if (length || bytes.length - end > 3) throw new Error('Invalid EMF+ PNG IEND or padding');
+      const png = bytes.subarray(0, end);
+      chunks(png); // Validate CRCs and chunk order on the PNG itself.
+      return png;
     }
+    at = end;
   }
-  return { objects, images };
+  throw new Error('Missing complete IEND in EMF+ PNG');
 }
 
-function previewReport(data, name, references, expected) {
-  const type = imageType(data, name);
+function previewReport(data, name, references, expected, type = imageType(data, name)) {
   const hash = sha256(data);
   const pngs = [];
   let error = null;
@@ -70,7 +54,8 @@ function previewReport(data, name, references, expected) {
       emfFindings(data, (bytes, label, metadata) => {
         if (metadata.imageType !== 1 || !label.startsWith('EMF+ image object[') ||
             bytes.subarray(0, 8).toString('hex') !== pngSignature) return;
-        pngs.push({ objectId: metadata.objectId, size: bytes.length, sha256: sha256(bytes) });
+        const png = pngThroughIend(bytes);
+        pngs.push({ objectId: metadata.objectId, size: png.length, sha256: sha256(png) });
       });
     } catch (err) {
       error = err.message;
@@ -91,6 +76,48 @@ function previewReport(data, name, references, expected) {
   };
 }
 
+const clipboardFormats = {
+  2: 'CF_BITMAP', 3: 'CF_METAFILEPICT', 8: 'CF_DIB', 14: 'CF_ENHMETAFILE', 17: 'CF_DIBV5',
+};
+
+function presentationReport(name, bytes, expected) {
+  let clipboardFormat = null, size = null;
+  try {
+    // MS-OLEDS OLEPresentationStream starts with a variable-length clipboard
+    // format and a TargetDeviceSize that includes the size field itself.
+    if (bytes.length < 4) throw new Error('Truncated clipboard format marker');
+    const marker = bytes.readUInt32LE(0);
+    let at = 4;
+    if (marker === 0xffffffff || marker === 0xfffffffe) {
+      if (bytes.length < 8) throw new Error('Truncated standard clipboard format');
+      const id = bytes.readUInt32LE(at);
+      clipboardFormat = { id, name: clipboardFormats[id] ?? null };
+      at += 4;
+    } else if (marker) {
+      if (marker > bytes.length - at || bytes[at + marker - 1] !== 0) {
+        throw new Error('Invalid registered clipboard format name');
+      }
+      clipboardFormat = { id: null, name: bytes.toString('latin1', at, at + marker - 1) };
+      at += marker;
+    }
+
+    if (at + 4 > bytes.length) throw new Error('Missing TargetDeviceSize');
+    const targetDeviceSize = bytes.readUInt32LE(at);
+    if (targetDeviceSize < 4 || targetDeviceSize > bytes.length - at) throw new Error('Invalid TargetDeviceSize');
+    at += targetDeviceSize;
+    // Aspect, Lindex, Advf, Reserved1, Width, Height, Size.
+    if (at + 28 > bytes.length) throw new Error('Truncated presentation header');
+    size = bytes.readUInt32LE(at + 24);
+    at += 28;
+    if (size > bytes.length - at) throw new Error('Truncated presentation data');
+    const preview = clipboardFormat?.name === 'CF_ENHMETAFILE'
+      ? previewReport(bytes.subarray(at, at + size), name, [], expected, 'emf') : null;
+    return { name, clipboardFormat, size, preview, error: null };
+  } catch (error) {
+    return { name, clipboardFormat, size, preview: null, error: error.message };
+  }
+}
+
 function objectReport(data, part, references, expected) {
   const hash = sha256(data);
   const base = { part, references, size: data.length, sha256: hash, matchesManifest: expected ? hash === expected.oleObject : null };
@@ -101,11 +128,13 @@ function objectReport(data, part, references, expected) {
     return {
       ...base, clsid, probeClass: clsid === CLSID,
       streams: [...streams].map(([name, bytes]) => ({ name, size: bytes.length })),
+      presentations: [...streams].filter(([name]) => /^\x02OlePres\d{3}$/i.test(name))
+        .map(([name, bytes]) => presentationReport(name, bytes, expected)),
       document: { present: document !== undefined, sha256: documentHash, matchesManifest: expected ? documentHash === expected.json : null },
       error: null,
     };
   } catch (error) {
-    return { ...base, clsid: null, probeClass: null, streams: null, document: null, error: error.message };
+    return { ...base, clsid: null, probeClass: null, streams: null, presentations: null, document: null, error: error.message };
   }
 }
 
@@ -118,25 +147,39 @@ export function inspectOle(bytes, manifest = null) {
   const entries = readZip(bytes);
   const names = new Set(entries.map(({ name }) => name));
   if (names.size !== entries.length) throw new Error('Duplicate part name in Office package');
-  const { objects, images } = relatedParts(entries);
+  const parts = new Map(entries.filter(({ name }) => !name.endsWith('/')).map(({ name, data }) => [name, data]));
+  const { objects, images, embeddings, imageUses, inspectedSources } = inspectOleMarkup(parts);
+  const liveEmbeddings = embeddings.filter(embedding => embedding.live);
+  const liveObjects = new Set(liveEmbeddings.map(embedding => embedding.target));
+  const livePreviews = new Set(liveEmbeddings.flatMap(embedding => embedding.previews)
+    .filter(preview => preview.exists).map(preview => preview.target));
   const oleObjects = [];
   const previews = [];
-  for (const { name, data } of entries) {
-    if (name.endsWith('/')) continue;
+  for (const [name, data] of parts) {
     if (objects.has(name) || /^(word|ppt)\/embeddings\/oleObject[^/]*\.bin$/i.test(name) ||
         (/^(word|ppt)\/embeddings\//i.test(name) && data.subarray(0, 8).toString('hex') === cfbSignature)) {
-      oleObjects.push(objectReport(data, name, objects.get(name) ?? [], expected));
+      oleObjects.push({ ...objectReport(data, name, objects.get(name) ?? [], expected), orphan: !liveObjects.has(name) });
     }
     if (images.has(name) || /^(word|ppt)\/media\//i.test(name)) {
-      previews.push(previewReport(data, name, images.get(name) ?? [], expected));
+      const references = images.get(name) ?? [];
+      const orphan = !imageUses.has(name) &&
+        !references.some(ref => !inspectedSources.has(ref.part) && parts.has(ref.part));
+      previews.push({ ...previewReport(data, name, references, expected), orphan, usedByLiveEmbedding: livePreviews.has(name) });
     }
   }
   return {
     oleObjectPresent: oleObjects.length > 0,
+    liveEmbeddingPresent: liveEmbeddings.length > 0,
     probeClassPresent: oleObjects.some(object => object.probeClass),
-    oleObjects, previews,
-    missingRelatedParts: [...new Set([...objects.keys(), ...images.keys()])].filter(part => !names.has(part)),
+    embeddings, oleObjects, previews,
+    orphanParts: [...oleObjects, ...previews].filter(part => part.orphan).map(part => part.part),
+    missingRelatedParts: [...new Set([...objects.keys(), ...images.keys()])].filter(part => !parts.has(part)),
   };
+}
+
+function branchLabel(branches) {
+  return branches.map(branch => branch.kind === 'choice'
+    ? `Choice Requires="${branch.requires.join(' ')}"` : 'Fallback').join(' / ');
 }
 
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -158,10 +201,26 @@ if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.me
       console.log(JSON.stringify(report, null, 2));
     } else {
       console.log(`${file}\nBaseline manifest ${manifestPath ?? 'unavailable'}`);
-      console.log(`OLE part present ${report.oleObjectPresent ? 'yes' : 'no'} | Probe CLSID present ${report.probeClassPresent ? 'yes' : 'no'}`);
+      console.log(`Live embedding ${report.liveEmbeddingPresent ? 'yes' : 'no'} | OLE part present ${report.oleObjectPresent ? 'yes' : 'no'} | Probe CLSID present ${report.probeClassPresent ? 'yes' : 'no'}`);
+      for (const embedding of report.embeddings) {
+        const branch = branchLabel(embedding.branches);
+        console.log(`  ${embedding.part} [${embedding.id ?? 'missing ID'}]${branch ? ` | ${branch}` : ''} | ${embedding.live ? embedding.target : `unresolved (${embedding.target ?? 'missing OLE relationship'})`}`);
+        for (const preview of embedding.previews) {
+          const branch = branchLabel(preview.branches);
+          console.log(`    Preview ${preview.part} [${preview.id ?? 'missing ID'}]${branch ? ` | ${branch}` : ''} | ${preview.exists ? preview.target : `unresolved (${preview.target ?? 'missing image relationship'})`}`);
+        }
+      }
       for (const object of report.oleObjects) {
         console.log(`  ${object.part} | ${object.size} bytes | ${object.clsid ?? object.error}`);
-        for (const stream of object.streams ?? []) console.log(`    ${JSON.stringify(stream.name)} | ${stream.size} bytes`);
+        for (const stream of object.streams ?? []) {
+          console.log(`    ${JSON.stringify(stream.name)} | ${stream.size} bytes`);
+        }
+        for (const presentation of object.presentations ?? []) {
+          const { name, clipboardFormat, size, preview, error } = presentation;
+          console.log(`    Cache ${JSON.stringify(name)} | ${clipboardFormat?.name ?? clipboardFormat?.id ?? 'unknown format'} | ${size ?? 'unknown'} data bytes`);
+          if (preview) console.log(`      ${preview.state}${preview.error ? ` | ${preview.error}` : ''}`);
+          if (error) console.log(`      ${error}`);
+        }
         if (object.document) {
           const comparison = object.document.matchesManifest === null ? 'no baseline' :
             object.document.matchesManifest ? 'matches manifest' : 'differs from manifest';
@@ -173,6 +232,7 @@ if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.me
         console.log(`  ${preview.part} | ${preview.type} | ${preview.size} bytes | ${preview.state}`);
         if (preview.error) console.log(`    ${preview.error}`);
       }
+      for (const part of report.orphanParts) console.log(`Orphan part ${part}`);
       for (const part of report.missingRelatedParts) console.log(`Missing relationship target ${part}`);
     }
   } catch (error) {

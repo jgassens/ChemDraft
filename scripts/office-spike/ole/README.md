@@ -10,15 +10,16 @@ no npm dependencies. The class is `ChemDraft.Structure.Probe`
   The PNG decoder accepts noninterlaced 8-bit grayscale, RGB, indexed, and RGBA PNGs.
 - [cfb-writer.mjs](cfb-writer.mjs) writes and reads v3 compound storage up to 50 MiB, including
   mini streams and DIFAT sectors. The probe contains `\x01CompObj`, `\x01Ole`, and
-  `ChemDraftDocument`. The initial preview lives in the OOXML package. The inspector lists any
-  OLE presentation cache streams Office adds on save.
+  `ChemDraftDocument`. The initial preview lives in the OOXML package.
 - [make-ole-docs.mjs](make-ole-docs.mjs) generates `preview.emf`, `oleObject1.bin`,
   `ole-word.docx`, `ole-ppt.pptx`, and `manifest.json`. The manifest records the hashes of
   the input PNG and JSON, the EMF, and the compound file.
 - [zip-compat.mjs](zip-compat.mjs) uses the shared ZIP writer when Node supplies `zlib.crc32`
   and a dependency-free ZIP writer on earlier supported versions.
-- [inspect-ole.mjs](inspect-ole.mjs) lists embedding and preview parts, relationship sources,
-  the root CLSID, stream names and sizes, and comparison results.
+- [inspect-ole.mjs](inspect-ole.mjs) reports live embeddings and their package previews,
+  orphan parts, the root CLSID, and any OLE presentation cache streams Office adds on save.
+  Each cache entry includes its clipboard format and declared data size. The inspector compares
+  `CF_ENHMETAFILE` data using the same hashes as the separate OOXML preview parts.
 - [ole.test.ts](ole.test.ts) verifies PNG decoding, the EMF records, compound storage, and both packages.
 
 ## Generate the baseline
@@ -69,12 +70,17 @@ node scripts/office-spike/ole/inspect-ole.mjs ppt-mac-saved.pptx --manifest ole-
 ```
 
 If `--manifest` is omitted, the inspector looks next to the input package for `manifest.json`.
-Comparison fields are `null` when no baseline is available. Record whether the embedding has
-a live relationship, the probe CLSID, and the original document hash. Also record the preview
-part's type and size, and whether the EMF or its internal PNG kept the original hash. A media
-part with no relationship may be left over from an earlier save. `changed-or-re-rendered`
-means the original bytes were unavailable in the checked representation. Use the display and
-print observations to assess what Office rendered.
+Comparison fields are `null` when no baseline is available. A live embedding has OLE markup in
+the Word document or slide XML with a matching relationship and an existing target part. The
+report shows each PowerPoint AlternateContent branch with its resolved preview, including a VML
+shape or fallback picture when present. `orphanParts` flags embedding and media parts left behind
+by the inspected markup. Media related to other existing source parts may still be in use.
+
+Record the live embedding, the probe CLSID, and the original document hash. For both the OOXML
+preview and any cached EMF, record the type and size, and whether the EMF or the PNG in its EMF+
+image object kept the original hash. The PNG hash covers bytes through IEND. The
+`changed-or-re-rendered` result means the checked representation retained neither original
+hash. Use the display and print observations to assess what Office rendered.
 
 | OS and version | Office host and build | Policy or prompts | Visible at 100% and 200% | Print pixels, PPI, and quality | Double-click result | Visible after reopen | OLE part, CLSID, and JSON hash | Preview part, bytes, and hash state |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |

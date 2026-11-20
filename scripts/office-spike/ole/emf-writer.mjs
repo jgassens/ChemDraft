@@ -114,7 +114,7 @@ function plusRecord(type, flags, data = Buffer.alloc(0)) {
   record.writeUInt16LE(type);
   record.writeUInt16LE(flags, 2);
   record.writeUInt32LE(record.length, 4);
-  record.writeUInt32LE(data.length, 8);
+  record.writeUInt32LE(record.length - 12, 8);
   data.copy(record, 12);
   return record;
 }
@@ -126,7 +126,15 @@ function record(type, size) {
   return bytes;
 }
 
-function plusComment(png, width, height, dpi) {
+function plusComment(...records) {
+  const plus = Buffer.concat([Buffer.from('EMF+'), ...records]);
+  const comment = record(70, 12 + plus.length);
+  comment.writeUInt32LE(plus.length, 8);
+  plus.copy(comment, 12);
+  return comment;
+}
+
+function plusPicture(png, width, height, dpi) {
   const header = Buffer.alloc(16);
   header.writeUInt32LE(GRAPHICS_VERSION);
   header.writeUInt32LE(1, 4); // Display device.
@@ -147,17 +155,11 @@ function plusComment(png, width, height, dpi) {
   draw.writeFloatLE(width, 32);
   draw.writeFloatLE(height, 36);
 
-  const plus = Buffer.concat([
-    Buffer.from('EMF+'),
+  return plusComment(
     plusRecord(0x4001, 1, header), // EmfPlusHeader, dual mode.
     plusRecord(0x4008, 0x0500, Buffer.concat([bitmap, png])), // Image object 0.
     plusRecord(0x401a, 0, draw), // EmfPlusDrawImage, RectF, image object 0.
-    plusRecord(0x4002, 0), // EmfPlusEndOfFile.
-  ]);
-  const comment = record(70, 12 + plus.length);
-  comment.writeUInt32LE(plus.length, 8);
-  plus.copy(comment, 12);
-  return comment;
+  );
 }
 
 function gdiBitmap(width, height, rgba) {
@@ -200,8 +202,9 @@ export function previewEmf({ png, widthPx, heightPx, dpi }) {
     throw new Error('Invalid DPI for EMF frame or device size');
   }
 
-  const comment = plusComment(png, width, height, dpi);
+  const comment = plusPicture(png, width, height, dpi);
   const dib = gdiBitmap(width, height, rgba);
+  const plusEof = plusComment(plusRecord(0x4002, 0)); // EmfPlusEndOfFile.
   const eof = record(14, 20);
   eof.writeUInt32LE(16, 12); // Offset where the empty palette would start.
   eof.writeUInt32LE(eof.length, 16);
@@ -213,8 +216,9 @@ export function previewEmf({ png, widthPx, heightPx, dpi }) {
   header.writeInt32LE(Math.round(micrometers[1] / 10), 36);
   header.writeUInt32LE(0x464d4520, 40);
   header.writeUInt32LE(0x00010000, 44);
-  header.writeUInt32LE(header.length + comment.length + dib.length + eof.length, 48);
-  header.writeUInt32LE(4, 52);
+  const records = [header, comment, dib, plusEof, eof];
+  header.writeUInt32LE(records.reduce((size, bytes) => size + bytes.length, 0), 48);
+  header.writeUInt32LE(records.length, 52);
   header.writeUInt16LE(1, 56); // Handle table includes the reserved slot.
   header.writeInt32LE(width, 72); // Reference device pixels.
   header.writeInt32LE(height, 76);
@@ -222,5 +226,5 @@ export function previewEmf({ png, widthPx, heightPx, dpi }) {
   header.writeInt32LE(Math.max(1, Math.round(micrometers[1] / 1000)), 84);
   header.writeInt32LE(micrometers[0], 100);
   header.writeInt32LE(micrometers[1], 104);
-  return Buffer.concat([header, comment, dib, eof]);
+  return Buffer.concat(records);
 }
