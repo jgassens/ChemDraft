@@ -5,7 +5,7 @@
 //!
 //! 1. passes its builder through [`hidden_until_first_paint`] (hidden, with a first-frame
 //!    background) and builds it,
-//! 2. calls [`arm_first_paint_fallback`] (or [`arm_first_paint_fallback_with`]) on the built
+//! 2. calls [`arm_first_paint_fallback_with`] on the built
 //!    window in the same main-thread turn as the build,
 //! 3. and lets the page call `ackFirstPaint()` (`src/firstPaint.ts`), which invokes
 //!    [`window_first_paint`].
@@ -69,12 +69,8 @@ fn first_frame_background(color: Color) -> Color {
 /// Registers a window built with [`hidden_until_first_paint`] as waiting for its first paint and
 /// shows it after `timeout` if the page has not acknowledged by then. Call it on the main thread,
 /// in the same turn as `build()`, so the page cannot acknowledge before the window is registered.
-#[cfg_attr(not(windows), allow(dead_code))]
-pub fn arm_first_paint_fallback<R: Runtime>(window: &WebviewWindow<R>, timeout: Duration) {
-    arm_first_paint_fallback_with(window, timeout, |_| Ok(()), |_, _| {});
-}
-
-/// [`arm_first_paint_fallback`] with two hooks that run once, on the main thread, at the reveal:
+///
+/// Two hooks run once, on the main thread, at the reveal:
 /// `before_show` may decline it (the window stays hidden and its error goes to `after_show`), and
 /// `after_show` receives the result of `show()`. Neither runs if the window is destroyed first;
 /// both are dropped then.
