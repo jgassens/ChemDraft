@@ -1379,9 +1379,10 @@ describe("legacy assistant host-tool writes are scoped by page and id", () => {
       // Page A's same-id molecule is never touched by a write scoped to page B's selection.
       expect(after.pages[0]!.objects).toEqual(pageA.objects);
       expect(result).toMatchObject({ isError: true, content: [{ text: expect.stringContaining(
-        `Plugin write refused: the change was not applied. The object you selected on page 2 shares its internal ID with an object on page 1, so ChemDraft can't tell which one to change safely. To edit it, delete the duplicate on page 1, then select the object and try again.`
+        `Plugin write refused: the change was not applied. The object you selected on page 2 shares its internal ID with an object on page 1, so ChemDraft can't tell which one to change safely. To edit it, make the change by hand, or copy the object and paste it as a new object, then try again.`
       ) }] });
       expect(JSON.stringify(result)).not.toContain(pageB.id);
+      expect(JSON.stringify(result)).not.toMatch(/delete/i);
       expect(s.history).toHaveLength(0);
       expect(after).toBe(twoPages);
       await s.controller.endRequest(s.plugin, { requestId });
@@ -1472,7 +1473,7 @@ describe("legacy assistant writes resolve a duplicate id by its Send-time page",
         // chem-core patch ops name objects by bare id and act on the first occurrence (page A), so a
         // change to page B's copy cannot be expressed: the host refuses it specifically.
         expect(result).toMatchObject({ isError: true, content: [{ text: expect.stringContaining(
-          `Plugin write refused: the change was not applied. The object you selected on page 2 shares its internal ID with an object on page 1, so ChemDraft can't tell which one to change safely. To edit it, delete the duplicate on page 1, then select the object and try again.`
+          `Plugin write refused: the change was not applied. The object you selected on page 2 shares its internal ID with an object on page 1, so ChemDraft can't tell which one to change safely. To edit it, make the change by hand, or copy the object and paste it as a new object, then try again.`
         ) }] });
         expect(after).toBe(twoPageDocument);
         expect(s.history).toHaveLength(0);

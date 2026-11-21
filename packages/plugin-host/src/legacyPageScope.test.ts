@@ -46,10 +46,11 @@ describe("legacy direct writes are scoped by page and id", () => {
     const original = twoPageDocument();
     const f = legacyHost(original);
     await expect(f.host.invokeCommand("plugin.pages.run")).rejects.toThrow(
-      `Plugin write refused: the change was not applied. The object you selected on page 2 shares its internal ID with an object on page 1, so ChemDraft can't tell which one to change safely. To edit it, delete the duplicate on page 1, then select the object and try again.`
+      `Plugin write refused: the change was not applied. The object you selected on page 2 shares its internal ID with an object on page 1, so ChemDraft can't tell which one to change safely. To edit it, make the change by hand, or copy the object and paste it as a new object, then try again.`
     );
     const refusal = await f.host.invokeCommand("plugin.pages.run").then(() => "", (error: Error) => error.message);
     expect(refusal).toContain("Plugin write refused:");
+    expect(refusal).not.toMatch(/delete/i);
     expect(refusal).not.toMatch(/page-[abc]/);
     expect(f.applyDocumentPatch).not.toHaveBeenCalled();
     expect(f.document().pages[0]!.objects[0]).toEqual(original.pages[0]!.objects[0]);
@@ -130,7 +131,7 @@ describe("legacy page binding follows the Send-time selection", () => {
     const edited = f.document();
     f.release();
     await expect(pending).rejects.toThrow(
-      `Plugin write refused: the change was not applied. The object you selected on page 2 is no longer there, and its internal ID now matches objects on page 1 and page 3, so ChemDraft can't tell which one to change safely. To edit it, delete the duplicates on page 1 and page 3, then select the object and try again.`);
+      `Plugin write refused: the change was not applied. The object you selected on page 2 is no longer there, and its internal ID now matches objects on page 1 and page 3, so ChemDraft can't tell which one to change safely. To edit it, make the change by hand, or copy the object and paste it as a new object, then try again.`);
     expect(f.document()).toBe(edited);
   });
 
@@ -139,7 +140,7 @@ describe("legacy page binding follows the Send-time selection", () => {
     const original = { ...twoPageDocument(), selection: { pageId: "page-a", objectIds: ["X"] } };
     const f = legacyHost(original);
     await expect(f.host.invokeCommand("plugin.pages.run", { writeSelection: { objectIds: ["X"], molecules: [], pageId: "page-b" } })).rejects.toThrow(
-      `Plugin write refused: the change was not applied. The object you selected on page 2 shares its internal ID with an object on page 1, so ChemDraft can't tell which one to change safely. To edit it, delete the duplicate on page 1, then select the object and try again.`
+      `Plugin write refused: the change was not applied. The object you selected on page 2 shares its internal ID with an object on page 1, so ChemDraft can't tell which one to change safely. To edit it, make the change by hand, or copy the object and paste it as a new object, then try again.`
     );
     expect(f.applyDocumentPatch).not.toHaveBeenCalled();
     expect(f.document().pages[0]!.objects[0]).toEqual(original.pages[0]!.objects[0]);

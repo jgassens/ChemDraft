@@ -62,8 +62,11 @@ describe("normalized assistant writes bind selected ids to their selection page"
   }
   const refusal = (_id: string, pinned: string, target: string) => {
     const number = (id: string) => (id === "page_b" ? 2 : 1);
-    return `Plugin write refused: the change was not applied. The object you selected on page ${number(pinned)} shares its internal ID with an object on page ${number(target)}, so ChemDraft can't tell which one to change safely. To edit it, delete the duplicate on page ${number(target)}, then select the object and try again.`;
+    return `Plugin write refused: the change was not applied. The object you selected on page ${number(pinned)} shares its internal ID with an object on page ${number(target)}, so ChemDraft can't tell which one to change safely. To edit it, make the change by hand, or copy the object and paste it as a new object, then try again.`;
   };
+  it("the refusal never tells the user to delete anything", () => {
+    expect(refusal("x", "page_b", "page_a")).not.toMatch(/delete/i);
+  });
 
   it("refuses a write that changes the same-id object on another page, in verification and in the gate recheck", async () => {
     const { context, molecule, document, pageA, pageB, scopePages } = twoPages();

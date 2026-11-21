@@ -51,8 +51,7 @@ export function duplicateIdRefusalMessage(document: ChemDraftDocument, objectId:
   console.warn(`Plugin write refused: object "${objectId}" selected on page id "${selectedPageId}"; same id on page ids ${others.map(id => `"${id}"`).join(", ")}.`);
   const otherLabels = others.map(id => pageNumberLabel(document, id));
   const where = joinLabels(otherLabels);
-  const plural = others.length > 1;
-  const fix = `To edit it, delete the duplicate${plural ? "s" : ""} on ${where}, then select the object and try again.`;
+  const fix = "To edit it, make the change by hand, or copy the object and paste it as a new object, then try again.";
   if (!stillOnSelectedPage) {
     return `Plugin write refused: the change was not applied. The object you selected on ${pageNumberLabel(document, selectedPageId)} is no longer there, and its internal ID now matches objects on ${where}, so ChemDraft can't tell which one to change safely. ${fix}`;
   }
