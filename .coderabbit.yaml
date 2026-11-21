@@ -1,0 +1,17 @@
+# CodeRabbit review settings for ChemDraft.
+# Reviews every non-draft pull request, whatever branch it targets
+# (main, release/*, feature branches). Draft PRs are skipped because
+# they are opened only to run CI; comment "@coderabbitai review" on a
+# draft to review it anyway.
+language: en-US
+reviews:
+  profile: chill
+  high_level_summary: true
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - ".*"
+  path_filters:
+    - "!pnpm-lock.yaml"
+    - "!**/*.snap"
