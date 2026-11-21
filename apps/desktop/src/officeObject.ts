@@ -40,6 +40,7 @@ interface OfficeCloseRequest {
   requestId: number | null;
   prompt: boolean;
   unsaved: boolean;
+  discard: boolean;
 }
 
 function updateFrame(json: string, png: Uint8Array): Uint8Array {
@@ -84,11 +85,46 @@ export function useOfficeObject(objectId: string | undefined, editor: OfficeObje
   const editorRef = useRef(editor);
   editorRef.current = editor;
   const publishedDocument = useRef<ChemDraftDocument | undefined>(undefined);
-  const busy = useRef(false);
+  const operationInFlight = useRef<Promise<void> | undefined>(undefined);
+  const closed = useRef(false);
   const pendingUpdate = useRef(false);
   const closeRequest = useRef<OfficeCloseRequest | undefined>(undefined);
+  const sessionPublish = useRef<{ id: number; done: Promise<void>; cancel: () => void } | undefined>(undefined);
   const containerRef = useRef<string | undefined>(undefined);
   const [container, setContainer] = useState<string>();
+
+  const publish = useCallback(async (session?: number) => {
+    const { readDocument, setStatus } = editorRef.current;
+    const container = containerRef.current;
+    try {
+      const snapshot = readDocument();
+      const page = snapshot.pages[0]!;
+      const wholeDrawing = selectDocumentObjects(snapshot, page.id, page.objects.map(object => object.id));
+      const selection = page.objects.length ? createSelectionClipboardPayload(wholeDrawing) : emptySelection;
+      if (!selection || selection.objects.length !== page.objects.length) {
+        throw new Error("The whole drawing could not be included in the Office selection.");
+      }
+      const { json, png, svg, raster } = await renderSelectionClipboardPng(snapshot, selection, { requireFullResolution: true });
+      const frame = updateFrame(json, png);
+      if (session !== undefined) {
+        if (sessionPublish.current?.id !== session) return false;
+        await invoke("office_object_update", frame, { headers: { "x-chemdraft-session-publish": String(session) } });
+        return true;
+      }
+      pendingUpdate.current = true;
+      await invoke("office_object_update", frame);
+      pendingUpdate.current = false;
+      publishedDocument.current = snapshot;
+      const warnings = [...(selection.warnings ?? []), ...[...svg.warnings, ...raster.warnings].map(warning => warning.message)];
+      setStatus([`Updated structure in ${container}.`, ...new Set(warnings)].join(" "));
+      return true;
+    } catch (error) {
+      if (session === undefined || sessionPublish.current?.id === session) {
+        setStatus(`Could not update the structure in ${container}: ${diagnostic(error)}`);
+      }
+      return false;
+    }
+  }, []);
 
   useEffect(() => {
     if (!objectId) return;
@@ -137,7 +173,8 @@ export function useOfficeObject(objectId: string | undefined, editor: OfficeObje
       const channel = new Channel<OfficeCloseRequest>();
       channel.onmessage = request => {
         void ready.then(async () => {
-          if (disposed) return;
+          while (!disposed && sessionPublish.current) await sessionPublish.current.done;
+          if (disposed || closed.current) return;
           closeRequest.current = request;
           try {
             await editorRef.current.invokeClose();
@@ -154,93 +191,99 @@ export function useOfficeObject(objectId: string | undefined, editor: OfficeObje
       install(await invoke<OfficeObjectOpen>("office_object_connect", { channel }));
     });
     void ready.catch(reportOpenError);
-    return () => { disposed = true; };
-  }, [objectId]);
+
+    const onSessionPublish = (event: Event) => {
+      const id = (event as CustomEvent<number>).detail;
+      if (closed.current || sessionPublish.current) return;
+      const thaw = editorRef.current.freezeForClose();
+      let resume!: () => void;
+      const done = new Promise<void>(resolve => { resume = resolve; });
+      sessionPublish.current = { id, done, cancel: () => { thaw(); resume(); } };
+      void ready.then(() => {
+        if (!disposed && publishedDocument.current && sessionPublish.current?.id === id) return publish(id);
+      }).catch(reportOpenError);
+    };
+    const onSessionCancel = (event: Event) => {
+      if (sessionPublish.current?.id !== (event as CustomEvent<number>).detail) return;
+      sessionPublish.current.cancel();
+      sessionPublish.current = undefined;
+    };
+    window.addEventListener("chemdraft:office-toolset:office-session-publish", onSessionPublish);
+    window.addEventListener("chemdraft:office-toolset:office-session-cancel", onSessionCancel);
+    return () => {
+      disposed = true;
+      sessionPublish.current?.cancel();
+      sessionPublish.current = undefined;
+      window.removeEventListener("chemdraft:office-toolset:office-session-publish", onSessionPublish);
+      window.removeEventListener("chemdraft:office-toolset:office-session-cancel", onSessionCancel);
+    };
+  }, [objectId, publish]);
 
   const run = useCallback(async (operation: "update" | "close") => {
     if (!objectId) return;
     const request = operation === "close" ? closeRequest.current : undefined;
     if (operation === "close") closeRequest.current = undefined;
-    if (busy.current) {
-      await cancelRequestedClose(objectId, request);
-      return;
-    }
-    busy.current = true;
-    let closed = false;
-    let releaseClose: (() => void) | undefined;
-    const container = containerRef.current;
-    const { readDocument, setStatus } = editorRef.current;
-    const publish = async () => {
-      try {
-        const snapshot = readDocument();
-        const page = snapshot.pages[0]!;
-        const wholeDrawing = selectDocumentObjects(snapshot, page.id, page.objects.map(object => object.id));
-        const selection = page.objects.length ? createSelectionClipboardPayload(wholeDrawing) : emptySelection;
-        if (!selection || selection.objects.length !== page.objects.length) {
-          throw new Error("The whole drawing could not be included in the Office selection.");
-        }
-        const { json, png, svg, raster } = await renderSelectionClipboardPng(snapshot, selection, { requireFullResolution: true });
-        const frame = updateFrame(json, png);
-        pendingUpdate.current = true;
-        await invoke("office_object_update", frame);
-        pendingUpdate.current = false;
-        publishedDocument.current = snapshot;
-        const warnings = [...(selection.warnings ?? []), ...[...svg.warnings, ...raster.warnings].map(warning => warning.message)];
-        setStatus([`Updated structure in ${container}.`, ...new Set(warnings)].join(" "));
-        return true;
-      } catch (error) {
-        setStatus(`Could not update the structure in ${container}: ${diagnostic(error)}`);
-        return false;
-      }
-    };
-
-    try {
+    const previous = operationInFlight.current;
+    if (operation === "update" && (previous || sessionPublish.current)) return;
+    const current = (previous ?? Promise.resolve()).then(async () => {
+      while (sessionPublish.current) await sessionPublish.current.done;
+      if (closed.current) return;
       if (operation === "update") {
         if (publishedDocument.current) await publish();
         return;
       }
-      const isDirty = () => {
-        const published = publishedDocument.current;
-        return published !== undefined && !assistantDocumentContentUnchanged(published, readDocument());
-      };
-      let saveChanges = true;
-      if (isDirty() || pendingUpdate.current || request?.unsaved) {
-        const choice = request?.prompt === false ? "update" : await nativePrompt({
-          owner: "office-object",
-          title: "Update the Office structure before closing?",
-          message: `Apply your changes to the structure in ${container}?`,
-          kind: "warning",
-          choices: [
-            { id: "update", label: "Update" },
-            { id: "discard", label: "Don't update", destructive: true },
-            { id: "cancel", label: "Cancel", cancel: true }
-          ]
-        }, async () => { throw new Error("The native Office update confirmation is unavailable."); });
-        if (choice === "cancel") return;
-        saveChanges = choice === "update";
-        if (saveChanges && (isDirty() || pendingUpdate.current)) {
-          if (!await publish()) return;
+      let releaseClose: (() => void) | undefined;
+      const container = containerRef.current;
+      const { readDocument, setStatus } = editorRef.current;
+      try {
+        const isDirty = () => {
+          const published = publishedDocument.current;
+          return published !== undefined && !assistantDocumentContentUnchanged(published, readDocument());
+        };
+        let saveChanges = !request?.discard;
+        if (saveChanges && (isDirty() || pendingUpdate.current || request?.unsaved)) {
+          const choice = request?.prompt === false ? "update" : await nativePrompt({
+            owner: "office-object",
+            title: "Update the Office structure before closing?",
+            message: `Apply your changes to the structure in ${container}?`,
+            kind: "warning",
+            choices: [
+              { id: "update", label: "Update" },
+              { id: "discard", label: "Don't update", destructive: true },
+              { id: "cancel", label: "Cancel", cancel: true }
+            ]
+          }, async () => { throw new Error("The native Office update confirmation is unavailable."); });
+          if (choice === "cancel") return;
+          saveChanges = choice === "update";
+          if (saveChanges && (isDirty() || pendingUpdate.current)) {
+            if (!await publish()) return;
+          }
+        }
+        releaseClose = editorRef.current.freezeForClose();
+        if (saveChanges && isDirty()) {
+          setStatus("The Office structure changed during the update. Close again to review the remaining changes.");
+          return;
+        }
+        await invoke("office_object_close", {
+          objectId, saveChanges, ...(request?.requestId == null ? {} : { requestId: request.requestId })
+        });
+        closed.current = true;
+      } catch (error) {
+        setStatus(`Could not close the Office structure${container ? ` in ${container}` : ""}: ${diagnostic(error)}`);
+      } finally {
+        if (!closed.current) {
+          releaseClose?.();
+          await cancelRequestedClose(objectId, request).catch(() => undefined);
         }
       }
-      releaseClose = editorRef.current.freezeForClose();
-      if (saveChanges && isDirty()) {
-        setStatus("The Office structure changed during the update. Close again to review the remaining changes.");
-        return;
-      }
-      await invoke("office_object_close", {
-        objectId, saveChanges, ...(request?.requestId == null ? {} : { requestId: request.requestId })
-      });
-      closed = true;
-    } catch (error) {
-      setStatus(`Could not close the Office structure${container ? ` in ${container}` : ""}: ${diagnostic(error)}`);
+    });
+    operationInFlight.current = current;
+    try {
+      await current;
     } finally {
-      busy.current = false;
-      if (!closed) {
-        releaseClose?.();
-        await cancelRequestedClose(objectId, request).catch(() => undefined);
-      }
+      if (operationInFlight.current === current) operationInFlight.current = undefined;
     }
-  }, [objectId]);
+  }, [objectId, publish]);
 
   return useMemo(() => {
     const outsideOffice = "This window is not editing an Office structure.";

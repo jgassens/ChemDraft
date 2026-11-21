@@ -73,16 +73,37 @@ pub(super) enum CloseOption {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum CloseDecision {
     Finish { save: bool },
-    AskEditor { prompt: bool },
+    AskEditor { prompt: bool, discard: bool },
 }
 
 impl CloseOption {
     pub fn decision(self, visible: bool, dirty: bool) -> CloseDecision {
         match (self, visible) {
-            (Self::PromptSave, true) => CloseDecision::AskEditor { prompt: true },
-            (Self::SaveIfDirty, true) => CloseDecision::AskEditor { prompt: false },
-            (Self::NoSave, _) => CloseDecision::Finish { save: false },
+            (option, true) => CloseDecision::AskEditor {
+                prompt: option == Self::PromptSave,
+                discard: option == Self::NoSave,
+            },
+            (Self::NoSave, false) => CloseDecision::Finish { save: false },
             _ => CloseDecision::Finish { save: dirty },
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum CloseReadiness {
+    Closed,
+    Retry,
+    Ready,
+}
+
+impl CloseReadiness {
+    pub fn check(closed: bool, closing: bool, updating_client: bool) -> Self {
+        if closed {
+            Self::Closed
+        } else if closing || updating_client {
+            Self::Retry
+        } else {
+            Self::Ready
         }
     }
 }
@@ -157,12 +178,17 @@ mod tests {
     #[test]
     fn close_options_account_for_renderer_edits_and_native_dirtiness() {
         for dirty in [false, true] {
-            for visible in [false, true] {
-                assert_eq!(
-                    CloseOption::NoSave.decision(visible, dirty),
-                    CloseDecision::Finish { save: false }
-                );
-            }
+            assert_eq!(
+                CloseOption::NoSave.decision(false, dirty),
+                CloseDecision::Finish { save: false }
+            );
+            assert_eq!(
+                CloseOption::NoSave.decision(true, dirty),
+                CloseDecision::AskEditor {
+                    prompt: false,
+                    discard: true
+                }
+            );
             assert_eq!(
                 CloseOption::SaveIfDirty.decision(false, dirty),
                 CloseDecision::Finish { save: dirty }
@@ -173,13 +199,28 @@ mod tests {
             );
             assert_eq!(
                 CloseOption::SaveIfDirty.decision(true, dirty),
-                CloseDecision::AskEditor { prompt: false }
+                CloseDecision::AskEditor {
+                    prompt: false,
+                    discard: false
+                }
             );
             assert_eq!(
                 CloseOption::PromptSave.decision(true, dirty),
-                CloseDecision::AskEditor { prompt: true }
+                CloseDecision::AskEditor {
+                    prompt: true,
+                    discard: false
+                }
             );
         }
+    }
+
+    #[test]
+    fn reentrant_close_must_retry_until_the_object_is_closed() {
+        use CloseReadiness::*;
+        assert_eq!(CloseReadiness::check(false, false, true), Retry);
+        assert_eq!(CloseReadiness::check(false, true, false), Retry);
+        assert_eq!(CloseReadiness::check(false, false, false), Ready);
+        assert_eq!(CloseReadiness::check(true, true, false), Closed);
     }
 
     #[test]

@@ -102,6 +102,8 @@ export interface UpdateFlowDeps {
   confirm(text: string, options: { title: string; okLabel: string }): Promise<boolean>;
   message(text: string, options: { title: string; kind: "info" | "error" }): Promise<void>;
   setStatus(text: string): void;
+  /** Resolve only after each embedded editor has agreed to close. Hold new activations until release. */
+  prepareEmbeddedEditors(): Promise<() => Promise<void>>;
   /** Write the document session to disk now. Rejects if it could not be saved. */
   flushSession(): Promise<void>;
 }
@@ -156,6 +158,7 @@ export async function runUpdateFlow(mode: "manual" | "automatic", deps: UpdateFl
     return "declined";
   }
 
+  let releaseEmbeddedEditors: (() => Promise<void>) | undefined;
   try {
     let received = 0;
     let total: number | undefined;
@@ -170,6 +173,8 @@ export async function runUpdateFlow(mode: "manual" | "automatic", deps: UpdateFl
     });
     // The installer ends this process. Anything not on disk now is gone, so a failed save stops the
     // update rather than risking the document.
+    deps.setStatus("Closing open Office structures before installing the update…");
+    releaseEmbeddedEditors = await deps.prepareEmbeddedEditors();
     deps.setStatus(`Saving your document before installing ChemDraft ${update.version}…`);
     await deps.flushSession();
     deps.setStatus(`Installing ChemDraft ${update.version}…`);
@@ -183,6 +188,8 @@ export async function runUpdateFlow(mode: "manual" | "automatic", deps: UpdateFl
     });
     await update.close().catch(() => undefined);
     return "install-failed";
+  } finally {
+    await releaseEmbeddedEditors?.().catch(error => console.warn("Could not release Office editors after update:", error));
   }
 }
 
@@ -230,7 +237,13 @@ export async function currentUpdateBuildInfo(isDesktop: boolean, platform: strin
 }
 
 /** The real dependencies: the updater plugin, the dialog plugin, and the app's own status/session. */
-export function tauriUpdateFlowDeps(app: Pick<UpdateFlowDeps, "setStatus" | "flushSession">): UpdateFlowDeps {
+export async function prepareOfficeEditorsForUpdate(): Promise<() => Promise<void>> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("prepare_office_editors_for_update", { release: false });
+  return () => invoke<void>("prepare_office_editors_for_update", { release: true });
+}
+
+export function tauriUpdateFlowDeps(app: Pick<UpdateFlowDeps, "setStatus" | "flushSession" | "prepareEmbeddedEditors">): UpdateFlowDeps {
   return {
     ...app,
     check: async () => {

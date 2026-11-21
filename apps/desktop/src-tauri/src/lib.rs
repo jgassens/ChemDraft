@@ -147,14 +147,6 @@ fn toolset_owner_query(label: &str) -> String {
     }
 }
 
-fn scoped_toolset_event(owner: &str, event: &str) -> String {
-    if owner == MAIN_WINDOW_LABEL {
-        event.to_owned()
-    } else {
-        format!("{event}/{owner}")
-    }
-}
-
 #[cfg(test)]
 mod document_window_tests {
     use super::is_document_window;
@@ -1650,14 +1642,13 @@ pub fn run() {
                         WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed
                     )
                 {
-                    let _ = window.app_handle().emit_to(
-                        _owner,
-                        &scoped_toolset_event(
-                            _owner,
+                    if let Some(owner) = window.app_handle().get_webview_window(_owner) {
+                        office_ole::toolset_events::deliver(
+                            &owner,
                             office_ole::toolset_events::NATIVE_POPOVER_CLOSE,
-                        ),
-                        window.label(),
-                    );
+                            &serde_json::to_string(window.label()).unwrap(),
+                        );
+                    }
                 }
             }
 
@@ -1830,10 +1821,14 @@ pub fn run() {
             }
             #[cfg(not(target_os = "macos"))]
             panel_window::observe_document_pointer_release(app.handle());
-            if app
+            let headless_office = app
                 .state::<office_ole::launch::Launch>()
-                .setup(app.handle())?
-            {
+                .setup(app.handle())?;
+            #[cfg(windows)]
+            if let Err(error) = windows_session_end::install(app.handle()) {
+                eprintln!("Could not install ChemDraft session-end handler: {error}");
+            }
+            if headless_office {
                 return Ok(());
             }
             setup_primary_app(app.handle())
@@ -1843,6 +1838,7 @@ pub fn run() {
             office_ole::toolset_events::office_toolset_emit,
             office_ole::bridge::office_object_update,
             office_ole::bridge::office_object_close,
+            office_ole::bridge::prepare_office_editors_for_update,
             canvas_context_menu::popup_canvas_context_menu,
             file_warnings_window::file_warnings_open,
             file_warnings_window::file_warnings_request,
@@ -2081,9 +2077,6 @@ fn start_macos_primary(
 }
 
 fn setup_primary_app(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
-    if let Err(error) = windows_session_end::install(app) {
-        eprintln!("Could not install ChemDraft session-end handler: {error}");
-    }
     #[cfg(target_os = "macos")]
     panel_window::observe_document_pointer_release(app);
     file_warnings_window::observe_document(app)?;
@@ -6773,6 +6766,8 @@ fn build_toolset_popover_window(
         .build()
         .map_err(|error| error.to_string())?;
 
+    #[cfg(windows)]
+    office_ole::toolset_events::attach_utility(&window);
     disable_default_context_menus(&window);
     configure_toolset_popover_window(&window, focus_mode)?;
     install_toolset_input_focus(&window)?;
@@ -7421,6 +7416,8 @@ fn build_toolset_tooltip_window(app: &tauri::AppHandle, owner: &str) -> Result<(
     .build()
     .map_err(|error| error.to_string())?;
 
+    #[cfg(windows)]
+    office_ole::toolset_events::attach_utility(&window);
     disable_default_context_menus(&window);
     configure_toolset_utility_window(&window, false)?;
     // Pure chrome: click-through and invisible to hit-testing. Without this, the tooltip appearing
@@ -7537,12 +7534,20 @@ fn route_toolset_command(
 
     if let Some(session_id) = flyout_opening.and_then(|opening| opening.bond_stereo_session_id) {
         if matches!(command_id, "geometry" | "flipped" | "keep") {
-            app.emit_to(
-                document,
-                &scoped_toolset_event(document, "chemdraft://bond-stereo-popover-action"),
-                serde_json::json!({ "sessionId": session_id, "action": command_id }),
-            )
-            .map_err(|error| error.to_string())?;
+            let payload = serde_json::json!({ "sessionId": session_id, "action": command_id });
+            #[cfg(windows)]
+            if document != MAIN_WINDOW_LABEL {
+                if let Some(owner) = app.get_webview_window(document) {
+                    office_ole::toolset_events::deliver(
+                        &owner,
+                        "chemdraft://bond-stereo-popover-action",
+                        &payload.to_string(),
+                    );
+                }
+                return Ok(());
+            }
+            app.emit_to(document, "chemdraft://bond-stereo-popover-action", payload)
+                .map_err(|error| error.to_string())?;
         }
         return Ok(());
     }
@@ -9586,16 +9591,21 @@ fn emit_toolset_window_state<R: Runtime>(
     owner: &str,
     state: &ToolsetWindowState,
 ) -> Result<(), String> {
-    if app.get_webview_window(owner).is_none() {
+    let Some(_window) = app.get_webview_window(owner) else {
+        return Ok(());
+    };
+    #[cfg(windows)]
+    if owner != MAIN_WINDOW_LABEL {
+        office_ole::toolset_events::deliver(
+            &_window,
+            TOOLSET_WINDOW_STATE_EVENT,
+            &serde_json::to_string(state).map_err(|error| error.to_string())?,
+        );
         return Ok(());
     }
 
-    app.emit_to(
-        owner,
-        &scoped_toolset_event(owner, TOOLSET_WINDOW_STATE_EVENT),
-        state.clone(),
-    )
-    .map_err(|error| error.to_string())
+    app.emit_to(owner, TOOLSET_WINDOW_STATE_EVENT, state.clone())
+        .map_err(|error| error.to_string())
 }
 
 /// Webview-owned View checkmarks and Close Tab / Close Window label.
@@ -10993,6 +11003,8 @@ fn ensure_toolset_window<R: Runtime>(
         }
     };
 
+    #[cfg(windows)]
+    office_ole::toolset_events::attach_utility(&window);
     disable_default_context_menus(&window);
     configure_toolset_utility_window(&window, true)?;
     install_toolset_input_focus(&window)?;

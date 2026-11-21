@@ -12,7 +12,7 @@ use std::{
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     rc::Rc,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering},
         mpsc, Arc, Mutex,
     },
     time::{Duration, Instant},
@@ -39,13 +39,31 @@ use windows::{
 
 use super::{
     bridge,
-    contracts::{editor_verb, CloseDecision, CloseOption, EditorVerb, PersistState},
+    contracts::{
+        editor_verb, CloseDecision, CloseOption, CloseReadiness, EditorVerb, PersistState,
+    },
     presentation::Content,
+    session_publish::SessionPublish,
     OleClass,
 };
 
 const MAX_PENDING_WORK: usize = 16;
 const MAX_PENDING_UPDATES: usize = 4;
+const RUNNING: u8 = 0;
+const QUITTING: u8 = 1;
+const INSTALLING_UPDATE: u8 = 2;
+
+fn next_close_request() -> u32 {
+    static NEXT_CLOSE: AtomicU32 = AtomicU32::new(1);
+    NEXT_CLOSE.fetch_add(1, Ordering::Relaxed)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NativeClose {
+    Idle,
+    Pending,
+    Sent(u32),
+}
 
 pub(super) enum Action {
     Connect(Channel<bridge::CloseRequest>),
@@ -58,6 +76,7 @@ pub(super) enum Action {
         request_id: Option<u32>,
     },
     PrepareQuit,
+    CommitSessionEnd(Vec<(String, Content)>, Arc<Mutex<HashSet<String>>>),
 }
 
 type WorkResult = std::result::Result<Option<bridge::Open>, String>;
@@ -88,7 +107,8 @@ struct Control {
     wake: OwnedHandle,
     stop: AtomicBool,
     resume: AtomicBool,
-    quitting: AtomicBool,
+    exit_intent: AtomicU8,
+    session_ending: AtomicBool,
 }
 
 impl Control {
@@ -104,6 +124,7 @@ pub(crate) struct Server {
     control: Arc<Control>,
     updates: Arc<Mutex<HashSet<String>>>,
     stopped: Mutex<mpsc::Receiver<()>>,
+    session_publish: Mutex<Option<SessionPublish<Content>>>,
 }
 
 pub(super) struct UpdatePermit {
@@ -155,17 +176,135 @@ impl Server {
     }
 
     pub(crate) fn begin_quit(&self) -> bool {
-        !self.control.quitting.swap(true, Ordering::AcqRel)
+        self.begin_exit(QUITTING)
     }
 
     pub(crate) fn cancel_quit(&self) {
-        self.control.quitting.store(false, Ordering::Release);
+        self.release_exit(QUITTING);
+    }
+
+    fn begin_exit(&self, intent: u8) -> bool {
+        self.control
+            .exit_intent
+            .compare_exchange(RUNNING, intent, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    fn release_exit(&self, intent: u8) {
+        let _ = self.control.exit_intent.compare_exchange(
+            intent,
+            RUNNING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+
+    pub(super) async fn prepare_update(&self) -> std::result::Result<(), String> {
+        if !self.begin_exit(INSTALLING_UPDATE) {
+            return Err(
+                "ChemDraft is already closing. Try installing the update again if it stays open."
+                    .into(),
+            );
+        }
+        if let Err(error) = self.prepare_quit().await {
+            self.release_update();
+            eprintln!("ChemDraft could not close the Office editors before updating: {error}");
+            return Err(
+                "An Office editor stayed open. Close it before installing the update.".into(),
+            );
+        }
+        Ok(())
+    }
+
+    pub(super) fn release_update(&self) {
+        self.release_exit(INSTALLING_UPDATE);
     }
 
     pub(crate) async fn prepare_quit(&self) -> std::result::Result<(), String> {
         self.request(String::new(), Action::PrepareQuit)
             .await
             .map(drop)
+    }
+
+    pub(crate) fn session_ending(&self) -> bool {
+        self.control.session_ending.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn start_session_publish(
+        &self,
+        deadline: Instant,
+        editors: Vec<String>,
+    ) -> Option<u32> {
+        if self.control.session_ending.swap(true, Ordering::AcqRel) {
+            return None;
+        }
+        let id = next_close_request();
+        *self.session_publish.lock().unwrap() = Some(SessionPublish::new(id, deadline, editors));
+        Some(id)
+    }
+
+    pub(super) fn accepting_session_publish(&self, request: u32, editor: &str) -> bool {
+        self.session_publish
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|pass| pass.accepting(request, editor, Instant::now()))
+    }
+
+    pub(super) fn publish_for_session(&self, request: u32, editor: &str, content: Content) -> bool {
+        self.session_publish
+            .lock()
+            .unwrap()
+            .as_mut()
+            .is_some_and(|pass| pass.publish(request, editor, Instant::now(), content))
+    }
+
+    pub(crate) fn missing_session_drawing_ids(&self) -> Vec<String> {
+        self.session_publish
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map_or_else(Vec::new, |pass| pass.missing().map(str::to_owned).collect())
+    }
+
+    pub(crate) fn cancel_session_publish(&self) -> Option<u32> {
+        let pass = self.session_publish.lock().unwrap().take();
+        self.control.session_ending.store(false, Ordering::Release);
+        pass.map(|pass| pass.id)
+    }
+
+    pub(crate) fn commit_session_publish(
+        &self,
+        app: &tauri::AppHandle,
+    ) -> Arc<Mutex<HashSet<String>>> {
+        let updates = self
+            .session_publish
+            .lock()
+            .unwrap()
+            .take()
+            .map_or_else(Vec::new, SessionPublish::into_updates);
+        let saving = Arc::new(Mutex::new(
+            updates.iter().map(|(id, _)| id.clone()).collect(),
+        ));
+        if !updates.is_empty() {
+            let pending = saving.clone();
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let server = app.state::<Server>();
+                if let Err(error) = server
+                    .request(String::new(), Action::CommitSessionEnd(updates, pending))
+                    .await
+                {
+                    crate::windows_session_end::log_office_loss(
+                        &app,
+                        format_args!(
+                            "Could not queue Office drawings for session-end save: {error}"
+                        ),
+                    );
+                }
+            });
+        }
+        saving
     }
 
     pub(crate) fn shutdown(&self) {
@@ -196,7 +335,8 @@ pub(crate) fn start(
         wake: unsafe { OwnedHandle::from_raw_handle(CreateEventW(None, false, false, None)?.0) },
         stop: AtomicBool::new(false),
         resume: AtomicBool::new(false),
-        quitting: AtomicBool::new(false),
+        exit_intent: AtomicU8::new(RUNNING),
+        session_ending: AtomicBool::new(false),
     });
     let sta_control = control.clone();
     let flag = automation;
@@ -223,6 +363,7 @@ pub(crate) fn start(
         control,
         updates: Default::default(),
         stopped: Mutex::new(stopped),
+        session_publish: Mutex::new(None),
     });
     Ok(())
 }
@@ -239,6 +380,7 @@ struct Apartment {
     queue: RefCell<work_queue::Receiver<Work>>,
     control: Arc<Control>,
     waiting_for_editor: Cell<bool>,
+    session_committed: Cell<bool>,
 }
 
 impl Apartment {
@@ -282,9 +424,22 @@ impl Apartment {
     }
 
     fn dispatch(&self, id: &str, action: Action) -> Result<Option<bridge::Open>> {
+        if let Action::CommitSessionEnd(updates, pending) = action {
+            self.session_committed.set(true);
+            for (id, content) in updates {
+                let object = self.editors.borrow().get(&id).cloned();
+                if let Some(object) = object {
+                    if let Err(error) = object.publish_to_client(content) {
+                        crate::windows_session_end::log_office_loss(&self.app, format_args!("Office object {id}: could not save the renderer drawing at session end: {error}"));
+                    }
+                }
+                pending.lock().unwrap().remove(&id);
+            }
+            return Ok(None);
+        }
         if matches!(action, Action::PrepareQuit) {
             if self.waiting_for_editor.get() {
-                return Err(OLE_E_PROMPTSAVECANCELLED.into());
+                return Err(close_retry());
             }
             for object in self.editors() {
                 object.close_with_option(CloseOption::PromptSave)?;
@@ -304,6 +459,9 @@ impl Apartment {
                 if object.channel.replace(Some(channel)).is_some() {
                     // A reload supersedes the close response from the previous renderer.
                     object.close_request.set(None);
+                    if matches!(object.native_close.get(), NativeClose::Sent(_)) {
+                        object.native_close.set(NativeClose::Pending);
+                    }
                 }
                 Ok(Some(bridge::Open {
                     object_id: id.to_owned(),
@@ -313,24 +471,22 @@ impl Apartment {
                 }))
             }
             Action::Update { content, _permit } => {
-                object.content.replace(Rc::new(content));
-                object.published.set(true);
-                object.changed();
-                unsafe {
-                    object.data_advise.SendOnDataChange(
-                        &object.to_interface::<IDataObject>(),
-                        None,
-                        0,
-                    )?;
+                if self.session_committed.get() {
+                    return Err(Error::new(
+                        OLE_E_NOTRUNNING,
+                        "The Windows session is ending",
+                    ));
                 }
-                object.save_to_client()?;
+                object.publish_to_client(content)?;
                 Ok(None)
             }
             Action::Close {
                 save_changes,
                 request_id,
             } => {
-                if request_id.is_some() && object.close_request.get() != request_id {
+                let native =
+                    request_id.is_some_and(|id| object.native_close.get() == NativeClose::Sent(id));
+                if request_id.is_some() && !native && object.close_request.get() != request_id {
                     return Err(Error::new(
                         E_UNEXPECTED,
                         "The Office close request has expired",
@@ -341,12 +497,14 @@ impl Apartment {
                 } else {
                     Ok(())
                 };
-                if request_id.is_some() || save_changes.is_some() {
+                if native {
+                    object.native_close.set(NativeClose::Idle);
+                } else if request_id.is_some() {
                     object.close_request.set(None);
                 }
                 result.map(|()| None)
             }
-            Action::PrepareQuit => unreachable!(),
+            Action::PrepareQuit | Action::CommitSessionEnd(..) => unreachable!(),
         }
     }
 
@@ -424,6 +582,7 @@ fn serve(
         queue: RefCell::new(queue),
         control,
         waiting_for_editor: Cell::new(false),
+        session_committed: Cell::new(false),
     });
     if !sta.automation.load(Ordering::Acquire) {
         // A normal document window keeps the factory continuously registered after the last object.
@@ -522,9 +681,9 @@ struct Embedded {
     signals: RefCell<Option<Arc<WindowSignals>>>,
     channel: RefCell<Option<Channel<bridge::CloseRequest>>>,
     close_request: Cell<Option<u32>>,
-    native_close: Cell<bool>,
+    native_close: Cell<NativeClose>,
     published: Cell<bool>,
-    saving_to_client: Cell<bool>,
+    updating_client: Cell<bool>,
     closing: Cell<bool>,
     closed: Cell<bool>,
     ole_advise: IOleAdviseHolder,
@@ -551,9 +710,9 @@ impl Embedded {
             signals: Default::default(),
             channel: Default::default(),
             close_request: Cell::new(None),
-            native_close: Cell::new(false),
+            native_close: Cell::new(NativeClose::Idle),
             published: Cell::new(false),
-            saving_to_client: Cell::new(false),
+            updating_client: Cell::new(false),
             closing: Cell::new(false),
             closed: Cell::new(false),
             ole_advise,
@@ -575,18 +734,10 @@ impl Embedded {
                 "Office object has no client site for SaveObject",
             )
         })?;
-        if self.saving_to_client.replace(true) {
-            return Err(Error::new(
-                STG_E_CANTSAVE,
-                "Office is already saving the structure",
-            ));
-        }
-        let result = unsafe {
+        unsafe {
             site.SaveObject()
                 .and_then(|()| self.ole_advise.SendOnSave())
-        };
-        self.saving_to_client.set(false);
-        result?;
+        }?;
         if self.dirty() {
             return Err(Error::new(
                 STG_E_CANTSAVE,
@@ -597,7 +748,40 @@ impl Embedded {
     }
 }
 
+fn close_retry() -> Error {
+    // RPC_E_SERVERCALL_RETRYLATER means the server is busy. A reentrant Close cannot
+    // wait on its own SaveObject/advise callback. Office may retry once that call returns.
+    Error::new(
+        RPC_E_SERVERCALL_RETRYLATER,
+        "The Office editor is busy. Retry closing it after the current operation finishes.",
+    )
+}
+
 impl Embedded_Impl {
+    fn publish_to_client(&self, content: Content) -> Result<()> {
+        if self.closing.get() || self.updating_client.replace(true) {
+            return Err(close_retry());
+        }
+        self.content.replace(Rc::new(content));
+        self.published.set(true);
+        self.changed();
+        let result = unsafe {
+            self.data_advise
+                .SendOnDataChange(&self.to_interface::<IDataObject>(), None, 0)
+        }
+        .and_then(|()| self.save_to_client());
+        self.updating_client.set(false);
+        result
+    }
+
+    fn close_readiness(&self) -> CloseReadiness {
+        CloseReadiness::check(
+            self.closed.get(),
+            self.closing.get(),
+            self.updating_client.get(),
+        )
+    }
+
     fn handle_window_signals(&self) {
         let signals = self.signals.borrow().clone();
         let Some(signals) = signals else { return };
@@ -605,24 +789,30 @@ impl Embedded_Impl {
             self.signals.take();
             self.channel.take();
             self.close_request.set(None);
-            self.native_close.set(false);
+            self.native_close.set(NativeClose::Idle);
             if let Err(error) = self.finish(self.published.get(), false) {
                 // Keep the object and its latest published content available for retry.
                 eprintln!("Could not save the destroyed Office editor: {error}");
             }
         } else {
-            if signals.close.swap(false, Ordering::AcqRel) && self.close_request.get().is_none() {
-                self.native_close.set(true);
+            if signals.close.swap(false, Ordering::AcqRel)
+                && self.native_close.get() == NativeClose::Idle
+            {
+                self.native_close.set(NativeClose::Pending);
             }
-            if self.native_close.get() && self.close_request.get().is_none() {
+            if self.native_close.get() == NativeClose::Pending && self.close_request.get().is_none()
+            {
                 if let Some(channel) = self.channel.borrow().as_ref() {
-                    self.native_close.set(false);
+                    let request_id = next_close_request();
                     if let Err(error) = channel.send(bridge::CloseRequest {
-                        request_id: None,
+                        request_id: Some(request_id),
                         prompt: true,
                         unsaved: self.published.get() && self.dirty(),
+                        discard: false,
                     }) {
                         eprintln!("Could not ask the Office editor to close: {error}");
+                    } else {
+                        self.native_close.set(NativeClose::Sent(request_id));
                     }
                 }
             }
@@ -630,22 +820,28 @@ impl Embedded_Impl {
     }
 
     fn close_with_option(&self, option: CloseOption) -> Result<()> {
-        if self.closed.get() || self.closing.get() || self.saving_to_client.get() {
-            return Ok(());
+        match self.close_readiness() {
+            CloseReadiness::Closed => return Ok(()),
+            CloseReadiness::Retry => return Err(close_retry()),
+            CloseReadiness::Ready => {}
+        }
+        if self.sta.control.session_ending.load(Ordering::Acquire) {
+            return Err(close_retry());
         }
         let visible = self.signals.borrow().is_some();
         match option.decision(visible, self.dirty()) {
             CloseDecision::Finish { save } => self.finish(save, true),
-            CloseDecision::AskEditor { prompt } => self.wait_for_editor_close(prompt),
+            CloseDecision::AskEditor { prompt, discard } => {
+                self.wait_for_editor_close(prompt, discard)
+            }
         }
     }
 
-    fn wait_for_editor_close(&self, prompt: bool) -> Result<()> {
+    fn wait_for_editor_close(&self, prompt: bool, discard: bool) -> Result<()> {
         if self.sta.waiting_for_editor.replace(true) {
-            return Err(OLE_E_PROMPTSAVECANCELLED.into());
+            return Err(close_retry());
         }
-        static NEXT_CLOSE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
-        let request_id = NEXT_CLOSE.fetch_add(1, Ordering::Relaxed);
+        let request_id = next_close_request();
         self.close_request.set(Some(request_id));
         if prompt {
             if let Some(id) = self.session.borrow().clone() {
@@ -674,6 +870,7 @@ impl Embedded_Impl {
                                 request_id: Some(request_id),
                                 prompt,
                                 unsaved: self.published.get() && self.dirty(),
+                                discard,
                             })
                             .map_err(|e| Error::new(E_FAIL, e.to_string()))?;
                         sent = true;
@@ -702,8 +899,10 @@ impl Embedded_Impl {
     }
 
     fn finish(&self, save: bool, destroy: bool) -> Result<()> {
-        if self.closed.get() || self.closing.replace(true) {
-            return Ok(());
+        match self.close_readiness() {
+            CloseReadiness::Closed => return Ok(()),
+            CloseReadiness::Retry => return Err(close_retry()),
+            CloseReadiness::Ready => self.closing.set(true),
         }
         let result = (|| {
             if save && self.dirty() {
@@ -810,7 +1009,8 @@ impl IOleObject_Impl for Embedded_Impl {
         if self.closed.get()
             || self.closing.get()
             || self.close_request.get().is_some()
-            || self.sta.control.quitting.load(Ordering::Acquire)
+            || self.sta.control.exit_intent.load(Ordering::Acquire) != RUNNING
+            || self.sta.control.session_ending.load(Ordering::Acquire)
         {
             return Err(OLE_E_NOTRUNNING.into());
         }

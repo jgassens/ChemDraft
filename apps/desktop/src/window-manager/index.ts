@@ -29,27 +29,17 @@ function officeOwner(): string | undefined {
   return /^office-object-\d{1,20}$/.test(owner) ? owner : undefined;
 }
 
-function toolsetEventName(name: string): string {
-  const owner = officeOwner();
-  return owner && /^chemdraft:\/\/(?:toolset-|palette-|bond-stereo-popover-|dismiss-toolset-)/.test(name)
-    ? `${name}/${owner}` : name;
-}
-
-function isOfficeDocument(): boolean {
-  return !!officeOwner() && new URLSearchParams(window.location.search).has("officeObject");
-}
-
 const listenTauriEvent: typeof listenNativeEvent = (name, handler) =>
-  isOfficeDocument() ? listenOfficeToolsetEvent(name, handler) : listenNativeEvent(toolsetEventName(name), handler);
+  officeOwner() ? listenOfficeToolsetEvent(name, handler) : listenNativeEvent(name, handler);
 
 async function emitNativeEvent<T>(name: string, payload?: T): Promise<void> {
-  if (isOfficeDocument()) {
+  if (officeOwner()) {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("office_toolset_emit", { event: name, payload });
     return;
   }
   const { emit } = await import("@tauri-apps/api/event");
-  await emit(toolsetEventName(name), payload);
+  await emit(name, payload);
 }
 
 function ownedToolsetWindowLabel(label: string): string {
@@ -391,8 +381,8 @@ export async function isToolsetPopoverFocusTransfer(toolsetId: string, includeOw
     import("@tauri-apps/api/core"), import("@tauri-apps/api/window")
   ]);
   const focused = await invoke<string | null>("list_toolset_window_states", { foregroundOnly: true });
-  return focused !== null && (focused === toolsetPopoverWindowLabel(toolsetId) ||
-    (includeOwner && (focused === getCurrentWindow().label || focused === toolsetWindowLabel(toolsetId))));
+  return focused !== null && (focused === ownedToolsetWindowLabel(toolsetPopoverWindowLabel(toolsetId)) ||
+    (includeOwner && (focused === getCurrentWindow().label || focused === ownedToolsetWindowLabel(toolsetWindowLabel(toolsetId)))));
 }
 
 /** OS deactivation and native hides need not pass through the renderer's close notification. */
@@ -411,7 +401,7 @@ export async function listenForToolsetPopoverNativeClose(toolsetId: string, clos
   const label = ownedToolsetWindowLabel(toolsetPopoverWindowLabel(toolsetId));
   const popover = await Window.getByLabel(label);
   if (!popover) { closed(); return () => undefined; }
-  if (isOfficeDocument()) {
+  if (officeOwner()) {
     return listenOfficeToolsetEvent<string>("chemdraft://office-popover-native-close", ({ payload }) => {
       if (payload === label) closed();
     });

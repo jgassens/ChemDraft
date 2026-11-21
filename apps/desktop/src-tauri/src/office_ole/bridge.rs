@@ -20,10 +20,37 @@ pub(crate) struct CloseRequest {
     pub request_id: Option<u32>,
     pub prompt: bool,
     pub unsaved: bool,
+    pub discard: bool,
+}
+
+#[tauri::command]
+pub(crate) async fn prepare_office_editors_for_update(
+    window: tauri::WebviewWindow,
+    release: bool,
+) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use tauri::Manager;
+        if window.label() != crate::MAIN_WINDOW_LABEL {
+            return Err("Only the main ChemDraft window can install updates".into());
+        }
+        let server = window.state::<super::server::Server>();
+        if release {
+            server.release_update();
+        } else {
+            server.prepare_update().await?;
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (window, release);
+        Err("Windows app updates require Windows".into())
+    }
 }
 
 #[cfg(any(windows, test))]
-pub(super) fn owner_id(label: &str) -> Result<&str, String> {
+pub(crate) fn owner_id(label: &str) -> Result<&str, String> {
     label
         .strip_prefix("office-object-")
         .filter(|id| !id.is_empty() && id.len() <= 20 && id.bytes().all(|b| b.is_ascii_digit()))
@@ -91,7 +118,25 @@ pub(crate) async fn office_object_update(
             .map_err(|_| "Invalid Office update header")?;
         let json_end = update_lengths(bytes.len(), u32::from_le_bytes(header) as usize)?;
         let server = window.state::<super::server::Server>();
-        let permit = server.begin_update(&id)?;
+        let session = request
+            .headers()
+            .get("x-chemdraft-session-publish")
+            .map(|value| {
+                value
+                    .to_str()
+                    .ok()
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .ok_or("Invalid Office session-end publish request")
+            })
+            .transpose()?;
+        if session.is_some_and(|request| !server.accepting_session_publish(request, &id)) {
+            return Err("The Office session-end publish request has expired".into());
+        }
+        let permit = if session.is_none() {
+            Some(server.begin_update(&id)?)
+        } else {
+            None
+        };
         let mut bytes = bytes.clone();
         let (content, permit) = tauri::async_runtime::spawn_blocking(move || {
             let png = bytes.split_off(json_end);
@@ -104,12 +149,19 @@ pub(crate) async fn office_object_update(
         })
         .await
         .map_err(|e| e.to_string())??;
+        if let Some(request) = session {
+            return if server.publish_for_session(request, &id, content) {
+                Ok(())
+            } else {
+                Err("The Office session-end publish request has expired".into())
+            };
+        }
         server
             .request(
                 id,
                 super::server::Action::Update {
                     content,
-                    _permit: permit,
+                    _permit: permit.expect("interactive update has a permit"),
                 },
             )
             .await
@@ -169,6 +221,10 @@ pub(super) fn open_window(
     // accept a result just after recv_timeout, leaving a window for an abandoned activation.
     let (opened, status) = std::sync::mpsc::sync_channel(0);
     app.run_on_main_thread(move || {
+        if handle.state::<super::server::Server>().session_ending() {
+            let _ = opened.send(Err("The Windows session is ending".into()));
+            return;
+        }
         let label = format!("office-object-{id}");
         if let Some(window) = handle.get_webview_window(&label) {
             let result = window
@@ -208,7 +264,7 @@ pub(super) fn open_window(
         match result {
             Ok(window) => {
                 let app = handle.clone();
-                let subscriptions = super::toolset_events::attach(&window);
+                let subscriptions = super::toolset_events::attach_settings(&window);
                 let editor = window.clone();
                 window.on_window_event(move |event| {
                     match event {
@@ -288,10 +344,11 @@ mod tests {
             to_value(CloseRequest {
                 request_id: Some(2),
                 prompt: true,
-                unsaved: false
+                unsaved: false,
+                discard: false
             })
             .unwrap(),
-            json!({"requestId":2,"prompt":true,"unsaved":false})
+            json!({"requestId":2,"prompt":true,"unsaved":false,"discard":false})
         );
         assert_eq!(owner_id("office-object-7").as_deref(), Ok("7"));
         assert!(owner_id("office-object-7-other").is_err());

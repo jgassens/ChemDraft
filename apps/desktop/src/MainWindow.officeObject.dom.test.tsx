@@ -1,16 +1,18 @@
 // @vitest-environment jsdom
 import { readChemDraftSelectionFromPng } from "@chemdraft/clipboard-adapter";
+import { applyPatch, type MoleculeObject } from "@chemdraft/chem-core";
 import { stereoPerceptionMolfile } from "@chemdraft/document-workflow-core";
 import { depictSmiles2D } from "@chemdraft/ocl-adapter";
-import type { InvokeArgs } from "@tauri-apps/api/core";
+import type { InvokeArgs, InvokeOptions } from "@tauri-apps/api/core";
 import { Molecule } from "openchemlib";
 import { StrictMode, act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MainWindow } from "./MainWindow";
+import { runUpdateFlow } from "./appUpdates";
 import {
-  createPhase4Document, createSelectionClipboardPayload, insertNativeMolfileMolecule, parseSelectionClipboardPayload,
-  serializeSelectionClipboardPayload
+  createPhase4Document, createSelectionClipboardPayload, insertNativeMolfileMolecule, insertNativeReactionArrow,
+  parseSelectionClipboardPayload, selectDocumentObjects, serializeSelectionClipboardPayload
 } from "./documentWorkflow";
 import { officeObjectIdFromSearch } from "./officeObject";
 import { picturePngBase64 } from "./testSupport/imageFixture";
@@ -18,7 +20,7 @@ import { MemoryStorage } from "./testSupport/memoryStorage";
 
 const tauri = vi.hoisted(() => ({
   desktop: true,
-  invoke: vi.fn<(command: string, args?: InvokeArgs) => Promise<unknown>>(),
+  invoke: vi.fn<(command: string, args?: InvokeArgs, options?: InvokeOptions) => Promise<unknown>>(),
   setTitle: vi.fn<(title: string) => Promise<void>>(),
   message: vi.fn<(message: string, options: unknown) => Promise<string>>()
 }));
@@ -42,11 +44,25 @@ vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 
 // The charged isotope and stereo case also used by bondStereo.test.ts and pageEnlargementShift.test.ts.
 const stereoFixture = "[13CH3]/C=C/[C@@H]([NH3+])Cl";
-const source = insertNativeMolfileMolecule(createPhase4Document(), { x: 240, y: 240 },
-  depictSmiles2D(stereoFixture).molfile, "molfile-v2000");
-const selectionJson = serializeSelectionClipboardPayload(createSelectionClipboardPayload(source)!);
+function reactionFixture() {
+  let drawing = createPhase4Document();
+  for (const [smiles, x] of [[stereoFixture, 160], ["[CH2]/C=C/CC", 280], ["CCO", 540]] as const) {
+    drawing = insertNativeMolfileMolecule(drawing, { x, y: 240 }, depictSmiles2D(smiles).molfile, "molfile-v2000");
+  }
+  drawing = insertNativeReactionArrow(drawing, { x: 360, y: 240 }, { x: 460, y: 240 }, "forward");
+  const page = drawing.pages[0]!;
+  const molecules = page.objects.filter(object => object.type === "molecule");
+  drawing = applyPatch(drawing, { op: "addObject", pageId: page.id, object: {
+    id: "fixture-reaction", type: "reaction", x: 100, y: 200, width: 500, height: 80, rotation: 0, style: {},
+    components: molecules.map((object, index) => ({ objectId: object.id, role: index === 2 ? "product" : "reactant" })),
+    arrowObjectIds: [page.objects.find(object => object.type === "reaction-arrow")!.id],
+    conditionsTextObjectIds: [], mappingState: "absent"
+  } });
+  return selectDocumentObjects(drawing, page.id, drawing.pages[0]!.objects.map(object => object.id));
+}
+const selectionJson = serializeSelectionClipboardPayload(createSelectionClipboardPayload(reactionFixture())!);
 const serverBlankJson = '{"kind":"chemdraft-selection","version":1,"objects":[],"selectionIds":[],"bounds":{"x":0,"y":0,"width":0,"height":0}}';
-interface CloseRequest { requestId: number | null; prompt: boolean; unsaved: boolean }
+interface CloseRequest { requestId: number | null; prompt: boolean; unsaved: boolean; discard: boolean }
 
 function updatedContent(frame: InvokeArgs | undefined) {
   if (!(frame instanceof Uint8Array)) throw new Error("Expected a raw Office update frame");
@@ -54,14 +70,15 @@ function updatedContent(frame: InvokeArgs | undefined) {
   return { json: new TextDecoder().decode(frame.subarray(4, jsonEnd)), png: frame.subarray(jsonEnd) };
 }
 
-function chemistry(json: string) {
-  const molecule = parseSelectionClipboardPayload(json)?.objects[0];
-  if (molecule?.type !== "molecule") throw new Error("Expected a molecule in the Office selection");
+function chemistry(molecule: MoleculeObject) {
   const molfile = Molecule.fromMolfile(stereoPerceptionMolfile(molecule));
+  const native = Molecule.fromMolfile(molecule.structure);
   return {
     smiles: molfile.toIsomericSmiles(), formula: molfile.getMolecularFormula().formula,
     charge: molecule.atoms.reduce((sum, atom) => sum + atom.formalCharge, 0),
-    atomCount: molecule.atoms.length, bondCount: molecule.bonds.length
+    atomCount: molecule.atoms.length, bondCount: molecule.bonds.length,
+    isotopes: molecule.atoms.map(atom => atom.isotope),
+    radicals: Array.from({ length: native.getAllAtoms() }, (_, i) => native.getAtomRadical(i))
   };
 }
 
@@ -71,10 +88,10 @@ describe("Office embedded document window", () => {
   let receiver: { onmessage: (request: CloseRequest) => void };
   let openPayload: { objectId: string; json: string; containerApp: string; containerDocument: string };
 
-  const deliverClose = (requestId: number | null = null, prompt = true, unsaved = false) =>
-    act(async () => receiver.onmessage({ requestId, prompt, unsaved }));
+  const deliverClose = (requestId: number | null = null, prompt = true, unsaved = false, discard = false) =>
+    act(async () => receiver.onmessage({ requestId, prompt, unsaved, discard }));
   const officeCalls = () => tauri.invoke.mock.calls.filter(([command]) =>
-    command === "office_object_update" || command === "office_object_close");
+    command === "office_object_update" || command === "office_object_close").map(([command, args]) => [command, args] as const);
   const status = () => host.querySelector("[data-status-message]")?.textContent;
 
   beforeEach(() => {
@@ -220,7 +237,7 @@ describe("Office embedded document window", () => {
     expect(parseSelectionClipboardPayload(updatedContent(request).json, { allowEmpty: true })?.objects).toEqual([]);
   });
 
-  it("round-trips stereo, charge and isotope and sends the exact JSON in a raw carrier PNG", async () => {
+  it("round-trips chemistry and geometry in a multi-component reaction and embeds its exact JSON in the preview", async () => {
     await mount();
     await nativeMenu("office.updateEmbeddedObject");
     expect(officeCalls(), status()).toEqual([["office_object_update", expect.any(Uint8Array)]]);
@@ -230,10 +247,31 @@ describe("Office embedded document window", () => {
     expect(tauri.invoke).toHaveBeenCalledWith("rasterize_svg", { request: expect.objectContaining({
       format: "png", scale: 4, cssPxPerInch: 96
     }) });
-    const expected = chemistry(selectionJson);
-    expect(expected.smiles).toBe(Molecule.fromSmiles(stereoFixture).toIsomericSmiles());
-    expect(expected.charge).toBe(1);
-    expect(chemistry(json)).toEqual(expected);
+    const before = parseSelectionClipboardPayload(selectionJson)!.objects;
+    const after = parseSelectionClipboardPayload(json)!.objects;
+    const beforeMolecules = before.filter(object => object.type === "molecule");
+    const afterMolecules = after.filter(object => object.type === "molecule");
+    const expected = beforeMolecules.map(chemistry);
+    expect(expected[0]).toMatchObject({ smiles: Molecule.fromSmiles(stereoFixture).toIsomericSmiles(), charge: 1 });
+    expect(expected[0]!.isotopes).toContain(13);
+    expect(expected[1]!.radicals.filter(Boolean)).toHaveLength(1);
+    expect(afterMolecules.map(chemistry)).toEqual(expected);
+    for (const [index, molecule] of afterMolecules.entries()) {
+      const original = beforeMolecules[index]!;
+      expect(molecule.x).toBeCloseTo(original.x, 8);
+      expect(molecule.y).toBeCloseTo(original.y, 8);
+      for (const [atomIndex, atom] of molecule.atoms.entries()) {
+        expect(atom.x).toBeCloseTo(original.atoms[atomIndex]!.x, 8);
+        expect(atom.y).toBeCloseTo(original.atoms[atomIndex]!.y, 8);
+      }
+    }
+    const originalArrow = before.find(object => object.type === "reaction-arrow")!;
+    const arrow = after.find(object => object.type === "reaction-arrow")!;
+    expect(arrow).toMatchObject({ arrowKind: "forward", start: originalArrow.start, end: originalArrow.end });
+    expect(after.find(object => object.type === "reaction")).toMatchObject({
+      components: afterMolecules.map((object, index) => ({ objectId: object.id, role: index === 2 ? "product" : "reactant" })),
+      arrowObjectIds: [arrow.id]
+    });
   });
 
   it.each(["windows", "macos"] as const)("routes File Save and the %s save chord to Office Update", async platform => {
@@ -290,6 +328,91 @@ describe("Office embedded document window", () => {
     expect(officeCalls().map(([command]) => command)).toEqual(["office_object_update"]);
     await act(async () => finishUpdate(null));
     expect(officeCalls().map(([command]) => command)).toEqual(["office_object_update", "office_object_close"]);
+  });
+
+  it.each([[51, true], [52, false]] as const)("queues close request %s behind an active update", async (requestId, prompt) => {
+    const invoke = tauri.invoke.getMockImplementation()!;
+    let finish!: (value: null) => void;
+    const pending = new Promise<null>(resolve => { finish = resolve; });
+    tauri.invoke.mockImplementation((command, args) => command === "office_object_update" ? pending : invoke(command, args));
+    await mount();
+    await edit();
+    await nativeMenu("office.updateEmbeddedObject");
+    await deliverClose(requestId, prompt);
+    expect(officeCalls().map(([command]) => command)).toEqual(["office_object_update"]);
+    await act(async () => finish(null));
+    expect(tauri.message).not.toHaveBeenCalled();
+    expect(officeCalls().at(-1)).toEqual(["office_object_close", { objectId: "17", requestId, saveChanges: true }]);
+  });
+
+  it("queues Office's explicit discard behind an active update without prompting", async () => {
+    const invoke = tauri.invoke.getMockImplementation()!;
+    let finish!: (value: null) => void;
+    const pending = new Promise<null>(resolve => { finish = resolve; });
+    tauri.invoke.mockImplementation((command, args) => command === "office_object_update" ? pending : invoke(command, args));
+    await mount();
+    await nativeMenu("office.updateEmbeddedObject");
+    await deliverClose(53, false, false, true);
+    expect(officeCalls()).toHaveLength(1);
+    await act(async () => finish(null));
+    expect(tauri.message).not.toHaveBeenCalled();
+    expect(officeCalls().at(-1)).toEqual(["office_object_close", { objectId: "17", requestId: 53, saveChanges: false }]);
+  });
+
+  it("prompts for edits made after the in-flight update took its snapshot", async () => {
+    const invoke = tauri.invoke.getMockImplementation()!;
+    let finish!: (value: null) => void;
+    const pending = new Promise<null>(resolve => { finish = resolve; });
+    tauri.invoke.mockImplementation((command, args) => command === "office_object_update" ? pending : invoke(command, args));
+    await mount();
+    await nativeMenu("office.updateEmbeddedObject");
+    await edit();
+    tauri.message.mockResolvedValue("Cancel");
+    await deliverClose(57);
+    expect(tauri.message).not.toHaveBeenCalled();
+    await act(async () => finish(null));
+    expect(tauri.message).toHaveBeenCalledOnce();
+    expect(officeCalls().at(-1)).toEqual(["office_object_close", { objectId: "17", requestId: 57 }]);
+  });
+
+  it("publishes for Windows session end without a prompt and unlocks if Windows cancels", async () => {
+    await mount();
+    await edit();
+    await act(async () => window.dispatchEvent(new CustomEvent("chemdraft:office-toolset:office-session-publish", { detail: 54 })));
+    expect(tauri.invoke).toHaveBeenCalledWith("office_object_update", expect.any(Uint8Array), {
+      headers: { "x-chemdraft-session-publish": "54" }
+    });
+    tauri.message.mockResolvedValue("Update");
+    await deliverClose(55);
+    expect(tauri.message).not.toHaveBeenCalled();
+    expect(officeCalls().map(([command]) => command)).toEqual(["office_object_update"]);
+    await act(async () => window.dispatchEvent(new CustomEvent("chemdraft:office-toolset:office-session-cancel", { detail: 54 })));
+    expect(tauri.message).toHaveBeenCalledOnce();
+    expect(officeCalls().map(([command]) => command)).toEqual(["office_object_update", "office_object_update", "office_object_close"]);
+  });
+
+  it("aborts an accepted app update when the user cancels an embedded editor's close prompt", async () => {
+    tauri.message.mockResolvedValue("Cancel");
+    await mount();
+    await edit();
+    const update = { version: "2", currentVersion: "1", download: vi.fn(), install: vi.fn(), close: vi.fn(async () => {}) };
+    const flushSession = vi.fn();
+    const outcome = await runUpdateFlow("manual", {
+      check: async () => update, confirm: async () => true, message: vi.fn(), setStatus: vi.fn(), flushSession,
+      prepareEmbeddedEditors: async () => {
+        await deliverClose(56);
+        const response = officeCalls().find(([command]) => command === "office_object_close")?.[1];
+        if (!response || !("saveChanges" in response)) throw new Error("An Office editor stayed open.");
+        return async () => {};
+      }
+    });
+    expect(tauri.message).toHaveBeenCalledWith(expect.stringContaining("Report.docx"), expect.objectContaining({
+      buttons: { YesNoCancelCustom: ["Update", "Don't update", "Cancel"] }
+    }));
+    expect(outcome).toBe("install-failed");
+    expect(officeCalls()).toEqual([["office_object_close", { objectId: "17", requestId: 56 }]]);
+    expect(update.install).not.toHaveBeenCalled();
+    expect(flushSession).not.toHaveBeenCalled();
   });
 
   it.each(["Update", "Don't update", "Cancel"])("reports %s for an app quit request", async choice => {

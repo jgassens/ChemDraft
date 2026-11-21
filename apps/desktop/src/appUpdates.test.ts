@@ -140,6 +140,7 @@ function deps(overrides: Partial<UpdateFlowDeps> = {}, order: string[] = []): Up
     confirm: vi.fn(async () => true),
     message: vi.fn(async () => undefined),
     setStatus: vi.fn(),
+    prepareEmbeddedEditors: vi.fn(async () => async () => undefined),
     flushSession: vi.fn(async () => {
       order.push("flush");
     }),
@@ -192,7 +193,7 @@ describe("runUpdateFlow", () => {
     warn.mockRestore();
   });
 
-  it("downloads, then saves the document, then installs — in that order", async () => {
+  it("downloads, closes embedded editors, saves the document, then installs", async () => {
     const order: string[] = [];
     const update = fakeUpdate();
     update.download = vi.fn(async (onEvent) => {
@@ -203,9 +204,12 @@ describe("runUpdateFlow", () => {
     update.install = vi.fn(async () => {
       order.push("install");
     });
-    const flow = deps({ check: vi.fn(async () => update) }, order);
+    const flow = deps({ check: vi.fn(async () => update), prepareEmbeddedEditors: async () => {
+      order.push("prepare Office");
+      return async () => { order.push("release Office"); };
+    } }, order);
     expect(await runUpdateFlow("manual", flow)).toBe("installing");
-    expect(order).toEqual(["download", "flush", "install"]);
+    expect(order).toEqual(["download", "prepare Office", "flush", "install", "release Office"]);
     expect(flow.setStatus).toHaveBeenCalledWith("Downloading ChemDraft 0.3.6: 50% (0.0 of 0.0 MB)");
   });
 

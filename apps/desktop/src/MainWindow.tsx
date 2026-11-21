@@ -953,6 +953,7 @@ import {
   currentUpdateBuildInfo,
   readLastAutoCheck,
   runUpdateFlow,
+  prepareOfficeEditorsForUpdate,
   safeLocalStorage,
   tauriUpdateFlowDeps,
   writeLastAutoCheck
@@ -11212,7 +11213,10 @@ export function MainWindow({
       }
       const outcome = await runUpdateFlow(
         mode,
-        tauriUpdateFlowDeps({ setStatus, flushSession: () => writeDocumentSessionNow({ strict: true }) })
+        tauriUpdateFlowDeps({
+          setStatus, prepareEmbeddedEditors: prepareOfficeEditorsForUpdate,
+          flushSession: () => writeDocumentSessionNow({ strict: true })
+        })
       );
       if (outcome !== "check-failed") {
         writeLastAutoCheck(safeLocalStorage(), Date.now());
@@ -11504,6 +11508,7 @@ export function MainWindow({
   const saveCurrentDocument = useCallback((forceSaveAs: boolean) =>
     saveDocumentTabById(activeDocumentTabIdRef.current, forceSaveAs), [saveDocumentTabById]);
 
+  const officeFreezeCount = useRef(0);
   const officeObject = useOfficeObject(officeObjectId, {
     installDocument: (opened) => {
       resetDocumentHistory(opened);
@@ -11512,15 +11517,19 @@ export function MainWindow({
     },
     readDocument: documentForFlush,
     setStatus,
-    invokeClose: () => invokeCommandRef.current(OFFICE_CLOSE_COMMAND_ID),
+    invokeClose: async () => { await registry.invoke(OFFICE_CLOSE_COMMAND_ID); },
     freezeForClose: () => {
-      quitInteractionRef.current = true;
-      quitMutationFrozenRef.current = true;
-      flushSync(() => setQuitCommitted(true));
+      if (++officeFreezeCount.current === 1) {
+        quitInteractionRef.current = true;
+        quitMutationFrozenRef.current = true;
+        flushSync(() => setQuitCommitted(true));
+      }
       return () => {
-        quitMutationFrozenRef.current = false;
-        quitInteractionRef.current = false;
-        setQuitCommitted(false);
+        if (--officeFreezeCount.current === 0) {
+          quitMutationFrozenRef.current = false;
+          quitInteractionRef.current = false;
+          setQuitCommitted(false);
+        }
       };
     }
   });

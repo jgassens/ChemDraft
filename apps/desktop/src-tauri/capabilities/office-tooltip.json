@@ -9,8 +9,6 @@
     "office-utility-office-object-*--toolset-tooltip"
   ],
   "permissions": [
-    "core:event:allow-listen",
-    "core:event:allow-unlisten",
     "core:window:allow-set-size",
     "allow-show-toolset-tooltip-window",
     "allow-hide-toolset-tooltip-window",

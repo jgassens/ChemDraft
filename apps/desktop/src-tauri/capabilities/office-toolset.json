@@ -10,9 +10,7 @@
     "office-utility-office-object-*--toolset-popover-*"
   ],
   "permissions": [
-    "core:event:allow-listen",
-    "core:event:allow-unlisten",
-    "core:event:allow-emit",
+    "allow-office-toolset-emit",
     "core:window:allow-get-all-windows",
     "core:window:allow-is-visible",
     "core:window:allow-hide",

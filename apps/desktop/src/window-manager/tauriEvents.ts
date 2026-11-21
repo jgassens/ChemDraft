@@ -114,8 +114,7 @@ export async function listenCurrentWindowEvent<T>(eventName: string, handler: Ev
   if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return () => undefined;
   const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
   const currentWindow = getCurrentWebviewWindow();
-  if (/^office-object-\d{1,20}$/.test(currentWindow.label) &&
-      ["tauri://move", "tauri://resize", "tauri://scale-change"].includes(eventName)) {
+  if (/^(?:office-object-\d{1,20}$|office-utility-office-object-\d{1,20}--toolset-)/.test(currentWindow.label)) {
     return listenOfficeToolsetEvent(eventName, handler);
   }
   return safeTauriWindowListen<T>(currentWindow, eventName, handler).attached;

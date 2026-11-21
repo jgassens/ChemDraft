@@ -540,6 +540,15 @@ fn activation_with_reason<R: tauri::Runtime>(
             generation,
             reason,
         };
+        #[cfg(windows)]
+        if super::toolset_window_parts(window.label()).0 != super::MAIN_WINDOW_LABEL {
+            super::office_ole::toolset_events::deliver(
+                window,
+                "chemdraft://plugin-panel-focus",
+                &serde_json::to_string(&event).unwrap(),
+            );
+            return;
+        }
         if let Err(error) = window.emit_to(window.label(), "chemdraft://plugin-panel-focus", event)
         {
             eprintln!("Could not notify panel focus: {error}");
@@ -797,6 +806,14 @@ pub(crate) fn install_input_focus<R: tauri::Runtime>(
             }
         }),
         refresh_hit_boxes: std::rc::Rc::new(move || {
+            if super::toolset_window_parts(refresh_window.label()).0 != super::MAIN_WINDOW_LABEL {
+                super::office_ole::toolset_events::deliver(
+                    &refresh_window,
+                    "chemdraft://palette-command-hit-boxes-refresh",
+                    "null",
+                );
+                return;
+            }
             let _ = refresh_window.emit_to(
                 refresh_window.label(),
                 "chemdraft://palette-command-hit-boxes-refresh",
