@@ -1,0 +1,101 @@
+{
+  "id": "antimony-trihydride",
+  "group": "Element support",
+  "geometrySource": "Hand-authored trigonal pyramidal SbH3 geometry and fixed perturbations",
+  "graphs": [
+    {
+      "hydrogenModel": "explicit-hydrogen",
+      "atoms": [
+        {
+          "element": "Sb",
+          "atomicNumber": 51,
+          "formalCharge": 0
+        },
+        {
+          "element": "H",
+          "atomicNumber": 1,
+          "formalCharge": 0
+        },
+        {
+          "element": "H",
+          "atomicNumber": 1,
+          "formalCharge": 0
+        },
+        {
+          "element": "H",
+          "atomicNumber": 1,
+          "formalCharge": 0
+        }
+      ],
+      "bonds": [
+        {
+          "a": 0,
+          "b": 1,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 0,
+          "b": 2,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 0,
+          "b": 3,
+          "order": 1,
+          "originalOrder": 1
+        }
+      ],
+      "snapshots": [
+        {
+          "id": "seed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [0, 0, 0],
+            [1.52, 0, -0.81],
+            [-0.76, 1.316, -0.81],
+            [-0.76, -1.316, -0.81]
+          ]
+        },
+        {
+          "id": "perturbed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [0.08, 0.03, -0.02],
+            [1.58, 0.03, -0.75],
+            [-0.7, 1.27, -0.88],
+            [-0.8, -1.32, -0.73]
+          ]
+        }
+      ]
+    },
+    {
+      "hydrogenModel": "drawn-heavy-atom-only",
+      "atoms": [
+        {
+          "element": "Sb",
+          "atomicNumber": 51,
+          "formalCharge": 0
+        }
+      ],
+      "bonds": [],
+      "snapshots": [
+        {
+          "id": "seed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [0, 0, 0]
+          ]
+        },
+        {
+          "id": "perturbed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [0.08, 0.03, -0.02]
+          ]
+        }
+      ]
+    }
+  ]
+}

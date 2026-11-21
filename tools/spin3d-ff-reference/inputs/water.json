@@ -1,0 +1,125 @@
+{
+  "id": "water",
+  "group": "Small organics and term isolation",
+  "geometrySource": "Hand-authored bent geometry and displaced bonds",
+  "graphs": [
+    {
+      "hydrogenModel": "explicit-hydrogen",
+      "atoms": [
+        {
+          "element": "O",
+          "atomicNumber": 8,
+          "formalCharge": 0
+        },
+        {
+          "element": "H",
+          "atomicNumber": 1,
+          "formalCharge": 0
+        },
+        {
+          "element": "H",
+          "atomicNumber": 1,
+          "formalCharge": 0
+        }
+      ],
+      "bonds": [
+        {
+          "a": 0,
+          "b": 1,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 0,
+          "b": 2,
+          "order": 1,
+          "originalOrder": 1
+        }
+      ],
+      "snapshots": [
+        {
+          "id": "seed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [0, 0, 0],
+            [0.9584, 0, 0],
+            [-0.24, 0.928, 0]
+          ]
+        },
+        {
+          "id": "perturbed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [0.02, 0.03, -0.01],
+            [1.015, -0.04, 0.06],
+            [-0.307, 0.898, 0.08]
+          ]
+        },
+        {
+          "id": "optimizer-start",
+          "gradientCheck": "smooth",
+          "optimizationRuns": [
+            {
+              "algorithm": "ABC-FIRE",
+              "frozenCoordinates": []
+            },
+            {
+              "algorithm": "ABC-FIRE",
+              "frozenCoordinates": [0, 1, 2]
+            },
+            {
+              "algorithm": "FIRE2",
+              "frozenCoordinates": []
+            }
+          ],
+          "coordinatesAngstrom": [
+            [0.0232, 0.0348, -0.0116],
+            [1.1773999999999998, -0.0464, 0.0696],
+            [-0.35612, 1.04168, 0.0928]
+          ]
+        }
+      ]
+    },
+    {
+      "hydrogenModel": "drawn-heavy-atom-only",
+      "atoms": [
+        {
+          "element": "O",
+          "atomicNumber": 8,
+          "formalCharge": 0
+        }
+      ],
+      "bonds": [],
+      "snapshots": [
+        {
+          "id": "seed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [0, 0, 0]
+          ]
+        },
+        {
+          "id": "perturbed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [0.02, 0.03, -0.01]
+          ]
+        },
+        {
+          "id": "optimizer-start",
+          "gradientCheck": "smooth",
+          "optimizationRuns": [
+            {
+              "algorithm": "ABC-FIRE",
+              "frozenCoordinates": []
+            }
+          ],
+          "coordinatesAngstrom": [
+            [0.0232, 0.0348, -0.0116]
+          ]
+        }
+      ]
+    }
+  ],
+  "optimizerStartScale": 1.16
+}

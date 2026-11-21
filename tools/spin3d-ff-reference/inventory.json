@@ -1,0 +1,148 @@
+{
+  "2-butanol-r": [
+    {"hydrogenModel": "explicit-hydrogen", "snapshots": ["seed", "perturbed"]},
+    {"hydrogenModel": "drawn-heavy-atom-only", "snapshots": ["seed", "perturbed"]}
+  ],
+  "2-butanol-s": [
+    {"hydrogenModel": "explicit-hydrogen", "snapshots": ["seed", "perturbed"]},
+    {"hydrogenModel": "drawn-heavy-atom-only", "snapshots": ["seed", "perturbed"]}
+  ],
+  "2-butanol-unspecified": [
+    {"hydrogenModel": "explicit-hydrogen", "snapshots": ["seed", "perturbed"]},
+    {"hydrogenModel": "drawn-heavy-atom-only", "snapshots": ["seed", "perturbed"]}
+  ],
+  "2-butene-e": [
+    {"hydrogenModel": "explicit-hydrogen", "snapshots": ["seed", "perturbed"]},
+    {"hydrogenModel": "drawn-heavy-atom-only", "snapshots": ["seed", "perturbed"]}
+  ],
+  "2-butene-unspecified": [
+    {"hydrogenModel": "explicit-hydrogen", "snapshots": ["seed", "perturbed"]},
+    {"hydrogenModel": "drawn-heavy-atom-only", "snapshots": ["seed", "perturbed"]}
+  ],
+  "2-butene-z": [
+    {"hydrogenModel": "explicit-hydrogen", "snapshots": ["seed", "perturbed"]},
+    {"hydrogenModel": "drawn-heavy-atom-only", "snapshots": ["seed", "perturbed"]}
+  ],
+  "acetamide": [
+    {"hydrogenModel": "explicit-hydrogen", "snapshots": ["seed", "perturbed"]},
+    {"hydrogenModel": "drawn-heavy-atom-only", "snapshots": ["seed", "perturbed"]}
+  ],
+  "acetate": [
+    {"hydrogenModel": "explicit-hydrogen", "snapshots": ["seed", "perturbed"]},
+    {"hydrogenModel": "drawn-heavy-atom-only", "snapshots": ["seed", "perturbed"]}
+  ],
+  "acetylene": [
+    {"hydrogenModel": "explicit-hydrogen", "snapshots": ["linear", "perturbed"]},
+    {"hydrogenModel": "drawn-heavy-atom-only", "snapshots": ["linear", "perturbed"]}
+  ],
+  "antimony-trihydride": [
+    {"hydrogenModel": "explicit-hydrogen", "snapshots": ["seed", "perturbed"]},
+    {"hydrogenModel": "drawn-heavy-atom-only", "snapshots": ["seed", "perturbed"]}
+  ],
+  "benzene": [
+    {"hydrogenModel": "explicit-hydrogen", "kekule": "A", "snapshots": ["seed", "perturbed"]},
+    {"hydrogenModel": "drawn-heavy-atom-only", "kekule": "A", "snapshots": ["seed", "perturbed"]},
+    {"hydrogenModel": "explicit-hydrogen", "kekule": "B", "snapshots": ["seed", "perturbed"]},
+    {"hydrogenModel": "drawn-heavy-atom-only", "kekule": "B", "snapshots": ["seed", "perturbed"]}
+  ],
+  "charged-pair": [
+    {"hydrogenModel": "no-hydrogens", "snapshots": ["inside-cutoff", "outside-cutoff"], "cutoffCrossingSteps": 11}
+  ],
+  "cyclohexane-chair": [
+    {
+      "hydrogenModel": "explicit-hydrogen",
+      "snapshots": ["seed", "perturbed", "optimizer-start"],
+      "runs": [
+        {"snapshotId": "optimizer-start", "algorithm": "ABC-FIRE", "frozenCoordinates": []}
+      ]
+    },
+    {
+      "hydrogenModel": "drawn-heavy-atom-only",
+      "snapshots": ["seed", "perturbed", "optimizer-start"],
+      "runs": [
+        {"snapshotId": "optimizer-start", "algorithm": "ABC-FIRE", "frozenCoordinates": []}
+      ]
+    }
+  ],
+  "cyclopropane": [
+    {"hydrogenModel": "explicit-hydrogen", "snapshots": ["seed", "perturbed"]},
+    {"hydrogenModel": "drawn-heavy-atom-only", "snapshots": ["seed", "perturbed"]}
+  ],
+  "element-scan-probe": [
+    {"hydrogenModel": "no-hydrogens", "snapshots": ["separated"]}
+  ],
+  "ethanol": [
+    {"hydrogenModel": "explicit-hydrogen", "snapshots": ["seed", "perturbed"]},
+    {"hydrogenModel": "drawn-heavy-atom-only", "snapshots": ["seed", "perturbed"]}
+  ],
+  "formaldehyde": [
+    {"hydrogenModel": "explicit-hydrogen", "snapshots": ["seed", "perturbed"]},
+    {"hydrogenModel": "drawn-heavy-atom-only", "snapshots": ["seed", "perturbed"]}
+  ],
+  "furan": [
+    {"hydrogenModel": "explicit-hydrogen", "snapshots": ["seed", "perturbed"]},
+    {"hydrogenModel": "drawn-heavy-atom-only", "snapshots": ["seed", "perturbed"]}
+  ],
+  "hydrogen-peroxide": [
+    {"hydrogenModel": "explicit-hydrogen", "snapshots": ["seed", "perturbed"]},
+    {"hydrogenModel": "drawn-heavy-atom-only", "snapshots": ["seed", "perturbed"]}
+  ],
+  "iodomethane": [
+    {"hydrogenModel": "explicit-hydrogen", "snapshots": ["seed", "perturbed"]},
+    {"hydrogenModel": "drawn-heavy-atom-only", "snapshots": ["seed", "perturbed"]}
+  ],
+  "iron-hexafluoride": [
+    {"hydrogenModel": "no-hydrogens", "snapshots": ["octahedral", "perturbed"]}
+  ],
+  "methane": [
+    {"hydrogenModel": "explicit-hydrogen", "snapshots": ["seed", "perturbed"]},
+    {"hydrogenModel": "drawn-heavy-atom-only", "snapshots": ["seed", "perturbed"]}
+  ],
+  "methylammonium": [
+    {"hydrogenModel": "explicit-hydrogen", "snapshots": ["seed", "perturbed"]},
+    {"hydrogenModel": "drawn-heavy-atom-only", "snapshots": ["seed", "perturbed"]}
+  ],
+  "n-butane": [
+    {
+      "hydrogenModel": "explicit-hydrogen",
+      "snapshots": ["seed", "perturbed", "optimizer-start"],
+      "runs": [
+        {"snapshotId": "optimizer-start", "algorithm": "ABC-FIRE", "frozenCoordinates": []}
+      ]
+    },
+    {
+      "hydrogenModel": "drawn-heavy-atom-only",
+      "snapshots": ["seed", "perturbed", "optimizer-start"],
+      "runs": [
+        {"snapshotId": "optimizer-start", "algorithm": "ABC-FIRE", "frozenCoordinates": []}
+      ]
+    }
+  ],
+  "naphthalene": [
+    {"hydrogenModel": "explicit-hydrogen", "kekule": "A", "snapshots": ["seed", "perturbed"]},
+    {"hydrogenModel": "drawn-heavy-atom-only", "kekule": "A", "snapshots": ["seed", "perturbed"]},
+    {"hydrogenModel": "explicit-hydrogen", "kekule": "B", "snapshots": ["seed", "perturbed"]},
+    {"hydrogenModel": "drawn-heavy-atom-only", "kekule": "B", "snapshots": ["seed", "perturbed"]}
+  ],
+  "sulfur-hexafluoride": [
+    {"hydrogenModel": "no-hydrogens", "snapshots": ["octahedral", "perturbed"]}
+  ],
+  "water": [
+    {
+      "hydrogenModel": "explicit-hydrogen",
+      "snapshots": ["seed", "perturbed", "optimizer-start"],
+      "runs": [
+        {"snapshotId": "optimizer-start", "algorithm": "ABC-FIRE", "frozenCoordinates": []},
+        {"snapshotId": "optimizer-start", "algorithm": "ABC-FIRE", "frozenCoordinates": [0, 1, 2]},
+        {"snapshotId": "optimizer-start", "algorithm": "FIRE2", "frozenCoordinates": []}
+      ]
+    },
+    {
+      "hydrogenModel": "drawn-heavy-atom-only",
+      "snapshots": ["seed", "perturbed", "optimizer-start"],
+      "runs": [
+        {"snapshotId": "optimizer-start", "algorithm": "ABC-FIRE", "frozenCoordinates": []}
+      ]
+    }
+  ]
+}
