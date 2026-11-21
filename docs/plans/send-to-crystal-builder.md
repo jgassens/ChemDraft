@@ -87,7 +87,18 @@ selection carries only a molfile while `embed3d` takes only SMILES; the only plu
 | Windows consent-file ACL deferred | Minor | Rule 5 (owner-only DACL through `windows-sys`) |
 | Stale X-handling text; "undocumented" bundle id; header; 2G "optional"; menu list; "learns nothing"; 0.4 text; Phase 3 stamp | Minor | Fixed in place |
 
-A scoped re-review of this revision is queued with the master session.
+**Re-review, 2026-11-21** (`run-20261121-172852-773bcb`, on `0b5a076b`): REVISE. Resolved: the
+official-plugin gate, the bonded XYZ writer, the `embed3d` input, and question 11's design. Fixed in
+this revision:
+
+| Finding | Severity | Handled in |
+|---|---|---|
+| Renderer `isTrusted` then IPC mint: any IPC-capable code could mint | Blocker | Rule 2: only Rust-seen events start handoff commands; no renderer mint; Worker-only plugins; mint-from-IPC test |
+| Every call burned the token, breaking `status` → `chooseApp` → send | Major | Rule 2: only the send consumes it |
+| Disabled N17/tbo still reachable through separate enums | Major | Manifest `combinations`: one validated choice; N17/tbo not declared |
+| Rebuild from a dialog window could not mint (main window only) | Major | Rule 2 (b) and task 1H: boxes shown from Rust; Rust mints on the click |
+| Rebuild not tied to the original input | Major | Rule 16 result session; task 1H tests |
+| MOF-5 named outright; no topology check | Partly resolved | Target record adds net agreement and the detected net from the build; every user-facing mention says "matches the MOF-5 target checks" |
 
 ## Context
 
@@ -256,7 +267,7 @@ click builds:
 
 | Drawn beside the linker | Linker | Suggested | Result |
 |---|---|---|---|
-| Zn²⁺ ions (any count), with or without O²⁻ | **terephthalate exactly** (after the cut, the linker graph equals C₆H₄X₂ with the X para) | net `pcu`, node `N16` (Zn₄O(CO₂)₆), **`repeat=2x2x2`** (see below) | MOF-5, named only when the target check passes |
+| Zn²⁺ ions (any count), with or without O²⁻ | **terephthalate exactly** (after the cut, the linker graph equals C₆H₄X₂ with the X para) | combination `pcu-N16-2x2x2` (Zn₄O(CO₂)₆; see below) | "matches the MOF-5 target checks", only when every check passes; never "MOF-5" alone |
 | Zn²⁺, or nothing | any other ditopic carboxylate | same net, node, and repeat; labelled "suggested; no metal drawn" when no metal is drawn | **Never a material name**: "Zn₄O pcu framework with this linker" plus the measured numbers (Kimi 2026-11-21: no "MOF-5 family" or IRMOF label from a proxy) |
 | Cu²⁺ | tritopic carboxylate | net `tbo`, Cu paddlewheel node `N17` (Cu₂(CO₂)₄ with axial O; task 0.4) | **Row disabled in 1.3** until a real N17/tbo build plus `inspect` fixture gives its full target record; then named HKUST-1 only for trimesate exactly |
 | anything else | any | no suggestion. In 1.3 the dialog offers only the validated rows above (no free node list), so no unvalidated id is ever built from the dialog | — |
@@ -278,8 +289,10 @@ carries a **target record**, checked only against numbers Crystal Builder itself
 2026-11-21: `inspect` has no dihedral measurement, and "Joint twist left" is a cost, not an angle, so
 the old "ring–carboxylate twist ≤ 10°" criterion is dropped rather than claimed):
 
-- from `mof.build --json` tables: "Joint twist left" exactly 0.000, no "Atoms overlap" rows, joints
-  bonded equal to the row's count (48 for MOF-5), the requested net and node;
+- from `mof.build --json`: an empty `detail` (Crystal Builder's own check that the built net agrees with
+  the requested one, task 0.4) and "The net that came out" table naming `pcu` (topology detected by
+  Crystal Builder, not assumed); "Joint twist left" exactly 0.000; no "Atoms overlap" rows; joints
+  bonded equal to the row's count (48 for MOF-5);
 - from `inspect --json`: `detected_space_group` (Fm-3m for MOF-5) at `symprec` 0.01, cell edge within
   2%, `z`, `formula` (Zn₃₂O₁₀₄C₁₉₂H₉₆), `n_atoms` (424), exactly one framework fragment, and no
   error-level diagnostics;
@@ -298,11 +311,10 @@ pipeline in Decision 3, rule 14) and the plugin compares:
 **No per-MOF knowledge of the repeat (task 0.4, 2026-11-21).** Crystal Builder scores every
 `consistent` build and reports the joints left twisted as the table row "Joint twist left" in its
 `--json` output (6.000 for pcu/N16 at 1×1×1, 0.000 at 2×2×2). So for any row or any user choice the
-plugin uses one generic rule: build at the row's preset repeat (1×1×1 when the user picked a
-custom combination); the host parses the "Joint twist left" row **fail closed** (missing,
+plugin uses one generic rule: build with the chosen combination; the host parses the "Joint twist left" row **fail closed** (missing,
 malformed, or non-numeric counts as "not zero"); if it is not zero, the result box says so with the
-number and offers **Rebuild at 2×2×2**, which is a new, host-authenticated user action and a new
-command invocation (question 11, option (b), recommended by the conductor and by Kimi). A failed
+number and, when the combination declares `rebuildAs`, offers **Rebuild at 2×2×2**, a new
+host-authenticated user action that rebuilds exactly the first input (rules 2 and 16) (question 11, option (b), recommended by the conductor and by Kimi). A failed
 rebuild never names or reopens the first output as if it were the answer. A twist of zero is
 necessary, not sufficient: naming still needs the full target check above. The repeat is **not
 hard-coded per MOF** (`docs/plans/notes/crystal-builder-0.4-source-map.md`); the per-material
@@ -405,7 +417,8 @@ interface PluginAppsAPI {
   runCompanion(request: {
     appId: string;
     pipeline: string;                 // id of a manifest-declared pipeline, e.g. "mofBuild"
-    params: Record<string, string>;   // each one a typed value (rule 11); ≤ 32 chars
+    combination: string;              // id of a declared combination (rule 11)
+    rebuildSession?: string;          // only on a Rebuild invocation (rule 16)
     input?: { extension: PluginHandoffExtension; text: string }; // exactly one file, ≤ 1 MB UTF-8
     openOutput?: boolean;             // open the declared output file with the app afterwards
   }): Promise<{ status: "done"; steps: { id: string; json: unknown /* parsed, ≤ 1 MB */ }[]; opened: boolean } |
@@ -429,18 +442,25 @@ or file names; plugin parameters are typed values that can never be a path or an
   "steps": [
     { "id": "preflight", "args": ["capabilities", "--json"], "timeoutSeconds": 30 },
     { "id": "build",
-      "args": ["run", "mof.build", "-p", "topology={topology}", "-p", "nodes={node}",
-               "-p", "edges={inputStem}", "-p", "bb_dir={inputDir}", "-p", "repeat={repeat}",
+      "args": ["run", "mof.build", "-p", "topology={combination.topology}",
+               "-p", "nodes={combination.node}", "-p", "edges={inputStem}",
+               "-p", "bb_dir={inputDir}", "-p", "repeat={combination.repeat}",
                "-o", "{outputFile:cif}", "--json"],
       "input": { "extension": "xyz" },
       "timeoutSeconds": 120 },
     { "id": "inspect", "args": ["inspect", "{previousOutput}", "--json"], "timeoutSeconds": 60 }
   ],
-  "params": { "topology": { "enum": ["pcu", "tbo"] },
-              "node": { "enum": ["N16", "N17"] },
-              "repeat": { "enum": ["1x1x1", "2x2x2"] } }
+  "combinations": {
+    "pcu-N16-2x2x2": { "topology": "pcu", "node": "N16", "repeat": "2x2x2" },
+    "pcu-N16-1x1x1": { "topology": "pcu", "node": "N16", "repeat": "1x1x1",
+                       "rebuildAs": "pcu-N16-2x2x2" }
+  }
 }]
 ```
+
+The plugin passes one `combination` id; net, node, and repeat are never chosen separately, so an
+unvalidated pairing cannot be built (Kimi re-review). Only validated combinations are declared; the
+N17/tbo combination is added in the release that ships its target record, not before.
 
 The host runs the steps in order, as one unit, and the plugin cannot call a step on its own (rule 14).
 
@@ -455,21 +475,37 @@ Rules the host enforces (each one gets a test):
    dispatcher as the app's own UI, and the bridge's `click()` synthesizes pointer events
    (`apps/desktop/src/agentBridge.ts`), so a flag on the shared dispatcher would be forgeable.
    Therefore:
-   - The flag never goes on the shared dispatcher. A separate entry point,
-     `invokeCommandFromUser(commandId, token)`, is called only from (a) the **native menu** handler,
-     which receives the menu event from Rust, and (b) toolbar, palette, shortcut, and overlay handlers
-     **only when `event.isTrusted` is true**. The bridge's `command()` and synthetic `click()`, MCP,
+   - The flag never goes on the shared dispatcher. Handoff commands (any command of a plugin with
+     `apps.handoff`) can be **started only by events Rust itself sees** (revised 2026-11-21 after the
+     Kimi re-review: an `isTrusted` check in the renderer followed by an IPC mint request would let
+     any code that can reach the IPC mint a token, because Rust never sees the real event):
+     (a) the **native menu**, including its keyboard accelerators, whose events arrive in Rust; and
+     (b) buttons in **host-owned native boxes shown from Rust** (the consent box, the build
+     confirmation, the result box with Rebuild, task 1H). Toolbar buttons, palettes, overlays, and
+     webview-only shortcuts cannot start a handoff command in 1.3; they show the menu path instead.
+     There is **no renderer IPC command that mints a token.**
+   - **The token is minted and checked in Rust.** On such an event Rust mints a one-shot token bound to
+     (pluginId, commandId, invocation id) with a 60 s lifetime and hands it to the host's
+     `invokeCommandFromUser`. The bridge's `command()` and synthetic `click()`, MCP,
      `invokeAssistantTool`, `invokeRequestTool`, panels' programmatic calls, and a plugin invoking its
      own command keep using `host.command` and never carry a token.
-   - **The token is minted and checked in Rust.** A native menu event mints it directly; a trusted
-     webview event asks Rust for one through an IPC command that requires the main window and is
-     rate-limited to one per real event. It is one-shot, bound to (pluginId, commandId), and expires
-     after 60 s. Every `app_handoff_*` native command requires a live token and burns it (a whole
-     pipeline, rule 14, runs on one token). Plugin code cannot reach these IPC commands
-     itself: task 1B proves with a test that worker and in-process plugin code have no handle on the
-     Tauri IPC (or, if in-process code can reach it, that a call without a live token is refused).
+   - **Token lifetime across calls** (Kimi re-review): `status` and `chooseApp` require a live token
+     but **do not consume it**; only the side-effecting call (`sendFile`, or `runCompanion` as one
+     whole pipeline, rule 14) consumes it, so `status` → `chooseApp` → `runCompanion` in one
+     invocation works and a second send does not.
+   - **`apps.handoff` plugins run Worker-only.** Their commands execute in the plugin's module Worker,
+     which has no handle on the Tauri IPC; registering an `apps.handoff` plugin in-process is
+     refused. The host relays handoff calls from the Worker to Rust with the token it holds; the
+     Worker never sees the token.
+   - Residual risk, stated: other code in the main renderer (for example an enabled agent bridge)
+     could observe a real menu event's token before the send and race it. The token is one-shot,
+     bound to the invocation, and short-lived, and the bridge stays off unless explicitly enabled
+     (AGENTS.md §5).
    - Tests cover `bridge.command`, `bridge.click`, synthetic `KeyboardEvent`s, MCP, both tool paths,
-     a plugin calling its own command, `source` in plugin input, a replayed token, and an expired one.
+     a plugin calling its own command, `source` in plugin input, a replayed token, an expired one,
+     **a token request from renderer IPC (no such command exists; any attempt to mint and then hand
+     off from IPC is rejected)**, in-process registration refused, and `status` → `chooseApp` →
+     `runCompanion` succeeding on one token while a second send is refused.
 3. **One pipeline or one send per command invocation** (`sendFile` or `runCompanion`, not both). A
    refused or declined call does not use up the allowance (same rule as `dialogs.promptText`). A
    rebuild (question 11) is a new invocation with a new token.
@@ -521,9 +557,9 @@ Rules the host enforces (each one gets a test):
     Windows), with `..`, symlinks, and Windows junctions and other reparse points out of it, and
     absolute paths, refused. Arguments are the declared steps only. A placeholder fills one whole
     argument, or follows a fixed literal prefix that ends in `=` in the same argument (as in
-    `topology={topology}`); nothing else may surround it. Each `{param}` must be one of its declared `enum` values (the only parameter type in 1.3); a value is
-    ≤ 32 characters and can never start with `-` or `@`, contain a path separator, `..`, `=`, or a
-    control character, or add an argument. Option-like and response-file values are tested as well as
+    `topology={topology}`); nothing else may surround it. The only plugin-chosen value is a declared `combination` id; each `{combination.*}` value
+    is fixed in the manifest, ≤ 32 characters, and validated at install: it can never start with `-` or
+    `@`, contain a path separator, `..`, `=`, or a control character, or add an argument. Option-like and response-file values are tested as well as
     shell metacharacters.
 12. **Consent names the pipeline.** The consent box shows the tool's name and each declared step's
     command line with its placeholders ("xtal run mof.build … -o <output>.cif"). A changed pipeline
@@ -552,6 +588,15 @@ Rules the host enforces (each one gets a test):
     rebuilt from a fixed platform allowlist (macOS: `HOME`, `TMPDIR`, `LANG`, a fixed `PATH`; Windows:
     `SystemRoot`, `TEMP`, `TMP`, `USERPROFILE`, `LOCALAPPDATA`, a fixed `PATH`). Tests show that
     `XTAL_*`, `PYTHON*`, `DYLD_*`, and `LD_*` set in ChemDraft's environment never reach the tool.
+16. **Rebuild repeats exactly the first build** (added 2026-11-21, Kimi re-review). After a pipeline,
+    the host keeps a **result session**: the exact input text, the combination, the app identity, the
+    template digest, and the handoff-graph digest, for 10 minutes or until the plugin's next send.
+    When the result box offers Rebuild (only if the combination declares `rebuildAs`), the click is a
+    native button Rust sees, so Rust mints the token (rule 2). The host then invokes the plugin
+    command with `rebuildSession`; that `runCompanion` call takes the input and combination from the
+    session (the `rebuildAs` combination) and **ignores anything else the plugin passes**, so a
+    changed selection cannot change what is rebuilt. An expired session, a changed app, consent, or
+    template digest refuses the rebuild with a message to start again.
 
 Every `#[cfg(target_os = "macos")]` gets its `cfg(windows)` side in the same change. The command line
 is built by one pure function that takes the platform as a parameter, so both branches are tested
@@ -602,13 +647,13 @@ Windows installer comes only from the GitHub workflow; the Windows session tests
 
 | Task | Owned paths | Acceptance and tests | Review |
 |---|---|---|---|
-| 1A API contract | `packages/plugin-api/src/index.ts` (+ new `appHandoff.ts`, `appHandoff.test.ts`), header comment, `packages/plugin-api/package.json` (version must match, `index.test.ts` checks it), `packages/plugin-api/src/workerProtocol.ts` (whitelist `apps`) | Schemas for the four methods and the manifest `companions` pipelines; permission added and marked dangerous; manifest refuses `apps.handoff` without `native.execute`, refuses a step whose placeholder is undeclared or sits inside a larger argument other than after a fixed `key=` prefix, refuses any parameter type but `enum`, and refuses timeouts over the rule 15 caps; version 0.1.27 (provisional: the next free patch when Phase 1 starts, re-read by task 0.5). Tests: name sanitizing, extension allowlist, size and warning limits, permission pairing, enum values that look like options or paths refused, failure `diagnostic` shape | Kimi |
-| 1B Host gate | `packages/plugin-host/src/**` (capability wiring + tests); the trusted entry points in `apps/desktop/src/` (native menu handler and `isTrusted` UI handlers) that call `invokeCommandFromUser`; the agent bridge untouched except tests | User-intent token per rule 2: separate entry point, never the shared dispatcher; spoofing tests for `bridge.command`, `bridge.click`, synthetic key events, MCP, both tool paths, self-invocation, `source` in input, replayed and expired tokens; proof that plugin code cannot reach the Tauri IPC; official-only allowlist per rule 13 at registration and on every call, with the sideload tests; absent without both permissions; one pipeline or send per invocation, refused calls not counted; worker and in-process paths behave the same | Kimi |
+| 1A API contract | `packages/plugin-api/src/index.ts` (+ new `appHandoff.ts`, `appHandoff.test.ts`), header comment, `packages/plugin-api/package.json` (version must match, `index.test.ts` checks it), `packages/plugin-api/src/workerProtocol.ts` (whitelist `apps`) | Schemas for the four methods and the manifest `companions` pipelines; permission added and marked dangerous; manifest refuses `apps.handoff` without `native.execute`, refuses a step whose placeholder is undeclared or sits inside a larger argument other than after a fixed `key=` prefix, refuses any plugin-chosen value but a declared `combination` id (each combination's values validated per rule 11), and refuses timeouts over the rule 15 caps; version 0.1.27 (provisional: the next free patch when Phase 1 starts, re-read by task 0.5). Tests: name sanitizing, extension allowlist, size and warning limits, permission pairing, combination values that look like options or paths refused, failure `diagnostic` shape | Kimi |
+| 1B Host gate | `packages/plugin-host/src/**` (capability wiring + tests); the trusted entry points in `apps/desktop/src/` (the native menu handler and the Rust-shown boxes) that call `invokeCommandFromUser`; the agent bridge untouched except tests | User-intent token per rule 2: separate entry point fed only by Rust-seen events (native menu, Rust-shown boxes), no renderer mint command; Worker-only execution for `apps.handoff` plugins, in-process registration refused; token required by `status` and `chooseApp` but consumed only by the send; spoofing tests for `bridge.command`, `bridge.click`, synthetic key events, MCP, both tool paths, self-invocation, `source` in input, replayed and expired tokens, and mint-then-handoff from renderer IPC rejected; official-only allowlist per rule 13 at registration and on every call, with the sideload tests; absent without both permissions; one pipeline or send per invocation, refused calls not counted; worker and in-process paths behave the same | Kimi |
 | 1C Native side | `apps/desktop/src-tauri/src/app_handoff/**`, `lib.rs` registration, `apps/desktop/src-tauri/build.rs` (register the new commands so their permissions are generated), `capabilities/app-handoff.json` (window `main` only) | Pure command-line builder tested for macOS and Windows from one host; token mint and check per rule 2; companion pipeline runner per rules 11, 14, and 15 (tool resolved inside the app folder, symlink, junction, and `..` escapes refused, preflight version check, `inspect` only on the file `build` wrote, timeout kills the tree, output caps with concurrent draining, null stdin, cleared environment, no console window on Windows), tested with a stub tool on both platforms; app identity per rule 6 (hashes, signing identity, re-check before every launch); picker accepts only `.app` / `.exe` and refuses `.lnk`; temp path and cleanup tests (backslashes, 8.3 paths, reserved names); new `app_handoff` consent store per rule 5 (separate file, `schemaVersion`, `templateDigest` re-checked on every call, owner-only file on both platforms, unknown fields kept), with tests for disable, a changed pipeline, app changed, and revoke; the external-tools store untouched; app-changed detection; serde/Zod wire fixtures like `externalToolsWire.test.ts`; clippy clean on both `cfg` sides | Kimi |
 | 1D Desktop wiring | `apps/desktop/src/appHandoff/**`, plugin runtime hookup, Plugin Manager consent rows (own section, not the AI-tool rows), `apps/desktop/src/plugins/installPluginPackage.ts` and the update path (uninstall deletes rows; permission dropped on update deletes rows; install provenance recorded for rule 13) with their tests | Native message boxes for consent and warnings (no in-viewport dialog, §12); the host-owned **build confirmation dialog** (task 1H); status-line success; specific errors with paths only in host UI; consent visible and revocable; lifecycle tests for uninstall, update, and permission dropped | Kimi |
 | 1F Connection points in the selection | `apps/desktop/src/plugins/selectionSnapshot.ts`, `packages/plugin-api/src/index.ts` (field), `chem-core` molfile warning text | `connectionPoints` per Decision 1b: lists exactly the atoms labelled `X` with anchor and bond order; molfile bytes unchanged for existing plugins; tests: X only, R1 only, X and R1 together, X with two neighbors (listed with `anchor: 0` so the plugin refuses it by name), `X` inside an abbreviation, a document saved and reopened | Kimi |
 | 1G Handoff graph and audit (added 2026-11-21, Kimi blockers) | `packages/plugin-api/src/index.ts` and `chemistry3d.ts` (types), `apps/desktop/src/plugins/` (host implementation using RDKit through the existing chemistry engine), `packages/layout-engine` (export the bond tool's new-bond direction for an atom, no copy) | `chemistry.handoffGraph({ objectId })` returns, for one selected molecule: atoms (element, charge, isotope, radical electrons, explicit H count, drawn label, `isConnectionPoint`), bonds (order 1/2/3/aromatic, stereo flags), RDKit canonical SMILES, unspecified stereocenters and double bonds (RDKit perception), reaction membership with roles and atom maps, abbreviations expanded or refused by name, and every serializer loss (a lossy fallback refuses). `embed3d` gains a `{ graph }` component (RDKit sanitizes; failure refuses). `suggestConnectionPoints({ objectId, anchors })` returns the bond-tool position for each new `X` (for task 2G). Tests: unspecified centers, a reaction member with atom maps, a radical with more than two electrons, an unknown bond, an abbreviation, writer fallback refused, graph round trip equals the drawn canonical SMILES | Kimi |
-| 1H Build confirmation dialog (added 2026-11-21) | `apps/desktop/src/appHandoff/**` (dialog through the shared native dialog host), `plugin-api` type | `runCompanion` shows, before the first step, a host-owned native dialog listing each `enum` parameter with the plugin's suggested value preselected; the user confirms or changes it; Cancel returns `declined`. The result box offers **Rebuild at 2×2×2** when the plugin asks for it, and that button is a trusted user action that starts a new invocation with a new token (question 11 (b)). The plugin API stays without a general choice dialog (only `promptText` exists today) | Kimi |
+| 1H Build confirmation dialog (added 2026-11-21) | `apps/desktop/src/appHandoff/**` (dialog through the shared native dialog host), `plugin-api` type | `runCompanion` shows, before the first step, a host-owned native box **shown from Rust** listing the declared combinations as one choice, with the plugin's suggestion preselected; Cancel returns `declined`. The result box, also shown from Rust, offers **Rebuild at 2×2×2** only when the combination declares `rebuildAs`; its click mints the token in Rust and rebuilds from the result session (rule 16; question 11 (b)). Tests: a changed selection before Rebuild still rebuilds the first input; an expired session refuses. The plugin API stays without a general choice dialog (only `promptText` exists today) | Kimi |
 | 1E Docs and closeout | `docs/plugin-architecture/AUTHORING.md` (new section + version table row), AGENTS.md §4.1 version line and dangerous-permission list (`apps.handoff`), `docs/manual-stress-checklist.md`, `docs/plans/PLANS.md`, build stamp | Docs match the code; a short AUTHORING example ("send a text file to an app the user picked"); gauntlet green | Kimi |
 
 Hands-on, both platforms (owner's MacBook for macOS UI; the Intel iMac checks only processor-specific
@@ -634,8 +679,8 @@ quitting ChemDraft leaves the other app running.
 
 Hands-on, both platforms, with Crystal Builder installed by the owner (agents do not install it):
 **the one-command demo first**: draw terephthalic acid and four Zn²⁺, select both, Build MOF in
-Crystal Builder…, accept the suggested pcu/N16, and MOF-5 (Fm-3m, a ≈ 25.9 Å, Z = 8, 424 atoms, flat linkers)
-opens in the window with no other clicks, and the status line names it only because the check passed; then
+Crystal Builder…, accept the suggested pcu/N16 combination, and the framework (Fm-3m, a ≈ 25.9 Å, Z = 8, 424 atoms)
+opens in the window with no other clicks, and the status line says "matches the MOF-5 target checks" only because every check passed; then
 a benzene ring with `X` in place of each COOH (terephthalate) sent as a MOF linker, then built into MOF-5 with node N16 in Crystal
 Builder's MOF builder (the demo; Save as a building block must report "2-connected" with no
 re-marking or hand-drawn bonds);
@@ -753,7 +798,8 @@ matters only for Phase 4 and can be read from its source when Phase 4 starts.
 - Hands-on lists above, on macOS and Windows; the report names any platform not run as unverified.
 - Chemistry check (§7): for each fixture, atom count, formula, and bond count in the CIF equal the drawn
   molecule's with explicit hydrogens; every loss in the table produces its warning or refusal.
-- One-command build check: terephthalic acid + Zn²⁺ gives MOF-5 as Crystal Builder itself reports it:
+- One-command build check: terephthalic acid + Zn²⁺ gives a build that matches the MOF-5 target checks
+  as Crystal Builder itself reports them (net agreement and detected pcu from the build):
   `xtal inspect` detects Fm-3m (at 0.01 Å), a = 25.8–25.9 Å, Z = 8, 424 atoms, one framework, and
   the build reports "Joint twist left" 0.000 with 48 joints bonded and no overlaps, as the 2026-11-20
   `repeat=2x2x2` build gave (rings measured flat by hand then; the plugin does not claim to measure it). A pcu build at
