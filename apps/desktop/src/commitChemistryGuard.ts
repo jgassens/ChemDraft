@@ -48,11 +48,30 @@ export interface MoleculeChemistryChange {
  * caller whose commit is meant to change chemistry, or that is verified elsewhere; `reason` says which.
  */
 export type CommitChemistryPolicy =
-  | { readonly kind: "preserve"; readonly operation?: string; readonly transform?: boolean }
+  | {
+    readonly kind: "preserve";
+    readonly operation?: string;
+    readonly transform?: boolean;
+    /**
+     * A SCOPED chemistry edit: the molecules whose atoms or bonds the operation itself added,
+     * removed or changed (`structurallyEditedMoleculeKeys`, `before` against the operation's own
+     * `next`) may change, and so may the molecules named in `editedMoleculeIds`. Every other
+     * molecule that existed before stays guarded. Bond, chain and template placement use it
+     * (`structureEditChemistry`): a ring fused onto A legitimately changes A, but a standalone
+     * template placed beside B must not take B's legacy loose "+".
+     */
+    readonly structureEdit?: boolean;
+    /** Molecules (by id, on any page) the operation is meant to change: `chemistryEditOf`. */
+    readonly editedMoleculeIds?: readonly string[];
+  }
   | { readonly kind: "exempt"; readonly reason: "chemistry edit" | "text edit" | "plugin write" };
 
 export const PRESERVE_CHEMISTRY: CommitChemistryPolicy = { kind: "preserve" };
-/** Drawing, deleting, charge and label edits, mark drops and drags, atom drags, Ketcher edits. */
+/**
+ * Document-wide exemption: deleting, label edits, mark drops and drags, atom drags, Ketcher edits,
+ * the point-based charge tool. Prefer the scoped `structureEditChemistry` / `chemistryEditOf`
+ * wherever the molecules an operation is meant to change are known.
+ */
 export const CHEMISTRY_EDIT: CommitChemistryPolicy = { kind: "exempt", reason: "chemistry edit" };
 /** Typing in a text object: the session's content was already the present while it was typed. */
 export const TEXT_EDIT: CommitChemistryPolicy = { kind: "exempt", reason: "text edit" };
@@ -61,6 +80,19 @@ export const PLUGIN_WRITE: CommitChemistryPolicy = { kind: "exempt", reason: "pl
 
 export function preserveChemistry(operation?: string): CommitChemistryPolicy {
   return operation === undefined ? PRESERVE_CHEMISTRY : { kind: "preserve", operation };
+}
+
+/**
+ * Bond, chain and template placement, standalone or fused: only the molecules whose atoms or bonds
+ * the operation added, removed or changed (plus `moleculeIds`) may change chemistry.
+ */
+export function structureEditChemistry(operation?: string, moleculeIds?: readonly string[]): CommitChemistryPolicy {
+  return { kind: "preserve", operation, structureEdit: true, ...(moleculeIds?.length ? { editedMoleculeIds: moleculeIds } : {}) };
+}
+
+/** A chemistry edit of the named molecules only (a charge placed on an atom, an atom-problem fix). */
+export function chemistryEditOf(moleculeIds: readonly string[], operation?: string): CommitChemistryPolicy {
+  return { kind: "preserve", operation, editedMoleculeIds: moleculeIds };
 }
 
 /** A selection transform (align, rotate, nudge, a drag…): see `CommitChemistryPolicy`. */
@@ -205,6 +237,10 @@ export interface CommitChemistryCheck {
   operation?: string;
   /** A selection transform: the selected molecules it moved may change (`movedSelectedMoleculeAtomKeys`). */
   transform?: boolean;
+  /** A scoped structure edit: the molecules it structurally edited may change (`structurallyEditedMoleculeKeys`). */
+  structureEdit?: boolean;
+  /** Molecules (by id, on any page) the operation is meant to change. */
+  editedMoleculeIds?: readonly string[];
 }
 
 /**
@@ -218,20 +254,107 @@ export interface CommitChemistryCheck {
  *   includes the mark, which decide and announce the mark's new atom);
  * - for a selection transform (`transform`), the atoms of the selected molecules it moved: moving
  *   a molecule away from its own stationary mark is announced by the transform as well.
- * Molecules the operation did not select and move are never exempt: the legacy loose "+" that
- * normalization would hand from B to a molecule placed beside it is refused.
+ * - for a scoped chemistry edit (`structureEdit`, `editedMoleculeIds`), every change, removal
+ *   included, to the molecules it structurally edited or names.
+ * Molecules the operation did not select and move, edit or name are never exempt: the legacy loose
+ * "+" that normalization would hand from B to a molecule placed beside it is refused, whether a
+ * paste or a standalone template placed it.
  */
 export function commitChemistryRefusals(check: CommitChemistryCheck): string[] {
   if (check.before === check.after) return [];
   const baseline = check.normalize(check.before);
-  const changes = preexistingMoleculeChemistryChanges(baseline, check.after);
+  let changes = preexistingMoleculeChemistryChanges(baseline, check.after);
   if (changes.length === 0) return [];
+  // A scoped edit: the molecules it edits are the operation's own, removal included (a bond that
+  // joins B into A removes B); nothing else is.
+  if (check.structureEdit || check.editedMoleculeIds?.length) {
+    const edited = check.structureEdit ? structurallyEditedMoleculeKeys(check.before, check.next) : new Set<string>();
+    const named = new Set(check.editedMoleculeIds ?? []);
+    changes = changes.filter((change) => !named.has(change.moleculeId) && !edited.has(moleculeKey(change.pageId, change.moleculeId)));
+    if (changes.length === 0) return [];
+  }
   const exempt = movedSelectedMarkAtomKeys(check.before, check.next, [baseline, check.after], check.markAtoms);
   if (check.transform) for (const key of movedSelectedMoleculeAtomKeys(check.before, check.next)) exempt.add(key);
   return changes
     .filter((change) => change.atomId === undefined || !change.after ||
       !exempt.has(atomChemistryKey(change.pageId, change.moleculeId, change.atomId)))
     .map((change) => describeMoleculeChemistryChange(change, check.operation));
+}
+
+/** A molecule on a page, as `structurallyEditedMoleculeKeys` keys it. */
+export const moleculeKey = (pageId: string, moleculeId: string) => `${pageId}\n${moleculeId}`;
+
+function sameAtomStructure(a: MoleculeAtom, b: MoleculeAtom): boolean {
+  return a.element === b.element && a.isotope === b.isotope && a.x === b.x && a.y === b.y;
+}
+
+function sameMoleculeStructure(a: MoleculeObject, b: MoleculeObject): boolean {
+  if (a === b) return true;
+  if (a.atoms.length !== b.atoms.length || a.bonds.length !== b.bonds.length) return false;
+  if (a.atoms !== b.atoms) {
+    const atoms = new Map(b.atoms.map((atom) => [atom.id, atom]));
+    if (a.atoms.some((atom) => { const other = atoms.get(atom.id); return !other || !sameAtomStructure(atom, other); })) return false;
+  }
+  if (a.bonds !== b.bonds) {
+    const bonds = new Map(b.bonds.map((bond) => [bond.id, bond]));
+    if (a.bonds.some((bond) => {
+      const other = bonds.get(bond.id);
+      return !other || other.fromAtomId !== bond.fromAtomId || other.toAtomId !== bond.toAtomId || other.order !== bond.order;
+    })) return false;
+  }
+  return true;
+}
+
+/**
+ * The molecules of `before` (`moleculeKey`) whose atoms or bonds the operation added, removed or
+ * changed in its own result `next`: a different atom or bond set, an atom's element, isotope or
+ * position, or a bond's atoms or order. A molecule gone from `next` (deleted, or joined into
+ * another) counts as edited. Charge and radical fields are NOT structure: an operation that only
+ * changes a molecule's charges did not edit it structurally. Pass the operation's own result, not
+ * the normalized one, so commit normalization can never widen the set.
+ */
+export function structurallyEditedMoleculeKeys(before: ChemDraftDocument, next: ChemDraftDocument): Set<string> {
+  const keys = new Set<string>();
+  if (before === next || before.pages === next.pages) return keys;
+  const nextPages = new Map(next.pages.map((page) => [page.id, page]));
+  let elsewhere: Map<string, MoleculeObject | undefined> | undefined;
+  const onAnyPage = (id: string) => {
+    if (!elsewhere) {
+      elsewhere = new Map();
+      for (const page of next.pages) {
+        for (const object of page.objects) {
+          if (object.type === "molecule") elsewhere.set(object.id, elsewhere.has(object.id) ? undefined : object);
+        }
+      }
+    }
+    return elsewhere.get(id);
+  };
+  for (const page of before.pages) {
+    const nextPage = nextPages.get(page.id);
+    if (nextPage?.objects === page.objects) continue;
+    const samePage = moleculesById(nextPage);
+    for (const molecule of page.objects) {
+      if (molecule.type !== "molecule") continue;
+      const found = samePage.get(molecule.id) ?? onAnyPage(molecule.id);
+      if (!found || !sameMoleculeStructure(molecule, found)) keys.add(moleculeKey(page.id, molecule.id));
+    }
+  }
+  return keys;
+}
+
+/**
+ * `commitChemistryRefusals` under a commit policy, as the commit funnel applies it: an exempt
+ * policy is not checked; a preserving one passes its operation name (else `operation`), transform
+ * flag and scope. Empty when the commit may proceed.
+ */
+export function policyChemistryRefusals(
+  policy: CommitChemistryPolicy,
+  check: Omit<CommitChemistryCheck, "operation" | "transform" | "structureEdit" | "editedMoleculeIds">,
+  operation?: string
+): string[] {
+  if (policy.kind !== "preserve") return [];
+  return commitChemistryRefusals({ ...check, operation: policy.operation ?? operation, transform: policy.transform,
+    structureEdit: policy.structureEdit, editedMoleculeIds: policy.editedMoleculeIds });
 }
 
 /**

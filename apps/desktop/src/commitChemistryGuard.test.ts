@@ -3,8 +3,9 @@ import { applyPatch, applyPatches, type ChemDraftDocument, type MoleculeObject }
 import { testMoleculeFromSmiles } from "@chemdraft/layout-engine/testing";
 import { createNativeTextObject, nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles, phase4Timestamp } from "@chemdraft/document-workflow-core";
 import {
-  atomChemistry, chemistryRefusalStatus, commitChemistryRefusals, describeMoleculeChemistryChange,
-  moleculeAtomChemistryChanges, preexistingMoleculeChemistryChanges
+  CHEMISTRY_EDIT, atomChemistry, chemistryEditOf, chemistryRefusalStatus, commitChemistryRefusals, describeMoleculeChemistryChange,
+  moleculeAtomChemistryChanges, moleculeKey, policyChemistryRefusals, preexistingMoleculeChemistryChanges,
+  structureEditChemistry, structurallyEditedMoleculeKeys
 } from "./commitChemistryGuard";
 import * as workflow from "./documentWorkflow";
 import { dropMark, dropMolecule, electronMarkDropFixture } from "./testSupport/electronMarkDropFixture";
@@ -230,5 +231,70 @@ describe("the commit check against commit normalization", () => {
     expect(moleculeById(workflow.normalizeCommittedDocument(onMark), B_ID).atoms[0]).toMatchObject({ formalCharge: 0 });
     expect(check(besideB, onMark, "move", true)).toEqual([expect.stringMatching(
       new RegExp(`^Cannot move without changing the chemistry of molecule "${B_ID}": `))]);
+  });
+});
+
+describe("scoped chemistry edits", () => {
+  // A (Boc-glycine, + on its N) and a neutral B. A scoped edit may change the molecules it edits
+  // structurally or names; every other molecule that existed before stays guarded.
+  function aAndB() {
+    const { document, nitrogen } = electronMarkDropFixture();
+    const withB = withNeutralB(document);
+    return { document: withB, a: dropMolecule(withB), b: moleculeById(withB, B_ID), nitrogen, pageId: withB.pages[0].id };
+  }
+  const charge = (document: ChemDraftDocument, moleculeId: string, atomId: string, formalCharge: number) =>
+    withAtomChanges(document, moleculeId, atoms => atoms.map(atom => atom.id === atomId ? { ...atom, formalCharge } : atom));
+  const addCarbon = (document: ChemDraftDocument, moleculeId: string) => {
+    const molecule = moleculeById(document, moleculeId);
+    const from = molecule.atoms[0];
+    return applyPatch(document, { op: "updateObject", objectId: moleculeId, changes: {
+      atoms: [...molecule.atoms, { id: "added_c", element: "C", formalCharge: 0, x: from.x, y: from.y + 22 }],
+      bonds: [...molecule.bonds, { id: "added_bond", fromAtomId: from.id, toAtomId: "added_c", order: "single" as const }]
+    } }, { now: phase4Timestamp });
+  };
+  const check = (before: ChemDraftDocument, next: ChemDraftDocument, policy: ReturnType<typeof structureEditChemistry>) =>
+    policyChemistryRefusals(policy, { before, next, after: next, normalize: identity, markAtoms });
+
+  it("finds the molecules whose atoms or bonds an operation added, removed or changed, never a charge-only change", () => {
+    const { document, a, b, nitrogen, pageId } = aAndB();
+    expect(structurallyEditedMoleculeKeys(document, document)).toEqual(new Set());
+    expect(structurallyEditedMoleculeKeys(document, addCarbon(document, a.id))).toEqual(new Set([moleculeKey(pageId, a.id)]));
+    expect(structurallyEditedMoleculeKeys(document, charge(document, a.id, nitrogen.id, 2))).toEqual(new Set());
+    const movedAtom = withAtomChanges(document, B_ID, atoms => atoms.map((atom, index) => index === 0 ? { ...atom, x: atom.x + 5 } : atom));
+    expect(structurallyEditedMoleculeKeys(document, movedAtom)).toEqual(new Set([moleculeKey(pageId, B_ID)]));
+    const removed = applyPatch(document, { op: "removeObject", objectId: b.id }, { now: phase4Timestamp });
+    expect(structurallyEditedMoleculeKeys(document, removed)).toEqual(new Set([moleculeKey(pageId, B_ID)]));
+    const copied = withAtomChanges(document, B_ID, atoms => atoms.map(atom => ({ ...atom })));
+    expect(structurallyEditedMoleculeKeys(document, copied)).toEqual(new Set());
+  });
+
+  it("lets a structure edit change the molecule it edits, never another one", () => {
+    const { document, a, b, nitrogen } = aAndB();
+    // A grows an atom and its N's charge changes: A is the edit's own molecule.
+    const grownAndRecharged = charge(addCarbon(document, a.id), a.id, nitrogen.id, 2);
+    expect(check(document, grownAndRecharged, structureEditChemistry("draw this bond"))).toEqual([]);
+    // A's charge changing with no structural edit is refused, naming A.
+    expect(check(document, charge(document, a.id, nitrogen.id, 2), structureEditChemistry("draw this bond"))).toEqual([
+      expect.stringMatching(new RegExp(`^Cannot draw this bond without changing the chemistry of molecule "${a.id}": `))]);
+    // A grows, but B (not edited) changes: B is refused even though A is exempt.
+    const grownAAndChargedB = charge(addCarbon(document, a.id), B_ID, b.atoms[0].id, 1);
+    expect(check(document, grownAAndChargedB, structureEditChemistry("place this template"))).toEqual([
+      expect.stringMatching(new RegExp(`^Cannot place this template without changing the chemistry of molecule "${B_ID}": `))]);
+    // The document-wide exemption checked nothing at all.
+    expect(policyChemistryRefusals(CHEMISTRY_EDIT, { before: document, next: grownAAndChargedB, after: grownAAndChargedB,
+      normalize: identity, markAtoms })).toEqual([]);
+    // A molecule the edit removed (a bond joining B into A) is the edit's own.
+    const joined = applyPatch(addCarbon(document, a.id), { op: "removeObject", objectId: b.id }, { now: phase4Timestamp });
+    expect(check(document, joined, structureEditChemistry())).toEqual([]);
+    expect(commitChemistryRefusals({ before: document, next: joined, after: joined, normalize: identity, markAtoms })).toHaveLength(1);
+  });
+
+  it("lets a named-molecule edit change only the molecules it names", () => {
+    const { document, a, b, nitrogen } = aAndB();
+    const rechargedA = charge(document, a.id, nitrogen.id, 2);
+    expect(check(document, rechargedA, chemistryEditOf([a.id]))).toEqual([]);
+    expect(check(document, rechargedA, chemistryEditOf([b.id]))).toHaveLength(1);
+    expect(check(document, charge(rechargedA, B_ID, b.atoms[0].id, 1), chemistryEditOf([a.id]))).toEqual([
+      expect.stringMatching(new RegExp(`molecule "${B_ID}"`))]);
   });
 });

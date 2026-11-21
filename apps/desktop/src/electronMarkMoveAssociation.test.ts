@@ -129,8 +129,10 @@ describe.each([false, true])("main's mark association policy with direct editing
     });
     const existing = { ...added("charge_003", "mol_bond_001"),
       objectIdBefore: "mol_bond_001", atomIdBefore: "atom_001" };
-    // Co-selected pairs copy their chemistry to the copied molecule. Mark-only duplication
-    // retains its existing policy, including the original-atom radical contribution.
+    // Co-selected pairs copy their chemistry to the copied molecule. The "duplicate mark only" row
+    // is the former behaviour (the copied mark attached to the original atom, adding to its
+    // charge and radical contribution); it is replaced right after this table, because mark-only
+    // duplication now changes no chemistry.
     const expected = {
       "duplicate small offset": [added(`${prefix}_copy_005`, "mol_copy_004")],
       "duplicate large offset": [added(`${prefix}_copy_005`, "mol_copy_004")],
