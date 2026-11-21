@@ -202,7 +202,7 @@ click builds:
 |---|---|---|---|
 | Zn²⁺ ions (any count), with or without O²⁻ | ditopic carboxylate | net `pcu`, node `N16` (Zn₄O(CO₂)₆), **`repeat=2x2x2`** (see below) | MOF-5 family (IRMOF) |
 | nothing | ditopic carboxylate | same, labelled "suggested; no metal drawn" | as above |
-| Cu²⁺ | tritopic carboxylate | net `tbo`, Cu paddlewheel node (catalog id from the Phase 0 code map) | HKUST-1, only after it passes the same target check |
+| Cu²⁺ | tritopic carboxylate | net `tbo`, Cu paddlewheel node `N17` (Cu₂(CO₂)₄ with axial O; task 0.4) | HKUST-1, only after it passes the same target check |
 | anything else | any | no suggestion; the user picks from Crystal Builder's node list | — |
 
 Drawn ions only pick the node; they are never sent as atoms, because a 2D drawing of four loose
@@ -227,6 +227,15 @@ companion template, `inspect`) and compares:
   target, for example "Zn₄O–terephthalate pcu net, P222, a = 12.94 Å: linkers twisted 45°, not MOF-5".
   A material name never appears for a structure that failed its check (§7, §8: no fabricated claims).
   If the user changes the repeat to 1×1×1, this is what they see.
+
+**No per-MOF knowledge of the repeat (task 0.4, 2026-11-21).** Crystal Builder scores every
+`consistent` build and reports the joints left twisted as the table row "Joint twist left" in its
+`--json` output (6.000 for pcu/N16 at 1×1×1, 0.000 at 2×2×2). So for any row or any user choice the
+plugin uses one generic rule: if the user did not set a repeat, build at 1×1×1; if "Joint twist
+left" is above zero, rebuild once at 2×2×2 (how, given rule 3: open question 11); if it is still above zero, open the result and show the
+number, never a material name. A table row may still preset its repeat to save the second build.
+The plugin reads only Crystal Builder's own report, so it learns nothing about each MOF
+(`docs/plans/notes/crystal-builder-0.4-source-map.md`).
 
 Linker refusals, each naming the problem: fewer than two `X` atoms ("Mark at least two connection
 points: draw an atom labelled X where the linker bonds to a metal node"); an `X` bonded to zero, two
@@ -467,7 +476,7 @@ Windows installer comes only from the GitHub workflow; the Windows session tests
 | 0.1 Owner approves this plan; summary goes to the master session | Master session's OK | OK received |
 | 0.2 ~~Note to Crystal Builder's author~~ | Dropped 2026-11-18: every question was answered by testing and reading its source | Done |
 | 0.3 One read-only code map (single worker) | Short note: how a user-invoked command is told apart from an assistant-invoked one in `plugin-host`; what SMILES the selection snapshot carries for abbreviations, R-groups, and an atom labelled `X`, and whether the selection exposes per-atom labels and bonds; the consent store's shape | Note attached; no files changed |
-| 0.4 Crystal Builder source map (same single worker, after 0.3) | Short note from its MIT source: the node and net ids in `xtal/mof/catalog.py` (Zn₄O = N16 confirmed; the Cu paddlewheel id); what `mof.build --json` prints (fit numbers, formula, output path) and its exit codes; whether `bb_dir` accepts a CIF block or only PORMAKE XYZ; which nets need a repeat above 1×1×1 before their nodes can alternate (as pcu/N16 needs 2×2×2), so each suggestion row sets its repeat; what `xtal inspect --json` prints for space group, Z, and coordination; the Windows `xtal` executable name and location in the installer | Note attached; no files changed |
+| 0.4 Crystal Builder source map (same single worker, after 0.3) | Short note from its MIT source: the node and net ids in `xtal/mof/catalog.py` (Zn₄O = N16 confirmed; the Cu paddlewheel id); what `mof.build --json` prints (fit numbers, formula, output path) and its exit codes; whether `bb_dir` accepts a CIF block or only PORMAKE XYZ; which nets need a repeat above 1×1×1 before their nodes can alternate (as pcu/N16 needs 2×2×2), so each suggestion row sets its repeat; what `xtal inspect --json` prints for space group, Z, and coordination; the Windows `xtal` executable name and location in the installer | **Done 2026-11-21:** `docs/plans/notes/crystal-builder-0.4-source-map.md` (worker's node table corrected by the conductor) |
 
 ### Phase 1: host capability (ChemDraft repo, branch `feat/app-handoff` off `origin/main` after 1.2.2 ships)
 
@@ -592,6 +601,14 @@ For the owner:
    The plugin pins the Crystal Builder versions it was tested with (1.1.1 now): it reads the version
    from `xtal capabilities --json`, refuses an untested version with a plain message naming the
    tested ones, and the release checklist re-runs the target checks before adding a new version.
+11. **The 2×2×2 retry and the one-build rule (new, 2026-11-21).** The generic repeat rule in Decision
+   1b (rebuild at 2×2×2 when "Joint twist left" is above zero) needs a second `mofBuild` run in one
+   command, which rule 3 forbids today. Options: (a) the template declares one retry that may change
+   only a named parameter (`"retry": {"param": "repeat", "values": ["2x2x2"]}`), shown in the consent
+   box; (b) no retry: the result's message box offers **Rebuild at 2×2×2**, and that click starts a
+   new command invocation; (c) keep presetting the repeat per table row and use the twist only to
+   refuse the name. Recommended: (b), because every build stays one user action and the host gains
+   nothing new. Owner to choose; the Kimi plan review should check it.
 
 For Crystal Builder's author: **nothing required.** No email is needed for the plan (owner, 2026-11-18); question 10 was answered no contact (owner, 2026-11-20). A1–A4 and A6 were
 answered by testing on macOS and by reading its MIT source (see "Test results" under Decision 1b).
