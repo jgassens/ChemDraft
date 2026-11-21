@@ -659,8 +659,10 @@ import {
   nativePolylinePathDocument,
   insertSmilesMoleculeGridStatus,
   visibleSkippedItems,
-  insertSmilesMolecule,
+  createSmilesMolecule,
+  SMILES_PASTE_SOURCE,
   SMILES_PASTE_OPTIONS,
+  addPastedObjectToCurrentPage,
   insertSmilesMoleculeGrid,
   documentObjectProjectedPlaneTilt,
   nativeBondStyleForToolCommand,
@@ -7710,7 +7712,11 @@ export function MainWindow({
     if (nextDocument === before) return false;
     const payload = nativePayload ?? createSelectionClipboardPayload(nextDocument);
     if (!payload) return false;
-    const page = before.pages[0]!;
+    // Every paste selects what it inserted, on the page it inserted it on (the current page, not
+    // always page one): fit, place and find the new objects on that page.
+    const pastePageId = nextDocument.selection.pageId;
+    const page = before.pages.find(candidate => candidate.id === pastePageId) ?? before.pages[0]!;
+    const nextPage = nextDocument.pages.find(candidate => candidate.id === page.id) ?? nextDocument.pages[0]!;
     if (payload.bounds.width > page.width || payload.bounds.height > page.height) {
       // Oversized content retains its prepared placement and the existing explicit page-size
       // choice. Repeat offsets and clamping apply only when the payload fits the current page.
@@ -7719,7 +7725,7 @@ export function MainWindow({
     const placement = nextSelectionClipboardPastePlacement(payload, selectionClipboardPasteStateRef.current,
       page, anchor.pointer, nativePayload ? 1 : 0);
     const existingIds = new Set(page.objects.map(object => object.id));
-    const insertedIds = nextDocument.pages[0]!.objects.filter(object => !existingIds.has(object.id)).map(object => object.id);
+    const insertedIds = nextPage.objects.filter(object => !existingIds.has(object.id)).map(object => object.id);
     const placed = translateInsertedDocumentObjects(nextDocument, insertedIds,
       placement.point.x - payload.bounds.centerX, placement.point.y - payload.bounds.centerY);
     // The funnel checks the placed, normalized document: only here is it known which molecule a
@@ -7785,26 +7791,25 @@ export function MainWindow({
       if (parsed.molecule && pasteDocument !== layoutDocument) throw new Error("The document changed while preparing SMILES paste; paste again.");
       // Reuse the template built with this document's defaults, placement and object IDs.
       const molecule = parsed.molecule;
+      // Both land on the current page (the selection's page), not always page one.
       const inserted = molecule ? {
-        document: applyPatches(pasteDocument, [
-          { op: "addObject", pageId: pasteDocument.pages[0]!.id, object: molecule },
-          { op: "setSelection", pageId: pasteDocument.pages[0]!.id, objectIds: [molecule.id] }
-        ]),
+        document: addPastedObjectToCurrentPage(pasteDocument, molecule),
         status: structureTemplateLayoutMessage(molecule)
-      } : { document: insertSmilesMolecule(
+      } : { document: addPastedObjectToCurrentPage(pasteDocument, createSmilesMolecule(
         pasteDocument,
         point,
         depiction,
         smilesText,
+        SMILES_PASTE_SOURCE,
         SMILES_PASTE_OPTIONS
-      ), status: undefined };
+      )), status: undefined };
       const nextDocument = inserted.document;
       let stereoStatus = "";
       const stereoWarnings: string[] = [];
       try {
         // Count the actual drawn structure: the worker's total also includes unassigned centers.
-        const pastedMolecule = nextDocument.pages[0]!.objects.find(object =>
-          object.type === "molecule" && nextDocument.selection.objectIds.includes(object.id));
+        const pastedMolecule = (nextDocument.pages.find(page => page.id === nextDocument.selection.pageId) ?? nextDocument.pages[0]!)
+          .objects.find(object => object.type === "molecule" && nextDocument.selection.objectIds.includes(object.id));
         if (!pastedMolecule || pastedMolecule.type !== "molecule") throw new Error("The pasted molecule was not found.");
         const { perceiveStereoCentersFromMolfile } = await import("@chemdraft/ocl-adapter");
         const centers = perceiveStereoCentersFromMolfile(pastedMolecule.structure).filter(center => center.isStereoCenter);

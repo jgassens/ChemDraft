@@ -244,6 +244,7 @@ import {
   firstPage,
   insertNativeReactionArrow,
   insertNativeTextObject,
+  createNativeTextObject,
   longestNativePath,
   moleculeGeometryFromAtoms,
   moleculeObjectChanges,
@@ -5052,7 +5053,7 @@ export function createNativeMolfileMolecule(
     throw new Error("Cannot paste MOL payload: no atoms were found.");
   }
 
-  const page = firstPage(document);
+  const page = currentDocumentPage(document);
   const { bondLengthPx, objectStyle } = documentDrawingDefaults(document);
   const atoms = scaleParsedMolfileAtoms(graph, point, page, bondLengthPx, true, "median").map((atom) => ({
     id: atom.id,
@@ -5128,7 +5129,7 @@ export function insertSmilesMoleculeGrid(
     throw new Error("SMILES grid gutter must be a finite, non-negative number.");
   }
   const margin = 24;
-  const page = firstPage(document);
+  const page = currentDocumentPage(document);
   const reservedObjectIds = new Set(entries.flatMap(entry => entry.molecule ? [entry.molecule.id] : []));
   const molecules = entries.map((entry) => {
     const molecule = entry.molecule ?? createSmilesMolecule(document, { x: margin, y: margin }, entry.depiction, entry.smiles, {
@@ -5194,11 +5195,11 @@ export function insertSmilesMoleculeGridStatus(
 ): string {
   let status = `Pasted ${result.objectIds.length} SMILES structures in a ${result.columns} × ${result.rows} grid`;
   if (outcome.decision === "enlarge") {
-    const page = firstPage(outcome.document);
+    const page = currentDocumentPage(outcome.document);
     const unit = pageLayoutSourceUnit(page.layout);
     status += ` (page grown to Custom ${formatPageSizeValue(cssPxToPageSize(page.width, unit))} × ${formatPageSizeValue(cssPxToPageSize(page.height, unit))} ${pageSizeUnitLabel(unit)})`;
   } else if (outcome.decision === "keep") {
-    const page = firstPage(outcome.document);
+    const page = currentDocumentPage(outcome.document);
     const title = PageSizePresets.find(preset => preset.id === page.layout.presetId)?.title ?? page.layout.presetId;
     const overflow = new Set(outcome.overflowObjectIds);
     const count = result.objectIds.filter(id => overflow.has(id)).length;
@@ -5221,7 +5222,7 @@ export function insertNativeMolfileMolecule(
   molfile: string,
   format: ClipboardMolfileFormat
 ): ChemDraftDocument {
-  const page = firstPage(document);
+  const page = currentDocumentPage(document);
   const object = createNativeMolfileMolecule(document, point, molfile, format);
 
   return applyPatches(
@@ -5246,7 +5247,7 @@ export function applyClipboardPastePayload(
 
   if (payload.kind === "image") {
     try {
-      const page = firstPage(document);
+      const page = currentDocumentPage(document);
       const { type, bytesBase64, ...metadata } = payload.image;
       const object = createImageGraphicObject({
         ...metadata, id: nextObjectId(document, "image"), mimeType: type,
@@ -5268,7 +5269,9 @@ export function applyClipboardPastePayload(
   }
 
   if (payload.kind === "plain-text") {
-    const nextDocument = insertNativeTextObject(document, point, payload.text, textStyle);
+    // Not insertNativeTextObject: that shared helper always adds to page one.
+    const nextDocument = addPastedObjectToCurrentPage(document,
+      createNativeTextObject(document, point, payload.text, textStyle));
     const selected = getSelectedTextObject(nextDocument);
     return {
       document: nextDocument,
@@ -5365,7 +5368,7 @@ export function applyClipboardPastePayload(
   }
 
   if (payload.kind === "smiles") {
-    const page = firstPage(document);
+    const page = currentDocumentPage(document);
     const object = createClipboardTextStructureMolecule(document, point, "smiles", payload.text, payload.warnings);
     const nextDocument = applyPatches(
       document,
@@ -14858,8 +14861,11 @@ export function createSelectionClipboardPayload(
   document: ChemDraftDocument,
   moleculeFragments: readonly NativeMoleculeFragmentSelection[] = []
 ): ChemDraftSelectionClipboardPayload | undefined {
-  const page = firstPage(document);
-  const selectedObjectIds = withArrowAttachmentIds(page.objects, selectedTransformObjectIds(document));
+  // The page that holds the selection, not the first page: with the selection on a later page the
+  // selected ids were looked up on page one, found nothing, and Copy put nothing on the clipboard.
+  const page = selectionPage(document);
+  const selectedObjectIds = withArrowAttachmentIds(page.objects,
+    resolveGroupedDocumentObjectIds(page.objects, document.selection.objectIds));
   const selectedIdSet = new Set(selectedObjectIds);
   const objects = page.objects.filter((object) => selectedIdSet.has(object.id));
   const selectedGroups = page.objects.filter((object): object is GroupObject =>
@@ -14918,13 +14924,14 @@ function createNativeMoleculeFragmentClipboardPayload(
     return undefined;
   }
 
-  const page = firstPage(document);
   const objects: DocumentObject[] = [];
   for (const fragment of fragments) {
-    const molecule = page.objects.find((object): object is MoleculeObject =>
+    // A fragment names its molecule, not a page; read it (and its marks) from the page that holds it.
+    const page = document.pages.find((candidate) => candidate.objects.some((object) => object.id === fragment.objectId));
+    const molecule = page?.objects.find((object): object is MoleculeObject =>
       object.id === fragment.objectId && object.type === "molecule"
     );
-    if (!molecule || !isEditableNativeMoleculeGraph(molecule)) {
+    if (!page || !molecule || !isEditableNativeMoleculeGraph(molecule)) {
       continue;
     }
 
@@ -15167,7 +15174,8 @@ export function pasteSelectionClipboardPayload(
   point: PagePoint,
   warningsOut?: string[]
 ): ChemDraftDocument {
-  const page = firstPage(document);
+  // The page the user is on, not always page one (see currentDocumentPage).
+  const page = currentDocumentPage(document);
   const dx = point.x - payload.bounds.centerX;
   const dy = point.y - payload.bounds.centerY;
   const sourceGroups = payload.objects.filter((object): object is GroupObject => object.type === "group");
@@ -20895,6 +20903,25 @@ function selectionPage(document: ChemDraftDocument): ChemDraftDocument["pages"][
   return document.pages.find((candidate) => candidate.id === document.selection.pageId) ?? firstPage(document);
 }
 
+/**
+ * The page a paste or insertion lands on: the page the user is working on. The editor keeps no
+ * active-page state of its own (MainWindow draws `pages[0]`); the selection's page is the page a
+ * document records as current, and every `setSelection` keeps it even when it selects nothing.
+ * Falls back to the first page when the selection names no page.
+ */
+export function currentDocumentPage(document: ChemDraftDocument): ChemDraftDocument["pages"][number] {
+  return selectionPage(document);
+}
+
+/** Add one pasted object to the current page and select it. */
+export function addPastedObjectToCurrentPage(document: ChemDraftDocument, object: DocumentObject): ChemDraftDocument {
+  const page = currentDocumentPage(document);
+  return applyPatches(document, [
+    { op: "addObject", pageId: page.id, object },
+    { op: "setSelection", pageId: page.id, objectIds: [object.id] }
+  ], { now: phase4Timestamp });
+}
+
 function createClipboardTextStructureMolecule(
   document: ChemDraftDocument,
   point: PagePoint,
@@ -20902,7 +20929,7 @@ function createClipboardTextStructureMolecule(
   structure: string,
   warnings: readonly ClipboardTransferWarning[]
 ): MoleculeObject {
-  const page = firstPage(document);
+  const page = currentDocumentPage(document);
   const width = 190;
   const height = 96;
 
@@ -22394,7 +22421,7 @@ export function addTableCenteredOnPage(
   table: Extract<DocumentObject, { type: "table" }>,
   center: PagePoint
 ): ChemDraftDocument {
-  const page = firstPage(document);
+  const page = currentDocumentPage(document);
   const centered = { ...table, x: center.x - table.width / 2, y: center.y - table.height / 2 };
   const shift = pageConstrainedShift(page, tableVisualBoundsForArrangement(centered));
   const placed = shift.x === 0 && shift.y === 0 ? centered : { ...centered, x: centered.x + shift.x, y: centered.y + shift.y };
