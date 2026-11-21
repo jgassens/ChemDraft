@@ -132,7 +132,11 @@ describe("PluginPromptTextDialog", () => {
     try {
       mount(createElement(Harness));
       const input = document.querySelector<HTMLInputElement>(".plugin-prompt-body input")!;
-      act(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+      // Escape cancels on release, so its auto-repeat stays inside the dialog until the key comes up.
+      act(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+      act(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", repeat: true, bubbles: true, cancelable: true })));
+      expect(onCancel).not.toHaveBeenCalled();
+      act(() => input.dispatchEvent(new KeyboardEvent("keyup", { key: "Escape", bubbles: true, cancelable: true })));
 
       expect(onCancel).toHaveBeenCalledOnce();
       expect(appShortcutHandler).not.toHaveBeenCalled();
@@ -154,11 +158,45 @@ describe("PluginPromptTextDialog", () => {
     document.body.appendChild(other);
 
     act(() => otherButton.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    act(() => otherButton.dispatchEvent(new KeyboardEvent("keyup", { key: "Escape", bubbles: true })));
     expect(onCancel).not.toHaveBeenCalled();
 
     const input = document.querySelector<HTMLInputElement>(".plugin-prompt-body input")!;
     act(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    act(() => input.dispatchEvent(new KeyboardEvent("keyup", { key: "Escape", bubbles: true })));
     expect(onCancel).toHaveBeenCalledWith(1);
+  });
+
+  it("does not submit on an Enter that confirms an IME composition", () => {
+    const onSubmit = vi.fn();
+    mount(createElement(PluginPromptTextDialog, { prompt, onSubmit, onCancel: vi.fn() }));
+    const input = document.querySelector<HTMLInputElement>(".plugin-prompt-body input")!;
+    act(() => setInputValue(input, "ベンゼン"));
+    act(() => input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true })));
+    const composingEnter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    act(() => input.dispatchEvent(composingEnter));
+    expect(composingEnter.defaultPrevented).toBe(true);
+    expect(onSubmit).not.toHaveBeenCalled();
+    act(() => input.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true })));
+    act(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+    expect(onSubmit).toHaveBeenCalledExactlyOnceWith(1, "ベンゼン");
+  });
+
+  it("prefills the initial value and caps input at the request's maxLength", () => {
+    const onSubmit = vi.fn();
+    mount(createElement(PluginPromptTextDialog, {
+      prompt: { ...prompt, request: { ...prompt.request, initialValue: "aspirin", maxLength: 12, submitLabel: undefined } },
+      onSubmit,
+      onCancel: vi.fn()
+    }));
+    const input = document.querySelector<HTMLInputElement>(".plugin-prompt-body input")!;
+    expect(input.value).toBe("aspirin");
+    expect(input.maxLength).toBe(12);
+    expect(input.placeholder).toBe("e.g. 2-acetyloxybenzoic acid");
+    const submit = document.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+    expect(submit.textContent).toBe("Submit");
+    act(() => (input.closest("form") as HTMLFormElement).requestSubmit());
+    expect(onSubmit).toHaveBeenCalledExactlyOnceWith(1, "aspirin");
   });
 
   it("cycles focus from the last control to the first and from the first to the last", () => {

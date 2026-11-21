@@ -1,10 +1,15 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
+import { PluginTextPromptForm } from "../dialogs/PluginTextPromptForm";
+import type { PluginTextPromptState } from "../dialogs/DialogCoordinator";
 import type { OpenPluginTextPrompt } from "./PluginPromptTextController";
+import { pluginTextPromptSnapshot } from "./nativePluginTextPrompts";
 
 export interface PluginPromptTextDialogProps {
   prompt: OpenPluginTextPrompt;
+  /** Submit off, with the reason, while the prompt's own tab is not active. */
+  state?: PluginTextPromptState;
   onSubmit: (promptId: number, value: string) => void;
   onCancel: (promptId: number) => void;
 }
@@ -16,47 +21,35 @@ export function isPluginPromptKeyboardEvent(event: Pick<KeyboardEvent, "target">
   return event.target instanceof Element && event.target.closest(".plugin-prompt-dialog") !== null;
 }
 
-export function PluginPromptTextDialog({ prompt, onSubmit, onCancel }: PluginPromptTextDialogProps) {
-  const [value, setValue] = useState(prompt.request.initialValue ?? "");
-  const inputRef = useRef<HTMLInputElement>(null);
-  const dialogRef = useRef<HTMLFormElement>(null);
-  const titleId = useId();
-  const labelId = useId();
-  const attributionId = useId();
+/**
+ * Browser-build fallback only. The desktop app asks through the shared native dialog host
+ * (presentPluginTextPromptsNatively); a browser has no owned native windows, so this shows the
+ * same PluginTextPromptForm in an in-page modal, as the other dialog-host kinds do there.
+ */
+export function PluginPromptTextDialog({ prompt, state, onSubmit, onCancel }: PluginPromptTextDialogProps) {
+  const backdropRef = useRef<HTMLDivElement>(null);
+  // Read during the first render: the form's autoFocus moves focus at commit, before any effect runs.
+  const [previousFocus] = useState(() =>
+    typeof document !== "undefined" && document.activeElement instanceof HTMLElement ? document.activeElement : undefined);
 
   useEffect(() => {
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
-    inputRef.current?.focus();
     return () => {
       if (previousFocus?.isConnected) {
         previousFocus.focus();
       }
     };
-  }, []);
+  }, [previousFocus]);
 
   useEffect(() => {
-    const handleDialogKeyDown = (event: KeyboardEvent): void => {
-      // Only keys aimed at this dialog. Another plugin dialog (an image request, the engine installer)
-      // may be open at the same time and owns its own Escape; a window-wide handler here would cancel
-      // this prompt too.
-      if (!(event.target instanceof Node) || !dialogRef.current?.contains(event.target)) {
-        return;
-      }
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        onCancel(prompt.id);
-        return;
-      }
-      if (event.key !== "Tab") {
-        return;
-      }
-      const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
+    const backdrop = backdropRef.current;
+    if (!backdrop) return;
+    // Keep Tab inside the modal while it is open.
+    const trapTab = (event: KeyboardEvent): void => {
+      if (event.key !== "Tab") return;
+      const focusable = backdrop.querySelectorAll<HTMLElement>(
         'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
       );
-      if (!focusable || focusable.length === 0) {
-        return;
-      }
+      if (focusable.length === 0) return;
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
       if (event.shiftKey && document.activeElement === first) {
@@ -67,61 +60,22 @@ export function PluginPromptTextDialog({ prompt, onSubmit, onCancel }: PluginPro
         first.focus();
       }
     };
-    window.addEventListener("keydown", handleDialogKeyDown);
-    return () => window.removeEventListener("keydown", handleDialogKeyDown);
-  }, [onCancel, prompt.id]);
+    backdrop.addEventListener("keydown", trapTab);
+    return () => backdrop.removeEventListener("keydown", trapTab);
+  }, []);
 
   if (typeof document === "undefined") {
     return null;
   }
 
   return createPortal(
-    <div className="plugin-prompt-backdrop" role="presentation">
-      <form
-        ref={dialogRef}
-        className="plugin-prompt-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        aria-describedby={attributionId}
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (value.length > 0) {
-            onSubmit(prompt.id, value);
-          }
-        }}
-      >
-        <header className="plugin-prompt-header">
-          <h2 id={titleId}>{prompt.request.title}</h2>
-          <p id={attributionId}>Requested by {prompt.pluginName} ({prompt.pluginId})</p>
-        </header>
-        <div className="plugin-prompt-body">
-          <label id={labelId} htmlFor={`plugin-prompt-input-${prompt.id}`}>
-            {prompt.request.label}
-          </label>
-          <input
-            ref={inputRef}
-            id={`plugin-prompt-input-${prompt.id}`}
-            aria-labelledby={labelId}
-            value={value}
-            placeholder={prompt.request.placeholder}
-            maxLength={prompt.request.maxLength}
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="off"
-            spellCheck={false}
-            onChange={(event) => setValue(event.currentTarget.value)}
-          />
-        </div>
-        <footer className="plugin-prompt-actions">
-          <button className="plugin-manager-button" type="button" onClick={() => onCancel(prompt.id)}>
-            Cancel
-          </button>
-          <button className="plugin-manager-button" type="submit" disabled={value.length === 0}>
-            {prompt.request.submitLabel ?? "Submit"}
-          </button>
-        </footer>
-      </form>
+    <div ref={backdropRef} className="plugin-prompt-backdrop" role="presentation">
+      <PluginTextPromptForm
+        scope="form"
+        data={{ ...pluginTextPromptSnapshot(prompt), ...state }}
+        onSubmit={value => onSubmit(prompt.id, value)}
+        onCancel={() => onCancel(prompt.id)}
+      />
     </div>,
     document.body
   );

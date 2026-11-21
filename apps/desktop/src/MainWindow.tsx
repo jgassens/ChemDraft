@@ -899,6 +899,7 @@ import {
 import { PluginManagerDialog } from "./plugins/PluginManagerDialog";
 import { revealRecognitionScreenCaptures } from "./plugins/recognitionScreenCaptures";
 import { PluginPromptTextDialog } from "./plugins/PluginPromptTextDialog";
+import { pluginTextPromptTabState, presentPluginTextPromptsNatively } from "./plugins/nativePluginTextPrompts";
 import { PluginImageRequestDialog } from "./plugins/PluginImageRequestDialog";
 import { StructureRecognitionInstallDialog } from "./plugins/StructureRecognitionInstallDialog";
 import { RecognitionProgressIndicator } from "./plugins/RecognitionProgressIndicator";
@@ -1837,7 +1838,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.21.12.45-opus";
+const CURRENT_BUILD_STAMP = "11.21.14.25-sonnet";
 const TABLE_DRAFT_RECOVERY_WARNING = "session.tableDraftDropped";
 
 function clearTableDraftRecoveryWarnings(report: OpenWarningsReport | undefined): OpenWarningsReport | undefined {
@@ -2974,6 +2975,14 @@ export function MainWindow({
     const key = requestDocumentKeysRef.current.get(tabId);
     requestDocumentKeysRef.current.delete(tabId);
     if (key) pluginRuntimeRef.current?.host.closeRequestsForDocument(key);
+    // The tab closed or its document was replaced: a plugin text prompt asked from it ends as cancelled.
+    if (key) pluginRuntimeRef.current?.prompts.cancelDocument(key);
+  }, []);
+  // The open tab whose document has this key (the active tab for no key); undefined once it closed or was replaced.
+  const documentTabForKey = useCallback((key: string | undefined) => {
+    const tabId = key === undefined ? activeDocumentTabIdRef.current
+      : [...requestDocumentKeysRef.current].find(([, candidate]) => candidate === key)?.[0];
+    return documentTabsRef.current.find(tab => tab.id === tabId);
   }, []);
   // Counts undo and redo steps. A label-edit session closed by one must not write into the history
   // state it landed on (see the atom-label close effect).
@@ -10720,6 +10729,9 @@ export function MainWindow({
       onPageEnlargementClosed: tabId => {
         if (activeDocumentTabIdRef.current === tabId) canvasRegionRef.current?.focus({ preventScroll: true });
       },
+      onPluginTextPromptClosed: tabId => {
+        if (activeDocumentTabIdRef.current === tabId) canvasRegionRef.current?.focus({ preventScroll: true });
+      },
       export: (tabId, options, live, progress) => exportToTabRef.current(tabId, options, live, progress),
       previewExport: (tabId, options, live) => previewExportRef.current(tabId, options, live),
       chooseExportDestination: (tabId, options, live) => chooseExportDestinationRef.current(tabId, options, live),
@@ -13072,7 +13084,9 @@ export function MainWindow({
       if (text) setStatus(text);
     },
     getActiveDocument: () => documentRef.current,
-    getActiveDocumentKey: () => String(documentIdentityRef.current),
+    // Stable per tab and rotated when its document is replaced or the tab closes, so a command's writes
+    // land only in the tab it started on, also after the user switches away and back.
+    getActiveDocumentKey: () => requestDocumentKey(activeDocumentTabIdRef.current),
     captureRequestDocument: () => {
       const tabId = activeDocumentTabIdRef.current;
       const key = requestDocumentKey(tabId);
@@ -13218,6 +13232,20 @@ export function MainWindow({
   const { isPluginCommand: pluginCommandExists, invokePluginCommand } = pluginRuntime;
   canvasOverlaysPresentRef.current = pluginRuntime.canvasOverlays.length > 0;
   pluginRuntimeRef.current = pluginRuntime.runtime;
+  // dialogs.promptText asks in its own native window, owned by this document window (AGENTS.md §12),
+  // one prompt at a time in queue order. The browser build renders the in-page fallback below. The
+  // prompt is modeless, but a command can write only to the document it started on: while another
+  // tab is active it stays open with Submit off, and closing its tab (or replacing its document)
+  // ends it as cancelled; see `invalidateRequestDocument` and `pluginTextPromptTabState`.
+  useEffect(() => {
+    if (!isDesktopRuntime()) return;
+    return presentPluginTextPromptsNatively(pluginRuntime.runtime.prompts, {
+      coordinator: () => dialogCoordinatorRef.current,
+      documentTab: documentTabForKey,
+      activeTabId: () => activeDocumentTabIdRef.current,
+      onError: setStatus
+    });
+  }, [documentTabForKey, pluginRuntime.runtime]);
   useEffect(() => {
     const runtime = pluginRuntime.runtime;
     runtime.notifyActiveDocumentChanged(requestDocumentKey(activeDocumentTabIdRef.current));
@@ -22867,10 +22895,13 @@ export function MainWindow({
         />
       ) : null}
 
-      {pluginRuntime.openTextPrompt ? (
+      {/* Browser build only: the desktop app asks in its own native dialog window (see below). */}
+      {!isDesktopRuntime() && pluginRuntime.openTextPrompt ? (
         <PluginPromptTextDialog
           key={pluginRuntime.openTextPrompt.id}
           prompt={pluginRuntime.openTextPrompt}
+          state={(tab => tab ? pluginTextPromptTabState(tab, activeDocumentTabId) : { submitEnabled: false })(
+            documentTabForKey(pluginRuntime.openTextPrompt.documentKey))}
           onSubmit={pluginRuntime.submitTextPrompt}
           onCancel={pluginRuntime.cancelTextPrompt}
         />

@@ -12,7 +12,7 @@ export type { DialogContentFit } from "./dialogContentFit";
 export const DIALOG_PROTOCOL_VERSION = 1;
 export const DIALOG_MAX_BYTES = 16 * 1024;
 export const DIALOG_PREVIEW_MAX_BYTES = 5 * 1024 * 1024;
-export type DialogKind = "pageSize" | "pageEnlargement" | "arrangementSpacing" | "reactionConditions" | "export" | "engineInstall" | "toolInstall" | "customColor" | "insertTable" | "structureTemplates" | "atomProblem" | "vibeCodeGuide";
+export type DialogKind = "pageSize" | "pageEnlargement" | "pluginTextPrompt" | "arrangementSpacing" | "reactionConditions" | "export" | "engineInstall" | "toolInstall" | "customColor" | "insertTable" | "structureTemplates" | "atomProblem" | "vibeCodeGuide";
 export type { AtomProblemAction } from "@chemdraft/document-workflow-core";
 import type { AtomProblemAction } from "@chemdraft/document-workflow-core";
 export interface AtomProblemSnapshot {
@@ -96,6 +96,57 @@ export interface DialogEnvelope {
 export type DialogCloseReason = "apply" | "cancel" | "close" | "destroy" | "ownerTabClose" | "ownerClose" | "quit" | "error";
 export const PAGE_ENLARGEMENT_TITLE = "Enlarge Page";
 export const PAGE_ENLARGEMENT_MESSAGE = "This doesn't fit on the page. Enlarge the page to fit? Content on the page may shift to make room.";
+/** A plugin's one-line text question (dialogs.promptText). Limits mirror PluginPromptTextRequestSchema. */
+export interface PluginTextPromptSnapshot {
+  title: string; label: string; placeholder: string; initialValue: string; submitLabel: string;
+  maxLength: number; pluginName: string; pluginId: string;
+  /** Why Submit is unavailable, e.g. the question's drawing is not the active tab. */
+  statusLine?: string;
+  /** Absent means enabled. While false, Submit and Enter do nothing and the owner refuses an answer. */
+  submitEnabled?: boolean;
+}
+export const PLUGIN_TEXT_PROMPT_LIMITS = { title: 200, label: 200, placeholder: 200, submitLabel: 200, maxLength: 2000, pluginName: 128, pluginId: 256, statusLine: 200 } as const;
+/** Serialized message budget: leaves room for Rust's delivery wrapper inside the 4096-byte channel limit. */
+export const PLUGIN_TEXT_PROMPT_MAX_BYTES = SMALL_DIALOG_MAX_BYTES;
+const worstCaseEnvelope = (dialogKind: DialogKind) => ({ protocolVersion: 1, ownerWindowId: "main", dialogKind,
+  documentTabId: "x".repeat(128), sessionId: "x".repeat(128), requestId: "x".repeat(128), snapshotRevision: Number.MAX_SAFE_INTEGER });
+const textBytes = (text: string) => serializedBytes(text) - 2;
+/** Fit a prompt into the native message budget. The initial value is the user's data and keeps
+ * priority; the display strings keep a minimum, then share whatever room remains. */
+export function boundedPluginTextPromptSnapshot(data: PluginTextPromptSnapshot): PluginTextPromptSnapshot {
+  const L = PLUGIN_TEXT_PROMPT_LIMITS;
+  const display = [
+    ["title", L.title, 96], ["label", L.label, 96], ["pluginName", L.pluginName, 64], ["pluginId", L.pluginId, 96],
+    ["submitLabel", L.submitLabel, 48], ["placeholder", L.placeholder, 0]
+  ] as const;
+  const result: PluginTextPromptSnapshot = { ...data, maxLength: Math.min(Math.max(1, Math.trunc(data.maxLength) || 1), L.maxLength) };
+  if (data.statusLine !== undefined) result.statusLine = clipDialogText(data.statusLine.replaceAll("\0", ""), L.statusLine, 600) || undefined;
+  for (const [field, maxLength, minBytes] of display) result[field] = clipDialogText(data[field].replaceAll("\0", ""), maxLength, minBytes);
+  const overhead = serializedBytes({ ...worstCaseEnvelope("pluginTextPrompt"), type: "snapshot", data: { ...result, initialValue: "" } });
+  let remaining = PLUGIN_TEXT_PROMPT_MAX_BYTES - overhead;
+  result.initialValue = clipDialogText(data.initialValue.replaceAll("\0", ""), result.maxLength, Math.max(0, remaining));
+  remaining -= textBytes(result.initialValue);
+  for (const [field, maxLength] of display) {
+    const before = textBytes(result[field]);
+    result[field] = clipDialogText(data[field].replaceAll("\0", ""), maxLength, before + Math.max(0, remaining));
+    remaining -= textBytes(result[field]) - before;
+  }
+  return result;
+}
+/** Whether a submitted value fits the native action budget (characters and serialized bytes). */
+export function pluginTextPromptValueFits(value: string, maxLength: number): boolean {
+  return value.length > 0 && value.length <= maxLength && !value.includes("\0") &&
+    serializedBytes({ ...worstCaseEnvelope("pluginTextPrompt"), type: "action", data: { action: "submit", value } }) <= PLUGIN_TEXT_PROMPT_MAX_BYTES;
+}
+function validPluginTextPromptSnapshot(d: Record<string, unknown>): boolean {
+  const L = PLUGIN_TEXT_PROMPT_LIMITS;
+  const text = (v: unknown, max: number, min = 1) => typeof v === "string" && v.length >= min && v.length <= max && !v.includes("\0");
+  return keys(d, ["title", "label", "placeholder", "initialValue", "submitLabel", "maxLength", "pluginName", "pluginId"], ["statusLine", "submitEnabled"]) &&
+    (d.statusLine === undefined || text(d.statusLine, L.statusLine)) && (d.submitEnabled === undefined || typeof d.submitEnabled === "boolean") &&
+    Number.isInteger(d.maxLength) && Number(d.maxLength) >= 1 && Number(d.maxLength) <= L.maxLength &&
+    text(d.title, L.title) && text(d.label, L.label) && text(d.placeholder, L.placeholder, 0) && text(d.submitLabel, L.submitLabel) &&
+    text(d.initialValue, Number(d.maxLength), 0) && text(d.pluginName, L.pluginName) && text(d.pluginId, L.pluginId);
+}
 export interface ExportDialogResult {
   status: "picked" | "exported" | "cancelled" | "error";
   destinationPath?: string;
@@ -109,6 +160,7 @@ export type DialogSnapshot = DialogEnvelope & (
   | { dialogKind: "insertTable"; type: "snapshot"; data: InsertTableOptions & { title: string } }
   | { dialogKind: "pageSize"; type: "snapshot"; data: PageSize & { title: string } }
   | { dialogKind: "pageEnlargement"; type: "snapshot"; data: { title: typeof PAGE_ENLARGEMENT_TITLE } }
+  | { dialogKind: "pluginTextPrompt"; type: "snapshot"; data: PluginTextPromptSnapshot }
   | { dialogKind: "arrangementSpacing"; type: "snapshot"; data: SpacingSnapshot }
   | { dialogKind: "reactionConditions"; type: "snapshot"; data: ConditionsSnapshot }
   | { dialogKind: "export"; type: "snapshot"; data: { title: string; options: ExportOptions; frame?: ExportFrame } }
@@ -120,7 +172,7 @@ export type DialogSnapshot = DialogEnvelope & (
 export type DialogMessage = DialogSnapshot | (DialogEnvelope & (
   | { type: "request"; data: Record<string, never> }
   | { type: "ready"; data: Record<string, never> | DialogContentFit }
-  | { type: "action"; data: ({ action: "apply" } & (PageSize | InsertTableOptions)) | { action: "apply"; hex: string } | { action: "clear" } | { action: "apply"; draft: ReactionConditionsDraft } | { action: AtomProblemAction; targetVersion: number } | { action: "apply" | "preview"; percent: number } | { action: "insert"; templateId: string } | { action: "enlarge" | "cancel" | "saveStarter" | "openPluginManager" } | { action: EngineInstallAction | ToolInstallAction } | { action: "export" | "chooseDestination" | "preview"; options: ExportOptions } }
+  | { type: "action"; data: ({ action: "apply" } & (PageSize | InsertTableOptions)) | { action: "apply"; hex: string } | { action: "clear" } | { action: "apply"; draft: ReactionConditionsDraft } | { action: AtomProblemAction; targetVersion: number } | { action: "apply" | "preview"; percent: number } | { action: "insert"; templateId: string } | { action: "submit"; value: string } | { action: "enlarge" | "cancel" | "saveStarter" | "openPluginManager" } | { action: EngineInstallAction | ToolInstallAction } | { action: "export" | "chooseDestination" | "preview"; options: ExportOptions } }
   | { type: "preview"; data: SpacingPreview }
   | { type: "result"; data: { status: "accepted" | "applied" | "inserted" | "progress" | ExportDialogResult["status"] | "preview" | "frame"; preview?: ExportPreviewResult; frame?: ExportFrame; error?: string; destinationPath?: string; filename?: string; notice?: string } }
   | { type: "closed"; data: { reason: DialogCloseReason } }
@@ -148,7 +200,7 @@ export function parseDialogMessage(value: unknown): DialogMessage | undefined {
   try {
     if (new TextEncoder().encode(JSON.stringify(value)).length > (record(value) && value.dialogKind === "export" && value.type === "result" && record(value.data) && value.data.status === "preview" ? DIALOG_PREVIEW_MAX_BYTES : DIALOG_MAX_BYTES)) return undefined;
     if (!record(value) || !keys(value, ["protocolVersion", "ownerWindowId", "documentTabId", "dialogKind", "sessionId", "requestId", "snapshotRevision", "type", "data"])) return undefined;
-    if (value.protocolVersion !== 1 || value.ownerWindowId !== "main" || typeof value.dialogKind !== "string" || !["pageSize", "pageEnlargement", "arrangementSpacing", "reactionConditions", "export", "engineInstall", "toolInstall", "insertTable", "customColor", "structureTemplates", "atomProblem", "vibeCodeGuide"].includes(value.dialogKind) ||
+    if (value.protocolVersion !== 1 || value.ownerWindowId !== "main" || typeof value.dialogKind !== "string" || !["pageSize", "pageEnlargement", "pluginTextPrompt", "arrangementSpacing", "reactionConditions", "export", "engineInstall", "toolInstall", "insertTable", "customColor", "structureTemplates", "atomProblem", "vibeCodeGuide"].includes(value.dialogKind) ||
         !token(value.documentTabId) || !token(value.sessionId) || !token(value.requestId) ||
         !Number.isSafeInteger(value.snapshotRevision) || Number(value.snapshotRevision) < 1 || !record(value.data)) return undefined;
     const d = value.data;
@@ -156,6 +208,15 @@ export function parseDialogMessage(value: unknown): DialogMessage | undefined {
       switch (value.type) {
         case "snapshot": return keys(d, ["title"]) && d.title === PAGE_ENLARGEMENT_TITLE ? value as unknown as DialogMessage : undefined;
         case "action": return keys(d, ["action"]) && (d.action === "enlarge" || d.action === "cancel") ? value as unknown as DialogMessage : undefined;
+        case "result": case "preview": return undefined;
+      }
+    }
+    if (value.dialogKind === "pluginTextPrompt") {
+      switch (value.type) {
+        case "snapshot": return validPluginTextPromptSnapshot(d) && serializedBytes(value) <= PLUGIN_TEXT_PROMPT_MAX_BYTES ? value as unknown as DialogMessage : undefined;
+        case "action": return (d.action === "cancel" ? keys(d, ["action"]) : d.action === "submit" && keys(d, ["action", "value"]) &&
+          typeof d.value === "string" && d.value.length > 0 && d.value.length <= PLUGIN_TEXT_PROMPT_LIMITS.maxLength && !d.value.includes("\0")) &&
+          serializedBytes(value) <= PLUGIN_TEXT_PROMPT_MAX_BYTES ? value as unknown as DialogMessage : undefined;
         case "result": case "preview": return undefined;
       }
     }

@@ -86,6 +86,15 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             fit_content: true,
             preserve_user_frame: false,
         }),
+        "pluginTextPrompt" => Ok(DialogKindSpec {
+            maximizable: false,
+            resizable: true,
+            title: "Plugin question",
+            size: (440.0, 190.0),
+            min_size: (340.0, 140.0),
+            fit_content: true,
+            preserve_user_frame: false,
+        }),
         "arrangementSpacing" => Ok(DialogKindSpec {
             maximizable: false,
             resizable: true,
@@ -157,7 +166,7 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
 fn native_window_title(kind: &str, spec_title: &str, snapshot_title: &str) -> String {
     if matches!(
         kind,
-        "engineInstall" | "toolInstall" | "vibeCodeGuide" | "pageEnlargement"
+        "engineInstall" | "toolInstall" | "vibeCodeGuide" | "pageEnlargement" | "pluginTextPrompt"
     ) {
         snapshot_title.to_string()
     } else {
@@ -208,6 +217,54 @@ enum VibeGuideAction {
 #[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
 enum PageEnlargementAction {
     Enlarge {},
+    Cancel {},
+}
+/// A plugin's dialogs.promptText question. Limits mirror PluginPromptTextRequestSchema (UTF-16 units).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PluginTextPromptSnapshot {
+    title: String,
+    label: String,
+    placeholder: String,
+    initial_value: String,
+    submit_label: String,
+    max_length: u32,
+    plugin_name: String,
+    plugin_id: String,
+    /// Why Submit is off, e.g. "Switch back to <tab> to insert."; absent when it is on.
+    #[serde(default)]
+    status_line: Option<String>,
+    /// Absent means on. While false, Rust refuses the window's submit (see `reserve_action`, which
+    /// reads it from the retained JSON; here it is only type-checked).
+    #[serde(default)]
+    #[allow(dead_code)]
+    submit_enabled: Option<bool>,
+}
+const PLUGIN_TEXT_PROMPT_MAX_LENGTH: u32 = 2000;
+fn prompt_text(text: &str, min: usize, max: usize) -> bool {
+    let units = text.encode_utf16().count();
+    (min..=max).contains(&units) && !text.contains('\0')
+}
+impl PluginTextPromptSnapshot {
+    fn valid(&self) -> bool {
+        (1..=PLUGIN_TEXT_PROMPT_MAX_LENGTH).contains(&self.max_length)
+            && prompt_text(&self.title, 1, 200)
+            && prompt_text(&self.label, 1, 200)
+            && prompt_text(&self.placeholder, 0, 200)
+            && prompt_text(&self.submit_label, 1, 200)
+            && prompt_text(&self.initial_value, 0, self.max_length as usize)
+            && prompt_text(&self.plugin_name, 1, 128)
+            && prompt_text(&self.plugin_id, 1, 256)
+            && self
+                .status_line
+                .as_deref()
+                .is_none_or(|line| prompt_text(line, 1, 200))
+    }
+}
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
+enum PluginTextPromptAction {
+    Submit { value: String },
     Cancel {},
 }
 #[derive(Deserialize)]
@@ -971,7 +1028,8 @@ impl Message {
             || self.snapshot_revision > 9_007_199_254_740_991
             || ((self.dialog_kind == "engineInstall"
                 || self.dialog_kind == "toolInstall"
-                || self.dialog_kind == "atomProblem")
+                || self.dialog_kind == "atomProblem"
+                || self.dialog_kind == "pluginTextPrompt")
                 && serde_json::to_vec(self).map_err(|e| e.to_string())?.len() > 3400)
         {
             return Err("Invalid dialog envelope or payload limit exceeded".into());
@@ -985,6 +1043,24 @@ impl Message {
                 serde_json::from_value::<PageEnlargementAction>(self.data.clone()).is_ok()
             }
             "result" if self.dialog_kind == "pageEnlargement" => false,
+            "snapshot" if self.dialog_kind == "pluginTextPrompt" => {
+                // An explicit null is not "absent": the optional fields are a string and a boolean.
+                serde_json::from_value::<PluginTextPromptSnapshot>(self.data.clone())
+                    .is_ok_and(|s| s.valid())
+                    && ["statusLine", "submitEnabled"]
+                        .iter()
+                        .all(|field| !self.data.get(*field).is_some_and(Value::is_null))
+            }
+            "action" if self.dialog_kind == "pluginTextPrompt" => serde_json::from_value::<
+                PluginTextPromptAction,
+            >(self.data.clone())
+            .is_ok_and(|a| match a {
+                PluginTextPromptAction::Submit { value } => {
+                    prompt_text(&value, 1, PLUGIN_TEXT_PROMPT_MAX_LENGTH as usize)
+                }
+                PluginTextPromptAction::Cancel {} => true,
+            }),
+            "result" if self.dialog_kind == "pluginTextPrompt" => false,
             "snapshot" if self.dialog_kind == "atomProblem" => {
                 serde_json::from_value::<AtomProblemSnapshot>(self.data.clone()).is_ok_and(|s| {
                     valid_title(&s.title)
@@ -1494,6 +1570,23 @@ fn reserve_action(session: &mut Session, message: &Message) -> Result<bool, Stri
     {
         return Err("This atom problem changed; use the current window actions".into());
     }
+    if message.dialog_kind == "pluginTextPrompt"
+        && message.data["action"] == "submit"
+        && !message.data["value"].as_str().is_some_and(|value| {
+            session.snapshot.data["maxLength"]
+                .as_u64()
+                .is_some_and(|max| value.encode_utf16().count() as u64 <= max)
+        })
+    {
+        return Err("The answer is longer than this plugin question allows".into());
+    }
+    // Submit is off while the question's drawing is not the active tab; the answer could not be inserted.
+    if message.dialog_kind == "pluginTextPrompt"
+        && message.data["action"] == "submit"
+        && session.snapshot.data["submitEnabled"] == false
+    {
+        return Err("Switch back to this question's drawing to insert".into());
+    }
     if message.dialog_kind == "structureTemplates"
         && message.data["action"] == "insert"
         && !session.snapshot.data["templateIds"]
@@ -1566,6 +1659,18 @@ fn update_snapshot(session: &mut Session, message: &Message) {
     {
         session.terminal_request = None;
     }
+    // Turning a plugin question's Submit off makes the owner refuse a submit already in flight, so
+    // its reservation ends here; the user can submit again once Submit is back on.
+    if message.dialog_kind == "pluginTextPrompt"
+        && message.data["submitEnabled"] == false
+        && session
+            .terminal_request
+            .as_ref()
+            .and_then(|id| session.actions.get(id))
+            .is_some_and(|action| action.data["action"] == "submit")
+    {
+        session.terminal_request = None;
+    }
     session.snapshot = message.clone();
 }
 fn releases_action_reservation(message: &Message) -> bool {
@@ -1612,12 +1717,13 @@ fn register(
         return Err("Too many dialog windows are open".into());
     }
     // Independent questions must never share consent, even for the same drawing.
-    if message.dialog_kind != "pageEnlargement"
-        && registry.sessions.values().any(|s| {
-            s.snapshot.document_tab_id == message.document_tab_id
-                && s.snapshot.dialog_kind == message.dialog_kind
-        })
-    {
+    if !matches!(
+        message.dialog_kind.as_str(),
+        "pageEnlargement" | "pluginTextPrompt"
+    ) && registry.sessions.values().any(|s| {
+        s.snapshot.document_tab_id == message.document_tab_id
+            && s.snapshot.dialog_kind == message.dialog_kind
+    }) {
         return Err("A dialog for this drawing is already open".into());
     }
     registry.next_slot += 1;
@@ -1994,7 +2100,7 @@ fn close_session<R: Runtime>(app: &tauri::AppHandle<R>, host_id: &str, reason: &
         .remove(host_id);
     if let Some(mut session) = session {
         flush_position(app, &mut session);
-        if session.snapshot.dialog_kind == "pageEnlargement" {
+        if is_question_kind(&session.snapshot.dialog_kind) {
             if let Some(window) = app.get_webview_window(&session.registration.window_label) {
                 let restore_focus = matches!(reason, "apply" | "cancel" | "close");
                 let target = window.clone();
@@ -2003,7 +2109,7 @@ fn close_session<R: Runtime>(app: &tauri::AppHandle<R>, host_id: &str, reason: &
                 })
                 .and_then(|result| result)
                 {
-                    eprintln!("Could not close page enlargement window: {error}");
+                    eprintln!("Could not close question window: {error}");
                     let _ = window.destroy();
                 }
             }
@@ -2015,6 +2121,10 @@ fn close_session<R: Runtime>(app: &tauri::AppHandle<R>, host_id: &str, reason: &
             let _ = window.destroy();
         }
     }
+}
+/// Request-bound questions: closing one returns focus to the document when it held focus.
+fn is_question_kind(kind: &str) -> bool {
+    matches!(kind, "pageEnlargement" | "pluginTextPrompt")
 }
 fn close_page_enlargement_on_main<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
@@ -4300,7 +4410,8 @@ pub(crate) fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &Win
             flush_preferences(window.app_handle(), PreferencesClose::Destroyed);
         }
         WindowEvent::CloseRequested { api, .. }
-            if window.label().starts_with("dialog-main-pageEnlargement-") =>
+            if window.label().starts_with("dialog-main-pageEnlargement-")
+                || window.label().starts_with("dialog-main-pluginTextPrompt-") =>
         {
             let host_id = REGISTRY
                 .lock()
@@ -9512,6 +9623,202 @@ mod tests {
         message.message_type = "result".into();
         message.data = json!({"status": "accepted"});
         assert!(message.validate().is_err());
+    }
+
+    fn plugin_text_prompt() -> Message {
+        let mut message = snapshot();
+        message.dialog_kind = "pluginTextPrompt".into();
+        message.data = json!({"title": "Structure from Name", "label": "Chemical name",
+            "placeholder": "e.g. aspirin", "initialValue": "", "submitLabel": "Insert", "maxLength": 500,
+            "pluginName": "Name to Structure (OPSIN)", "pluginId": "org.chemdraft.opsin"});
+        message
+    }
+    #[test]
+    fn plugin_text_prompt_registers_owned_question_windows_with_document_focus_return() {
+        let spec = kind_spec("pluginTextPrompt").unwrap();
+        assert!(!spec.maximizable && spec.resizable && spec.fit_content);
+        assert!(include_str!("../capabilities/dialog-host.json")
+            .contains("dialog-main-pluginTextPrompt-*"));
+        assert!(is_dialog_label("dialog-main-pluginTextPrompt-12"));
+        assert!(!is_dialog_label("dialog-main-pluginTextPrompt-../main"));
+        assert!(!is_dialog_label("dialog-main-pluginTextPrompt-"));
+        assert!(is_question_kind("pluginTextPrompt") && is_question_kind("pageEnlargement"));
+        assert!(!is_question_kind("pageSize"));
+        // The window is titled by the plugin's own question, not a generic kind prefix.
+        assert_eq!(
+            native_window_title("pluginTextPrompt", spec.title, "Structure from Name"),
+            "Structure from Name"
+        );
+        let message = plugin_text_prompt();
+        assert!(message.validate().is_ok());
+        let mut registry = Registry::default();
+        let (first, _) = register(&mut registry, message.clone(), false).unwrap();
+        assert!(is_dialog_label(&first.window_label));
+        assert!(first
+            .window_label
+            .starts_with("dialog-main-pluginTextPrompt-"));
+        // The next queued prompt may register while the previous window is still closing.
+        let mut next = message.clone();
+        next.session_id = "next-prompt".into();
+        let (second, _) = register(&mut registry, next, false).unwrap();
+        assert_ne!(first.window_label, second.window_label);
+    }
+    #[test]
+    fn plugin_text_prompt_snapshot_caps_match_the_plugin_api_and_deny_unknown_fields() {
+        let valid = plugin_text_prompt();
+        let with = |field: &str, value: Value| {
+            let mut message = valid.clone();
+            message.data[field] = value;
+            message.validate()
+        };
+        // Boundaries accepted (UTF-16 units, like the plugin API's zod limits).
+        assert!(with("title", json!("x".repeat(200))).is_ok());
+        assert!(with("title", json!("😀".repeat(100))).is_ok());
+        assert!(with("label", json!("x".repeat(200))).is_ok());
+        assert!(with("placeholder", json!("")).is_ok());
+        assert!(with("placeholder", json!("x".repeat(200))).is_ok());
+        assert!(with("submitLabel", json!("x".repeat(200))).is_ok());
+        assert!(with("maxLength", json!(1)).is_ok());
+        assert!(with("maxLength", json!(2000)).is_ok());
+        assert!(with("pluginName", json!("x".repeat(128))).is_ok());
+        // Out of range, wrong type, or NUL.
+        for (field, value) in [
+            ("title", json!("")),
+            ("title", json!("x".repeat(201))),
+            ("title", json!("😀".repeat(101))),
+            ("label", json!("")),
+            ("label", json!("x".repeat(201))),
+            ("placeholder", json!("x".repeat(201))),
+            ("placeholder", json!(null)),
+            ("submitLabel", json!("")),
+            ("submitLabel", json!("x".repeat(201))),
+            ("maxLength", json!(0)),
+            ("maxLength", json!(2001)),
+            ("maxLength", json!(1.5)),
+            ("maxLength", json!("500")),
+            ("pluginName", json!("")),
+            ("pluginName", json!("x".repeat(129))),
+            ("pluginId", json!("")),
+            ("pluginId", json!("x".repeat(257))),
+            ("title", json!("a\u{0}b")),
+            ("initialValue", json!("x".repeat(501))),
+        ] {
+            assert!(with(field, value).is_err(), "{field} should be rejected");
+        }
+        // The optional Submit state: a bounded one-line reason and a boolean, never null.
+        assert!(with("statusLine", json!("Switch back to Untitled to insert.")).is_ok());
+        assert!(with("statusLine", json!("x".repeat(200))).is_ok());
+        assert!(with("submitEnabled", json!(false)).is_ok());
+        assert!(with("submitEnabled", json!(true)).is_ok());
+        for (field, value) in [
+            ("statusLine", json!("")),
+            ("statusLine", json!("x".repeat(201))),
+            ("statusLine", json!("a\u{0}b")),
+            ("statusLine", json!(null)),
+            ("statusLine", json!(3)),
+            ("submitEnabled", json!(null)),
+            ("submitEnabled", json!("false")),
+            ("submitEnabled", json!(0)),
+        ] {
+            assert!(with(field, value).is_err(), "{field} should be rejected");
+        }
+        let mut message = valid.clone();
+        message.data["path"] = json!("/private/drawing.cdxml");
+        assert!(message.validate().is_err());
+        let mut message = valid.clone();
+        message.data.as_object_mut().unwrap().remove("placeholder");
+        assert!(message.validate().is_err());
+        // The serialized message stays inside the small-dialog budget below the channel limit.
+        let mut message = valid.clone();
+        message.data["maxLength"] = json!(2000);
+        message.data["initialValue"] = json!("語".repeat(1200));
+        assert!(message.validate().is_err());
+        message.data["initialValue"] = json!("a".repeat(2000));
+        assert!(message.validate().is_ok());
+        let mut registry = Registry::default();
+        let (registration, _) = register(&mut registry, message.clone(), false).unwrap();
+        let session = registry.sessions.get(&registration.host_id).unwrap();
+        assert!(delivery(session, "main", &message).is_ok());
+    }
+    #[test]
+    fn plugin_text_prompt_accepts_only_submit_and_cancel_within_the_requested_length() {
+        let mut registry = Registry::default();
+        let mut snapshot = plugin_text_prompt();
+        snapshot.data["maxLength"] = json!(5);
+        let (registration, _) = register(&mut registry, snapshot.clone(), false).unwrap();
+        let session = registry.sessions.get_mut(&registration.host_id).unwrap();
+        let mut action = snapshot.clone();
+        action.message_type = "action".into();
+        for data in [
+            json!({"action": "submit", "value": "a".repeat(2000)}),
+            json!({"action": "cancel"}),
+        ] {
+            action.data = data;
+            assert!(action.validate().is_ok());
+        }
+        for data in [
+            json!({"action": "submit", "value": ""}),
+            json!({"action": "submit", "value": "a".repeat(2001)}),
+            json!({"action": "submit"}),
+            json!({"action": "submit", "value": 5}),
+            json!({"action": "submit", "value": "ok", "extra": true}),
+            json!({"action": "cancel", "value": "ok"}),
+            json!({"action": "apply", "value": "ok"}),
+            json!({"action": "enlarge"}),
+            json!({"action": "submit", "value": "a\u{0}"}),
+            json!({"action": "submit", "value": "語".repeat(1500)}),
+        ] {
+            action.data = data;
+            assert!(action.validate().is_err());
+        }
+        // Rust holds the retained snapshot's own limit, not just the API maximum.
+        action.data = json!({"action": "submit", "value": "toolong"});
+        assert!(reserve_action(session, &action).is_err());
+        action.request_id = "answer".into();
+        action.data = json!({"action": "submit", "value": "short"});
+        assert!(reserve_action(session, &action).unwrap());
+        action.request_id = "second-answer".into();
+        assert!(reserve_action(session, &action).is_err());
+        action.message_type = "result".into();
+        action.data = json!({"status": "accepted"});
+        assert!(action.validate().is_err());
+    }
+    #[test]
+    fn plugin_text_prompt_refuses_submit_while_off_and_releases_an_in_flight_submit() {
+        let mut registry = Registry::default();
+        let snapshot = plugin_text_prompt();
+        let (registration, _) = register(&mut registry, snapshot.clone(), false).unwrap();
+        let session = registry.sessions.get_mut(&registration.host_id).unwrap();
+        let mut off = snapshot.clone();
+        off.data["submitEnabled"] = json!(false);
+        off.data["statusLine"] = json!("Switch back to Untitled to insert.");
+        assert!(off.validate().is_ok());
+        let mut submit = snapshot.clone();
+        submit.message_type = "action".into();
+        submit.request_id = "in-flight".into();
+        submit.data = json!({"action": "submit", "value": "benzene"});
+        // A submit sent while Submit was on is reserved; turning Submit off releases it.
+        assert!(reserve_action(session, &submit).unwrap());
+        update_snapshot(session, &off);
+        assert!(session.terminal_request.is_none());
+        // While off, a new submit is refused and reserves nothing; cancel still works.
+        submit.request_id = "while-off".into();
+        assert!(reserve_action(session, &submit).is_err());
+        assert!(session.terminal_request.is_none());
+        // Back on: the user can submit again.
+        update_snapshot(session, &snapshot);
+        submit.request_id = "back-on".into();
+        assert!(reserve_action(session, &submit).unwrap());
+        // A cancel reservation is never released by a state change.
+        let mut registry = Registry::default();
+        let (registration, _) = register(&mut registry, snapshot.clone(), false).unwrap();
+        let session = registry.sessions.get_mut(&registration.host_id).unwrap();
+        let mut cancel = submit.clone();
+        cancel.request_id = "cancel".into();
+        cancel.data = json!({"action": "cancel"});
+        assert!(reserve_action(session, &cancel).unwrap());
+        update_snapshot(session, &off);
+        assert_eq!(session.terminal_request.as_deref(), Some("cancel"));
     }
 
     #[test]

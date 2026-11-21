@@ -1,7 +1,7 @@
 import { VIBE_CODE_GUIDE } from "./vibeCodeGuideText";
 import type { ConditionsSnapshot } from "./dialogProtocol";
 import type { ReactionConditionsDraft } from "@chemdraft/document-workflow-core";
-import { dialogEnvelope, parseDialogMessage, validateDialogDelivery, type DialogCloseReason, type DialogEnvelope, type DialogMessage, type DialogRegistration, type PageSize, type SpacingSnapshot, type ExportDialogResult, PAGE_ENLARGEMENT_TITLE, SPACING_PREVIEW_CHUNK_SIZE, SPACING_PREVIEW_MAX_CHUNKS } from "./dialogProtocol";
+import { dialogEnvelope, parseDialogMessage, validateDialogDelivery, type DialogCloseReason, type DialogEnvelope, type DialogMessage, type DialogRegistration, type PageSize, type SpacingSnapshot, type ExportDialogResult, PAGE_ENLARGEMENT_TITLE, boundedPluginTextPromptSnapshot, type PluginTextPromptSnapshot, SPACING_PREVIEW_CHUNK_SIZE, SPACING_PREVIEW_MAX_CHUNKS } from "./dialogProtocol";
 import type { ExportOptions, ExportFrame, ExportPreviewResult } from "./exportOptions";
 import type { DialogDelivery, DialogTransport } from "./dialogTransport";
 import type { DialogKind, EngineInstallSnapshot, EngineInstallAction, ToolInstallSnapshot, ToolInstallAction } from "./dialogProtocol";
@@ -29,8 +29,21 @@ interface PageEnlargementQuestion {
   removeAbortListener?: () => void;
 }
 
+/** Mirrors the plugin API's PluginPromptTextResult without importing the plugin package here. */
+export type PluginTextPromptResult = { status: "submitted"; value: string } | { status: "cancelled" };
+/** Whether the question may be answered now, and the one line saying why not. */
+export type PluginTextPromptState = Pick<PluginTextPromptSnapshot, "statusLine" | "submitEnabled">;
+interface PluginTextPromptQuestion {
+  session?: Session;
+  signal?: AbortSignal;
+  resolve(result: PluginTextPromptResult): void;
+  value?: string;
+  opening?: Promise<DialogRegistration>;
+  removeAbortListener?: () => void;
+}
+
 function sessionKey({ documentTabId, dialogKind, sessionId }: DialogEnvelope): string {
-  return dialogKind === "pageEnlargement" ? `${documentTabId}:${dialogKind}:${sessionId}` : `${documentTabId}:${dialogKind}`;
+  return dialogKind === "pageEnlargement" || dialogKind === "pluginTextPrompt" ? `${documentTabId}:${dialogKind}:${sessionId}` : `${documentTabId}:${dialogKind}`;
 }
 
 interface Session {
@@ -51,6 +64,7 @@ interface Session {
   engineInstall?: EngineInstallPresenter;
   toolInstall?: ToolInstallPresenter;
   pageEnlargement?: PageEnlargementQuestion;
+  pluginTextPrompt?: PluginTextPromptQuestion;
 }
 /** Document-owned authority. A future modal kind can acquire an input lease here; pageSize never does. */
 export class DialogCoordinator {
@@ -76,6 +90,7 @@ export class DialogCoordinator {
     vibeCodeGuideAction?(action: "saveStarter" | "openPluginManager"): void | Promise<void>;
     onError(message: string): void;
     onPageEnlargementClosed?(tabId: string): void;
+    onPluginTextPromptClosed?(tabId: string): void;
     onSettled?(tabId: string, reason: DialogCloseReason, kind?: DialogKind): void;
   }, private options: { readyTimeoutMs?: number } = {}) {}
 
@@ -130,6 +145,32 @@ export class DialogCoordinator {
           resolve(signal?.aborted ? "keep" : "unanswered");
         });
     });
+  }
+  /** Ask a plugin's one-line question in its own native window. Each call is an independent session;
+   * the request's signal closes the window and resolves as cancelled. `onOpen` receives the session's
+   * update function, which turns Submit on or off without touching the user's draft. */
+  promptPluginText(tabId: string, data: PluginTextPromptSnapshot, signal?: AbortSignal,
+    onOpen?: (update: (state: PluginTextPromptState) => Promise<void>) => void): Promise<PluginTextPromptResult> {
+    if (signal?.aborted) return Promise.resolve({ status: "cancelled" });
+    return new Promise(resolve => {
+      const question: PluginTextPromptQuestion = { signal, resolve };
+      onOpen?.(state => this.updatePluginTextPrompt(question, state));
+      void this.open(tabId, "pluginTextPrompt", boundedPluginTextPromptSnapshot(data), undefined, undefined, undefined, undefined, question)
+        .catch(error => {
+          if (!signal?.aborted) this.owner.onError(`${data.title} could not open: ${String(error)}`);
+          resolve({ status: "cancelled" });
+        });
+    });
+  }
+  private async updatePluginTextPrompt(question: PluginTextPromptQuestion, state: PluginTextPromptState): Promise<void> {
+    const session = question.session;
+    if (!session || session.settled || session.snapshot.dialogKind !== "pluginTextPrompt") return;
+    const { statusLine: _line, submitEnabled: _enabled, ...data } = session.snapshot.data;
+    const snapshot = { ...session.snapshot, data: boundedPluginTextPromptSnapshot({ ...data, ...state }) };
+    if (!parseDialogMessage(snapshot)) throw new Error("Invalid plugin question snapshot");
+    // Synchronously, so an answer arriving after this call is judged by the new state.
+    session.snapshot = snapshot;
+    if (session.registration) await this.transport.publish(session.registration.hostId, snapshot);
   }
   async openAtomProblem(tabId: string, data: AtomProblemSnapshot): Promise<void> {
     // Serialize opens across tabs so concurrent commands cannot create two problem windows.
@@ -207,7 +248,7 @@ export class DialogCoordinator {
       throw new Error("Finish the open Reaction conditions editor before editing another arrow in this drawing.");
     return this.open(tabId, "reactionConditions", data);
   }
-  private async open(tabId: string, kind: DialogKind, data: Extract<DialogMessage, { type: "snapshot" }>["data"], engineInstall?: EngineInstallPresenter, toolInstall?: ToolInstallPresenter, afterClose?: Promise<void>, pageEnlargement?: PageEnlargementQuestion): Promise<void> {
+  private async open(tabId: string, kind: DialogKind, data: Extract<DialogMessage, { type: "snapshot" }>["data"], engineInstall?: EngineInstallPresenter, toolInstall?: ToolInstallPresenter, afterClose?: Promise<void>, pageEnlargement?: PageEnlargementQuestion, pluginTextPrompt?: PluginTextPromptQuestion): Promise<void> {
     if (this.stopped) throw new Error("The document window is closing");
     const snapshot: Session["snapshot"] = { protocolVersion: 1, ownerWindowId: "main", documentTabId: tabId,
       dialogKind: kind, sessionId: crypto.randomUUID(), requestId: crypto.randomUUID(), snapshotRevision: 1, type: "snapshot", data } as Session["snapshot"];
@@ -224,17 +265,19 @@ export class DialogCoordinator {
       return;
     }
     if (perfProbe) perfHook(() => perfProbe?.expectCompletion("dialog-open", snapshot.sessionId));
-    const title = kind === "pageEnlargement" ? PAGE_ENLARGEMENT_TITLE : kind === "customColor" ? "Custom Color" : kind === "vibeCodeGuide" ? VIBE_CODE_GUIDE.title : kind === "reactionConditions" ? "Reaction conditions" : kind === "atomProblem" ? "Atom problem" : kind === "insertTable" ? "Insert Table" : kind === "structureTemplates" ? "Templates" : kind === "engineInstall" ? "Engine installation" : kind === "toolInstall" ? "Tool installation" : kind === "export" ? "Export" : kind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size";
+    const title = kind === "pageEnlargement" ? PAGE_ENLARGEMENT_TITLE : kind === "pluginTextPrompt" ? "Plugin question" : kind === "customColor" ? "Custom Color" : kind === "vibeCodeGuide" ? VIBE_CODE_GUIDE.title : kind === "reactionConditions" ? "Reaction conditions" : kind === "atomProblem" ? "Atom problem" : kind === "insertTable" ? "Insert Table" : kind === "structureTemplates" ? "Templates" : kind === "engineInstall" ? "Engine installation" : kind === "toolInstall" ? "Tool installation" : kind === "export" ? "Export" : kind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size";
     if (!parseDialogMessage(snapshot)) throw new Error(`Invalid ${title} snapshot`);
-    const session: Session = { snapshot, engineInstall, toolInstall, pageEnlargement, receipts: new Map(), inFlight: new Map(), settled: false, ready: false,
+    const session: Session = { snapshot, engineInstall, toolInstall, pageEnlargement, pluginTextPrompt, receipts: new Map(), inFlight: new Map(), settled: false, ready: false,
       frameKey: snapshot.dialogKind === "export" ? JSON.stringify(snapshot.data.frame) : undefined,
       timer: setTimeout(() => { this.owner.onError(`${title} did not become ready. Open it again to try again.`); void this.settle(session, "error"); }, this.options.readyTimeoutMs ?? 10000) };
     this.sessions.set(key, session);
-    if (pageEnlargement?.signal) {
-      const signal = pageEnlargement.signal;
+    if (pluginTextPrompt) pluginTextPrompt.session = session;
+    const question = pageEnlargement ?? pluginTextPrompt;
+    if (question?.signal) {
+      const signal = question.signal;
       const abort = () => { void this.settle(session, "cancel"); };
       signal.addEventListener("abort", abort, { once: true });
-      pageEnlargement.removeAbortListener = () => signal.removeEventListener("abort", abort);
+      question.removeAbortListener = () => signal.removeEventListener("abort", abort);
       if (signal.aborted) abort();
     }
     try {
@@ -243,11 +286,13 @@ export class DialogCoordinator {
       if (afterClose) await afterClose;
       if (session.settled || this.stopped) return;
       const opening = this.transport.open(snapshot);
-      if (pageEnlargement) pageEnlargement.opening = opening;
+      if (question) question.opening = opening;
       session.registration = await opening;
+      // A plugin question's state may have changed while its window was opening.
+      if (pluginTextPrompt && !session.settled && session.snapshot !== snapshot) await this.transport.publish(session.registration.hostId, session.snapshot);
       if (!session.settled && session.ready && (session.snapshot.dialogKind === "engineInstall" || session.snapshot.dialogKind === "toolInstall" || session.snapshot.dialogKind === "atomProblem")) await this.transport.publish(session.registration.hostId, session.snapshot);
       await this.flushExportFrame(session);
-      if (session.settled && !pageEnlargement) await this.transport.close(session.registration.hostId, session.settledReason ?? "error");
+      if (session.settled && !question) await this.transport.close(session.registration.hostId, session.settledReason ?? "error");
       else if (session.ready && session.previewRequest) {
         await this.preview(session, session.previewRequest.requestId, session.previewRequest.percent);
       }
@@ -267,7 +312,7 @@ export class DialogCoordinator {
     const message = validateDialogDelivery(parsed, delivery.senderWindowId, session.snapshot, label);
     if (!message) return;
     if (message.type === "closed") {
-      if (message.data.reason === "error") this.owner.onError(`${parsed.dialogKind === "pageEnlargement" ? PAGE_ENLARGEMENT_TITLE : parsed.dialogKind === "customColor" ? "Custom Color" : parsed.dialogKind === "reactionConditions" ? "Reaction conditions" : parsed.dialogKind === "atomProblem" ? "Atom problem" : parsed.dialogKind === "insertTable" ? "Insert Table" : parsed.dialogKind === "structureTemplates" ? "Templates" : parsed.dialogKind === "engineInstall" ? "Engine installation" : parsed.dialogKind === "toolInstall" ? "Tool installation" : parsed.dialogKind === "export" ? "Export" : parsed.dialogKind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size"} could not show its native window. Open it again to try again.`);
+      if (message.data.reason === "error") this.owner.onError(`${parsed.dialogKind === "pageEnlargement" ? PAGE_ENLARGEMENT_TITLE : parsed.dialogKind === "pluginTextPrompt" ? "Plugin question" : parsed.dialogKind === "customColor" ? "Custom Color" : parsed.dialogKind === "reactionConditions" ? "Reaction conditions" : parsed.dialogKind === "atomProblem" ? "Atom problem" : parsed.dialogKind === "insertTable" ? "Insert Table" : parsed.dialogKind === "structureTemplates" ? "Templates" : parsed.dialogKind === "engineInstall" ? "Engine installation" : parsed.dialogKind === "toolInstall" ? "Tool installation" : parsed.dialogKind === "export" ? "Export" : parsed.dialogKind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size"} could not show its native window. Open it again to try again.`);
       await this.settle(session, message.data.reason, false); return;
     }
     if (message.type === "ready") {
@@ -282,6 +327,16 @@ export class DialogCoordinator {
     if (message.type !== "action" || !session.ready) return;
     if (session.pageEnlargement) {
       await this.settle(session, message.data.action === "enlarge" ? "apply" : "cancel");
+      return;
+    }
+    if (session.pluginTextPrompt) {
+      const data = message.data;
+      if (data.action === "cancel") { await this.settle(session, "cancel"); return; }
+      // While Submit is off (its drawing is not the active tab) an answer is refused and the window stays open.
+      if (data.action !== "submit" || !("value" in data) || session.snapshot.dialogKind !== "pluginTextPrompt" ||
+          session.snapshot.data.submitEnabled === false || data.value.length === 0 || data.value.length > session.snapshot.data.maxLength) return;
+      session.pluginTextPrompt.value = data.value;
+      await this.settle(session, "apply");
       return;
     }
     if (message.data.action === "preview" && "percent" in message.data) {
@@ -512,6 +567,24 @@ export class DialogCoordinator {
         this.owner.onError(`Could not close page enlargement: ${String(error)}`);
       }
       question.resolve(question.signal?.aborted ? "keep" : decision);
+      return;
+    }
+    const prompt = session.pluginTextPrompt;
+    if (prompt) {
+      prompt.removeAbortListener?.();
+      const result: PluginTextPromptResult = reason === "apply" && prompt.value !== undefined && !prompt.signal?.aborted
+        ? { status: "submitted", value: prompt.value } : { status: "cancelled" };
+      try {
+        // An abort can precede the registration reply. Close that exact window as soon as its ID is available.
+        const registration = close ? session.registration ?? await prompt.opening?.catch(() => undefined) : undefined;
+        if (registration) await this.transport.close(registration.hostId, reason);
+        if (session.ready && (reason === "apply" || reason === "cancel" || reason === "close" || reason === "destroy")) {
+          this.owner.onPluginTextPromptClosed?.(session.snapshot.documentTabId);
+        }
+      } catch (error) {
+        this.owner.onError(`Could not close the plugin question: ${String(error)}`);
+      }
+      prompt.resolve(result);
       return;
     }
     if (session.snapshot.dialogKind === "arrangementSpacing") this.owner.onSpacingSettled?.(session.snapshot.documentTabId);

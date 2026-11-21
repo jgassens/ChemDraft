@@ -733,11 +733,15 @@ export interface PluginHostOptions {
   createStorage?: (pluginId: string) => PluginStorage;
   /** Renders a validated panel report; absent hosts simply expose no panels API. */
   showPanelReport?: (pluginId: string, panelId: string, report: PluginPanelReport) => void | Promise<void>;
-  /** Shows host-owned text-prompt UI. The signal aborts when the command ends or plugin unregisters. */
+  /** Shows host-owned text-prompt UI. The signal aborts when the command ends or plugin unregisters.
+   *  `context.documentKey` is the active-document key (see `getActiveDocumentKey`) the asking command
+   *  was invoked on. Its writes may land only in that document, so the embedder should accept an
+   *  answer only while that document is active and end the prompt as cancelled once it closes. */
   promptText?: (
     plugin: { id: string; name: string },
     request: NormalizedPluginPromptTextRequest,
-    signal: AbortSignal
+    signal: AbortSignal,
+    context?: { documentKey?: string }
   ) => PluginPromptTextResult | Promise<PluginPromptTextResult>;
   /** Host-managed AI command-line tools. Plugins never supply argv or environment variables. */
   externalTools?: PluginHostExternalTools;
@@ -2489,7 +2493,8 @@ export class PluginHost {
           this.promptText(
             { id: plugin.manifest.id, name: plugin.manifest.name },
             parsedRequest,
-            abortController.signal
+            abortController.signal,
+            { documentKey: this.activeCommandInvocations.get(invocationToken)?.documentKey }
           )
         ),
         cancelledOnAbort
