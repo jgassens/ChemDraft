@@ -62,6 +62,33 @@ and missing-monitor fallback. They require
 native execution on both platforms; follow the Preferences checks in the standing manual stress
 checklist for real-window verification.
 
+## About ChemDraft
+
+The app-wide About session opens through the registered `help.about` command. Its shared
+modeless frame is owned by the document and persists under the `about` key. The owner snapshot
+contains the title, app version, and build stamp. Provenance is built from the repository records
+and loaded by the About renderer. The host handles Copy Version using the authenticated snapshot.
+Its HTTPS links open in the system browser.
+
+## Guided tour
+
+The app-wide `guidedTour` session uses the document-owned dialog host and remembers its frame
+by kind. Its allowlist covers the three practice commands, shortcut selection, Skip and Finish.
+The dialog sends only the typed action and the owner invokes registered commands. The practice
+drawing is a separate clean tab populated through the structure template workflow.
+
+The native `preferences.json` file in app data stores the shortcut scheme and the guided-tour
+seen flag. An absent flag is unseen for both new installs and upgrades. The previous shortcut
+setting remains readable as the migration fallback until a scheme is saved to the native file.
+The desktop writes the seen flag on Skip, Finish or title-bar close. The browser preview has its
+own local setting. Document-window tests can set `tourMode` to `force` or `suppress`.
+
+The automatic request waits for session recovery, the native file-open queue and an idle
+interval. The native host also checks for other dialogs, Preferences, utility suspension,
+queued files, and an active document window before admission and reveal. A reveal deferred
+by a newly opened window goes back through the idle wait. Help > Take the Tour opens the same
+session on demand.
+
 ## Atom problems
 
 Value-encoded `atom.problem.open.<object>.<atom>` commands open the `atomProblem` kind from a

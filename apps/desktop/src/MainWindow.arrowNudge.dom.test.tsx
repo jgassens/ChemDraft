@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { moleculeToMolfileV2000, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { applyPatch, moleculeToMolfileV2000, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import * as OCL from "openchemlib";
 import { planTableLayout } from "@chemdraft/layout-engine";
 import { MainWindow } from "./MainWindow";
@@ -10,6 +10,7 @@ import { createPhase4Document, insertNativeSingleBondMolecule, insertNativeTextO
   insertTableIntoDocument } from "./documentWorkflow";
 import { getAssistantHistoryPort } from "./assistant/historyPort";
 import { MemoryStorage } from "./testSupport/memoryStorage";
+import { ammoniumElectronMarkDropFixture, dropMark } from "./testSupport/electronMarkDropFixture";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
@@ -116,6 +117,34 @@ describe.each(["macos", "windows"] as const)("canvas arrow nudge (%s)", platform
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Moved selection down by 10 px");
     expectTranslation(before, 0, 10);
     await undo(); expect(current().pages).toEqual(before.pages);
+  });
+  it("labels the whole arrow nudge burst when the second press removes a charge", async () => {
+    const { document, nitrogen } = ammoniumElectronMarkDropFixture();
+    const mark = dropMark(document);
+    const nearEdge = applyPatch(document, { op: "updateObject", objectId: mark.id, changes: {
+      x: nitrogen.x + 24 - mark.width / 2, y: nitrogen.y - mark.height / 2
+    } });
+    await mountDocument(selectDocumentObjects(nearEdge, nearEdge.pages[0].id, [mark.id]));
+    vi.spyOn(Date, "now").mockReturnValue(Date.now());
+    const before = current();
+    const status = () => container.querySelector("[data-status-message]")?.textContent;
+    await key("ArrowRight");
+    expect(dropMark(current()).anchor).toEqual(mark.anchor);
+    expect(molecule().atoms[0].formalCharge).toBe(1);
+    await key("ArrowRight", { repeat: true });
+    const after = current();
+    expect(dropMark(after).anchor.kind).toBe("point");
+    expect(molecule().atoms[0].formalCharge).toBe(0);
+    expect(status()).toBe("Charge removed from N (N now NH3)");
+    await key("ArrowRight", { repeat: true });
+    const final = current();
+    expect(dropMark(final).x).toBe(dropMark(after).x + 1);
+    await undo();
+    expect(status()).toBe("Undid Move and Remove Charge");
+    expect(current()).toEqual(before);
+    await redo();
+    expect(status()).toBe("Redid Move and Remove Charge");
+    expect(current()).toEqual(final);
   });
   function twoPageDrawing() {
     let initial = insertNativeSingleBondMolecule(createPhase4Document("Page 2 nudge"), { x: 200, y: 200 });

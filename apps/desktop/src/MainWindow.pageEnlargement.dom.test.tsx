@@ -720,6 +720,8 @@ describe.each(["macos", "windows"] as const)("mounted page commits on %s", platf
       if (action === "reviewed proposal") {
         await act(async () => container.querySelector<HTMLButtonElement>(".patch-review-badge")!.click());
         await act(async () => container.querySelector<HTMLButtonElement>(".patch-review-actions button")!.click());
+        // An accepted insertion's chemistry is checked off-thread before the page question and the commit.
+        await act(async () => { await vi.waitFor(() => expect(runtime.host.listProposedPatches("pending")).toHaveLength(0), { timeout: 4_000 }); });
       }
     }
     await act(async () => {});
@@ -810,6 +812,8 @@ describe.each(["macos", "windows"] as const)("mounted page commits on %s", platf
     });
     await act(async () => container.querySelector<HTMLButtonElement>(".patch-review-badge")!.click());
     await act(async () => container.querySelector<HTMLButtonElement>(".patch-review-actions button")!.click());
+    // The insertion's chemistry is checked off-thread before the page question opens.
+    await act(async () => { await vi.waitFor(() => expect(answer).toBeDefined(), { timeout: 4_000 }); });
     expect(current()).toEqual(before);
     expect(runtime.host.listProposedPatches("pending")).toHaveLength(1);
     const external = setDocumentCustomPageSize(before, { width: 80, height: 80, unit: "css-px" });
@@ -895,6 +899,8 @@ describe.each(["macos", "windows"] as const)("mounted page commits on %s", platf
       } } });
       finished = runtime.invokeCommand("plugin.pageCancelled.insert").then(() => "applied", () => "cancelled");
     });
+    // The insertion's chemistry is checked off-thread before the page question opens.
+    await act(async () => { await vi.waitFor(() => expect(answer).toBeDefined(), { timeout: 4_000 }); });
     expect(current()).toEqual(before);
     await act(async () => { runtime.unregisterPlugin("org.chemdraft.pageCancelled"); });
     await expect(finished).resolves.toBe("cancelled");

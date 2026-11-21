@@ -3,6 +3,8 @@
  * Numeric and fragment drawing keys are shared by both presets.
  */
 
+import { createHoverShortcutRegistry, type ShortcutOverrides, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
+import { nativeSingleLetterElements } from "./documentWorkflow";
 import { atomLabelCommandId, fragmentAtomDrawingHotkeys, fragmentBondDrawingHotkeys, numericAtomDrawingHotkeys, numericBondDrawingHotkeys, type CommandSpec } from "./commands";
 import type { KeybindingScheme } from "./keybindingSettings";
 import { formatShortcutLabel } from "./toolsets";
@@ -57,16 +59,15 @@ export const CHEMDRAW_COMMAND_SHORTCUT_OVERRIDES: Readonly<Record<string, string
  */
 export function applyKeybindingSchemeToCommands(
   commands: readonly CommandSpec[],
-  scheme: KeybindingScheme
+  scheme: KeybindingScheme,
+  overrides?: ShortcutOverrides,
+  platform?: ShortcutPlatform
 ): CommandSpec[] {
-  if (scheme !== "chemdraw") {
-    return [...commands];
-  }
   return commands.map((command) => {
-    if (!Object.prototype.hasOwnProperty.call(CHEMDRAW_COMMAND_SHORTCUT_OVERRIDES, command.id)) {
-      return command;
-    }
-    const override = CHEMDRAW_COMMAND_SHORTCUT_OVERRIDES[command.id];
+    const keys = overrides?.commands?.[command.id] ?? overrides?.atom?.[command.id] ?? overrides?.bond?.[command.id];
+    const override = keys ? keys[0] ?? null : scheme === "chemdraw" && Object.hasOwn(CHEMDRAW_COMMAND_SHORTCUT_OVERRIDES, command.id)
+      ? CHEMDRAW_COMMAND_SHORTCUT_OVERRIDES[command.id] : undefined;
+    if (override === undefined) return command;
     return {
       ...command,
       // Empty string — NOT undefined — is the "unbound" sentinel. Transformed specs are later
@@ -76,7 +77,7 @@ export function applyKeybindingSchemeToCommands(
       // and clears both fields the shortcut engine falls back through.
       shortcut: override ?? "",
       defaultShortcut: override ?? "",
-      shortcutLabel: override ? formatShortcutLabel(override) ?? override : ""
+      shortcutLabel: override ? formatShortcutLabel(override, platform) ?? override : ""
     };
   });
 }
@@ -162,6 +163,39 @@ export function chemDrawHoveredTargetHotkeyCommand(
   targetKind: "atom" | "bond",
   key: string
 ): string | undefined {
-  const table = targetKind === "atom" ? CHEMDRAW_ATOM_HOTKEYS : CHEMDRAW_BOND_HOTKEYS;
+  const table = defaultHoverShortcuts("chemdraw", targetKind);
   return Object.prototype.hasOwnProperty.call(table, key) ? table[key] : undefined;
 }
+
+const CHEMDRAFT_ATOM_HOTKEYS: Readonly<Record<string, string>> = {
+  ...Object.fromEntries(nativeSingleLetterElements.flatMap(element => [
+    [element.toLowerCase(), atomElementCommand(element)], [element, atomElementCommand(element)]
+  ])),
+  ...numericAtomDrawingHotkeys,
+  ...fragmentAtomDrawingHotkeys,
+  k: "atom.addCarbonylToHoveredAtom",
+  K: "atom.addCarbonylToHoveredAtom",
+  "+": "atom.addPositiveChargeToHoveredAtom",
+  "-": "atom.addNegativeChargeToHoveredAtom",
+  ".": "atom.addRadicalToHoveredAtom"
+};
+
+const CHEMDRAFT_BOND_HOTKEYS: Readonly<Record<string, string>> = {
+  ...numericBondDrawingHotkeys,
+  ...fragmentBondDrawingHotkeys,
+  w: "bond.setHoveredBondDisplay.wedge",
+  W: "bond.setHoveredBondDisplay.hashed"
+};
+
+export function defaultHoverShortcuts(scheme: KeybindingScheme, target: "atom" | "bond"): Readonly<Record<string, string>> {
+  if (scheme === "chemdraw") return target === "atom" ? CHEMDRAW_ATOM_HOTKEYS : CHEMDRAW_BOND_HOTKEYS;
+  return target === "atom" ? CHEMDRAFT_ATOM_HOTKEYS : CHEMDRAFT_BOND_HOTKEYS;
+}
+
+export function createHoverShortcutTables(scheme: KeybindingScheme, overrides?: ShortcutOverrides) {
+  const table = (scope: "atom" | "bond") =>
+    createHoverShortcutRegistry(defaultHoverShortcuts(scheme, scope), overrides?.[scope]);
+  return { atom: table("atom"), bond: table("bond") };
+}
+
+export type HoverShortcutTables = ReturnType<typeof createHoverShortcutTables>;

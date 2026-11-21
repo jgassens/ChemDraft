@@ -13,7 +13,7 @@
  */
 
 import type { ChemDraftDocument, MoleculeObject } from "@chemdraft/chem-core";
-import { nativeMoleculeRingAtPoint } from "@chemdraft/layout-engine";
+import { inverseTransformPointForObject, nativeMoleculeRingAtPoint } from "@chemdraft/layout-engine";
 import {
   findNativeMoleculeDeleteHit,
   findNativeMoleculeTemplateHit,
@@ -133,7 +133,8 @@ export function nativeMoleculeHitFromPointerTarget(
   // The geometric model hit (nearest atom, else nearest bond, each gated by its hit
   // radius) is the source of truth and always reports real distances, so the
   // cross-object sort in nativeMoleculeCanvasHoverTarget stays correct.
-  const modelHit = findNativeMoleculeDeleteHit(molecule, point, tolerance);
+  const localPoint = inverseTransformPointForObject(molecule, point);
+  const modelHit = findNativeMoleculeDeleteHit(molecule, localPoint, tolerance);
 
   // The DOM tells us which glyph the pointer is literally over — a strong intent
   // signal, but only used to break a near-tie in favour of that atom. It must never
@@ -149,7 +150,7 @@ export function nativeMoleculeHitFromPointerTarget(
   if (atomId && (modelHit?.kind !== "atom" || modelHit.atomId !== atomId)) {
     const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
     if (atom) {
-      const atomDistance = distance(atom, point);
+      const atomDistance = distance(atom, localPoint);
       if (!modelHit || atomDistance <= modelHit.distanceToPointer + HOVER_DOM_TIEBREAK_PX) {
         return { kind: "atom", atomId: atom.id, distanceToPointer: atomDistance, source: "atom-dom-tiebreak" };
       }

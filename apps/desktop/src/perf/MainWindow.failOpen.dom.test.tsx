@@ -604,9 +604,10 @@ it.each([
   });
 
 it.each([
-  ["view.togglePreferences", "preferences", "toggle_preferences_window"],
-  ["view.toggle3dDebugger", "spin3d-debugger", "toggle_spin3d_debugger_window"]
-])("%s registers cold-open intent before the toggle without awaiting diagnostics", async (action, target, toggle) => {
+  { action: "view.togglePreferences", target: "preferences", toggle: "toggle_preferences_window" },
+  { action: "view.openKeyboardPreferences", target: "preferences", toggle: "toggle_preferences_window", args: { keyboard: true } },
+  { action: "view.toggle3dDebugger", target: "spin3d-debugger", toggle: "toggle_spin3d_debugger_window" }
+])("$action registers cold-open intent before the toggle without awaiting diagnostics", async ({ action, target, toggle, args }) => {
   await mount(); vi.useFakeTimers(); native.invoke.mockClear();
   let registered: import("./runtime").NativeOpen | undefined;
   native.invoke.mockImplementation((name: string, args?: { nativeOpen?: import("./runtime").NativeOpen }) => {
@@ -629,7 +630,7 @@ it.each([
   expect(native.windows.has(toggle)).toBe(true);
   expect(native.invoke.mock.calls.slice(0, 2)).toEqual([
     ["perf_log_clock", { nativeOpen: expect.objectContaining({ target, commandId: action }) }],
-    [toggle]
+    args ? [toggle, args] : [toggle]
   ]);
   expect(registered?.shownAt).toEqual(expect.any(Number));
   const at = registered!.shownAt! + 1;

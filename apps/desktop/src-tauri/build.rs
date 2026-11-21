@@ -60,6 +60,7 @@ fn main() {
             "focus_main_document_window_if_app_active",
             "set_menu_checked",
             "set_keybinding_scheme",
+            "desktop_preferences",
             "plugin_storage_read",
             "plugin_storage_write",
             "plugin_storage_delete",

@@ -1,0 +1,88 @@
+[
+  {
+    "name": "Jeremiah Gassensmith",
+    "handle": "jgassens",
+    "contribution": "Creator and maintainer.",
+    "sources": [
+      "f0b106982 (initial ChemDraft scaffold)",
+      "NOTICE (ChemDraft copyright)"
+    ]
+  },
+  {
+    "name": "Clemens Kaussler",
+    "contribution": "Detailed drawing and NMR bug reports and testing, and the Ilm-NMR-P31 phosphorus NMR data.",
+    "sources": [
+      "owner email, 2026-11-18"
+    ]
+  },
+  {
+    "name": "Emily Osborn",
+    "handle": "EmOsborn7",
+    "contribution": "Compound layouts, formatted reaction conditions, electron-mark sizing and editing, and wavy art-line controls.",
+    "sources": [
+      "2dec5d841 (#158)",
+      "release-notes/macos/ChemDraft_1.1.0_aarch64.md",
+      "release-notes/macos/ChemDraft_1.2.0_aarch64.md",
+      "docs/wavy-lines-handoff.md (#209)"
+    ]
+  },
+  {
+    "name": "Fairuz Tahia",
+    "handle": "tfairuz38",
+    "contribution": "Sourced ACS 1996 and RSC journal style values, and helped preserve chemistry in export.",
+    "sources": [
+      "f4fa8203d",
+      "91fba5fc9 (#151, including public handle)",
+      "release-notes/macos/ChemDraft_1.2.0_aarch64.md"
+    ]
+  },
+  {
+    "name": "Kohulan",
+    "handle": "Kohulan",
+    "contribution": "Linux desktop support, including clipboard, startup, and release packaging.",
+    "sources": [
+      "4236a66cf (merged in a17dfc84f, PR #381)",
+      "763661f5d (merged in 810e99cb6, PR #409)"
+    ]
+  },
+  {
+    "name": "Neelima Koti",
+    "handle": "neelimakoti555-hub",
+    "contribution": "Ring tool grouping, 7- and 8-membered rings, orbital placement and rotation, and double and triple bond tools.",
+    "sources": [
+      "d3a652767 (#263, co-author trailer)",
+      "release-notes/macos/ChemDraft_1.1.0_aarch64.md"
+    ]
+  },
+  {
+    "name": "Nithish Agamendran",
+    "handle": "nithishag20",
+    "contribution": "Windows development tooling, document tabs, export previews and size presets, and startup and quit options.",
+    "sources": [
+      "14459a46f (#105)",
+      "7564a9566 (#102, document tabs)",
+      "94f61c929 (#141)",
+      "e7724e1a5 (#144)",
+      "d3a652767 (#263)",
+      "release-notes/macos/ChemDraft_1.1.0_aarch64.md"
+    ]
+  },
+  {
+    "name": "Sam Ellis",
+    "handle": "SamChemMan",
+    "contribution": "Wrote the upstream Octet Draw code adapted for structure search, offline name lookup, and binary CDX compatibility.",
+    "sources": [
+      "NOTICE (Octet Draw attribution)",
+      "docs/architecture/dependency-inventory.md (Octet Draw row)"
+    ]
+  },
+  {
+    "name": "Ziqi Wang",
+    "handle": "Ziqi1107",
+    "contribution": "Fixed overlapping text during edits and enabled formatting across selected text boxes.",
+    "sources": [
+      "d3a652767 (#263, co-author trailer)",
+      "release-notes/macos/ChemDraft_1.1.0_aarch64.md"
+    ]
+  }
+]

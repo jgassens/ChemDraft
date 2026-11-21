@@ -1,4 +1,6 @@
 import type { ShortcutRegistry } from "@chemdraft/shortcut-engine";
+import { aboutCommand } from "./about/aboutCommand";
+import { SHOW_TOUR_COMMAND } from "./tour/tourCommands";
 
 /** Native app menu routes, mirrored from lib.rs MENU_COMMAND_IDS by a parity test.
  * Close Window is absent: its native action closes the palette, not the document tab. */
@@ -47,6 +49,8 @@ export const NATIVE_MENU_COMMAND_IDS: ReadonlySet<string> = new Set([
   "structure.openInteractive3d",
   "plugins.manage",
   "plugins.vibeCodeStarter",
+  aboutCommand.id,
+  SHOW_TOUR_COMMAND,
   "help.reportBug",
 ]);
 

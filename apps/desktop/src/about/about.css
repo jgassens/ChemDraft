@@ -1,0 +1,105 @@
+.about-window {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  user-select: text;
+  color: CanvasText;
+  background: Canvas;
+  color-scheme: light dark;
+  font: 0.875rem/1.5 system-ui, sans-serif;
+}
+
+.about-window nav,
+.about-window footer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  padding: 0.75rem 1.25rem;
+}
+
+.about-window nav {
+  border-bottom: 1px solid color-mix(in srgb, CanvasText 20%, Canvas);
+}
+
+.about-window footer {
+  justify-content: flex-end;
+  border-top: 1px solid color-mix(in srgb, CanvasText 20%, Canvas);
+}
+
+.about-sections,
+.about-license {
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+  padding: 0 1.25rem 1.25rem;
+  overflow-wrap: anywhere;
+}
+
+.about-license {
+  padding-top: 1rem;
+}
+
+.about-license pre {
+  white-space: pre-wrap;
+}
+
+.about-window h1,
+.about-window h2 {
+  margin: 1rem 0 0.5rem;
+}
+
+.about-window h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.about-window p {
+  margin: 0.35rem 0;
+}
+
+.about-window a {
+  color: LinkText;
+}
+
+.about-window button {
+  font: inherit;
+}
+
+.about-version span {
+  display: block;
+}
+
+.about-links {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+}
+
+.about-credits {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.about-credits li {
+  border-bottom: 1px solid color-mix(in srgb, CanvasText 15%, Canvas);
+  padding: 0.55rem 0;
+}
+
+.about-group > summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 0.35rem 0;
+}
+
+.about-handles {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  margin: 0;
+  padding: 0;
+}

@@ -102,9 +102,8 @@ describe("repeated radical placement", () => {
       x: first.x - 9, y: first.y - 9, width: 18, height: 18, rotation: 0, style: {},
       anchor: { kind: "atom", objectId: molecule.id, atomId: "atom" } };
     const second = nativeRadicalPlacementPointForAtom(molecule, "atom", [molecule, mark], 792, 612)!;
-    const localCenter = transformPointForObject({ ...molecule, rotation: -rotation }, first);
     const existingSearch = electronMarkPlacementPointForAtom(molecule, "atom", [molecule, {
-      ...mark, markKind: "charge", x: localCenter.x - 9, y: localCenter.y - 9
+      ...mark, markKind: "charge"
     }],
       792, 612, { avoidLabelOverlap: false })!;
     expect(second).toEqual(transformPointForObject(molecule, existingSearch));
@@ -159,9 +158,10 @@ function anchoredMark(angle: number, markKind: ElectronMarkObject["markKind"] = 
     anchor: { kind: "atom", objectId: "molecule", atomId: "oxygen" } };
 }
 
-function expectDirection(plan: ReturnType<typeof lonePairPlacementPlanForAtom>, angle: number) {
+function expectDirection(plan: ReturnType<typeof lonePairPlacementPlanForAtom>, angle: number,
+  atom = { x: 200, y: 200 }) {
   expect(plan).toBeDefined();
-  const dx = plan!.center.x - 200, dy = plan!.center.y - 200;
+  const dx = plan!.center.x - atom.x, dy = plan!.center.y - atom.y;
   const radius = Math.hypot(dx, dy);
   expect(dx / radius).toBeCloseTo(Math.cos(angle), 10);
   expect(dy / radius).toBeCloseTo(Math.sin(angle), 10);
@@ -172,6 +172,45 @@ function expectDirection(plan: ReturnType<typeof lonePairPlacementPlanForAtom>, 
 }
 
 describe("lone-pair placement plans", () => {
+  it.each([0, 90, 45, 180])("places a page-right pair on an off-center atom and clears its label at %s°", rotation => {
+    const molecule = oxygen([], "OH", 72);
+    molecule.atoms[0].y = 150;
+    const rotated = { ...molecule, rotation };
+    const atom = transformPointForObject(rotated, molecule.atoms[0]);
+    const plan = lonePairPlacementPlanForAtom(rotated, "oxygen", [rotated], 792, 612, 0);
+    expectDirection(plan, 0, atom);
+
+    // A common rotation of the mark and label preserves the required clearance.
+    const local = lonePairPlacementPlanForAtom(molecule, "oxygen", [molecule], 792, 612, -rotation * Math.PI / 180)!;
+    const expected = transformPointForObject(rotated, local.center);
+    expect(plan!.center.x).toBeCloseTo(expected.x, 10);
+    expect(plan!.center.y).toBeCloseTo(expected.y, 10);
+    expect(plan!.center.x - atom.x).toBeGreaterThan(24.3);
+  });
+
+  it.each([0, 90, 45, 180])("finds gaps between a rotated bond and a page-space mark at %s°", rotation => {
+    const molecule = { ...oxygen([Math.PI]), rotation };
+    for (const atom of molecule.atoms) atom.y -= 50;
+    const atom = transformPointForObject(molecule, molecule.atoms[0]);
+    const turn = rotation * Math.PI / 180;
+    const first = lonePairPlacementPlanForAtom(molecule, "oxygen", [molecule], 792, 612);
+    expectDirection(first, turn, atom);
+
+    const occupied = turn - Math.PI / 2;
+    const mark = { ...anchoredMark(occupied, "radical-dot"),
+      x: atom.x + 35 * Math.cos(occupied) - 9, y: atom.y + 35 * Math.sin(occupied) - 9 };
+    const second = lonePairPlacementPlanForAtom(molecule, "oxygen", [molecule, mark], 792, 612);
+    expectDirection(second, turn + Math.PI / 4, atom);
+  });
+
+  it("checks the page edge after rotation", () => {
+    const molecule = { ...oxygen([Math.PI / 2]), rotation: 90 };
+    for (const atom of molecule.atoms) atom.y -= 50;
+    expect(lonePairPlacementPlanForAtom(molecule, "oxygen", [molecule], 271, 612, 0)).toBeUndefined();
+    expectDirection(lonePairPlacementPlanForAtom(molecule, "oxygen", [molecule], 271, 612, Math.PI),
+      Math.PI, { x: 250, y: 200 });
+  });
+
   it.each([0, Math.PI / 7, -Math.PI / 2])("places the first ketone pair opposite its bond after rotation %s", turn => {
     const molecule = oxygen([Math.PI + turn]);
     const plan = lonePairPlacementPlanForAtom(molecule, "oxygen", [molecule], 792, 612);

@@ -1,9 +1,12 @@
 import { clearStoredCtabReference, storedCtabReference } from "@chemdraft/plugin-host";
 import type { Anchor, MoleculeObject } from "@chemdraft/chem-core";
 import { chemicalIdentitySource, moleculeSmiles, nativeSingleBondGraphMetadata } from "@chemdraft/document-workflow-core";
+import type { ExportWarning } from "@chemdraft/export-engine";
 import { nativeElementFromAtomLabel, nativeEnhancedStereoAtomIndicators } from "@chemdraft/layout-engine";
+import { refreshNativeSingleBondGraph } from "../../documentWorkflow";
 import { validateInspectionSource } from "../depiction/structureInspection";
 import { inspectMolecule, inspectSmiles, type StructureInspectionContext } from "./structureIdentity";
+import { ChemistryRefusal } from "./chemistryRefusal";
 import { assertStoredCtabStereo, verifyWrittenBonds } from "./storedStereo";
 
 export const stableRecord = (record: unknown) =>
@@ -49,9 +52,12 @@ function hasExtraCtabFields(structure: string, format: "molfile-v2000" | "molfil
   });
 }
 
+const CLAIM_LABELS = { stereochemistry: "stereo", isotopeLabels: "isotope labels", radicalCount: "radical count",
+  totalCharge: "charge", formula: "formula" } as const;
+
 export async function inspectWriteSmiles(context: StructureInspectionContext, value: string) {
   validateInspectionSource({ format: "smiles", structure: value });
-  if (value.includes("|")) throw new Error("A graph edit cannot verify extended CXSMILES annotations.");
+  if (value.includes("|")) throw new ChemistryRefusal("the structure carries extended SMILES annotations that can't be checked", "A graph edit cannot verify extended CXSMILES annotations.");
   return inspectSmiles(context, value);
 }
 
@@ -64,39 +70,61 @@ export async function verifyStoredSources(context: StructureInspectionContext, m
   const replacementIdentity = graph?.identitySmiles ?? options.replacementIdentity;
   const { structure, structureFormat } = molecule;
   if (replacementIdentity !== undefined && nativeEnhancedStereoAtomIndicators(molecule).length) {
-    throw new Error(`The stored annotations of "${molecule.id}" cannot be verified by a plain SMILES chemical edit.`);
+    throw new ChemistryRefusal("its stereo annotations can't be matched to the drawn structure", `The stored annotations of "${molecule.id}" cannot be verified by a plain SMILES chemical edit.`);
   }
   const check = async (format: Exclude<MoleculeObject["structureFormat"], "unknown">, value: string) => {
     validateInspectionSource({ format, structure: value });
     if (replacementIdentity !== undefined && (format === "smiles" ? value.includes("|") : hasExtraCtabFields(value, format))) {
-      throw new Error(`The stored ${format} of "${molecule.id}" contains annotations the graph writer cannot verify.`);
+      throw new ChemistryRefusal("the stored structure carries annotations that can't be checked against the drawn atoms", `The stored ${format} of "${molecule.id}" contains annotations the graph writer cannot verify.`);
     }
     const result = await context.chemistry.inspectStructure(format === "smiles" ? "smiles" : "molfile", value);
     if (!result.valid || !result.orderedIdentity ||
         replacementIdentity !== undefined && (result.hasStoredGroups !== false || result.identitySmiles !== replacementIdentity)) {
-      throw new Error(`The stored ${format} of "${molecule.id}" has chemistry the editable graph cannot verify.`);
+      throw new ChemistryRefusal("the stored structure doesn't match the drawn atoms", `The stored ${format} of "${molecule.id}" has chemistry the editable graph cannot verify.`);
     }
     if (format !== "smiles" && graph) {
       let referenceMolfile: string | undefined;
       if (reference && reference !== molecule) {
         const serialized = chemicalIdentitySource(reference, [], "v2000");
         if (stableRecord(serialized.molecule.atoms.map(atom => atom.id)) !== stableRecord(graph.atomIds)) {
-          throw new Error("Cannot map the retained stereo coordinates to the editable graph.");
+          throw new ChemistryRefusal("its stereo annotations can't be matched to the drawn structure", "Cannot map the retained stereo coordinates to the editable graph.");
         }
         referenceMolfile = serialized.molfile;
       }
-      assertStoredCtabStereo(value, result.stereoTags, graph, molecule, referenceMolfile);
+      // The identity check above already required the stored source to read as the graph does.
+      assertStoredCtabStereo(value, result.stereoTags, graph, molecule, referenceMolfile, graph.identitySmiles);
     }
   };
   if (structure && !(alreadyVerified?.structureFormat === structureFormat && alreadyVerified.structure === structure)) {
-    if (structureFormat === "unknown") throw new Error(`Cannot verify the stored structure format of "${molecule.id}".`);
+    if (structureFormat === "unknown") throw new ChemistryRefusal("the stored structure's format isn't recognized", `Cannot verify the stored structure format of "${molecule.id}".`);
     await check(structureFormat, structure);
   }
   const cached = molecule.compatibility?.unknown.smiles;
   if (cached !== undefined && cached !== alreadyVerified?.compatibility?.unknown.smiles &&
       !(structureFormat === "smiles" && cached === structure)) {
-    if (typeof cached !== "string") throw new Error(`Cannot verify the cached SMILES of "${molecule.id}".`);
+    if (typeof cached !== "string") throw new ChemistryRefusal("the stored SMILES can't be checked against the drawn atoms", `Cannot verify the cached SMILES of "${molecule.id}".`);
     await check("smiles", cached);
+  }
+}
+
+/** Superatoms, R-groups and retained compatibility records (other than the cached SMILES) have
+ * no counterpart the editable graph can verify, so a write may keep them but never change them. */
+export function assertRetainedAnnotationsKept(original: MoleculeObject, molecule: MoleculeObject) {
+  if (abbreviationRecords(original) !== abbreviationRecords(molecule) ||
+      retainedCompatibility(original) !== retainedCompatibility(molecule)) {
+    throw new ChemistryRefusal("it would change an abbreviation or R-group that can't be checked", `The chemical edit cannot verify changes to retained annotations or abbreviations of "${molecule.id}".`);
+  }
+}
+
+/** A chemistry record the write supplied must state what the graph-derived record states. */
+export function assertChemistryClaims(molecule: MoleculeObject, original: MoleculeObject | undefined, record: MoleculeObject) {
+  if (!molecule.chemistry || stableRecord(molecule.chemistry) === stableRecord(original?.chemistry)) return;
+  for (const key of ["stereochemistry", "isotopeLabels", "radicalCount", "totalCharge", "formula"] as const) {
+    const claim = molecule.chemistry[key];
+    if (claim !== undefined && (key !== "stereochemistry" || molecule.chemistry.stereochemistry.length > 0) &&
+        stableRecord(claim) !== stableRecord(record.chemistry![key])) {
+      throw new ChemistryRefusal(`the ${CLAIM_LABELS[key]} doesn't match the drawn structure`, `The stored ${key} of "${molecule.id}" differs from the verified chemical edit.`);
+    }
   }
 }
 
@@ -109,45 +137,19 @@ export async function verifiedChemicalRecord(context: StructureInspectionContext
   if (previous) {
     const original = previous.molecule;
     await verifyStoredSources(context, original, { graph: previous.graph, reference: storedCtabReference(original) });
-    if (abbreviationRecords(original) !== abbreviationRecords(molecule) ||
-        retainedCompatibility(original) !== retainedCompatibility(molecule)) {
-      throw new Error(`The chemical edit cannot verify changes to retained annotations or abbreviations of "${id}".`);
-    }
+    assertRetainedAnnotationsKept(original, molecule);
     if (original.chemistry) {
       const native = nativeSingleBondGraphMetadata(original.atoms, original.bonds);
+      if (original.chemistry.stereochemistry.length) native.stereochemistry = previous.graph.stereochemistry ?? [];
       if (Object.entries(original.chemistry).some(([key, value]) => stableRecord(value) !== stableRecord(native[key as keyof typeof native]))) {
-        throw new Error(`The stored chemistry metadata of "${id}" cannot be verified from its native graph.`);
+        throw new ChemistryRefusal("the stored chemistry details don't match the drawn atoms", `The stored chemistry metadata of "${id}" cannot be verified from its native graph.`);
       }
     }
   }
-  verifyWrittenBonds(molecule, graph);
   await verifyStoredSources(context, molecule, { graph, alreadyVerified: previous?.molecule });
-  const chemistry = nativeSingleBondGraphMetadata(molecule.atoms, molecule.bonds);
-  if (molecule.chemistry && stableRecord(molecule.chemistry) !== stableRecord(previous?.molecule.chemistry)) {
-    for (const key of ["stereochemistry", "isotopeLabels", "radicalCount", "totalCharge", "formula"] as const) {
-      const claim = molecule.chemistry[key];
-      if (claim !== undefined && stableRecord(claim) !== stableRecord(chemistry[key])) {
-        throw new Error(`The stored ${key} of "${id}" differs from the verified chemical edit.`);
-      }
-    }
-  }
-  if (chemistry.formula !== graph.formula) {
-    throw new Error(`The native formula of "${id}" differs from the normalized graph's formula.`);
-  }
-  const explicitUnknown = molecule.bonds.some(bond => bond.stereo === "either" || bond.display?.bondStyle === "wavy");
-  // Keep source CTAB stereo on its atom/bond, including annotations plain SMILES cannot store.
-  const format = molecule.structureFormat.startsWith("molfile-") ? molecule.structureFormat :
-    previous?.molecule.structureFormat.startsWith("molfile-") ? previous.molecule.structureFormat :
-    explicitUnknown ? "molfile-v2000" : "smiles";
-  const structure = format === "molfile-v3000" ? chemicalIdentitySource(molecule, [], "v3000").molfile :
-    format === "molfile-v2000" ? graph.molfile : graph.identitySmiles;
-  const compatibility = clearStoredCtabReference(molecule.compatibility);
-  const record: MoleculeObject = { ...molecule, chemistry,
-    structureFormat: format, structure,
-    ...(compatibility && { compatibility: "smiles" in compatibility.unknown
-      ? { ...compatibility, unknown: { ...compatibility.unknown, smiles: graph.identitySmiles } } : compatibility })
-  };
-  if (format === "molfile-v3000") {
+  const record = refreshVerifiedMoleculeChemistry(molecule, graph, previous?.molecule.structureFormat);
+  assertChemistryClaims(molecule, previous?.molecule, record);
+  if (record.structureFormat === "molfile-v3000") {
     await verifyStoredSources(context, record, { graph });
   }
   // Exercise the actual export serializer, including its independent stored-SMILES fallback.
@@ -159,13 +161,44 @@ export async function verifiedChemicalRecord(context: StructureInspectionContext
   };
   const engineExport = await moleculeSmiles(record, 0, [], inspectMolfile);
   if ((await inspectSmiles(context, engineExport)).identitySmiles !== graph.identitySmiles) {
-    throw new Error(`The exported SMILES would change the chemistry of "${id}".`);
+    throw new ChemistryRefusal("exporting it as SMILES would change the structure", `The exported SMILES would change the chemistry of "${id}".`);
   }
-  const fallback = await moleculeSmiles(record, 0, [], undefined);
+  const fallbackWarnings: ExportWarning[] = [];
+  const fallback = await moleculeSmiles(record, 0, fallbackWarnings, undefined);
   const fallbackIdentity = (await inspectSmiles(context, fallback)).identitySmiles;
-  if (fallbackIdentity !== graph.identitySmiles) {
-    throw new Error(`The exported SMILES would change the chemistry of "${id}".`);
+  // The native fallback can omit stereo. RDKit already verified the isomeric storage and engine export.
+  // Still require the fallback to preserve all other chemistry and reject conflicting stereo.
+  if (fallbackIdentity !== graph.identitySmiles &&
+      !(fallbackWarnings.some(warning => warning.code === "export.smiles_stereo_dropped") &&
+        graph.stereochemistry?.length && fallbackIdentity === graph.identityFacts?.withoutStereo)) {
+    throw new ChemistryRefusal("exporting it as SMILES would change the structure", `The exported SMILES would change the chemistry of "${id}".`);
   }
 
   return record;
+}
+
+/** Refresh metadata through the canvas edit path and store the isomeric identity RDKit read. */
+export function refreshVerifiedMoleculeChemistry(molecule: MoleculeObject, graph: Awaited<ReturnType<typeof inspectMolecule>>,
+  previousFormat?: MoleculeObject["structureFormat"]): MoleculeObject {
+  verifyWrittenBonds(molecule, graph);
+  const { id } = molecule;
+  const { chemistry } = refreshNativeSingleBondGraph(molecule, molecule.atoms, molecule.bonds);
+  if (!chemistry || chemistry.formula !== graph.formula) {
+    throw new ChemistryRefusal("the formula doesn't match the drawn atoms", `The native formula of "${id}" differs from the normalized graph's formula.`);
+  }
+  if (graph.formalCharge !== undefined && chemistry.totalCharge !== graph.formalCharge) {
+    throw new ChemistryRefusal("the charge doesn't match the drawn atoms", `The native charge of "${id}" differs from the normalized graph's charge.`);
+  }
+  const explicitUnknown = molecule.bonds.some(bond => bond.stereo === "either" || bond.display?.bondStyle === "wavy");
+  // Keep source CTAB stereo on its atom/bond, including annotations plain SMILES cannot store.
+  const format = molecule.structureFormat.startsWith("molfile-") ? molecule.structureFormat :
+    previousFormat?.startsWith("molfile-") ? previousFormat : explicitUnknown ? "molfile-v2000" : "smiles";
+  const structure = format === "molfile-v3000" ? chemicalIdentitySource(molecule, [], "v3000").molfile :
+    format === "molfile-v2000" ? graph.molfile : graph.identitySmiles;
+  const compatibility = clearStoredCtabReference(molecule.compatibility);
+  return { ...molecule, chemistry: { ...chemistry, stereochemistry: graph.stereochemistry ?? [] },
+    structureFormat: format, structure,
+    ...(compatibility && { compatibility: "smiles" in compatibility.unknown
+      ? { ...compatibility, unknown: { ...compatibility.unknown, smiles: graph.identitySmiles } } : compatibility })
+  };
 }

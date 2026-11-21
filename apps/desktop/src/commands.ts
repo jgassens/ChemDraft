@@ -626,6 +626,7 @@ export const atomElementActions: CommandSpec[] = nativeHotkeyElements.map((eleme
 
 /** Opens the Preferences window (Spin 3D refinement mode, future app settings). */
 export const PREFERENCES_COMMAND_ID = "view.togglePreferences";
+export const KEYBOARD_PREFERENCES_COMMAND_ID = "view.openKeyboardPreferences";
 
 export const viewActions: CommandSpec[] = [
   {

@@ -1,4 +1,4 @@
-import { applyPatch, createEmptyDocument, createDocumentHistory, undo, redo, type DocumentPatch } from "@chemdraft/chem-core";
+import { applyPatch, createEmptyDocument, createDocumentHistory, undo, redo, type ChemDraftDocument, type DocumentPatch } from "@chemdraft/chem-core";
 import { TableSpecSchema } from "@chemdraft/document-workflow-core";
 import type { AppliedPatchReceipt, PluginTableSpec } from "@chemdraft/plugin-api";
 import type { PluginPatchApplicationRequest } from "@chemdraft/plugin-host";
@@ -66,5 +66,39 @@ describe("plugin table preparation and runtime", () => {
     const restored = undo(history);
     expect(restored.present).toBe(before);
     expect(redo(restored).present).toBe(document);
+  });
+  it("places the table beside the selection's own page when a selected id also names an object on an earlier page", async () => {
+    const caption = (y: number) => ({ id: "caption", type: "text" as const, x: 100, y, width: 50, height: 50, rotation: 0, style: {}, text: "Caption", spans: [] });
+    const empty = createEmptyDocument();
+    // Page A and page B each hold an object "caption"; the command's selection names page B's.
+    const pageA = { ...empty.pages[0]!, id: "page_a", objects: [caption(200)] };
+    const pageB = { ...empty.pages[0]!, id: "page_b", objects: [caption(400)] };
+    let document: ChemDraftDocument = { ...empty, pages: [pageA, pageB], selection: { pageId: "page_b", objectIds: ["caption"] } };
+    const applyDocumentPatch = vi.fn((request: PluginPatchApplicationRequest) => {
+      const result = applyPluginDocumentPatch(document, request.patch);
+      document = result.document;
+      return result.receipt;
+    });
+    const runtime = createPluginRuntime({ getActiveDocument: () => document, applyDocumentPatch });
+    runtime.registerPlugin({ id: "org.test.tables", name: "Tables", version: "1", apiVersion: "^0.1.18", entry: "plugin.js",
+      permissions: ["document.write"], contributes: { commands: [{ id: "plugin.tables.insert", title: "Make table" }] }
+    }, { commandHandlers: { "plugin.tables.insert": context => context.documents.insertTable!(spec) } });
+    const receipt = await runtime.invokeCommand("plugin.tables.insert") as AppliedPatchReceipt;
+    expect(document.pages[0]!.objects).toEqual(pageA.objects);
+    const table = document.pages[1]!.objects.find(object => object.id === receipt.objectIds[0])!;
+    // Beside page B's caption (x 100..150, centred on y 425), not on page A.
+    expect(table).toMatchObject({ type: "table", x: 162 });
+    expect(table.y + table.height / 2).toBe(425);
+    expect(document.selection).toEqual({ pageId: "page_b", objectIds: receipt.objectIds });
+  });
+  it("anchors only on the page each reference names", () => {
+    const caption = (y: number) => ({ id: "caption", type: "text" as const, x: 100, y, width: 50, height: 50, rotation: 0, style: {}, text: "Caption", spans: [] });
+    const empty = createEmptyDocument();
+    const document = { ...empty, pages: [{ ...empty.pages[0]!, id: "page_a", objects: [caption(200)] },
+      { ...empty.pages[0]!, id: "page_b", objects: [caption(400)] }] };
+    const patch = buildPluginTablePatch(spec, document, [{ pageId: "page_b", objectId: "caption" }]).patch as DocumentPatch;
+    if (patch.op !== "addObject") throw new Error("Expected table insertion");
+    expect(patch.pageId).toBe("page_b");
+    expect(patch.object.y + patch.object.height / 2).toBe(425);
   });
 });

@@ -61,6 +61,24 @@ function parseNativeMenuCommandIds(): string[] {
 }
 
 describe("app menu model", () => {
+  it.each([["macos", "app"], ["windows", "help"]] as const)("places About ChemDraft in the %s menu", (platform, sectionId) => {
+    const sections = buildAppMenuModel({ ...EMPTY_CONTEXT, platform });
+    const about = expect.objectContaining({ kind: "command", commandId: "help.about", label: "About ChemDraft", enabled: true });
+    const section = sections.find(section => section.id === sectionId)!;
+    expect(section.items).toContainEqual(about);
+    if (platform === "macos") expect(section.items[0]).toEqual(about);
+    expect(flattenAppMenuCommands(sections).filter(item => item.commandId === "help.about")).toHaveLength(1);
+  });
+
+  it("uses the same routed About command in the native app and Help menus", () => {
+    const native = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+    const macMenu = native.split("fn create_native_app_menu<R: Runtime>")[1]!.split("fn create_page_setup_menu")[0]!;
+    expect(macMenu).toMatch(/&\[\s*&about_menu_item\(app\)\?/);
+    const helpMenu = native.split('"Help",\n                true,')[1]!.split("],")[0]!;
+    expect(helpMenu).toMatch(/#\[cfg\(not\(target_os = "macos"\)\)\]\s*&about_menu_item\(app\)\?/);
+    expect(parseNativeMenuCommandIds()).toContain("help.about");
+  });
+
   it.each(["macos", "windows"] as const)("keeps a separate plugin alias block after the drawing styles on %s", platform => {
     const context = { ...EMPTY_CONTEXT, platform };
     const base = buildAppMenuModel(context).find(section => section.id === "structure")!;
@@ -455,7 +473,7 @@ describe("Preferences placement", () => {
     expect(appMenu.indexOf("&preferences_menu_item(app)?")).toBeLessThan(appMenu.indexOf("PredefinedMenuItem::services"));
     const item = source.split("fn preferences_menu_item<R: Runtime>")[1]!.split("fn create_view_menu")[0]!;
     expect(item).toContain("PREFERENCES_TOGGLE_COMMAND_ID");
-    expect(item).toContain('Some("CmdOrCtrl+,")');
+    expect(item).toContain('native_menu_shortcut(app, PREFERENCES_TOGGLE_COMMAND_ID, "CmdOrCtrl+,")');
     const viewMenu = source.split("fn create_view_menu<R: Runtime>")[1]!.split("fn create_toolbars_menu")[0]!;
     expect(viewMenu).not.toContain("preferences");
     expect(source).toContain('const PREFERENCES_TOGGLE_COMMAND_ID: &str = "view.togglePreferences";');

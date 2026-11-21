@@ -47,6 +47,7 @@ mod plugin_panel_acl_tests;
 mod plugin_starter;
 mod problem_reports;
 mod screen_capture;
+mod shortcut_recording_menu;
 mod structure_search;
 mod utility_suspension;
 #[cfg(test)]
@@ -85,9 +86,7 @@ use std::{
 use download_diagnosis::diagnose_download_host;
 use plugin_starter::plugin_starter_computer;
 use tauri::{
-    menu::{
-        AboutMetadata, CheckMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu,
-    },
+    menu::{CheckMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu},
     webview::PageLoadEvent,
     Emitter, Listener, Manager, RunEvent, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
@@ -970,6 +969,7 @@ const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
 const TOOLSET_CUSTOMIZATION_STATE_FILENAME: &str = "toolbar-layout-state.json";
 const TOOLSET_CUSTOMIZATION_EXTENSIONS_FILENAME: &str = "toolbar-layout-state.v2.json";
 const DOCUMENT_SESSION_FILENAME: &str = "document-session.json";
+const ABOUT_COMMAND_ID: &str = "help.about";
 const MENU_COMMAND_IDS: &[&str] = &[
     "table.insertDialog",
     "template.insertDialog",
@@ -1015,6 +1015,8 @@ const MENU_COMMAND_IDS: &[&str] = &[
     "structure.openInteractive3d",
     "plugins.manage",
     "plugins.vibeCodeStarter",
+    ABOUT_COMMAND_ID,
+    "help.showTour",
     "help.reportBug",
 ];
 
@@ -1077,7 +1079,19 @@ struct NativeMenuNeedsRebuild(AtomicBool);
 /// Which keyboard-shortcut scheme the app runs under (mirrors the webview's persisted setting; JS
 /// pushes it on startup and on change via `set_keybinding_scheme`). Read at menu-build time so the
 /// few native accelerators that differ between the schemes stay in step with the webview registry.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Deserialize,
+    serde::Serialize,
+)]
+#[serde(rename_all = "lowercase")]
 enum KeybindingScheme {
     #[default]
     ChemDraft,
@@ -1086,6 +1100,24 @@ enum KeybindingScheme {
 
 #[derive(Default)]
 struct KeybindingSchemeState(std::sync::Mutex<KeybindingScheme>);
+
+type MenuAccelerators = std::collections::BTreeMap<String, Option<String>>;
+
+#[derive(Default)]
+struct MenuAcceleratorOverrides(Mutex<MenuAccelerators>);
+
+fn native_menu_shortcut<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    id: &str,
+    default: &str,
+) -> Option<String> {
+    custom_menu_shortcut(app, id).unwrap_or_else(|| Some(default.to_owned()))
+}
+
+fn custom_menu_shortcut<R: Runtime>(app: &tauri::AppHandle<R>, id: &str) -> Option<Option<String>> {
+    app.try_state::<MenuAcceleratorOverrides>()
+        .and_then(|state| state.0.lock().unwrap().get(id).cloned())
+}
 
 fn current_keybinding_scheme<R: Runtime>(app: &tauri::AppHandle<R>) -> KeybindingScheme {
     app.try_state::<KeybindingSchemeState>()
@@ -1404,6 +1436,7 @@ pub fn run() {
         .manage(ToolbarsMenuModel::default())
         .manage(NativeMenuNeedsRebuild::default())
         .manage(KeybindingSchemeState::default())
+        .manage(MenuAcceleratorOverrides::default())
         // Take over the app's OWN `tauri://` origin so one handler serves both the document and any
         // staged plugin package (ADR-0029 §6 as amended; M36). This *replaces* Tauri's built-in
         // handler rather than adding a scheme — a new scheme would be a new origin, and M35 measured
@@ -1520,7 +1553,9 @@ pub fn run() {
                 close_key_window(app);
                 return;
             }
-            if is_routed_menu_command(command_id)
+            if (is_routed_menu_command(command_id)
+                || (is_clipboard_edit_menu_command(command_id)
+                    && custom_menu_shortcut(app, command_id).is_some()))
                 || is_core_routed_dynamic_menu_command(command_id, &current_plugin_menu_items(app))
             {
                 if let Err(error) = emit_menu_command(app, command_id) {
@@ -1530,6 +1565,11 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             file_warnings_window::on_window_event(window, event);
+            if window.label() == PREFERENCES_WINDOW_LABEL
+                && matches!(event, WindowEvent::Focused(false) | WindowEvent::Destroyed)
+            {
+                shortcut_recording_menu::set_recording(false);
+            }
             if window.label() == MAIN_WINDOW_LABEL {
                 if on_main_window_geometry_event_with(&QUIT, event, || {
                     // Windows sends Resized when the owner is restored from the taskbar;
@@ -1803,6 +1843,7 @@ pub fn run() {
             focus_main_document_window_if_app_active,
             set_menu_checked,
             set_keybinding_scheme,
+            desktop_preferences,
             plugin_storage_read,
             plugin_storage_write,
             plugin_storage_delete,
@@ -8329,13 +8370,17 @@ fn spin3d_debugger_window_route() -> &'static str {
 }
 
 #[tauri::command]
-async fn toggle_preferences_window(app: tauri::AppHandle) -> Result<(), String> {
+async fn toggle_preferences_window(
+    app: tauri::AppHandle,
+    keyboard: Option<bool>,
+) -> Result<(), String> {
     let _creation = lock_window_creation()?;
-    ensure_preferences_window(&app).map(|_| ())
+    ensure_preferences_window(&app, keyboard.unwrap_or(false)).map(|_| ())
 }
 
 fn ensure_preferences_window<R: Runtime>(
     app: &tauri::AppHandle<R>,
+    keyboard: bool,
 ) -> Result<tauri::WebviewWindow<R>, String> {
     let target = app.clone();
     with_preferences_owner_restored(
@@ -8365,7 +8410,7 @@ fn ensure_preferences_window<R: Runtime>(
             .map_err(|error| format!("Could not restore document for Preferences: {error}"))
             .and_then(|result| result)
         },
-        || create_or_raise_preferences_window(app),
+        || create_or_raise_preferences_window(app, keyboard),
     )
 }
 
@@ -8407,11 +8452,17 @@ fn restore_preferences_owner_if_needed(
 
 fn create_or_raise_preferences_window<R: Runtime>(
     app: &tauri::AppHandle<R>,
+    keyboard: bool,
 ) -> Result<tauri::WebviewWindow<R>, String> {
     if let Some(window) = app.get_webview_window(PREFERENCES_WINDOW_LABEL) {
         let target = window.clone();
         run_on_main_thread_blocking(&window, move || dialog_windows::show_preferences(&target))
             .and_then(|result| result)?;
+        if keyboard {
+            window
+                .eval("location.hash = 'keyboard'")
+                .map_err(|error| error.to_string())?;
+        }
         return Ok(window);
     }
     let owner = app
@@ -8422,7 +8473,11 @@ fn create_or_raise_preferences_window<R: Runtime>(
     let builder = WebviewWindowBuilder::new(
         app,
         PREFERENCES_WINDOW_LABEL,
-        WebviewUrl::App(PREFERENCES_WINDOW_ROUTE.into()),
+        WebviewUrl::App(if keyboard {
+            format!("{PREFERENCES_WINDOW_ROUTE}#keyboard").into()
+        } else {
+            PREFERENCES_WINDOW_ROUTE.into()
+        }),
     )
     .title("ChemDraft Preferences")
     .inner_size(640.0, 600.0)
@@ -9077,49 +9132,32 @@ const EDIT_HISTORY_MENU_ITEMS: [EditHistoryMenuItem; 2] = [
     },
 ];
 
-/// Edit ▸ Cut / Copy / Paste, in menu order, as (command id, label).
-#[cfg(target_os = "linux")]
-const CLIPBOARD_EDIT_MENU_ITEMS: [(&str, &str); 3] = [
-    ("clipboard.cut", "Cut"),
-    ("clipboard.copy", "Copy"),
-    ("clipboard.paste", "Paste"),
-];
-
-/// On macOS and Windows the predefined items make the system send cut/copy/paste to the focused
-/// webview, which raises the DOM clipboard events the editor (and any focused text field) handles.
-#[cfg(not(target_os = "linux"))]
+/// Defaults use the platform editing selectors. A customized row routes its new
+/// shortcut or menu click to the same editing operation through the focused webview.
 fn clipboard_edit_menu_item<R: Runtime>(
     app: &tauri::AppHandle<R>,
     command_id: &str,
 ) -> tauri::Result<Box<dyn tauri::menu::IsMenuItem<R>>> {
+    let label = match command_id {
+        "clipboard.cut" => "Cut",
+        "clipboard.copy" => "Copy",
+        _ => "Paste",
+    };
+    let custom = custom_menu_shortcut(app, command_id);
+    if custom.is_some() || cfg!(target_os = "linux") {
+        return Ok(Box::new(MenuItem::with_id(
+            app,
+            command_id,
+            label,
+            true,
+            custom.flatten(),
+        )?));
+    }
     Ok(match command_id {
         "clipboard.cut" => Box::new(PredefinedMenuItem::cut(app, None)?),
         "clipboard.copy" => Box::new(PredefinedMenuItem::copy(app, None)?),
         _ => Box::new(PredefinedMenuItem::paste(app, None)?),
     })
-}
-
-/// muda's Linux predefined Cut/Copy/Paste only fake a Ctrl+X/C/V key press through libxdo: nothing
-/// on Wayland, and on X11 the press can land before the menu releases its grab, so the click did
-/// nothing. Invoke WebKit's editing commands directly. With no GTK accelerator, the keys still
-/// reach the webview and raise the same DOM clipboard events as the menu commands.
-#[cfg(target_os = "linux")]
-fn clipboard_edit_menu_item<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    command_id: &str,
-) -> tauri::Result<Box<dyn tauri::menu::IsMenuItem<R>>> {
-    let (id, label) = CLIPBOARD_EDIT_MENU_ITEMS
-        .iter()
-        .find(|(id, _)| *id == command_id)
-        .copied()
-        .unwrap_or(CLIPBOARD_EDIT_MENU_ITEMS[2]);
-    Ok(Box::new(MenuItem::with_id(
-        app,
-        id,
-        label,
-        true,
-        None::<&str>,
-    )?))
 }
 
 fn edit_history_menu_item<R: Runtime>(
@@ -9131,7 +9169,7 @@ fn edit_history_menu_item<R: Runtime>(
         item.command_id,
         item.label,
         true,
-        Some(item.accelerator),
+        native_menu_shortcut(app, item.command_id, item.accelerator),
     )
 }
 
@@ -9154,6 +9192,10 @@ fn native_clipboard_edit_command(command_id: &str) -> Option<&'static std::ffi::
 #[cfg(not(target_os = "linux"))]
 fn native_clipboard_edit_command(_command_id: &str) -> Option<&'static std::ffi::CStr> {
     None
+}
+
+fn is_clipboard_edit_menu_command(id: &str) -> bool {
+    matches!(id, "clipboard.cut" | "clipboard.copy" | "clipboard.paste")
 }
 
 /// Which window a routed menu command is delivered to. Everything goes to the main document window,
@@ -9192,6 +9234,20 @@ fn emit_menu_command<R: Runtime>(
             .get_webview_window(target_label)
             .ok_or_else(|| format!("Window {target_label} is not available."))?;
         return linux_clipboard::execute_editing_command(&target, command);
+    }
+    #[cfg(target_os = "macos")]
+    if is_clipboard_edit_menu_command(command_id) {
+        let main =
+            objc2::MainThreadMarker::new().ok_or("The clipboard menu needs the main thread.")?;
+        let application = objc2_app_kit::NSApplication::sharedApplication(main);
+        let action = match command_id {
+            "clipboard.cut" => objc2::sel!(cut:),
+            "clipboard.copy" => objc2::sel!(copy:),
+            _ => objc2::sel!(paste:),
+        };
+        // Match the normal AppKit edit menus and dispatch to the key window's first responder.
+        unsafe { application.sendAction_to_from(action, None, None) };
+        return Ok(());
     }
     if target_label == MAIN_WINDOW_LABEL {
         return emit_command_to_main(app, command_id);
@@ -9806,34 +9862,142 @@ impl KeybindingScheme {
     }
 }
 
+#[derive(Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DesktopPreferences {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shortcut_scheme: Option<KeybindingScheme>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shortcut_overrides:
+        Option<std::collections::BTreeMap<KeybindingScheme, ShortcutScopeOverrides>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    guided_tour_seen: Option<bool>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct ShortcutScopeOverrides {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    commands: Option<std::collections::BTreeMap<String, Vec<String>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    atom: Option<std::collections::BTreeMap<String, Vec<String>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bond: Option<std::collections::BTreeMap<String, Vec<String>>>,
+}
+
+impl DesktopPreferences {
+    fn apply_patch(&mut self, patch: Self) {
+        self.shortcut_scheme = patch.shortcut_scheme.or(self.shortcut_scheme);
+        if let Some(overrides) = patch.shortcut_overrides {
+            self.shortcut_overrides
+                .get_or_insert_with(Default::default)
+                .extend(overrides);
+        }
+        if patch.guided_tour_seen == Some(true) {
+            self.guided_tour_seen = Some(true);
+        }
+    }
+}
+
+fn update_desktop_preferences<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    patch: Option<DesktopPreferences>,
+) -> Result<DesktopPreferences, String> {
+    static SETTINGS_WRITE: Mutex<()> = Mutex::new(());
+    let path = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("preferences.json");
+    let _guard = SETTINGS_WRITE.lock().map_err(|error| error.to_string())?;
+    let mut settings = match fs::read_to_string(&path) {
+        Ok(contents) => serde_json::from_str::<DesktopPreferences>(&contents)
+            .map_err(|error| error.to_string())?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => DesktopPreferences::default(),
+        Err(error) => return Err(error.to_string()),
+    };
+    if let Some(patch) = patch {
+        settings.apply_patch(patch);
+        write_file_atomic(
+            &path,
+            &serde_json::to_string(&settings).map_err(|error| error.to_string())?,
+        )?;
+    }
+    Ok(settings)
+}
+
 #[tauri::command]
-fn set_keybinding_scheme(app: tauri::AppHandle, scheme: String) -> Result<(), String> {
-    let parsed = match scheme.as_str() {
-        "chemdraft" => KeybindingScheme::ChemDraft,
-        "chemdraw" => KeybindingScheme::ChemDraw,
-        other => return Err(format!("unknown keybinding scheme: {other}")),
+async fn desktop_preferences(
+    window: tauri::WebviewWindow,
+    patch: Option<DesktopPreferences>,
+) -> Result<DesktopPreferences, String> {
+    if !matches!(window.label(), MAIN_WINDOW_LABEL | PREFERENCES_WINDOW_LABEL)
+        || (window.label() != MAIN_WINDOW_LABEL
+            && patch
+                .as_ref()
+                .is_some_and(|patch| patch.guided_tour_seen.is_some()))
+    {
+        return Err("This window cannot access the requested preferences".into());
+    }
+    update_desktop_preferences(window.app_handle(), patch)
+}
+
+#[tauri::command]
+fn set_keybinding_scheme(
+    window: tauri::WebviewWindow,
+    scheme: Option<String>,
+    accelerators: Option<MenuAccelerators>,
+    recording: Option<bool>,
+) -> Result<(), String> {
+    let app = window.app_handle().clone();
+    if let Some(recording) = recording {
+        if window.label() != PREFERENCES_WINDOW_LABEL {
+            return Err("Only Preferences can record shortcuts.".into());
+        }
+        return run_on_main_thread_blocking(&app, move || {
+            shortcut_recording_menu::set_recording(
+                recording && window.is_focused().unwrap_or(false),
+            );
+        });
+    }
+    if window.label() != MAIN_WINDOW_LABEL {
+        return Err("Only the document window can update menu shortcuts.".into());
+    }
+    let parsed = match scheme.as_deref() {
+        Some("chemdraft") => KeybindingScheme::ChemDraft,
+        Some("chemdraw") => KeybindingScheme::ChemDraw,
+        _ => return Err("Unknown keybinding scheme.".into()),
     };
     run_on_main_thread_blocking(&app.clone(), move || {
-        let update = if current_keybinding_scheme(&app) == parsed {
-            MenuUpdate::Unchanged
-        } else if cfg!(windows) {
-            MenuUpdate::Rebuild
-        } else {
-            MenuUpdate::Properties
+        let changed = current_keybinding_scheme(&app) != parsed;
+        let overrides = app.state::<MenuAcceleratorOverrides>();
+        let old_accelerators = {
+            let mut live = overrides.0.lock().unwrap();
+            accelerators
+                .filter(|next| *live != *next)
+                .map(|next| std::mem::replace(&mut *live, next))
         };
-        apply_menu_update(
+        let update = if old_accelerators.is_some() || (changed && cfg!(windows)) {
+            MenuUpdate::Rebuild
+        } else if changed {
+            MenuUpdate::Properties
+        } else {
+            MenuUpdate::Unchanged
+        };
+        let result = apply_menu_update(
             &app.state::<NativeMenuNeedsRebuild>().0,
             update,
             || {
                 let menu = installed_app_menu(&app)?;
-                for (id, accelerator) in [
+                for (id, default) in [
                     ("export.open", parsed.export()),
                     ("view.toggleRulers", parsed.rulers()),
                     ("view.toggleCrosshairs", parsed.crosshairs()),
                 ] {
+                    let accelerator = native_menu_shortcut(&app, id, default);
                     match required_menu_item(&menu, id)? {
-                        MenuItemKind::MenuItem(item) => item.set_accelerator(Some(accelerator)),
-                        MenuItemKind::Check(item) => item.set_accelerator(Some(accelerator)),
+                        MenuItemKind::MenuItem(item) => item.set_accelerator(accelerator),
+                        MenuItemKind::Check(item) => item.set_accelerator(accelerator),
                         _ => return Err(format!("Expected an accelerator menu item for {id}")),
                     }
                     .map_err(|e| e.to_string())?;
@@ -9850,7 +10014,13 @@ fn set_keybinding_scheme(app: tauri::AppHandle, scheme: String) -> Result<(), St
                     parsed,
                 )
             },
-        )?;
+        );
+        if let Err(error) = result {
+            if let Some(previous) = old_accelerators {
+                *overrides.0.lock().unwrap() = previous;
+            }
+            return Err(error);
+        }
         *app.state::<KeybindingSchemeState>().0.lock().unwrap() = parsed;
         Ok(())
     })?
@@ -9874,6 +10044,8 @@ fn set_keybinding_scheme(app: tauri::AppHandle, scheme: String) -> Result<(), St
 fn install_app_menu<R: Runtime>(app: &tauri::AppHandle<R>, menu: Menu<R>) -> tauri::Result<()> {
     #[cfg(target_os = "macos")]
     app.set_menu(menu)?;
+    #[cfg(target_os = "macos")]
+    shortcut_recording_menu::refresh();
     #[cfg(not(target_os = "macos"))]
     {
         let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
@@ -10029,7 +10201,7 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                 "structure.cleanup2d",
                 "Clean up Structure 2D",
                 true,
-                Some("CmdOrCtrl+Shift+K"),
+                native_menu_shortcut(app, "structure.cleanup2d", "CmdOrCtrl+Shift+K"),
             )?,
             &MenuItem::with_id(
                 app,
@@ -10124,15 +10296,33 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                 "File",
                 true,
                 &[
-                    &MenuItem::with_id(app, "document.new", "New", true, Some("CmdOrCtrl+N"))?,
-                    &MenuItem::with_id(app, "document.open", "Open...", true, Some("CmdOrCtrl+O"))?,
-                    &MenuItem::with_id(app, "document.save", "Save", true, Some("CmdOrCtrl+S"))?,
+                    &MenuItem::with_id(
+                        app,
+                        "document.new",
+                        "New",
+                        true,
+                        native_menu_shortcut(app, "document.new", "CmdOrCtrl+N"),
+                    )?,
+                    &MenuItem::with_id(
+                        app,
+                        "document.open",
+                        "Open...",
+                        true,
+                        native_menu_shortcut(app, "document.open", "CmdOrCtrl+O"),
+                    )?,
+                    &MenuItem::with_id(
+                        app,
+                        "document.save",
+                        "Save",
+                        true,
+                        native_menu_shortcut(app, "document.save", "CmdOrCtrl+S"),
+                    )?,
                     &MenuItem::with_id(
                         app,
                         "document.saveAs",
                         "Save As...",
                         true,
-                        Some("CmdOrCtrl+Shift+S"),
+                        native_menu_shortcut(app, "document.saveAs", "CmdOrCtrl+Shift+S"),
                     )?,
                     &PredefinedMenuItem::separator(app)?,
                     &page_setup_menu,
@@ -10142,7 +10332,7 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                         "export.open",
                         "Export...",
                         true,
-                        Some(scheme.export()),
+                        native_menu_shortcut(app, "export.open", scheme.export()),
                     )?,
                     &PredefinedMenuItem::separator(app)?,
                     #[cfg(not(target_os = "macos"))]
@@ -10199,7 +10389,11 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                                 "clipboard.copyAs.smiles",
                                 "SMILES",
                                 true,
-                                Some("CmdOrCtrl+Alt+C"),
+                                native_menu_shortcut(
+                                    app,
+                                    "clipboard.copyAs.smiles",
+                                    "CmdOrCtrl+Alt+C",
+                                ),
                             )?,
                             &MenuItem::with_id(
                                 app,
@@ -10220,21 +10414,29 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                                 "clipboard.copyAs.cdxml",
                                 "CDXML Text",
                                 true,
-                                Some("CmdOrCtrl+D"),
+                                native_menu_shortcut(app, "clipboard.copyAs.cdxml", "CmdOrCtrl+D"),
                             )?,
                             &MenuItem::with_id(
                                 app,
                                 "clipboard.copyAs.mol",
                                 "MOL Text",
                                 true,
-                                Some("CmdOrCtrl+Alt+O"),
+                                native_menu_shortcut(
+                                    app,
+                                    "clipboard.copyAs.mol",
+                                    "CmdOrCtrl+Alt+O",
+                                ),
                             )?,
                             &MenuItem::with_id(
                                 app,
                                 "clipboard.copyAs.molV2000",
                                 "MOL V2000 Text",
                                 true,
-                                Some("CmdOrCtrl+Alt+Shift+O"),
+                                native_menu_shortcut(
+                                    app,
+                                    "clipboard.copyAs.molV2000",
+                                    "CmdOrCtrl+Alt+Shift+O",
+                                ),
                             )?,
                             &MenuItem::with_id(
                                 app,
@@ -10258,16 +10460,22 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                         "edit.selectAll",
                         "Select All",
                         true,
-                        Some("CmdOrCtrl+A"),
+                        native_menu_shortcut(app, "edit.selectAll", "CmdOrCtrl+A"),
                     )?,
                     &PredefinedMenuItem::separator(app)?,
-                    &MenuItem::with_id(app, "layout.group", "Group", true, Some("CmdOrCtrl+G"))?,
+                    &MenuItem::with_id(
+                        app,
+                        "layout.group",
+                        "Group",
+                        true,
+                        native_menu_shortcut(app, "layout.group", "CmdOrCtrl+G"),
+                    )?,
                     &MenuItem::with_id(
                         app,
                         "layout.ungroup",
                         "Ungroup",
                         true,
-                        Some("CmdOrCtrl+Shift+G"),
+                        native_menu_shortcut(app, "layout.ungroup", "CmdOrCtrl+Shift+G"),
                     )?,
                 ],
             )?,
@@ -10303,11 +10511,12 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                 "Help",
                 true,
                 &[
+                    &MenuItem::with_id(app, "help.showTour", "Take the Tour", true, None::<&str>)?,
                     &MenuItem::with_id(app, "help.reportBug", "Report a Bug…", true, None::<&str>)?,
                     #[cfg(not(target_os = "macos"))]
                     &PredefinedMenuItem::separator(app)?,
                     #[cfg(not(target_os = "macos"))]
-                    &PredefinedMenuItem::about(app, None, Some(about_metadata(app)))?,
+                    &about_menu_item(app)?,
                 ],
             )?,
         ],
@@ -10444,32 +10653,20 @@ fn close_key_window<R: Runtime>(app: &tauri::AppHandle<R>) {
     }
 }
 
-fn about_metadata<R: Runtime>(app: &tauri::AppHandle<R>) -> AboutMetadata<'static> {
-    let config = app.config();
-    AboutMetadata {
-        name: Some("ChemDraft".to_string()),
-        version: Some(app.package_info().version.to_string()),
-        copyright: config.bundle.copyright.clone(),
-        authors: config
-            .bundle
-            .publisher
-            .clone()
-            .map(|publisher| vec![publisher]),
-        ..Default::default()
-    }
+fn about_menu_item<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<MenuItem<R>> {
+    MenuItem::with_id(app, ABOUT_COMMAND_ID, "About ChemDraft", true, None::<&str>)
 }
 
 #[cfg(target_os = "macos")]
 fn create_native_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Submenu<R>> {
     let package_info = app.package_info();
-    let about_metadata = about_metadata(app);
 
     Submenu::with_items(
         app,
         package_info.name.clone(),
         true,
         &[
-            &PredefinedMenuItem::about(app, None, Some(about_metadata))?,
+            &about_menu_item(app)?,
             &PredefinedMenuItem::separator(app)?,
             &preferences_menu_item(app)?,
             &PredefinedMenuItem::separator(app)?,
@@ -10545,7 +10742,7 @@ fn preferences_menu_item<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result
         PREFERENCES_TOGGLE_COMMAND_ID,
         "Preferences…",
         true,
-        Some("CmdOrCtrl+,"),
+        native_menu_shortcut(app, PREFERENCES_TOGGLE_COMMAND_ID, "CmdOrCtrl+,"),
     )
 }
 
@@ -10563,7 +10760,7 @@ fn create_view_menu<R: Runtime>(
         "Show Rulers",
         true,
         view_state.rulers_visible,
-        Some(scheme.rulers()),
+        native_menu_shortcut(app, "view.toggleRulers", scheme.rulers()),
     )?;
     let show_crosshairs = CheckMenuItem::with_id(
         app,
@@ -10571,7 +10768,7 @@ fn create_view_menu<R: Runtime>(
         "Show Crosshairs",
         true,
         view_state.crosshairs_visible,
-        Some(scheme.crosshairs()),
+        native_menu_shortcut(app, "view.toggleCrosshairs", scheme.crosshairs()),
     )?;
     let separator = PredefinedMenuItem::separator(app)?;
     let debugger_separator = PredefinedMenuItem::separator(app)?;
@@ -12254,6 +12451,39 @@ fn find_menu_item_by_id<R: Runtime>(
 mod tests {
 
     use super::*;
+
+    #[test]
+    fn desktop_preferences_persist_shortcut_schemes_independently() {
+        let mut settings: DesktopPreferences = serde_json::from_value(serde_json::json!({
+            "shortcutScheme": "chemdraft",
+            "guidedTourSeen": true
+        }))
+        .unwrap();
+        for patch in [
+            serde_json::json!({ "shortcutOverrides": {
+                "chemdraft": { "commands": { "document.save": ["Mod+F9"] } }
+            }}),
+            serde_json::json!({ "shortcutScheme": "chemdraw" }),
+            serde_json::json!({ "shortcutOverrides": {
+                "chemdraw": { "atom": { "atom.setHoveredElement.Br": ["D"], "atom.setHoveredElement.B": [] } }
+            }}),
+            serde_json::json!({ "shortcutOverrides": { "chemdraft": {} } }),
+        ] {
+            settings.apply_patch(serde_json::from_value(patch).unwrap());
+            settings = serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
+        }
+        assert_eq!(
+            serde_json::to_value(settings).unwrap(),
+            serde_json::json!({
+                "shortcutScheme": "chemdraw",
+                "guidedTourSeen": true,
+                "shortcutOverrides": {
+                    "chemdraft": {},
+                    "chemdraw": { "atom": { "atom.setHoveredElement.Br": ["D"], "atom.setHoveredElement.B": [] } }
+                }
+            })
+        );
+    }
 
     #[test]
     fn preferences_restores_hidden_and_iconic_owners_before_create_or_raise() {
@@ -14882,6 +15112,7 @@ mod tests {
             include_str!("../capabilities/toolset-window-size.json"),
             include_str!("../capabilities/inspector-window-clamp.json"),
             include_str!("../capabilities/default.json"),
+            include_str!("../capabilities/desktop-preferences.json"),
             include_str!("../capabilities/document-dialogs.json"),
             include_str!("../capabilities/plugin-panel.json"),
             include_str!("../capabilities/quit-prompt.json"),

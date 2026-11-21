@@ -16,6 +16,8 @@ import { ToolInstallForm } from "./ToolInstallForm";
 import { InsertTableForm } from "./InsertTableForm";
 import { AtomProblemForm } from "./AtomProblemForm";
 import { measureDialogContentWhenFontsReady, observeDialogContent, type DialogContentFit } from "./dialogContentFit";
+const AboutWindow = lazy(() => import("../about/AboutWindow").then(module => ({ default: module.AboutWindow })));
+const TourForm = lazy(() => import("../tour/TourForm").then(module => ({ default: module.TourForm })));
 const VibeCodeGuideForm = lazy(() => import("./VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const ExportForm = lazy(() => import("./ExportForm").then(module => ({ default: module.ExportForm })));
 const CustomColorForm = lazy(() => import("./CustomColorForm").then(module => ({ default: module.CustomColorForm })));
@@ -94,7 +96,7 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
       if (message.type === "snapshot") {
         if (latest && (message.sessionId !== latest.sessionId || message.snapshotRevision < latest.snapshotRevision)) return;
         // Replay must not replace the user's draft at the same revision.
-        if (!latest || message.snapshotRevision > latest.snapshotRevision || message.dialogKind === "engineInstall" || message.dialogKind === "toolInstall" || message.dialogKind === "atomProblem") {
+        if (!latest || message.snapshotRevision > latest.snapshotRevision || message.dialogKind === "engineInstall" || message.dialogKind === "toolInstall" || message.dialogKind === "atomProblem" || message.dialogKind === "guidedTour") {
           setSnapshot(message);
           if (message.dialogKind === "toolInstall" && (message.data.state.status === "failed" || message.data.state.status === "broken")) {
             clearTimeout(actionTimer.current);
@@ -134,7 +136,7 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
         clearTimeout(pending.timer);
         if (message.data.status === "preview" && message.data.preview) pending.resolve(message.data.preview);
         else pending.reject(new Error(message.data.error ?? "Preview unavailable"));
-      } else if (!cancellationRequested.current && latest && sameDialog(message, latest) && message.type === "result" && message.requestId === pendingRequestId.current) {
+      } else if (latest && (!cancellationRequested.current || latest.dialogKind === "guidedTour") && sameDialog(message, latest) && message.type === "result" && message.requestId === pendingRequestId.current) {
         if (message.data.status === "accepted") {
           clearTimeout(actionTimer.current);
           setError(undefined);
@@ -160,6 +162,7 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
           const { destinationPath, filename } = message.data;
           setExportDraft(current => current ? { ...current, destinationPath, filename } : current);
         }
+        if (latest.dialogKind === "guidedTour" && message.data.status === "error") cancellationRequested.current = false;
         setNotice(message.data.notice);
         setError(message.data.error);
       }
@@ -170,7 +173,7 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
   // All content-fit forms use this path, including later notices and installation progress.
   const reportReady = useCallback((fitElement?: HTMLElement) => {
     if (!snapshot) return;
-    if ((snapshot.dialogKind === "engineInstall" || snapshot.dialogKind === "toolInstall" || snapshot.dialogKind === "atomProblem") && readySession.current === snapshot.sessionId) return;
+    if ((snapshot.dialogKind === "engineInstall" || snapshot.dialogKind === "toolInstall" || snapshot.dialogKind === "atomProblem" || snapshot.dialogKind === "guidedTour") && readySession.current === snapshot.sessionId) return;
     readySession.current = snapshot.sessionId;
     contentObservation.current?.();
     const generation = ++contentGeneration.current;
@@ -212,6 +215,24 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
       return;
     }
     clearPreview();
+    if (data.action === "cancel" && snapshot.dialogKind === "guidedTour") {
+      if (cancellationRequested.current) return;
+      cancellationRequested.current = true;
+      actionPending.current = true;
+      setBusy(true);
+      const requestId = crypto.randomUUID();
+      pendingRequestId.current = requestId;
+      startAcceptanceDeadline();
+      void sendDialogMessage(hostId, { ...dialogEnvelope(snapshot), requestId, type: "action", data }).catch(e => {
+        if (pendingRequestId.current !== requestId) return;
+        clearTimeout(actionTimer.current);
+        cancellationRequested.current = false;
+        actionPending.current = false;
+        setBusy(false);
+        setError(String(e));
+      });
+      return;
+    }
     if (data.action === "cancel" || data.action === "close") {
       cancellationRequested.current = true;
       clearTimeout(actionTimer.current);
@@ -246,6 +267,13 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
   </Suspense>;
   if (snapshot.dialogKind === "atomProblem") return <AtomProblemForm data={snapshot.data} busy={busy} error={error} onReady={reportReady}
     onAction={action => sendAction({ action, targetVersion: snapshot.data.targetVersion })} onClose={() => sendAction({ action: "cancel" })} />;
+  if (snapshot.dialogKind === "about") return <Suspense fallback={<p role="status">Opening About ChemDraft…</p>}>
+    <AboutWindow {...snapshot.data} onReady={reportReady} error={error} onClose={() => sendAction({ action: "cancel" })}
+      onCopy={() => sendDialogMessage(hostId, { ...dialogEnvelope(snapshot), requestId: crypto.randomUUID(), type: "action", data: { action: "copyVersion" } })} />
+  </Suspense>;
+  if (snapshot.dialogKind === "guidedTour") return <Suspense fallback={<p>Opening tour…</p>}>
+    <TourForm scheme={snapshot.data.scheme} onReady={reportReady} busy={busy} error={error} onAction={sendAction} />
+  </Suspense>;
   if (snapshot.dialogKind === "vibeCodeGuide") return <Suspense fallback={<p>Opening guide…</p>}><VibeCodeGuideForm onReady={reportReady} onAction={action => sendAction({ action })} /></Suspense>;
   if (snapshot.dialogKind === "structureTemplates") return <Suspense fallback={<p role="status">Opening Templates…</p>}>
     <StructureTemplatePicker {...snapshot.data} busy={busy} error={error} onReady={reportReady}

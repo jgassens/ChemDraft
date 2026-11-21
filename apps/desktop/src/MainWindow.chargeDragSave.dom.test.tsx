@@ -7,7 +7,7 @@ import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import { setReactionArrowConditions } from "@chemdraft/document-workflow-core";
 import { MainWindow } from "./MainWindow";
 import { createNativeArtLineGraphicObject, nativeChargeMarkCenter } from "./documentWorkflow";
-import { dropMark, dropMolecule, electronMarkDropFixture } from "./testSupport/electronMarkDropFixture";
+import { ammoniumElectronMarkDropFixture, dropMark, dropMolecule, electronMarkDropFixture } from "./testSupport/electronMarkDropFixture";
 import { saveDirectElectronMarkEditing } from "./electronMarkEditingSettings";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 
@@ -64,6 +64,29 @@ describe.each(["macos", "windows"] as const)("charge drag Save (%s)", platform =
     Object.defineProperties(event, { pointerId: { value: 7 }, isPrimary: { value: true }, pointerType: { value: "mouse" } });
     await act(async () => target.dispatchEvent(event));
   }
+  it("saves the committed charge while an atom drag previews removal", async () => {
+    const { document: initialDocument, nitrogen } = ammoniumElectronMarkDropFixture();
+    await act(async () => root.render(<MainWindow initialDocument={initialDocument} initialActiveToolCommandId="tool.select"
+      initialPaletteMode="hidden" initialCrosshairsVisible={false} initialRulersVisible={false} nativePalette shortcutPlatform={platform} />));
+    const page = container.querySelector<HTMLElement>(".page")!;
+    page.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 792, bottom: 612, width: 792, height: 612, toJSON: () => ({}) });
+    await key("s");
+    expect(savedWrites()).toHaveLength(1);
+    native.writeFile.mockClear();
+    const target = container.querySelector(`.native-molecule-object[data-object-id="${dropMolecule(initialDocument).id}"]`)!;
+    await pointer(target, "pointerdown", nitrogen);
+    const before = snapshot().document;
+    await pointer(page, "pointermove", { x: nitrogen.x + 100, y: nitrogen.y + 100 });
+    expect(dropMolecule(snapshot().document).atoms[0].formalCharge).toBe(0);
+    await key("s");
+    expect(savedWrites()).toHaveLength(1);
+    const saved = openChemDraftPayload(savedWrites()[0][1]).document!;
+    expect(dropMolecule(saved)).toEqual(dropMolecule(before));
+    expect(dropMark(saved)).toEqual(dropMark(before));
+    await key("Escape");
+    expect(snapshot().document).toEqual(before);
+  });
+
   describe.each(["move", "resize"] as const)("%s gesture", gesture => {
   describe.each(["Escape", "pointercancel", "pointerup", "Escape during save"] as const)("%s", ending => {
     it.each([false, true])("saves pre-drag chemistry and finishes consistently (conditions: %s)", async withConditions => {

@@ -50,6 +50,24 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             fit_content: true,
             preserve_user_frame: false,
         }),
+        "about" => Ok(DialogKindSpec {
+            maximizable: false,
+            resizable: true,
+            title: "About ChemDraft",
+            size: (660.0, 620.0),
+            min_size: (380.0, 300.0),
+            fit_content: false,
+            preserve_user_frame: false,
+        }),
+        "guidedTour" => Ok(DialogKindSpec {
+            maximizable: false,
+            resizable: true,
+            title: "Take the Tour",
+            size: (520.0, 375.0),
+            min_size: (360.0, 260.0),
+            fit_content: false,
+            preserve_user_frame: false,
+        }),
         "vibeCodeGuide" => Ok(DialogKindSpec {
             maximizable: false,
             resizable: true,
@@ -157,7 +175,12 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
 fn native_window_title(kind: &str, spec_title: &str, snapshot_title: &str) -> String {
     if matches!(
         kind,
-        "engineInstall" | "toolInstall" | "vibeCodeGuide" | "pageEnlargement"
+        "engineInstall"
+            | "toolInstall"
+            | "vibeCodeGuide"
+            | "guidedTour"
+            | "about"
+            | "pageEnlargement"
     ) {
         snapshot_title.to_string()
     } else {
@@ -176,6 +199,49 @@ pub(crate) fn macos_dialog_title_bar_style() -> tauri::TitleBarStyle {
     // all exclude decorations. configure_on_main restores the opaque appearance before
     // reveal without changing the style mask or the size units.
     tauri::TitleBarStyle::Transparent
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GuidedTourSnapshot {
+    title: String,
+    #[serde(rename = "scheme")]
+    _scheme: super::KeybindingScheme,
+    #[serde(rename = "automatic")]
+    _automatic: bool,
+}
+
+impl GuidedTourSnapshot {
+    fn valid(self) -> bool {
+        valid_title(&self.title) && !self.title.contains('\0')
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
+enum GuidedTourAction {
+    Cancel {},
+    Finish {},
+    ChooseShortcuts {
+        #[serde(rename = "scheme")]
+        _scheme: super::KeybindingScheme,
+    },
+    TryTourCommand {
+        #[serde(rename = "command")]
+        _command: GuidedTourCommand,
+    },
+}
+
+#[derive(Deserialize)]
+enum GuidedTourCommand {
+    #[serde(rename = "view.openKeyboardPreferences")]
+    OpenKeyboardPreferences,
+    #[serde(rename = "help.tour.openSample")]
+    OpenSample,
+    #[serde(rename = "plugin.opsinNameToStructure.convert")]
+    ConvertName,
+    #[serde(rename = "analyze.molecularProperties")]
+    InspectMolecule,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -915,6 +981,21 @@ fn optional_string_fields(data: &Value, names: &[&str]) -> bool {
         .all(|name| data.get(name).is_none_or(Value::is_string))
 }
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AboutSnapshot {
+    title: String,
+    version: String,
+    build_stamp: String,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
+enum AboutAction {
+    Cancel {},
+    CopyVersion {},
+}
+
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Closed {
     reason: String,
@@ -946,6 +1027,7 @@ fn valid_reason(reason: &str) -> bool {
             | "ownerClose"
             | "quit"
             | "error"
+            | "deferred"
     )
 }
 impl Message {
@@ -1039,6 +1121,26 @@ impl Message {
                 CustomColorAction::Apply { hex } => valid_custom_color(&hex),
                 CustomColorAction::Clear {} | CustomColorAction::Cancel {} => true,
             }),
+            "snapshot" if self.dialog_kind == "about" => {
+                serde_json::from_value::<AboutSnapshot>(self.data.clone()).is_ok_and(|s| {
+                    s.title == "About ChemDraft"
+                        && [&s.version, &s.build_stamp].into_iter().all(|text| {
+                            !text.is_empty()
+                                && text.encode_utf16().count() <= 128
+                                && !text.contains(['\0', '\r', '\n'])
+                        })
+                })
+            }
+            "action" if self.dialog_kind == "about" => {
+                serde_json::from_value::<AboutAction>(self.data.clone()).is_ok()
+            }
+            "snapshot" if self.dialog_kind == "guidedTour" => {
+                serde_json::from_value::<GuidedTourSnapshot>(self.data.clone())
+                    .is_ok_and(|snapshot| snapshot.valid())
+            }
+            "action" if self.dialog_kind == "guidedTour" => {
+                serde_json::from_value::<GuidedTourAction>(self.data.clone()).is_ok()
+            }
             "snapshot" if self.dialog_kind == "vibeCodeGuide" => {
                 serde_json::from_value::<TitleSnapshot>(self.data.clone())
                     .is_ok_and(|s| valid_title(&s.title) && !s.title.contains('\0'))
@@ -1238,6 +1340,10 @@ impl Message {
                             })
                     })
             }
+            "ready" if self.dialog_kind == "about" => {
+                self.data.as_object().is_some_and(|d| d.is_empty())
+            }
+            "result" if self.dialog_kind == "about" => false,
             "request" => self.data.as_object().is_some_and(|d| d.is_empty()),
             "ready" => {
                 self.data.as_object().is_some_and(|d| d.is_empty())
@@ -1646,6 +1752,34 @@ fn register(
     Ok((registration, true))
 }
 
+const TOUR_WAITING_FOR_IDLE: &str = "Guided tour is waiting for the document window to be idle";
+
+fn automatic_tour_idle<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    owner: &tauri::WebviewWindow<R>,
+    tour_host: Option<&str>,
+) -> bool {
+    if super::quit_in_progress()
+        || super::utility_windows_suspended()
+        || !owner.is_focused().unwrap_or(false)
+        || !owner.is_visible().unwrap_or(false)
+        || owner.is_minimized().unwrap_or(true)
+        || !app
+            .state::<super::PendingOpenDocument>()
+            .payloads
+            .lock()
+            .is_ok_and(|payloads| payloads.is_empty())
+    {
+        return false;
+    }
+    let registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
+    registry.preferences.is_none()
+        && !registry
+            .sessions
+            .keys()
+            .any(|host| Some(host.as_str()) != tour_host)
+}
+
 /// Async, serialized, worker construction. Never take WINDOW_CREATION on the event thread.
 #[tauri::command]
 pub(crate) async fn dialog_open(
@@ -1660,6 +1794,17 @@ pub(crate) async fn dialog_open(
         return Err("Unknown dialog owner".into());
     }
     let _creation = super::lock_window_creation()?;
+    let new_automatic_tour = message.dialog_kind == "guidedTour"
+        && message.data["automatic"] == true
+        && !REGISTRY
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .sessions
+            .values()
+            .any(|session| session.snapshot.same_session(&message));
+    if new_automatic_tour && !automatic_tour_idle(&app, &window, None) {
+        return Err(TOUR_WAITING_FOR_IDLE.into());
+    }
     let owner_decision = dialog_owner_reveal_decision(&window);
     if owner_decision == OwnerRevealDecision::RejectHidden {
         return Err("The document window is hidden; no dialog can open".into());
@@ -1729,6 +1874,23 @@ pub(crate) async fn dialog_open(
     .maximizable(spec.maximizable)
     .resizable(spec.resizable)
     .minimizable(false);
+    let builder = if message.dialog_kind == "about" {
+        builder.on_new_window(|url, _| {
+            // About's attribution links open in the system browser. Never create a
+            // remote webview or run a custom protocol from this dialog.
+            if url.scheme() == "https"
+                && url.host_str().is_some()
+                && url.username().is_empty()
+                && url.password().is_none()
+            {
+                super::problem_reports::open_external_address(url.as_str())
+                    .unwrap_or_else(|error| eprintln!("Could not open About link: {error}"));
+            }
+            tauri::webview::NewWindowResponse::Deny
+        })
+    } else {
+        builder
+    };
     // Let the activation click reach dialog controls on macOS. Other platforms retain
     // their existing click behavior; first-mouse acceptance is an AppKit policy.
     #[cfg(target_os = "macos")]
@@ -1816,14 +1978,14 @@ pub(crate) async fn dialog_send(
     if !matches!(message.message_type.as_str(), "ready" | "action") {
         return Err("Dialog can send only ready or a typed action".into());
     }
-    let _creation = super::lock_window_creation()?;
+    let creation = super::lock_window_creation()?;
     // The form measured at this window's current scale; read it before taking the registry lock.
     let scale_at_ready = if message.message_type == "ready" {
         window.scale_factor().ok()
     } else {
         None
     };
-    let (reveal, refit) = {
+    let (reveal, refit, automatic_tour) = {
         let mut registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
         let session = registry
             .sessions
@@ -1834,6 +1996,30 @@ pub(crate) async fn dialog_send(
         if message.message_type == "action" {
             if !session.ready {
                 return Err("Dialog is not ready".into());
+            }
+            if message.dialog_kind == "about" && message.data["action"] == "copyVersion" {
+                // Copy only these fields from the trusted owner snapshot. No host-supplied text
+                // reaches the system clipboard, and copying does not reserve a terminal action.
+                let text = format!(
+                    "ChemDraft {} (build {})",
+                    session.snapshot.data["version"]
+                        .as_str()
+                        .unwrap_or_default(),
+                    session.snapshot.data["buildStamp"]
+                        .as_str()
+                        .unwrap_or_default()
+                );
+                drop(registry);
+                drop(creation);
+                return super::clipboard_write_succeeded(super::write_clipboard_items_checked(
+                    &app,
+                    vec![super::ClipboardWriteItem {
+                        r#type: "text/plain".into(),
+                        text: Some(text),
+                        bytes_base64: None,
+                        required: true,
+                    }],
+                )?);
             }
             if let Some(receipt) = session.receipts.get(&message.request_id) {
                 return send_host(session, receipt);
@@ -1857,15 +2043,35 @@ pub(crate) async fn dialog_send(
         if !refit {
             send_owner(session, window.label(), &message)?;
         }
-        (reveal, refit)
+        let automatic_tour = session.snapshot.dialog_kind == "guidedTour"
+            && session.snapshot.data["automatic"] == true;
+        (reveal, refit, automatic_tour)
     };
     // Deliver ready before showing so the owner's listener is authoritative even on a fast click.
     if reveal {
         let target = window.clone();
-        if let Err(error) =
-            super::run_on_main_thread_blocking(&window, move || reveal_on_main(&target))
-                .and_then(|result| result)
+        let app_for_reveal = app.clone();
+        let host_for_reveal = host_id.clone();
+        if let Err(error) = super::run_on_main_thread_blocking(&window, move || {
+            if automatic_tour
+                && ((cfg!(any(target_os = "macos", windows))
+                    && !super::foreground_belongs_to_app())
+                    || app_for_reveal
+                        .get_webview_window(super::MAIN_WINDOW_LABEL)
+                        .is_none_or(|owner| {
+                            !automatic_tour_idle(&app_for_reveal, &owner, Some(&host_for_reveal))
+                        }))
+            {
+                return Err(TOUR_WAITING_FOR_IDLE.into());
+            }
+            reveal_on_main(&target)
+        })
+        .and_then(|result| result)
         {
+            if automatic_tour && error == TOUR_WAITING_FOR_IDLE {
+                close_session(&app, &host_id, "deferred");
+                return Ok(());
+            }
             eprintln!("Could not reveal native dialog: {error}");
             close_session(&app, &host_id, "error");
             return Err(error);
@@ -4324,6 +4530,19 @@ pub(crate) fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &Win
             let session = key.and_then(|k| registry.sessions.remove(&k));
             drop(registry);
             if let Some(mut session) = session {
+                if session.snapshot.dialog_kind == "guidedTour"
+                    && matches!(event, WindowEvent::CloseRequested { .. })
+                {
+                    if let Err(error) = super::update_desktop_preferences(
+                        window.app_handle(),
+                        Some(super::DesktopPreferences {
+                            guided_tour_seen: Some(true),
+                            ..Default::default()
+                        }),
+                    ) {
+                        eprintln!("Could not save guided tour preference: {error}");
+                    }
+                }
                 flush_position(window.app_handle(), &mut session);
                 notify_closed(
                     &session,
@@ -5106,9 +5325,17 @@ mod tests {
             .split("fn ensure_preferences_window")
             .next()
             .unwrap();
-        assert!(menu_open.contains("ensure_preferences_window(&app).map(|_| ())"));
-        let existing_window = lib
+        assert!(menu_open.contains("ensure_preferences_window(&app, keyboard.unwrap_or(false))"));
+        let ensure_window = lib
             .split("fn ensure_preferences_window")
+            .nth(1)
+            .unwrap()
+            .split("fn with_preferences_owner_restored")
+            .next()
+            .unwrap();
+        assert!(ensure_window.contains("create_or_raise_preferences_window(app, keyboard)"));
+        let existing_window = lib
+            .split("fn create_or_raise_preferences_window")
             .nth(1)
             .unwrap()
             .split("let owner = app")
@@ -5117,7 +5344,7 @@ mod tests {
         assert!(existing_window.contains("app.get_webview_window(PREFERENCES_WINDOW_LABEL)"));
         assert!(existing_window.contains("dialog_windows::show_preferences(&target)"));
         assert!(existing_window.contains("return Ok(window);"));
-        for path in [menu_open, existing_window] {
+        for path in [menu_open, ensure_window, existing_window] {
             assert!(!path.contains("window.hide()"));
             assert!(!path.contains("window.close()"));
             assert!(!path.contains("window.destroy()"));
@@ -5128,7 +5355,7 @@ mod tests {
             .split("fn close_key_window")
             .nth(1)
             .unwrap()
-            .split("fn about_metadata")
+            .split("fn about_menu_item")
             .next()
             .unwrap();
         assert!(menu_close.contains("(CloseWindowRoute::TauriClose, Some(window)) => {\n            if let Err(error) = window.close()"));
@@ -5356,6 +5583,77 @@ mod tests {
             assert!(frame.applied_position.is_none());
         }
     }
+    #[test]
+    fn about_only_accepts_display_metadata_and_typed_actions() {
+        let mut message = snapshot();
+        message.dialog_kind = "about".into();
+        message.data = json!({"title": "About ChemDraft", "version": "1.2.2", "buildStamp": "11.19.18.03-codex"});
+        assert!(message.validate().is_ok());
+        assert!(is_dialog_label("dialog-main-about-1"));
+        let spec = kind_spec("about").unwrap();
+        assert!(!spec.fit_content);
+        let snapshot_title = message.data["title"].as_str().unwrap();
+        assert_eq!(
+            native_window_title("about", spec.title, snapshot_title),
+            "About ChemDraft"
+        );
+        message.data["buildStamp"] = json!("any\ntext");
+        assert!(message.validate().is_err());
+
+        message.message_type = "action".into();
+        message.data = json!({"action": "copyVersion"});
+        assert!(message.validate().is_ok());
+        message.data["text"] = json!("arbitrary clipboard content");
+        assert!(message.validate().is_err());
+        message.data = json!({"action": "cancel"});
+        assert!(message.validate().is_ok());
+    }
+
+    #[test]
+    fn guided_tour_is_a_resizable_modeless_kind_with_typed_actions() {
+        let spec = kind_spec("guidedTour").unwrap();
+        assert!(spec.resizable && !spec.maximizable);
+        assert_eq!(
+            native_window_title("guidedTour", spec.title, spec.title),
+            "Take the Tour"
+        );
+        assert!(is_dialog_label("dialog-main-guidedTour-1"));
+        let mut message = snapshot();
+        message.dialog_kind = "guidedTour".into();
+        message.data = json!({"title":"Take the Tour", "scheme":"chemdraft", "automatic":true});
+        assert!(message.validate().is_ok());
+        message.data["automatic"] = json!("true");
+        assert!(message.validate().is_err());
+        message.message_type = "action".into();
+        for data in [
+            json!({"action":"cancel"}),
+            json!({"action":"finish"}),
+            json!({"action":"chooseShortcuts","scheme":"chemdraft"}),
+            json!({"action":"chooseShortcuts","scheme":"chemdraw"}),
+        ] {
+            message.data = data;
+            assert!(message.validate().is_ok());
+        }
+    }
+
+    #[test]
+    fn guided_tour_accepts_all_try_it_commands() {
+        let mut message = snapshot();
+        message.dialog_kind = "guidedTour".into();
+        message.message_type = "action".into();
+        for command in [
+            "view.openKeyboardPreferences",
+            "help.tour.openSample",
+            "plugin.opsinNameToStructure.convert",
+            "analyze.molecularProperties",
+        ] {
+            message.data = json!({"action":"tryTourCommand","command":command});
+            assert_eq!(message.validate(), Ok(()), "{command}");
+        }
+        message.data = json!({"action":"tryTourCommand","command":"document.save"});
+        assert!(message.validate().is_err());
+    }
+
     #[test]
     fn vibe_code_guide_kind_and_messages_are_bounded() {
         let spec = kind_spec("vibeCodeGuide").unwrap();

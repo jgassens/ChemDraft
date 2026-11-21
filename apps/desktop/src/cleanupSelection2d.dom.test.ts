@@ -92,11 +92,12 @@ describe("Clean Up Selection command", () => {
   async function selectBond(molecule: MoleculeObject, bond: MoleculeBond, pointerId: number) {
     const a = molecule.atoms.find(atom => atom.id === bond.fromAtomId)!;
     const b = molecule.atoms.find(atom => atom.id === bond.toAtomId)!;
+    const midpoint = transformPointForObject(molecule, { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
     const wrapper = () => container.querySelector<HTMLElement>(`[data-object-id="${molecule.id}"]`)!;
     await act(async () => {
       for (const type of ["pointerdown", "pointerup"]) {
         const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0,
-          buttons: type === "pointerdown" ? 1 : 0, shiftKey: true, clientX: (a.x + b.x) / 2, clientY: (a.y + b.y) / 2 });
+          buttons: type === "pointerdown" ? 1 : 0, shiftKey: true, clientX: midpoint.x, clientY: midpoint.y });
         Object.defineProperties(event, { isPrimary: { value: true }, pointerId: { value: pointerId }, pointerType: { value: "mouse" } });
         wrapper().dispatchEvent(event);
       }

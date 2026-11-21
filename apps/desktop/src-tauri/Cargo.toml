@@ -1,6 +1,6 @@
 [package]
 name = "chemdraft"
-version = "1.2.1"
+version = "1.2.2"
 description = "ChemDraft desktop shell"
 authors = ["ChemDraft contributors"]
 edition = "2021"
@@ -104,7 +104,7 @@ block2 = "0.6"
 # Match Tauri's app-data resolver before creating the main application.
 dirs = "6"
 objc2 = { version = "0.6", default-features = false }
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSAlert", "NSPasteboard", "NSWindow", "NSEvent", "NSApplication", "NSGraphics"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSAlert", "NSPasteboard", "NSWindow", "NSEvent", "NSApplication", "NSGraphics", "NSMenu", "NSMenuItem"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSBundle", "NSData", "NSString", "NSGeometry", "NSNotification", "NSOperation", "NSTimer", "block2"] }
 objc2-web-kit = { version = "0.3.2", default-features = false, features = ["WKWebView", "objc2-app-kit"] }
 tauri-plugin-sparkle-updater = "=0.2.4"

@@ -1,5 +1,6 @@
 import { basename } from "@tauri-apps/api/path";
 import { CanvasContextMenu, NATIVE_CANVAS_MENU_CLOSED_EVENT } from "./CanvasContextMenu";
+import { PLUGIN_CHANGE_REFUSED, RECOGNITION_REFUSED, chemistryRefusalOf, refusalSentence } from "./plugins/requestWrites/chemistryRefusal";
 import { buildObjectCanvasMenu, pageCanvasMenu, SET_DEFAULT_ARROW_STYLE_COMMAND_ID } from "./canvasContextMenuModel";
 import { RequestWriteError } from "@chemdraft/plugin-host";
 import { createRequestHistory } from "./plugins/requestWrites/requestHistory";
@@ -7,7 +8,7 @@ import { electronMarkInteractionFrames } from "./electronMarkInteraction";
 import { installPopoverEscapeRouting } from "./window-manager/popoverEscape";
 import { BracketLabelEditor, type BracketLabelEditorHandle } from "./BracketLabelEditor";
 import { createBracketCommands, selectedBracketPair, toggleBracketRepeatUnit, setBracketRepeatLabel, bracketRepeatUnitStatus, prepareCleanupRepeatUnits } from "./bracketCommands";
-import { bracketLabelPlan, bracketLabelContainsPoint, lonePairDragDirection } from "@chemdraft/layout-engine";
+import { bracketLabelPlan, bracketLabelContainsPoint, lonePairDragDirection, transformPointForObject } from "@chemdraft/layout-engine";
 import { useCanvasHandwritingFont } from "./canvasHandwritingFont";
 import { nativeTemplateForToolCommand } from "./ringTemplates";
 import { documentDrawingDefaults } from "@chemdraft/document-workflow-core";
@@ -16,8 +17,13 @@ import { AtomProblemMarker } from "./AtomProblemMarker";
 import { atomProblemCommandId, atomProblemCommands, atomProblemSnapshot, type AtomProblemTarget } from "./atomProblemCommands";
 import { atomProblem, nativeImplicitHydrogenCount, type AtomProblemAction } from "@chemdraft/document-workflow-core";
 import { applyNativeAtomProblemFix } from "./documentWorkflow";
-import { dropElectronMark, dropElectronMarksInSelection, electronMarkDropTarget, resolveElectronMarksInSelectionTransform } from "./electronMarkDrop";
-import { electronMarkUndoLabel } from "./electronMarkUndoLabel";
+import { dropElectronMark, dropElectronMarksInSelection, electronMarkDropTarget, electronMarkName,
+  resolveElectronMarksAfterMoleculePartMove, resolveElectronMarksInSelectionTransform } from "./electronMarkDrop";
+import { chargeAssociationUndoLabel, electronMarkUndoLabel } from "./electronMarkUndoLabel";
+import {
+  CHEMISTRY_EDIT, PLUGIN_WRITE, PRESERVE_CHEMISTRY, TEXT_EDIT, chemistryEditOf, chemistryRefusalStatus, policyChemistryRefusals,
+  preserveChemistry, selectionTransformChemistry, structureEditChemistry, type CommitChemistryPolicy
+} from "./commitChemistryGuard";
 import { nativeBenzeneHotkeyAtAtomTarget, nativeFragmentSproutTarget, nativeDieneFuseTarget, nativeOxoHotkeyTarget, nativeBranchedHotkeyTarget, type FragmentSproutKind } from "./sproutHotkeys";
 import { applyTableCommand, applyTableFontCommand, applyTableObjectEdit, createTableCommands, createTableInsertAction, parseTableInsertCommandId, resolveActiveTableCell, selectedTable, tableInsertCommandId, tableInspectorSnapshot, type ActiveTableCell, type TableInsertDimensions } from "./tableCommands";
 import { TableCellEditor, TableColumnResizers, type TableCellEditorHandle } from "./tableCellEditor";
@@ -226,6 +232,7 @@ import { createPersistentPluginStorage } from "./plugins/pluginStorage";
 import {
   applyAcceptedPluginProposal,
   applyPluginDocumentPatch,
+  refreshPluginPatchChemistry,
   placeInsertedObjectsInFreeSpace,
   createPluginWriteGate,
   describePatchFailure,
@@ -272,7 +279,7 @@ import { canvasOverlayPrompt, OVERLAY_BUSY_MESSAGE, pluginCanvasOverlayOpenComma
 import type { PluginPanelActionRequest, PluginPanelActionResult } from "./plugins/pluginPanelActionTypes";
 import { handleSpectrumWindowAction, saveBinaryFileHere, saveTextFileHere, spectrumToPdf } from "./plugins/spectrumExport";
 import type { QueuedProposedPatch } from "@chemdraft/plugin-host";
-import { isBlockedByModalDialog, shouldIgnoreShortcutTarget, subscribeToModalDialogChanges, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
+import { hoverKeyFromEvent, isBlockedByModalDialog, shouldIgnoreShortcutTarget, subscribeToModalDialogChanges, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import {
   atomLabelAnchorOffset,
   nativeHoverAtomLabelCompletion,
@@ -345,13 +352,9 @@ import {
   isSelectionNudgeCommand,
   atomElementActions,
   atomNicknameLabelActions,
-  atomElementCommandId,
   nicknameLabelByCommandId,
-  fragmentAtomDrawingHotkeys,
-  fragmentBondDrawingHotkeys,
   fragmentSproutKindForCommand,
   fragmentSproutCommands,
-  numericAtomDrawingHotkeys,
   numericBondDrawingHotkeys,
   artBooleanOperationCommandIds,
   createLayerActions,
@@ -462,6 +465,7 @@ import {
   pageCustomSizeAction,
   PAGE_CUSTOM_SIZE_COMMAND_ID,
   PREFERENCES_COMMAND_ID,
+  KEYBOARD_PREFERENCES_COMMAND_ID,
   toggleDrawnStructureSettingsCommandId,
   moleculeStructureNumberRanges,
   allShellCommands,
@@ -525,6 +529,8 @@ import {
   createMechanismArrowBetween,
   type MechanismArrowEndpoint,
   normalizeCommittedDocument,
+  committedElectronMarkAtoms,
+  committedNormalForm,
   applyDocumentObjectProjectedPlaneTilt,
   applyNativeAtomLabelClearTarget,
   applyNativeWarningSuppressionToScope,
@@ -861,7 +867,6 @@ import {
   setToolbarsMenu,
   toolsetCommandSpecsSignature,
   PREFERENCES_WINDOW_KIND,
-  listenForKeybindingSettings,
   listenForSpin3dSettings,
   pushKeybindingSchemeToNativeMenu,
   closeToolsetWindow,
@@ -915,6 +920,7 @@ import {
   isArrowNudgeEditorTarget,
   createDesktopShortcutRegistry,
   createMainWindowShortcutCommands,
+  defaultClipboardShortcut,
   detectDesktopShortcutPlatform,
   enableWindowsLastDocumentCloseAction
 } from "./keyboardShortcuts";
@@ -960,7 +966,7 @@ import {
   tauriUpdateFlowDeps,
   writeLastAutoCheck
 } from "./appUpdates";
-import { applyKeybindingSchemeToCommands, chemDrawHoveredTargetHotkeyCommand } from "./keybindingScheme";
+import { applyKeybindingSchemeToCommands, createHoverShortcutTables, defaultHoverShortcuts, type HoverShortcutTables } from "./keybindingScheme";
 import { isCompoundLayoutCommandHidden, compoundLayoutCommandDisabledReason, isCompoundLayoutCommand } from "./compoundLayoutSettings";
 import { useStructureSearchEnabled } from "./structureSearchSettings";
 import { createStructureSearchController, structureSearchCommands, structureSearchDocument, structureSearchErrorStatus, structureSearchSite } from "./structureSearch";
@@ -969,7 +975,14 @@ import { useDirectElectronMarkEditing } from "./useDirectElectronMarkEditing";
 import { ArrangementSpacingDialog, arrangementSpacingPreviewSvg, checkedArrangementSpacing } from "./ArrangementSpacingDialog";
 import { arrangeSelectedDocumentObjects, arrangementSpacingRange, selectedArrangementObjectIds } from "./documentWorkflow";
 import { arrangementLayoutForCommand, arrangementGridAlignmentForCommand } from "./commands";
-import { loadKeybindingSettings, type KeybindingScheme } from "./keybindingSettings";
+import type { KeybindingScheme } from "./keybindingSettings";
+import { nativeMenuShortcutOverrides } from "./customKeyboardShortcuts";
+import { useShortcutPreference } from "./useShortcutPreference";
+import { aboutCommand, openAbout } from "./about/aboutCommand";
+import { SHOW_TOUR_COMMAND, TOUR_NAME_COMMAND, TOUR_SAMPLE_COMMAND, TOUR_TITLE, type TourAction } from "./tour/tourCommands";
+import type { TourMode } from "./tour/tourState";
+import { buildTourSample } from "./tour/tourSample";
+import { useGuidedTour } from "./tour/useGuidedTour";
 import { saveDrawingSettings } from "./drawingSettings";
 import { listenForDrawingSettings } from "./window-manager";
 import { rasterizeSvgNative } from "./nativeRasterExport";
@@ -1838,7 +1851,29 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.21.15.05-sonnet";
+const CURRENT_BUILD_STAMP = "11.21.15.30-sonnet";
+
+/**
+ * The commit funnel's chemistry check (AGENTS.md section 7, `commitChemistryGuard.ts`). `before`
+ * is the committed document the operation started from, `next` the operation's own result and
+ * `after` the normalized document about to be committed, so placement and normalization are both
+ * done. Returns the status-line refusal when a molecule that existed before would change, or
+ * undefined when the commit may proceed. Commits declared exempt are not checked; a scoped chemistry
+ * edit (`structureEditChemistry`, `chemistryEditOf`) is checked for every molecule outside its scope.
+ */
+function commitChemistryRefusal(
+  before: ChemDraftDocument,
+  next: ChemDraftDocument,
+  after: ChemDraftDocument,
+  policy: CommitChemistryPolicy,
+  undoLabel?: string | ((before: ChemDraftDocument, after: ChemDraftDocument) => string)
+): string | undefined {
+  if (policy.kind !== "preserve" || before === after) return undefined;
+  const messages = policyChemistryRefusals(policy, {
+    before, next, after, normalize: committedNormalForm, markAtoms: committedElectronMarkAtoms
+  }, typeof undoLabel === "string" ? `apply "${undoLabel}"` : undefined);
+  return messages.length > 0 ? chemistryRefusalStatus(messages) : undefined;
+}
 const TABLE_DRAFT_RECOVERY_WARNING = "session.tableDraftDropped";
 
 function clearTableDraftRecoveryWarnings(report: OpenWarningsReport | undefined): OpenWarningsReport | undefined {
@@ -2092,6 +2127,7 @@ export interface MainWindowProps {
   initialDocument?: ChemDraftDocument;
   initialActiveToolCommandId?: string;
   shortcutPlatform?: ShortcutPlatform;
+  tourMode?: TourMode;
   /**
    * Floating native palette windows instead of in-window palettes. Defaults to on only in the desktop
    * runtime (`shouldDefaultToNativePalettes`), and nothing in the app turns it on elsewhere. Forcing it
@@ -2141,6 +2177,16 @@ function inspectPastePayload(payload: ClipboardReadPayload): ClipboardDetectedPa
   });
 }
 
+function molecularInspectorSubject(molecule: MoleculeObject, document: ChemDraftDocument): string {
+  return analysisSubjectKey({
+    ...molecule,
+    atoms: molecule.atoms.map(({ labelVisible: _visible, labelOffset: _offset, warningSuppressed: _warning, ...atom }) => atom),
+    bonds: molecule.bonds.map(({ display, ...bond }) => ({ ...bond,
+      ...(display?.bondStyle && (isDativeBond({ ...bond, display }) || ["wedge", "hashed", "wavy"].includes(display.bondStyle))
+        ? { display: { bondStyle: display.bondStyle } } : {}) }))
+  }, document) + JSON.stringify([molecule.structureFormat, molecule.structure]);
+}
+
 export function MainWindow({
   initialPaletteMode = "floating",
   initialRulersVisible = true,
@@ -2148,6 +2194,7 @@ export function MainWindow({
   initialDocument,
   initialActiveToolCommandId,
   shortcutPlatform,
+  tourMode,
   nativePalette = shouldDefaultToNativePalettes()
 }: MainWindowProps) {
   useEffect(() => installBrowserReloadGuard(shortcutPlatform), [shortcutPlatform]);
@@ -2561,6 +2608,9 @@ export function MainWindow({
   documentTabsRef.current = documentTabs;
   const pluginRuntimeRef = useRef<DesktopPluginRuntime | undefined>(undefined);
   const dialogCoordinatorRef = useRef<DialogCoordinator | undefined>(undefined);
+  const tourActionRef = useRef<(action: TourAction) => Promise<void>>(async () => {});
+  const deferTourRef = useRef<() => void>(() => {});
+  const tourSampleRef = useRef<{ tabId: string; moleculeId: string } | undefined>(undefined);
   const atomProblemTargetRef = useRef<{ tabId: string; target: AtomProblemTarget; source: ChemDraftDocument; version: number } | undefined>(undefined);
   const atomProblemVersionRef = useRef(0);
   const fixAtomProblemRef = useRef<(tabId: string, action: AtomProblemAction, version: number) => void>(() => {});
@@ -3135,13 +3185,7 @@ export function MainWindow({
 
   const selectedMolecule = getSelectedMolecule(document);
   // Exclude drawing-only fields while retaining chemistry-bearing bond styles and bracket context.
-  const inspectorSubject = selectedMolecule ? analysisSubjectKey({
-    ...selectedMolecule,
-    atoms: selectedMolecule.atoms.map(({ labelVisible: _visible, labelOffset: _offset, warningSuppressed: _warning, ...atom }) => atom),
-    bonds: selectedMolecule.bonds.map(({ display, ...bond }) => ({ ...bond,
-      ...(display?.bondStyle && (isDativeBond({ ...bond, display }) || ["wedge", "hashed", "wavy"].includes(display.bondStyle))
-        ? { display: { bondStyle: display.bondStyle } } : {}) }))
-  }, document) + JSON.stringify([selectedMolecule.structureFormat, selectedMolecule.structure]) : undefined;
+  const inspectorSubject = selectedMolecule ? molecularInspectorSubject(selectedMolecule, document) : undefined;
   const inspectorVisible = molecularInspectorOpen || visibleToolsetIds.has(molecularInspectorToolsetId);
   useEffect(() => {
     if (!inspectorVisible) {
@@ -3521,7 +3565,12 @@ export function MainWindow({
       setTapeMeasure(undefined);
     }
   }, [activeTool]);
-  const [keybindingScheme, setKeybindingScheme] = useState<KeybindingScheme>(() => loadKeybindingSettings().scheme);
+  const shortcutSettings = useShortcutPreference();
+  const keybindingScheme = shortcutSettings.scheme;
+  const shortcutOverrides = shortcutSettings.overrides?.[keybindingScheme];
+  const hoverShortcuts = useMemo(() => createHoverShortcutTables(keybindingScheme, shortcutOverrides), [keybindingScheme, shortcutOverrides]);
+  const hoverShortcutsRef = useRef(hoverShortcuts);
+  hoverShortcutsRef.current = hoverShortcuts;
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
@@ -3533,32 +3582,17 @@ export function MainWindow({
     return () => { disposed = true; unlisten?.(); };
   }, []);
   const keybindingSchemeRef = useRef(keybindingScheme);
+  keybindingSchemeRef.current = keybindingScheme;
   useEffect(() => {
-    keybindingSchemeRef.current = keybindingScheme;
-    // The native macOS menu carries its own accelerators; keep them in step with the scheme.
-    void pushKeybindingSchemeToNativeMenu(keybindingScheme);
-  }, [keybindingScheme]);
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    void listenForKeybindingSettings((next) => setKeybindingScheme(next.scheme)).then((listener) => {
-      if (disposed) {
-        listener();
-        return;
-      }
-      unlisten = listener;
-    });
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
+    // The native menu carries its own accelerators. Keep them in step with the canvas.
+    void pushKeybindingSchemeToNativeMenu(keybindingScheme, nativeMenuShortcutOverrides(shortcutOverrides, shortcutPlatform));
+  }, [keybindingScheme, shortcutOverrides, shortcutPlatform]);
   const toolCommandSpecs = useMemo(
     () => applyKeybindingSchemeToCommands(
       withStandaloneDrawingToolCommands(getToolsetCommandSpecs(toolsetRegistry)),
-      keybindingScheme
+      keybindingScheme, shortcutOverrides, shortcutPlatform
     ),
-    [keybindingScheme, toolsetRegistry]
+    [keybindingScheme, shortcutOverrides, shortcutPlatform, toolsetRegistry]
   );
   const hasSearchableStructure = useMemo(() => structureSearchDocument(
     document, nativeMoleculeFragmentSelections(selectedNativeMoleculeParts)
@@ -3583,9 +3617,9 @@ export function MainWindow({
         structureSearchEnabled,
         hasSearchableStructure
       }).map(command => customSwatchActions.find(action => action.id === command.id) ?? command).filter(command => command.id !== "arrow.conditions" || isDesktopRuntime()),
-      keybindingScheme
+      keybindingScheme, shortcutOverrides, shortcutPlatform
     ),
-    [baseToolbarCommands, customSwatches, customSwatchActions, activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId, canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, selectedNativeMoleculeParts, toolsetRegistry, compoundLayoutsEnabled, compoundLayoutSettings, structureSearchEnabled, hasSearchableStructure]
+    [shortcutOverrides, shortcutPlatform, baseToolbarCommands, customSwatches, customSwatchActions, activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId, canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, selectedNativeMoleculeParts, toolsetRegistry, compoundLayoutsEnabled, compoundLayoutSettings, structureSearchEnabled, hasSearchableStructure]
   );
   const shellCommandsById = useMemo(
     () => createShellCommandMap(shellCommandSpecs),
@@ -3601,12 +3635,12 @@ export function MainWindow({
     void broadcastToolsetCommandSpecs(shellCommandSpecsRef.current).catch(() => undefined);
   }, [shellCommandSpecsSignature]);
   const shortcutCommands = useMemo(
-    () => createMainWindowShortcutCommands({ quickActions, layerActions, toolCommandSpecs }, keybindingScheme),
-    [keybindingScheme, layerActions, quickActions, toolCommandSpecs]
+    () => createMainWindowShortcutCommands({ quickActions, layerActions, toolCommandSpecs }, keybindingScheme, shortcutOverrides, shortcutPlatform),
+    [keybindingScheme, shortcutOverrides, shortcutPlatform, layerActions, quickActions, toolCommandSpecs]
   );
   const shortcutRegistry = useMemo(
-    () => createDesktopShortcutRegistry(shortcutCommands, shortcutPlatform),
-    [shortcutCommands, shortcutPlatform]
+    () => createDesktopShortcutRegistry(shortcutCommands, { platform: shortcutPlatform, overrides: shortcutOverrides }),
+    [shortcutCommands, shortcutPlatform, shortcutOverrides]
   );
   useEffect(() => {
     const stop = perfHook(() => onPerfStarted(() => { perfHook(() => perfProbe?.setShortcutRegistry(shortcutRegistry)); }));
@@ -3761,6 +3795,8 @@ export function MainWindow({
     // write already in flight against the old document key is refused rather than landing here.
     documentIdentityRef.current += 1;
     const tabId = activeDocumentTabIdRef.current;
+    // Legacy assistant requests are bound to the tab's document too: cancel them, never retarget them.
+    pluginRuntimeRef.current?.assistant.cancelForReplacedDocument(tabId);
     invalidateRequestDocument(tabId);
     installDocumentHistory(createDocumentHistory(normalizeCommittedDocument(
       admitParsedDocument(nextDocument), { preserveElectronMarks: true }
@@ -3777,7 +3813,8 @@ export function MainWindow({
   }, [installDocumentHistory, invalidateRequestDocument, requestDocumentKey]);
   const replacePresentDocument = useCallback((
     nextDocumentOrUpdate: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument),
-    palettePreview = false
+    palettePreview = false,
+    labelReplacement?: (present: ChemDraftDocument) => string
   ): boolean => {
     if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
     let changed = false;
@@ -3788,7 +3825,7 @@ export function MainWindow({
       if (nextDocument === currentHistory.present) return currentHistory;
 
       const present = normalizeCommittedDocument(nextDocument);
-      const undoLabel = documentUndoLabelsRef.current.get(currentHistory.present);
+      const undoLabel = labelReplacement?.(present) ?? documentUndoLabelsRef.current.get(currentHistory.present);
       if (undoLabel) documentUndoLabelsRef.current.set(present, undoLabel);
       changed = true;
       return { ...currentHistory, present };
@@ -3808,6 +3845,13 @@ export function MainWindow({
     if (label) documentUndoLabelsRef.current.set(clean, label);
     return clean;
   }, []);
+  // A refused commit's reason goes on the status line. Many callers report their own outcome right
+  // after committing ("Grouped selection", "Select a group"), so it is set again once the current
+  // task has finished, where it is the last word.
+  const reportChemistryRefusal = useCallback((message: string) => {
+    setStatus(message);
+    queueMicrotask(() => setStatus(message));
+  }, []);
   // Ordinary edits and assistant history pushes/amendments share commit preparation.
   const prepareDocumentCommit = useCallback((nextDocument: ChemDraftDocument, undoLabel?: string,
     assertFinalDocument?: (document: ChemDraftDocument) => ChemDraftDocument | void) => {
@@ -3819,13 +3863,24 @@ export function MainWindow({
   }, []);
   const pageFitPendingRef = useRef(0);
   const pluginPageConsentsRef = useRef(new WeakMap<AbortSignal, PageEnlargementConsent>());
+  // Every commit is checked for chemistry changes to molecules that existed before it, after
+  // placement and normalization (`commitChemistryRefusal`), unless `chemistry` declares it exempt:
+  // drawing, deleting, charge and label edits, mark drops pass CHEMISTRY_EDIT, plugin writes
+  // PLUGIN_WRITE. A refusal leaves the document and the undo stack as they were.
   const commitDocumentChange = useCallback((
     nextDocumentOrUpdate: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument),
-    undoLabel?: string,
+    undoLabel?: string | ((before: ChemDraftDocument, after: ChemDraftDocument) => string),
     textCheckpointed = false,
-    assertFinalDocument?: (document: ChemDraftDocument) => ChemDraftDocument | void
+    assertFinalDocument?: (document: ChemDraftDocument) => ChemDraftDocument | void,
+    chemistry: CommitChemistryPolicy = PRESERVE_CHEMISTRY
   ): boolean => {
     if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
+    const prepare = (before: ChemDraftDocument, next: ChemDraftDocument) => {
+      if (typeof undoLabel !== "function") return prepareDocumentCommit(next, undoLabel, assertFinalDocument);
+      const present = prepareDocumentCommit(next, undefined, assertFinalDocument);
+      documentUndoLabelsRef.current.set(present, undoLabel(before, present));
+      return present;
+    };
     // Validate the actual final state before checkpointing typing or settling other history.
     // Reuse this prepared document only while its baseline is still current.
     let guardedCurrent: ChemDraftDocument | undefined;
@@ -3834,7 +3889,13 @@ export function MainWindow({
       const current = documentRef.current;
       const next = typeof nextDocumentOrUpdate === "function" ? nextDocumentOrUpdate(current) : nextDocumentOrUpdate;
       if (next === current) return false;
-      guardedPresent = prepareDocumentCommit(next, undoLabel, assertFinalDocument);
+      guardedPresent = prepare(current, next);
+      // Refused before any typing checkpoint is staged, as a failed assertion would be.
+      const refusal = commitChemistryRefusal(current, next, guardedPresent, chemistry, undoLabel);
+      if (refusal) {
+        reportChemistryRefusal(refusal);
+        return false;
+      }
       guardedCurrent = current;
     }
     // Record typing before the command, retaining main's editor lifetime in its callers.
@@ -3842,6 +3903,7 @@ export function MainWindow({
     // install a typing entry, notify assistant transactions, or disarm the text snapshot.
     let resumeTextEdit = textCheckpointed || assertFinalDocument ? undefined : checkpointTextEditBeforeCommitRef.current();
     let changed = false;
+    let refusal = undefined as string | undefined;
     try {
       installDocumentHistory((history) => {
         const checkpoint = assertFinalDocument && !textCheckpointed ? prepareTextEditCheckpointRef.current(history) : undefined;
@@ -3852,7 +3914,12 @@ export function MainWindow({
           : nextDocumentOrUpdate);
         if (nextDocument === currentHistory.present) return history;
 
-        const present = reusablePresent ?? prepareDocumentCommit(nextDocument, undoLabel, assertFinalDocument);
+        const present = reusablePresent ?? prepare(currentHistory.present, nextDocument);
+        // The final document must not change a molecule that existed before (a reused present
+        // was already checked against this same baseline above).
+        refusal = reusablePresent ? undefined
+          : commitChemistryRefusal(currentHistory.present, nextDocument, present, chemistry, undoLabel);
+        if (refusal) return history;
         checkpoint?.complete();
         resumeTextEdit = checkpoint?.resume ?? resumeTextEdit;
         changed = true;
@@ -3863,6 +3930,10 @@ export function MainWindow({
         };
       });
     } finally { resumeTextEdit?.(); }
+    if (refusal) {
+      reportChemistryRefusal(refusal);
+      return false;
+    }
     if (!changed) return false;
     setFileState((current) => {
       const nextFileState = { ...current, dirty: true };
@@ -3870,24 +3941,48 @@ export function MainWindow({
       return nextFileState;
     });
     return true;
-  }, [atomLabelHistorySnapshot, installDocumentHistory, prepareDocumentCommit]);
+  }, [atomLabelHistorySnapshot, installDocumentHistory, prepareDocumentCommit, reportChemistryRefusal]);
   // Only insertion and automatic re-layout callers opt into the pre-commit page question.
   // Hand gestures, typing, styling and arrange commands use the synchronous commit above.
   const commitDocumentChangeWithPageFit = useCallback((
     update: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument), label?: string,
     onCommit?: NonNullable<Parameters<typeof commitWithPageFit>[3]>["onCommit"],
-    assertFinalDocument?: (document: ChemDraftDocument) => ChemDraftDocument | void
+    assertFinalDocument?: (document: ChemDraftDocument) => ChemDraftDocument | void,
+    chemistry: CommitChemistryPolicy = PRESERVE_CHEMISTRY
   ): boolean => {
     if (pageFitPendingRef.current) { setStatus("Finish the page size question before editing."); return false; }
+    // The chemistry check runs BEFORE the typing checkpoint below, which records an "Edit Text" undo
+    // entry: a refused commit must leave the undo stack exactly as it was. A caller's own final-
+    // document assertion (Clean Up) runs first, as in the final commit; when it throws, its more
+    // specific refusal is raised by that commit instead.
+    const unchecked = documentRef.current;
+    const uncheckedNext = typeof update === "function" ? update(unchecked) : update;
+    if (uncheckedNext !== unchecked) {
+      let finalDocument: ChemDraftDocument | undefined;
+      try { finalDocument = prepareDocumentCommit(uncheckedNext, label, assertFinalDocument); } catch { finalDocument = undefined; }
+      const earlyRefusal = finalDocument && commitChemistryRefusal(unchecked, uncheckedNext, finalDocument, chemistry, label);
+      if (earlyRefusal) {
+        reportChemistryRefusal(earlyRefusal);
+        return false;
+      }
+    }
     const resumeTextEdit = checkpointTextEditBeforeCommitRef.current();
     try {
       if (pageFitPendingRef.current) return false;
       const before = documentRef.current;
-      const next = typeof update === "function" ? update(before) : update;
+      // Reuse the checked result while the checkpoint left the document as it was.
+      const next = before === unchecked ? uncheckedNext : typeof update === "function" ? update(before) : update;
       if (next === before) return false;
       const proposed = prepareDocumentCommit(next, label);
+      // Refuse before asking about the page size; the final commit checks again. A caller's own
+      // final-document assertion (Clean Up) runs first there, keeping its more specific refusal.
+      const refusal = assertFinalDocument ? undefined : commitChemistryRefusal(before, next, proposed, chemistry, label);
+      if (refusal) {
+        reportChemistryRefusal(refusal);
+        return false;
+      }
       const tabId = activeDocumentTabIdRef.current;
-      const pending = commitWithPageFit(before, proposed, document => commitDocumentChange(document, label, true, assertFinalDocument), {
+      const pending = commitWithPageFit(before, proposed, document => commitDocumentChange(document, label, true, assertFinalDocument, chemistry), {
         onCommit,
         consent: new PageEnlargementConsent(shortcutPlatform),
         isCurrent: () => mountedRef.current && !quitMutationFrozenRef.current && activeDocumentTabIdRef.current === tabId &&
@@ -3899,7 +3994,7 @@ export function MainWindow({
       }
       return true;
     } finally { resumeTextEdit?.(); }
-  }, [commitDocumentChange, prepareDocumentCommit, shortcutPlatform]);
+  }, [commitDocumentChange, prepareDocumentCommit, reportChemistryRefusal, shortcutPlatform]);
   settlePalettePreviewRef.current = (reason) => {
     const session = artStylePreviewRef.current ?? moleculeInspectorPreviewRef.current;
     if (!session) return;
@@ -3910,11 +4005,21 @@ export function MainWindow({
     artStylePreviewRef.current = null;
     moleculeInspectorPreviewRef.current = null;
     const previewDocument = documentRef.current;
+    const present = previewDocument === session.startDocument ? undefined : prepareDocumentCommit(previewDocument, session.undoLabel);
+    // A style preview must not change chemistry either; a refused one is withdrawn, unrecorded. The
+    // check runs before the typing checkpoint, so a refusal leaves no "Edit Text" entry either: the
+    // undo stack is exactly as it was.
+    const refusal = present && commitChemistryRefusal(session.startDocument, previewDocument, present, PRESERVE_CHEMISTRY, session.undoLabel);
+    if (refusal) {
+      installDocumentHistory((history) => history.present === session.startDocument ? history : { ...history, present: session.startDocument });
+      palettePreviewSettlingRef.current = false;
+      reportChemistryRefusal(refusal);
+      return;
+    }
     const resumeTextEdit = checkpointTextEditBeforeCommitRef.current(session.startDocument);
     try {
       installDocumentHistory((history) => {
-        if (previewDocument === session.startDocument) return history;
-        const present = prepareDocumentCommit(previewDocument, session.undoLabel);
+        if (!present) return history;
         return {
           past: boundedHistoryPast([...history.past, atomLabelHistorySnapshot(session.startDocument)], present),
           present,
@@ -4073,14 +4178,24 @@ export function MainWindow({
     startDocument: ChemDraftDocument,
     nextDocument: ChemDraftDocument,
     undoLabel?: string,
-    assertFinalDocument?: (document: ChemDraftDocument) => void
-  ) => {
+    assertFinalDocument?: (document: ChemDraftDocument) => void,
+    chemistry: CommitChemistryPolicy = PRESERVE_CHEMISTRY
+  ): boolean => {
     if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
     const verified = assertFinalDocument ? prepareDocumentCommit(nextDocument, undoLabel, assertFinalDocument) : undefined;
+    const present = verified ?? prepareDocumentCommit(nextDocument, undoLabel);
+    // The gesture's final document must not change a molecule that existed before it. On refusal the
+    // pre-gesture document is put back (a drag leaves its last preview frame as the present) and
+    // nothing is recorded.
+    const refusal = commitChemistryRefusal(startDocument, nextDocument, present, chemistry, undoLabel);
+    if (refusal) {
+      installDocumentHistory((history) => history.present === startDocument ? history : { ...history, present: startDocument });
+      reportChemistryRefusal(refusal);
+      return false;
+    }
     // Exclude live preview geometry from the text checkpoint, then resume on the final frame.
     const resumeTextEdit = checkpointTextEditBeforeCommitRef.current(startDocument);
     try {
-      const present = verified ?? prepareDocumentCommit(nextDocument, undoLabel);
       installDocumentHistory((currentHistory) => ({
         past: boundedHistoryPast([...currentHistory.past, atomLabelHistorySnapshot(startDocument)], present),
         present,
@@ -4092,14 +4207,22 @@ export function MainWindow({
       fileStateRef.current = nextFileState;
       return nextFileState;
     });
-  }, [atomLabelHistorySnapshot, installDocumentHistory, prepareDocumentCommit]);
+    return true;
+  }, [atomLabelHistorySnapshot, installDocumentHistory, prepareDocumentCommit, reportChemistryRefusal]);
   // Inserted builders may use a drag preview. Keep its pre-placement undo snapshot while
   // leaving every transform/drawing commit on commitDocumentHistoryFrom.
-  const commitInsertionHistoryWithPageFit = useCallback((start: ChemDraftDocument, proposed: ChemDraftDocument, undoLabel?: string) => {
+  const commitInsertionHistoryWithPageFit = useCallback((start: ChemDraftDocument, proposed: ChemDraftDocument, undoLabel?: string,
+    chemistry: CommitChemistryPolicy = PRESERVE_CHEMISTRY) => {
+    const placed = proposed;
     proposed = prepareDocumentCommit(proposed);
+    // Refused before the page-size question; commitDocumentHistoryFrom puts `start` back.
+    if (commitChemistryRefusal(start, placed, proposed, chemistry, undoLabel)) {
+      commitDocumentHistoryFrom(start, placed, undoLabel, undefined, chemistry);
+      return;
+    }
     const tabId = activeDocumentTabIdRef.current;
     if (planDocumentPageFit(start, proposed).growth.length) replacePresentDocument(start);
-    const pending = commitWithPageFit(start, proposed, document => commitDocumentHistoryFrom(start, document, undoLabel), {
+    const pending = commitWithPageFit(start, proposed, document => { commitDocumentHistoryFrom(start, document, undoLabel, undefined, chemistry); }, {
       consent: new PageEnlargementConsent(shortcutPlatform),
       isCurrent: () => mountedRef.current && !quitMutationFrozenRef.current && activeDocumentTabIdRef.current === tabId &&
         assistantDocumentContentUnchanged(start, documentRef.current)
@@ -4169,8 +4292,16 @@ export function MainWindow({
     fileStateRef.current = file;
     setFileState(file);
   }, []);
+  // Typed rotation and stretch entries record their live preview. A transform must not change
+  // chemistry, so a refused preview is withdrawn (the start document comes back) and not recorded.
   const commitLiveInputPreview = useCallback((startDocument: ChemDraftDocument, undoLabel?: string): boolean => {
     const previewDocument = documentRef.current;
+    const refusal = commitChemistryRefusal(startDocument, previewDocument, previewDocument, selectionTransformChemistry(), undoLabel);
+    if (refusal) {
+      installDocumentHistory((history) => history.present === startDocument ? history : { ...history, present: startDocument });
+      reportChemistryRefusal(refusal);
+      return false;
+    }
     if (undoLabel) documentUndoLabelsRef.current.set(previewDocument, undoLabel);
     const resumeTextEdit = checkpointTextEditBeforeCommitRef.current(startDocument);
     let changed = false;
@@ -4188,7 +4319,7 @@ export function MainWindow({
     if (!changed) return false;
     markDocumentDirty();
     return true;
-  }, [atomLabelHistorySnapshot, installDocumentHistory, markDocumentDirty]);
+  }, [atomLabelHistorySnapshot, installDocumentHistory, markDocumentDirty, reportChemistryRefusal]);
 
   useEffect(() => {
     if (!bondToolActive) {
@@ -4706,7 +4837,7 @@ export function MainWindow({
         selectDocumentObject(currentDocument, hoveredArrowId)
       );
       if (nextDocument !== currentDocument) {
-        commitDocumentChange(nextDocument);
+        commitDocumentChange(nextDocument, undefined, false, undefined, CHEMISTRY_EDIT);
         toolbarStyleTargetRef.current = undefined;
         setArrowEditTargetId(undefined);
         setActiveEditorObjectId(undefined);
@@ -4746,7 +4877,7 @@ export function MainWindow({
     if (labelClearTarget) {
       const cleared = applyNativeAtomLabelClearTarget(currentDocument, labelClearTarget);
       if (cleared !== currentDocument) {
-        commitDocumentChange(cleared);
+        commitDocumentChange(cleared, undefined, false, undefined, CHEMISTRY_EDIT);
         setActiveAtomLabelEdit(undefined);
         setStatus("Deleted atom label");
         return;
@@ -4764,7 +4895,7 @@ export function MainWindow({
       }
 
       const deletedObjectIds = new Set(selectedDeleteTargets.map((part) => part.objectId));
-      commitDocumentChange(nextDocument);
+      commitDocumentChange(nextDocument, undefined, false, undefined, CHEMISTRY_EDIT);
       toolbarStyleTargetRef.current = undefined;
       setActiveEditorObjectId((current) => current && deletedObjectIds.has(current) ? undefined : current);
       setActiveTextEditObjectId(undefined);
@@ -4791,7 +4922,7 @@ export function MainWindow({
       }
 
       const deletedCount = currentDocument.selection.objectIds.length;
-      commitDocumentChange(nextDocument);
+      commitDocumentChange(nextDocument, undefined, false, undefined, CHEMISTRY_EDIT);
       toolbarStyleTargetRef.current = undefined;
       setActiveEditorObjectId(undefined);
       setActiveTextEditObjectId(undefined);
@@ -4820,7 +4951,7 @@ export function MainWindow({
       return;
     }
 
-    commitDocumentChange(nextDocument);
+    commitDocumentChange(nextDocument, undefined, false, undefined, CHEMISTRY_EDIT);
     toolbarStyleTargetRef.current = undefined;
     setActiveEditorObjectId((current) => current === target.objectId ? undefined : current);
     setActiveTextEditObjectId(undefined);
@@ -4854,7 +4985,7 @@ export function MainWindow({
       return false;
     }
 
-    commitDocumentChange(nextDocument);
+    commitDocumentChange(nextDocument, undefined, false, undefined, CHEMISTRY_EDIT);
     toolbarStyleTargetRef.current = undefined;
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
@@ -4882,7 +5013,7 @@ export function MainWindow({
       return;
     }
 
-    commitDocumentChange(nextDocument, madePlain ? "Made bond plain" : undefined);
+    commitDocumentChange(nextDocument, madePlain ? "Made bond plain" : undefined, false, undefined, CHEMISTRY_EDIT);
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
@@ -4911,7 +5042,7 @@ export function MainWindow({
       return;
     }
 
-    commitDocumentChange(nextDocument, madePlain ? "Made bond plain" : undefined);
+    commitDocumentChange(nextDocument, madePlain ? "Made bond plain" : undefined, false, undefined, CHEMISTRY_EDIT);
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
@@ -4946,7 +5077,8 @@ export function MainWindow({
       return;
     }
 
-    commitDocumentChange(nextDocument, reverses ? `Reverse ${nativeBondToolStatusLabel(bondStyle)}` : bondStyle === "wavy" ? "Make bond wavy" : bondStyle === "wedge" ? "Make bond wedge" : undefined);
+    commitDocumentChange(nextDocument, reverses ? `Reverse ${nativeBondToolStatusLabel(bondStyle)}` : bondStyle === "wavy" ? "Make bond wavy" : bondStyle === "wedge" ? "Make bond wedge" : undefined,
+      false, undefined, CHEMISTRY_EDIT);
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
@@ -4977,7 +5109,7 @@ export function MainWindow({
     }
 
     const split = result.target.kind === "atom" && result.target.atomId !== target.atomId;
-    commitDocumentChange(nextDocument, split ? `Add ${element} substituent` : undefined);
+    commitDocumentChange(nextDocument, split ? `Add ${element} substituent` : undefined, false, undefined, CHEMISTRY_EDIT);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
@@ -5002,7 +5134,7 @@ export function MainWindow({
       return;
     }
 
-    commitDocumentChange(nextDocument, split ? `Add ${label} substituent` : `Label atom ${label}`);
+    commitDocumentChange(nextDocument, split ? `Add ${label} substituent` : `Label atom ${label}`, false, undefined, CHEMISTRY_EDIT);
     if (split) {
       setSelectedNativeMoleculePart(result.target);
     }
@@ -5043,7 +5175,8 @@ export function MainWindow({
       return;
     }
 
-    commitDocumentChange(nextDocument, undoLabel);
+    // Scoped: a sprouted or fused fragment changes the molecule it grows on, never another one.
+    commitDocumentChange(nextDocument, undoLabel, false, undefined, structureEditChemistry(`add ${statusNoun}`));
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
@@ -5109,7 +5242,7 @@ export function MainWindow({
       return;
     }
 
-    commitDocumentChange(nextDocument);
+    commitDocumentChange(nextDocument, undefined, false, undefined, structureEditChemistry("add this carbonyl"));
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
@@ -5139,7 +5272,7 @@ export function MainWindow({
       return;
     }
 
-    commitDocumentChange(nextDocument);
+    commitDocumentChange(nextDocument, undefined, false, undefined, structureEditChemistry("draw this bond"));
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
@@ -5182,7 +5315,9 @@ export function MainWindow({
       return;
     }
 
-    commitDocumentChange(nextDocument, electronMarkUndoLabel(currentDocument, nextDocument, markSpec));
+    // Scoped to the target atom's molecule: placing a mark there changes no other molecule.
+    commitDocumentChange(nextDocument, electronMarkUndoLabel(currentDocument, nextDocument, markSpec), false, undefined,
+      chemistryEditOf([target.objectId]));
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
@@ -7252,7 +7387,7 @@ export function MainWindow({
       replacePresentDocument(result.document);
       documentUndoLabelsRef.current.set(documentRef.current, atomLabelUndoLabel(result.baseline, result.target, state.draft));
     } else if (changed) {
-      commitDocumentHistoryFrom(result.baseline, result.document, atomLabelUndoLabel(result.baseline, result.target, state.draft));
+      commitDocumentHistoryFrom(result.baseline, result.document, atomLabelUndoLabel(result.baseline, result.target, state.draft), undefined, CHEMISTRY_EDIT);
       // snapshotDocumentTab finishes drafts before close/quit checks this ref. The history
       // commit queues its dirty-state update; reconcile it now, as the table finisher does.
       // A Save while the editor was open may already have written this exact draft.
@@ -7604,7 +7739,7 @@ export function MainWindow({
     if (payload.bounds.width > page.width || payload.bounds.height > page.height) {
       // Oversized content retains its prepared placement and the existing explicit page-size
       // choice. Repeat offsets and clamping apply only when the payload fits the current page.
-      return commitDocumentChangeWithPageFit(nextDocument, label);
+      return commitDocumentChangeWithPageFit(nextDocument, label, undefined, undefined, preserveChemistry("paste"));
     }
     const placement = nextSelectionClipboardPastePlacement(payload, selectionClipboardPasteStateRef.current,
       page, anchor.pointer, nativePayload ? 1 : 0);
@@ -7612,7 +7747,9 @@ export function MainWindow({
     const insertedIds = nextDocument.pages[0]!.objects.filter(object => !existingIds.has(object.id)).map(object => object.id);
     const placed = translateInsertedDocumentObjects(nextDocument, insertedIds,
       placement.point.x - payload.bounds.centerX, placement.point.y - payload.bounds.centerY);
-    if (!commitDocumentChange(placed, label)) return false;
+    // The funnel checks the placed, normalized document: only here is it known which molecule a
+    // pasted object lands beside (a loose "+" there may otherwise be re-attributed to it).
+    if (!commitDocumentChange(placed, label, false, undefined, preserveChemistry("paste"))) return false;
     selectionClipboardPasteStateRef.current = { ...placement.state, document: documentRef.current };
     return true;
   }, [commitDocumentChange, commitDocumentChangeWithPageFit]);
@@ -7627,7 +7764,7 @@ export function MainWindow({
     );
     if (result.document !== documentRef.current) {
       if (detectedPayload.kind === "image") {
-        if (!commitDocumentChangeWithPageFit(result.document, "Paste Picture")) return;
+        if (!commitDocumentChangeWithPageFit(result.document, "Paste Picture", undefined, undefined, preserveChemistry("paste"))) return;
       } else if (!commitClipboardPaste(result.document, anchor)) return;
     } else if (detectedPayload.kind === "image" || detectedPayload.kind === "image-refused") {
       setStatus(result.status);
@@ -7942,7 +8079,7 @@ export function MainWindow({
       warnings
     );
     if (nextDocument === documentRef.current) {
-      setStatus("Clipboard selection unchanged");
+      setStatus(warnings.length > 0 ? warnings.join("; ") : "Clipboard selection unchanged");
       return;
     }
 
@@ -7967,7 +8104,7 @@ export function MainWindow({
     // whole objects and fragments, and the user may have changed selection while it was writing.
     const nextDocument = deleteClipboardSelection(currentDocument, payload, wholeObjectIds);
     if (nextDocument !== documentRef.current) {
-      commitDocumentChange(nextDocument);
+      commitDocumentChange(nextDocument, undefined, false, undefined, CHEMISTRY_EDIT);
       setActiveEditorObjectId(undefined);
       setActiveTextEditObjectId(undefined);
       setActiveAtomLabelEdit(undefined);
@@ -8053,10 +8190,10 @@ export function MainWindow({
   // document, and a relaunch never reopens changed chemistry. The edit itself stays open. Reads
   // refs only, including private table and repeat-label drafts.
   const documentForFlush = useCallback((onDroppedDraft?: (kind: string, error: unknown) => void): ChemDraftDocument => {
-    // Resizing replaces the live page for preview, but only pointerup commits it.
+    // Resizing and part drags replace the live page during the preview.
     // A Save/autosave/export during the held gesture must match what Escape restores.
-    const resize = objectResizeDragRef.current;
-    if (resize) return resize.startDocument;
+    const gesture = objectResizeDragRef.current ?? nativePartDragRef.current;
+    if (gesture) return gesture.startDocument;
     let current = documentRef.current;
     const includeDraft = (kind: string, apply: () => ChemDraftDocument, rollback?: () => ChemDraftDocument) => {
       if (!onDroppedDraft) return apply();
@@ -8290,7 +8427,8 @@ export function MainWindow({
               labelResult.target,
               nativeTextObjectLabel(currentDocument, objectId),
               "Convert Text to Atom Label"
-            )
+            ),
+            false, undefined, CHEMISTRY_EDIT
           );
           setSelectedNativeMoleculePart(labelResult.target);
         }
@@ -8301,7 +8439,7 @@ export function MainWindow({
       // the open-space element conversion, so do not repeat that hit-test here.
       const converted = convertNativeTextObjectToAtom(currentDocument, objectId, { skipAtomLabel: true });
       if (converted !== currentDocument) {
-        commitDocumentChange(converted);
+        commitDocumentChange(converted, undefined, false, undefined, CHEMISTRY_EDIT);
         const atomElement = getSelectedMolecule(converted)?.atoms[0]?.element;
         setStatus(atomElement ? `Placed naked ${atomElement} atom` : "Placed atom");
       }
@@ -8316,7 +8454,7 @@ export function MainWindow({
     if (snapshot.documentIdentity !== documentIdentityRef.current) return;
     if (!assistantDocumentContentUnchanged(snapshot.document, current)) {
       textEditHistoryWritingRef.current = true;
-      try { commitDocumentHistoryFrom(snapshot.document, current, "Edit Text"); }
+      try { commitDocumentHistoryFrom(snapshot.document, current, "Edit Text", undefined, TEXT_EDIT); }
       finally { textEditHistoryWritingRef.current = false; }
       // The state updater that marks the file dirty is deferred; the quit prompt reads the ref now.
       fileStateRef.current = { ...fileStateRef.current, dirty: true };
@@ -9952,8 +10090,12 @@ export function MainWindow({
     if (repeatUnitSelection) setSelectedNativeMoleculeParts(repeatUnitSelection);
 
     historyNavigationCountRef.current += 1;
+    // Redoing the supplied practice structure returns to the clean starting drawing.
+    const tourBaseline = tourSampleRef.current?.tabId === activeDocumentTabIdRef.current
+      ? savedDocumentsRef.current.get(activeDocumentTabIdRef.current) : undefined;
+    const dirty = !tourBaseline || !assistantDocumentContentUnchanged(tourBaseline, nextHistory.present);
     setFileState((current) => {
-      const nextFileState = { ...current, dirty: true };
+      const nextFileState = { ...current, dirty };
       fileStateRef.current = nextFileState;
       return nextFileState;
     });
@@ -10215,6 +10357,40 @@ export function MainWindow({
     setStatus("Blank native document");
   }, [addDocumentTab, clearDocumentInteractionState, resetDocumentHistory]);
 
+  const openTourSample = () => {
+    if (closeTabPromptRef.current || quitInteractionRef.current || keptDrawingsPromptRef.current
+      || isSnapshotSessionActive() || activeAtomLabelEditRef.current || activeTextEditObjectIdRef.current
+      || tableCellEditorRef.current || bracketLabelEditorRef.current) {
+      throw new Error("Finish the current drawing edit before opening the tour sample.");
+    }
+    const practice = tourSampleRef.current;
+    if (practice) {
+      const source = practice.tabId === activeDocumentTabIdRef.current
+        ? documentRef.current : documentTabSnapshotsRef.current.get(practice.tabId)?.history.present;
+      if (source && findDocumentObject(source, practice.moleculeId)?.type === "molecule") {
+        activateDocumentTab(practice.tabId);
+        if (activeDocumentTabIdRef.current !== practice.tabId) throw new Error("Could not switch to the tour drawing.");
+        if (documentRef.current.selection.objectIds[0] !== practice.moleculeId || documentRef.current.selection.objectIds.length !== 1) {
+          replacePresentDocument(current => ({ ...current, selection: { ...current.selection, objectIds: [practice.moleculeId] } }));
+        }
+        return;
+      }
+    }
+    const blank = createPhase4Document("Tour");
+    const sample = buildTourSample(blank);
+    if (!addDocumentTab("Tour")) throw new Error("Could not open the tour drawing.");
+    resetDocumentHistory(blank);
+    clearDocumentInteractionState({ clearSpin3dModelCache: true });
+    tabPageFitRef.current = undefined;
+    setPageFitPrompt(undefined);
+    const present = prepareDocumentCommit(sample.document, sample.label);
+    installDocumentHistory({ past: [documentRef.current], present, future: [] });
+    const tabId = activeDocumentTabIdRef.current;
+    savedDocumentsRef.current.set(tabId, present);
+    tourSampleRef.current = { tabId, moleculeId: present.selection.objectIds[0] };
+    setStatus("Tour drawing opened");
+  };
+
   const removeDocumentTab = useCallback((id: string) => {
     if (id === activeDocumentTabIdRef.current) smilesListPasteAbortRef.current?.abort();
     let tabs = documentTabsRef.current;
@@ -10361,6 +10537,8 @@ export function MainWindow({
   const openDocumentContentsNowRef = useRef(openDocumentContentsNow);
   openDocumentContentsNowRef.current = openDocumentContentsNow;
   const documentOpenQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const queuedDocumentOpensRef = useRef(0);
+  const nativeOpenDrainBusyRef = useRef(true);
 
   // Opens run one at a time. A CDXML conflict choice awaits the user, so a second open of the same
   // file must wait and then find the tab the first one made, not add a second tab for one path.
@@ -10373,6 +10551,7 @@ export function MainWindow({
     let timing = perfHook(() => perfProbe?.documentOpenStarted());
     // A deferred read reserves its place immediately, so every file in a drop can be enqueued
     // before reading the first file or waiting for its page-size prompt.
+    queuedDocumentOpensRef.current += 1;
     const run = documentOpenQueueRef.current.then(async () =>
       openDocumentContentsNowRef.current(typeof contents === "function" ? await contents() : contents, displayName, path, options, outcome => {
         perfHook(() => {
@@ -10384,7 +10563,7 @@ export function MainWindow({
           if (outcome === "installed") return perfProbe?.documentOpenCommitted(timing);
           return perfProbe?.documentOpenSkipped(timing, outcome);
         });
-      }));
+      })).finally(() => { queuedDocumentOpensRef.current -= 1; });
     perfHook(() => {
       if (timing) return run.catch(() => perfHook(() => perfProbe?.documentOpenFailed(timing)));
     });
@@ -10490,7 +10669,14 @@ export function MainWindow({
 
   const commitInsertionToTabWithPageFit = useCallback((tabId: string, source: ChemDraftDocument,
     proposed: ChemDraftDocument, label: string, status = label) => {
+    const inserted = proposed;
     proposed = prepareDocumentCommit(proposed, label);
+    // An insertion must not change a molecule already in the tab, whichever tab it goes to.
+    const refusal = commitChemistryRefusal(source, inserted, proposed, PRESERVE_CHEMISTRY, label);
+    if (refusal) {
+      reportChemistryRefusal(refusal);
+      return;
+    }
     const pending = commitWithPageFit(source, proposed, document => {
       if (tabId === activeDocumentTabIdRef.current) {
         commitDocumentChange(document, label);
@@ -10514,7 +10700,7 @@ export function MainWindow({
       pageFitPendingRef.current += 1;
       void pending.catch(error => setStatus(String(error))).finally(() => { pageFitPendingRef.current -= 1; });
     }
-  }, [assistantHistoryPort, commitDocumentChange, prepareDocumentCommit, shortcutPlatform]);
+  }, [assistantHistoryPort, commitDocumentChange, prepareDocumentCommit, reportChemistryRefusal, shortcutPlatform]);
 
   const insertTemplateToTab = useCallback(async (tabId: string, id: string) => {
     const geometry = await readCanvasOcclusion();
@@ -10601,12 +10787,18 @@ export function MainWindow({
     const result = checkedArrangementSpacing(source, percent / 100);
     if (!result.ok) throw new Error(result.status);
     if (tabId === activeDocumentTabIdRef.current) {
-      commitDocumentChange(result.document, "Adjust arrangement spacing"); setStatus(result.status); return;
+      commitDocumentChange(result.document, (before, after) => chargeAssociationUndoLabel(before, after, "Adjust arrangement spacing"),
+        false, undefined, selectionTransformChemistry());
+      setStatus(result.status);
+      return;
     }
     const snapshot = documentTabSnapshotsRef.current.get(tabId)!;
     if (result.document === source) return;
     const present = normalizeCommittedDocument(result.document);
-    documentUndoLabelsRef.current.set(present, "Adjust arrangement spacing");
+    // The same commit-time chemistry guard as the active tab's funnel; the dialog shows the refusal.
+    const refusal = commitChemistryRefusal(source, result.document, present, selectionTransformChemistry("adjust arrangement spacing"));
+    if (refusal) throw new Error(refusal);
+    documentUndoLabelsRef.current.set(present, chargeAssociationUndoLabel(source, present, "Adjust arrangement spacing"));
     for (const listener of assistantUserEditListenersRef.current) listener(tabId);
     documentTabSnapshotsRef.current.set(tabId, { ...snapshot,
       history: { past: boundedHistoryPast([...snapshot.history.past, source], present), present, future: [] },
@@ -10652,7 +10844,8 @@ export function MainWindow({
     const result = applyNativeAtomProblemFix(source, target.target.objectId, target.target.atomId, action);
     if (!result) throw new Error("This fix no longer applies to the atom.");
     if (active) {
-      commitDocumentChange(result.document, result.label);
+      // Scoped to the problem atom's molecule: a fix changes no other molecule.
+      commitDocumentChange(result.document, result.label, false, undefined, chemistryEditOf([target.target.objectId]));
       setSelectedNativeMoleculePart({ kind: "atom", ...target.target });
       setStatus(result.status);
     } else if (snapshot) {
@@ -10712,6 +10905,7 @@ export function MainWindow({
     if (!isDesktopRuntime()) return;
     const coordinator = new DialogCoordinator(nativeDialogTransport, {
       fixAtomProblem: (tabId, action, version) => fixAtomProblemRef.current(tabId, action, version),
+      guidedTourAction: action => tourActionRef.current(action),
       vibeCodeGuideAction: action => vibeGuideActionRef.current(action),
       insertTemplate: (tabId, id) => dispatchTemplateRef.current(tabId, id),
       applyPageSize: (tabId, size) => applyPageSizeToTabRef.current(tabId, size),
@@ -10730,6 +10924,7 @@ export function MainWindow({
       previewExport: (tabId, options, live) => previewExportRef.current(tabId, options, live),
       chooseExportDestination: (tabId, options, live) => chooseExportDestinationRef.current(tabId, options, live),
       onSettled: (tabId, _reason, kind) => {
+        if (kind === "guidedTour" && _reason === "deferred") deferTourRef.current();
         if (kind === "export") exportGrantsRef.current.delete(tabId);
         if (kind === "atomProblem" && atomProblemTargetRef.current?.tabId === tabId) atomProblemTargetRef.current = undefined;
       }
@@ -10824,6 +11019,7 @@ export function MainWindow({
       subscribe: listenForNativeOpenDocuments,
       drain: takePendingNativeOpenDocuments,
       consumeBatch: openNativePayloads,
+      onDrainActivity: busy => { nativeOpenDrainBusyRef.current = busy; },
       onError: error => setStatus(`Could not check pending open files: ${error instanceof Error ? error.message : String(error)}`)
     });
   }, [openDocumentBatch]);
@@ -10917,6 +11113,7 @@ export function MainWindow({
             snapshotDocumentTab(false);
             tabs = [...documentTabsRef.current, ...restoredTabs];
           } else {
+            pluginRuntimeRef.current?.assistant.cancelForReplacedDocument(activeDocumentTabIdRef.current);
             invalidateRequestDocument(activeDocumentTabIdRef.current);
             documentTabSnapshotsRef.current.clear();
             nonPristineTabsRef.current.clear();
@@ -11942,10 +12139,25 @@ export function MainWindow({
     []
   );
 
-  // Core command handlers are rebuilt every render (they close over live state), but they
-  // now populate a plain Map instead of a fresh CommandRegistry. The registry instance
-  // itself is created once (below) and its handlers delegate to this ref, so plugin
-  // commands registered into the same registry survive re-renders (Phase 2 depends on this).
+  const tour = useGuidedTour({
+    coordinator: () => dialogCoordinatorRef.current,
+    readyAndIdle: () => documentSessionHydratedRef.current
+      && (!isDesktopRuntime() || (!nativeOpenDrainBusyRef.current && (!effectiveNativePalette || nativeToolsetStartupReady)))
+      && queuedDocumentOpensRef.current === 0 && !keptDrawingsPromptRef.current
+      && !nativeDocumentNoticeOpenRef.current && !closeTabPromptRef.current
+      && !quitInteractionRef.current && !isSnapshotSessionActive()
+      && !activeAtomLabelEditRef.current && !activeTextEditObjectIdRef.current
+      && !tableCellEditorRef.current && !bracketLabelEditorRef.current,
+    scheme: keybindingScheme,
+    platform: shortcutPlatform,
+    mode: tourMode,
+    setStatus
+  });
+  deferTourRef.current = tour.deferred;
+  const tourCommandsRef = useRef({ open: tour.open, openSample: openTourSample });
+  tourCommandsRef.current = { open: tour.open, openSample: openTourSample };
+
+  // Core handlers close over the latest state, while plugins keep the same registry instance.
   const coreCommandBindings = useMemo(() => {
     const bindings = new Map<string, { spec: CommandSpec; run: () => Promise<void> }>();
     const register = (definition: CommandSpec, handler?: () => void | Promise<void>) => {
@@ -11983,9 +12195,25 @@ export function MainWindow({
       // Like assistant-history amendments, retain the first before-snapshot and replace only
       // the current snapshot. History identity also ends a burst after any intervening edit,
       // selection change, tab switch or Undo/Redo, even when it arrived outside keyboard routing.
+      // Nudging selected atoms within a molecule moves them as a part drag does: a chemistry edit.
+      // Nudging whole objects must leave every molecule's chemistry as it was.
+      const chemistry = fragments.length > 0 ? CHEMISTRY_EDIT : selectionTransformChemistry("move");
       if (continuesBurst) {
-        replacePresentDocument(prepareDocumentCommit(moved, "Move"));
-      } else commitDocumentChange(moved, "Move");
+        const before = documentHistoryRef.current.past.at(-1) ?? current;
+        // A burst amends its one entry, so it is checked against the document before the burst.
+        const refusal = chemistry.kind === "preserve"
+          ? commitChemistryRefusal(before, moved, committedNormalForm(moved), chemistry, "Move") : undefined;
+        if (refusal) {
+          arrowNudgeBurstRef.current = undefined;
+          reportChemistryRefusal(refusal);
+          return;
+        }
+        replacePresentDocument(moved, false, present => chargeAssociationUndoLabel(before, present, "Move"));
+      } else if (!commitDocumentChange(moved, (before, after) => chargeAssociationUndoLabel(before, after, "Move"), false, undefined, chemistry)) {
+        // Refused (or unchanged): no entry was recorded, so the next press must not amend the previous one.
+        arrowNudgeBurstRef.current = undefined;
+        return;
+      }
       arrowNudgeBurstRef.current = { history: documentHistoryRef.current, lastPress: now };
       if (result.status) {
         setStatus(result.status);
@@ -12038,7 +12266,7 @@ export function MainWindow({
         const result = applyNativeAtomProblemFix(documentHistoryRef.current.present, target.objectId, target.atomId, action);
         if (!result) return;
         if (isSnapshotSessionActive()) throw new Error("Finish the current drawing gesture before fixing the atom.");
-        commitDocumentChange(result.document, result.label);
+        commitDocumentChange(result.document, result.label, false, undefined, chemistryEditOf([target.objectId]));
         setSelectedNativeMoleculePart({ kind: "atom", ...target });
         setStatus(result.status);
       }
@@ -12175,6 +12403,13 @@ export function MainWindow({
       }
     );
 
+    register(aboutCommand, () => openAbout(dialogCoordinatorRef.current, CURRENT_BUILD_STAMP, isDesktopRuntime()).catch(error => {
+      setStatus(`Could not open About ChemDraft: ${describeError(error).brief}`);
+    }));
+    register({ id: SHOW_TOUR_COMMAND, title: TOUR_TITLE, icon: "open", source: "core", category: "app" },
+      () => tourCommandsRef.current.open());
+    register({ id: TOUR_SAMPLE_COMMAND, title: "Open Tour Drawing", icon: "new", source: "core", category: "app" },
+      () => tourCommandsRef.current.openSample());
     register(
       {
         id: REPORT_BUG_COMMAND_ID,
@@ -12224,7 +12459,8 @@ export function MainWindow({
               result.target,
               selectedNativeTextObjectLabel(documentRef.current),
               "Convert Text to Atom Label"
-            )
+            ),
+            false, undefined, CHEMISTRY_EDIT
           );
           setActiveTextEditObjectId(undefined);
           setSelectedNativeMoleculePart(result.target);
@@ -12298,12 +12534,13 @@ export function MainWindow({
             await toggleToolset(molecularInspectorToolsetId);
             return;
           }
-          const molecule = getSelectedMolecule(document);
+          const current = documentRef.current;
+          const molecule = getSelectedMolecule(current);
           if (!molecule) {
             setStatus("Molecular Inspector opened — select a structure to analyze it");
             return;
           }
-          inspectorSubjectRef.current = inspectorSubject;
+          inspectorSubjectRef.current = molecularInspectorSubject(molecule, current);
           await runMolecularProperties(molecule, analysisInterpretation);
           return;
         }
@@ -12466,6 +12703,8 @@ export function MainWindow({
 
     layerActions.forEach((action) => {
       register(action, () => {
+        const layoutUndoLabel = (before: ChemDraftDocument, after: ChemDraftDocument) =>
+          chargeAssociationUndoLabel(before, after, action.title);
         if (action.id === "arrow.conditions") {
           const reason = compoundLayoutCommandDisabledReason(action.id, compoundLayoutSettingsRef.current);
           if (reason) { setStatus(reason); return; }
@@ -12487,7 +12726,7 @@ export function MainWindow({
             const edit = resolveElectronMarksInSelectionTransform(current, result.document);
             operationStatus = edit.status ?? result.status;
             return edit.document;
-          }, action.title);
+          }, layoutUndoLabel, false, undefined, selectionTransformChemistry());
           setStatus(operationStatus); return;
         }
         if (action.id === distributeModeCommandIds.centers || action.id === distributeModeCommandIds.spacing) {
@@ -12517,7 +12756,7 @@ export function MainWindow({
             const result = resolveElectronMarksInSelectionTransform(current, transform(current));
             markStatus = result.status;
             return result.document;
-          }, action.title);
+          }, layoutUndoLabel, false, undefined, selectionTransformChemistry());
           setStatus(markStatus ?? (changed ? action.title : emptyStatus));
         };
 
@@ -12548,7 +12787,9 @@ export function MainWindow({
 
         if (action.id === "layout.duplicate") {
           const warnings: string[] = [];
-          const changed = commitDocumentChangeWithPageFit((current) => duplicateSelectedDocumentObjects(current, undefined, warnings));
+          // The page-fit commit may call the update twice (checked, then after the typing checkpoint).
+          const changed = commitDocumentChangeWithPageFit((current) => { warnings.length = 0; return duplicateSelectedDocumentObjects(current, undefined, warnings); },
+            undefined, undefined, undefined, preserveChemistry("duplicate"));
           setStatus([changed ? action.title : "No selected object", ...warnings].join("; "));
           return;
         }
@@ -12804,12 +13045,16 @@ export function MainWindow({
       });
     });
 
-    viewActions.forEach((action) => {
+    const keyboardPreferences: CommandSpec = {
+      id: KEYBOARD_PREFERENCES_COMMAND_ID, title: "Keyboard Preferences", icon: "inspector", source: "core"
+    };
+    [...viewActions, keyboardPreferences].forEach((action) => {
       register(action, () => {
-        if (action.id === PREFERENCES_COMMAND_ID) {
+        if (action.id === PREFERENCES_COMMAND_ID || action.id === KEYBOARD_PREFERENCES_COMMAND_ID) {
+          const keyboard = action.id === KEYBOARD_PREFERENCES_COMMAND_ID;
           if (!isDesktopRuntime()) {
             const perfWindow = perfHook(() => perfProbe?.expectSignal("command-finished", action.id));
-            setStatus(openBrowserUtilityWindow(PREFERENCES_WINDOW_KIND)
+            setStatus(openBrowserUtilityWindow(PREFERENCES_WINDOW_KIND, keyboard ? "keyboard" : "")
               ? "Preferences opened in browser"
               : "Preferences pop-up blocked");
             if (perfWindow) perfHook(() => perfProbe?.complete(perfWindow, "command-finished"));
@@ -12820,7 +13065,11 @@ export function MainWindow({
             // Diagnostics have their own transport; the app command keeps its original contract.
             const open = perfHook(() => nativeWindowOpening("preferences", action.id));
             const { invoke } = await import("@tauri-apps/api/core");
-            await invoke("toggle_preferences_window");
+            if (keyboard) {
+              await invoke("toggle_preferences_window", { keyboard: true });
+            } else {
+              await invoke("toggle_preferences_window");
+            }
             perfHook(() => perfToggleResolved("preferences", open, input));
           })().catch((error: unknown) => {
             if (input) perfHook(() => perfProbe?.complete(input, "failed"));
@@ -12907,7 +13156,7 @@ export function MainWindow({
 
     return bindings;
   }, [
-    isSnapshotSessionActive, replacePresentDocument, prepareDocumentCommit, selectedNativeMoleculeParts,
+    isSnapshotSessionActive, replacePresentDocument, selectedNativeMoleculeParts,
     customSwatchActions, tableActions, activeTableCell, bracketActions, clearScheduledTextEditorFocus,
     activateDocumentTab,
     newDocumentTab,
@@ -13051,8 +13300,9 @@ export function MainWindow({
   // to the session's snapshot as well was the alternative, but every session keeps its snapshot in a
   // different shape; one predicate is easier to keep true than two dozen snapshot rewrites.
   const pluginWriteGateRef = useRef<PluginWriteGate | undefined>(undefined);
+  const pluginChemistryPendingRef = useRef(false);
   useEffect(() => {
-    const gate = createPluginWriteGate({ isGestureActive: isSnapshotSessionActive });
+    const gate = createPluginWriteGate({ isGestureActive: () => pluginChemistryPendingRef.current || isSnapshotSessionActive() });
     pluginWriteGateRef.current = gate;
     // Sessions end on a release; check right after the canvas handlers have committed (window listeners
     // run after React's). The gate's own timer covers endings that are not a release (a double-click).
@@ -13127,7 +13377,7 @@ export function MainWindow({
     commandRegistry: registry,
     createStorage: createPersistentPluginStorage,
     onProposedPatchesChanged: () => setPatchQueueVersion((version) => version + 1),
-    applyDocumentPatch: async ({ plugin, command, patch, undoLabel, signal, writeScopeObjectIds, repeatUnitCleanup }) => {
+    applyDocumentPatch: async ({ plugin, command, patch, undoLabel, signal, writeScopeObjectIds, writeScopePages, repeatUnitCleanup }) => {
       if (quitInteractionRef.current) throw new Error("Quit is waiting for a choice; nothing was inserted.");
       const gate = pluginWriteGateRef.current;
       if (!gate) throw new Error("The document window is closing; nothing was inserted.");
@@ -13144,7 +13394,7 @@ export function MainWindow({
           throw new Error("The document changed while the plugin was running; nothing was inserted.");
         }
         const before = documentRef.current;
-        assertPluginPatchWriteScope(before, patch, writeScopeObjectIds);
+        assertPluginPatchWriteScope(before, patch, writeScopeObjectIds, undefined, undefined, writeScopePages);
         const previousIds = new Set(before.pages.flatMap(page => page.objects.map(object => object.id)));
         const applied = applyPluginDocumentPatch(before, patch, {
           avoidInsertionOverlap: plugin.id === "org.chemdraft.opsin.nameToStructure",
@@ -13170,29 +13420,40 @@ export function MainWindow({
             });
           }
         }
-        const prepared = normalizeCommittedDocument(placed);
+        const authored = rebasePluginPatch(before, patch);
+        const normalized = normalizeCommittedDocument(placed);
+        const refreshed = refreshPluginPatchChemistry(before, normalized, authored, writeScopeObjectIds, signal, writeScopePages);
+        const isCurrent = () => mountedRef.current && !quitInteractionRef.current && documentIdentityRef.current === documentIdentity &&
+          assistantDocumentContentUnchanged(before, documentRef.current, { checkBracketIdentity: true });
+        let prepared = normalized;
+        if (refreshed) {
+          pluginChemistryPendingRef.current = true;
+          try { prepared = await refreshed; } finally { pluginChemistryPendingRef.current = false; }
+          signal?.throwIfAborted();
+          if (!isCurrent() || isSnapshotSessionActive()) {
+            throw new Error("The drawing changed while refreshing stored chemistry. Try the plugin command again.");
+          }
+        }
         let committed = prepared;
         const pending = commitWithPageFit(before, prepared, (document, fitBaseline) => {
           // Compare the fitted commit against the original pages plus their consented deltas.
           const baseline = fitBaseline(before);
-          const authoredPatch = rebasePluginPatch(before, patch).patch;
           let cleanup: ReturnType<typeof finishScopedRepeatUnitCleanup>;
           const assertFinalDocument = (document: ChemDraftDocument) => {
-            assertPluginDocumentWriteScope(baseline, document, patch, writeScopeObjectIds);
+            assertPluginDocumentWriteScope(baseline, document, patch, writeScopeObjectIds, writeScopePages);
             signal?.throwIfAborted();
             pluginRuntimeRef.current!.host.requirePermission(plugin.id, "document.write");
-            cleanup = finishScopedRepeatUnitCleanup(repeatUnitCleanup, before, document, authoredPatch);
+            cleanup = finishScopedRepeatUnitCleanup(repeatUnitCleanup, before, document, authored.patch);
             committed = cleanup?.document ?? document;
             return committed;
           };
           // Both history paths normalize again; check their actual final state, after page fit too.
           if (assistantTxId) assistantTransactions.writeAssistantTransaction(assistantTxId, document, applied.receipt.objectIds, prepared, assertFinalDocument);
-          else commitDocumentChange(document, undoLabel, false, assertFinalDocument);
+          else commitDocumentChange(document, undoLabel, false, assertFinalDocument, PLUGIN_WRITE);
           cleanup?.record();
         }, { // Allocate request consent only if page fitting actually needs a question.
           get consent() { return assistantTxId ? assistantTransactions.pageEnlargementConsent(assistantTxId, shortcutPlatform) : consent; }, signal,
-          isCurrent: () => mountedRef.current && !quitInteractionRef.current && documentIdentityRef.current === documentIdentity &&
-          assistantDocumentContentUnchanged(before, documentRef.current, { checkBracketIdentity: true }) });
+          isCurrent });
         if (pending) {
           pageFitPendingRef.current += 1;
           try { await pending; } finally { pageFitPendingRef.current -= 1; }
@@ -13222,6 +13483,16 @@ export function MainWindow({
     }
   });
   const { isPluginCommand: pluginCommandExists, invokePluginCommand } = pluginRuntime;
+  tourActionRef.current = action => tour.completeOrRun(action, {
+    has: id => registry.get(id)?.enabled === true,
+    invoke: async id => {
+      if (id !== TOUR_NAME_COMMAND) return registry.invoke(id);
+      const result = await invokePluginCommand(id);
+      const error = pluginCommandFailure(result);
+      if (error) throw new Error(error);
+      return result;
+    }
+  });
   canvasOverlaysPresentRef.current = pluginRuntime.canvasOverlays.length > 0;
   pluginRuntimeRef.current = pluginRuntime.runtime;
   useEffect(() => {
@@ -13469,7 +13740,7 @@ export function MainWindow({
   }, [pluginRuntime.detachedPanels]);
 
   // The user accepting a proposal is the review step itself, so it goes through the host's user path
-  // (`acceptProposedPatch`), never the plugin-gated `documents.applyPatch`. What was inserted is
+  // (`acceptProposedPatch`), never the plugin-gated `documents.applyPatch`. What changed is
   // selected in the same history entry, and every outcome — success included — is reported: the
   // status line here, and the review window through the returned outcome.
   const acceptPluginProposal = useCallback(
@@ -13527,14 +13798,22 @@ export function MainWindow({
           }
         }
         prepared = normalizeCommittedDocument(prepared);
+        const authored = rebasePluginPatch(before, proposal.proposal, true);
+        const isCurrent = () => mountedRef.current && !quitInteractionRef.current &&
+          activeDocumentTabIdRef.current === tab.id && documentIdentityRef.current === documentIdentity &&
+          assistantDocumentContentUnchanged(before, documentRef.current, { checkBracketIdentity: true });
+        const refreshed = refreshPluginPatchChemistry(before, prepared, authored);
+        if (refreshed) {
+          prepared = await refreshed;
+          if (!isCurrent() || isSnapshotSessionActive()) {
+            throw new Error("The drawing changed or is busy; accept the proposal again.");
+          }
+        }
         // Keep the proposal pending until the page question and stale-document check succeed.
         const pending = commitWithPageFit(before, prepared, document => {
           const updated = host.acceptProposedPatch(proposal.id, documentRef.current, { apply: () => document });
-          commitDocumentChange(updated, `${pluginName}: ${recognized ? "Insert Recognized Structure" : "Apply Proposal"}`);
-        }, { consent: new PageEnlargementConsent(shortcutPlatform), isCurrent: () =>
-          mountedRef.current && !quitInteractionRef.current && documentIdentityRef.current === documentIdentity &&
-          assistantDocumentContentUnchanged(before, documentRef.current, { checkBracketIdentity: true })
-        });
+          commitDocumentChange(updated, `${pluginName}: ${recognized ? "Insert Recognized Structure" : "Apply Proposal"}`, false, undefined, PLUGIN_WRITE);
+        }, { consent: new PageEnlargementConsent(shortcutPlatform), isCurrent });
         if (pending) {
           pageFitPendingRef.current += 1;
           try { await pending; } finally { pageFitPendingRef.current -= 1; }
@@ -13547,7 +13826,11 @@ export function MainWindow({
         setStatus(message);
         return { ok: true, message };
       } catch (error) {
-        const message = `Could not insert the proposal: ${describePatchFailure(error)}`;
+        const refusal = chemistryRefusalOf(error);
+        if (refusal) console.warn(refusal.detail);
+        const message = refusal
+          ? refusalSentence(recognized ? RECOGNITION_REFUSED : PLUGIN_CHANGE_REFUSED, refusal.reason)
+          : `Could not insert the proposal: ${describePatchFailure(error)}`;
         setStatus(message);
         return { ok: false, message };
       }
@@ -13848,6 +14131,37 @@ export function MainWindow({
       commandId = stripForcedDocumentHistorySuffix(commandId);
     }
     if (commandId === "edit.selectAll" && !forcedDocumentHistory && performFocusedFieldSelectAll(globalThis.document)) return;
+    const focusedField = globalThis.document.activeElement;
+    if (shouldLetSystemClipboardHandleCommand(commandId) && isEditableTarget(focusedField)) {
+      if (commandId === "clipboard.paste") {
+        try {
+          const { textItems } = await readClipboardPayload();
+          const text = textItems?.find(item => item.type === "text/plain")?.text;
+          if (text && focusedField === globalThis.document.activeElement) {
+            globalThis.document.execCommand("insertText", false, text);
+          }
+        } catch (error) {
+          setStatus("Could not paste into the focused field. " + String(error));
+        }
+      } else {
+        const operation = commandId === "clipboard.cut" ? "cut" : "copy";
+        if (!globalThis.document.execCommand(operation)) {
+          const selection = () => focusedField instanceof HTMLInputElement || focusedField instanceof HTMLTextAreaElement
+            ? focusedField.value.slice(focusedField.selectionStart ?? 0, focusedField.selectionEnd ?? 0)
+            : globalThis.document.getSelection()?.toString();
+          const text = selection();
+          try {
+            if (text && await writeClipboardText(text) && operation === "cut" &&
+                focusedField === globalThis.document.activeElement && selection() === text) {
+              globalThis.document.execCommand("delete");
+            }
+          } catch (error) {
+            setStatus("Could not write to the clipboard. " + String(error));
+          }
+        }
+      }
+      return;
+    }
     const historyDirection = editHistoryDirection(commandId);
     if (historyDirection) {
       const history = documentHistoryRef.current;
@@ -14934,7 +15248,7 @@ export function MainWindow({
           isBlockedByModalDialog(event.target) || !(event.target instanceof Element) ||
           !event.target.matches(".text-object-editor, [data-table-cell-editor] textarea, [data-atom-label-editor], [data-bracket-label-editor]")) return;
       const commandId = shortcutRegistry.resolve({
-        key: event.key, ctrlKey: event.ctrlKey, metaKey: event.metaKey,
+        key: event.key, code: event.code, ctrlKey: event.ctrlKey, metaKey: event.metaKey,
         altKey: event.altKey, shiftKey: event.shiftKey
       });
       // The text textarea stops bubbling keys, just like the table editor. Route its
@@ -15015,10 +15329,10 @@ export function MainWindow({
       // Tab navigation ends an inline edit, so it also works while that editor owns focus.
       // Resolve through the same shortcut engine, omitting only its text-field target filter.
       const tabCommand = shortcutRegistry.resolve({
-        key: event.key, ctrlKey: event.ctrlKey, metaKey: event.metaKey,
+        key: event.key, code: event.code, ctrlKey: event.ctrlKey, metaKey: event.metaKey,
         altKey: event.altKey, shiftKey: event.shiftKey
       });
-      if (!event.defaultPrevented && tabCommand &&
+      if (!event.defaultPrevented && (event.metaKey || event.ctrlKey || event.altKey) && tabCommand &&
           ["document.closeTab", "document.nextTab", "document.previousTab"].includes(tabCommand)) {
         event.preventDefault();
         hoverLabelAssignmentRef.current = undefined;
@@ -15177,6 +15491,8 @@ export function MainWindow({
       }
 
       if (!event.metaKey && !event.ctrlKey && !event.altKey) {
+        const key = hoverKeyFromEvent(event);
+        const tables = hoverShortcutsRef.current;
         const assignment = hoverLabelAssignmentRef.current;
         let labelContinues = false;
         // Over a different atom, element keys (either case) and digits act on that atom; other
@@ -15189,9 +15505,9 @@ export function MainWindow({
           const current = hoveredNativeDeleteTargetRef.current;
           const continuingOnAtom = assignment !== undefined && current?.kind === "atom" &&
             current.objectId === assignment.objectId && current.atomId === assignment.atomId &&
-            /^[a-z0-9]$/i.test(event.key) && !Object.prototype.hasOwnProperty.call(numericBondDrawingHotkeys, event.key);
+            /^[a-z0-9]$/i.test(key) && !Object.prototype.hasOwnProperty.call(numericBondDrawingHotkeys, key);
           if (retarget && !activeAtomLabelEditRef.current &&
-            (!continuingOnAtom || hasBondHoverShortcut(retarget.pointerTarget, event.key))) {
+            (!continuingOnAtom || hasBondHoverShortcut(retarget.pointerTarget, key, tables))) {
             labelHoverRetargetRef.current = undefined;
             rederiveNativeCanvasHoverRef.current?.(documentRef.current);
           }
@@ -15199,14 +15515,17 @@ export function MainWindow({
           // case) and digits act on a different atom; non-element letters continue the label there.
           // Preserve that decision when the hover moves to the atom being labelled.
           const pointerTarget = hoveredNativeDeleteTargetRef.current;
-          labelContinues = assignment !== undefined &&
-            hoverLabelContinuesForKey(documentRef.current, pointerTarget, assignment, event.key);
+          const followsSchemeDefault = hoveredNativeTargetShortcutCommand(pointerTarget, key, keybindingSchemeRef.current, tables) ===
+            hoveredNativeTargetShortcutCommand(pointerTarget, key, keybindingSchemeRef.current);
+          labelContinues = assignment !== undefined && followsSchemeDefault &&
+            hoverLabelContinuesForKey(documentRef.current, pointerTarget, assignment, key);
           const labelAtom = hoverLabelAtomTargetForKey(
             documentRef.current,
             pointerTarget,
             hoverPagePointRef.current,
-            assignment,
-            event.key
+            labelContinues ? assignment : undefined,
+            key,
+            tables
           );
           if (labelAtom) {
             assignHoveredNativeDeleteTarget(labelAtom);
@@ -15214,7 +15533,7 @@ export function MainWindow({
           }
         }
         const hoveredTarget = hoveredNativeDeleteTargetRef.current;
-        if (event.key !== "Shift") {
+        if (key !== "Shift") {
           hoverLabelAssignmentRef.current = undefined;
         }
         if (
@@ -15224,7 +15543,7 @@ export function MainWindow({
         ) {
           const object = findDocumentObject(documentRef.current, assignment.objectId);
           const atom = object?.type === "molecule" ? object.atoms.find((candidate) => candidate.id === assignment.atomId) : undefined;
-          const draft = `${assignment.label}${event.key}`;
+          const draft = `${assignment.label}${key}`;
           if (atom?.element === assignment.label && startAtomLabelEdit(hoveredTarget, {
             draft, beforeAtom: assignment.beforeAtom, beforeMolecule: assignment.beforeMolecule,
             startedFromHover: true,
@@ -15243,8 +15562,9 @@ export function MainWindow({
           documentRef.current,
           selectedNativeMoleculePart,
           hoveredNativeDeleteTargetRef.current,
-          event.key,
-          keybindingSchemeRef.current
+          key,
+          keybindingSchemeRef.current,
+          tables
         );
         if (hoveredTargetCommandId) {
           event.preventDefault();
@@ -15258,10 +15578,10 @@ export function MainWindow({
           invokeCanvasKeyCommand(hoveredTargetCommandId, !labelHoverRetargetRef.current);
           // Only a label assignment made by a hover key starts continuation. Other keys and
           // selected-atom assignments retain their existing shortcut behavior.
-          const assignedElement = nativeElementFromKeyboardKey(event.key);
+          const assignedElement = nativeElementFromKeyboardKey(key);
           if (
             keybindingSchemeRef.current === "chemdraft" && hoveredTarget?.kind === "atom" &&
-            assignedElement
+            assignedElement && hoveredTargetCommandId === "atom.setHoveredElement." + assignedElement
           ) {
             const object = findDocumentObject(documentRef.current, hoveredTarget.objectId);
             const atom = object?.type === "molecule" ? object.atoms.find((candidate) => candidate.id === hoveredTarget.atomId) : undefined;
@@ -15277,13 +15597,15 @@ export function MainWindow({
         }
       }
 
+      const clipboard = defaultClipboardShortcut(event, shortcutPlatform);
       const commandId = shortcutRegistry.resolve(wasBrowserReloadPrevented(event) ? {
-        key: event.key, ctrlKey: event.ctrlKey, metaKey: event.metaKey,
+        key: event.key, code: event.code, ctrlKey: event.ctrlKey, metaKey: event.metaKey,
         altKey: event.altKey, shiftKey: event.shiftKey, target: event.target
       } : event);
-      if (!commandId) {
-        return;
+      if (clipboard && shortcutOverrides?.commands?.[clipboard] && commandId !== clipboard) {
+        event.preventDefault();
       }
+      if (!commandId) return;
       if (isSelectionNudgeCommand(commandId) &&
         ((!documentRef.current.selection.objectIds.length && !selectedNativeMoleculePartsRef.current.length) ||
           isArrowNudgeEditorTarget(event.target) || isArrowNudgeEditorTarget(globalThis.document.activeElement) ||
@@ -15294,7 +15616,7 @@ export function MainWindow({
       // Copy/cut/paste fall through to the native clipboard events (handleCopy/handleCut/handlePaste),
       // which read and write event.clipboardData synchronously. On desktop, handlePaste additionally
       // falls back to the native Tauri clipboard read when the WebView paste event has no data.
-      if (shouldLetSystemClipboardHandleCommand(commandId)) {
+      if (clipboard === commandId && shouldLetSystemClipboardHandleCommand(commandId)) {
         return;
       }
 
@@ -15329,6 +15651,8 @@ export function MainWindow({
     selectedNativeMoleculePart,
     assignHoveredNativeDeleteTarget,
     shortcutRegistry,
+    shortcutOverrides,
+    shortcutPlatform,
     isSnapshotSessionActive,
     activeTableCellState,
     startTableCellEdit,
@@ -16080,7 +16404,8 @@ export function MainWindow({
     }
     const selected = getSelectedMolecule(nextDocument);
     const atomCount = selected?.atoms.length ?? 0;
-    commitDocumentChange(nextDocument);
+    // Scoped: a standalone bond must not take a neighbouring molecule's loose charge mark.
+    commitDocumentChange(nextDocument, undefined, false, undefined, structureEditChemistry("draw this bond"));
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
@@ -16105,7 +16430,9 @@ export function MainWindow({
     if (changed) {
       commitDocumentChangeWithPageFit(
         nextDocument,
-        plan?.fallbackReason ? `Placed ${nativeTemplateStatusLabel(templateId)} separately` : undefined
+        plan?.fallbackReason ? `Placed ${nativeTemplateStatusLabel(templateId)} separately` : undefined,
+        // Scoped: a fused template changes the molecule it fuses onto, never any other one.
+        undefined, undefined, structureEditChemistry("place this template")
       );
     }
     setActiveEditorObjectId(undefined);
@@ -16266,7 +16593,8 @@ export function MainWindow({
     const nextDocument = applyNativeBondDisplayStyleTarget(currentDocument, target, bondStyle,
       cachedOclAdapter?.perceiveStereoCentersFromMolfile);
     if (nextDocument !== currentDocument) {
-      commitDocumentChange(nextDocument, reverses ? `Reverse ${nativeBondToolStatusLabel(bondStyle)}` : bondStyle === "wavy" ? "Make bond wavy" : bondStyle === "wedge" ? "Make bond wedge" : undefined);
+      commitDocumentChange(nextDocument, reverses ? `Reverse ${nativeBondToolStatusLabel(bondStyle)}` : bondStyle === "wavy" ? "Make bond wavy" : bondStyle === "wedge" ? "Make bond wedge" : undefined,
+      false, undefined, CHEMISTRY_EDIT);
     }
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
@@ -16286,7 +16614,7 @@ export function MainWindow({
   const applyChargeDocumentAtPoint = useCallback((spec: NativeElectronMarkSpec, point: ClientPoint) => {
     const nextDocument = applyChargeToolAtPoint(documentRef.current, spec, point);
     if (nextDocument !== documentRef.current) {
-      commitDocumentChange(nextDocument, electronMarkUndoLabel(documentRef.current, nextDocument, spec));
+      commitDocumentChange(nextDocument, electronMarkUndoLabel(documentRef.current, nextDocument, spec), false, undefined, CHEMISTRY_EDIT);
     }
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
@@ -16326,7 +16654,7 @@ export function MainWindow({
       selected.atoms.length === previousMolecule.atoms.length &&
       selected.bonds.length > previousMolecule.bonds.length;
     if (nextDocument !== sourceDocument) {
-      commitDocumentChange(nextDocument);
+      commitDocumentChange(nextDocument, undefined, false, undefined, structureEditChemistry("draw this bond"));
     }
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
@@ -16642,9 +16970,10 @@ export function MainWindow({
     if (drag.kind === "lone-pair" && drag.lonePairTarget?.kind === "atom") {
       const target = drag.lonePairTarget;
       const molecule = findDocumentObject(drag.startDocument, target.objectId);
-      const atom = molecule?.type === "molecule" ? molecule.atoms.find(atom => atom.id === target.atomId) : undefined;
+      if (molecule?.type !== "molecule") return drag.startDocument;
+      const atom = molecule.atoms.find(atom => atom.id === target.atomId);
       return atom ? applyChargeToolAtNativeAtom(drag.startDocument, { kind: "lone-pair" }, target,
-        lonePairDragDirection(atom, point, drag.altKey)) : drag.startDocument;
+        lonePairDragDirection(transformPointForObject(molecule, atom), point, drag.altKey)) : drag.startDocument;
     }
     if (drag.kind === "bracket" && drag.bracketKind) {
       return insertNativeBracket(drag.startDocument, drag.startPoint, drag.bracketKind, point);
@@ -16714,12 +17043,20 @@ export function MainWindow({
       return false;
     }
 
+    // Bonds, chains and templates are scoped chemistry edits: they may change the molecules they
+    // draw onto (fuse, extend, join), never another molecule (a standalone one placed beside B must
+    // not take B's loose charge mark). A lone pair is a mark tool: a document-wide chemistry edit.
+    // Arrows, art lines, orbitals and brackets must leave every molecule as it was.
+    const chemistry = drag.kind === "single-bond" ? structureEditChemistry("draw this bond")
+      : drag.kind === "chain" ? structureEditChemistry("draw this chain")
+      : drag.kind === "template" ? structureEditChemistry("place this template")
+      : drag.kind === "lone-pair" ? CHEMISTRY_EDIT : PRESERVE_CHEMISTRY;
     if (drag.kind === "template" || drag.kind === "orbital" || drag.kind === "bracket" ||
       (!drag.dragging && (drag.kind === "arrow" || drag.kind === "art-line"))) {
-      commitInsertionHistoryWithPageFit(drag.startDocument, placed, drag.kind === "bracket" ? `Draw ${drag.bracketKind} bracket pair` : undefined);
+      commitInsertionHistoryWithPageFit(drag.startDocument, placed, drag.kind === "bracket" ? `Draw ${drag.bracketKind} bracket pair` : undefined, chemistry);
     } else {
-      commitDocumentHistoryFrom(drag.startDocument, placed, drag.kind === "lone-pair"
-        ? electronMarkUndoLabel(drag.startDocument, placed, { kind: "lone-pair" }) : undefined);
+      return commitDocumentHistoryFrom(drag.startDocument, placed, drag.kind === "lone-pair"
+        ? electronMarkUndoLabel(drag.startDocument, placed, { kind: "lone-pair" }) : undefined, undefined, chemistry);
     }
     return true;
   }, [commitDocumentHistoryFrom, commitInsertionHistoryWithPageFit, nativePlacementDocumentFromDrag, replacePresentDocument]);
@@ -16885,7 +17222,9 @@ export function MainWindow({
     markFrame("previewObjectDrag", () => {
       const object = findDocumentObject(drag.startDocument, drag.objectId);
       if (object?.type === "electron-mark" && !(drag.groupObjectIds && drag.groupObjectIds.length > 1)) {
-        assignHoveredNativeDeleteTarget(electronMarkDropTarget(drag.startDocument, point));
+        const delta = objectDragDelta(drag, point);
+        const center = { x: drag.startObjectX + delta.x + object.width / 2, y: drag.startObjectY + delta.y + object.height / 2 };
+        assignHoveredNativeDeleteTarget(electronMarkDropTarget(drag.startDocument, point, undefined, { mark: object, center }));
       }
       if (drag.startDocument.pages.some(page => page.objects.some(object => object.type === "text" && object.arrowAttachment?.kind === "conditions"))) {
         clearObjectTransformPreview(drag.pointerId);
@@ -17279,8 +17618,7 @@ export function MainWindow({
       return false;
     }
 
-    commitDocumentHistoryFrom(drag.startDocument, moved);
-    return true;
+    return commitDocumentHistoryFrom(drag.startDocument, moved);
   }, [commitDocumentHistoryFrom, replacePresentDocument]);
 
   const commitObjectDrag = useCallback((drag: ObjectDragState, point: ClientPoint): boolean => {
@@ -17296,7 +17634,8 @@ export function MainWindow({
         replacePresentDocument(drag.startDocument);
         return false;
       }
-      commitDocumentHistoryFrom(drag.startDocument, result.document, result.undoLabel);
+      // Dropping a mark onto an atom, or dragging it off one, is a chemistry edit.
+      commitDocumentHistoryFrom(drag.startDocument, result.document, result.undoLabel, undefined, CHEMISTRY_EDIT);
       return true;
     }
     const selectionDrop = drag.groupObjectIds && drag.groupObjectIds.length > 1
@@ -17319,10 +17658,12 @@ export function MainWindow({
     }
     const movesGroup = (drag.groupObjectIds?.length ?? 0) > 1 &&
       (object?.type === "group" || parentGroupForDocumentObject(drag.startDocument.pages[0]?.objects ?? [], drag.objectId) !== undefined);
-    commitDocumentHistoryFrom(drag.startDocument, moved, movesGroup ? "Move group"
+    const label = movesGroup ? "Move group"
       : movedMarkCount > 0 ? (movedMarkCount === movedIds.size ? "Move electron mark" : "Move")
-      : object?.type === "text" && object.arrowAttachment?.kind === "conditions" ? "Move Reaction Conditions" : undefined);
-    return true;
+      : object?.type === "text" && object.arrowAttachment?.kind === "conditions" ? "Move Reaction Conditions" : undefined;
+    return commitDocumentHistoryFrom(drag.startDocument, moved,
+      selectionDrop?.status ? chargeAssociationUndoLabel(drag.startDocument, moved, label ?? "Move") : label,
+      undefined, selectionTransformChemistry("move"));
   }, [assignHoveredNativeDeleteTarget, clearObjectTransformPreview, commitDocumentHistoryFrom, objectDragDelta, objectDragDocument, replacePresentDocument]);
 
   const commitGraphicCornerRadius = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): boolean => {
@@ -17380,8 +17721,8 @@ export function MainWindow({
       });
     }
 
-    commitDocumentHistoryFrom(drag.startDocument, committed, findDocumentObject(drag.startDocument, drag.objectId)?.type === "electron-mark" ? "Rotate electron mark" : undefined);
-    return true;
+    return commitDocumentHistoryFrom(drag.startDocument, committed, findDocumentObject(drag.startDocument, drag.objectId)?.type === "electron-mark" ? "Rotate electron mark" : undefined,
+      undefined, selectionTransformChemistry("rotate"));
   }, [clearObjectTransformPreview, commitDocumentHistoryFrom, objectRotateDocumentFromDrag, objectRotateDragDegrees, replacePresentDocument]);
 
   const commitProjectedPlaneTilt = useCallback((drag: ProjectedPlaneTiltDragState, point: ClientPoint): boolean => {
@@ -17413,8 +17754,8 @@ export function MainWindow({
           orientation: finalOrientation,
           engine: model.engine
         });
-        commitDocumentHistoryFrom(drag.startDocument, modeled, undefined, present =>
-          assertSpin3dDocumentIdentity(drag.startDocument, present, options.stereoReference));
+        if (!commitDocumentHistoryFrom(drag.startDocument, modeled, undefined, present =>
+          assertSpin3dDocumentIdentity(drag.startDocument, present, options.stereoReference), preserveChemistry("rotate in 3D"))) return false;
       } catch (error) {
         drag.rotationRefusal = `3D rotation not applied: ${error instanceof Error ? error.message : String(error)}`;
         return false;
@@ -17430,8 +17771,7 @@ export function MainWindow({
       return false;
     }
 
-    commitDocumentHistoryFrom(drag.startDocument, result.document);
-    return true;
+    return commitDocumentHistoryFrom(drag.startDocument, result.document, undefined, undefined, preserveChemistry("tilt"));
   }, [commitDocumentHistoryFrom, projectedPlaneTiltFromDrag, replacePresentDocument, showProjectedPlaneTiltReadout, spin3dFlattenStereoOptions]);
 
   const rotationInputDocumentFromDraft = useCallback((input: RotationInputState, warnings: string[]): RotationInputDraftDocumentResult | undefined => {
@@ -17836,8 +18176,8 @@ export function MainWindow({
       return false;
     }
 
-    commitDocumentHistoryFrom(drag.startDocument, resized, findDocumentObject(drag.startDocument, drag.objectId)?.type === "electron-mark" ? "Resize electron mark" : undefined);
-    return true;
+    return commitDocumentHistoryFrom(drag.startDocument, resized, findDocumentObject(drag.startDocument, drag.objectId)?.type === "electron-mark" ? "Resize electron mark" : undefined,
+      undefined, selectionTransformChemistry("resize"));
   }, [clearObjectTransformPreview, commitDocumentHistoryFrom, objectResizeDocumentFromDrag, replacePresentDocument, showObjectResizeReadout]);
 
   const nativePartDocumentFromDrag = useCallback((drag: NativePartDragState, point: ClientPoint): ChemDraftDocument => {
@@ -17856,18 +18196,23 @@ export function MainWindow({
 
   const previewNativePartDrag = useCallback((drag: NativePartDragState, point: ClientPoint) => {
     drag.latestPoint = point;
-    replacePresentDocument(nativePartDocumentFromDrag(drag, point));
+    const preview = resolveElectronMarksAfterMoleculePartMove(drag.startDocument, nativePartDocumentFromDrag(drag, point));
+    replacePresentDocument(preview.document);
   }, [nativePartDocumentFromDrag, replacePresentDocument]);
 
-  const commitNativePartDrag = useCallback((drag: NativePartDragState, point: ClientPoint): boolean => {
-    const moved = nativePartDocumentFromDrag(drag, point);
-    if (moved === drag.startDocument) {
+  const commitNativePartDrag = useCallback((drag: NativePartDragState, point: ClientPoint) => {
+    const result = resolveElectronMarksAfterMoleculePartMove(drag.startDocument, nativePartDocumentFromDrag(drag, point));
+    if (result.document === drag.startDocument) {
       replacePresentDocument(drag.startDocument);
-      return false;
+      setStatus(result.status ?? "Molecule part did not move");
+      return;
     }
 
-    commitDocumentHistoryFrom(drag.startDocument, moved);
-    return true;
+    // Dragging atoms and bonds of a molecule is drawing: a chemistry edit, which reports a charge it
+    // moves or removes itself.
+    const committed = normalizeCommittedDocument(result.document);
+    commitDocumentHistoryFrom(drag.startDocument, committed, chargeAssociationUndoLabel(drag.startDocument, committed, "Move"), undefined, CHEMISTRY_EDIT);
+    setStatus(result.status ?? "Moved selected molecule part");
   }, [commitDocumentHistoryFrom, nativePartDocumentFromDrag, replacePresentDocument]);
 
   const resizeTextDocumentFromDrag = useCallback((drag: TextResizeState, point: ClientPoint): ChemDraftDocument => {
@@ -18498,7 +18843,7 @@ export function MainWindow({
         // Click-only fallback: no path yet, so both variants drop the same one-segment chain.
         const nextDocument = applyNativeChainTool(documentRef.current, point);
         if (nextDocument !== documentRef.current) {
-          commitDocumentChange(nextDocument);
+          commitDocumentChange(nextDocument, undefined, false, undefined, structureEditChemistry("draw this chain"));
           setStatus("Inserted carbon chain");
         }
       }
@@ -19053,9 +19398,10 @@ export function MainWindow({
         const transformed = result?.document ?? groupTransformDocument(groupTransform, point, event.shiftKey);
         const edit = resolveElectronMarksInSelectionTransform(before, transformed);
         if (edit.document !== before) {
-          const undoLabel = groupTransform.mode === "rotate" ? "Rotate selection"
-            : groupTransform.mode === "resize" ? "Resize selection" : undefined;
-          commitDocumentHistoryFrom(before, edit.document, undoLabel);
+          const label = groupTransform.mode === "rotate" ? "Rotate selection"
+            : groupTransform.mode === "resize" ? "Resize selection" : "3D rotate";
+          commitDocumentHistoryFrom(before, edit.document, chargeAssociationUndoLabel(before, edit.document, label), undefined,
+            selectionTransformChemistry());
         } else {
           replacePresentDocument(before);
         }
@@ -19272,8 +19618,7 @@ export function MainWindow({
       event.stopPropagation();
       const point = pagePointFromPointerEvent(event) ?? nativePartDrag.latestPoint;
       if (nativePartDrag.dragging) {
-        const changed = commitNativePartDrag(nativePartDrag, point);
-        setStatus(changed ? "Moved selected molecule part" : "Molecule part did not move");
+        commitNativePartDrag(nativePartDrag, point);
       }
       clearNativePartDrag(event);
       return;
@@ -19362,7 +19707,7 @@ export function MainWindow({
         : { objectIds: [], moleculeParts: [] };
       const nextDocument = applyEraserSweep(document, sweep);
       if (nextDocument !== document) {
-        commitDocumentChange(nextDocument);
+        commitDocumentChange(nextDocument, undefined, false, undefined, CHEMISTRY_EDIT);
         toolbarStyleTargetRef.current = undefined;
         setSelectedNativeMoleculePart(undefined);
         setActiveGraphicTransformObjectId(undefined);
@@ -20106,7 +20451,7 @@ export function MainWindow({
         return;
       }
 
-      commitDocumentChange(nextDocument);
+      commitDocumentChange(nextDocument, undefined, false, undefined, CHEMISTRY_EDIT);
       toolbarStyleTargetRef.current = undefined;
       clearTransientInteractionChrome();
       setSelectedNativeMoleculePart(undefined);
@@ -20462,7 +20807,7 @@ export function MainWindow({
         setStatus(nativeBondOrderTargetRefusal(selectedDocument, target, activeNativeBondOrder) ?? "Bond order not changed");
         return;
       }
-      commitDocumentChange(nextDocument);
+      commitDocumentChange(nextDocument, undefined, false, undefined, CHEMISTRY_EDIT);
       setActiveEditorObjectId(undefined);
       setActiveTextEditObjectId(undefined);
       setActiveAtomLabelEdit(undefined);
@@ -22091,8 +22436,7 @@ export function MainWindow({
       event.stopPropagation();
       const point = pagePointFromPointerEvent(event) ?? nativePartDrag.latestPoint;
       if (nativePartDrag.dragging) {
-        const changed = commitNativePartDrag(nativePartDrag, point);
-        setStatus(changed ? "Moved selected molecule part" : "Molecule part did not move");
+        commitNativePartDrag(nativePartDrag, point);
       }
       clearNativePartDrag(event);
       return;
@@ -22398,12 +22742,23 @@ export function MainWindow({
     // A side-dependent label the save could not carry is read again from its drawing: say so (short
     // on the status line, each atom named in the log) rather than let the save change it silently.
     const applied = applyEditorSaveResultWithLabelWarnings(documentRef.current, result);
-    commitDocumentChangeWithPageFit(applied.document);
+    // A save that would move a charge or radical mark onto another atom, or whose charge contradicts
+    // a mark still on the atom, is refused before commit: the document and undo stack are unchanged,
+    // and the host keeps this message on the status line (it reports success only for `true`).
+    if (applied.refusal) {
+      setStatus(applied.refusal);
+      return false;
+    }
+    // The commit can still decline (a page-size question already open, a chemistry refusal): it has
+    // set its own status then, which an "Applied" from the host must not overwrite.
+    const committed = commitDocumentChangeWithPageFit(applied.document, undefined, undefined, undefined, CHEMISTRY_EDIT);
+    if (!committed) return false;
     const labelStatus = editorSaveLabelWarningsStatus(applied.labelWarnings);
     if (labelStatus) {
       setStatus(labelStatus);
       applied.labelWarnings.forEach((warning) => console.info(warning.detail));
     }
+    return true;
   }, [commitDocumentChangeWithPageFit]);
 
   const createAgentSnapshot = useCallback((): AgentSnapshot => {
@@ -22590,7 +22945,9 @@ export function MainWindow({
         toolbars: getToolbarsMenuModel(visibleToolsetIds, toolsetRegistry),
         pluginMenuItems: [...bracketMenuItems, ...pluginRuntime.pluginMenuItems],
         availablePluginUpdateCount,
-        keybindingScheme
+        keybindingScheme,
+        keybindingOverrides: shortcutOverrides,
+        platform: shortcutPlatform
       }),
     [
       rulersVisible,
@@ -22600,6 +22957,8 @@ export function MainWindow({
       document.selection.objectIds.length,
       quickActions,
       keybindingScheme,
+      shortcutOverrides,
+      shortcutPlatform,
       selectedMolecule,
       visibleToolsetIds,
       toolsetRegistry,
@@ -23790,6 +24149,7 @@ export function MainWindow({
           />
         ) : null}
       </section>
+      {tour.renderBrowser(action => tourActionRef.current(action))}
       {!isDesktopRuntime() && browserVibeGuide ? <Suspense fallback={<p>Opening guide…</p>}><VibeCodeGuideForm onAction={action => { if (action === "cancel") setBrowserVibeGuide(false); else void vibeGuideActionRef.current(action); }} /></Suspense> : null}
       {!isDesktopRuntime() && browserTemplates ? <div className="cd-template-browser"><Suspense fallback={<p role="status">Opening Templates…</p>}>
         <StructureTemplatePicker {...browserTemplates} onClose={() => setBrowserTemplates(undefined)}
@@ -23802,7 +24162,8 @@ export function MainWindow({
           }
           let ok = false, operationStatus = "";
           commitDocumentChange(current => { const result = checkedArrangementSpacing(current, factor);
-            ok = result.ok; operationStatus = result.status; return result.document; }, "Adjust arrangement spacing");
+            ok = result.ok; operationStatus = result.status; return result.document;
+          }, (before, after) => chargeAssociationUndoLabel(before, after, "Adjust arrangement spacing"), false, undefined, selectionTransformChemistry());
           if (ok) setSpacingSource(undefined); setStatus(operationStatus);
         }} /> : null}
       {objectContextMenu ? (
@@ -25566,50 +25927,17 @@ export function shouldOpenMoleculeEditorFromObjectClick(
 export function hoveredNativeTargetShortcutCommand(
   target: NativeMoleculeDeleteTarget | undefined,
   key: string,
-  scheme: KeybindingScheme = "chemdraft"
+  scheme: KeybindingScheme = "chemdraft",
+  tables?: HoverShortcutTables
 ): string | undefined {
-  const fragments = target?.kind === "atom" ? fragmentAtomDrawingHotkeys : target?.kind === "bond" ? fragmentBondDrawingHotkeys : undefined;
-  if (fragments && Object.prototype.hasOwnProperty.call(fragments, key)) return fragments[key];
-  if (scheme === "chemdraw") {
-    return target?.kind === "atom" || target?.kind === "bond"
-      ? chemDrawHoveredTargetHotkeyCommand(target.kind, key)
-      : undefined;
-  }
-
-  if (target?.kind === "bond") {
-    if (key === "w") return "bond.setHoveredBondDisplay.wedge";
-    if (key === "W") return "bond.setHoveredBondDisplay.hashed";
-    return Object.prototype.hasOwnProperty.call(numericBondDrawingHotkeys, key)
-      ? numericBondDrawingHotkeys[key]
-      : undefined;
-  }
-
-  if (target?.kind !== "atom") {
-    return undefined;
-  }
-
-  if (Object.prototype.hasOwnProperty.call(numericAtomDrawingHotkeys, key)) {
-    return numericAtomDrawingHotkeys[key];
-  }
-  if (key.toLowerCase() === "k") {
-    return "atom.addCarbonylToHoveredAtom";
-  }
-  if (key === "+") {
-    return "atom.addPositiveChargeToHoveredAtom";
-  }
-  if (key === "-") {
-    return "atom.addNegativeChargeToHoveredAtom";
-  }
-  if (key === ".") {
-    return "atom.addRadicalToHoveredAtom";
-  }
-
-  const element = nativeElementFromKeyboardKey(key);
-  return element ? atomElementCommandId(element) : undefined;
+  if (target?.kind !== "atom" && target?.kind !== "bond") return undefined;
+  if (tables) return tables[target.kind].get(key);
+  const defaults = defaultHoverShortcuts(scheme, target.kind);
+  return Object.hasOwn(defaults, key) ? defaults[key] : undefined;
 }
 
-function hasBondHoverShortcut(target: NativeMoleculeDeleteTarget | undefined, key: string): boolean {
-  return target?.kind === "bond" && hoveredNativeTargetShortcutCommand(target, key) !== undefined;
+function hasBondHoverShortcut(target: NativeMoleculeDeleteTarget | undefined, key: string, tables?: HoverShortcutTables): boolean {
+  return target?.kind === "bond" && hoveredNativeTargetShortcutCommand(target, key, "chemdraft", tables) !== undefined;
 }
 
 /**
@@ -25718,7 +26046,8 @@ export function hoverLabelAtomTargetForKey(
   target: NativeMoleculeDeleteTarget | undefined,
   pointer: ClientPoint | undefined,
   assignment: HoverLabelAssignment | undefined,
-  key: string
+  key: string,
+  tables?: HoverShortcutTables
 ): NativeMoleculeDeleteTarget | undefined {
   if (assignment && hoverLabelContinuesForKey(document, target, assignment, key)) {
     const onLabelledAtom = target?.kind === "atom" && target.objectId === assignment.objectId && target.atomId === assignment.atomId;
@@ -25727,7 +26056,8 @@ export function hoverLabelAtomTargetForKey(
   if (target?.kind !== "bond") {
     return undefined;
   }
-  if (hasBondHoverShortcut(target, key) || !nativeElementFromKeyboardKey(key)) {
+  if (hasBondHoverShortcut(target, key, tables) ||
+      !(tables ? tables.atom.get(key)?.startsWith("atom.setHoveredElement.") : nativeElementFromKeyboardKey(key))) {
     return undefined;
   }
   const molecule = findDocumentObject(document, target.objectId);
@@ -25749,13 +26079,15 @@ export function activeNativeTargetShortcutCommand(
   selectedPart: NativeMoleculeSelectionPart | undefined,
   hoveredTarget: NativeMoleculeDeleteTarget | undefined,
   key: string,
-  scheme: KeybindingScheme = "chemdraft"
+  scheme: KeybindingScheme = "chemdraft",
+  tables?: HoverShortcutTables
 ): string | undefined {
   if (key === "." && hoveredTarget?.kind !== "atom") return undefined;
   return hoveredNativeTargetShortcutCommand(
     hoveredTarget ?? nativeDeleteTargetFromSelectionPart(document, selectedPart),
     key,
-    scheme
+    scheme,
+    tables
   );
 }
 
@@ -28711,6 +29043,7 @@ function objectSelectionStatusLabel(document: ChemDraftDocument): string {
     const object = findDocumentObject(document, objectIds[0]);
     if (object?.type === "bracket") return "Selected bracket";
     if (object?.type === "group") return "Selected group";
+    if (object?.type === "electron-mark") return `Selected ${electronMarkName(object).toLowerCase()}`;
   }
   return selectionStatusLabel({ objectIds });
 }
@@ -33811,14 +34144,14 @@ function shouldEnableArtStyleQaLayer(): boolean {
   }
 }
 
-function openBrowserUtilityWindow(windowKind: string): boolean {
+function openBrowserUtilityWindow(windowKind: string, section = ""): boolean {
   if (typeof window === "undefined") {
     return false;
   }
 
   const url = new URL(window.location.href);
   url.searchParams.set("window", windowKind);
-  url.hash = "";
+  url.hash = section;
   const opened = window.open(
     url.toString(),
     `chemdraft-${windowKind}`,

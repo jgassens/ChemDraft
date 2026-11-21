@@ -1,0 +1,23 @@
+{
+  "note": "People who opened an issue or commented on github.com/jgassens/ChemDraft, listed by public GitHub handle. A real name appears only where it is already public in contributors.json. Refresh by re-running the method below and merging new handles; keep the list sorted and free of duplicates.",
+  "gatheredOn": "2026-11-20",
+  "source": "https://github.com/jgassens/ChemDraft/issues",
+  "method": "List the author of every issue and every issue or pull request comment in the repository (gh api --paginate repos/jgassens/ChemDraft/issues and repos/jgassens/ChemDraft/issues/comments). Drop bots (logins ending in [bot] or -bot), the owner (jgassens), and anyone already credited in contributors.json (Kohulan, nithishag20, EmOsborn7, tfairuz38, neelimakoti555-hub, Ziqi1107). Sort the rest case-insensitively.",
+  "handles": [
+    "ACH-Repo",
+    "afalk42",
+    "bfreed3",
+    "ChemProf50",
+    "chuckiehydride",
+    "eugenenaku",
+    "ghutchis",
+    "hauerwas",
+    "hfalk5555",
+    "iacchi",
+    "michemistry",
+    "miguelagaspar",
+    "robertexternbrink",
+    "serena-oli",
+    "sgraber"
+  ]
+}

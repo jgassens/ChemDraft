@@ -8,6 +8,7 @@ export function listenAndDrainNativeOpenQueue<T>(options: {
   subscribe: (changed: () => void) => Promise<() => void>;
   drain: () => Promise<readonly T[]>;
   consumeBatch: (payloads: readonly T[]) => void;
+  onDrainActivity?: (busy: boolean) => void;
   onError: (error: unknown) => void;
 }): () => void {
   let disposed = false;
@@ -19,6 +20,7 @@ export function listenAndDrainNativeOpenQueue<T>(options: {
   const drainRequested = async () => {
     if (!ready || draining || disposed) return;
     draining = true;
+    options.onDrainActivity?.(true);
     try {
       while (requested && !disposed) {
         requested = false;
@@ -29,7 +31,10 @@ export function listenAndDrainNativeOpenQueue<T>(options: {
           if (payloads.length) options.consumeBatch(payloads);
         } catch (error) { options.onError(error); }
       }
-    } finally { draining = false; }
+    } finally {
+      draining = false;
+      if (!disposed) options.onDrainActivity?.(false);
+    }
   };
   const changed = () => {
     requested = true;

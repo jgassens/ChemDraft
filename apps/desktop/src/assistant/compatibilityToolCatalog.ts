@@ -1,7 +1,7 @@
 import { PluginRequestCapabilities, type PluginExpectedStructure } from "@chemdraft/plugin-api";
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import { unionLayoutBounds, type LayoutBounds } from "@chemdraft/layout-engine";
-import { RequestWriteError, writePatchOps } from "@chemdraft/plugin-host";
+import { RequestWriteError, scopedObjectPage, writePatchOps } from "@chemdraft/plugin-host";
 import { planDocumentPageFit } from "../pageEnlargement";
 import { loadRdkitWithAppLoader } from "../plugins/rdkitAppLoader";
 import type { HostToolProvider, McpToolResult } from "../plugins/toolSessions/ToolSessionController";
@@ -61,7 +61,8 @@ export function compatibilityTools(createContext: AssistantToolsControllerOption
             let pageSpace: { pageId: string; decisionId: string } | undefined;
             output = toolResult(await tool.handler({
               ...services, plugin: binding.plugin, tabId, signal: stop, getDocument,
-              getSelectionAtSend: binding.selection, getInsertedObjectIds: binding.insertions,
+              getSelectionAtSend: binding.selection, getSelectionPagesAtSend: () => binding.selectionPages?.(),
+              getInsertedObjectIds: binding.insertions,
               getViewportRect: () => binding.document.viewport?.(),
               chemistry: { ...services.chemistry, reactionProductAligner: async () => {
                 const adapter = await loadRdkitWithAppLoader(() => import("@chemdraft/rdkit-adapter/depiction"));
@@ -106,8 +107,9 @@ export function compatibilityTools(createContext: AssistantToolsControllerOption
                     if (sourceSmiles) expectedStructures.push({ kind: "insertion", opIndex, sourceSmiles });
                   } else if (op.op === "updateObject") {
                     const sourceSmiles = sources?.get(op.objectId);
-                    const page = document.pages.find(candidate => candidate.objects.some(object => object.id === op.objectId));
-                    if (sourceSmiles && page) expectedStructures.push({ kind: "object", pageId: page.id, objectId: op.objectId, sourceSmiles });
+                    // Name the object by its Send-time page, never the first same-id object in the document.
+                    const pageId = scopedObjectPage(document, op.objectId, binding.selectionPages?.());
+                    if (sourceSmiles && pageId) expectedStructures.push({ kind: "object", pageId, objectId: op.objectId, sourceSmiles });
                   }
                 }
                 const receipt = await ctx.documents.applyRequestPatch({ requestId: binding.requestId,

@@ -705,10 +705,8 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     await clickControl(button);
     expect(leases().filter(([, args]) => args.editing)).toHaveLength(0);
     const shell = container.querySelector<HTMLElement>(".palette-window-shell")!;
-    const hotkey = await press(shell, "3");
-    const command = createDesktopShortcutRegistry(allShellCommands(createPhase4Document()), { includeDisabled: true }).resolve({ key: "3" });
-    expect(command).toBeTruthy();
-    expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith(command);
+    const hotkey = await press(shell, "m");
+    expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith("tool.bond");
     expect(hotkey.defaultPrevented).toBe(true);
     // jsdom does not hit-test CSS: assert the pass-through rule excludes buttons.
     const css = readFileSync(resolve("apps/desktop/src/App.css"), "utf8");
@@ -1043,10 +1041,11 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     expect(document.activeElement).toBe(control);
     vi.mocked(sendPaletteCommand).mockClear();
     native.resolved.mockClear();
-    const event = new KeyboardEvent("keydown", { key: "3", bubbles: true, cancelable: true });
+    const event = new KeyboardEvent("keydown", { key: "m", bubbles: true, cancelable: true });
     await act(async () => control.dispatchEvent(event));
     expect(native.resolved).toHaveBeenCalledTimes(kind === "select" ? 0 : 1);
-    expect(sendPaletteCommand).toHaveBeenCalledTimes(kind === "select" ? 0 : 1);
+    if (kind === "select") expect(sendPaletteCommand).not.toHaveBeenCalled();
+    else expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith("tool.bond");
     expect(event.defaultPrevented).toBe(kind !== "select");
   });
 
@@ -1082,10 +1081,11 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
       expect(event.defaultPrevented, key).toBe(false);
       expect(document.activeElement, key).toBe(control);
     }
-    const hotkey = new KeyboardEvent("keydown", { key: "k", bubbles: true, cancelable: true });
+    const hotkey = new KeyboardEvent("keydown", { key: "m", bubbles: true, cancelable: true });
     await act(async () => control.dispatchEvent(hotkey));
     expect(native.resolved).toHaveBeenCalledTimes(kind === "select" ? 0 : 1);
-    expect(sendPaletteCommand).toHaveBeenCalledTimes(kind === "select" ? 0 : 1);
+    if (kind === "select") expect(sendPaletteCommand).not.toHaveBeenCalled();
+    else expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith("tool.bond");
     expect(hotkey.defaultPrevented).toBe(kind !== "select");
     vi.mocked(sendPaletteCommand).mockClear();
     const undo = new KeyboardEvent("keydown", { key: "z", ctrlKey: platform === "windows", metaKey: platform === "macos", bubbles: true, cancelable: true });
@@ -1327,7 +1327,11 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     expect(leases().map(([, args]) => args.editing)).toEqual([true, false]);
   });
 
-  it.each(["3", "Delete", "Backspace"])("keeps %s in the input and still forwards it outside controls", async (key) => {
+  it.each([
+    { key: "3", command: undefined },
+    { key: "Delete", command: "edit.forwardDeleteHoveredNativeTarget" },
+    { key: "Backspace", command: "edit.deleteHoveredNativeTarget" }
+  ])("keeps $key in the input and only forwards global bindings outside controls", async ({ key, command }) => {
     const input = await mountSettings();
     await act(async () => input.focus());
     await flush();
@@ -1341,10 +1345,9 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     await flush(); // Only a settled departure releases the lease and restores shortcuts.
     const outside = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
     await act(async () => container.querySelector(".palette-window-shell")!.dispatchEvent(outside));
-    const command = createDesktopShortcutRegistry(allShellCommands(createPhase4Document()), { includeDisabled: true }).resolve({ key });
-    expect(command).toBeTruthy();
-    expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith(command);
-    expect(outside.defaultPrevented).toBe(true);
+    if (command) expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith(command);
+    else expect(sendPaletteCommand).not.toHaveBeenCalled();
+    expect(outside.defaultPrevented).toBe(command !== undefined);
   });
 
   it("keeps a field unfocused until acquisition settles and blurs a rejected lease", async () => {

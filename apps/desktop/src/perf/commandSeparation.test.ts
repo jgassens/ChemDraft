@@ -19,8 +19,11 @@ function contaminatedCalls(text: string) {
       if (command && ts.isStringLiteral(command) && !command.text.startsWith("perf_log_")) {
         if (node.arguments.slice(1).some(arg => diagnostic.test(arg.getText(source)))
           || node.typeArguments?.some(arg => diagnostic.test(arg.getText(source)))) errors.push(node.getText(source));
-        if (["toggle_preferences_window", "toggle_spin3d_debugger_window"].includes(command.text)
-          && (node.arguments.length !== 1 || node.typeArguments?.length)) errors.push(node.getText(source));
+        if (["toggle_preferences_window", "toggle_spin3d_debugger_window"].includes(command.text)) {
+          const opensKeyboard = command.text === "toggle_preferences_window" && node.arguments.length === 2
+            && /^\{\s*keyboard:\s*true\s*\}$/.test(node.arguments[1]!.getText(source));
+          if ((!opensKeyboard && node.arguments.length !== 1) || node.typeArguments?.length) errors.push(node.getText(source));
+        }
       }
     }
     ts.forEachChild(node, walk);
@@ -57,8 +60,13 @@ pub fn generic<R: Runtime>(callback: fn(u32) -> u32) -> Result<(), String> {}`))
 it("keeps diagnostic identifiers out of all non-perf invoke call arguments and return types", () => {
   expect(sourceFiles("apps/desktop/src").flatMap(file => contaminatedCalls(readFileSync(file, "utf8")).map(call => `${file}: ${call}`))).toEqual([]);
 });
+it("allows the Preferences command to select Keyboard without diagnostics", () => {
+  expect(contaminatedCalls('invoke("toggle_preferences_window", { keyboard: true })')).toEqual([]);
+});
 it.each([
   'invoke("toggle_preferences_window", { perfOpen: open })',
+  'invoke("toggle_preferences_window", { keyboard: true, perfOpen: open })',
+  'invoke<boolean>("toggle_preferences_window", { keyboard: true })',
   'invoke<boolean>("toggle_spin3d_debugger_window")',
   'invoke("route_toolset_command", { commandId, perfOrigin })',
   'invoke<NativeOpen>("open_toolset_window", { request })'

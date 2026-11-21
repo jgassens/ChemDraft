@@ -717,7 +717,7 @@ function isSpin3dSettingsPayload(payload: unknown): payload is Spin3dSettings {
 export const KEYBINDING_SETTINGS_EVENT = "chemdraft://keybinding-settings";
 
 /** Broadcast a keybinding-scheme change so every open window rebuilds its shortcut registry live.
- *  localStorage is the source of truth across reloads; this event is the live-sync channel. */
+ *  The native preference and local cache handle persistence; this event handles live updates. */
 export async function broadcastKeybindingSettings(settings: KeybindingSettings): Promise<void> {
   dispatchDomToolsetEvent(KEYBINDING_SETTINGS_EVENT, settings);
   if (!isDesktopRuntime()) {
@@ -747,13 +747,13 @@ export async function listenForKeybindingSettings(
 }
 
 /** Keep native menu accelerators in step with the shortcut scheme. */
-export async function pushKeybindingSchemeToNativeMenu(scheme: KeybindingScheme): Promise<void> {
+export async function pushKeybindingSchemeToNativeMenu(scheme: KeybindingScheme, accelerators: Record<string, string | null> = {}): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
 
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("set_keybinding_scheme", { scheme }).catch(() => undefined);
+  await invoke("set_keybinding_scheme", { scheme, accelerators }).catch(error => console.error("Could not update menu shortcuts", error));
 }
 
 export async function listToolsetWindowStates(): Promise<ToolsetWindowState[]> {

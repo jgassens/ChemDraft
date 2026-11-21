@@ -17,6 +17,7 @@ export interface CommandShortcutSource {
 
 export interface KeyboardEventLike {
   key: string;
+  code?: string;
   altKey?: boolean;
   ctrlKey?: boolean;
   metaKey?: boolean;
@@ -158,9 +159,11 @@ export function normalizeShortcut(
     }
   });
 
+  const key = normalizeKey(keyToken, modifiers.has("Shift"));
+  if (key === "=") modifiers.delete("Shift");
   return {
     commandId: shortcut.commandId,
-    key: normalizeKey(keyToken),
+    key,
     modifiers: sortModifiers([...modifiers]),
     platform: shortcut.platform,
     when: shortcut.when
@@ -175,7 +178,8 @@ export function keyboardEventChord(input: KeyboardEventLike): string {
   if (input.altKey) {
     modifiers.push("Alt");
   }
-  const key = normalizeKey(input.key);
+  const physicalKey = input.code ? keyFromCode(input.code) : undefined;
+  const key = normalizeKey(input.altKey && physicalKey && !/^[a-z]$/i.test(input.key) ? physicalKey : input.key, input.shiftKey);
   // Shift on the +/= key only chooses which legend the event reports, so counting it would make
   // Cmd+Shift+= — how most people press "Cmd plus" — a different chord from Cmd+=. No command
   // binds Shift together with this key, so folding it costs nothing and revives the press.
@@ -336,9 +340,9 @@ export function detectShortcutPlatform(): ShortcutPlatform {
 
 function normalizeModifier(token: string, platform: ShortcutPlatform): ShortcutModifier | undefined {
   const value = token.trim().toLowerCase();
-  // Bindings are authored Mac-first ("Cmd+S"). Off macOS the Command key's role belongs to Ctrl —
-  // mapping it to Meta would demand the Windows/Super key and leave every shortcut dead.
-  if (value === "cmd" || value === "command" || value === "meta") {
+  if (value === "meta" || value === "super") return "Meta";
+  // Legacy defaults use Cmd for the platform's primary modifier.
+  if (value === "cmd" || value === "command") {
     return platform === "macos" ? "Meta" : "Ctrl";
   }
   if (value === "ctrl" || value === "control") {
@@ -356,7 +360,26 @@ function normalizeModifier(token: string, platform: ShortcutPlatform): ShortcutM
   return undefined;
 }
 
-function normalizeKey(key: string): string {
+const codeKeys: Readonly<Record<string, string>> = {
+  Backquote: "`", Minus: "-", Equal: "=", BracketLeft: "[", BracketRight: "]",
+  Backslash: "\\", Semicolon: ";", Quote: "'", Comma: ",", Period: ".", Slash: "/",
+  Space: "Space"
+};
+
+export function keyFromCode(code: string): string | undefined {
+  const alphanumeric = /^(?:Key([A-Z])|Digit([0-9]))$/.exec(code);
+  return alphanumeric?.[1] ?? alphanumeric?.[2] ?? (Object.hasOwn(codeKeys, code) ? codeKeys[code] : undefined);
+}
+
+const shiftedSymbols = '~!@#$%^&*()_+{}|:"<>?';
+const unshiftedSymbols = "`1234567890-=[]\\;',./";
+
+export function unshiftedShortcutKey(key: string): string | undefined {
+  return key.length === 1 ? unshiftedSymbols[shiftedSymbols.indexOf(key)] : undefined;
+}
+
+function normalizeKey(key: string, shift = false): string {
+  if (shift) key = unshiftedShortcutKey(key) ?? key;
   // The spacebar reports key " ", so trimming first erased it: the event normalized to "" while a
   // "Space" binding normalized to " ", and the two could never match. Handle it before the trim.
   if (key === " ") {
@@ -379,7 +402,7 @@ function normalizeKey(key: string): string {
   if (lower === "minus") {
     return "-";
   }
-  if (lower === "space") {
+  if (lower === "space" || lower === "spacebar") {
     return " ";
   }
   if (lower === "esc") {
@@ -399,3 +422,5 @@ function sortModifiers(modifiers: readonly ShortcutModifier[]): ShortcutModifier
 function chordFor(key: string, modifiers: readonly ShortcutModifier[]): string {
   return [...modifiers, key].join("+");
 }
+
+export * from "./customShortcuts";

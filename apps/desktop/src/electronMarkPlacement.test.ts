@@ -125,16 +125,20 @@ describe("charge-tool placement equivalence with ee50d782", () => {
       }
   });
 
-  it("still accounts for existing charge centres when there is no growth slot", () => {
+  it.each([0, 90, 45, 180])("accounts for existing charge centres when there is no growth slot at %s°", rotation => {
     // Growth has no valence/degree cap. Sixteen bonded neighbours block every endpoint
     // geometrically (within 0.25 bond lengths), and cannot be offered as new ring closures.
     const molecule = placementFixture("blocked", "Zn", { x: 300, y: 300 }, 0, 15);
     expect(previewNativeMoleculeBondGrowth(molecule, molecule.atoms[0], 792, 612)).toBeUndefined();
     const original = nativeChargePlacementPointForAtom(molecule, "atom_0", [molecule], 792, 612)!;
-    const objects = [molecule, chargeMark(molecule, original)];
-    const point = nativeChargePlacementPointForAtom(molecule, "atom_0", objects, 792, 612);
-    expect(point).not.toEqual(original);
-    expect(point).toEqual(legacyPlacementPoint(molecule, "atom_0", objects, 792, 612));
+    const local = legacyPlacementPoint(molecule, "atom_0", [molecule, chargeMark(molecule, original)], 792, 612)!;
+    const rotated = { ...molecule, rotation };
+    const objects = [rotated, chargeMark(rotated, transformPointForObject(rotated, original))];
+    const point = nativeChargePlacementPointForAtom(rotated, "atom_0", objects, 792, 612);
+    const expected = transformPointForObject(rotated, local);
+    expect(distance(expected, transformPointForObject(rotated, original))).toBeGreaterThan(0);
+    expect(point?.x).toBeCloseTo(expected.x, 10);
+    expect(point?.y).toBeCloseTo(expected.y, 10);
   });
 
   it("returns no point for a missing atom", () => {
@@ -232,6 +236,23 @@ describe("lone-pair tool placement", () => {
     const mark = updated.pages[0].objects.find((object): object is ElectronMarkObject => object.type === "electron-mark")!;
     expect(nativeChargeMarkCenter(mark)).toEqual(legacyPlacementPoint(molecule, "oxygen", [molecule], 792, 612));
     expect(mark.rotation).toBe(0);
+  });
+
+  it.each([90, 45, 180])("places charges and radicals on the clicked atom at %s°", rotation => {
+    const { document, molecule, target } = ketoneFixture();
+    const rotated = { ...molecule, rotation };
+    const drawing = { ...document, pages: [{ ...document.pages[0], objects: [rotated] }] };
+    const local = legacyPlacementPoint(molecule, target.atomId, [molecule], drawing.pages[0].width, drawing.pages[0].height)!;
+    const expected = transformPointForObject(rotated, local);
+    for (const spec of [{ kind: "charge", charge: 1 }, { kind: "radical-dot" }] as const) {
+      const updated = normalizeCommittedDocument(applyChargeToolAtNativeAtom(drawing, spec, target));
+      const mark = updated.pages[0].objects.find((object): object is ElectronMarkObject => object.type === "electron-mark")!;
+      expect(nativeChargeMarkCenter(mark)).toEqual(expected);
+      expect(mark).toMatchObject({
+        markKind: spec.kind, rotation: 0, atomAssociation: "explicit",
+        anchor: { kind: "atom", objectId: molecule.id, atomId: target.atomId }
+      });
+    }
   });
 
   it("preserves RDKit canonical SMILES, formula, charge, atom/bond counts and the entire native graph after two pairs", async () => {

@@ -1,3 +1,4 @@
+import { KEYBOARD_PREFERENCES_COMMAND_ID } from "../commands";
 import type { ReactionConditionsDraft } from "@chemdraft/document-workflow-core";
 export type ConditionsSnapshot = { title: string; arrowId: string; draft: ReactionConditionsDraft };
 /** Internal host contract. Advance independently of the public plugin API. No document/path URLs. */
@@ -9,10 +10,14 @@ export { validInsertTableOptions, type InsertTableOptions } from "./insertTableO
 import { structureTemplateById } from "@chemdraft/template-library";
 import { validDialogContentFit, type DialogContentFit } from "./dialogContentFit";
 export type { DialogContentFit } from "./dialogContentFit";
+import { isKeybindingScheme, type KeybindingScheme } from "../keybindingSettings";
+import { TOUR_INSPECTOR_COMMAND, TOUR_NAME_COMMAND, TOUR_SAMPLE_COMMAND, type TourAction } from "../tour/tourCommands";
+
 export const DIALOG_PROTOCOL_VERSION = 1;
 export const DIALOG_MAX_BYTES = 16 * 1024;
 export const DIALOG_PREVIEW_MAX_BYTES = 5 * 1024 * 1024;
-export type DialogKind = "pageSize" | "pageEnlargement" | "arrangementSpacing" | "reactionConditions" | "export" | "engineInstall" | "toolInstall" | "customColor" | "insertTable" | "structureTemplates" | "atomProblem" | "vibeCodeGuide";
+
+export type DialogKind = "pageSize" | "pageEnlargement" | "arrangementSpacing" | "reactionConditions" | "export" | "engineInstall" | "toolInstall" | "customColor" | "insertTable" | "structureTemplates" | "atomProblem" | "vibeCodeGuide" | "guidedTour" | "about";
 export type { AtomProblemAction } from "@chemdraft/document-workflow-core";
 import type { AtomProblemAction } from "@chemdraft/document-workflow-core";
 export interface AtomProblemSnapshot {
@@ -93,7 +98,7 @@ export interface DialogEnvelope {
   requestId: string;
   snapshotRevision: number;
 }
-export type DialogCloseReason = "apply" | "cancel" | "close" | "destroy" | "ownerTabClose" | "ownerClose" | "quit" | "error";
+export type DialogCloseReason = "apply" | "cancel" | "close" | "destroy" | "ownerTabClose" | "ownerClose" | "quit" | "error" | "deferred";
 export const PAGE_ENLARGEMENT_TITLE = "Enlarge Page";
 export const PAGE_ENLARGEMENT_MESSAGE = "This doesn't fit on the page. Enlarge the page to fit? Content on the page may shift to make room.";
 export interface ExportDialogResult {
@@ -116,18 +121,21 @@ export type DialogSnapshot = DialogEnvelope & (
   | { dialogKind: "toolInstall"; type: "snapshot"; data: ToolInstallSnapshot }
   | { dialogKind: "structureTemplates"; type: "snapshot"; data: StructureTemplatesSnapshot }
   | { dialogKind: "vibeCodeGuide"; type: "snapshot"; data: { title: string } }
+  | { dialogKind: "about"; type: "snapshot"; data: AboutSnapshot }
+  | { dialogKind: "guidedTour"; type: "snapshot"; data: { title: string; scheme: KeybindingScheme; automatic: boolean } }
 );
+export interface AboutSnapshot { title: string; version: string; buildStamp: string }
 export type DialogMessage = DialogSnapshot | (DialogEnvelope & (
   | { type: "request"; data: Record<string, never> }
   | { type: "ready"; data: Record<string, never> | DialogContentFit }
-  | { type: "action"; data: ({ action: "apply" } & (PageSize | InsertTableOptions)) | { action: "apply"; hex: string } | { action: "clear" } | { action: "apply"; draft: ReactionConditionsDraft } | { action: AtomProblemAction; targetVersion: number } | { action: "apply" | "preview"; percent: number } | { action: "insert"; templateId: string } | { action: "enlarge" | "cancel" | "saveStarter" | "openPluginManager" } | { action: EngineInstallAction | ToolInstallAction } | { action: "export" | "chooseDestination" | "preview"; options: ExportOptions } }
+  | { type: "action"; data: ({ action: "apply" } & (PageSize | InsertTableOptions)) | { action: "apply"; hex: string } | { action: "clear" } | { action: "apply"; draft: ReactionConditionsDraft } | { action: AtomProblemAction; targetVersion: number } | { action: "apply" | "preview"; percent: number } | { action: "insert"; templateId: string } | { action: "enlarge" | "cancel" | "saveStarter" | "openPluginManager" | "copyVersion" } | { action: EngineInstallAction | ToolInstallAction } | { action: "export" | "chooseDestination" | "preview"; options: ExportOptions } | TourAction }
   | { type: "preview"; data: SpacingPreview }
   | { type: "result"; data: { status: "accepted" | "applied" | "inserted" | "progress" | ExportDialogResult["status"] | "preview" | "frame"; preview?: ExportPreviewResult; frame?: ExportFrame; error?: string; destinationPath?: string; filename?: string; notice?: string } }
   | { type: "closed"; data: { reason: DialogCloseReason } }
 ));
 export interface DialogRegistration { hostId: string; windowLabel: string }
 
-const reasons = new Set<DialogCloseReason>(["apply", "cancel", "close", "destroy", "ownerTabClose", "ownerClose", "quit", "error"]);
+const reasons = new Set<DialogCloseReason>(["apply", "cancel", "close", "destroy", "ownerTabClose", "ownerClose", "quit", "error", "deferred"]);
 const record = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const keys = (v: Record<string, unknown>, required: string[], optional: string[] = []) =>
   required.every(k => Object.hasOwn(v, k)) && Object.keys(v).every(k => required.includes(k) || optional.includes(k));
@@ -148,7 +156,7 @@ export function parseDialogMessage(value: unknown): DialogMessage | undefined {
   try {
     if (new TextEncoder().encode(JSON.stringify(value)).length > (record(value) && value.dialogKind === "export" && value.type === "result" && record(value.data) && value.data.status === "preview" ? DIALOG_PREVIEW_MAX_BYTES : DIALOG_MAX_BYTES)) return undefined;
     if (!record(value) || !keys(value, ["protocolVersion", "ownerWindowId", "documentTabId", "dialogKind", "sessionId", "requestId", "snapshotRevision", "type", "data"])) return undefined;
-    if (value.protocolVersion !== 1 || value.ownerWindowId !== "main" || typeof value.dialogKind !== "string" || !["pageSize", "pageEnlargement", "arrangementSpacing", "reactionConditions", "export", "engineInstall", "toolInstall", "insertTable", "customColor", "structureTemplates", "atomProblem", "vibeCodeGuide"].includes(value.dialogKind) ||
+    if (value.protocolVersion !== 1 || value.ownerWindowId !== "main" || typeof value.dialogKind !== "string" || !["pageSize", "pageEnlargement", "arrangementSpacing", "reactionConditions", "export", "engineInstall", "toolInstall", "insertTable", "customColor", "structureTemplates", "atomProblem", "vibeCodeGuide", "guidedTour", "about"].includes(value.dialogKind) ||
         !token(value.documentTabId) || !token(value.sessionId) || !token(value.requestId) ||
         !Number.isSafeInteger(value.snapshotRevision) || Number(value.snapshotRevision) < 1 || !record(value.data)) return undefined;
     const d = value.data;
@@ -174,6 +182,33 @@ export function parseDialogMessage(value: unknown): DialogMessage | undefined {
         case "ready": valid = keys(d, []) || validDialogContentFit(d); break;
         case "closed": valid = keys(d, ["reason"]) && reasons.has(d.reason as DialogCloseReason); break;
         case "result": valid = keys(d, ["status"], ["error"]) && ["accepted", "applied", "cancelled", "error"].includes(String(d.status)) && (d.error === undefined || typeof d.error === "string" && d.error.length <= 2048); break;
+      }
+      return valid ? value as unknown as DialogMessage : undefined;
+    }
+    if (value.dialogKind === "about") {
+      const text = (v: unknown, max: number) => typeof v === "string" && v.length > 0 && v.length <= max && !/[\r\n\0]/.test(v);
+      switch (value.type) {
+        case "snapshot": valid = keys(d, ["title", "version", "buildStamp"]) && d.title === "About ChemDraft" &&
+          text(d.version, 128) && text(d.buildStamp, 128); break;
+        case "action": valid = keys(d, ["action"]) && (d.action === "copyVersion" || d.action === "cancel"); break;
+        case "request": case "ready": valid = keys(d, []); break;
+        case "closed": valid = keys(d, ["reason"]) && reasons.has(d.reason as DialogCloseReason); break;
+      }
+      return valid ? value as unknown as DialogMessage : undefined;
+    }
+    if (value.dialogKind === "guidedTour") {
+      switch (value.type) {
+        case "snapshot": valid = keys(d, ["title", "scheme", "automatic"]) && typeof d.title === "string" &&
+          d.title.length > 0 && d.title.length <= 256 && !d.title.includes("\0") &&
+          isKeybindingScheme(d.scheme) && typeof d.automatic === "boolean"; break;
+        case "action": valid = d.action === "cancel" || d.action === "finish" ? keys(d, ["action"])
+          : d.action === "chooseShortcuts" ? keys(d, ["action", "scheme"]) && isKeybindingScheme(d.scheme)
+          : d.action === "tryTourCommand" && keys(d, ["action", "command"]) &&
+            [TOUR_SAMPLE_COMMAND, TOUR_NAME_COMMAND, TOUR_INSPECTOR_COMMAND, KEYBOARD_PREFERENCES_COMMAND_ID].some(command => d.command === command); break;
+        case "request": case "ready": valid = keys(d, []); break;
+        case "closed": valid = keys(d, ["reason"]) && reasons.has(d.reason as DialogCloseReason); break;
+        case "result": valid = keys(d, ["status"], ["error"]) && ["accepted", "cancelled", "error"].includes(String(d.status)) &&
+          (d.error === undefined || typeof d.error === "string" && d.error.length <= 1024); break;
       }
       return valid ? value as unknown as DialogMessage : undefined;
     }

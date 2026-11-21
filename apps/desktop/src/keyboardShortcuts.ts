@@ -1,8 +1,11 @@
 import {
   createShortcutRegistry,
   detectShortcutPlatform,
+  parseShortcutDisplay,
   shortcutsFromCommands,
   type CommandShortcut,
+  type KeyboardEventLike,
+  type ShortcutOverrides,
   type ShortcutPlatform,
   type ShortcutRegistry
 } from "@chemdraft/shortcut-engine";
@@ -57,6 +60,7 @@ const PLATFORM_ALTERNATE_SHORTCUTS: readonly CommandShortcut[] = [
 export interface DesktopShortcutRegistryOptions {
   platform?: ShortcutPlatform;
   includeDisabled?: boolean;
+  overrides?: ShortcutOverrides;
 }
 
 /**
@@ -88,7 +92,9 @@ export function createMainWindowShortcutCommands(
     layerActions: readonly CommandSpec[];
     toolCommandSpecs: readonly CommandSpec[];
   },
-  scheme: KeybindingScheme
+  scheme: KeybindingScheme,
+  overrides?: ShortcutOverrides,
+  platform?: ShortcutPlatform
 ): CommandSpec[] {
   return applyKeybindingSchemeToCommands([
     ...state.quickActions,
@@ -102,7 +108,7 @@ export function createMainWindowShortcutCommands(
     ...pageOrientationActions,
     ...textToolbarActions,
     ...toolbarCustomizationActions
-  ], scheme);
+  ].filter(command => !isHoverOnlyShortcutCommand(command.id)), scheme, overrides, platform);
 }
 
 export function createDesktopShortcutRegistry(
@@ -112,20 +118,46 @@ export function createDesktopShortcutRegistry(
   const options = typeof platformOrOptions === "string"
     ? { platform: platformOrOptions }
     : platformOrOptions;
+  const platform = options.platform ?? detectDesktopShortcutPlatform();
   const shortcutCommands = options.includeDisabled
     ? commands.map((command) => ({ ...command, enabled: true }))
     : commands;
 
-  const commandShortcuts = shortcutsFromCommands(shortcutCommands);
+  const commandShortcuts = shortcutsFromCommands(shortcutCommands).filter(shortcut => !isHoverOnlyShortcutCommand(shortcut.commandId));
+  for (const shortcut of [...commandShortcuts]) {
+    const extras = options.overrides?.commands?.[shortcut.commandId]?.slice(1) ?? [];
+    commandShortcuts.push(...extras.map(key => ({ commandId: shortcut.commandId, keys: parseShortcutDisplay(key) })));
+  }
   const boundCommandIds = new Set(commandShortcuts.map((shortcut) => shortcut.commandId));
   // An alternate follows its command: a disabled or absent command gets no extra chord either.
-  const alternates = PLATFORM_ALTERNATE_SHORTCUTS.filter((shortcut) => boundCommandIds.has(shortcut.commandId));
+  const alternates = PLATFORM_ALTERNATE_SHORTCUTS.filter(shortcut => boundCommandIds.has(shortcut.commandId) &&
+    !Object.hasOwn(options.overrides?.commands ?? {}, shortcut.commandId));
 
   return createShortcutRegistry([...commandShortcuts, ...alternates], {
-    platform: options.platform ?? detectDesktopShortcutPlatform()
+    platform
   });
+}
+
+export function commandPlatformAlternates(commandId: string, platform: ShortcutPlatform): string[] {
+  return PLATFORM_ALTERNATE_SHORTCUTS.filter(shortcut => shortcut.commandId === commandId && shortcut.platform === platform)
+    .map(shortcut => shortcut.keys.join("+"));
+}
+
+function isHoverOnlyShortcutCommand(id: string): boolean {
+  return id.startsWith("atom.") || id.startsWith("bond.");
 }
 
 export function detectDesktopShortcutPlatform(): ShortcutPlatform {
   return detectShortcutPlatform();
+}
+
+export function defaultClipboardShortcut(event: KeyboardEventLike, platform: ShortcutPlatform = detectDesktopShortcutPlatform()): string | undefined {
+  const main = platform === "macos" ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+  if (!main || event.altKey || event.shiftKey) return undefined;
+  switch (event.key.toLowerCase()) {
+    case "c": return "clipboard.copy";
+    case "x": return "clipboard.cut";
+    case "v": return "clipboard.paste";
+    default: return undefined;
+  }
 }

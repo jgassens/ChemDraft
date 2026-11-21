@@ -17,6 +17,7 @@ const PaletteTooltipWindow = lazy(() => import("./PaletteTooltipWindow").then(m 
 const PluginPanelWindow = lazy(() => import("./plugins/PluginPanelWindow").then(m => ({ default: m.PluginPanelWindow })));
 const Spin3dDebuggerWindow = lazy(() => import("./Spin3dDebuggerWindow").then(m => ({ default: m.Spin3dDebuggerWindow })));
 const PreferencesWindow = lazy(() => import("./PreferencesWindow").then(m => ({ default: m.PreferencesWindow })));
+const BrowserAboutWindow = lazy(() => import("./about/AboutWindow").then(m => ({ default: m.BrowserAboutWindow })));
 const DialogWindow = lazy(() => import("./dialogs/DialogWindow").then(m => ({ default: m.DialogWindow })));
 const FileWarningsWindow = lazy(() => import("./FileWarningsWindow").then(m => ({ default: m.FileWarningsWindow })));
 
@@ -33,6 +34,9 @@ export function App() {
   }, []);
   if (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("window") === "fileWarnings") {
     return <Suspense fallback={null}><FileWarningsWindow /></Suspense>;
+  }
+  if (typeof window !== "undefined" && !isDesktopRuntime() && new URLSearchParams(window.location.search).get("window") === "about") {
+    return <Suspense fallback={<p role="status">Opening About ChemDraft…</p>}><BrowserAboutWindow /></Suspense>;
   }
   const dialog = dialogRoute();
   if (dialog !== undefined) {

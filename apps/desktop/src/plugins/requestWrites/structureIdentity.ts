@@ -1,5 +1,6 @@
 import type { MoleculeObject } from "@chemdraft/chem-core";
 import { assertMoleculeMatchesSmiles, chemicalIdentitySource, type ChemicalIdentityFacts } from "@chemdraft/document-workflow-core";
+import { inspectStructureOffThread } from "../../depiction2d/identityClient";
 
 export type StereoTags = { CIP_atoms?: [number, string][]; CIP_bonds?: [number, number, string][] };
 
@@ -7,7 +8,7 @@ export type StructureInspection =
   | { valid: true; canonicalSmiles: string; identitySmiles: string; identityFacts?: ChemicalIdentityFacts;
       formula: string; heavyAtoms: number; warnings: string[];
       orderedIdentity?: string; stereoTags?: StereoTags; hasStoredGroups?: boolean;
-      stereochemistry?: string[];
+      stereochemistry?: string[]; formalCharge?: number;
       topology?: { atomCount: number; bonds: [number, number][]; rings: number[][] } }
   | { valid: false; reason: string; code?: "limit" | "unavailable" | "unsupported" };
 
@@ -15,6 +16,11 @@ export interface StructureInspectionContext {
   chemistry: {
     inspectStructure(format: "smiles" | "molfile", value: string, stereoReference?: string): Promise<StructureInspection>;
   };
+}
+
+export function desktopWriteInspectionContext(signal?: AbortSignal): StructureInspectionContext {
+  return { chemistry: { inspectStructure: (format, value, stereo) =>
+    inspectStructureOffThread(format, value, stereo, signal, "writeIdentity") } };
 }
 
 export async function inspectSmiles(context: StructureInspectionContext, smiles: string) {

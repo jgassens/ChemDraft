@@ -15,7 +15,8 @@ import {
 
 export interface KetcherEditorHostProps {
   molecule: MoleculeObject;
-  onApply(result: EditorSaveResult): void;
+  /** Applies the save; returns false when the edit was refused (the caller has said why). */
+  onApply(result: EditorSaveResult): boolean;
   onClose(): void;
   onStatus(message: string): void;
 }
@@ -33,6 +34,32 @@ type StandaloneProviderConstructor = new () => unknown;
 interface KetcherRuntimeModules {
   Editor: KetcherEditorComponent;
   structServiceProvider: unknown;
+}
+
+/**
+ * Saves the editor's molecule and hands it to `onApply`. The success status is shown only when
+ * `onApply` reports the edit applied: a refused edit has already put its reason on the status line,
+ * and it must stay there. Returns the save error message, if the save itself failed.
+ */
+export async function applyKetcherSave(
+  adapter: Pick<EditorAdapter, "saveObject">,
+  onApply: (result: EditorSaveResult) => boolean,
+  onStatus: (message: string) => void
+): Promise<string | undefined> {
+  try {
+    const result = await adapter.saveObject();
+    if (!onApply(result)) return undefined;
+    onStatus(
+      result.warnings.length > 0
+        ? `Applied Ketcher edit with ${result.warnings.length} warning(s)`
+        : "Applied Ketcher molecule edit"
+    );
+    return undefined;
+  } catch (saveError) {
+    const message = saveError instanceof Error ? saveError.message : String(saveError);
+    onStatus(`Ketcher save failed: ${message}`);
+    return message;
+  }
 }
 
 export function KetcherEditorHost({
@@ -149,17 +176,8 @@ export function KetcherEditorHost({
 
     setBusy(true);
     try {
-      const result = await adapter.saveObject();
-      onApply(result);
-      onStatus(
-        result.warnings.length > 0
-          ? `Applied Ketcher edit with ${result.warnings.length} warning(s)`
-          : "Applied Ketcher molecule edit"
-      );
-    } catch (saveError) {
-      const message = saveError instanceof Error ? saveError.message : String(saveError);
-      setError(message);
-      onStatus(`Ketcher save failed: ${message}`);
+      const saveError = await applyKetcherSave(adapter, onApply, onStatus);
+      if (saveError !== undefined) setError(saveError);
     } finally {
       setBusy(false);
     }

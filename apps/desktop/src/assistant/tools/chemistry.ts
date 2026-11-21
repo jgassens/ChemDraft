@@ -11,7 +11,8 @@ export async function validateSmiles(context: AssistantToolContext, input: ToolI
   catch (error) { return { valid: false, reason: error instanceof Error ? error.message : String(error) }; }
 }
 export async function structureToName(context: AssistantToolContext, input: ToolInput<"structure_to_name">) {
-  const { object } = findObject(requireDocument(context), input.objectId);
+  const { object, page } = findObject(context, requireDocument(context), input.objectId);
   if (object.type !== "molecule") throw new Error(`${object.id} is not a molecule.`);
-  return context.chemistry.structureToName(input);
+  // Name the molecule on the page it was resolved on, never a same-id molecule on another page.
+  return context.chemistry.structureToName(input, page.id);
 }

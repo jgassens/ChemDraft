@@ -1,6 +1,6 @@
 {
   "name": "@chemdraft/desktop",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -43,6 +43,7 @@
     "@dnd-kit/utilities": "^3.2.2",
     "@jaames/iro": "^5.5.2",
     "@scena/react-ruler": "^0.19.0",
+    "@tanstack/react-hotkeys": "0.27.1",
     "@tauri-apps/api": "^2.11.0",
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-fs": "^2.5.1",

@@ -237,7 +237,7 @@ describe("complete molecule carried with its distant explicit charge", () => {
     expectCarriedCharges(workflow.normalizeCommittedDocument(reopened.document!), expected);
   });
 
-  it("keeps the existing mark-only move and molecule-only duplicate policies", () => {
+  it("keeps the existing mark-only move policy and duplicates a molecule with its marks", () => {
     const document = distantAttachedCharge(), mark = dropMark(document), molecule = dropMolecule(document);
     const moved = workflow.normalizeCommittedDocument(workflow.moveDocumentObjects(document, [mark.id], 24, 24));
     expect(dropMolecule(moved).atoms.find(atom => atom.element === "N")?.formalCharge).toBe(0);
@@ -245,9 +245,11 @@ describe("complete molecule carried with its distant explicit charge", () => {
     expect(dropMark(moved).atomAssociation).toBeUndefined();
     const selected = workflow.selectDocumentObjects(document, document.pages[0].id, [molecule.id]);
     const duplicated = workflow.normalizeCommittedDocument(workflow.duplicateSelectedDocumentObjects(selected));
+    // Duplicating a molecule copies the charge mark it carries, so the copy keeps its charge.
     expect(duplicated.pages[0].objects.filter(object => object.type === "molecule")
-      .map(object => object.atoms.find(atom => atom.element === "N")?.formalCharge)).toEqual([1, 0]);
+      .map(object => object.atoms.find(atom => atom.element === "N")?.formalCharge)).toEqual([1, 1]);
     expect(dropMark(duplicated)).toEqual(mark);
+    expect(duplicated.pages[0].objects.filter(object => object.type === "electron-mark")).toHaveLength(2);
     const carried = workflow.normalizeCommittedDocument(workflow.moveDocumentObject(document, molecule.id,
       { x: molecule.x + 24, y: molecule.y + 24 }));
     expectCarriedCharges(carried, [1]);
