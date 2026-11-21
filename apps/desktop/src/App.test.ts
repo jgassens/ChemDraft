@@ -2595,7 +2595,13 @@ describe("ChemDraft desktop shell", () => {
     // Inactive-tab spacing keeps its original direct normalization; insertion tab commits
     // share preparation, and plugin/proposal preflight also normalizes before checking fit.
     // The conditions editor also commits to its original tab while it is inactive.
-    expect(mainWindowSource.match(/normalizeCommittedDocument\(/g)).toHaveLength(14);
+    // A molecule-part drag (commitNativePartDrag) normalizes before naming its charge-aware Undo
+    // label (chargeAssociationUndoLabel), so the label describes the reconciled charge marks the
+    // committed document carries; commitDocumentHistoryFrom then normalizes it again, idempotently.
+    expect(mainWindowSource.match(/normalizeCommittedDocument\(/g)).toHaveLength(15);
+    expect(mainWindowSource).toContain(
+      "const committed = normalizeCommittedDocument(result.document);\n    commitDocumentHistoryFrom(drag.startDocument, committed, chargeAssociationUndoLabel(drag.startDocument, committed, \"Move\"));"
+    );
     const prepareDocumentCommitSource = mainWindowSource.slice(
       mainWindowSource.indexOf("const prepareDocumentCommit = useCallback("),
       mainWindowSource.indexOf("const pageFitPendingRef =")
