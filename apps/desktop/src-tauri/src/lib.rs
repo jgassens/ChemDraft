@@ -1714,13 +1714,22 @@ pub fn run() {
                 return;
             }
 
-            if is_office_document_window(window.label()) && matches!(event, WindowEvent::Destroyed)
-            {
-                dialog_windows::dismiss_office_dialogs(window.app_handle(), window.label());
-                for utility in window.app_handle().webview_windows().into_values() {
-                    if toolset_window_parts(utility.label()).0 == window.label() {
-                        let _ = utility.destroy();
+            if is_office_document_window(window.label()) {
+                match event {
+                    // An Office editor restored (Windows sends Resized) or focused again: its
+                    // palettes held while it was minimized are shown, as main's are above.
+                    WindowEvent::Resized(_) | WindowEvent::Focused(true) => {
+                        palette_first_paint::release_held(window.app_handle());
                     }
+                    WindowEvent::Destroyed => {
+                        dialog_windows::dismiss_office_dialogs(window.app_handle(), window.label());
+                        for utility in window.app_handle().webview_windows().into_values() {
+                            if toolset_window_parts(utility.label()).0 == window.label() {
+                                let _ = utility.destroy();
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
 
