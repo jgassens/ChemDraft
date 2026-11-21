@@ -93,7 +93,7 @@ impl Guard {
         })
     }
 
-    #[cfg(any(target_os = "macos", windows, test))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows, test))]
     pub fn blocks(&self, now: u64) -> bool {
         self.blocks_for(now, |_| true)
     }
