@@ -1,5 +1,9 @@
-//! Registration is opt-in. The executable flags use HKCU; installer integration with
-//! per-user and all-users scopes is a separate slice.
+//! Registration of ChemDraft's own OLE class (docs/architecture/office-editing.md §4).
+//!
+//! `--register-office-object[=per-user|all-users]` and `--unregister-office-object[=...]` write
+//! or remove only this build's CLSID and ProgID keys, under `HKCU\Software\Classes` (per-user,
+//! the default) or `HKLM\Software\Classes` (all-users, which needs an elevated process). The NSIS
+//! installer hooks (`windows/installer-hooks.nsh`) run them for the installer's scope.
 
 use super::OleClass;
 use std::ffi::{OsStr, OsString};
@@ -57,12 +61,62 @@ fn plan(class: OleClass, exe: &OsStr) -> Vec<Branch> {
     ]
 }
 
-#[cfg(windows)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Scope {
     PerUser,
-    #[allow(dead_code)] // Installer entry point.
     AllUsers,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Action {
+    Register,
+    Unregister,
+}
+
+const REGISTER_FLAG: &str = "--register-office-object";
+const UNREGISTER_FLAG: &str = "--unregister-office-object";
+
+/// The Office registration request in a process's arguments (without argv\[0\]), if any.
+/// A bare flag means per-user, so earlier `--register-office-object` callers keep HKCU.
+fn parse_cli(args: &[OsString]) -> Result<Option<(Action, Scope)>, String> {
+    let mut request = None;
+    for arg in args {
+        let Some(text) = arg.to_str() else { continue };
+        for (flag, action) in [
+            (REGISTER_FLAG, Action::Register),
+            (UNREGISTER_FLAG, Action::Unregister),
+        ] {
+            let Some(rest) = text.strip_prefix(flag) else {
+                continue;
+            };
+            let scope = match rest {
+                "" | "=per-user" => Scope::PerUser,
+                "=all-users" => Scope::AllUsers,
+                _ if rest.starts_with('=') => {
+                    return Err(format!(
+                        "Unknown Office registration scope in {text:?}; use {flag}=per-user or {flag}=all-users"
+                    ))
+                }
+                _ => continue,
+            };
+            request = Some((action, scope));
+        }
+    }
+    if request.is_some() && args.len() != 1 {
+        return Err("Use one Office registration flag by itself".into());
+    }
+    Ok(request)
+}
+
+/// Whether an existing `LocalServer32` value names `exe`. Unregistering from one copy of
+/// ChemDraft must never remove the registration a copy installed elsewhere has since written.
+fn server_is(existing: &str, exe: &OsStr) -> bool {
+    let existing = existing.trim();
+    let existing = existing
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .unwrap_or(existing);
+    existing.eq_ignore_ascii_case(&exe.to_string_lossy())
 }
 
 #[cfg(windows)]
@@ -88,12 +142,19 @@ mod native {
         }
 
         fn apply_registration(self, scope: Scope, install: bool) -> io::Result<()> {
+            if scope == Scope::AllUsers && !process_is_elevated()? {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "All-users Office registration writes HKLM and needs an elevated (administrator) process. Run it from an elevated prompt, or use the per-user flag.",
+                ));
+            }
             let hive = RegKey::predef(match scope {
                 Scope::PerUser => HKEY_CURRENT_USER,
                 Scope::AllUsers => HKEY_LOCAL_MACHINE,
             });
             let transaction = Transaction::new()?;
-            let branches = plan(self, std::env::current_exe()?.as_os_str());
+            let exe = std::env::current_exe()?;
+            let branches = plan(self, exe.as_os_str());
             let mut report = Vec::new();
             // CLSID is redirected on 64-bit Windows. ProgID branches may be shared between views.
             for view in [KEY_WOW64_64KEY, KEY_WOW64_32KEY] {
@@ -116,6 +177,24 @@ mod native {
                     };
                     classes
                 };
+                if !install {
+                    let server = optional(classes.open_subkey_transacted_with_flags(
+                        format!(r"CLSID\{}\LocalServer32", self.clsid),
+                        &transaction,
+                        KEY_READ | view,
+                    ))?
+                    .map(|key| optional(key.get_value::<String, _>("")))
+                    .transpose()?
+                    .flatten();
+                    if let Some(server) =
+                        server.filter(|server| !server_is(server, exe.as_os_str()))
+                    {
+                        report.push(format!(
+                            "Kept registration: LocalServer32 is {server}, not this executable"
+                        ));
+                        continue;
+                    }
+                }
                 for branch in &branches {
                     let root = PathBuf::from(&branch.root);
                     let existing = optional(classes.open_subkey_transacted_with_flags(
@@ -220,11 +299,41 @@ mod native {
         }
     }
 
+    fn process_is_elevated() -> io::Result<bool> {
+        use windows_sys::Win32::{
+            Foundation::{CloseHandle, HANDLE},
+            Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY},
+            System::Threading::{GetCurrentProcess, OpenProcessToken},
+        };
+        let mut token: HANDLE = std::ptr::null_mut();
+        // SAFETY: the pseudo-handle from GetCurrentProcess needs no closing; `token` is closed
+        // below, and GetTokenInformation writes at most `size_of::<TOKEN_ELEVATION>()` bytes.
+        unsafe {
+            if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+            let mut returned = 0u32;
+            let ok = GetTokenInformation(
+                token,
+                TokenElevation,
+                (&mut elevation as *mut TOKEN_ELEVATION).cast(),
+                std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+                &mut returned,
+            );
+            let error = io::Error::last_os_error();
+            CloseHandle(token);
+            if ok == 0 {
+                return Err(error);
+            }
+            Ok(elevation.TokenIsElevated != 0)
+        }
+    }
+
     pub(crate) fn handle_cli(identifier: &str) {
         let args: Vec<_> = std::env::args_os().skip(1).collect();
-        let register = args.iter().any(|a| a == "--register-office-object");
-        let unregister = args.iter().any(|a| a == "--unregister-office-object");
-        if !register && !unregister {
+        let request = parse_cli(&args);
+        if matches!(request, Ok(None)) {
             return;
         }
         // A packaged GUI process has no console. Reuse its invoking terminal when present.
@@ -233,20 +342,14 @@ mod native {
                 windows_sys::Win32::System::Console::ATTACH_PARENT_PROCESS,
             );
         }
-        let result = OleClass::for_identifier(identifier)
-            .map_err(io::Error::other)
-            .and_then(|class| {
-                if args.len() != 1 {
-                    return Err(io::Error::other(
-                        "Use one Office registration flag by itself",
-                    ));
-                }
-                if register {
-                    class.register(Scope::PerUser)
-                } else {
-                    class.unregister(Scope::PerUser)
-                }
-            });
+        let result = request.map_err(io::Error::other).and_then(|request| {
+            let (action, scope) = request.expect("Ok(None) returned above");
+            let class = OleClass::for_identifier(identifier).map_err(io::Error::other)?;
+            match action {
+                Action::Register => class.register(scope),
+                Action::Unregister => class.unregister(scope),
+            }
+        });
         if let Err(error) = result {
             eprintln!("ChemDraft Office registration failed: {error}");
             std::process::exit(1);
@@ -305,5 +408,149 @@ mod tests {
                 .all(|b| !branches.iter().any(|a| a.root == b.root)));
         }
         assert!(OleClass::for_identifier("other").is_err());
+    }
+
+    fn parse(args: &[&str]) -> Result<Option<(Action, Scope)>, String> {
+        parse_cli(&args.iter().map(OsString::from).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn cli_selects_action_and_scope() {
+        use Action::*;
+        use Scope::*;
+        for (arg, expected) in [
+            ("--register-office-object", (Register, PerUser)),
+            ("--register-office-object=per-user", (Register, PerUser)),
+            ("--register-office-object=all-users", (Register, AllUsers)),
+            ("--unregister-office-object", (Unregister, PerUser)),
+            ("--unregister-office-object=per-user", (Unregister, PerUser)),
+            (
+                "--unregister-office-object=all-users",
+                (Unregister, AllUsers),
+            ),
+        ] {
+            assert_eq!(parse(&[arg]), Ok(Some(expected)), "{arg}");
+        }
+        // Normal launches, document paths and COM's own flag are not registration requests.
+        for args in [
+            &[][..],
+            &["C:\\Users\\me\\a.chemdraft"][..],
+            &["-Embedding"][..],
+            &["--register-office-objects"][..],
+            &["--register-office-object-now"][..],
+        ] {
+            assert_eq!(parse(args), Ok(None), "{args:?}");
+        }
+        for args in [
+            &["--register-office-object=machine"][..],
+            &["--unregister-office-object="][..],
+            &["--register-office-object=All-Users"][..],
+            &["--register-office-object", "--unregister-office-object"][..],
+            &["--register-office-object=all-users", "x.chemdraft"][..],
+        ] {
+            assert!(parse(args).is_err(), "{args:?}");
+        }
+        assert!(parse(&["--register-office-object=machine"])
+            .unwrap_err()
+            .contains("--register-office-object=all-users"));
+    }
+
+    #[test]
+    fn unregistering_matches_only_this_executable() {
+        let exe = OsStr::new(r"C:\Program Files\ChemDraft\ChemDraft.exe");
+        assert!(server_is(
+            r#""C:\Program Files\ChemDraft\ChemDraft.exe""#,
+            exe
+        ));
+        assert!(server_is(
+            r#""c:\program files\chemdraft\chemdraft.exe""#,
+            exe
+        ));
+        assert!(server_is(r"C:\Program Files\ChemDraft\ChemDraft.exe", exe));
+        assert!(!server_is(
+            r#""C:\Users\me\AppData\Local\ChemDraft\ChemDraft.exe""#,
+            exe
+        ));
+        assert!(!server_is(r#""C:\Program Files\ChemDraft\Other.exe""#, exe));
+    }
+
+    #[test]
+    fn installer_hooks_register_after_install_and_unregister_before_removal() {
+        let hook = include_str!("../../windows/installer-hooks.nsh");
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../../tauri.windows.conf.json")).unwrap();
+        assert_eq!(
+            config["bundle"]["windows"]["nsis"]["installerHooks"],
+            "./windows/installer-hooks.nsh"
+        );
+        let code: String = hook
+            .lines()
+            .map(|line| line.split(';').next().unwrap().trim())
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let body = |name: &str| {
+            let start = code
+                .find(&format!("!macro {name}"))
+                .unwrap_or_else(|| panic!("{name} missing"));
+            let end = start + code[start..].find("!macroend").unwrap();
+            code[start..end].to_string()
+        };
+        // Tauri's installer.nsi inserts POSTINSTALL after copying files and PREUNINSTALL before
+        // deleting them; no other phase may touch registration.
+        assert!(
+            body("NSIS_HOOK_POSTINSTALL").contains("!insertmacro CHEMDRAFT_OFFICE_OBJECT register")
+        );
+        assert!(body("NSIS_HOOK_PREUNINSTALL")
+            .contains("!insertmacro CHEMDRAFT_OFFICE_OBJECT unregister"));
+        assert!(!body("NSIS_HOOK_POSTINSTALL").contains("unregister"));
+        for phase in ["NSIS_HOOK_PREINSTALL", "NSIS_HOOK_POSTUNINSTALL"] {
+            assert!(!code.contains(&format!("!macro {phase}")), "{phase}");
+        }
+        let run = body("CHEMDRAFT_OFFICE_OBJECT");
+        assert!(run.contains(
+            r#"ExecWait '"$INSTDIR\${MAINBINARYNAME}.exe" --${_ACTION}-office-object=$1' $0"#
+        ));
+        // A failure is logged, never fatal.
+        assert!(run.contains("DetailPrint"));
+        for fatal in ["Abort", "Quit", "SetErrorLevel", "MessageBox"] {
+            assert!(!code.contains(fatal), "{fatal}");
+        }
+        // Scope follows the installer's mode; the macro values are exactly the CLI's.
+        let scope = body("CHEMDRAFT_OFFICE_SCOPE");
+        let lines: Vec<_> = scope.lines().collect();
+        let after = |condition: &str| {
+            let at = lines.iter().position(|l| *l == condition).unwrap();
+            lines[at + 1]
+        };
+        assert_eq!(
+            after(r#"!if "${INSTALLMODE}" == "perMachine""#),
+            r#"StrCpy ${_OUT} "all-users""#
+        );
+        assert_eq!(
+            after(r#"${If} $MultiUser.InstallMode == "AllUsers""#),
+            r#"StrCpy ${_OUT} "all-users""#
+        );
+        assert_eq!(after("!else"), r#"StrCpy ${_OUT} "per-user""#);
+        for value in ["per-user", "all-users"] {
+            let flag = format!("--register-office-object={value}");
+            assert!(parse(&[&flag]).unwrap().is_some());
+        }
+        // The executable chooses the class; the hook code never names a class or another program's keys.
+        for class in [OleClass::STABLE, OleClass::DEV] {
+            for name in [class.clsid, class.prog_id, class.independent] {
+                assert!(!code.contains(name), "{name}");
+            }
+        }
+        let writes: Vec<_> = code
+            .lines()
+            .filter(|l| l.starts_with("WriteReg") || l.starts_with("DeleteReg"))
+            .collect();
+        assert_eq!(
+            writes,
+            [
+                r#"WriteRegStr SHCTX "Software\Classes\ChemDraft Document\shell\open\command" "" '$\"$INSTDIR\${MAINBINARYNAME}.exe$\" $\"%1$\"'"#
+            ]
+        );
     }
 }
