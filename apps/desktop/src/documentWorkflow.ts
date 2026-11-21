@@ -14651,12 +14651,15 @@ export function duplicateSelectedDocumentObjects(
   offset: PagePoint = { x: 24, y: 24 },
   warningsOut?: string[]
 ): ChemDraftDocument {
-  const page = firstPage(document);
+  // The page that holds the selection, not the first page: with the selection on a later page the
+  // selected ids were looked up on page one, found nothing, and Duplicate silently did nothing.
+  const page = selectionPage(document);
   const directlySelected = new Set(document.selection.objectIds);
   const selectedGroups = page.objects.filter((object): object is GroupObject =>
     object.type === "group" && directlySelected.has(object.id)
   );
-  const selectedIds = new Set(withArrowAttachmentIds(page.objects, selectedTransformObjectIds(document)));
+  const selectedIds = new Set(withArrowAttachmentIds(page.objects,
+    resolveGroupedDocumentObjectIds(page.objects, document.selection.objectIds)));
   // A molecule's charge and radical marks are separate objects: copying only the molecule recomputes
   // the copy's charge as 0. Carry each duplicated molecule's marks with it, by the same rule as the
   // clipboard (a mark that is also selected is already in `selectedIds`, so it is copied once).
