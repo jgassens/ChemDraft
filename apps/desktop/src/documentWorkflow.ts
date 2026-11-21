@@ -14651,6 +14651,10 @@ export function duplicateSelectedDocumentObjects(
   }
   remapCopiedElectronMarkAssociations(copySources,
     new Map(copySources.map((object, index) => [object.id, duplicates[index]])), warningsOut);
+  // A copied charge or radical that does not belong to a copied molecule stays loose: normalization
+  // would otherwise attribute it to whatever molecule it lands near, an unselected one included.
+  const copiedMoleculeIds = new Set(duplicates.flatMap((duplicate) => duplicate.type === "molecule" ? [duplicate.id] : []));
+  for (const duplicate of duplicates) keepUnboundCopiedMarkLoose(duplicate, copiedMoleculeIds);
 
   // Every group reachable inside a selected group, innermost first, so a nested group's copy exists
   // before the group containing it maps its children. Only the selected groups used to be copied —
@@ -14751,8 +14755,9 @@ export function duplicateSelectedDocumentObjects(
  * Duplicate must not change chemistry (AGENTS.md section 7). Commit-normalizes the document before
  * and after, as the commit funnel will, and lists every atom of a duplicated molecule whose charge,
  * mark charge or radicals differ: on the original (a copied mark attributed to it) or on the copy
- * (compared with the original before the duplicate). Neutral molecules are checked too, since a
- * copied or nearby mark can charge them. Empty when the duplicate is faithful.
+ * (compared with the original before the duplicate), then every atom of any other molecule already
+ * on the page that changed. Neutral molecules are checked too, since a copy can attract a nearby
+ * loose mark away from, or onto, them. Empty when the duplicate is faithful.
  */
 function duplicatedChemistryChanges(
   before: ChemDraftDocument,
@@ -14762,9 +14767,10 @@ function duplicatedChemistryChanges(
   duplicateIdByOriginalId: ReadonlyMap<string, string>
 ): string[] {
   const originals = selectedObjects.filter((object): object is MoleculeObject => object.type === "molecule");
-  // Without an electron-mark on the page, normalization treats a copy exactly as its original.
+  // Without an electron-mark on the page, normalization treats a copy exactly as its original. A
+  // selection with no molecule (a lone mark) is still checked: its copy must not charge any molecule.
   const resultPage = result.pages.find((candidate) => candidate.id === pageId);
-  if (originals.length === 0 || !resultPage?.objects.some((object) => object.type === "electron-mark")) return [];
+  if (!resultPage?.objects.some((object) => object.type === "electron-mark")) return [];
   const beforePage = normalizeCommittedDocument(before).pages.find((candidate) => candidate.id === pageId);
   const page = normalizeCommittedDocument(result).pages.find((candidate) => candidate.id === pageId);
   if (!beforePage || !page) return [];
@@ -14789,6 +14795,9 @@ function duplicatedChemistryChanges(
     if (originalAfter?.type === "molecule") compare(source.id, original, originalAfter, "original");
     if (copy?.type === "molecule") compare(source.id, original, copy, "copy");
   }
+  // Every other molecule already on the page, selected or not, must keep its chemistry too.
+  changes.push(...preexistingMoleculeChemistryChanges(before, result, pageId,
+    new Set(originals.map((source) => source.id)), "duplicate", { beforePage, page }));
   return changes;
 }
 
@@ -15139,6 +15148,15 @@ export function pasteSelectionClipboardPayload(
   }
   remapCopiedElectronMarkAssociations(sourceChildren,
     new Map(sourceChildren.map(object => [object.id, pastedById.get(idBySourceId.get(object.id)!)!])), warningsOut);
+  // A pasted charge or radical that names no pasted molecule stays loose, as on Duplicate, so it can
+  // never charge a molecule already on the page. A mark naming a pasted molecule keeps the remap
+  // above, or its legacy fallback when the copied atom is missing.
+  const sourceMoleculeIds = new Set(sourceChildren.flatMap((object) => object.type === "molecule" ? [object.id] : []));
+  const pastedMoleculeIds = new Set([...sourceMoleculeIds].map((id) => idBySourceId.get(id)!));
+  for (const source of sourceChildren) {
+    if (source.type !== "electron-mark" || sourceMoleculeIds.has(source.anchor.objectId ?? "")) continue;
+    keepUnboundCopiedMarkLoose(pastedById.get(idBySourceId.get(source.id)!)!, pastedMoleculeIds);
+  }
 
   // Object ids are reminted on paste; atom ids remain local to their cloned molecule.
   for (const object of sourceChildren) {
@@ -15198,7 +15216,68 @@ export function pasteSelectionClipboardPayload(
   patches.push({ op: "setSelection", pageId: page.id, objectIds: fallbackSelectionIds });
 
   const next = applyPatches(document, patches, { now: phase4Timestamp });
-  return payload.nativeSource ? copyNativeObjectExtensions(payload.nativeSource, next, idBySourceId) : next;
+  const result = payload.nativeSource ? copyNativeObjectExtensions(payload.nativeSource, next, idBySourceId) : next;
+  const chemistryChanges = preexistingMoleculeChemistryChanges(document, result, page.id, new Set(), "paste");
+  if (chemistryChanges.length === 0) return result;
+  // Refuse the paste rather than commit a molecule already on the page with different chemistry.
+  if (!warningsOut) throw new Error(chemistryChanges[0]);
+  warningsOut.push(...chemistryChanges);
+  return document;
+}
+
+/**
+ * Marks a copied charge or radical mark (Duplicate, paste) as deliberately floating unless it is
+ * explicitly bound to an atom of a molecule copied in the same operation. Normalization never
+ * associates an explicit point anchor by proximity (`nativeElectronMarkAssignments`), so the copy
+ * cannot charge a molecule it was not copied with; a user's later direct drop can still attach it.
+ * Lone pairs carry no chemistry and keep the existing standalone-copy policy.
+ */
+function keepUnboundCopiedMarkLoose(copy: DocumentObject, copiedMoleculeIds: ReadonlySet<string>): void {
+  if (copy.type !== "electron-mark") return;
+  const { charge, radicals } = electronMarkAtomContribution(copy);
+  if (charge === 0 && radicals === 0) return;
+  if (copy.atomAssociation === "explicit" && (copy.anchor.kind === "point" ||
+    (copy.anchor.kind === "atom" && copy.anchor.objectId !== undefined && copiedMoleculeIds.has(copy.anchor.objectId)))) return;
+  if (copy.anchor.kind !== "point") copy.anchor = { kind: "point", point: nativeChargeMarkCenter(copy) };
+  copy.atomAssociation = "explicit";
+}
+
+/**
+ * Duplicate and paste must not change the chemistry of a molecule already on the page (AGENTS.md
+ * section 7). Commit-normalizes the document before and after, as the commit funnel will, and lists
+ * every atom of every pre-existing molecule (except `skipIds`, which the caller reports itself)
+ * whose charge, mark charge or radicals differ. Empty when nothing changed.
+ */
+function preexistingMoleculeChemistryChanges(
+  before: ChemDraftDocument,
+  result: ChemDraftDocument,
+  pageId: string,
+  skipIds: ReadonlySet<string>,
+  operation: "duplicate" | "paste",
+  normalized?: { beforePage: DocumentPage; page: DocumentPage }
+): string[] {
+  const resultPage = result.pages.find((candidate) => candidate.id === pageId);
+  // Without an electron-mark on the page, normalization leaves every molecule's chemistry as it was.
+  if (!resultPage?.objects.some((object) => object.type === "electron-mark")) return [];
+  const beforePage = normalized?.beforePage ?? normalizeCommittedDocument(before).pages.find((candidate) => candidate.id === pageId);
+  const page = normalized?.page ?? normalizeCommittedDocument(result).pages.find((candidate) => candidate.id === pageId);
+  if (!beforePage || !page) return [];
+  const changes: string[] = [];
+  for (const original of beforePage.objects) {
+    if (original.type !== "molecule" || skipIds.has(original.id)) continue;
+    const after = objectOnPage(page, original.id);
+    if (after?.type !== "molecule") continue;
+    const afterAtoms = new Map(after.atoms.map((atom) => [atom.id, atom]));
+    for (const atom of original.atoms) {
+      const found = afterAtoms.get(atom.id);
+      if (!found || (found.formalCharge === atom.formalCharge && (found.markCharge ?? 0) === (atom.markCharge ?? 0) &&
+        (found.markRadicals ?? 0) === (atom.markRadicals ?? 0))) continue;
+      changes.push(`Cannot ${operation} without changing the chemistry of molecule "${original.id}": its atom "${atom.id}" ` +
+        `would have charge ${found.formalCharge} and ${found.markRadicals ?? 0} radical marks instead of ` +
+        `${atom.formalCharge} and ${atom.markRadicals ?? 0}.`);
+    }
+  }
+  return changes;
 }
 
 /** Copies retain local atom ids: remap the molecule id and validate the copied atom identity. */

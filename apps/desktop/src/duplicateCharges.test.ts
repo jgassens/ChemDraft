@@ -281,9 +281,27 @@ describe("Duplicate never changes the chemistry of a molecule it copies, neutral
     expect(workflow.committedElectronMarkAssignments(committed.pages[0]).anchorByMarkId.get(copiedMark.id)).toBeUndefined();
   });
 
+  it("keeps the copy of a selected loose mark loose, even where it lands on the original", () => {
+    // Its copy lands on the ORIGINAL nitrogen. A copied mark that belongs to no copied molecule is
+    // stored as deliberately floating, so normalization never attributes it to that nitrogen (this
+    // duplicate used to be refused instead).
+    const offset = { x: 0, y: 60 };
+    const probe = electronMarkDropFixture({ kind: "charge", charge: 1 });
+    const { document, mark } = floatingMarkFixture({ x: probe.nitrogen.x, y: probe.nitrogen.y - 60 }, false);
+    const selected = select(document, [dropMolecule(document).id, mark.id]);
+    const originalIds = new Set(selected.pages[0].objects.map(object => object.id));
+    const warnings: string[] = [];
+    const edited = workflow.duplicateSelectedDocumentObjects(selected, offset, warnings);
+    expect(warnings).toEqual([]);
+    const committed = workflow.normalizeCommittedDocument(edited);
+    expect(moleculesOf(committed)).toHaveLength(2);
+    expect(neutral(committed)).toBe(true);
+    const [copiedMark] = marksOf(edited).filter(candidate => !originalIds.has(candidate.id));
+    expect(copiedMark).toMatchObject({ atomAssociation: "explicit", anchor: { kind: "point" } });
+    expect(workflow.committedElectronMarkAssignments(committed.pages[0]).anchorByMarkId.get(copiedMark.id)).toBeUndefined();
+  });
+
   it.each([
-    // Selected with the molecule; its copy lands on the ORIGINAL nitrogen.
-    { name: "a selected loose mark whose copy lands on the original", selectMark: true, at: { x: 0, y: -60 } },
     // Not selected; the copied nitrogen lands under it.
     { name: "an unselected loose mark the copy lands under", selectMark: false, at: { x: 0, y: 60 } }
   ])("refuses a duplicate that would charge a neutral molecule: $name", ({ selectMark, at }) => {
@@ -370,5 +388,194 @@ describe("Duplicating a group offsets each copied mark exactly once", () => {
     const committed = workflow.normalizeCommittedDocument(edited);
     expect(chemistryOf(moleculesOf(committed).find(candidate => candidate.id === copy.id)!))
       .toEqual(chemistryOf(moleculesOf(workflow.normalizeCommittedDocument(document))[0]));
+  });
+});
+
+describe("Duplicate and paste never change a molecule that was not copied", () => {
+  const B_ID = "b_mol";
+  const B_AT = { x: 420, y: 350 };
+
+  /** A neutral ethane, unselected, that a copied mark could land on. */
+  function withNeutralMolecule(document: ChemDraftDocument): ChemDraftDocument {
+    const graph = testMoleculeFromSmiles("CC");
+    const atoms = graph.atoms.map((atom, index) => ({ ...atom, x: B_AT.x + index * 22, y: B_AT.y }));
+    const molecule: MoleculeObject = { id: B_ID, type: "molecule", x: B_AT.x, y: B_AT.y, width: 22, height: 0,
+      rotation: 0, style: {}, atoms, bonds: graph.bonds, structureFormat: "smiles",
+      structure: nativeSingleBondGraphSmiles(atoms, graph.bonds), chemistry: nativeSingleBondGraphMetadata(atoms, graph.bonds),
+      superatoms: [], rGroups: [] };
+    return applyPatches(document, [{ op: "addObject", pageId: document.pages[0].id, object: molecule }], { now: phase4Timestamp });
+  }
+
+  /** Neutral Boc-glycine (A), a + mark floating at `center` (not explicit, attributed to nothing), and neutral B. */
+  function looseMarkBesideB(center: { x: number; y: number }) {
+    const fixture = electronMarkDropFixture({ kind: "charge", charge: 1 });
+    const mark = dropMark(fixture.document);
+    const document = workflow.normalizeCommittedDocument(withNeutralMolecule(applyPatch(fixture.document, {
+      op: "updateObject", objectId: mark.id, changes: {
+        anchor: { kind: "point", point: center }, atomAssociation: undefined,
+        x: center.x - mark.width / 2, y: center.y - mark.height / 2
+      }
+    }, { now: phase4Timestamp })));
+    expect(workflow.committedElectronMarkAssignments(document.pages[0]).anchorByMarkId.get(mark.id)).toBeUndefined();
+    expect(dropMark(document).atomAssociation).toBeUndefined();
+    for (const molecule of moleculesOf(document)) {
+      for (const atom of chemistryOf(molecule)) expect(atom).toMatchObject({ formalCharge: 0, markCharge: 0, markRadicals: 0 });
+    }
+    return { document, mark: dropMark(document), a: dropMolecule(document) };
+  }
+
+  const moleculeB = (document: ChemDraftDocument) => moleculesOf(document).find(molecule => molecule.id === B_ID)!;
+  // The loose mark sits 100 px above B's first atom: out of everyone's association range.
+  const looseCenter = { x: B_AT.x, y: B_AT.y - 100 };
+  // Lands the copied mark exactly on B's first atom.
+  const ontoB = { x: 0, y: 100 };
+
+  /** The copied mark really would have charged B had it not been kept loose, or the case proves nothing. */
+  function expectWouldHaveChargedB(edited: ChemDraftDocument, copiedMark: ElectronMarkObject) {
+    const unflagged = applyPatch(edited, { op: "updateObject", objectId: copiedMark.id,
+      changes: { atomAssociation: undefined } }, { now: phase4Timestamp });
+    expect(workflow.committedElectronMarkAssignments(unflagged.pages[0]).anchorByMarkId.get(copiedMark.id)?.objectId).toBe(B_ID);
+  }
+
+  function expectCopiedMarkLooseAndBUnchanged(before: ChemDraftDocument, edited: ChemDraftDocument, at: { x: number; y: number }) {
+    const originalIds = new Set(before.pages[0].objects.map(object => object.id));
+    const copiedMarks = marksOf(edited).filter(candidate => !originalIds.has(candidate.id));
+    expect(copiedMarks).toHaveLength(1);
+    const [copiedMark] = copiedMarks;
+    expect(copiedMark.atomAssociation).toBe("explicit");
+    expect(copiedMark.anchor.kind).toBe("point");
+    const center = workflow.nativeChargeMarkCenter(copiedMark);
+    expect(center.x).toBeCloseTo(at.x);
+    expect(center.y).toBeCloseTo(at.y);
+    const committed = workflow.normalizeCommittedDocument(edited);
+    expect(workflow.committedElectronMarkAssignments(committed.pages[0]).anchorByMarkId.get(copiedMark.id)).toBeUndefined();
+    expect(chemistryOf(moleculeB(committed))).toEqual(chemistryOf(moleculeB(workflow.normalizeCommittedDocument(before))));
+    for (const molecule of moleculesOf(committed)) {
+      for (const atom of chemistryOf(molecule)) expect(atom).toMatchObject({ formalCharge: 0, markCharge: 0, markRadicals: 0 });
+    }
+    return copiedMark;
+  }
+
+  it("(a) duplicates neutral A with a loose mark whose copy lands on unselected B, leaving B neutral", () => {
+    const { document, mark, a } = looseMarkBesideB(looseCenter);
+    const selected = select(document, [a.id, mark.id]);
+    const before = serializeDocument(selected);
+    const warnings: string[] = [];
+    const edited = workflow.duplicateSelectedDocumentObjects(selected, ontoB, warnings);
+    expect(warnings).toEqual([]);
+    expect(serializeDocument(selected)).toBe(before);
+    expect(moleculesOf(edited)).toHaveLength(3);
+    const copiedMark = expectCopiedMarkLooseAndBUnchanged(selected, edited, B_AT);
+    expectWouldHaveChargedB(edited, copiedMark);
+    // Without a warning sink it does not throw either: nothing would change.
+    expect(() => workflow.duplicateSelectedDocumentObjects(selected, ontoB)).not.toThrow();
+  });
+
+  it("(b) duplicates a lone loose mark onto unselected B, leaving B neutral", () => {
+    const { document, mark } = looseMarkBesideB(looseCenter);
+    const selected = select(document, [mark.id]);
+    const warnings: string[] = [];
+    const edited = workflow.duplicateSelectedDocumentObjects(selected, ontoB, warnings);
+    expect(warnings).toEqual([]);
+    expect(moleculesOf(edited)).toHaveLength(2);
+    expect(marksOf(edited)).toHaveLength(2);
+    const copiedMark = expectCopiedMarkLooseAndBUnchanged(selected, edited, B_AT);
+    expectWouldHaveChargedB(edited, copiedMark);
+    expect(edited.selection.objectIds).toEqual([copiedMark.id]);
+  });
+
+  it("(c) duplicates A with a loose mark whose copy lands far from everything, unchanged", () => {
+    const { document, mark, a } = looseMarkBesideB(looseCenter);
+    const selected = select(document, [a.id, mark.id]);
+    const offset = { x: 0, y: -150 };
+    const warnings: string[] = [];
+    const edited = workflow.duplicateSelectedDocumentObjects(selected, offset, warnings);
+    expect(warnings).toEqual([]);
+    const originalIds = new Set(selected.pages[0].objects.map(object => object.id));
+    for (const original of selected.pages[0].objects) {
+      expect(edited.pages[0].objects.find(object => object.id === original.id)).toEqual(original);
+    }
+    const copy = moleculesOf(edited).find(candidate => !originalIds.has(candidate.id))!;
+    expect(copy.x).toBeCloseTo(a.x + offset.x);
+    expect(copy.y).toBeCloseTo(a.y + offset.y);
+    expectCopiedMarkLooseAndBUnchanged(selected, edited, { x: looseCenter.x + offset.x, y: looseCenter.y + offset.y });
+    const committed = workflow.normalizeCommittedDocument(edited);
+    expect(chemistryOf(moleculesOf(committed).find(candidate => candidate.id === copy.id)!))
+      .toEqual(chemistryOf(moleculesOf(committed).find(candidate => candidate.id === a.id)!));
+  });
+
+  it("pastes neutral A with a loose mark onto B, leaving B neutral", () => {
+    const { document, mark, a } = looseMarkBesideB(looseCenter);
+    const selected = select(document, [a.id, mark.id]);
+    const payload = workflow.parseSelectionClipboardPayload(
+      workflow.serializeSelectionClipboardPayload(workflow.createSelectionClipboardPayload(selected)!))!;
+    const warnings: string[] = [];
+    const edited = workflow.pasteSelectionClipboardPayload(selected, payload,
+      { x: payload.bounds.centerX + ontoB.x, y: payload.bounds.centerY + ontoB.y }, warnings);
+    expect(warnings).toEqual([]);
+    expect(moleculesOf(edited)).toHaveLength(3);
+    const copiedMark = expectCopiedMarkLooseAndBUnchanged(selected, edited, B_AT);
+    expectWouldHaveChargedB(edited, copiedMark);
+  });
+
+  it("pastes a lone loose mark onto B, leaving B neutral", () => {
+    const { document, mark } = looseMarkBesideB(looseCenter);
+    const selected = select(document, [mark.id]);
+    const payload = workflow.createSelectionClipboardPayload(selected)!;
+    const warnings: string[] = [];
+    const edited = workflow.pasteSelectionClipboardPayload(selected, payload,
+      { x: payload.bounds.centerX + ontoB.x, y: payload.bounds.centerY + ontoB.y }, warnings);
+    expect(warnings).toEqual([]);
+    const copiedMark = expectCopiedMarkLooseAndBUnchanged(selected, edited, B_AT);
+    expectWouldHaveChargedB(edited, copiedMark);
+  });
+
+  describe("refuses when a copy would take a pre-existing loose mark away from unselected B", () => {
+    // A legacy loose + 10 px left of B's first atom, attributed to B by distance (an older file, not
+    // yet normalized). Neutral A's hydroxyl oxygen (294, 250) is copied exactly onto it.
+    const stealCenter = { x: B_AT.x - 10, y: B_AT.y };
+    const stealOffset = { x: stealCenter.x - 294, y: stealCenter.y - 250 };
+    function legacyChargedB() {
+      const fixture = electronMarkDropFixture({ kind: "charge", charge: 1 });
+      const mark = dropMark(fixture.document);
+      const document = withNeutralMolecule(applyPatch(fixture.document, { op: "updateObject", objectId: mark.id, changes: {
+        anchor: { kind: "point", point: stealCenter }, atomAssociation: undefined,
+        x: stealCenter.x - mark.width / 2, y: stealCenter.y - mark.height / 2
+      } }, { now: phase4Timestamp }));
+      expect(workflow.committedElectronMarkAssignments(document.pages[0]).anchorByMarkId.get(mark.id)?.objectId).toBe(B_ID);
+      const a = dropMolecule(document);
+      expect(a.atoms[11]).toMatchObject({ element: "O", x: 294, y: 250 });
+      return { document, a };
+    }
+
+    it("on Duplicate, naming B", () => {
+      const { document, a } = legacyChargedB();
+      const selected = select(document, [a.id]);
+      const before = serializeDocument(selected);
+      const warnings: string[] = [];
+      const edited = workflow.duplicateSelectedDocumentObjects(selected, stealOffset, warnings);
+      expect(edited).toBe(selected);
+      expect(serializeDocument(selected)).toBe(before);
+      expect(warnings.some(warning =>
+        warning.startsWith(`Cannot duplicate without changing the chemistry of molecule "${B_ID}": its atom`))).toBe(true);
+      expect(() => workflow.duplicateSelectedDocumentObjects(selected, stealOffset)).toThrow(/Cannot duplicate/);
+    });
+
+    it("on paste, naming B", () => {
+      const { document, a } = legacyChargedB();
+      const selected = select(document, [a.id]);
+      const payload = workflow.createSelectionClipboardPayload(selected)!;
+      expect(payload.objects.filter(object => object.type === "electron-mark")).toEqual([]);
+      const at = { x: payload.bounds.centerX + stealOffset.x, y: payload.bounds.centerY + stealOffset.y };
+      const before = serializeDocument(selected);
+      const warnings: string[] = [];
+      const edited = workflow.pasteSelectionClipboardPayload(selected, payload, at, warnings);
+      expect(edited).toBe(selected);
+      expect(serializeDocument(selected)).toBe(before);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatch(new RegExp(`^Cannot paste without changing the chemistry of molecule "${B_ID}": its atom ` +
+        `"[^"]+" would have charge 0 and 0 radical marks instead of 1 and 0\\.$`));
+      expect(() => workflow.pasteSelectionClipboardPayload(selected, payload, at)).toThrow(/Cannot paste/);
+    });
   });
 });
