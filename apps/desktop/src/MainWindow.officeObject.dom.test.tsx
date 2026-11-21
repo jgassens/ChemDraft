@@ -2,7 +2,7 @@
 import { readChemDraftSelectionFromPng } from "@chemdraft/clipboard-adapter";
 import { stereoPerceptionMolfile } from "@chemdraft/document-workflow-core";
 import { depictSmiles2D } from "@chemdraft/ocl-adapter";
-import type { EventCallback } from "@tauri-apps/api/event";
+import type { InvokeArgs } from "@tauri-apps/api/core";
 import { Molecule } from "openchemlib";
 import { StrictMode, act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -18,23 +18,15 @@ import { MemoryStorage } from "./testSupport/memoryStorage";
 
 const tauri = vi.hoisted(() => ({
   desktop: true,
-  invoke: vi.fn<(command: string, args?: Record<string, unknown>) => Promise<unknown>>(),
-  emitTo: vi.fn<(label: string, event: string) => Promise<void>>(),
-  listen: vi.fn<(event: string, handler: EventCallback<unknown>) => Promise<() => void>>(),
+  invoke: vi.fn<(command: string, args?: InvokeArgs) => Promise<unknown>>(),
   setTitle: vi.fn<(title: string) => Promise<void>>(),
   message: vi.fn<(message: string, options: unknown) => Promise<string>>()
 }));
 vi.mock("@tauri-apps/api/core", async original => ({
   ...await original<typeof import("@tauri-apps/api/core")>(), invoke: tauri.invoke, isTauri: () => tauri.desktop
 }));
-vi.mock("@tauri-apps/api/event", async original => ({
-  ...await original<typeof import("@tauri-apps/api/event")>(), emitTo: tauri.emitTo, emit: vi.fn(async () => {})
-}));
-vi.mock("@tauri-apps/api/webviewWindow", () => ({
-  getCurrentWebviewWindow: () => ({ label: "office-object-17", listen: tauri.listen })
-}));
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ label: "office-object-17", listen: tauri.listen, setTitle: tauri.setTitle })
+  getCurrentWindow: () => ({ label: "office-object-17", setTitle: tauri.setTitle })
 }));
 vi.mock("./window-manager", async original => ({
   ...await original<typeof import("./window-manager")>(), isDesktopRuntime: () => tauri.desktop
@@ -54,8 +46,13 @@ const source = insertNativeMolfileMolecule(createPhase4Document(), { x: 240, y: 
   depictSmiles2D(stereoFixture).molfile, "molfile-v2000");
 const selectionJson = serializeSelectionClipboardPayload(createSelectionClipboardPayload(source)!);
 const serverBlankJson = '{"kind":"chemdraft-selection","version":1,"objects":[],"selectionIds":[],"bounds":{"x":0,"y":0,"width":0,"height":0}}';
-const closeEvent = "tauri://close-requested";
-const openEvent = "office-object://open";
+interface CloseRequest { requestId: number | null; prompt: boolean; unsaved: boolean }
+
+function updatedContent(frame: InvokeArgs | undefined) {
+  if (!(frame instanceof Uint8Array)) throw new Error("Expected a raw Office update frame");
+  const jsonEnd = 4 + new DataView(frame.buffer, frame.byteOffset, frame.byteLength).getUint32(0, true);
+  return { json: new TextDecoder().decode(frame.subarray(4, jsonEnd)), png: frame.subarray(jsonEnd) };
+}
 
 function chemistry(json: string) {
   const molecule = parseSelectionClipboardPayload(json)?.objects[0];
@@ -71,38 +68,35 @@ function chemistry(json: string) {
 describe("Office embedded document window", () => {
   let host: HTMLDivElement;
   let root: Root;
-  let listeners: Map<string, Set<EventCallback<unknown>>>;
+  let receiver: { onmessage: (request: CloseRequest) => void };
   let openPayload: { objectId: string; json: string; containerApp: string; containerDocument: string };
 
-  const deliver = (event: string, payload?: unknown) => {
-    for (const listener of listeners.get(event) ?? []) listener({ event, payload, id: 1 });
-  };
-  const officeCalls = () => tauri.invoke.mock.calls.filter(([command]) => command.startsWith("office_object_"));
+  const deliverClose = (requestId: number | null = null, prompt = true, unsaved = false) =>
+    act(async () => receiver.onmessage({ requestId, prompt, unsaved }));
+  const officeCalls = () => tauri.invoke.mock.calls.filter(([command]) =>
+    command === "office_object_update" || command === "office_object_close");
   const status = () => host.querySelector("[data-status-message]")?.textContent;
 
   beforeEach(() => {
-    listeners = new Map();
     openPayload = { objectId: "17", json: selectionJson, containerApp: "Microsoft Word", containerDocument: "Report.docx" };
     window.history.replaceState(null, "", "/?officeObject=17");
     tauri.desktop = true;
-    tauri.listen.mockReset().mockImplementation(async (event, listener) => {
-      const set = listeners.get(event) ?? new Set<EventCallback<unknown>>();
-      listeners.set(event, set);
-      set.add(listener);
-      return () => { set.delete(listener); };
-    });
-    tauri.emitTo.mockReset().mockImplementation(async () => { deliver(openEvent, openPayload); });
     tauri.setTitle.mockReset().mockResolvedValue(undefined);
     tauri.message.mockReset().mockResolvedValue("Cancel");
     tauri.invoke.mockReset().mockImplementation(async (command, args) => {
-      if (command === "plugin:dialog|message") return tauri.message(String(args?.message), args);
+      const params = args as Record<string, unknown> | undefined;
+      if (command === "office_object_connect") {
+        receiver = params?.channel as typeof receiver;
+        return openPayload;
+      }
+      if (command === "plugin:dialog|message") return tauri.message(String(params?.message), args);
       return command === "rasterize_svg" ? {
         bytes: Array.from(Buffer.from(picturePngBase64, "base64")), width: 144, height: 72, warnings: []
       } : null;
     });
     vi.stubGlobal("isTauri", true);
     vi.stubGlobal("__TAURI_INTERNALS__", {
-      invoke: (command: string, args?: Record<string, unknown>) => tauri.invoke(command, args),
+      invoke: (command: string, args?: InvokeArgs) => tauri.invoke(command, args),
       metadata: { currentWindow: { label: "office-object-17" }, currentWebview: { label: "office-object-17" } },
       transformCallback: () => 1,
       unregisterCallback: () => undefined
@@ -153,25 +147,26 @@ describe("Office embedded document window", () => {
     vi.stubGlobal("isTauri", false);
     vi.stubGlobal("__TAURI_INTERNALS__", undefined);
     await mount();
-    expect(tauri.listen).not.toHaveBeenCalledWith(openEvent, expect.anything());
-    expect(tauri.emitTo).not.toHaveBeenCalled();
+    expect(tauri.invoke.mock.calls.map(([name]) => name)).not.toContain("office_object_connect");
   });
 
-  it("attaches window listeners before announcing ready and titles the editor from the container document", async () => {
-    const listen = tauri.listen.getMockImplementation()!;
+  it("connects once and waits for the document before processing native close", async () => {
+    const invoke = tauri.invoke.getMockImplementation()!;
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
-    tauri.listen.mockImplementation(async (event, handler) => {
-      if (event === openEvent) await gate;
-      return listen(event, handler);
+    tauri.invoke.mockImplementation(async (command, args) => {
+      const response = await invoke(command, args);
+      if (command === "office_object_connect") await gate;
+      return response;
     });
     await mount();
-    expect(tauri.emitTo).not.toHaveBeenCalled();
-    expect(listeners.get(closeEvent)?.size).toBe(1);
+    expect(tauri.invoke.mock.calls.filter(([name]) => name === "office_object_connect")).toHaveLength(1);
+    await deliverClose();
+    expect(officeCalls()).toEqual([]);
     await act(async () => release());
-    expect(tauri.emitTo).toHaveBeenCalledExactlyOnceWith("office-object-17", "office-object://ready");
     expect(tauri.setTitle).toHaveBeenCalledExactlyOnceWith("ChemDraft Structure in Report.docx — test");
     expect(document.title).toBe("ChemDraft Structure in Report.docx — test");
+    expect(officeCalls()).toEqual([["office_object_close", { objectId: "17", saveChanges: true }]]);
     expect(tauri.invoke.mock.calls.map(([name]) => name)).not.toContain("load_document_session");
   });
 
@@ -187,6 +182,19 @@ describe("Office embedded document window", () => {
     await nativeMenu("plugins.manage");
     expect(officeCalls()).toEqual([]);
     expect(host.querySelector('input[type="file"]')).toBeNull();
+  });
+
+  it("uses its owner-scoped toolset bridge for drawing tool state", async () => {
+    await mount("windows", true);
+    const drawingTools = () => host.querySelector('header [aria-label="Drawing tools"]');
+    expect(drawingTools()).not.toBeNull();
+    await act(async () => window.dispatchEvent(new CustomEvent("chemdraft:office-toolset:chemdraft://toolset-window-state", {
+      detail: { toolsetId: "core.main", open: false }
+    })));
+    expect(drawingTools()).toBeNull();
+    expect(tauri.invoke).toHaveBeenCalledWith("office_toolset_emit", expect.objectContaining({
+      event: "chemdraft://toolset-active-tool"
+    }));
   });
 
   it("opens editing dialogs with the embedded document as their owner", async () => {
@@ -209,18 +217,15 @@ describe("Office embedded document window", () => {
     expect(host.querySelector('header [aria-label="Drawing tools"] [data-command-id="tool.bond"]')).not.toBeNull();
     await nativeMenu("office.updateEmbeddedObject");
     const [, request] = officeCalls()[0]!;
-    expect(parseSelectionClipboardPayload(String(request?.json), { allowEmpty: true })?.objects).toEqual([]);
+    expect(parseSelectionClipboardPayload(updatedContent(request).json, { allowEmpty: true })?.objects).toEqual([]);
   });
 
-  it("round-trips stereo, charge and isotope and sends the exact JSON in a standard-base64 PNG", async () => {
+  it("round-trips stereo, charge and isotope and sends the exact JSON in a raw carrier PNG", async () => {
     await mount();
     await nativeMenu("office.updateEmbeddedObject");
-    expect(officeCalls(), status()).toEqual([["office_object_update", {
-      objectId: "17", json: expect.any(String), pngBase64: expect.stringMatching(/^[A-Za-z0-9+/]+={0,2}$/)
-    }]]);
+    expect(officeCalls(), status()).toEqual([["office_object_update", expect.any(Uint8Array)]]);
     const [, request] = officeCalls()[0]!;
-    const json = String(request?.json);
-    const png = Uint8Array.from(Buffer.from(String(request?.pngBase64), "base64"));
+    const { json, png } = updatedContent(request);
     expect(await readChemDraftSelectionFromPng(png)).toEqual({ kind: "found", chunk: "iTXt", json });
     expect(tauri.invoke).toHaveBeenCalledWith("rasterize_svg", { request: expect.objectContaining({
       format: "png", scale: 4, cssPxPerInch: 96
@@ -241,7 +246,7 @@ describe("Office embedded document window", () => {
   it("closes an unmodified structure without prompting, even after select all", async () => {
     await mount();
     await key("a", { ctrlKey: true });
-    await act(async () => deliver(closeEvent));
+    await deliverClose();
     expect(tauri.message).not.toHaveBeenCalled();
     expect(officeCalls()).toEqual([["office_object_close", { objectId: "17", saveChanges: true }]]);
   });
@@ -250,7 +255,7 @@ describe("Office embedded document window", () => {
     tauri.message.mockResolvedValue(choice);
     await mount();
     await edit();
-    await nativeMenu("office.closeEmbeddedObject");
+    await deliverClose();
     expect(tauri.message, status()).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("Report.docx"), expect.objectContaining({
       buttons: { YesNoCancelCustom: ["Update", "Don't update", "Cancel"] }
     }));
@@ -268,7 +273,7 @@ describe("Office embedded document window", () => {
     tauri.message.mockResolvedValue("Update");
     await mount();
     await edit();
-    await act(async () => deliver(closeEvent));
+    await deliverClose();
     expect(officeCalls().map(([command]) => command)).toEqual(["office_object_update"]);
     expect(status()).toBe("Could not update the structure in Report.docx: Word rejected the preview");
   });
@@ -281,10 +286,55 @@ describe("Office embedded document window", () => {
     tauri.message.mockResolvedValue("Update");
     await mount();
     await edit();
-    await act(async () => deliver(closeEvent));
+    await deliverClose();
     expect(officeCalls().map(([command]) => command)).toEqual(["office_object_update"]);
     await act(async () => finishUpdate(null));
     expect(officeCalls().map(([command]) => command)).toEqual(["office_object_update", "office_object_close"]);
+  });
+
+  it.each(["Update", "Don't update", "Cancel"])("reports %s for an app quit request", async choice => {
+    tauri.message.mockResolvedValue(choice);
+    await mount();
+    await edit();
+    await deliverClose(41);
+    expect(tauri.message).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("Report.docx"), expect.anything());
+    expect(officeCalls().map(([command]) => command)).toEqual(choice === "Update"
+      ? ["office_object_update", "office_object_close"] : ["office_object_close"]);
+    expect(officeCalls().at(-1)?.[1]).toEqual({
+      objectId: "17", requestId: 41, ...(choice === "Cancel" ? {} : { saveChanges: choice === "Update" })
+    });
+  });
+
+  it("cancels an app quit and keeps the editor open when Office rejects its update", async () => {
+    const invoke = tauri.invoke.getMockImplementation()!;
+    tauri.invoke.mockImplementation(async (command, args) => {
+      if (command === "office_object_update") throw "Word rejected the preview";
+      return invoke(command, args);
+    });
+    tauri.message.mockResolvedValue("Update");
+    await mount();
+    await edit();
+    await deliverClose(41);
+    expect(officeCalls().map(([command]) => command)).toEqual(["office_object_update", "office_object_close"]);
+    expect(officeCalls().at(-1)?.[1]).toEqual({ objectId: "17", requestId: 41 });
+    expect(status()).toBe("Could not update the structure in Report.docx: Word rejected the preview");
+  });
+
+  it("lets the user retry a pending native save without rendering the drawing again", async () => {
+    tauri.message.mockResolvedValue("Update");
+    await mount();
+    await deliverClose(41, true, true);
+    expect(tauri.message).toHaveBeenCalledTimes(1);
+    expect(officeCalls()).toEqual([["office_object_close", { objectId: "17", requestId: 41, saveChanges: true }]]);
+  });
+
+  it("publishes a dirty editor without prompting for Office Save If Dirty", async () => {
+    await mount();
+    await edit();
+    await deliverClose(42, false);
+    expect(tauri.message).not.toHaveBeenCalled();
+    expect(officeCalls().map(([command]) => command)).toEqual(["office_object_update", "office_object_close"]);
+    expect(officeCalls().at(-1)?.[1]).toEqual({ objectId: "17", requestId: 42, saveChanges: true });
   });
 
   it("reports unsupported selection JSON and keeps the editor from updating the object", async () => {
@@ -293,6 +343,19 @@ describe("Office embedded document window", () => {
     expect(status()).toContain("invalid or unsupported ChemDraft selection JSON");
     await key("s", { ctrlKey: true });
     expect(officeCalls()).toEqual([]);
+  });
+
+  it("holds further edits until Office accepts the close", async () => {
+    const invoke = tauri.invoke.getMockImplementation()!;
+    let failClose!: (error: Error) => void;
+    const pendingClose = new Promise<never>((_resolve, reject) => { failClose = reject; });
+    tauri.invoke.mockImplementation((command, args) => command === "office_object_close" ? pendingClose : invoke(command, args));
+    await mount();
+    await deliverClose();
+    await nativeMenu("page.setSize.legal");
+    expect(status()).not.toContain("Page size:");
+    await act(async () => failClose(new Error("Office is busy")));
+    await edit();
   });
 
   it("shows a specific diagnostic when the native close fails", async () => {

@@ -20,6 +20,9 @@ impl Embedded {
 
     fn requested_format(&self, format: *const FORMATETC) -> Result<FORMATETC> {
         let format = unsafe { format.as_ref() }.ok_or(E_POINTER)?;
+        if !format.ptd.is_null() {
+            return Err(DV_E_DVTARGETDEVICE.into());
+        }
         if format.dwAspect != DVASPECT_CONTENT.0 {
             return Err(DV_E_DVASPECT.into());
         }
@@ -84,12 +87,15 @@ impl IDataObject_Impl for Embedded_Impl {
     fn SetData(&self, _: *const FORMATETC, _: *const STGMEDIUM, _: BOOL) -> Result<()> {
         Err(E_NOTIMPL.into())
     }
-    fn GetCanonicalFormatEtc(&self, _: *const FORMATETC, out: *mut FORMATETC) -> HRESULT {
-        if out.is_null() {
+    fn GetCanonicalFormatEtc(&self, input: *const FORMATETC, out: *mut FORMATETC) -> HRESULT {
+        if input.is_null() || out.is_null() {
             return E_POINTER;
         }
         unsafe {
-            (*out).ptd = std::ptr::null_mut();
+            out.write(super::super::contracts::canonical_format(
+                input.read(),
+                |format| &mut format.ptd,
+            ));
         }
         DATA_S_SAMEFORMATETC
     }

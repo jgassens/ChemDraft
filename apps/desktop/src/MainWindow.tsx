@@ -11512,7 +11512,17 @@ export function MainWindow({
     },
     readDocument: documentForFlush,
     setStatus,
-    invokeClose: () => { void invokeCommandRef.current(OFFICE_CLOSE_COMMAND_ID); }
+    invokeClose: () => invokeCommandRef.current(OFFICE_CLOSE_COMMAND_ID),
+    freezeForClose: () => {
+      quitInteractionRef.current = true;
+      quitMutationFrozenRef.current = true;
+      flushSync(() => setQuitCommitted(true));
+      return () => {
+        quitMutationFrozenRef.current = false;
+        quitInteractionRef.current = false;
+        setQuitCommitted(false);
+      };
+    }
   });
 
   const officeUpdateTitle = officeObject.update.enabled ? officeObject.update.title : undefined;
@@ -23073,7 +23083,7 @@ export function MainWindow({
         <section
           ref={canvasRegionRef}
           tabIndex={-1}
-          inert={!!officeObjectId && officeObject.update.enabled === false}
+          inert={!!officeObjectId && (!officeObject.update.enabled || quitCommitted)}
           className={["canvas-region", rulersVisible ? "rulers-visible" : ""].filter(Boolean).join(" ")}
           aria-label="Document workspace"
           onPointerLeave={() => { pointerInsideCanvasRef.current = false; }}

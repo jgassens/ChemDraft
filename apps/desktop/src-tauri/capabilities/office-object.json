@@ -9,14 +9,12 @@
     "office-object-*"
   ],
   "permissions": [
-    "core:event:allow-listen",
-    "core:event:allow-unlisten",
-    "core:event:allow-emit",
-    "core:event:allow-emit-to",
     "core:window:allow-set-title",
     "core:window:allow-get-all-windows",
     "core:window:allow-is-visible",
     "dialog:allow-message",
+    "allow-office-object-connect",
+    "allow-office-toolset-emit",
     "allow-office-object-update",
     "allow-office-object-close",
     "allow-read-clipboard-payload",

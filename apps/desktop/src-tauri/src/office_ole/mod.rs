@@ -2,6 +2,8 @@
 
 pub(crate) mod bridge;
 #[cfg(any(windows, test))]
+mod contracts;
+#[cfg(any(windows, test))]
 pub(crate) mod emf;
 pub(crate) mod launch;
 #[cfg(any(windows, test))]
@@ -12,6 +14,7 @@ pub(crate) mod registry;
 pub(crate) mod server;
 #[cfg(any(windows, test))]
 pub(crate) mod storage;
+pub(crate) mod toolset_events;
 
 #[cfg(any(windows, test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

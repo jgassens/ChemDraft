@@ -1,6 +1,4 @@
-import { invoke, isTauri } from "@tauri-apps/api/core";
-import { emitTo, TauriEvent } from "@tauri-apps/api/event";
-import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -11,9 +9,7 @@ import {
   pasteSelectionClipboardPayload, selectDocumentObjects, type ChemDraftSelectionClipboardPayload
 } from "./documentWorkflow";
 import { nativePrompt } from "./nativePrompt";
-import { bytesToBase64 } from "./rasterPictureDecode";
 import { renderSelectionClipboardPng } from "./selectionClipboard";
-import { safeTauriWindowListen } from "./window-manager/tauriEvents";
 
 export const OFFICE_UPDATE_COMMAND_ID = "office.updateEmbeddedObject";
 export const OFFICE_CLOSE_COMMAND_ID = "office.closeEmbeddedObject";
@@ -40,6 +36,29 @@ interface OfficeObjectOpen {
   containerDocument: string;
 }
 
+interface OfficeCloseRequest {
+  requestId: number | null;
+  prompt: boolean;
+  unsaved: boolean;
+}
+
+function updateFrame(json: string, png: Uint8Array): Uint8Array {
+  const selection = new TextEncoder().encode(json);
+  const limit = 25 * 1024 * 1024;
+  if (selection.byteLength > limit) throw new Error("ChemDraftDocument exceeds 25 MiB");
+  if (png.byteLength > limit) throw new Error("Preview PNG exceeds 25 MiB");
+  const frame = new Uint8Array(4 + selection.byteLength + png.byteLength);
+  new DataView(frame.buffer).setUint32(0, selection.byteLength, true);
+  frame.set(selection, 4);
+  frame.set(png, 4 + selection.byteLength);
+  return frame;
+}
+
+function cancelRequestedClose(objectId: string, request?: OfficeCloseRequest): Promise<void> {
+  if (request?.requestId == null) return Promise.resolve();
+  return invoke("office_object_close", { objectId, requestId: request.requestId });
+}
+
 export function officeObjectIdFromSearch(search: string): string | undefined {
   return new URLSearchParams(search).get("officeObject") || undefined;
 }
@@ -57,7 +76,8 @@ interface OfficeObjectEditor {
   installDocument: (document: ChemDraftDocument) => ChemDraftDocument;
   readDocument: () => ChemDraftDocument;
   setStatus: (message: string) => void;
-  invokeClose: () => void;
+  invokeClose: () => void | Promise<void>;
+  freezeForClose: () => () => void;
 }
 
 export function useOfficeObject(objectId: string | undefined, editor: OfficeObjectEditor) {
@@ -65,6 +85,9 @@ export function useOfficeObject(objectId: string | undefined, editor: OfficeObje
   editorRef.current = editor;
   const publishedDocument = useRef<ChemDraftDocument | undefined>(undefined);
   const busy = useRef(false);
+  const pendingUpdate = useRef(false);
+  const closeRequest = useRef<OfficeCloseRequest | undefined>(undefined);
+  const containerRef = useRef<string | undefined>(undefined);
   const [container, setContainer] = useState<string>();
 
   useEffect(() => {
@@ -77,18 +100,13 @@ export function useOfficeObject(objectId: string | undefined, editor: OfficeObje
       reportOpenError("The Office editing bridge is unavailable in this window.");
       return;
     }
-    const webview = getCurrentWebviewWindow();
-    if (webview.label !== `office-object-${objectId}`) {
+    const currentWindow = getCurrentWindow();
+    if (currentWindow.label !== `office-object-${objectId}`) {
       reportOpenError("The Office object ID does not match this window.");
       return;
     }
-    const currentWindow = getCurrentWindow();
-    // Tauri defers destruction when this window has a close-request listener. The Office
-    // close command completes the session and destroys the window after the user's choice.
-    const close = safeTauriWindowListen(currentWindow, TauriEvent.WINDOW_CLOSE_REQUESTED,
-      () => editorRef.current.invokeClose());
-    const open = safeTauriWindowListen<OfficeObjectOpen>(webview, "office-object://open", ({ payload }) => {
-      if (payload.objectId !== objectId || publishedDocument.current) return;
+    const install = (payload: OfficeObjectOpen) => {
+      if (disposed || payload.objectId !== objectId || publishedDocument.current) return;
       try {
         const selection = parseSelectionClipboardPayload(payload.json, { allowEmpty: true });
         if (!selection) throw new Error("The embedded drawing contains invalid or unsupported ChemDraft selection JSON.");
@@ -102,6 +120,7 @@ export function useOfficeObject(objectId: string | undefined, editor: OfficeObje
           throw new Error("The embedded drawing contains objects that could not be restored.");
         }
         publishedDocument.current = editorRef.current.installDocument(selectDocumentObjects(pasted, pasted.pages[0]!.id, []));
+        containerRef.current = name;
         setContainer(name);
         document.title = windowTitle;
         editorRef.current.setStatus([`Opened structure from ${name}.`, ...warnings].join(" "));
@@ -111,16 +130,45 @@ export function useOfficeObject(objectId: string | undefined, editor: OfficeObje
       } catch (error) {
         reportOpenError(error);
       }
+    };
+    // Strict Mode can dispose the effect before its first connection is needed.
+    const ready = Promise.resolve().then(async () => {
+      if (disposed) return;
+      const channel = new Channel<OfficeCloseRequest>();
+      channel.onmessage = request => {
+        void ready.then(async () => {
+          if (disposed) return;
+          closeRequest.current = request;
+          try {
+            await editorRef.current.invokeClose();
+          } finally {
+            if (closeRequest.current === request) {
+              closeRequest.current = undefined;
+              await cancelRequestedClose(objectId, request);
+            }
+          }
+        }).catch(error => {
+          if (!disposed) editorRef.current.setStatus(`Could not close the Office structure: ${diagnostic(error)}`);
+        });
+      };
+      install(await invoke<OfficeObjectOpen>("office_object_connect", { channel }));
     });
-    void Promise.all([open.attached, close.attached]).then(async () => {
-      if (!disposed) await emitTo(webview.label, "office-object://ready");
-    }).catch(reportOpenError);
-    return () => { disposed = true; open.stop(); close.stop(); };
+    void ready.catch(reportOpenError);
+    return () => { disposed = true; };
   }, [objectId]);
 
   const run = useCallback(async (operation: "update" | "close") => {
-    if (!objectId || busy.current) return;
+    if (!objectId) return;
+    const request = operation === "close" ? closeRequest.current : undefined;
+    if (operation === "close") closeRequest.current = undefined;
+    if (busy.current) {
+      await cancelRequestedClose(objectId, request);
+      return;
+    }
     busy.current = true;
+    let closed = false;
+    let releaseClose: (() => void) | undefined;
+    const container = containerRef.current;
     const { readDocument, setStatus } = editorRef.current;
     const publish = async () => {
       try {
@@ -132,7 +180,10 @@ export function useOfficeObject(objectId: string | undefined, editor: OfficeObje
           throw new Error("The whole drawing could not be included in the Office selection.");
         }
         const { json, png, svg, raster } = await renderSelectionClipboardPng(snapshot, selection, { requireFullResolution: true });
-        await invoke("office_object_update", { objectId, json, pngBase64: bytesToBase64(png) });
+        const frame = updateFrame(json, png);
+        pendingUpdate.current = true;
+        await invoke("office_object_update", frame);
+        pendingUpdate.current = false;
         publishedDocument.current = snapshot;
         const warnings = [...(selection.warnings ?? []), ...[...svg.warnings, ...raster.warnings].map(warning => warning.message)];
         setStatus([`Updated structure in ${container}.`, ...new Set(warnings)].join(" "));
@@ -152,9 +203,9 @@ export function useOfficeObject(objectId: string | undefined, editor: OfficeObje
         const published = publishedDocument.current;
         return published !== undefined && !assistantDocumentContentUnchanged(published, readDocument());
       };
-      let saveChanges = publishedDocument.current !== undefined;
-      if (isDirty()) {
-        const choice = await nativePrompt({
+      let saveChanges = true;
+      if (isDirty() || pendingUpdate.current || request?.unsaved) {
+        const choice = request?.prompt === false ? "update" : await nativePrompt({
           owner: "office-object",
           title: "Update the Office structure before closing?",
           message: `Apply your changes to the structure in ${container}?`,
@@ -167,21 +218,29 @@ export function useOfficeObject(objectId: string | undefined, editor: OfficeObje
         }, async () => { throw new Error("The native Office update confirmation is unavailable."); });
         if (choice === "cancel") return;
         saveChanges = choice === "update";
-        if (saveChanges) {
+        if (saveChanges && (isDirty() || pendingUpdate.current)) {
           if (!await publish()) return;
-          if (isDirty()) {
-            setStatus("The Office structure changed during the update. Close again to review the remaining changes.");
-            return;
-          }
         }
       }
-      await invoke("office_object_close", { objectId, saveChanges });
+      releaseClose = editorRef.current.freezeForClose();
+      if (saveChanges && isDirty()) {
+        setStatus("The Office structure changed during the update. Close again to review the remaining changes.");
+        return;
+      }
+      await invoke("office_object_close", {
+        objectId, saveChanges, ...(request?.requestId == null ? {} : { requestId: request.requestId })
+      });
+      closed = true;
     } catch (error) {
       setStatus(`Could not close the Office structure${container ? ` in ${container}` : ""}: ${diagnostic(error)}`);
     } finally {
       busy.current = false;
+      if (!closed) {
+        releaseClose?.();
+        await cancelRequestedClose(objectId, request).catch(() => undefined);
+      }
     }
-  }, [container, objectId]);
+  }, [objectId]);
 
   return useMemo(() => {
     const outsideOffice = "This window is not editing an Office structure.";

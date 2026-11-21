@@ -1,4 +1,5 @@
 use super::super::{
+    contracts::{PersistError, PersistState, Saved},
     emf::MAX_PNG_BYTES,
     storage::{decode_document, document_bytes, DOCUMENT, MAX_DOCUMENT_BYTES},
 };
@@ -106,6 +107,25 @@ fn check_class(storage: &IStorage, class: GUID, allow_empty: bool) -> Result<()>
     ))
 }
 
+fn state_error(error: PersistError) -> Error {
+    match error {
+        PersistError::AlreadyInitialized => CO_E_ALREADYINITIALIZED,
+        PersistError::Unexpected => E_UNEXPECTED,
+        PersistError::SaveInProgress => STG_E_CANTSAVE,
+        PersistError::MissingStorage => E_INVALIDARG,
+    }
+    .into()
+}
+
+impl Embedded {
+    fn write_class_metadata(&self, store: &IStorage) -> Result<()> {
+        unsafe {
+            WriteClassStg(store, &self.sta.guid)?;
+            WriteFmtUserTypeStg(store, 0, &HSTRING::from(self.sta.class.user_type))
+        }
+    }
+}
+
 fn invalid(error: impl std::fmt::Display) -> Error {
     Error::new(STG_E_INVALIDHEADER, error.to_string())
 }
@@ -125,24 +145,21 @@ impl IPersistStorage_Impl for Embedded_Impl {
         }
     }
     fn InitNew(&self, store: Ref<IStorage>) -> Result<()> {
+        let next = self.persistence.get().initialize().map_err(state_error)?;
         let store = store.ok()?;
-        if self.storage.borrow().is_some() {
-            return Err(CO_E_ALREADYINITIALIZED.into());
-        }
         check_class(store, self.sta.guid, true)?;
         let blank = Content::blank().map_err(invalid)?;
+        self.write_class_metadata(store)?;
         self.storage.replace(Some(store.clone()));
         self.content.replace(Rc::new(blank));
         self.extent.set(None);
-        self.saving.set(None);
+        self.persistence.set(next);
         self.changed();
         Ok(())
     }
     fn Load(&self, store: Ref<IStorage>) -> Result<()> {
+        let next = self.persistence.get().initialize().map_err(state_error)?;
         let store = store.ok()?;
-        if self.storage.borrow().is_some() {
-            return Err(CO_E_ALREADYINITIALIZED.into());
-        }
         check_class(store, self.sta.guid, false)?;
         let json =
             decode_document(read_stream(store, DOCUMENT, MAX_DOCUMENT_BYTES)?).map_err(invalid)?;
@@ -169,23 +186,21 @@ impl IPersistStorage_Impl for Embedded_Impl {
         self.content.replace(Rc::new(content));
         self.extent.set(extent);
         self.clean.set(self.generation.get());
-        self.saving.set(None);
+        self.persistence.set(next);
         Ok(())
     }
     fn Save(&self, store: Ref<IStorage>, same: BOOL) -> Result<()> {
+        let saved = Saved {
+            generation: self.generation.get(),
+            same_storage: same.as_bool(),
+        };
+        let next = self.persistence.get().save(saved).map_err(state_error)?;
         let store = store.ok()?;
-        if self.saving.get().is_some() {
-            return Err(STG_E_CANTSAVE.into());
-        }
         check_class(store, self.sta.guid, true)?;
-        let generation = self.generation.get();
         let content = self.content.borrow().clone();
         let extent = self.extent.get();
         let doc = document_bytes(&content.json).map_err(invalid)?;
-        unsafe {
-            WriteClassStg(store, &self.sta.guid)?;
-            WriteFmtUserTypeStg(store, 0, &HSTRING::from(self.sta.class.user_type))?;
-        }
+        self.write_class_metadata(store)?;
         write_stream(store, DOCUMENT, doc)?;
         for (name, bytes) in [
             (
@@ -208,24 +223,29 @@ impl IPersistStorage_Impl for Embedded_Impl {
             }
         }
         // The container owns IStorage::Commit. Remain dirty during NoScribble.
-        self.saving.set(Some((generation, same.as_bool())));
+        self.persistence.set(next);
         Ok(())
     }
     fn SaveCompleted(&self, new: Ref<IStorage>) -> Result<()> {
+        let clean = self
+            .persistence
+            .get()
+            .complete(!new.is_null())
+            .map_err(state_error)?;
         if let Some(store) = new.as_ref() {
             check_class(store, self.sta.guid, false)?;
             self.storage.replace(Some(store.clone()));
         }
-        if let Some((saved, same)) = self.saving.take() {
-            // Save-copy-as completes with same=false and a null new storage.
-            if same || !new.is_null() {
-                self.clean.set(saved);
-            }
+        if let Some(generation) = clean {
+            self.clean.set(generation);
         }
+        self.persistence.set(PersistState::Normal);
         Ok(())
     }
     fn HandsOffStorage(&self) -> Result<()> {
+        let next = self.persistence.get().hands_off().map_err(state_error)?;
         self.storage.take();
+        self.persistence.set(next);
         Ok(())
     }
 }

@@ -13,7 +13,7 @@ import { isDrawingSettings, DRAWING_SETTINGS_STORAGE_KEY, loadDrawingSettings, t
 import { ELECTRON_MARK_EDITING_STORAGE_KEY, loadDirectElectronMarkEditing } from "../electronMarkEditingSettings";
 import { isKeybindingSettings, type KeybindingScheme, type KeybindingSettings } from "../keybindingSettings";
 import { migrateLegacyToolsetIds } from "../toolbars/legacyToolsetIds";
-import { listenCurrentWindowEvent, listenTauriEvent as listenNativeEvent, safeTauriWindowListen } from "./tauriEvents";
+import { listenCurrentWindowEvent, listenTauriEvent as listenNativeEvent, listenOfficeToolsetEvent, safeTauriWindowListen } from "./tauriEvents";
 import {
   compareToolsetPopoverOpenings, type AcceptedToolsetPopoverOpening, type ToolsetPopoverDismissPayload,
   type ToolsetPopoverOpening, type ToolsetFlyoutClosedNotice
@@ -35,10 +35,19 @@ function toolsetEventName(name: string): string {
     ? `${name}/${owner}` : name;
 }
 
+function isOfficeDocument(): boolean {
+  return !!officeOwner() && new URLSearchParams(window.location.search).has("officeObject");
+}
+
 const listenTauriEvent: typeof listenNativeEvent = (name, handler) =>
-  listenNativeEvent(toolsetEventName(name), handler);
+  isOfficeDocument() ? listenOfficeToolsetEvent(name, handler) : listenNativeEvent(toolsetEventName(name), handler);
 
 async function emitNativeEvent<T>(name: string, payload?: T): Promise<void> {
+  if (isOfficeDocument()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("office_toolset_emit", { event: name, payload });
+    return;
+  }
   const { emit } = await import("@tauri-apps/api/event");
   await emit(toolsetEventName(name), payload);
 }
@@ -390,7 +399,7 @@ export async function isToolsetPopoverFocusTransfer(toolsetId: string, includeOw
 export async function isToolsetPopoverVisible(toolsetId: string): Promise<boolean> {
   if (!isDesktopRuntime()) return false;
   const { Window } = await import("@tauri-apps/api/window");
-  const popover = await Window.getByLabel(toolsetPopoverWindowLabel(toolsetId));
+  const popover = await Window.getByLabel(ownedToolsetWindowLabel(toolsetPopoverWindowLabel(toolsetId)));
   return popover ? popover.isVisible().catch(() => false) : false;
 }
 
@@ -399,8 +408,14 @@ export async function isToolsetPopoverVisible(toolsetId: string): Promise<boolea
 export async function listenForToolsetPopoverNativeClose(toolsetId: string, closed: () => void): Promise<Unlisten> {
   if (!isDesktopRuntime()) return () => undefined;
   const { Window } = await import("@tauri-apps/api/window");
-  const popover = await Window.getByLabel(toolsetPopoverWindowLabel(toolsetId));
+  const label = ownedToolsetWindowLabel(toolsetPopoverWindowLabel(toolsetId));
+  const popover = await Window.getByLabel(label);
   if (!popover) { closed(); return () => undefined; }
+  if (isOfficeDocument()) {
+    return listenOfficeToolsetEvent<string>("chemdraft://office-popover-native-close", ({ payload }) => {
+      if (payload === label) closed();
+    });
+  }
   const listeners = ["tauri://close-requested", "tauri://destroyed"].map(name =>
     safeTauriWindowListen(popover, name, closed));
   const stop = () => listeners.forEach(listener => listener.stop());
@@ -430,7 +445,7 @@ export async function listenForToolsetPopoverClosed(handler: (payload: ToolsetPo
 export async function isToolsetPopoverWindowVisible(toolsetId: string): Promise<boolean> {
   if (!isDesktopRuntime()) return false;
   const { Window } = await import("@tauri-apps/api/window");
-  const popover = await Window.getByLabel(toolsetPopoverWindowLabel(toolsetId));
+  const popover = await Window.getByLabel(ownedToolsetWindowLabel(toolsetPopoverWindowLabel(toolsetId)));
   return popover ? popover.isVisible() : false;
 }
 

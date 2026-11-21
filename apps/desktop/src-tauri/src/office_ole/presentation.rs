@@ -1,11 +1,6 @@
-use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Deserialize;
 
-use super::{
-    emf::{preview_with_extent, MAX_PNG_BYTES},
-    storage::{document_bytes, MAX_DOCUMENT_BYTES},
-    OleError,
-};
+use super::{emf::preview_with_extent, storage::document_bytes, OleError};
 
 pub(super) const EMPTY: &str = r#"{"kind":"chemdraft-selection","version":1,"objects":[],"selectionIds":[],"bounds":{"x":0,"y":0,"width":0,"height":0}}"#;
 
@@ -21,19 +16,6 @@ pub(super) struct Content {
 }
 
 impl Content {
-    pub fn from_update(json: &str, encoded: &str) -> Result<Self, OleError> {
-        if json.len() > MAX_DOCUMENT_BYTES {
-            return Err(OleError("ChemDraftDocument exceeds 25 MiB".into()));
-        }
-        if encoded.len() > MAX_PNG_BYTES.div_ceil(3) * 4 {
-            return Err(OleError("Preview PNG exceeds 25 MiB".into()));
-        }
-        let png = STANDARD
-            .decode(encoded)
-            .map_err(|error| OleError(format!("Invalid preview PNG base64: {error}")))?;
-        Self::load(json.to_owned(), Some(png))
-    }
-
     pub fn load(json: String, png: Option<Vec<u8>>) -> Result<Self, OleError> {
         #[derive(Deserialize)]
         struct Header {
@@ -88,10 +70,13 @@ mod tests {
             i32::from_le_bytes(image.emf[32..36].try_into().unwrap()),
             image.extent[0]
         );
-        let encoded = STANDARD.encode(image.png);
-        assert_eq!(Content::from_update(EMPTY, &encoded).unwrap().json, EMPTY);
-        assert!(Content::from_update(&format!("{EMPTY} "), &encoded).is_err());
-        assert!(Content::from_update(EMPTY, "?").is_err());
+        assert_eq!(
+            Content::load(EMPTY.into(), Some(image.png.clone()))
+                .unwrap()
+                .json,
+            EMPTY
+        );
+        assert!(Content::load(format!("{EMPTY} "), Some(image.png)).is_err());
         assert!(Content::load("{}".into(), None).is_err());
         assert!(Content::load(EMPTY.replace("\"version\":1", "\"version\":2"), None).is_err());
         assert!(Content::load(EMPTY.into(), None).unwrap().image.is_none());

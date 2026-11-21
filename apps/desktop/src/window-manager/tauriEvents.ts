@@ -99,6 +99,14 @@ export function safeTauriWindowListen<T>(target: Pick<Window, "listen">, eventNa
   return safeTauriListen<T>(eventName, (wrapped) => target.listen<T>(eventName, wrapped), handler);
 }
 
+/** Local delivery from the embedded editor's native window and own toolsets. */
+export async function listenOfficeToolsetEvent<T>(name: string, handler: EventCallback<T>): Promise<SafeUnlisten> {
+  const eventName = `chemdraft:office-toolset:${name}`;
+  const listener = (event: globalThis.Event) => handler({ event: name, id: 0, payload: (event as CustomEvent<T>).detail });
+  window.addEventListener(eventName, listener);
+  return () => window.removeEventListener(eventName, listener);
+}
+
 /** The current webview window's own `listen` (events targeted at this window), with a stop that cannot fail. */
 export async function listenCurrentWindowEvent<T>(eventName: string, handler: EventCallback<T>): Promise<SafeUnlisten> {
   // A desktop UI marker (__TAURI__) alone supplies no window metadata or native IPC.
@@ -106,5 +114,9 @@ export async function listenCurrentWindowEvent<T>(eventName: string, handler: Ev
   if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return () => undefined;
   const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
   const currentWindow = getCurrentWebviewWindow();
+  if (/^office-object-\d{1,20}$/.test(currentWindow.label) &&
+      ["tauri://move", "tauri://resize", "tauri://scale-change"].includes(eventName)) {
+    return listenOfficeToolsetEvent(eventName, handler);
+  }
   return safeTauriWindowListen<T>(currentWindow, eventName, handler).attached;
 }

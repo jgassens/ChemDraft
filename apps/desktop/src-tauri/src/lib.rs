@@ -635,6 +635,32 @@ fn request_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
     if windows_session_end::in_progress() {
         return;
     }
+    #[cfg(windows)]
+    if let Some(server) = app.try_state::<office_ole::server::Server>() {
+        if server.begin_quit() {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let server = app.state::<office_ole::server::Server>();
+                match server.prepare_quit().await {
+                    Ok(()) => request_document_quit(&app),
+                    Err(error) => {
+                        server.cancel_quit();
+                        eprintln!("ChemDraft quit cancelled while closing Office editors: {error}");
+                    }
+                }
+            });
+        } else if quit_in_progress() || prompt_waits_for_user(&QUIT) {
+            request_document_quit(app);
+        }
+        return;
+    }
+    request_document_quit(app);
+}
+
+fn request_document_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
+    if windows_session_end::in_progress() {
+        return;
+    }
     if ASK_TO_SAVE_ON_QUIT.load(Ordering::SeqCst) {
         // A repeated menu/Dock quit also reveals a prompt that was subsequently minimized.
         if prompt_waits_for_user(&QUIT) {
@@ -964,7 +990,14 @@ async fn cancel_quit(
     request_id: u64,
 ) -> Result<QuitCancelOutcome, String> {
     authorize_quit_window(window.label())?;
-    Ok(cancel_quit_with(&QUIT, request_id))
+    let outcome = cancel_quit_with(&QUIT, request_id);
+    #[cfg(windows)]
+    if outcome == QuitCancelOutcome::Cancelled {
+        if let Some(server) = window.try_state::<office_ole::server::Server>() {
+            server.cancel_quit();
+        }
+    }
+    Ok(outcome)
 }
 
 #[tauri::command]
@@ -1605,12 +1638,27 @@ pub fn run() {
                 }
             }
 
-            if toolset_window_parts(window.label())
-                .1
-                .starts_with("toolset-popover-")
-                && matches!(event, WindowEvent::Destroyed)
-            {
-                toolset_popover_command_sources().remove(window.label());
+            let (_owner, utility) = toolset_window_parts(window.label());
+            if utility.starts_with("toolset-popover-") {
+                if matches!(event, WindowEvent::Destroyed) {
+                    toolset_popover_command_sources().remove(window.label());
+                }
+                #[cfg(windows)]
+                if is_office_document_window(_owner)
+                    && matches!(
+                        event,
+                        WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed
+                    )
+                {
+                    let _ = window.app_handle().emit_to(
+                        _owner,
+                        &scoped_toolset_event(
+                            _owner,
+                            office_ole::toolset_events::NATIVE_POPOVER_CLOSE,
+                        ),
+                        window.label(),
+                    );
+                }
             }
 
             // Owned windows may finish unminimizing after their owner's Resized event.
@@ -1791,6 +1839,8 @@ pub fn run() {
             setup_primary_app(app.handle())
         })
         .invoke_handler(tauri::generate_handler![
+            office_ole::bridge::office_object_connect,
+            office_ole::toolset_events::office_toolset_emit,
             office_ole::bridge::office_object_update,
             office_ole::bridge::office_object_close,
             canvas_context_menu::popup_canvas_context_menu,
@@ -1958,7 +2008,14 @@ pub fn run() {
                     cfg!(target_os = "macos"),
                     code,
                     APP_QUITTING.load(Ordering::SeqCst),
-                ) {
+                ) || (cfg!(windows)
+                    && code != Some(tauri::RESTART_EXIT_CODE)
+                    && !APP_QUITTING.load(Ordering::SeqCst)
+                    && app
+                        .webview_windows()
+                        .keys()
+                        .any(|label| is_office_document_window(label)))
+                {
                     // AppHandle::exit and last-window destruction are preventable. The exit
                     // posted by quit_now is allowed through because APP_QUITTING is then true.
                     api.prevent_exit();
