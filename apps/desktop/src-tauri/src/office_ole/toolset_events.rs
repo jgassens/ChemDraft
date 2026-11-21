@@ -120,6 +120,9 @@ pub(crate) fn office_toolset_emit(
 ) -> Result<(), String> {
     #[cfg(windows)]
     {
+        if event == super::bridge::EDITOR_PAINTED {
+            return super::bridge::editor_painted(&window);
+        }
         if event == "chemdraft://bond-stereo-popover-action"
             && payload
                 .as_ref()
@@ -212,6 +215,43 @@ mod tests {
         assert!(outbound_owner(owner, "chemdraft://keybinding-settings").is_err());
         assert!(outbound_owner(owner, "chemdraft://toolset-active-tool/office-object-18").is_err());
         assert!(outbound_owner("main", event).is_err());
+    }
+
+    #[test]
+    fn only_the_editor_window_can_report_its_first_paint() {
+        use super::super::bridge::{painted_sender, EDITOR_PAINTED};
+        assert_eq!(painted_sender("office-object-17"), Ok("office-object-17"));
+        for label in [
+            "main",
+            "office-object-",
+            "office-object-17-x",
+            "office-utility-office-object-17--toolset-core-main",
+            "office-utility-office-object-17--toolset-popover-core-main",
+            "office-utility-office-object-17--toolset-tooltip",
+            "dialog-office-object-17-pageSize-1",
+            "toolset-core-main",
+        ] {
+            assert!(painted_sender(label).is_err(), "{label}");
+        }
+        // Handled before routing, and never delivered to (or accepted from) another window.
+        for list in [TO_TOOLSET, BETWEEN_UTILITIES, FROM_TOOLSET, TO_TOOLTIP] {
+            assert!(!list.contains(&EDITOR_PAINTED));
+        }
+        assert!(outbound_owner("office-object-17", EDITOR_PAINTED).is_err());
+        let source = include_str!("toolset_events.rs");
+        let emit = &source[source.find("pub(crate) fn office_toolset_emit(").unwrap()..];
+        let windows = &emit[emit.find("#[cfg(windows)]").unwrap()..];
+        assert!(windows.starts_with(
+            "#[cfg(windows)]\n    {\n        if event == super::bridge::EDITOR_PAINTED {\n            return super::bridge::editor_painted(&window);"
+        ));
+        // The office-object window already holds this grant; utilities that also hold it are
+        // refused by `painted_sender`. No other capability grants it.
+        let object = include_str!("../../capabilities/office-object.json");
+        let toolset = include_str!("../../capabilities/office-toolset.json");
+        assert!(
+            object.contains("\"office-object-*\"") && object.contains("allow-office-toolset-emit")
+        );
+        assert!(!toolset.contains("\"office-object-*\""));
     }
 
     #[test]

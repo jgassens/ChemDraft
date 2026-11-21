@@ -42,6 +42,20 @@
         status.setAttribute("aria-live", "polite");
         status.textContent = "Opening structure from " + (name || "Office") + "…";
         document.getElementById("root").appendChild(status);
+        // The window is built hidden; reveal it once this screen has painted (the second
+        // animation frame runs after the first one reached the screen). Rust shows it anyway
+        // after 1.5 s, and only the first reveal counts (office_ole/bridge.rs).
+        var tauri = window.__TAURI_INTERNALS__;
+        if (!tauri || typeof window.requestAnimationFrame !== "function") return;
+        window.requestAnimationFrame(function () {
+          window.requestAnimationFrame(function () {
+            Promise.resolve()
+              .then(function () {
+                return tauri.invoke("office_toolset_emit", { event: "chemdraft://office-object-painted" });
+              })
+              .catch(function () {});
+          });
+        });
       })();
     </script>
     <script type="module" src="/src/main.tsx"></script>
