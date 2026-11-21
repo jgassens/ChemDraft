@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { applyPatch, createCustomPageLayout, createEmptyDocument, DocumentObjectSchema, nativeDrawingStyleFromObjectStyle, toEngineDocument, undo, redo, type ReactionObject } from "@chemdraft/chem-core";
+import { applyPatch, createCustomPageLayout, createEmptyDocument, DocumentObjectSchema, nativeDrawingStyleFromObjectStyle, toEngineDocument, undo, redo, type ChemDraftDocument, type ReactionObject } from "@chemdraft/chem-core";
 import { AssistantCapabilityPermissions, ProposedDocumentPatchSchema, runPluginWorker, parsePluginManifest, type PluginWorkerHandle,
   type PluginCommandContext, type PluginAssistantToolHandler } from "@chemdraft/plugin-api";
-import { PluginHost } from "@chemdraft/plugin-host";
+import { assertPluginDocumentWriteScope, assertPluginPatchWriteScope, PluginHost } from "@chemdraft/plugin-host";
 import legacyCatalog from "./legacyMcpCatalog.fixture.json";
 import { AssistantToolsController } from "./AssistantToolsController";
 import { AssistantTransactions } from "./assistantTransaction";
@@ -17,6 +17,7 @@ import { buildMoveObjects, translateObject } from "./writeBuilder";
 import { applyChargeToolAtPoint } from "../documentWorkflow";
 import { PluginWorkerBridge } from "../plugins/PluginWorkerBridge";
 import { createWorkerRoutedOptions } from "../plugins/registerBundledPlugins";
+import { createPluginRuntime } from "../plugins/createPluginRuntime";
 
 function setup(onAssistantToolCall?: PluginAssistantToolHandler, directWrites = false, workerRouted = false, platform?: "macos" | "windows",
   bindDocument = false) {
@@ -1383,6 +1384,98 @@ describe("legacy assistant host-tool writes are scoped by page and id", () => {
       expect(s.history).toHaveLength(0);
       expect(after).toBe(twoPages);
       await s.controller.endRequest(s.plugin, { requestId });
+    } finally { await s.finish(); }
+  });
+});
+
+describe("legacy assistant writes resolve a duplicate id by its Send-time page", () => {
+  /** Page A holds the fixture molecule and a caption; page B holds a different object with the same id
+   * as page A's molecule, 200 px lower. Send selected page B's copy. */
+  function twoPages(s: ReturnType<typeof setup>) {
+    const document = s.context.getDocument()!;
+    const pageA = document.pages[0]!;
+    const copy = translateObject(structuredClone(s.molecule), 0, 200);
+    const pageB = { ...pageA, id: "page_b", objects: [copy] };
+    const twoPageDocument = { ...document, pages: [pageA, pageB], selection: { pageId: pageB.id, objectIds: [s.molecule.id] } };
+    s.replace(twoPageDocument);
+    s.select([s.molecule.id]);
+    return { pageA, pageB, copy, twoPageDocument };
+  }
+  const centreY = (object: Parameters<typeof objectRect>[0]) => { const rect = objectRect(object); return rect.y + rect.height / 2; };
+
+  it.each([
+    ["insert_text", (id: string) => ({ text: "Beside page B", relativeTo: { objectId: id, side: "right" } })],
+    ["insert_table", (id: string) => ({ besideObjectId: id, columns: [{ header: "Value" }], rows: [["1"]] })]
+  ] as const)("%s beside a selected duplicate id lands on the selection's page, beside that page's object", async (name, input) => {
+    const s = setup();
+    try {
+      const { pageA, copy } = twoPages(s);
+      await s.controller.beginRequest(s.plugin, { prompt: "annotate" });
+      const result = await s.controller.callTool(s.plugin, { name, input: input(s.molecule.id) });
+      expect(result.isError).not.toBe(true);
+      const after = s.context.getDocument()!;
+      expect(after.pages[0]!.objects).toEqual(pageA.objects);
+      const inserted = after.pages[1]!.objects.filter(object => object.id !== copy.id);
+      expect(inserted).toHaveLength(1);
+      // Placed to the right of page B's object, level with it, not with page A's object 200 px higher.
+      expect(objectRect(inserted[0]!).x).toBeGreaterThanOrEqual(objectRect(copy).x + objectRect(copy).width);
+      expect(Math.abs(centreY(inserted[0]!) - centreY(copy))).toBeLessThan(Math.abs(centreY(inserted[0]!) - centreY(s.molecule)));
+    } finally { await s.finish(); }
+  });
+
+  it.each([
+    ["update (move_objects)", "move_objects", { to: { arrange: "row" } }],
+    ["delete (delete_objects)", "delete_objects", {}],
+    ["style (style_objects)", "style_objects", { style: { color: "#112233" } }],
+    ["relative text insert (insert_text)", "insert_text", undefined],
+    ["relative table insert (insert_table)", "insert_table", undefined],
+    ["plugin documents.insertTable", "plugin.insertTable", undefined]
+  ] as const)("every write kind acts on page B only: %s", async (_label, kind, extra) => {
+    const s = setup();
+    try {
+      const { pageA, pageB, copy, twoPageDocument } = twoPages(s);
+      const id = s.molecule.id;
+      if (kind === "plugin.insertTable") {
+        // The plugin path: a command whose selection names page B's object inserts a table beside it.
+        let current: ChemDraftDocument = twoPageDocument;
+        const runtime = createPluginRuntime({ getActiveDocument: () => current, applyDocumentPatch: request => {
+          assertPluginPatchWriteScope(current, request.patch, request.writeScopeObjectIds, undefined, undefined, request.writeScopePages);
+          const applied = applyPluginDocumentPatch(current, request.patch);
+          assertPluginDocumentWriteScope(current, applied.document, request.patch, request.writeScopeObjectIds, request.writeScopePages);
+          current = applied.document;
+          return applied.receipt;
+        } });
+        runtime.registerPlugin({ id: "org.test.pagetables", name: "Tables", version: "1", apiVersion: "^0.1.18", entry: "plugin.js",
+          permissions: ["document.write"], contributes: { commands: [{ id: "plugin.pagetables.insert", title: "Make table" }] }
+        }, { commandHandlers: { "plugin.pagetables.insert": context => context.documents.insertTable!({ columns: [{ header: "Value" }], rows: [["1"]] }) } });
+        await runtime.invokeCommand("plugin.pagetables.insert");
+        expect(current.pages[0]!.objects).toEqual(pageA.objects);
+        const table = current.pages[1]!.objects.find(object => object.type === "table")!;
+        expect(table).toBeDefined();
+        expect(objectRect(table).x).toBeGreaterThanOrEqual(objectRect(copy).x + objectRect(copy).width);
+        return;
+      }
+      await s.controller.beginRequest(s.plugin, { prompt: "edit page B" });
+      const input = kind === "insert_text" ? { text: "Beside page B", relativeTo: { objectId: id, side: "right" } }
+        : kind === "insert_table" ? { besideObjectId: id, columns: [{ header: "Value" }], rows: [["1"]] }
+        : { objectIds: [id], ...extra };
+      const result = await s.controller.callTool(s.plugin, { name: kind, input });
+      const after = s.context.getDocument()!;
+      // Page A's same-id object is never touched.
+      expect(after.pages[0]!.objects).toEqual(pageA.objects);
+      if (kind === "insert_text" || kind === "insert_table") {
+        expect(result.isError).not.toBe(true);
+        expect(after.pages[1]!.objects).toHaveLength(pageB.objects.length + 1);
+        expect(after.pages[1]!.objects[0]).toEqual(copy);
+      } else {
+        // chem-core patch ops name objects by bare id and act on the first occurrence (page A), so a
+        // change to page B's copy cannot be expressed: the host refuses it specifically.
+        expect(result).toMatchObject({ isError: true, content: [{ text: expect.stringContaining(
+          `Plugin write refused: object "${id}" is selected on page "${pageB.id}", but the write would change the object with the same id on page "${pageA.id}".`
+        ) }] });
+        expect(after).toBe(twoPageDocument);
+        expect(s.history).toHaveLength(0);
+      }
     } finally { await s.finish(); }
   });
 });

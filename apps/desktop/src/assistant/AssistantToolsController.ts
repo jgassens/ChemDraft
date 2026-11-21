@@ -138,6 +138,7 @@ export class AssistantToolsController implements PluginHostAssistant {
     const request: Request = { pluginId: plugin.id, tabId, selection, selectionPages, binding, repeatUnitCleanup, inserted: new Set(), touched: new Set(), transactions,
       ended: false, cancellations: new Map(), opening: 0,
       context: { ...services, plugin: manifest, tabId, getDocument, getSelectionAtSend: () => selection,
+        getSelectionPagesAtSend: () => selectionPages,
         chemistry: { ...services.chemistry, reactionProductAligner: async () => {
           const adapter = await loadRdkitWithAppLoader(() => import("@chemdraft/rdkit-adapter/depiction"));
           return adapter.createReactionProductAligner();
