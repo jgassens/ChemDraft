@@ -83,6 +83,13 @@ describe.each([false, true])("main's mark association policy with direct editing
         const positions = (state: ReturnType<typeof associationState>) => state.molecules.map(([id, atoms]) =>
           [id, (atoms as { x: number; y: number }[]).map(({ x, y }) => ({ x, y }))]);
         expect(positions(associationState(patched, result.document)), name).toEqual(positions(expected as ReturnType<typeof associationState>));
+      } else if (name === "duplicate mark only" && spec.kind !== "lone-pair") {
+        // Duplicate no longer attaches a copied loose charge/radical mark by proximity to a molecule
+        // already on the page (AGENTS.md section 7), so main's oracle (which linked and doubled the
+        // original's charge) no longer applies. The copy is an explicit point and the original is untouched.
+        const copy = result.document.pages[0].objects.find(o => o.type === "electron-mark" && !before.pages[0].objects.some(old => old.id === o.id))!;
+        expect(copy, name).toMatchObject({ anchor: { kind: "point" }, atomAssociation: "explicit" });
+        expect(moleculesIn(result.document), name).toEqual(moleculesIn(before));
       } else expect(associationState(patched, result.document), name).toEqual(expected);
       expect(result.chemistryChanges).toEqual(electronMarkChemistryChanges(before, result.document));
       expect(JSON.stringify(before)).toBe(beforeJson);
@@ -132,6 +139,9 @@ describe.each([false, true])("main's mark association policy with direct editing
       "stale paste missing atom": [added(`${prefix}_copy_001`, "mol_copy_002", "atom_002")],
       "stale paste missing molecule": []
     };
+    // Duplicate no longer attaches a copied loose mark by proximity (section 7), so mark-only
+    // duplication changes no chemistry for charge and radical specs.
+    if (spec.kind !== "lone-pair") expected["duplicate mark only"] = [];
     for (const [name, changes] of Object.entries(expected)) {
       const { before, patched } = mainAssociationCases(workflow, spec).find(c => c.name === name)!;
       expect(normalizeDocumentEdit(before, patched).chemistryChanges, name).toEqual(spec.kind === "lone-pair" ? [] : changes);

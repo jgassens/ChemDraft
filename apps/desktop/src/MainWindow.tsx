@@ -7951,7 +7951,7 @@ export function MainWindow({
       warnings
     );
     if (nextDocument === documentRef.current) {
-      setStatus("Clipboard selection unchanged");
+      setStatus(warnings.length > 0 ? warnings.join("; ") : "Clipboard selection unchanged");
       return;
     }
 
