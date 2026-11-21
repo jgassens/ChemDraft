@@ -2598,9 +2598,12 @@ describe("ChemDraft desktop shell", () => {
     // A molecule-part drag (commitNativePartDrag) normalizes before naming its charge-aware Undo
     // label (chargeAssociationUndoLabel), so the label describes the reconciled charge marks the
     // committed document carries; commitDocumentHistoryFrom then normalizes it again, idempotently.
+    // The funnel now also runs the commit-time chemistry guard (commitChemistryGuard.ts) on every
+    // commit; a part drag moves atoms of a molecule, which is drawing, so it declares itself a
+    // chemistry edit (CHEMISTRY_EDIT) as the funnel's last argument.
     expect(mainWindowSource.match(/normalizeCommittedDocument\(/g)).toHaveLength(15);
     expect(mainWindowSource).toContain(
-      "const committed = normalizeCommittedDocument(result.document);\n    commitDocumentHistoryFrom(drag.startDocument, committed, chargeAssociationUndoLabel(drag.startDocument, committed, \"Move\"));"
+      "const committed = normalizeCommittedDocument(result.document);\n    commitDocumentHistoryFrom(drag.startDocument, committed, chargeAssociationUndoLabel(drag.startDocument, committed, \"Move\"), undefined, CHEMISTRY_EDIT);"
     );
     const prepareDocumentCommitSource = mainWindowSource.slice(
       mainWindowSource.indexOf("const prepareDocumentCommit = useCallback("),

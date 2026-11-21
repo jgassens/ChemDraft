@@ -6,6 +6,7 @@ import {
 import { testMoleculeFromSmiles } from "@chemdraft/layout-engine/testing";
 import { nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles, phase4Timestamp } from "@chemdraft/document-workflow-core";
 import * as workflow from "./documentWorkflow";
+import { commitChemistryRefusals } from "./commitChemistryGuard";
 import {
   ammoniumElectronMarkDropFixture, dropMark, dropMolecule, electronMarkDropFixture
 } from "./testSupport/electronMarkDropFixture";
@@ -548,7 +549,7 @@ describe("Duplicate and paste never change a molecule that was not copied", () =
       return { document, a };
     }
 
-    it("on Duplicate, naming B", () => {
+    it("on Duplicate, where the copy itself would take the +", () => {
       const { document, a } = legacyChargedB();
       const selected = select(document, [a.id]);
       const before = serializeDocument(selected);
@@ -556,26 +557,49 @@ describe("Duplicate and paste never change a molecule that was not copied", () =
       const edited = workflow.duplicateSelectedDocumentObjects(selected, stealOffset, warnings);
       expect(edited).toBe(selected);
       expect(serializeDocument(selected)).toBe(before);
+      // Duplicate's own check compares each copy with its original; molecules that were not copied,
+      // B included, are checked once for every operation by the commit funnel (below).
       expect(warnings.some(warning =>
-        warning.startsWith(`Cannot duplicate without changing the chemistry of molecule "${B_ID}": its atom`))).toBe(true);
+        warning.startsWith(`Cannot duplicate molecule "${a.id}" without changing chemistry: the copy's atom`))).toBe(true);
       expect(() => workflow.duplicateSelectedDocumentObjects(selected, stealOffset)).toThrow(/Cannot duplicate/);
     });
 
-    it("on paste, naming B", () => {
+    it("on paste then placement: the commit check refuses, naming B", () => {
       const { document, a } = legacyChargedB();
       const selected = select(document, [a.id]);
       const payload = workflow.createSelectionClipboardPayload(selected)!;
       expect(payload.objects.filter(object => object.type === "electron-mark")).toEqual([]);
-      const at = { x: payload.bounds.centerX + stealOffset.x, y: payload.bounds.centerY + stealOffset.y };
       const before = serializeDocument(selected);
+      // MainWindow pastes at the copied selection's own position, then moves the pasted objects to
+      // the pointer or repeat-paste position before committing (commitClipboardPaste).
       const warnings: string[] = [];
-      const edited = workflow.pasteSelectionClipboardPayload(selected, payload, at, warnings);
-      expect(edited).toBe(selected);
+      const pasted = workflow.pasteSelectionClipboardPayload(selected, payload,
+        { x: payload.bounds.centerX, y: payload.bounds.centerY }, warnings);
+      expect(warnings).toEqual([]);
       expect(serializeDocument(selected)).toBe(before);
-      expect(warnings).toHaveLength(1);
-      expect(warnings[0]).toMatch(new RegExp(`^Cannot paste without changing the chemistry of molecule "${B_ID}": its atom ` +
+      // At the source position nothing reaches the +: a check there would have passed.
+      const committedBefore = workflow.normalizeCommittedDocument(selected);
+      expect(chemistryOf(moleculeB(workflow.normalizeCommittedDocument(pasted)))).toEqual(chemistryOf(moleculeB(committedBefore)));
+
+      const originalIds = new Set(selected.pages[0].objects.map(object => object.id));
+      const insertedIds = pasted.pages[0].objects.filter(object => !originalIds.has(object.id)).map(object => object.id);
+      const placed = workflow.translateInsertedDocumentObjects(pasted, insertedIds, stealOffset.x, stealOffset.y);
+      const committed = workflow.normalizeCommittedDocument(placed);
+      // Placed, the copy's oxygen sits on the + and normalization would take B's charge.
+      expect(moleculeB(committedBefore).atoms[0]).toMatchObject({ formalCharge: 1 });
+      expect(moleculeB(committed).atoms[0]).toMatchObject({ formalCharge: 0 });
+
+      const refusals = commitChemistryRefusals({ before: selected, next: placed, after: committed,
+        normalize: workflow.normalizeCommittedDocument, markAtoms: workflow.committedElectronMarkAtoms, operation: "paste" });
+      expect(refusals).toHaveLength(1);
+      expect(refusals[0]).toMatch(new RegExp(`^Cannot paste without changing the chemistry of molecule "${B_ID}": its atom ` +
         `"[^"]+" would have charge 0 and 0 radical marks instead of 1 and 0\\.$`));
-      expect(() => workflow.pasteSelectionClipboardPayload(selected, payload, at)).toThrow(/Cannot paste/);
+      // A placement away from the + commits, and B keeps its charge.
+      const away = workflow.translateInsertedDocumentObjects(pasted, insertedIds, 0, -150);
+      const awayCommitted = workflow.normalizeCommittedDocument(away);
+      expect(commitChemistryRefusals({ before: selected, next: away, after: awayCommitted,
+        normalize: workflow.normalizeCommittedDocument, markAtoms: workflow.committedElectronMarkAtoms, operation: "paste" })).toEqual([]);
+      expect(chemistryOf(moleculeB(awayCommitted))).toEqual(chemistryOf(moleculeB(committedBefore)));
     });
   });
 });
