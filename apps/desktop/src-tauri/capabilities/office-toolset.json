@@ -36,6 +36,7 @@
     "allow-set-plugin-panel-input-focus",
     "allow-set-palette-command-hit-boxes",
     "allow-list-system-fonts",
-    "allow-set-current-window-global-position"
+    "allow-set-current-window-global-position",
+    "allow-window-first-paint"
   ]
 }

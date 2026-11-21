@@ -642,6 +642,13 @@ mod tests {
                     serde_json::json!(["office-object-*"])
                 ),
                 (
+                    "office-toolset".to_owned(),
+                    serde_json::json!([
+                        "office-utility-office-object-*--toolset-core-*",
+                        "office-utility-office-object-*--toolset-popover-*"
+                    ])
+                ),
+                (
                     "toolset-first-paint".to_owned(),
                     serde_json::json!([
                         "toolset-core-*",
