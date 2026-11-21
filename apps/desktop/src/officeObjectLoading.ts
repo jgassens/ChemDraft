@@ -6,13 +6,8 @@
 /** `--cd-bg-app`; the native window (`office_ole/bridge.rs`) paints the same color first. */
 export const OFFICE_OBJECT_LOADING_BACKGROUND = "#d8dee3";
 export const OFFICE_OBJECT_LOADING_HTML_CLASS = "office-object-loading-html";
-/**
- * The Office editor window is built hidden. index.html sends this event through
- * `office_toolset_emit` once its loading screen has painted, and the window is shown then
- * (`EDITOR_PAINTED` in `office_ole/bridge.rs`; Rust shows it after 1.5 s regardless).
- */
-export const OFFICE_OBJECT_PAINTED_COMMAND = "office_toolset_emit";
-export const OFFICE_OBJECT_PAINTED_EVENT = "chemdraft://office-object-painted";
+// The editor window is built hidden; index.html reveals it with `window_first_paint` once this
+// state has painted (src/firstPaint.ts, src-tauri/src/first_paint.rs).
 /** Matches `MAX_CONTAINER_APP_CHARS` in `office_ole/bridge.rs`. */
 const MAX_CONTAINER_APP_CHARS = 80;
 

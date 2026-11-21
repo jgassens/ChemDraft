@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-window-first-paint"
+description = "Enables the window_first_paint command without any pre-configured scope."
+commands.allow = ["window_first_paint"]
+
+[[permission]]
+identifier = "deny-window-first-paint"
+description = "Denies the window_first_paint command without any pre-configured scope."
+commands.deny = ["window_first_paint"]

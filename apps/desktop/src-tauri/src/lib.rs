@@ -10,6 +10,7 @@ mod download_diagnosis;
 mod export;
 mod external_tools;
 mod file_warnings_window;
+mod first_paint;
 mod fonts;
 mod installed_plugins;
 #[cfg(target_os = "linux")]
@@ -1847,6 +1848,7 @@ pub fn run() {
             office_ole::bridge::office_object_update,
             office_ole::bridge::office_object_close,
             office_ole::bridge::prepare_office_editors_for_update,
+            first_paint::window_first_paint,
             canvas_context_menu::popup_canvas_context_menu,
             file_warnings_window::file_warnings_open,
             file_warnings_window::file_warnings_request,

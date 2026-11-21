@@ -42,19 +42,33 @@
         status.setAttribute("aria-live", "polite");
         status.textContent = "Opening structure from " + (name || "Office") + "…";
         document.getElementById("root").appendChild(status);
-        // The window is built hidden; reveal it once this screen has painted (the second
-        // animation frame runs after the first one reached the screen). Rust shows it anyway
-        // after 1.5 s, and only the first reveal counts (office_ole/bridge.rs).
+        // The window is built hidden; reveal it once this screen has painted. Same rule as
+        // ackFirstPaint() in src/firstPaint.ts (this runs before any module can load it): two
+        // animation frames while visible, at once while hidden (a hidden page gets no frames).
+        // Rust shows the window anyway after 1.5 s; only the first reveal counts (first_paint.rs).
         var tauri = window.__TAURI_INTERNALS__;
-        if (!tauri || typeof window.requestAnimationFrame !== "function") return;
+        if (!tauri) return;
+        var sent = false;
+        var acknowledge = function () {
+          if (sent) return;
+          sent = true;
+          document.removeEventListener("visibilitychange", onVisibility);
+          Promise.resolve()
+            .then(function () {
+              return tauri.invoke("window_first_paint", {});
+            })
+            .catch(function () {});
+        };
+        var onVisibility = function () {
+          if (document.visibilityState === "hidden") acknowledge();
+        };
+        if (typeof window.requestAnimationFrame !== "function" || document.visibilityState === "hidden") {
+          acknowledge();
+          return;
+        }
+        document.addEventListener("visibilitychange", onVisibility);
         window.requestAnimationFrame(function () {
-          window.requestAnimationFrame(function () {
-            Promise.resolve()
-              .then(function () {
-                return tauri.invoke("office_toolset_emit", { event: "chemdraft://office-object-painted" });
-              })
-              .catch(function () {});
-          });
+          window.requestAnimationFrame(acknowledge);
         });
       })();
     </script>

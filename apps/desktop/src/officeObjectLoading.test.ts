@@ -1,26 +1,33 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { WINDOW_FIRST_PAINT_COMMAND } from "./firstPaint";
 import {
-  OFFICE_OBJECT_LOADING_BACKGROUND, OFFICE_OBJECT_LOADING_HTML_CLASS, OFFICE_OBJECT_PAINTED_COMMAND,
-  OFFICE_OBJECT_PAINTED_EVENT, officeObjectContainerLabel, officeObjectLoadingMessage, officeObjectLoadingRoute
+  OFFICE_OBJECT_LOADING_BACKGROUND, OFFICE_OBJECT_LOADING_HTML_CLASS, officeObjectContainerLabel,
+  officeObjectLoadingMessage, officeObjectLoadingRoute
 } from "./officeObjectLoading";
 
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const css = readFileSync(new URL("./App.css", import.meta.url), "utf8");
 const bridge = readFileSync(new URL("../src-tauri/src/office_ole/bridge.rs", import.meta.url), "utf8");
 const toolsetEvents = readFileSync(new URL("../src-tauri/src/office_ole/toolset_events.rs", import.meta.url), "utf8");
+const firstPaint = readFileSync(new URL("../src-tauri/src/first_paint.rs", import.meta.url), "utf8");
 const capabilityDirectory = new URL("../src-tauri/capabilities/", import.meta.url);
 
 /**
  * Runs index.html's inline loader against a minimal DOM and returns what it painted. With `tauri`,
- * the window carries a recording `invoke` and a manual animation-frame queue (`frame()` runs one).
+ * the window carries a recording `invoke` and a manual animation-frame queue (`frame()` runs one);
+ * `hidden` starts the page hidden, and `hide()` hides it later.
  */
-function runInlineLoader(search: string, tauri = false) {
+function runInlineLoader(search: string, tauri = false, hidden = false) {
   const script = /<script>([\s\S]*?)<\/script>/.exec(html)?.[1];
   if (!script) throw new Error("index.html has no inline loader");
   const classes = new Set<string>();
   const root = { children: [] as Array<Record<string, unknown>>, appendChild(node: Record<string, unknown>) { this.children.push(node); } };
+  const listeners = new Set<() => void>();
   const document = {
+    visibilityState: hidden ? "hidden" : "visible",
+    addEventListener: (type: string, listener: () => void) => { if (type === "visibilitychange") listeners.add(listener); },
+    removeEventListener: (type: string, listener: () => void) => { if (type === "visibilitychange") listeners.delete(listener); },
     documentElement: { classList: { add: (name: string) => classes.add(name) } },
     createElement: (tag: string) => {
       const attributes: Record<string, string> = {};
@@ -40,7 +47,8 @@ function runInlineLoader(search: string, tauri = false) {
   }
   new Function("window", "document", script)(window, document);
   const frame = () => { const due = frames; frames = []; due.forEach(callback => callback()); };
-  return { classes, painted: root.children, invoked, frame, pendingFrames: () => frames.length };
+  const hide = () => { document.visibilityState = "hidden"; [...listeners].forEach(listener => listener()); };
+  return { classes, painted: root.children, invoked, frame, hide, listeners, pendingFrames: () => frames.length };
 }
 
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -102,27 +110,48 @@ describe("Office editor loading state", () => {
     expect(loader.invoked).toEqual([]);
     loader.frame(); // runs once that frame has reached the screen
     await settle();
-    expect(loader.invoked).toEqual([[OFFICE_OBJECT_PAINTED_COMMAND, { event: OFFICE_OBJECT_PAINTED_EVENT }]]);
+    expect(loader.invoked).toEqual([[WINDOW_FIRST_PAINT_COMMAND, {}]]);
     expect(loader.pendingFrames()).toBe(0);
+    expect(loader.listeners.size).toBe(0);
     // Outside the desktop app (no Tauri bridge) the loader paints and sends nothing.
     expect(runInlineLoader("?officeObject=17").painted).toHaveLength(1);
   });
 
-  it("lets only the office-object window send the paint signal, and Rust shows the window either way", () => {
-    expect(bridge).toContain(`pub(super) const EDITOR_PAINTED: &str = "${OFFICE_OBJECT_PAINTED_EVENT}";`);
+  it("acknowledges at once while the page is hidden, since a hidden page gets no animation frames", async () => {
+    const hidden = runInlineLoader("?officeObject=17", true, true);
+    expect(hidden.pendingFrames()).toBe(0);
+    await settle();
+    expect(hidden.invoked).toEqual([[WINDOW_FIRST_PAINT_COMMAND, {}]]);
+
+    // Hidden while waiting for the frames: acknowledges then, and the frames add nothing.
+    const turned = runInlineLoader("?officeObject=17", true);
+    turned.frame();
+    turned.hide();
+    await settle();
+    expect(turned.invoked).toEqual([[WINDOW_FIRST_PAINT_COMMAND, {}]]);
+    turned.frame();
+    await settle();
+    expect(turned.invoked).toHaveLength(1);
+    expect(turned.listeners.size).toBe(0);
+  });
+
+  it("reveals through the generic first-paint command, granted only to the office-object window", () => {
+    expect(html).not.toContain("office_toolset_emit");
+    expect(html).not.toContain("office-object-painted");
+    const shipped = (source: string) => source.slice(0, source.indexOf("#[cfg(test)]\nmod tests"));
+    expect(shipped(toolsetEvents)).not.toMatch(/EDITOR_PAINTED|editor_painted/);
+    expect(shipped(bridge)).not.toMatch(/PENDING_REVEALS|fn editor_painted|fn painted_sender/);
     expect(bridge).toContain("const REVEAL_FALLBACK: std::time::Duration = std::time::Duration::from_millis(1500);");
-    expect(toolsetEvents).toContain(`pub(crate) fn ${OFFICE_OBJECT_PAINTED_COMMAND}(`);
-    expect(toolsetEvents).toMatch(/if event == super::bridge::EDITOR_PAINTED \{\s*return super::bridge::editor_painted\(&window\);/);
-    expect(bridge).toMatch(/fn painted_sender\(label: &str\) -> Result<&str, String> \{\s*owner_id\(label\)/);
-    // Which windows hold the grant: the editor itself, and its utilities (refused by `painted_sender`).
+    expect(bridge).toContain("crate::first_paint::hidden_until_first_paint(");
+    expect(bridge).toMatch(/crate::first_paint::arm_first_paint_fallback_with\(\s*&window,\s*REVEAL_FALLBACK,/);
+    expect(firstPaint).toContain(`pub fn ${WINDOW_FIRST_PAINT_COMMAND}(window: WebviewWindow) ->`);
     const grants = readdirSync(capabilityDirectory).filter(name => name.endsWith(".json")).map(name =>
       JSON.parse(readFileSync(new URL(name, capabilityDirectory), "utf8")) as {
         identifier: string; windows: string[]; platforms?: string[]; permissions: unknown[];
       });
-    const holders = grants.filter(grant => grant.permissions.includes(`allow-${OFFICE_OBJECT_PAINTED_COMMAND.replaceAll("_", "-")}`));
-    expect(holders.map(grant => [grant.identifier, grant.windows, grant.platforms]).sort()).toEqual([
-      ["office-object", ["office-object-*"], ["windows"]],
-      ["office-toolset", ["office-utility-office-object-*--toolset-core-*", "office-utility-office-object-*--toolset-popover-*"], ["windows"]]
+    const holders = grants.filter(grant => grant.permissions.includes(`allow-${WINDOW_FIRST_PAINT_COMMAND.replaceAll("_", "-")}`));
+    expect(holders.map(grant => [grant.identifier, grant.windows, grant.platforms])).toEqual([
+      ["office-object", ["office-object-*"], ["windows"]]
     ]);
   });
 });

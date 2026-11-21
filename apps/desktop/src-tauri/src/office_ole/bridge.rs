@@ -243,76 +243,16 @@ pub(crate) async fn office_object_close(
     }
 }
 
-/// The editor window's first frame: `--cd-bg-app` in App.css. `background_color` on the
-/// builder sets it twice in the pinned Tauri: tao fills the client area with it on
-/// `WM_ERASEBKGND`, and wry hands it to WebView2 as the controller's `DefaultBackgroundColor`
-/// (in the creation options and again once the controller exists).
+/// The editor window's first frame: `--cd-bg-app` in App.css, handed to
+/// `first_paint::hidden_until_first_paint` (the window layer and WebView2's default background).
 #[cfg(any(windows, test))]
 const EDITOR_BACKGROUND: (u8, u8, u8) = (0xd8, 0xde, 0xe3);
-
-/// The page sends this through `office_toolset_emit` once `index.html` has painted its loading
-/// screen (two animation frames after the markup). Only an `office-object-<id>` window may send
-/// it, it reveals only that window, and it is never routed to another window.
-#[cfg(any(windows, test))]
-pub(super) const EDITOR_PAINTED: &str = "chemdraft://office-object-painted";
 
 /// Shows the editor if the page has not reported its first paint by then, so Office's
 /// activation never waits on the page: `open_window` answers DoVerb when the window is shown,
 /// well inside its 10 s limit.
 #[cfg(any(windows, test))]
 const REVEAL_FALLBACK: std::time::Duration = std::time::Duration::from_millis(1500);
-
-/// The window that may report a painted editor: the editor itself, never one of its utilities.
-#[cfg(any(windows, test))]
-pub(super) fn painted_sender(label: &str) -> Result<&str, String> {
-    owner_id(label).map(|_| label)
-}
-
-/// Editors built hidden whose DoVerb is still waiting for them to be shown, by label.
-#[cfg(windows)]
-static PENDING_REVEALS: std::sync::Mutex<
-    std::collections::BTreeMap<String, std::sync::mpsc::SyncSender<Result<(), String>>>,
-> = std::sync::Mutex::new(std::collections::BTreeMap::new());
-
-#[cfg(windows)]
-fn take_pending_reveal(label: &str) -> Option<std::sync::mpsc::SyncSender<Result<(), String>>> {
-    PENDING_REVEALS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(label)
-}
-
-/// Shows a hidden editor and answers the DoVerb waiting on it. Idempotent: only the first call
-/// for a window (the page's paint signal or the fallback timer) does anything. Main thread.
-#[cfg(windows)]
-pub(super) fn reveal(window: &tauri::WebviewWindow) {
-    use tauri::Manager;
-    let Some(opened) = take_pending_reveal(window.label()) else {
-        return;
-    };
-    let result = if window.state::<super::server::Server>().session_ending() {
-        Err("The Windows session is ending".to_string())
-    } else {
-        window
-            .show()
-            .and_then(|_| window.set_focus())
-            .map_err(|e| e.to_string())
-    };
-    let failed = result.is_err();
-    if opened.send(result).is_err() || failed {
-        let _ = window.destroy();
-    }
-}
-
-/// `office_toolset_emit` with [`EDITOR_PAINTED`]: the page painted its loading screen.
-#[cfg(windows)]
-pub(super) fn editor_painted(window: &tauri::WebviewWindow) -> Result<(), String> {
-    painted_sender(window.label())?;
-    let target = window.clone();
-    window
-        .run_on_main_thread(move || reveal(&target))
-        .map_err(|error| error.to_string())
-}
 
 /// Longest container name carried into the loading message; matches `officeObjectLoading.ts`.
 #[cfg(any(windows, test))]
@@ -367,7 +307,7 @@ pub(super) fn open_window(
         let label = format!("office-object-{id}");
         if let Some(window) = handle.get_webview_window(&label) {
             // A first activation still waiting for its paint is answered before this one.
-            reveal(&window);
+            crate::first_paint::show_after_first_paint(&window);
             let result = window
                 .set_title(&title)
                 .and_then(|_| window.unminimize())
@@ -390,19 +330,20 @@ pub(super) fn open_window(
             .filter(|_| cfg!(debug_assertions))
             .map(|url| url.origin());
         let (red, green, blue) = EDITOR_BACKGROUND;
-        let result = WebviewWindowBuilder::new(
-            &handle,
-            &label,
-            WebviewUrl::App(editor_url(&id, &container_app).into()),
+        let result = crate::first_paint::hidden_until_first_paint(
+            WebviewWindowBuilder::new(
+                &handle,
+                &label,
+                WebviewUrl::App(editor_url(&id, &container_app).into()),
+            )
+            .title(&title)
+            .inner_size(900.0, 640.0)
+            .on_navigation(move |url| {
+                url.origin().ascii_serialization() == "http://tauri.localhost"
+                    || dev_origin.as_ref() == Some(&url.origin())
+            }),
+            tauri::window::Color(red, green, blue, 0xff),
         )
-        .title(&title)
-        .visible(false)
-        .background_color(tauri::window::Color(red, green, blue, 0xff))
-        .inner_size(900.0, 640.0)
-        .on_navigation(move |url| {
-            url.origin().ascii_serialization() == "http://tauri.localhost"
-                || dev_origin.as_ref() == Some(&url.origin())
-        })
         .build();
         match result {
             Ok(window) => {
@@ -419,8 +360,6 @@ pub(super) fn open_window(
                             for &subscription in &subscriptions {
                                 app.unlisten(subscription);
                             }
-                            // Dropping the sender ends a DoVerb still waiting for the reveal.
-                            take_pending_reveal(editor.label());
                             signals.destroyed();
                         }
                         WindowEvent::Moved(_) => {
@@ -447,20 +386,30 @@ pub(super) fn open_window(
                 ) {
                     // Stay hidden until index.html has painted its loading screen, so the
                     // WebView2 surface is never seen before the page's first frame. The page
-                    // reports the paint (`editor_painted`); the timer covers a page that never
-                    // does. Either one shows the window and answers DoVerb, once.
-                    Ok(()) => {
-                        PENDING_REVEALS
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .insert(label, opened);
-                        let fallback = window.clone();
-                        std::thread::spawn(move || {
-                            std::thread::sleep(REVEAL_FALLBACK);
-                            let target = fallback.clone();
-                            let _ = fallback.run_on_main_thread(move || reveal(&target));
-                        });
-                    }
+                    // reports the paint (`window_first_paint`); the timer covers a page that
+                    // never does. Either one shows the window and answers DoVerb, once; a window
+                    // destroyed first drops `opened`, which ends the DoVerb wait.
+                    Ok(()) => crate::first_paint::arm_first_paint_fallback_with(
+                        &window,
+                        REVEAL_FALLBACK,
+                        |window| {
+                            if window.state::<super::server::Server>().session_ending() {
+                                Err("The Windows session is ending".to_string())
+                            } else {
+                                Ok(())
+                            }
+                        },
+                        move |window, shown| {
+                            // The user just activated the object: the editor takes focus.
+                            let result = shown.and_then(|()| {
+                                window.set_focus().map_err(|error| error.to_string())
+                            });
+                            let failed = result.is_err();
+                            if opened.send(result).is_err() || failed {
+                                let _ = window.destroy();
+                            }
+                        },
+                    ),
                     Err(error) => {
                         let _ = opened.send(Err(error.to_string()));
                         let _ = window.destroy();
@@ -539,8 +488,15 @@ mod tests {
         let builder = &source[source.find("WebviewWindowBuilder::new(").unwrap()..];
         let builder = &builder[..builder.find(".build()").unwrap()];
         assert!(builder.contains("editor_url(&id, &container_app)"));
-        assert!(builder.contains(".visible(false)"));
-        assert!(builder.contains(".background_color(tauri::window::Color(red, green, blue, 0xff))"));
+        assert!(!builder.contains(".visible("));
+        assert!(!builder.contains(".background_color("));
+        let open = &source[source.find("pub(super) fn open_window(").unwrap()..];
+        let step = &open[open
+            .find("crate::first_paint::hidden_until_first_paint(")
+            .unwrap()..];
+        let step = &step[..step.find(".build();").unwrap()];
+        assert!(step.contains("WebviewWindowBuilder::new("));
+        assert!(step.contains("tauri::window::Color(red, green, blue, 0xff),\n        )"));
     }
 
     #[test]
@@ -551,35 +507,48 @@ mod tests {
             let rest = &source[start..];
             &rest[..rest.find("\n}\n").unwrap()]
         };
-        // Nothing shows the new window between build and the pending reveal.
+        // Nothing shows the new window between build and the first-paint reveal.
         let open = body("pub(super) fn open_window(");
         let built = &open[open.find(".build();").unwrap()..];
         assert!(
             !built.contains(".show()"),
             "open_window shows the editor before it paints"
         );
-        let pending = &built[built.find("Ok(()) => {").unwrap()..];
+        let pending = &built[built.find("Ok(()) => ").unwrap()..];
         let pending = &pending[..pending.find("Err(error) => {").unwrap()];
-        assert!(pending.contains(".insert(label, opened);"));
-        assert!(pending.contains("std::thread::sleep(REVEAL_FALLBACK);"));
-        assert!(pending.contains("run_on_main_thread(move || reveal(&target))"));
+        assert!(pending.starts_with(
+            "Ok(()) => crate::first_paint::arm_first_paint_fallback_with(\n                        &window,\n                        REVEAL_FALLBACK,"
+        ));
         assert_eq!(REVEAL_FALLBACK, std::time::Duration::from_millis(1500));
+        // The helper shows; the editor declines during session end, then focuses and answers
+        // DoVerb with the result.
+        assert!(pending.contains("session_ending()"));
+        assert!(pending.contains("shown.and_then(|()| {"));
+        assert!(pending.contains("window.set_focus()"));
+        assert!(pending.contains("opened.send(result).is_err() || failed"));
         // A second activation of a still-hidden editor answers the first one too.
         let existing = &open[open.find("get_webview_window(&label)").unwrap()..];
-        assert!(existing[..existing.find(".set_title(").unwrap()].contains("reveal(&window);"));
-        // A destroyed editor releases its waiting DoVerb.
-        assert!(open.contains("take_pending_reveal(editor.label());"));
+        assert!(existing[..existing.find(".set_title(").unwrap()]
+            .contains("crate::first_paint::show_after_first_paint(&window);"));
+        // The old office-only reveal path is gone.
+        for removed in [
+            "PENDING_REVEALS",
+            "take_pending_reveal",
+            "fn editor_painted",
+            "fn painted_sender",
+            "office-object-painted",
+        ] {
+            assert!(!code_only(source).contains(removed), "{removed}");
+        }
+    }
 
-        // The page's paint signal and the timer both go through one idempotent reveal.
-        let reveal = body("pub(super) fn reveal(");
-        let taken = reveal.find("take_pending_reveal(window.label())").unwrap();
-        assert!(reveal[taken..].contains("else {\n        return;\n    };"));
-        assert!(reveal.find(".show()").unwrap() > taken);
-        assert!(reveal.contains(".set_focus()"));
-        assert!(reveal.contains("opened.send(result).is_err() || failed"));
-        let painted = body("pub(super) fn editor_painted(");
-        assert!(painted.contains("painted_sender(window.label())?;"));
-        assert!(painted.contains("run_on_main_thread(move || reveal(&target))"));
+    fn code_only(source: &str) -> String {
+        let source = &source[..source.find("#[cfg(test)]\nmod tests").unwrap()];
+        source
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]

@@ -24,6 +24,7 @@ fn main() {
             "office_object_update",
             "office_object_close",
             "prepare_office_editors_for_update",
+            "window_first_paint",
             "popup_canvas_context_menu",
             "file_warnings_open",
             "file_warnings_request",

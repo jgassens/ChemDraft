@@ -17,6 +17,7 @@
     "allow-office-toolset-emit",
     "allow-office-object-update",
     "allow-office-object-close",
+    "allow-window-first-paint",
     "allow-read-clipboard-payload",
     "allow-write-clipboard-items",
     "allow-rasterize-svg",
