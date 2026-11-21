@@ -1,15 +1,20 @@
 import type { ChemDraftDocument, MoleculeObject } from "@chemdraft/chem-core";
 import { nameStructure, type StructureNameDeps } from "@chemdraft/document-workflow-core";
 import type { PluginSelectionSnapshot, PluginStructureToNameResult } from "@chemdraft/plugin-api";
+import { resolveObjectOnPage } from "@chemdraft/plugin-host";
 import { loadRdkitWithAppLoader } from "./rdkitAppLoader";
+import { selectionPageId } from "./selectionSnapshot";
 import type { StructureNamingEngine, StructureNamingEngineStatus, StructureNamingRawResult } from "./structureNamingEngine";
 
 /** Always read the molecule from the document, never from plugin-provided chemistry. */
 export function scopedNamingMolecule(document: ChemDraftDocument | undefined, selection: PluginSelectionSnapshot | undefined,
   objectId: string): MoleculeObject {
-  const pageId = selection?.molecules.find(molecule => molecule.objectId === objectId)?.pageId;
-  const page = pageId ? document?.pages.find(page => page.id === pageId) : document?.pages[0];
-  const molecule = page?.objects.find(object => object.id === objectId && object.type === "molecule");
+  // Read on the page the snapshot resolved the id on, else on the selection's page: never by bare id,
+  // which would reach a same-id molecule on another page (object ids are unique per page only).
+  const pageId = selection?.molecules.find(molecule => molecule.objectId === objectId)?.pageId
+    ?? (document ? selectionPageId(document) : undefined);
+  const page = document?.pages.find(page => page.id === pageId);
+  const molecule = page && document ? resolveObjectOnPage(document, page.id, objectId)?.object : undefined;
   const ids = selection?.objectIds ?? [];
   const inScope = ids.length ? ids.includes(objectId) : page?.objects.filter(object => object.type === "molecule").length === 1;
   if (!molecule || molecule.type !== "molecule" || !inScope) throw new Error("Structure naming requires a molecule in the current selection, or the page's only molecule when nothing is selected.");

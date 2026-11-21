@@ -3,6 +3,7 @@ import { PluginStructureToNameResultSchema } from "@chemdraft/plugin-api";
 import { nameStructure, verifyNameRoundTrip } from "@chemdraft/document-workflow-core";
 import { createPhase4Document } from "../documentWorkflow";
 import { nameStructureForPlugin, namingReadBack, scopedNamingMolecule } from "./pluginStructureNaming";
+import { buildPluginSelectionSnapshot } from "./selectionSnapshot";
 import { fakeNamingEngine, namingInstalled, namingMolecule, namingRaw } from "./structureNamingTestFixtures";
 
 describe("pluginStructureNaming uses the real naming policy", () => {
@@ -85,5 +86,26 @@ describe("pluginStructureNaming uses the real naming policy", () => {
     doc.pages[0]!.objects.push({ ...namingMolecule, id: "m2" });
     expect(() => scopedNamingMolecule(doc, undefined, "m1")).toThrow();
     expect(scopedNamingMolecule(doc, { objectIds: ["m1"], molecules: [] }, "m1")).toBe(namingMolecule);
+  });
+  it("reads the selected FIRST duplicate, not a same-id molecule on a later page", () => {
+    const doc = createPhase4Document();
+    const pageA = doc.pages[0]!;
+    const onA = { ...namingMolecule, id: "X" };
+    const onB = { ...namingMolecule, id: "X", structure: "CCN" };
+    doc.pages = [{ ...pageA, objects: [onA] }, { ...pageA, id: "page_B", objects: [onB] }];
+    doc.selection = { pageId: pageA.id, objectIds: ["X"] };
+    const selection = buildPluginSelectionSnapshot(doc);
+    expect(selection.molecules).toMatchObject([{ objectId: "X", pageId: pageA.id }]);
+    expect(scopedNamingMolecule(doc, selection, "X")).toBe(onA);
+    doc.selection = { pageId: "page_B", objectIds: ["X"] };
+    expect(scopedNamingMolecule(doc, buildPluginSelectionSnapshot(doc), "X")).toBe(onB);
+  });
+  it("never reads another page's same-id molecule for a selected id the snapshot does not carry", () => {
+    const doc = createPhase4Document();
+    const pageA = doc.pages[0]!;
+    doc.pages = [{ ...pageA, objects: [{ ...namingMolecule, id: "X" }] },
+      { ...pageA, id: "page_B", objects: [{ id: "X", type: "text", x: 0, y: 0, width: 10, height: 10, rotation: 0, style: {}, text: "X" } as never] }];
+    doc.selection = { pageId: "page_B", objectIds: ["X"] };
+    expect(() => scopedNamingMolecule(doc, { objectIds: ["X"], molecules: [] }, "X")).toThrow(/current selection/);
   });
 });

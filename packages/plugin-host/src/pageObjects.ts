@@ -152,6 +152,38 @@ export function pinSelectionPages(document: ChemDraftDocument | undefined, objec
   return { pages, ambiguous };
 }
 
+/**
+ * Resolve selected ids for READING, with the same page binding the write scope gives them
+ * (legacyWriteScopePages, then scopedObjectPage): an id on `pageId` resolves there, even when the id
+ * also exists on other pages; an id absent from `pageId` resolves on its only page; an id on several
+ * other pages, or on none, is omitted. One pass over the document, so large selections stay linear.
+ */
+export function resolveSelectedObjects(document: ChemDraftDocument, objectIds: Iterable<string>,
+  pageId: string | undefined): Map<string, PageObjectLocation> {
+  const wanted = new Set(objectIds);
+  const onPage = new Map<string, PageObjectLocation>();
+  // null marks an id found on more than one other page.
+  const elsewhere = new Map<string, PageObjectLocation | null>();
+  for (const page of document.pages) {
+    for (const object of page.objects) {
+      if (!wanted.has(object.id)) continue;
+      if (page.id === pageId) {
+        if (!onPage.has(object.id)) onPage.set(object.id, { page, object });
+        continue;
+      }
+      const seen = elsewhere.get(object.id);
+      if (seen === undefined) elsewhere.set(object.id, { page, object });
+      else if (seen !== null && seen.page !== page) elsewhere.set(object.id, null);
+    }
+  }
+  const resolved = new Map<string, PageObjectLocation>();
+  for (const objectId of wanted) {
+    const location = onPage.get(objectId) ?? elsewhere.get(objectId);
+    if (location) resolved.set(objectId, location);
+  }
+  return resolved;
+}
+
 /** Each scoped id as a page reference, for placement beside the selection. Unresolvable ids are omitted. */
 export function scopedObjectRefs(document: ChemDraftDocument, objectIds: Iterable<string>,
   scopePages?: PluginWriteScopePages): PageObjectRef[] {

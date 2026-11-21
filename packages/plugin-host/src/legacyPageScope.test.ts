@@ -1,6 +1,7 @@
 import { applyPatch, createEmptyDocument, toEngineDocument, type ChemDraftDocument, type DocumentObject, type MoleculeObject } from "@chemdraft/chem-core";
 import { describe, expect, it, vi } from "vitest";
-import { assertPluginDocumentWriteScope, assertPluginPatchWriteScope, PluginHost, type PluginPatchApplicationRequest } from "./index";
+import { assertPluginDocumentWriteScope, assertPluginPatchWriteScope, legacyWriteScopePages, PluginHost, resolveSelectedObjects, scopedObjectPage,
+  type PluginPatchApplicationRequest } from "./index";
 
 const now = "2026-11-21T00:00:00.000Z";
 const molecule = (id: string, x: number): MoleculeObject => ({
@@ -152,5 +153,25 @@ describe("legacy page binding follows the Send-time selection", () => {
     await expect(f.host.invokeCommand("plugin.pages.run", { writeSelection: { objectIds: ["X"], molecules: [] } }))
       .rejects.toThrow("X was not selected when the command started");
     expect(f.document().pages[0]!.objects[0]).toEqual(original.pages[0]!.objects[0]);
+  });
+});
+
+describe("resolveSelectedObjects (read-side page binding)", () => {
+  const pagesDocument = (pages: Array<[string, string[]]>, selection: { pageId?: string; objectIds: string[] }) => ({
+    id: "doc", selection,
+    pages: pages.map(([id, ids]) => ({ id, objects: ids.map(objectId => ({ id: objectId, type: "text", text: `${id}:${objectId}` })) }))
+  }) as unknown as ChemDraftDocument;
+
+  it("resolves the selected FIRST duplicate on the selection page, and agrees with the write binding", () => {
+    const document = pagesDocument([["pA", ["X", "Y"]], ["pB", ["X", "U", "D"]], ["pC", ["D"]]], { pageId: "pA", objectIds: ["X", "U", "D", "Y", "gone"] });
+    const resolved = resolveSelectedObjects(document, document.selection.objectIds, "pA");
+    expect([...resolved].map(([id, location]) => [id, location.page.id])).toEqual([["X", "pA"], ["U", "pB"], ["Y", "pA"]]);
+    expect(resolved.get("X")!.object).toBe(document.pages[0]!.objects[0]);
+    const pins = legacyWriteScopePages(document, document.selection.objectIds);
+    for (const objectId of document.selection.objectIds) {
+      expect(resolved.get(objectId)?.page.id).toBe(scopedObjectPage(document, objectId, pins));
+    }
+    expect(resolveSelectedObjects(document, ["X"], "pB").get("X")!.page.id).toBe("pB");
+    expect(resolveSelectedObjects(document, ["X"], "missing").has("X")).toBe(false);
   });
 });

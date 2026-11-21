@@ -86,7 +86,7 @@ function assertPluginPageWriteScope(before: ChemDraftDocument, after: ChemDraftD
 }
 
 export { bareIdTargetPage, duplicateIdRefusalMessage, pageNumberLabel, effectiveScopePages, objectInWriteScope, objectLocations, pinSelectionPages, resolveObjectOnPage,
-  resolveScopedObject, scopedObjectPage, scopedObjectRefs, type PageObjectLocation, type PageObjectRef,
+  resolveScopedObject, resolveSelectedObjects, scopedObjectPage, scopedObjectRefs, type PageObjectLocation, type PageObjectRef,
   type PluginWriteScopePages } from "./pageObjects";
 
 /** The legacy selection's page binding (Send time). Ids on `pageId` bind to it; see pinSelectionPages. */

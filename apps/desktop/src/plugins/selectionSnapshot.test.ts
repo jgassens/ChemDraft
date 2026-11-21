@@ -124,6 +124,55 @@ describe("buildPluginSelectionSnapshot", () => {
     (edited.pages[0].objects[0] as { structure: string }).structure = "CCO";
     expect(buildPluginSelectionSnapshot(edited).molecules[0].sourceFingerprint).not.toBe(before);
   });
+
+  // Object ids are unique per page, not per document (AGENTS.md section 7): resolve each selected id on
+  // the selection's page, never by a document-wide bare-id lookup.
+  function duplicatePages(selection: { pageId?: string; objectIds: string[] }, pageBObjects?: unknown[]): ChemDraftDocument {
+    return {
+      id: "doc1",
+      selection,
+      pages: [
+        { id: "pA", objects: [{ id: "X", type: "molecule", structureFormat: "smiles", structure: "CCO" }] },
+        { id: "pB", objects: pageBObjects ?? [{ id: "X", type: "molecule", structureFormat: "smiles", structure: "c1ccccc1" }] },
+        { id: "pC", objects: [
+          { id: "U", type: "molecule", structureFormat: "smiles", structure: "CN" },
+          { id: "D", type: "molecule", structureFormat: "smiles", structure: "CCl" }
+        ] },
+        { id: "pD", objects: [{ id: "D", type: "molecule", structureFormat: "smiles", structure: "CBr" }] }
+      ]
+    } as unknown as ChemDraftDocument;
+  }
+
+  it("reads the FIRST duplicate when it is the selected one, with its own page id", () => {
+    const document = duplicatePages({ pageId: "pA", objectIds: ["X"] });
+    const [molecule, ...rest] = buildPluginSelectionSnapshot(document).molecules;
+    expect(rest).toEqual([]);
+    expect(molecule).toMatchObject({ objectId: "X", pageId: "pA", structure: "CCO" });
+    expect(molecule!.sourceFingerprint).toBe(createStructureSourceFingerprint({
+      documentId: "doc1", pageId: "pA", objectId: "X", structureFormat: "smiles", structure: "CCO"
+    }));
+  });
+
+  it("reads a later duplicate when the selection is on its page", () => {
+    const document = duplicatePages({ pageId: "pB", objectIds: ["X"] });
+    expect(buildPluginSelectionSnapshot(document).molecules).toMatchObject([{ objectId: "X", pageId: "pB", structure: "c1ccccc1" }]);
+  });
+
+  it("never substitutes another page's molecule for a selected non-molecule", () => {
+    const document = duplicatePages({ pageId: "pB", objectIds: ["X"] }, [{ id: "X", type: "text", text: "label" }]);
+    expect(buildPluginSelectionSnapshot(document).molecules).toEqual([]);
+  });
+
+  it("resolves an id missing from the selection page only on its only page, and omits an ambiguous one", () => {
+    const document = duplicatePages({ pageId: "pA", objectIds: ["U", "D", "X"] });
+    expect(buildPluginSelectionSnapshot(document).molecules.map(({ objectId, pageId }) => [objectId, pageId]))
+      .toEqual([["U", "pC"], ["X", "pA"]]);
+  });
+
+  it("binds an unpaged selection to the first page, as the write scope does", () => {
+    const document = duplicatePages({ objectIds: ["X"] });
+    expect(buildPluginSelectionSnapshot(document).molecules).toMatchObject([{ objectId: "X", pageId: "pA", structure: "CCO" }]);
+  });
 });
 
 describe("pluginFacingStructure", () => {

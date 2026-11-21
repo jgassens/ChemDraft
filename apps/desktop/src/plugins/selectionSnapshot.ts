@@ -7,7 +7,7 @@ import {
   type PluginSelectionSnapshot,
   type PluginStructureFormat
 } from "@chemdraft/plugin-api";
-import type { RequestSnapshotBudget } from "@chemdraft/plugin-host";
+import { resolveSelectedObjects, type RequestSnapshotBudget } from "@chemdraft/plugin-host";
 
 /**
  * The structure a plugin should analyze for `molecule`.
@@ -187,6 +187,11 @@ function moleculeSourceFingerprint(
   return fingerprint;
 }
 
+/** The page a selection names its ids on; an unpaged selection binds to the first page, as legacyWriteScopePages does. */
+export function selectionPageId(document: ChemDraftDocument): string | undefined {
+  return document.selection.pageId ?? document.pages[0]?.id;
+}
+
 /**
  * Build a selection snapshot from the active document: for each selected molecule, its object /
  * page / document identity, structure, and a source fingerprint for staleness detection. Molecules
@@ -204,29 +209,26 @@ export function buildPluginSelectionSnapshot(
   const molecules: PluginSelectedMolecule[] = [];
   const snapshot = { objectIds: document.selection.objectIds, molecules };
   budget?.(snapshot);
-  const located = new Map<string, { pageId: string; molecule: MoleculeObject }>();
-  for (const page of document.pages) {
-    for (const object of page.objects) {
-      if (object.type === "molecule") {
-        located.set(object.id, { pageId: page.id, molecule: object });
-      }
-    }
-  }
+  // Object ids are unique per page, not per document. Resolve each selected id on the selection's page
+  // (for a request, the pinned document's Send-time selection), bound exactly as the write scope binds
+  // it, so a plugin never reads one page's molecule and then writes to a same-id object on another.
+  const located = resolveSelectedObjects(document, document.selection.objectIds, selectionPageId(document));
 
   for (const objectId of document.selection.objectIds) {
     const hit = located.get(objectId);
-    if (!hit) {
+    if (hit?.object.type !== "molecule") {
       continue;
     }
-    const facing = pluginFacingStructure(hit.molecule, warnings);
+    const pageId = hit.page.id;
+    const facing = pluginFacingStructure(hit.object, warnings);
     const molecule = {
       objectId,
       documentId: document.id,
-      pageId: hit.pageId,
+      pageId,
       structureFormat: facing.structureFormat,
       structure: facing.structure,
       // Retain stereo geometry while keeping pure translations and rotations out of the key.
-      sourceFingerprint: moleculeSourceFingerprint(document, hit.pageId, hit.molecule)
+      sourceFingerprint: moleculeSourceFingerprint(document, pageId, hit.object)
     };
     budget?.(molecule, molecules.length > 0 ? 1 : 0); // The empty array was charged with the snapshot header.
     molecules.push(molecule);
