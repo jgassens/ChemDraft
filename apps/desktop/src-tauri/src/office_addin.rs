@@ -446,6 +446,19 @@ impl Addin {
     }
 }
 
+/// The bytes of the regular file at `path`, or `None` if nothing is there.
+fn read_manifest(fs: &Fs, path: &Path) -> Result<Option<Vec<u8>>, Failure> {
+    match fs.lstat(path) {
+        Ok(metadata) if metadata.is_file() => Ok(Some(fs.read_regular_file(path, &metadata)?)),
+        Ok(_) => Err(Failure::other(format!(
+            "{} must be a regular file.",
+            path.display()
+        ))),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
 /// The manifest's status, plus its bytes when it is one of ChemDraft's, so a rollback can put the
 /// exact file back.
 fn manifest_status(
@@ -453,25 +466,15 @@ fn manifest_status(
     path: &Path,
     addin: &Addin,
 ) -> Result<(Status, Option<Vec<u8>>), Failure> {
-    match fs.lstat(path) {
-        Ok(metadata) if metadata.is_file() => {
-            let installed = fs.read_regular_file(path, &metadata)?;
-            let status = match std::str::from_utf8(&installed) {
-                Ok(xml) if addin.identifies(xml) && addin.is_current(xml) => {
-                    Status::InstalledSameVersion
-                }
-                Ok(xml) if addin.identifies(xml) => Status::InstalledOtherVersion,
-                _ => return Ok((Status::Unrecognized, None)),
-            };
-            Ok((status, Some(installed)))
-        }
-        Ok(_) => Err(Failure::other(format!(
-            "{} must be a regular file.",
-            path.display()
-        ))),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok((Status::NotInstalled, None)),
-        Err(error) => Err(error.into()),
-    }
+    let Some(installed) = read_manifest(fs, path)? else {
+        return Ok((Status::NotInstalled, None));
+    };
+    let status = match std::str::from_utf8(&installed) {
+        Ok(xml) if addin.identifies(xml) && addin.is_current(xml) => Status::InstalledSameVersion,
+        Ok(xml) if addin.identifies(xml) => Status::InstalledOtherVersion,
+        _ => return Ok((Status::Unrecognized, None)),
+    };
+    Ok((status, Some(installed)))
 }
 
 fn manifest_path(home: &Path, app: OfficeApp, addin: &Addin) -> PathBuf {
@@ -489,8 +492,6 @@ struct Plan {
     /// The container folders Install must create, outermost first.
     missing: Vec<PathBuf>,
     status: Status,
-    /// The ChemDraft manifest found at `path`, restored if the change has to be undone.
-    previous: Option<Vec<u8>>,
 }
 
 impl Plan {
@@ -527,17 +528,16 @@ fn inspect(fs: &Fs, home: &Path, app: OfficeApp, addin: &Addin) -> Result<Option
         }
     }
     let path = dir.join(addin.filename);
-    let (status, previous) = if missing.is_empty() {
-        manifest_status(fs, &path, addin)?
+    let status = if missing.is_empty() {
+        manifest_status(fs, &path, addin)?.0
     } else {
-        (Status::NotInstalled, None)
+        Status::NotInstalled
     };
     Ok(Some(Plan {
         app,
         path,
         missing,
         status,
-        previous,
     }))
 }
 
@@ -549,14 +549,32 @@ fn remove_created(fs: &Fs, created: &[PathBuf]) {
     }
 }
 
-/// Make one app's change. On failure nothing of it is left behind. Returns the folders it created
-/// so an undo can remove them, or `None` if the file was already gone (a Remove race).
-fn perform(
-    fs: &Fs,
-    plan: &Plan,
-    addin: &Addin,
-    action: Action,
-) -> Result<Option<Vec<PathBuf>>, Failure> {
+/// One app's change, as `undo` needs it.
+struct Change {
+    /// The folders it created, removed again by an undo.
+    created: Vec<PathBuf>,
+    /// What the file was just before the change: its status and, for a ChemDraft manifest, its
+    /// exact bytes.
+    status: Status,
+    previous: Option<Vec<u8>>,
+}
+
+enum Performed {
+    Changed(Change),
+    /// Remove found the file already gone.
+    Gone,
+    /// The file at the path is no longer one ChemDraft can identify as its own (replaced since
+    /// `inspect`), so it was left alone.
+    Unrecognized,
+}
+
+/// Make one app's change. On failure nothing of it is left behind.
+///
+/// The file is read again right before it is replaced or removed: `inspect` ran earlier, possibly
+/// before the other app's inspection waited on macOS's permission prompt, and the file may have
+/// been replaced since. Only a regular file that is still a ChemDraft manifest (or no file, for an
+/// Install) is changed.
+fn perform(fs: &Fs, plan: &Plan, addin: &Addin, action: Action) -> Result<Performed, Failure> {
     match action {
         Action::Install => {
             let mut created = Vec::new();
@@ -567,29 +585,86 @@ fn perform(
                 }
                 created.push(dir.clone());
             }
+            let (status, previous) = match manifest_status(fs, &plan.path, addin) {
+                Ok((Status::Unrecognized, _)) => {
+                    remove_created(fs, &created);
+                    return Ok(Performed::Unrecognized);
+                }
+                Ok(found) => found,
+                Err(failure) => {
+                    remove_created(fs, &created);
+                    return Err(failure);
+                }
+            };
             if let Err(error) = fs.write_atomic(&plan.path, addin.manifest.as_bytes()) {
                 remove_created(fs, &created);
                 return Err(error.into());
             }
-            Ok(Some(created))
+            Ok(Performed::Changed(Change {
+                created,
+                status,
+                previous,
+            }))
         }
-        Action::Remove => match fs.remove_file(&plan.path) {
-            Ok(()) => Ok(Some(Vec::new())),
-            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error.into()),
-        },
+        Action::Remove => {
+            let (status, previous) = match manifest_status(fs, &plan.path, addin)? {
+                (Status::Unrecognized, _) => return Ok(Performed::Unrecognized),
+                (Status::NotInstalled, _) => return Ok(Performed::Gone),
+                found => found,
+            };
+            match fs.remove_file(&plan.path) {
+                Ok(()) => Ok(Performed::Changed(Change {
+                    created: Vec::new(),
+                    status,
+                    previous,
+                })),
+                Err(error) if error.kind() == ErrorKind::NotFound => Ok(Performed::Gone),
+                Err(error) => Err(error.into()),
+            }
+        }
         #[cfg(test)]
-        Action::Status => Ok(None),
+        Action::Status => Ok(Performed::Gone),
     }
 }
 
-/// Put one app back as `inspect` found it.
-fn undo(fs: &Fs, plan: &Plan, created: &[PathBuf]) -> io::Result<()> {
-    match &plan.previous {
-        Some(previous) => fs.write_atomic(&plan.path, previous)?,
-        None => fs.remove_file(&plan.path)?,
+/// Why an undo left `path` alone: something replaced what ChemDraft wrote or removed there.
+fn replaced_since(path: &Path, current: Option<&[u8]>, addin: &Addin) -> Failure {
+    let ours = current
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .is_some_and(|xml| addin.identifies(xml));
+    Failure::other(if ours {
+        format!(
+            "{} changed while ChemDraft was working, so ChemDraft did not replace it.",
+            path.display()
+        )
+    } else {
+        format!(
+            "{} is not a ChemDraft add-in manifest, so ChemDraft did not replace it.",
+            path.display()
+        )
+    })
+}
+
+/// Put one app back as it was just before `perform` changed it. The file is read again first: it
+/// must still be exactly what the change left (the manifest Install wrote, or nothing after a
+/// Remove), so an undo never overwrites or deletes a file something else put there.
+fn undo(
+    fs: &Fs,
+    path: &Path,
+    change: &Change,
+    addin: &Addin,
+    action: Action,
+) -> Result<(), Failure> {
+    let current = read_manifest(fs, path)?;
+    let expected = (action == Action::Install).then_some(addin.manifest.as_bytes());
+    if current.as_deref() != expected {
+        return Err(replaced_since(path, current.as_deref(), addin));
     }
-    remove_created(fs, created);
+    match &change.previous {
+        Some(previous) => fs.write_atomic(path, previous)?,
+        None => fs.remove_file(path)?,
+    }
+    remove_created(fs, &change.created);
     Ok(())
 }
 
@@ -626,7 +701,7 @@ fn change_both(fs: &Fs, home: &Path, addin: &Addin, action: Action) -> [OfficeAd
         return results;
     }
 
-    let mut done: Vec<(usize, Vec<PathBuf>)> = Vec::new();
+    let mut done: Vec<(usize, Change)> = Vec::new();
     for (index, inspection) in inspected.iter().enumerate() {
         let Ok(Some(plan)) = inspection else {
             continue;
@@ -635,8 +710,8 @@ fn change_both(fs: &Fs, home: &Path, addin: &Addin, action: Action) -> [OfficeAd
             continue;
         }
         match perform(fs, plan, addin, action) {
-            Ok(Some(created)) => {
-                done.push((index, created));
+            Ok(Performed::Changed(change)) => {
+                done.push((index, change));
                 results[index].changed = true;
                 results[index].status = if action == Action::Install {
                     Status::InstalledSameVersion
@@ -644,22 +719,25 @@ fn change_both(fs: &Fs, home: &Path, addin: &Addin, action: Action) -> [OfficeAd
                     Status::NotInstalled
                 };
             }
-            Ok(None) => results[index].status = Status::NotInstalled,
+            Ok(Performed::Gone) => results[index].status = Status::NotInstalled,
+            Ok(Performed::Unrecognized) => {
+                results[index] =
+                    OfficeAddinResult::status(home, plan.app, addin, Status::Unrecognized);
+            }
             Err(failure) => {
                 results[index] = OfficeAddinResult::failure(plan.app, &failure);
-                for (undone, created) in done.into_iter().rev() {
+                for (undone, change) in done.into_iter().rev() {
                     let Ok(Some(earlier)) = &inspected[undone] else {
                         continue;
                     };
                     let result = &mut results[undone];
-                    match undo(fs, earlier, &created) {
+                    match undo(fs, &earlier.path, &change, addin, action) {
                         Ok(()) => {
-                            result.status = earlier.status;
+                            result.status = change.status;
                             result.changed = false;
                             result.rolled_back = true;
                         }
-                        Err(error) => {
-                            let failure = Failure::from(error);
+                        Err(failure) => {
                             result.error = Some(format!(
                                 "ChemDraft could not undo this change after {} failed: {}",
                                 plan.app.name(),
@@ -1282,6 +1360,124 @@ mod tests {
         );
         assert_eq!((tree(&word), tree(&powerpoint)), installed);
         assert_eq!(fs::read_to_string(word_manifest).unwrap(), addin.manifest);
+    }
+
+    /// A file swapped in after `inspect`, here while PowerPoint is being inspected (where macOS's
+    /// permission prompt can wait), is read again before it is replaced or removed.
+    #[test]
+    fn a_manifest_replaced_between_inspect_and_change_is_left_alone() {
+        let addin = Addin::for_build(STABLE_IDENTIFIER, false, Some(""));
+        let foreign = addin.manifest.replace(
+            "<ProviderName>ChemDraft</ProviderName>",
+            "<ProviderName>Someone Else</ProviderName>",
+        );
+        let older = addin.manifest.replace("<Version>", "<Version>9");
+        for action in [Action::Install, Action::Remove] {
+            let (home, word, powerpoint) = office_home();
+            let word_wef = word.join("Data").join("Documents").join("wef");
+            fs::create_dir_all(&word_wef).unwrap();
+            let word_manifest = word_wef.join(addin.filename);
+            let installed = if action == Action::Install {
+                older.as_str()
+            } else {
+                apply(&home.0, &addin, Action::Install);
+                addin.manifest.as_ref()
+            };
+            fs::write(&word_manifest, installed).unwrap();
+            let swapped = std::cell::Cell::new(false);
+            let swap = |op, path: &Path| {
+                if op == Op::Inspect && path.starts_with(&powerpoint) && !swapped.replace(true) {
+                    fs::write(&word_manifest, &foreign).unwrap();
+                }
+                Ok(())
+            };
+            let [word_result, powerpoint_result] =
+                apply_with(&Fs { gate: &swap }, &home.0, &addin, action);
+            assert!(swapped.get());
+            assert_eq!(
+                (word_result.status, word_result.changed, word_result.error),
+                (Status::Unrecognized, false, None),
+                "{action:?}"
+            );
+            assert_eq!(
+                word_result.path.as_deref(),
+                Some(word_manifest.to_str().unwrap())
+            );
+            assert_eq!(fs::read_to_string(&word_manifest).unwrap(), foreign);
+            assert_eq!(fs::read_dir(&word_wef).unwrap().count(), 1);
+            // An unrecognized file skips its app, as at inspect time; the other app proceeds.
+            assert!(powerpoint_result.changed, "{action:?}");
+            assert_eq!(
+                manifest_path(&home.0, OfficeApp::PowerPoint, &addin).exists(),
+                action == Action::Install
+            );
+        }
+    }
+
+    /// An undo reads the file again and puts the old one back only over exactly what the change
+    /// left: the manifest it wrote, or nothing after a Remove.
+    #[test]
+    fn an_undo_never_replaces_a_file_swapped_in_after_the_change() {
+        let addin = Addin::for_build(STABLE_IDENTIFIER, false, Some(""));
+        let foreign = addin.manifest.replace(
+            "<ProviderName>ChemDraft</ProviderName>",
+            "<ProviderName>Someone Else</ProviderName>",
+        );
+        let older = addin.manifest.replace("<Version>", "<Version>9");
+        for (action, swapped_in, says) in [
+            (
+                Action::Install,
+                foreign.as_str(),
+                "is not a ChemDraft add-in manifest, so ChemDraft did not replace it.",
+            ),
+            (
+                Action::Install,
+                older.as_str(),
+                "changed while ChemDraft was working, so ChemDraft did not replace it.",
+            ),
+            (
+                Action::Remove,
+                foreign.as_str(),
+                "is not a ChemDraft add-in manifest, so ChemDraft did not replace it.",
+            ),
+        ] {
+            let (home, _word, powerpoint) = office_home();
+            if action == Action::Remove {
+                apply(&home.0, &addin, Action::Install);
+            }
+            let word_manifest = manifest_path(&home.0, OfficeApp::Word, &addin);
+            // PowerPoint's change is denied; just before, something replaces Word's file.
+            let op = if action == Action::Install {
+                Op::Write
+            } else {
+                Op::Remove
+            };
+            let gate = |seen, path: &Path| {
+                if seen == op && path.starts_with(&powerpoint) {
+                    fs::write(&word_manifest, swapped_in).unwrap();
+                    return Err(io::Error::from_raw_os_error(1));
+                }
+                Ok(())
+            };
+            let [word_result, powerpoint_result] =
+                apply_with(&Fs { gate: &gate }, &home.0, &addin, action);
+            assert_eq!(
+                powerpoint_result.error_kind,
+                Some(FailureKind::PermissionDenied)
+            );
+            assert!(!word_result.rolled_back);
+            assert_eq!(word_result.error_kind, Some(FailureKind::Other));
+            let error = word_result.error.unwrap();
+            assert!(
+                error.starts_with("ChemDraft could not undo this change after PowerPoint failed: "),
+                "{error}"
+            );
+            assert!(
+                error.ends_with(&format!("{} {says}", word_manifest.display())),
+                "{error}"
+            );
+            assert_eq!(fs::read_to_string(&word_manifest).unwrap(), swapped_in);
+        }
     }
 
     #[test]

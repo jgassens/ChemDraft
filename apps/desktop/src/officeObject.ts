@@ -16,6 +16,7 @@ export const OFFICE_CLOSE_COMMAND_ID = "office.closeEmbeddedObject";
 // Read by office_object_update in src-tauri/src/office_ole/bridge.rs.
 const SESSION_PUBLISH_HEADER = "x-chemdraft-session-publish";
 const SESSION_UNCHANGED_HEADER = "x-chemdraft-session-unchanged";
+const SESSION_FAILED_HEADER = "x-chemdraft-session-failed";
 
 const standaloneCommands = new Set([
   "document.new", "document.open", "document.saveAs", "export.open",
@@ -204,21 +205,39 @@ export function useOfficeObject(objectId: string | undefined, editor: OfficeObje
       let resume!: () => void;
       const done = new Promise<void>(resolve => { resume = resolve; });
       sessionPublish.current = { id, done, cancel: () => { thaw(); resume(); } };
+      // A drawing that could not be rendered or sent is reported to ChemDraft as unsent, so it
+      // keeps the session end refused and writes a recovery copy, and the editor unlocks so the
+      // user can update or close it again. Nothing resends this request.
+      const fail = async () => {
+        if (disposed || sessionPublish.current?.id !== id) return;
+        try {
+          await invoke("office_object_update", new Uint8Array(0), {
+            headers: { [SESSION_PUBLISH_HEADER]: String(id), [SESSION_FAILED_HEADER]: "1" }
+          });
+        } catch {
+          // The request expired or the app is going away; the unlock below still applies.
+        }
+        if (sessionPublish.current?.id !== id) return;
+        sessionPublish.current.cancel();
+        sessionPublish.current = undefined;
+      };
       void ready.catch(() => undefined).then(async () => {
         if (disposed || sessionPublish.current?.id !== id) return;
         const published = publishedDocument.current;
         if (published && (pendingUpdate.current ||
             !assistantDocumentContentUnchanged(published, editorRef.current.readDocument()))) {
-          await publish(id);
+          // publish reports its own failure in the status line.
+          if (!await publish(id)) await fail();
           return;
         }
         // Office already holds this drawing, or the editor never loaded one it could change.
         await invoke("office_object_update", new Uint8Array(0), {
           headers: { [SESSION_PUBLISH_HEADER]: String(id), [SESSION_UNCHANGED_HEADER]: "1" }
         });
-      }).catch(error => {
+      }).catch(async error => {
         if (!disposed && sessionPublish.current?.id === id) {
           editorRef.current.setStatus(`Could not answer the Windows session end: ${diagnostic(error)}`);
+          await fail();
         }
       });
     };

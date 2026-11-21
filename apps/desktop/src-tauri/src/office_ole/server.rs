@@ -295,6 +295,12 @@ impl Server {
         pending
     }
 
+    /// The renderer could not render or send its drawing: the editor stays at risk with a
+    /// recovery copy instead of being waited on.
+    pub(super) fn session_publish_failed(&self, request: u32, editor: &str) -> bool {
+        self.control.tracker.lock().unwrap().unsent(request, editor)
+    }
+
     pub(super) fn session_unchanged(&self, request: u32, editor: &str) -> bool {
         self.control
             .tracker
@@ -1163,6 +1169,35 @@ impl IOleObject_Impl for Embedded_Impl {
         )
         .map_err(|e| Error::new(E_FAIL, e))?;
         if !was_open {
+            // One decision under the tracker's lock: either this editor is registered before a
+            // Windows session end takes its snapshot, or a session end that began while the
+            // window was opening refuses it. A refused editor would be asked for nothing and get
+            // no recovery copy, so its window goes and the activation fails. Nothing else has
+            // been recorded for it yet.
+            let json = self.content.borrow().json.clone();
+            let registered = self.sta.control.tracker.lock().unwrap().opened(
+                &id,
+                &container_app,
+                &container_document,
+                &json,
+            );
+            if !registered {
+                if let Some(window) = self
+                    .sta
+                    .app
+                    .get_webview_window(&format!("office-object-{id}"))
+                {
+                    if let Err(error) = window.destroy() {
+                        eprintln!(
+                            "Could not close the Office editor refused at session end: {error}"
+                        );
+                    }
+                }
+                return Err(Error::new(
+                    OLE_E_NOTRUNNING,
+                    "The Windows session is ending",
+                ));
+            }
             self.session.replace(Some(id.clone()));
             self.signals.replace(Some(signals));
             {
@@ -1177,13 +1212,6 @@ impl IOleObject_Impl for Embedded_Impl {
             if let Some(previous) = &previous {
                 self.sta.editor_closed(previous);
             }
-            let json = self.content.borrow().json.clone();
-            self.sta.control.tracker.lock().unwrap().opened(
-                &id,
-                &container_app,
-                &container_document,
-                &json,
-            );
             if let Some(site) = self.site.borrow().clone() {
                 unsafe {
                     let _ = site.OnShowWindow(true);

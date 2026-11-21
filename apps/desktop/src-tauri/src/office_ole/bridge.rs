@@ -107,20 +107,27 @@ enum SessionReply {
     Drawing(u32),
     /// Office already holds everything this editor shows; the body is ignored.
     Unchanged(u32),
+    /// The editor could not render or send its drawing; the body is ignored. The editor stays
+    /// at risk with a recovery copy instead of being waited on.
+    Failed(u32),
 }
 
 #[cfg(any(windows, test))]
 const SESSION_PUBLISH_HEADER: &str = "x-chemdraft-session-publish";
 #[cfg(any(windows, test))]
 const SESSION_UNCHANGED_HEADER: &str = "x-chemdraft-session-unchanged";
+#[cfg(any(windows, test))]
+const SESSION_FAILED_HEADER: &str = "x-chemdraft-session-failed";
 
 #[cfg(any(windows, test))]
 fn session_reply(headers: &tauri::http::HeaderMap) -> Result<Option<SessionReply>, String> {
     let unchanged = headers.get(SESSION_UNCHANGED_HEADER);
+    let failed = headers.get(SESSION_FAILED_HEADER);
     let Some(value) = headers.get(SESSION_PUBLISH_HEADER) else {
-        return match unchanged {
-            Some(_) => Err("An unchanged Office reply needs a session-end request".into()),
-            None => Ok(None),
+        return match (unchanged, failed) {
+            (None, None) => Ok(None),
+            (Some(_), _) => Err("An unchanged Office reply needs a session-end request".into()),
+            (None, Some(_)) => Err("A failed Office reply needs a session-end request".into()),
         };
     };
     let request = value
@@ -128,10 +135,18 @@ fn session_reply(headers: &tauri::http::HeaderMap) -> Result<Option<SessionReply
         .ok()
         .and_then(|value| value.parse::<u32>().ok())
         .ok_or("Invalid Office session-end publish request")?;
-    match unchanged.map(|value| value.as_bytes()) {
-        None => Ok(Some(SessionReply::Drawing(request))),
-        Some(b"1") => Ok(Some(SessionReply::Unchanged(request))),
-        Some(_) => Err("Invalid Office session-end unchanged marker".into()),
+    match (
+        unchanged.map(|value| value.as_bytes()),
+        failed.map(|value| value.as_bytes()),
+    ) {
+        (None, None) => Ok(Some(SessionReply::Drawing(request))),
+        (Some(b"1"), None) => Ok(Some(SessionReply::Unchanged(request))),
+        (None, Some(b"1")) => Ok(Some(SessionReply::Failed(request))),
+        (Some(_), Some(_)) => {
+            Err("An Office session-end reply cannot be both unchanged and failed".into())
+        }
+        (Some(_), None) => Err("Invalid Office session-end unchanged marker".into()),
+        (None, Some(_)) => Err("Invalid Office session-end failure marker".into()),
     }
 }
 
@@ -148,6 +163,13 @@ pub(crate) async fn office_object_update(
         let session = match session_reply(request.headers())? {
             Some(SessionReply::Unchanged(publish)) => {
                 if !server.session_unchanged(publish, &id) {
+                    return Err("The Office session-end publish request has expired".into());
+                }
+                crate::windows_session_end::office_session_changed(window.app_handle());
+                return Ok(());
+            }
+            Some(SessionReply::Failed(publish)) => {
+                if !server.session_publish_failed(publish, &id) {
                     return Err("The Office session-end publish request has expired".into());
                 }
                 crate::windows_session_end::office_session_changed(window.app_handle());
@@ -250,9 +272,11 @@ const EDITOR_BACKGROUND: (u8, u8, u8) = (0xd8, 0xde, 0xe3);
 
 /// Shows the editor if the page has not reported its first paint by then, so Office's
 /// activation never waits on the page: `open_window` answers DoVerb when the window is shown,
-/// well inside its 10 s limit.
+/// well inside its 10 s limit. On Windows the page reported its first paint 1.35 s after the
+/// hidden window was built, too close to the earlier 1.5 s; 4 s leaves room and still answers
+/// Office well within its limit.
 #[cfg(any(windows, test))]
-const REVEAL_FALLBACK: std::time::Duration = std::time::Duration::from_millis(1500);
+const REVEAL_FALLBACK: std::time::Duration = std::time::Duration::from_millis(4000);
 
 /// Longest container name carried into the loading message; matches `officeObjectLoading.ts`.
 #[cfg(any(windows, test))]
@@ -521,7 +545,7 @@ mod tests {
         assert!(pending.starts_with(
             "Ok(()) => crate::first_paint::arm_first_paint_fallback_with(\n                &window,\n                REVEAL_FALLBACK,"
         ));
-        assert_eq!(REVEAL_FALLBACK, std::time::Duration::from_millis(1500));
+        assert_eq!(REVEAL_FALLBACK, std::time::Duration::from_millis(4000));
         // The helper shows; the editor declines during session end, then focuses and answers
         // DoVerb with the result.
         assert!(pending.contains("session_ending()"));
@@ -640,8 +664,22 @@ mod tests {
             ])),
             Ok(Some(SessionReply::Unchanged(54)))
         );
+        assert_eq!(
+            session_reply(&headers(&[
+                (SESSION_PUBLISH_HEADER, "54"),
+                (SESSION_FAILED_HEADER, "1")
+            ])),
+            Ok(Some(SessionReply::Failed(54)))
+        );
         for bad in [
             &[(SESSION_UNCHANGED_HEADER, "1")][..],
+            &[(SESSION_FAILED_HEADER, "1")],
+            &[(SESSION_PUBLISH_HEADER, "54"), (SESSION_FAILED_HEADER, "0")],
+            &[
+                (SESSION_PUBLISH_HEADER, "54"),
+                (SESSION_UNCHANGED_HEADER, "1"),
+                (SESSION_FAILED_HEADER, "1"),
+            ],
             &[(SESSION_PUBLISH_HEADER, "x")],
             &[(SESSION_PUBLISH_HEADER, "-1")],
             &[

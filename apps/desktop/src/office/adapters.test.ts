@@ -148,12 +148,15 @@ interface PptxOptions {
   relationships?: string;
   /** Animate the picture (p:timing targeting spid 22). */
   animated?: boolean;
+  /** The picture fills a slide layout placeholder (p:nvPicPr/p:nvPr/p:ph). */
+  placeholder?: boolean;
 }
 
 function pptx({ rotation = 0, crop = false, group = false, noCarrier = false, properties = {}, shapeProperties = "",
-  relationships = "", animated = false }: PptxOptions = {}) {
+  relationships = "", animated = false, placeholder = false }: PptxOptions = {}) {
   const picture = '<p:pic><p:nvPicPr><p:cNvPr id="22" name="Original figure"' + (properties.attributes ?? "") + '>' +
-    (properties.children ?? "") + '</p:cNvPr></p:nvPicPr>' +
+    (properties.children ?? "") + '</p:cNvPr>' +
+    (placeholder ? '<p:cNvPicPr/><p:nvPr><p:ph type="pic" idx="13"/></p:nvPr>' : "") + '</p:nvPicPr>' +
     '<p:blipFill><a:blip r:embed="rId7"/><a:srcRect' + (crop ? ' t="1000"' : "") + '/></p:blipFill>' +
     '<p:spPr><a:xfrm rot="' + rotation * 60000 + '"/>' + shapeProperties + '</p:spPr></p:pic>';
   const wrapped = group ? "<p:grpSp>" + picture + "</p:grpSp>" : picture;
@@ -183,10 +186,14 @@ interface HostOptions extends PptxOptions {
   extraInsert?: boolean;
   /** Make the rollback unable to delete the inserted picture. */
   undeletable?: boolean;
+  /** Make delete() of the old picture throw. */
+  oldUndeletable?: boolean;
+  /** Setting the inserted picture decorative clears its title and description. */
+  decorativeClearsAltText?: boolean;
 }
 
 function powerpointHost({ version = 10, writableRotation = true, failSyncAfterInsert, extraInsert = false,
-  undeletable = false, ...pptxOptions }: HostOptions = {}) {
+  undeletable = false, oldUndeletable = false, decorativeClearsAltText = false, ...pptxOptions }: HostOptions = {}) {
   const rotation = pptxOptions.rotation ?? 0;
   const archive = pptx(pptxOptions);
   const sets = ["CompressedFile 1.1", "ImageCoercion 1.1"];
@@ -215,6 +222,7 @@ function powerpointHost({ version = 10, writableRotation = true, failSyncAfterIn
       }),
       delete: vi.fn((): void => {
         if (undeletable && id !== "22") throw new Error("Cannot delete.");
+        if (oldUndeletable && id === "22") throw new Error("Cannot delete the old picture.");
         const index = stack.findIndex(item => item.id === id);
         stack.splice(index, 1);
         mutations.push("delete:" + id);
@@ -240,9 +248,20 @@ function powerpointHost({ version = 10, writableRotation = true, failSyncAfterIn
   }) } satisfies PowerPointApi;
   host.document.setSelectedDataAsync.mockImplementation(
     (_base64: string, options: Parameters<OfficeDocument["setSelectedDataAsync"]>[1], done: Parameters<OfficeDocument["setSelectedDataAsync"]>[2]) => {
-      stack.push({ ...shape("24", "Inserted"), ...{ left: options.imageLeft, top: options.imageTop, width: options.imageWidth, height: options.imageHeight },
-        get zOrderPosition() { return stack.indexOf(this); },
-      });
+      const inserted = { ...shape("24", "Inserted"), ...{ left: options.imageLeft, top: options.imageTop, width: options.imageWidth, height: options.imageHeight },
+        get zOrderPosition(): number { return stack.indexOf(this); },
+      };
+      if (decorativeClearsAltText) {
+        let decorative = inserted.isDecorative;
+        Object.defineProperty(inserted, "isDecorative", {
+          get: () => decorative,
+          set(value: boolean) {
+            decorative = value;
+            if (value) Object.assign(inserted, { altTextTitle: "", altTextDescription: "" });
+          },
+        });
+      }
+      stack.push(inserted);
       if (extraInsert) stack.push({ ...shape("25", "Unrelated"), left: 400, get zOrderPosition() { return stack.indexOf(this); } });
       mutations.push("insert");
       syncsAfterInsert = 0;
@@ -342,6 +361,44 @@ describe("PowerPoint Office adapter", () => {
     expect(stack.find(item => item.id === "24")).toMatchObject({ altTextTitle: "", altTextDescription: "", isDecorative: true });
   });
 
+  it("refuses a decorative picture whose alt text PowerPoint did not keep and removes the new picture", async () => {
+    const decorative = '<a:extLst><a:ext uri="{C183D7F6-B498-43B3-948B-1728B52AA6E4}"><adec:decorative ' +
+      'xmlns:adec="http://schemas.microsoft.com/office/drawing/2017/decorative" val="1"/></a:ext></a:extLst>';
+    const { host, powerpoint, stack } = powerpointHost({
+      properties: { attributes: ' title="Benzene" descr="A benzene ring"', children: decorative }, decorativeClearsAltText: true,
+    });
+    const adapter = powerpointAdapter(host, powerpoint);
+    await adapter.readSelectedStructure();
+    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toMatchObject({
+      kind: "refusal", reason: expect.stringContaining("could not preserve the picture’s alt text"),
+    });
+    expect(stack.map(item => item.id)).toEqual(["21", "22", "23"]);
+  });
+
+  it("keeps a decorative picture's alt text when PowerPoint keeps it", async () => {
+    const decorative = '<a:extLst><a:ext uri="{C183D7F6-B498-43B3-948B-1728B52AA6E4}"><adec:decorative ' +
+      'xmlns:adec="http://schemas.microsoft.com/office/drawing/2017/decorative" val="1"/></a:ext></a:extLst>';
+    const { host, powerpoint, stack } = powerpointHost({
+      properties: { attributes: ' title="Benzene" descr="A benzene ring"', children: decorative },
+    });
+    const adapter = powerpointAdapter(host, powerpoint);
+    await adapter.readSelectedStructure();
+    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({ kind: "replaced" });
+    expect(stack.find(item => item.id === "24")).toMatchObject({
+      altTextTitle: "Benzene", altTextDescription: "A benzene ring", isDecorative: true,
+    });
+  });
+
+  it("names a slide layout placeholder in the warning after Update", async () => {
+    const { host, powerpoint, stack } = powerpointHost({ placeholder: true });
+    const adapter = powerpointAdapter(host, powerpoint);
+    await adapter.readSelectedStructure();
+    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({
+      kind: "replaced", warnings: ["Not carried over from the old picture: its place in the slide layout (placeholder)."],
+    });
+    expect(stack.map(item => item.id)).toEqual(["21", "24", "23"]);
+  });
+
   it("warns about alt text and a link PowerPoint before PowerPointApi 1.10 cannot write", async () => {
     const { host, powerpoint, stack } = powerpointHost({
       version: 8, properties: { attributes: ' descr="A benzene ring"', children: link }, relationships: linkRel,
@@ -383,6 +440,18 @@ describe("PowerPoint Office adapter", () => {
     });
     expect(mutations).toContain("delete:24");
     expect(mutations).not.toContain("delete:22");
+    expect(stack.map(item => item.id)).toEqual(["21", "22", "23"]);
+  });
+
+  it("removes the inserted picture when deleting the old one throws", async () => {
+    const { host, powerpoint, stack, mutations } = powerpointHost({ oldUndeletable: true });
+    const adapter = powerpointAdapter(host, powerpoint);
+    await adapter.readSelectedStructure();
+    const result = await adapter.replaceSelectedStructure(updated, updateJson, size);
+    expect(result).toMatchObject({ kind: "refusal", reason: expect.stringContaining("Cannot delete the old picture.") });
+    expect(result).not.toMatchObject({ reason: expect.stringContaining("Check the slide") });
+    expect(mutations).toContain("delete:24");
+    // Exactly one picture remains: the old one, in its place.
     expect(stack.map(item => item.id)).toEqual(["21", "22", "23"]);
   });
 

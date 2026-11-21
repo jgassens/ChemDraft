@@ -45,6 +45,10 @@ struct Known {
 enum Stage<T> {
     /// Asked for the renderer's drawing; none has arrived.
     Waiting,
+    /// The renderer answered that it could not render or send its drawing. Its edits exist only
+    /// in the renderer, so the STA has nothing newer to save: the session end stays refused and
+    /// the last known drawing gets a recovery copy.
+    Unsent,
     /// Collected and waiting for the STA to save it into Office.
     Ready(T),
     /// The STA is saving it now.
@@ -76,6 +80,7 @@ impl<T> Stage<T> {
     fn describe(&self) -> &'static str {
         match self {
             Self::Waiting => "its editor did not send its latest drawing",
+            Self::Unsent => "its editor could not send its latest drawing",
             Self::Ready(_) => "its latest drawing was not saved into Office yet",
             Self::Saving => "Office had not finished saving its latest drawing",
             Self::Failed { .. } => "Office did not save its latest drawing",
@@ -200,7 +205,14 @@ impl<T: Drawing> Tracker<T> {
 
     // --- The STA's bookkeeping of open edit sessions.
 
-    pub fn opened(&mut self, editor: &str, app: &str, document: &str, json: &str) {
+    /// Register a new edit session. Refused (false) while a session end is pending: the editors
+    /// to ask were decided when it began, so an editor registered later would be asked nothing
+    /// and get no recovery copy. The caller must then tear its editor down. Registration and
+    /// `begin` share this tracker's lock, so every editor is either in the session end or refused.
+    pub fn opened(&mut self, editor: &str, app: &str, document: &str, json: &str) -> bool {
+        if self.session.is_some() {
+            return false;
+        }
         self.known.insert(
             editor.to_owned(),
             Known {
@@ -209,6 +221,7 @@ impl<T: Drawing> Tracker<T> {
                 json: json.into(),
             },
         );
+        true
     }
 
     pub fn renamed(&mut self, editor: &str, app: &str, document: &str) {
@@ -236,7 +249,7 @@ impl<T: Drawing> Tracker<T> {
         let described = entry.stage.describe();
         let unsaved = match entry.stage {
             Stage::Saved | Stage::Closed { .. } => return None,
-            Stage::Waiting => false,
+            Stage::Waiting | Stage::Unsent => false,
             Stage::Ready(_) | Stage::Saving | Stage::Failed { .. } => true,
         };
         entry.stage = Stage::Closed { unsaved };
@@ -286,7 +299,7 @@ impl<T: Drawing> Tracker<T> {
         let mut failed = session
             .editors
             .values()
-            .filter(|editor| matches!(editor.stage, Stage::Failed { .. }));
+            .filter(|editor| matches!(editor.stage, Stage::Failed { .. } | Stage::Unsent));
         if let Some(first) = failed.next() {
             return Answer::Block(failure_reason(first.name(), failed.count()));
         }
@@ -381,12 +394,32 @@ impl<T: Drawing> Tracker<T> {
 
     // --- The renderer's replies, through IPC.
 
+    /// Whether this request still takes the editor's answer. An editor that reported a failure
+    /// may still answer later with its drawing.
     pub fn accepting(&self, request: u32, editor: &str) -> bool {
         self.session
             .as_ref()
             .filter(|session| session.request == request)
             .and_then(|session| session.editors.get(editor))
-            .is_some_and(|entry| matches!(entry.stage, Stage::Waiting))
+            .is_some_and(|entry| matches!(entry.stage, Stage::Waiting | Stage::Unsent))
+    }
+
+    /// The renderer could not render or send its drawing. Stop waiting on it: the editor stays
+    /// at risk (refusing the session end with its document's name) and keeps a recovery copy of
+    /// its last known drawing. Only a waiting editor can fail.
+    pub fn unsent(&mut self, request: u32, editor: &str) -> bool {
+        let waiting = self
+            .session
+            .as_ref()
+            .filter(|session| session.request == request)
+            .and_then(|session| session.editors.get(editor))
+            .is_some_and(|entry| matches!(entry.stage, Stage::Waiting));
+        if waiting {
+            self.editor_mut(editor)
+                .expect("waiting editor exists")
+                .stage = Stage::Unsent;
+        }
+        waiting
     }
 
     pub fn collect(&mut self, request: u32, editor: &str, content: T) -> bool {
@@ -421,7 +454,7 @@ impl<T: Drawing> Tracker<T> {
         let Some(entry) = self.editor_mut(editor) else {
             return false;
         };
-        if !matches!(entry.stage, Stage::Waiting) {
+        if !matches!(entry.stage, Stage::Waiting | Stage::Unsent) {
             return false;
         }
         entry.stage = Stage::Failed {
@@ -930,6 +963,103 @@ mod tests {
             t.take_jobs(now, false).as_slice(),
             [(9, _, Job::Retry)]
         ));
+    }
+
+    /// DoVerb shows the editor's window, then registers it. A WM_QUERYENDSESSION handled in
+    /// between must not leave the shown editor outside the session end.
+    #[test]
+    fn session_end_refuses_an_editor_that_registers_after_the_snapshot() {
+        let mut t = tracker(&[("17", "Report.docx", "{old}")]);
+        // The window for editor 18 is shown; the main thread begins the session end first.
+        assert_eq!(t.begin(3, STAMP.into()), Some(vec!["17".into()]));
+        // DoVerb's registration now loses: the caller destroys the window and fails activation.
+        assert!(!t.opened("18", "Microsoft Word", "Late.docx", "{late}"));
+        assert!(!t.accepting(3, "18"));
+        assert!(t.recovery().write.iter().all(|write| write.editor == "17"));
+        assert!(t.risks().iter().all(|risk| risk.editor == "17"));
+        // Nothing of the refused editor survives into a later session end.
+        t.cancel(true);
+        assert_eq!(t.begin(4, STAMP.into()), Some(vec!["17".into()]));
+
+        // Registered first, the editor is in the snapshot: it is asked and kept at risk.
+        let mut t = tracker(&[("17", "Report.docx", "{old}")]);
+        assert!(t.opened("18", "Microsoft Word", "Late.docx", "{late}"));
+        assert_eq!(
+            t.begin(5, STAMP.into()),
+            Some(vec!["17".into(), "18".into()])
+        );
+        assert!(t.accepting(5, "18"));
+        let plan = t.recovery();
+        assert_eq!(
+            plan.write
+                .iter()
+                .map(|w| w.editor.as_str())
+                .collect::<Vec<_>>(),
+            ["17", "18"]
+        );
+        assert_eq!(&*plan.write[1].json, "{late}");
+
+        // The DoVerb source takes that decision from `opened`'s answer and tears the window down.
+        let source = include_str!("server.rs");
+        let verb = &source[source.find("fn DoVerb(").unwrap()..];
+        let verb = &verb[..verb.find("fn EnumVerbs(").unwrap()];
+        let shown = verb.find("bridge::open_window(").unwrap();
+        let registered = verb.find("let registered = ").unwrap();
+        let refused = verb.find("if !registered {").unwrap();
+        let recorded = verb
+            .find("self.session.replace(Some(id.clone()));")
+            .unwrap();
+        assert!(shown < registered && registered < refused && refused < recorded);
+        let refusal = &verb[refused..recorded];
+        assert!(refusal.contains("window.destroy()"));
+        assert!(refusal.contains("OLE_E_NOTRUNNING"));
+        assert_eq!(verb.matches(".opened(").count(), 1);
+    }
+
+    #[test]
+    fn session_end_keeps_an_editor_that_could_not_send_its_drawing_at_risk() {
+        let mut t = tracker(&[("17", "Report.docx", "{old}"), ("18", "Notes.docx", "{n}")]);
+        assert!(!t.unsent(1, "17"), "no session end pending");
+        t.begin(6, STAMP.into());
+        assert!(!t.unsent(5, "17"), "stale request");
+        assert!(!t.unsent(6, "19"), "unknown editor");
+        assert!(t.unsent(6, "17"));
+        assert!(!t.unsent(6, "17"), "only a waiting editor fails");
+        assert!(t.unchanged(6, "18"));
+        // Not waited on, still refusing with its document's name, and never saved by the STA.
+        assert_eq!(
+            t.answer(),
+            Answer::Block("Could not save the ChemDraft structure in Report.docx".into())
+        );
+        assert!(t.take_jobs(Instant::now(), true).is_empty());
+        assert_eq!(t.next_retry(), None);
+        let risks = t.risks();
+        assert_eq!(risks.len(), 1);
+        assert_eq!(
+            risks[0].state,
+            "its editor could not send its latest drawing"
+        );
+        let plan = t.recovery();
+        assert_eq!(plan.write.len(), 1);
+        assert_eq!(plan.write[0].editor, "17");
+        assert_eq!(&*plan.write[0].json, "{old}");
+
+        // A later answer from the same editor is still taken.
+        assert!(t.accepting(6, "17"));
+        assert!(t.collect(6, "17", "{new}"));
+        saved_by_sta(&mut t, |_| Outcome::Saved);
+        assert_eq!(t.answer(), Answer::Allow);
+
+        // Office closing the object leaves no unsaved collected drawing to keep.
+        let mut t = tracker(&[("17", "Report.docx", "{old}")]);
+        t.begin(7, STAMP.into());
+        t.unsent(7, "17");
+        assert_eq!(
+            t.closed("17"),
+            Some("its editor could not send its latest drawing")
+        );
+        assert_eq!(t.answer(), Answer::Allow);
+        assert!(t.risks().is_empty());
     }
 
     #[test]

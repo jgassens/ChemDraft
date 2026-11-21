@@ -89,6 +89,8 @@ function pictureState(doc: Document, shape: Element, properties: Element, rels: 
   }
   if (child(properties, A, "hlinkHover")) lost.push("its mouse-over action");
   if (on(properties.getAttribute("hidden"))) lost.push("its hidden setting");
+  // A picture in a layout placeholder; the replacement is inserted as an ordinary picture.
+  if (child(child(child(shape, P, "nvPicPr"), P, "nvPr"), P, "ph")) lost.push("its place in the slide layout (placeholder)");
   const locks = child(child(child(shape, P, "nvPicPr"), P, "cNvPicPr"), A, "picLocks");
   if (locks && [...locks.attributes].some(attribute => attribute.name !== "noChangeAspect" && on(attribute.value))) {
     lost.push("its locks");
@@ -358,10 +360,12 @@ export function powerpointAdapter(office: OfficeContext, powerpoint: PowerPointA
             if (canRotate && (!Number.isFinite(inserted.rotation) || Math.abs(inserted.rotation! - original.rotation!) > 0.01)) {
               throw new Error("PowerPoint could not preserve the picture’s rotation.");
             }
+            // Title and description are checked whether or not the picture is decorative: a
+            // decorative picture can carry alt text too.
             const altChanged = (key: "altTextTitle" | "altTextDescription") =>
               altWritable.includes(key) && (inserted[key] ?? "") !== state[key];
             if ((altWritable.includes("isDecorative") && inserted.isDecorative !== state.isDecorative) ||
-                (!state.isDecorative && (altChanged("altTextTitle") || altChanged("altTextDescription")))) {
+                altChanged("altTextTitle") || altChanged("altTextDescription")) {
               throw new Error("PowerPoint could not preserve the picture’s alt text.");
             }
             if (state.link) {
@@ -377,8 +381,10 @@ export function powerpointAdapter(office: OfficeContext, powerpoint: PowerPointA
                 lost.push("its link");
               }
             }
-            deletionRequested = true;
+            // Only once delete() has queued the deletion can the sync below leave the outcome
+            // unknown; a delete() that throws leaves the old picture, so the new one is removed.
             old.delete();
+            deletionRequested = true;
             await context.sync();
           });
         } catch (error) {

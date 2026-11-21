@@ -427,6 +427,38 @@ describe("Office embedded document window", () => {
     await mount();
     await act(async () => window.dispatchEvent(new CustomEvent("chemdraft:office-toolset:office-session-publish", { detail: 61 })));
     expect(status()).toContain("Could not answer the Windows session end: The Office session-end publish request has expired");
+    expect(tauri.invoke).toHaveBeenCalledWith("office_object_update", new Uint8Array(0), {
+      headers: { "x-chemdraft-session-publish": "61", "x-chemdraft-session-failed": "1" }
+    });
+    // The failed answer unlocked the editor: Office's close goes through without a cancel.
+    await deliverClose(63);
+    expect(officeCalls().at(-1)).toEqual(["office_object_close", { objectId: "17", requestId: 63, saveChanges: true }]);
+  });
+
+  it("reports a drawing it could not send for a Windows session end and unlocks Update and Close", async () => {
+    const invoke = tauri.invoke.getMockImplementation()!;
+    tauri.invoke.mockImplementation(async (command, args, options) => {
+      const headers = (options?.headers ?? {}) as Record<string, string>;
+      if (command === "office_object_update" && headers["x-chemdraft-session-publish"] && !headers["x-chemdraft-session-failed"]) {
+        throw new Error("IPC channel closed");
+      }
+      return invoke(command, args, options);
+    });
+    await mount();
+    await edit();
+    await act(async () => window.dispatchEvent(new CustomEvent("chemdraft:office-toolset:office-session-publish", { detail: 62 })));
+    expect(status()).toBe("Could not update the structure in Report.docx: IPC channel closed");
+    const sessionCalls = tauri.invoke.mock.calls.filter(([command]) => command === "office_object_update").map(([, , options]) => options);
+    expect(sessionCalls).toEqual([
+      { headers: { "x-chemdraft-session-publish": "62" } },
+      { headers: { "x-chemdraft-session-publish": "62", "x-chemdraft-session-failed": "1" } }
+    ]);
+    // No cancel arrives; Update and Close work again anyway.
+    await nativeMenu("office.updateEmbeddedObject");
+    expect(tauri.invoke.mock.calls.filter(([command]) => command === "office_object_update").at(-1)?.[2]).toBeUndefined();
+    expect(status()).toBe("Updated structure in Report.docx.");
+    await deliverClose(64);
+    expect(officeCalls().at(-1)).toEqual(["office_object_close", { objectId: "17", requestId: 64, saveChanges: true }]);
   });
 
   it("aborts an accepted app update when the user cancels an embedded editor's close prompt", async () => {

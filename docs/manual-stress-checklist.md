@@ -1669,8 +1669,17 @@ Windows with Word and PowerPoint, and the Mac items on a Mac with both apps. Say
   picture is replaced in place, size, wrapping and position are kept, and Undo restores it. Selecting
   anything else shows "Select a ChemDraft structure".
 - PowerPoint: do the same on a slide picture. Position, rotation and alt text are kept after Update.
-- PowerPoint on a picture that has an animation or a link: the pane warns before updating, and the
-  warning names what will be lost.
-- A refused update (for example a grouped or cropped picture, or Cancel at the warning): the original
-  picture stays and no duplicate picture is left on the slide or page.
+- PowerPoint on a picture that has an animation: Update is not refused and asks nothing first. It
+  replaces the picture, and only then the pane shows "Structure updated." followed by "Not carried
+  over from the old picture: animations." The Animation Pane no longer lists the picture; nothing
+  else on the slide changed. A picture with none of the listed state shows no such warning.
+- PowerPoint on a picture with a plain link to a web address: after Update the link still opens
+  (PowerPointApi 1.10). On a PowerPoint without it, the post-Update warning names "its link" instead.
+- PowerPoint on a picture in a layout placeholder (a slide whose layout has a Picture placeholder,
+  with the ChemDraft picture inserted into it): Update replaces the picture at the same position and
+  size, and only then the pane shows "Not carried over from the old picture: its place in the slide
+  layout (placeholder)." The new picture is an ordinary picture: Home > Reset no longer returns it to
+  the placeholder.
+- A refused update (for example a grouped or cropped picture): the original picture stays and no
+  duplicate picture is left on the slide or page.
 - A picture without a ChemDraft carrier is refused with a reason and is not altered.

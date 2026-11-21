@@ -81,9 +81,9 @@ slide's `p:timing` and relationships), because Office.js cannot read most of it.
 | --- | --- |
 | Position, width, stacking order, name, tags | Restored and read back; a mismatch fails the update and removes the new picture |
 | Rotation | Restored and read back with PowerPointApi 1.10; without it a rotated picture is refused before anything is inserted |
-| Alt text title and description, decorative flag | Written with PowerPointApi 1.10 (`altTextTitle`, `altTextDescription`, `isDecorative`) and read back, so the new picture never keeps alt text PowerPoint generated for it. Without 1.10, alt text or a decorative flag on the old picture is named in the warning |
+| Alt text title and description, decorative flag | Written with PowerPointApi 1.10 (`altTextTitle`, `altTextDescription`, `isDecorative`) and read back, so the new picture never keeps alt text PowerPoint generated for it. Title and description are read back whether or not the picture is decorative; a mismatch fails the update and removes the new picture. Without 1.10, alt text or a decorative flag on the old picture is named in the warning |
 | A plain click hyperlink to an external address | Written with `Shape.setHyperlink` (PowerPointApi 1.10). Office.js cannot read a shape's hyperlink back, so a write that fails, or a host without the method, is named in the warning instead |
-| Animations targeting the picture, links to slides, action settings, mouse-over actions, the hidden setting, locks, a border, effects or a style, color adjustments on the picture | No Office.js API writes these; when the slide XML shows the old picture had any of them, Update still succeeds and the pane names them: "Not carried over from the old picture: animations, its link." No warning is shown when the old picture had none |
+| Animations targeting the picture, links to slides, action settings, mouse-over actions, the hidden setting, locks, a border, effects or a style, color adjustments on the picture, membership of a slide layout placeholder (`p:nvPicPr/p:nvPr/p:ph`) | No Office.js API writes these; when the slide XML shows the old picture had any of them, Update still succeeds and, after it, the pane names them: "Not carried over from the old picture: animations, its link, its place in the slide layout (placeholder)." The new picture is an ordinary picture. No warning is shown when the old picture had none |
 
 Rollback: once `setSelectedDataAsync` has inserted the new picture, every later step (identifying
 it, restoring its state, verifying, deleting the old one) runs inside the rollback path. On any
@@ -91,7 +91,10 @@ failure before the old picture is deleted, a fresh batch removes the new picture
 when the update got far enough to learn it, otherwise as the only new picture at the exact
 position and size the insert was asked for (an image cannot carry a tag or name until it exists).
 If neither finds exactly one picture, or the delete fails, the error says the new picture may
-remain on the slide.
+remain on the slide. The old picture counts as deleted only once its `delete()` call has returned:
+a `delete()` that throws leaves the old picture, so the new one is removed. A failure in the sync
+after a successful `delete()` leaves the outcome unknown, and the error asks the user to check the
+slide before retrying.
 
 Not used:
 
@@ -186,6 +189,20 @@ which PowerPoint's managed-security defaults do.
   shows it sharply, prints it at full resolution, and refreshes it after an edit. Slice 2 measures
   this before building the rest.
 
+**Windows session end** (`windows_session_end.rs`, `office_ole/session_publish.rs`)
+
+- When Windows asks to end the session, every open editor is asked for its drawing, and ChemDraft
+  refuses the session end with a reason until each drawing is saved in Office or beyond saving. A
+  drawing still at risk has a recovery copy under the app data folder.
+- The editors asked are fixed when the session end begins. Registering a newly activated editor
+  and beginning a session end are one decision under one lock: an editor that finishes activating
+  after the session end began is refused, its window is closed and Office's activation fails, so no
+  open editor is ever left out of the session end.
+- An editor that cannot render or send its drawing answers with a failure instead of staying
+  silent. ChemDraft then stops waiting for it, keeps refusing the session end with the document's
+  name, and keeps a recovery copy of its last known drawing; the editor unlocks, so Update and
+  Close work again once the user cancels the sign-out.
+
 **What other machines see (expected; to be measured)**
 
 | Machine | Shows | Double-click |
@@ -254,6 +271,15 @@ The add-in is the Mac route only (owner, 2026-11-20). It is also what Office on 
      and a removed one is written back. Each write goes through a temporary sibling that is deleted
      on failure. A missing app or an unrecognized file at ChemDraft's filename is a skip, not a
      failure, so the other app still proceeds.
+   - **Checked again at the moment of change.** The file can change between the first read and the
+     write, for example while the other app's read waits on macOS's prompt. So right before
+     replacing or removing a manifest, ChemDraft reads it again and changes it only if it is still a
+     regular file that is a ChemDraft manifest (same `<Id>` and `<ProviderName>ChemDraft`), or, for
+     Install, if no file is there. A file that no longer qualifies is left alone and reported in
+     the same words as at the first read ("… is not a ChemDraft add-in manifest, so ChemDraft did
+     not replace it"). An undo reads the file again too and puts the old one back only over exactly
+     what the change left: the manifest it wrote, or no file after a Remove. Otherwise it leaves the
+     file and reports that the change could not be undone.
    - **Denial named.** `EPERM`/`EACCES` comes back as `errorKind: "permissionDenied"`, with the
      build's bundle identifier (`bundleIdentifier`, from the running app's configuration). The
      message says Office was not changed, because macOS did not allow ChemDraft to access Word's
