@@ -266,6 +266,39 @@ function cachedPresentation(format: number | string, data: Buffer, targetDevice 
   return Buffer.concat([clipboard, targetDeviceSize, targetDevice, header, data]);
 }
 
+// A GetWinMetaFileBits-style WMF: the EMF in "WMFC" MFCOMMENT escapes, then a GDI record.
+function wmfWithEmf(emf: Buffer, chunkSize = 0x2000, corrupt = false) {
+  const records: Buffer[] = [];
+  const count = Math.ceil(emf.length / chunkSize);
+  for (let offset = 0; offset < emf.length; offset += chunkSize) {
+    const data = emf.subarray(offset, offset + chunkSize);
+    const record = Buffer.alloc(44 + data.length + (data.length % 2));
+    record.writeUInt32LE(record.length / 2);
+    record.writeUInt16LE(0x0626, 4); // META_ESCAPE.
+    record.writeUInt16LE(0x000f, 6); // MFCOMMENT.
+    record.writeUInt16LE(34 + data.length, 8);
+    record.writeUInt32LE(0x43464d57, 10); // "WMFC".
+    record.writeUInt32LE(1, 14);
+    record.writeUInt32LE(0x10000, 18);
+    record.writeUInt32LE(count, 28);
+    record.writeUInt32LE(data.length, 32);
+    record.writeUInt32LE(emf.length - offset - data.length + (corrupt ? 1 : 0), 36);
+    record.writeUInt32LE(emf.length, 40);
+    data.copy(record, 44);
+    records.push(record);
+  }
+  const setMapMode = Buffer.from([4, 0, 0, 0, 0x03, 0x01, 8, 0]); // MM_ANISOTROPIC.
+  const eof = Buffer.from([3, 0, 0, 0, 0, 0]);
+  const body = Buffer.concat([...records, setMapMode, eof]);
+  const header = Buffer.alloc(18);
+  header.writeUInt16LE(1); // Memory metafile.
+  header.writeUInt16LE(9, 2);
+  header.writeUInt16LE(0x300, 4);
+  header.writeUInt32LE((header.length + body.length) / 2, 6);
+  header.writeUInt32LE(Math.max(4, ...records.map(record => record.length / 2)), 12);
+  return Buffer.concat([header, body]);
+}
+
 function compoundWithCache(presentation: Buffer) {
   const name = '\x02OlePres000';
   const cfb = writeCfb(presentation);
@@ -487,6 +520,32 @@ describe('Office packages', () => {
       preview: null, error: 'Truncated presentation data',
     }]);
     expect(truncated.error).toBeNull();
+  });
+
+  it('reads the EMF that a Windows OlePres000 cache wraps in a WMF after its header', () => {
+    const manifest = JSON.parse(readFileSync(join(output, 'manifest.json'), 'utf8'));
+    const emf = readFileSync(join(output, 'preview.emf'));
+    const wmf = wmfWithEmf(emf);
+    const prefixed = Buffer.concat([Buffer.alloc(8), emf]);
+    prefixed.writeUInt32LE(108);
+    prefixed.writeUInt32LE(emf.length, 4);
+    const [wrapped, sizePrefixed, noEmf, corrupt] = inspectOle(writeZip([
+      ['ppt/embeddings/oleObject1.bin', compoundWithCache(cachedPresentation(14, wmf, Buffer.alloc(8)))],
+      ['ppt/embeddings/oleObject2.bin', compoundWithCache(cachedPresentation(14, prefixed))],
+      ['ppt/embeddings/oleObject3.bin', compoundWithCache(cachedPresentation(14, wmfWithEmf(Buffer.alloc(0))))],
+      ['ppt/embeddings/oleObject4.bin', compoundWithCache(cachedPresentation(14, wmfWithEmf(emf, 0x2000, true)))],
+    ]), manifest).oleObjects;
+    expect(wrapped.presentations).toMatchObject([{
+      name: '\x02OlePres000', clipboardFormat: { id: 14, name: 'CF_ENHMETAFILE' }, size: wmf.length,
+      dataType: 'wmf', embeddedEmfSize: emf.length, error: null,
+      preview: { state: 'unchanged-emf', originalEmf: true, originalPngInEmfPlus: true, error: null },
+    }]);
+    expect(sizePrefixed.presentations).toMatchObject([{
+      dataType: 'emf-with-size-prefix', embeddedEmfSize: null, error: null,
+      preview: { state: 'unchanged-emf', size: emf.length },
+    }]);
+    expect(noEmf.presentations).toMatchObject([{ dataType: 'wmf', embeddedEmfSize: null, preview: null, error: null }]);
+    expect(corrupt.presentations).toMatchObject([{ preview: null, error: 'Inconsistent EMF chunk in WMF comment' }]);
   });
 
   it('rejects an OLEPresentationStream with ClipboardFormat marker zero', () => {

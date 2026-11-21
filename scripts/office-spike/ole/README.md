@@ -19,7 +19,9 @@ no npm dependencies. The class is `ChemDraft.Structure.Probe`
 - [inspect-ole.mjs](inspect-ole.mjs) reports live embeddings and their package previews,
   orphan parts, the root CLSID, and any OLE presentation cache streams Office adds on save.
   Each cache entry includes its clipboard format and declared data size. The inspector compares
-  `CF_ENHMETAFILE` data using the same hashes as the separate OOXML preview parts.
+  `CF_ENHMETAFILE` data using the same hashes as the separate OOXML preview parts. Windows writes
+  that data as a WMF (`dataType: "wmf"`) carrying the original EMF in "WMFC" comment records; the
+  inspector reassembles that EMF (`embeddedEmfSize`) and reports on it.
 - [ole.test.ts](ole.test.ts) verifies PNG decoding, the EMF records, compound storage, and both packages.
 
 ## Generate the baseline

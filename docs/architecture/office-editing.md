@@ -152,6 +152,12 @@ which PowerPoint's managed-security defaults do.
   record, plus ordinary GDI records drawing the same image** (EMF+-only content is invisible to plain
   GDI). In the saved file Office also keeps a separate preview image part (Word: `v:imagedata` in
   `word/media`; PowerPoint: a `p:pic` under `p:oleObj` in `ppt/media`) beside the OLE package.
+- **Size budget and Slide Show (2026-11-20):** a small molecule's whole embedded object, OLE cache
+  included, must stay well under 200 KB. The EMF keeps the 384-dpi PNG and carries only a 96-dpi,
+  8-bit GDI fallback (600 x 671 px at 384 dpi: EMF 1.63 MB before, 47 KB after; the old
+  full-resolution 32-bit DIB made a 2.8 MB `oleObject1.bin`). PowerPoint Slide Show does not activate
+  an embedded object on double-click (standard PowerPoint behavior; an Action Settings "Object
+  action" is needed).
 - **Goal, not yet measured:** that Office keeps this preview through save and reopen in both places,
   shows it sharply, prints it at full resolution, and refreshes it after an edit. Slice 2 measures
   this before building the rest.

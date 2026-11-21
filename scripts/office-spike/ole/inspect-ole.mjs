@@ -80,8 +80,58 @@ const clipboardFormats = {
   2: 'CF_BITMAP', 3: 'CF_METAFILEPICT', 8: 'CF_DIB', 14: 'CF_ENHMETAFILE', 17: 'CF_DIBV5',
 };
 
+const WMF_ESCAPE = 0x0626, MFCOMMENT = 0x000f, WMFC = 0x43464d57;
+
+// GetWinMetaFileBits stores the source EMF in META_ESCAPE MFCOMMENT records ("WMFC"
+// comments, MS-WMF META_ESCAPE_ENHANCED_METAFILE) ahead of the WMF rendering. Windows'
+// OLE cache writes a CF_ENHMETAFILE presentation that way, so reassemble that EMF.
+function emfInWmf(wmf) {
+  let at = wmf.length >= 22 && wmf.readUInt32LE(0) === 0x9ac6cdd7 ? 22 : 0; // Placeable header.
+  if (wmf.length - at < 18) throw new Error('Truncated WMF header');
+  const headerWords = wmf.readUInt16LE(at + 2);
+  if (headerWords !== 9) throw new Error('Invalid WMF header size');
+  at += 18;
+  const chunks = [];
+  let total = null, collected = 0, records = 0;
+  while (at < wmf.length) {
+    if (++records > 100000) throw new Error('WMF record count exceeds 100000');
+    if (wmf.length - at < 6) throw new Error('Truncated WMF record');
+    const words = wmf.readUInt32LE(at), func = wmf.readUInt16LE(at + 4);
+    if (words < 3 || words > (wmf.length - at) / 2) throw new Error('Invalid or truncated WMF record size');
+    const record = wmf.subarray(at, at + words * 2);
+    at += record.length;
+    if (func === 0) break; // META_EOF.
+    if (func !== WMF_ESCAPE || record.length < 44 || record.readUInt16LE(6) !== MFCOMMENT ||
+        record.readUInt32LE(10) !== WMFC || record.readUInt32LE(14) !== 1) continue;
+    const byteCount = record.readUInt16LE(8), current = record.readUInt32LE(32);
+    const remaining = record.readUInt32LE(36), size = record.readUInt32LE(40);
+    if (total === null) total = size;
+    if (size !== total || current > record.length - 44 || byteCount < 34 + current ||
+        current > total - collected || remaining !== total - collected - current) {
+      throw new Error('Inconsistent EMF chunk in WMF comment');
+    }
+    chunks.push(record.subarray(44, 44 + current));
+    collected += current;
+  }
+  if (total === null) return null;
+  if (collected !== total) throw new Error('Incomplete EMF in WMF comments');
+  return Buffer.concat(chunks, total);
+}
+
+function cachedEnhancedMetafile(data) {
+  const type = imageType(data, '');
+  if (type === 'emf') return { dataType: 'emf', emf: data };
+  if (type === 'wmf') return { dataType: 'wmf', emf: emfInWmf(data) };
+  // A CONTENTS-style prefix: sizeof(ENHMETAHEADER) and nBytes ahead of the EMF bits.
+  const inner = data.subarray(8);
+  if (data.length >= 8 && imageType(inner, '') === 'emf' && data.readUInt32LE(4) === inner.length) {
+    return { dataType: 'emf-with-size-prefix', emf: inner };
+  }
+  return { dataType: type, emf: data }; // Report the EMF parser's own error.
+}
+
 function presentationReport(name, bytes, expected) {
-  let clipboardFormat = null, size = null;
+  let clipboardFormat = null, size = null, dataType = null, embeddedEmfSize = null;
   try {
     // MS-OLEDS OLEPresentationStream starts with a variable-length clipboard
     // format and a TargetDeviceSize that includes the size field itself.
@@ -112,11 +162,16 @@ function presentationReport(name, bytes, expected) {
     size = bytes.readUInt32LE(at + 24);
     at += 28;
     if (size > bytes.length - at) throw new Error('Truncated presentation data');
-    const preview = clipboardFormat?.name === 'CF_ENHMETAFILE'
-      ? previewReport(bytes.subarray(at, at + size), name, [], expected, 'emf') : null;
-    return { name, clipboardFormat, size, preview, error: null };
+    let preview = null;
+    if (clipboardFormat?.name === 'CF_ENHMETAFILE') {
+      const cached = cachedEnhancedMetafile(bytes.subarray(at, at + size));
+      dataType = cached.dataType;
+      embeddedEmfSize = cached.dataType === 'wmf' ? cached.emf?.length ?? null : null;
+      if (cached.emf) preview = previewReport(cached.emf, name, [], expected, 'emf');
+    }
+    return { name, clipboardFormat, size, dataType, embeddedEmfSize, preview, error: null };
   } catch (error) {
-    return { name, clipboardFormat, size, preview: null, error: error.message };
+    return { name, clipboardFormat, size, dataType, embeddedEmfSize, preview: null, error: error.message };
   }
 }
 
@@ -218,8 +273,9 @@ if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.me
           console.log(`    ${JSON.stringify(stream.name)} | ${stream.size} bytes`);
         }
         for (const presentation of object.presentations ?? []) {
-          const { name, clipboardFormat, size, preview, error } = presentation;
-          console.log(`    Cache ${JSON.stringify(name)} | ${clipboardFormat?.name ?? clipboardFormat?.id ?? 'unknown format'} | ${size ?? 'unknown'} data bytes`);
+          const { name, clipboardFormat, size, dataType, embeddedEmfSize, preview, error } = presentation;
+          const embedded = embeddedEmfSize === null ? '' : ` | embedded EMF ${embeddedEmfSize} bytes`;
+          console.log(`    Cache ${JSON.stringify(name)} | ${clipboardFormat?.name ?? clipboardFormat?.id ?? 'unknown format'} | ${size ?? 'unknown'} data bytes${dataType ? ` | ${dataType}` : ''}${embedded}`);
           if (preview) console.log(`      ${preview.state}${preview.error ? ` | ${preview.error}` : ''}`);
           if (error) console.log(`      ${error}`);
         }

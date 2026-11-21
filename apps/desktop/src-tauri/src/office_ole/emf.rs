@@ -8,15 +8,22 @@ use super::OleError;
 const MIB: usize = 1024 * 1024;
 pub(super) const MAX_PNG_BYTES: usize = 25 * MIB;
 const MAX_IMAGE_SIDE: u32 = 6000;
-// A 40 MiB DIB can require an 80 MiB RGBA16 decode buffer. With the input PNG,
-// the large allocations total 121 MiB while decoding (leaving room for decoder
-// overhead), 145 MiB during conversion, and 129 MiB during EMF assembly.
-const MAX_DIB_BYTES: usize = 40 * MIB;
+// 40 MiB of RGBA8 pixels can require an 80 MiB RGBA16 decode buffer. With the input
+// PNG, the large allocations total 121 MiB while decoding (leaving room for decoder
+// overhead), 145 MiB during conversion, and at most 100 MiB during EMF assembly.
+const MAX_PIXEL_BYTES: usize = 40 * MIB;
 const MAX_EMF_BYTES: usize = 64 * MIB;
 const MAX_DECODE_ALLOC: u64 = 16 * MIB as u64;
 // The PNG decoder's byte accounting doesn't include its per-text-chunk bookkeeping.
 const MAX_TEXT_CHUNKS: usize = 4096;
 const DEFAULT_DPI: u32 = 96;
+// The GDI fallback is drawn only by renderers that ignore EMF+ (Office uses the PNG),
+// so it is kept at screen resolution and 8 bits per pixel. A full-resolution 32-bit
+// DIB was 99% of the EMF, and Windows' OLE cache stores the EMF and the DIB again.
+const FALLBACK_DPI: u32 = 96;
+const PALETTE_COLORS: usize = 256;
+const CUBE_COLORS: usize = 216; // 6 x 6 x 6 levels; the other 40 entries are grays.
+const GRAY_LEVELS: u32 = (PALETTE_COLORS - CUBE_COLORS) as u32;
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 
 const EMR_HEADER: u32 = 1;
@@ -32,7 +39,9 @@ const GRAPHICS_VERSION: u32 = 0xdbc0_1002;
 const HEADER_SIZE: usize = 108;
 const COMMENT_HEADER_SIZE: usize = 16;
 const PLUS_HEADER_SIZE: usize = 12;
-const DIB_OFFSET: usize = 120;
+const BITMAPINFO_OFFSET: usize = 80;
+const BITMAPINFO_SIZE: usize = 40 + 4 * PALETTE_COLORS;
+const DIB_OFFSET: usize = BITMAPINFO_OFFSET + BITMAPINFO_SIZE;
 const EOF_SIZE: usize = 20;
 
 /// Write an EMF+ dual preview with the original carrier PNG and a GDI fallback.
@@ -55,20 +64,24 @@ pub(super) fn preview_with_extent(
     let (width, height) = png_dimensions(chunks)?;
     // Each side has been checked, so even the largest product fits in a 32-bit usize.
     let pixel_bytes = width as usize * height as usize * 4;
-    if pixel_bytes > MAX_DIB_BYTES {
-        return Err(OleError("Preview PNG exceeds the 40 MiB DIB limit".into()));
+    if pixel_bytes > MAX_PIXEL_BYTES {
+        return Err(OleError(
+            "Preview PNG exceeds the 40 MiB pixel limit".into(),
+        ));
     }
+    let dpi = png_dpi(chunks, selection)?;
+    let fallback = Fallback::new(width, height, dpi);
     let object_size = PLUS_HEADER_SIZE + 28 + png.len().next_multiple_of(4);
     let picture_size =
         COMMENT_HEADER_SIZE + PLUS_HEADER_SIZE + 16 + object_size + PLUS_HEADER_SIZE + 40;
-    let dib_size = DIB_OFFSET + pixel_bytes;
+    let dib_size = DIB_OFFSET + fallback.pixel_bytes();
     let plus_eof_size = COMMENT_HEADER_SIZE + PLUS_HEADER_SIZE;
     let total_size = HEADER_SIZE + picture_size + dib_size + plus_eof_size + EOF_SIZE;
+    // A backstop: the PNG and pixel caps keep a valid preview far below this.
     if total_size > MAX_EMF_BYTES {
         return Err(OleError("Preview EMF exceeds 64 MiB".into()));
     }
 
-    let dpi = png_dpi(chunks, selection)?;
     let micrometers = [
         device_micrometers(width, dpi[0])?,
         device_micrometers(height, dpi[1])?,
@@ -113,12 +126,7 @@ pub(super) fn preview_with_extent(
 
     let picture = plus_comment(&mut emf, picture_size);
     write_picture(picture, png, object_size, width, height, dpi);
-    write_dib(
-        emr(&mut emf, EMR_STRETCHDIBITS, dib_size),
-        width,
-        height,
-        pixels.as_raw(),
-    );
+    fallback.write(emr(&mut emf, EMR_STRETCHDIBITS, dib_size), pixels.as_raw());
 
     // GDI+ requires its EOF comment immediately before the outer EMR_EOF.
     plus_record(plus_comment(&mut emf, plus_eof_size), EMF_PLUS_EOF, 0);
@@ -313,35 +321,122 @@ fn write_picture(
     put(draw, 36, (height as f32).to_le_bytes());
 }
 
-fn write_dib(dib: &mut [u8], width: i32, height: i32, rgba: &[u8]) {
-    let pixel_bytes = (rgba.len() as u32).to_le_bytes();
-    put(dib, 16, (width - 1).to_le_bytes());
-    put(dib, 20, (height - 1).to_le_bytes());
-    put(dib, 40, width.to_le_bytes()); // Source dimensions.
-    put(dib, 44, height.to_le_bytes());
-    put(dib, 48, 80u32.to_le_bytes()); // BITMAPINFO offset and size.
-    put(dib, 52, 40u32.to_le_bytes());
-    put(dib, 56, (DIB_OFFSET as u32).to_le_bytes());
-    put(dib, 60, pixel_bytes);
-    put(dib, 68, 0x00cc_0020u32.to_le_bytes()); // SRCCOPY.
-    put(dib, 72, width.to_le_bytes()); // Destination dimensions.
-    put(dib, 76, height.to_le_bytes());
-    put(dib, 80, 40u32.to_le_bytes()); // BITMAPINFOHEADER size.
-    put(dib, 84, width.to_le_bytes());
-    put(dib, 88, (-height).to_le_bytes()); // Top-down.
-    put(dib, 92, 1u16.to_le_bytes()); // Planes.
-    put(dib, 94, 32u16.to_le_bytes()); // BGRX, BI_RGB.
-    put(dib, 100, pixel_bytes);
+/// The GDI fallback: the image box-filtered down to at most 96 DPI and stored as a
+/// top-down 8-bit BI_RGB DIB with a fixed palette, stretched to the full frame.
+struct Fallback {
+    /// Source pixels averaged into one fallback pixel, per axis.
+    step: [u32; 2],
+    /// Full image size, the destination of the stretch.
+    image: [u32; 2],
+    /// Fallback DIB size.
+    size: [u32; 2],
+}
 
-    // BI_RGB ignores alpha. Composite onto the same white background as the probe.
-    for (source, dest) in rgba
-        .chunks_exact(4)
-        .zip(dib[DIB_OFFSET..].chunks_exact_mut(4))
-    {
-        let alpha = u16::from(source[3]);
-        for (channel, output) in source[..3].iter().rev().zip(dest.iter_mut()) {
-            *output = 255 - (((255 - u16::from(*channel)) * alpha + 127) / 255) as u8;
+impl Fallback {
+    fn new(width: u32, height: u32, dpi: [u32; 2]) -> Self {
+        let step = dpi.map(|dpi| dpi.div_ceil(FALLBACK_DPI).max(1));
+        Self {
+            step,
+            image: [width, height],
+            size: [width.div_ceil(step[0]), height.div_ceil(step[1])],
         }
+    }
+
+    fn stride(&self) -> usize {
+        (self.size[0] as usize).next_multiple_of(4)
+    }
+
+    fn pixel_bytes(&self) -> usize {
+        self.stride() * self.size[1] as usize
+    }
+
+    fn write(&self, dib: &mut [u8], rgba: &[u8]) {
+        let [width, height] = self.image.map(|side| side as i32);
+        let [dib_width, dib_height] = self.size.map(|side| side as i32);
+        let pixel_bytes = (self.pixel_bytes() as u32).to_le_bytes();
+        put(dib, 16, (width - 1).to_le_bytes());
+        put(dib, 20, (height - 1).to_le_bytes());
+        put(dib, 40, dib_width.to_le_bytes()); // Source dimensions.
+        put(dib, 44, dib_height.to_le_bytes());
+        put(dib, 48, (BITMAPINFO_OFFSET as u32).to_le_bytes());
+        put(dib, 52, (BITMAPINFO_SIZE as u32).to_le_bytes());
+        put(dib, 56, (DIB_OFFSET as u32).to_le_bytes());
+        put(dib, 60, pixel_bytes);
+        // iUsageSrc 0 is DIB_RGB_COLORS.
+        put(dib, 68, 0x00cc_0020u32.to_le_bytes()); // SRCCOPY.
+        put(dib, 72, width.to_le_bytes()); // Destination dimensions.
+        put(dib, 76, height.to_le_bytes());
+
+        let info = &mut dib[BITMAPINFO_OFFSET..];
+        put(info, 0, 40u32.to_le_bytes()); // BITMAPINFOHEADER size.
+        put(info, 4, dib_width.to_le_bytes());
+        put(info, 8, (-dib_height).to_le_bytes()); // Top-down.
+        put(info, 12, 1u16.to_le_bytes()); // Planes.
+        put(info, 14, 8u16.to_le_bytes()); // 8 bits per pixel, BI_RGB.
+        put(info, 20, pixel_bytes);
+        put(info, 32, (PALETTE_COLORS as u32).to_le_bytes()); // biClrUsed.
+        for (index, entry) in info[40..BITMAPINFO_SIZE].chunks_exact_mut(4).enumerate() {
+            let [red, green, blue] = palette_color(index);
+            entry.copy_from_slice(&[blue, green, red, 0]);
+        }
+
+        let [step_x, step_y] = self.step.map(|step| step as usize);
+        let [image_width, image_height] = self.image.map(|side| side as usize);
+        let stride = self.stride();
+        let mut sums = vec![[0u32; 3]; self.size[0] as usize];
+        for (row, output) in dib[DIB_OFFSET..].chunks_exact_mut(stride).enumerate() {
+            sums.fill([0; 3]);
+            let rows = row * step_y..((row + 1) * step_y).min(image_height);
+            let row_count = rows.len();
+            for source_row in rows {
+                let line = &rgba[source_row * image_width * 4..][..image_width * 4];
+                for (column, pixel) in line.chunks_exact(4).enumerate() {
+                    // BI_RGB has no alpha. Composite onto the same white as the probe.
+                    let alpha = u32::from(pixel[3]);
+                    let sum = &mut sums[column / step_x];
+                    for (total, &channel) in sum.iter_mut().zip(&pixel[..3]) {
+                        *total += 255 - ((255 - u32::from(channel)) * alpha + 127) / 255;
+                    }
+                }
+            }
+            for (column, (sum, index)) in sums.iter().zip(output.iter_mut()).enumerate() {
+                let columns = (image_width - column * step_x).min(step_x);
+                let count = (columns * row_count) as u32;
+                *index = palette_index(sum.map(|total| ((total + count / 2) / count) as u8));
+            }
+        }
+    }
+}
+
+fn palette_color(index: usize) -> [u8; 3] {
+    if index < CUBE_COLORS {
+        [index / 36, index / 6 % 6, index % 6].map(|level| (level * 51) as u8)
+    } else {
+        [gray_value((index - CUBE_COLORS) as u32); 3]
+    }
+}
+
+fn gray_value(level: u32) -> u8 {
+    ((level * 255 + (GRAY_LEVELS - 1) / 2) / (GRAY_LEVELS - 1)) as u8
+}
+
+/// The nearer of the closest color-cube entry and the closest gray, by squared error.
+fn palette_index(color: [u8; 3]) -> u8 {
+    let error = |candidate: [u8; 3]| -> u32 {
+        color
+            .iter()
+            .zip(candidate)
+            .map(|(&a, b)| u32::from(a.abs_diff(b)).pow(2))
+            .sum()
+    };
+    let levels = color.map(|channel| (u32::from(channel) * 5 + 127) / 255);
+    let cube = (levels[0] * 36 + levels[1] * 6 + levels[2]) as usize;
+    let mean = color.iter().map(|&channel| u32::from(channel)).sum::<u32>() / 3;
+    let gray = CUBE_COLORS + ((mean * (GRAY_LEVELS - 1) + 127) / 255) as usize;
+    if error(palette_color(gray)) < error(palette_color(cube)) {
+        gray as u8
+    } else {
+        cube as u8
     }
 }
 
@@ -453,10 +548,17 @@ mod tests {
         let emf = preview_emf(CARRIER).unwrap();
         let records = records(&emf, 8);
         let layout: Vec<_> = records.iter().map(|r| (u32_at(r, 0), r.len())).collect();
-        // Golden type/length pairs from emf-writer.mjs for png-itxt.png at 96 DPI.
+        // Golden type/length pairs from emf-writer.mjs for png-itxt.png at 96 DPI, except
+        // the GDI fallback: 8-bit 600 x 671 pixels behind a 256-color BITMAPINFO.
         assert_eq!(
             layout,
-            [(1, 108), (70, 19924), (81, 1610520), (70, 28), (14, 20)]
+            [
+                (1, 108),
+                (70, 19924),
+                (81, 1144 + 600 * 671),
+                (70, 28),
+                (14, 20)
+            ]
         );
         let [header, picture, dib, plus_eof, eof] = records.as_slice() else {
             panic!("expected five EMF records");
@@ -465,7 +567,7 @@ mod tests {
         assert_eq!(u32_at(header, 52), 5);
         assert_eq!([u32_at(header, 16), u32_at(header, 20)], [599, 670]);
         assert_eq!([u32_at(header, 32), u32_at(header, 36)], [15875, 17754]);
-        assert_eq!(u32_at(dib, 60) as usize, dib.len() - 120);
+        assert_eq!(u32_at(dib, 60) as usize, dib.len() - DIB_OFFSET);
         assert_eq!(u32_at(eof, 16) as usize, eof.len());
 
         let plus_layout = |comment: &[u8]| {
@@ -513,7 +615,7 @@ mod tests {
     }
 
     #[test]
-    fn writes_top_down_32_bit_dib_in_bgrx_on_white() {
+    fn writes_top_down_8_bit_palette_dib_on_white() {
         let pixels = [
             19, 230, 8, 255, 56, 22, 90, 0, 16, 42, 90, 128, 3, 7, 11, 255, 0, 0, 0, 255, 24, 96,
             128, 255,
@@ -525,22 +627,69 @@ mod tests {
         let emf = preview_emf(&png).unwrap();
         let dib = records(&emf, 8)[2];
         assert_eq!(u32_at(dib, 0), 81);
+        assert_eq!([u32_at(dib, 40), u32_at(dib, 44)], [3, 2]);
         assert_eq!(u32_at(dib, 48), 80);
-        assert_eq!(u32_at(dib, 56), 120);
-        assert_eq!(u32_at(dib, 60), 24);
+        assert_eq!(u32_at(dib, 52), 1064);
+        assert_eq!(u32_at(dib, 56), 1144);
+        assert_eq!(u32_at(dib, 60), 8); // Two rows padded to four bytes.
+        assert_eq!(u32_at(dib, 64), 0); // DIB_RGB_COLORS.
         assert_eq!(u32_at(dib, 68), 0x00cc_0020);
+        assert_eq!([u32_at(dib, 72), u32_at(dib, 76)], [3, 2]);
+        assert_eq!(u32_at(dib, 80), 40);
         assert_eq!(u32_at(dib, 84), 3);
         assert_eq!(u32_at(dib, 88) as i32, -2);
         assert_eq!(u16_at(dib, 92), 1);
-        assert_eq!(u16_at(dib, 94), 32);
-        assert_eq!(u32_at(dib, 96), 0);
-        assert_eq!(
-            &dib[120..],
-            [
-                8, 230, 19, 0, 255, 255, 255, 0, 172, 148, 135, 0, 11, 7, 3, 0, 0, 0, 0, 0, 128,
-                96, 24, 0,
-            ]
-        );
+        assert_eq!(u16_at(dib, 94), 8);
+        assert_eq!(u32_at(dib, 96), 0); // BI_RGB.
+        assert_eq!(u32_at(dib, 100), 8);
+        assert_eq!(u32_at(dib, 112), 256);
+        let entry = |index: usize| &dib[120 + index * 4..][..4];
+        assert_eq!(entry(0), [0, 0, 0, 0]);
+        assert_eq!(entry(30), [0, 255, 0, 0]); // BGR order.
+        assert_eq!(entry(215), [255, 255, 255, 0]);
+        assert_eq!(entry(217), [7, 7, 7, 0]);
+        assert_eq!(entry(255), [255, 255, 255, 0]);
+        // Opaque green, transparent (white), half-covered blue-gray on white, near black
+        // (a gray), black, and teal; then row padding.
+        assert_eq!(&dib[1144..], [30, 215, 129, 0, 217, 0, 15, 0]);
+    }
+
+    #[test]
+    fn averages_a_384_dpi_png_into_a_96_dpi_fallback() {
+        // 8 x 4 at 384 DPI becomes 2 x 1: a half-black block and a black block.
+        let mut data = vec![255u8; 32];
+        for row in 0..4 {
+            data[row * 8..row * 8 + 2].fill(0);
+            data[row * 8 + 4..row * 8 + 8].fill(0);
+        }
+        let mut png = Vec::new();
+        PngEncoder::new(&mut png)
+            .write_image(&data, 8, 4, ExtendedColorType::L8)
+            .unwrap();
+        let mut density = [0; 9];
+        put(&mut density, 0, 15118u32.to_be_bytes()); // 384 DPI.
+        put(&mut density, 4, 15118u32.to_be_bytes());
+        density[8] = 1;
+        let png = add_chunks_before_idat(&png, |output| write_chunk(output, b"pHYs", &density));
+        let emf = preview_emf(&png).unwrap();
+        let dib = records(&emf, 8)[2];
+        assert_eq!([u32_at(dib, 40), u32_at(dib, 44)], [2, 1]); // Source.
+        assert_eq!([u32_at(dib, 72), u32_at(dib, 76)], [8, 4]); // Destination.
+        assert_eq!([u32_at(dib, 84), u32_at(dib, 88)], [2, (-1i32) as u32]);
+        assert_eq!(entry_rgb(dib, dib[1144]), [131; 3]); // Mean 128, nearest gray.
+        assert_eq!(&dib[1144..], [236, 0, 0, 0]);
+
+        // The 600 x 671 carrier at 384 DPI keeps every PNG pixel and a 150 x 168 fallback.
+        let emf = preview_emf(CARRIER_384_DPI).unwrap();
+        let dib = records(&emf, 8)[2];
+        assert_eq!([u32_at(dib, 40), u32_at(dib, 44)], [150, 168]);
+        assert_eq!([u32_at(dib, 72), u32_at(dib, 76)], [600, 671]);
+        assert_eq!(dib.len(), 1144 + 152 * 168);
+    }
+
+    fn entry_rgb(dib: &[u8], index: u8) -> [u8; 3] {
+        let entry = &dib[120 + usize::from(index) * 4..][..3];
+        [entry[2], entry[1], entry[0]]
     }
 
     #[test]
@@ -585,7 +734,8 @@ mod tests {
             .unwrap();
         let emf = preview_emf(&png).unwrap();
         let dib = records(&emf, 8)[2];
-        assert_eq!(&dib[DIB_OFFSET..], &[1, 128, 255, 0, 255, 255, 255, 0]);
+        assert_eq!(entry_rgb(dib, dib[DIB_OFFSET]), [255, 153, 0]);
+        assert_eq!(&dib[DIB_OFFSET..], &[198, 215, 0, 0]);
     }
 
     #[test]
@@ -600,7 +750,8 @@ mod tests {
         write_chunk(&mut png, b"IEND", &[]);
         let emf = preview_emf(&png).unwrap();
         let dib = records(&emf, 8)[2];
-        assert_eq!(&dib[DIB_OFFSET..], &[33, 22, 11, 0, 255, 255, 255, 0]);
+        assert_eq!(entry_rgb(dib, dib[DIB_OFFSET]), [20; 3]); // Nearest to (11, 22, 33).
+        assert_eq!(&dib[DIB_OFFSET..], &[219, 215, 0, 0]);
     }
 
     #[test]
@@ -617,20 +768,12 @@ mod tests {
                 .to_string()
                 .contains("6000 pixels"));
         }
-        // These dimensions put the DIB twenty bytes over its cap.
-        assert_eq!(1935 * 5419 * 4, MAX_DIB_BYTES + 20);
+        // These dimensions put the decoded pixels twenty bytes over their cap.
+        assert_eq!(1935 * 5419 * 4, MAX_PIXEL_BYTES + 20);
         assert!(preview_emf(&grayscale_png(1935, 5419))
             .unwrap_err()
             .to_string()
-            .contains("40 MiB DIB"));
-
-        let mut too_large = grayscale_png(4096, 2560); // Exactly a 40 MiB DIB.
-                                                       // Pad the carrier to yield a valid input size but an EMF one DWORD over its cap.
-        too_large.resize(MAX_EMF_BYTES - MAX_DIB_BYTES - 412 + 4, 0);
-        assert!(preview_emf(&too_large)
-            .unwrap_err()
-            .to_string()
-            .contains("64 MiB"));
+            .contains("40 MiB pixel limit"));
     }
 
     #[test]
@@ -653,6 +796,42 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("4096 text chunks"));
+    }
+
+    /// Size budget for a small molecule (600 x 671 px at 384 DPI, about 1.6 x 1.7 in).
+    /// Run with `--nocapture` to see each part. Windows' OLE cache stores the EMF a
+    /// second time inside a WMF (GetWinMetaFileBits), whose META_STRETCHDIB repeats
+    /// the DIB, so the cache estimate is the EMF plus the DIB record.
+    #[test]
+    fn reports_preview_part_sizes_for_a_small_molecule() {
+        let emf = preview_emf(CARRIER_384_DPI).unwrap();
+        let records = records(&emf, 8);
+        let [header, picture, dib, plus_eof, eof] = records.as_slice() else {
+            panic!("expected five EMF records");
+        };
+        let storage = super::super::storage::write_object_storage(
+            include_str!("../../../../../packages/fixtures/office/sample-document.json"),
+            &super::super::OleClass::STABLE,
+        )
+        .unwrap();
+        let cache_estimate = emf.len() + dib.len() + 64;
+        eprintln!(
+            "PNG {} | EMF header {} | EMF+ picture {} | GDI DIB record {} (pixels {}) | \
+             EMF+ EOF {} | EOF {} | EMF total {} | OlePres000 estimate {} | \
+             object storage without cache {}",
+            CARRIER_384_DPI.len(),
+            header.len(),
+            picture.len(),
+            dib.len(),
+            u32_at(dib, 60),
+            plus_eof.len(),
+            eof.len(),
+            emf.len(),
+            cache_estimate,
+            storage.len(),
+        );
+        assert!(emf.len() < 48 * 1024, "EMF is {} bytes", emf.len());
+        assert!(storage.len() + cache_estimate < 128 * 1024);
     }
 
     #[test]
