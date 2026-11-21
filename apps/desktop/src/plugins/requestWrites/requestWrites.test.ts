@@ -349,6 +349,24 @@ describe("verified request writes", () => {
     } finally { await f.finish(); }
   });
 
+  it("reports a request-bound stored-chemistry refusal as the plain sentence, without the molecule id", async () => {
+    const { molecule } = wavyHalide("v2000");
+    const f = setup([molecule.id], undefined, { objects: [molecule] });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const requestId = await f.begin();
+      const result = await f.context.documents.applyRequestPatch!({ requestId,
+        patch: { op: "updateObject", objectId: molecule.id,
+          changes: { atoms: molecule.atoms.map(atom => atom.id === "a1" ? { ...atom, element: "O" } : atom) } },
+        expectedStructures: [{ kind: "object", pageId: f.pageId, objectId: molecule.id, sourceSmiles: "OC(F)Cl" }] });
+      expect(result).toMatchObject({ ok: false, error: { code: "chemistry" } });
+      const message = (result as { error: { message: string } }).error.message;
+      expect(message).toMatch(/^Plugin write refused: .+\.$/);
+      expect(message).not.toContain(molecule.id);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("Plugin write refused: "));
+    } finally { warn.mockRestore(); await f.finish(); }
+  });
+
   it.each(["v2000", "v3000"] as const)("maps retained %s wavy stereo by atom ID through a reordered edit", async version => {
     const { molecule, markedBonds } = wavyHalide(version);
     const f = setup([molecule.id], undefined, { objects: [{ ...molecule, bonds: markedBonds }] });

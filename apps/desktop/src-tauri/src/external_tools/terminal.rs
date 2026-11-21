@@ -9,7 +9,6 @@ use std::{
     fs,
     io::{self, Write},
     path::{Path, PathBuf},
-    process::Command,
 };
 #[derive(Debug, Clone)]
 pub struct TerminalCommand {
@@ -34,7 +33,7 @@ pub struct SignInLaunch {
     pub detail: Option<String>,
 }
 pub fn spawn_terminal(command: &TerminalCommand) -> io::Result<()> {
-    let mut child = Command::new(&command.program);
+    let mut child = crate::child_command(&command.program);
     child.args(&command.args).env_clear().envs(&command.env);
     #[cfg(windows)]
     if command.new_console {

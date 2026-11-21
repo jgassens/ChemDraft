@@ -507,6 +507,7 @@ dependencies = [
  "chrono",
  "dirs",
  "flate2",
+ "futures-lite",
  "getrandom 0.3.4",
  "gtk",
  "http",
@@ -538,6 +539,7 @@ dependencies = [
  "tokio",
  "webkit2gtk",
  "windows-sys 0.61.2",
+ "zbus",
 ]
 
 [[package]]
@@ -4763,6 +4765,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",

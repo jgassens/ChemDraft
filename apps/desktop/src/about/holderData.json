@@ -37,6 +37,13 @@
       ],
       "from": "license file"
     },
+    "cargo:futures-lite@2.6.1": {
+      "holders": [
+        "Copyright (c) 2016 Alex Crichton",
+        "Copyright (c) 2017 The Tokio Authors"
+      ],
+      "from": "license file"
+    },
     "cargo:getrandom@0.3.4": {
       "holders": [
         "Copyright (c) 2018-2025 The rust-random Project Developers",
@@ -261,6 +268,12 @@
     "cargo:windows-sys@0.61.2": {
       "holders": [
         "Copyright (c) Microsoft Corporation"
+      ],
+      "from": "license file"
+    },
+    "cargo:zbus@5.19.0": {
+      "holders": [
+        "Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors"
       ],
       "from": "license file"
     },

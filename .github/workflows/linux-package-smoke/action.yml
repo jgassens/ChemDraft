@@ -11,7 +11,7 @@ inputs:
     description: x11 or wayland
     required: true
   native-wayland:
-    description: Set to 1 to exercise the native Wayland opt-out under Weston
+    description: Set to 1 to exercise native Wayland under Weston
     default: '0'
   logs:
     description: Directory for display, app, and process logs
@@ -142,7 +142,11 @@ runs:
 
         if [[ "$backend" == wayland ]]; then
           export WAYLAND_DISPLAY=chemdraft-smoke
-          weston --backend=headless --renderer=pixman --shell=kiosk-shell.so --xwayland \
+          weston_args=()
+          if [[ "$native_wayland" != 1 || "$package" == deb ]]; then
+            weston_args+=(--xwayland)
+          fi
+          weston --backend=headless --renderer=pixman --shell=kiosk-shell.so "${weston_args[@]}" \
             --socket="$WAYLAND_DISPLAY" --idle-time=0 > "$logs/display.log" 2>&1 &
           ready="$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
         else
@@ -166,8 +170,12 @@ runs:
         if [[ "$backend" == x11 ]]; then
           export GDK_BACKEND=x11
         elif [[ "$native_wayland" == 1 ]]; then
-          export CHEMDRAFT_NATIVE_WAYLAND=1
-          echo 'Testing the native Wayland opt-out with only the Wayland display available.'
+          if [[ "$package" == deb ]]; then
+            export CHEMDRAFT_NATIVE_WAYLAND=1
+            echo 'Testing the native Wayland opt-out with only the Wayland display available.'
+          else
+            echo 'Testing the AppImage backend default under Weston without XWayland.'
+          fi
         else
           for _ in {1..20}; do
             display=$(sed -n 's/.*xserver listening on display \(:[0-9][0-9]*\).*/\1/p' "$logs/display.log" | tail -n 1)
@@ -199,8 +207,16 @@ runs:
           fi
         fi
         command=("$bundle")
+        trace=execve
+        launch_dir=$PWD
         if [[ "$package" == appimage ]]; then
-          command+=(--appimage-extract-and-run)
+          trace+=,openat
+          command+=(--appimage-extract-and-run drawing.cdxml)
+          launch_dir="$work/launch folder"
+          second_dir="$work/second launch folder"
+          mkdir "$launch_dir" "$second_dir"
+          printf '<CDXML><page/></CDXML>\n' > "$launch_dir/drawing.cdxml"
+          cp "$launch_dir/drawing.cdxml" "$second_dir/drawing.cdxml"
         fi
         report_egl_error() {
           if grep -qE 'Could not create default EGL display|EGL_BAD_PARAMETER.*Aborting|Aborting.*EGL_BAD_PARAMETER' "$logs/chemdraft.log"; then
@@ -215,6 +231,7 @@ runs:
           exit 1
         }
         # Trace execs and process exits so a child SIGABRT fails even without a systemd journal.
+        # For AppImage launches, also trace file opens to verify relative document resolution.
         smoke_uid=$(id -u)
         # AppImage may fork AppRun, and WebKit may start helpers in another process group.
         belongs_to_launch() {
@@ -253,8 +270,13 @@ runs:
         web_process_running() {
           launched_pid -f '(^|/)WebKitWebProcess([[:space:]:]|$)' >/dev/null
         }
-        setsid strace -f -e trace=execve -s 256 -o "$logs/process.log" "${command[@]}" \
-          > "$logs/chemdraft.log" 2>&1 &
+        (
+          cd "$launch_dir"
+          if [[ "$package" == appimage ]]; then
+            export OWD="$PWD"
+          fi
+          exec setsid strace -f -e trace="$trace" -s 256 -o "$logs/process.log" "${command[@]}"
+        ) > "$logs/chemdraft.log" 2>&1 &
         launcher_pid=$!
         for _ in {1..60}; do
           kill -0 "$launcher_pid" 2>/dev/null || fail 'ChemDraft or its tracer exited during startup'
@@ -268,6 +290,45 @@ runs:
         if ! app_environment=$(tr '\0' '\n' < "/proc/$main_pid/environ"); then
           echo "::error::Could not read ChemDraft process environment at /proc/$main_pid/environ"
           exit 1
+        fi
+        if [[ "$package" == appimage ]]; then
+          app_env_value() { sed -n "s/^$1=//p" <<< "$app_environment"; }
+          appdir=$(app_env_value APPDIR)
+          injected_dir=$(app_env_value WEBKIT_INJECTED_BUNDLE_PATH)
+          gtk_hook="$appdir/apprun-hooks/linuxdeploy-plugin-gtk.sh"
+          [[ "$appdir" == /* && -f "$gtk_hook" ]] || fail 'Could not find the extracted AppImage GTK hook'
+          for backend_value in unset wayland; do
+            if ! (
+              set +u # The generated GTK hook reads optional environment variables.
+              export APPDIR="$appdir"
+              unset GDK_BACKEND
+              if [[ "$backend_value" != unset ]]; then
+                export GDK_BACKEND="$backend_value"
+              fi
+              source "$gtk_hook"
+              [[ "${GDK_BACKEND-unset}" == "$backend_value" ]]
+            ); then
+              fail "The AppImage GTK hook changed GDK_BACKEND from $backend_value"
+            fi
+          done
+          [[ "$injected_dir" == "$appdir/"* && -f "$injected_dir/libwebkit2gtkinjectedbundle.so" ]] \
+            || fail 'WebKit injected bundle directory is missing or outside APPDIR'
+          for variable in GIO_MODULE_DIR GIO_EXTRA_MODULES; do
+            module_dir=$(app_env_value "$variable")
+            [[ -z "$module_dir" || ( "$module_dir" == "$appdir/"* && -d "$module_dir" ) ]] \
+              || fail "$variable is missing its bundled directory"
+          done
+          if [[ "${GDK_BACKEND+x}" ]]; then
+            grep -Fxq "GDK_BACKEND=$GDK_BACKEND" <<< "$app_environment" \
+              || fail 'The AppImage changed the caller’s GDK_BACKEND'
+          elif grep -q '^GDK_BACKEND=' <<< "$app_environment"; then
+            fail 'The AppImage set GDK_BACKEND before ChemDraft starts'
+          fi
+          if [[ "$backend" == wayland && "$native_wayland" == 1 ]]; then
+            [[ -z $(app_env_value DISPLAY) ]] || fail 'X11 DISPLAY leaked into native Wayland smoke'
+            grep -Fq 'keeping native Wayland because DISPLAY is unavailable' "$logs/chemdraft.log" \
+              || fail 'ChemDraft did not select its Wayland default without XWayland'
+          fi
         fi
         echo 'Display environment inherited by ChemDraft:'
         grep -E '^(EGL_PLATFORM|GDK_BACKEND|WAYLAND_DISPLAY|DISPLAY|CHEMDRAFT_NATIVE_WAYLAND)=' <<< "$app_environment" || true
@@ -312,6 +373,17 @@ runs:
           /usr/bin/python3 "$action_path/x11-interaction.py" "$main_pid" "$document" "$logs" \
             || fail 'X11 menu or clipboard check failed. See the preceding check output'
         fi
+        if [[ "$package" == appimage ]]; then
+          # Reuse the extraction so the secondary launch can't remove the primary's files.
+          if ! (
+            cd "$second_dir"
+            APPDIR="$appdir" APPIMAGE="$bundle" OWD="$PWD" timeout --kill-after=5s 30s \
+              "$appdir/AppRun" drawing.cdxml
+          ) > "$logs/second-launch.log" 2>&1; then
+            cat "$logs/second-launch.log"
+            fail 'The AppImage second launch did not hand off to the running instance'
+          fi
+        fi
         for _ in {1..20}; do
           sleep 1
           for pid in "$launcher_pid" "$main_pid" "$display_pid"; do
@@ -335,5 +407,23 @@ runs:
         fi
         web_process_running || fail 'No WebKitWebProcess was alive at the end of the smoke test'
         window_ready || fail 'No ChemDraft window was visible at the end of the smoke test'
+        if [[ "$package" == appimage ]]; then
+          for folder in "$launch_dir" "$second_dir"; do
+            if ! awk -v path="$folder/drawing.cdxml" '
+              index($0, "openat(AT_FDCWD, \"" path "\",") {
+                if (/ = [0-9]+$/) opened = 1
+                if (/<unfinished \.\.\.>$/) pending[$1] = 1
+              }
+              /<\.\.\. openat resumed>/ && ($1 in pending) {
+                if (/ = [0-9]+$/) opened = 1
+                delete pending[$1]
+              }
+              END { exit !opened }
+            ' "$logs/process.log"; then
+              fail "The running AppImage did not open the relative document from $folder"
+            fi
+          done
+          echo 'AppImage GTK settings and relative document opens passed.'
+        fi
         echo 'ChemDraft started WebKitWebProcess and stayed alive for 20 seconds.'
         SMOKE

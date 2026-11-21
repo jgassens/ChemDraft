@@ -274,7 +274,7 @@ pub(crate) fn reveal_recognition_screen_captures(app: AppHandle) -> Result<(), S
     #[cfg(target_os = "windows")]
     let mut command = std::process::Command::new("explorer.exe");
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let mut command = std::process::Command::new("xdg-open");
+    let mut command = crate::child_command("xdg-open");
     let mut child = command
         .arg(&directory)
         .spawn()

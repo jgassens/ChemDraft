@@ -80,9 +80,11 @@ jobs:
             package: deb
             backend: wayland
             native_wayland: '1'
-          # The AppImage cannot run natively on Wayland: linuxdeploy-plugin-gtk's AppRun hook
-          # always exports GDK_BACKEND=x11 before ChemDraft starts, so it always uses XWayland.
-          # Native Wayland is covered by the .deb job.
+          - distro: debian
+            image: debian:sid
+            package: appimage
+            backend: wayland
+            native_wayland: '1'
     container:
       image: ${{ matrix.image }}
       # strace needs ptrace and glycin's bubblewrap needs user namespaces.
@@ -173,11 +175,12 @@ jobs:
           install -d -m 1777 /tmp/.X11-unix
 
       - name: Check AppImage library resolution against host Mesa
-        if: matrix.package == appimage
+        if: matrix.package == 'appimage'
         run: bash .github/workflows/linux-package-smoke/host-mesa.sh "$BUNDLE"
 
       # Xvfb also runs the document, menu and clipboard checks. Weston exercises the XWayland
-      # default and the .deb's native Wayland opt-out. Both use virtual displays without a GPU.
+      # default, the .deb's native Wayland opt-out, and the AppImage without XWayland. Both use
+      # virtual displays without a GPU.
       - name: Smoke test the Linux package
         uses: ./.github/workflows/linux-package-smoke
         with:

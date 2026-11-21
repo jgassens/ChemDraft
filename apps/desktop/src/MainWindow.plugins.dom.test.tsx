@@ -10,6 +10,7 @@ import { AssistantCapabilityPermissions, PluginPanelReportSchema, ProposedDocume
 import { applyPatch, createEmptyDocument, DocumentStylePreset, nativeDrawingStyleFromObjectStyle, type BracketObject, type ChemDraftDocument, type DocumentObject, type ElectronMarkObject, type MoleculeObject } from "@chemdraft/chem-core";
 import { applyMoleculeTargetBondLength, createSmilesMolecule, inspectHydrogenNormalizedIdentity, pastedStructureDepictionFromMolfile, resolveStructureTemplateName, setReactionArrowConditions } from "@chemdraft/document-workflow-core";
 import { ensureRdkit, generateSmiles2DMolfile, setRdkitModuleLoader } from "../../../packages/rdkit-adapter/src/conformer";
+import { depictSmiles2D } from "@chemdraft/ocl-adapter";
 import { applyChargeToolAtPoint, createNativeArtLineGraphicObject, normalizeCommittedDocument } from "./documentWorkflow";
 import * as workflow from "./documentWorkflow";
 import { getAssistantHistoryPort } from "./assistant/historyPort";
@@ -62,6 +63,14 @@ const submit = vi.fn<(context: PluginCommandContext) => Promise<void>>();
 const select = vi.fn<(context: PluginCommandContext) => Promise<void>>();
 let root: Root;
 let container: HTMLDivElement;
+
+/** A refusal's message is the plain user sentence, exactly, and never names the molecule. */
+async function expectUserRefusal(write: Promise<unknown>, sentence: string, moleculeId: string) {
+  const error = await write.then(() => undefined, (caught: unknown) => caught);
+  expect(error).toBeInstanceOf(Error);
+  expect((error as Error).message).toBe(sentence);
+  expect((error as Error).message).not.toContain(moleculeId);
+}
 
 describe("assistant writes through mounted desktop normalization", () => {
   let chemistry: AssistantToolContext["chemistry"];
@@ -385,10 +394,10 @@ describe("plugin direct writes through mounted desktop normalization", () => {
   }, 20_000);
 
   it.each([
-    ["stale structure", /stored smiles.*editable graph cannot verify/i],
-    ["stale cached SMILES", /stored smiles.*editable graph cannot verify/i],
-    ["stale formula", /stored formula/i],
-    ["an empty graph", /no editable atoms to verify/i]
+    ["stale structure", "Plugin write refused: the stored structure doesn't match the drawn atoms."],
+    ["stale cached SMILES", "Plugin write refused: the stored structure doesn't match the drawn atoms."],
+    ["stale formula", /^Plugin write refused: the formula doesn't match the drawn (structure|atoms)\.$/],
+    ["an empty graph", "Plugin write refused: the molecule has no drawn atoms to check against."]
   ] as const)("refuses a direct insertion with %s", async (mismatch, failure) => {
     const blank = createEmptyDocument();
     const molecule = graphEditFixture(blank, { name: "element", source: "CO" });
@@ -401,7 +410,10 @@ describe("plugin direct writes through mounted desktop normalization", () => {
     const invoke = registerWrite(context => context.documents.applyPatch!({ reason: "Insert inconsistent molecule", patch: {
       op: "addObject", pageId: blank.pages[0]!.id, object: molecule
     } }));
-    await act(async () => { await expect(invoke()).rejects.toThrow(failure); });
+    await act(async () => {
+      if (typeof failure === "string") await expectUserRefusal(invoke(), failure, molecule.id);
+      else await expect(invoke()).rejects.toThrow(failure);
+    });
     expect(port.read("initial")).toBe(before);
   }, 20_000);
 
@@ -490,8 +502,7 @@ describe("plugin direct writes through mounted desktop normalization", () => {
       op: "updateObject", objectId: molecule.id, changes: { atoms }
     } }));
     // Neither drawing gives the alkene a side, so its stored E isomer cannot be confirmed.
-    await act(async () => { await expect(invoke()).rejects.toThrow(
-      new RegExp(`cannot refresh stored chemistry for molecule "${molecule.id}".*stored smiles.*editable graph cannot verify`, "i")); });
+    await act(async () => { await expectUserRefusal(invoke(), "Plugin write refused: the stored structure doesn't match the drawn atoms.", molecule.id); });
     expect(inspect).toHaveBeenCalled();
     expect(port.read("initial")).toBe(before);
   }, 20_000);
@@ -582,8 +593,7 @@ describe("plugin direct writes through mounted desktop normalization", () => {
     const inspect = vi.spyOn(identityClient, "inspectStructureOffThread");
     const atoms = molecule.atoms.map(atom => role(atom.id) === "O" ? { ...atom, y: 255.5 - 1e-7 } : atom);
     // A collinear drawing gives the stereocentre no configuration, so its stored R cannot be confirmed.
-    await expect(moveStereocentreAtoms(molecule, atoms)).rejects.toThrow(
-      new RegExp(`cannot refresh stored chemistry for molecule "${molecule.id}".*stored smiles.*editable graph cannot verify`, "i"));
+    await expectUserRefusal(moveStereocentreAtoms(molecule, atoms), "Plugin write refused: the stored structure doesn't match the drawn atoms.", molecule.id);
     expect(inspect).toHaveBeenCalled();
     expect(port.read("initial")).toBe(before);
   }, 20_000);
@@ -600,6 +610,113 @@ describe("plugin direct writes through mounted desktop normalization", () => {
     expect(inspect).not.toHaveBeenCalled();
     expect(port.read("initial")!.pages[0]!.objects).toMatchObject([{ id: molecule.id, structure: "CO" }]);
   });
+
+  it.each([
+    ["structure", (molecule: MoleculeObject): Partial<MoleculeObject> => ({ structure: "CO" }), "Plugin write refused: the stored structure doesn't match the drawn atoms."],
+    ["cached SMILES", (molecule: MoleculeObject): Partial<MoleculeObject> => ({
+      compatibility: { ...molecule.compatibility!, unknown: { ...molecule.compatibility!.unknown, smiles: "CO" } } }),
+    "Plugin write refused: the stored structure doesn't match the drawn atoms."],
+    ["structure as a molfile", (): Partial<MoleculeObject> => ({ structureFormat: "molfile-v2000",
+      structure: depictSmiles2D("CO").molfile }), "Plugin write refused: the stored structure doesn't match the drawn atoms."],
+    ["formula", (molecule: MoleculeObject): Partial<MoleculeObject> => ({ chemistry: { ...molecule.chemistry!, formula: "CH4O" } }),
+      "Plugin write refused: the formula doesn't match the drawn structure."],
+    ["superatoms", (molecule: MoleculeObject): Partial<MoleculeObject> => ({ superatoms: [{ label: "OMe",
+      atomIds: [molecule.atoms[1]!.id], attachmentPoints: [], warnings: [] }] }), "Plugin write refused: it would change an abbreviation or R-group that can't be checked."]
+  ] as const)("refuses a write to the stored %s of a selected molecule that disagrees with its graph", async (_field, changes, failure) => {
+    const blank = createEmptyDocument();
+    const pageId = blank.pages[0]!.id;
+    const molecule = graphEditFixture(blank, { name: "element", source: "CC" });
+    const port = await mount(applyPatch(blank, { op: "batch", patches: [
+      { op: "addObject", pageId, object: molecule }, { op: "setSelection", pageId, objectIds: [molecule.id] }
+    ] }));
+    const before = port.read("initial")!;
+    const invoke = registerWrite(context => context.documents.applyPatch!({ reason: "Rewrite stored chemistry", patch: {
+      op: "updateObject", objectId: molecule.id, changes: changes(before.pages[0]!.objects[0]! as MoleculeObject)
+    } }));
+    // The canvas still draws ethane; saving or exporting methanol would silently change the chemistry.
+    await act(async () => { await expectUserRefusal(invoke(), failure, molecule.id); });
+    expect(port.read("initial")).toBe(before);
+  }, 20_000);
+
+  it("accepts a stored-structure write that agrees with the graph and stores the graph's own record", async () => {
+    const blank = createEmptyDocument();
+    const pageId = blank.pages[0]!.id;
+    const molecule = graphEditFixture(blank, { name: "element", source: "CC" });
+    const port = await mount(applyPatch(blank, { op: "batch", patches: [
+      { op: "addObject", pageId, object: molecule }, { op: "setSelection", pageId, objectIds: [molecule.id] }
+    ] }));
+    const invoke = registerWrite(context => context.documents.applyPatch!({ reason: "Rewrite stored chemistry", patch: {
+      op: "updateObject", objectId: molecule.id, changes: { structure: "C(C)" }
+    } }));
+    await act(async () => { await expect(invoke()).resolves.toMatchObject({ applied: true, objectIds: [molecule.id] }); });
+    const after = port.read("initial")!.pages[0]!.objects[0]! as MoleculeObject;
+    expect(after).toMatchObject({ structure: "CC", structureFormat: "smiles", compatibility: { unknown: { smiles: "CC" } } });
+    expect(after.chemistry?.formula).toBe("C2H6");
+  }, 20_000);
+
+  it("refuses an accepted insertion proposal whose stored structure disagrees with its graph", async () => {
+    const blank = createEmptyDocument();
+    const pageId = blank.pages[0]!.id;
+    const molecule = graphEditFixture(blank, { name: "element", source: "CC" });
+    molecule.structure = "CO";
+    const port = await mount(blank);
+    const before = port.read("initial")!;
+    const runtime = captured.runtime!;
+    let proposalId!: string;
+    await act(async () => {
+      runtime.registerPlugin({ id: "org.chemdraft.proposalTest", name: "Proposal test", version: "0.1.0", apiVersion: "^0.1.14",
+        entry: "test.js", permissions: ["document.proposePatch"] });
+      proposalId = runtime.host.proposePatch("org.chemdraft.proposalTest", { reason: "Insert ethane",
+        patch: { op: "addObject", pageId, object: molecule } }).id;
+    });
+    await act(async () => { container.querySelector<HTMLButtonElement>(".patch-review-badge")!.click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>(`[data-proposal-id="${proposalId}"] button`)!.click(); });
+    // Flush React between polls; the refusal lands after off-thread inspection.
+    await vi.waitFor(async () => {
+      await act(async () => {});
+      expect(container.querySelector("[role=status]")?.textContent).toMatch(/Plugin change not applied/);
+    }, { timeout: 15_000 });
+    expect(container.querySelector("[role=status]")?.textContent).toBe(
+      "Plugin change not applied: the stored structure doesn't match the drawn atoms.");
+    expect(container.querySelector("[role=status]")?.textContent).not.toContain(molecule.id);
+    expect(port.read("initial")).toBe(before);
+    expect(runtime.host.listProposedPatches("pending")).toHaveLength(1);
+  }, 20_000);
+
+  it("keeps a stored stereo molfile in step with a rigid rotation so a later element edit verifies", async () => {
+    const blank = createEmptyDocument();
+    const pageId = blank.pages[0]!.id;
+    const molecule = graphEditFixture(blank, { name: "element", source: "C[C@H](N)O" }, true);
+    expect(molecule.structureFormat).toBe("molfile-v2000");
+    const port = await mount(applyPatch(blank, { op: "batch", patches: [
+      { op: "addObject", pageId, object: molecule }, { op: "setSelection", pageId, objectIds: [molecule.id] }
+    ] }));
+    const stored = port.read("initial")!.pages[0]!.objects[0]! as MoleculeObject;
+    const cx = molecule.atoms.reduce((sum, atom) => sum + atom.x, 0) / molecule.atoms.length;
+    const cy = molecule.atoms.reduce((sum, atom) => sum + atom.y, 0) / molecule.atoms.length;
+    const cos = Math.cos(Math.PI / 3), sin = Math.sin(Math.PI / 3);
+    const atoms = stored.atoms.map(atom => ({ ...atom,
+      x: cx + 15 + (atom.x - cx) * cos - (atom.y - cy) * sin, y: cy + 10 + (atom.x - cx) * sin + (atom.y - cy) * cos }));
+    let changes: Partial<MoleculeObject> = { atoms };
+    const invoke = registerWrite(context => context.documents.applyPatch!({ reason: "Edit molecule", patch: {
+      op: "updateObject", objectId: molecule.id, changes
+    } }));
+    await act(async () => { await expect(invoke()).resolves.toMatchObject({ applied: true }); });
+    const rotated = port.read("initial")!.pages[0]!.objects[0]! as MoleculeObject;
+    expect(rotated.structure).toBe(stored.structure);
+    expect(rotated.chemistry?.stereochemistry).toEqual(stored.chemistry?.stereochemistry);
+    // Oxygen to sulfur keeps the CIP ranking (S > N > C > H as O > N > C > H), so the label must not change.
+    changes = { atoms: rotated.atoms.map(atom => atom.element === "O" ? { ...atom, element: "S" } : atom) };
+    await act(async () => { await expect(invoke()).resolves.toMatchObject({ applied: true, objectIds: [molecule.id] }); });
+    const after = port.read("initial")!.pages[0]!.objects[0]! as MoleculeObject;
+    expect(await storedConfiguration(stored)).toBe(await storedConfiguration({ ...stored, structure: "C[C@H](N)O", structureFormat: "smiles" }));
+    expect(after.structureFormat).toBe("molfile-v2000");
+    const expected = await storedConfiguration({ ...after, structure: "C[C@H](N)S", structureFormat: "smiles" });
+    expect(await storedConfiguration(after)).toBe(expected);
+    expect(after.compatibility?.unknown.smiles).toBe(expected);
+    expect(after.chemistry?.stereochemistry.join(" ")).toMatch(/\(R\)/);
+    expect(after.chemistry?.stereochemistry.join(" ")).not.toMatch(/\(S\)/);
+  }, 20_000);
 
   it("preserves a canvas edit made while a plugin graph patch awaits inspection", async () => {
     const blank = createEmptyDocument();

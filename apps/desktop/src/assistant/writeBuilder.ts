@@ -1,4 +1,4 @@
-import { objectAnchors } from "@chemdraft/plugin-host";
+import { objectAnchors, resolveScopedObject, type PageObjectLocation } from "@chemdraft/plugin-host";
 import {
   applyPatch, DocumentObjectSchema, type Anchor, type ChemDraftDocument,
   type DocumentObject, type DocumentPatch, type MoleculeObject, type NativeTextStyle
@@ -57,12 +57,11 @@ export function scopeRefusal(context: AssistantToolContext, ids: readonly string
   const id = ids.find(id => !scope.has(id));
   return id ? { refused: true as const, reason: `${id} was not selected when you sent the request` } : undefined;
 }
-export function findObject(document: ChemDraftDocument, id: string) {
-  for (const page of document.pages) {
-    const object = page.objects.find(object => object.id === id);
-    if (object) return { object, page };
-  }
-  throw new Error(`Object "${id}" does not exist in the assistant's document.`);
+/** The one object lookup for assistant tools: by the Send-time selection page, never the first
+ * same-id object in page order (AGENTS.md section 7). An id that is not selected resolves only when
+ * it is unique in the document; an ambiguous one is refused with the pages it names. */
+export function findObject(context: AssistantToolContext, document: ChemDraftDocument, id: string): PageObjectLocation {
+  return resolveScopedObject(document, id, context.getSelectionPagesAtSend?.(), "the assistant's document");
 }
 
 async function buildMolecule(context: AssistantToolContext, smiles: string): Promise<MoleculeObject> {
@@ -108,7 +107,7 @@ export async function applyAssistantWrite(context: AssistantToolContext, built: 
     if (growth) built = { ...built, pageGrowth: { ...growth, pages, description: "This content", itemCount: 1, items: [] } };
   }
   for (const [id, smiles] of built.expectedSmiles ?? []) {
-    const { object } = findObject(validated, id);
+    const { object } = findObject(context, validated, id);
     if (object.type !== "molecule") throw new Error(`Expected molecule ${id}.`);
     await assertCanonical(context, object, smiles);
   }
@@ -202,12 +201,13 @@ function assistantText(document: ChemDraftDocument, text: string, style: Partial
   // Text measurement rounds to hundredths; a fractional paper width must remain the ceiling.
   return { ...object, ...size, width: Math.min(size.width, maxWidth) };
 }
+/** `relative.anchor` is already resolved on `pageId` by findObject; it is never looked up again by id. */
 function placement(context: AssistantToolContext, objects: readonly DocumentObject[], pageId?: string,
-  relative?: { objectId: string; side: RelativeSide }, exclude: readonly string[] = []) {
+  relative?: { anchor: DocumentObject; side: RelativeSide }, exclude: readonly string[] = []) {
   const document = requireDocument(context);
   const page = pageId ? document.pages.find(page => page.id === pageId)! : document.pages[0]!;
   const bounds = unionRects(objects.map(objectRect));
-  const preferred = relative ? relativeRect(bounds, objectRect(findObject(document, relative.objectId).object), relative.side) : undefined;
+  const preferred = relative ? relativeRect(bounds, objectRect(relative.anchor), relative.side) : undefined;
   const placed = choosePagePlacements({ page, sizes: [bounds], occupied: page.objects.filter(object => !exclude.includes(object.id)).map(objectRect),
     viewport: context.getViewportRect?.(context.tabId), preferred, ...(relative ? { gap: RELATIVE_GAP } : {}) });
   return { page, plan: placed,
@@ -341,10 +341,11 @@ export async function buildInsertReaction(context: AssistantToolContext, raw: un
 export function buildInsertText(context: AssistantToolContext, raw: unknown): AssistantWrite {
   const input = toolSchemas.insert_text.parse(raw);
   const document = requireDocument(context);
-  const pageId = input.relativeTo ? findObject(document, input.relativeTo.objectId).page.id : undefined;
-  const textDocument = pageId ? { ...document, pages: [document.pages.find(page => page.id === pageId)!] } : document;
+  const anchor = input.relativeTo ? findObject(context, document, input.relativeTo.objectId) : undefined;
+  const pageId = anchor?.page.id;
+  const textDocument = anchor ? { ...document, pages: [anchor.page] } : document;
   const object = freshObjects(document, [assistantText(textDocument, input.text, nativeTextStyle(input.style))]);
-  const placed = placement(context, object, pageId, input.relativeTo);
+  const placed = placement(context, object, pageId, anchor && { anchor: anchor.object, side: input.relativeTo!.side });
   return insertionPlan(context, document, insertWrite(placed.page.id, placed.objects, "Inserted text", []),
     placed.plan, placed.page.id, [object], [input.text.slice(0, 80)], "This text");
 }
@@ -361,16 +362,15 @@ export function buildInsertTable(context: AssistantToolContext, raw: unknown): A
   let column = 0;
   const localId = (prefix: string) => prefix === "row" ? `${id}-r${++row}` : `${id}-c${++column}`;
   const { object } = buildTableObject(spec, { id, x: 0, y: 0, newId: localId });
-  const relative = besideObjectId ? { objectId: besideObjectId, side: "right" as const } : undefined;
-  const pageId = besideObjectId ? findObject(document, besideObjectId).page.id : undefined;
-  const placed = placement(context, [object], pageId, relative);
+  const anchor = besideObjectId ? findObject(context, document, besideObjectId) : undefined;
+  const placed = placement(context, [object], anchor?.page.id, anchor && { anchor: anchor.object, side: "right" });
   return insertionPlan(context, document, insertWrite(placed.page.id, placed.objects, "Inserted table", []),
     placed.plan, placed.page.id, [[object]], ["table"], "This table");
 }
 export async function buildEditStructure(context: AssistantToolContext, raw: unknown): Promise<AssistantWrite> {
   const input = toolSchemas.edit_structure.parse(raw);
   const document = requireDocument(context);
-  const { object: old, page } = findObject(document, input.objectId);
+  const { object: old, page } = findObject(context, document, input.objectId);
   if (old.type !== "molecule") throw new Error(`${old.id} is not a molecule.`);
   const checkPreconditions = captureWritePreconditions(document, [old.id], "edit");
   let object = (freshObjects(document, [await buildMolecule(context, input.smiles)])[0]!) as MoleculeObject;
@@ -393,7 +393,7 @@ export function buildStyleObjects(context: AssistantToolContext, input: ToolInpu
     throw new Error("Bond display is stored on bonds and can encode stereochemistry; style_objects can change only object style. Use edit_structure for a chemical edit.");
   }
   const patches: DocumentPatch[] = [...new Set(input.objectIds)].map(objectId => {
-    const { object } = findObject(document, objectId);
+    const { object } = findObject(context, document, objectId);
     const { ringStyles, bondDisplay: _bondDisplay, ...requested } = input.style;
     const style: Record<string, unknown> = { ...object.style, ...requested };
     if (object.type === "molecule") {
@@ -419,7 +419,7 @@ export function buildMoveObjects(context: AssistantToolContext, input: ToolInput
   const document = requireDocument(context);
   const checkPreconditions = captureWritePreconditions(document, input.objectIds, "move",
     "relativeTo" in input.to ? [input.to.relativeTo] : []);
-  const entries = [...new Set(input.objectIds)].map(id => findObject(document, id));
+  const entries = [...new Set(input.objectIds)].map(id => findObject(context, document, id));
   if (entries.some(entry => entry.page.id !== entries[0]!.page.id)) throw new Error("Move objects must be on one page.");
   for (const { object } of entries) {
     // Moving an independently anchored mark can alter the molecule's charge during reconciliation.
@@ -434,15 +434,19 @@ export function buildMoveObjects(context: AssistantToolContext, input: ToolInput
     }
   }
   const originals = entries.map(entry => entry.object);
-  const relative = "relativeTo" in input.to ? { objectId: input.to.relativeTo, side: input.to.side } : undefined;
-  if (relative && input.objectIds.includes(relative.objectId)) throw new Error("A move cannot be relative to an object being moved.");
-  if (relative && findObject(document, relative.objectId).page.id !== entries[0]!.page.id) throw new Error("The relative object must be on the same page.");
+  const to = input.to;
+  if ("relativeTo" in to && input.objectIds.includes(to.relativeTo)) throw new Error("A move cannot be relative to an object being moved.");
+  const anchor = "relativeTo" in to ? findObject(context, document, to.relativeTo) : undefined;
+  if (anchor && anchor.page.id !== entries[0]!.page.id) throw new Error("The relative object must be on the same page.");
+  const relative = anchor && "side" in to ? { anchor: anchor.object, side: to.side } : undefined;
   const cells = arrangementCells(originals);
   const placed = "arrange" in input.to
     ? arrangeCells(context, cells, entries[0]!.page.id, input.to.arrange === "row" ? cells.length : Math.ceil(Math.sqrt(cells.length)), input.objectIds)
     : placement(context, originals, entries[0]!.page.id, relative, input.objectIds);
+  // The moved objects were resolved on their page above; never look them up again by bare id.
+  const originalById = new Map(originals.map(object => [object.id, object]));
   const patches: DocumentPatch[] = placed.objects.map(object => {
-    const original = findObject(document, object.id).object;
+    const original = originalById.get(object.id)!;
     const changes: Partial<DocumentObject> = {};
     for (const key of Object.keys(object) as (keyof DocumentObject)[]) {
       if (JSON.stringify(object[key]) !== JSON.stringify(original[key])) Object.assign(changes, { [key]: object[key] });

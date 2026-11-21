@@ -35,11 +35,13 @@ export interface RequestState {
 }
 
 /** Resolve the command's grant while capturing Send, before the plugin can yield or switch tabs. */
-export function captureRequestSelection(snapshot: ChemDraftDocument | undefined, explicitIds?: readonly string[]): RequestObjectRef[] {
+/** `explicitPageId` is the page an explicit (Send-time) id list was selected on, when the caller knows it. */
+export function captureRequestSelection(snapshot: ChemDraftDocument | undefined, explicitIds?: readonly string[],
+  explicitPageId?: string): RequestObjectRef[] {
   if (!snapshot) return [];
   const selected = new Set(explicitIds ?? snapshot.selection.objectIds);
   if (!selected.size) return [];
-  const pageId = explicitIds ? undefined : snapshot.selection.pageId;
+  const pageId = explicitIds ? explicitPageId : snapshot.selection.pageId;
   return snapshot.pages.filter(page => !pageId || page.id === pageId)
     .flatMap(page => page.objects.filter(object => selected.has(object.id)).map(object => ({ pageId: page.id, objectId: object.id })));
 }

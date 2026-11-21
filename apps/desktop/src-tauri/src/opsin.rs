@@ -346,6 +346,15 @@ fn convert_with_control(
     // this line is the engine, and a failure there says nothing about the name.
     let name = validate_name(name).map_err(OpsinError::invalid_name)?;
 
+    #[cfg(target_os = "linux")]
+    let jar_path = crate::linux_startup::user_path(jar);
+    #[cfg(target_os = "linux")]
+    let jar = jar_path.as_ref();
+    #[cfg(target_os = "linux")]
+    let java_path = (java.components().count() > 1).then(|| crate::linux_startup::user_path(java));
+    #[cfg(target_os = "linux")]
+    let java = java_path.as_deref().unwrap_or(java);
+
     // The jar is passed relative to its own directory (the child's working directory): the Windows
     // Java launcher reads its command line in the system ANSI code page, so an absolute path under a
     // profile folder with characters outside it (C:\Users\Łukasz\…) reached the JVM as '?'s.
@@ -353,7 +362,7 @@ fn convert_with_control(
         (Some(dir), Some(file)) if !dir.as_os_str().is_empty() => (Some(dir), file.to_os_string()),
         _ => (None, jar.as_os_str().to_os_string()),
     };
-    let mut command = Command::new(java);
+    let mut command = crate::child_command(java);
     if let Some(dir) = jar_dir {
         command.current_dir(dir);
     }

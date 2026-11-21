@@ -85,6 +85,12 @@ libc = "0.2"
 # toolkit WebKitGTK runs on); used directly by linux_clipboard.rs and the tooltip window.
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
+dirs = "6"
+# Already locked through Tauri's single-instance plugin. Listen for termination signals and
+# take a bounded logind shutdown delay where available.
+tokio = { version = "=1.52.3", features = ["signal"] }
+zbus = "5.9"
+futures-lite = "2"
 # Match Tauri's locked platform webview type for the web-process-terminated signal.
 webkit2gtk = { version = "=2.0.2", features = ["v2_20"] }
 

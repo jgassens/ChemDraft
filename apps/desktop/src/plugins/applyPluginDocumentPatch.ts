@@ -8,18 +8,23 @@ import {
   type DocumentObject,
   type MoleculeObject
 } from "@chemdraft/chem-core";
+import { ChemistryRefusal, PLUGIN_WRITE_REFUSED, chemistryRefusalOf, refusalSentence } from "./requestWrites/chemistryRefusal";
 import {
   AppliedPatchReceiptSchema,
   type AppliedPatchReceipt,
   type NormalizedProposedDocumentPatch
 } from "@chemdraft/plugin-api";
-import { assertPluginDocumentWriteScope, rebasePluginPatch, storedCtabReference, writePatchOps } from "@chemdraft/plugin-host";
+import { assertPluginDocumentWriteScope, bareIdTargetPage, effectiveScopePages, objectInWriteScope, rebasePluginPatch,
+  retainedCtabCompatibility, storedCtabReference, writePatchOps, type PageObjectRef, type PluginWriteScopePages } from "@chemdraft/plugin-host";
 import { selectionBounds, translateInsertedDocumentObjects } from "../documentWorkflow";
 import { choosePlacement, objectRect, overlaps as boundsOverlap, pageContentRect, RELATIVE_GAP, unionRects } from "../assistant/placement";
 import type { ViewportRect } from "@chemdraft/viewport-engine";
 import { nativeSingleBondGraphMetadata, tryNativeSingleBondGraphSmiles } from "@chemdraft/document-workflow-core";
 import { nativeElementFromAtomLabel } from "@chemdraft/layout-engine";
-import { refreshVerifiedMoleculeChemistry, stableRecord, verifiedChemicalRecord, verifyStoredSources } from "./requestWrites/storedChemistry";
+import {
+  assertChemistryClaims, assertRetainedAnnotationsKept, refreshVerifiedMoleculeChemistry, stableRecord, verifiedChemicalRecord,
+  verifyStoredSources, withoutGeometry
+} from "./requestWrites/storedChemistry";
 import { desktopWriteInspectionContext, inspectMolecule } from "./requestWrites/structureIdentity";
 
 export interface PluginPatchPlacementOptions extends ApplyPatchOptions {
@@ -34,17 +39,27 @@ export interface AppliedPluginDocumentPatch {
   receipt: AppliedPatchReceipt;
 }
 
+/** The fields that carry a molecule's chemistry beside its editable graph, for save and export. */
+const STORED_CHEMISTRY_FIELDS = ["structure", "structureFormat", "chemistry", "compatibility", "superatoms", "rGroups"] as const;
+
 /** Match draft molecules with the graphs they had before the batch's updates.
- * Reviewed proposals are authorized by acceptance and have no command selection scope. */
+ * Reviewed proposals are authorized by acceptance and have no command selection scope, but their
+ * insertions are verified exactly like a scoped plugin's. */
 export function refreshPluginPatchChemistry(before: ChemDraftDocument, draft: ChemDraftDocument,
-  rebased: NormalizedProposedDocumentPatch, writeScopeObjectIds?: readonly string[], signal?: AbortSignal
+  rebased: NormalizedProposedDocumentPatch, writeScopeObjectIds?: readonly string[], signal?: AbortSignal,
+  /** Legacy writes: a selected id is in scope only on the page its selection named. */
+  writeScopePages?: PluginWriteScopePages
 ): Promise<ChemDraftDocument> | undefined {
   const scope = writeScopeObjectIds && new Set(writeScopeObjectIds);
+  // Follow a uniquely identified selected object that moved pages; never a same-id object elsewhere.
+  const scopePages = effectiveScopePages(before, writeScopePages);
   const inserted = new Set<string>();
   const atomUpdates = new Set<string>();
+  const storedUpdates = new Set<string>();
   const positions = writePatchOps(rebased.patch).filter(op => {
     if (op.op === "addObject") inserted.add(op.object.id);
     if (op.op === "updateObject" && "atoms" in op.changes) atomUpdates.add(op.objectId);
+    if (op.op === "updateObject" && STORED_CHEMISTRY_FIELDS.some(key => key in op.changes)) storedUpdates.add(op.objectId);
     return op.op === "addObject" || op.op === "addAnnotation" || op.op === "removeObject" ||
       op.op === "removeAnnotation" || op.op === "reorderObject" || op.op === "setObjectOrder";
   });
@@ -55,6 +70,7 @@ export function refreshPluginPatchChemistry(before: ChemDraftDocument, draft: Ch
   }) : before;
   const context = desktopWriteInspectionContext(signal);
   const edits: Promise<void>[] = [];
+  let retained = false;
   const pages = draft.pages.map((page, pageIndex) => {
     // Reviewed edits can also remove orphaned brackets and groups during patch application.
     const prior = baseline.pages[pageIndex]!.objects.filter(object => object.type === "molecule");
@@ -64,24 +80,39 @@ export function refreshPluginPatchChemistry(before: ChemDraftDocument, draft: Ch
       if (object.type !== "molecule") continue;
       const previous = prior[moleculeIndex++];
       const isInsertion = inserted.has(object.id);
-      if (previous?.id !== object.id || (scope && !isInsertion && !scope.has(object.id))) continue;
-      const verifyInsertion = !!scope && isInsertion;
+      if (previous?.id !== object.id || (scope && !isInsertion && !objectInWriteScope(scope, scopePages, page.id, object.id))) continue;
+      // Every insertion is verified, whether a scoped command wrote it or the user accepted it.
+      const verifyInsertion = isInsertion;
       // An authored atom move can change 2D stereo, but only where geometry defines stereo, and
       // never when every atom moved together keeping every stereo side. Host placement
       // translates an insertion as a unit.
       const graphChanged = object !== previous && (graphSignature(previous) !== graphSignature(object) ||
         atomUpdates.has(object.id) && hasGeometryStereo(object) &&
         !(movedAsUnit(previous, object) && keptStereoSides(previous, object)));
-      if (!verifyInsertion && !graphChanged) continue;
+      // A write to the stored records must agree with the graph the canvas draws, changed or not.
+      const storedChanged = object !== previous && storedUpdates.has(object.id) && storedRecord(previous) !== storedRecord(object);
+      if (!verifyInsertion && !graphChanged && !storedChanged) {
+        // The graph and its chemistry are unchanged, but a retained CTAB still holds the old atom
+        // coordinates. Keep them beside it, as a request write does, so a later edit can map its stereo.
+        if (object !== previous && atomUpdates.has(object.id)) {
+          const compatibility = retainedCtabCompatibility(previous, object);
+          if (compatibility !== previous.compatibility) {
+            if (objects === page.objects) objects = [...objects];
+            objects[index] = { ...object, compatibility };
+            retained = true;
+          }
+        }
+        continue;
+      }
       // Records the canvas itself derives from this graph cannot disagree with it.
-      if (verifyInsertion && !graphChanged && storesNativeDerivation(object)) continue;
+      if (verifyInsertion && !graphChanged && !storedChanged && storesNativeDerivation(object)) continue;
       // Give existing scope refusals priority over chemistry inspection of a draft that cannot commit.
-      if (!edits.length && writeScopeObjectIds) assertPluginDocumentWriteScope(before, draft, rebased, writeScopeObjectIds);
+      if (!edits.length && writeScopeObjectIds) assertPluginDocumentWriteScope(before, draft, rebased, writeScopeObjectIds, writeScopePages);
       if (objects === page.objects) objects = [...objects];
       edits.push((async () => {
         try {
-          if (!object.atoms.length) throw new Error("The molecule has no editable atoms to verify.");
-          if (verifyInsertion && !graphChanged) {
+          if (!object.atoms.length) throw new ChemistryRefusal("the molecule has no drawn atoms to check against", "The molecule has no editable atoms to verify.");
+          if (verifyInsertion && !graphChanged && !storedChanged) {
             // Verification only: an insertion that matches its graph keeps its records as authored.
             const insertion = withoutBracketContext(object);
             await verifiedChemicalRecord(context, insertion, await inspectMolecule(context, insertion));
@@ -95,19 +126,36 @@ export function refreshPluginPatchChemistry(before: ChemDraftDocument, draft: Ch
             await verifyStoredSources(context, previous, { graph, reference: storedCtabReference(previous) });
           }
           const graph = await inspectMolecule(context, withoutBracketContext(object));
+          if (storedChanged) assertRetainedAnnotationsKept(previous, object);
           await verifyStoredSources(context, object, { graph, alreadyVerified: previous });
           const refreshed = refreshVerifiedMoleculeChemistry(object, graph, previous.structureFormat);
+          // A supplied record is checked against the graph's, then replaced by it like every other field.
+          if (storedChanged) assertChemistryClaims(withoutBracketContext(object), withoutBracketContext(previous), refreshed);
           if (refreshed.structureFormat === "molfile-v3000") await verifyStoredSources(context, refreshed, { graph });
           objects[index] = refreshed;
         } catch (error) {
           signal?.throwIfAborted();
-          throw new Error(`Plugin write refused: cannot refresh stored chemistry for molecule "${object.id}". ${describePatchFailure(error)}`);
+          const technical = `Plugin write refused: cannot refresh stored chemistry for molecule "${object.id}". ${describePatchFailure(error)}`;
+          const refusal = chemistryRefusalOf(error);
+          if (!refusal) throw new Error(technical);
+          // The user sees the plain sentence; the full text, with the molecule id, goes to the log.
+          const detail = `Plugin write refused: cannot refresh stored chemistry for molecule "${object.id}". ${refusal.detail}`;
+          console.warn(detail);
+          throw new ChemistryRefusal(refusal.reason, detail, refusalSentence(PLUGIN_WRITE_REFUSED, refusal.reason));
         }
       })());
     }
     return objects === page.objects ? page : { ...page, objects };
   });
   if (edits.length) return Promise.all(edits).then(() => adoptDerivedDocument(draft, { ...draft, pages }));
+  if (retained) return Promise.resolve(adoptDerivedDocument(draft, { ...draft, pages }));
+}
+
+/** Everything a molecule stores for save and export beside its graph, without geometry. */
+function storedRecord(molecule: MoleculeObject): string {
+  const { superatoms, rGroups } = withoutGeometry(molecule);
+  return stableRecord([molecule.structure, molecule.structureFormat, withoutBracketContext(molecule).chemistry,
+    molecule.compatibility, superatoms, rGroups]);
 }
 
 function graphSignature(molecule: MoleculeObject): string {
@@ -302,26 +350,32 @@ export function applyPluginDocumentPatch(
     }
     patched = translateInsertedDocumentObjects(patched, objects.map(object => object.id), x - bounds.x, y - bounds.y);
   }
+  // Record each touched object by page and id: the page an insertion names, and the page chem-core's
+  // bare-id op acted on (its first occurrence). A same-id object on another page is never "touched".
   const touched = new Set<string>();
+  const touchedRefs: PageObjectRef[] = [];
+  const touch = (pageId: string | undefined, objectId: string) => {
+    if (pageId === undefined || touched.has(`${pageId}\u0000${objectId}`)) return;
+    touched.add(`${pageId}\u0000${objectId}`);
+    touchedRefs.push({ pageId, objectId });
+  };
   for (const op of writePatchOps(proposed.patch)) {
     switch (op.op) {
-      case "addObject": touched.add(op.object.id); break;
-      case "addAnnotation": touched.add(op.annotation.id); break;
+      case "addObject": touch(op.pageId, op.object.id); break;
+      case "addAnnotation": touch(op.pageId, op.annotation.id); break;
       case "updateObject":
       case "moveObject":
-      case "reorderObject": touched.add(op.objectId); break;
-      case "setObjectOrder": op.objectIds.forEach((id) => touched.add(id)); break;
+      case "reorderObject": touch(bareIdTargetPage(patched, op.objectId), op.objectId); break;
+      case "setObjectOrder": op.objectIds.forEach((id) => touch(op.pageId, id)); break;
     }
   }
   const objectIds = patched.pages.flatMap((page) =>
-    page.objects.filter((object) => touched.has(object.id)).map((object) => object.id)
+    page.objects.filter((object) => touched.has(`${page.id}\u0000${object.id}`)).map((object) => object.id)
   );
 
   let selected = patched;
   if (objectIds.length > 0) {
-    const page = patched.pages.find((candidate) =>
-      objectIds.every((objectId) => candidate.objects.some((object) => object.id === objectId))
-    );
+    const page = patched.pages.find((candidate) => touchedRefs.every((ref) => ref.pageId === candidate.id));
     if (page) {
       selected = applyPatch(
         patched,
@@ -440,6 +494,8 @@ export function describePatchFailure(error: unknown): string {
     const detail = typeof first?.message === "string" ? first.message : "invalid value";
     return `the proposed structure is not valid (${path ? `${path}: ` : ""}${detail})`;
   }
+  const refusal = chemistryRefusalOf(error);
+  if (refusal) return refusal.reason;
   const message = error instanceof Error ? error.message : String(error);
   return message.split("\n")[0]!.replace(/\.$/, "") || "unknown error";
 }

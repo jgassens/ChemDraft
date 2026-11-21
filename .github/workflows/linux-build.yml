@@ -154,7 +154,7 @@ jobs:
           echo "deb-name=$(basename "$deb")" >> "$GITHUB_OUTPUT"
           echo "appimage-name=$(basename "$appimage")" >> "$GITHUB_OUTPUT"
 
-      - name: Repack AppImage with host Wayland and compiler runtimes
+      - name: Repack AppImage with host runtimes, Mesa dependencies and GTK backend selection
         env:
           APPIMAGE: ${{ steps.bundle.outputs.appimage }}
         run: |
@@ -170,11 +170,43 @@ jobs:
           [[ "$offset" =~ ^[1-9][0-9]*$ ]]
           "$image" --appimage-extract > original-extraction.log
           test -x squashfs-root/AppRun
-          echo 'Graphics and compiler libraries in the original AppImage:'
-          find squashfs-root \( -name 'libwayland-*' -o -name 'libEGL*.so*' -o -name 'libgbm.so*' \
-            -o -name 'libstdc++.so*' -o -name 'libgcc_s.so*' \) -print
-          find squashfs-root \( -name 'libwayland-*' -o -name 'libstdc++.so*' \
-            -o -name 'libgcc_s.so*' \) -delete
+          # Libraries the host must supply. Wayland and the compiler runtimes must match the host's
+          # graphics stack. The rest are dependencies of host Mesa (libEGL_mesa, libgallium, libgbm,
+          # the DRI drivers): linuxdeploy bundles the Ubuntu 22.04 copies, which then shadow the
+          # host's newer ones when host Mesa loads inside the AppImage, a known cause of EGL
+          # failures such as EGL_BAD_PARAMETER. Each is a standard base package on every supported
+          # host: Ubuntu 22.04+ and Debian 12+ (libzstd1, libelf1, libffi8, libxau6, libxdmcp6,
+          # libxcb-randr0, libxcb-shm0, libbsd0, libmd0), Fedora (libzstd, elfutils-libelf, libffi,
+          # libXau, libXdmcp, libxcb, libbsd, libmd) and Arch (zstd, libelf, libffi, libxau,
+          # libxdmcp, libxcb, libbsd, libmd). libxcb.so.1 itself stays bundled.
+          host_libs=( -name 'libwayland-*' -o -name 'libstdc++.so*' -o -name 'libgcc_s.so*'
+            -o -name 'libzstd.so*' -o -name 'libelf.so*' -o -name 'libelf-*.so' -o -name 'libffi.so*'
+            -o -name 'libXau.so*' -o -name 'libXdmcp.so*' -o -name 'libxcb-randr.so*'
+            -o -name 'libxcb-shm.so*' -o -name 'libbsd.so*' -o -name 'libmd.so*' )
+          echo 'Graphics and host-supplied libraries in the original AppImage:'
+          find squashfs-root \( "${host_libs[@]}" -o -name 'libEGL*.so*' -o -name 'libgbm.so*' \) -print
+          find squashfs-root \( "${host_libs[@]}" \) -delete
+
+          # Tauri copies the Jammy WebKitGTK 4.1 helpers into the original multiarch layout.
+          appdir=squashfs-root
+          multiarch=$(dpkg-architecture -qDEB_HOST_MULTIARCH)
+          webkit_dir="usr/lib/$multiarch/webkit2gtk-4.1"
+          for helper in WebKitWebProcess WebKitNetworkProcess; do
+            test -x "$appdir/$webkit_dir/$helper"
+          done
+          test -f "$appdir/$webkit_dir/injected-bundle/libwebkit2gtkinjectedbundle.so"
+          gtk_hook="$appdir/apprun-hooks/linuxdeploy-plugin-gtk.sh"
+          # Keep the generated GTK settings and let ChemDraft choose the default backend.
+          sed -i -E '/^[[:space:]]*export[[:space:]]+GDK_BACKEND=x11([[:space:]]|$)/d; /^[[:space:]]*export[[:space:]]+GIO_EXTRA_MODULES=/d' "$gtk_hook"
+          cat >> "$gtk_hook" <<HOOK
+          export WEBKIT_INJECTED_BUNDLE_PATH="\$APPDIR/$webkit_dir/injected-bundle"
+          HOOK
+          gio_dir="usr/lib/$multiarch/gio/modules"
+          if [[ -d "$appdir/$gio_dir" ]]; then
+            printf 'export GIO_EXTRA_MODULES="$APPDIR/%s"\n' "$gio_dir" >> "$gtk_hook"
+          fi
+          bash -n "$gtk_hook"
+
           # The AppImage runtime reads only zlib or zstd.
           mksquashfs squashfs-root app.squashfs -noappend -all-root -comp zstd -no-progress
           head -c "$offset" "$image" > repacked.AppImage
@@ -187,8 +219,7 @@ jobs:
           test -x squashfs-root/AppRun
           echo 'Shared libraries under usr/lib in the repacked AppImage:'
           find squashfs-root/usr/lib \( -type f -o -type l \) \( -name '*.so' -o -name '*.so.*' \) -print | LC_ALL=C sort
-          leftovers=$(find squashfs-root \( -name 'libwayland-*' -o -name 'libstdc++.so*' \
-            -o -name 'libgcc_s.so*' \) -print)
+          leftovers=$(find squashfs-root \( "${host_libs[@]}" \) -print)
           if [[ -n "$leftovers" ]]; then
             printf '::error::AppImage still contains host libraries\n%s\n' "$leftovers"
             exit 1

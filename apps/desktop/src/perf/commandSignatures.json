@@ -1,5 +1,21 @@
 [
   {
+    "file": "appimage_dialogs.rs",
+    "name": "open",
+    "async": true,
+    "generics": "<R: Runtime>",
+    "parameters": "window: Window<R>, options: Options,",
+    "returnType": "tauri_plugin_dialog::Result<Selection>"
+  },
+  {
+    "file": "appimage_dialogs.rs",
+    "name": "save",
+    "async": true,
+    "generics": "<R: Runtime>",
+    "parameters": "window: Window<R>, options: Options,",
+    "returnType": "tauri_plugin_dialog::Result<Option<FilePath>>"
+  },
+  {
     "file": "assistant_mcp/mod.rs",
     "name": "assistant_mcp_session_open",
     "async": true,

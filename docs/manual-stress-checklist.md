@@ -1703,3 +1703,28 @@ whole-molecule cleanup with the existing behavior, and check save/reopen and exp
 - Try the normal Cut, Copy and Paste menu items with focus on a text field and with canvas
   selection, before and after changing their shortcuts. Check that Windows utility windows
   stay menu-free and the macOS app menu restores its shortcuts if Preferences loses focus mid-recording.
+
+## Linux startup and session end
+
+- Disable “Start with a fresh document”, make an unsaved edit, and log out before the autosave
+  debounce expires. Log back in and verify that the last edit is recovered. Repeat with
+  `kill -TERM`, `kill -HUP`, and `kill -INT` against ChemDraft, including with the Save on Quit
+  prompt open. Stall the renderer and verify that shutdown is bounded and reports an
+  unconfirmed flush. On GNOME, a stalled renderer at logout must make the session manager
+  name ChemDraft with "ChemDraft could not save your open documents", and logout must still
+  finish within a few seconds.
+- In a directory containing `drawing.cdxml`, launch `/path/to/ChemDraft.AppImage drawing.cdxml`.
+  Verify that the drawing opens, then launch from a different directory containing a second
+  `drawing.cdxml` and check that the running instance opens that file. With no remembered folder,
+  verify that Open and Save for an untitled document start in the primary launch folder, or home
+  when `OWD` is unavailable. Repeat from a launch folder with mode `000` (accessible parents):
+  the dialogs must start in home.
+- Create a drawing whose file name is not valid UTF-8 (for example
+  `cp drawing.cdxml "$(printf 'caf\351.cdxml')"`). Opening it from the first launch must show
+  an error naming the file, not open it. With ChemDraft running, launch the AppImage with that
+  file and a normal one: the normal file opens in the running instance, the second launch shows
+  the same error and exits with status 1. Check that opening a report link, revealing saved screen captures,
+  and running OPSIN work while WebKit runs from the AppRun working folder.
+- Start a native Wayland session with XWayland disabled. With `DISPLAY` and `GDK_BACKEND` unset,
+  launch both packages and verify that the document window and drawing canvas appear. Repeat
+  on Wayland with XWayland enabled and check the default and an explicit Wayland override.

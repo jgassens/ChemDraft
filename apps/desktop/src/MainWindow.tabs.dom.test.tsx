@@ -31,6 +31,7 @@ import { DOM_COMMAND_EVENT, broadcastExportPreviewSettings, setToolbarsMenu, typ
 import { buildDocumentSessionEnvelope, buildDocumentTabsSession, DOCUMENT_SESSION_SAVE_DEBOUNCE_MS, parseDocumentSessionEnvelope } from "./documentSession";
 import { createPluginRuntime, type DesktopPluginRuntime } from "./plugins/createPluginRuntime";
 import { applyPatches, type DocumentPatch, type MoleculeObject } from "@chemdraft/chem-core";
+import { AssistantCapabilityPermissions, type PluginCommandContext } from "@chemdraft/plugin-api";
 import { buildTableObject } from "@chemdraft/document-workflow-core";
 import { planTableLayout } from "@chemdraft/layout-engine";
 import {
@@ -879,6 +880,32 @@ describe("documents in one window", () => {
     expect(respondToProposalDecision).toHaveBeenCalledExactlyOnceWith("review-result", {
       ok: true, message: expect.any(String)
     }, reviewSourceLabel);
+  });
+
+  it("replacing a tab's document cancels its pending legacy assistant request", async () => {
+    const commandId = "plugin.tabAssistant.run";
+    let assistant!: NonNullable<PluginCommandContext["assistant"]>;
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    runtime().registerPlugin({
+      id: "org.test.tab-assistant", name: "Tab Assistant", version: "0.0.1", apiVersion: "^0.1.21",
+      entry: "dist/plugin.js", permissions: [...AssistantCapabilityPermissions],
+      contributes: { commands: [{ id: commandId, title: "Ask" }] }
+    }, { commandHandlers: { [commandId]: async context => { assistant = context.assistant!; await held; } } });
+    let invocation!: Promise<unknown>;
+    await act(async () => { invocation = runtime().invokeCommand(commandId); await vi.waitFor(() => expect(assistant).toBeDefined()); });
+    await act(async () => { await assistant.beginRequest({ prompt: "caption" }); });
+    await open("Replacement drawing");
+    expect(tabs()).toHaveLength(1);
+    const opened = bridge().snapshot().document;
+    const replaced = "Assistant request canceled: the drawing it was working on was replaced.";
+    await act(async () => {
+      await expect(assistant.callTool({ name: "insert_text", input: { text: "Late caption" } })).rejects.toThrow(replaced);
+    });
+    expect(bridge().snapshot().document).toEqual(opened);
+    expect(bridge().snapshot().file.dirty).toBe(false);
+    release();
+    await act(async () => { await invocation; });
   });
 
   async function mountHoverChain() {

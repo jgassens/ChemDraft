@@ -163,7 +163,7 @@ impl SidecarProtocol for OcsrProtocol {
         RecognitionProgress::Starting
     }
     fn configure_command(paths: &LaunchPaths) -> Command {
-        let mut command = Command::new(&paths.python);
+        let mut command = crate::child_command(&paths.python);
         command
             .args(&paths.interpreter_args)
             .arg(&paths.sidecar)

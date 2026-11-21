@@ -1,4 +1,5 @@
 import { parseMolfileGraph, type ParsedMolfileGraph } from "@chemdraft/clipboard-adapter";
+import { ChemistryRefusal } from "./chemistryRefusal";
 import type { MoleculeObject } from "@chemdraft/chem-core";
 import type { StereoTags } from "./structureIdentity";
 
@@ -25,7 +26,7 @@ function hasAtomParity(molfile: string, format: ParsedMolfileGraph["format"]) {
   return lines.slice(start + 1, end).some(line => /\bCFG=(?!0\b)\d+/.test(line));
 }
 
-const unmapped = () => new Error("Cannot uniquely map the stored stereo annotations to the editable graph.");
+const unmapped = () => new ChemistryRefusal("its stereo annotations can't be matched to the drawn structure", "Cannot uniquely map the stored stereo annotations to the editable graph.");
 
 /** Owner of the serialization supplies these IDs in the order it actually wrote. */
 function writerIds(graph: ParsedMolfileGraph, atomIds: readonly string[]) {
@@ -127,9 +128,9 @@ function mappedBonds(graph: ParsedMolfileGraph, ids: ReadonlyMap<string, string>
   const bonds = new Map<string, { order: string; stereo?: string }>();
   for (const bond of graph.bonds) {
     const from = ids.get(bond.fromAtomId), to = ids.get(bond.toAtomId);
-    if (!from || !to) throw new Error("Cannot map a stored stereo bond endpoint.");
+    if (!from || !to) throw new ChemistryRefusal("its stereo annotations can't be matched to the drawn structure", "Cannot map a stored stereo bond endpoint.");
     const key = bondKey(from, to);
-    if (bonds.has(key)) throw new Error("Ambiguous bond mapping for stored stereochemistry.");
+    if (bonds.has(key)) throw new ChemistryRefusal("its stereo annotations can't be matched to the drawn structure", "Ambiguous bond mapping for stored stereochemistry.");
     bonds.set(key, { order: bond.order, stereo: stereoAnnotation(from, bond.bondStyle, bond.stereo) });
   }
   return bonds;
@@ -143,9 +144,9 @@ export function verifyWrittenBonds(molecule: MoleculeObject, written: Serialized
     const style = bond.display?.bondStyle;
     const stereoStyle = bond.order !== "single" && (style === "wedge" || style === "hashed") ? undefined : style;
     const writtenBond = encoded.get(key);
-    if (!writtenBond) throw new Error(`The editable bond ${key} cannot be written.`);
+    if (!writtenBond) throw new ChemistryRefusal("a bond in the structure can't be written as drawn", `The editable bond ${key} cannot be written.`);
     if (writtenBond.stereo !== stereoAnnotation(bond.fromAtomId, stereoStyle, bond.stereo)) {
-      throw new Error(`The editable stereo annotation on bond ${key} cannot be written.`);
+      throw new ChemistryRefusal("its stereo annotations can't be matched to the drawn structure", `The editable stereo annotation on bond ${key} cannot be written.`);
     }
   }
   return encoded;
@@ -174,7 +175,7 @@ export function assertStoredCtabStereo(source: string, sourceTags: StereoTags | 
   original: SerializedGraph, molecule: MoleculeObject, referenceMolfile = original.molfile, sharedIdentity?: string) {
   const stored = parseMolfileGraph(source);
   if (hasAtomParity(source, stored.format)) {
-    throw new Error("The chemical edit cannot preserve stored atom stereo parity.");
+    throw new ChemistryRefusal("its stereo annotations can't be matched to the drawn structure", "The chemical edit cannot preserve stored atom stereo parity.");
   }
   const prior = parseMolfileGraph(original.molfile);
   // With no stereo on either side there is nothing to place, so the stored coordinates need not
@@ -192,12 +193,12 @@ export function assertStoredCtabStereo(source: string, sourceTags: StereoTags | 
     const old = before.get(key);
     if (old?.order !== annotation.order) throw unmapped();
     if (old.stereo !== annotation.stereo) {
-      throw new Error(`The stored stereo annotation on bond ${key} differs from the editable graph.`);
+      throw new ChemistryRefusal("its stereo annotations can't be matched to the drawn structure", `The stored stereo annotation on bond ${key} differs from the editable graph.`);
     }
   }
-  if (!sourceTags || !original.stereoTags) throw new Error("Cannot verify stored atom and double-bond stereo.");
+  if (!sourceTags || !original.stereoTags) throw new ChemistryRefusal("its stereo annotations can't be matched to the drawn structure", "Cannot verify stored atom and double-bond stereo.");
   if (mappedStereoTags(sourceTags, stored.atoms.map(atom => storedIds.get(atom.id)!)) !==
       mappedStereoTags(original.stereoTags, original.atomIds)) {
-    throw new Error("The stored atom or double-bond stereo differs from the editable graph.");
+    throw new ChemistryRefusal("its stereo annotations can't be matched to the drawn structure", "The stored atom or double-bond stereo differs from the editable graph.");
   }
 }

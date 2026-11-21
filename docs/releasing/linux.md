@@ -38,17 +38,28 @@ The workflow:
 4. Checks the bundle identity and that the `.deb` carries `chemdraft`, the 3D sidecar and the
    OPSIN runtime.
 5. Repacks the AppImage after Tauri bundles it. It uses the host's Wayland and compiler runtime
-   libraries and the host's `libgpg-error.so.0`; the job verifies that the finished image contains no `libwayland-*`,
+   libraries and the host's `libgpg-error.so.0`. It also removes the bundled copies of libraries
+   that host Mesa (`libEGL_mesa`, `libgallium`, `libgbm`, the DRI drivers) depends on, so the
+   Ubuntu 22.04 copies never shadow the host's newer ones: `libzstd.so*`, `libelf.so*` and
+   `libelf-*.so`, `libffi.so*`, `libXau.so*`, `libXdmcp.so*`, `libxcb-randr.so*`,
+   `libxcb-shm.so*`, `libbsd.so*`, and `libmd.so*`. Each is a standard base package on every
+   supported host (on Debian and Ubuntu: `libzstd1`, `libelf1`, `libffi8`, `libxau6`,
+   `libxdmcp6`, `libxcb-randr0`, `libxcb-shm0`, `libbsd0`, `libmd0`); `libxcb.so.1` stays
+   bundled. The job verifies that the finished image contains none of these and no `libwayland-*`,
    `libstdc++.so*`, or `libgcc_s.so*` files or symlinks. The job logs the bundled shared libraries
    under `usr/lib` and rejects bundled `libEGL*`, `libGL.so*`, `libGLX*`, `libOpenGL.so*`,
    `libGLESv1_CM.so*`, `libGLESv2.so*`, `libGLU.so*`, `libGLdispatch*`, `libgbm*`, `libdrm*`,
    `libglapi*`, `*_dri.so`, `libvulkan*`, and any `dri` directory or symlink.
+   The repack lets ChemDraft select the GTK backend and sets absolute paths for the WebKit injected
+   bundle and bundled GIO modules in the AppRun hook. WebKitGTK starts its helpers relative to the
+   working folder set by AppRun.
 6. Records the source commit and final bytes of each package, then stages the packages, records,
    and checksums as the `linux-release-amd64` workflow artifact.
 7. Runs independent smoke jobs on **Ubuntu 22.04 and 24.04**. Each downloads and verifies the same
    22.04-built packages against `SHA256SUMS-linux.txt`. The jobs run both package checks, even
    when the AppImage or the other runner fails.
-8. The Debian sid, Fedora and Arch container checks also have to pass before upload. After the
+8. The Debian sid, Fedora and Arch container checks, including the native-Wayland AppImage and
+   .deb jobs, also have to pass before upload. After the
    smoke jobs pass, the workflow fetches the draft's tag and checks that it resolves to the build
    commit. It uploads to the existing draft, validates the attached builds, and refreshes the
    combined checksums.
@@ -68,6 +79,9 @@ start and a ChemDraft window appears within 60 seconds. The app must stay up for
 with a visible window and live web process at the end. A WebKit web process crash or app panic fails
 the check. The harness matches processes and windows to the active launch by process ancestry.
 The smoke test also reports EGL display initialization failures and logs the display backend settings.
+For the AppImage, it checks that the extracted GTK hook preserves the caller's backend, the
+exported resource paths point inside the extraction, and ChemDraft reads relative document
+arguments from two separate launch folders on startup and single-instance handoff.
 
 The `linux-smoke-amd64-ubuntu-22.04` and `linux-smoke-amd64-ubuntu-24.04` artifacts preserve
 package setup, library versions, display, app, and process logs even when smoke fails. The harness
@@ -86,7 +100,8 @@ detail depends on the binary's available symbols.
 
 ## Container smoke test
 
-Pull requests changing Linux packaging paths also build and smoke-test packages from the PR head.
+Pull requests changing Linux packaging paths, any desktop Rust source, `Cargo.toml` or `Cargo.lock`
+also build and smoke-test packages from the PR head.
 
 Build and test both packages using the workflow from a branch or tag:
 
@@ -106,7 +121,8 @@ libgpg-error as a desktop system would. Debian installs the
 .deb with apt and Fedora extracts its payload and runs it with Fedora's libraries. Each job
 uploads display, app, and process logs. These tests cover startup and subprocess crashes. GPU
 rendering still needs a desktop check. The privileged containers allow `strace` to trace the app
-and glycin's bubblewrap to create user namespaces. Weston enables Xwayland for Wayland startup tests.
+and glycin's bubblewrap to create user namespaces. Weston runs the AppImage both with and without
+XWayland.
 
 On Ubuntu and in the Xvfb container jobs, readiness requires the Main Toolbar window and more
 than 16 distinct colors in the document screenshot below the native menu bar. The check reads
@@ -123,17 +139,30 @@ repository on GitHub Pages, or a Flathub listing.
 
 ## Platform notes
 
-- On Wayland, the `.deb` defaults to XWayland so ChemDraft can position floating toolbars and
-  dialogs, matching the AppImage launcher. Set `CHEMDRAFT_NATIVE_WAYLAND=1` to skip the app's
-  XWayland default for the `.deb`, and use `GDK_BACKEND` to supply an explicit backend. The AppImage
-  always uses XWayland because linuxdeploy-plugin-gtk's AppRun hook exports `GDK_BACKEND=x11` before
-  ChemDraft starts.
+- On Wayland with a non-empty `DISPLAY`, ChemDraft defaults to XWayland so it can position
+  floating toolbars and dialogs. With no X11 display, GTK chooses native Wayland.
+  `CHEMDRAFT_NATIVE_WAYLAND=1` skips this default and an explicit `GDK_BACKEND` takes precedence.
 - Webview: WebKitGTK, origin `tauri://localhost` (as on macOS). Before startup on Linux,
   ChemDraft defaults `WEBKIT_DISABLE_DMABUF_RENDERER` to `1` to avoid Wayland graphics
   problems. An explicit value, including `0`, takes precedence.
   For AppImage launches, an explicit `EGL_PLATFORM` takes precedence. Otherwise, a `GDK_BACKEND`
   starting with `x11` or `wayland` selects that EGL platform. For other or unset backends, ChemDraft
-  selects `wayland` when `WAYLAND_DISPLAY` is set and `x11` otherwise.
+  selects `wayland` when `WAYLAND_DISPLAY` is non-empty and `x11` otherwise.
+- AppRun's working folder stays inside the image for WebKitGTK. ChemDraft resolves relative
+  document arguments against the caller's `OWD` or home folder before opening or forwarding them.
+  File dialogs use an explicit start path when supplied, otherwise they start in `OWD` or home
+  (home also when `OWD` cannot be listed or entered).
+- A document whose file name is not valid UTF-8 cannot be saved back in place, because the
+  renderer keeps the path as text. ChemDraft refuses to open it and shows a message naming the
+  file. A second AppImage launch forwards its other documents, shows the same message, and exits
+  with status 1.
+  ChemDraft starts its child processes in the home folder or a directory required by the tool.
+- Linux session end uses the same recovery write as File ▸ Exit. The app requests it on SIGTERM,
+  SIGINT, SIGHUP, a GNOME session-end notification, or a logind shutdown notification. When
+  available, a logind delay inhibitor gives the renderer up to two seconds to confirm the
+  write. A separate three-second deadline covers a stalled event loop or teardown. When the
+  write is not confirmed in time, ChemDraft answers GNOME's session-end request with "not OK"
+  and the reason "ChemDraft could not save your open documents", and exits with status 1.
 - Menus: on the document window, as on Windows (`install_app_menu`). Edit ▸ Cut / Copy / Paste
   invoke WebKitGTK's native editing commands in the focused window. The webview receives
   Ctrl+X / C / V directly and uses the same clipboard events for menu clicks and shortcuts.
@@ -147,4 +176,5 @@ repository on GitHub Pages, or a Flathub listing.
   libayatana-appindicator3-dev libsoup-3.0-dev libssl-dev libxdo-dev patchelf`, then
   `node scripts/build-opsin-runtime.mjs` and
   `LD_LIBRARY_PATH=$PWD/apps/desktop/src-tauri/resources/opsin/jre/lib/server APPIMAGE_EXTRACT_AND_RUN=1 NO_STRIP=true pnpm --filter @chemdraft/desktop build --bundles deb,appimage`.
-  The `LD_LIBRARY_PATH` lets linuxdeploy find `libjvm.so` for the bundled OPSIN runtime.
+  The `LD_LIBRARY_PATH` lets linuxdeploy find `libjvm.so` for the bundled OPSIN runtime. Apply the
+  repack step in `linux-build.yml` before launching the AppImage.
