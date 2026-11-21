@@ -13894,39 +13894,63 @@ function cascadeCarriedAnchoredMarkIds(
   return markIds;
 }
 
+/** A mark that belongs to a copied molecule, and the form in which the molecule's copy carries it. */
+interface CarriedElectronMark {
+  mark: ElectronMarkObject;
+  moleculeId: string;
+  /** What to clone for the copy: the mark itself, or the mark re-anchored to its resolved atom. */
+  copySource: ElectronMarkObject;
+}
+
 /**
- * The electron-marks that belong to each of `molecules`, for the operations that copy a molecule
- * (Duplicate). It starts from `anchoredElectronMarksForTransform`, the same atom-anchored rule the
- * clipboard and every molecule transform use, and adds the marks whose anchor is not an atom
- * (a bond or object anchor, or a legacy loose point) but which the committed assignment resolver
- * already attributes to the molecule: normalization derives the molecule's markCharge and
- * markRadicals from exactly that attribution, so a copy that left such a mark behind would be
- * recomputed to a different charge. No second association rule: the resolver is the one the
- * commit funnel runs. Results are in page order; a mark is owned by one molecule only.
+ * The electron-marks that belong to each of `molecules`: the ONE association rule for every
+ * operation that copies a molecule (Duplicate, and the clipboard copy of whole molecules and of
+ * lasso fragments). `molecules` are the molecules as they will be copied (a fragment passes its
+ * pruned molecule, which keeps its id), so a mark belongs only when the atom it sits on is copied.
+ *
+ * It starts from `anchoredElectronMarksForTransform`, the atom-anchored rule every molecule
+ * transform uses, and adds the marks whose anchor is not an atom (a bond or object anchor, or a
+ * legacy loose point) but which the committed assignment resolver attributes to one of the copied
+ * atoms: normalization derives markCharge and markRadicals from exactly that attribution, so a copy
+ * that left such a mark behind would be recomputed to a different charge. No second association
+ * rule: the resolver is the one the commit funnel runs.
+ *
+ * Bond, object and point anchors resolve by distance to the nearest atom of ANY molecule, so a copy
+ * placed near its original could be attributed to the original's atoms instead of the copy's. Their
+ * `copySource` is therefore anchored to the atom the resolver chose; the copy paths remap an atom
+ * anchor to the copied molecule and make it explicit, so the copied mark belongs to the copy.
+ * Results are in page order; a mark is owned by one molecule only.
  */
 function electronMarksCarriedWithMolecules(
   page: DocumentPage,
   molecules: readonly MoleculeObject[]
-): Array<{ mark: ElectronMarkObject; moleculeId: string }> {
-  const ownerByMarkId = new Map<string, string>();
+): CarriedElectronMark[] {
+  const ownerByMarkId = new Map<string, { moleculeId: string; atomId?: string }>();
   for (const molecule of molecules) {
     const atomIds = new Set(molecule.atoms.map((atom) => atom.id));
     for (const mark of anchoredElectronMarksForTransform(page.objects, molecule.id, atomIds)) {
-      if (!ownerByMarkId.has(mark.id)) ownerByMarkId.set(mark.id, molecule.id);
+      if (!ownerByMarkId.has(mark.id)) ownerByMarkId.set(mark.id, { moleculeId: molecule.id });
     }
   }
   if (page.objects.some((object) => object.type === "electron-mark" && object.anchor.kind !== "atom")) {
-    const moleculeIds = new Set(molecules.map((molecule) => molecule.id));
+    const moleculeById = new Map(molecules.map((molecule) => [molecule.id, molecule] as const));
     const objectById = objectByIdIndex(page.objects);
     for (const [markId, owner] of committedElectronMarkAssignments(page).anchorByMarkId) {
-      if (!owner || !moleculeIds.has(owner.objectId) || ownerByMarkId.has(markId)) continue;
+      if (!owner || ownerByMarkId.has(markId)) continue;
+      const molecule = moleculeById.get(owner.objectId);
+      if (!molecule?.atoms.some((atom) => atom.id === owner.atomId)) continue;
       const mark = objectById.get(markId);
-      if (mark?.type === "electron-mark" && mark.anchor.kind !== "atom") ownerByMarkId.set(markId, owner.objectId);
+      if (mark?.type === "electron-mark" && mark.anchor.kind !== "atom") {
+        ownerByMarkId.set(markId, { moleculeId: owner.objectId, atomId: owner.atomId });
+      }
     }
   }
   return page.objects.flatMap((object) => {
-    const moleculeId = object.type === "electron-mark" ? ownerByMarkId.get(object.id) : undefined;
-    return object.type === "electron-mark" && moleculeId !== undefined ? [{ mark: object, moleculeId }] : [];
+    const owner = object.type === "electron-mark" ? ownerByMarkId.get(object.id) : undefined;
+    if (object.type !== "electron-mark" || owner === undefined) return [];
+    const copySource: ElectronMarkObject = owner.atomId === undefined ? object
+      : { ...object, anchor: { kind: "atom", objectId: owner.moleculeId, atomId: owner.atomId } };
+    return [{ mark: object, moleculeId: owner.moleculeId, copySource }];
   });
 }
 
@@ -14590,15 +14614,18 @@ export function duplicateSelectedDocumentObjects(
   );
   const selectedIds = new Set(withArrowAttachmentIds(page.objects, selectedTransformObjectIds(document)));
   // A molecule's charge and radical marks are separate objects: copying only the molecule recomputes
-  // the copy's charge as 0. Carry each duplicated molecule's marks with it (a mark that is also
-  // selected is already in `selectedIds`, so it is copied once).
-  const carriedMarks = electronMarksCarriedWithMolecules(page,
-    page.objects.filter((object): object is MoleculeObject => object.type === "molecule" && selectedIds.has(object.id)));
-  const carriedMarkOwnerById = new Map(carriedMarks.map(({ mark, moleculeId }) => [mark.id, moleculeId]));
-  const selectedObjects = page.objects.filter((object) => selectedIds.has(object.id) || carriedMarkOwnerById.has(object.id));
+  // the copy's charge as 0. Carry each duplicated molecule's marks with it, by the same rule as the
+  // clipboard (a mark that is also selected is already in `selectedIds`, so it is copied once).
+  const carriedMarkById = new Map(electronMarksCarriedWithMolecules(page,
+    page.objects.filter((object): object is MoleculeObject => object.type === "molecule" && selectedIds.has(object.id)))
+    .map((carried) => [carried.mark.id, carried] as const));
+  const selectedObjects = page.objects.filter((object) => selectedIds.has(object.id) || carriedMarkById.has(object.id));
   if (selectedObjects.length === 0) {
     return document;
   }
+  // What each copy is cloned from: a carried mark in the form its molecule's copy keeps (anchored to
+  // its atom, so the copy cannot be attributed to the original's atoms).
+  const copySources = selectedObjects.map((object) => carriedMarkById.get(object.id)?.copySource ?? object);
 
   // One patch batch, with ids minted exactly as one-at-a-time additions would mint them: adding each
   // duplicate separately cloned and validated the whole document per object (and rescanned every id
@@ -14608,18 +14635,22 @@ export function duplicateSelectedDocumentObjects(
   const duplicates: DocumentObject[] = [];
   const duplicateIds: string[] = [];
   const duplicateIdByOriginalId = new Map<string, string>();
-  for (const object of selectedObjects) {
+  for (const object of copySources) {
     const duplicate = structuredClone(object) as DocumentObject;
-    // Standalone marks use the normal policy; attached pairs are remapped after all copies exist.
-    if (duplicate.type === "electron-mark") delete duplicate.atomAssociation;
+    // Standalone marks use the normal policy; attached pairs are remapped after all copies exist. A
+    // deliberately floating mark (an explicit point anchor) stays floating, as a move keeps it: losing
+    // the flag would let its copy be attributed to whichever atom it lands near, the original's included.
+    if (duplicate.type === "electron-mark" && !(duplicate.atomAssociation === "explicit" && duplicate.anchor.kind === "point")) {
+      delete duplicate.atomAssociation;
+    }
     duplicate.id = allocateId(duplicateObjectIdPrefix(object));
     duplicates.push(duplicate);
     duplicateIds.push(duplicate.id);
     duplicateIdByOriginalId.set(object.id, duplicate.id);
     patches.push({ op: "addObject", pageId: page.id, object: duplicate });
   }
-  remapCopiedElectronMarkAssociations(selectedObjects,
-    new Map(selectedObjects.map((object, index) => [object.id, duplicates[index]])), warningsOut);
+  remapCopiedElectronMarkAssociations(copySources,
+    new Map(copySources.map((object, index) => [object.id, duplicates[index]])), warningsOut);
 
   // Every group reachable inside a selected group, innermost first, so a nested group's copy exists
   // before the group containing it maps its children. Only the selected groups used to be copied —
@@ -14690,17 +14721,14 @@ export function duplicateSelectedDocumentObjects(
   // parent's, as the original was.
   remapCopiedReactionReferences(document, patches, duplicateIdByOriginalId);
   // Marks copied only because their molecule was: they follow it but are not part of the selection.
+  // Every carried mark is now atom-anchored to its copied molecule, so the move below carries it with
+  // that molecule (or the group copy containing it) exactly once, like any atom-anchored mark.
   const carriedOnlyDuplicateIds = new Set(selectedObjects.flatMap((object) =>
-    carriedMarkOwnerById.has(object.id) && !selectedIds.has(object.id) ? [duplicateIdByOriginalId.get(object.id)!] : []));
+    carriedMarkById.has(object.id) && !selectedIds.has(object.id) ? [duplicateIdByOriginalId.get(object.id)!] : []));
   const selectionIds = [
     ...duplicateGroupIds.filter((duplicateId) => !groupedDuplicateChildIds.has(duplicateId)),
     ...duplicateIds.filter((duplicateId) => !groupedDuplicateChildIds.has(duplicateId) && !carriedOnlyDuplicateIds.has(duplicateId))
   ];
-  // Marks not anchored to an atom (bond/object anchor, loose point) are moved with their molecule's
-  // own applied delta below, not by a mark move, which would reset a charge's anchor to a point.
-  const offsetWithMoleculeMarkIds = new Set(selectedObjects.flatMap((object) =>
-    object.type === "electron-mark" && carriedMarkOwnerById.has(object.id) && object.anchor.kind !== "atom"
-      ? [duplicateIdByOriginalId.get(object.id)!] : []));
   patches.push({ op: "setSelection", pageId: page.id, objectIds: selectionIds });
 
   for (const duplicate of duplicates) {
@@ -14709,11 +14737,9 @@ export function duplicateSelectedDocumentObjects(
     duplicate.arrowAttachment = parentObjectId ? { ...duplicate.arrowAttachment, parentObjectId } : undefined;
   }
   const next = applyPatches(document, patches, { now: phase4Timestamp });
-  let moved = moveDocumentObjects(next, selectionIds.filter((id) => !offsetWithMoleculeMarkIds.has(id)), offset.x, offset.y);
-  moved = offsetCopiedMarksWithTheirMolecules(moved, page.id, document, selectedObjects, carriedMarkOwnerById,
-    duplicateIdByOriginalId, offsetWithMoleculeMarkIds);
+  const moved = moveDocumentObjects(next, selectionIds, offset.x, offset.y);
   const result = copyNativeObjectExtensions(document, reconcileReactionArrowAttachments(moved), duplicateIdByOriginalId);
-  const chemistryChanges = duplicatedChemistryChanges(result, page.id, selectedObjects, duplicateIdByOriginalId);
+  const chemistryChanges = duplicatedChemistryChanges(document, result, page.id, selectedObjects, duplicateIdByOriginalId);
   if (chemistryChanges.length === 0) return result;
   // Refuse the duplicate rather than commit a copy whose chemistry differs from its original.
   if (!warningsOut) throw new Error(chemistryChanges[0]);
@@ -14722,71 +14748,46 @@ export function duplicateSelectedDocumentObjects(
 }
 
 /**
- * Translates the copied non-atom-anchored marks by the delta their copied molecule actually moved
- * (the move may be clamped to the page), keeping their anchor kind: a bond anchor stays a bond
- * anchor on the copied molecule, and a loose point's stored coordinates travel with it.
- */
-function offsetCopiedMarksWithTheirMolecules(
-  moved: ChemDraftDocument,
-  pageId: string,
-  original: ChemDraftDocument,
-  selectedObjects: readonly DocumentObject[],
-  ownerByOriginalMarkId: ReadonlyMap<string, string>,
-  duplicateIdByOriginalId: ReadonlyMap<string, string>,
-  markIds: ReadonlySet<string>
-): ChemDraftDocument {
-  if (markIds.size === 0) return moved;
-  const page = moved.pages.find((candidate) => candidate.id === pageId)!;
-  const originalPage = original.pages.find((candidate) => candidate.id === pageId)!;
-  const patches: DocumentPatch[] = [];
-  for (const source of selectedObjects) {
-    const markId = duplicateIdByOriginalId.get(source.id);
-    const ownerId = ownerByOriginalMarkId.get(source.id);
-    if (source.type !== "electron-mark" || markId === undefined || !markIds.has(markId) || ownerId === undefined) continue;
-    const copyMolecule = objectOnPage(page, duplicateIdByOriginalId.get(ownerId) ?? "");
-    const sourceMolecule = objectOnPage(originalPage, ownerId);
-    const copyMark = objectOnPage(page, markId);
-    if (copyMolecule?.type !== "molecule" || sourceMolecule?.type !== "molecule" || copyMark?.type !== "electron-mark") continue;
-    const dx = copyMolecule.x - sourceMolecule.x;
-    const dy = copyMolecule.y - sourceMolecule.y;
-    if (dx === 0 && dy === 0) continue;
-    patches.push({ op: "updateObject", objectId: markId, changes: {
-      x: copyMark.x + dx, y: copyMark.y + dy, anchor: offsetAnchorPoint(copyMark.anchor, dx, dy)
-    } });
-  }
-  return patches.length > 0 ? applyPatches(moved, patches, { now: phase4Timestamp }) : moved;
-}
-
-/**
- * Duplicate must not change chemistry (AGENTS.md section 7). Commit-normalizes the result as the
- * commit funnel will and lists every copied atom whose charge, mark charge or radicals differ from
- * its original's (empty when the copy is faithful).
+ * Duplicate must not change chemistry (AGENTS.md section 7). Commit-normalizes the document before
+ * and after, as the commit funnel will, and lists every atom of a duplicated molecule whose charge,
+ * mark charge or radicals differ: on the original (a copied mark attributed to it) or on the copy
+ * (compared with the original before the duplicate). Neutral molecules are checked too, since a
+ * copied or nearby mark can charge them. Empty when the duplicate is faithful.
  */
 function duplicatedChemistryChanges(
+  before: ChemDraftDocument,
   result: ChemDraftDocument,
   pageId: string,
   selectedObjects: readonly DocumentObject[],
   duplicateIdByOriginalId: ReadonlyMap<string, string>
 ): string[] {
-  const originals = selectedObjects.filter((object): object is MoleculeObject => object.type === "molecule" &&
-    object.atoms.some((atom) => atom.formalCharge !== 0 || (atom.markCharge ?? 0) !== 0 || (atom.markRadicals ?? 0) !== 0));
-  if (originals.length === 0) return [];
+  const originals = selectedObjects.filter((object): object is MoleculeObject => object.type === "molecule");
+  // Without an electron-mark on the page, normalization treats a copy exactly as its original.
+  const resultPage = result.pages.find((candidate) => candidate.id === pageId);
+  if (originals.length === 0 || !resultPage?.objects.some((object) => object.type === "electron-mark")) return [];
+  const beforePage = normalizeCommittedDocument(before).pages.find((candidate) => candidate.id === pageId);
   const page = normalizeCommittedDocument(result).pages.find((candidate) => candidate.id === pageId);
-  if (!page) return [];
+  if (!beforePage || !page) return [];
   const changes: string[] = [];
-  for (const source of originals) {
-    const normalizedSource = objectOnPage(page, source.id);
-    const copy = objectOnPage(page, duplicateIdByOriginalId.get(source.id) ?? "");
-    if (normalizedSource?.type !== "molecule" || copy?.type !== "molecule") continue;
-    const copiedAtoms = new Map(copy.atoms.map((atom) => [atom.id, atom]));
-    for (const atom of normalizedSource.atoms) {
-      const copied = copiedAtoms.get(atom.id);
-      if (!copied || (copied.formalCharge === atom.formalCharge &&
-        (copied.markCharge ?? 0) === (atom.markCharge ?? 0) && (copied.markRadicals ?? 0) === (atom.markRadicals ?? 0))) continue;
-      changes.push(`Cannot duplicate molecule "${source.id}" without changing chemistry: atom "${atom.id}" would have ` +
-        `charge ${copied.formalCharge} and ${copied.markRadicals ?? 0} radical marks instead of ` +
-        `${atom.formalCharge} and ${atom.markRadicals ?? 0}.`);
+  const compare = (sourceId: string, expected: MoleculeObject, actual: MoleculeObject, which: string) => {
+    const actualAtoms = new Map(actual.atoms.map((atom) => [atom.id, atom]));
+    for (const atom of expected.atoms) {
+      const found = actualAtoms.get(atom.id);
+      if (found && found.formalCharge === atom.formalCharge && (found.markCharge ?? 0) === (atom.markCharge ?? 0) &&
+        (found.markRadicals ?? 0) === (atom.markRadicals ?? 0)) continue;
+      changes.push(`Cannot duplicate molecule "${sourceId}" without changing chemistry: ` + (found
+        ? `the ${which}'s atom "${atom.id}" would have charge ${found.formalCharge} and ${found.markRadicals ?? 0} radical marks ` +
+          `instead of ${atom.formalCharge} and ${atom.markRadicals ?? 0}.`
+        : `the ${which} would not have atom "${atom.id}".`));
     }
+  };
+  for (const source of originals) {
+    const original = objectOnPage(beforePage, source.id);
+    const originalAfter = objectOnPage(page, source.id);
+    const copy = objectOnPage(page, duplicateIdByOriginalId.get(source.id) ?? "");
+    if (original?.type !== "molecule") continue;
+    if (originalAfter?.type === "molecule") compare(source.id, original, originalAfter, "original");
+    if (copy?.type === "molecule") compare(source.id, original, copy, "copy");
   }
   return changes;
 }
@@ -14817,9 +14818,10 @@ export function createSelectionClipboardPayload(
     document,
     moleculeFragments.filter((fragment) => !selectedIdSet.has(fragment.objectId))
   );
-  const carriedMarks = objects.flatMap((object) => object.type === "molecule"
-    ? anchoredElectronMarksForTransform(page.objects, object.id, new Set(object.atoms.map((atom) => atom.id)))
-    : []);
+  // The marks a copied molecule carries, by the rule Duplicate uses. Listed after `objects`, so a mark
+  // that was also selected is replaced, in place, by the form its molecule's copy keeps.
+  const carriedMarks = electronMarksCarriedWithMolecules(page,
+    objects.filter((object): object is MoleculeObject => object.type === "molecule")).map(({ copySource }) => copySource);
   const copiedObjects = [...new Map([
     ...objects,
     ...selectedGroups.filter((group) => group.childObjectIds.some((childId) => selectedIdSet.has(childId))),
@@ -14891,10 +14893,10 @@ function createNativeMoleculeFragmentClipboardPayload(
     const bonds = molecule.bonds.filter((bond) =>
       keptAtomIds.has(bond.fromAtomId) && keptAtomIds.has(bond.toAtomId)
     );
-    objects.push(
-      moleculeWithPrunedRingStyles(refreshNativeSingleBondGraph(molecule, atoms, bonds)),
-      ...anchoredElectronMarksForTransform(page.objects, molecule.id, keptAtomIds)
-    );
+    // The fragment keeps the molecule's id, so the shared rule keeps exactly the marks on its atoms.
+    const fragmentMolecule = moleculeWithPrunedRingStyles(refreshNativeSingleBondGraph(molecule, atoms, bonds));
+    objects.push(fragmentMolecule,
+      ...electronMarksCarriedWithMolecules(page, [fragmentMolecule]).map(({ copySource }) => copySource));
   }
 
   const bounds = selectionBounds(objects, objects.map((object) => object.id));

@@ -45,13 +45,14 @@ function carbanionFixture() {
 }
 
 /** The Boc-glycine nitrogen's mark rewritten as a legacy mark that is not anchored to an atom. */
-function legacyMarkFixture(kind: "point" | "bond") {
+function legacyMarkFixture(kind: "point" | "bond" | "object") {
   const fixture = electronMarkDropFixture({ kind: "charge", charge: 1 });
   const molecule = dropMolecule(fixture.document), mark = dropMark(fixture.document), nitrogen = fixture.nitrogen;
   const bond = molecule.bonds.find(candidate => candidate.fromAtomId === nitrogen.id || candidate.toAtomId === nitrogen.id)!;
   const centerX = nitrogen.x, centerY = nitrogen.y;
   const anchor: ElectronMarkObject["anchor"] = kind === "bond"
     ? { kind: "bond", objectId: molecule.id, bondId: bond.id }
+    : kind === "object" ? { kind: "object", objectId: molecule.id }
     : { kind: "point", point: { x: centerX, y: centerY } };
   // Not normalized afterwards: a loose mark inside the association radius is what an older file holds.
   const document = applyPatch(fixture.document, { op: "updateObject", objectId: mark.id, changes: {
@@ -64,7 +65,11 @@ function legacyMarkFixture(kind: "point" | "bond") {
   return { document };
 }
 
-const cases: Array<{ name: string; make: () => { document: ChemDraftDocument }; anchorKind: "atom" | "bond" | "point";
+/** The atom a mark is attributed to: its own anchor atom, or the one the committed resolver chose. */
+const attributedAtomId = (document: ChemDraftDocument, mark: ElectronMarkObject) => mark.anchor.kind === "atom"
+  ? mark.anchor.atomId : workflow.committedElectronMarkAssignments(document.pages[0]).anchorByMarkId.get(mark.id)?.atomId;
+
+const cases: Array<{ name: string; make: () => { document: ChemDraftDocument }; anchorKind: "atom" | "bond" | "point" | "object";
   chemistry: { formalCharge: number; markCharge: number; markRadicals: number } }> = [
   { name: "atom-anchored minus on a carbon", make: carbanionFixture, anchorKind: "atom",
     chemistry: { formalCharge: -1, markCharge: -1, markRadicals: 0 } },
@@ -75,6 +80,8 @@ const cases: Array<{ name: string; make: () => { document: ChemDraftDocument }; 
   { name: "legacy loose plus within association range", make: () => legacyMarkFixture("point"), anchorKind: "point",
     chemistry: { formalCharge: 1, markCharge: 1, markRadicals: 0 } },
   { name: "bond-anchored plus", make: () => legacyMarkFixture("bond"), anchorKind: "bond",
+    chemistry: { formalCharge: 1, markCharge: 1, markRadicals: 0 } },
+  { name: "object-anchored plus", make: () => legacyMarkFixture("object"), anchorKind: "object",
     chemistry: { formalCharge: 1, markCharge: 1, markRadicals: 0 } }
 ];
 
@@ -110,17 +117,14 @@ describe("Duplicate keeps the charge and radical marks of the molecule it copies
     expect(copy.x).toBeCloseTo(source.x + OFFSET.x);
     expect(copy.y).toBeCloseTo(source.y + OFFSET.y);
 
-    // Every copied anchor points at the copy, never at the original.
-    expect(copied.anchor.kind).toBe(anchorKind);
-    if (original.anchor.kind === "atom") {
-      expect(copied.anchor).toEqual({ kind: "atom", objectId: copy.id, atomId: original.anchor.atomId });
-    } else if (original.anchor.kind === "bond") {
-      expect(copied.anchor).toEqual({ kind: "bond", objectId: copy.id, bondId: original.anchor.bondId });
-    } else {
-      expect(copied.anchor.objectId).toBeUndefined();
-      expect(copied.anchor.point!.x).toBeCloseTo(original.anchor.point!.x + OFFSET.x);
-      expect(copied.anchor.point!.y).toBeCloseTo(original.anchor.point!.y + OFFSET.y);
-    }
+    // Every copied anchor points at the copy, never at the original. A bond, object or loose-point
+    // anchor resolves by distance to any molecule's atoms, so the copy is anchored explicitly to the
+    // copied atom its original was attributed to; the original keeps its own anchor.
+    expect(original.anchor.kind).toBe(anchorKind);
+    const atomId = attributedAtomId(selected, original);
+    expect(atomId).toBeDefined();
+    expect(copied.anchor).toEqual({ kind: "atom", objectId: copy.id, atomId });
+    expect(copied.atomAssociation).toBe("explicit");
 
     // After commit-normalization the copy has the original's charge, mark charge and radicals.
     const committed = workflow.normalizeCommittedDocument(edited);
@@ -184,8 +188,8 @@ describe("Duplicate keeps the charge and radical marks of the molecule it copies
     }
   });
 
-  it.each(["atom", "bond"] as const)("copies a %s-anchored mark selected with its molecule exactly once", kind => {
-    const { document } = kind === "atom" ? electronMarkDropFixture({ kind: "charge", charge: 1 }) : legacyMarkFixture("bond");
+  it.each(["atom", "bond", "point"] as const)("copies a %s-anchored mark selected with its molecule exactly once", kind => {
+    const { document } = kind === "atom" ? electronMarkDropFixture({ kind: "charge", charge: 1 }) : legacyMarkFixture(kind);
     const molecule = dropMolecule(document), mark = dropMark(document);
     const selected = select(document, [molecule.id, mark.id]);
     const originalIds = new Set(selected.pages[0].objects.map(object => object.id));
@@ -232,5 +236,139 @@ describe("Duplicate keeps the charge and radical marks of the molecule it copies
     expect(marksOf(pasted)).toHaveLength(1);
     expect(marksOf(pasted)[0].anchor.objectId).toBe(moleculesOf(pasted)[0].id);
     expect(chemistryOf(moleculesOf(pasted)[0])).toEqual(chemistryOf(dropMolecule(document)));
+  });
+});
+
+describe("Duplicate never changes the chemistry of a molecule it copies, neutral ones included", () => {
+  /** A neutral Boc-glycine with a + mark floating at `center`, attributed to no atom. */
+  function floatingMarkFixture(center: { x: number; y: number }, explicit: boolean) {
+    const fixture = electronMarkDropFixture({ kind: "charge", charge: 1 });
+    const mark = dropMark(fixture.document);
+    const document = workflow.normalizeCommittedDocument(applyPatch(fixture.document, {
+      op: "updateObject", objectId: mark.id, changes: {
+        anchor: { kind: "point", point: center }, atomAssociation: explicit ? "explicit" : undefined,
+        x: center.x - mark.width / 2, y: center.y - mark.height / 2
+      }
+    }, { now: phase4Timestamp }));
+    // The molecule really is neutral and the mark really floats, or these cases would prove nothing.
+    expect(workflow.committedElectronMarkAssignments(document.pages[0]).anchorByMarkId.get(mark.id)).toBeUndefined();
+    for (const atom of chemistryOf(dropMolecule(document))) {
+      expect(atom).toMatchObject({ formalCharge: 0, markCharge: 0, markRadicals: 0 });
+    }
+    return { document, mark: dropMark(document) };
+  }
+
+  const neutral = (document: ChemDraftDocument) => moleculesOf(document).every(molecule =>
+    chemistryOf(molecule).every(atom => atom.formalCharge === 0 && atom.markCharge === 0 && atom.markRadicals === 0));
+
+  it("copies a deliberately floating mark selected with a neutral molecule as a floating mark", () => {
+    // 14 px above the nitrogen. Its copy lands 10 px from the ORIGINAL molecule's CH2 carbon, which
+    // charged that carbon when the copy lost its floating flag.
+    const { nitrogen } = electronMarkDropFixture({ kind: "charge", charge: 1 });
+    const center = { x: nitrogen.x, y: nitrogen.y - 14 };
+    const { document, mark } = floatingMarkFixture(center, true);
+    const selected = select(document, [dropMolecule(document).id, mark.id]);
+    const originalIds = new Set(selected.pages[0].objects.map(object => object.id));
+    const warnings: string[] = [];
+    const edited = workflow.duplicateSelectedDocumentObjects(selected, OFFSET, warnings);
+    expect(warnings).toEqual([]);
+    const committed = workflow.normalizeCommittedDocument(edited);
+    expect(moleculesOf(committed)).toHaveLength(2);
+    expect(neutral(committed)).toBe(true);
+    const [copiedMark] = marksOf(edited).filter(candidate => !originalIds.has(candidate.id));
+    expect(copiedMark.atomAssociation).toBe("explicit");
+    expect(copiedMark.anchor).toEqual({ kind: "point", point: { x: center.x + OFFSET.x, y: center.y + OFFSET.y } });
+    expect(workflow.committedElectronMarkAssignments(committed.pages[0]).anchorByMarkId.get(copiedMark.id)).toBeUndefined();
+  });
+
+  it.each([
+    // Selected with the molecule; its copy lands on the ORIGINAL nitrogen.
+    { name: "a selected loose mark whose copy lands on the original", selectMark: true, at: { x: 0, y: -60 } },
+    // Not selected; the copied nitrogen lands under it.
+    { name: "an unselected loose mark the copy lands under", selectMark: false, at: { x: 0, y: 60 } }
+  ])("refuses a duplicate that would charge a neutral molecule: $name", ({ selectMark, at }) => {
+    const offset = { x: 0, y: 60 };
+    const probe = electronMarkDropFixture({ kind: "charge", charge: 1 });
+    const { document, mark } = floatingMarkFixture({ x: probe.nitrogen.x + at.x, y: probe.nitrogen.y + at.y }, false);
+    const selected = select(document, selectMark ? [dropMolecule(document).id, mark.id] : [dropMolecule(document).id]);
+    const before = serializeDocument(selected);
+    const warnings: string[] = [];
+    const edited = workflow.duplicateSelectedDocumentObjects(selected, offset, warnings);
+    // Refused, not committed with a silently charged molecule.
+    expect(warnings.length).toBeGreaterThan(0);
+    expect(warnings[0]).toMatch(/^Cannot duplicate molecule "boc_glycine" without changing chemistry: the (original|copy)'s atom/);
+    expect(edited).toBe(selected);
+    expect(serializeDocument(selected)).toBe(before);
+    expect(() => workflow.duplicateSelectedDocumentObjects(selected, offset)).toThrow(/Cannot duplicate molecule/);
+  });
+});
+
+describe("Copy and paste carries the same marks as Duplicate", () => {
+  it.each(["bond", "point", "object"] as const)("a %s-anchored charge travels with its molecule", kind => {
+    const { document } = legacyMarkFixture(kind);
+    const source = dropMolecule(document), mark = dropMark(document);
+    const selected = select(document, [source.id]);
+    const expected = chemistryOf(moleculesOf(workflow.normalizeCommittedDocument(selected))[0]);
+    expect(expected.filter(atom => atom.formalCharge === 1)).toHaveLength(1);
+
+    const payload = workflow.parseSelectionClipboardPayload(
+      workflow.serializeSelectionClipboardPayload(workflow.createSelectionClipboardPayload(selected)!))!;
+    const copiedMarks = payload.objects.filter((object): object is ElectronMarkObject => object.type === "electron-mark");
+    expect(copiedMarks).toHaveLength(1);
+    // The clipboard holds the mark anchored to the atom it charges, not the original's legacy anchor.
+    expect(copiedMarks[0].anchor).toEqual({ kind: "atom", objectId: source.id, atomId: attributedAtomId(selected, mark) });
+    expect(dropMark(selected)).toEqual(mark);
+
+    const at = { x: payload.bounds.centerX + OFFSET.x, y: payload.bounds.centerY + OFFSET.y };
+    const elsewhere = workflow.normalizeCommittedDocument(
+      workflow.pasteSelectionClipboardPayload(workflow.createPhase4Document("Paste target"), payload, at));
+    expect(moleculesOf(elsewhere)).toHaveLength(1);
+    expect(marksOf(elsewhere)).toHaveLength(1);
+    expect(marksOf(elsewhere)[0].anchor.objectId).toBe(moleculesOf(elsewhere)[0].id);
+    expect(chemistryOf(moleculesOf(elsewhere)[0])).toEqual(expected);
+
+    // Pasted beside the original: each molecule keeps exactly its own charge.
+    const beside = workflow.normalizeCommittedDocument(workflow.pasteSelectionClipboardPayload(selected, payload, at));
+    expect(moleculesOf(beside)).toHaveLength(2);
+    expect(marksOf(beside)).toHaveLength(2);
+    for (const molecule of moleculesOf(beside)) expect(chemistryOf(molecule)).toEqual(expected);
+    const pasted = moleculesOf(beside).find(molecule => molecule.id !== source.id)!;
+    const pastedMark = marksOf(beside).find(candidate => candidate.id !== mark.id)!;
+    expect(pastedMark.anchor.objectId).toBe(pasted.id);
+    expect(pastedMark.x).toBeCloseTo(mark.x + OFFSET.x);
+    expect(pastedMark.y).toBeCloseTo(mark.y + OFFSET.y);
+  });
+});
+
+describe("Duplicating a group offsets each copied mark exactly once", () => {
+  it.each(["bond", "point"] as const)("a charged molecule grouped with its %s-anchored mark", kind => {
+    const { document } = legacyMarkFixture(kind);
+    const molecule = dropMolecule(document), mark = dropMark(document);
+    const grouped = workflow.groupSelectedDocumentObjects(select(document, [molecule.id, mark.id]));
+    const group = grouped.pages[0].objects.find(object => object.type === "group")!;
+    expect(grouped.selection.objectIds).toEqual([group.id]);
+    const originalIds = new Set(grouped.pages[0].objects.map(object => object.id));
+
+    const edited = workflow.duplicateSelectedDocumentObjects(grouped, OFFSET);
+    const copy = moleculesOf(edited).find(candidate => !originalIds.has(candidate.id))!;
+    const copiedMarks = marksOf(edited).filter(candidate => !originalIds.has(candidate.id));
+    expect(copiedMarks).toHaveLength(1);
+    const [copiedMark] = copiedMarks;
+    expect(copy.x).toBeCloseTo(molecule.x + OFFSET.x);
+    expect(copy.y).toBeCloseTo(molecule.y + OFFSET.y);
+    // The original position plus the duplicate offset, once: not moved by the group and again with its molecule.
+    expect(copiedMark.x).toBeCloseTo(mark.x + OFFSET.x);
+    expect(copiedMark.y).toBeCloseTo(mark.y + OFFSET.y);
+    expect(copiedMark.anchor).toEqual({ kind: "atom", objectId: copy.id, atomId: attributedAtomId(document, mark) });
+
+    const copiedGroup = edited.pages[0].objects.find(object => object.type === "group" && !originalIds.has(object.id))!;
+    expect(copiedGroup.type === "group" && new Set(copiedGroup.childObjectIds)).toEqual(new Set([copy.id, copiedMark.id]));
+    expect(edited.selection.objectIds).toEqual([copiedGroup.id]);
+    for (const original of grouped.pages[0].objects) {
+      expect(edited.pages[0].objects.find(object => object.id === original.id)).toEqual(original);
+    }
+    const committed = workflow.normalizeCommittedDocument(edited);
+    expect(chemistryOf(moleculesOf(committed).find(candidate => candidate.id === copy.id)!))
+      .toEqual(chemistryOf(moleculesOf(workflow.normalizeCommittedDocument(document))[0]));
   });
 });
