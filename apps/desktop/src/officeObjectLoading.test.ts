@@ -141,7 +141,7 @@ describe("Office editor loading state", () => {
     const shipped = (source: string) => source.slice(0, source.indexOf("#[cfg(test)]\nmod tests"));
     expect(shipped(toolsetEvents)).not.toMatch(/EDITOR_PAINTED|editor_painted/);
     expect(shipped(bridge)).not.toMatch(/PENDING_REVEALS|fn editor_painted|fn painted_sender/);
-    expect(bridge).toContain("const REVEAL_FALLBACK: std::time::Duration = std::time::Duration::from_millis(1500);");
+    expect(bridge).toContain("const REVEAL_FALLBACK: std::time::Duration = std::time::Duration::from_millis(4000);");
     expect(bridge).toContain("crate::first_paint::hidden_until_first_paint(");
     expect(bridge).toMatch(/crate::first_paint::arm_first_paint_fallback_with\(\s*&window,\s*REVEAL_FALLBACK,/);
     expect(firstPaint).toContain(`pub fn ${WINDOW_FIRST_PAINT_COMMAND}(window: WebviewWindow) ->`);

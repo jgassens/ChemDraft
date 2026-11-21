@@ -190,10 +190,12 @@ interface HostOptions extends PptxOptions {
   oldUndeletable?: boolean;
   /** Setting the inserted picture decorative clears its title and description. */
   decorativeClearsAltText?: boolean;
+  /** PowerPoint ignores writes to the inserted picture's title and description. */
+  ignoresAltTextWrites?: boolean;
 }
 
 function powerpointHost({ version = 10, writableRotation = true, failSyncAfterInsert, extraInsert = false,
-  undeletable = false, oldUndeletable = false, decorativeClearsAltText = false, ...pptxOptions }: HostOptions = {}) {
+  undeletable = false, oldUndeletable = false, decorativeClearsAltText = false, ignoresAltTextWrites = false, ...pptxOptions }: HostOptions = {}) {
   const rotation = pptxOptions.rotation ?? 0;
   const archive = pptx(pptxOptions);
   const sets = ["CompressedFile 1.1", "ImageCoercion 1.1"];
@@ -260,6 +262,12 @@ function powerpointHost({ version = 10, writableRotation = true, failSyncAfterIn
             if (value) Object.assign(inserted, { altTextTitle: "", altTextDescription: "" });
           },
         });
+      }
+      if (ignoresAltTextWrites) {
+        for (const key of ["altTextTitle", "altTextDescription"] as const) {
+          const kept = inserted[key];
+          Object.defineProperty(inserted, key, { get: () => kept, set: () => undefined });
+        }
       }
       stack.push(inserted);
       if (extraInsert) stack.push({ ...shape("25", "Unrelated"), left: 400, get zOrderPosition() { return stack.indexOf(this); } });
@@ -361,11 +369,23 @@ describe("PowerPoint Office adapter", () => {
     expect(stack.find(item => item.id === "24")).toMatchObject({ altTextTitle: "", altTextDescription: "", isDecorative: true });
   });
 
-  it("refuses a decorative picture whose alt text PowerPoint did not keep and removes the new picture", async () => {
+  it("updates a decorative picture whose alt text PowerPoint did not keep and warns about it", async () => {
     const decorative = '<a:extLst><a:ext uri="{C183D7F6-B498-43B3-948B-1728B52AA6E4}"><adec:decorative ' +
       'xmlns:adec="http://schemas.microsoft.com/office/drawing/2017/decorative" val="1"/></a:ext></a:extLst>';
     const { host, powerpoint, stack } = powerpointHost({
       properties: { attributes: ' title="Benzene" descr="A benzene ring"', children: decorative }, decorativeClearsAltText: true,
+    });
+    const adapter = powerpointAdapter(host, powerpoint);
+    await adapter.readSelectedStructure();
+    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({
+      kind: "replaced", warnings: ["Not carried over from the old picture: its alt text."],
+    });
+    expect(stack.map(item => item.id)).toEqual(["21", "24", "23"]);
+  });
+
+  it("refuses a non-decorative picture whose alt text PowerPoint did not keep and removes the new picture", async () => {
+    const { host, powerpoint, stack } = powerpointHost({
+      properties: { attributes: ' title="Benzene" descr="A benzene ring"' }, ignoresAltTextWrites: true,
     });
     const adapter = powerpointAdapter(host, powerpoint);
     await adapter.readSelectedStructure();

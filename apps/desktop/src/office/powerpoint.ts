@@ -360,13 +360,16 @@ export function powerpointAdapter(office: OfficeContext, powerpoint: PowerPointA
             if (canRotate && (!Number.isFinite(inserted.rotation) || Math.abs(inserted.rotation! - original.rotation!) > 0.01)) {
               throw new Error("PowerPoint could not preserve the picture’s rotation.");
             }
-            // Title and description are checked whether or not the picture is decorative: a
-            // decorative picture can carry alt text too.
+            // The decorative flag must always survive. Title and description must too, except on a
+            // decorative picture: PowerPoint may clear them there, so that is warned about, not fatal.
             const altChanged = (key: "altTextTitle" | "altTextDescription") =>
               altWritable.includes(key) && (inserted[key] ?? "") !== state[key];
-            if ((altWritable.includes("isDecorative") && inserted.isDecorative !== state.isDecorative) ||
-                altChanged("altTextTitle") || altChanged("altTextDescription")) {
+            if (altWritable.includes("isDecorative") && inserted.isDecorative !== state.isDecorative) {
               throw new Error("PowerPoint could not preserve the picture’s alt text.");
+            }
+            if (altChanged("altTextTitle") || altChanged("altTextDescription")) {
+              if (!state.isDecorative) throw new Error("PowerPoint could not preserve the picture’s alt text.");
+              lost.push("its alt text");
             }
             if (state.link) {
               // Office.js cannot read a shape's hyperlink back, so a failed write is reported, not verified.
