@@ -4,5 +4,5 @@
   "description": "Manage the ChemDraft add-in manifest in the local Word and PowerPoint developer folders on macOS.",
   "platforms": ["macOS"],
   "windows": ["main"],
-  "permissions": ["allow-office-addin-status", "allow-office-addin-install", "allow-office-addin-remove"]
+  "permissions": ["allow-office-addin-install", "allow-office-addin-remove"]
 }

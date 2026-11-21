@@ -789,14 +789,7 @@ fn commands_have_generated_permissions_and_main_only_capability() {
         serde_json::from_str(include_str!("../../capabilities/assistant-mcp.json")).unwrap();
     assert_eq!(capability["windows"], json!(["main"]));
     assert!(capability.get("webviews").is_none());
-    let source = include_str!("../lib.rs");
-    let handler = source
-        .split_once("generate_handler![")
-        .unwrap()
-        .1
-        .split(']')
-        .next()
-        .unwrap();
+    let handler = crate::handler_list::registered_commands(include_str!("../lib.rs"));
     let build = include_str!("../../build.rs");
     for command in [
         "assistant_mcp_session_open",
@@ -804,7 +797,7 @@ fn commands_have_generated_permissions_and_main_only_capability() {
         "assistant_mcp_respond",
         "assistant_mcp_status",
     ] {
-        assert!(handler.contains(&format!("assistant_mcp::{command},")));
+        assert!(handler.contains(&format!("assistant_mcp::{command}").as_str()));
         assert!(build.contains(&format!("\"{command}\"")));
         let permission = format!("allow-{}", command.replace('_', "-"));
         assert!(capability["permissions"]
@@ -818,7 +811,9 @@ fn commands_have_generated_permissions_and_main_only_capability() {
             .unwrap()
             .contains(&format!("commands.allow = [\"{command}\"]")));
     }
-    assert!(!handler.contains("session_credentials"));
+    assert!(!handler
+        .iter()
+        .any(|command| command.contains("session_credentials")));
 }
 
 #[tokio::test]

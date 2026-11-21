@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { CommandRegistry } from "@chemdraft/plugin-host";
 import { describe, expect, it, vi } from "vitest";
 import { createCoreCommandRegistrar, type CoreCommandBindings } from "./coreCommandRegistrar";
@@ -15,7 +16,8 @@ const outdated = { app: "word", status: "installedOtherVersion", changed: false 
 const wordPath = "/Users/someone/Library/Containers/com.microsoft.Word/Data/Documents/wef/chemdraft-office-addin.xml";
 const foreign = { app: "word", status: "unrecognized", changed: false, path: wordPath } as const;
 const deniedPowerPoint = {
-  app: "powerPoint", status: "unavailable", changed: false, errorKind: "permissionDenied", error: "Operation not permitted (os error 1)"
+  app: "powerPoint", status: "unavailable", changed: false, errorKind: "permissionDenied", error: "Operation not permitted (os error 1)",
+  bundleIdentifier: "org.chemdraft.desktop"
 } as const;
 
 function createPort() {
@@ -38,10 +40,9 @@ describe("Office add-in commands", () => {
     [false, "macos"]
   ] as const)("disables and hides native actions when desktop is %s on %s", async (desktop, platform) => {
     const supported = officeAddinSupported(desktop, platform);
-    const state = { results: [uninstalled, powerpointMissing] };
     const port = createPort();
-    const registry = registryFor(supported, state, port);
-    expect(officeAddinMenuItems(supported, officeAddinCommands(supported, state))).toEqual([]);
+    const registry = registryFor(supported, {}, port);
+    expect(officeAddinMenuItems(supported, officeAddinCommands(supported, {}))).toEqual([]);
     for (const id of ["office.installAddin", "office.removeAddin"]) {
       await expect(registry.invoke(id)).rejects.toThrow("available in the ChemDraft app on macOS");
     }
@@ -49,20 +50,29 @@ describe("Office add-in commands", () => {
     expect(port.invoke).not.toHaveBeenCalled();
   });
 
-  it.each([
-    [[uninstalled, powerpointMissing], [true, false]],
-    [[installed, powerpointMissing], [false, true]],
-    [[outdated, powerpointMissing], [true, true]],
-    [[foreign, powerpointMissing], [true, true]],
-    [[wordMissing, powerpointMissing], [false, false]],
-    [undefined, [false, false]]
-  ] as const)("syncs native Help actions with status %j", (results, enabled) => {
+  it("shows both Help rows enabled from the first menu build, with no status check", () => {
     const supported = officeAddinSupported(true, "macos");
-    const bindings = officeAddinCommands(supported, { results });
-    expect(bindings.map(({ spec }) => Boolean(spec.disabledReason))).toEqual(enabled.map(value => !value));
+    const bindings = officeAddinCommands(supported, {});
+    expect(bindings.map(({ spec }) => [spec.enabled, spec.disabledReason])).toEqual([[true, undefined], [true, undefined]]);
     expect(buildMainWindowNativeMenuItems(officeAddinMenuItems(supported, bindings)).filter(item => item.location === "help")).toEqual([
-      { id: "office.installAddin", label: "Install Office Add-in…", enabled: enabled[0], coreRouted: true, location: "help" },
-      { id: "office.removeAddin", label: "Remove Office Add-in", enabled: enabled[1], coreRouted: true, location: "help" }
+      { id: "office.installAddin", label: "Install Office Add-in…", enabled: true, coreRouted: true, location: "help" },
+      { id: "office.removeAddin", label: "Remove Office Add-in…", enabled: true, coreRouted: true, location: "help" }
+    ]);
+    // Reading Word's and PowerPoint's containers can raise macOS's "access data from other apps"
+    // prompt, so nothing reads them until the user chooses an action: no status command, nothing on
+    // mount or focus.
+    const source = readFileSync(new URL("./officeAddin.ts", import.meta.url), "utf8");
+    expect(source).not.toContain("office_addin_status");
+    expect(source).not.toContain("useEffect");
+    expect(source).not.toContain("addEventListener");
+    expect(source).not.toContain("Checking Office add-in status");
+  });
+
+  it("disables both rows, with a reason, only while an action runs", () => {
+    const bindings = officeAddinCommands(true, { busy: true });
+    expect(bindings.map(({ spec }) => [spec.enabled, spec.disabledReason])).toEqual([
+      [false, "Office add-in management is in progress."],
+      [false, "Office add-in management is in progress."]
     ]);
   });
 
@@ -70,7 +80,7 @@ describe("Office add-in commands", () => {
     const port = createPort();
     let answer!: (choice: string) => void;
     port.prompt.mockImplementationOnce(() => new Promise(resolve => { answer = resolve; }));
-    const registry = registryFor(true, { results: [uninstalled, powerpointMissing] }, port);
+    const registry = registryFor(true, {}, port);
     const installing = registry.invoke("office.installAddin");
     expect(port.prompt.mock.calls[0]?.[0]).toMatchObject({
       owner: "document",
@@ -91,12 +101,36 @@ describe("Office add-in commands", () => {
     expect(port.invoke).not.toHaveBeenCalled();
   });
 
-  it("cancels install if the native confirmation cannot open", async () => {
+  it("requires affirmative native confirmation before invoking remove", async () => {
+    const port = createPort();
+    let answer!: (choice: string) => void;
+    port.prompt.mockImplementationOnce(() => new Promise(resolve => { answer = resolve; }));
+    const removing = registryFor(true, {}, port).invoke("office.removeAddin");
+    expect(port.prompt.mock.calls[0]?.[0]).toMatchObject({
+      title: "Remove Office Add-in",
+      owner: "document",
+      choices: [{ id: "remove", label: "Remove" }, { id: "cancel", label: "Cancel", cancel: true }]
+    });
+    expect(port.prompt.mock.calls[0]?.[0].message).toBe(
+      "This removes ChemDraft from Word and PowerPoint on this Mac.\n\n" +
+      "macOS may ask to let ChemDraft access data from other apps, because the add-in file is in Word's and PowerPoint's own folders. " +
+      "Choose Allow to remove it; if you choose Don't Allow, Office is left unchanged."
+    );
+    expect(port.invoke).not.toHaveBeenCalled();
+    answer("cancel");
+    await removing;
+    expect(port.invoke).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["installAddin", "Could not open the Office add-in installation confirmation."],
+    ["removeAddin", "Could not open the Office add-in removal confirmation."]
+  ] as const)("cancels %s if the native confirmation cannot open", async (command, status) => {
     const port = createPort();
     port.prompt.mockImplementationOnce((prompt, fallback) => fallback!(prompt));
-    await registryFor(true, { results: [uninstalled, powerpointMissing] }, port).invoke("office.installAddin");
+    await registryFor(true, {}, port).invoke("office." + command);
     expect(port.invoke).not.toHaveBeenCalled();
-    expect(port.setStatus).toHaveBeenCalledWith("Could not open the Office add-in installation confirmation.");
+    expect(port.setStatus).toHaveBeenCalledWith(status);
   });
 
   it("shows where to find Edit Structure after installing and reports an app that was skipped", async () => {
@@ -104,7 +138,7 @@ describe("Office add-in commands", () => {
     port.prompt.mockResolvedValueOnce("install").mockResolvedValueOnce("ok").mockResolvedValueOnce("install").mockResolvedValueOnce("ok");
     port.invoke.mockResolvedValueOnce([installed, { ...installed, app: "powerPoint" }])
       .mockResolvedValueOnce([installed, powerpointMissing]);
-    const registry = registryFor(true, { results: [uninstalled, powerpointMissing] }, port);
+    const registry = registryFor(true, {}, port);
     await registry.invoke("office.installAddin");
     expect(port.invoke).toHaveBeenCalledWith("office_addin_install");
     expect(port.prompt.mock.calls[1]?.[0].message).toContain("Restart Word and PowerPoint, then choose Edit Structure on the Home tab.");
@@ -115,64 +149,103 @@ describe("Office add-in commands", () => {
 
   it("reports the other app's failure and that the first app was restored", async () => {
     const port = createPort();
-    port.prompt.mockResolvedValue("ok");
+    port.prompt.mockResolvedValueOnce("remove").mockResolvedValue("ok");
     port.invoke.mockResolvedValue([
       { ...installed, changed: false, rolledBack: true },
       { app: "powerPoint", status: "unavailable", error: "No space left on device", errorKind: "other", changed: false }
     ]);
-    const registry = registryFor(true, { results: [installed, { ...installed, app: "powerPoint" }] }, port);
+    const registry = registryFor(true, {}, port);
     await registry.invoke("office.removeAddin");
     expect(port.invoke).toHaveBeenCalledOnce();
     expect(port.invoke).toHaveBeenCalledWith("office_addin_remove");
-    expect(port.prompt.mock.calls[0]?.[0]).toMatchObject({ kind: "warning" });
-    expect(port.prompt.mock.calls[0]?.[0].message).toBe("Word was not changed.\n\nPowerPoint could not be updated. No space left on device");
+    expect(port.prompt.mock.calls[1]?.[0]).toMatchObject({ kind: "warning" });
+    expect(port.prompt.mock.calls[1]?.[0].message).toBe("Word was not changed.\n\nPowerPoint could not be updated. No space left on device");
   });
 
   it.each([
-    ["install", "office_addin_install", "installed", "Install Office Add-in"],
-    ["remove", "office_addin_remove", "removed", "Remove Office Add-in"]
-  ] as const)("explains a macOS permission denial on %s and how to allow it", async (action, command, verb, item) => {
+    [[uninstalled, powerpointMissing], "The Office add-in is not installed in Word or PowerPoint, so nothing was removed."],
+    [[uninstalled, { ...uninstalled, app: "powerPoint" }], "The Office add-in is not installed in Word or PowerPoint, so nothing was removed."],
+    [[wordMissing, powerpointMissing], "Word and PowerPoint were not found on this Mac, so nothing was removed."]
+  ] as const)("says plainly when Remove finds nothing installed (%j)", async (results, expected) => {
     const port = createPort();
-    port.prompt.mockResolvedValue(action === "install" ? "install" : "ok");
-    port.invoke.mockResolvedValue([{ ...uninstalled, rolledBack: true }, deniedPowerPoint]);
-    const state = await runOfficeAddinAction(action, port);
+    port.prompt.mockResolvedValueOnce("remove").mockResolvedValue("ok");
+    port.invoke.mockResolvedValue([...results]);
+    await runOfficeAddinAction("remove", port);
+    expect(port.invoke).toHaveBeenCalledWith("office_addin_remove");
+    expect(port.prompt.mock.calls[1]?.[0]).toMatchObject({ kind: "info", title: "Remove Office Add-in" });
+    expect(port.prompt.mock.calls[1]?.[0].message).toBe(expected);
+  });
+
+  it("reports what Remove removed", async () => {
+    const port = createPort();
+    port.prompt.mockResolvedValueOnce("remove").mockResolvedValue("ok");
+    port.invoke.mockResolvedValue([{ app: "word", status: "notInstalled", changed: true }, powerpointMissing]);
+    await runOfficeAddinAction("remove", port);
+    expect(port.prompt.mock.calls[1]?.[0].message).toBe(
+      "Removed from Word.\n\nPowerPoint was skipped because its Office container was not found.\n\nRestart Word to finish removing the add-in."
+    );
+  });
+
+  it.each([
+    ["install", "office_addin_install", "Install Office Add-in", "org.chemdraft.desktop"],
+    ["remove", "office_addin_remove", "Remove Office Add-in", "org.chemdraft.desktop.dev"]
+  ] as const)("explains a macOS permission denial on %s, how to retry and how to reset the decision", async (action, command, item, bundleIdentifier) => {
+    const port = createPort();
+    port.prompt.mockResolvedValueOnce(action).mockResolvedValue("ok");
+    const denied = { ...deniedPowerPoint, bundleIdentifier };
+    port.invoke.mockResolvedValue([{ ...uninstalled, rolledBack: true }, denied]);
+    const results = await runOfficeAddinAction(action, port);
     expect(port.invoke).toHaveBeenCalledWith(command);
     const report = port.prompt.mock.calls.at(-1)?.[0];
     expect(report).toMatchObject({ kind: "warning", title: item });
     expect(report?.message).toBe(
-      "Office was not changed. macOS did not allow ChemDraft to access Word's and PowerPoint's data, so the add-in was not " + verb + " in either app." +
-      "\n\nTo allow it, choose Help > " + item + " again and choose Allow when macOS asks. If macOS does not ask, open " +
-      "System Settings > Privacy & Security > Full Disk Access and turn on ChemDraft (macOS has no separate setting for " +
-      "access to other apps' data), then choose Help > " + item + " again."
+      "Office was not changed, because macOS did not allow ChemDraft to access Word's and PowerPoint's data." +
+      "\n\nChoose Help > " + item + " again and click Allow when macOS asks." +
+      "\n\nIf macOS does not ask again, reset its decision in Terminal with this command, then try again:" +
+      "\n\ntccutil reset SystemPolicyAppData " + bundleIdentifier
     );
+    expect(report?.message).not.toContain("Full Disk Access");
+    expect(report?.message).not.toContain("System Settings");
     expect(report?.message).not.toContain("Restart");
     expect(report?.message).not.toContain("os error");
-    expect(state).toEqual({ results: [{ ...uninstalled, rolledBack: true }, deniedPowerPoint] });
+    expect(results).toEqual([{ ...uninstalled, rolledBack: true }, denied]);
+  });
+
+  it("never invents a bundle identifier for the reset command", async () => {
+    const port = createPort();
+    port.prompt.mockResolvedValueOnce("install").mockResolvedValue("ok");
+    const withoutIdentifier = {
+      app: "powerPoint", status: "unavailable", changed: false, errorKind: "permissionDenied", error: deniedPowerPoint.error
+    } as const;
+    port.invoke.mockResolvedValue([uninstalled, withoutIdentifier]);
+    await runOfficeAddinAction("install", port);
+    const message = port.prompt.mock.calls.at(-1)?.[0].message;
+    expect(message).toBe("Office was not changed, because macOS did not allow ChemDraft to access Word's and PowerPoint's data." +
+      "\n\nChoose Help > Install Office Add-in again and click Allow when macOS asks.");
+  });
+
+  it("gives only the retry steps when one app did change before the denial", async () => {
+    const port = createPort();
+    port.prompt.mockResolvedValueOnce("install").mockResolvedValue("ok");
+    port.invoke.mockResolvedValue([{ ...installed, error: "ChemDraft could not undo this change after PowerPoint failed: x" }, deniedPowerPoint]);
+    await runOfficeAddinAction("install", port);
+    const message = port.prompt.mock.calls.at(-1)?.[0].message;
+    expect(message).not.toContain("Office was not changed");
+    expect(message).toContain("Choose Help > Install Office Add-in again and click Allow when macOS asks.");
+    expect(message).toContain("tccutil reset SystemPolicyAppData org.chemdraft.desktop");
   });
 
   it("keeps Install and Remove enabled after a denial so choosing one again retries", async () => {
     const port = createPort();
-    port.prompt.mockResolvedValue("install");
+    port.prompt.mockImplementation(async prompt => prompt.choices[0]!.id);
     port.invoke.mockResolvedValueOnce([uninstalled, deniedPowerPoint])
       .mockResolvedValueOnce([installed, { ...installed, app: "powerPoint" }]);
-    const state = await runOfficeAddinAction("install", port);
-    const bindings = officeAddinCommands(true, state!);
+    await runOfficeAddinAction("install", port);
+    const bindings = officeAddinCommands(true, {});
     expect(bindings.map(({ spec }) => [spec.enabled, spec.disabledReason])).toEqual([[true, undefined], [true, undefined]]);
-    await registryFor(true, state!, port).invoke("office.installAddin");
+    await registryFor(true, {}, port).invoke("office.installAddin");
     expect(port.invoke).toHaveBeenCalledTimes(2);
     expect(port.prompt.mock.calls.at(-1)?.[0].message).toContain("Installed in Word.\n\nInstalled in PowerPoint.");
-    // A status check macOS denied also leaves Install available.
-    expect(officeAddinCommands(true, { results: [uninstalled, deniedPowerPoint] })[0]!.spec.enabled).toBe(true);
-  });
-
-  it("exists from the first menu build, disabled with a reason, until the status is known", () => {
-    const supported = officeAddinSupported(true, "macos");
-    const bindings = officeAddinCommands(supported, {});
-    expect(bindings.map(({ spec }) => spec.disabledReason)).toEqual(["Checking Office add-in status…", "Checking Office add-in status…"]);
-    expect(officeAddinMenuItems(supported, bindings).map(item => item.command)).toEqual([
-      expect.objectContaining({ id: "office.installAddin", label: "Install Office Add-in…", enabled: false }),
-      expect.objectContaining({ id: "office.removeAddin", label: "Remove Office Add-in", enabled: false })
-    ]);
   });
 
   it.each([
@@ -182,7 +255,7 @@ describe("Office add-in commands", () => {
       " is not a ChemDraft add-in manifest, so ChemDraft did not remove it."]
   ] as const)("names the unidentified file it left alone on %s", async (action, command, expected) => {
     const port = createPort();
-    port.prompt.mockResolvedValue(action === "install" ? "install" : "ok");
+    port.prompt.mockResolvedValueOnce(action).mockResolvedValue("ok");
     port.invoke.mockResolvedValue([foreign, { ...installed, app: "powerPoint", changed: false }]);
     await runOfficeAddinAction(action, port);
     expect(port.invoke).toHaveBeenCalledWith(command);
@@ -194,7 +267,7 @@ describe("Office add-in commands", () => {
 
   it("still names the file in the status line when the report cannot open", async () => {
     const port = createPort();
-    port.prompt.mockImplementationOnce((prompt, fallback) => fallback!(prompt));
+    port.prompt.mockResolvedValueOnce("remove").mockImplementationOnce((prompt, fallback) => fallback!(prompt));
     port.invoke.mockResolvedValue([foreign, powerpointMissing]);
     await runOfficeAddinAction("remove", port);
     expect(port.setStatus).toHaveBeenCalledWith(expect.stringContaining(wordPath + " is not a ChemDraft add-in manifest"));

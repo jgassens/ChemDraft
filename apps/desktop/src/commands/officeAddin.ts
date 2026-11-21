@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import type { PluginAppMenuItem } from "../appMenu";
@@ -8,7 +8,7 @@ import { nativePrompt } from "../nativePrompt";
 
 const commands = {
   install: { id: "office.installAddin", title: "Install Office Add-in…" },
-  remove: { id: "office.removeAddin", title: "Remove Office Add-in" }
+  remove: { id: "office.removeAddin", title: "Remove Office Add-in…" }
 } as const;
 
 const appNames = { word: "Word", powerPoint: "PowerPoint" } as const;
@@ -28,11 +28,16 @@ interface OfficeAddinResult {
   path?: string;
   /** This app was changed, then restored because the other app's change failed. */
   rolledBack?: boolean;
+  /** Set with `permissionDenied`: this build's bundle identifier, for the `tccutil reset` command. */
+  bundleIdentifier?: string;
 }
 
+/**
+ * All the Help rows depend on. There is no status check: reading Word's and PowerPoint's
+ * containers can raise macOS's "access data from other apps" prompt, so ChemDraft reads them only
+ * inside an Install or Remove the user chose and confirmed (AGENTS.md §13).
+ */
 interface OfficeAddinState {
-  results?: readonly OfficeAddinResult[];
-  error?: string;
   busy?: boolean;
 }
 
@@ -40,29 +45,12 @@ export function officeAddinSupported(isDesktop: boolean, platform: ShortcutPlatf
   return isDesktop && platform === "macos";
 }
 
-export function officeAddinCommands(supported: boolean, { results, error, busy }: OfficeAddinState) {
-  const availability = !supported ? "Office add-in management is available in the ChemDraft app on macOS."
+/** Both rows are enabled on macOS except while an action runs; each action reports what it found. */
+export function officeAddinCommands(supported: boolean, { busy }: OfficeAddinState = {}) {
+  const disabledReason = !supported ? "Office add-in management is available in the ChemDraft app on macOS."
     : busy ? "Office add-in management is in progress."
-    : error ? "Could not check Office add-in status. " + error
-    : !results ? "Checking Office add-in status…"
     : undefined;
-  const disabledFor = (action: OfficeAddinAction): string | undefined => {
-    if (availability) return availability;
-    // A denial keeps both actions enabled: after allowing access, choosing one again is the retry.
-    if (results?.some(result => result.errorKind === "permissionDenied")) return undefined;
-    // An unrecognized file keeps both actions enabled so choosing one explains which file is in the way.
-    if (results?.some(result => result.status === "installedOtherVersion" || result.status === "unrecognized" ||
-        result.status === (action === "install" ? "notInstalled" : "installedSameVersion"))) return undefined;
-    if (results?.every(result => result.status === "appNotFound")) return "Word and PowerPoint were not found.";
-    if (results?.some(result => result.status === "unavailable")) {
-      return "Could not check the Office add-in in " + results
-        .filter(result => result.status === "unavailable")
-        .map(result => appNames[result.app]).join(" and ") + ".";
-    }
-    return action === "install" ? "The current Office add-in is already installed." : "The Office add-in is not installed.";
-  };
   return (["install", "remove"] as const).map(action => {
-    const disabledReason = disabledFor(action);
     const spec: CommandSpec = {
       ...commands[action], icon: "open", source: "core", category: "app",
       enabled: disabledReason === undefined, disabledReason
@@ -88,6 +76,12 @@ const installConfirmation = [
   "To remove it, choose Help > Remove Office Add-in in ChemDraft."
 ].join("\n\n");
 
+const removeConfirmation = [
+  "This removes ChemDraft from Word and PowerPoint on this Mac.",
+  "macOS may ask to let ChemDraft access data from other apps, because the add-in file is in Word's and PowerPoint's own folders. " +
+    "Choose Allow to remove it; if you choose Don't Allow, Office is left unchanged."
+].join("\n\n");
+
 function unrecognizedMessage(action: OfficeAddinAction, app: string, path = "ChemDraft's add-in manifest file"): string {
   const file = path + " is not a ChemDraft add-in manifest";
   return action === "install"
@@ -96,18 +90,29 @@ function unrecognizedMessage(action: OfficeAddinAction, app: string, path = "Che
 }
 
 /**
- * After Don't Allow. macOS 26 lists no separate setting for access to other apps' data (TCC's
- * App Data service), so the lasting way to allow it from System Settings is Full Disk Access.
+ * After Don't Allow, as paragraphs: what happened, then how to retry. macOS keeps the answer (TCC
+ * service `SystemPolicyAppData`, keyed by bundle identifier) and may not ask again; resetting that
+ * one decision is enough, so the message never suggests a broader grant such as Full Disk Access.
  */
-function permissionDeniedMessage(action: OfficeAddinAction): string {
-  const command = "Help > " + (action === "install" ? "Install Office Add-in" : "Remove Office Add-in");
+function permissionDeniedMessage(action: OfficeAddinAction, bundleIdentifier: string | undefined): string[] {
+  const item = action === "install" ? "Install Office Add-in" : "Remove Office Add-in";
   return [
-    "Office was not changed. macOS did not allow ChemDraft to access Word's and PowerPoint's data, so the add-in was not " +
-      (action === "install" ? "installed" : "removed") + " in either app.",
-    "To allow it, choose " + command + " again and choose Allow when macOS asks. If macOS does not ask, open " +
-      "System Settings > Privacy & Security > Full Disk Access and turn on ChemDraft (macOS has no separate setting for " +
-      "access to other apps' data), then choose " + command + " again."
-  ].join("\n\n");
+    "Office was not changed, because macOS did not allow ChemDraft to access Word's and PowerPoint's data.",
+    "Choose Help > " + item + " again and click Allow when macOS asks.",
+    ...(bundleIdentifier ? [
+      "If macOS does not ask again, reset its decision in Terminal with this command, then try again:",
+      "tccutil reset SystemPolicyAppData " + bundleIdentifier
+    ] : [])
+  ];
+}
+
+function nothingToRemoveMessage(results: readonly OfficeAddinResult[]): string | undefined {
+  if (results.some(result => result.changed || result.error || (result.status !== "notInstalled" && result.status !== "appNotFound"))) {
+    return undefined;
+  }
+  return results.every(result => result.status === "appNotFound")
+    ? "Word and PowerPoint were not found on this Mac, so nothing was removed."
+    : "The Office add-in is not installed in Word or PowerPoint, so nothing was removed.";
 }
 
 interface OfficeAddinPort {
@@ -116,7 +121,11 @@ interface OfficeAddinPort {
   setStatus: (text: string) => void;
 }
 
-export async function runOfficeAddinAction(action: OfficeAddinAction, port: OfficeAddinPort): Promise<OfficeAddinState | undefined> {
+/**
+ * Confirms, then installs or removes. The add-in's status is read only here, by the command the
+ * user confirmed; the results are returned for tests, and nothing keeps them.
+ */
+export async function runOfficeAddinAction(action: OfficeAddinAction, port: OfficeAddinPort): Promise<OfficeAddinResult[] | undefined> {
   const title = action === "install" ? "Install Office Add-in" : "Remove Office Add-in";
   const notice = async (message: string, kind: "info" | "warning" | "error") => {
     await port.prompt({
@@ -126,30 +135,36 @@ export async function runOfficeAddinAction(action: OfficeAddinAction, port: Offi
       return "ok";
     });
   };
-  if (action === "install") {
-    const choice = await port.prompt({
-      title, message: installConfirmation, kind: "warning", owner: "document",
-      choices: [{ id: "install", label: "Install" }, { id: "cancel", label: "Cancel", cancel: true }]
-    }, async () => {
-      port.setStatus("Could not open the Office add-in installation confirmation.");
-      return "cancel";
-    });
-    if (choice !== "install") return;
-  }
+  const choice = await port.prompt({
+    title, message: action === "install" ? installConfirmation : removeConfirmation, kind: "warning", owner: "document",
+    choices: [
+      action === "install" ? { id: "install", label: "Install" } : { id: "remove", label: "Remove" },
+      { id: "cancel", label: "Cancel", cancel: true }
+    ]
+  }, async () => {
+    port.setStatus("Could not open the Office add-in " + (action === "install" ? "installation" : "removal") + " confirmation.");
+    return "cancel";
+  });
+  if (choice !== action) return;
 
   let results: OfficeAddinResult[];
   try {
     results = await port.invoke(action === "install" ? "office_addin_install" : "office_addin_remove");
   } catch (error) {
-    const message = String(error);
-    await notice(title + " failed. " + message, "error");
-    return { error: message };
+    await notice(title + " failed. " + String(error), "error");
+    return;
   }
 
-  const denied = results.some(result => result.errorKind === "permissionDenied");
+  const denial = results.find(result => result.errorKind === "permissionDenied");
+  const denied = denial ? permissionDeniedMessage(action, denial.bundleIdentifier) : undefined;
   if (denied && !results.some(result => result.changed)) {
-    await notice(permissionDeniedMessage(action), "warning");
-    return { results };
+    await notice(denied.join("\n\n"), "warning");
+    return results;
+  }
+  const nothingRemoved = action === "remove" ? nothingToRemoveMessage(results) : undefined;
+  if (nothingRemoved) {
+    await notice(nothingRemoved, "info");
+    return results;
   }
   // Either both apps change or neither does, so after a failure the other app is reported unchanged.
   const failed = results.some(result => result.error);
@@ -168,52 +183,32 @@ export async function runOfficeAddinAction(action: OfficeAddinAction, port: Offi
   if (changed) {
     messages.push("Restart " + changed + (action === "install" ? ", then choose Edit Structure on the Home tab." : " to finish removing the add-in."));
   }
-  if (denied) messages.push(permissionDeniedMessage(action).split("\n\n")[1]!);
+  // Something changed, so only the retry steps apply, not "Office was not changed".
+  if (denied) messages.push(...denied.slice(1));
   await notice(messages.join("\n\n"), results.some(result => result.error || result.status === "unrecognized") ? "warning" : "info");
-  return { results };
+  return results;
 }
 
 export function useOfficeAddinCommands(supported: boolean, setStatus: (text: string) => void) {
-  const [state, setState] = useState<OfficeAddinState>({});
-  const busy = useRef(false);
-  const request = useRef(0);
-
-  useEffect(() => {
-    if (!supported) return;
-    const refresh = async () => {
-      if (busy.current) return;
-      const id = ++request.current;
-      try {
-        const results = await invoke<OfficeAddinResult[]>("office_addin_status");
-        if (id === request.current) setState({ results });
-      } catch (error) {
-        if (id === request.current) setState({ error: String(error) });
-      }
-    };
-    void refresh();
-    window.addEventListener("focus", refresh);
-    return () => {
-      request.current++;
-      window.removeEventListener("focus", refresh);
-    };
-  }, [supported]);
+  // Nothing runs at launch or on focus: the rows stay enabled, and only a chosen action reads
+  // Office's folders.
+  const [busy, setBusy] = useState(false);
+  const running = useRef(false);
 
   const run = useCallback(async (action: OfficeAddinAction) => {
-    if (!supported || busy.current) return;
-    busy.current = true;
-    const id = ++request.current;
-    setState(current => ({ ...current, busy: true }));
+    if (!supported || running.current) return;
+    running.current = true;
+    setBusy(true);
     try {
-      const result = await runOfficeAddinAction(action, { invoke, prompt: nativePrompt, setStatus });
-      if (id === request.current && result) setState({ ...result, busy: true });
+      await runOfficeAddinAction(action, { invoke, prompt: nativePrompt, setStatus });
     } finally {
-      busy.current = false;
-      if (id === request.current) setState(current => ({ ...current, busy: false }));
+      running.current = false;
+      setBusy(false);
     }
   }, [supported, setStatus]);
 
   return useMemo(() => {
-    const bindings = officeAddinCommands(supported, state);
+    const bindings = officeAddinCommands(supported, { busy });
     return { bindings, run, menuItems: officeAddinMenuItems(supported, bindings) };
-  }, [supported, state, run]);
+  }, [supported, busy, run]);
 }

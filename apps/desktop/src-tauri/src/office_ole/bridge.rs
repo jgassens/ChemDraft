@@ -345,79 +345,81 @@ pub(super) fn open_window(
             tauri::window::Color(red, green, blue, 0xff),
         )
         .build();
-        match result {
-            Ok(window) => {
-                let app = handle.clone();
-                let subscriptions = super::toolset_events::attach_settings(&window);
-                let editor = window.clone();
-                window.on_window_event(move |event| {
-                    match event {
-                        WindowEvent::CloseRequested { api, .. } => {
-                            api.prevent_close();
-                            signals.request_close();
-                        }
-                        WindowEvent::Destroyed => {
-                            for &subscription in &subscriptions {
-                                app.unlisten(subscription);
-                            }
-                            signals.destroyed();
-                        }
-                        WindowEvent::Moved(_) => {
-                            super::toolset_events::deliver(&editor, "tauri://move", "null");
-                            return;
-                        }
-                        WindowEvent::Resized(_) => {
-                            super::toolset_events::deliver(&editor, "tauri://resize", "null");
-                            return;
-                        }
-                        WindowEvent::ScaleFactorChanged { .. } => {
-                            super::toolset_events::deliver(&editor, "tauri://scale-change", "null");
-                            return;
-                        }
-                        _ => return,
-                    }
-                    app.state::<super::server::Server>().wake();
-                });
-                match crate::install_office_document_menu(
-                    &window,
-                    &[],
-                    crate::ViewMenuState::default(),
-                    None,
-                ) {
-                    // Stay hidden until index.html has painted its loading screen, so the
-                    // WebView2 surface is never seen before the page's first frame. The page
-                    // reports the paint (`window_first_paint`); the timer covers a page that
-                    // never does. Either one shows the window and answers DoVerb, once; a window
-                    // destroyed first drops `opened`, which ends the DoVerb wait.
-                    Ok(()) => crate::first_paint::arm_first_paint_fallback_with(
-                        &window,
-                        REVEAL_FALLBACK,
-                        |window| {
-                            if window.state::<super::server::Server>().session_ending() {
-                                Err("The Windows session is ending".to_string())
-                            } else {
-                                Ok(())
-                            }
-                        },
-                        move |window, shown| {
-                            // The user just activated the object: the editor takes focus.
-                            let result = shown.and_then(|()| {
-                                window.set_focus().map_err(|error| error.to_string())
-                            });
-                            let failed = result.is_err();
-                            if opened.send(result).is_err() || failed {
-                                let _ = window.destroy();
-                            }
-                        },
-                    ),
-                    Err(error) => {
-                        let _ = opened.send(Err(error.to_string()));
-                        let _ = window.destroy();
-                    }
-                }
-            }
+        let window = match result {
+            Ok(window) => window,
             Err(error) => {
                 let _ = opened.send(Err(format!("Could not open Office editor: {error}")));
+                return;
+            }
+        };
+        // Like every webview window: WebView2's own menus can leave input stuck after they are
+        // dismissed (webview_context_menus.rs). The window is still hidden here.
+        crate::disable_default_context_menus(&window);
+        let app = handle.clone();
+        let subscriptions = super::toolset_events::attach_settings(&window);
+        let editor = window.clone();
+        window.on_window_event(move |event| {
+            match event {
+                WindowEvent::CloseRequested { api, .. } => {
+                    api.prevent_close();
+                    signals.request_close();
+                }
+                WindowEvent::Destroyed => {
+                    for &subscription in &subscriptions {
+                        app.unlisten(subscription);
+                    }
+                    signals.destroyed();
+                }
+                WindowEvent::Moved(_) => {
+                    super::toolset_events::deliver(&editor, "tauri://move", "null");
+                    return;
+                }
+                WindowEvent::Resized(_) => {
+                    super::toolset_events::deliver(&editor, "tauri://resize", "null");
+                    return;
+                }
+                WindowEvent::ScaleFactorChanged { .. } => {
+                    super::toolset_events::deliver(&editor, "tauri://scale-change", "null");
+                    return;
+                }
+                _ => return,
+            }
+            app.state::<super::server::Server>().wake();
+        });
+        match crate::install_office_document_menu(
+            &window,
+            &[],
+            crate::ViewMenuState::default(),
+            None,
+        ) {
+            // Stay hidden until index.html has painted its loading screen, so the
+            // WebView2 surface is never seen before the page's first frame. The page
+            // reports the paint (`window_first_paint`); the timer covers a page that
+            // never does. Either one shows the window and answers DoVerb, once; a window
+            // destroyed first drops `opened`, which ends the DoVerb wait.
+            Ok(()) => crate::first_paint::arm_first_paint_fallback_with(
+                &window,
+                REVEAL_FALLBACK,
+                |window| {
+                    if window.state::<super::server::Server>().session_ending() {
+                        Err("The Windows session is ending".to_string())
+                    } else {
+                        Ok(())
+                    }
+                },
+                move |window, shown| {
+                    // The user just activated the object: the editor takes focus.
+                    let result =
+                        shown.and_then(|()| window.set_focus().map_err(|error| error.to_string()));
+                    let failed = result.is_err();
+                    if opened.send(result).is_err() || failed {
+                        let _ = window.destroy();
+                    }
+                },
+            ),
+            Err(error) => {
+                let _ = opened.send(Err(error.to_string()));
+                let _ = window.destroy();
             }
         }
     })
@@ -517,14 +519,13 @@ mod tests {
         let pending = &built[built.find("Ok(()) => ").unwrap()..];
         let pending = &pending[..pending.find("Err(error) => {").unwrap()];
         assert!(pending.starts_with(
-            "Ok(()) => crate::first_paint::arm_first_paint_fallback_with(\n                        &window,\n                        REVEAL_FALLBACK,"
+            "Ok(()) => crate::first_paint::arm_first_paint_fallback_with(\n                &window,\n                REVEAL_FALLBACK,"
         ));
         assert_eq!(REVEAL_FALLBACK, std::time::Duration::from_millis(1500));
         // The helper shows; the editor declines during session end, then focuses and answers
         // DoVerb with the result.
         assert!(pending.contains("session_ending()"));
-        assert!(pending.contains("shown.and_then(|()| {"));
-        assert!(pending.contains("window.set_focus()"));
+        assert!(pending.contains("shown.and_then(|()| window.set_focus()"));
         assert!(pending.contains("opened.send(result).is_err() || failed"));
         // A second activation of a still-hidden editor answers the first one too.
         let existing = &open[open.find("get_webview_window(&label)").unwrap()..];
@@ -539,6 +540,72 @@ mod tests {
             "office-object-painted",
         ] {
             assert!(!code_only(source).contains(removed), "{removed}");
+        }
+    }
+
+    /// Each Office OLE command has its generated permission and is granted by exactly the
+    /// capabilities listed here, so no other window can invoke it. A new `office_ole::` command
+    /// fails until it is added.
+    #[test]
+    fn office_ole_commands_are_permitted_and_granted_only_to_their_windows() {
+        let expected: [(&str, &[&str]); 5] = [
+            ("office_object_connect", &["office-object"]),
+            ("office_object_update", &["office-object"]),
+            ("office_object_close", &["office-object"]),
+            ("office_toolset_emit", &["office-object", "office-toolset"]),
+            ("prepare_office_editors_for_update", &["app-updates"]),
+        ];
+        let registered: Vec<&str> =
+            crate::handler_list::registered_commands(include_str!("../lib.rs"))
+                .into_iter()
+                .filter(|command| command.starts_with("office_ole::"))
+                .map(|command| command.rsplit("::").next().unwrap())
+                .collect();
+        let mut listed: Vec<&str> = expected.iter().map(|(command, _)| *command).collect();
+        let mut sorted = registered.clone();
+        sorted.sort_unstable();
+        listed.sort_unstable();
+        assert_eq!(sorted, listed);
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let build = include_str!("../../build.rs");
+        let mut capabilities = Vec::new();
+        for entry in std::fs::read_dir(root.join("capabilities")).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|e| e == "json") {
+                let json: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+                capabilities.push(json);
+            }
+        }
+        for (command, holders) in expected {
+            assert!(build.contains(&format!("\"{command}\",")), "{command}");
+            let permission = std::fs::read_to_string(
+                root.join(format!("permissions/autogenerated/{command}.toml")),
+            )
+            .unwrap();
+            assert!(permission.contains(&format!("commands.allow = [\"{command}\"]")));
+            let allow = format!("allow-{}", command.replace('_', "-"));
+            let mut granted: Vec<&str> = capabilities
+                .iter()
+                .filter(|capability| {
+                    capability["permissions"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|p| {
+                            p.as_str().or_else(|| p["identifier"].as_str()) == Some(allow.as_str())
+                        })
+                })
+                .map(|capability| capability["identifier"].as_str().unwrap())
+                .collect();
+            granted.sort_unstable();
+            assert_eq!(granted, holders, "{command}");
+            for capability in &capabilities {
+                if holders.contains(&capability["identifier"].as_str().unwrap()) {
+                    assert_eq!(capability["platforms"], json!(["windows"]), "{command}");
+                }
+            }
         }
     }
 

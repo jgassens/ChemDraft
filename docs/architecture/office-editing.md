@@ -237,30 +237,38 @@ The add-in is the Mac route only (owner, 2026-11-20). It is also what Office on 
    an ad-hoc signed dev build sees it again after each rebuild, because its code signature changes.
    How ChemDraft handles it:
 
-   - **Said before it happens.** The Install confirmation, shown before anything is written, says
-     macOS will ask next, why (the add-in file goes into Word's and PowerPoint's own folders), and
-     that Don't Allow leaves Office unchanged.
+   - **Nothing reads the containers until the user acts.** There is no status check at launch, on
+     focus or anywhere else (AGENTS.md §13): a launch-time check raised the prompt with no user
+     action, for example after a rebuild. Both Help rows, *Install Office Add-in…* and *Remove
+     Office Add-in…*, are always enabled (disabled only while one of them runs). Each reads Office's
+     state only after the user chooses it and confirms, and its report says what it found: already
+     installed, or for Remove "The Office add-in is not installed in Word or PowerPoint, so nothing
+     was removed."
+   - **Said before it happens.** The Install confirmation, shown before anything is read or
+     written, says macOS will ask next, why (the add-in file goes into Word's and PowerPoint's own
+     folders), and that Don't Allow leaves Office unchanged. The Remove confirmation says macOS may
+     ask, why, and that Don't Allow leaves Office unchanged.
    - **All or nothing.** `office_addin.rs` reads both apps' state before writing either. A read that
      fails writes nothing. If the second app's write fails, the first app's change is undone: a new
      manifest is deleted with any folders created for it, a replaced one is restored byte for byte,
      and a removed one is written back. Each write goes through a temporary sibling that is deleted
      on failure. A missing app or an unrecognized file at ChemDraft's filename is a skip, not a
      failure, so the other app still proceeds.
-   - **Denial named.** `EPERM`/`EACCES` comes back as `errorKind: "permissionDenied"`. The message
-     says Office was not changed, that macOS denied access, and how to allow it: choose the command
-     again and Allow when asked, or, if macOS does not ask, turn ChemDraft on in System Settings >
-     Privacy & Security > Full Disk Access. macOS 26 has no separate App Data list in Privacy &
-     Security (its settings list has App Management, which covers changing other apps' bundles, not
-     their data). `tccutil reset SystemPolicyAppData org.chemdraft.desktop` (or
-     `org.chemdraft.desktop.dev`) makes macOS ask again. A denial keeps both Help items enabled, so
-     choosing one again is the retry. Remove is handled the same way.
-   - **Off the main thread.** The three commands are `async` and do their file work in
+   - **Denial named.** `EPERM`/`EACCES` comes back as `errorKind: "permissionDenied"`, with the
+     build's bundle identifier (`bundleIdentifier`, from the running app's configuration). The
+     message says Office was not changed, because macOS did not allow ChemDraft to access Word's
+     and PowerPoint's data; to choose the command again and click Allow when macOS asks; and, if
+     macOS does not ask again, to reset that one decision in Terminal and try again, giving the
+     exact command for this build: `tccutil reset SystemPolicyAppData org.chemdraft.desktop`, or
+     `org.chemdraft.desktop.dev` for a dev build. It never recommends Full Disk Access, which grants
+     far more than this needs. Both Help items stay enabled, so choosing one again is the retry.
+     Remove is handled the same way.
+   - **Off the main thread.** The two commands are `async` and do their file work in
      `tauri::async_runtime::spawn_blocking`, one action at a time, so menus and the window stay
      responsive while the prompt is up. (Tauri 2 runs a non-`async` command on the main thread.)
    - **Help rows from launch.** The rows come from the webview's menu sync. The native menu is built
-     before the webview loads, so lib.rs seeds them (`initial_plugin_menu_items`) disabled; the
-     webview's command says "Checking Office add-in status…" until the status check returns, and its
-     sync then updates the rows. macOS only; the Windows menu has no such rows.
+     before the webview loads, so lib.rs seeds the same rows (`initial_plugin_menu_items`), enabled,
+     and the webview's first sync changes nothing. macOS only; the Windows menu has no such rows.
 2. **Store listing and IT-admin deployment**: prepare the AppSource listing materials and an IT-admin
    deployment guide (centralized deployment manifest and steps). Submission to the store waits for
    the owner.

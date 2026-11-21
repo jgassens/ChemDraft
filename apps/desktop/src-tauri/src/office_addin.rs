@@ -14,17 +14,20 @@ const STABLE_ID: &str = "c2b05f5c-0724-4438-bff6-229da8041c57";
 const DEV_ID: &str = "62b8cf76-1e9e-4826-a1b1-1ed9cbea128f";
 
 /// The Help rows for these commands, as the webview syncs them (`officeAddin.ts`). lib.rs builds
-/// them, disabled, into the first native menu so they exist before the webview's first sync;
-/// that sync then updates them in place.
+/// them, enabled, into the first native menu so they exist before the webview's first sync. Both
+/// stay enabled: nothing reads Office's folders until the user chooses one and confirms, because
+/// reading them can raise macOS's "access data from other apps" prompt.
 pub(crate) const HELP_MENU_ROWS: [(&str, &str); 2] = [
     ("office.installAddin", "Install Office Add-in…"),
-    ("office.removeAddin", "Remove Office Add-in"),
+    ("office.removeAddin", "Remove Office Add-in…"),
 ];
 
 struct Addin {
     filename: &'static str,
     id: &'static str,
     manifest: Cow<'static, str>,
+    /// This build's bundle identifier, the one macOS records its app-data decision under.
+    bundle_identifier: String,
 }
 
 impl Addin {
@@ -36,6 +39,7 @@ impl Addin {
                 filename: "chemdraft-office-addin.xml",
                 id: STABLE_ID,
                 manifest: STABLE_MANIFEST.into(),
+                bundle_identifier: identifier.to_owned(),
             }
         } else {
             Self {
@@ -48,6 +52,7 @@ impl Addin {
                         "<DisplayName DefaultValue=\"ChemDraft (dev)\"",
                     )
                     .into(),
+                bundle_identifier: identifier.to_owned(),
             }
         }
     }
@@ -104,7 +109,8 @@ enum Status {
 
 /// Why an app could not be checked or changed. `PermissionDenied` is what macOS returns (`EPERM`, or
 /// `EACCES`) once the user chooses Don't Allow at "'ChemDraft' would like to access data from other
-/// apps" (TCC service `SystemPolicyAppData`), so the webview can explain how to allow it.
+/// apps" (TCC service `SystemPolicyAppData`), so the webview can explain how to allow it: try again
+/// and click Allow, or reset the decision with `tccutil reset SystemPolicyAppData <bundle id>`.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 enum FailureKind {
@@ -159,6 +165,10 @@ pub(crate) struct OfficeAddinResult {
     /// This app was changed and then restored because the other app's change failed.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     rolled_back: bool,
+    /// Set with a `PermissionDenied` error: this build's bundle identifier, which macOS keys its
+    /// decision on, so the message can give the exact `tccutil reset` command for this build.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bundle_identifier: Option<String>,
 }
 
 impl OfficeAddinResult {
@@ -172,6 +182,7 @@ impl OfficeAddinResult {
             path: (status == Status::Unrecognized)
                 .then(|| manifest_path(home, app, addin).display().to_string()),
             rolled_back: false,
+            bundle_identifier: None,
         }
     }
 
@@ -184,12 +195,16 @@ impl OfficeAddinResult {
             error_kind: Some(failure.kind),
             path: None,
             rolled_back: false,
+            bundle_identifier: None,
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Action {
+    /// Tests only: read both apps' state and write nothing. The app has no status check: it reads
+    /// Office's folders only inside an Install or Remove the user chose and confirmed.
+    #[cfg(test)]
     Status,
     Install,
     Remove,
@@ -563,6 +578,7 @@ fn perform(
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error.into()),
         },
+        #[cfg(test)]
         Action::Status => Ok(None),
     }
 }
@@ -584,6 +600,16 @@ fn undo(fs: &Fs, plan: &Plan, created: &[PathBuf]) -> io::Result<()> {
 /// change is undone, so Office is never left with the add-in in only one app. An unrecognized file
 /// or a missing app is not a failure: that app is skipped and reported, and the other proceeds.
 fn apply_with(fs: &Fs, home: &Path, addin: &Addin, action: Action) -> [OfficeAddinResult; 2] {
+    let mut results = change_both(fs, home, addin, action);
+    for result in &mut results {
+        if result.error_kind == Some(FailureKind::PermissionDenied) {
+            result.bundle_identifier = Some(addin.bundle_identifier.clone());
+        }
+    }
+    results
+}
+
+fn change_both(fs: &Fs, home: &Path, addin: &Addin, action: Action) -> [OfficeAddinResult; 2] {
     let apps = [OfficeApp::Word, OfficeApp::PowerPoint];
     let inspected = apps.map(|app| inspect(fs, home, app, addin));
     let mut results: [OfficeAddinResult; 2] = std::array::from_fn(|index| {
@@ -594,7 +620,9 @@ fn apply_with(fs: &Fs, home: &Path, addin: &Addin, action: Action) -> [OfficeAdd
             Err(failure) => OfficeAddinResult::failure(app, failure),
         }
     });
-    if action == Action::Status || inspected.iter().any(Result::is_err) {
+    // Nothing is written if either app could not be read. (The tests' status check writes nothing
+    // either way: no plan needs a change for it.)
+    if inspected.iter().any(Result::is_err) {
         return results;
     }
 
@@ -685,13 +713,6 @@ async fn run(
 }
 
 #[tauri::command]
-pub(crate) async fn office_addin_status(
-    window: tauri::WebviewWindow,
-) -> Result<[OfficeAddinResult; 2], String> {
-    run(window, Action::Status).await
-}
-
-#[tauri::command]
 pub(crate) async fn office_addin_install(
     window: tauri::WebviewWindow,
 ) -> Result<[OfficeAddinResult; 2], String> {
@@ -736,12 +757,41 @@ mod tests {
         assert_eq!(office["windows"], serde_json::json!(["main"]));
         assert_eq!(
             office["permissions"],
-            serde_json::json!([
-                "allow-office-addin-status",
-                "allow-office-addin-install",
-                "allow-office-addin-remove"
-            ])
+            serde_json::json!(["allow-office-addin-install", "allow-office-addin-remove"])
         );
+        // Only Install and Remove exist: there is no status check that could read Office's
+        // folders before the user chooses one of them.
+        let registered: Vec<&str> =
+            crate::handler_list::registered_commands(include_str!("lib.rs"))
+                .into_iter()
+                .filter(|command| command.contains("office_addin"))
+                .collect();
+        assert_eq!(
+            registered,
+            [
+                "office_addin::office_addin_install",
+                "office_addin::office_addin_remove"
+            ]
+        );
+        let lib = include_str!("lib.rs");
+        for command in &registered {
+            let line = format!("\n            {command},\n");
+            let at = lib.find(&line).unwrap();
+            assert!(
+                lib[..at].ends_with("#[cfg(target_os = \"macos\")]"),
+                "{command} must be registered on macOS only"
+            );
+        }
+        let build = include_str!("../build.rs");
+        let permissions = Path::new(env!("CARGO_MANIFEST_DIR")).join("permissions/autogenerated");
+        for command in ["office_addin_install", "office_addin_remove"] {
+            assert!(build.contains(&format!("\"{command}\",")));
+            let permission =
+                fs::read_to_string(permissions.join(format!("{command}.toml"))).unwrap();
+            assert!(permission.contains(&format!("commands.allow = [\"{command}\"]")));
+        }
+        assert!(!build.contains("office_addin_status"));
+        assert!(!permissions.join("office_addin_status.toml").exists());
         let capabilities = Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities");
         for entry in fs::read_dir(capabilities).unwrap() {
             let entry = entry.unwrap();
@@ -1113,6 +1163,41 @@ mod tests {
     }
 
     #[test]
+    fn a_denial_names_this_builds_bundle_identifier_for_the_reset_command() {
+        for (identifier, debug) in [
+            (STABLE_IDENTIFIER, false),
+            ("org.chemdraft.desktop.dev", true),
+        ] {
+            let addin = Addin::for_build(identifier, debug, Some(""));
+            for action in [Action::Install, Action::Remove] {
+                let (home, _word, powerpoint) = office_home();
+                if action == Action::Remove {
+                    let [word, powerpoint] = apply(&home.0, &addin, Action::Install);
+                    assert!(word.changed && powerpoint.changed);
+                }
+                let gate = deny_under(&powerpoint, &[Op::Write, Op::Remove]);
+                let [word, powerpoint] = apply_with(&Fs { gate: &gate }, &home.0, &addin, action);
+                assert_eq!(powerpoint.error_kind, Some(FailureKind::PermissionDenied));
+                let json = serde_json::to_value(&powerpoint).unwrap();
+                assert_eq!(json["bundleIdentifier"], identifier, "{action:?}");
+                // Only a denial carries it.
+                assert_eq!(word.error, None);
+                assert!(serde_json::to_value(&word)
+                    .unwrap()
+                    .get("bundleIdentifier")
+                    .is_none());
+            }
+        }
+        let home = TempHome::new();
+        let addin = Addin::for_build(STABLE_IDENTIFIER, false, Some(""));
+        let gate = deny_under(&home.0, &[Op::Inspect]);
+        for result in apply_with(&Fs { gate: &gate }, &home.0, &addin, Action::Install) {
+            assert_eq!(result.error_kind, Some(FailureKind::PermissionDenied));
+            assert_eq!(result.bundle_identifier.as_deref(), Some(STABLE_IDENTIFIER));
+        }
+    }
+
+    #[test]
     fn a_denied_second_install_rolls_back_the_first_and_leaves_nothing_behind() {
         // Denied at the write, and denied at the rename after the temporary file exists.
         for ops in [&[Op::Write][..], &[Op::Rename], &[Op::Write, Op::Rename]] {
@@ -1251,11 +1336,7 @@ mod tests {
     #[test]
     fn commands_run_the_file_work_off_the_main_thread() {
         let source = include_str!("office_addin.rs");
-        for command in [
-            "office_addin_status",
-            "office_addin_install",
-            "office_addin_remove",
-        ] {
+        for command in ["office_addin_install", "office_addin_remove"] {
             // Tauri 2 runs a non-async command on the main thread.
             assert!(source.contains(&format!("pub(crate) async fn {command}(")));
         }

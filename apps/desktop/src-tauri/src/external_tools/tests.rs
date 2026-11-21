@@ -2074,21 +2074,9 @@ fn capability_is_main_only_and_exactly_matches_registered_commands() {
     assert_eq!(capability["windows"], serde_json::json!(["main"]));
     assert!(capability.get("webviews").is_none());
     assert!(capability.get("remote").is_none());
-    let source = include_str!("../lib.rs");
-    let handler = source
-        .split("generate_handler![")
-        .nth(1)
-        .unwrap()
-        .split(']')
-        .next()
-        .unwrap();
-    let commands: BTreeSet<_> = handler
-        .lines()
-        .filter_map(|line| {
-            line.trim()
-                .trim_end_matches(',')
-                .strip_prefix("external_tools::")
-        })
+    let commands: BTreeSet<_> = crate::handler_list::registered_commands(include_str!("../lib.rs"))
+        .into_iter()
+        .filter_map(|command| command.strip_prefix("external_tools::"))
         .collect();
     assert_eq!(commands.len(), 13);
     let expected: BTreeSet<_> = commands

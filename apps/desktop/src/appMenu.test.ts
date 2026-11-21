@@ -488,7 +488,7 @@ describe("Office add-in Help rows", () => {
   it("refreshes the macOS Help rows in place and keeps them off the Windows menu", () => {
     const source = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
     // The in-place property loop only visits DYNAMIC_MENU_SECTIONS; without "help" there,
-    // status loads, Install and Remove left the Office rows' enabled state stale.
+    // Install and Remove left the Office rows' enabled state stale after they ran.
     expect(source).toContain('#[cfg(target_os = "macos")]\nconst DYNAMIC_MENU_SECTIONS: [&str; 5] = ["structure", "tools", "analyze", "plugins", "help"];');
     expect(source).toContain('#[cfg(not(target_os = "macos"))]\nconst DYNAMIC_MENU_SECTIONS: [&str; 4] = ["structure", "tools", "analyze", "plugins"];');
     const update = source.split("fn update_plugin_menu_properties<Row>")[1]!.split("fn classify_toolbars_menu_update")[0]!;
@@ -500,7 +500,7 @@ describe("Office add-in Help rows", () => {
     expect(builder).toMatch(/#\[cfg\(target_os = "macos"\)\]\s*if office_update_title\.is_none\(\) \{\s*let office_items = plugin_menu_items_in\(plugin_items, "help"\);/);
   });
 
-  it("builds the macOS rows into the first native menu, disabled, with the webview's ids and labels", () => {
+  it("builds the macOS rows into the first native menu, enabled, with the webview's ids and labels", () => {
     const source = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
     const office = readFileSync(new URL("../src-tauri/src/office_addin.rs", import.meta.url), "utf8");
     // The first menu reads the managed state, whose default is the seeded rows rather than empty.
@@ -509,14 +509,17 @@ describe("Office add-in Help rows", () => {
     const seed = source.split("fn initial_plugin_menu_items()")[1]!.split("\n}\n")[0]!;
     expect(seed).toMatch(/#\[cfg\(target_os = "macos"\)\]\s*\{\s*office_addin::HELP_MENU_ROWS/);
     expect(seed).toContain('location: "help".to_owned()');
-    expect(seed).toContain("enabled: false");
+    expect(seed).toContain("enabled: true");
     expect(seed).toContain("core_routed: true");
     expect(seed).toMatch(/#\[cfg\(not\(target_os = "macos"\)\)\]\s*\{\s*Vec::new\(\)\s*\}/);
     const rows = office.split("pub(crate) const HELP_MENU_ROWS")[1]!.split("];")[0]!;
     const seeded = [...rows.matchAll(/\("([^"]+)", "([^"]+)"\)/g)].map(([, id, label]) => ({ id, label }));
-    // The same rows, in order, as the webview's first sync, so that sync updates them in place.
+    // The same rows, in order and enabled, as the webview's first sync, so that sync changes nothing.
+    // Nothing checks the add-in's status at launch: only Install and Remove read Office's folders.
     const bindings = officeAddinCommands(officeAddinSupported(true, "macos"), {});
     expect(seeded).toEqual(officeAddinMenuItems(true, bindings).map(item => ({ id: item.command.commandId, label: item.command.label })));
-    expect(bindings.every(({ spec }) => spec.enabled === false && spec.disabledReason === "Checking Office add-in status…")).toBe(true);
+    expect(seeded.map(row => row.label)).toEqual(["Install Office Add-in…", "Remove Office Add-in…"]);
+    expect(bindings.every(({ spec }) => spec.enabled === true && spec.disabledReason === undefined)).toBe(true);
+    expect(source).not.toContain("office_addin_status");
   });
 });

@@ -1640,22 +1640,31 @@ Windows with Word and PowerPoint, and the Mac items on a Mac with both apps. Say
 
 ### macOS Office add-in (Word and PowerPoint)
 
-- Help menu: with the add-in not installed, Install Office Add-in is enabled and Remove Office
-  Add-in is disabled with a reason. Choose Install, read the confirmation (testing route; loads from
-  chemdraft.ai), and click Install. Both items update without a relaunch: Install disabled, Remove
-  enabled. Cancel in the confirmation changes nothing.
-- Help menu at launch: Install Office Add-in and Remove Office Add-in are in Help from the first
-  moment the menu bar appears (disabled while the status is checked), not only Report a Bug….
+- Help menu at launch: Install Office Add-in… and Remove Office Add-in… are in Help, both
+  enabled, from the first moment the menu bar appears, not only Report a Bug…. Launching, and
+  switching back to ChemDraft, never shows macOS's "access data from other apps" prompt: run
+  `tccutil reset SystemPolicyAppData org.chemdraft.desktop.dev`, relaunch a fresh dev build and
+  switch apps a few times; no prompt appears until you choose Install or Remove and confirm.
+- Help menu: choose Install, read the confirmation (testing route; loads from chemdraft.ai), and
+  click Install. Cancel in the confirmation changes nothing and shows no macOS prompt. After
+  installing, both items stay enabled; Install again reports it is already installed.
+- Remove with nothing installed: after confirming, the report says plainly that the add-in is not
+  installed in Word or PowerPoint, so nothing was removed. Cancel at the Remove confirmation
+  changes nothing.
 - macOS "“ChemDraft” would like to access data from other apps" prompt (use a fresh dev build, or
   run `tccutil reset SystemPolicyAppData org.chemdraft.desktop.dev` first, so it appears). The
   Install confirmation says beforehand that macOS will ask. While the prompt is up, ChemDraft's
-  window and menus still respond. **Don't Allow**: the message says Office was not changed, that
-  macOS denied access, and how to allow it (Full Disk Access, or Install again); no
+  window and menus still respond. **Don't Allow**: the message says Office was not changed, because
+  macOS did not allow ChemDraft to access Word's and PowerPoint's data; to choose Install Office
+  Add-in again and click Allow; and, if macOS does not ask again, the exact
+  `tccutil reset SystemPolicyAppData org.chemdraft.desktop.dev` command to run in Terminal (the
+  stable app names `org.chemdraft.desktop`). It does not mention Full Disk Access. No
   `chemdraft-office-addin*.xml` or `.tmp` file appears in either `wef` folder; Install stays enabled.
   **Allow** (choose Install again): both apps are installed. Repeat with Remove: Don't Allow leaves
-  both manifests in place, Allow removes both.
+  both manifests in place, Allow removes both. After a Don't Allow, if macOS does not ask again, the
+  given `tccutil` command makes it ask on the next Install.
 - Restart Word and PowerPoint: the Edit Structure button is in the ribbon. Choose Help > Remove
-  Office Add-in, then confirm the items swap back and the button is gone after a restart.
+  Office Add-in…, confirm, and check that the button is gone after a restart.
 - Word: select a ChemDraft picture with the pane open. It loads without a click. Edit and Update: the
   picture is replaced in place, size, wrapping and position are kept, and Undo restores it. Selecting
   anything else shows "Select a ChemDraft structure".

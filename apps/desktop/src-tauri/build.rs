@@ -16,7 +16,6 @@ fn main() {
     ensure_opsin_runtime_dir();
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
-            "office_addin_status",
             "office_addin_install",
             "office_addin_remove",
             "office_object_connect",

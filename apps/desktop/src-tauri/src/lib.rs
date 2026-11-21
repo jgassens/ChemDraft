@@ -12,6 +12,8 @@ mod external_tools;
 mod file_warnings_window;
 mod first_paint;
 mod fonts;
+#[cfg(test)]
+mod handler_list;
 mod installed_plugins;
 #[cfg(target_os = "linux")]
 mod linux_clipboard;
@@ -1128,10 +1130,10 @@ impl Default for PluginNativeMenuItems {
 }
 
 /// The synced rows the first native menu is built with, before the webview's first sync. On macOS
-/// these are the Office add-in Help rows, disabled while the webview checks the add-in's status
-/// (its `disabledReason` reads "Checking Office add-in status…"). Without them Help showed only
-/// Report a Bug… until the webview loaded; with them that sync updates the rows in place. The
-/// Windows menu never carries them.
+/// these are the Office add-in Help rows, enabled: nothing checks the add-in's status at launch
+/// (reading Word's and PowerPoint's containers can raise macOS's "access data from other apps"
+/// prompt), so they are the same rows the webview syncs. Without them Help showed only Report a
+/// Bug… until the webview loaded. The Windows menu never carries them.
 fn initial_plugin_menu_items() -> Vec<PluginMenuItemInput> {
     #[cfg(target_os = "macos")]
     {
@@ -1143,7 +1145,7 @@ fn initial_plugin_menu_items() -> Vec<PluginMenuItemInput> {
                 separator_before: false,
                 label: (*label).to_owned(),
                 location: "help".to_owned(),
-                enabled: false,
+                enabled: true,
             })
             .collect()
     }
@@ -1868,8 +1870,6 @@ pub fn run() {
             setup_primary_app(app.handle())
         })
         .invoke_handler(tauri::generate_handler![
-            #[cfg(target_os = "macos")]
-            office_addin::office_addin_status,
             #[cfg(target_os = "macos")]
             office_addin::office_addin_install,
             #[cfg(target_os = "macos")]
@@ -13509,7 +13509,7 @@ mod tests {
     }
 
     #[test]
-    fn office_addin_help_rows_exist_disabled_from_the_first_menu_build_on_macos_only() {
+    fn office_addin_help_rows_exist_enabled_from_the_first_menu_build_on_macos_only() {
         let seeded = PluginNativeMenuItems::default().0.into_inner().unwrap();
         let help = plugin_menu_items_in(&seeded, "help");
         #[cfg(target_os = "macos")]
@@ -13521,22 +13521,27 @@ mod tests {
             assert_eq!(
                 rows,
                 [
-                    ("office.installAddin", "Install Office Add-in…", false),
-                    ("office.removeAddin", "Remove Office Add-in", false),
+                    ("office.installAddin", "Install Office Add-in…", true),
+                    ("office.removeAddin", "Remove Office Add-in…", true),
                 ]
             );
             assert!(help.iter().all(|item| item.core_routed));
             assert_eq!(seeded.len(), help.len());
-            // The webview's first sync of the same rows, status now known, only updates them.
-            let synced = seeded
+            // The webview's first sync sends the same rows, so it changes nothing.
+            assert_eq!(
+                classify_plugin_menu_update(&seeded, &seeded.clone()),
+                MenuUpdate::Unchanged
+            );
+            // While an action runs the webview disables both; that only updates them in place.
+            let busy = seeded
                 .iter()
                 .map(|item| PluginMenuItemInput {
-                    enabled: item.id == "office.installAddin",
+                    enabled: false,
                     ..item.clone()
                 })
                 .collect::<Vec<_>>();
             assert_eq!(
-                classify_plugin_menu_update(&seeded, &synced),
+                classify_plugin_menu_update(&seeded, &busy),
                 MenuUpdate::Properties
             );
         }
@@ -15159,27 +15164,12 @@ mod tests {
             include_str!("../capabilities/plugin-starter.json")
         );
 
-        let handler_start = lib_source
-            .find("generate_handler![")
-            .expect("generate_handler! invocation");
-        let handler_body = &lib_source[handler_start..];
-        let handler_end = handler_body.find(']').expect("generate_handler! close");
-        let registered: Vec<String> = handler_body[.."generate_handler![".len() + handler_end]
-            .lines()
-            .skip(1)
-            .filter_map(|line| {
-                let name = line.trim().trim_end_matches(',').trim();
-                // Module-qualified commands (export::, fonts::) carry their own permissions.
-                if name.is_empty()
-                    || name.contains("::")
-                    || name.contains('[')
-                    || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                {
-                    None
-                } else {
-                    Some(name.to_string())
-                }
-            })
+        // Attributes such as `#[cfg(target_os = "macos")]` are matched, not taken as the list's end.
+        let registered: Vec<String> = crate::handler_list::registered_commands(lib_source)
+            .into_iter()
+            // Module-qualified commands (export::, fonts::) carry their own permissions.
+            .filter(|name| !name.contains("::"))
+            .map(str::to_string)
             .collect();
         assert!(
             registered.len() > 10,

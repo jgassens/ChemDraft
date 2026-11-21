@@ -174,6 +174,11 @@ fn constructor(tokens: &[Token]) -> Option<usize> {
     (valid && tokens.get(method + 1)?.text == "(").then_some(method + 1)
 }
 
+/// Functions that take a window builder and return that same builder with settings added, so the
+/// built result is still the window they were given. `builder_wrappers_return_their_builder`
+/// checks each signature.
+const BUILDER_WRAPPERS: [&str; 2] = ["utility_window_builder", "hidden_until_first_paint"];
+
 #[derive(Default, Clone)]
 struct Value {
     builders: BTreeSet<usize>,
@@ -328,11 +333,11 @@ impl Guard {
             } else if token.text == "(" {
                 value = self.expression(&token.children, bindings);
             } else if rest.get(1).is_some_and(|t| t.text == "(") {
-                // Only the repo's known builder wrapper carries the result. An arbitrary call
+                // Only the repo's known builder wrappers carry the result. An arbitrary call
                 // might return a different window: inspecting its args must not credit that one.
                 value = Value::default();
                 for argument in self.arguments(&rest[1].children, bindings) {
-                    if token.text == "utility_window_builder" {
+                    if BUILDER_WRAPPERS.contains(&token.text.as_str()) {
                         value.merge(argument);
                     }
                 }
@@ -630,10 +635,40 @@ fn guard_tracks_split_builders_aliases_wrappers_and_inline_results() {
         "fn create() { let builder = WebviewBuilder::new(label, url); let child = parent.add_child(builder, pos, size)?; disable_default_context_menus(&child); }",
         "fn create() { disable_default_context_menus(&WebviewWindow::builder(app, label, url).build()?); }",
         "fn create() { let window = utility_window_builder(WebviewWindowBuilder::new(app, label, url), app).build()?; disable_default_context_menus(&window); }",
+        "fn create() { let window = crate::first_paint::hidden_until_first_paint(WebviewWindowBuilder::new(app, label, url), Color(1, 2, 3, 0xff)).build()?; disable_default_context_menus(&window); }",
+        "fn create() { let result = hidden_until_first_paint(WebviewWindowBuilder::new(app, label, url), color).build(); let window = match result { Ok(window) => window, Err(error) => { return; } }; crate::disable_default_context_menus(&window); }",
     ] {
         let guard = Guard::scan(source);
         assert!(!guard.sites.is_empty());
         assert!(guard.uncovered().is_empty(), "rejected {source}");
+    }
+}
+
+#[test]
+fn builder_wrappers_return_their_builder() {
+    let sources = [include_str!("lib.rs"), include_str!("first_paint.rs")];
+    for wrapper in BUILDER_WRAPPERS {
+        let definitions: Vec<&str> = sources
+            .iter()
+            .filter_map(|source| {
+                let start = source.find(&format!("fn {wrapper}<"))?;
+                let rest = &source[start..];
+                Some(&rest[..rest.find('{').unwrap()])
+            })
+            .collect();
+        assert_eq!(definitions.len(), 1, "{wrapper} must be defined once");
+        let signature = definitions[0];
+        let (parameters, returned) = signature.split_once("->").expect(wrapper);
+        let first = parameters[parameters.find('(').unwrap() + 1..].trim_start();
+        assert!(
+            first.starts_with("builder: WebviewWindowBuilder<'a, R, M>,"),
+            "{wrapper} must take the builder first: {signature}"
+        );
+        assert_eq!(
+            returned.trim(),
+            "WebviewWindowBuilder<'a, R, M>",
+            "{wrapper} must return a builder, not a window"
+        );
     }
 }
 
@@ -652,6 +687,7 @@ fn guard_does_not_credit_another_window_scope_or_a_builder() {
         "fn create() { let windows = vec![WebviewWindow::builder(app, label, url).build()?]; }",
         "fn create() { let w = WebviewWindow::builder(app, label, url).build()?; fn other(w: WebviewWindow) { disable_default_context_menus(&w); } }",
         "fn create() { let w = WebviewWindow::builder(app, label, url).build()?; let other = |w| { disable_default_context_menus(&w); }; }",
+        "fn create() { let w = hidden_until_first_paint(WebviewWindowBuilder::new(app, label, url), color).build()?; }",
     ] {
         assert!(!Guard::scan(source).uncovered().is_empty(), "accepted {source}");
     }
