@@ -136,6 +136,22 @@ describe("Office task-pane selection", () => {
     expect(session.snapshot().status).toBe("Structure updated.");
   });
 
+  it("shows the host's warning about shape state it could not carry over after Update", async () => {
+    const { session, replaceSelectedStructure, readSelectedStructure, structure } = paneSession();
+    await vi.waitFor(() => expect(session.snapshot().selected).toBe(true));
+    let document = session.snapshot().document!;
+    session.attachEditor(session.snapshot().loadId, () => document);
+    document = insertNativeTextObject(document, { x: 100, y: 100 }, "Figure label");
+    session.observeEditor();
+    const warning = "Not carried over from the old picture: animations.";
+    replaceSelectedStructure.mockImplementation(async (_png, replacement) => {
+      readSelectedStructure.mockResolvedValue({ ...structure, json: replacement });
+      return { kind: "replaced", warnings: [warning] };
+    });
+    await session.update();
+    expect(session.snapshot().status).toBe("Structure updated. " + warning);
+  });
+
   it("preserves canonical isomeric SMILES through an edit-free open and PNG update payload", async () => {
     const opened = openOfficeDrawing(json);
     const expected = chemistry(json);

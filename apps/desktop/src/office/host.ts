@@ -23,7 +23,8 @@ export interface Refusal {
 }
 
 export type SelectionResult = SelectedStructure | NoStructure | Refusal;
-export type ReplaceResult = { kind: "replaced" } | Refusal;
+/** `warnings` names shape state the host could not carry over to the replacement. */
+export type ReplaceResult = { kind: "replaced"; warnings?: string[] } | Refusal;
 
 export interface OfficeHostAdapter {
   readSelectedStructure(): Promise<SelectionResult>;

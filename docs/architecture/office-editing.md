@@ -58,8 +58,8 @@ feasibility gate (see Slices) and the add-in is built only if it passes.
 | Read the stored PNG (first choice) | `range.getOoxml()`: a flat Office package with each picture in `pkg:binaryData` | `slide.exportAsBase64()` (PowerPointApi 1.8): the slide as a one-slide .pptx; follow the shape's `r:embed` to `ppt/media/…` |
 | Read the stored PNG (fallback) | `Office.context.document.getFileAsync(Office.FileType.Compressed)`: the whole .docx in slices, on web, Windows and Mac, including older perpetual Office | Same, for the whole .pptx |
 | Check the carrier | New reader in `clipboard-adapter`, beside the writer; refuse a picture whose carrier is missing or invalid | Same |
-| Replace (first choice) | `insertOoxml(…, "Replace")` with the new PNG, its own extent and the old width, wrapping and position (measured: keeps a floating picture's placement, one undo step) | Insert with `setSelectedDataAsync`, restore z-order, rotation and name, delete the old shape (measured: works, three undo steps). `shape.fill.setImage` does **not** replace a picture: it sets the shape's fill |
-| Refuse | Pictures the measurements show cannot be replaced faithfully | Grouped or cropped pictures, and rotated ones if rotation cannot be restored; never silently drop shape state |
+| Replace (first choice) | `insertOoxml(…, "Replace")` with the new PNG, its own extent and the old width, wrapping and position (measured: keeps a floating picture's placement, one undo step) | Insert with `setSelectedDataAsync`, restore z-order, rotation, name, tags, alt text and a plain link, delete the old shape (measured: works, three undo steps); see "PowerPoint Update: kept, warned, rolled back" below. `shape.fill.setImage` does **not** replace a picture: it sets the shape's fill |
+| Refuse | Pictures the measurements show cannot be replaced faithfully | Grouped, cropped or flipped pictures, and rotated ones if rotation cannot be restored; never silently drop shape state: what cannot be carried over is named in a warning after Update |
 | Mark ChemDraft pictures | Alt-text description holds a short marker; the carrier stays the source of truth | Shape tag `CHEMDRAFT` (PowerPointApi 1.3) as a fast filter; the carrier stays the source of truth |
 
 PowerPointApi 1.8 is available in PowerPoint on the web, Windows Microsoft 365 version 2504 and
@@ -68,6 +68,30 @@ PowerPoint is insert-and-delete, which needs 1.8 (for `setZOrder`; `fill.setImag
 to replace a picture). PowerPoint versions without 1.8 can still read a structure
 (through `getFileAsync`) but get a clear "updating needs a newer PowerPoint" message instead of a
 replacement that loses stacking order.
+
+#### PowerPoint Update: kept, warned, rolled back
+
+Insert-and-delete makes a new shape, so everything on the old one must be copied across or reported.
+The manifest declares no requirement sets; every feature below is detected at run time
+(`isSetSupported` plus a check that the property is writable on the shape). The old picture's state
+is read from the slide XML the add-in already reads for the carrier (`p:cNvPr`, `p:spPr`, the
+slide's `p:timing` and relationships), because Office.js cannot read most of it.
+
+| State | What Update does |
+| --- | --- |
+| Position, width, stacking order, name, tags | Restored and read back; a mismatch fails the update and removes the new picture |
+| Rotation | Restored and read back with PowerPointApi 1.10; without it a rotated picture is refused before anything is inserted |
+| Alt text title and description, decorative flag | Written with PowerPointApi 1.10 (`altTextTitle`, `altTextDescription`, `isDecorative`) and read back, so the new picture never keeps alt text PowerPoint generated for it. Without 1.10, alt text or a decorative flag on the old picture is named in the warning |
+| A plain click hyperlink to an external address | Written with `Shape.setHyperlink` (PowerPointApi 1.10). Office.js cannot read a shape's hyperlink back, so a write that fails, or a host without the method, is named in the warning instead |
+| Animations targeting the picture, links to slides, action settings, mouse-over actions, the hidden setting, locks, a border, effects or a style, color adjustments on the picture | No Office.js API writes these; when the slide XML shows the old picture had any of them, Update still succeeds and the pane names them: "Not carried over from the old picture: animations, its link." No warning is shown when the old picture had none |
+
+Rollback: once `setSelectedDataAsync` has inserted the new picture, every later step (identifying
+it, restoring its state, verifying, deleting the old one) runs inside the rollback path. On any
+failure before the old picture is deleted, a fresh batch removes the new picture: by its shape ID
+when the update got far enough to learn it, otherwise as the only new picture at the exact
+position and size the insert was asked for (an image cannot carry a tag or name until it exists).
+If neither finds exactly one picture, or the delete fails, the error says the new picture may
+remain on the slide.
 
 Not used:
 

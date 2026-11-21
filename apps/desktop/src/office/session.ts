@@ -169,7 +169,7 @@ export class OfficePaneSession {
       updated = true;
       this.baseline = document;
       this.active = this.active ? { ...this.active, json } : undefined;
-      resultMessage = ["Structure updated.", ...warnings].join(" ");
+      resultMessage = ["Structure updated.", ...warnings, ...(result.warnings ?? [])].join(" ");
     } catch (error) {
       resultMessage = errorMessage(error);
     } finally {

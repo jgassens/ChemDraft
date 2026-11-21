@@ -138,46 +138,83 @@ describe("Word Office adapter", () => {
   });
 });
 
-function pptx({ rotation = 0, crop = false, group = false, noCarrier = false } = {}) {
-  const picture = '<p:pic><p:nvPicPr><p:cNvPr id="22" name="Original figure"/></p:nvPicPr>' +
+interface PptxOptions {
+  rotation?: number; crop?: boolean; group?: boolean; noCarrier?: boolean;
+  /** Attributes and children added to the picture's p:cNvPr. */
+  properties?: { attributes?: string; children?: string };
+  /** Children added to the picture's p:spPr after a:xfrm. */
+  shapeProperties?: string;
+  /** Extra slide relationships. */
+  relationships?: string;
+  /** Animate the picture (p:timing targeting spid 22). */
+  animated?: boolean;
+}
+
+function pptx({ rotation = 0, crop = false, group = false, noCarrier = false, properties = {}, shapeProperties = "",
+  relationships = "", animated = false }: PptxOptions = {}) {
+  const picture = '<p:pic><p:nvPicPr><p:cNvPr id="22" name="Original figure"' + (properties.attributes ?? "") + '>' +
+    (properties.children ?? "") + '</p:cNvPr></p:nvPicPr>' +
     '<p:blipFill><a:blip r:embed="rId7"/><a:srcRect' + (crop ? ' t="1000"' : "") + '/></p:blipFill>' +
-    '<p:spPr><a:xfrm rot="' + rotation * 60000 + '"/></p:spPr></p:pic>';
+    '<p:spPr><a:xfrm rot="' + rotation * 60000 + '"/>' + shapeProperties + '</p:spPr></p:pic>';
   const wrapped = group ? "<p:grpSp>" + picture + "</p:grpSp>" : picture;
+  const timing = animated ? '<p:timing><p:tnLst><p:par><p:cTn id="1"><p:childTnLst><p:anim><p:cBhvr><p:tgtEl>' +
+    '<p:spTgt spid="22"/></p:tgtEl></p:cBhvr></p:anim></p:childTnLst></p:cTn></p:par></p:tnLst></p:timing>' : "";
   const slide = '<p:sld xmlns:p="' + P + '" xmlns:a="' + A + '" xmlns:r="' + R +
-    '"><p:cSld><p:spTree>' + wrapped + "</p:spTree></p:cSld></p:sld>";
+    '"><p:cSld><p:spTree>' + wrapped + "</p:spTree></p:cSld>" + timing + "</p:sld>";
+  const slideRels = '<Relationships xmlns="' + PKG_REL + '"><Relationship Id="rId7" Type="' + R +
+    '/image" Target="../media/chemistry.png"/>' + relationships + '</Relationships>';
   return zipSync({
     "ppt/presentation.xml": strToU8('<p:presentation xmlns:p="' + P + '" xmlns:r="' + R +
       '"><p:sldIdLst><p:sldId id="307" r:id="rId2"/></p:sldIdLst></p:presentation>'),
     "ppt/_rels/presentation.xml.rels": strToU8(rels("rId2", "slide", "slides/slide4.xml")),
     "ppt/slides/slide4.xml": strToU8(slide),
-    "ppt/slides/_rels/slide4.xml.rels": strToU8(rels("rId7", "image", "../media/chemistry.png")),
+    "ppt/slides/_rels/slide4.xml.rels": strToU8(slideRels),
     "ppt/media/chemistry.png": noCarrier ? plainPng : carrier,
     "ppt/media/unrelated.png": updated,
   });
 }
 
-function powerpointHost({ rotation = 0, crop = false, group = false, noCarrier = false, version = 10, writableRotation = true } = {}) {
-  const archive = pptx({ rotation, crop, group, noCarrier });
+interface HostOptions extends PptxOptions {
+  version?: number;
+  writableRotation?: boolean;
+  /** Fail the nth context.sync() after the picture is inserted. */
+  failSyncAfterInsert?: number;
+  /** Insert a second, unrelated picture alongside the new one. */
+  extraInsert?: boolean;
+  /** Make the rollback unable to delete the inserted picture. */
+  undeletable?: boolean;
+}
+
+function powerpointHost({ version = 10, writableRotation = true, failSyncAfterInsert, extraInsert = false,
+  undeletable = false, ...pptxOptions }: HostOptions = {}) {
+  const rotation = pptxOptions.rotation ?? 0;
+  const archive = pptx(pptxOptions);
   const sets = ["CompressedFile 1.1", "ImageCoercion 1.1"];
   for (const minor of [5, 8, 10]) if (version >= minor) sets.push("PowerPointApi 1." + minor);
   const host = office({ sets, archive });
   type Shape = ReturnType<typeof shape>;
   const stack: Shape[] = [];
   const mutations: string[] = [];
+  let syncsAfterInsert: number | undefined;
   function shape(id: string, name: string, initialRotation = 0) {
     const tags = collection<{ key: string; value: string }>([]);
+    // PowerPointApi 1.10 alt-text properties; an inserted picture may arrive with generated alt text.
+    const altText: { altTextTitle?: string; altTextDescription?: string; isDecorative?: boolean } =
+      version >= 10 ? { altTextTitle: "", altTextDescription: "Generated description", isDecorative: false } : {};
     return {
-      id, name, type: "Image", left: 27, top: 16, width: 300, height: 150, rotation: initialRotation,
-      get zOrderPosition() { return stack.indexOf(this); },
+      id, name, type: "Image", left: 27, top: 16, width: 300, height: 150, rotation: initialRotation, ...altText,
+      setHyperlink: vi.fn(),
+      get zOrderPosition(): number { return stack.indexOf(this); },
       load: vi.fn(),
       tags: { ...tags, add: (key: string, value: string) => tags.items.push({ key, value }) },
-      setZOrder: vi.fn((direction: "BringForward" | "SendBackward") => {
+      setZOrder: vi.fn((direction: "BringForward" | "SendBackward"): void => {
         const index = stack.indexOf(stack.find(item => item.id === id)!);
         const [item] = stack.splice(index, 1);
         stack.splice(direction === "SendBackward" ? index - 1 : index + 1, 0, item!);
         mutations.push("stack");
       }),
-      delete: vi.fn(() => {
+      delete: vi.fn((): void => {
+        if (undeletable && id !== "22") throw new Error("Cannot delete.");
         const index = stack.findIndex(item => item.id === id);
         stack.splice(index, 1);
         mutations.push("delete:" + id);
@@ -196,14 +233,19 @@ function powerpointHost({ rotation = 0, crop = false, group = false, noCarrier =
     presentation: {
       getSelectedShapes: () => collection([old]), getSelectedSlides: () => collection([slide]),
       slides: { getItem: () => slide },
-    }, sync: async () => undefined,
+    }, sync: async () => {
+      if (syncsAfterInsert === undefined) return;
+      if (++syncsAfterInsert === failSyncAfterInsert) throw new Error("PowerPoint sync failed.");
+    },
   }) } satisfies PowerPointApi;
   host.document.setSelectedDataAsync.mockImplementation(
     (_base64: string, options: Parameters<OfficeDocument["setSelectedDataAsync"]>[1], done: Parameters<OfficeDocument["setSelectedDataAsync"]>[2]) => {
       stack.push({ ...shape("24", "Inserted"), ...{ left: options.imageLeft, top: options.imageTop, width: options.imageWidth, height: options.imageHeight },
         get zOrderPosition() { return stack.indexOf(this); },
       });
+      if (extraInsert) stack.push({ ...shape("25", "Unrelated"), left: 400, get zOrderPosition() { return stack.indexOf(this); } });
       mutations.push("insert");
+      syncsAfterInsert = 0;
       done({ status: "succeeded", value: undefined });
     });
   return { host, powerpoint, slide, old, stack, mutations };
@@ -270,5 +312,97 @@ describe("PowerPoint Office adapter", () => {
     });
     expect(host.document.setSelectedDataAsync).not.toHaveBeenCalled();
     expect(stack.map(item => item.id)).toEqual(["21", "22", "23"]);
+  });
+  const link = '<a:hlinkClick r:id="rId9" tooltip="Reference"/>';
+  const linkRel = '<Relationship Id="rId9" Type="' + R + '/hyperlink" Target="https://example.org/benzene" TargetMode="External"/>';
+
+  it("keeps alt text, the decorative flag and a plain link, and warns about animations", async () => {
+    const { host, powerpoint, stack } = powerpointHost({
+      properties: { attributes: ' title="Benzene" descr="A benzene ring"', children: link },
+      relationships: linkRel, animated: true,
+    });
+    const adapter = powerpointAdapter(host, powerpoint);
+    await adapter.readSelectedStructure();
+    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({
+      kind: "replaced", warnings: ["Not carried over from the old picture: animations."],
+    });
+    const inserted = stack.find(item => item.id === "24")!;
+    expect(inserted).toMatchObject({ altTextTitle: "Benzene", altTextDescription: "A benzene ring", isDecorative: false });
+    expect(inserted.setHyperlink).toHaveBeenCalledWith({ address: "https://example.org/benzene", screenTip: "Reference" });
+    expect(stack.map(item => item.id)).toEqual(["21", "24", "23"]);
+  });
+
+  it("clears generated alt text and keeps a decorative picture decorative", async () => {
+    const decorative = '<a:extLst><a:ext uri="{C183D7F6-B498-43B3-948B-1728B52AA6E4}"><adec:decorative ' +
+      'xmlns:adec="http://schemas.microsoft.com/office/drawing/2017/decorative" val="1"/></a:ext></a:extLst>';
+    const { host, powerpoint, stack } = powerpointHost({ properties: { children: decorative } });
+    const adapter = powerpointAdapter(host, powerpoint);
+    await adapter.readSelectedStructure();
+    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({ kind: "replaced" });
+    expect(stack.find(item => item.id === "24")).toMatchObject({ altTextTitle: "", altTextDescription: "", isDecorative: true });
+  });
+
+  it("warns about alt text and a link PowerPoint before PowerPointApi 1.10 cannot write", async () => {
+    const { host, powerpoint, stack } = powerpointHost({
+      version: 8, properties: { attributes: ' descr="A benzene ring"', children: link }, relationships: linkRel,
+    });
+    const adapter = powerpointAdapter(host, powerpoint);
+    await adapter.readSelectedStructure();
+    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({
+      kind: "replaced", warnings: ["Not carried over from the old picture: its alt text, its link."],
+    });
+    expect(stack.find(item => item.id === "24")!.setHyperlink).not.toHaveBeenCalled();
+  });
+
+  it("names actions, mouse-over actions, borders and effects it cannot carry over", async () => {
+    const { host, powerpoint } = powerpointHost({
+      properties: { attributes: ' hidden="1"', children: '<a:hlinkClick r:id="" action="ppaction://macro?name=Run"/><a:hlinkHover r:id="" action="ppaction://noaction"/>' },
+      shapeProperties: '<a:ln w="12700"><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></a:ln><a:effectLst><a:outerShdw/></a:effectLst>',
+    });
+    const adapter = powerpointAdapter(host, powerpoint);
+    await adapter.readSelectedStructure();
+    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({
+      kind: "replaced", warnings: ["Not carried over from the old picture: its action setting, its mouse-over action, " +
+        "its hidden setting, its border and effects."],
+    });
+  });
+
+  it("does not warn about an outline with no fill or an empty effect list", async () => {
+    const { host, powerpoint } = powerpointHost({ shapeProperties: '<a:ln><a:noFill/></a:ln><a:effectLst/>' });
+    const adapter = powerpointAdapter(host, powerpoint);
+    await adapter.readSelectedStructure();
+    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({ kind: "replaced" });
+  });
+
+  it.each([1, 2])("removes the inserted picture when sync %i after the insert fails", async failSyncAfterInsert => {
+    const { host, powerpoint, stack, mutations } = powerpointHost({ failSyncAfterInsert });
+    const adapter = powerpointAdapter(host, powerpoint);
+    await adapter.readSelectedStructure();
+    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toMatchObject({
+      kind: "refusal", reason: expect.stringContaining("PowerPoint sync failed."),
+    });
+    expect(mutations).toContain("delete:24");
+    expect(mutations).not.toContain("delete:22");
+    expect(stack.map(item => item.id)).toEqual(["21", "22", "23"]);
+  });
+
+  it("finds and removes an unidentified new picture by the placement it was inserted at", async () => {
+    const { host, powerpoint, stack } = powerpointHost({ extraInsert: true });
+    const adapter = powerpointAdapter(host, powerpoint);
+    await adapter.readSelectedStructure();
+    const result = await adapter.replaceSelectedStructure(updated, updateJson, size);
+    expect(result).toMatchObject({ kind: "refusal", reason: expect.stringContaining("could not be identified") });
+    expect(result).not.toMatchObject({ reason: expect.stringContaining("may remain") });
+    expect(stack.map(item => item.id)).toEqual(["21", "22", "23", "25"]);
+  });
+
+  it("says the new picture may remain when the rollback cannot remove it", async () => {
+    const { host, powerpoint, stack } = powerpointHost({ failSyncAfterInsert: 2, undeletable: true });
+    const adapter = powerpointAdapter(host, powerpoint);
+    await adapter.readSelectedStructure();
+    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toMatchObject({
+      kind: "refusal", reason: expect.stringContaining("may remain on the slide"),
+    });
+    expect(stack.map(item => item.id)).toContain("22");
   });
 });
