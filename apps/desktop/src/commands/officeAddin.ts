@@ -19,8 +19,15 @@ interface OfficeAddinResult {
   status: "notInstalled" | "installedSameVersion" | "installedOtherVersion" | "unrecognized" | "appNotFound" | "unavailable";
   changed: boolean;
   error?: string;
+  /**
+   * `permissionDenied` is macOS refusing access to the app's folder (EPERM/EACCES), most often
+   * after the user chose Don't Allow when macOS asked to let ChemDraft access data from other apps.
+   */
+  errorKind?: "permissionDenied" | "other";
   /** Set for `unrecognized`: the file at ChemDraft's manifest name that ChemDraft left alone. */
   path?: string;
+  /** This app was changed, then restored because the other app's change failed. */
+  rolledBack?: boolean;
 }
 
 interface OfficeAddinState {
@@ -37,10 +44,12 @@ export function officeAddinCommands(supported: boolean, { results, error, busy }
   const availability = !supported ? "Office add-in management is available in the ChemDraft app on macOS."
     : busy ? "Office add-in management is in progress."
     : error ? "Could not check Office add-in status. " + error
-    : !results ? "Checking Office add-in status."
+    : !results ? "Checking Office add-in status…"
     : undefined;
   const disabledFor = (action: OfficeAddinAction): string | undefined => {
     if (availability) return availability;
+    // A denial keeps both actions enabled: after allowing access, choosing one again is the retry.
+    if (results?.some(result => result.errorKind === "permissionDenied")) return undefined;
     // An unrecognized file keeps both actions enabled so choosing one explains which file is in the way.
     if (results?.some(result => result.status === "installedOtherVersion" || result.status === "unrecognized" ||
         result.status === (action === "install" ? "notInstalled" : "installedSameVersion"))) return undefined;
@@ -72,6 +81,8 @@ export function officeAddinMenuItems(supported: boolean, bindings: ReturnType<ty
 
 const installConfirmation = [
   "This adds ChemDraft to Word and PowerPoint on this Mac.",
+  "Next, macOS will ask to let ChemDraft access data from other apps, because the add-in file goes into Word's and PowerPoint's own folders. " +
+    "Choose Allow to install it; if you choose Don't Allow, Office is left unchanged.",
   "Microsoft describes this way of adding add-ins as meant for testing and may change it.",
   "The add-in loads its editor from https://chemdraft.ai.",
   "To remove it, choose Help > Remove Office Add-in in ChemDraft."
@@ -82,6 +93,21 @@ function unrecognizedMessage(action: OfficeAddinAction, app: string, path = "Che
   return action === "install"
     ? app + " was not changed. " + file + ", so ChemDraft did not replace it. Move or delete that file, then choose Install Office Add-in again."
     : app + " was not changed. " + file + ", so ChemDraft did not remove it.";
+}
+
+/**
+ * After Don't Allow. macOS 26 lists no separate setting for access to other apps' data (TCC's
+ * App Data service), so the lasting way to allow it from System Settings is Full Disk Access.
+ */
+function permissionDeniedMessage(action: OfficeAddinAction): string {
+  const command = "Help > " + (action === "install" ? "Install Office Add-in" : "Remove Office Add-in");
+  return [
+    "Office was not changed. macOS did not allow ChemDraft to access Word's and PowerPoint's data, so the add-in was not " +
+      (action === "install" ? "installed" : "removed") + " in either app.",
+    "To allow it, choose " + command + " again and choose Allow when macOS asks. If macOS does not ask, open " +
+      "System Settings > Privacy & Security > Full Disk Access and turn on ChemDraft (macOS has no separate setting for " +
+      "access to other apps' data), then choose " + command + " again."
+  ].join("\n\n");
 }
 
 interface OfficeAddinPort {
@@ -120,9 +146,19 @@ export async function runOfficeAddinAction(action: OfficeAddinAction, port: Offi
     return { error: message };
   }
 
+  const denied = results.some(result => result.errorKind === "permissionDenied");
+  if (denied && !results.some(result => result.changed)) {
+    await notice(permissionDeniedMessage(action), "warning");
+    return { results };
+  }
+  // Either both apps change or neither does, so after a failure the other app is reported unchanged.
+  const failed = results.some(result => result.error);
   const messages = results.map(result => {
     const app = appNames[result.app];
     if (result.error) return app + " could not be updated. " + result.error;
+    if (failed && !result.changed && result.status !== "appNotFound" && result.status !== "unrecognized") {
+      return app + " was not changed.";
+    }
     if (result.status === "appNotFound") return app + " was skipped because its Office container was not found.";
     if (result.status === "unrecognized") return unrecognizedMessage(action, app, result.path);
     if (action === "install") return result.changed ? "Installed in " + app + "." : "Already installed in " + app + ".";
@@ -132,6 +168,7 @@ export async function runOfficeAddinAction(action: OfficeAddinAction, port: Offi
   if (changed) {
     messages.push("Restart " + changed + (action === "install" ? ", then choose Edit Structure on the Home tab." : " to finish removing the add-in."));
   }
+  if (denied) messages.push(permissionDeniedMessage(action).split("\n\n")[1]!);
   await notice(messages.join("\n\n"), results.some(result => result.error || result.status === "unrecognized") ? "warning" : "info");
   return { results };
 }

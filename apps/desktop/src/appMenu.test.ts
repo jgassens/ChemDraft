@@ -19,6 +19,7 @@ import {
 import { pluginItemsForNativeMenu } from "./plugins/nativePluginMenu";
 import { VIBE_CODE_STARTER_COMMAND_ID } from "./commands/vibeCodeStarter";
 import { nativeStylePresetCommandId } from "./commands";
+import { officeAddinCommands, officeAddinMenuItems, officeAddinSupported } from "./commands/officeAddin";
 
 const EMPTY_CONTEXT: AppMenuContext = {
   rulersVisible: true,
@@ -497,5 +498,25 @@ describe("Office add-in Help rows", () => {
     // The rows themselves are built only on macOS, so Windows gains nothing.
     const builder = source.split("fn create_document_menu<R: Runtime>")[1]!.split("/// Close Window")[0]!;
     expect(builder).toMatch(/#\[cfg\(target_os = "macos"\)\]\s*if office_update_title\.is_none\(\) \{\s*let office_items = plugin_menu_items_in\(plugin_items, "help"\);/);
+  });
+
+  it("builds the macOS rows into the first native menu, disabled, with the webview's ids and labels", () => {
+    const source = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+    const office = readFileSync(new URL("../src-tauri/src/office_addin.rs", import.meta.url), "utf8");
+    // The first menu reads the managed state, whose default is the seeded rows rather than empty.
+    expect(source).toContain(".manage(PluginNativeMenuItems::default())");
+    expect(source).toMatch(/impl Default for PluginNativeMenuItems \{\s*fn default\(\) -> Self \{\s*Self\(std::sync::Mutex::new\(initial_plugin_menu_items\(\)\)\)/);
+    const seed = source.split("fn initial_plugin_menu_items()")[1]!.split("\n}\n")[0]!;
+    expect(seed).toMatch(/#\[cfg\(target_os = "macos"\)\]\s*\{\s*office_addin::HELP_MENU_ROWS/);
+    expect(seed).toContain('location: "help".to_owned()');
+    expect(seed).toContain("enabled: false");
+    expect(seed).toContain("core_routed: true");
+    expect(seed).toMatch(/#\[cfg\(not\(target_os = "macos"\)\)\]\s*\{\s*Vec::new\(\)\s*\}/);
+    const rows = office.split("pub(crate) const HELP_MENU_ROWS")[1]!.split("];")[0]!;
+    const seeded = [...rows.matchAll(/\("([^"]+)", "([^"]+)"\)/g)].map(([, id, label]) => ({ id, label }));
+    // The same rows, in order, as the webview's first sync, so that sync updates them in place.
+    const bindings = officeAddinCommands(officeAddinSupported(true, "macos"), {});
+    expect(seeded).toEqual(officeAddinMenuItems(true, bindings).map(item => ({ id: item.command.commandId, label: item.command.label })));
+    expect(bindings.every(({ spec }) => spec.enabled === false && spec.disabledReason === "Checking Office add-in status…")).toBe(true);
   });
 });

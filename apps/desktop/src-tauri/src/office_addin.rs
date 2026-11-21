@@ -2,8 +2,9 @@ use serde::Serialize;
 use std::{
     borrow::Cow,
     fs,
-    io::ErrorKind,
+    io::{self, ErrorKind, Write},
     path::{Path, PathBuf},
+    sync::Mutex,
 };
 use tauri::Manager;
 
@@ -11,6 +12,14 @@ const STABLE_IDENTIFIER: &str = "org.chemdraft.desktop";
 const STABLE_MANIFEST: &str = include_str!(concat!(env!("OUT_DIR"), "/office-manifest.xml"));
 const STABLE_ID: &str = "c2b05f5c-0724-4438-bff6-229da8041c57";
 const DEV_ID: &str = "62b8cf76-1e9e-4826-a1b1-1ed9cbea128f";
+
+/// The Help rows for these commands, as the webview syncs them (`officeAddin.ts`). lib.rs builds
+/// them, disabled, into the first native menu so they exist before the webview's first sync;
+/// that sync then updates them in place.
+pub(crate) const HELP_MENU_ROWS: [(&str, &str); 2] = [
+    ("office.installAddin", "Install Office Add-in…"),
+    ("office.removeAddin", "Remove Office Add-in"),
+];
 
 struct Addin {
     filename: &'static str,
@@ -71,6 +80,13 @@ impl OfficeApp {
             Self::PowerPoint => "com.microsoft.Powerpoint",
         }
     }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Word => "Word",
+            Self::PowerPoint => "PowerPoint",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -86,6 +102,47 @@ enum Status {
     Unavailable,
 }
 
+/// Why an app could not be checked or changed. `PermissionDenied` is what macOS returns (`EPERM`, or
+/// `EACCES`) once the user chooses Don't Allow at "'ChemDraft' would like to access data from other
+/// apps" (TCC service `SystemPolicyAppData`), so the webview can explain how to allow it.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum FailureKind {
+    PermissionDenied,
+    Other,
+}
+
+#[derive(Debug)]
+struct Failure {
+    kind: FailureKind,
+    message: String,
+}
+
+impl Failure {
+    fn other(message: String) -> Self {
+        Self {
+            kind: FailureKind::Other,
+            message,
+        }
+    }
+}
+
+impl From<io::Error> for Failure {
+    fn from(error: io::Error) -> Self {
+        // EPERM is 1 and EACCES is 13 on macOS; std maps both to `PermissionDenied` as well.
+        let denied = error.kind() == ErrorKind::PermissionDenied
+            || matches!(error.raw_os_error(), Some(1 | 13));
+        Self {
+            kind: if denied {
+                FailureKind::PermissionDenied
+            } else {
+                FailureKind::Other
+            },
+            message: error.to_string(),
+        }
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct OfficeAddinResult {
@@ -94,24 +151,148 @@ pub(crate) struct OfficeAddinResult {
     changed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error_kind: Option<FailureKind>,
     /// The manifest path, reported only for `Unrecognized` so the message can name the file.
     #[serde(skip_serializing_if = "Option::is_none")]
     path: Option<String>,
+    /// This app was changed and then restored because the other app's change failed.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    rolled_back: bool,
 }
 
-#[derive(Clone, Copy)]
+impl OfficeAddinResult {
+    fn status(home: &Path, app: OfficeApp, addin: &Addin, status: Status) -> Self {
+        Self {
+            app,
+            status,
+            changed: false,
+            error: None,
+            error_kind: None,
+            path: (status == Status::Unrecognized)
+                .then(|| manifest_path(home, app, addin).display().to_string()),
+            rolled_back: false,
+        }
+    }
+
+    fn failure(app: OfficeApp, failure: &Failure) -> Self {
+        Self {
+            app,
+            status: Status::Unavailable,
+            changed: false,
+            error: Some(failure.message.clone()),
+            error_kind: Some(failure.kind),
+            path: None,
+            rolled_back: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Action {
     Status,
     Install,
     Remove,
 }
 
-fn directory_exists(path: &Path) -> Result<bool, String> {
-    match fs::symlink_metadata(path) {
+/// The kinds of file-system call the add-in makes, named so a test gate can refuse one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Op {
+    Inspect,
+    Read,
+    CreateDir,
+    Write,
+    Rename,
+    Remove,
+}
+
+type Gate<'a> = &'a dyn Fn(Op, &Path) -> io::Result<()>;
+
+fn allow_all(_: Op, _: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+/// Every file-system call goes through `gate` first, so tests can inject the permission denial
+/// macOS returns after Don't Allow at any step. The real gate allows everything.
+struct Fs<'a> {
+    gate: Gate<'a>,
+}
+
+impl Fs<'_> {
+    fn real() -> Fs<'static> {
+        Fs { gate: &allow_all }
+    }
+
+    fn lstat(&self, path: &Path) -> io::Result<fs::Metadata> {
+        (self.gate)(Op::Inspect, path)?;
+        fs::symlink_metadata(path)
+    }
+
+    /// Read the manifest without following a link: the file opened must be the regular file `lstat`
+    /// saw, so a symlink swapped in between the two calls is refused rather than read.
+    fn read_regular_file(&self, path: &Path, expected: &fs::Metadata) -> Result<Vec<u8>, Failure> {
+        use std::{io::Read, os::unix::fs::MetadataExt};
+
+        (self.gate)(Op::Read, path)?;
+        let mut file = fs::File::open(path)?;
+        let opened = file.metadata()?;
+        if !opened.is_file() || opened.dev() != expected.dev() || opened.ino() != expected.ino() {
+            return Err(Failure::other(format!(
+                "{} must be a regular file.",
+                path.display()
+            )));
+        }
+        let mut contents = Vec::new();
+        file.read_to_end(&mut contents)?;
+        Ok(contents)
+    }
+
+    fn create_dir(&self, path: &Path) -> io::Result<()> {
+        (self.gate)(Op::CreateDir, path)?;
+        fs::create_dir(path)
+    }
+
+    fn remove_file(&self, path: &Path) -> io::Result<()> {
+        (self.gate)(Op::Remove, path)?;
+        fs::remove_file(path)
+    }
+
+    fn remove_dir(&self, path: &Path) -> io::Result<()> {
+        (self.gate)(Op::Remove, path)?;
+        fs::remove_dir(path)
+    }
+
+    /// Write through a temporary sibling and rename it into place, removing the temporary file on
+    /// every failure, so a denial partway through never leaves a stray file in Office's folder.
+    fn write_atomic(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
+        static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        (self.gate)(Op::Write, path)?;
+        let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut tmp = path.as_os_str().to_owned();
+        tmp.push(format!(".{}.{}.tmp", std::process::id(), sequence));
+        let tmp = PathBuf::from(tmp);
+        let mut file = fs::File::create_new(&tmp)?;
+        let written = file.write_all(contents);
+        drop(file);
+        let renamed = written
+            .and_then(|()| (self.gate)(Op::Rename, path))
+            .and_then(|()| fs::rename(&tmp, path));
+        if renamed.is_err() {
+            let _ = fs::remove_file(&tmp);
+        }
+        renamed
+    }
+}
+
+fn directory_exists(fs: &Fs, path: &Path) -> Result<bool, Failure> {
+    match fs.lstat(path) {
         Ok(metadata) if metadata.is_dir() => Ok(true),
-        Ok(_) => Err(format!("{} must be a directory.", path.display())),
+        Ok(_) => Err(Failure::other(format!(
+            "{} must be a directory.",
+            path.display()
+        ))),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error.to_string()),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -250,37 +431,31 @@ impl Addin {
     }
 }
 
-/// Read the manifest without following a link: the file opened must be the regular file `lstat`
-/// saw, so a symlink swapped in between the two calls is refused rather than read.
-fn read_regular_file(path: &Path, expected: &fs::Metadata) -> Result<Vec<u8>, String> {
-    use std::{io::Read, os::unix::fs::MetadataExt};
-
-    let mut file = fs::File::open(path).map_err(|error| error.to_string())?;
-    let opened = file.metadata().map_err(|error| error.to_string())?;
-    if !opened.is_file() || opened.dev() != expected.dev() || opened.ino() != expected.ino() {
-        return Err(format!("{} must be a regular file.", path.display()));
-    }
-    let mut contents = Vec::new();
-    file.read_to_end(&mut contents)
-        .map_err(|error| error.to_string())?;
-    Ok(contents)
-}
-
-fn manifest_status(path: &Path, addin: &Addin) -> Result<Status, String> {
-    match fs::symlink_metadata(path) {
+/// The manifest's status, plus its bytes when it is one of ChemDraft's, so a rollback can put the
+/// exact file back.
+fn manifest_status(
+    fs: &Fs,
+    path: &Path,
+    addin: &Addin,
+) -> Result<(Status, Option<Vec<u8>>), Failure> {
+    match fs.lstat(path) {
         Ok(metadata) if metadata.is_file() => {
-            let installed = read_regular_file(path, &metadata)?;
-            Ok(match std::str::from_utf8(&installed) {
+            let installed = fs.read_regular_file(path, &metadata)?;
+            let status = match std::str::from_utf8(&installed) {
                 Ok(xml) if addin.identifies(xml) && addin.is_current(xml) => {
                     Status::InstalledSameVersion
                 }
                 Ok(xml) if addin.identifies(xml) => Status::InstalledOtherVersion,
-                _ => Status::Unrecognized,
-            })
+                _ => return Ok((Status::Unrecognized, None)),
+            };
+            Ok((status, Some(installed)))
         }
-        Ok(_) => Err(format!("{} must be a regular file.", path.display())),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(Status::NotInstalled),
-        Err(error) => Err(error.to_string()),
+        Ok(_) => Err(Failure::other(format!(
+            "{} must be a regular file.",
+            path.display()
+        ))),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok((Status::NotInstalled, None)),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -292,73 +467,201 @@ fn manifest_path(home: &Path, app: OfficeApp, addin: &Addin) -> PathBuf {
         .join(addin.filename)
 }
 
-fn apply_to_app(
-    home: &Path,
+/// One app's state, read before anything is written.
+struct Plan {
     app: OfficeApp,
-    addin: &Addin,
-    action: Action,
-) -> Result<(Status, bool), String> {
+    path: PathBuf,
+    /// The container folders Install must create, outermost first.
+    missing: Vec<PathBuf>,
+    status: Status,
+    /// The ChemDraft manifest found at `path`, restored if the change has to be undone.
+    previous: Option<Vec<u8>>,
+}
+
+impl Plan {
+    fn needs_change(&self, action: Action) -> bool {
+        matches!(
+            (action, self.status),
+            (
+                Action::Install,
+                Status::NotInstalled | Status::InstalledOtherVersion
+            ) | (
+                Action::Remove,
+                Status::InstalledSameVersion | Status::InstalledOtherVersion
+            )
+        )
+    }
+}
+
+/// Read one app's state without writing. `None` means Office's container for it is absent.
+fn inspect(fs: &Fs, home: &Path, app: OfficeApp, addin: &Addin) -> Result<Option<Plan>, Failure> {
     let library = home.join("Library");
     let containers = library.join("Containers");
-    let mut path = container_path(home, app);
-    if !directory_exists(&library)? || !directory_exists(&containers)? || !directory_exists(&path)?
+    let mut dir = container_path(home, app);
+    if !directory_exists(fs, &library)?
+        || !directory_exists(fs, &containers)?
+        || !directory_exists(fs, &dir)?
     {
-        return Ok((Status::AppNotFound, false));
+        return Ok(None);
     }
-
+    let mut missing = Vec::new();
     for component in ["Data", "Documents", "wef"] {
-        path.push(component);
-        if !directory_exists(&path)? {
-            if !matches!(action, Action::Install) {
-                return Ok((Status::NotInstalled, false));
-            }
-            fs::create_dir(&path).map_err(|error| error.to_string())?;
+        dir.push(component);
+        if !missing.is_empty() || !directory_exists(fs, &dir)? {
+            missing.push(dir.clone());
         }
+    }
+    let path = dir.join(addin.filename);
+    let (status, previous) = if missing.is_empty() {
+        manifest_status(fs, &path, addin)?
+    } else {
+        (Status::NotInstalled, None)
+    };
+    Ok(Some(Plan {
+        app,
+        path,
+        missing,
+        status,
+        previous,
+    }))
+}
+
+/// Remove folders this change created, innermost first. Best effort: a folder something else has
+/// since put a file into is left alone.
+fn remove_created(fs: &Fs, created: &[PathBuf]) {
+    for dir in created.iter().rev() {
+        let _ = fs.remove_dir(dir);
+    }
+}
+
+/// Make one app's change. On failure nothing of it is left behind. Returns the folders it created
+/// so an undo can remove them, or `None` if the file was already gone (a Remove race).
+fn perform(
+    fs: &Fs,
+    plan: &Plan,
+    addin: &Addin,
+    action: Action,
+) -> Result<Option<Vec<PathBuf>>, Failure> {
+    match action {
+        Action::Install => {
+            let mut created = Vec::new();
+            for dir in &plan.missing {
+                if let Err(error) = fs.create_dir(dir) {
+                    remove_created(fs, &created);
+                    return Err(error.into());
+                }
+                created.push(dir.clone());
+            }
+            if let Err(error) = fs.write_atomic(&plan.path, addin.manifest.as_bytes()) {
+                remove_created(fs, &created);
+                return Err(error.into());
+            }
+            Ok(Some(created))
+        }
+        Action::Remove => match fs.remove_file(&plan.path) {
+            Ok(()) => Ok(Some(Vec::new())),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        },
+        Action::Status => Ok(None),
+    }
+}
+
+/// Put one app back as `inspect` found it.
+fn undo(fs: &Fs, plan: &Plan, created: &[PathBuf]) -> io::Result<()> {
+    match &plan.previous {
+        Some(previous) => fs.write_atomic(&plan.path, previous)?,
+        None => fs.remove_file(&plan.path)?,
+    }
+    remove_created(fs, created);
+    Ok(())
+}
+
+/// Check, install or remove the add-in in Word and PowerPoint as one change.
+///
+/// Both apps are inspected before anything is written, and nothing is written if either cannot be
+/// read. If the second app's write fails (most often macOS's permission denial), the first app's
+/// change is undone, so Office is never left with the add-in in only one app. An unrecognized file
+/// or a missing app is not a failure: that app is skipped and reported, and the other proceeds.
+fn apply_with(fs: &Fs, home: &Path, addin: &Addin, action: Action) -> [OfficeAddinResult; 2] {
+    let apps = [OfficeApp::Word, OfficeApp::PowerPoint];
+    let inspected = apps.map(|app| inspect(fs, home, app, addin));
+    let mut results: [OfficeAddinResult; 2] = std::array::from_fn(|index| {
+        let app = apps[index];
+        match &inspected[index] {
+            Ok(None) => OfficeAddinResult::status(home, app, addin, Status::AppNotFound),
+            Ok(Some(plan)) => OfficeAddinResult::status(home, app, addin, plan.status),
+            Err(failure) => OfficeAddinResult::failure(app, failure),
+        }
+    });
+    if action == Action::Status || inspected.iter().any(Result::is_err) {
+        return results;
     }
 
-    path.push(addin.filename);
-    let status = manifest_status(&path, addin)?;
-    match (action, status) {
-        (Action::Install, Status::NotInstalled | Status::InstalledOtherVersion) => {
-            super::write_file_atomic_in_existing_dir(&path, &addin.manifest)?;
-            Ok((Status::InstalledSameVersion, true))
+    let mut done: Vec<(usize, Vec<PathBuf>)> = Vec::new();
+    for (index, inspection) in inspected.iter().enumerate() {
+        let Ok(Some(plan)) = inspection else {
+            continue;
+        };
+        if !plan.needs_change(action) {
+            continue;
         }
-        (Action::Remove, Status::InstalledSameVersion | Status::InstalledOtherVersion) => {
-            match fs::remove_file(&path) {
-                Ok(()) => Ok((Status::NotInstalled, true)),
-                Err(error) if error.kind() == ErrorKind::NotFound => {
-                    Ok((Status::NotInstalled, false))
+        match perform(fs, plan, addin, action) {
+            Ok(Some(created)) => {
+                done.push((index, created));
+                results[index].changed = true;
+                results[index].status = if action == Action::Install {
+                    Status::InstalledSameVersion
+                } else {
+                    Status::NotInstalled
+                };
+            }
+            Ok(None) => results[index].status = Status::NotInstalled,
+            Err(failure) => {
+                results[index] = OfficeAddinResult::failure(plan.app, &failure);
+                for (undone, created) in done.into_iter().rev() {
+                    let Ok(Some(earlier)) = &inspected[undone] else {
+                        continue;
+                    };
+                    let result = &mut results[undone];
+                    match undo(fs, earlier, &created) {
+                        Ok(()) => {
+                            result.status = earlier.status;
+                            result.changed = false;
+                            result.rolled_back = true;
+                        }
+                        Err(error) => {
+                            let failure = Failure::from(error);
+                            result.error = Some(format!(
+                                "ChemDraft could not undo this change after {} failed: {}",
+                                plan.app.name(),
+                                failure.message
+                            ));
+                            result.error_kind = Some(failure.kind);
+                        }
+                    }
                 }
-                Err(error) => Err(error.to_string()),
+                return results;
             }
         }
-        _ => Ok((status, false)),
     }
+    results
 }
 
 fn apply(home: &Path, addin: &Addin, action: Action) -> [OfficeAddinResult; 2] {
-    [OfficeApp::Word, OfficeApp::PowerPoint].map(|app| {
-        match apply_to_app(home, app, addin, action) {
-            Ok((status, changed)) => OfficeAddinResult {
-                app,
-                status,
-                changed,
-                error: None,
-                path: (status == Status::Unrecognized)
-                    .then(|| manifest_path(home, app, addin).display().to_string()),
-            },
-            Err(error) => OfficeAddinResult {
-                app,
-                status: Status::Unavailable,
-                changed: false,
-                error: Some(error),
-                path: None,
-            },
-        }
-    })
+    apply_with(&Fs::real(), home, addin, action)
 }
 
-fn run(window: &tauri::WebviewWindow, action: Action) -> Result<[OfficeAddinResult; 2], String> {
+/// One add-in action at a time, so an undo never races another action's write.
+static ACTION_LOCK: Mutex<()> = Mutex::new(());
+
+/// Runs the file work on Tauri's blocking pool, never the main thread. Opening Office's folders can
+/// block for as long as macOS's "access data from other apps" prompt stays up; on the main thread
+/// that froze menus and IPC. (Tauri 2 runs a non-`async` command on the main thread.)
+async fn run(
+    window: tauri::WebviewWindow,
+    action: Action,
+) -> Result<[OfficeAddinResult; 2], String> {
     if window.label() != super::MAIN_WINDOW_LABEL {
         return Err("Manage the Office add-in from the main document window.".to_owned());
     }
@@ -371,28 +674,35 @@ fn run(window: &tauri::WebviewWindow, action: Action) -> Result<[OfficeAddinResu
         cfg!(debug_assertions),
         option_env!("CHEMDRAFT_WORKTREE_LABEL"),
     );
-    Ok(apply(&home, &addin, action))
+    tauri::async_runtime::spawn_blocking(move || {
+        let _serialized = ACTION_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        apply(&home, &addin, action)
+    })
+    .await
+    .map_err(|error| format!("The Office add-in task could not run: {error}"))
 }
 
 #[tauri::command]
-pub(crate) fn office_addin_status(
+pub(crate) async fn office_addin_status(
     window: tauri::WebviewWindow,
 ) -> Result<[OfficeAddinResult; 2], String> {
-    run(&window, Action::Status)
+    run(window, Action::Status).await
 }
 
 #[tauri::command]
-pub(crate) fn office_addin_install(
+pub(crate) async fn office_addin_install(
     window: tauri::WebviewWindow,
 ) -> Result<[OfficeAddinResult; 2], String> {
-    run(&window, Action::Install)
+    run(window, Action::Install).await
 }
 
 #[tauri::command]
-pub(crate) fn office_addin_remove(
+pub(crate) async fn office_addin_remove(
     window: tauri::WebviewWindow,
 ) -> Result<[OfficeAddinResult; 2], String> {
-    run(&window, Action::Remove)
+    run(window, Action::Remove).await
 }
 
 #[cfg(test)]
@@ -698,11 +1008,11 @@ mod tests {
         let seen = fs::symlink_metadata(&link).unwrap();
         fs::remove_file(&link).unwrap();
         symlink(&outside, &link).unwrap();
-        assert!(read_regular_file(&link, &seen).is_err());
+        assert!(Fs::real().read_regular_file(&link, &seen).is_err());
     }
 
     #[test]
-    fn rejects_symlinks_and_reports_each_app_independently() {
+    fn rejects_symlinks_and_leaves_the_other_app_unchanged() {
         use std::os::unix::fs::symlink;
 
         let home = TempHome::new();
@@ -720,7 +1030,13 @@ mod tests {
         symlink(&outside, &wef).unwrap();
         let results = apply(&home.0, &addin, Action::Install);
         assert_eq!(results[0].status, Status::Unavailable);
-        assert_eq!(results[1].status, Status::InstalledSameVersion);
+        assert_eq!(results[0].error_kind, Some(FailureKind::Other));
+        // Word could not be read, so nothing is written: PowerPoint is reported, not changed.
+        assert_eq!(
+            (results[1].status, results[1].changed),
+            (Status::NotInstalled, false)
+        );
+        assert_eq!(fs::read_dir(&powerpoint).unwrap().count(), 0);
         fs::remove_file(&wef).unwrap();
         fs::create_dir(&wef).unwrap();
         symlink(&untouched, wef.join(addin.filename)).unwrap();
@@ -731,6 +1047,222 @@ mod tests {
             );
         }
         assert_eq!(fs::read_to_string(untouched).unwrap(), "outside");
+    }
+
+    /// A home with both Office containers. Word has no `wef` folder yet; PowerPoint has one.
+    fn office_home() -> (TempHome, PathBuf, PathBuf) {
+        let home = TempHome::new();
+        let word = container_path(&home.0, OfficeApp::Word);
+        let powerpoint = container_path(&home.0, OfficeApp::PowerPoint);
+        fs::create_dir_all(&word).unwrap();
+        fs::create_dir_all(powerpoint.join("Data").join("Documents").join("wef")).unwrap();
+        (home, word, powerpoint)
+    }
+
+    /// macOS's answer after Don't Allow: `EPERM`, for the chosen operations under `root`.
+    fn deny_under<'a>(
+        root: &'a Path,
+        ops: &'static [Op],
+    ) -> impl Fn(Op, &Path) -> io::Result<()> + 'a {
+        move |op, path| {
+            if ops.contains(&op) && path.starts_with(root) {
+                Err(io::Error::from_raw_os_error(1))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    /// Every path under `dir`, so a test can prove nothing was left behind.
+    fn tree(dir: &Path) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        let mut pending = vec![dir.to_path_buf()];
+        while let Some(next) = pending.pop() {
+            for entry in fs::read_dir(&next).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path.clone());
+                }
+                paths.push(path);
+            }
+        }
+        paths.sort();
+        paths
+    }
+
+    #[test]
+    fn eperm_and_eacces_are_permission_denials() {
+        for code in [1, 13] {
+            assert_eq!(
+                Failure::from(io::Error::from_raw_os_error(code)).kind,
+                FailureKind::PermissionDenied
+            );
+        }
+        assert_eq!(
+            Failure::from(io::Error::from_raw_os_error(28)).kind,
+            FailureKind::Other
+        );
+        let json = serde_json::to_value(OfficeAddinResult::failure(
+            OfficeApp::Word,
+            &Failure::from(io::Error::from_raw_os_error(1)),
+        ))
+        .unwrap();
+        assert_eq!(json["status"], "unavailable");
+        assert_eq!(json["errorKind"], "permissionDenied");
+        assert!(json.get("rolledBack").is_none());
+    }
+
+    #[test]
+    fn a_denied_second_install_rolls_back_the_first_and_leaves_nothing_behind() {
+        // Denied at the write, and denied at the rename after the temporary file exists.
+        for ops in [&[Op::Write][..], &[Op::Rename], &[Op::Write, Op::Rename]] {
+            let (home, word, powerpoint) = office_home();
+            let before = (tree(&word), tree(&powerpoint));
+            let gate = deny_under(&powerpoint, ops);
+            let addin = Addin::for_build(STABLE_IDENTIFIER, false, Some(""));
+            let [word_result, powerpoint_result] =
+                apply_with(&Fs { gate: &gate }, &home.0, &addin, Action::Install);
+            assert_eq!(
+                (
+                    word_result.status,
+                    word_result.changed,
+                    word_result.rolled_back
+                ),
+                (Status::NotInstalled, false, true)
+            );
+            assert_eq!(word_result.error, None);
+            assert_eq!(powerpoint_result.status, Status::Unavailable);
+            assert_eq!(
+                powerpoint_result.error_kind,
+                Some(FailureKind::PermissionDenied)
+            );
+            assert!(powerpoint_result.error.unwrap().contains("not permitted"));
+            // Word's manifest and the folders created for it are gone; no temporary file remains.
+            assert_eq!((tree(&word), tree(&powerpoint)), before, "{ops:?}");
+            // Allowing access afterwards installs both on the next try.
+            assert_eq!(
+                apply(&home.0, &addin, Action::Install)
+                    .map(|result| (result.status, result.changed)),
+                [(Status::InstalledSameVersion, true); 2]
+            );
+        }
+    }
+
+    #[test]
+    fn a_denied_second_upgrade_restores_the_first_apps_previous_manifest_exactly() {
+        let (home, word, powerpoint) = office_home();
+        let addin = Addin::for_build(STABLE_IDENTIFIER, false, Some(""));
+        let word_wef = word.join("Data").join("Documents").join("wef");
+        fs::create_dir_all(&word_wef).unwrap();
+        let older = addin.manifest.replace("<Version>", "<Version>9");
+        fs::write(word_wef.join(addin.filename), &older).unwrap();
+        let gate = deny_under(&powerpoint, &[Op::Write]);
+        let [word_result, _] = apply_with(&Fs { gate: &gate }, &home.0, &addin, Action::Install);
+        assert_eq!(
+            (
+                word_result.status,
+                word_result.changed,
+                word_result.rolled_back
+            ),
+            (Status::InstalledOtherVersion, false, true)
+        );
+        assert_eq!(
+            fs::read_to_string(word_wef.join(addin.filename)).unwrap(),
+            older
+        );
+        assert_eq!(fs::read_dir(&word_wef).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_denied_second_remove_puts_the_first_apps_manifest_back() {
+        let (home, word, powerpoint) = office_home();
+        let addin = Addin::for_build(STABLE_IDENTIFIER, false, Some(""));
+        apply(&home.0, &addin, Action::Install);
+        let installed = (tree(&word), tree(&powerpoint));
+        let word_manifest = manifest_path(&home.0, OfficeApp::Word, &addin);
+        let gate = deny_under(&powerpoint, &[Op::Remove]);
+        let [word_result, powerpoint_result] =
+            apply_with(&Fs { gate: &gate }, &home.0, &addin, Action::Remove);
+        assert_eq!(
+            (
+                word_result.status,
+                word_result.changed,
+                word_result.rolled_back
+            ),
+            (Status::InstalledSameVersion, false, true)
+        );
+        assert_eq!(
+            powerpoint_result.error_kind,
+            Some(FailureKind::PermissionDenied)
+        );
+        assert_eq!((tree(&word), tree(&powerpoint)), installed);
+        assert_eq!(fs::read_to_string(word_manifest).unwrap(), addin.manifest);
+    }
+
+    #[test]
+    fn a_denied_read_writes_nothing_to_either_app() {
+        for op in [Op::Inspect, Op::Read] {
+            let (home, word, powerpoint) = office_home();
+            let addin = Addin::for_build(STABLE_IDENTIFIER, false, Some(""));
+            // PowerPoint holds an older manifest, so Inspect and Read both run on it.
+            fs::write(
+                manifest_path(&home.0, OfficeApp::PowerPoint, &addin),
+                addin.manifest.replace("<Version>", "<Version>9"),
+            )
+            .unwrap();
+            let before = (tree(&word), tree(&powerpoint));
+            let data = powerpoint.join("Data");
+            let gate = deny_under(
+                &data,
+                if op == Op::Inspect {
+                    &[Op::Inspect]
+                } else {
+                    &[Op::Read]
+                },
+            );
+            let attempted = std::cell::RefCell::new(Vec::new());
+            let recording = |op, path: &Path| {
+                if !matches!(op, Op::Inspect | Op::Read) {
+                    attempted.borrow_mut().push((op, path.to_path_buf()));
+                }
+                gate(op, path)
+            };
+            for action in [Action::Install, Action::Remove] {
+                let [word_result, powerpoint_result] =
+                    apply_with(&Fs { gate: &recording }, &home.0, &addin, action);
+                assert_eq!(
+                    (
+                        word_result.status,
+                        word_result.changed,
+                        word_result.rolled_back
+                    ),
+                    (Status::NotInstalled, false, false)
+                );
+                assert_eq!(
+                    (powerpoint_result.status, powerpoint_result.error_kind),
+                    (Status::Unavailable, Some(FailureKind::PermissionDenied))
+                );
+            }
+            assert!(attempted.borrow().is_empty(), "{:?}", attempted.borrow());
+            assert_eq!((tree(&word), tree(&powerpoint)), before);
+        }
+    }
+
+    #[test]
+    fn commands_run_the_file_work_off_the_main_thread() {
+        let source = include_str!("office_addin.rs");
+        for command in [
+            "office_addin_status",
+            "office_addin_install",
+            "office_addin_remove",
+        ] {
+            // Tauri 2 runs a non-async command on the main thread.
+            assert!(source.contains(&format!("pub(crate) async fn {command}(")));
+        }
+        let run = source.split("async fn run(").nth(1).unwrap();
+        let run = run.split("#[tauri::command]").next().unwrap();
+        let blocking = run.find("spawn_blocking(").unwrap();
+        assert!(run.find("apply(&home, &addin, action)").unwrap() > blocking);
     }
 
     #[test]

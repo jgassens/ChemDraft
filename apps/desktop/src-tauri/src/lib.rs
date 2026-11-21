@@ -1119,8 +1119,39 @@ fn plugin_menu_items_in<'a>(
 
 /// The plugin menu items last synced from the webview. Read by every menu rebuild so the items
 /// survive toolset-driven rebuilds, not only plugin syncs.
-#[derive(Default)]
 struct PluginNativeMenuItems(std::sync::Mutex<Vec<PluginMenuItemInput>>);
+
+impl Default for PluginNativeMenuItems {
+    fn default() -> Self {
+        Self(std::sync::Mutex::new(initial_plugin_menu_items()))
+    }
+}
+
+/// The synced rows the first native menu is built with, before the webview's first sync. On macOS
+/// these are the Office add-in Help rows, disabled while the webview checks the add-in's status
+/// (its `disabledReason` reads "Checking Office add-in status…"). Without them Help showed only
+/// Report a Bug… until the webview loaded; with them that sync updates the rows in place. The
+/// Windows menu never carries them.
+fn initial_plugin_menu_items() -> Vec<PluginMenuItemInput> {
+    #[cfg(target_os = "macos")]
+    {
+        office_addin::HELP_MENU_ROWS
+            .iter()
+            .map(|(id, label)| PluginMenuItemInput {
+                id: (*id).to_owned(),
+                core_routed: true,
+                separator_before: false,
+                label: (*label).to_owned(),
+                location: "help".to_owned(),
+                enabled: false,
+            })
+            .collect()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Vec::new()
+    }
+}
 
 /// The Toolbars-menu rows and View-toggle state last pushed by JS (`set_toolbars_menu`). Stored so a
 /// plugin-menu sync (`sync_plugin_menu_items`) can rebuild the whole native menu from the same model
@@ -10101,7 +10132,8 @@ fn create_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<
     )
 }
 
-/// The plugin menu items last synced from the webview (empty until the first sync). Read on every menu
+/// The plugin menu items last synced from the webview (`initial_plugin_menu_items` until the first
+/// sync). Read on every menu
 /// build so toolset-driven rebuilds keep the plugin items too (ADR-0016).
 fn current_plugin_menu_items<R: Runtime>(app: &tauri::AppHandle<R>) -> Vec<PluginMenuItemInput> {
     app.try_state::<PluginNativeMenuItems>()
@@ -13474,6 +13506,42 @@ mod tests {
         )
         .unwrap();
         assert_eq!(calls, [(1, false), (0, true)]);
+    }
+
+    #[test]
+    fn office_addin_help_rows_exist_disabled_from_the_first_menu_build_on_macos_only() {
+        let seeded = PluginNativeMenuItems::default().0.into_inner().unwrap();
+        let help = plugin_menu_items_in(&seeded, "help");
+        #[cfg(target_os = "macos")]
+        {
+            let rows = help
+                .iter()
+                .map(|item| (item.id.as_str(), item.label.as_str(), item.enabled))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                rows,
+                [
+                    ("office.installAddin", "Install Office Add-in…", false),
+                    ("office.removeAddin", "Remove Office Add-in", false),
+                ]
+            );
+            assert!(help.iter().all(|item| item.core_routed));
+            assert_eq!(seeded.len(), help.len());
+            // The webview's first sync of the same rows, status now known, only updates them.
+            let synced = seeded
+                .iter()
+                .map(|item| PluginMenuItemInput {
+                    enabled: item.id == "office.installAddin",
+                    ..item.clone()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                classify_plugin_menu_update(&seeded, &synced),
+                MenuUpdate::Properties
+            );
+        }
+        #[cfg(not(target_os = "macos"))]
+        assert!(seeded.is_empty() && help.is_empty());
     }
 
     #[test]
