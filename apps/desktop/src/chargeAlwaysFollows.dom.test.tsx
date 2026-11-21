@@ -46,16 +46,27 @@ function carbanion(): Charged {
   return chargedFrom(document, carbon);
 }
 
-/** The tool-placed N⁺ mark re-stored as a legacy loose (point) or bond-anchored mark, same place. */
+/**
+ * The tool-placed N⁺ mark re-stored as a legacy loose (point) or bond-anchored mark, at the tool's
+ * distance from N but below it. A legacy mark has no atom anchor, so it belongs to the nearest atom
+ * within the association radius (`nativeElectronMarkAssignments` pass 2, ties going to the earlier
+ * atom; one bond length × 1.15 = 25.3 px here). The tool's slot above N is as close to the carbonyl
+ * O (a6, at 206,228) as to N (a7, at 228,250), so a legacy mark left there belongs to O. Below N,
+ * N is the only atom in range: C5 and C8 are √2 bond lengths (31 px) away.
+ */
 function legacyNitrogen(kind: "point" | "bond"): Charged {
   const { document, nitrogen } = electronMarkDropFixture();
   const molecule = dropMolecule(document), mark = dropMark(document);
   const bond = molecule.bonds.find(bond => bond.fromAtomId === nitrogen.id || bond.toAtomId === nitrogen.id)!;
+  const toolCenter = workflow.nativeChargeMarkCenter(mark);
+  const atom = transformPointForObject(molecule, nitrogen);
+  const center = { x: atom.x, y: atom.y + Math.hypot(toolCenter.x - atom.x, toolCenter.y - atom.y) };
   const anchor: ElectronMarkObject["anchor"] = kind === "point"
-    ? { kind: "point", point: workflow.nativeChargeMarkCenter(mark) }
+    ? { kind: "point", point: center }
     : { kind: "bond", objectId: molecule.id, bondId: bond.id };
   const legacy = workflow.normalizeCommittedDocument(applyPatch(document, { op: "updateObject", objectId: mark.id,
-    changes: { anchor, atomAssociation: undefined } }, { now: phase4Timestamp }));
+    changes: { x: center.x - mark.width / 2, y: center.y - mark.height / 2, anchor, atomAssociation: undefined } },
+    { now: phase4Timestamp }));
   return chargedFrom(legacy, nitrogen);
 }
 
@@ -216,6 +227,19 @@ describe.each(["macos", "windows"] as const)("charge always follows its atom (%s
     await act(async () => pointer(page(), "pointerup", to));
     return before;
   }
+  /**
+   * Press an atom of a wholly selected molecule and drag it: a whole-object move, as in
+   * MainWindow.dragTransform.dom.test.ts. That move is tracked by the molecule's own pointermove
+   * handler (`handleObjectPointerMove`), so the move and release go to the molecule, not the page.
+   */
+  async function dragWhole(objectId: string, from: Point, to: Point) {
+    const target = moleculeTarget(objectId);
+    await act(async () => pointer(target, "pointerdown", from));
+    const before = snapshot();
+    await move(target, to);
+    await act(async () => pointer(target, "pointerup", to));
+    return before;
+  }
   async function shiftClickAtom(objectId: string, point: Point) {
     await act(async () => pointer(moleculeTarget(objectId), "pointerdown", point, true));
     await act(async () => pointer(moleculeTarget(objectId), "pointerup", point, true));
@@ -345,7 +369,7 @@ describe.each(["macos", "windows"] as const)("charge always follows its atom (%s
         await mount(workflow.selectDocumentObjects(document, document.pages[0].id, [charged.moleculeId, ...captionIds]));
         // Grab the ester oxygen, away from either charged atom and its mark.
         const grip = transformPointForObject(dropMolecule(document), dropMolecule(document).atoms[4]);
-        const before = await dragPart(charged.moleculeId, grip, { x: grip.x + 120, y: grip.y + 90 });
+        const before = await dragWhole(charged.moleculeId, grip, { x: grip.x + 120, y: grip.y + 90 });
         const after = snapshot();
         expectAtomMoved(before, after, charged, 50);
         expectChargeFollowed(before, after, charged);
@@ -406,6 +430,11 @@ describe.each(["macos", "windows"] as const)("charge always follows its atom (%s
   });
 
   describe("duplicate", () => {
+    // Only the molecule is selected. Duplicate keeps atom ids, so the copy's atom is read by the
+    // original id. Today `duplicateSelectedDocumentObjects` (documentWorkflow.ts) copies only the
+    // selected objects and not the marks anchored to a copied molecule, which the clipboard copy
+    // does carry (`anchoredElectronMarksForTransform`), so the copy's atom loses its charge on
+    // normalization. That is a behavior gap this test pins, not a setup error.
     it.each(variants)("duplicates a molecule with the $name: the copy carries the charge and its mark", async ({ build }) => {
       const charged = build();
       expectChargedFixture(charged);
