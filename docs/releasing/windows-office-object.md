@@ -103,3 +103,28 @@ value.` A dev build must leave the stable keys untouched, and the reverse.
 Tests: `cargo test office_ole::registry` covers the flag parsing and scope selection, the
 uninstall path check, and the hooks' phases and flags (it reads `installer-hooks.nsh`), and runs on
 macOS and Windows. The registry writes themselves are checked only on Windows, by the queries above.
+
+## Release-candidate checks
+
+Two checks run only on the release-candidate installer built by
+`.github/workflows/windows-release.yml`; branch builds must never replace the stable app, so they
+cannot be checked earlier. Both are required before publishing (see
+[three-builds.md](three-builds.md#before-publishing-release-candidate-only-checks)).
+
+### Cold start of the Office editor
+
+1. Install the release-candidate installer. Quit every ChemDraft process (check Task Manager).
+2. In Word, choose Insert > Object > ChemDraft Structure. The editor window must show the light
+   loading screen ("Opening structure from Word…") from its first frame, never a dark frame.
+3. Record the time from the window appearing to the loading text, and from the window to the editor
+   ready. Quit every ChemDraft process again and repeat once, so there are two cold starts in Word.
+4. Do the same twice in PowerPoint.
+
+### Installer registration
+
+1. Per-user install of the release candidate. Run the `reg query` checks in
+   [Verifying](#verifying); the stable class must be registered.
+2. Reinstall over it. Run `reg query "HKCU\Software\Classes\CLSID\{CE37136C-13F0-4A5A-954F-0EF6DFE359D0}\LocalServer32" /reg:64`
+   and the `/reg:32` form: each shows exactly one `LocalServer32`, at the installed path.
+3. Uninstall. The queries report the keys missing, Insert Object in Word and PowerPoint no longer
+   lists ChemDraft, and documents saved earlier still show their pictures.
