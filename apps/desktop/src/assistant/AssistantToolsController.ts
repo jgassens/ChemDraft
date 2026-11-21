@@ -3,7 +3,7 @@ import {
   PluginAssistantToolResultSchema, PluginAssistantToolSessionRequestSchema, AssistantCapabilityPermissions,
   type PluginAssistantToolDescriptor, type PluginAssistantAPI, type PluginAssistantToolResult, type PluginManifest
 } from "@chemdraft/plugin-api";
-import { beginScopedRepeatUnitCleanup, finishScopedRepeatUnitCleanup, legacyWriteScopePages, writePatchOps,
+import { assertLegacyWritePages, beginScopedRepeatUnitCleanup, finishScopedRepeatUnitCleanup, legacyWriteScopePages, writePatchOps,
   type PluginHost, type PluginHostAssistant, type ScopedRepeatUnitCleanup } from "@chemdraft/plugin-host";
 import { PluginWriteGateTimeoutError, type PluginWriteGate } from "../plugins/applyPluginDocumentPatch";
 import { runThumbnail } from "./runThumbnail";
@@ -250,7 +250,10 @@ export class AssistantToolsController implements PluginHostAssistant {
           const dependencyContent = (document: ChemDraftDocument) => document.pages.flatMap(page =>
             page.objects.filter(object => dependencies.has(object.id)).map(object => ({ pageId: page.id, object })));
           const plannedContent = JSON.stringify(dependencyContent(plannedDocument));
-          const verified = await verifyNormalizedAssistantWrite(request.context, plannedDocument, patchDocument(plannedDocument), scope, expectedSmiles);
+          // Send-time ids are bound to their selection page: never resolve one to a same-id object elsewhere.
+          assertLegacyWritePages(plannedDocument, patch, request.selectionPages);
+          const verified = await verifyNormalizedAssistantWrite(request.context, plannedDocument, patchDocument(plannedDocument), scope,
+            expectedSmiles, request.selectionPages);
           const apply = () => {
             this.running(plugin, requestId);
             if (abort.signal.aborted || signal?.aborted) throw new Error("Assistant tool call was canceled.");
@@ -265,6 +268,7 @@ export class AssistantToolsController implements PluginHostAssistant {
             return this.options.host().applyPatchForPlugin(plugin.id, undefined,
               { patch, reason: `Assistant: ${input.name}`, warnings: [], requiresUserApproval: true }, {
                 objectIds: [...request.selection, ...request.inserted],
+                ...(request.selectionPages?.size ? { scopePages: request.selectionPages } : {}),
                 getDocument: request.context.getDocument,
                 apply: application => {
                   this.running(plugin, requestId);
@@ -274,7 +278,9 @@ export class AssistantToolsController implements PluginHostAssistant {
                     op.op === "addAnnotation" ? [op.annotation.id] : "objectId" in op ? [op.objectId] : op.op === "setObjectOrder" ? op.objectIds : []);
                   // Recompute after a gesture or concurrent tool call, including every nearby
                   // mark. No await separates this scope/chemistry recheck and the history commit.
-                  const authored = recheckNormalizedAssistantWrite(before, patchDocument(before), scope, verified, plannedDocument);
+                  assertLegacyWritePages(before, patch, request.selectionPages);
+                  const authored = recheckNormalizedAssistantWrite(before, patchDocument(before), scope, verified, plannedDocument,
+                    request.selectionPages);
                   const fitted = fitDocument(before, authored);
                   let cleanup: ReturnType<typeof finishScopedRepeatUnitCleanup>;
                   request.transactions.writeAssistantTransaction(requestId, fitted, touched, authored, document => {

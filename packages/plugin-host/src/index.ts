@@ -121,6 +121,12 @@ function assertLegacyWriteTargetPage(document: ChemDraftDocument, scopePages: Pl
   }
 }
 
+/** Refuse a legacy write whose page-bound target id would resolve to a same-id object on another page. */
+export function assertLegacyWritePages(document: ChemDraftDocument, patch: DocumentPatch,
+  scopePages: PluginWriteScopePages | undefined): void {
+  for (const op of writePatchOps(patch)) assertLegacyWriteTargetPage(document, scopePages, op);
+}
+
 /** Host-only preflight. Embedders must rerun against the document they will actually commit after
  * any gesture wait. Keep the authored patch so rebasing uses commit-time ids, not preflight ids. */
 export function assertPluginPatchWriteScope(
@@ -2102,6 +2108,8 @@ export class PluginHost {
       /** Read the same fixed document that `apply` writes, even after a tab switch. */
       getDocument: () => ChemDraftDocument | undefined | Promise<ChemDraftDocument | undefined>;
       apply: NonNullable<PluginHostOptions["applyDocumentPatch"]>;
+      /** Legacy assistant requests: Send-time selection bound to its page. */
+      scopePages?: PluginWriteScopePages;
     },
     /** Trusted host label, never taken from plugin input. */
     undoLabel?: string
@@ -2175,7 +2183,7 @@ export class PluginHost {
         throw new PluginHostError(`Plugin patch refused: no ${requestScope ? "request" : "active"} document is available to check ${ops.some(op => op.op === "removeObject") ? "reaction removal scope" : "write scope"}.`);
       }
       assertPluginPatchWriteScope(document, parsedPatch, requestScope?.objectIds ?? [...invocation.writeScope],
-        undefined, undefined, requestScope ? undefined : invocation.writeScopePages);
+        undefined, undefined, requestScope ? requestScope.scopePages : invocation.writeScopePages);
     }
     const plugin = this.requireRegisteredPlugin(pluginId).manifest;
     const receipt = await apply({
@@ -2183,7 +2191,8 @@ export class PluginHost {
       command: { id: invocation.commandId, title: invocation.commandTitle },
       patch: parsedPatch,
       writeScopeObjectIds: [...(requestScope?.objectIds ?? invocation.writeScope)],
-      ...(!requestScope && invocation.writeScopePages?.size ? { writeScopePages: new Map(invocation.writeScopePages) } : {}),
+      ...(requestScope ? (requestScope.scopePages?.size ? { writeScopePages: new Map(requestScope.scopePages) } : {})
+        : invocation.writeScopePages?.size ? { writeScopePages: new Map(invocation.writeScopePages) } : {}),
       repeatUnitCleanup: requestScope ? undefined : invocation.repeatUnitCleanup,
       undoLabel: undoLabel ?? `${plugin.name}: ${invocation.commandTitle}`,
       signal

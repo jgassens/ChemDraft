@@ -50,3 +50,36 @@ describe("normalized assistant writes on invalid drawings", () => {
     expect(context.chemistry.inspectStructure).toHaveBeenCalled();
   });
 });
+
+describe("normalized assistant writes bind selected ids to their selection page", () => {
+  function twoPages() {
+    const fixture = testContext();
+    const document = structuredClone(fixture.context.getDocument()!);
+    const pageA = document.pages[0]!;
+    const pageB = { ...pageA, id: "page_b", objects: [structuredClone(fixture.molecule)] };
+    document.pages = [pageA, pageB];
+    return { ...fixture, document, pageA, pageB, scopePages: new Map([[fixture.molecule.id, pageB.id]]) };
+  }
+  const refusal = (id: string, pinned: string, target: string) =>
+    `Plugin write refused: object "${id}" is selected on page "${pinned}", but the write would change the object with the same id on page "${target}".`;
+
+  it("refuses a write that changes the same-id object on another page, in verification and in the gate recheck", async () => {
+    const { context, molecule, document, pageA, pageB, scopePages } = twoPages();
+    // A bare-id patch resolves to the first occurrence: page A's molecule.
+    const patched = applyPatch(document, buildStyleObjects(context, { objectIds: [molecule.id], style: { color: "#123456" } }).patch);
+    expect(patched.pages[0]!.objects[0]).not.toEqual(pageA.objects[0]);
+    const scope = new Set([molecule.id]);
+    await expect(verifyNormalizedAssistantWrite(context, document, patched, scope, new Map(), scopePages))
+      .rejects.toThrow(refusal(molecule.id, pageB.id, pageA.id));
+    expect(() => recheckNormalizedAssistantWrite(document, patched, scope, document, document, scopePages))
+      .toThrow(refusal(molecule.id, pageB.id, pageA.id));
+  });
+
+  it("accepts a write that changes only the selection page's object", async () => {
+    const { context, molecule, document, pageB, scopePages } = twoPages();
+    const restyled = { ...structuredClone(molecule), style: { ...molecule.style, bondColor: "#123456" } };
+    const patched = { ...document, pages: [document.pages[0]!, { ...pageB, objects: [restyled] }] };
+    const verified = await verifyNormalizedAssistantWrite(context, document, patched, new Set([molecule.id]), new Map(), scopePages);
+    expect(verified.pages[0]!.objects).toEqual(document.pages[0]!.objects);
+  });
+});

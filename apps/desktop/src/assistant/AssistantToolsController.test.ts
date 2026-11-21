@@ -1359,3 +1359,30 @@ describe("legacy assistant request and document replacement", () => {
     } finally { await s.finish(); }
   });
 });
+
+describe("legacy assistant host-tool writes are scoped by page and id", () => {
+  it.each(["style_objects", "delete_objects"] as const)("%s never changes a same-id molecule on another page than the selection", async tool => {
+    const s = setup();
+    try {
+      const document = s.context.getDocument()!;
+      const pageA = document.pages[0]!;
+      // Page B holds a molecule with the same id as page A's molecule; the selection names page B's.
+      const pageB = { ...pageA, id: "page_b", objects: [structuredClone(s.molecule)] };
+      const twoPages = { ...document, pages: [pageA, pageB], selection: { pageId: pageB.id, objectIds: [s.molecule.id] } };
+      s.replace(twoPages);
+      s.select([s.molecule.id]);
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "restyle" });
+      const input = tool === "style_objects" ? { objectIds: [s.molecule.id], style: { color: "#112233" } } : { objectIds: [s.molecule.id] };
+      const result = await s.controller.callTool(s.plugin, { name: tool, input });
+      const after = s.context.getDocument()!;
+      // Page A's same-id molecule is never touched by a write scoped to page B's selection.
+      expect(after.pages[0]!.objects).toEqual(pageA.objects);
+      expect(result).toMatchObject({ isError: true, content: [{ text: expect.stringContaining(
+        `Plugin write refused: object "${s.molecule.id}" is selected on page "${pageB.id}", but the write would change the object with the same id on page "${pageA.id}".`
+      ) }] });
+      expect(s.history).toHaveLength(0);
+      expect(after).toBe(twoPages);
+      await s.controller.endRequest(s.plugin, { requestId });
+    } finally { await s.finish(); }
+  });
+});
