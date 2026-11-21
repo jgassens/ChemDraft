@@ -62,6 +62,7 @@ it("stops the updater before installation when an empty dirty drawing cannot be 
     check: async () => ({ version: "1", currentVersion: "0", download: async () => undefined,
       install, close: async () => undefined }),
     confirm: async () => true, message, setStatus: () => undefined,
+    prepareEmbeddedEditors: async () => async () => undefined,
     flushSession: async () => {
       const refusal = strictSessionFlushRefusal({ hydrated: true, saveEnabled: false,
         blank: true, fileState: { dirty: true } });

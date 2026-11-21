@@ -928,6 +928,22 @@
     "returnType": "()"
   },
   {
+    "file": "office_addin.rs",
+    "name": "office_addin_install",
+    "async": true,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow,",
+    "returnType": "Result<[OfficeAddinResult; 2], String>"
+  },
+  {
+    "file": "office_addin.rs",
+    "name": "office_addin_remove",
+    "async": true,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow,",
+    "returnType": "Result<[OfficeAddinResult; 2], String>"
+  },
+  {
     "file": "office_ole/bridge.rs",
     "name": "prepare_office_editors_for_update",
     "async": true,

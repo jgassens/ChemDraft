@@ -50,7 +50,7 @@ describe("native menu document ownership guards", () => {
     expect(officeBridge).toContain("install_office_document_menu(");
     expect(install).toContain("install_document_window_menu(window, menu)");
     expect(lib).toContain("parent: Some(toolset_window_parts(label).0.into())");
-    expect(lib).toMatch(/let builder = builder\.focused\(false\);\s*match app\s*\.get_webview_window\(owner_label\)/);
+    expect(lib).toMatch(/let builder = builder\.focused\(false\);\s*let owner = app\s*\.get_webview_window\(owner_label\)/);
     const dialog = readFileSync(resolve(nativeRoot, "dialog_windows.rs"), "utf8");
     expect(dialog).toContain("builder.parent(&window)");
     expect(dialog).toContain("window.label() != message.owner_window_id");
