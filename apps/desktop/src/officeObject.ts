@@ -13,6 +13,9 @@ import { renderSelectionClipboardPng } from "./selectionClipboard";
 
 export const OFFICE_UPDATE_COMMAND_ID = "office.updateEmbeddedObject";
 export const OFFICE_CLOSE_COMMAND_ID = "office.closeEmbeddedObject";
+// Read by office_object_update in src-tauri/src/office_ole/bridge.rs.
+const SESSION_PUBLISH_HEADER = "x-chemdraft-session-publish";
+const SESSION_UNCHANGED_HEADER = "x-chemdraft-session-unchanged";
 
 const standaloneCommands = new Set([
   "document.new", "document.open", "document.saveAs", "export.open",
@@ -108,7 +111,7 @@ export function useOfficeObject(objectId: string | undefined, editor: OfficeObje
       const frame = updateFrame(json, png);
       if (session !== undefined) {
         if (sessionPublish.current?.id !== session) return false;
-        await invoke("office_object_update", frame, { headers: { "x-chemdraft-session-publish": String(session) } });
+        await invoke("office_object_update", frame, { headers: { [SESSION_PUBLISH_HEADER]: String(session) } });
         return true;
       }
       pendingUpdate.current = true;
@@ -192,6 +195,8 @@ export function useOfficeObject(objectId: string | undefined, editor: OfficeObje
     });
     void ready.catch(reportOpenError);
 
+    // Windows waits on every editor's answer before it ends the session, so each one answers:
+    // the whole drawing if Office may not hold it yet, otherwise "unchanged".
     const onSessionPublish = (event: Event) => {
       const id = (event as CustomEvent<number>).detail;
       if (closed.current || sessionPublish.current) return;
@@ -199,9 +204,23 @@ export function useOfficeObject(objectId: string | undefined, editor: OfficeObje
       let resume!: () => void;
       const done = new Promise<void>(resolve => { resume = resolve; });
       sessionPublish.current = { id, done, cancel: () => { thaw(); resume(); } };
-      void ready.then(() => {
-        if (!disposed && publishedDocument.current && sessionPublish.current?.id === id) return publish(id);
-      }).catch(reportOpenError);
+      void ready.catch(() => undefined).then(async () => {
+        if (disposed || sessionPublish.current?.id !== id) return;
+        const published = publishedDocument.current;
+        if (published && (pendingUpdate.current ||
+            !assistantDocumentContentUnchanged(published, editorRef.current.readDocument()))) {
+          await publish(id);
+          return;
+        }
+        // Office already holds this drawing, or the editor never loaded one it could change.
+        await invoke("office_object_update", new Uint8Array(0), {
+          headers: { [SESSION_PUBLISH_HEADER]: String(id), [SESSION_UNCHANGED_HEADER]: "1" }
+        });
+      }).catch(error => {
+        if (!disposed && sessionPublish.current?.id === id) {
+          editorRef.current.setStatus(`Could not answer the Windows session end: ${diagnostic(error)}`);
+        }
+      });
     };
     const onSessionCancel = (event: Event) => {
       if (sessionPublish.current?.id !== (event as CustomEvent<number>).detail) return;

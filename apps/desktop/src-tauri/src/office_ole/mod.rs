@@ -9,11 +9,13 @@ pub(crate) mod launch;
 #[cfg(any(windows, test))]
 mod presentation;
 #[cfg(any(windows, test))]
+pub(crate) mod recovery;
+#[cfg(any(windows, test))]
 pub(crate) mod registry;
 #[cfg(windows)]
 pub(crate) mod server;
 #[cfg(any(windows, test))]
-mod session_publish;
+pub(crate) mod session_publish;
 #[cfg(any(windows, test))]
 pub(crate) mod storage;
 pub(crate) mod toolset_events;

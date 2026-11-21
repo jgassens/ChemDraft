@@ -99,6 +99,42 @@ pub(crate) async fn office_object_connect(
     }
 }
 
+/// A renderer's answer to a Windows session-end request (`office-session-publish`).
+#[cfg(any(windows, test))]
+#[derive(Debug, PartialEq, Eq)]
+enum SessionReply {
+    /// The frame carries the editor's whole drawing.
+    Drawing(u32),
+    /// Office already holds everything this editor shows; the body is ignored.
+    Unchanged(u32),
+}
+
+#[cfg(any(windows, test))]
+const SESSION_PUBLISH_HEADER: &str = "x-chemdraft-session-publish";
+#[cfg(any(windows, test))]
+const SESSION_UNCHANGED_HEADER: &str = "x-chemdraft-session-unchanged";
+
+#[cfg(any(windows, test))]
+fn session_reply(headers: &tauri::http::HeaderMap) -> Result<Option<SessionReply>, String> {
+    let unchanged = headers.get(SESSION_UNCHANGED_HEADER);
+    let Some(value) = headers.get(SESSION_PUBLISH_HEADER) else {
+        return match unchanged {
+            Some(_) => Err("An unchanged Office reply needs a session-end request".into()),
+            None => Ok(None),
+        };
+    };
+    let request = value
+        .to_str()
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .ok_or("Invalid Office session-end publish request")?;
+    match unchanged.map(|value| value.as_bytes()) {
+        None => Ok(Some(SessionReply::Drawing(request))),
+        Some(b"1") => Ok(Some(SessionReply::Unchanged(request))),
+        Some(_) => Err("Invalid Office session-end unchanged marker".into()),
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn office_object_update(
     window: tauri::WebviewWindow,
@@ -108,6 +144,18 @@ pub(crate) async fn office_object_update(
     {
         use tauri::{ipc::InvokeBody, Manager};
         let id = owner_id(window.label())?.to_owned();
+        let server = window.state::<super::server::Server>();
+        let session = match session_reply(request.headers())? {
+            Some(SessionReply::Unchanged(publish)) => {
+                if !server.session_unchanged(publish, &id) {
+                    return Err("The Office session-end publish request has expired".into());
+                }
+                crate::windows_session_end::office_session_changed(window.app_handle());
+                return Ok(());
+            }
+            Some(SessionReply::Drawing(publish)) => Some(publish),
+            None => None,
+        };
         let InvokeBody::Raw(bytes) = request.body() else {
             return Err("Office updates require a raw selection and PNG payload".into());
         };
@@ -117,19 +165,7 @@ pub(crate) async fn office_object_update(
             .try_into()
             .map_err(|_| "Invalid Office update header")?;
         let json_end = update_lengths(bytes.len(), u32::from_le_bytes(header) as usize)?;
-        let server = window.state::<super::server::Server>();
-        let session = request
-            .headers()
-            .get("x-chemdraft-session-publish")
-            .map(|value| {
-                value
-                    .to_str()
-                    .ok()
-                    .and_then(|value| value.parse::<u32>().ok())
-                    .ok_or("Invalid Office session-end publish request")
-            })
-            .transpose()?;
-        if session.is_some_and(|request| !server.accepting_session_publish(request, &id)) {
+        if session.is_some_and(|publish| !server.accepting_session_publish(publish, &id)) {
             return Err("The Office session-end publish request has expired".into());
         }
         let permit = if session.is_none() {
@@ -149,8 +185,9 @@ pub(crate) async fn office_object_update(
         })
         .await
         .map_err(|e| e.to_string())??;
-        if let Some(request) = session {
-            return if server.publish_for_session(request, &id, content) {
+        if let Some(publish) = session {
+            return if server.publish_for_session(publish, &id, content) {
+                crate::windows_session_end::office_session_changed(window.app_handle());
                 Ok(())
             } else {
                 Err("The Office session-end publish request has expired".into())
@@ -425,6 +462,41 @@ mod tests {
         assert!(builder.contains("editor_url(&id, &container_app)"));
         assert!(builder.contains(".visible(false)"));
         assert!(builder.contains(".background_color(tauri::window::Color(red, green, blue, 0xff))"));
+    }
+
+    #[test]
+    fn session_end_replies_carry_a_request_and_an_optional_unchanged_marker() {
+        use tauri::http::{HeaderMap, HeaderValue};
+        let headers = |pairs: &[(&'static str, &'static str)]| {
+            let mut map = HeaderMap::new();
+            for &(name, value) in pairs {
+                map.insert(name, HeaderValue::from_static(value));
+            }
+            map
+        };
+        assert_eq!(session_reply(&headers(&[])), Ok(None));
+        assert_eq!(
+            session_reply(&headers(&[(SESSION_PUBLISH_HEADER, "54")])),
+            Ok(Some(SessionReply::Drawing(54)))
+        );
+        assert_eq!(
+            session_reply(&headers(&[
+                (SESSION_PUBLISH_HEADER, "54"),
+                (SESSION_UNCHANGED_HEADER, "1")
+            ])),
+            Ok(Some(SessionReply::Unchanged(54)))
+        );
+        for bad in [
+            &[(SESSION_UNCHANGED_HEADER, "1")][..],
+            &[(SESSION_PUBLISH_HEADER, "x")],
+            &[(SESSION_PUBLISH_HEADER, "-1")],
+            &[
+                (SESSION_PUBLISH_HEADER, "54"),
+                (SESSION_UNCHANGED_HEADER, "0"),
+            ],
+        ] {
+            assert!(session_reply(&headers(bad)).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

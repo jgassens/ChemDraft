@@ -391,6 +391,44 @@ describe("Office embedded document window", () => {
     expect(officeCalls().map(([command]) => command)).toEqual(["office_object_update", "office_object_update", "office_object_close"]);
   });
 
+  it("answers a Windows session end as unchanged when Office already holds the drawing", async () => {
+    await mount();
+    await act(async () => window.dispatchEvent(new CustomEvent("chemdraft:office-toolset:office-session-publish", { detail: 58 })));
+    expect(officeCalls()).toEqual([["office_object_update", new Uint8Array(0)]]);
+    expect(tauri.invoke).toHaveBeenCalledWith("office_object_update", new Uint8Array(0), {
+      headers: { "x-chemdraft-session-publish": "58", "x-chemdraft-session-unchanged": "1" }
+    });
+    await act(async () => window.dispatchEvent(new CustomEvent("chemdraft:office-toolset:office-session-cancel", { detail: 58 })));
+    await deliverClose(59);
+    expect(tauri.message).not.toHaveBeenCalled();
+    expect(officeCalls().at(-1)).toEqual(["office_object_close", { objectId: "17", requestId: 59, saveChanges: true }]);
+  });
+
+  it("answers a Windows session end as unchanged when the editor never received its document", async () => {
+    const invoke = tauri.invoke.getMockImplementation()!;
+    tauri.invoke.mockImplementation(async (command, args) => {
+      if (command === "office_object_connect") throw new Error("Office object STA has exited");
+      return invoke(command, args);
+    });
+    await mount();
+    await act(async () => window.dispatchEvent(new CustomEvent("chemdraft:office-toolset:office-session-publish", { detail: 60 })));
+    expect(officeCalls()).toEqual([["office_object_update", new Uint8Array(0)]]);
+    expect(tauri.invoke).toHaveBeenCalledWith("office_object_update", new Uint8Array(0), {
+      headers: { "x-chemdraft-session-publish": "60", "x-chemdraft-session-unchanged": "1" }
+    });
+  });
+
+  it("reports a session-end answer Windows did not accept", async () => {
+    const invoke = tauri.invoke.getMockImplementation()!;
+    tauri.invoke.mockImplementation(async (command, args) => {
+      if (command === "office_object_update") throw new Error("The Office session-end publish request has expired");
+      return invoke(command, args);
+    });
+    await mount();
+    await act(async () => window.dispatchEvent(new CustomEvent("chemdraft:office-toolset:office-session-publish", { detail: 61 })));
+    expect(status()).toContain("Could not answer the Windows session end: The Office session-end publish request has expired");
+  });
+
   it("aborts an accepted app update when the user cancels an embedded editor's close prompt", async () => {
     tauri.message.mockResolvedValue("Cancel");
     await mount();

@@ -10,6 +10,7 @@ use std::{
     collections::{HashMap, HashSet},
     ffi::c_void,
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
+    path::Path,
     rc::Rc,
     sync::{
         atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering},
@@ -43,7 +44,8 @@ use super::{
         editor_verb, CloseDecision, CloseOption, CloseReadiness, EditorVerb, PersistState,
     },
     presentation::Content,
-    session_publish::SessionPublish,
+    recovery::{self, CancelReport, Report},
+    session_publish::{Answer, Job, Outcome, Risk, Tracker},
     OleClass,
 };
 
@@ -76,7 +78,6 @@ pub(super) enum Action {
         request_id: Option<u32>,
     },
     PrepareQuit,
-    CommitSessionEnd(Vec<(String, Content)>, Arc<Mutex<HashSet<String>>>),
 }
 
 type WorkResult = std::result::Result<Option<bridge::Open>, String>;
@@ -109,6 +110,8 @@ struct Control {
     resume: AtomicBool,
     exit_intent: AtomicU8,
     session_ending: AtomicBool,
+    /// Open edit sessions and a pending Windows session end. Never held across a COM call.
+    tracker: Mutex<Tracker<Content>>,
 }
 
 impl Control {
@@ -124,7 +127,6 @@ pub(crate) struct Server {
     control: Arc<Control>,
     updates: Arc<Mutex<HashSet<String>>>,
     stopped: Mutex<mpsc::Receiver<()>>,
-    session_publish: Mutex<Option<SessionPublish<Content>>>,
 }
 
 pub(super) struct UpdatePermit {
@@ -230,81 +232,87 @@ impl Server {
         self.control.session_ending.load(Ordering::Acquire)
     }
 
-    pub(crate) fn start_session_publish(
-        &self,
-        deadline: Instant,
-        editors: Vec<String>,
-    ) -> Option<u32> {
-        if self.control.session_ending.swap(true, Ordering::AcqRel) {
-            return None;
-        }
-        let id = next_close_request();
-        *self.session_publish.lock().unwrap() = Some(SessionPublish::new(id, deadline, editors));
-        Some(id)
+    /// Ask every open editor for its drawing, unless a session end is already pending. Returns
+    /// the request ID and the editors to ask.
+    pub(crate) fn begin_session_end(&self, stamp: String) -> Option<(u32, Vec<String>)> {
+        let mut tracker = self.control.tracker.lock().unwrap();
+        let request = next_close_request();
+        let editors = tracker.begin(request, stamp)?;
+        self.control.session_ending.store(true, Ordering::Release);
+        Some((request, editors))
+    }
+
+    pub(crate) fn session_end_pending(&self) -> bool {
+        self.control.tracker.lock().unwrap().active()
+    }
+
+    pub(crate) fn session_end_answer(&self) -> Answer {
+        self.control.tracker.lock().unwrap().answer()
+    }
+
+    pub(crate) fn session_end_risks(&self) -> Vec<Risk> {
+        self.control.tracker.lock().unwrap().risks()
+    }
+
+    /// Update the recovery folder from the main thread. Never waits on the STA.
+    pub(crate) fn settle_session_end(&self, dir: Option<&Path>) -> (Answer, Report) {
+        recovery::settle(&self.control.tracker, dir)
     }
 
     pub(super) fn accepting_session_publish(&self, request: u32, editor: &str) -> bool {
-        self.session_publish
+        self.control
+            .tracker
             .lock()
             .unwrap()
-            .as_ref()
-            .is_some_and(|pass| pass.accepting(request, editor, Instant::now()))
+            .accepting(request, editor)
     }
 
     pub(super) fn publish_for_session(&self, request: u32, editor: &str, content: Content) -> bool {
-        self.session_publish
+        let collected = self
+            .control
+            .tracker
             .lock()
             .unwrap()
-            .as_mut()
-            .is_some_and(|pass| pass.publish(request, editor, Instant::now(), content))
-    }
-
-    pub(crate) fn missing_session_drawing_ids(&self) -> Vec<String> {
-        self.session_publish
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map_or_else(Vec::new, |pass| pass.missing().map(str::to_owned).collect())
-    }
-
-    pub(crate) fn cancel_session_publish(&self) -> Option<u32> {
-        let pass = self.session_publish.lock().unwrap().take();
-        self.control.session_ending.store(false, Ordering::Release);
-        pass.map(|pass| pass.id)
-    }
-
-    pub(crate) fn commit_session_publish(
-        &self,
-        app: &tauri::AppHandle,
-    ) -> Arc<Mutex<HashSet<String>>> {
-        let updates = self
-            .session_publish
-            .lock()
-            .unwrap()
-            .take()
-            .map_or_else(Vec::new, SessionPublish::into_updates);
-        let saving = Arc::new(Mutex::new(
-            updates.iter().map(|(id, _)| id.clone()).collect(),
-        ));
-        if !updates.is_empty() {
-            let pending = saving.clone();
-            let app = app.clone();
-            tauri::async_runtime::spawn(async move {
-                let server = app.state::<Server>();
-                if let Err(error) = server
-                    .request(String::new(), Action::CommitSessionEnd(updates, pending))
-                    .await
-                {
-                    crate::windows_session_end::log_office_loss(
-                        &app,
-                        format_args!(
-                            "Could not queue Office drawings for session-end save: {error}"
-                        ),
-                    );
-                }
-            });
+            .collect(request, editor, content);
+        if collected {
+            // The STA saves it into Office now, while Windows still waits for an answer.
+            self.wake();
         }
-        saving
+        collected
+    }
+
+    /// The editor has no window to ask, so the STA saves what its object already holds.
+    pub(crate) fn session_editor_window_closed(&self, request: u32, editor: &str) -> bool {
+        let pending =
+            self.control
+                .tracker
+                .lock()
+                .unwrap()
+                .without_renderer(request, editor, Instant::now());
+        if pending {
+            self.wake();
+        }
+        pending
+    }
+
+    pub(super) fn session_unchanged(&self, request: u32, editor: &str) -> bool {
+        self.control
+            .tracker
+            .lock()
+            .unwrap()
+            .unchanged(request, editor)
+    }
+
+    /// Windows cancelled the session end. `remove_open` removes recovery copies of drawings
+    /// that are still open in their editors.
+    pub(crate) fn cancel_session_end(
+        &self,
+        dir: Option<&Path>,
+        remove_open: bool,
+    ) -> Option<CancelReport> {
+        let cancelled = recovery::cancel(&self.control.tracker, dir, remove_open);
+        self.control.session_ending.store(false, Ordering::Release);
+        cancelled
     }
 
     pub(crate) fn shutdown(&self) {
@@ -337,6 +345,7 @@ pub(crate) fn start(
         resume: AtomicBool::new(false),
         exit_intent: AtomicU8::new(RUNNING),
         session_ending: AtomicBool::new(false),
+        tracker: Mutex::new(Tracker::new()),
     });
     let sta_control = control.clone();
     let flag = automation;
@@ -363,7 +372,6 @@ pub(crate) fn start(
         control,
         updates: Default::default(),
         stopped: Mutex::new(stopped),
-        session_publish: Mutex::new(None),
     });
     Ok(())
 }
@@ -380,7 +388,6 @@ struct Apartment {
     queue: RefCell<work_queue::Receiver<Work>>,
     control: Arc<Control>,
     waiting_for_editor: Cell<bool>,
-    session_committed: Cell<bool>,
 }
 
 impl Apartment {
@@ -423,20 +430,75 @@ impl Apartment {
         ids.into_iter().map(|id| editors[id].clone()).collect()
     }
 
-    fn dispatch(&self, id: &str, action: Action) -> Result<Option<bridge::Open>> {
-        if let Action::CommitSessionEnd(updates, pending) = action {
-            self.session_committed.set(true);
-            for (id, content) in updates {
-                let object = self.editors.borrow().get(&id).cloned();
-                if let Some(object) = object {
-                    if let Err(error) = object.publish_to_client(content) {
-                        crate::windows_session_end::log_office_loss(&self.app, format_args!("Office object {id}: could not save the renderer drawing at session end: {error}"));
-                    }
-                }
-                pending.lock().unwrap().remove(&id);
-            }
-            return Ok(None);
+    fn editor_closed(&self, id: &str) {
+        let effect = self.control.tracker.lock().unwrap().closed(id);
+        if let Some(state) = effect {
+            crate::windows_session_end::log_office_loss(
+                &self.app,
+                format_args!("Office object {id} closed during the Windows session end: {state}."),
+            );
+            crate::windows_session_end::office_session_changed(&self.app);
         }
+    }
+
+    /// Save collected session-end drawings into Office, and retry failed saves when due (all of
+    /// them when `force` is set). A failure keeps the drawing pending; nothing is dropped.
+    fn save_session_drawings(&self, force: bool) {
+        let jobs = self
+            .control
+            .tracker
+            .lock()
+            .unwrap()
+            .take_jobs(Instant::now(), force);
+        for (request, id, job) in jobs {
+            let object = self.editors.borrow().get(&id).cloned();
+            let outcome = match (object, job) {
+                (None, _) => Outcome::Closed,
+                (Some(object), Job::Install(content)) => match object.install_and_save(content) {
+                    Ok(()) => Outcome::Saved,
+                    Err((content, error)) => Outcome::Failed {
+                        content,
+                        error: error.to_string(),
+                    },
+                },
+                (Some(object), Job::Retry) => match object.retry_session_save() {
+                    Ok(()) => Outcome::Saved,
+                    Err(error) => Outcome::Failed {
+                        content: None,
+                        error: error.to_string(),
+                    },
+                },
+            };
+            let failure = self.control.tracker.lock().unwrap().finish_job(
+                request,
+                &id,
+                outcome,
+                Instant::now(),
+            );
+            if let Some(failure) = failure {
+                crate::windows_session_end::log_office_loss(
+                    &self.app,
+                    format_args!(
+                        "Office object {id} in {}: could not save its drawing during the Windows session end; ChemDraft keeps it pending and retries: {}",
+                        failure.document, failure.error
+                    ),
+                );
+            }
+            crate::windows_session_end::office_session_changed(&self.app);
+        }
+    }
+
+    /// The STA's wait between messages: until the next save retry is due, if any.
+    fn retry_timeout(&self) -> u32 {
+        let next = self.control.tracker.lock().unwrap().next_retry();
+        next.map_or(INFINITE, |at| {
+            at.saturating_duration_since(Instant::now())
+                .as_millis()
+                .min(u128::from(INFINITE - 1)) as u32
+        })
+    }
+
+    fn dispatch(&self, id: &str, action: Action) -> Result<Option<bridge::Open>> {
         if matches!(action, Action::PrepareQuit) {
             if self.waiting_for_editor.get() {
                 return Err(close_retry());
@@ -471,7 +533,9 @@ impl Apartment {
                 }))
             }
             Action::Update { content, _permit } => {
-                if self.session_committed.get() {
+                // Session-end saves carry the newest drawing; an older interactive update
+                // arriving after one of them must not replace it.
+                if self.control.session_ending.load(Ordering::Acquire) {
                     return Err(Error::new(
                         OLE_E_NOTRUNNING,
                         "The Windows session is ending",
@@ -504,7 +568,7 @@ impl Apartment {
                 }
                 result.map(|()| None)
             }
-            Action::PrepareQuit | Action::CommitSessionEnd(..) => unreachable!(),
+            Action::PrepareQuit => unreachable!(),
         }
     }
 
@@ -527,6 +591,7 @@ impl Apartment {
         for object in self.editors() {
             object.handle_window_signals();
         }
+        self.save_session_drawings(false);
     }
 
     /// Also used inside IOleObject::Close. COM remains on this STA, including Update and
@@ -582,7 +647,6 @@ fn serve(
         queue: RefCell::new(queue),
         control,
         waiting_for_editor: Cell::new(false),
-        session_committed: Cell::new(false),
     });
     if !sta.automation.load(Ordering::Acquire) {
         // A normal document window keeps the factory continuously registered after the last object.
@@ -601,14 +665,16 @@ fn serve(
         if ready.send(Ok(())).is_ok() {
             while !sta.control.stop.load(Ordering::Acquire) {
                 sta.drain();
-                if sta.control.stop.load(Ordering::Acquire) || !sta.pump(INFINITE) {
+                if sta.control.stop.load(Ordering::Acquire) || !sta.pump(sta.retry_timeout()) {
                     break;
                 }
             }
         }
         let revoked = CoRevokeClassObject(cookie);
         // Normal app quit has already completed each editor's close. On a forced teardown,
-        // retry accepted renderer content before releasing the last STA references.
+        // install collected session-end drawings, then retry accepted renderer content before
+        // releasing the last STA references.
+        sta.save_session_drawings(true);
         for object in sta.editors() {
             if let Err(error) = object.finish(object.published.get(), false) {
                 eprintln!("Could not save Office editor during shutdown: {error}");
@@ -759,8 +825,25 @@ fn close_retry() -> Error {
 
 impl Embedded_Impl {
     fn publish_to_client(&self, content: Content) -> Result<()> {
+        self.install_and_save(content).map_err(|(_, error)| error)
+    }
+
+    /// On failure, also returns the drawing if it was never installed, so a session-end save
+    /// can keep it for the next attempt.
+    fn install_and_save(
+        &self,
+        content: Content,
+    ) -> std::result::Result<(), (Option<Content>, Error)> {
         if self.closing.get() || self.updating_client.replace(true) {
-            return Err(close_retry());
+            return Err((Some(content), close_retry()));
+        }
+        if let Some(id) = self.session.borrow().as_deref() {
+            self.sta
+                .control
+                .tracker
+                .lock()
+                .unwrap()
+                .replaced(id, &content.json);
         }
         self.content.replace(Rc::new(content));
         self.published.set(true);
@@ -770,6 +853,21 @@ impl Embedded_Impl {
                 .SendOnDataChange(&self.to_interface::<IDataObject>(), None, 0)
         }
         .and_then(|()| self.save_to_client());
+        self.updating_client.set(false);
+        result.map_err(|error| (None, error))
+    }
+
+    /// Retry saving the drawing a failed session-end save already installed.
+    fn retry_session_save(&self) -> Result<()> {
+        if self.closing.get() || self.updating_client.replace(true) {
+            return Err(close_retry());
+        }
+        // Office may have saved the object itself in the meantime.
+        let result = if self.dirty() {
+            self.save_to_client()
+        } else {
+            Ok(())
+        };
         self.updating_client.set(false);
         result
     }
@@ -793,6 +891,15 @@ impl Embedded_Impl {
             if let Err(error) = self.finish(self.published.get(), false) {
                 // Keep the object and its latest published content available for retry.
                 eprintln!("Could not save the destroyed Office editor: {error}");
+                if let Some(id) = self.session.borrow().as_deref() {
+                    // No renderer can answer a pending session end now; retry what Office lacks.
+                    self.sta
+                        .control
+                        .tracker
+                        .lock()
+                        .unwrap()
+                        .renderer_gone(id, Instant::now());
+                }
             }
         } else {
             if signals.close.swap(false, Ordering::AcqRel)
@@ -911,6 +1018,7 @@ impl Embedded_Impl {
             self.closed.set(true);
             if let Some(id) = self.session.take() {
                 self.sta.editors.borrow_mut().remove(&id);
+                self.sta.editor_closed(&id);
                 if destroy {
                     let app = self.sta.app.clone();
                     if let Err(error) = self.sta.app.run_on_main_thread(move || {
@@ -979,7 +1087,16 @@ impl IOleObject_Impl for Embedded_Impl {
                     .map_err(|_| Error::new(E_INVALIDARG, "Invalid UTF-16 Office host name"))
             }
         };
-        self.host.replace((name(app)?, name(doc)?));
+        let (app, doc) = (name(app)?, name(doc)?);
+        if let Some(id) = self.session.borrow().as_deref() {
+            self.sta
+                .control
+                .tracker
+                .lock()
+                .unwrap()
+                .renamed(id, &app, &doc);
+        }
+        self.host.replace((app, doc));
         Ok(())
     }
     fn Close(&self, option: &OLECLOSE) -> Result<()> {
@@ -1040,7 +1157,7 @@ impl IOleObject_Impl for Embedded_Impl {
             &self.sta.app,
             &id,
             title,
-            container_app,
+            container_app.clone(),
             was_open,
             signals.clone(),
         )
@@ -1050,13 +1167,23 @@ impl IOleObject_Impl for Embedded_Impl {
             self.signals.replace(Some(signals));
             {
                 let mut editors = self.sta.editors.borrow_mut();
-                if let Some(previous) = previous {
+                if let Some(previous) = &previous {
                     // A destroyed renderer with a failed save retained this object for retry.
                     // Its old window label must never address the new edit session.
-                    editors.remove(&previous);
+                    editors.remove(previous);
                 }
-                editors.insert(id, self.to_object());
+                editors.insert(id.clone(), self.to_object());
             }
+            if let Some(previous) = &previous {
+                self.sta.editor_closed(previous);
+            }
+            let json = self.content.borrow().json.clone();
+            self.sta.control.tracker.lock().unwrap().opened(
+                &id,
+                &container_app,
+                &container_document,
+                &json,
+            );
             if let Some(site) = self.site.borrow().clone() {
                 unsafe {
                     let _ = site.OnShowWindow(true);
