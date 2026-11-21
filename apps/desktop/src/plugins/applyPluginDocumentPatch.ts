@@ -1,18 +1,24 @@
 import {
+  adoptDerivedDocument,
   applyPatch,
+  applyPatches,
+  isDativeBond,
   type ApplyPatchOptions,
   type ChemDraftDocument,
-  type DocumentObject
+  type DocumentObject,
+  type MoleculeObject
 } from "@chemdraft/chem-core";
 import {
   AppliedPatchReceiptSchema,
   type AppliedPatchReceipt,
   type NormalizedProposedDocumentPatch
 } from "@chemdraft/plugin-api";
-import { rebasePluginPatch, writePatchOps } from "@chemdraft/plugin-host";
+import { assertPluginDocumentWriteScope, rebasePluginPatch, storedCtabReference, writePatchOps } from "@chemdraft/plugin-host";
 import { selectionBounds, translateInsertedDocumentObjects } from "../documentWorkflow";
 import { choosePlacement, objectRect, overlaps as boundsOverlap, pageContentRect, RELATIVE_GAP, unionRects } from "../assistant/placement";
 import type { ViewportRect } from "@chemdraft/viewport-engine";
+import { refreshVerifiedMoleculeChemistry, verifyStoredSources } from "./requestWrites/storedChemistry";
+import { desktopWriteInspectionContext, inspectMolecule } from "./requestWrites/structureIdentity";
 
 export interface PluginPatchPlacementOptions extends ApplyPatchOptions {
   /** Page-space visible rectangle, read when the write actually commits (after gesture gating). */
@@ -24,6 +30,71 @@ export interface PluginPatchPlacementOptions extends ApplyPatchOptions {
 export interface AppliedPluginDocumentPatch {
   document: ChemDraftDocument;
   receipt: AppliedPatchReceipt;
+}
+
+/** Match draft molecules with the graphs they had before the batch's updates. */
+export function refreshPluginPatchChemistry(before: ChemDraftDocument, draft: ChemDraftDocument,
+  rebased: NormalizedProposedDocumentPatch, writeScopeObjectIds: readonly string[], signal?: AbortSignal
+): Promise<ChemDraftDocument> | undefined {
+  const scope = new Set(writeScopeObjectIds);
+  const positions = writePatchOps(rebased.patch).filter(op => {
+    if (op.op === "addObject") scope.add(op.object.id);
+    return op.op === "addObject" || op.op === "addAnnotation" || op.op === "removeObject" ||
+      op.op === "removeAnnotation" || op.op === "reorderObject" || op.op === "setObjectOrder";
+  });
+  // Replay only the position-changing operations. Array slots then identify the same occurrence
+  // even if a batch removed/reordered duplicate ids or edited a molecule it had just inserted.
+  const baseline = positions.length ? applyPatches(before, positions, {
+    preserveRepeatUnitBrackets: true, deferGroupCleanup: true, now: draft.updatedAt
+  }) : before;
+  const context = desktopWriteInspectionContext(signal);
+  const edits: Promise<void>[] = [];
+  const pages = draft.pages.map((page, pageIndex) => {
+    const prior = baseline.pages[pageIndex]!;
+    let objects = page.objects;
+    for (const [index, object] of page.objects.entries()) {
+      const previous = prior.objects[index];
+      if (object === previous || object.type !== "molecule" || previous?.type !== "molecule" ||
+          previous.id !== object.id || !scope.has(object.id) || graphSignature(previous) === graphSignature(object)) continue;
+      // Give existing scope refusals priority over chemistry inspection of a draft that cannot commit.
+      if (!edits.length) assertPluginDocumentWriteScope(before, draft, rebased, writeScopeObjectIds);
+      if (objects === page.objects) objects = [...objects];
+      edits.push((async () => {
+        try {
+          if (previous.structure || previous.compatibility?.unknown.smiles !== undefined) {
+            const graph = await inspectMolecule(context, previous);
+            await verifyStoredSources(context, previous, { graph, reference: storedCtabReference(previous) });
+          }
+          const graph = await inspectMolecule(context, object);
+          await verifyStoredSources(context, object, { graph, alreadyVerified: previous });
+          const refreshed = refreshVerifiedMoleculeChemistry(object, graph, previous.structureFormat);
+          if (refreshed.structureFormat === "molfile-v3000") await verifyStoredSources(context, refreshed, { graph });
+          objects[index] = refreshed;
+        } catch (error) {
+          signal?.throwIfAborted();
+          throw new Error(`Plugin write refused: cannot refresh stored chemistry for molecule "${object.id}". ${describePatchFailure(error)}`);
+        }
+      })());
+    }
+    return objects === page.objects ? page : { ...page, objects };
+  });
+  if (edits.length) return Promise.all(edits).then(() => adoptDerivedDocument(draft, { ...draft, pages }));
+}
+
+function graphSignature(molecule: MoleculeObject): string {
+  return JSON.stringify([
+    molecule.atoms.map(atom => JSON.stringify([atom.id, atom.element, atom.formalCharge, atom.isotope,
+      atom.markRadicals, atom.schemeAbbreviation, atom.labelLiteral, atom.hydrogenCount,
+      atom.labelBondSide?.side, atom.labelBondSide?.atomId])).sort(),
+    molecule.bonds.map(bond => {
+      const style = bond.display?.bondStyle;
+      const stereo = bond.order === "single" && (style === "wedge" || style === "hashed" || style === "wavy") ? style : undefined;
+      const dative = isDativeBond(bond);
+      const endpoints = [bond.fromAtomId, bond.toAtomId];
+      if (!stereo && !dative) endpoints.sort();
+      return JSON.stringify([endpoints, bond.order, bond.stereo, stereo, dative]);
+    }).sort()
+  ]);
 }
 
 /**

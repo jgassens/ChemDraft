@@ -1,9 +1,8 @@
 import { changedElectronMarkAssignments, moleculeSmiles, nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles } from "@chemdraft/document-workflow-core";
 import { adoptDerivedDocument, type ChemDraftDocument, type DocumentObject, type MoleculeObject } from "@chemdraft/chem-core";
 import { retainedCtabCompatibility, RequestWriteError, type RequestHistory } from "@chemdraft/plugin-host";
-import { inspectStructureOffThread } from "../../depiction2d/identityClient";
 import { normalizeCommittedDocument } from "../../documentWorkflow";
-import { inspectMolecule, inspectSmiles, type StructureInspectionContext } from "./structureIdentity";
+import { desktopWriteInspectionContext, inspectMolecule, inspectSmiles, type StructureInspectionContext } from "./structureIdentity";
 import { inspectWriteSmiles, stableRecord, verifiedChemicalRecord, verifyStoredSources, withoutGeometry } from "./storedChemistry";
 import { assertRepeatUnitIdentity } from "./repeatUnitIdentity";
 
@@ -170,6 +169,4 @@ export async function verifyNormalizedWrite(context: StructureInspectionContext,
 }
 
 export const verifyDesktopRequestWrite: RequestHistory["verify"] = (before, draft, scope, expected, signal) =>
-  verifyNormalizedWrite({
-    chemistry: { inspectStructure: (format, value, stereo) => inspectStructureOffThread(format, value, stereo, signal, "writeIdentity") }
-  }, before, draft, scope, expected);
+  verifyNormalizedWrite(desktopWriteInspectionContext(signal), before, draft, scope, expected);

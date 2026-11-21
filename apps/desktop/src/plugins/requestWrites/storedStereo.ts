@@ -135,13 +135,16 @@ function mappedBonds(graph: ParsedMolfileGraph, ids: ReadonlyMap<string, string>
   return bonds;
 }
 
-/** Check the graph writer as well as the input. For example, it cannot serialize a
- * directed wedge on a double bond. Plain SMILES would hide that loss. */
+/** Check the graph writer as well as the input. Wedges and hashes signify stereo only on single bonds. */
 export function verifyWrittenBonds(molecule: MoleculeObject, written: SerializedGraph, parsed = parseMolfileGraph(written.molfile)) {
   const encoded = mappedBonds(parsed, writerIds(parsed, written.atomIds));
   for (const bond of molecule.bonds) {
     const key = bondKey(bond.fromAtomId, bond.toAtomId);
-    if (encoded.get(key)?.stereo !== stereoAnnotation(bond.fromAtomId, bond.display?.bondStyle, bond.stereo)) {
+    const style = bond.display?.bondStyle;
+    const stereoStyle = bond.order !== "single" && (style === "wedge" || style === "hashed") ? undefined : style;
+    const writtenBond = encoded.get(key);
+    if (!writtenBond) throw new Error(`The editable bond ${key} cannot be written.`);
+    if (writtenBond.stereo !== stereoAnnotation(bond.fromAtomId, stereoStyle, bond.stereo)) {
       throw new Error(`The editable stereo annotation on bond ${key} cannot be written.`);
     }
   }

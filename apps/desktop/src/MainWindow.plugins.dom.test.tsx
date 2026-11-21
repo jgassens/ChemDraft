@@ -25,6 +25,9 @@ import { DOM_COMMAND_EVENT } from "./window-manager";
 import { NATIVE_CANVAS_MENU_CLOSED_EVENT } from "./CanvasContextMenu";
 import { forceDocumentHistoryCommandId } from "./editHistoryRouting";
 import { assertPluginDocumentWriteScope } from "@chemdraft/plugin-host";
+import { expectStoredGraph, graphEditChanges, graphEditFixture, pluginGraphEdits } from "./testSupport/pluginGraphEdits";
+import { deferred } from "./testSupport/deferred";
+import * as identityClient from "./depiction2d/identityClient";
 
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("./plugins/rdkitAppLoader", () => ({ loadRdkitWithAppLoader: (load: () => Promise<unknown>) => load() }));
@@ -310,6 +313,91 @@ describe("plugin direct writes through mounted desktop normalization", () => {
       atomAssociation: "explicit", anchor: { kind: "atom", objectId: molecule.id, atomId: atom.id },
       x: atom.x + 12, y: atom.y - 12, width: 18, height: 18, rotation: 0, style: {} };
   }
+
+  it.each(pluginGraphEdits)("refreshes stored chemistry after a direct plugin $name edit and round-trips it in history", async edit => {
+    const blank = createEmptyDocument();
+    const pageId = blank.pages[0]!.id;
+    const molecule = graphEditFixture(blank, edit, edit.name === "element");
+    const text = testContext(false).text;
+    const port = await mount(applyPatch(blank, { op: "batch", patches: [
+      { op: "addObject", pageId, object: molecule }, { op: "addObject", pageId, object: text },
+      { op: "setSelection", pageId, objectIds: [molecule.id, text.id] }
+    ] }));
+    const before = port.read("initial")!;
+    const original = before.pages[0]!.objects[0]! as MoleculeObject;
+    const invoke = registerWrite(context => context.documents.applyPatch!({ reason: "Edit atom graph", patch: {
+      op: "updateObject", objectId: molecule.id, changes: graphEditChanges(original, edit)
+    } }));
+    await act(async () => { await expect(invoke()).resolves.toMatchObject({ applied: true, objectIds: [molecule.id] }); });
+    const after = port.read("initial")!;
+    expect(after.selection.objectIds).toEqual([molecule.id]);
+    await expectStoredGraph(after.pages[0]!.objects[0]! as MoleculeObject, edit);
+
+    async function history(commandId: "edit.undo" | "edit.redo") {
+      await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT,
+        { detail: { commandId: forceDocumentHistoryCommandId(commandId) } })); });
+    }
+    await history("edit.undo");
+    expect(port.read("initial")!.pages).toEqual(before.pages);
+    expect(container.querySelector("[role=status]")?.textContent).toContain("Undid Write scope test: Test");
+    const undone = port.read("initial");
+    await history("edit.undo");
+    expect(port.read("initial")).toBe(undone);
+    await history("edit.redo");
+    expect(port.read("initial")!.pages).toEqual(after.pages);
+  }, 20_000);
+
+  it("preserves a canvas edit made while a plugin graph patch awaits inspection", async () => {
+    const blank = createEmptyDocument();
+    const pageId = blank.pages[0]!.id;
+    const edit = pluginGraphEdits[0];
+    const molecule = graphEditFixture(blank, edit);
+    const port = await mount(applyPatch(blank, { op: "batch", patches: [
+      { op: "addObject", pageId, object: molecule }, { op: "setSelection", pageId, objectIds: [molecule.id] }
+    ] }));
+    const before = port.read("initial")!;
+    const moved = applyPatch(before, { op: "moveObject", objectId: molecule.id, x: molecule.x + 25, y: molecule.y });
+    const inspect = identityClient.inspectStructureOffThread;
+    const started = deferred<void>();
+    const resume = deferred<void>();
+    vi.spyOn(identityClient, "inspectStructureOffThread").mockImplementationOnce(async (...args) => {
+      started.resolve();
+      await resume.promise;
+      return inspect(...args);
+    });
+    const invoke = registerWrite(context => context.documents.applyPatch!({ reason: "Edit element", patch: {
+      op: "updateObject", objectId: molecule.id, changes: graphEditChanges(molecule, edit)
+    } }));
+    await act(async () => {
+      const pending = invoke();
+      await Promise.race([started.promise, pending]);
+      port.push("initial", before, moved, "Move molecule");
+      resume.resolve();
+      await expect(pending).rejects.toThrow(/drawing changed while refreshing stored chemistry/i);
+    });
+    expect(port.read("initial")!.pages).toEqual(moved.pages);
+  }, 20_000);
+
+  it("refuses an indeterminate bond order without committing any part of the batch", async () => {
+    const blank = createEmptyDocument();
+    const pageId = blank.pages[0]!.id;
+    const molecule = graphEditFixture(blank, pluginGraphEdits[0]);
+    const port = await mount(applyPatch(blank, { op: "batch", patches: [
+      { op: "addObject", pageId, object: molecule }, { op: "setSelection", pageId, objectIds: [molecule.id] }
+    ] }));
+    const before = port.read("initial");
+    const bond = molecule.bonds[0]!;
+    const invoke = registerWrite(context => context.documents.applyPatch!({ reason: "Invalid graph edit", patch: {
+      op: "batch", patches: [
+        { op: "updateObject", objectId: molecule.id, changes: graphEditChanges(molecule, pluginGraphEdits[0]) },
+        { op: "updateObject", objectId: molecule.id, changes: { bonds: [{ ...bond, order: "unknown" }] } }
+      ]
+    } }));
+    await act(async () => { await expect(invoke()).rejects.toThrow(/cannot refresh stored chemistry.*unknown bond order/i); });
+    expect(port.read("initial")).toBe(before);
+    await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "edit.undo" } })); });
+    expect(port.read("initial")).toBe(before);
+  }, 20_000);
 
   describe.each(["macos", "windows"] as const)("plugin writes during an open text edit on %s", platform => {
     beforeEach(() => {
@@ -715,19 +803,27 @@ describe("plugin direct writes through mounted desktop normalization", () => {
     expect(port.read("initial")).toBe(before);
   });
 
-  it("records a selected atom's label bond side while preserving an unselected molecule", async () => {
+  it.each(["left", "right"] as const)("checks the meaning of an SCN label with its bond on the %s", async side => {
     const fixture = testContext();
     const second = { ...fixture.molecule, id: "unselected_structure" };
     const drawing = applyPatch(fixture.context.getDocument()!, { op: "addObject", pageId: fixture.context.getDocument()!.pages[0]!.id, object: second });
     const port = await mount(applyPatch(drawing, { op: "setSelection", objectIds: [fixture.molecule.id] }));
     const before = port.read("initial")!;
     const molecule = before.pages[0]!.objects[0]! as MoleculeObject;
+    const index = side === "left" ? 1 : 0;
     const invoke = registerWrite(context => context.documents.applyPatch!({ reason: "Edit atom label", patch: {
-      op: "updateObject", objectId: molecule.id, changes: { atoms: molecule.atoms.map((atom, i) => i ? atom : { ...atom, element: "SCN", labelLiteral: true }) }
+      op: "updateObject", objectId: molecule.id, changes: { atoms: molecule.atoms.map((atom, i) => i === index
+        ? { ...atom, element: "SCN", labelLiteral: true } : atom) }
     } }));
+    // Right-bond SCN is a bare formula. Saving it as an R-group placeholder would lose its meaning.
+    if (side === "right") {
+      await act(async () => { await expect(invoke()).rejects.toThrow(/cannot refresh stored chemistry.*Atom label "SCN"/); });
+      expect(port.read("initial")).toBe(before);
+      return;
+    }
     await act(async () => { await expect(invoke()).resolves.toMatchObject({ applied: true }); });
     const after = port.read("initial")!;
-    expect((after.pages[0]!.objects[0]! as MoleculeObject).atoms[0]!.labelBondSide).toEqual({ side: "right", atomId: molecule.atoms[1]!.id });
+    expect((after.pages[0]!.objects[0]! as MoleculeObject).atoms[index]!.labelBondSide).toEqual({ side, atomId: molecule.atoms[0]!.id });
     expect(after.pages[0]!.objects.find(object => object.id === second.id)).toEqual(before.pages[0]!.objects.find(object => object.id === second.id));
   });
 
