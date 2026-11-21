@@ -4,7 +4,7 @@ Status: plan approved by the owner 2026-11-10; revised 2026-11-20 for the one-co
 return trip (owner direction below), and again the same afternoon after the hand-built "MOF-5" turned
 out to be the wrong structure because it was built on one cell (see "MOF-5 correctness" under Test
 results; open question 9, now answered). The new `runCompanion` method widens the security contract, so the
-master session's OK and the Kimi review (condition 3) cover it too. The master session OKed the revised plan, including the `runCompanion` security contract scoped to official catalog plugins (2026-11-20); the usual gates apply when code starts. Every open question is answered (2026-11-20). Target: after ChemDraft 1.2.2 ships (1.2.x has priority; nothing here touches
+master session's OK and the Kimi review (condition 3) cover it too. The master session OKed the revised plan, including the `runCompanion` security contract scoped to official catalog plugins (2026-11-20); the usual gates apply when code starts. Questions 1–10 are answered (2026-11-20); questions 11 and 12 are open (2026-11-21). **Kimi plan review, 2026-11-21: not ready for Phase 1 as written; every finding is folded in below** (see "Kimi plan review (2026-11-21)", next section). Target: after ChemDraft 1.2.2 ships (1.2.x has priority; nothing here touches
 `release/1.2-rc` or `main`). Final home of this document: `docs/plans/send-to-crystal-builder.md` on
 local branch `plan/crystal-builder` (see "After approval").
 
@@ -44,6 +44,51 @@ Zn₄O–terephthalate pcu framework in Crystal Builder that was later found not
    scheduled after the one-click send ships. It needs a new native object in `chem-core` and touches
    the charter's "3D molecular visualization" non-goal (PLAN.md §5), which the owner lifted for this object on 2026-11-20 (question 7).
 
+## Kimi plan review (2026-11-21)
+
+`kimi-k3` (K3.1 Pro, effort high), read-only, on `c6f5977e` (agentctl run
+`run-20261121-161757-0048e5`, dispatched by the master session from the MacBook; the first try,
+`cb-plan-kimi-review`, stalled with no verdict). Verdict: **not ready for Phase 1 as written.** It
+checked code at the plan branch's old base (API 0.1.20), so its line references are to that commit;
+the conductor re-checked the main claims on `origin/main` (2026-11-21): the bridge's `command()` does
+go through the same `host.command` as the app's UI and its `click()` synthesizes pointer events; the
+selection carries only a molfile while `embed3d` takes only SMILES; the only plugin dialog is
+`promptText`. Each finding and where it is handled:
+
+| Finding | Severity | Handled in |
+|---|---|---|
+| `runCompanion` official-only was decided but never enforced | Blocker | Rule 13; task 1B; install provenance in 1D |
+| No forgery-proof user action (shared dispatcher, synthetic bridge clicks) | Blocker | Rule 2 (separate entry point, `isTrusted`, Rust one-shot token); task 1B tests; 1C mint and check |
+| Target check named a twist angle nothing measures | Blocker | Decision 1b target record now uses only reported numbers; "matches the target checks" wording |
+| Material names from proxies ("MOF-5 family", any tritopic → HKUST-1) | Blocker | Suggestion table: MOF-5 for terephthalate only, others unnamed, HKUST-1 row disabled |
+| `bb_dir` needs bonded XYZ, but only a CIF writer was planned | Blocker | Task 2B2 |
+| No task owned molfile parsing and SMILES for `embed3d` | Blocker | Task 1G (host graph, RDKit, `embed3d` graph input); the plugin parses nothing |
+| Regex params and substitution do not stop option or path injection | Important | Rule 11 (enum only, no `-`/`@`/separators); host placeholders only for paths |
+| Inputs, stderr, timeouts, environment unbounded | Important | Rule 15 |
+| Consent row had no template digest | Important | Rule 5 `templateDigest`, checked every call |
+| Errors promised no paths but quoted one | Important | Rule 8 |
+| App-change check spoofable; no Windows identity | Important | Rule 6 (hashes, signing identity, re-check before launch) |
+| Code claims not verified on the target commit | Important | Task 0.5; 0.1.27 marked provisional |
+| Repeat retry and question 11 unresolved, not fail closed | Important | Decision 1b rule (fail closed, Rebuild button); task 1H; question 11 |
+| Automatic cut active for any node | Important | Decision 1b, task 2C3: cut only for N16, N17 |
+| Loss audit impossible from the molfile alone | Important | Task 1G audit; Decision 1 table |
+| Minimization states `not-converged` and `clash` missing | Important | Decision 1 table; task 2C |
+| Master condition 3(d) vs inherent losses | Important | Question 12 |
+| Input stem and edge name could disagree or collide | Important | Rule 7 reserved stem, `{inputStem}`; one input |
+| Windows `.lnk` unclear; junctions not covered | Important | Decision 2 (refuse `.lnk`); rule 11 |
+| Version pinning had no step; `inspect` order ambiguous | Important | Rule 14 pipeline (preflight, build, inspect) |
+| No native dialog for net, node, repeat | Important | Task 1H (host confirmation dialog) |
+| Consent lifecycle and manifest ownership gaps | Important | Task 1D owns install and update files; task 2A owns the final manifest |
+| No source for a full node list; HKUST-1 untested | Important | Dialog offers validated rows only; HKUST-1 row disabled |
+| Task 2G put layout math in the plugin (§9) | Important | Task 1G `suggestConnectionPoints`; task 2G |
+| Phase 5 readback and raw CIF claims | Important | Tasks 5D, 5E |
+| Failure result had no stdout; exit-code behavior unclear | Important | API `diagnostic`; rule 14 |
+| Missing owned files (`package.json`, `workerProtocol.ts`, `build.rs`, AGENTS.md list) | Important | Tasks 1A, 1C, 1E |
+| Windows consent-file ACL deferred | Minor | Rule 5 (owner-only DACL through `windows-sys`) |
+| Stale X-handling text; "undocumented" bundle id; header; 2G "optional"; menu list; "learns nothing"; 0.4 text; Phase 3 stamp | Minor | Fixed in place |
+
+A scoped re-review of this revision is queued with the master session.
+
 ## Context
 
 Crystal Builder (github.com/JulesOpp/Crystal-Builder, MIT, Python/PySide6/VTK) builds crystals and
@@ -71,8 +116,9 @@ Two facts shape everything:
    drag-and-drop; registers `.cif` and `.xtalproj` only, not `.xyz`); its `xtal` CLI inspects and
    converts but has no "load this into the open window" command; its window MCP server is opt-in, off
    by default, on `127.0.0.1:7781` with a per-launch bearer token in a discovery file. SMILES is
-   accepted only through a GUI command that needs its optional RDKit extra. Builds are unsigned.
-   The macOS bundle identifier and the single-instance behavior are not documented.
+   accepted only through a GUI command that needs its optional RDKit extra. Builds are ad-hoc signed
+   (macOS) or unsigned. The bundle identifier is `org.crystalbuilder.CrystalBuilder` (test A3); it is
+   used only for change detection, never to find the app.
 
 ## Decision 1: what to send
 
@@ -137,13 +183,20 @@ Provenance goes in CIF comment lines and `_audit_*` items: source SMILES, net ch
 | Formal charges | Per-atom charges not stored; net charge goes in the comment line | **Warn before send**, naming the atoms |
 | Isotope labels | Not stored | **Warn before send**, naming them |
 | Radicals | Not stored | **Warn before send** |
-| Stereo flags (wedges, E/Z) | Specified stereo survives only as geometry. Unspecified centers and "either" bonds get one arbitrary 3D configuration | **Warn before send** when anything is unspecified, counting the centers and bonds |
+| Stereo flags (wedges, E/Z) | Specified stereo survives only as geometry. Unspecified centers and "either" bonds get one arbitrary 3D configuration | **Warn before send** when anything is unspecified, counting the centers and bonds. RDKit perceives them in the host (task 1G); the plugin does not parse stereo |
 | Several molecules or a salt | Components sit side by side; their relative position means nothing | **Warn before send** |
-| Abbreviations, superatoms | Must expand to real atoms | Expanded when the host's SMILES already does so; otherwise **refuse**, naming the label |
+| Abbreviations, superatoms | Must expand to real atoms | Expanded by the host's handoff graph (task 1G); a label it cannot expand is **refused** by name. A lossy serializer fallback is refused for this feature, never sent |
 | Connection-point atoms labelled `X` (Decision 1b) | **Send as MOF Linker**: kept as `X` atoms at the connection positions. **Send as Molecule**: not chemistry | Linker send: always disclosed ("2 connection points marked"). Molecule send: **refuse**, naming the X atoms and pointing to Send as MOF Linker |
 | R-groups, atom lists, polymer brackets, repeat units | Cannot be a single 3D molecule | **Refuse**, naming the object |
-| Reaction context (arrows, roles, conditions, atom maps) | Dropped; only the selected molecules go | **Warn before send** if the selection is part of a reaction |
-| Embedding or minimization fails (common with metals) | No coordinates | **Refuse** with the specific engine reason; never send unminimized or made-up geometry without saying so |
+| Reaction context (arrows, roles, conditions, atom maps) | Dropped; only the selected molecules go | **Warn before send** if the selection is part of a reaction. The selection alone cannot tell (it carries only a molfile), so the host's handoff audit reports reaction membership and atom maps (task 1G) |
+| Embedding or minimization fails (common with metals) | No coordinates | Per `PluginMinimize3DResult` (`chemistry3d.ts`): embed or setup failure and `clash` **refuse** with the engine's reason; `not-converged` **warns before send** with the iteration count ("geometry not fully relaxed"); engine warnings are listed in the box. Never send unminimized or made-up geometry without saying so |
+
+"Always disclosed" items (layout, labels, colors, implicit hydrogens made explicit, the vacuum box)
+are inherent to any 3D handoff: they are stated in the one-time consent box, the status line after
+each send, and the file. Master condition 3(d) asks for a box "every time something would be lost";
+owner question 2 chose "a box only when something specific would be lost". These two readings meet
+only if the inherent items count as format behavior, not specific losses; that is question 12, for
+the owner and the master session.
 
 "Warn before send" means a native message box listing the specific losses, with **Send** and
 **Cancel**. With nothing specific to warn about, the send proceeds without a box (after the one-time
@@ -185,7 +238,10 @@ the midpoint of the ring C–carboxyl C bond (Crystal Builder's own rule for its
 demo), and the pre-send box says "2 carboxylic acids cut to connection points (X) for the Zn₄O node".
 The drawn document is not changed (§7). Hand-drawn `X` atoms still work and take precedence: if the
 selection has any `X`, no automatic cut happens. Other connecting groups (pyridyl N, azolates,
-phosphonates) are refused by name in Phase 2, not guessed.
+phosphonates) are refused by name in Phase 2, not guessed. **The cut is bound to the node** (Kimi
+2026-11-21): it runs only for a node whose record says it supplies the carboxylates (`N16`, `N17`);
+if the user picks any other node, no automatic cut happens and hand-marked `X` is required, with
+that said in the dialog.
 
 **Three commands:**
 
@@ -200,10 +256,10 @@ click builds:
 
 | Drawn beside the linker | Linker | Suggested | Result |
 |---|---|---|---|
-| Zn²⁺ ions (any count), with or without O²⁻ | ditopic carboxylate | net `pcu`, node `N16` (Zn₄O(CO₂)₆), **`repeat=2x2x2`** (see below) | MOF-5 family (IRMOF) |
-| nothing | ditopic carboxylate | same, labelled "suggested; no metal drawn" | as above |
-| Cu²⁺ | tritopic carboxylate | net `tbo`, Cu paddlewheel node `N17` (Cu₂(CO₂)₄ with axial O; task 0.4) | HKUST-1, only after it passes the same target check |
-| anything else | any | no suggestion; the user picks from Crystal Builder's node list | — |
+| Zn²⁺ ions (any count), with or without O²⁻ | **terephthalate exactly** (after the cut, the linker graph equals C₆H₄X₂ with the X para) | net `pcu`, node `N16` (Zn₄O(CO₂)₆), **`repeat=2x2x2`** (see below) | MOF-5, named only when the target check passes |
+| Zn²⁺, or nothing | any other ditopic carboxylate | same net, node, and repeat; labelled "suggested; no metal drawn" when no metal is drawn | **Never a material name**: "Zn₄O pcu framework with this linker" plus the measured numbers (Kimi 2026-11-21: no "MOF-5 family" or IRMOF label from a proxy) |
+| Cu²⁺ | tritopic carboxylate | net `tbo`, Cu paddlewheel node `N17` (Cu₂(CO₂)₄ with axial O; task 0.4) | **Row disabled in 1.3** until a real N17/tbo build plus `inspect` fixture gives its full target record; then named HKUST-1 only for trimesate exactly |
+| anything else | any | no suggestion. In 1.3 the dialog offers only the validated rows above (no free node list), so no unvalidated id is ever built from the dialog | — |
 
 Drawn ions only pick the node; they are never sent as atoms, because a 2D drawing of four loose
 ions is not the cluster's geometry (the 2026-11-20 demo showed this). The dialog says so: "Node N16
@@ -217,44 +273,60 @@ every benzene ring is twisted 45° from both (P222, a = 12.94 Å; Crystal Builde
 it as "Joint twist left 6.000", and its manual, `docs/manual/frameworks/orientation.md`, says one
 pcu cell cannot alternate). Built on **2×2×2**, Crystal Builder's default `orientation=consistent`
 alternates the clusters itself and gives real MOF-5: Fm-3m, a = 25.87 Å, Z = 8, 424 atoms, twist
-0.00°. So the MOF-5 row asks for `repeat=2x2x2`, and each row of the suggestion table also carries a
-**target record** (space group, cell edge within 2%, Z, formula, maximum ring–carboxylate twist 10°).
-After every build the plugin runs Crystal Builder's own `xtal inspect` on the output (a second fixed
-companion template, `inspect`) and compares:
+0.00°. So the MOF-5 row asks for `repeat=2x2x2`, and each named row of the suggestion table also
+carries a **target record**, checked only against numbers Crystal Builder itself reports (revised
+2026-11-21: `inspect` has no dihedral measurement, and "Joint twist left" is a cost, not an angle, so
+the old "ring–carboxylate twist ≤ 10°" criterion is dropped rather than claimed):
 
-- **Match:** the status line names the material ("MOF-5: Fm-3m, a = 25.87 Å, 424 atoms").
+- from `mof.build --json` tables: "Joint twist left" exactly 0.000, no "Atoms overlap" rows, joints
+  bonded equal to the row's count (48 for MOF-5), the requested net and node;
+- from `inspect --json`: `detected_space_group` (Fm-3m for MOF-5) at `symprec` 0.01, cell edge within
+  2%, `z`, `formula` (Zn₃₂O₁₀₄C₁₉₂H₉₆), `n_atoms` (424), exactly one framework fragment, and no
+  error-level diagnostics;
+- the linker: the host-canonical graph of the sent block equals the row's linker exactly.
+
+After every build the host runs Crystal Builder's own `xtal inspect` on the output (the fixed
+pipeline in Decision 3, rule 14) and the plugin compares:
+
+- **Match:** the status line says "matches the MOF-5 target checks: Fm-3m, a = 25.87 Å, 424 atoms"
+  (a match on stated checks, not a proof of identity).
 - **No match:** the framework still opens, but the status line says what it is and why it is not the
-  target, for example "Zn₄O–terephthalate pcu net, P222, a = 12.94 Å: linkers twisted 45°, not MOF-5".
+  target, for example "Zn₄O–terephthalate pcu net, P222, a = 12.94 Å, Joint twist left 6.000: does not match the MOF-5 target checks".
   A material name never appears for a structure that failed its check (§7, §8: no fabricated claims).
   If the user changes the repeat to 1×1×1, this is what they see.
 
 **No per-MOF knowledge of the repeat (task 0.4, 2026-11-21).** Crystal Builder scores every
 `consistent` build and reports the joints left twisted as the table row "Joint twist left" in its
 `--json` output (6.000 for pcu/N16 at 1×1×1, 0.000 at 2×2×2). So for any row or any user choice the
-plugin uses one generic rule: if the user did not set a repeat, build at 1×1×1; if "Joint twist
-left" is above zero, rebuild once at 2×2×2 (how, given rule 3: open question 11); if it is still above zero, open the result and show the
-number, never a material name. A table row may still preset its repeat to save the second build.
-The plugin reads only Crystal Builder's own report, so it learns nothing about each MOF
-(`docs/plans/notes/crystal-builder-0.4-source-map.md`).
+plugin uses one generic rule: build at the row's preset repeat (1×1×1 when the user picked a
+custom combination); the host parses the "Joint twist left" row **fail closed** (missing,
+malformed, or non-numeric counts as "not zero"); if it is not zero, the result box says so with the
+number and offers **Rebuild at 2×2×2**, which is a new, host-authenticated user action and a new
+command invocation (question 11, option (b), recommended by the conductor and by Kimi). A failed
+rebuild never names or reopens the first output as if it were the answer. A twist of zero is
+necessary, not sufficient: naming still needs the full target check above. The repeat is **not
+hard-coded per MOF** (`docs/plans/notes/crystal-builder-0.4-source-map.md`); the per-material
+target records are a separate, narrower thing.
 
 Linker refusals, each naming the problem: fewer than two `X` atoms ("Mark at least two connection
 points: draw an atom labelled X where the linker bonds to a metal node"); an `X` bonded to zero, two
 or more atoms, or by a multiple bond; `X` in a molecule of several components.
 
-**How the 3D model is built with `X` present** (pure plugin code, no host change): the force field
-cannot type a dummy atom, so the plugin gives `embed3d` a SMILES in which each `X` becomes an explicit
-`[H]`, minimizes as usual, then writes those atoms back out as `X` in the CIF, bonded to their anchors. Atom order is stable
-across embedding and minimization (`chemistry3d.ts`), so the mapping is exact. The `X` sits at a C–H
-distance (about 1.1 Å) along the bond to its anchor. Tested: the builder accepts 1.09 Å as well as
-PORMAKE's own 0.75 Å, so no rescaling is needed. How an
-`X` label reaches the plugin in the selection SMILES (as `*`, as an unknown label, or refused by the
-host) is part of the Phase 0 code map (0.3); if the host refuses it, the plugin reads `X` atoms from the
-selection's atom list instead, and no host change is planned without a separate decision.
+**How the 3D model is built with `X` present** (revised 2026-11-21): the plugin never parses a
+molfile. The host's handoff graph (task 1G) gives atoms, bonds, and the `X` atoms; the plugin turns
+each `X` into an explicit H (the force field cannot type a dummy atom), passes the **graph** to
+`embed3d` (task 1G adds a graph input; RDKit sanitizes it in the host), minimizes as usual, then
+writes those atoms back out as `X`, bonded to their anchors. Atom order is stable across embedding
+and minimization (`chemistry3d.ts`), so the mapping is exact. The `X` sits at a C–H distance (about
+1.1 Å) along the bond to its anchor. Tested: the builder accepts 1.09 Å as well as PORMAKE's own
+0.75 Å, so no rescaling is needed.
 
-**Optional, later: a "Mark Connection Points" command** (task 2G). The user selects anchor atoms and
-the plugin adds `X` atoms at the right bond length and direction, as one labelled undo entry with the
-new atoms selected (§4.4). It needs `document.write`, a dangerous permission, so it ships only if the
-owner wants it (owner question 6). Drawing `X` by hand stays the documented way and is enough.
+**A "Mark Connection Points" command** (task 2G; approved for Phase 2, owner question 6). The user
+selects anchor atoms and the plugin adds `X` atoms as one labelled undo entry with the new atoms
+selected (§4.4). It needs `document.write`. Where each `X` goes (bond length and open direction) is
+layout math, which AGENTS.md §9 keeps in `layout-engine`, so the host supplies it (task 1G,
+`suggestConnectionPoints`); the plugin only builds the patch. Drawing `X` by hand stays the
+documented way.
 
 ### Test results: Crystal Builder 1.1.1, macOS Intel (2026-11-18)
 
@@ -294,12 +366,13 @@ What this changes:
 Platform parity for (a):
 
 - **Finding the app: the user picks it** in a native file dialog (starting in `/Applications` on
-  macOS, the Start-menu Programs folder on Windows). No hard-coded paths, no bundle-ID lookup (Crystal
-  Builder's ID is undocumented), no registry reads, no PATH search. The host remembers the pick.
+  macOS, the Start-menu Programs folder on Windows). No hard-coded paths, no bundle-ID lookup (the ID is
+  used only for change detection, rule 6), no registry reads, no PATH search. The host remembers the pick.
 - **macOS**: accept only a `.app` bundle; launch with `/usr/bin/open -a <bundle> -- <file>` (argument
   array, no shell). This routes to the running instance when the app supports it.
-- **Windows**: accept only a `.exe` (a picked Start-menu shortcut resolves to its target; `.bat`,
-  `.cmd`, `.lnk`, `.ps1` targets are refused because their quoting rules are unsafe); launch with
+- **Windows**: accept only a `.exe`. Shortcuts are **not** resolved: a picked `.lnk` is refused with
+  "Choose Crystal Builder.exe itself (in its install folder), not a shortcut", and `.bat`, `.cmd`,
+  `.ps1` are refused because their quoting rules are unsafe (Kimi 2026-11-21); launch with
   `std::process::Command` and the file as one argument. No `ShellExecute` verbs, no `cmd /c`.
 - **Both**: the process is detached; the host does not read its output, wait for it, or kill it on
   quit. Unsigned Crystal Builder builds may trigger Gatekeeper or SmartScreen on first run; that
@@ -327,113 +400,158 @@ interface PluginAppsAPI {
     warnings?: string[];     // ≤ 20 lines, ≤ 300 chars each; shown in the pre-send message box
   }): Promise<{ status: "sent" } | { status: "declined" } |
               { status: "failed"; code: "app-missing" | "app-changed" | "launch-failed" | "write-failed"; message: string }>;
-  /** Added 2026-11-20 for the one-command build. Run a companion tool shipped inside the chosen app,
-   *  using a command template the plugin DECLARED IN ITS MANIFEST, then optionally open its output. */
+  /** Added 2026-11-20 for the one-command build; revised 2026-11-21 after the Kimi review.
+   *  Run the companion PIPELINE the plugin declared in its manifest, inside the chosen app. */
   runCompanion(request: {
     appId: string;
-    template: string;                 // id of a manifest-declared template, e.g. "mofBuild"
-    params: Record<string, string>;   // each checked against the template's declared enum or pattern
-    inputs?: { name: string; extension: PluginHandoffExtension; text: string }[]; // written to a host temp dir
+    pipeline: string;                 // id of a manifest-declared pipeline, e.g. "mofBuild"
+    params: Record<string, string>;   // each one a typed value (rule 11); ≤ 32 chars
+    input?: { extension: PluginHandoffExtension; text: string }; // exactly one file, ≤ 1 MB UTF-8
     openOutput?: boolean;             // open the declared output file with the app afterwards
-  }): Promise<{ status: "done"; stdout: string /* ≤ 1 MB, JSON if the template says so */; opened: boolean } |
+  }): Promise<{ status: "done"; steps: { id: string; json: unknown /* parsed, ≤ 1 MB */ }[]; opened: boolean } |
               { status: "declined" } |
-              { status: "failed"; code: "app-missing" | "app-changed" | "tool-missing" | "bad-param" | "timeout" | "exit-nonzero" | "write-failed"; message: string }>;
+              { status: "failed"; code: "app-missing" | "app-changed" | "tool-missing" | "bad-param" |
+                  "version-untested" | "timeout" | "exit-nonzero" | "bad-output" | "write-failed";
+                message: string;              // no host paths (rule 8)
+                diagnostic?: { step: string; exitCode?: number; json?: unknown; stderrTail?: string /* ≤ 4 KB */ } }>;
 }
 ```
 
-The manifest declares each template in full, so consent can show it and review can read it:
+The manifest declares each pipeline in full, so consent can show it and review can read it. Only the
+host's placeholders (`{inputDir}`, `{inputStem}`, `{outputFile:cif}`, `{previousOutput}`) carry paths
+or file names; plugin parameters are typed values that can never be a path or an option:
 
 ```json
 "companions": [{
   "id": "mofBuild",
   "tool": { "macos": "Contents/MacOS/xtal", "windows": "xtal.exe" },
-  "args": ["run", "mof.build", "-p", "topology={topology}", "-p", "nodes={node}",
-           "-p", "edges={edge}", "-p", "bb_dir={inputDir}", "-p", "repeat={repeat}",
-           "-o", "{outputFile:cif}", "--json"],
-  "params": { "topology": { "pattern": "^[a-z]{3}(-[a-z0-9]+)?$" },
-              "node": { "pattern": "^[A-Za-z0-9_]{1,32}$" },
-              "edge": { "pattern": "^[A-Za-z0-9_]{1,32}$" },
-              "repeat": { "pattern": "^[1-4]x[1-4]x[1-4]$" } },
-  "timeoutSeconds": 120
-}, {
-  "id": "inspect",
-  "after": "mofBuild",
-  "tool": { "macos": "Contents/MacOS/xtal", "windows": "xtal.exe" },
-  "args": ["inspect", "{previousOutput}", "--json"],
-  "timeoutSeconds": 60
+  "testedVersions": ["1.1.1"],
+  "steps": [
+    { "id": "preflight", "args": ["capabilities", "--json"], "timeoutSeconds": 30 },
+    { "id": "build",
+      "args": ["run", "mof.build", "-p", "topology={topology}", "-p", "nodes={node}",
+               "-p", "edges={inputStem}", "-p", "bb_dir={inputDir}", "-p", "repeat={repeat}",
+               "-o", "{outputFile:cif}", "--json"],
+      "input": { "extension": "xyz" },
+      "timeoutSeconds": 120 },
+    { "id": "inspect", "args": ["inspect", "{previousOutput}", "--json"], "timeoutSeconds": 60 }
+  ],
+  "params": { "topology": { "enum": ["pcu", "tbo"] },
+              "node": { "enum": ["N16", "N17"] },
+              "repeat": { "enum": ["1x1x1", "2x2x2"] } }
 }]
 ```
 
-A template with `after` (added 2026-11-20 for the target check in Decision 1b) takes no plugin
-parameters and no plugin text: its only input is the file the named template just wrote, and it
-writes nothing. It may run once, right after that template, in the same command invocation.
+The host runs the steps in order, as one unit, and the plugin cannot call a step on its own (rule 14).
 
 Rules the host enforces (each one gets a test):
 
-1. **Two permissions.** New `apps.handoff`, added to `dangerousPluginPermissions`; manifest validation
-   refuses it without `native.execute` (same pattern as `assistant.run`, `index.ts:377`). The capability
-   is absent without both, and every method re-checks both.
-2. **Explicit user action only.** Methods work only while one of the plugin's own commands is
-   running, and that command must have been invoked by the user (menu, toolbar, shortcut). Analyzers,
-   background work, and commands invoked by an assistant or MCP tool call are refused. Task 0.3
-   found that main has **no invocation-source flag**: every user path reaches `host.invokeCommand`
-   with no source, and assistant and request tools enter through separate methods
-   (`invokeAssistantTool`, `invokeRequestTool`) that set a host-private `tool: true`. So the host
-   gains a **host-set source**: `invokeCommand(commandId, { source: "user" })`, passed only by the
-   app's own menu, toolbar, shortcut, and panel/overlay dispatch after a real UI event, and stored
-   on the host-private active invocation. It is never read from plugin input (the existing
-   `PluginCommandInput.source`, `"panel" | "overlay"`, stays separate and is not trusted for this),
-   never settable by a plugin, and absent on every other path. Handoff methods require it positively;
-   "not a tool call" is not enough. Tests show that `invokeAssistantTool`, `invokeRequestTool`, the
-   agent bridge, MCP-driven calls, and a plugin invoking its own command programmatically cannot
-   produce it, and that a plugin passing `source` in its input is ignored.
-3. **One send per command invocation** (`sendFile` or `runCompanion`, not both). A refused or
-   declined call does not use up the allowance (same rule as `dialogs.promptText`). The one exception
-   is a declared `after` template, which may follow its parent once and reads only the parent's output.
+1. **Two permissions.** New `apps.handoff`, added to `dangerousPluginPermissions` (and to the list in
+   AGENTS.md §4.1); manifest validation refuses it without `native.execute` (same pattern as
+   `assistant.run`). The capability is absent without both, and every method re-checks both.
+2. **Explicit user action only, with proof (revised 2026-11-21; Kimi blocker).** Methods work only
+   while one of the plugin's own commands is running **and** that invocation carries a host-issued
+   **user-intent token**. On main, the agent bridge's `command()` calls the same `host.command`
+   dispatcher as the app's own UI, and the bridge's `click()` synthesizes pointer events
+   (`apps/desktop/src/agentBridge.ts`), so a flag on the shared dispatcher would be forgeable.
+   Therefore:
+   - The flag never goes on the shared dispatcher. A separate entry point,
+     `invokeCommandFromUser(commandId, token)`, is called only from (a) the **native menu** handler,
+     which receives the menu event from Rust, and (b) toolbar, palette, shortcut, and overlay handlers
+     **only when `event.isTrusted` is true**. The bridge's `command()` and synthetic `click()`, MCP,
+     `invokeAssistantTool`, `invokeRequestTool`, panels' programmatic calls, and a plugin invoking its
+     own command keep using `host.command` and never carry a token.
+   - **The token is minted and checked in Rust.** A native menu event mints it directly; a trusted
+     webview event asks Rust for one through an IPC command that requires the main window and is
+     rate-limited to one per real event. It is one-shot, bound to (pluginId, commandId), and expires
+     after 60 s. Every `app_handoff_*` native command requires a live token and burns it (a whole
+     pipeline, rule 14, runs on one token). Plugin code cannot reach these IPC commands
+     itself: task 1B proves with a test that worker and in-process plugin code have no handle on the
+     Tauri IPC (or, if in-process code can reach it, that a call without a live token is refused).
+   - Tests cover `bridge.command`, `bridge.click`, synthetic `KeyboardEvent`s, MCP, both tool paths,
+     a plugin calling its own command, `source` in plugin input, a replayed token, and an expired one.
+3. **One pipeline or one send per command invocation** (`sendFile` or `runCompanion`, not both). A
+   refused or declined call does not use up the allowance (same rule as `dialogs.promptText`). A
+   rebuild (question 11) is a new invocation with a new token.
 4. **The plugin never supplies a path, free argv, environment, or verb at run time.** It supplies
-   text, a base name, an allowlisted extension, and for `runCompanion` only the id of a template fixed
-   in its manifest plus parameter values checked against that template (rule 11). The host renders
-   the command line.
+   text, an allowlisted extension, a pipeline id fixed in its manifest, and typed parameter values
+   (rule 11). The host renders the command line.
 5. **Consent per plugin and per app**, once, in a native message box that names the plugin (name and
-   id), the app's display name and location, and says the plugin will start that app and give it a
-   file each time its command runs. Task 0.3 found the external-tools store can't hold this (its
-   `ToolId` is a closed Claude/Codex enum, rows use `deny_unknown_fields`, and the UI strings are
-   hard-coded), so apps get a **new, separate store**, and the external-tools schema is not widened
-   (no downgrade risk for older builds reading that file). `app_local_data_dir()/app-handoff/consents.json`:
-   a top-level object with `schemaVersion: 1` and `rows: [{ pluginId, appId, appPath, granted, at }]`,
-   keyed by (pluginId, appId), written atomically like `consent.rs` (temp, sync, rename; 0o600 on Unix,
-   the Windows equivalent checked by the Windows session); unknown fields are kept on read and
-   rewrite, so a newer file never breaks an older build. Behavior, each with a test:
+   id), the app's display name and location, and the declared pipeline, and says the plugin will start
+   that app's tool and give it a file each time its command runs. Task 0.3 found the external-tools
+   store can't hold this (its `ToolId` is a closed Claude/Codex enum, rows use `deny_unknown_fields`,
+   and the UI strings are hard-coded), so apps get a **new, separate store**, and the external-tools
+   schema is not widened. `app_local_data_dir()/app-handoff/consents.json`: a top-level object with
+   `schemaVersion: 1` and `rows: [{ pluginId, appId, appPath, appIdentity, templateDigest,
+   consentTextVersion, granted, at }]`, keyed by (pluginId, appId). **`templateDigest`** is SHA-256 of
+   the canonical JSON of the declared pipeline, and it is **re-checked on every call**, not only at
+   update time, so a missed update hook or an interrupted swap can never run a changed template
+   (Kimi 2026-11-21). Written atomically like `consent.rs` (temp, sync, rename); 0o600 on Unix; on
+   Windows the file gets an owner-only DACL through `windows-sys` (already a dependency; a feature
+   flag may be added), tested by reading the ACL back. Unknown fields are kept on read and rewrite.
+   Behavior, each with a test:
    - **Uninstall:** every row for the plugin is deleted.
    - **Disable:** rows are kept; while disabled, the plugin's commands don't run, so nothing is sent.
-     Re-enabling restores the same consent.
-   - **Update:** rows are kept if the new version still declares `apps.handoff` and `native.execute`,
-     and its `companions` templates are unchanged; if the permission is dropped the rows are deleted;
-     if any template changed, consent is asked again (the box shows the new command).
+   - **Update:** rows are kept if the new version still declares both permissions; a changed pipeline
+     simply fails the digest check, so consent is asked again on the next call (the box shows the new
+     command); if the permission is dropped, the rows are deleted.
    - **App changed or missing** (rule 6): that row stops counting and consent is asked again.
-   - **Revoke** in the Plugin Manager sets `granted: false`; the row is listed until the plugin is
-     uninstalled.
-6. **The app is re-confirmed if it changes**: the host records path, size, modified time, and on
-   macOS the bundle identifier. A mismatch returns `app-changed` and asks again.
+   - **Revoke** in the Plugin Manager sets `granted: false`; the row is listed until uninstall.
+6. **The app is re-confirmed if it changes** (revised 2026-11-21). `appIdentity` holds SHA-256 of the
+   main executable and of the companion tool, plus the code-signing identity where one exists (macOS
+   cdhash for ad-hoc builds or the Team ID for signed ones; the Windows Authenticode publisher when the
+   file is signed). Before every launch the host canonicalizes the path again, re-hashes, and fails
+   closed on any mismatch (`app-changed`), then asks again. Path, size, and modified time stay as a
+   fast pre-check only.
 7. **Temp files are the host's**: `<app cache>/handoff/<pluginId>/<random>/<name>.<ext>`, built with
    `path` APIs; the name is stripped of separators, control characters, Windows reserved names, and
-   trailing dots or spaces; anything older than 24 hours is removed at startup. (The other app may
-   still hold the file, so it cannot be deleted right after the send.)
-8. **Specific errors** (§13): for example `Send to Crystal Builder failed: "Crystal Builder.app" is no
-   longer at /Applications. Choose the app again.`
+   trailing dots or spaces; anything older than 24 hours is removed at startup. The input block gets a
+   collision-resistant reserved stem, `cdx_<128-bit random hex>`, used as `{inputStem}`, so it can never
+   shadow or be shadowed by a block shipped with Crystal Builder (its `bb_dir` lets a user block
+   override a shipped one with the same stem).
+8. **Specific errors, without paths to the plugin** (§13; revised 2026-11-21). The plugin gets a code,
+   a message with no host paths, and a bounded `diagnostic`. Paths appear only in host-owned native UI,
+   for example the host's own box: `Send to Crystal Builder failed: "Crystal Builder.app" is no longer
+   at /Applications. Choose the app again.`
 9. **Web build and other hosts**: the capability rejects with a plain error and the same shape.
-10. **No new Rust dependency**: `std::process::Command` plus the existing `tauri-plugin-dialog`. No
-    shell or opener plugin is added, so no broad "open anything" surface appears in the webview.
-11. **`runCompanion` runs only what the manifest declared** (added 2026-11-20). The tool path is
-    resolved inside the chosen app's folder (bundle on macOS, install folder on Windows), with `..`,
-    symlinks out of it, and absolute paths refused. Arguments are the declared template only; every
-    `{param}` fills one whole argument, matches its declared enum or pattern, and can never add an
-    argument. `{inputDir}` and `{outputFile:ext}` are host paths in the handoff temp folder. No shell,
-    no environment from the plugin, a hard timeout that kills the process tree, stdout capped at 1 MB,
-    stderr kept for the error message. Windows: `CREATE_NO_WINDOW`, so no console flashes.
-12. **Consent names the template.** The one-time consent box for a companion shows the tool's name
-    and the declared command line with its placeholders ("xtal run mof.build … -o <output>.cif"). A
-    changed template in a plugin update asks again.
+10. **No new Rust dependency**: `std::process::Command`, the existing `tauri-plugin-dialog`, and the
+    existing `windows-sys` (feature flags only). No shell or opener plugin is added.
+11. **`runCompanion` runs only what the manifest declared, with typed values** (revised 2026-11-21).
+    The tool path is resolved inside the chosen app's folder (bundle on macOS, install folder on
+    Windows), with `..`, symlinks, and Windows junctions and other reparse points out of it, and
+    absolute paths, refused. Arguments are the declared steps only. A placeholder fills one whole
+    argument, or follows a fixed literal prefix that ends in `=` in the same argument (as in
+    `topology={topology}`); nothing else may surround it. Each `{param}` must be one of its declared `enum` values (the only parameter type in 1.3); a value is
+    ≤ 32 characters and can never start with `-` or `@`, contain a path separator, `..`, `=`, or a
+    control character, or add an argument. Option-like and response-file values are tested as well as
+    shell metacharacters.
+12. **Consent names the pipeline.** The consent box shows the tool's name and each declared step's
+    command line with its placeholders ("xtal run mof.build … -o <output>.cif"). A changed pipeline
+    fails the digest (rule 5) and asks again.
+13. **Official plugins only in 1.3** (owner question 8; added 2026-11-21, Kimi blocker). A host-owned
+    allowlist in Phase 1, `OFFICIAL_COMPANION_PLUGINS` (plugin id plus its release repository), is
+    checked when the plugin registers and on every `runCompanion` call. A plugin passes only if its
+    installed package came through the host's catalog or update path from that repository with a
+    verified SHA-256 (the install record keeps the provenance). Phase 2 testing, before the catalog
+    entry exists (Phase 3), installs the plugin from a GitHub pre-release of its repository through the
+    same verified path, which the allowlist already names. Development builds (`ChemDraft (dev)`) may
+    also accept a hand-installed package for an allowlisted id, and say so in the consent box; stable
+    builds never do. Tests: a sideloaded package with an allowlisted id and both permissions is refused
+    on a stable build; an unlisted plugin is refused everywhere; a dev build accepts the hand install.
+14. **A pipeline runs whole, in order** (added 2026-11-21). `preflight` (`xtal capabilities --json`)
+    must report a version in `testedVersions`, or the call fails with `version-untested` naming the
+    tested versions (question 10). `build` runs only after it; `inspect` runs only on the regular file
+    `build` just wrote inside the handoff temp folder (checked before the call). A step's stdout must
+    parse as JSON, or the call fails with `bad-output`; a nonzero exit still returns the parsed JSON in
+    `diagnostic` when there is one, so Crystal Builder's own message reaches the user (exit 1 is bad
+    input, exit 2 a build that ran and failed; task 0.4).
+15. **Bounds and environment** (added 2026-11-21). One input file, ≤ 1 MB; parameters ≤ 32 characters;
+    `timeoutSeconds` ≤ 300 per step and ≤ 600 per pipeline, and the timeout kills the process tree;
+    stdin is null; stdout ≤ 1 MB and stderr ≤ 256 KB per step, drained concurrently so a full pipe
+    cannot hang the tool; Windows `CREATE_NO_WINDOW`. The environment is cleared (`env_clear`) and
+    rebuilt from a fixed platform allowlist (macOS: `HOME`, `TMPDIR`, `LANG`, a fixed `PATH`; Windows:
+    `SystemRoot`, `TEMP`, `TMP`, `USERPROFILE`, `LOCALAPPDATA`, a fixed `PATH`). Tests show that
+    `XTAL_*`, `PYTHON*`, `DYLD_*`, and `LD_*` set in ChemDraft's environment never reach the tool.
 
 Every `#[cfg(target_os = "macos")]` gets its `cfg(windows)` side in the same change. The command line
 is built by one pure function that takes the platform as a parameter, so both branches are tested
@@ -447,9 +565,10 @@ from one host (§1, §14).
 - **Commands**: `plugin.crystalBuilder.buildMof` (main, "Build MOF in Crystal Builder…", menu
   `menu.crystalBuilder.buildMof`), `plugin.crystalBuilder.sendLinker` ("Send as MOF Linker"),
   `plugin.crystalBuilder.sendMolecule` ("Send as Molecule"), `plugin.crystalBuilder.chooseApp`
-  (re-pick); optional later `plugin.crystalBuilder.markConnectionPoints` (task 2G).
-  **Menus**: `menu.crystalBuilder.sendLinker`, `menu.crystalBuilder.sendMolecule`,
-  `menu.crystalBuilder.chooseApp`, location `plugins`.
+  (re-pick), and `plugin.crystalBuilder.markConnectionPoints` (task 2G, approved for Phase 2).
+  **Menus**: `menu.crystalBuilder.buildMof`, `menu.crystalBuilder.sendLinker`,
+  `menu.crystalBuilder.sendMolecule`, `menu.crystalBuilder.chooseApp`, and
+  `menu.crystalBuilder.markConnectionPoints` (task 2G), location `plugins`.
 - **Permissions**: `selection.read`, `chemistry.compute`, `apps.handoff`, `native.execute`,
   `plugin.storage`, `ui.menu`, and `document.write` (task 2G, Mark Connection Points; owner
   2026-11-20). `apiVersion: "^0.1.27"`. Nothing else: no network, no clipboard, no filesystem.
@@ -476,18 +595,21 @@ Windows installer comes only from the GitHub workflow; the Windows session tests
 | 0.1 Owner approves this plan; summary goes to the master session | Master session's OK | OK received |
 | 0.2 ~~Note to Crystal Builder's author~~ | Dropped 2026-11-18: every question was answered by testing and reading its source | Done |
 | 0.3 One read-only code map (single worker) | Short note: how a user-invoked command is told apart from an assistant-invoked one in `plugin-host`; what SMILES the selection snapshot carries for abbreviations, R-groups, and an atom labelled `X`, and whether the selection exposes per-atom labels and bonds; the consent store's shape | Note attached; no files changed |
-| 0.4 Crystal Builder source map (same single worker, after 0.3) | Short note from its MIT source: the node and net ids in `xtal/mof/catalog.py` (Zn₄O = N16 confirmed; the Cu paddlewheel id); what `mof.build --json` prints (fit numbers, formula, output path) and its exit codes; whether `bb_dir` accepts a CIF block or only PORMAKE XYZ; which nets need a repeat above 1×1×1 before their nodes can alternate (as pcu/N16 needs 2×2×2), so each suggestion row sets its repeat; what `xtal inspect --json` prints for space group, Z, and coordination; the Windows `xtal` executable name and location in the installer | **Done 2026-11-21:** `docs/plans/notes/crystal-builder-0.4-source-map.md` (worker's node table corrected by the conductor) |
+| 0.4 Crystal Builder source map (same single worker, after 0.3) | Short note from its MIT source: the node and net ids in `xtal/mof/catalog.py` (Zn₄O = N16 confirmed; the Cu paddlewheel id); what `mof.build --json` prints (fit numbers, formula, output path) and its exit codes; whether `bb_dir` accepts a CIF block or only PORMAKE XYZ; which nets need a repeat above 1×1×1 before their nodes can alternate (as pcu/N16 needs 2×2×2), and how a build reports it (now: "Joint twist left", read fail closed, with a Rebuild action per question 11); what `xtal inspect --json` prints for space group, Z, and coordination; the Windows `xtal` executable name and location in the installer | **Done 2026-11-21:** `docs/plans/notes/crystal-builder-0.4-source-map.md` (worker's node table corrected by the conductor) |
+| 0.5 Rebased code map (added 2026-11-21, Kimi) | Redo the 0.3 map on the exact commit Phase 1 branches from, after 1.2.2 ships: `PluginApiVersion`, `invokeCommand` and the tool paths, every dispatch site that calls `host.command` (menus, toolbar, shortcuts, panels, overlay, agent bridge), whether plugin code (worker and in-process) can reach the Tauri IPC, `workerProtocol.ts` capability whitelist, `build.rs` command registration, and the install record's provenance fields. The plan branch's own base (5008267c, API 0.1.20) is too old to cite | Note attached; line references in rules 1–15 and tasks 1A–1H updated to that commit |
 
 ### Phase 1: host capability (ChemDraft repo, branch `feat/app-handoff` off `origin/main` after 1.2.2 ships)
 
 | Task | Owned paths | Acceptance and tests | Review |
 |---|---|---|---|
-| 1A API contract | `packages/plugin-api/src/index.ts` (+ new `appHandoff.ts`, `appHandoff.test.ts`), header comment | Schemas for the four methods and the manifest `companions` block; permission added and marked dangerous; manifest refuses `apps.handoff` without `native.execute`, and refuses a template whose placeholder is undeclared or sits inside a larger argument; version 0.1.27. Tests: name sanitizing cases, extension allowlist, 5 MB and warning limits, permission pairing, template and param-pattern validation | Kimi |
-| 1B Host gate | `packages/plugin-host/src/**` (capability wiring + tests), app dispatch sites in `apps/desktop/src/` that pass `source: "user"` | Host-set `source: "user"` on `invokeCommand` per rule 2, with spoofing tests (assistant tool, request tool, agent bridge, MCP, programmatic self-invocation, `source` in plugin input); absent without both permissions; rejects outside the plugin's own command; rejects every invocation without the user source; one send per invocation, refused calls not counted; worker and in-process paths behave the same | Kimi |
-| 1C Native side | `apps/desktop/src-tauri/src/app_handoff/**`, `lib.rs` registration, `capabilities/app-handoff.json` (window `main` only) | Pure command-line builder tested for macOS and Windows from one host; companion runner per rule 11 (tool resolved inside the app folder, symlink and `..` escapes refused, timeout kills the tree, 1 MB stdout cap, no console window on Windows), tested with a stub tool on both platforms; picker accepts only `.app` / `.exe`; temp path and cleanup tests (backslashes, 8.3 paths, reserved names); new `app_handoff` consent store per rule 5 (separate file, `schemaVersion`, unknown fields kept), with tests for uninstall, disable, update with and without template changes, permission dropped, app changed, and revoke; the external-tools store untouched; app-changed detection; serde/Zod wire fixtures like `externalToolsWire.test.ts`; clippy clean on both `cfg` sides | Kimi |
-| 1D Desktop wiring | `apps/desktop/src/appHandoff/**`, plugin runtime hookup, Plugin Manager consent rows (own section, not the AI-tool rows) | Native message boxes for consent and warnings (no in-viewport dialog, §12); status-line success; specific errors; consent visible and revocable | Kimi |
+| 1A API contract | `packages/plugin-api/src/index.ts` (+ new `appHandoff.ts`, `appHandoff.test.ts`), header comment, `packages/plugin-api/package.json` (version must match, `index.test.ts` checks it), `packages/plugin-api/src/workerProtocol.ts` (whitelist `apps`) | Schemas for the four methods and the manifest `companions` pipelines; permission added and marked dangerous; manifest refuses `apps.handoff` without `native.execute`, refuses a step whose placeholder is undeclared or sits inside a larger argument other than after a fixed `key=` prefix, refuses any parameter type but `enum`, and refuses timeouts over the rule 15 caps; version 0.1.27 (provisional: the next free patch when Phase 1 starts, re-read by task 0.5). Tests: name sanitizing, extension allowlist, size and warning limits, permission pairing, enum values that look like options or paths refused, failure `diagnostic` shape | Kimi |
+| 1B Host gate | `packages/plugin-host/src/**` (capability wiring + tests); the trusted entry points in `apps/desktop/src/` (native menu handler and `isTrusted` UI handlers) that call `invokeCommandFromUser`; the agent bridge untouched except tests | User-intent token per rule 2: separate entry point, never the shared dispatcher; spoofing tests for `bridge.command`, `bridge.click`, synthetic key events, MCP, both tool paths, self-invocation, `source` in input, replayed and expired tokens; proof that plugin code cannot reach the Tauri IPC; official-only allowlist per rule 13 at registration and on every call, with the sideload tests; absent without both permissions; one pipeline or send per invocation, refused calls not counted; worker and in-process paths behave the same | Kimi |
+| 1C Native side | `apps/desktop/src-tauri/src/app_handoff/**`, `lib.rs` registration, `apps/desktop/src-tauri/build.rs` (register the new commands so their permissions are generated), `capabilities/app-handoff.json` (window `main` only) | Pure command-line builder tested for macOS and Windows from one host; token mint and check per rule 2; companion pipeline runner per rules 11, 14, and 15 (tool resolved inside the app folder, symlink, junction, and `..` escapes refused, preflight version check, `inspect` only on the file `build` wrote, timeout kills the tree, output caps with concurrent draining, null stdin, cleared environment, no console window on Windows), tested with a stub tool on both platforms; app identity per rule 6 (hashes, signing identity, re-check before every launch); picker accepts only `.app` / `.exe` and refuses `.lnk`; temp path and cleanup tests (backslashes, 8.3 paths, reserved names); new `app_handoff` consent store per rule 5 (separate file, `schemaVersion`, `templateDigest` re-checked on every call, owner-only file on both platforms, unknown fields kept), with tests for disable, a changed pipeline, app changed, and revoke; the external-tools store untouched; app-changed detection; serde/Zod wire fixtures like `externalToolsWire.test.ts`; clippy clean on both `cfg` sides | Kimi |
+| 1D Desktop wiring | `apps/desktop/src/appHandoff/**`, plugin runtime hookup, Plugin Manager consent rows (own section, not the AI-tool rows), `apps/desktop/src/plugins/installPluginPackage.ts` and the update path (uninstall deletes rows; permission dropped on update deletes rows; install provenance recorded for rule 13) with their tests | Native message boxes for consent and warnings (no in-viewport dialog, §12); the host-owned **build confirmation dialog** (task 1H); status-line success; specific errors with paths only in host UI; consent visible and revocable; lifecycle tests for uninstall, update, and permission dropped | Kimi |
 | 1F Connection points in the selection | `apps/desktop/src/plugins/selectionSnapshot.ts`, `packages/plugin-api/src/index.ts` (field), `chem-core` molfile warning text | `connectionPoints` per Decision 1b: lists exactly the atoms labelled `X` with anchor and bond order; molfile bytes unchanged for existing plugins; tests: X only, R1 only, X and R1 together, X with two neighbors (listed with `anchor: 0` so the plugin refuses it by name), `X` inside an abbreviation, a document saved and reopened | Kimi |
-| 1E Docs and closeout | `docs/plugin-architecture/AUTHORING.md` (new section + version table row), AGENTS.md §4.1 version line, `docs/manual-stress-checklist.md`, `docs/plans/PLANS.md`, build stamp | Docs match the code; a short AUTHORING example ("send a text file to an app the user picked"); gauntlet green | Kimi |
+| 1G Handoff graph and audit (added 2026-11-21, Kimi blockers) | `packages/plugin-api/src/index.ts` and `chemistry3d.ts` (types), `apps/desktop/src/plugins/` (host implementation using RDKit through the existing chemistry engine), `packages/layout-engine` (export the bond tool's new-bond direction for an atom, no copy) | `chemistry.handoffGraph({ objectId })` returns, for one selected molecule: atoms (element, charge, isotope, radical electrons, explicit H count, drawn label, `isConnectionPoint`), bonds (order 1/2/3/aromatic, stereo flags), RDKit canonical SMILES, unspecified stereocenters and double bonds (RDKit perception), reaction membership with roles and atom maps, abbreviations expanded or refused by name, and every serializer loss (a lossy fallback refuses). `embed3d` gains a `{ graph }` component (RDKit sanitizes; failure refuses). `suggestConnectionPoints({ objectId, anchors })` returns the bond-tool position for each new `X` (for task 2G). Tests: unspecified centers, a reaction member with atom maps, a radical with more than two electrons, an unknown bond, an abbreviation, writer fallback refused, graph round trip equals the drawn canonical SMILES | Kimi |
+| 1H Build confirmation dialog (added 2026-11-21) | `apps/desktop/src/appHandoff/**` (dialog through the shared native dialog host), `plugin-api` type | `runCompanion` shows, before the first step, a host-owned native dialog listing each `enum` parameter with the plugin's suggested value preselected; the user confirms or changes it; Cancel returns `declined`. The result box offers **Rebuild at 2×2×2** when the plugin asks for it, and that button is a trusted user action that starts a new invocation with a new token (question 11 (b)). The plugin API stays without a general choice dialog (only `promptText` exists today) | Kimi |
+| 1E Docs and closeout | `docs/plugin-architecture/AUTHORING.md` (new section + version table row), AGENTS.md §4.1 version line and dangerous-permission list (`apps.handoff`), `docs/manual-stress-checklist.md`, `docs/plans/PLANS.md`, build stamp | Docs match the code; a short AUTHORING example ("send a text file to an app the user picked"); gauntlet green | Kimi |
 
 Hands-on, both platforms (owner's MacBook for macOS UI; the Intel iMac checks only processor-specific
 behavior; Windows on the CI-built installer): pick an app; decline consent; accept; send; revoke and
@@ -499,15 +621,16 @@ quitting ChemDraft leaves the other app running.
 
 | Task | Owned paths | Acceptance and tests | Review |
 |---|---|---|---|
-| 2A Scaffold | manifest, `src/index.ts`, `src/workerEntry.ts`, LICENSE, README | Manifest parses; boundary rule holds (only `@chemdraft/plugin-api`) | Kimi |
+| 2A Scaffold | manifest (final: every command, menu, permission, and the `mofBuild` pipeline; later tasks chain off 2A and do not edit it), `src/index.ts`, `src/workerEntry.ts`, LICENSE, README | Manifest parses; boundary rule holds (only `@chemdraft/plugin-api`) | Kimi |
 | 2B CIF writer | `src/cif.ts` + test | Pure function, `Plugin3DModel` plus bonds → text in the Decision 1 format: P1 box with 5 Å vacuum, unique labels, `_geom_bond` loop with `_xtal_bond_order` and `_xtal_bond_kind explicit`; fixed decimals, LF only, atom count and order equal the model; provenance comments. Golden-file test of the exact text for the terephthalate linker (guards the private-tag risk) | Kimi |
-| 2C Loss audit | `src/lossAudit.ts` + test | Pure function returning refusals and warnings exactly per the table in Decision 1, per send mode; fixtures: charged, isotopic, radical, unspecified stereo, salt, abbreviation, R-group, reaction member, metal complex, X atoms in a molecule send | Kimi |
-| 2C2 Connection points | `src/connectionPoints.ts` + test | Pure functions: find `X` atoms and their anchors; validate per Decision 1b (fewer than two, wrong valence, multiple bond, several components each refused with its message); read connection points only from `connectionPoints` (never by guessing which `R#` is an `X`); rewrite them to H for embedding; map embedded atoms back to `X` by index. Fixture: a molecule with one `X` and one real `R1` (the `R1` is refused as an R-group, the `X` accepted). Fixtures: terephthalate linker (benzene ring with X in place of each COOH, PORMAKE E14 cut), a tritopic linker with 3 X, a molecule with 1 X (refused), X on a double bond (refused) | Kimi |
-| 2C3 Automatic cut | `src/carboxylateCut.ts` + test | Pure function: each COOH / COO⁻ on carbon → one `X` at the ring C–carboxyl C midpoint, per Decision 1b; skipped when the selection already has `X`; other connecting groups refused by name. Fixtures: terephthalic acid → C₆H₄X₂ matching the 2026-11-20 block; disodium terephthalate; trimesic acid → 3 X; nicotinic acid (pyridyl refused) | Kimi |
-| 2H Build MOF command | `src/buildMof.ts`, `src/nodeSuggest.ts` + tests, manifest `companions.mofBuild` | Node and net suggestion per the Decision 1b table (drawn Zn²⁺ → N16/pcu, `repeat=2x2x2`; Cu²⁺ + tritopic → paddlewheel/tbo; else no suggestion); one native dialog to confirm or change net, node, repeat; then one `runCompanion` call with the linker block as input and `openOutput: true`, then the `inspect` template on the output; `src/targetCheck.ts` compares it with the row's target record (space group, cell within 2%, Z, formula, ring–carboxylate twist ≤ 10°) and names the material only on a match. Mocked-context tests: success, user cancels, tool missing, timeout, nonzero exit with Crystal Builder's message passed through, net mismatch reported; **the 2026-11-20 twisted P222 build (fixture) must not be called MOF-5, and the Fm-3m cell must be** | Kimi |
+| 2B2 Linker block writer (added 2026-11-21, Kimi blocker) | `src/pormakeXyz.ts` + test | Pure function, embedded model plus graph → the bonded PORMAKE XYZ that `bb_dir` reads (task 0.4): atom count; the line of 0-based connection-atom indices; `symbol x y z` lines with `X` for connection atoms; bond lines `i j S\|D\|T\|A` (aromatic as `A`). Golden-file tests of the exact text for terephthalate and trimesate: index line, 0-based indices, coordinates to fixed decimals, every bond and its letter, atom order equal to the model | Kimi |
+| 2C Loss audit | `src/lossAudit.ts` + test | Pure function over the host's `handoffGraph` audit (task 1G; the plugin parses no molfile) returning refusals and warnings exactly per the table in Decision 1, per send mode, including minimization `not-converged` and `clash`; fixtures: charged, isotopic, radical, unspecified stereo, salt, abbreviation, R-group, reaction member, metal complex, X atoms in a molecule send | Kimi |
+| 2C2 Connection points | `src/connectionPoints.ts` + test | Pure functions: find `X` atoms and their anchors; validate per Decision 1b (fewer than two, wrong valence, multiple bond, several components each refused with its message); read connection points only from the host (`connectionPoints` / `handoffGraph`, never by guessing which `R#` is an `X`); rewrite them to H in the graph for embedding; map embedded atoms back to `X` by index. Fixture: a molecule with one `X` and one real `R1` (the `R1` is refused as an R-group, the `X` accepted). Fixtures: terephthalate linker (benzene ring with X in place of each COOH, PORMAKE E14 cut), a tritopic linker with 3 X, a molecule with 1 X (refused), X on a double bond (refused) | Kimi |
+| 2C3 Automatic cut | `src/carboxylateCut.ts` + test | Pure function on the host graph: each COOH / COO⁻ on carbon → one `X` at the ring C–carboxyl C midpoint, per Decision 1b; skipped when the selection already has `X`; runs only for a node that supplies carboxylates (N16, N17), refused with "mark X by hand" for any other node; other connecting groups refused by name. Fixtures: terephthalic acid → C₆H₄X₂ matching the 2026-11-20 block; disodium terephthalate; trimesic acid → 3 X; nicotinic acid (pyridyl refused) | Kimi |
+| 2H Build MOF command | `src/buildMof.ts`, `src/nodeSuggest.ts`, `src/targetCheck.ts` + tests (chained after 2A, 2B2, 2C, 2C2, 2C3) | Suggestion per the Decision 1b table (MOF-5 row only for terephthalate exactly; other ditopic carboxylates unnamed; the HKUST-1 row disabled); one `runCompanion` call on the `mofBuild` pipeline with the 2B2 block as the single input and the suggested values (the host's confirmation dialog, task 1H, lets the user change them); `targetCheck.ts` reads the `build` and `inspect` step JSON per the Decision 1b target record ("Joint twist left" parsed fail closed, no overlap rows, joints bonded, detected space group, cell within 2%, Z, formula, atom count, one fragment, linker graph equal) and names the material only on a full match, as "matches the MOF-5 target checks". Mocked-context tests: success; user cancels; tool missing; untested Crystal Builder version; timeout; exit 1 and exit 2 with Crystal Builder's JSON message passed through; non-JSON output; JSON failure without `tables`; missing, malformed, and non-numeric twist rows; nonzero twist offers Rebuild; failed rebuild names nothing; **the 2026-11-20 twisted P222 build (fixture) is not called MOF-5, and the Fm-3m cell is** | Kimi |
 | 2D Command flow | `src/send.ts` + test with a mocked context | Both send commands: empty selection, cancelled picker, declined consent, embed failure, minimize failure, linker refusals, and success each produce the specified message; one send per command | Kimi |
 | 2E Package and release | package zip, checksum, release body markers | Installs by hand through Add plugin from package on both platforms | Kimi |
-| 2G Mark Connection Points (in Phase 2, owner 2026-11-20) | `src/markConnectionPoints.ts` + test; manifest adds `document.write` | Selected anchors get `X` atoms at bond length along the open direction, through `documents.applyPatch`, one labelled undo entry, new atoms selected (§4.4); anchors with no free valence refused by name; chemistry of the anchor molecule otherwise unchanged (§7 test: canonical SMILES with X removed equals the original) | Kimi |
+| 2G Mark Connection Points (in Phase 2, owner 2026-11-20) | `src/markConnectionPoints.ts` + test (chained after 2A, which already declares `document.write`) | Selected anchors get `X` atoms at the positions the host's `suggestConnectionPoints` returns (task 1G; no layout math in the plugin, §9), through `documents.applyPatch`, one labelled undo entry, new atoms selected (§4.4); anchors with no free valence refused by name; chemistry of the anchor molecule otherwise unchanged (§7 test: canonical SMILES with X removed equals the original) | Kimi |
 
 Hands-on, both platforms, with Crystal Builder installed by the owner (agents do not install it):
 **the one-command demo first**: draw terephthalic acid and four Zn²⁺, select both, Build MOF in
@@ -524,7 +647,7 @@ formula.
 ### Phase 3: catalog and docs (ChemDraft repo)
 
 One task: catalog entry, the four capability URLs, `pluginUpdates.test.ts`, AUTHORING catalog
-paragraph, move the slice to `docs/shipped/README.md`. Acceptance: one-click install from **Add or
+paragraph, move the slice to `docs/shipped/README.md`, bump `CURRENT_BUILD_STAMP`. Acceptance: one-click install from **Add or
 Remove Plugins** on macOS and Windows; update check finds a newer release. Kimi review; gauntlet.
 
 ### Phase 4: later (not scheduled)
@@ -556,8 +679,8 @@ Recommended shape (if the owner says yes):
 | 5A Native object | `chem-core` (type, Zod schema, migration), `plugin-api` type, version bump, PLAN.md §5 non-goal wording | `crystal3d`: atoms (element, label, fractional or Cartesian Å), bonds with periodic image offsets, cell (a, b, c, α, β, γ), space group as read, repeat (1–4 per axis), a view rotation, and provenance (file name, source app, formula). Read-only chemistry: analyzers return `unsupported` ("periodic structure") |
 | 5B Drawing and rotation | `layout-engine` (projection, depth cues, cell edges; §9 says this math lives there only), `apps/desktop/src/interaction/` (drag-rotate, reusing the Spin 3D `ScreenPlacement` contract) | Shown as a ball-and-stick or stick projection with the cell box; move like any object; drag inside it to rotate; typed angles; repeat cells; the rotation is saved |
 | 5C Import | plugin importer contribution (`.cif`), host open dialog | The user exports or saves a CIF in Crystal Builder and opens or drops it in ChemDraft; one labelled undo entry, new object selected (§4.4). Malformed CIF fails with a specific message (§13) |
-| 5D Export | `export-engine` | SVG and PDF draw the current projection exactly as the canvas does; CDXML writes the projection as graphics with a warning that the 3D cell is not kept; the native `.chemdraft` file keeps everything; **Send back to Crystal Builder** re-sends the stored CIF unchanged |
-| 5E Optional automation | plugin | "Bring back from Crystal Builder" after a 2H build: the host already holds the output CIF from `runCompanion`, so one command inserts it as a `crystal3d` object, with no file dialog |
+| 5D Export | `export-engine` | SVG and PDF draw the current projection exactly as the canvas does; CDXML writes the projection as graphics with a warning that the 3D cell is not kept; the native `.chemdraft` file keeps everything; **Send back to Crystal Builder** re-sends the original CIF text, which 5A stores in the object with its SHA-256 (revised 2026-11-21: the object must keep the raw CIF for this to be true). Tests: schema and migration, periodic bonds, malformed CIF, undo, projection and export parity, both platforms |
+| 5E Optional automation | plugin, plus a host readback contract | "Bring back from Crystal Builder" after a 2H build. `runCompanion` returns no output bytes today, so this needs a host-mediated readback of the declared output file (bounded, same handoff folder, one user action), designed in Phase 5, not assumed |
 
 The picture-only fallback was considered and dropped (owner, 2026-11-20).
 
@@ -607,8 +730,15 @@ For the owner:
    only a named parameter (`"retry": {"param": "repeat", "values": ["2x2x2"]}`), shown in the consent
    box; (b) no retry: the result's message box offers **Rebuild at 2×2×2**, and that click starts a
    new command invocation; (c) keep presetting the repeat per table row and use the twist only to
-   refuse the name. Recommended: (b), because every build stays one user action and the host gains
-   nothing new. Owner to choose; the Kimi plan review should check it.
+   refuse the name. Recommended: (b), because every build stays one user action. The Kimi review
+   (2026-11-21) also recommends (b), as a new host-authenticated user action with rule 3 unchanged;
+   the plan is now written for (b) (task 1H). **Owner to confirm.**
+12. **Inherent format losses and master condition 3(d) (new, 2026-11-21, from the Kimi review).**
+   Layout, labels, colors, implicit hydrogens made explicit, and the vacuum box are lost on every send
+   by the nature of a 3D file. Owner question 2 chose a box only for specific losses; condition 3(d)
+   reads as a box whenever anything is lost. Recommended: treat these as format behavior, always
+   disclosed in the consent box, status line, and file, and amend condition 3(d) to say so. **Owner
+   and master session to confirm.**
 
 For Crystal Builder's author: **nothing required.** No email is needed for the plan (owner, 2026-11-18); question 10 was answered no contact (owner, 2026-11-20). A1–A4 and A6 were
 answered by testing on macOS and by reading its MIT source (see "Test results" under Decision 1b).
@@ -624,8 +754,9 @@ matters only for Phase 4 and can be read from its source when Phase 4 starts.
 - Chemistry check (§7): for each fixture, atom count, formula, and bond count in the CIF equal the drawn
   molecule's with explicit hydrogens; every loss in the table produces its warning or refusal.
 - One-command build check: terephthalic acid + Zn²⁺ gives MOF-5 as Crystal Builder itself reports it:
-  `xtal inspect` detects Fm-3m (at 0.01 Å), a = 25.8–25.9 Å, Z = 8, 424 atoms, one framework, every
-  ring within 10° of its carboxylates, as the 2026-11-20 `repeat=2x2x2` build gave. A pcu build at
+  `xtal inspect` detects Fm-3m (at 0.01 Å), a = 25.8–25.9 Å, Z = 8, 424 atoms, one framework, and
+  the build reports "Joint twist left" 0.000 with 48 joints bonded and no overlaps, as the 2026-11-20
+  `repeat=2x2x2` build gave (rings measured flat by hand then; the plugin does not claim to measure it). A pcu build at
   a ≈ 12.9 Å is a failure, whatever its fit numbers say: fit RMSD 0.000 and "net confirmed pcu"
   both passed on the wrong structure.
 - Every other target in the suggestion table is checked the same way before its row ships.
