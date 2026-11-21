@@ -136,7 +136,7 @@ describe("Office editor loading state", () => {
     expect(turned.listeners.size).toBe(0);
   });
 
-  it("reveals through the generic first-paint command, granted only to the office-object window and Windows palettes", () => {
+  it("reveals through the generic first-paint command, granted only to the office-object window, the Office editor's toolbars and Windows palettes", () => {
     expect(html).not.toContain("office_toolset_emit");
     expect(html).not.toContain("office-object-painted");
     const shipped = (source: string) => source.slice(0, source.indexOf("#[cfg(test)]\nmod tests"));
@@ -151,9 +151,10 @@ describe("Office editor loading state", () => {
         identifier: string; windows: string[]; platforms?: string[]; permissions: unknown[];
       });
     const holders = grants.filter(grant => grant.permissions.includes(`allow-${WINDOW_FIRST_PAINT_COMMAND.replaceAll("_", "-")}`));
-    // Windows palettes report their first paint through the same command (toolset-first-paint).
+    // The Office editor's own toolbars (office-toolset) and Windows palettes report their first paint through the same command (toolset-first-paint).
     expect(holders.map(grant => [grant.identifier, grant.windows, grant.platforms]).sort()).toEqual([
       ["office-object", ["office-object-*"], ["windows"]],
+      ["office-toolset", ["office-utility-office-object-*--toolset-core-*", "office-utility-office-object-*--toolset-popover-*"], ["windows"]],
       ["toolset-first-paint", ["toolset-core-*", "toolset-plugin-*", "toolset-user-*", "toolset-popover-*", "toolset-tooltip"], ["windows"]]
     ]);
   });
