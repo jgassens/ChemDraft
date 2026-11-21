@@ -496,6 +496,98 @@ describe("plugin direct writes through mounted desktop normalization", () => {
     expect(port.read("initial")).toBe(before);
   }, 20_000);
 
+  /** (R)-1-aminoethanol drawn with its nitrogen wedged up from the stereocentre, at explicit
+   * coordinates for the stereocentre's three neighbours. */
+  function stereocentreAt(blank: ChemDraftDocument, place: (element: "centre" | "C" | "N" | "O") => { x: number; y: number }) {
+    const molecule = graphEditFixture(blank, { name: "element", source: "C[C@H](N)O" });
+    const centre = molecule.bonds.find(bond => bond.display?.bondStyle === "wedge")!.fromAtomId;
+    expect(molecule.atoms.find(atom => atom.id === centre)?.element).toBe("C");
+    const role = (id: string) => id === centre ? "centre" : molecule.atoms.find(atom => atom.id === id)!.element as "C" | "N" | "O";
+    molecule.atoms = molecule.atoms.map(atom => ({ ...atom, ...place(role(atom.id)) }));
+    return { molecule, role };
+  }
+  async function storedConfiguration(molecule: MoleculeObject) {
+    const result = await identityClient.inspectStructureOffThread(molecule.structureFormat === "smiles" ? "smiles" : "molfile",
+      molecule.structure, undefined, undefined, "writeIdentity");
+    if (!result.valid) throw new Error(result.reason);
+    return result.identitySmiles;
+  }
+  async function moveStereocentreAtoms(molecule: MoleculeObject, atoms: MoleculeObject["atoms"]) {
+    const invoke = registerWrite(context => context.documents.applyPatch!({ reason: "Move atoms", patch: {
+      op: "updateObject", objectId: molecule.id, changes: { atoms }
+    } }));
+    let result: unknown;
+    await act(async () => { result = await invoke(); });
+    return result;
+  }
+
+  it("verifies a large-coordinate edit that moves one wedge neighbour across another", async () => {
+    const blank = createEmptyDocument();
+    const pageId = blank.pages[0]!.id;
+    // Extent 1e9 lets the similarity fit absorb a 2-unit move; the oxygen still crosses the methyl's ray.
+    const { molecule, role } = stereocentreAt(blank, which => ({ centre: { x: 300, y: 255.5 }, C: { x: 300 + 1e9, y: 255.5 },
+      N: { x: 300, y: 233.5 }, O: { x: 305, y: 256.5 } })[which]);
+    const port = await mount(applyPatch(blank, { op: "batch", patches: [
+      { op: "addObject", pageId, object: molecule }, { op: "setSelection", pageId, objectIds: [molecule.id] }
+    ] }));
+    const before = port.read("initial")!;
+    const inspect = vi.spyOn(identityClient, "inspectStructureOffThread");
+    const atoms = molecule.atoms.map(atom => role(atom.id) === "O" ? { ...atom, y: 254.5 } : atom);
+    await expect(moveStereocentreAtoms(molecule, atoms)).resolves.toMatchObject({ applied: true, objectIds: [molecule.id] });
+    expect(inspect).toHaveBeenCalled();
+    const after = port.read("initial")!.pages[0]!.objects[0]! as MoleculeObject;
+    expect(after).not.toBe(before.pages[0]!.objects[0]);
+    // The drawn configuration inverted, so the stored R must become S and never stay R.
+    expect(await storedConfiguration(after)).toBe(await storedConfiguration({ ...after, structure: "C[C@@H](N)O", structureFormat: "smiles" }));
+    expect(after.compatibility?.unknown.smiles).toBe("C[C@@H](N)O");
+    expect(after.chemistry?.stereochemistry.join(" ")).toMatch(/\(S\)/);
+    expect(after.chemistry?.stereochemistry.join(" ")).not.toMatch(/\(R\)/);
+  }, 20_000);
+
+  it("skips inspection when a wedged stereocentre is rotated and moved as one unit", async () => {
+    const blank = createEmptyDocument();
+    const pageId = blank.pages[0]!.id;
+    const molecule = graphEditFixture(blank, { name: "element", source: "C[C@H](N)O" });
+    const port = await mount(applyPatch(blank, { op: "batch", patches: [
+      { op: "addObject", pageId, object: molecule }, { op: "setSelection", pageId, objectIds: [molecule.id] }
+    ] }));
+    const stored = port.read("initial")!.pages[0]!.objects[0]! as MoleculeObject;
+    const inspect = vi.spyOn(identityClient, "inspectStructureOffThread");
+    const cx = molecule.atoms.reduce((sum, atom) => sum + atom.x, 0) / molecule.atoms.length;
+    const cy = molecule.atoms.reduce((sum, atom) => sum + atom.y, 0) / molecule.atoms.length;
+    const cos = Math.cos(Math.PI / 3), sin = Math.sin(Math.PI / 3);
+    // A rotation keeps the turn between every pair of the stereocentre's neighbours, so R cannot change.
+    const atoms = molecule.atoms.map(atom => ({ ...atom,
+      x: cx + 15 + (atom.x - cx) * cos - (atom.y - cy) * sin, y: cy + 10 + (atom.x - cx) * sin + (atom.y - cy) * cos }));
+    await expect(moveStereocentreAtoms(molecule, atoms)).resolves.toMatchObject({ applied: true });
+    expect(inspect).not.toHaveBeenCalled();
+    const after = port.read("initial")!.pages[0]!.objects[0]! as MoleculeObject;
+    expect(after.atoms.map(atom => [atom.x, atom.y])).toEqual(atoms.map(atom => [atom.x, atom.y]));
+    expect(after.structure).toBe("C[C@H](N)O");
+    expect(after.compatibility?.unknown.smiles).toBe(stored.compatibility?.unknown.smiles);
+    expect(after.chemistry?.stereochemistry).toEqual(stored.chemistry?.stereochemistry);
+  });
+
+  it("verifies a near-collinear wedge neighbour that crosses another neighbour's ray", async () => {
+    const blank = createEmptyDocument();
+    const pageId = blank.pages[0]!.id;
+    // The oxygen sits within the side epsilon of the methyl's ray (|sin| about 5e-9), so neither
+    // drawing clearly keeps its turn, although the move is far inside the similarity tolerance.
+    const { molecule, role } = stereocentreAt(blank, which => ({ centre: { x: 300, y: 255.5 }, C: { x: 320, y: 255.5 },
+      N: { x: 300, y: 233.5 }, O: { x: 280, y: 255.5 + 1e-7 } })[which]);
+    const port = await mount(applyPatch(blank, { op: "batch", patches: [
+      { op: "addObject", pageId, object: molecule }, { op: "setSelection", pageId, objectIds: [molecule.id] }
+    ] }));
+    const before = port.read("initial")!;
+    const inspect = vi.spyOn(identityClient, "inspectStructureOffThread");
+    const atoms = molecule.atoms.map(atom => role(atom.id) === "O" ? { ...atom, y: 255.5 - 1e-7 } : atom);
+    // A collinear drawing gives the stereocentre no configuration, so its stored R cannot be confirmed.
+    await expect(moveStereocentreAtoms(molecule, atoms)).rejects.toThrow(
+      new RegExp(`cannot refresh stored chemistry for molecule "${molecule.id}".*stored smiles.*editable graph cannot verify`, "i"));
+    expect(inspect).toHaveBeenCalled();
+    expect(port.read("initial")).toBe(before);
+  }, 20_000);
+
   it("inserts a molecule whose stored records are the canvas's own derivation without inspection", async () => {
     const blank = createEmptyDocument();
     const molecule = graphEditFixture(blank, { name: "element", source: "CO" });
