@@ -1843,7 +1843,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.21.07.30-sonnet";
+const CURRENT_BUILD_STAMP = "11.21.08.30-opus";
 const TABLE_DRAFT_RECOVERY_WARNING = "session.tableDraftDropped";
 
 function clearTableDraftRecoveryWarnings(report: OpenWarningsReport | undefined): OpenWarningsReport | undefined {
@@ -3764,6 +3764,8 @@ export function MainWindow({
     // write already in flight against the old document key is refused rather than landing here.
     documentIdentityRef.current += 1;
     const tabId = activeDocumentTabIdRef.current;
+    // Legacy assistant requests are bound to the tab's document too: cancel them, never retarget them.
+    pluginRuntimeRef.current?.assistant.cancelForReplacedDocument(tabId);
     invalidateRequestDocument(tabId);
     installDocumentHistory(createDocumentHistory(normalizeCommittedDocument(
       admitParsedDocument(nextDocument), { preserveElectronMarks: true }
@@ -10962,6 +10964,7 @@ export function MainWindow({
             snapshotDocumentTab(false);
             tabs = [...documentTabsRef.current, ...restoredTabs];
           } else {
+            pluginRuntimeRef.current?.assistant.cancelForReplacedDocument(activeDocumentTabIdRef.current);
             invalidateRequestDocument(activeDocumentTabIdRef.current);
             documentTabSnapshotsRef.current.clear();
             nonPristineTabsRef.current.clear();
@@ -13194,7 +13197,7 @@ export function MainWindow({
     commandRegistry: registry,
     createStorage: createPersistentPluginStorage,
     onProposedPatchesChanged: () => setPatchQueueVersion((version) => version + 1),
-    applyDocumentPatch: async ({ plugin, command, patch, undoLabel, signal, writeScopeObjectIds, repeatUnitCleanup }) => {
+    applyDocumentPatch: async ({ plugin, command, patch, undoLabel, signal, writeScopeObjectIds, writeScopePages, repeatUnitCleanup }) => {
       if (quitInteractionRef.current) throw new Error("Quit is waiting for a choice; nothing was inserted.");
       const gate = pluginWriteGateRef.current;
       if (!gate) throw new Error("The document window is closing; nothing was inserted.");
@@ -13211,7 +13214,7 @@ export function MainWindow({
           throw new Error("The document changed while the plugin was running; nothing was inserted.");
         }
         const before = documentRef.current;
-        assertPluginPatchWriteScope(before, patch, writeScopeObjectIds);
+        assertPluginPatchWriteScope(before, patch, writeScopeObjectIds, undefined, undefined, writeScopePages);
         const previousIds = new Set(before.pages.flatMap(page => page.objects.map(object => object.id)));
         const applied = applyPluginDocumentPatch(before, patch, {
           avoidInsertionOverlap: plugin.id === "org.chemdraft.opsin.nameToStructure",
@@ -13239,7 +13242,7 @@ export function MainWindow({
         }
         const authored = rebasePluginPatch(before, patch);
         const normalized = normalizeCommittedDocument(placed);
-        const refreshed = refreshPluginPatchChemistry(before, normalized, authored, writeScopeObjectIds, signal);
+        const refreshed = refreshPluginPatchChemistry(before, normalized, authored, writeScopeObjectIds, signal, writeScopePages);
         const isCurrent = () => mountedRef.current && !quitInteractionRef.current && documentIdentityRef.current === documentIdentity &&
           assistantDocumentContentUnchanged(before, documentRef.current, { checkBracketIdentity: true });
         let prepared = normalized;
@@ -13257,7 +13260,7 @@ export function MainWindow({
           const baseline = fitBaseline(before);
           let cleanup: ReturnType<typeof finishScopedRepeatUnitCleanup>;
           const assertFinalDocument = (document: ChemDraftDocument) => {
-            assertPluginDocumentWriteScope(baseline, document, patch, writeScopeObjectIds);
+            assertPluginDocumentWriteScope(baseline, document, patch, writeScopeObjectIds, writeScopePages);
             signal?.throwIfAborted();
             pluginRuntimeRef.current!.host.requirePermission(plugin.id, "document.write");
             cleanup = finishScopedRepeatUnitCleanup(repeatUnitCleanup, before, document, authored.patch);

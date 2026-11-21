@@ -18,7 +18,8 @@ import { applyChargeToolAtPoint } from "../documentWorkflow";
 import { PluginWorkerBridge } from "../plugins/PluginWorkerBridge";
 import { createWorkerRoutedOptions } from "../plugins/registerBundledPlugins";
 
-function setup(onAssistantToolCall?: PluginAssistantToolHandler, directWrites = false, workerRouted = false, platform?: "macos" | "windows") {
+function setup(onAssistantToolCall?: PluginAssistantToolHandler, directWrites = false, workerRouted = false, platform?: "macos" | "windows",
+  bindDocument = false) {
   const fixture = testContext();
   const { context, replace } = fixture;
   replace(toEngineDocument(context.getDocument()!));
@@ -48,9 +49,16 @@ function setup(onAssistantToolCall?: PluginAssistantToolHandler, directWrites = 
     close: vi.fn(async (_sessionId: string) => {}), respond: vi.fn(async (_sessionId: string, _requestId: string, _response: McpBridgeResponse) => {}),
     status: vi.fn(async () => ({ listening: true, sessionCount: listeners.size }))
   };
+  // Mirrors the desktop's per-tab request-document key, rotated when a tab's document is replaced.
+  let documentKey = 0;
+  const captureDocument = () => {
+    const tabId = activeTabId, key = documentKey;
+    return { key: String(key), read: () => documentKey === key ? port.read(tabId) : undefined };
+  };
   const controller = new AssistantToolsController({ platform, host: (): PluginHost => host, engine,
     getActiveTabId: () => activeTabId, getSelectionIds, runWrite: apply => gate.run(apply),
-    readDocument: port.read, transactions: () => transactions, createContext: () => context });
+    readDocument: port.read, transactions: () => transactions, createContext: () => context,
+    ...(bindDocument ? { captureDocument } : {}) });
   const host = new PluginHost({ assistant: controller, getActiveDocument: () => port.read(activeTabId), getSelection: () => ({ objectIds: [], molecules: [] }),
     ...(directWrites ? { getActiveDocument: context.getDocument, applyDocumentPatch: (application: import("@chemdraft/plugin-host").PluginPatchApplicationRequest) => gate.run(() => {
       writeSignals.push(application.signal!);
@@ -101,6 +109,8 @@ function setup(onAssistantToolCall?: PluginAssistantToolHandler, directWrites = 
   return { ...fixture, host, controller, engine, plugin, context, listeners, history, port, commandContext, bridge,
     gesture, gate, getSelectionIds, userEdits, transactions, workerBridge, writeSignals,
     select: (ids: string[]) => { selection = ids; }, activate: (tabId: string) => { activeTabId = tabId; },
+    /** File > Open into the same tab: the tab keeps its id, its document is replaced. */
+    openIntoTab: (next: typeof baseline) => { documentKey += 1; fixture.replace(next); },
     finishCommand: async () => { release(); await command; },
     finish: async () => { controller.closeAllForPlugin(plugin.id); gate.dispose(); release(); await command;
       workerBridge?.terminate(); transactions.dispose(); } };
@@ -1321,5 +1331,31 @@ describe("session-scoped plugin assistant tools", () => {
         { result: { tools: expect.not.arrayContaining([EXTRA_TOOL]) } }));
       expect(handler).not.toHaveBeenCalled();
     } finally { await s.finish(); s.host.unregisterPlugin(other.id); }
+  });
+});
+
+describe("legacy assistant request and document replacement", () => {
+  const replaced = "Assistant request canceled: the drawing it was working on was replaced.";
+  const openedDrawing = () => toEngineDocument(createEmptyDocument({ title: "Opened drawing", now: "2026-11-21T00:00:00Z" }));
+
+  it.each([false, true])("never lands a pending insertion in a drawing opened into its tab (host cancels = %s)", async hostCancels => {
+    const s = setup(undefined, false, false, undefined, true);
+    try {
+      await s.controller.beginRequest(s.plugin, { prompt: "caption" });
+      s.gesture.active = true;
+      const pending = s.controller.callTool(s.plugin, { name: "insert_text", input: { text: "Late caption" } });
+      const rejection = expect(pending).rejects.toThrow(replaced);
+      await vi.waitFor(() => expect(s.gate.pending()).toBe(1));
+      const opened = openedDrawing();
+      s.openIntoTab(opened);
+      if (hostCancels) (s.controller as unknown as { cancelForReplacedDocument?(tabId: string): void }).cancelForReplacedDocument?.(s.context.tabId);
+      s.gesture.active = false;
+      s.gate.flush();
+      await rejection;
+      expect(s.history).toHaveLength(0);
+      expect(s.context.getDocument()!.pages[0]!.objects).toEqual(opened.pages[0]!.objects);
+      await expect(s.controller.callTool(s.plugin, { name: "insert_text", input: { text: "Next caption" } })).rejects.toThrow(replaced);
+      expect(s.context.getDocument()!.pages[0]!.objects).toEqual(opened.pages[0]!.objects);
+    } finally { await s.finish(); }
   });
 });

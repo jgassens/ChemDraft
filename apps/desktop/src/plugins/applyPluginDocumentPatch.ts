@@ -14,7 +14,8 @@ import {
   type AppliedPatchReceipt,
   type NormalizedProposedDocumentPatch
 } from "@chemdraft/plugin-api";
-import { assertPluginDocumentWriteScope, rebasePluginPatch, retainedCtabCompatibility, storedCtabReference, writePatchOps } from "@chemdraft/plugin-host";
+import { assertPluginDocumentWriteScope, rebasePluginPatch, retainedCtabCompatibility, storedCtabReference, writePatchOps,
+  type PluginWriteScopePages } from "@chemdraft/plugin-host";
 import { selectionBounds, translateInsertedDocumentObjects } from "../documentWorkflow";
 import { choosePlacement, objectRect, overlaps as boundsOverlap, pageContentRect, RELATIVE_GAP, unionRects } from "../assistant/placement";
 import type { ViewportRect } from "@chemdraft/viewport-engine";
@@ -45,7 +46,9 @@ const STORED_CHEMISTRY_FIELDS = ["structure", "structureFormat", "chemistry", "c
  * Reviewed proposals are authorized by acceptance and have no command selection scope, but their
  * insertions are verified exactly like a scoped plugin's. */
 export function refreshPluginPatchChemistry(before: ChemDraftDocument, draft: ChemDraftDocument,
-  rebased: NormalizedProposedDocumentPatch, writeScopeObjectIds?: readonly string[], signal?: AbortSignal
+  rebased: NormalizedProposedDocumentPatch, writeScopeObjectIds?: readonly string[], signal?: AbortSignal,
+  /** Legacy writes: a selected id is in scope only on the page its selection named. */
+  writeScopePages?: PluginWriteScopePages
 ): Promise<ChemDraftDocument> | undefined {
   const scope = writeScopeObjectIds && new Set(writeScopeObjectIds);
   const inserted = new Set<string>();
@@ -75,7 +78,8 @@ export function refreshPluginPatchChemistry(before: ChemDraftDocument, draft: Ch
       if (object.type !== "molecule") continue;
       const previous = prior[moleculeIndex++];
       const isInsertion = inserted.has(object.id);
-      if (previous?.id !== object.id || (scope && !isInsertion && !scope.has(object.id))) continue;
+      if (previous?.id !== object.id || (scope && !isInsertion && (!scope.has(object.id) ||
+        (writeScopePages?.get(object.id) ?? page.id) !== page.id))) continue;
       // Every insertion is verified, whether a scoped command wrote it or the user accepted it.
       const verifyInsertion = isInsertion;
       // An authored atom move can change 2D stereo, but only where geometry defines stereo, and
@@ -102,7 +106,7 @@ export function refreshPluginPatchChemistry(before: ChemDraftDocument, draft: Ch
       // Records the canvas itself derives from this graph cannot disagree with it.
       if (verifyInsertion && !graphChanged && !storedChanged && storesNativeDerivation(object)) continue;
       // Give existing scope refusals priority over chemistry inspection of a draft that cannot commit.
-      if (!edits.length && writeScopeObjectIds) assertPluginDocumentWriteScope(before, draft, rebased, writeScopeObjectIds);
+      if (!edits.length && writeScopeObjectIds) assertPluginDocumentWriteScope(before, draft, rebased, writeScopeObjectIds, writeScopePages);
       if (objects === page.objects) objects = [...objects];
       edits.push((async () => {
         try {

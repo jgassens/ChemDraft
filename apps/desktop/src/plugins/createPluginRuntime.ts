@@ -360,6 +360,9 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       return port.runWrite(apply);
     }),
     readDocument: options.getAssistantDocument ?? (tabId => getAssistantHistoryPort().read(tabId)),
+    // The same per-tab document identity public requests use, so a legacy request never follows its
+    // tab into a replaced document.
+    captureDocument: options.captureRequestDocument,
     transactions: options.assistantTransactions,
   });
   const commandInvocations = new Map<symbol, { pluginId: string; stop: AbortController }>();
