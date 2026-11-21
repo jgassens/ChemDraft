@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ToolsetRegistry,
   applyToolsetLayoutState,
+  parseToolsetLayoutState,
   type ToolsetDefinition,
   type ToolsetItemDefinition,
   type ToolsetLayoutState
@@ -14,6 +15,7 @@ import {
   emptyLayoutState,
   nextSpacerItemId,
   removeToolsetItem,
+  removedToolsetItemIds,
   renameToolset,
   reorderGroups,
   reorderItems,
@@ -285,11 +287,53 @@ describe("layoutStateEdits — item additions (spacers + gallery adds)", () => {
     expect(state.toolsetOverrides).toEqual([]);
   });
 
-  it("removing a manifest item hides it (there is no addition to delete)", () => {
+  it("removing a manifest item takes it off the toolbar and marks it removed, not merely hidden", () => {
     const state = removeToolsetItem(emptyLayoutState(), "core.demo", "tool.b");
+    // hiddenCommandIds keeps it off the toolbar in every build (the v1.1.1 file included); the
+    // side-file marker tells Customize Toolbars it was removed rather than unchecked.
     expect(state.toolsetOverrides[0]?.hiddenCommandIds).toEqual(["tool.b"]);
+    expect(state.removedToolsetItemIds).toEqual({ "core.demo": ["tool.b"] });
+    expect([...removedToolsetItemIds(state, "core.demo")]).toEqual(["tool.b"]);
     const { toolsets } = apply(state);
     expect(itemIds(toolsets.find((toolset) => toolset.id === "core.demo"))).toEqual(["tool.a", "widget.core.demo"]);
+  });
+
+  it("removes a manifest widget the same way as a manifest command", () => {
+    const state = removeToolsetItem(emptyLayoutState(), "core.demo", "widget.core.demo");
+    expect([...removedToolsetItemIds(state, "core.demo")]).toEqual(["widget.core.demo"]);
+    expect(itemIds(apply(state).toolsets.find((toolset) => toolset.id === "core.demo"))).toEqual(["tool.a", "tool.b"]);
+  });
+
+  it("a removed manifest item survives a save and reload (JSON round trip through the schema)", () => {
+    const state = removeToolsetItem(emptyLayoutState(), "core.demo", "tool.b");
+    const reloaded = parseToolsetLayoutState(JSON.parse(JSON.stringify(state)));
+    expect(reloaded).toEqual(state);
+    expect([...removedToolsetItemIds(reloaded, "core.demo")]).toEqual(["tool.b"]);
+    expect(itemIds(apply(reloaded).toolsets.find((toolset) => toolset.id === "core.demo"))).toEqual(["tool.a", "widget.core.demo"]);
+  });
+
+  it("showing a removed manifest item again clears its removal marker", () => {
+    let state = removeToolsetItem(emptyLayoutState(), "core.demo", "tool.b");
+    state = removeToolsetItem(state, "core.demo", "tool.a");
+    state = setItemHidden(state, "core.demo", "tool.b", false);
+    expect(state.removedToolsetItemIds).toEqual({ "core.demo": ["tool.a"] });
+    state = setItemHidden(state, "core.demo", "tool.a", false);
+    expect(state).toEqual(emptyLayoutState());
+  });
+
+  it("ignores a stale removal marker whose item is no longer hidden", () => {
+    const state: ToolsetLayoutState = { ...emptyLayoutState(), removedToolsetItemIds: { "core.demo": ["tool.b"] } };
+    expect(removedToolsetItemIds(state, "core.demo").size).toBe(0);
+  });
+
+  it("Reset restores only that toolbar's removed items", () => {
+    let state = removeToolsetItem(emptyLayoutState(), "core.demo", "tool.b");
+    state = removeToolsetItem(state, "core.other", "tool.c");
+    state = resetToolsetLayout(state, "core.demo");
+    expect(state.removedToolsetItemIds).toEqual({ "core.other": ["tool.c"] });
+    expect(state.toolsetOverrides.map((override) => override.toolsetId)).toEqual(["core.other"]);
+    expect(itemIds(apply(state).toolsets.find((toolset) => toolset.id === "core.demo"))).toEqual(["tool.a", "tool.b", "widget.core.demo"]);
+    expect(resetToolsetLayout(state, "core.other")).toEqual(emptyLayoutState());
   });
 
   it("removing an addition scrubs its itemOrder and hidden references", () => {

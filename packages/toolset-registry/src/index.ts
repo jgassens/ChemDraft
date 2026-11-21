@@ -236,6 +236,12 @@ export const ToolsetLayoutStateSchema = z
     // In-memory only: desktop persistence puts this in toolbar-layout-state.v2.json, never the
     // strict toolbar-layout-state.json read by v1.1.1. Earlier inline 1.2 saves still parse here.
     mainToolbarDefaultsRevision: z.number().int().positive().optional(),
+    // Also side-file only. Built-in items the user REMOVED (not merely unchecked), keyed by toolset
+    // id. Each id is also in that toolset's `hiddenCommandIds`, which is what keeps it off the
+    // toolbar (in every build, v1.1.1 included); this marker only tells Customize Toolbars to list
+    // the item under "Add command…" rather than as an unchecked row. A marker whose id is no longer
+    // hidden is stale and ignored. The command itself is never removed from the registry.
+    removedToolsetItemIds: z.record(NonEmptyStringSchema, z.array(CommandIdSchema)).optional(),
     toolsetOrder: z.array(NonEmptyStringSchema).optional(),
     toolsetOverrides: z.array(UserToolsetOverrideSchema).default([]),
     userToolsets: z.array(UserToolsetDefinitionSchema).default([])

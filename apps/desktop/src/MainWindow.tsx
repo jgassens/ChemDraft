@@ -872,7 +872,7 @@ import {
   desktopToolsetRegistry,
   compoundLayoutRegistry,
   getToolbarsMenuModel,
-  getToolsetCommandSpecs,
+  reachableToolsetCommandSpecs,
   getToolsetItemGroups,
   getToolsetPaletteGroups,
   getToolsetToggleActions,
@@ -1836,7 +1836,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.20.16.45-codex";
+const CURRENT_BUILD_STAMP = "11.21.03.50-opus";
 const TABLE_DRAFT_RECOVERY_WARNING = "session.tableDraftDropped";
 
 function clearTableDraftRecoveryWarnings(report: OpenWarningsReport | undefined): OpenWarningsReport | undefined {
@@ -3550,12 +3550,21 @@ export function MainWindow({
       unlisten?.();
     };
   }, []);
+  // The layout-free registry, re-read whenever the catalog changes (a plugin toolset arriving or
+  // leaving also republishes `unfilteredToolsetRegistry`). Feature gates still apply to it.
+  const baseToolsetRegistry = useMemo(
+    () => compoundLayoutRegistry(toolbarCatalog.baseRegistry(), compoundLayoutsEnabled, compoundLayoutSettings, isDesktopRuntime()),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- unfilteredToolsetRegistry marks a catalog change
+    [toolbarCatalog, unfilteredToolsetRegistry, compoundLayoutsEnabled, compoundLayoutSettings]
+  );
+  // Removing or hiding a built-in toolbar item must not unbind its command (menus and shortcuts
+  // share this registry), so the manifest's commands are always included.
   const toolCommandSpecs = useMemo(
     () => applyKeybindingSchemeToCommands(
-      withStandaloneDrawingToolCommands(getToolsetCommandSpecs(toolsetRegistry)),
+      withStandaloneDrawingToolCommands(reachableToolsetCommandSpecs(toolsetRegistry, baseToolsetRegistry)),
       keybindingScheme
     ),
-    [keybindingScheme, toolsetRegistry]
+    [keybindingScheme, toolsetRegistry, baseToolsetRegistry]
   );
   const hasSearchableStructure = useMemo(() => structureSearchDocument(
     document, nativeMoleculeFragmentSelections(selectedNativeMoleculeParts)

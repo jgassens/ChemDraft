@@ -797,6 +797,18 @@ export function getToolsetCommandSpecs(
   return dedupeCommands([...primaryCommands, ...submenuCommands]);
 }
 
+/**
+ * Toolbar command specs that stay registered whatever the user's layout: the customized registry's
+ * (first, so an addition's presentation wins the dedupe) plus every manifest toolset's. Removing or
+ * hiding a built-in toolbar item must never unbind its command, which menus and shortcuts share.
+ */
+export function reachableToolsetCommandSpecs(
+  customized: DesktopToolsetRegistry,
+  base: DesktopToolsetRegistry
+): CommandSpec[] {
+  return dedupeCommands([...getToolsetCommandSpecs(customized), ...getToolsetCommandSpecs(base)]);
+}
+
 export function getToolsetToggleActions(
   registry: DesktopToolsetRegistry = desktopToolsetRegistry
 ): CommandSpec[] {

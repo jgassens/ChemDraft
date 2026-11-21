@@ -108,6 +108,18 @@ only to `user.*` toolsets; core and plugin toolsets take overrides only (clone a
 it structurally) — with the single exception of add-only `itemAdditions`, which in-place customize
 uses to grow a core toolbar. Built-in and plugin manifests remain stable source contributions.
 
+**Remove and Reset to Defaults (1.3).** Every item in the dialog has a Remove button. Removing an
+addition or a user toolbar's item deletes it; removing a built-in (core or plugin manifest) item hides
+it in `hiddenCommandIds` *and* records it in the top-level `removedToolsetItemIds` (`{ toolsetId:
+ids[] }`), so the dialog lists it under "Add command…" instead of as an unchecked row. That field is
+side-file metadata (`toolbar-layout-state.v2.json`, validated in `lib.rs`), never written into the
+frozen v1.1.1 file, so an older build still keeps the item hidden. A marker whose item is no longer
+hidden is ignored. Removal never touches the command registry: the document window registers
+`reachableToolsetCommandSpecs(customized, base)`, the customized registry's commands plus every
+manifest toolset's, so menus and shortcuts keep working. Each built-in or plugin toolbar row has
+Reset to Defaults, which asks with a native message box (Cancel is the default) and then drops that
+toolbar's overrides and removal markers; user toolbars have no defaults and offer Delete instead.
+
 ## Flattened Main Toolbar (free placement)
 
 `core.main` is a **single manifest group** (`core.main.items`): every icon, spacer, and divider lives

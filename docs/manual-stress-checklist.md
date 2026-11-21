@@ -1651,3 +1651,14 @@ whole-molecule cleanup with the existing behavior, and check save/reopen and exp
 - Use File > Open to open a binary `.cdx` with known structures. Check bonds, labels and any import
   warnings against the source. Open a truncated CDX: it reports an import failure. On Windows use
   the file chooser or Open With; the installer does not register `.cdx` as an association.
+
+### Customize Toolbars: Remove and Reset to Defaults
+
+- On macOS and Windows open View > Customize Toolbars…, select the Main toolbar and click Remove
+  on a built-in button. It leaves the list and the floating toolbar at once and appears under
+  "Add command…". Its shortcut and menu item still work. Apply, quit, relaunch: still removed.
+- Uncheck a different built-in button: it stays listed, unchecked. Add the removed one back from
+  "Add command…": it returns to its original slot.
+- Click Reset to Defaults on that toolbar. A native message box owned by the document window asks
+  first; Escape and Cancel change nothing. Confirm: removed and hidden buttons return, added ones
+  go. User toolbars show Delete, not Reset to Defaults.

@@ -28,6 +28,7 @@ import {
 import type { DesktopToolsetDefinition } from "../../toolsets";
 import { SHELL_COMMAND_IDS } from "../../shellCommandIds";
 import { WIDGET_CONTROL_ID_PREFIX } from "../toolbarWidgets";
+import { nativePrompt } from "../../nativePrompt";
 import {
   USER_TOOLSET_ID_PREFIX,
   addToolsetItemAddition,
@@ -37,6 +38,7 @@ import {
   deleteUserToolset,
   renameToolset,
   removeToolsetItem,
+  removedToolsetItemIds,
   reorderItems,
   reorderToolsets,
   resetToolsetLayout,
@@ -90,6 +92,24 @@ function orderItemsByIds(
 
 type LayoutState = ToolsetLayoutState<string, string>;
 
+/** Ask before Reset to Defaults, with a native message box on both desktop platforms (the browser
+ *  build falls back to nativePrompt's DOM prompt). Cancel is the safe choice. */
+export async function confirmResetToolbarToDefaults(toolsetTitle: string): Promise<boolean> {
+  const choice = await nativePrompt({
+    title: `Reset “${toolsetTitle}” to its defaults?`,
+    message: "This restores the toolbar’s default buttons, order, name and visibility. Buttons you removed come back and "
+      + "buttons you added are taken off. No commands are changed; they stay available from menus, shortcuts and "
+      + "Customize Toolbars.",
+    kind: "warning",
+    owner: "document",
+    choices: [
+      { id: "reset", label: "Reset to Defaults", destructive: true },
+      { id: "cancel", label: "Cancel", cancel: true }
+    ]
+  });
+  return choice === "reset";
+}
+
 export interface CustomizeToolbarsDialogProps {
   /** Core ∪ plugin toolsets BEFORE layout state (the draft is re-applied on top for the preview). */
   baseToolsets: readonly DesktopToolsetDefinition[];
@@ -104,6 +124,8 @@ export interface CustomizeToolbarsDialogProps {
    *  palettes appear/disappear as you click instead of only on Apply. */
   onLiveApply?: (next: LayoutState) => void;
   onClose: () => void;
+  /** Confirms Reset to Defaults; defaults to {@link confirmResetToolbarToDefaults}. */
+  confirmReset?: (toolsetTitle: string) => Promise<boolean>;
 }
 
 /** Apply the draft to the base toolsets so the list reflects order, visibility, and renames live.
@@ -213,9 +235,17 @@ function SortableToolsetRow({
       <button type="button" className="customize-toolset-action" onClick={onClone} title={`Duplicate ${toolset.title}`}>
         Duplicate
       </button>
-      <button type="button" className="customize-toolset-action" onClick={onReset} title={`Reset ${toolset.title}`}>
-        Reset
-      </button>
+      {isUser ? null : (
+        // A user toolbar has no defaults to return to (its items are its own); Delete removes it.
+        <button
+          type="button"
+          className="customize-toolset-action customize-toolset-reset"
+          onClick={onReset}
+          title={`Reset ${toolset.title} to Defaults`}
+        >
+          Reset to Defaults
+        </button>
+      )}
       {isUser ? (
         <button
           type="button"
@@ -237,7 +267,8 @@ export function CustomizeToolbarsDialog({
   isCommandHidden,
   onApply,
   onLiveApply,
-  onClose
+  onClose,
+  confirmReset = confirmResetToolbarToDefaults
 }: CustomizeToolbarsDialogProps) {
   const [draft, setDraft] = useState<LayoutState>(layoutState);
   // Live preview: every edit applies immediately (palettes appear/disappear as you click), instead of
@@ -307,19 +338,23 @@ export function CustomizeToolbarsDialog({
     () => draft.userToolsets.find((toolset) => toolset.id === selectedToolsetId) ?? baseById.get(selectedToolsetId ?? ""),
     [draft.userToolsets, baseById, selectedToolsetId]
   );
-  const selectedIsUser = selectedBase?.source === "user";
   const selectedTitle =
     effective.find((toolset) => toolset.id === selectedToolsetId)?.title ?? selectedBase?.title ?? "";
 
   const selectedOverride = draft.toolsetOverrides.find((entry) => entry.toolsetId === selectedToolsetId);
   const hiddenItemIds = useMemo(() => hiddenToolsetItemIds(selectedOverride), [selectedOverride]);
+  // Removed built-in items leave the list (like a removed addition) and are offered under "Add
+  // command…"; their commands stay registered. Merely unchecked items stay listed.
+  const removedItemIds = useMemo(
+    () => (selectedToolsetId ? removedToolsetItemIds(draft, selectedToolsetId) : new Set<string>()),
+    [draft, selectedToolsetId]
+  );
   const groupsWithAdditions = useMemo(
     () => mergeToolsetItemAdditions<string, string>(selectedBase?.groups ?? [], selectedOverride?.itemAdditions),
     [selectedBase, selectedOverride?.itemAdditions]
   );
 
   const detailGroups: CustomizeGroupModel[] = useMemo(() => {
-    const baseItemIds = toolbarItemIds(selectedBase?.groups ?? []);
     return groupsWithAdditions.map((group) => {
       const groupId = group.id ?? "";
       const ordered = orderItemsByIds(group.items, groupId ? selectedOverride?.itemOrder?.[groupId] : undefined);
@@ -334,13 +369,15 @@ export function CustomizeToolbarsDialog({
               label: item.label ?? id,
               hidden: hiddenItemIds.has(id),
               isWidget: isWidgetItem(item),
-              canRemove: selectedIsUser || !baseItemIds.has(id)
+              // Every item can be removed: an addition or a user toolbar's item is deleted, a built-in
+              // item is hidden and marked removed (see removeToolsetItem).
+              canRemove: true
             };
           })
-          .filter((item) => item.id.length > 0)
+          .filter((item) => item.id.length > 0 && !removedItemIds.has(item.id))
       };
     });
-  }, [groupsWithAdditions, hiddenItemIds, selectedBase, selectedOverride, selectedIsUser]);
+  }, [groupsWithAdditions, hiddenItemIds, removedItemIds, selectedOverride]);
 
   const displayedGroups = useMemo(() => isCommandHidden
     ? detailGroups.map((group) => ({ ...group, items: group.items.filter((item) => !isCommandHidden(item.id)) }))
@@ -349,8 +386,18 @@ export function CustomizeToolbarsDialog({
   const availableForToolset: CommandOption[] = useMemo(() => {
     const present = toolbarItemIds(groupsWithAdditions);
     hiddenItemIds.forEach((id) => present.delete(id));
-    return availableCommands.filter((command) => !isCommandHidden?.(command.id) && !present.has(command.id));
-  }, [availableCommands, groupsWithAdditions, hiddenItemIds, isCommandHidden]);
+    const offered = availableCommands.filter((command) => !isCommandHidden?.(command.id) && !present.has(command.id));
+    // A removed built-in item must always be addable back, even when it is not a gallery command
+    // (a widget, or a command the gallery omits); re-adding un-hides it in its manifest slot.
+    const offeredIds = new Set(offered.map((command) => command.id));
+    const removed = groupsWithAdditions.flatMap((group) => group.items).flatMap((item) => {
+      const id = itemCustomizationId(item);
+      return removedItemIds.has(id) && !offeredIds.has(id) && !isCommandHidden?.(id)
+        ? [{ id, title: item.label ?? id }]
+        : [];
+    });
+    return [...removed, ...offered];
+  }, [availableCommands, groupsWithAdditions, hiddenItemIds, isCommandHidden, removedItemIds]);
 
   const addCommand = (command: CommandOption) => {
     if (!selectedBase) {
@@ -405,6 +452,25 @@ export function CustomizeToolbarsDialog({
       );
       return setUserToolsetGroups(current, toolset.id, groups);
     });
+  };
+
+  // Reset to Defaults asks first (a native message box). The answer arrives asynchronously, so it is
+  // ignored once the dialog has closed rather than writing into an unmounted draft.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+  const resetToDefaults = async (toolsetId: string, toolsetTitle: string) => {
+    let confirmed = false;
+    try {
+      confirmed = await confirmReset(toolsetTitle);
+    } catch (error) {
+      console.error(`Reset to Defaults confirmation failed for toolbar "${toolsetId}"`, error);
+    }
+    if (confirmed && mountedRef.current) {
+      setDraft((current) => resetToolsetLayout(current, toolsetId));
+    }
   };
 
   // Every edit applies live (and persists), so dismissing the dialog must ROLL BACK to the state it
@@ -466,7 +532,7 @@ export function CustomizeToolbarsDialog({
                       onSelect={() => setSelectedToolsetId(toolset.id)}
                       onToggleVisible={(visible) => setDraft((current) => setToolsetVisible(current, toolset.id, visible))}
                       onRename={(title) => setDraft((current) => renameToolset(current, toolset.id, title))}
-                      onReset={() => setDraft((current) => resetToolsetLayout(current, toolset.id))}
+                      onReset={() => void resetToDefaults(toolset.id, toolset.title)}
                       onClone={() => handleClone(toolset.id)}
                       onDelete={() => {
                         setDraft((current) => deleteUserToolset(current, toolset.id));

@@ -3,17 +3,23 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { applyToolsetLayoutState, type ToolsetLayoutState } from "@chemdraft/toolset-registry";
+import { applyToolsetLayoutState, parseToolsetLayoutState, type ToolsetLayoutState } from "@chemdraft/toolset-registry";
 import { createPluginRuntime } from "../../plugins/createPluginRuntime";
 import {
   createFixturePluginOptions, FIXTURE_PLUGIN_CHAT_COMMAND_ID, FIXTURE_PLUGIN_PING_COMMAND_ID,
   FIXTURE_PLUGIN_TOOLSET_ID, fixturePluginManifest
 } from "../../plugins/fixturePlugin";
 import { SHELL_COMMAND_IDS } from "../../shellCommandIds";
-import { getToolsetItemGroups, type DesktopToolsetDefinition } from "../../toolsets";
+import { createDesktopShortcutRegistry } from "../../keyboardShortcuts";
+import { setNativePromptProvider, type NativePromptOptions } from "../../nativePrompt";
+import {
+  createDesktopToolsetRegistry, desktopToolsets, getToolsetCommandSpecs, getToolsetItemGroups,
+  reachableToolsetCommandSpecs, type DesktopToolsetDefinition
+} from "../../toolsets";
 import { createToolbarCatalog } from "../toolbarCatalog";
 import { filterToolbarCustomizationCommands } from "../toolbarCustomizationCommands";
 import { CustomizeToolbarsDialog } from "./CustomizeToolbarsDialog";
+import { removeToolsetItem } from "./layoutStateEdits";
 
 vi.mock("../../drawingTools", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../drawingTools")>(),
@@ -74,11 +80,17 @@ describe("CustomizeToolbarsDialog", () => {
     { id: "edit.undo", title: "Undo", enabled: false, disabledReason: "Nothing to undo" }
   ], { enabled: false });
 
-  function render(state: ToolsetLayoutState = emptyState, toolsets: DesktopToolsetDefinition[] = baseToolsets) {
+  function render(
+    state: ToolsetLayoutState = emptyState,
+    toolsets: DesktopToolsetDefinition[] = baseToolsets,
+    confirmReset?: (title: string) => Promise<boolean>
+  ) {
     onApply = vi.fn();
     onClose = vi.fn();
     act(() => {
-      root.render(createElement(CustomizeToolbarsDialog, { baseToolsets: toolsets, layoutState: state, availableCommands, onApply, onClose }));
+      root.render(createElement(CustomizeToolbarsDialog, {
+        baseToolsets: toolsets, layoutState: state, availableCommands, onApply, onClose, confirmReset
+      }));
     });
   }
 
@@ -257,7 +269,7 @@ describe("CustomizeToolbarsDialog", () => {
     render();
     click(`[data-toolset-id="${toolsetId}"] .customize-toolset-title`);
     const manifestItem = container.querySelector(`[data-item-id="${manifestItemId}"]`)!;
-    expect(manifestItem.querySelector(".customize-item-remove")).toBeNull();
+    expect(manifestItem.querySelector(".customize-item-remove")).not.toBeNull();
     const search = openPicker();
     expect(container.querySelector(`[data-command-id="${manifestItemId}"]`)).toBeNull();
     act(() => setInputValue(search, circle.id));
@@ -283,18 +295,131 @@ describe("CustomizeToolbarsDialog", () => {
     expect(applied()).toEqual(emptyState);
   });
 
-  it("resets a built-in toolbar to its manifest layout", () => {
-    render();
+  it("resets a built-in toolbar to its manifest layout after confirmation", async () => {
+    const confirmReset = vi.fn(async () => true);
+    render(emptyState, baseToolsets, confirmReset);
     openPicker();
     click('[data-command-id="edit.undo"]');
     click('[data-item-id="tool.a"] .customize-item-visible');
     const edited = applyToolsetLayoutState(baseToolsets, applied(), { additionalCommandIds: SHELL_COMMAND_IDS });
     expect(edited.find((toolset) => toolset.id === "core.main")?.groups[0]?.items.map((item) => item.id))
       .toEqual(["edit.undo"]);
-    click('[title="Reset Main Toolbar"]');
+    await act(async () => container.querySelector<HTMLElement>('[title="Reset Main Toolbar to Defaults"]')!.click());
+    expect(confirmReset).toHaveBeenCalledWith("Main Toolbar");
     expect(container.querySelector('[data-item-id="edit.undo"]')).toBeNull();
     expect(container.querySelector<HTMLInputElement>('[data-item-id="tool.a"] .customize-item-visible')?.checked).toBe(true);
     expect(applied()).toEqual(emptyState);
+  });
+
+  it("removes a built-in item like any other, persists it, and can add it back", () => {
+    render();
+    click('[data-item-id="tool.a"] .customize-item-remove');
+    // Gone from the list (not left as an unchecked row) and offered under Add command instead.
+    expect(container.querySelector('[data-item-id="tool.a"]')).toBeNull();
+    openPicker();
+    expect(container.querySelector('[data-command-id="tool.a"]')?.textContent).toBe("+ A");
+    const removed = applied();
+    expect(removed).toEqual({
+      ...emptyState,
+      toolsetOverrides: [{ toolsetId: "core.main", hiddenCommandIds: ["tool.a"] }],
+      removedToolsetItemIds: { "core.main": ["tool.a"] }
+    });
+    // The toolbar itself drops the item; the manifest is untouched.
+    const effective = applyToolsetLayoutState(baseToolsets, removed, { additionalCommandIds: SHELL_COMMAND_IDS });
+    expect(effective.find((toolset) => toolset.id === "core.main")?.groups).toEqual([]);
+    expect(baseToolsets[0]!.groups[0]!.items.map((item) => item.id)).toEqual(["tool.a"]);
+
+    // Reopen with the saved (JSON round-tripped) state, as after a restart: still removed.
+    act(() => root.unmount());
+    root = createRoot(container);
+    render(parseToolsetLayoutState(JSON.parse(JSON.stringify(removed))));
+    expect(container.querySelector('[data-item-id="tool.a"]')).toBeNull();
+    openPicker();
+    click('[data-command-id="tool.a"]');
+    expect(container.querySelector<HTMLInputElement>('[data-item-id="tool.a"] .customize-item-visible')?.checked).toBe(true);
+    expect(applied()).toEqual(emptyState);
+  });
+
+  it("keeps an unchecked built-in item listed, unlike a removed one", () => {
+    render();
+    click('[data-item-id="tool.a"] .customize-item-visible');
+    expect(container.querySelector<HTMLInputElement>('[data-item-id="tool.a"] .customize-item-visible')?.checked).toBe(false);
+    expect(applied().removedToolsetItemIds).toBeUndefined();
+  });
+
+  it("restores removed built-in items with Reset to Defaults, through the native prompt", async () => {
+    const prompts: NativePromptOptions[] = [];
+    let answer = "cancel";
+    const restore = setNativePromptProvider(async (prompt) => { prompts.push(prompt); return answer; });
+    try {
+      render();
+      click('[data-item-id="tool.a"] .customize-item-remove');
+      const reset = () => container.querySelector<HTMLElement>('[data-toolset-id="core.main"] .customize-toolset-reset')!;
+      expect(reset().textContent).toBe("Reset to Defaults");
+
+      await act(async () => reset().click());
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]).toMatchObject({
+        title: "Reset “Main Toolbar” to its defaults?",
+        kind: "warning",
+        owner: "document",
+        choices: [
+          { id: "reset", label: "Reset to Defaults", destructive: true },
+          { id: "cancel", label: "Cancel", cancel: true }
+        ]
+      });
+      // Cancel keeps the removal.
+      expect(container.querySelector('[data-item-id="tool.a"]')).toBeNull();
+      expect(applied().removedToolsetItemIds).toEqual({ "core.main": ["tool.a"] });
+
+      answer = "reset";
+      await act(async () => reset().click());
+      expect(container.querySelector('[data-item-id="tool.a"]')).not.toBeNull();
+      expect(applied()).toEqual(emptyState);
+    } finally {
+      restore();
+    }
+  });
+
+  it("offers Reset to Defaults per built-in or plugin toolbar, never on a user toolbar", () => {
+    render();
+    const nameInput = container.querySelector<HTMLInputElement>('[aria-label="New toolbar name"]');
+    act(() => setInputValue(nameInput!, "Mine"));
+    clickButton((button) => button.textContent === "Create Toolbar");
+    const resettable = [...container.querySelectorAll("[data-toolset-id]")]
+      .filter((row) => row.querySelector(".customize-toolset-reset"))
+      .map((row) => row.getAttribute("data-toolset-id"));
+    expect(resettable).toEqual(["core.main", "core.art", "plugin.fixture"]);
+  });
+
+  it("keeps a removed built-in item's command registered for menus, shortcuts and Customize", () => {
+    // Use the real manifest so commands carry their real shortcuts. Remove a shortcut command from
+    // EVERY built-in toolbar that carries it as a button, so the customized registry really loses it.
+    const removeEverywhere = (commandId: string) => desktopToolsets
+      .filter((toolset) => toolset.groups.some((group) => group.items.some((item) => item.commandId === commandId)))
+      .reduce<ToolsetLayoutState>((next, toolset) => removeToolsetItem(next, toolset.id, commandId), { ...emptyState });
+    const target = getToolsetCommandSpecs(createDesktopToolsetRegistry()).find((command) =>
+      command.shortcut && desktopToolsets.some((toolset) => toolset.id === "core.main" &&
+        toolset.groups.some((group) => group.items.some((item) => item.commandId === command.id))) &&
+      !getToolsetCommandSpecs(createDesktopToolsetRegistry(removeEverywhere(command.id)))
+        .some((candidate) => candidate.id === command.id))!;
+    expect(target).toBeDefined();
+    const state = removeEverywhere(target.id);
+    const catalog = createToolbarCatalog();
+    catalog.setLayoutState(state);
+
+    // Off the toolbars...
+    expect(getToolsetItemGroups("core.main", catalog.registry()).flat().map((item) => item.id)).not.toContain(target.id);
+    // ...but the command survives: in the gallery's base commands, the toolbar command specs the
+    // document window registers (menus and shortcuts share that registry), and its shortcut on both platforms.
+    expect(catalog.baseCommands().map((command) => command.id)).toContain(target.id);
+    // The customized registry alone no longer yields it, which is why the manifest's are merged in.
+    expect(getToolsetCommandSpecs(catalog.registry()).map((command) => command.id)).not.toContain(target.id);
+    const reachable = reachableToolsetCommandSpecs(catalog.registry(), catalog.baseRegistry());
+    expect(reachable.map((command) => command.id)).toContain(target.id);
+    for (const platform of ["macos", "windows"] as const) {
+      expect(createDesktopShortcutRegistry(reachable, platform).list().map((shortcut) => shortcut.commandId)).toContain(target.id);
+    }
   });
 
   it("offers transiently disabled commands and excludes transitional stubs and compatibility-only variants", () => {

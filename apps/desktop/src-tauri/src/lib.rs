@@ -3604,15 +3604,35 @@ struct ToolsetCustomizationBinding {
     fields: serde_json::Map<String, serde_json::Value>,
 }
 
+// Built-in toolbar items the user removed, keyed by toolset id (see `removedToolsetItemIds` in
+// packages/toolset-registry). Each id is also hidden in the main file, so a build that ignores
+// this field still keeps the item off the toolbar.
+const TOOLSET_REMOVED_ITEMS_KEY: &str = "removedToolsetItemIds";
+
+fn valid_removed_toolset_item_ids(value: &serde_json::Value) -> bool {
+    let non_empty = |text: &str| !text.trim().is_empty();
+    value.as_object().is_some_and(|toolsets| {
+        toolsets.iter().all(|(toolset_id, ids)| {
+            non_empty(toolset_id)
+                && ids
+                    .as_array()
+                    .is_some_and(|ids| ids.iter().all(|id| id.as_str().is_some_and(non_empty)))
+        })
+    })
+}
+
 fn valid_toolset_customization_fields(fields: &serde_json::Map<String, serde_json::Value>) -> bool {
     // Keep this list aligned with the in-memory ToolsetLayoutState schema. Unrecognised
     // side-file fields are corrupt/unsupported metadata, not layout.
     fields
         .keys()
-        .all(|key| key == "mainToolbarDefaultsRevision")
+        .all(|key| key == "mainToolbarDefaultsRevision" || key == TOOLSET_REMOVED_ITEMS_KEY)
         && fields
             .get("mainToolbarDefaultsRevision")
             .is_none_or(|value| value.as_u64().is_some_and(|revision| revision > 0))
+        && fields
+            .get(TOOLSET_REMOVED_ITEMS_KEY)
+            .is_none_or(valid_removed_toolset_item_ids)
 }
 
 fn split_toolset_customization_state(
@@ -3979,6 +3999,50 @@ mod toolbar_customization_persistence_tests {
             read_toolset_customization_state(&files.main()).unwrap(),
             Some(legacy)
         );
+    }
+
+    #[test]
+    fn removed_toolbar_items_live_only_in_the_side_file_and_round_trip() {
+        let files = Files::new();
+        let (legacy, mut current) = fixture();
+        let removed = json!({"core.main": ["tool.eraser"]});
+        current[TOOLSET_REMOVED_ITEMS_KEY] = removed.clone();
+        write_toolset_customization_state(&files.main(), current.clone()).unwrap();
+        // The released v1.1.1 file shape is unchanged; the marker is side-file metadata only.
+        assert_eq!(read_json(&files.main()), legacy);
+        assert_eq!(
+            read_json(&files.side())["fields"][TOOLSET_REMOVED_ITEMS_KEY],
+            removed
+        );
+        assert_eq!(
+            read_toolset_customization_state(&files.main()).unwrap(),
+            Some(current)
+        );
+    }
+
+    #[test]
+    fn malformed_removed_toolbar_items_invalidate_only_side_metadata() {
+        for removed in [
+            json!([]),
+            json!({"core.main": "tool.eraser"}),
+            json!({"core.main": [1]}),
+            json!({"core.main": [" "]}),
+            json!({" ": ["tool.eraser"]}),
+        ] {
+            let files = Files::new();
+            let (legacy, _) = fixture();
+            fs::write(files.main(), legacy.to_string()).unwrap();
+            let side = json!({
+                "version": 1,
+                "legacyState": legacy,
+                "fields": {"mainToolbarDefaultsRevision": 2, (TOOLSET_REMOVED_ITEMS_KEY): removed}
+            });
+            fs::write(files.side(), side.to_string()).unwrap();
+            assert_eq!(
+                read_toolset_customization_state(&files.main()).unwrap(),
+                Some(without_metadata(legacy))
+            );
+        }
     }
 
     #[test]

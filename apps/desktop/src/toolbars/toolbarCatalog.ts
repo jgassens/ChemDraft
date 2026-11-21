@@ -19,6 +19,9 @@ import { SHELL_COMMAND_IDS } from "../shellCommandIds";
  */
 export interface ToolbarCatalog {
   registry(): DesktopToolsetRegistry;
+  /** Core ∪ plugin toolsets with NO layout applied, so commands of removed or hidden built-in items
+   *  stay registered for menus and shortcuts. */
+  baseRegistry(): DesktopToolsetRegistry;
   /** Core ∪ plugin toolsets BEFORE the user's layout state — what the Customize editor re-applies its
    *  draft on top of. */
   baseToolsets(): readonly DesktopToolsetDefinition[];
@@ -48,6 +51,7 @@ export function createToolbarCatalog(): ToolbarCatalog {
   };
 
   let snapshot = build(layoutState);
+  let baseSnapshot: DesktopToolsetRegistry | undefined;
 
   const rebuild = (state: unknown) => {
     snapshot = build(state);
@@ -57,6 +61,7 @@ export function createToolbarCatalog(): ToolbarCatalog {
 
   return {
     registry: () => snapshot,
+    baseRegistry: () => (baseSnapshot ??= createDesktopToolsetRegistry(undefined, additionalCommandIds, pluginToolsets)),
     baseToolsets: () => [...desktopToolsets, ...pluginToolsets],
     baseCommands: () => baseCommands,
     setPluginToolsets(toolsets, commandsWithHandlers = []) {
@@ -82,6 +87,7 @@ export function createToolbarCatalog(): ToolbarCatalog {
       }
       baseCommands = [...commandsById.values()];
       additionalCommandIds = new Set([...SHELL_COMMAND_IDS, ...pluginCommandIds]);
+      baseSnapshot = undefined;
       rebuild(layoutState);
     },
     setLayoutState(state) {

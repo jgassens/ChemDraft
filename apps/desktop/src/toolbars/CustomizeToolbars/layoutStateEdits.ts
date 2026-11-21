@@ -1,4 +1,4 @@
-import { toolsetItemCustomizationId } from "@chemdraft/toolset-registry";
+import { hiddenToolsetItemIds, toolsetItemCustomizationId } from "@chemdraft/toolset-registry";
 import type {
   ToolsetDefinition,
   ToolsetGroupDefinition,
@@ -20,6 +20,10 @@ import type {
  * core toolset may gain a new command/spacer via `toolsetOverrides[].itemAdditions`, but its
  * manifest items are never mutated. Cloning a built-in toolset (see {@link cloneToolset}) is still
  * how you get a fully structurally-editable copy.
+ *
+ * Removing a manifest (built-in) item is an override too: it is hidden (`hiddenCommandIds`) and marked
+ * in the top-level `removedToolsetItemIds`, so the dialog lists it under "Add command…" instead of
+ * as an unchecked row. Its command is untouched — layout state never edits the command registry.
  */
 
 export const USER_TOOLSET_ID_PREFIX = "user.";
@@ -137,14 +141,64 @@ export function reorderItems<I extends string, A extends string>(
   });
 }
 
-/** Hide or show a single item (command or `widget.*` control id) within a toolset. */
+/** Add or drop `itemId` in the top-level removal marker for `toolsetId`, keeping the record minimal. */
+function withRemovalMarker<I extends string, A extends string>(
+  state: ToolsetLayoutState<I, A>,
+  toolsetId: string,
+  itemId: string,
+  removed: boolean
+): ToolsetLayoutState<I, A> {
+  const current = state.removedToolsetItemIds?.[toolsetId] ?? [];
+  if (current.includes(itemId) === removed) {
+    return state;
+  }
+  const ids = removed ? [...current, itemId] : current.filter((id) => id !== itemId);
+  const record = { ...(state.removedToolsetItemIds ?? {}) };
+  if (ids.length > 0) {
+    record[toolsetId] = ids;
+  } else {
+    delete record[toolsetId];
+  }
+  return withRemovedRecord(state, record);
+}
+
+function withRemovedRecord<I extends string, A extends string>(
+  state: ToolsetLayoutState<I, A>,
+  record: Record<string, string[]>
+): ToolsetLayoutState<I, A> {
+  const next = { ...state };
+  if (Object.keys(record).length > 0) {
+    next.removedToolsetItemIds = record;
+  } else {
+    delete next.removedToolsetItemIds;
+  }
+  return next;
+}
+
+/** The built-in items the user removed from `toolsetId`. A marker counts only while its item is still
+ *  hidden; a stale one (e.g. an older build re-showed the item) is ignored, so the item is listed. */
+export function removedToolsetItemIds<I extends string, A extends string>(
+  state: ToolsetLayoutState<I, A>,
+  toolsetId: string
+): Set<string> {
+  const marked = state.removedToolsetItemIds?.[toolsetId] ?? [];
+  if (marked.length === 0) {
+    return new Set();
+  }
+  const hidden = hiddenToolsetItemIds(state.toolsetOverrides.find((override) => override.toolsetId === toolsetId));
+  return new Set(marked.filter((id) => hidden.has(id)));
+}
+
+/** Hide or show a single item (command or `widget.*` control id) within a toolset. Showing an item
+ *  also clears any removal marker, so a removed built-in item comes back as an ordinary row. */
 export function setItemHidden<I extends string, A extends string>(
   state: ToolsetLayoutState<I, A>,
   toolsetId: string,
   itemId: string,
   hidden: boolean
 ): ToolsetLayoutState<I, A> {
-  return withOverride(state, toolsetId, (draft) => {
+  const base = hidden ? state : withRemovalMarker(state, toolsetId, itemId, false);
+  return withOverride(base, toolsetId, (draft) => {
     const current = new Set(draft.hiddenCommandIds ?? []);
     if (hidden) {
       current.add(itemId);
@@ -213,8 +267,9 @@ export function addToolsetItemAddition<I extends string, A extends string>(
 }
 
 /** Remove an item from a toolset. An id belonging to an addition is deleted outright (and scrubbed
- *  from itemOrder / hiddenCommandIds / itemOverrides so no dangling reference survives); a manifest
- *  (base) item can only be hidden, so it falls through to {@link setItemHidden}. */
+ *  from itemOrder / hiddenCommandIds / itemOverrides so no dangling reference survives). A manifest
+ *  (base) item is hidden and marked removed ({@link removedToolsetItemIds}); the manifest and the
+ *  command registry are never changed, so Reset or "Add command…" brings it back. */
 export function removeToolsetItem<I extends string, A extends string>(
   state: ToolsetLayoutState<I, A>,
   toolsetId: string,
@@ -225,7 +280,7 @@ export function removeToolsetItem<I extends string, A extends string>(
     (existing) => toolsetItemCustomizationId(existing.item as ToolsetItemDefinition<I, A>) === itemId
   );
   if (!isAddition) {
-    return setItemHidden(state, toolsetId, itemId, true);
+    return withRemovalMarker(setItemHidden(state, toolsetId, itemId, true), toolsetId, itemId, true);
   }
   return withOverride(state, toolsetId, (draft) => {
     const additions = (draft.itemAdditions ?? []).filter(
@@ -297,15 +352,18 @@ export function nextSeparatorItemId<I extends string, A extends string>(
   return nextAdditionItemId(state, toolsetId, SEPARATOR_ID_PREFIX);
 }
 
-/** Drop all overrides for one toolset (Reset Toolbar Layout), leaving user toolsets intact. */
+/** Drop all overrides for one toolset (Reset to Defaults): removed and hidden items return, additions
+ *  go, and order, name and visibility revert to the manifest. Other toolsets and user toolsets'
+ *  own groups are left intact. */
 export function resetToolsetLayout<I extends string, A extends string>(
   state: ToolsetLayoutState<I, A>,
   toolsetId: string
 ): ToolsetLayoutState<I, A> {
-  return {
+  const { [toolsetId]: _removed, ...removed } = state.removedToolsetItemIds ?? {};
+  return withRemovedRecord({
     ...state,
     toolsetOverrides: state.toolsetOverrides.filter((override) => override.toolsetId !== toolsetId)
-  };
+  }, removed);
 }
 
 /** Drop ALL customization — overrides, order, and user toolsets (Reset All Toolbar Layouts). */
@@ -394,11 +452,12 @@ export function deleteUserToolset<I extends string, A extends string>(
   if (!state.userToolsets.some((toolset) => toolset.id === toolsetId)) {
     return state;
   }
-  const next: ToolsetLayoutState<I, A> = {
+  const { [toolsetId]: _removed, ...removed } = state.removedToolsetItemIds ?? {};
+  const next = withRemovedRecord({
     ...state,
     userToolsets: state.userToolsets.filter((toolset) => toolset.id !== toolsetId),
     toolsetOverrides: state.toolsetOverrides.filter((override) => override.toolsetId !== toolsetId)
-  };
+  }, removed);
   if (next.toolsetOrder) {
     const order = next.toolsetOrder.filter((id) => id !== toolsetId);
     if (order.length > 0) {
