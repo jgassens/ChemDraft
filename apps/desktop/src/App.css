@@ -771,10 +771,43 @@ textarea:focus-visible,
 
 .document-tab-list {
   display: flex;
+  flex-direction: column;
   flex: 0 1 auto;
-  gap: 2px;
   min-width: 0;
-  overflow-x: auto;
+  overflow: hidden;
+}
+
+.document-tab-clip {
+  /* Give focus navigation no native scroll range inside the hidden viewport. */
+  min-width: 0;
+  overflow: clip;
+}
+
+.document-tab-track {
+  display: flex;
+  gap: 2px;
+  width: max-content;
+  /* DocumentTabList pans horizontal touch and pen drags itself; the browser keeps only vertical panning, so it
+     neither scrolls nor zooms sideways underneath, and taps still click. */
+  touch-action: pan-y;
+}
+
+.document-tab-scrollbar {
+  position: relative;
+  /* A finger or pen on the thumb drags it; the browser takes no gesture from it. */
+  touch-action: none;
+  flex: 0 0 8px;
+  visibility: hidden;
+  background: var(--cd-border-subtle);
+  border-radius: 4px;
+}
+
+.document-tab-scrollbar-thumb {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-block: 1px solid transparent;
+  border-radius: 4px;
+  background: var(--cd-text-muted) padding-box;
 }
 
 .document-tab-new {

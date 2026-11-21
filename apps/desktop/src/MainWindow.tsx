@@ -90,6 +90,7 @@ import {
   type OpenWarningsReport
 } from "./openWarnings";
 import { modifierHint, type HeldModifiers, type ModifierHintContext, type ModifierHintInteraction } from "./modifierHints";
+import { DocumentTabList, type DocumentTabListHandle } from "./DocumentTabList";
 import { modifierLabels } from "./modifierLabels";
 import {
   Fragment,
@@ -1840,7 +1841,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.21.13.55-opus";
+const CURRENT_BUILD_STAMP = "11.21.15.05-sonnet";
 const TABLE_DRAFT_RECOVERY_WARNING = "session.tableDraftDropped";
 
 function clearTableDraftRecoveryWarnings(report: OpenWarningsReport | undefined): OpenWarningsReport | undefined {
@@ -2562,6 +2563,7 @@ export function MainWindow({
   const [fileState, setFileState] = useState<NativeFileState>({ dirty: false });
   const [documentTabs, setDocumentTabs] = useState([{ id: "initial", title: initialDocument?.title ?? "Untitled" }]);
   const [activeDocumentTabId, setActiveDocumentTabId] = useState("initial");
+  const documentTabListRef = useRef<DocumentTabListHandle>(null);
   const documentTabsRef = useRef(documentTabs);
   documentTabsRef.current = documentTabs;
   const pluginRuntimeRef = useRef<DesktopPluginRuntime | undefined>(undefined);
@@ -10262,6 +10264,7 @@ export function MainWindow({
     savedDocumentsRef.current.delete(id);
     nonPristineTabsRef.current.delete(id);
     browserFileKeysRef.current.delete(id);
+    documentTabListRef.current?.beforeRemove(remaining);
     documentTabsRef.current = remaining;
     setDocumentTabs(remaining);
     setCloseTabPrompt(undefined);
@@ -10288,6 +10291,9 @@ export function MainWindow({
     activateDocumentTab(tabs[(index + direction + tabs.length) % tabs.length]!.id);
   }, [activateDocumentTab]);
 
+  const documentTabOrder = documentTabs.map((tab) => tab.id).join(",");
+  // The strip re-reveals the active tab when its title changes; the title is the tab's own, as drawn.
+  const activeDocumentTabTitle = documentTabs.find((candidate) => candidate.id === activeDocumentTabId)?.title ?? "";
   useLayoutEffect(() => {
     const scroll = pendingTabScrollRef.current;
     const canvas = canvasRegionRef.current;
@@ -23175,13 +23181,14 @@ export function MainWindow({
       ) : null}
       <section className={officeObjectId ? "workspace" : "workspace workspace-with-tabs"}>
         {!officeObjectId ? <div className="document-tab-strip">
-          <div className="document-tab-list" role="tablist" aria-label="Open documents">
+          <DocumentTabList ref={documentTabListRef} activeId={activeDocumentTabId} order={documentTabOrder}
+            activeTitle={activeDocumentTabTitle}>
             {documentTabs.map((tab) => {
               const active = tab.id === activeDocumentTabId;
               const file = active ? fileState : documentTabSnapshotsRef.current.get(tab.id)?.file;
               const title = tab.title;
               return (
-                <div className="document-tab" key={tab.id} data-active={active}>
+                <div className="document-tab" key={tab.id} data-document-tab-id={tab.id} data-active={active}>
                   <button type="button" role="tab" aria-selected={active}
                     title={title} onClick={() => void invoke(activateDocumentTabCommandId(tab.id))}>
                     <span>{title}</span>{file?.dirty ? <span aria-label="Unsaved changes"> •</span> : null}
@@ -23191,7 +23198,7 @@ export function MainWindow({
                 </div>
               );
             })}
-          </div>
+          </DocumentTabList>
           <button type="button" className="document-tab-new" aria-label="New tab" title="New tab"
             onClick={() => void invoke("document.new")}><span aria-hidden="true">+</span></button>
         </div> : null}

@@ -15,6 +15,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { Molecule } from "openchemlib";
 import { dropMark, dropMolecule, electronMarkDropFixture } from "./testSupport/electronMarkDropFixture";
 import { MainWindow, documentTabPathKey } from "./MainWindow";
+import { PAN_CLICK_WINDOW_MS, TOUCH_PAN_SLOP } from "./DocumentTabList";
 import { exportPhase4Svg, applyNativeChainTool, createNativeSingleBondMolecule, arrangeSelectedDocumentObjects, createNativeSavePayload, createPhase4Document, openNativeDocument, selectDocumentObjects } from "./documentWorkflow";
 import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import { saveCompoundLayoutSettings } from "./compoundLayoutSettings";
@@ -1837,6 +1838,910 @@ describe("documents in one window", () => {
     await activate(0);
     await command("edit.redo");
     expect(drawnText()).toContain("First note for history");
+  });
+
+  describe("overflowing document tab strip", () => {
+    function translationX(element: HTMLElement) {
+      return Number.parseFloat(element.style.transform.replace("translateX(", "")) || 0;
+    }
+
+    async function openOverflowingTabs(clientWidthAfterClose = 230) {
+      const strip = container.querySelector<HTMLDivElement>(".document-tab-list")!;
+      const track = strip.querySelector<HTMLDivElement>(".document-tab-track")!;
+      const scrollbar = strip.querySelector<HTMLDivElement>(".document-tab-scrollbar")!;
+      const thumb = scrollbar.querySelector<HTMLDivElement>(".document-tab-scrollbar-thumb")!;
+      const tabWidth = 150;
+      const gap = 2;
+      const stripLeft = 24;
+      track.style.columnGap = `${gap}px`;
+      const stripWidth = vi.spyOn(strip, "clientWidth", "get").mockImplementation(() =>
+        track.childElementCount === 4 ? 230 : clientWidthAfterClose);
+      const trackWidth = vi.spyOn(track, "scrollWidth", "get").mockImplementation(() =>
+        Math.max(0, track.childElementCount * (tabWidth + gap) - gap));
+      vi.spyOn(strip, "getBoundingClientRect").mockImplementation(() => new DOMRect(stripLeft, 0, strip.clientWidth, 24));
+      vi.spyOn(thumb, "getBoundingClientRect").mockImplementation(() =>
+        new DOMRect(stripLeft + translationX(thumb), 24, Number.parseFloat(thumb.style.width), 8));
+      const bounds = HTMLDivElement.prototype.getBoundingClientRect;
+      vi.spyOn(HTMLDivElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLDivElement) {
+        if (this.parentElement !== track) return bounds.call(this);
+        const index = Array.from(track.children).indexOf(this);
+        return new DOMRect(stripLeft + index * (tabWidth + gap) + translationX(track), 0, tabWidth, 24);
+      });
+      for (const name of ["First drawing", "Second drawing", "Third drawing", "Fourth drawing"]) await open(name);
+      expect(tabs()).toHaveLength(4);
+      expect(active()).toBe(3);
+      for (const tab of track.children) vi.spyOn(tab as HTMLElement, "offsetWidth", "get").mockReturnValue(tabWidth);
+      return { strip, track, scrollbar, thumb, stripWidth, trackWidth };
+    }
+
+    function wheel(target: Element, deltaX: number, deltaY: number, deltaMode = 0) {
+      const event = new WheelEvent("wheel", { deltaX, deltaY, deltaMode, bubbles: true, cancelable: true });
+      target.dispatchEvent(event);
+      return event.defaultPrevented;
+    }
+
+    function pointer(target: Element, type: string, clientX: number, options: PointerEventInit = {}) {
+      const event = new PointerEvent(type, { clientX, pointerId: 7, pointerType: "mouse", button: 0,
+        bubbles: true, cancelable: true, ...options });
+      target.dispatchEvent(event);
+      return event.defaultPrevented;
+    }
+
+    it("shows an unfocusable scrollbar on overflow and follows the tab track offset", async () => {
+      const bar = container.querySelector<HTMLDivElement>(".document-tab-scrollbar")!;
+      expect(bar.style.visibility).toBe("hidden");
+      expect(bar.getAttribute("aria-hidden")).toBe("true");
+      expect(bar.tabIndex).toBe(-1);
+
+      const { scrollbar, thumb, track } = await openOverflowingTabs();
+      const thumbWidth = 230 * (230 / 606);
+      expect(scrollbar.style.visibility).toBe("visible");
+      expect(Number.parseFloat(thumb.style.width)).toBeCloseTo(thumbWidth);
+      expect(translationX(thumb)).toBeCloseTo(230 - thumbWidth);
+
+      expect(wheel(scrollbar, 0, -188)).toBe(true);
+      expect(track.style.transform).toBe("translateX(-188px)");
+      expect(translationX(thumb)).toBeCloseTo((230 - thumbWidth) / 2);
+    });
+
+    it("captures primary thumb drags, maps movement proportionally, and clamps at both edges", async () => {
+      const { scrollbar, thumb, track } = await openOverflowingTabs();
+      const thumbTravel = 230 - 230 * (230 / 606);
+      expect(wheel(track, -376, 0)).toBe(true);
+      const capture = scrollbar.setPointerCapture = vi.fn();
+
+      expect(pointer(thumb, "pointerdown", 44, { button: 2 })).toBe(false);
+      expect(capture).not.toHaveBeenCalled();
+      expect(pointer(thumb, "pointerdown", 44)).toBe(true);
+      expect(capture).toHaveBeenCalledExactlyOnceWith(7);
+      pointer(scrollbar, "pointermove", 104, { pointerId: 8 });
+      expect(translationX(track)).toBe(0);
+      pointer(scrollbar, "pointermove", 104);
+      expect(translationX(track)).toBeCloseTo(-60 / thumbTravel * 376);
+      expect(translationX(thumb)).toBeCloseTo(60);
+      pointer(scrollbar, "pointermove", 500);
+      expect(translationX(track)).toBe(-376);
+      pointer(scrollbar, "pointermove", 12);
+      expect(translationX(track)).toBe(0);
+      pointer(scrollbar, "pointerup", 12);
+      pointer(scrollbar, "pointermove", 500);
+      expect(translationX(track)).toBe(0);
+
+      pointer(thumb, "pointerdown", 44);
+      expect(capture).toHaveBeenCalledTimes(2);
+      pointer(scrollbar, "pointercancel", 44);
+      pointer(scrollbar, "pointermove", 500);
+      expect(translationX(track)).toBe(0);
+    });
+
+    it("pages one viewport toward a scrollbar track click", async () => {
+      const { strip, scrollbar, track } = await openOverflowingTabs();
+      expect(wheel(track, -376, 0)).toBe(true);
+      const bounds = strip.getBoundingClientRect();
+      pointer(scrollbar, "pointerdown", bounds.right - 1);
+      expect(track.style.transform).toBe("translateX(-230px)");
+      pointer(scrollbar, "pointerdown", bounds.left + 1);
+      expect(track.style.transform).toBe("translateX(0px)");
+    });
+
+    function touch(target: Element, type: string, clientX: number, clientY = 12, options: PointerEventInit = {}) {
+      return pointer(target, type, clientX, { pointerType: "touch", pointerId: 21, isPrimary: true, clientY, ...options });
+    }
+
+    function lostCapture(target: Element, pointerId: number, pointerType: string) {
+      target.dispatchEvent(new PointerEvent("lostpointercapture", { pointerId, pointerType, bubbles: true }));
+    }
+
+    it("drags the thumb and pages the scrollbar with a finger or a pen exactly as with the mouse", async () => {
+      const { strip, scrollbar, thumb, track } = await openOverflowingTabs();
+      const thumbTravel = 230 - 230 * (230 / 606);
+      const capture = scrollbar.setPointerCapture = vi.fn();
+      for (const [pointerType, pointerId, end] of [["touch", 11, "pointerup"], ["pen", 12, "pointercancel"]] as const) {
+        wheel(track, -1000, 0);
+        expect(translationX(track)).toBe(0);
+        const options = { pointerType, pointerId, isPrimary: true };
+        expect(pointer(thumb, "pointerdown", 44, options)).toBe(true);
+        expect(capture).toHaveBeenLastCalledWith(pointerId);
+        // Moving the implicit touch or pen capture from the thumb to the scrollbar does not end the drag.
+        lostCapture(thumb, pointerId, pointerType);
+        pointer(scrollbar, "pointermove", 104, options);
+        expect(translationX(track)).toBeCloseTo(-60 / thumbTravel * 376);
+        expect(translationX(thumb)).toBeCloseTo(60);
+        pointer(scrollbar, "pointermove", 500, options);
+        expect(translationX(track)).toBe(-376);
+        pointer(scrollbar, "pointermove", 12, options);
+        expect(translationX(track)).toBe(0);
+        pointer(scrollbar, end, 12, options);
+        pointer(scrollbar, "pointermove", 500, options);
+        expect(translationX(track)).toBe(0);
+      }
+      expect(capture).toHaveBeenCalledTimes(2);
+
+      // The scrollbar's own capture ending does end a touch drag.
+      expect(pointer(thumb, "pointerdown", 44, { pointerType: "touch", pointerId: 13, isPrimary: true })).toBe(true);
+      lostCapture(scrollbar, 13, "touch");
+      pointer(scrollbar, "pointermove", 500, { pointerType: "touch", pointerId: 13 });
+      expect(translationX(track)).toBe(0);
+
+      // A tap or pen press on the scrollbar track pages one viewport toward it.
+      const bounds = strip.getBoundingClientRect();
+      expect(pointer(scrollbar, "pointerdown", bounds.right - 1, { pointerType: "touch", pointerId: 14, isPrimary: true })).toBe(true);
+      expect(track.style.transform).toBe("translateX(-230px)");
+      pointer(scrollbar, "pointerdown", bounds.left + 1, { pointerType: "pen", pointerId: 15, isPrimary: true });
+      expect(track.style.transform).toBe("translateX(0px)");
+    });
+
+    it("pans the tabs with a touch or pen drag past the slop and never activates the tab under it", async () => {
+      const { track, thumb } = await openOverflowingTabs();
+      const thumbTravel = 230 - 230 * (230 / 606);
+      const capture = track.setPointerCapture = vi.fn();
+      const third = tabs()[2]!;
+      touch(third, "pointerdown", 60);
+      touch(third, "pointermove", 60 + TOUCH_PAN_SLOP + 1, 14);
+      expect(capture).toHaveBeenCalledExactlyOnceWith(21);
+      expect(translationX(track)).toBe(-376 + TOUCH_PAN_SLOP + 1);
+      // Taking the capture from the tab under the finger does not end the pan.
+      lostCapture(third, 21, "touch");
+      touch(track, "pointermove", 160);
+      expect(translationX(track)).toBe(-276);
+      touch(track, "pointermove", 1000);
+      expect(translationX(track)).toBe(0);
+      touch(track, "pointermove", 110);
+      expect(translationX(track)).toBe(-326);
+      expect(translationX(thumb)).toBeCloseTo(326 / 376 * thumbTravel);
+      touch(track, "pointerup", 110);
+      await act(async () => third.click());
+      expect(active()).toBe(3);
+      expect(bridge().snapshot().document.title).toBe("Fourth drawing");
+      expect(translationX(track)).toBe(-326);
+      touch(track, "pointermove", 160);
+      expect(translationX(track)).toBe(-326);
+
+      const pen = { pointerType: "pen", pointerId: 22, isPrimary: true, clientY: 12 };
+      pointer(third, "pointerdown", 60, pen);
+      pointer(third, "pointermove", 80, pen);
+      expect(translationX(track)).toBe(-306);
+      pointer(track, "pointerup", 80, pen);
+      await act(async () => third.click());
+      expect(active()).toBe(3);
+    });
+
+    it("lets a touch tap activate a tab or close it from its ×, and scopes a pan's suppression to its own click", async () => {
+      const { track } = await openOverflowingTabs();
+      track.setPointerCapture = vi.fn();
+      // A pan whose release brings no click; the next tap's press starts a new gesture.
+      touch(tabs()[3]!, "pointerdown", 150);
+      touch(tabs()[3]!, "pointermove", 200);
+      expect(translationX(track)).toBe(-326);
+      touch(track, "pointerup", 200);
+
+      const third = tabs()[2]!;
+      touch(third, "pointerdown", 80, 12);
+      touch(third, "pointermove", 80 + TOUCH_PAN_SLOP, 15);
+      expect(translationX(track)).toBe(-326);
+      touch(third, "pointerup", 80 + TOUCH_PAN_SLOP, 15);
+      await act(async () => third.click());
+      expect(active()).toBe(2);
+      expect(bridge().snapshot().document.title).toBe("Third drawing");
+
+      // After a pan's click window, a click that no press preceded (keyboard or automation) still activates.
+      vi.useFakeTimers();
+      touch(tabs()[2]!, "pointerdown", 100);
+      touch(tabs()[2]!, "pointermove", 60);
+      expect(translationX(track)).toBe(-344);
+      touch(track, "pointerup", 60);
+      await act(async () => vi.advanceTimersByTimeAsync(PAN_CLICK_WINDOW_MS));
+      await act(async () => tabs()[3]!.click());
+      expect(active()).toBe(3);
+      vi.useRealTimers();
+
+      const close = container.querySelectorAll<HTMLButtonElement>(".document-tab-close")[3]!;
+      touch(close, "pointerdown", 200);
+      touch(close, "pointerup", 200);
+      await act(async () => close.click());
+      expect(tabs()).toHaveLength(3);
+      expect(tabs().map(tab => tab.textContent)).not.toContain("Fourth drawing");
+    });
+
+    // A pan with no trailing click, as Chromium sends after a moved touch: down on a tab, past the slop, up on the track.
+    function panWithoutClick(track: HTMLElement, from: Element, pointerId: number) {
+      touch(from, "pointerdown", 150, 12, { pointerId });
+      touch(from, "pointermove", 150 - TOUCH_PAN_SLOP - 20, 12, { pointerId });
+      touch(track, "pointerup", 150 - TOUCH_PAN_SLOP - 20, 12, { pointerId });
+    }
+
+    it("activates a different tab tapped 0, 50 or 150 ms after a pan, and swallows only the pan's own release click", async () => {
+      const { track } = await openOverflowingTabs();
+      track.setPointerCapture = vi.fn();
+      vi.useFakeTimers();
+      let pointerId = 30;
+      for (const [delay, target] of [[0, 0], [50, 1], [150, 2]] as const) {
+        panWithoutClick(track, tabs()[active()]!, ++pointerId);
+        if (delay > 0) await act(async () => vi.advanceTimersByTimeAsync(delay));
+        const tap = { pointerId: ++pointerId };
+        touch(tabs()[target]!, "pointerdown", 100, 12, tap);
+        touch(tabs()[target]!, "pointerup", 100, 12, tap);
+        await act(async () => tabs()[target]!.click());
+        expect(active()).toBe(target);
+      }
+
+      // The pan's own release click, on the panned tab right after its pointerup with no press between, is swallowed.
+      panWithoutClick(track, tabs()[0]!, ++pointerId);
+      await act(async () => tabs()[0]!.click());
+      expect(active()).toBe(2);
+      // An immediate tap on that same tab is a new press, so its click activates.
+      const tap = { pointerId: ++pointerId };
+      touch(tabs()[0]!, "pointerdown", 100, 12, tap);
+      touch(tabs()[0]!, "pointerup", 100, 12, tap);
+      await act(async () => tabs()[0]!.click());
+      expect(active()).toBe(0);
+      vi.useRealTimers();
+    });
+
+    it("lets a press or a key press anywhere end a pan's release-click window", async () => {
+      const { track } = await openOverflowingTabs();
+      track.setPointerCapture = vi.fn();
+      // A press outside the tab track, here on the page body, still ends the window.
+      panWithoutClick(track, tabs()[3]!, 40);
+      pointer(document.body, "pointerdown", 4, { pointerType: "mouse", pointerId: 1 });
+      pointer(document.body, "pointerup", 4, { pointerType: "mouse", pointerId: 1 });
+      await act(async () => tabs()[1]!.click());
+      expect(active()).toBe(1);
+      // So does a key press outside the track.
+      panWithoutClick(track, tabs()[1]!, 41);
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Shift", bubbles: true, cancelable: true }));
+      await act(async () => tabs()[2]!.click());
+      expect(active()).toBe(2);
+    });
+
+    it("consumes a panning finger's touch moves so the browser starts no scroll or fling of its own", async () => {
+      const { track } = await openOverflowingTabs();
+      track.setPointerCapture = vi.fn();
+      const touchMove = (target: Element) => {
+        const event = new Event("touchmove", { bubbles: true, cancelable: true });
+        target.dispatchEvent(event);
+        return event.defaultPrevented;
+      };
+      const third = tabs()[2]!;
+      touch(third, "pointerdown", 60);
+      touch(third, "pointermove", 60 + TOUCH_PAN_SLOP - 1);
+      // Still a tap: the browser keeps the touch.
+      expect(touchMove(third)).toBe(false);
+      touch(third, "pointermove", 60 + TOUCH_PAN_SLOP + 1);
+      expect(touchMove(third)).toBe(true);
+      touch(track, "pointermove", 160);
+      expect(touchMove(track)).toBe(true);
+      touch(track, "pointerup", 160);
+      expect(touchMove(track)).toBe(false);
+
+      // A vertical-dominant move is left to the browser.
+      touch(third, "pointerdown", 60, 4, { pointerId: 22 });
+      touch(third, "pointermove", 62, 4 + TOUCH_PAN_SLOP + 1, { pointerId: 22 });
+      expect(touchMove(third)).toBe(false);
+      touch(third, "pointerup", 62, 4 + TOUCH_PAN_SLOP + 1, { pointerId: 22 });
+    });
+
+    it("never default-prevents touch moves of an abandoned vertical gesture or outside the strip", async () => {
+      const { track } = await openOverflowingTabs();
+      track.setPointerCapture = vi.fn();
+      const touchMove = (target: Element) => {
+        const event = new Event("touchmove", { bubbles: true, cancelable: true });
+        target.dispatchEvent(event);
+        return event.defaultPrevented;
+      };
+      const third = tabs()[2]!;
+      touch(third, "pointerdown", 60, 4, { pointerId: 23 });
+      touch(third, "pointermove", 66, 44, { pointerId: 23 });
+      // Vertical page scroll and pinch-zoom keep working during and after the abandoned gesture.
+      expect(touchMove(third)).toBe(false);
+      expect(touchMove(track)).toBe(false);
+      expect(touchMove(document.body)).toBe(false);
+      // Turning sideways afterwards does not make it a pan.
+      touch(third, "pointermove", 160, 44, { pointerId: 23 });
+      expect(touchMove(third)).toBe(false);
+      expect(touchMove(track)).toBe(false);
+      touch(third, "pointerup", 160, 44, { pointerId: 23 });
+      expect(touchMove(third)).toBe(false);
+      expect(touchMove(track)).toBe(false);
+      expect(touchMove(document.body)).toBe(false);
+    });
+
+    it("does not pan on a vertical-dominant touch move", async () => {
+      const { track } = await openOverflowingTabs();
+      const capture = track.setPointerCapture = vi.fn();
+      const third = tabs()[2]!;
+      touch(third, "pointerdown", 60, 4);
+      touch(third, "pointermove", 63, 4 + TOUCH_PAN_SLOP + 1);
+      // Turning sideways afterwards does not make it a pan.
+      touch(third, "pointermove", 160, 14);
+      expect(translationX(track)).toBe(-376);
+      touch(third, "pointerup", 160, 14);
+      // Diagonal, more vertical than horizontal, both past the slop.
+      touch(third, "pointerdown", 60, 0);
+      touch(third, "pointermove", 60 + TOUCH_PAN_SLOP + 2, TOUCH_PAN_SLOP + 2);
+      touch(third, "pointermove", 160, TOUCH_PAN_SLOP + 2);
+      expect(translationX(track)).toBe(-376);
+      touch(third, "pointerup", 160, TOUCH_PAN_SLOP + 2);
+      expect(capture).not.toHaveBeenCalled();
+
+      // The next horizontal swipe pans.
+      touch(third, "pointerdown", 60, 4);
+      touch(third, "pointermove", 160, 6);
+      expect(translationX(track)).toBe(-276);
+    });
+
+    it("treats a touch move of slop−1 as a tap and slop+1 as a pan", async () => {
+      const { track } = await openOverflowingTabs();
+      track.setPointerCapture = vi.fn();
+      const third = tabs()[2]!;
+      touch(third, "pointerdown", 60);
+      touch(third, "pointermove", 60 + TOUCH_PAN_SLOP - 1);
+      expect(translationX(track)).toBe(-376);
+      touch(third, "pointerup", 60 + TOUCH_PAN_SLOP - 1);
+      await act(async () => third.click());
+      expect(active()).toBe(2);
+      expect(translationX(track)).toBe(-304);
+
+      const fourth = tabs()[3]!;
+      touch(fourth, "pointerdown", 200);
+      touch(fourth, "pointermove", 200 + TOUCH_PAN_SLOP + 1);
+      expect(translationX(track)).toBe(-304 + TOUCH_PAN_SLOP + 1);
+      touch(fourth, "pointerup", 200 + TOUCH_PAN_SLOP + 1);
+      await act(async () => fourth.click());
+      expect(active()).toBe(2);
+      expect(translationX(track)).toBe(-304 + TOUCH_PAN_SLOP + 1);
+    });
+
+    it("does not pan when the mouse presses and moves on a tab", async () => {
+      const { track } = await openOverflowingTabs();
+      const capture = track.setPointerCapture = vi.fn();
+      const third = tabs()[2]!;
+      pointer(third, "pointerdown", 60, { clientY: 12, isPrimary: true });
+      pointer(third, "pointermove", 160, { clientY: 12, isPrimary: true });
+      expect(translationX(track)).toBe(-376);
+      pointer(third, "pointerup", 160, { clientY: 12, isPrimary: true });
+      expect(capture).not.toHaveBeenCalled();
+      await act(async () => third.click());
+      expect(active()).toBe(2);
+    });
+
+    it("moves by horizontal and vertical wheel deltas, as a trackpad sends them, by the same amounts as before", async () => {
+      const { track } = await openOverflowingTabs();
+      expect(wheel(track, -100, 0)).toBe(true);
+      expect(translationX(track)).toBe(-276);
+      expect(wheel(track, 0, -50)).toBe(true);
+      expect(translationX(track)).toBe(-226);
+      expect(wheel(tabs()[2]!, 12.5, 40)).toBe(true);
+      expect(translationX(track)).toBe(-238.5);
+      expect(wheel(track, 0, 1, WheelEvent.DOM_DELTA_LINE)).toBe(true);
+      expect(translationX(track)).toBeLessThan(-238.5);
+    });
+
+    it("keeps new, activated and cycled tabs in view and clamps after a close widens the strip", async () => {
+      const { track } = await openOverflowingTabs(250);
+      expect(track.style.transform).toBe("translateX(-376px)");
+      const movement = vi.spyOn(track.style, "transform", "set");
+      await closeTab();
+      expect(movement.mock.calls.map(([value]) => value)).toEqual(["translateX(-224px)", "translateX(-204px)"]);
+      expect(track.style.transform).toBe("translateX(-204px)");
+      expect(active()).toBe(2);
+
+      await key();
+      expect(active()).toBe(0);
+      expect(track.style.transform).toBe("translateX(0px)");
+      await key(true);
+      expect(active()).toBe(2);
+      expect(track.style.transform).toBe("translateX(-204px)");
+      await activate(1);
+      expect(bridge().snapshot().document.title).toBe("Second drawing");
+      expect(track.style.transform).toBe("translateX(-152px)");
+      await command("document.new");
+      expect(active()).toBe(3);
+      expect(track.style.transform).toBe("translateX(-376px)");
+    });
+
+    it("uses horizontal wheel input first, accepts vertical input, and releases the wheel at either edge", async () => {
+      const { track } = await openOverflowingTabs();
+      expect(wheel(track, 1, 0)).toBe(false);
+      expect(wheel(track, -23.5, 80)).toBe(true);
+      expect(track.style.transform).toBe("translateX(-352.5px)");
+      expect(wheel(track, 0, -1000)).toBe(true);
+      expect(track.style.transform).toBe("translateX(0px)");
+      expect(wheel(track, 0, -1)).toBe(false);
+      expect(wheel(track, 0, 1, WheelEvent.DOM_DELTA_PAGE)).toBe(true);
+      expect(track.style.transform).toBe("translateX(-230px)");
+      await act(async () => tabs()[0]!.focus());
+      expect(track.style.transform).toBe("translateX(0px)");
+      expect(active()).toBe(3);
+    });
+
+    it("clamps the offset when the viewport or tab track changes width", async () => {
+      const resize = new Map<Element, () => void>();
+      vi.stubGlobal("ResizeObserver", class {
+        constructor(private readonly onResize: () => void) {}
+        observe(element: Element) { resize.set(element, this.onResize); }
+        unobserve(element: Element) { resize.delete(element); }
+        disconnect() {}
+      });
+      await remount();
+      const { strip, track, scrollbar, thumb, stripWidth, trackWidth } = await openOverflowingTabs();
+      expect(track.style.transform).toBe("translateX(-376px)");
+
+      stripWidth.mockReturnValue(80);
+      resize.get(strip)!();
+      expect(thumb.style.width).toBe("24px");
+
+      stripWidth.mockReturnValue(320);
+      resize.get(strip)!();
+      expect(track.style.transform).toBe("translateX(-286px)");
+
+      trackWidth.mockReturnValue(300);
+      resize.get(track)!();
+      expect(track.style.transform).toBe("translateX(0px)");
+      expect(scrollbar.style.visibility).toBe("hidden");
+      expect(wheel(track, 10, 0)).toBe(false);
+    });
+
+    describe("resizing the strip", () => {
+      async function openWithResize() {
+        const resize = new Map<Element, () => void>();
+        vi.stubGlobal("ResizeObserver", class {
+          constructor(private readonly onResize: () => void) {}
+          observe(element: Element) { resize.set(element, this.onResize); }
+          unobserve(element: Element) { resize.delete(element); }
+          disconnect() {}
+        });
+        await remount();
+        const opened = await openOverflowingTabs();
+        expect(opened.track.style.transform).toBe("translateX(-376px)");
+        return { ...opened, resize };
+      }
+
+      function expectActiveTabInView(strip: HTMLElement) {
+        const tab = strip.querySelector('[data-active="true"]')!.getBoundingClientRect();
+        const bounds = strip.getBoundingClientRect();
+        expect(tab.left).toBeGreaterThanOrEqual(bounds.left);
+        expect(tab.right).toBeLessThanOrEqual(bounds.right);
+      }
+
+      it("keeps a fully visible active tab in view when the strip narrows", async () => {
+        const { strip, track, stripWidth, resize } = await openWithResize();
+        stripWidth.mockReturnValue(200);
+        resize.get(strip)!();
+        expect(track.style.transform).toBe("translateX(-406px)");
+        expectActiveTabInView(strip);
+      });
+
+      it("only clamps when the user had scrolled the active tab out of view before narrowing", async () => {
+        const { strip, track, stripWidth, resize } = await openWithResize();
+        expect(wheel(track, -300, 0)).toBe(true);
+        expect(track.style.transform).toBe("translateX(-76px)");
+        stripWidth.mockReturnValue(200);
+        resize.get(strip)!();
+        expect(track.style.transform).toBe("translateX(-76px)");
+      });
+
+      it("clamps to the new maximum with no gap when the strip widens", async () => {
+        const { strip, track, stripWidth, resize } = await openWithResize();
+        stripWidth.mockReturnValue(320);
+        resize.get(strip)!();
+        expect(track.style.transform).toBe("translateX(-286px)");
+        expect(286 + 320).toBe(606);
+        expectActiveTabInView(strip);
+      });
+    });
+
+    describe("a tab that grows after it was revealed", () => {
+      const gap = 2;
+      const stripLeft = 24;
+      const stripWidth = 230;
+      const closeWidth = 30;
+
+      // Tabs have a width of their own, so one can grow after the strip has already revealed it. The width comes
+      // from the title unless a test overrides it, and only the tests fire the resize callbacks.
+      async function mountWithVariableWidths() {
+        const resize = new Map<Element, () => void>();
+        vi.stubGlobal("ResizeObserver", class {
+          constructor(private readonly onResize: () => void) {}
+          observe(element: Element) { resize.set(element, this.onResize); }
+          unobserve(element: Element) { resize.delete(element); }
+          disconnect() {}
+        });
+        await remount();
+        const strip = container.querySelector<HTMLDivElement>(".document-tab-list")!;
+        const track = strip.querySelector<HTMLDivElement>(".document-tab-track")!;
+        const widths = new Map<Element, number>();
+        const widthOf = (tab: Element) => {
+          const title = tab.querySelector('[role="tab"] span')?.textContent ?? "";
+          return widths.get(tab) ?? (title === "Untitled" ? 90 : title.startsWith("Quarterly") ? 220 : 150);
+        };
+        const trackWidth = () => {
+          const tabs = Array.from(track.children);
+          return Math.max(0, tabs.reduce((sum, tab) => sum + widthOf(tab), 0) + Math.max(0, tabs.length - 1) * gap);
+        };
+        track.style.columnGap = `${gap}px`;
+        vi.spyOn(strip, "clientWidth", "get").mockReturnValue(stripWidth);
+        vi.spyOn(strip, "getBoundingClientRect").mockImplementation(() => new DOMRect(stripLeft, 0, stripWidth, 24));
+        vi.spyOn(track, "scrollWidth", "get").mockImplementation(trackWidth);
+        vi.spyOn(track, "getBoundingClientRect").mockImplementation(() =>
+          new DOMRect(stripLeft + translationX(track), 0, trackWidth(), 24));
+        const bounds = HTMLDivElement.prototype.getBoundingClientRect;
+        vi.spyOn(HTMLDivElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLDivElement) {
+          if (this.parentElement !== track) return bounds.call(this);
+          let left = 0;
+          for (const tab of Array.from(track.children)) {
+            if (tab === this) break;
+            left += widthOf(tab) + gap;
+          }
+          return new DOMRect(stripLeft + left + translationX(track), 0, widthOf(this), 24);
+        });
+        for (const name of ["First drawing", "Second drawing", "Third drawing", "Fourth drawing"]) await open(name);
+        expect(tabs()).toHaveLength(4);
+        expect(active()).toBe(3);
+        // Four tabs of 150 px and three gaps make a 606 px track in a 230 px strip: the last tab is revealed.
+        expect(track.style.transform).toBe("translateX(-376px)");
+        return { strip, track, widths, resize, lastTab: () => track.lastElementChild as HTMLElement };
+      }
+
+      // The tab and its close button, at the tab's right end, both sit inside the strip.
+      function expectTabAndCloseInStrip(tab: HTMLElement) {
+        const box = tab.getBoundingClientRect();
+        expect(box.left).toBeGreaterThanOrEqual(stripLeft);
+        expect(box.right).toBeLessThanOrEqual(stripLeft + stripWidth);
+        expect(box.right - closeWidth).toBeGreaterThanOrEqual(stripLeft);
+      }
+
+      it("keeps the active last tab fully visible when its width grows after the reveal", async () => {
+        const { track, widths, resize, lastTab } = await mountWithVariableWidths();
+        expectTabAndCloseInStrip(lastTab());
+
+        // Only the tab's own width changes: the strip keeps its size, so just the track's observer fires.
+        widths.set(lastTab(), 200);
+        resize.get(track)!();
+
+        expect(track.style.transform).toBe("translateX(-426px)");
+        expect(426 + stripWidth).toBe(3 * 150 + 200 + 3 * gap);
+        expectTabAndCloseInStrip(lastTab());
+      });
+
+      it("reveals a file opening into a blank last tab at its final width", async () => {
+        const { track, lastTab } = await mountWithVariableWidths();
+        await command("document.new");
+        expect(tabs()).toHaveLength(5);
+        expect(active()).toBe(4);
+        expect(tabs()[4]!.textContent).toBe("Untitled");
+        expect(track.style.transform).toBe("translateX(-468px)");
+        expectTabAndCloseInStrip(lastTab());
+
+        // The pristine tab keeps its id, so only its title changes; no resize callback fires.
+        await open("Quarterly review");
+        expect(tabs()).toHaveLength(5);
+        expect(active()).toBe(4);
+        expect(tabs()[4]!.textContent).toBe("Quarterly review.chemdraft");
+        expect(track.style.transform).toBe("translateX(-598px)");
+        expectTabAndCloseInStrip(lastTab());
+      });
+
+      it("does not pull the strip back when the user scrolled away before the tab grew", async () => {
+        const { track, widths, resize, lastTab } = await mountWithVariableWidths();
+        expect(wheel(track, -300, 0)).toBe(true);
+        expect(track.style.transform).toBe("translateX(-76px)");
+
+        widths.set(lastTab(), 200);
+        resize.get(track)!();
+
+        expect(track.style.transform).toBe("translateX(-76px)");
+      });
+    });
+
+    it.each(["×", "Cmd+W", "Ctrl+W"] as const)(
+      "scrolls before removing the last active tab via %s",
+      async (route) => {
+        if (route !== "×") await mountForShortcutPlatform(route === "Cmd+W" ? "macos" : "windows");
+        const { strip, track, thumb } = await openOverflowingTabs();
+        const movement = vi.spyOn(track.style, "transform", "set");
+        if (route === "×") {
+          await closeTab();
+        } else {
+          const event = new KeyboardEvent("keydown", {
+            key: "w", metaKey: route === "Cmd+W", ctrlKey: route === "Ctrl+W",
+            bubbles: true, cancelable: true
+          });
+          await act(async () => window.dispatchEvent(event));
+          expect(event.defaultPrevented).toBe(true);
+        }
+
+        expect(tabs()).toHaveLength(3);
+        expect(active()).toBe(2);
+        expect(movement).toHaveBeenNthCalledWith(1, "translateX(-224px)");
+        expect(track.style.transform).toBe("translateX(-224px)");
+        const thumbWidth = 230 * (230 / 454);
+        expect(Number.parseFloat(thumb.style.width)).toBeCloseTo(thumbWidth);
+        expect(translationX(thumb)).toBeCloseTo(230 - thumbWidth);
+        const activeTabRect = strip.querySelector('[data-active="true"]')!.getBoundingClientRect();
+        const stripRect = strip.getBoundingClientRect();
+        expect(activeTabRect.left).toBeGreaterThanOrEqual(stripRect.left);
+        expect(activeTabRect.right).toBeLessThanOrEqual(stripRect.right);
+      }
+    );
+
+    it("accounts for both closing tabs when React batches the removals", async () => {
+      const { strip, track } = await openOverflowingTabs();
+      const movement = vi.spyOn(track.style, "transform", "set");
+      const buttons = strip.querySelectorAll<HTMLButtonElement>(".document-tab-close");
+      await act(async () => {
+        buttons[3]!.click();
+        buttons[2]!.click();
+      });
+
+      expect(tabs()).toHaveLength(2);
+      expect(movement).toHaveBeenNthCalledWith(1, "translateX(-224px)");
+      expect(movement).toHaveBeenNthCalledWith(2, "translateX(-72px)");
+      expect(track.style.transform).toBe("translateX(-72px)");
+    });
+
+    it("reveals the active tab when closing an inactive tab shrinks the strip", async () => {
+      const { track } = await openOverflowingTabs();
+      await activate(0);
+      expect(wheel(track, 1000, 0)).toBe(true);
+      const movement = vi.spyOn(track.style, "transform", "set");
+
+      await closeTab(3);
+
+      expect(active()).toBe(0);
+      expect(movement).toHaveBeenNthCalledWith(1, "translateX(-224px)");
+      expect(track.style.transform).toBe("translateX(0px)");
+    });
+
+    it("activates the clicked tab by id after closing and scrolling the strip", async () => {
+      const { track } = await openOverflowingTabs();
+      const clickedTab = tabs()[1]!;
+      const commandId = runtime().host.commands.list().find(command => command.title === "Activate Second drawing.chemdraft")!.id;
+      await closeTab();
+      expect(wheel(track, -100, 0)).toBe(true);
+      expect(track.style.transform).toBe("translateX(-124px)");
+      const invoke = vi.spyOn(runtime().host, "invokeCommand");
+
+      await act(async () => clickedTab.click());
+
+      expect(invoke).toHaveBeenCalledExactlyOnceWith(commandId);
+      expect(clickedTab.getAttribute("aria-selected")).toBe("true");
+      expect(bridge().snapshot().document.title).toBe("Second drawing");
+    });
+
+    describe("last tab close button", () => {
+      const closeWidth = 30;
+
+      // Give each close button the box it has at the right end of its tab, and put the "+" button where the
+      // layout puts it: beside the strip, two pixels past its right edge.
+      function stubCloseButtonsAndNewTab(strip: HTMLElement) {
+        for (const tab of Array.from(strip.querySelectorAll<HTMLElement>(".document-tab"))) {
+          const close = tab.querySelector<HTMLElement>(".document-tab-close")!;
+          vi.spyOn(close, "getBoundingClientRect").mockImplementation(() => {
+            const box = tab.getBoundingClientRect();
+            return new DOMRect(box.right - closeWidth, box.top, closeWidth, box.height);
+          });
+        }
+        const plus = container.querySelector<HTMLElement>(".document-tab-new")!;
+        vi.spyOn(plus, "getBoundingClientRect").mockImplementation(() =>
+          new DOMRect(strip.getBoundingClientRect().right + 2, 0, 30, 24));
+        return plus;
+      }
+
+      function expectLastTabFullyVisible(strip: HTMLElement, plus: HTMLElement) {
+        const bounds = strip.getBoundingClientRect();
+        // The visible right edge stops where a sibling begins to cover the strip.
+        const visibleRight = Math.min(bounds.right, plus.getBoundingClientRect().left);
+        const last = Array.from(strip.querySelectorAll<HTMLElement>(".document-tab")).at(-1)!;
+        const tab = last.getBoundingClientRect();
+        const close = last.querySelector<HTMLElement>(".document-tab-close")!.getBoundingClientRect();
+        const slack = 1e-6;
+        expect(tab.left).toBeGreaterThanOrEqual(bounds.left - slack);
+        expect(tab.right).toBeLessThanOrEqual(visibleRight + slack);
+        expect(close.left).toBeGreaterThanOrEqual(bounds.left - slack);
+        expect(close.right).toBeLessThanOrEqual(visibleRight + slack);
+      }
+
+      async function exerciseLastTab(strip: HTMLElement, track: HTMLElement) {
+        const plus = stubCloseButtonsAndNewTab(strip);
+        // Opening the fourth tab revealed it.
+        expectLastTabFullyVisible(strip, plus);
+
+        // Reveal it again from the far end, by activating it.
+        await activate(0);
+        expect(translationX(track)).toBe(0);
+        await activate(3);
+        expect(active()).toBe(3);
+        expectLastTabFullyVisible(strip, plus);
+
+        // Scroll to the end by wheel, and past it.
+        expect(wheel(track, -100000, 0)).toBe(true);
+        expect(translationX(track)).toBe(0);
+        expect(wheel(track, 100000, 0)).toBe(true);
+        expectLastTabFullyVisible(strip, plus);
+        expect(wheel(track, 100000, 0)).toBe(false);
+
+        // Scroll to the end by dragging the scrollbar thumb past its end.
+        expect(wheel(track, -100000, 0)).toBe(true);
+        const scrollbar = strip.querySelector<HTMLDivElement>(".document-tab-scrollbar")!;
+        const thumb = scrollbar.querySelector<HTMLDivElement>(".document-tab-scrollbar-thumb")!;
+        scrollbar.setPointerCapture = vi.fn();
+        pointer(thumb, "pointerdown", 0);
+        pointer(scrollbar, "pointermove", 100000);
+        pointer(scrollbar, "pointerup", 100000);
+        expectLastTabFullyVisible(strip, plus);
+      }
+
+      it("keeps the last tab and its close button inside the visible strip at the end and when revealed", async () => {
+        const { strip, track } = await openOverflowingTabs();
+        await exerciseLastTab(strip, track);
+        expect(translationX(track)).toBe(-376);
+      });
+
+      it("rounds a fractional overflow up so the close button is not clipped by a sub-pixel", async () => {
+        const strip = container.querySelector<HTMLDivElement>(".document-tab-list")!;
+        const track = strip.querySelector<HTMLDivElement>(".document-tab-track")!;
+        const thumb = strip.querySelector<HTMLDivElement>(".document-tab-scrollbar-thumb")!;
+        // Real text widths are fractional. The track is 606.4 px and the strip 229.6 px, but scrollWidth and
+        // clientWidth report 606 and 230, which understates the overflow (376 against 376.8).
+        const tabWidth = 150.1;
+        const gap = 2;
+        const stripLeft = 24;
+        const stripExact = 229.6;
+        const trackExact = () => Math.max(0, track.childElementCount * (tabWidth + gap) - gap);
+        track.style.columnGap = `${gap}px`;
+        vi.spyOn(strip, "clientWidth", "get").mockImplementation(() => Math.round(stripExact));
+        vi.spyOn(track, "scrollWidth", "get").mockImplementation(() => Math.round(trackExact()));
+        vi.spyOn(strip, "getBoundingClientRect").mockImplementation(() => new DOMRect(stripLeft, 0, stripExact, 24));
+        vi.spyOn(track, "getBoundingClientRect").mockImplementation(() =>
+          new DOMRect(stripLeft + translationX(track), 0, trackExact(), 24));
+        vi.spyOn(thumb, "getBoundingClientRect").mockImplementation(() =>
+          new DOMRect(stripLeft + translationX(thumb), 24, Number.parseFloat(thumb.style.width), 8));
+        const bounds = HTMLDivElement.prototype.getBoundingClientRect;
+        vi.spyOn(HTMLDivElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLDivElement) {
+          if (this.parentElement !== track) return bounds.call(this);
+          const index = Array.from(track.children).indexOf(this);
+          return new DOMRect(stripLeft + index * (tabWidth + gap) + translationX(track), 0, tabWidth, 24);
+        });
+        for (const name of ["First drawing", "Second drawing", "Third drawing", "Fourth drawing"]) await open(name);
+        expect(tabs()).toHaveLength(4);
+        expect(active()).toBe(3);
+        expect(track.scrollWidth).toBe(606);
+        expect(strip.clientWidth).toBe(230);
+
+        await exerciseLastTab(strip, track);
+        expect(translationX(track)).toBe(-377);
+      });
+    });
+
+    // Display scaling (Windows at 125%, devicePixelRatio 1.25) makes every layout width fractional, while
+    // clientWidth and scrollWidth round to whole pixels.
+    describe("fractional geometry at a display scale such as 125%", () => {
+      const gap = 2;
+      const stripLeft = 24;
+      const closeWidth = 30;
+
+      async function mountFractional(tabWidth: number, stripExact: number) {
+        const resize = new Map<Element, () => void>();
+        vi.stubGlobal("ResizeObserver", class {
+          constructor(private readonly onResize: () => void) {}
+          observe(element: Element) { resize.set(element, this.onResize); }
+          unobserve(element: Element) { resize.delete(element); }
+          disconnect() {}
+        });
+        await remount();
+        const strip = container.querySelector<HTMLDivElement>(".document-tab-list")!;
+        const track = strip.querySelector<HTMLDivElement>(".document-tab-track")!;
+        const scrollbar = strip.querySelector<HTMLDivElement>(".document-tab-scrollbar")!;
+        const thumb = scrollbar.querySelector<HTMLDivElement>(".document-tab-scrollbar-thumb")!;
+        const trackExact = () => Math.max(0, track.childElementCount * (tabWidth + gap) - gap);
+        track.style.columnGap = `${gap}px`;
+        vi.spyOn(strip, "clientWidth", "get").mockImplementation(() => Math.round(stripExact));
+        vi.spyOn(track, "scrollWidth", "get").mockImplementation(() => Math.round(trackExact()));
+        vi.spyOn(strip, "getBoundingClientRect").mockImplementation(() => new DOMRect(stripLeft, 0, stripExact, 24));
+        vi.spyOn(track, "getBoundingClientRect").mockImplementation(() =>
+          new DOMRect(stripLeft + translationX(track), 0, trackExact(), 24));
+        vi.spyOn(thumb, "getBoundingClientRect").mockImplementation(() =>
+          new DOMRect(stripLeft + translationX(thumb), 24, Number.parseFloat(thumb.style.width), 8));
+        const bounds = HTMLDivElement.prototype.getBoundingClientRect;
+        vi.spyOn(HTMLDivElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLDivElement) {
+          if (this.parentElement !== track) return bounds.call(this);
+          const index = Array.from(track.children).indexOf(this);
+          return new DOMRect(stripLeft + index * (tabWidth + gap) + translationX(track), 0, tabWidth, 24);
+        });
+        // Measure the layout as stubbed; the observers are the only trigger a lone tab has.
+        await act(async () => { resize.get(strip)?.(); resize.get(track)?.(); });
+        return { strip, track, scrollbar, thumb };
+      }
+
+      // The first file opens into the pristine blank tab, so opening `count` files leaves `count` tabs.
+      async function openTabs(count: number) {
+        for (const name of ["First drawing", "Second drawing", "Third drawing", "Fourth drawing", "Fifth drawing"].slice(0, count)) await open(name);
+        expect(tabs()).toHaveLength(count);
+      }
+
+      it.each([82, 82.33])("hides the scrollbar for one tab whose track is 82.33 px in a %s px viewport", async (stripExact) => {
+        const { scrollbar, track } = await mountFractional(82.33, stripExact);
+        expect(tabs()).toHaveLength(1);
+        expect(scrollbar.style.visibility).toBe("hidden");
+        expect(track.style.transform).toBe("translateX(0px)");
+        expect(wheel(track, 100, 0)).toBe(false);
+      });
+
+      it("hides the scrollbar for tabs that exactly fit at fractional widths", async () => {
+        // Five tabs and four gaps make 419.63 px in a 419.63 px strip, which rounds to 420 for scrollWidth and clientWidth.
+        const { strip, track, scrollbar } = await mountFractional((419.63 - 4 * gap) / 5, 419.63);
+        await openTabs(5);
+        expect(track.scrollWidth).toBe(420);
+        expect(strip.clientWidth).toBe(420);
+        expect(scrollbar.style.visibility).toBe("hidden");
+        expect(track.style.transform).toBe("translateX(0px)");
+        expect(wheel(track, 100, 0)).toBe(false);
+        await activate(0);
+        expect(scrollbar.style.visibility).toBe("hidden");
+        expect(track.style.transform).toBe("translateX(0px)");
+      });
+
+      it("scrolls a real 1.5 px overflow and keeps the last close button fully inside", async () => {
+        // Two tabs and a gap make 231.5 px in a 230 px strip.
+        const { strip, track, scrollbar, thumb } = await mountFractional((231.5 - gap) / 2, 230);
+        await openTabs(2);
+        expect(scrollbar.style.visibility).toBe("visible");
+        expect(Number.parseFloat(thumb.style.width)).toBeLessThan(230);
+        expect(active()).toBe(1);
+        // The range rounds up, so the end of the last tab clears the strip.
+        expect(translationX(track)).toBe(-2);
+        const last = Array.from(strip.querySelectorAll<HTMLElement>(".document-tab")).at(-1)!;
+        const close = last.querySelector<HTMLElement>(".document-tab-close")!;
+        vi.spyOn(close, "getBoundingClientRect").mockImplementation(() => {
+          const box = last.getBoundingClientRect();
+          return new DOMRect(box.right - closeWidth, box.top, closeWidth, box.height);
+        });
+        const bounds = strip.getBoundingClientRect();
+        expect(last.getBoundingClientRect().right).toBeLessThanOrEqual(bounds.right);
+        expect(close.getBoundingClientRect().left).toBeGreaterThanOrEqual(bounds.left);
+        expect(close.getBoundingClientRect().right).toBeLessThanOrEqual(bounds.right);
+      });
+
+      it("ends at the same offset by wheel and by revealing the last tab with Ctrl+Shift+Tab", async () => {
+        // Four 150.1 px tabs make 606.4 px in a 229.6 px strip: the range rounds up from 376.8 to 377.
+        const { track } = await mountFractional(150.1, 229.6);
+        await openTabs(4);
+        expect(translationX(track)).toBe(-377);
+
+        expect(wheel(track, -100000, 0)).toBe(true);
+        expect(translationX(track)).toBe(0);
+        expect(wheel(track, 100000, 0)).toBe(true);
+        const byWheel = translationX(track);
+        expect(byWheel).toBe(-377);
+
+        await activate(0);
+        expect(translationX(track)).toBe(0);
+        await key(true);
+        expect(active()).toBe(3);
+        expect(translationX(track)).toBe(byWheel);
+      });
+    });
   });
 
   it("dirty tab x uses the registered close command; Cancel retains it and Discard selects its neighbour", async () => {
