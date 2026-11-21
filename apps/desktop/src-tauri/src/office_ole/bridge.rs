@@ -206,11 +206,48 @@ pub(crate) async fn office_object_close(
     }
 }
 
+/// The editor window's first frame: `--cd-bg-app` in App.css. Without it the window and the
+/// WebView2 surface paint dark until the page's own background arrives, which on a cold
+/// start is seconds after `show()`.
+#[cfg(any(windows, test))]
+const EDITOR_BACKGROUND: (u8, u8, u8) = (0xd8, 0xde, 0xe3);
+
+/// Longest container name carried into the loading message; matches `officeObjectLoading.ts`.
+#[cfg(any(windows, test))]
+const MAX_CONTAINER_APP_CHARS: usize = 80;
+
+/// `index.html?officeObject=<id>&officeApp=<name>`. The name only labels the pre-mount loading
+/// message; the editor still takes the document and container names from `office_object_connect`.
+#[cfg(any(windows, test))]
+fn editor_url(id: &str, container_app: &str) -> String {
+    let name: String = container_app
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_CONTAINER_APP_CHARS)
+        .collect();
+    let mut url = format!("index.html?officeObject={id}");
+    if !name.is_empty() {
+        url.push_str("&officeApp=");
+        for byte in name.bytes() {
+            if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+                url.push(byte as char);
+            } else {
+                url.push_str(&format!("%{byte:02X}"));
+            }
+        }
+    }
+    url
+}
+
 #[cfg(windows)]
 pub(super) fn open_window(
     app: &tauri::AppHandle,
     id: &str,
     title: String,
+    container_app: String,
     was_open: bool,
     signals: std::sync::Arc<super::server::WindowSignals>,
 ) -> Result<(), String> {
@@ -248,13 +285,15 @@ pub(super) fn open_window(
             .as_ref()
             .filter(|_| cfg!(debug_assertions))
             .map(|url| url.origin());
+        let (red, green, blue) = EDITOR_BACKGROUND;
         let result = WebviewWindowBuilder::new(
             &handle,
             &label,
-            WebviewUrl::App(format!("index.html?officeObject={id}").into()),
+            WebviewUrl::App(editor_url(&id, &container_app).into()),
         )
         .title(&title)
         .visible(false)
+        .background_color(tauri::window::Color(red, green, blue, 0xff))
         .inner_size(900.0, 640.0)
         .on_navigation(move |url| {
             url.origin().ascii_serialization() == "http://tauri.localhost"
@@ -353,6 +392,39 @@ mod tests {
         assert_eq!(owner_id("office-object-7").as_deref(), Ok("7"));
         assert!(owner_id("office-object-7-other").is_err());
         assert!(owner_id("main").is_err());
+    }
+
+    #[test]
+    fn editor_url_carries_a_sanitized_container_name() {
+        assert_eq!(editor_url("7", ""), "index.html?officeObject=7");
+        assert_eq!(editor_url("7", " \t "), "index.html?officeObject=7");
+        assert_eq!(
+            editor_url("7", "Microsoft  Word"),
+            "index.html?officeObject=7&officeApp=Microsoft%20Word"
+        );
+        assert_eq!(
+            editor_url("12", "A&B=\u{7}<x>#é"),
+            "index.html?officeObject=12&officeApp=A%26B%3D%3Cx%3E%23%C3%A9"
+        );
+        let long = editor_url("1", &"é".repeat(200));
+        assert_eq!(long.matches("%C3%A9").count(), MAX_CONTAINER_APP_CHARS);
+    }
+
+    #[test]
+    fn editor_window_paints_the_app_background_before_the_page_loads() {
+        let css = include_str!("../../../src/App.css");
+        let (r, g, b) = EDITOR_BACKGROUND;
+        let token = format!("--cd-bg-app: #{r:02x}{g:02x}{b:02x};");
+        assert!(css.contains(&token), "App.css no longer defines {token}");
+        let html = include_str!("../../../index.html");
+        assert!(html.contains(&format!("#{r:02x}{g:02x}{b:02x}")));
+
+        let source = include_str!("bridge.rs");
+        let builder = &source[source.find("WebviewWindowBuilder::new(").unwrap()..];
+        let builder = &builder[..builder.find(".build()").unwrap()];
+        assert!(builder.contains("editor_url(&id, &container_app)"));
+        assert!(builder.contains(".visible(false)"));
+        assert!(builder.contains(".background_color(tauri::window::Color(red, green, blue, 0xff))"));
     }
 
     #[test]

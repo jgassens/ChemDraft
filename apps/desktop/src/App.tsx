@@ -8,6 +8,8 @@ import {
 } from "./window-manager";
 import { installSecondaryWindowEditHistory } from "./editHistoryRouting";
 import { installBrowserReloadGuard } from "./browserReloadGuard";
+import { OfficeObjectLoadingState } from "./OfficeObjectLoadingState";
+import { officeObjectLoadingRoute } from "./officeObjectLoading";
 
 const MainWindow = lazy(() => import("./MainWindow").then(m => ({ default: m.MainWindow })));
 const PaletteWindow = lazy(() => import("./PaletteWindow").then(m => ({ default: m.PaletteWindow })));
@@ -50,7 +52,11 @@ export function App() {
     );
   }
 
-  return <Suspense fallback={null}><MainWindow /></Suspense>;
+  // An Office editor window is on screen while the MainWindow chunk loads (seconds on a cold
+  // start), so it keeps index.html's loading state instead of an empty frame.
+  const office = typeof window === "undefined" ? undefined : officeObjectLoadingRoute(window.location.search);
+  const fallback = office ? <OfficeObjectLoadingState containerApp={office.containerApp} /> : null;
+  return <Suspense fallback={fallback}><MainWindow /></Suspense>;
 }
 
 /**

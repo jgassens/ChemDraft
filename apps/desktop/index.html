@@ -4,9 +4,46 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ChemDraft</title>
+    <style>
+      /* Office editor first paint (src/OfficeObjectLoadingState.tsx renders the same state from React). */
+      html.office-object-loading-html,
+      html.office-object-loading-html body {
+        margin: 0;
+        height: 100%;
+        background: #d8dee3;
+      }
+      .office-object-loading {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin: 0;
+        background: #d8dee3;
+        color: #4d5860;
+        font: 13px system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // Runs before any module loads, so an Office editor window never shows an empty frame.
+      // React replaces this on mount; keep it in step with src/OfficeObjectLoadingState.tsx.
+      (function () {
+        var params = new URLSearchParams(window.location.search);
+        if (!params.get("officeObject")) return;
+        document.documentElement.classList.add("office-object-loading-html");
+        var name = Array.from((params.get("officeApp") || "").replace(/\s+/g, " ").trim()
+          .replace(/[\u0000-\u001f\u007f-\u009f]/g, "")).slice(0, 80).join("").trim();
+        var status = document.createElement("div");
+        status.className = "office-object-loading";
+        status.setAttribute("role", "status");
+        status.setAttribute("aria-live", "polite");
+        status.textContent = "Opening structure from " + (name || "Office") + "…";
+        document.getElementById("root").appendChild(status);
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

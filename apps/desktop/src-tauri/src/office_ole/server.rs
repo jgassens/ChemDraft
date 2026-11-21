@@ -1027,7 +1027,8 @@ impl IOleObject_Impl for Embedded_Impl {
         } else {
             NEXT_SESSION.fetch_add(1, Ordering::Relaxed).to_string()
         };
-        let mut title = format!("ChemDraft Structure in {}", self.host.borrow().1);
+        let (container_app, container_document) = self.host.borrow().clone();
+        let mut title = format!("ChemDraft Structure in {container_document}");
         if let Some(label) = option_env!("CHEMDRAFT_WORKTREE_LABEL")
             .map(str::trim)
             .filter(|s| !s.is_empty())
@@ -1035,8 +1036,15 @@ impl IOleObject_Impl for Embedded_Impl {
             title.push_str(" — ");
             title.push_str(label);
         }
-        bridge::open_window(&self.sta.app, &id, title, was_open, signals.clone())
-            .map_err(|e| Error::new(E_FAIL, e))?;
+        bridge::open_window(
+            &self.sta.app,
+            &id,
+            title,
+            container_app,
+            was_open,
+            signals.clone(),
+        )
+        .map_err(|e| Error::new(E_FAIL, e))?;
         if !was_open {
             self.session.replace(Some(id.clone()));
             self.signals.replace(Some(signals));
