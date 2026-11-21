@@ -67,9 +67,11 @@ export function refreshPluginPatchChemistry(before: ChemDraftDocument, draft: Ch
       if (previous?.id !== object.id || (scope && !isInsertion && !scope.has(object.id))) continue;
       const verifyInsertion = !!scope && isInsertion;
       // An authored atom move can change 2D stereo, but only where geometry defines stereo, and
-      // never when every atom moved together. Host placement translates an insertion as a unit.
+      // never when every atom moved together keeping every stereo side. Host placement
+      // translates an insertion as a unit.
       const graphChanged = object !== previous && (graphSignature(previous) !== graphSignature(object) ||
-        atomUpdates.has(object.id) && hasGeometryStereo(object) && !movedAsUnit(previous, object));
+        atomUpdates.has(object.id) && hasGeometryStereo(object) &&
+        !(movedAsUnit(previous, object) && keptStereoSides(previous, object)));
       if (!verifyInsertion && !graphChanged) continue;
       // Records the canvas itself derives from this graph cannot disagree with it.
       if (verifyInsertion && !graphChanged && storesNativeDerivation(object)) continue;
@@ -162,6 +164,56 @@ function movedAsUnit(before: MoleculeObject, after: MoleculeObject): boolean {
   const zx = real / spread, zy = imaginary / spread;
   if (!(Math.hypot(zx, zy) > 1e-9)) return false;
   return offsets.every(({ ux, uy, vx, vy }) => Math.hypot(vx - (zx * ux - zy * uy), vy - (zx * uy + zy * ux)) <= tolerance);
+}
+
+/** Smallest |sin| of the angle between a stereo bond and its reference that still reads as a side.
+ * Fixed rather than scaled by the molecule's size, so a near-collinear substituent never counts as
+ * kept, however large the drawing. */
+const STEREO_SIDE_EPSILON = 1e-3;
+
+/** True when every orientation that 2D geometry gives stereo is clearly the same before and after:
+ * each substituent's side of a stereo double bond, and the turn between each pair of neighbours of
+ * a wedged or hashed bond's atoms. `movedAsUnit` alone allows a residual that grows with the
+ * molecule's extent, which can hide a substituent crossing an axis; this check cannot. */
+function keptStereoSides(before: MoleculeObject, after: MoleculeObject): boolean {
+  const start = new Map(before.atoms.map(atom => [atom.id, atom]));
+  const end = new Map(after.atoms.map(atom => [atom.id, atom]));
+  const neighbours = new Map<string, string[]>();
+  for (const bond of after.bonds) {
+    neighbours.set(bond.fromAtomId, [...neighbours.get(bond.fromAtomId) ?? [], bond.toAtomId]);
+    neighbours.set(bond.toAtomId, [...neighbours.get(bond.toAtomId) ?? [], bond.fromAtomId]);
+  }
+  // +1 or -1 for the side of `other` relative to the ray from `centre` to `reference`, 0 if degenerate.
+  const side = (atoms: typeof start, centre: string, reference: string, other: string) => {
+    const c = atoms.get(centre), r = atoms.get(reference), o = atoms.get(other);
+    if (!c || !r || !o) return 0;
+    const rx = r.x - c.x, ry = r.y - c.y, ox = o.x - c.x, oy = o.y - c.y;
+    const lengths = Math.hypot(rx, ry) * Math.hypot(ox, oy);
+    if (!(lengths > 0) || !Number.isFinite(lengths)) return 0;
+    const sine = (rx * oy - ry * ox) / lengths;
+    return Math.abs(sine) >= STEREO_SIDE_EPSILON ? Math.sign(sine) : 0;
+  };
+  const kept = (centre: string, reference: string, other: string) => {
+    const was = side(start, centre, reference, other);
+    return was !== 0 && was === side(end, centre, reference, other);
+  };
+  for (const bond of after.bonds) {
+    const ends = [bond.fromAtomId, bond.toAtomId] as const;
+    if (bond.order === "double") {
+      const substituents = ends.map((centre, index) => (neighbours.get(centre) ?? []).filter(id => id !== ends[1 - index]));
+      if (substituents.every(list => list.length) && ends.some((centre, index) =>
+        substituents[index]!.some(other => !kept(centre, ends[1 - index]!, other)))) return false;
+    }
+    if (bond.display?.bondStyle === "wedge" || bond.display?.bondStyle === "hashed") {
+      for (const centre of ends) {
+        const around = neighbours.get(centre) ?? [];
+        for (let i = 0; i < around.length; i++) {
+          for (let j = i + 1; j < around.length; j++) if (!kept(centre, around[i]!, around[j]!)) return false;
+        }
+      }
+    }
+  }
+  return true;
 }
 
 /** chem-core regenerates this page-context note on every commit. It does not describe the graph:

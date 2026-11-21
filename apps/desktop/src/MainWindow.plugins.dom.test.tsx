@@ -442,6 +442,60 @@ describe("plugin direct writes through mounted desktop normalization", () => {
     expect(inspect).not.toHaveBeenCalled();
   });
 
+  /** The E-but-2-ene fixture with explicit coordinates for the alkene ends and their substituents. */
+  function alkeneAt(blank: ChemDraftDocument, place: (role: "start" | "end" | "startSubstituent" | "endSubstituent") => { x: number; y: number }) {
+    const molecule = graphEditFixture(blank, pluginGraphEdits.find(edit => edit.name === "coordinate-only E/Z")!);
+    const alkene = molecule.bonds.find(bond => bond.order === "double")!;
+    const role = (id: string) => id === alkene.fromAtomId ? "start" : id === alkene.toAtomId ? "end" :
+      molecule.bonds.some(bond => bond !== alkene && [bond.fromAtomId, bond.toAtomId].includes(id) &&
+        [bond.fromAtomId, bond.toAtomId].includes(alkene.fromAtomId)) ? "startSubstituent" : "endSubstituent";
+    molecule.atoms = molecule.atoms.map(atom => ({ ...atom, ...place(role(atom.id)) }));
+    return { molecule, role };
+  }
+
+  it("verifies a large-coordinate edit that moves one alkene substituent across the axis", async () => {
+    const blank = createEmptyDocument();
+    const pageId = blank.pages[0]!.id;
+    // Extent 1e9 lets the similarity fit absorb a 2-unit move; the substituent still changes sides.
+    const { molecule, role } = alkeneAt(blank, which => ({ start: { x: 300, y: 250 }, end: { x: 300 + 1e9, y: 250 },
+      startSubstituent: { x: 299, y: 251 }, endSubstituent: { x: 301 + 1e9, y: 249 } })[which]);
+    const port = await mount(applyPatch(blank, { op: "batch", patches: [
+      { op: "addObject", pageId, object: molecule }, { op: "setSelection", pageId, objectIds: [molecule.id] }
+    ] }));
+    const before = port.read("initial")!;
+    const inspect = vi.spyOn(identityClient, "inspectStructureOffThread");
+    const atoms = molecule.atoms.map(atom => role(atom.id) === "startSubstituent" ? { ...atom, y: 249 } : atom);
+    const invoke = registerWrite(context => context.documents.applyPatch!({ reason: "Move substituent", patch: {
+      op: "updateObject", objectId: molecule.id, changes: { atoms }
+    } }));
+    await act(async () => { await expect(invoke()).resolves.toMatchObject({ applied: true, objectIds: [molecule.id] }); });
+    expect(inspect).toHaveBeenCalled();
+    expect(port.read("initial")).not.toBe(before);
+    await expectStoredGraph(port.read("initial")!.pages[0]!.objects[0]! as MoleculeObject,
+      pluginGraphEdits.find(edit => edit.name === "coordinate-only E/Z")!);
+  }, 20_000);
+
+  it("verifies a near-collinear substituent that crosses the double-bond axis", async () => {
+    const blank = createEmptyDocument();
+    const pageId = blank.pages[0]!.id;
+    const { molecule, role } = alkeneAt(blank, which => ({ start: { x: 300, y: 250 }, end: { x: 320, y: 250 },
+      startSubstituent: { x: 280, y: 250 + 1e-5 }, endSubstituent: { x: 330, y: 250 - 17.32 } })[which]);
+    const port = await mount(applyPatch(blank, { op: "batch", patches: [
+      { op: "addObject", pageId, object: molecule }, { op: "setSelection", pageId, objectIds: [molecule.id] }
+    ] }));
+    const before = port.read("initial")!;
+    const inspect = vi.spyOn(identityClient, "inspectStructureOffThread");
+    const atoms = molecule.atoms.map(atom => role(atom.id) === "startSubstituent" ? { ...atom, y: 250 - 1e-5 } : atom);
+    const invoke = registerWrite(context => context.documents.applyPatch!({ reason: "Move substituent", patch: {
+      op: "updateObject", objectId: molecule.id, changes: { atoms }
+    } }));
+    // Neither drawing gives the alkene a side, so its stored E isomer cannot be confirmed.
+    await act(async () => { await expect(invoke()).rejects.toThrow(
+      new RegExp(`cannot refresh stored chemistry for molecule "${molecule.id}".*stored smiles.*editable graph cannot verify`, "i")); });
+    expect(inspect).toHaveBeenCalled();
+    expect(port.read("initial")).toBe(before);
+  }, 20_000);
+
   it("inserts a molecule whose stored records are the canvas's own derivation without inspection", async () => {
     const blank = createEmptyDocument();
     const molecule = graphEditFixture(blank, { name: "element", source: "CO" });
