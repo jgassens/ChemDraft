@@ -4,7 +4,7 @@ import { sameDocumentValue } from "./documentValue";
 // however, is taken from `@chemdraft/plugin-api` so a consumer using both SDK packages sees ONE canonical
 // document type — not a second, structurally-identical copy inlined here.
 import type { ApplyPatchOptions, DocumentObject, DocumentPatch, DocumentPage, OrphanedRepeatUnit } from "@chemdraft/chem-core";
-import { bareIdTargetPage, effectiveScopePages, objectInWriteScope, objectLocations, pinSelectionPages, resolveObjectOnPage,
+import { bareIdTargetPage, duplicateIdRefusalMessage, effectiveScopePages, objectInWriteScope, objectLocations, pinSelectionPages, resolveObjectOnPage,
   scopedObjectRefs, type PageObjectRef, type PluginWriteScopePages } from "./pageObjects";
 import { applyPatch, planOrphanedRepeatUnitCleanup, pruneReactionObjectReferences, removeOrphanedRepeatUnitBrackets, sameBracketIdentity } from "@chemdraft/chem-core";
 import {
@@ -85,7 +85,7 @@ function assertPluginPageWriteScope(before: ChemDraftDocument, after: ChemDraftD
   }
 }
 
-export { bareIdTargetPage, effectiveScopePages, objectInWriteScope, objectLocations, pinSelectionPages, resolveObjectOnPage,
+export { bareIdTargetPage, duplicateIdRefusalMessage, pageNumberLabel, effectiveScopePages, objectInWriteScope, objectLocations, pinSelectionPages, resolveObjectOnPage,
   resolveScopedObject, scopedObjectPage, scopedObjectRefs, type PageObjectLocation, type PageObjectRef,
   type PluginWriteScopePages } from "./pageObjects";
 
@@ -107,9 +107,10 @@ function assertLegacyWriteTargetPage(document: ChemDraftDocument, scopePages: Pl
     const target = op.op === "setObjectOrder" ? op.pageId : bareIdTargetPage(document, id);
     if (target === undefined || target === pinned) continue;
     if (!resolveObjectOnPage(document, pinned, id)) {
-      throw new PluginHostError(`Plugin write refused: object "${id}" was selected on page "${pinned}", but it is no longer there and the id now names objects on pages ${objectLocations(document, id).map(location => `"${location.page.id}"`).join(", ")}.`);
+      throw new PluginHostError(duplicateIdRefusalMessage(document, id, pinned,
+        objectLocations(document, id).map(location => location.page.id), false));
     }
-    throw new PluginHostError(`Plugin write refused: object "${id}" is selected on page "${pinned}", but the write would change the object with the same id on page "${target}".`);
+    throw new PluginHostError(duplicateIdRefusalMessage(document, id, pinned, [target]));
   }
 }
 

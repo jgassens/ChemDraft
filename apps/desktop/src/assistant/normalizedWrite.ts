@@ -1,5 +1,5 @@
 import type { ChemDraftDocument, DocumentObject, MoleculeObject } from "@chemdraft/chem-core";
-import { effectiveScopePages, objectInWriteScope, type PluginWriteScopePages } from "@chemdraft/plugin-host";
+import { duplicateIdRefusalMessage, effectiveScopePages, objectInWriteScope, type PluginWriteScopePages } from "@chemdraft/plugin-host";
 import { normalizeCommittedDocument } from "../documentWorkflow";
 import type { AssistantToolContext } from "./AssistantToolContext";
 import { assertCanonical, inspectMolecule } from "../plugins/requestWrites/structureIdentity";
@@ -60,8 +60,7 @@ function assertOffPageDuplicatesUnchanged(before: ChemDraftDocument, after: Chem
   for (let index = 0; index < Math.max(previous.length, next.length); index++) {
     if (equalEntry(previous[index], next[index])) continue;
     const entry = (previous[index] ?? next[index])!;
-    throw new Error(`Plugin write refused: object "${entry.object.id}" is selected on page "${scopePages.get(entry.object.id)}", ` +
-      `but the write would change the object with the same id on page "${entry.pageId}".`);
+    throw new Error(duplicateIdRefusalMessage(before, entry.object.id, scopePages.get(entry.object.id)!, [entry.pageId]));
   }
 }
 

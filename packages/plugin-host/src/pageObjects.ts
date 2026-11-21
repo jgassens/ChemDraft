@@ -31,6 +31,34 @@ export function objectLocations(document: ChemDraftDocument, objectId: string): 
   return found;
 }
 
+/** A page as the user sees it: its 1-based position in the document. Pages carry no display name. */
+export function pageNumberLabel(document: ChemDraftDocument, pageId: string): string {
+  const index = document.pages.findIndex(page => page.id === pageId);
+  return index < 0 ? "another page" : `page ${index + 1}`;
+}
+
+function joinLabels(labels: string[]): string {
+  return labels.length < 3 ? labels.join(" and ") : `${labels.slice(0, -1).join(", ")}, and ${labels[labels.length - 1]}`;
+}
+
+/**
+ * The user-facing refusal for a write whose selected object shares its id with an object on another page.
+ * Pages are named by number; the internal ids go to console.warn only. `others` are the page ids holding
+ * the same-id objects the write would have reached. `selectedPageId` is where the selection named the object.
+ */
+export function duplicateIdRefusalMessage(document: ChemDraftDocument, objectId: string, selectedPageId: string,
+  others: readonly string[], stillOnSelectedPage = true): string {
+  console.warn(`Plugin write refused: object "${objectId}" selected on page id "${selectedPageId}"; same id on page ids ${others.map(id => `"${id}"`).join(", ")}.`);
+  const otherLabels = others.map(id => pageNumberLabel(document, id));
+  const where = joinLabels(otherLabels);
+  const plural = others.length > 1;
+  const fix = `To edit it, delete the duplicate${plural ? "s" : ""} on ${where}, then select the object and try again.`;
+  if (!stillOnSelectedPage) {
+    return `Plugin write refused: the change was not applied. The object you selected on ${pageNumberLabel(document, selectedPageId)} is no longer there, and its internal ID now matches objects on ${where}, so ChemDraft can't tell which one to change safely. ${fix}`;
+  }
+  return `Plugin write refused: the change was not applied. The object you selected on ${pageNumberLabel(document, selectedPageId)} shares its internal ID with an object on ${where}, so ChemDraft can't tell which one to change safely. ${fix}`;
+}
+
 /** The object named `objectId` on page `pageId`, or undefined. */
 export function resolveObjectOnPage(document: ChemDraftDocument, pageId: string, objectId: string): PageObjectLocation | undefined {
   const page = document.pages.find(candidate => candidate.id === pageId);
