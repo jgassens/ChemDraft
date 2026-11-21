@@ -17,7 +17,9 @@ import { assertPluginDocumentWriteScope, rebasePluginPatch, storedCtabReference,
 import { selectionBounds, translateInsertedDocumentObjects } from "../documentWorkflow";
 import { choosePlacement, objectRect, overlaps as boundsOverlap, pageContentRect, RELATIVE_GAP, unionRects } from "../assistant/placement";
 import type { ViewportRect } from "@chemdraft/viewport-engine";
-import { refreshVerifiedMoleculeChemistry, verifiedChemicalRecord, verifyStoredSources } from "./requestWrites/storedChemistry";
+import { nativeSingleBondGraphMetadata, tryNativeSingleBondGraphSmiles } from "@chemdraft/document-workflow-core";
+import { nativeElementFromAtomLabel } from "@chemdraft/layout-engine";
+import { refreshVerifiedMoleculeChemistry, stableRecord, verifiedChemicalRecord, verifyStoredSources } from "./requestWrites/storedChemistry";
 import { desktopWriteInspectionContext, inspectMolecule } from "./requestWrites/structureIdentity";
 
 export interface PluginPatchPlacementOptions extends ApplyPatchOptions {
@@ -64,11 +66,13 @@ export function refreshPluginPatchChemistry(before: ChemDraftDocument, draft: Ch
       const isInsertion = inserted.has(object.id);
       if (previous?.id !== object.id || (scope && !isInsertion && !scope.has(object.id))) continue;
       const verifyInsertion = !!scope && isInsertion;
-      // An authored atom move can change 2D stereo. Host placement translates an insertion as a unit.
-      const includeCoordinates = atomUpdates.has(object.id);
-      const graphChanged = object !== previous &&
-        graphSignature(previous, includeCoordinates) !== graphSignature(object, includeCoordinates);
+      // An authored atom move can change 2D stereo, but only where geometry defines stereo, and
+      // never when every atom moved together. Host placement translates an insertion as a unit.
+      const graphChanged = object !== previous && (graphSignature(previous) !== graphSignature(object) ||
+        atomUpdates.has(object.id) && hasGeometryStereo(object) && !movedAsUnit(previous, object));
       if (!verifyInsertion && !graphChanged) continue;
+      // Records the canvas itself derives from this graph cannot disagree with it.
+      if (verifyInsertion && !graphChanged && storesNativeDerivation(object)) continue;
       // Give existing scope refusals priority over chemistry inspection of a draft that cannot commit.
       if (!edits.length && writeScopeObjectIds) assertPluginDocumentWriteScope(before, draft, rebased, writeScopeObjectIds);
       if (objects === page.objects) objects = [...objects];
@@ -76,16 +80,19 @@ export function refreshPluginPatchChemistry(before: ChemDraftDocument, draft: Ch
         try {
           if (!object.atoms.length) throw new Error("The molecule has no editable atoms to verify.");
           if (verifyInsertion && !graphChanged) {
-            objects[index] = await verifiedChemicalRecord(context, object, await inspectMolecule(context, object));
+            // Verification only: an insertion that matches its graph keeps its records as authored.
+            const insertion = withoutBracketContext(object);
+            await verifiedChemicalRecord(context, insertion, await inspectMolecule(context, insertion));
             return;
           }
+          const original = withoutBracketContext(previous);
           if (verifyInsertion) {
-            await verifiedChemicalRecord(context, previous, await inspectMolecule(context, previous));
+            await verifiedChemicalRecord(context, original, await inspectMolecule(context, original));
           } else if (previous.structure || previous.compatibility?.unknown.smiles !== undefined) {
-            const graph = await inspectMolecule(context, previous);
+            const graph = await inspectMolecule(context, original);
             await verifyStoredSources(context, previous, { graph, reference: storedCtabReference(previous) });
           }
-          const graph = await inspectMolecule(context, object);
+          const graph = await inspectMolecule(context, withoutBracketContext(object));
           await verifyStoredSources(context, object, { graph, alreadyVerified: previous });
           const refreshed = refreshVerifiedMoleculeChemistry(object, graph, previous.structureFormat);
           if (refreshed.structureFormat === "molfile-v3000") await verifyStoredSources(context, refreshed, { graph });
@@ -101,12 +108,11 @@ export function refreshPluginPatchChemistry(before: ChemDraftDocument, draft: Ch
   if (edits.length) return Promise.all(edits).then(() => adoptDerivedDocument(draft, { ...draft, pages }));
 }
 
-function graphSignature(molecule: MoleculeObject, includeCoordinates: boolean): string {
+function graphSignature(molecule: MoleculeObject): string {
   return JSON.stringify([
     molecule.atoms.map(atom => JSON.stringify([atom.id, atom.element, atom.formalCharge, atom.isotope,
       atom.markRadicals, atom.schemeAbbreviation, atom.labelLiteral, atom.hydrogenCount,
-      atom.labelBondSide?.side, atom.labelBondSide?.atomId,
-      includeCoordinates ? [atom.x, atom.y] : undefined])).sort(),
+      atom.labelBondSide?.side, atom.labelBondSide?.atomId])).sort(),
     molecule.bonds.map(bond => {
       const style = bond.display?.bondStyle;
       const stereo = bond.order === "single" && (style === "wedge" || style === "hashed" || style === "wavy") ? style : undefined;
@@ -116,6 +122,77 @@ function graphSignature(molecule: MoleculeObject, includeCoordinates: boolean): 
       return JSON.stringify([endpoints, bond.order, bond.stereo, stereo, dative]);
     }).sort()
   ]);
+}
+
+/** 2D coordinates define stereo only through wedges and hashes, or across a double bond whose
+ * ends both carry another substituent. Elsewhere a coordinate change cannot change chemistry. */
+function hasGeometryStereo({ bonds }: MoleculeObject): boolean {
+  const degree = new Map<string, number>();
+  for (const bond of bonds) {
+    for (const id of [bond.fromAtomId, bond.toAtomId]) degree.set(id, (degree.get(id) ?? 0) + 1);
+  }
+  return bonds.some(bond => bond.display?.bondStyle === "wedge" || bond.display?.bondStyle === "hashed" ||
+    bond.order === "double" && degree.get(bond.fromAtomId)! > 1 && degree.get(bond.toAtomId)! > 1);
+}
+
+/** True when the same atoms moved by one translation, rotation and uniform scale. Such a move
+ * keeps every wedge's handedness and every double bond's sides; a reflection or a reshaped
+ * molecule does not count. */
+function movedAsUnit(before: MoleculeObject, after: MoleculeObject): boolean {
+  const start = new Map(before.atoms.map(atom => [atom.id, atom]));
+  const pairs = after.atoms.map(atom => [start.get(atom.id), atom] as const);
+  if (pairs.length !== start.size || pairs.some(([from]) => !from)) return false;
+  if (!pairs.length) return true;
+  const centre = (points: readonly { x: number; y: number }[]) => ({
+    x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
+    y: points.reduce((sum, point) => sum + point.y, 0) / points.length
+  });
+  const a = centre(pairs.map(([from]) => from!)), b = centre(pairs.map(([, to]) => to));
+  const offsets = pairs.map(([from, to]) => ({ ux: from!.x - a.x, uy: from!.y - a.y, vx: to.x - b.x, vy: to.y - b.y }));
+  // The least-squares similarity maps u to z·u, with z = Σ v·conj(u) / Σ |u|² as a complex number.
+  let spread = 0, real = 0, imaginary = 0, extent = 0;
+  for (const { ux, uy, vx, vy } of offsets) {
+    spread += ux * ux + uy * uy;
+    real += vx * ux + vy * uy;
+    imaginary += vy * ux - vx * uy;
+    extent = Math.max(extent, Math.hypot(ux, uy), Math.hypot(vx, vy));
+  }
+  const tolerance = 1e-6 * Math.max(1, extent);
+  if (!(spread > 0)) return offsets.every(({ vx, vy }) => Math.hypot(vx, vy) <= tolerance);
+  const zx = real / spread, zy = imaginary / spread;
+  if (!(Math.hypot(zx, zy) > 1e-9)) return false;
+  return offsets.every(({ ux, uy, vx, vy }) => Math.hypot(vx - (zx * ux - zy * uy), vy - (zx * uy + zy * ux)) <= tolerance);
+}
+
+/** chem-core regenerates this page-context note on every commit. It does not describe the graph:
+ * the stored chemistry of a repeat-unit member is that of the one drawn copy. */
+function withoutBracketContext(molecule: MoleculeObject): MoleculeObject {
+  const warnings = molecule.chemistry?.warnings;
+  if (!warnings?.some(warning => warning.code === "chemistry.bracket_multiplier")) return molecule;
+  return { ...molecule, chemistry: { ...molecule.chemistry!,
+    warnings: warnings.filter(warning => warning.code !== "chemistry.bracket_multiplier") } };
+}
+
+/** The structure, cached SMILES and chemistry are exactly what the canvas derives from this graph
+ * (`refreshNativeSingleBondGraph`), so they cannot be stale. Limited to plain elements with no
+ * radicals, no unusual bonds and no geometry-defined stereo, which the native writer cannot record. */
+function storesNativeDerivation(molecule: MoleculeObject): boolean {
+  const { atoms, bonds } = molecule;
+  if (!atoms.length || molecule.superatoms.length || molecule.rGroups.length || molecule.structureFormat !== "smiles") return false;
+  if (atoms.some(atom => atom.labelLiteral || atom.schemeAbbreviation || atom.markRadicals || !nativeElementFromAtomLabel(atom.element))) {
+    return false;
+  }
+  if (bonds.some(bond => bond.stereo !== undefined || bond.display?.bondStyle === "wavy" || isDativeBond(bond) ||
+      (bond.order !== "single" && bond.order !== "double" && bond.order !== "triple")) || hasGeometryStereo(molecule)) {
+    return false;
+  }
+  const native = tryNativeSingleBondGraphSmiles(atoms, bonds);
+  if (!("smiles" in native) || !native.smiles || native.smiles !== molecule.structure) return false;
+  const retained = molecule.compatibility?.unknown ?? {};
+  if (Object.keys(retained).some(key => key !== "smiles") ||
+      (retained.smiles !== undefined && retained.smiles !== molecule.structure)) return false;
+  return !molecule.chemistry ||
+    stableRecord(withoutBracketContext(molecule).chemistry) === stableRecord(nativeSingleBondGraphMetadata(atoms, bonds));
 }
 
 /**

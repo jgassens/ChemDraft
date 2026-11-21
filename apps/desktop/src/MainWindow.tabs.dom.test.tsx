@@ -834,10 +834,15 @@ describe("documents in one window", () => {
   }
   const reviewSourceLabel = pluginPanelWindowLabel({ pluginId: ANALYSIS_WINDOW_OWNER_ID, panelId: PATCH_REVIEW_WINDOW_ID });
   async function decide(kind: "acceptPluginProposal" | "rejectPluginProposal", proposalId: string) {
+    const answered = vi.mocked(respondToProposalDecision).mock.calls.length;
     // Rust stamps the review window's label before forwarding the action to main.
     await act(async () => native.events.get(ANALYSIS_WINDOW_ACTION_EVENT)!({
       kind, proposalId, requestId: "review-result", sourceLabel: reviewSourceLabel
     }));
+    // An accept that changes a graph commits only after its off-thread chemistry check; the review
+    // window's answer is sent once the decision has finished either way.
+    await act(async () => { await vi.waitFor(() =>
+      expect(vi.mocked(respondToProposalDecision).mock.calls.length).toBeGreaterThan(answered), { timeout: 4_000 }); });
   }
   const reviewItems = () => {
     const snapshots = vi.mocked(broadcastAnalysisWindowSnapshot).mock.calls

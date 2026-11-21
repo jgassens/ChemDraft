@@ -895,6 +895,8 @@ describe.each(["macos", "windows"] as const)("mounted page commits on %s", platf
       } } });
       finished = runtime.invokeCommand("plugin.pageCancelled.insert").then(() => "applied", () => "cancelled");
     });
+    // The insertion's chemistry is checked off-thread before the page question opens.
+    await act(async () => { await vi.waitFor(() => expect(answer).toBeDefined(), { timeout: 4_000 }); });
     expect(current()).toEqual(before);
     await act(async () => { runtime.unregisterPlugin("org.chemdraft.pageCancelled"); });
     await expect(finished).resolves.toBe("cancelled");

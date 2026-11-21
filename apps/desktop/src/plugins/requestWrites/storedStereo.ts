@@ -165,15 +165,26 @@ function mappedStereoTags(tags: StereoTags, ids: readonly string[]) {
   ]);
 }
 
+const hasCipTags = (tags: StereoTags) => !!(tags.CIP_atoms?.length || tags.CIP_bonds?.length);
+
 /** Verify the retained source against the pre-edit graph. A proposed graph cannot
- * authorize a chemical edit by happening to reproduce a previously conflicting mark. */
+ * authorize a chemical edit by happening to reproduce a previously conflicting mark.
+ * `sharedIdentity` is the isomeric SMILES the caller has already verified both records share. */
 export function assertStoredCtabStereo(source: string, sourceTags: StereoTags | undefined,
-  original: SerializedGraph, molecule: MoleculeObject, referenceMolfile = original.molfile) {
+  original: SerializedGraph, molecule: MoleculeObject, referenceMolfile = original.molfile, sharedIdentity?: string) {
   const stored = parseMolfileGraph(source);
   if (hasAtomParity(source, stored.format)) {
     throw new Error("The chemical edit cannot preserve stored atom stereo parity.");
   }
   const prior = parseMolfileGraph(original.molfile);
+  // With no stereo on either side there is nothing to place, so the stored coordinates need not
+  // line up with the drawing (an insertion stretched along one axis, say).
+  if (sharedIdentity !== undefined && !/[@\\/]/.test(sharedIdentity) && sourceTags && original.stereoTags &&
+      !hasCipTags(sourceTags) && !hasCipTags(original.stereoTags) &&
+      stored.bonds.every(bond => stereoAnnotation(bond.fromAtomId, bond.bondStyle, bond.stereo) === undefined) &&
+      [...verifyWrittenBonds(molecule, original, prior).values()].every(bond => bond.stereo === undefined)) {
+    return;
+  }
   const reference = referenceMolfile === original.molfile ? prior : parseMolfileGraph(referenceMolfile);
   const storedIds = storedAtomIds(source, stored, original, prior, reference);
   const before = verifyWrittenBonds(molecule, original, prior);

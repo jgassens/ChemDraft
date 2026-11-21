@@ -421,6 +421,40 @@ describe("plugin direct writes through mounted desktop normalization", () => {
     expect(inspect).not.toHaveBeenCalled();
   });
 
+  it("skips inspection when a whole alkene is rotated and moved as one unit", async () => {
+    const blank = createEmptyDocument();
+    const pageId = blank.pages[0]!.id;
+    const molecule = graphEditFixture(blank, pluginGraphEdits.find(edit => edit.name === "coordinate-only E/Z")!);
+    await mount(applyPatch(blank, { op: "batch", patches: [
+      { op: "addObject", pageId, object: molecule }, { op: "setSelection", pageId, objectIds: [molecule.id] }
+    ] }));
+    const inspect = vi.spyOn(identityClient, "inspectStructureOffThread");
+    const cx = molecule.atoms.reduce((sum, atom) => sum + atom.x, 0) / molecule.atoms.length;
+    const cy = molecule.atoms.reduce((sum, atom) => sum + atom.y, 0) / molecule.atoms.length;
+    const cos = Math.cos(Math.PI / 3), sin = Math.sin(Math.PI / 3);
+    // A rotation keeps both double-bond sides, so the E isomer cannot change.
+    const atoms = molecule.atoms.map(atom => ({ ...atom,
+      x: cx + 15 + (atom.x - cx) * cos - (atom.y - cy) * sin, y: cy + 10 + (atom.x - cx) * sin + (atom.y - cy) * cos }));
+    const invoke = registerWrite(context => context.documents.applyPatch!({ reason: "Rotate molecule", patch: {
+      op: "updateObject", objectId: molecule.id, changes: { atoms }
+    } }));
+    await act(async () => { await expect(invoke()).resolves.toMatchObject({ applied: true }); });
+    expect(inspect).not.toHaveBeenCalled();
+  });
+
+  it("inserts a molecule whose stored records are the canvas's own derivation without inspection", async () => {
+    const blank = createEmptyDocument();
+    const molecule = graphEditFixture(blank, { name: "element", source: "CO" });
+    const port = await mount(blank);
+    const inspect = vi.spyOn(identityClient, "inspectStructureOffThread");
+    const invoke = registerWrite(context => context.documents.applyPatch!({ reason: "Insert methanol", patch: {
+      op: "addObject", pageId: blank.pages[0]!.id, object: molecule
+    } }));
+    await act(async () => { await expect(invoke()).resolves.toMatchObject({ applied: true, objectIds: [molecule.id] }); });
+    expect(inspect).not.toHaveBeenCalled();
+    expect(port.read("initial")!.pages[0]!.objects).toMatchObject([{ id: molecule.id, structure: "CO" }]);
+  });
+
   it("preserves a canvas edit made while a plugin graph patch awaits inspection", async () => {
     const blank = createEmptyDocument();
     const pageId = blank.pages[0]!.id;

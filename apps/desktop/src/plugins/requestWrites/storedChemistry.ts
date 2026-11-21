@@ -87,7 +87,8 @@ export async function verifyStoredSources(context: StructureInspectionContext, m
         }
         referenceMolfile = serialized.molfile;
       }
-      assertStoredCtabStereo(value, result.stereoTags, graph, molecule, referenceMolfile);
+      // The identity check above already required the stored source to read as the graph does.
+      assertStoredCtabStereo(value, result.stereoTags, graph, molecule, referenceMolfile, graph.identitySmiles);
     }
   };
   if (structure && !(alreadyVerified?.structureFormat === structureFormat && alreadyVerified.structure === structure)) {
