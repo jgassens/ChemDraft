@@ -1589,3 +1589,69 @@ whole-molecule cleanup with the existing behavior, and check save/reopen and exp
 - Use File > Open to open a binary `.cdx` with known structures. Check bonds, labels and any import
   warnings against the source. Open a truncated CDX: it reports an import failure. On Windows use
   the file chooser or Open With; the installer does not register `.cdx` as an association.
+
+## Office editing (Windows OLE object and macOS add-in)
+
+Design: `docs/architecture/office-editing.md`. The Windows route is ChemDraft's own embedded object
+(`ChemDraft.Structure`); the Mac route is the Word and PowerPoint add-in. Run the Windows items on
+Windows with Word and PowerPoint, and the Mac items on a Mac with both apps. Say which you did not run.
+
+### Windows embedded object (Word and PowerPoint)
+
+- Insert > Object > ChemDraft Structure (labeled "ChemDraft Structure", never "ChemDraft (dev)
+  Structure" on a stable build). An empty structure opens in ChemDraft. Draw ethanol, then close or
+  save: the object appears in the document with a sharp preview.
+- Double-click the object in Word and in PowerPoint normal view. ChemDraft opens the same structure.
+  Edit it and save: the preview in the document updates and the canonical SMILES matches the edit.
+- On closing the editor with changes, the prompt offers Update, Don't update and Cancel.
+  - Update writes the edit back and closes.
+  - Don't update closes and leaves the document object unchanged.
+  - Cancel keeps the editor open with the edit intact.
+- Already-running start: with ChemDraft open on another document, double-click the object. The editor
+  opens as its own window and the existing document is untouched.
+- Cold start: quit ChemDraft, then double-click the object. A loading screen shows at once, then the
+  structure. No dark or blank frame appears at any point, including on a dark-themed system.
+- Save the Office file, close it and reopen it. The preview is still sharp, double-click still opens
+  the structure, and the structure is unchanged. Repeat after moving the file to another folder.
+- Resize and rotate the object in Word and PowerPoint, then edit it: size and rotation are kept.
+- PowerPoint Slide Show: double-click on the object does not activate it. This is expected PowerPoint
+  behavior and is not a ChemDraft failure. The preview still draws and the slide prints.
+- Quit ChemDraft while an editor is open with unsaved edits, and again during an app update: the
+  edits are saved or the user is asked first, and the Office object never loses them silently.
+- Log off or shut down Windows with an editor open with unsaved edits: the logoff is blocked and a
+  reason is shown. After saving or discarding, logoff proceeds.
+- A document opened in Protected View, or with OLE blocked by policy, shows the preview only and
+  gives no ChemDraft error.
+- Copy a structure in ChemDraft and Paste Special in Word and PowerPoint: the list offers the
+  embedded object and a picture. The pasted object opens with double-click.
+
+### Windows installer registration
+
+- Fresh install: Insert > Object lists ChemDraft Structure, and a double-click on an existing object
+  works. ChemDraft's class is registered; no other program's class, ProgID or file type changes,
+  and `.cdxml` is not taken over.
+- Upgrade over an installed version: the object still opens, and there is no duplicate entry in
+  Insert > Object.
+- Uninstall: ChemDraft Structure disappears from Insert > Object, and the keys the installer wrote
+  are gone. Existing objects still show their preview, and double-click says the program is
+  unavailable.
+- A dev build installed beside stable has its own entry ("ChemDraft (dev) Structure") and never
+  changes the stable registration.
+
+### macOS Office add-in (Word and PowerPoint)
+
+- Help menu: with the add-in not installed, Install Office Add-in is enabled and Remove Office
+  Add-in is disabled with a reason. Choose Install, read the confirmation (testing route; loads from
+  chemdraft.ai), and click Install. Both items update without a relaunch: Install disabled, Remove
+  enabled. Cancel in the confirmation changes nothing.
+- Restart Word and PowerPoint: the Edit Structure button is in the ribbon. Choose Help > Remove
+  Office Add-in, then confirm the items swap back and the button is gone after a restart.
+- Word: select a ChemDraft picture with the pane open. It loads without a click. Edit and Update: the
+  picture is replaced in place, size, wrapping and position are kept, and Undo restores it. Selecting
+  anything else shows "Select a ChemDraft structure".
+- PowerPoint: do the same on a slide picture. Position, rotation and alt text are kept after Update.
+- PowerPoint on a picture that has an animation or a link: the pane warns before updating, and the
+  warning names what will be lost.
+- A refused update (for example a grouped or cropped picture, or Cancel at the warning): the original
+  picture stays and no duplicate picture is left on the slide or page.
+- A picture without a ChemDraft carrier is refused with a reason and is not altered.
