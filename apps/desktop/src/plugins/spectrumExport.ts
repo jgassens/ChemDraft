@@ -110,15 +110,28 @@ export function spectrumPeaksForMode(
 }
 
 // NMR instruments are conventionally named by their proton frequency. A nucleus is observed at a
-// different frequency in the same magnetic field; the ratio below is γ(13C)/γ(1H).
-const OBSERVE_FREQUENCY_RATIO: Readonly<Record<string, number>> = {
+// different frequency in the same magnetic field: the ratio is |γ(nucleus)/γ(1H)|. This is the
+// single table for that conversion. 15N and 29Si have negative γ; the frequency uses the magnitude.
+const GYROMAGNETIC_RATIO_TO_PROTON: Readonly<Record<string, number>> = {
   "1H": 1,
-  "13C": 0.25144953
+  "2H": 0.153506088,
+  "11B": 0.320838,
+  "13C": 0.25144953,
+  "15N": 0.101329118,
+  "19F": 0.940866982,
+  "29Si": 0.198705,
+  "31P": 0.40480742
 };
 
-/** Convert a proton-rated instrument frequency into the actual frequency of the observed nucleus. */
-export function observeFrequencyMHz(nucleus: string, protonFrequencyMHz: number): number {
-  return protonFrequencyMHz * (OBSERVE_FREQUENCY_RATIO[nucleus] ?? 1);
+/**
+ * Convert a proton-rated instrument frequency into the actual frequency of the observed nucleus.
+ * Returns `undefined` for a nucleus missing from the table (or a non-finite field): callers then
+ * show no observe frequency at all rather than silently reusing the proton frequency.
+ */
+export function observeFrequencyMHz(nucleus: string, protonFrequencyMHz: number): number | undefined {
+  const ratio = Object.hasOwn(GYROMAGNETIC_RATIO_TO_PROTON, nucleus) ? GYROMAGNETIC_RATIO_TO_PROTON[nucleus] : undefined;
+  if (ratio === undefined || !Number.isFinite(protonFrequencyMHz)) return undefined;
+  return protonFrequencyMHz * ratio;
 }
 
 function formatFrequencyMHz(value: number): string {
@@ -167,7 +180,8 @@ export function spectrumToJcampDx(
     // JCAMP-DX 5.01 OWNER names the legal data owner, not the generating software. The report
     // supplies no ownership; UNKNOWN avoids inventing a holder or asserting PUBLIC DOMAIN.
     "##OWNER=UNKNOWN",
-    `##.OBSERVE FREQUENCY=${formatFrequencyMHz(observeMHz)}`,
+    // An unknown nucleus has no derivable observe frequency; omit it instead of writing 1H's.
+    ...(observeMHz === undefined ? [] : [`##.OBSERVE FREQUENCY=${formatFrequencyMHz(observeMHz)}`]),
     `##.OBSERVE NUCLEUS=${jcampNucleus(spectrum.nucleus)}`,
     `##$CHEMDRAFT PROTON FREQUENCY=${formatFrequencyMHz(protonFrequencyMHz)}`,
     `##$CHEMDRAFT COMPARISON MODE=${comparisonMode === "primary" ? hasEstimated ? "PRIMARY" : comparison?.primaryLabel.toUpperCase() ?? "PRIMARY" : "BOTH"}`,

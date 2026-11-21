@@ -247,6 +247,42 @@ describe("spectrumToJcampDx", () => {
   });
 });
 
+describe("observeFrequencyMHz", () => {
+  // Expected frequencies are |γ(X)/γ(1H)| × the proton-rated field, written out per nucleus.
+  it.each([
+    ["1H", 300, 300], ["1H", 400, 400], ["1H", 600, 600],
+    ["2H", 300, 46.051826], ["2H", 400, 61.402435], ["2H", 600, 92.103653],
+    ["11B", 300, 96.2514], ["11B", 400, 128.3352], ["11B", 600, 192.5028],
+    ["13C", 300, 75.434859], ["13C", 400, 100.579812], ["13C", 600, 150.869718],
+    ["15N", 300, 30.398735], ["15N", 400, 40.531647], ["15N", 600, 60.797471],
+    ["19F", 300, 282.260095], ["19F", 400, 376.346793], ["19F", 600, 564.520189],
+    ["29Si", 300, 59.6115], ["29Si", 400, 79.482], ["29Si", 600, 119.223],
+    ["31P", 300, 121.442226], ["31P", 400, 161.922968], ["31P", 600, 242.884452]
+  ] as const)("observes %s at a %s MHz proton field at %s MHz", (nucleus, field, expected) => {
+    const observed = observeFrequencyMHz(nucleus, field)!;
+    expect(observed).toBeCloseTo(expected, 5);
+    // Negative-γ nuclei (15N, 29Si) still report a positive frequency.
+    expect(observed).toBeGreaterThan(0);
+    expect(spectrumToJcampDx({ ...spectrum, nucleus }, { protonFrequencyMHz: field }))
+      .toContain(`##.OBSERVE FREQUENCY=${expected}`);
+  });
+
+  it.each(["195Pt", "17O", "7Li", "X", "", "constructor", "__proto__", "toString"])(
+    "reports no observe frequency for %j instead of reusing the proton frequency", (nucleus) => {
+      expect(observeFrequencyMHz(nucleus, 300)).toBeUndefined();
+      const jdx = spectrumToJcampDx({ ...spectrum, nucleus }, { protonFrequencyMHz: 300 });
+      expect(jdx).not.toContain("##.OBSERVE FREQUENCY");
+      // The instrument rating itself is still recorded, labeled as the proton frequency.
+      expect(jdx).toContain("##$CHEMDRAFT PROTON FREQUENCY=300");
+    }
+  );
+
+  it("reports no observe frequency for a non-finite field", () => {
+    expect(observeFrequencyMHz("31P", Number.NaN)).toBeUndefined();
+    expect(observeFrequencyMHz("31P", Number.POSITIVE_INFINITY)).toBeUndefined();
+  });
+});
+
 describe("standaloneSpectrumSvg", () => {
   // SHA-256 values captured from the exporter at HEAD before the estimate-disclosure change.
   it.each([

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
+  annotationAtomDrawsLabel,
   annotationBondLines,
   annotationLabelBoxesOverlap,
   estimateAnnotationTextWidth,
@@ -508,7 +509,11 @@ export function LinkedFigureView({
 
   // ---- realistic (summed pseudo-Voigt) spectrum -----------------------------------------------
   const ppmPerPx = (view.max - view.min) / PLOT_W;
-  const halfWidthPpm = Math.max(LINE_HALF_WIDTH_HZ / observeMHz, MIN_HALF_WIDTH_PX * ppmPerPx);
+  // An unknown nucleus has no Hz→ppm conversion: draw the pixel-floor linewidth, not a 1H guess.
+  const halfWidthPpm = Math.max(
+    observeMHz === undefined ? 0 : LINE_HALF_WIDTH_HZ / observeMHz,
+    MIN_HALF_WIDTH_PX * ppmPerPx
+  );
   // Oversample finely enough that a peak this sharp is caught (≈3 samples across its half-width), but no
   // finer than 1px so zoomed-in views stay cheap.
   const sampleStep = Math.max(0.25, Math.min(1, halfWidthPpm / ppmPerPx / 3));
@@ -588,19 +593,11 @@ export function LinkedFigureView({
     }];
   }));
 
-  // Per-atom estimation quality uses the same tiers as the table (high→good, low/est→rough).
+  // Per-atom estimation quality uses the plugin's own confidence tiers; a rule estimate is low.
   const atomQuality = useMemo(() => {
-    const map = new Map<number, "good" | "medium" | "rough">();
+    const map = new Map<number, ConfidenceTier>();
     for (const peak of spectrum.peaks) {
-      const quality = peak.estimated
-        ? "rough"
-        : peak.confidence === "high"
-          ? "good"
-          : peak.confidence === "medium"
-            ? "medium"
-            : peak.confidence === "low"
-              ? "rough"
-              : undefined;
+      const quality = peak.estimated ? "low" : confidenceTier(peak.confidence);
       if (!quality) continue;
       for (const atom of peak.atomIndices) map.set(atom, quality);
     }
@@ -730,9 +727,11 @@ export function LinkedFigureView({
             ))}
           </select>
         </label>
-        <span className="lf-observe-frequency">
-          Observe {formatNucleus(spectrum.nucleus)}: {formatObserveFrequency(observeMHz)} MHz
-        </span>
+        {observeMHz === undefined ? null : (
+          <span className="lf-observe-frequency">
+            Observe {formatNucleus(spectrum.nucleus)}: {formatObserveFrequency(observeMHz)} MHz
+          </span>
+        )}
         {supportsComparison ? (
           <label className="lf-meta-field">
             Shift comparison
@@ -772,7 +771,7 @@ export function LinkedFigureView({
           ref={spectrumRef}
           className="lf-spectrum"
           viewBox={`0 0 ${SPECTRUM_W} ${SPECTRUM_H}`}
-          data-observe-frequency-mhz={formatObserveFrequency(observeMHz)}
+          data-observe-frequency-mhz={observeMHz === undefined ? undefined : formatObserveFrequency(observeMHz)}
           role="img"
           aria-label={`Predicted ${formatNucleus(spectrum.nucleus)} spectrum; scroll to zoom, drag to pan`}
           onPointerDown={onPointerDown}
@@ -887,7 +886,7 @@ export function LinkedFigureView({
               const active = activeAtoms.has(atom.index);
               const shift = atomShift.get(atom.index);
               const annotation = layout.labelByIndex.get(atom.index);
-              const isHetero = atom.element !== "C";
+              const isHetero = annotationAtomDrawsLabel(atom.element);
               return (
                 <g
                   key={`a${atom.index}`}
@@ -944,9 +943,9 @@ export function LinkedFigureView({
           <span>
             Shift label color = {spectrum.comparison ? comparison.primaryLabel : "prediction"} confidence:
           </span>
-          <span className="lf-legend-item is-good">good</span>
-          <span className="lf-legend-item is-medium">medium</span>
-          <span className="lf-legend-item is-rough">rough</span>
+          {CONFIDENCE_TIERS.map((tier) => (
+            <span key={tier} className={`lf-legend-item is-${tier}`}>{tier}</span>
+          ))}
         </div>
       ) : null}
     </div>
@@ -998,7 +997,11 @@ function layoutStructure(
     const a = byIndex.get(bond.from);
     const b = byIndex.get(bond.to);
     if (!a || !b) return [];
-    return [{ lines: annotationBondLines({ x: a.sx, y: a.sy }, { x: b.sx, y: b.sy }, bond.order, placement.fitScale) }];
+    // Bond ends stop at drawn element labels; the label box uses the same font size as the text.
+    return [{ lines: annotationBondLines(
+      { x: a.sx, y: a.sy, element: a.element }, { x: b.sx, y: b.sy, element: b.element },
+      bond.order, placement.fitScale, placement.atomFontSize
+    ) }];
   });
   const labelByIndex = new Map(placement.labels.map((label) => [label.index, label]));
   const routedLeaders = routeLeaders ? routeAtomAnnotationLeaders({
@@ -1102,9 +1105,11 @@ function curveClassName(style: CurveStyle): string {
 
 function multipletLines(
   peak: { ppm: number; couplings?: PluginLinkedFigurePeak["couplings"] },
-  spectrometerMHz: number
+  spectrometerMHz: number | undefined
 ): { ppm: number; rel: number }[] {
   if (!Number.isFinite(peak.ppm)) return [];
+  // Without an observe frequency, J in Hz has no ppm spacing; show the resonance unsplit.
+  if (spectrometerMHz === undefined) return [{ ppm: peak.ppm, rel: 1 }];
   const couplings = (peak.couplings ?? []).filter((coupling) =>
     Number.isFinite(coupling.jHz) && Number.isFinite(coupling.partnerCount)
   );
@@ -1400,10 +1405,21 @@ function round(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
-function formatNucleus(nucleus: string): string {
-  if (nucleus === "13C") return "¹³C";
-  if (nucleus === "1H") return "¹H";
-  return nucleus;
+const SUPERSCRIPT_DIGITS = "⁰¹²³⁴⁵⁶⁷⁸⁹";
+
+/** Render a '<mass><element>' code with a superscript mass number (31P → ³¹P); anything else as is. */
+export function formatNucleus(nucleus: string): string {
+  const match = /^(\d+)([A-Z][a-z]?)$/.exec(nucleus);
+  if (!match) return nucleus;
+  return `${[...match[1]].map((digit) => SUPERSCRIPT_DIGITS[Number(digit)]).join("")}${match[2]}`;
+}
+
+/** The plugin's confidence words, used verbatim for the shift colors and the legend. */
+const CONFIDENCE_TIERS = ["high", "medium", "low"] as const;
+type ConfidenceTier = (typeof CONFIDENCE_TIERS)[number];
+
+function confidenceTier(confidence: unknown): ConfidenceTier | undefined {
+  return CONFIDENCE_TIERS.find((tier) => tier === confidence);
 }
 
 function formatObserveFrequency(frequencyMHz: number): string {

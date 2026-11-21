@@ -170,6 +170,53 @@ describe("spectrum structure leaders", () => {
     }
   });
 
+  it.each([
+    { name: "nitrobenzene", smiles: "c1ccc(cc1)[N+](=O)[O-]", labels: ["N+", "O", "O\u2212"] },
+    { name: "phenyltrimethyltin", smiles: "C[Sn](C)(C)c1ccccc1", labels: ["Sn"] },
+    { name: "4-methoxypyridine", smiles: "COc1ccncc1", labels: ["N", "O"] }
+  ].flatMap(molecule => [1, 2].map(size => ({ ...molecule, size }))))(
+    "ends $name bond strokes outside element labels and keeps carbon strokes unchanged (panel scale $size)", ({ smiles, labels, size }) => {
+    const depiction = depictSmiles2D(smiles);
+    // Display labels as a plugin reports them (element plus charge); not a chemistry prediction.
+    const atoms = depiction.atoms.map((atom, index) => ({
+      x: atom.x, y: atom.y, index, annotation: `${120 + index}.00`,
+      element: `${atom.element}${atom.charge > 0 ? "+" : atom.charge < 0 ? "\u2212" : ""}`
+    }));
+    const bonds = depiction.bonds.map(bond => ({ ...bond, order: bond.order === "double" ? 2 : bond.order === "triple" ? 3 : 1 }));
+    const placement = layoutAtomAnnotationLabels({ atoms, bonds, width: 340 * size, height: 260 * size });
+    const byIndex = new Map(placement.atoms.map(atom => [atom.index, atom]));
+    const labelBoxes = placement.atoms.filter(atom => atom.element !== "C").map(atom => {
+      const width = estimateAnnotationTextWidth(atom.element, placement.atomFontSize);
+      return { x: atom.x - width / 2, y: atom.y - placement.atomFontSize / 2, width, height: placement.atomFontSize };
+    });
+    expect(placement.atoms.filter(atom => atom.element !== "C").map(atom => atom.element).sort()).toEqual([...labels].sort());
+    const bondLines = bonds.flatMap(bond => {
+      const a = byIndex.get(bond.from)!, b = byIndex.get(bond.to)!;
+      const lines = annotationBondLines(a, b, bond.order, placement.fitScale, placement.atomFontSize);
+      const plain = annotationBondLines({ x: a.x, y: a.y }, { x: b.x, y: b.y }, bond.order, placement.fitScale);
+      expect(lines).toHaveLength(bond.order);
+      if (a.element === "C" && b.element === "C") expect(lines).toEqual(plain);
+      for (const [i, line] of lines.entries()) {
+        if (a.element === "C") expect([line.x1, line.y1]).toEqual([plain[i].x1, plain[i].y1]);
+        if (b.element === "C") expect([line.x2, line.y2]).toEqual([plain[i].x2, plain[i].y2]);
+        for (const end of [{ x: line.x1, y: line.y1 }, { x: line.x2, y: line.y2 }]) {
+          for (const box of labelBoxes) {
+            expect(end.x > box.x && end.x < box.x + box.width && end.y > box.y && end.y < box.y + box.height,
+              `bond ${bond.from}-${bond.to} ends inside a label`).toBe(false);
+          }
+        }
+      }
+      return lines;
+    });
+    // Leader routing consumes the trimmed strokes and still finds bond-free routes.
+    const leaders = routeAtomAnnotationLeaders({ ...placement, bonds, bondLines });
+    expect(leaders.map(leader => leader.index)).toEqual(placement.labels.map(label => label.index));
+    for (const leader of leaders) {
+      visible(leader.points);
+      expect(leader.crossesBonds, `unexpected fallback for atom ${leader.index}`).toBe(false);
+    }
+  });
+
   it.each([true, false])("keeps every leader visible in a no-bond molecule (coincident: %s)", coincident => {
     const placement = layoutAtomAnnotationLabels({
       atoms: Array.from({ length: 10 }, (_, index) => ({ index, element: "C", x: coincident ? 0 : index * 20, y: 0, annotation: `${120 + index}.00` })),
