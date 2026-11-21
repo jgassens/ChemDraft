@@ -9710,6 +9710,12 @@ fn apply_menu_update(
     result
 }
 
+/// Sections whose rows come from the webview's synced items and so need in-place refreshes.
+/// Help carries the Office add-in rows, which are built only on macOS; the Windows menu never
+/// gains them, so off macOS Help stays out of the list and its updates stay a no-op.
+#[cfg(target_os = "macos")]
+const DYNAMIC_MENU_SECTIONS: [&str; 5] = ["structure", "tools", "analyze", "plugins", "help"];
+#[cfg(not(target_os = "macos"))]
 const DYNAMIC_MENU_SECTIONS: [&str; 4] = ["structure", "tools", "analyze", "plugins"];
 
 fn classify_plugin_menu_update(
@@ -13466,6 +13472,62 @@ mod tests {
         )
         .unwrap();
         assert_eq!(calls, [(1, false), (0, true)]);
+    }
+
+    #[test]
+    fn office_addin_help_rows_refresh_in_place_only_on_macos() {
+        let row = |id: &str, enabled| PluginMenuItemInput {
+            id: id.into(),
+            location: "help".into(),
+            label: id.into(),
+            core_routed: true,
+            enabled,
+            separator_before: false,
+        };
+        let old = [
+            row("office.installAddin", false),
+            row("office.removeAddin", false),
+        ];
+        let new = [
+            row("office.installAddin", true),
+            row("office.removeAddin", false),
+        ];
+        assert_eq!(
+            classify_plugin_menu_update(&old, &new),
+            MenuUpdate::Properties
+        );
+        let mut calls = Vec::new();
+        update_plugin_menu_properties(
+            &old,
+            &new,
+            |section| {
+                assert_eq!(section, "help");
+                // The native Help submenu: Report a Bug…, then the synced Office rows.
+                Ok([
+                    "help.reportBug",
+                    "office.installAddin",
+                    "office.removeAddin",
+                ]
+                .into_iter()
+                .enumerate()
+                .map(|(i, id)| (id.to_owned(), i))
+                .collect())
+            },
+            |position, enabled| {
+                calls.push((*position, enabled));
+                Ok(())
+            },
+            |_, _| panic!("Enabled changes do not rename items"),
+        )
+        .unwrap();
+        #[cfg(target_os = "macos")]
+        assert_eq!(calls, [(1, true)]);
+        #[cfg(not(target_os = "macos"))]
+        assert!(calls.is_empty());
+        assert_eq!(
+            DYNAMIC_MENU_SECTIONS.contains(&"help"),
+            cfg!(target_os = "macos")
+        );
     }
 
     #[test]

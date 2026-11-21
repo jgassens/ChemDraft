@@ -482,3 +482,20 @@ describe("Preferences placement", () => {
     expect(flattenAppMenuCommands(sections.filter(section => section.id === "view")).some(item => item.commandId === "view.togglePreferences")).toBe(false);
   });
 });
+
+describe("Office add-in Help rows", () => {
+  it("refreshes the macOS Help rows in place and keeps them off the Windows menu", () => {
+    const source = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+    // The in-place property loop only visits DYNAMIC_MENU_SECTIONS; without "help" there,
+    // status loads, Install and Remove left the Office rows' enabled state stale.
+    expect(source).toContain('#[cfg(target_os = "macos")]\nconst DYNAMIC_MENU_SECTIONS: [&str; 5] = ["structure", "tools", "analyze", "plugins", "help"];');
+    expect(source).toContain('#[cfg(not(target_os = "macos"))]\nconst DYNAMIC_MENU_SECTIONS: [&str; 4] = ["structure", "tools", "analyze", "plugins"];');
+    const update = source.split("fn update_plugin_menu_properties<Row>")[1]!.split("fn classify_toolbars_menu_update")[0]!;
+    expect(update).toContain("for section in DYNAMIC_MENU_SECTIONS");
+    const classify = source.split("fn classify_plugin_menu_update(")[1]!.split("fn update_installed_plugin_menu")[0]!;
+    expect(classify).toContain("for section in DYNAMIC_MENU_SECTIONS");
+    // The rows themselves are built only on macOS, so Windows gains nothing.
+    const builder = source.split("fn create_document_menu<R: Runtime>")[1]!.split("/// Close Window")[0]!;
+    expect(builder).toMatch(/#\[cfg\(target_os = "macos"\)\]\s*if office_update_title\.is_none\(\) \{\s*let office_items = plugin_menu_items_in\(plugin_items, "help"\);/);
+  });
+});

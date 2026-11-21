@@ -16,9 +16,11 @@ export type OfficeAddinAction = keyof typeof commands;
 
 interface OfficeAddinResult {
   app: keyof typeof appNames;
-  status: "notInstalled" | "installedSameVersion" | "installedOtherVersion" | "appNotFound" | "unavailable";
+  status: "notInstalled" | "installedSameVersion" | "installedOtherVersion" | "unrecognized" | "appNotFound" | "unavailable";
   changed: boolean;
   error?: string;
+  /** Set for `unrecognized`: the file at ChemDraft's manifest name that ChemDraft left alone. */
+  path?: string;
 }
 
 interface OfficeAddinState {
@@ -39,7 +41,8 @@ export function officeAddinCommands(supported: boolean, { results, error, busy }
     : undefined;
   const disabledFor = (action: OfficeAddinAction): string | undefined => {
     if (availability) return availability;
-    if (results?.some(result => result.status === "installedOtherVersion" ||
+    // An unrecognized file keeps both actions enabled so choosing one explains which file is in the way.
+    if (results?.some(result => result.status === "installedOtherVersion" || result.status === "unrecognized" ||
         result.status === (action === "install" ? "notInstalled" : "installedSameVersion"))) return undefined;
     if (results?.every(result => result.status === "appNotFound")) return "Word and PowerPoint were not found.";
     if (results?.some(result => result.status === "unavailable")) {
@@ -73,6 +76,13 @@ const installConfirmation = [
   "The add-in loads its editor from https://chemdraft.ai.",
   "To remove it, choose Help > Remove Office Add-in in ChemDraft."
 ].join("\n\n");
+
+function unrecognizedMessage(action: OfficeAddinAction, app: string, path = "ChemDraft's add-in manifest file"): string {
+  const file = path + " is not a ChemDraft add-in manifest";
+  return action === "install"
+    ? app + " was not changed. " + file + ", so ChemDraft did not replace it. Move or delete that file, then choose Install Office Add-in again."
+    : app + " was not changed. " + file + ", so ChemDraft did not remove it.";
+}
 
 interface OfficeAddinPort {
   invoke(command: "office_addin_install" | "office_addin_remove"): Promise<OfficeAddinResult[]>;
@@ -114,6 +124,7 @@ export async function runOfficeAddinAction(action: OfficeAddinAction, port: Offi
     const app = appNames[result.app];
     if (result.error) return app + " could not be updated. " + result.error;
     if (result.status === "appNotFound") return app + " was skipped because its Office container was not found.";
+    if (result.status === "unrecognized") return unrecognizedMessage(action, app, result.path);
     if (action === "install") return result.changed ? "Installed in " + app + "." : "Already installed in " + app + ".";
     return result.changed ? "Removed from " + app + "." : "The add-in was already absent from " + app + ".";
   });
@@ -121,7 +132,7 @@ export async function runOfficeAddinAction(action: OfficeAddinAction, port: Offi
   if (changed) {
     messages.push("Restart " + changed + (action === "install" ? ", then choose Edit Structure on the Home tab." : " to finish removing the add-in."));
   }
-  await notice(messages.join("\n\n"), results.some(result => result.error) ? "warning" : "info");
+  await notice(messages.join("\n\n"), results.some(result => result.error || result.status === "unrecognized") ? "warning" : "info");
   return { results };
 }
 

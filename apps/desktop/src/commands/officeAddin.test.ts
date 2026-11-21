@@ -12,6 +12,8 @@ const powerpointMissing = { app: "powerPoint", status: "appNotFound", changed: f
 const uninstalled = { app: "word", status: "notInstalled", changed: false } as const;
 const installed = { app: "word", status: "installedSameVersion", changed: true } as const;
 const outdated = { app: "word", status: "installedOtherVersion", changed: false } as const;
+const wordPath = "/Users/someone/Library/Containers/com.microsoft.Word/Data/Documents/wef/chemdraft-office-addin.xml";
+const foreign = { app: "word", status: "unrecognized", changed: false, path: wordPath } as const;
 
 function createPort() {
   return { invoke: vi.fn<Port["invoke"]>(), prompt: vi.fn<Port["prompt"]>(), setStatus: vi.fn() };
@@ -48,6 +50,7 @@ describe("Office add-in commands", () => {
     [[uninstalled, powerpointMissing], [true, false]],
     [[installed, powerpointMissing], [false, true]],
     [[outdated, powerpointMissing], [true, true]],
+    [[foreign, powerpointMissing], [true, true]],
     [[wordMissing, powerpointMissing], [false, false]],
     [undefined, [false, false]]
   ] as const)("syncs native Help actions with status %j", (results, enabled) => {
@@ -118,5 +121,30 @@ describe("Office add-in commands", () => {
     expect(port.prompt.mock.calls[0]?.[0].message).toContain("Removed from Word.");
     expect(port.prompt.mock.calls[0]?.[0].message).toContain("PowerPoint could not be updated. Permission denied");
     expect(port.prompt.mock.calls[0]?.[0].message).toContain("Restart Word to finish removing the add-in.");
+  });
+
+  it.each([
+    ["install", "office_addin_install", "Word was not changed. " + wordPath +
+      " is not a ChemDraft add-in manifest, so ChemDraft did not replace it. Move or delete that file, then choose Install Office Add-in again."],
+    ["remove", "office_addin_remove", "Word was not changed. " + wordPath +
+      " is not a ChemDraft add-in manifest, so ChemDraft did not remove it."]
+  ] as const)("names the unidentified file it left alone on %s", async (action, command, expected) => {
+    const port = createPort();
+    port.prompt.mockResolvedValue(action === "install" ? "install" : "ok");
+    port.invoke.mockResolvedValue([foreign, { ...installed, app: "powerPoint", changed: false }]);
+    await runOfficeAddinAction(action, port);
+    expect(port.invoke).toHaveBeenCalledWith(command);
+    const report = port.prompt.mock.calls.at(-1)?.[0];
+    expect(report).toMatchObject({ kind: "warning" });
+    expect(report?.message.split("\n\n")[0]).toBe(expected);
+    expect(report?.message).not.toContain("Restart");
+  });
+
+  it("still names the file in the status line when the report cannot open", async () => {
+    const port = createPort();
+    port.prompt.mockImplementationOnce((prompt, fallback) => fallback!(prompt));
+    port.invoke.mockResolvedValue([foreign, powerpointMissing]);
+    await runOfficeAddinAction("remove", port);
+    expect(port.setStatus).toHaveBeenCalledWith(expect.stringContaining(wordPath + " is not a ChemDraft add-in manifest"));
   });
 });
