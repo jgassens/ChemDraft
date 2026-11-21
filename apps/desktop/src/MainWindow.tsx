@@ -1,4 +1,5 @@
 import { CanvasContextMenu, NATIVE_CANVAS_MENU_CLOSED_EVENT } from "./CanvasContextMenu";
+import { PLUGIN_CHANGE_REFUSED, RECOGNITION_REFUSED, chemistryRefusalOf, refusalSentence } from "./plugins/requestWrites/chemistryRefusal";
 import { buildObjectCanvasMenu, pageCanvasMenu, SET_DEFAULT_ARROW_STYLE_COMMAND_ID } from "./canvasContextMenuModel";
 import { RequestWriteError } from "@chemdraft/plugin-host";
 import { createRequestHistory } from "./plugins/requestWrites/requestHistory";
@@ -1842,7 +1843,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.21.06.00-opus";
+const CURRENT_BUILD_STAMP = "11.21.07.30-sonnet";
 const TABLE_DRAFT_RECOVERY_WARNING = "session.tableDraftDropped";
 
 function clearTableDraftRecoveryWarnings(report: OpenWarningsReport | undefined): OpenWarningsReport | undefined {
@@ -13642,7 +13643,11 @@ export function MainWindow({
         setStatus(message);
         return { ok: true, message };
       } catch (error) {
-        const message = `Could not insert the proposal: ${describePatchFailure(error)}`;
+        const refusal = chemistryRefusalOf(error);
+        if (refusal) console.warn(refusal.detail);
+        const message = refusal
+          ? refusalSentence(recognized ? RECOGNITION_REFUSED : PLUGIN_CHANGE_REFUSED, refusal.reason)
+          : `Could not insert the proposal: ${describePatchFailure(error)}`;
         setStatus(message);
         return { ok: false, message };
       }

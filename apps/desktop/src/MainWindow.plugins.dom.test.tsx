@@ -64,6 +64,14 @@ const select = vi.fn<(context: PluginCommandContext) => Promise<void>>();
 let root: Root;
 let container: HTMLDivElement;
 
+/** A refusal's message is the plain user sentence, exactly, and never names the molecule. */
+async function expectUserRefusal(write: Promise<unknown>, sentence: string, moleculeId: string) {
+  const error = await write.then(() => undefined, (caught: unknown) => caught);
+  expect(error).toBeInstanceOf(Error);
+  expect((error as Error).message).toBe(sentence);
+  expect((error as Error).message).not.toContain(moleculeId);
+}
+
 describe("assistant writes through mounted desktop normalization", () => {
   let chemistry: AssistantToolContext["chemistry"];
   beforeEach(() => {
@@ -386,9 +394,9 @@ describe("plugin direct writes through mounted desktop normalization", () => {
   }, 20_000);
 
   it.each([
-    ["stale structure", /stored smiles.*editable graph cannot verify/i],
-    ["stale cached SMILES", /stored smiles.*editable graph cannot verify/i],
-    ["stale formula", /stored formula/i],
+    ["stale structure", "Plugin write refused: the stored structure doesn't match the drawn atoms."],
+    ["stale cached SMILES", "Plugin write refused: the stored structure doesn't match the drawn atoms."],
+    ["stale formula", /^Plugin write refused: the formula doesn't match the drawn (structure|atoms)\.$/],
     ["an empty graph", /no editable atoms to verify/i]
   ] as const)("refuses a direct insertion with %s", async (mismatch, failure) => {
     const blank = createEmptyDocument();
@@ -402,7 +410,10 @@ describe("plugin direct writes through mounted desktop normalization", () => {
     const invoke = registerWrite(context => context.documents.applyPatch!({ reason: "Insert inconsistent molecule", patch: {
       op: "addObject", pageId: blank.pages[0]!.id, object: molecule
     } }));
-    await act(async () => { await expect(invoke()).rejects.toThrow(failure); });
+    await act(async () => {
+      if (typeof failure === "string") await expectUserRefusal(invoke(), failure, molecule.id);
+      else await expect(invoke()).rejects.toThrow(failure);
+    });
     expect(port.read("initial")).toBe(before);
   }, 20_000);
 
@@ -491,8 +502,7 @@ describe("plugin direct writes through mounted desktop normalization", () => {
       op: "updateObject", objectId: molecule.id, changes: { atoms }
     } }));
     // Neither drawing gives the alkene a side, so its stored E isomer cannot be confirmed.
-    await act(async () => { await expect(invoke()).rejects.toThrow(
-      new RegExp(`cannot refresh stored chemistry for molecule "${molecule.id}".*stored smiles.*editable graph cannot verify`, "i")); });
+    await act(async () => { await expectUserRefusal(invoke(), "Plugin write refused: the stored structure doesn't match the drawn atoms.", molecule.id); });
     expect(inspect).toHaveBeenCalled();
     expect(port.read("initial")).toBe(before);
   }, 20_000);
@@ -583,8 +593,7 @@ describe("plugin direct writes through mounted desktop normalization", () => {
     const inspect = vi.spyOn(identityClient, "inspectStructureOffThread");
     const atoms = molecule.atoms.map(atom => role(atom.id) === "O" ? { ...atom, y: 255.5 - 1e-7 } : atom);
     // A collinear drawing gives the stereocentre no configuration, so its stored R cannot be confirmed.
-    await expect(moveStereocentreAtoms(molecule, atoms)).rejects.toThrow(
-      new RegExp(`cannot refresh stored chemistry for molecule "${molecule.id}".*stored smiles.*editable graph cannot verify`, "i"));
+    await expectUserRefusal(moveStereocentreAtoms(molecule, atoms), "Plugin write refused: the stored structure doesn't match the drawn atoms.", molecule.id);
     expect(inspect).toHaveBeenCalled();
     expect(port.read("initial")).toBe(before);
   }, 20_000);
@@ -603,16 +612,16 @@ describe("plugin direct writes through mounted desktop normalization", () => {
   });
 
   it.each([
-    ["structure", (molecule: MoleculeObject): Partial<MoleculeObject> => ({ structure: "CO" }), /stored smiles.*editable graph cannot verify/i],
+    ["structure", (molecule: MoleculeObject): Partial<MoleculeObject> => ({ structure: "CO" }), "Plugin write refused: the stored structure doesn't match the drawn atoms."],
     ["cached SMILES", (molecule: MoleculeObject): Partial<MoleculeObject> => ({
       compatibility: { ...molecule.compatibility!, unknown: { ...molecule.compatibility!.unknown, smiles: "CO" } } }),
-    /stored smiles.*editable graph cannot verify/i],
+    "Plugin write refused: the stored structure doesn't match the drawn atoms."],
     ["structure as a molfile", (): Partial<MoleculeObject> => ({ structureFormat: "molfile-v2000",
-      structure: depictSmiles2D("CO").molfile }), /stored molfile-v2000.*editable graph cannot verify/i],
+      structure: depictSmiles2D("CO").molfile }), "Plugin write refused: the stored structure doesn't match the drawn atoms."],
     ["formula", (molecule: MoleculeObject): Partial<MoleculeObject> => ({ chemistry: { ...molecule.chemistry!, formula: "CH4O" } }),
-      /stored formula/i],
+      "Plugin write refused: the formula doesn't match the drawn structure."],
     ["superatoms", (molecule: MoleculeObject): Partial<MoleculeObject> => ({ superatoms: [{ label: "OMe",
-      atomIds: [molecule.atoms[1]!.id], attachmentPoints: [], warnings: [] }] }), /retained annotations or abbreviations/i]
+      atomIds: [molecule.atoms[1]!.id], attachmentPoints: [], warnings: [] }] }), "Plugin write refused: it would change an abbreviation or R-group that can't be checked."]
   ] as const)("refuses a write to the stored %s of a selected molecule that disagrees with its graph", async (_field, changes, failure) => {
     const blank = createEmptyDocument();
     const pageId = blank.pages[0]!.id;
@@ -625,8 +634,7 @@ describe("plugin direct writes through mounted desktop normalization", () => {
       op: "updateObject", objectId: molecule.id, changes: changes(before.pages[0]!.objects[0]! as MoleculeObject)
     } }));
     // The canvas still draws ethane; saving or exporting methanol would silently change the chemistry.
-    await act(async () => { await expect(invoke()).rejects.toThrow(
-      new RegExp(`cannot refresh stored chemistry for molecule "${molecule.id}".*${failure.source}`, "i")); });
+    await act(async () => { await expectUserRefusal(invoke(), failure, molecule.id); });
     expect(port.read("initial")).toBe(before);
   }, 20_000);
 
@@ -666,10 +674,11 @@ describe("plugin direct writes through mounted desktop normalization", () => {
     // Flush React between polls; the refusal lands after off-thread inspection.
     await vi.waitFor(async () => {
       await act(async () => {});
-      expect(container.querySelector("[role=status]")?.textContent).toMatch(/Could not insert the proposal/);
+      expect(container.querySelector("[role=status]")?.textContent).toMatch(/Plugin change not applied/);
     }, { timeout: 15_000 });
-    expect(container.querySelector("[role=status]")?.textContent).toMatch(
-      new RegExp(`cannot refresh stored chemistry for molecule "${molecule.id}".*stored smiles.*editable graph cannot verify`, "i"));
+    expect(container.querySelector("[role=status]")?.textContent).toBe(
+      "Plugin change not applied: the stored structure doesn't match the drawn atoms.");
+    expect(container.querySelector("[role=status]")?.textContent).not.toContain(molecule.id);
     expect(port.read("initial")).toBe(before);
     expect(runtime.host.listProposedPatches("pending")).toHaveLength(1);
   }, 20_000);

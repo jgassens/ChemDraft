@@ -8,6 +8,7 @@ import {
   type DocumentObject,
   type MoleculeObject
 } from "@chemdraft/chem-core";
+import { ChemistryRefusal, PLUGIN_WRITE_REFUSED, chemistryRefusalOf, refusalSentence } from "./requestWrites/chemistryRefusal";
 import {
   AppliedPatchReceiptSchema,
   type AppliedPatchReceipt,
@@ -129,7 +130,13 @@ export function refreshPluginPatchChemistry(before: ChemDraftDocument, draft: Ch
           objects[index] = refreshed;
         } catch (error) {
           signal?.throwIfAborted();
-          throw new Error(`Plugin write refused: cannot refresh stored chemistry for molecule "${object.id}". ${describePatchFailure(error)}`);
+          const technical = `Plugin write refused: cannot refresh stored chemistry for molecule "${object.id}". ${describePatchFailure(error)}`;
+          const refusal = chemistryRefusalOf(error);
+          if (!refusal) throw new Error(technical);
+          // The user sees the plain sentence; the full text, with the molecule id, goes to the log.
+          const detail = `Plugin write refused: cannot refresh stored chemistry for molecule "${object.id}". ${refusal.detail}`;
+          console.warn(detail);
+          throw new ChemistryRefusal(refusal.reason, detail, refusalSentence(PLUGIN_WRITE_REFUSED, refusal.reason));
         }
       })());
     }
@@ -476,6 +483,8 @@ export function describePatchFailure(error: unknown): string {
     const detail = typeof first?.message === "string" ? first.message : "invalid value";
     return `the proposed structure is not valid (${path ? `${path}: ` : ""}${detail})`;
   }
+  const refusal = chemistryRefusalOf(error);
+  if (refusal) return refusal.reason;
   const message = error instanceof Error ? error.message : String(error);
   return message.split("\n")[0]!.replace(/\.$/, "") || "unknown error";
 }

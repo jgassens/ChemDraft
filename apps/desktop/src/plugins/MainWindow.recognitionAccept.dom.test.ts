@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { ChemistryRefusal } from "./requestWrites/chemistryRefusal";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -377,6 +378,22 @@ describe("accepting a recognition proposal from the review window", () => {
     await sendAction({ kind: "acceptPluginProposal", proposalId: proposal.id });
 
     expect(statusText()).toContain("Could not insert the proposal: page page_1 does not exist");
+  });
+
+  it("tells the user, in plain words, when a recognition's stereo annotations cannot be verified", async () => {
+    const bridge = await renderMainWindow();
+    const proposal = await recognizeIntoProposal(bridge);
+    vi.spyOn(harness.runtime!.host, "acceptProposedPatch").mockImplementation(() => {
+      throw new ChemistryRefusal("its stereo annotations can't be matched to the drawn structure",
+        'Plugin write refused: cannot refresh stored chemistry for molecule "mol-3f2a9c". The stored atom or double-bond stereo differs from the editable graph');
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await sendAction({ kind: "acceptPluginProposal", proposalId: proposal.id });
+
+    expect(statusText()).toBe("Recognition not inserted: its stereo annotations can't be matched to the drawn structure.");
+    expect(statusText()).not.toContain("mol-3f2a9c");
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("mol-3f2a9c"));
   });
 
   it("reports an Accept for a proposal that is no longer pending", async () => {
