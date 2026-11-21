@@ -11,6 +11,7 @@ export const pluginGraphEdits = [
   { name: "add atom", source: "CC", product: "CCO", atomCount: 3, bondCount: 2 },
   { name: "remove atom", source: "CCO", product: "CC", atomCount: 2, bondCount: 1 },
   { name: "isotopic E/Z", source: "[2H]/C=C/Cl", product: "[2H]/C=C/F", atomCount: 4, bondCount: 3 },
+  { name: "coordinate-only E/Z", source: "C/C=C/C", product: "C/C=C\\C", atomCount: 4, bondCount: 3 },
   { name: "stale wedge", source: "CC", product: "C=C", atomCount: 2, bondCount: 1 },
   { name: "symmetric alkene", source: "C/C(F)=C/F", product: "CC(C)=CF", atomCount: 5, bondCount: 4 },
   { name: "charge and isotope", source: "[13CH3]CO", product: "[13CH3]C[O-]", atomCount: 3, bondCount: 2,
@@ -19,7 +20,7 @@ export const pluginGraphEdits = [
 
 type GraphEdit = typeof pluginGraphEdits[number];
 
-export function graphEditFixture(document: ChemDraftDocument, edit: GraphEdit, storeMolfile = false) {
+export function graphEditFixture(document: ChemDraftDocument, edit: Pick<GraphEdit, "name"> & { source: string }, storeMolfile = false) {
   const molfile = depictSmiles2D(edit.source).molfile;
   const molecule = createNativeMolfileMolecule(document, { x: 300, y: 250 }, molfile, "molfile-v2000");
   if (!storeMolfile) {
@@ -46,6 +47,17 @@ export function graphEditChanges(molecule: MoleculeObject, { name }: GraphEdit):
     case "remove atom": return { atoms: atoms.filter(atom => atom !== oxygen),
       bonds: bonds.filter(bond => bond.fromAtomId !== oxygen!.id && bond.toAtomId !== oxygen!.id) };
     case "isotopic E/Z": return { atoms: atoms.map(atom => atom.element === "Cl" ? { ...atom, element: "F" } : atom) };
+    case "coordinate-only E/Z": {
+      const alkene = bonds.find(bond => bond.order === "double")!;
+      const start = atoms.find(atom => atom.id === alkene.fromAtomId)!;
+      const end = atoms.find(atom => atom.id === alkene.toAtomId)!;
+      const terminal = atoms.find(atom => atom !== start && atom !== end)!;
+      const dx = end.x - start.x, dy = end.y - start.y;
+      const along = ((terminal.x - start.x) * dx + (terminal.y - start.y) * dy) / (dx * dx + dy * dy);
+      return { atoms: atoms.map(atom => atom === terminal ? {
+        ...atom, x: 2 * (start.x + along * dx) - atom.x, y: 2 * (start.y + along * dy) - atom.y
+      } : atom) };
+    }
     case "symmetric alkene": {
       const substitutedEnd = atoms.find(atom => bonds.filter(bond => bond.fromAtomId === atom.id || bond.toAtomId === atom.id).length === 3)!;
       const fluorine = atoms.find(atom => atom.element === "F" && bonds.some(bond =>

@@ -13543,7 +13543,7 @@ export function MainWindow({
   }, [pluginRuntime.detachedPanels]);
 
   // The user accepting a proposal is the review step itself, so it goes through the host's user path
-  // (`acceptProposedPatch`), never the plugin-gated `documents.applyPatch`. What was inserted is
+  // (`acceptProposedPatch`), never the plugin-gated `documents.applyPatch`. What changed is
   // selected in the same history entry, and every outcome — success included — is reported: the
   // status line here, and the review window through the returned outcome.
   const acceptPluginProposal = useCallback(
@@ -13601,14 +13601,22 @@ export function MainWindow({
           }
         }
         prepared = normalizeCommittedDocument(prepared);
+        const authored = rebasePluginPatch(before, proposal.proposal, true);
+        const isCurrent = () => mountedRef.current && !quitInteractionRef.current &&
+          activeDocumentTabIdRef.current === tab.id && documentIdentityRef.current === documentIdentity &&
+          assistantDocumentContentUnchanged(before, documentRef.current, { checkBracketIdentity: true });
+        const refreshed = refreshPluginPatchChemistry(before, prepared, authored);
+        if (refreshed) {
+          prepared = await refreshed;
+          if (!isCurrent() || isSnapshotSessionActive()) {
+            throw new Error("The drawing changed or is busy; accept the proposal again.");
+          }
+        }
         // Keep the proposal pending until the page question and stale-document check succeed.
         const pending = commitWithPageFit(before, prepared, document => {
           const updated = host.acceptProposedPatch(proposal.id, documentRef.current, { apply: () => document });
           commitDocumentChange(updated, `${pluginName}: ${recognized ? "Insert Recognized Structure" : "Apply Proposal"}`);
-        }, { consent: new PageEnlargementConsent(shortcutPlatform), isCurrent: () =>
-          mountedRef.current && !quitInteractionRef.current && documentIdentityRef.current === documentIdentity &&
-          assistantDocumentContentUnchanged(before, documentRef.current, { checkBracketIdentity: true })
-        });
+        }, { consent: new PageEnlargementConsent(shortcutPlatform), isCurrent });
         if (pending) {
           pageFitPendingRef.current += 1;
           try { await pending; } finally { pageFitPendingRef.current -= 1; }

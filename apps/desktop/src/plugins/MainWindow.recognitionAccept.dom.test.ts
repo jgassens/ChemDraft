@@ -463,8 +463,10 @@ function registerDirectWritePlugin(pageId: string, resolveName = false): { relea
                 style: {},
                 structureFormat: "smiles",
                 structure: "C=O",
-                atoms: [],
-                bonds: [],
+                // Match the supplied SMILES so insertion verification can check the fixture.
+                atoms: [{ id: "a1", element: "C", x: 410, y: 310, formalCharge: 0 },
+                  { id: "a2", element: "O", x: 430, y: 310, formalCharge: 0 }],
+                bonds: [{ id: "b1", fromAtomId: "a1", toAtomId: "a2", order: "double" }],
                 superatoms: [],
                 rGroups: []
               }

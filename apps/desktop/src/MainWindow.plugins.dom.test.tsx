@@ -347,6 +347,80 @@ describe("plugin direct writes through mounted desktop normalization", () => {
     expect(port.read("initial")!.pages).toEqual(after.pages);
   }, 20_000);
 
+  it("refreshes stored chemistry when the user accepts a graph-editing proposal", async () => {
+    const blank = createEmptyDocument();
+    const pageId = blank.pages[0]!.id;
+    const edit = pluginGraphEdits[0];
+    const molecule = graphEditFixture(blank, edit);
+    const port = await mount(applyPatch(blank, { op: "addObject", pageId, object: molecule }));
+    const before = port.read("initial")!;
+    const runtime = captured.runtime!;
+    const id = "org.chemdraft.proposalTest";
+    let proposalId!: string;
+    await act(async () => {
+      runtime.registerPlugin({ id, name: "Proposal test", version: "0.1.0", apiVersion: "^0.1.14",
+        entry: "test.js", permissions: ["document.proposePatch"] });
+      proposalId = runtime.host.proposePatch(id, { reason: "Edit element", patch: {
+        op: "updateObject", objectId: molecule.id, changes: graphEditChanges(molecule, edit)
+      } }).id;
+    });
+    expect(port.read("initial")).toBe(before);
+    await act(async () => { container.querySelector<HTMLButtonElement>(".patch-review-badge")!.click(); });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(`[data-proposal-id="${proposalId}"] button`)!.click();
+      await vi.waitFor(() => expect(runtime.host.listProposedPatches("pending")).toHaveLength(0));
+    });
+    const after = port.read("initial")!;
+    expect(after.selection.objectIds).toEqual([molecule.id]);
+    await expectStoredGraph(after.pages[0]!.objects[0]! as MoleculeObject, edit);
+    async function history(commandId: "edit.undo" | "edit.redo") {
+      await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT,
+        { detail: { commandId: forceDocumentHistoryCommandId(commandId) } })); });
+    }
+    await history("edit.undo");
+    expect(port.read("initial")).toEqual(before);
+    expect(container.querySelector("[role=status]")?.textContent).toContain("Undid Proposal test: Apply Proposal");
+    await history("edit.redo");
+    expect(port.read("initial")).toEqual(after);
+  }, 20_000);
+
+  it.each([
+    ["stale structure", /stored smiles.*editable graph cannot verify/i],
+    ["stale cached SMILES", /stored smiles.*editable graph cannot verify/i],
+    ["stale formula", /stored formula/i],
+    ["an empty graph", /no editable atoms to verify/i]
+  ] as const)("refuses a direct insertion with %s", async (mismatch, failure) => {
+    const blank = createEmptyDocument();
+    const molecule = graphEditFixture(blank, { name: "element", source: "CO" });
+    if (mismatch === "stale structure") molecule.structure = "CC";
+    if (mismatch === "stale cached SMILES") molecule.compatibility!.unknown.smiles = "CC";
+    if (mismatch === "stale formula") molecule.chemistry = { ...molecule.chemistry!, formula: "C2H6" };
+    if (mismatch === "an empty graph") { molecule.atoms = []; molecule.bonds = []; }
+    const port = await mount(blank);
+    const before = port.read("initial")!;
+    const invoke = registerWrite(context => context.documents.applyPatch!({ reason: "Insert inconsistent molecule", patch: {
+      op: "addObject", pageId: blank.pages[0]!.id, object: molecule
+    } }));
+    await act(async () => { await expect(invoke()).rejects.toThrow(failure); });
+    expect(port.read("initial")).toBe(before);
+  }, 20_000);
+
+  it.each([false, true])("skips inspection for unchanged or restyled atoms (restyled=%s)", async restyled => {
+    const blank = createEmptyDocument();
+    const pageId = blank.pages[0]!.id;
+    const molecule = graphEditFixture(blank, pluginGraphEdits[0]);
+    await mount(applyPatch(blank, { op: "batch", patches: [
+      { op: "addObject", pageId, object: molecule }, { op: "setSelection", pageId, objectIds: [molecule.id] }
+    ] }));
+    const inspect = vi.spyOn(identityClient, "inspectStructureOffThread");
+    const atoms = restyled ? molecule.atoms.map(atom => ({ ...atom, labelVisible: true })) : molecule.atoms;
+    const invoke = registerWrite(context => context.documents.applyPatch!({ reason: "Update atom labels", patch: {
+      op: "updateObject", objectId: molecule.id, changes: { atoms }
+    } }));
+    await act(async () => { await expect(invoke()).resolves.toMatchObject({ applied: true }); });
+    expect(inspect).not.toHaveBeenCalled();
+  });
+
   it("preserves a canvas edit made while a plugin graph patch awaits inspection", async () => {
     const blank = createEmptyDocument();
     const pageId = blank.pages[0]!.id;
