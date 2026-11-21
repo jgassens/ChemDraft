@@ -26,6 +26,8 @@ mod network_error;
 #[cfg(test)]
 mod network_test_http;
 mod ocsr_engine;
+#[cfg(target_os = "macos")]
+mod office_addin;
 mod office_ole;
 mod opsin;
 mod panel_full_size;
@@ -1834,6 +1836,12 @@ pub fn run() {
             setup_primary_app(app.handle())
         })
         .invoke_handler(tauri::generate_handler![
+            #[cfg(target_os = "macos")]
+            office_addin::office_addin_status,
+            #[cfg(target_os = "macos")]
+            office_addin::office_addin_install,
+            #[cfg(target_os = "macos")]
+            office_addin::office_addin_remove,
             office_ole::bridge::office_object_connect,
             office_ole::toolset_events::office_toolset_emit,
             office_ole::bridge::office_object_update,
@@ -3695,6 +3703,10 @@ fn write_file_atomic(path: &Path, contents: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
+    write_file_atomic_in_existing_dir(path, contents)
+}
+
+fn write_file_atomic_in_existing_dir(path: &Path, contents: &str) -> Result<(), String> {
     static WRITE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let sequence = WRITE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut tmp = path.as_os_str().to_owned();
@@ -3703,7 +3715,10 @@ fn write_file_atomic(path: &Path, contents: &str) -> Result<(), String> {
     // Clean up on BOTH failure paths. The rename arm already did; the write arm did not, so a
     // write that failed partway (a full disk, a quota) left its temp sibling behind next to the
     // real file — and the name carries a pid and a counter, so each attempt orphaned a new one.
-    fs::write(&tmp, contents).map_err(|error| {
+    let mut file = fs::File::create_new(&tmp).map_err(|error| error.to_string())?;
+    let written = file.write_all(contents.as_bytes());
+    drop(file);
+    written.map_err(|error| {
         let _ = fs::remove_file(&tmp);
         error.to_string()
     })?;
@@ -10408,8 +10423,9 @@ fn create_document_menu<R: Runtime>(
             &PredefinedMenuItem::close_window(app, None)?,
         ],
     )?;
-    let help_menu = Submenu::with_items(
+    let help_menu = Submenu::with_id_and_items(
         app,
+        "help",
         "Help",
         true,
         &[
@@ -10420,6 +10436,22 @@ fn create_document_menu<R: Runtime>(
             &PredefinedMenuItem::about(app, None, Some(about_metadata(app)))?,
         ],
     )?;
+    #[cfg(target_os = "macos")]
+    if office_update_title.is_none() {
+        let office_items = plugin_menu_items_in(plugin_items, "help");
+        if !office_items.is_empty() {
+            help_menu.append(&PredefinedMenuItem::separator(app)?)?;
+            for item in office_items {
+                help_menu.append(&MenuItem::with_id(
+                    app,
+                    item.id.as_str(),
+                    item.label.as_str(),
+                    item.enabled,
+                    None::<&str>,
+                )?)?;
+            }
+        }
+    }
     let mut items: Vec<&dyn tauri::menu::IsMenuItem<R>> = vec![
         #[cfg(target_os = "macos")]
         &native_app_menu,

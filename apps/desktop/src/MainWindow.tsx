@@ -49,6 +49,7 @@ import { acquireNativeUtilitySuspension } from "./nativeUtilitySuspension";
 import { loadAskToSaveBeforeQuit } from "./quitSettings";
 import { loadStartWithFreshDocument } from "./startupSettings";
 import { nativePrompt, useNativePrompt } from "./nativePrompt";
+import { officeAddinSupported, useOfficeAddinCommands } from "./commands/officeAddin";
 import { notifyNativeDocumentCompatibility } from "./nativeDocumentNotice";
 import { formatDocumentOpenBatchStatus, formatDocumentOpenFailure, listenAndDrainNativeOpenQueue, type DocumentOpenResult } from "./nativeOpenQueue";
 import { useInAppModalUtilitySuspension } from "./useInAppModalUtilitySuspension";
@@ -2915,6 +2916,10 @@ export function MainWindow({
     height: 0
   }));
   const [status, setStatus] = useState(officeObjectId ? "Opening Office structure…" : "Blank native document");
+  const officeAddin = useOfficeAddinCommands(
+    !officeObjectId && officeAddinSupported(isDesktopRuntime(), shortcutPlatform),
+    setStatus
+  );
   const tableDraftStatusRef = useRef<{ announced: string; original: string } | undefined>(undefined);
   // Keep import findings and the latest save findings independent for this tab.
   // Replacing the document drops both (resetDocumentHistory).
@@ -12197,6 +12202,8 @@ export function MainWindow({
       () => sendProblemReportRef.current("bug", "describe the problem in a few words")
     );
 
+    officeAddin.bindings.forEach(({ action, spec }) => register(spec, () => officeAddin.run(action)));
+
     // File ▸ Check for Updates… on Windows. macOS answers the same menu id natively (Sparkle), and
     // other builds have no update channel, so the command exists only where it can work.
     if (appUpdatesSupported({ isDesktop: isDesktopRuntime(), platform: detectDesktopShortcutPlatform() })) {
@@ -12930,7 +12937,7 @@ export function MainWindow({
     return bindings;
   }, [
     isSnapshotSessionActive, replacePresentDocument, prepareDocumentCommit, selectedNativeMoleculeParts,
-    officeObject, officeObjectId,
+    officeObject, officeObjectId, officeAddin,
     customSwatchActions, tableActions, activeTableCell, bracketActions, clearScheduledTextEditorFocus,
     activateDocumentTab,
     newDocumentTab,
@@ -13220,8 +13227,9 @@ export function MainWindow({
   const nativePluginMenuItems = useMemo(() => buildMainWindowNativeMenuItems([
     ...structureSearchMenuItems(structureSearchEnabled, hasSearchableStructure),
     ...bracketMenuItems,
+    ...officeAddin.menuItems,
     ...pluginRuntime.pluginMenuItems
-  ], availablePluginUpdateCount), [availablePluginUpdateCount, bracketMenuItems, pluginRuntime.pluginMenuItems, structureSearchEnabled, hasSearchableStructure]);
+  ], availablePluginUpdateCount), [availablePluginUpdateCount, bracketMenuItems, officeAddin.menuItems, pluginRuntime.pluginMenuItems, structureSearchEnabled, hasSearchableStructure]);
   useEffect(() => {
     if (officeObjectId || !isTauriHost()) return;
     void syncPluginNativeMenuItems(nativePluginMenuItems);

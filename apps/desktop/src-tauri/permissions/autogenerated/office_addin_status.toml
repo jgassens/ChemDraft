@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-office-addin-status"
+description = "Enables the office_addin_status command without any pre-configured scope."
+commands.allow = ["office_addin_status"]
+
+[[permission]]
+identifier = "deny-office-addin-status"
+description = "Denies the office_addin_status command without any pre-configured scope."
+commands.deny = ["office_addin_status"]

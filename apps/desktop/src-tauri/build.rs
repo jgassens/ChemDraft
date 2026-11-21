@@ -10,9 +10,15 @@ fn main() {
     }
     #[cfg(target_os = "macos")]
     stage_sparkle_framework_for_cargo_executables();
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        embed_office_manifest();
+    }
     ensure_opsin_runtime_dir();
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
+            "office_addin_status",
+            "office_addin_install",
+            "office_addin_remove",
             "office_object_connect",
             "office_toolset_emit",
             "office_object_update",
@@ -143,6 +149,22 @@ fn main() {
         ]),
     ))
     .expect("failed to run Tauri build script");
+}
+
+// Use the same template and release version as build:office without requiring a Vite build
+// for cargo test, development launches, or either macOS bundle architecture.
+fn embed_office_manifest() {
+    let template = "../office/manifest.xml";
+    println!("cargo:rerun-if-changed={template}");
+    let app_version = env!("CARGO_PKG_VERSION");
+    let version = app_version.split(['-', '+']).next().unwrap();
+    let source = std::fs::read_to_string(template)
+        .expect("read the Office add-in manifest template")
+        .replace("{{AppVersion}}", app_version)
+        .replace("{{ManifestVersion}}", &format!("{version}.0"));
+    let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    std::fs::write(output.join("office-manifest.xml"), source)
+        .expect("write the embedded Office add-in manifest");
 }
 
 /// Cargo test binaries are launched from `target/<profile>/deps`, not from an app bundle. The

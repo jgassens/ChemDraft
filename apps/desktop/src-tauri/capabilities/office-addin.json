@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "office-addin",
+  "description": "Manage the ChemDraft add-in manifest in the local Word and PowerPoint developer folders on macOS.",
+  "platforms": ["macOS"],
+  "windows": ["main"],
+  "permissions": ["allow-office-addin-status", "allow-office-addin-install", "allow-office-addin-remove"]
+}
