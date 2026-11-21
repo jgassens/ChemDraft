@@ -6947,11 +6947,15 @@ fn show_toolset_tooltip_window(
     let owner = toolset_document_label(caller.label());
     let windows = app.webview_windows();
     // A window being torn down may have unreadable visibility; it must not suppress tooltips.
+    // Querying every window's visibility on each tooltip show slowed toolbar clicks, so filter
+    // to this document's popovers by label before any visibility query.
     if toolset_tooltip_suppressed(
         windows
             .iter()
             .map(|(label, window)| (toolset_window_parts(label), window))
-            .filter(|((document, _), _)| *document == owner)
+            .filter(|((document, utility), _)| {
+                *document == owner && utility.starts_with("toolset-popover-")
+            })
             .map(|((_, utility), window)| (utility, window.is_visible().unwrap_or(false))),
     ) {
         return Ok(());

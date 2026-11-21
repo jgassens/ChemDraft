@@ -43,7 +43,9 @@ describe("document window launch placement", () => {
     const startup = between("pub fn run() {", "fn start_macos_primary(");
     expect(startup).toContain("tauri_plugin_single_instance::init(handle_second_launch)");
     expect(startup).toMatch(/macos_single_instance::plugin\(\s*guard,\s*handle_macos_second_launch,/);
-    const secondLaunch = between("fn handle_second_launch<", "fn handle_macos_second_launch(");
+    // Office OLE state needs the concrete runtime, so the entry point is no longer generic;
+    // the shared, generic reveal logic still lives in handle_second_launch_with.
+    const secondLaunch = between("fn handle_second_launch(", "fn handle_macos_second_launch(");
     expect(secondLaunch).toContain("handle_second_launch_with(app,");
     const reveal = between("fn handle_second_launch_with<", "fn quit_in_progress(");
     expect(reveal).toContain("ensure_main_window_visible(app)");
