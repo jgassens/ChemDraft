@@ -431,7 +431,7 @@ pub(super) fn open_window(
                         Ok(())
                     }
                 },
-                move |window, shown| {
+                move |window, _trigger, shown| {
                     // The user just activated the object: the editor takes focus.
                     let result =
                         shown.and_then(|()| window.set_focus().map_err(|error| error.to_string()));
