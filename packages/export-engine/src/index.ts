@@ -26,7 +26,7 @@ export type {
 } from "./results";
 export type { PdfExportOptions } from "./pdf";
 export { ensureHandwritingFontLoaded, HandwritingFontNotLoadedError } from "./handwritingFont";
-export { ensureSvgFontsLoaded, documentStyleSvg, exportDocumentToSvg, type SvgExportOptions, type SvgExportResult } from "./svg";
+export { SvgByteLimitError, ensureSvgFontsLoaded, documentStyleSvg, exportDocumentToSvg, type SvgExportOptions, type SvgExportResult } from "./svg";
 export {
   exportTableClipboardPayloads,
   exportTableToHtml,

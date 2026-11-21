@@ -1,5 +1,5 @@
-import { applyPatch, createEmptyDocument, type MoleculeObject } from "@chemdraft/chem-core";
-import { PluginApiVersion } from "@chemdraft/plugin-api";
+import { applyPatch, createEmptyDocument, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { PluginApiVersion, PluginRequestLimits, ProposedDocumentPatchSchema } from "@chemdraft/plugin-api";
 import type {
   PluginCommandContext,
   PluginImageRequestResult,
@@ -7,10 +7,12 @@ import type {
   PluginPanelReport,
   PluginPermission,
   PluginProvidedImage,
-  PluginPromptTextResult
+  PluginPromptTextResult,
+  PluginToolHandler
 } from "@chemdraft/plugin-api";
 import { PluginImageMaxBytes } from "@chemdraft/plugin-api";
 import { describe, expect, it, vi } from "vitest";
+import { commitRequestPatch } from "./requestWrites";
 import pluginHostPackage from "../package.json";
 import {
   CommandRegistry,
@@ -18,6 +20,7 @@ import {
   PluginHost,
   PluginHostError,
   PluginPermissionError,
+  type RequestDepictionProviders,
   validateTrustedPluginManifest
 } from "./index";
 
@@ -41,6 +44,43 @@ function moleculeObject(id = "mol_001"): MoleculeObject {
     rGroups: []
   };
 }
+
+describe("request write normalization", () => {
+  it.each<{ field: string; atom?: Partial<MoleculeObject["atoms"][number]>; bond?: Partial<MoleculeObject["bonds"][number]>;
+    storage?: Partial<MoleculeObject> }>([
+    { field: "charge", atom: { formalCharge: 1 } },
+    { field: "radical", atom: { markRadicals: 1 } },
+    { field: "isotope", atom: { isotope: 13 } },
+    { field: "stereo", bond: { display: { bondStyle: "wedge" } } },
+    { field: "connectivity", bond: { fromAtomId: "c", toAtomId: "a" } },
+    { field: "source SMILES", storage: { structure: "[CH2]CC" } },
+    { field: "stored formula", storage: { chemistry: { formula: "C3H7", warnings: [], isotopeLabels: [], stereochemistry: [] } } },
+    { field: "enhanced stereo annotation", storage: { compatibility: { warnings: [], unknown: { enhancedStereoByAtomId: { a: "or1" } } } } }
+  ])("refuses a normalized $field change even when verification and history agree", async ({ atom, bond, storage }) => {
+    const document = createEmptyDocument();
+    const page = document.pages[0]!;
+    const molecule: MoleculeObject = { ...moleculeObject(), structure: "CCC",
+      atoms: ["a", "b", "c"].map((id, i) => ({ id, element: "C", x: i * 22, y: 0, formalCharge: 0 })),
+      bonds: [{ id: "ab", fromAtomId: "a", toAtomId: "b", order: "single" },
+        { id: "bc", fromAtomId: "b", toAtomId: "c", order: "single" }] };
+    page.objects.push(molecule);
+    const changes = {
+      atoms: [{ ...molecule.atoms[0]!, ...atom }, ...molecule.atoms.slice(1)],
+      bonds: [{ ...molecule.bonds[0]!, ...bond }, ...molecule.bonds.slice(1)], ...storage
+    };
+    const normalize = (draft: ChemDraftDocument) => applyPatch(draft, { op: "updateObject", objectId: molecule.id, changes });
+    const recorded = vi.fn();
+    await expect(commitRequestPatch({
+      document: { key: "drawing", read: () => document }, selection: [{ pageId: page.id, objectId: molecule.id }],
+      signal: new AbortController().signal, authorize: () => {}, publish: () => {},
+      history: { verify: async (_before, draft) => normalize(draft), run: async apply => apply(),
+        write: (draft, _ids, guard) => { const final = normalize(draft); guard(final); recorded(final); } }
+    }, ProposedDocumentPatchSchema.parse({ reason: "Move", patch: {
+      op: "updateObject", objectId: molecule.id, changes: { x: molecule.x + 5 }
+    } }))).rejects.toMatchObject({ code: "chemistry" });
+    expect(recorded).not.toHaveBeenCalled();
+  });
+});
 
 describe("CommandRegistry", () => {
   it("registers, lists, and invokes a command definition", async () => {
@@ -1261,6 +1301,195 @@ function minimalManifest(id: string): PluginManifest {
     }
   };
 }
+
+describe("PluginHost request tool document capabilities", () => {
+  it("routes all depiction providers through the pinned request and refuses foreign or ended invocations", async () => {
+    const pinned = createEmptyDocument({ title: "Pinned depiction" });
+    const active = createEmptyDocument({ title: "Foreground" });
+    let foreground = pinned;
+    let requestId: string;
+    const snapshot = vi.fn();
+    const renderSignals: AbortSignal[] = [];
+    let finishRender!: () => void;
+    const renderPending = new Promise<void>(resolve => { finishRender = resolve; });
+    const unavailable = { ok: false as const, error: { code: "unavailable" as const, message: "Engine unavailable." } };
+    const providers: RequestDepictionProviders = {
+      inspectStructure: async (_input, _signal, binding) => { snapshot(binding?.document); return unavailable; },
+      rings: async (_input, binding) => { snapshot(binding.document); return unavailable; },
+      measure: (_input, binding) => { snapshot(binding.document); return unavailable; },
+      renderRegion: async (_input, binding) => {
+        snapshot(binding.document);
+        renderSignals.push(binding.signal);
+        await renderPending;
+        return unavailable;
+      }
+    };
+    const args = () => ({ requestId, pageId: pinned.pages[0]!.id });
+    const target = { kind: "region" as const, bounds: { x: 0, y: 0, width: 5, height: 5 } };
+    const host = new PluginHost({
+      getActiveDocument: () => foreground, getActiveDocumentKey: () => foreground.title,
+      captureRequestDocument: () => ({ key: pinned.title, read: () => pinned }),
+      requestDepiction: providers
+    });
+    const manifest = minimalManifest("org.test.depiction");
+    manifest.apiVersion = `^${PluginApiVersion}`;
+    manifest.permissions = ["document.read", "selection.read", "chemistry.compute"];
+    manifest.contributes.commands = ["owner", "other"].map(name =>
+      ({ id: `plugin.depiction.${name}`, title: name, enabled: true, requiredPermissions: [] }));
+    const foreign = minimalManifest("org.test.foreign");
+    foreign.apiVersion = manifest.apiVersion;
+    foreign.permissions = manifest.permissions;
+    foreign.contributes.commands = [{ id: "plugin.foreign.read", title: "Read", enabled: true, requiredPermissions: [] }];
+    host.registerPlugin(foreign, { commandHandlers: {
+      "plugin.foreign.read": ctx => ctx.chemistry!.rings!({ ...args(), objectId: "m" })
+    } });
+    host.registerPlugin(manifest, { commandHandlers: {
+      "plugin.depiction.other": ctx => ctx.depiction!.measure({ ...args(), target }),
+      "plugin.depiction.owner": async ctx => {
+        const started = await ctx.requests!.begin({ label: "Measure figure" });
+        if (!started.ok) throw new Error(started.error.message);
+        requestId = started.value.requestId;
+        foreground = active;
+        expect(await ctx.chemistry!.inspectStructure!({ ...args(), kind: "molecule", objectId: "m" })).toEqual(unavailable);
+        expect(await ctx.chemistry!.rings!({ ...args(), objectId: "m" })).toEqual(unavailable);
+        expect(await ctx.depiction!.measure({ ...args(), target })).toEqual(unavailable);
+        for (const command of ["plugin.depiction.other", "plugin.foreign.read"]) {
+          await expect(host.invokeCommand(command)).resolves.toMatchObject({ ok: false, error: { code: "cancelled" } });
+        }
+        const render = { ...args(), target, widthPx: 5, heightPx: 5 };
+        const calls = Array.from({ length: PluginRequestLimits.pendingCapabilities }, () => ctx.depiction!.renderRegion(render));
+        await expect(ctx.depiction!.renderRegion(render)).resolves.toMatchObject({ ok: false, error: { code: "limit" } });
+        await ctx.requests!.end({ requestId });
+        expect(renderSignals.every(signal => signal.aborted)).toBe(true);
+        finishRender();
+        for (const result of await Promise.all(calls)) expect(result).toMatchObject({ ok: false, error: { code: "cancelled" } });
+        await expect(ctx.depiction!.measure({ ...args(), target })).resolves.toMatchObject({ ok: false, error: { code: "cancelled" } });
+      }
+    } });
+    await host.invokeCommand("plugin.depiction.owner");
+    expect(renderSignals).toHaveLength(PluginRequestLimits.pendingCapabilities);
+    expect(snapshot.mock.calls.every(([document]) => document === pinned)).toBe(true);
+    expect(snapshot).toHaveBeenCalledTimes(3 + PluginRequestLimits.pendingCapabilities);
+    expect(renderSignals.every(signal => signal.aborted)).toBe(true);
+  });
+
+  function requestTool(handler: PluginToolHandler, objects = [moleculeObject("selected")]) {
+    const manifest = minimalManifest("org.test.bound-tool");
+    manifest.apiVersion = `^${PluginApiVersion}`;
+    manifest.permissions = ["document.read", "selection.read", "document.write", "chemistry.compute"];
+    const command = "plugin.bound-tool.run";
+    manifest.contributes.commands = [{ id: command, title: "Run", enabled: true, requiredPermissions: [] }];
+    const document = createEmptyDocument({ title: "Pinned" });
+    const pinned: ChemDraftDocument = {
+      ...document,
+      pages: [{ ...document.pages[0]!, objects }],
+      selection: { objectIds: objects.map(object => object.id) }
+    };
+    const getSelection = () => ({
+      objectIds: pinned.selection.objectIds,
+      molecules: objects.map(({ id, structure, structureFormat }) =>
+        ({ objectId: id, structure, structureFormat, sourceFingerprint: id }))
+    });
+    let active = pinned;
+    const buildTablePatch = vi.fn();
+    const host = new PluginHost({
+      getActiveDocument: () => active, getActiveDocumentKey: () => active.title,
+      getSelection,
+      getRequestSelection: getSelection,
+      captureRequestDocument: () => ({ key: pinned.title, read: () => pinned }),
+      buildTablePatch,
+      toolSessions: {
+        open: async (binding, { requestId }) => {
+          active = createEmptyDocument({ title: "Foreground" });
+          const result = await binding.invoke({ name: "read", requestId, sessionId: "session", input: {} },
+            new AbortController().signal, false, {});
+          expect(result).toEqual({ ok: true, value: null });
+          return { sessionId: "session", tools: [] };
+        },
+        close: async () => {}
+      }
+    });
+    host.registerPlugin(manifest, { onToolCall: handler, commandHandlers: {
+      [command]: async ctx => {
+        const request = await ctx.requests!.begin({ label: "Bound tool" });
+        if (!request.ok) throw new Error(request.error.message);
+        return ctx.toolSessions!.open({ requestId: request.value.requestId, definitions: [] });
+      }
+    } });
+    return {
+      invoke: () => host.invokeCommand(command), buildTablePatch,
+      ordinaryContext: host.createCommandContext(manifest.id), pinned, getSelection
+    };
+  }
+
+  it("shares the pending capability limit across ordinary pinned reads and request methods", async () => {
+    const { invoke } = requestTool(async (ctx, { requestId }) => {
+      const reads = Array.from({ length: PluginRequestLimits.pendingCapabilities - 2 }, () => ctx.documents.getActiveDocument());
+      const selection = ctx.selection!.getSelection();
+      const request = ctx.requests!.getContext({ requestId });
+      await Promise.all([
+        expect(ctx.documents.getActiveDocument()).rejects.toMatchObject({ code: "limit" }),
+        expect(ctx.selection!.getSelection()).rejects.toMatchObject({ code: "limit" }),
+        expect(ctx.requests!.getContext({ requestId })).resolves.toMatchObject({ ok: false, error: { code: "limit" } })
+      ]);
+      expect((await Promise.all(reads)).map(doc => doc?.title)).toEqual(Array(reads.length).fill("Pinned"));
+      await expect(selection).resolves.toMatchObject({ objectIds: ["selected"] });
+      await expect(request).resolves.toMatchObject({ ok: true, value: { documentKey: "Pinned" } });
+      const document = await ctx.documents.getActiveDocument();
+      expect(document?.title).toBe("Pinned");
+      expect(Object.isFrozen(document?.pages[0]?.objects[0])).toBe(true);
+      expect(Object.isFrozen((await selection).molecules[0])).toBe(true);
+      return { ok: true, value: null };
+    });
+    await expect(invoke()).resolves.toMatchObject({ ok: true });
+  });
+
+  it("refuses oversized pinned document and selection reads before cloning either snapshot", async () => {
+    // Each NUL needs six bytes in JSON, so both snapshots exceed 8 MiB despite their smaller
+    // in-memory character counts. Spread the size across objects so reads can paginate.
+    const structure = "\0".repeat(96 * 1024);
+    const objects = Array.from({ length: 16 }, (_, i) => ({ ...moleculeObject(`mol_${i}`), structure }));
+    const { invoke, ordinaryContext, pinned, getSelection } = requestTool(async (ctx, { requestId }) => {
+      const clone = vi.spyOn(globalThis, "structuredClone");
+      try {
+        const results = await Promise.allSettled([ctx.documents.getActiveDocument(), ctx.selection!.getSelection()]);
+        for (const result of results) {
+          expect(result).toMatchObject({ status: "rejected", reason: {
+            code: "limit", message: expect.stringContaining("documents.readRequest")
+          } });
+        }
+        expect(clone).not.toHaveBeenCalled();
+      } finally { clone.mockRestore(); }
+      await expect(ctx.documents.readRequest!({ requestId, pageId: "page_001", objectIds: ["mol_0"] }))
+        .resolves.toMatchObject({ ok: true, value: { objects: [{ object: { id: "mol_0" } }] } });
+      return { ok: true, value: null };
+    }, objects);
+    await expect(ordinaryContext.documents.getActiveDocument()).resolves.toEqual(pinned);
+    await expect(ordinaryContext.selection!.getSelection()).resolves.toEqual(getSelection());
+    await expect(invoke()).resolves.toMatchObject({ ok: true });
+  });
+
+  it("bounds bound writes before proposal parsing or table building", async () => {
+    const parse = vi.spyOn(ProposedDocumentPatchSchema, "_parse");
+    const { invoke, buildTablePatch } = requestTool(async (ctx, { requestId }) => {
+      const deep = Array.from({ length: PluginRequestLimits.jsonDepth + 1 })
+        .reduce<unknown>(value => ({ nested: value }), "deep");
+      for (const value of [deep, "x".repeat(PluginRequestLimits.requestBytes)]) {
+        const patch = { op: "updateObject" as const, objectId: "selected", changes: { style: { value } } };
+        await expect(ctx.documents.applyPatch!({ reason: "Edit", patch })).rejects.toMatchObject({ code: "limit" });
+        await expect(ctx.documents.applyRequestPatch!({ requestId, patch })).resolves.toMatchObject({ ok: false, error: { code: "limit" } });
+      }
+      await expect(ctx.documents.insertTable!({ columns: [{}], rows: [["x".repeat(PluginRequestLimits.requestBytes)]] }))
+        .rejects.toMatchObject({ code: "limit" });
+      return { ok: true, value: null };
+    });
+    try {
+      await expect(invoke()).resolves.toMatchObject({ ok: true });
+      expect(parse).not.toHaveBeenCalled();
+      expect(buildTablePatch).not.toHaveBeenCalled();
+    } finally { parse.mockRestore(); }
+  });
+});
 
 describe("PluginHost runtime enumeration, panels, and subscriptions", () => {
   it("rejects duplicate plugin registration", () => {

@@ -1,7 +1,7 @@
 //! Native pointer observation and a bounded guard while the palette page classifies
 //! a click. Webview key delivery is guarded in MainWindow on BOTH platforms.
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{
     sync::{Mutex, OnceLock},
@@ -96,11 +96,21 @@ pub(super) fn pointer<R: tauri::Runtime>(app: &tauri::AppHandle<R>, label: Optio
         end(app, label, End::Acquired, None, 0);
         return;
     }
-    let wall_time = SystemTime::now()
+    let wall_time = wall_time();
+    let event = GUARD.lock().unwrap().pointer(label, now(), wall_time);
+    publish_click(app, label, event);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn wall_time() -> u64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis() as u64;
-    let event = GUARD.lock().unwrap().pointer(label, now(), wall_time);
+        .as_millis() as u64
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn publish_click<R: tauri::Runtime>(app: &tauri::AppHandle<R>, label: &str, event: state::Event) {
     publish(app, Some((label.to_owned(), event)));
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -308,7 +318,13 @@ pub(super) fn install<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> Re
     windows::install(window)
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(target_os = "linux")]
+#[path = "palette_focus_linux.rs"]
+pub(crate) mod linux;
+#[cfg(target_os = "linux")]
+pub(super) use linux::install;
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub(super) fn install<R: tauri::Runtime>(_window: &tauri::WebviewWindow<R>) -> Result<(), String> {
     Ok(())
 }

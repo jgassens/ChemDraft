@@ -102,10 +102,11 @@ A plugin imports **only `@chemdraft/plugin-api`** (plus ordinary npm packages), 
 menus, panels, toolbar buttons, inspectors, templates, importers, exporters, analyzers, transformers,
 and recognizers.
 
-`PluginApiVersion` is `0.1.25`. API 0.1.20 added `tableStyle.autoColumnMinEm`; 0.1.21 adds
+`PluginApiVersion` is `0.1.26`. API 0.1.20 added `tableStyle.autoColumnMinEm`; 0.1.21 adds
 plugin chemistry properties and plugin assistant tools; 0.1.22 adds name-to-structure result
 source and dictionary match provenance; 0.1.23 adds native wavy single bonds;
-0.1.24 adds reaction schemes and binary CDX; 0.1.25 adds bracketed groups. For a 0.x version the minor is the compatibility boundary, so additive
+0.1.24 adds reaction schemes and binary CDX; 0.1.25 adds bracketed groups, and 0.1.26 adds
+request-bound tools and depiction. For a 0.x version the minor is the compatibility boundary, so additive
 methods bump the patch and a plugin declares the caret version it needs. Record each bump in the
 `plugin-api` header comment and `AUTHORING.md`.
 
@@ -148,13 +149,13 @@ Naming: commands `plugin.<pluginName>.<action>` (schema-enforced for toolset con
 
 ### 4.4 Writing to the document
 
-Plugins mutate documents only through patches. A plugin with `document.write` calls
-`documents.applyPatch` only while one of its own commands is running. It may insert objects, and may
-change or remove only objects selected when that command started plus objects it inserted during
-that command. Writes land directly, leaving what changed selected. The assistant transaction groups
-writes into one labelled undo entry per AI request; for other plugins, each `documents.applyPatch`
-call creates its own labelled undo entry (including a batch patch). Undo and redo restore recorded
-states exactly; they never re-run a plugin or an AI. **Proposal review** stays mandatory for image recognition
+Plugins mutate documents only through patches. An ordinary command with `document.write` may change
+or remove objects selected when it started and objects it inserted. Each ordinary write creates one
+labelled undo entry, including a batch patch. A request-bound write uses the document instance and
+selection captured at Send, plus objects already inserted by that request. The host verifies
+chemistry before committing and records one labelled undo entry per request with writes. The
+legacy assistant transaction keeps its existing history behavior. Writes land directly and select
+what changed. Undo and redo restore recorded states exactly. **Proposal review** stays mandatory for image recognition
 results (MolScribe); other plugin writes need no review window. Reports are for failures; success
 needs no window.
 

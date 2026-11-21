@@ -1,4 +1,4 @@
-import { bracketChemistryWarnings, bracketPairs, bracketPairUsage, resolveRepeatUnitAtomMembership, type DocumentObject, type ChemDraftDocument, type MoleculeObject, type MolfileWriteOptions } from "@chemdraft/chem-core";
+import { bracketChemistryWarnings, bracketPairs, bracketPairSemantics, resolveRepeatUnitAtomMembership, type DocumentObject, type ChemDraftDocument, type MoleculeObject, type MolfileWriteOptions } from "@chemdraft/chem-core";
 import { transformPointForObject } from "@chemdraft/layout-engine";
 import type { ExportWarning } from "./results";
 
@@ -17,9 +17,8 @@ type RepeatUnit = {
 export function repeatUnits(document: ChemDraftDocument, molecules?: readonly MoleculeObject[]): RepeatUnit[] {
   const exported = molecules && new Set(molecules.map(molecule => molecule.id));
   return document.pages.flatMap(page => [...bracketPairs(page.objects).values()].flatMap(pair => {
-    const usage = bracketPairUsage(pair);
+    const { usage, closing, label } = bracketPairSemantics(pair);
     if (usage === "generic") return [];
-    const close = pair.find(object => object.side === "close")!;
     const explicit = new Set(pair.flatMap(object => object.containedObjectIds));
     const membership = resolveRepeatUnitAtomMembership(pair, page.objects, { atomPosition: transformPointForObject });
     const allMembers = page.objects.flatMap(object => {
@@ -49,7 +48,7 @@ export function repeatUnits(document: ChemDraftDocument, molecules?: readonly Mo
         ? "part of its atom membership is outside the export scope"
       : members.some(member => member.atomIds.length === 0) ? "its atom membership is empty"
       : membership.reason;
-    return [{ objectId: close.id, label: close.label ?? "n", usage, unresolved: membership.unresolved, members,
+    return [{ objectId: closing.id, label, usage, unresolved: membership.unresolved, members,
       connectivity: membership.connectivity, context: members.flatMap(member => member.context.map(warning => warning.message)), reason }];
   }));
 }

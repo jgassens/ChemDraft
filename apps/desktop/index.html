@@ -24,6 +24,20 @@
         font: 13px system-ui, -apple-system, "Segoe UI", sans-serif;
       }
     </style>
+    <script>
+      // Palette, popover and tooltip windows paint their own background from the very first frame,
+      // before React mounts their content: App.css colors html[data-cd-first-frame] with the same
+      // token their mounted page uses (src-tauri/src/palette_first_paint.rs builds them with it as
+      // the window background). Without this an early or fallback reveal showed the document
+      // window's --cd-bg-app instead. The document window (no ?window=) keeps its own background.
+      (function () {
+        var kind = new URLSearchParams(window.location.search).get("window");
+        var frame = kind === "toolset" || kind === "tool-palette" || kind === "toolsetPopover"
+          ? "panel"
+          : kind === "toolsetTooltip" ? "tooltip" : "";
+        if (frame) document.documentElement.setAttribute("data-cd-first-frame", frame);
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

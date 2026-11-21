@@ -77,6 +77,15 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             fit_content: true,
             preserve_user_frame: false,
         }),
+        "pageEnlargement" => Ok(DialogKindSpec {
+            maximizable: false,
+            resizable: false,
+            title: "Enlarge Page",
+            size: (420.0, 150.0),
+            min_size: (320.0, 100.0),
+            fit_content: true,
+            preserve_user_frame: false,
+        }),
         "arrangementSpacing" => Ok(DialogKindSpec {
             maximizable: false,
             resizable: true,
@@ -146,7 +155,10 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
     }
 }
 fn native_window_title(kind: &str, spec_title: &str, snapshot_title: &str) -> String {
-    if matches!(kind, "engineInstall" | "toolInstall" | "vibeCodeGuide") {
+    if matches!(
+        kind,
+        "engineInstall" | "toolInstall" | "vibeCodeGuide" | "pageEnlargement"
+    ) {
         snapshot_title.to_string()
     } else {
         format!("{spec_title} — {snapshot_title}")
@@ -182,7 +194,7 @@ pub(crate) struct Message {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct VibeGuideSnapshot {
+struct TitleSnapshot {
     title: String,
 }
 #[derive(Deserialize)]
@@ -190,6 +202,12 @@ struct VibeGuideSnapshot {
 enum VibeGuideAction {
     SaveStarter {},
     OpenPluginManager {},
+    Cancel {},
+}
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
+enum PageEnlargementAction {
+    Enlarge {},
     Cancel {},
 }
 #[derive(Deserialize)]
@@ -961,6 +979,14 @@ impl Message {
             return Err("Invalid dialog envelope or payload limit exceeded".into());
         }
         let valid = match self.message_type.as_str() {
+            "snapshot" if self.dialog_kind == "pageEnlargement" => {
+                serde_json::from_value::<TitleSnapshot>(self.data.clone())
+                    .is_ok_and(|s| s.title == "Enlarge Page")
+            }
+            "action" if self.dialog_kind == "pageEnlargement" => {
+                serde_json::from_value::<PageEnlargementAction>(self.data.clone()).is_ok()
+            }
+            "result" if self.dialog_kind == "pageEnlargement" => false,
             "snapshot" if self.dialog_kind == "atomProblem" => {
                 serde_json::from_value::<AtomProblemSnapshot>(self.data.clone()).is_ok_and(|s| {
                     valid_title(&s.title)
@@ -1016,7 +1042,7 @@ impl Message {
                 CustomColorAction::Clear {} | CustomColorAction::Cancel {} => true,
             }),
             "snapshot" if self.dialog_kind == "vibeCodeGuide" => {
-                serde_json::from_value::<VibeGuideSnapshot>(self.data.clone())
+                serde_json::from_value::<TitleSnapshot>(self.data.clone())
                     .is_ok_and(|s| valid_title(&s.title) && !s.title.contains('\0'))
             }
             "action" if self.dialog_kind == "vibeCodeGuide" => {
@@ -1622,11 +1648,14 @@ fn register(
     if registry.sessions.len() >= 16 {
         return Err("Too many dialog windows are open".into());
     }
-    if registry.sessions.values().any(|s| {
-        s.snapshot.owner_window_id == message.owner_window_id
-            && s.snapshot.document_tab_id == message.document_tab_id
-            && s.snapshot.dialog_kind == message.dialog_kind
-    }) {
+    // Independent questions must never share consent, even for the same drawing.
+    if message.dialog_kind != "pageEnlargement"
+        && registry.sessions.values().any(|s| {
+            s.snapshot.owner_window_id == message.owner_window_id
+                && s.snapshot.document_tab_id == message.document_tab_id
+                && s.snapshot.dialog_kind == message.dialog_kind
+        })
+    {
         return Err("A dialog for this drawing is already open".into());
     }
     registry.next_slot += 1;
@@ -2004,11 +2033,50 @@ fn close_session<R: Runtime>(app: &tauri::AppHandle<R>, host_id: &str, reason: &
         .remove(host_id);
     if let Some(mut session) = session {
         flush_position(app, &mut session);
+        if session.snapshot.dialog_kind == "pageEnlargement" {
+            if let Some(window) = app.get_webview_window(&session.registration.window_label) {
+                let restore_focus = matches!(reason, "apply" | "cancel" | "close");
+                let target = window.clone();
+                if let Err(error) = super::run_on_main_thread_blocking(&window, move || {
+                    close_page_enlargement_on_main(&target, restore_focus)
+                })
+                .and_then(|result| result)
+                {
+                    eprintln!("Could not close page enlargement window: {error}");
+                    let _ = window.destroy();
+                }
+            }
+            notify_closed(&session, reason);
+            return;
+        }
         notify_closed(&session, reason);
         if let Some(window) = app.get_webview_window(&session.registration.window_label) {
             let _ = window.destroy();
         }
     }
+}
+fn close_page_enlargement_on_main<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    restore_focus: bool,
+) -> Result<(), String> {
+    let app = window.app_handle();
+    let owner = app
+        .get_webview_window(super::MAIN_WINDOW_LABEL)
+        .filter(|owner| {
+            restore_focus
+                && super::foreground_belongs_to_app()
+                && !super::quit_in_progress()
+                && window.is_focused().unwrap_or(false)
+                && owner.is_visible().unwrap_or(false)
+                && !owner.is_minimized().unwrap_or(true)
+        });
+    let _ = window.hide();
+    window.destroy().map_err(|error| error.to_string())?;
+    if let Some(owner) = owner {
+        super::focus_native_document_window(&owner)?;
+        owner.set_focus().map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 pub(crate) fn dismiss_owned<R: Runtime>(app: &tauri::AppHandle<R>, reason: &str) {
     flush_preferences(app, PreferencesClose::Close);
@@ -4283,6 +4351,21 @@ pub(crate) fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &Win
         }
         WindowEvent::Destroyed if window.label() == super::PREFERENCES_WINDOW_LABEL => {
             flush_preferences(window.app_handle(), PreferencesClose::Destroyed);
+        }
+        WindowEvent::CloseRequested { api, .. }
+            if window.label().starts_with("dialog-main-pageEnlargement-") =>
+        {
+            let host_id = REGISTRY
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .sessions
+                .iter()
+                .find(|(_, s)| s.registration.window_label == window.label())
+                .map(|(id, _)| id.clone());
+            if let Some(host_id) = host_id {
+                api.prevent_close();
+                close_session(window.app_handle(), &host_id, "close");
+            }
         }
         WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed => {
             let mut registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
@@ -9441,6 +9524,49 @@ mod tests {
         message.data = json!({"action":"preview", "percent":80});
         assert!(message.validate().is_err());
     }
+    #[test]
+    fn page_enlargement_registers_independent_questions_and_only_two_choices() {
+        let spec = kind_spec("pageEnlargement").unwrap();
+        assert!(!spec.maximizable && !spec.resizable && spec.fit_content);
+        assert!(include_str!("../capabilities/dialog-host.json")
+            .contains("dialog-main-pageEnlargement-*"));
+        assert!(!is_dialog_label("dialog-main-pageEnlargement-../main"));
+        let mut message = snapshot();
+        message.dialog_kind = "pageEnlargement".into();
+        message.data = json!({"title": "Enlarge Page"});
+        let mut registry = Registry::default();
+        let (first, _) = register(&mut registry, message.clone(), false).unwrap();
+        assert!(is_dialog_label(&first.window_label));
+        message.session_id = "other-question".into();
+        let (second, _) = register(&mut registry, message.clone(), false).unwrap();
+        assert_ne!(first.window_label, second.window_label);
+        for data in [
+            json!({"title": "Arbitrary title"}),
+            json!({"title": "Enlarge Page", "path": "secret"}),
+            json!({}),
+        ] {
+            let mut invalid = message.clone();
+            invalid.data = data;
+            assert!(invalid.validate().is_err());
+        }
+        message.message_type = "action".into();
+        for action in ["enlarge", "cancel"] {
+            message.data = json!({"action": action});
+            assert!(message.validate().is_ok());
+        }
+        for data in [
+            json!({"action": "enlarge", "width": 200}),
+            json!({"action": "cancel", "extra": true}),
+            json!({"action": "apply"}),
+        ] {
+            message.data = data;
+            assert!(message.validate().is_err());
+        }
+        message.message_type = "result".into();
+        message.data = json!({"status": "accepted"});
+        assert!(message.validate().is_err());
+    }
+
     #[test]
     fn custom_color_registers_labels_and_validates_payloads() {
         let spec = kind_spec("customColor").unwrap();

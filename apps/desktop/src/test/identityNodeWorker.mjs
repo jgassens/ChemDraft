@@ -8,14 +8,14 @@ const { installNodeRdkitModuleLoader } = await import("../../../../packages/rdki
 const { inspectStructureInWorker } = await import("../depiction2d/identityInspect.ts");
 installNodeRdkitModuleLoader();
 const module = await ensureRdkit();
-parentPort.on("message", ({ id, value, stereoReference }) => {
+parentPort.on("message", ({ id, value, stereoReference, details }) => {
   try {
     if (workerData.slowStereoReference && workerData.slowStereoReference === stereoReference) {
       // Inject a synchronous stuck check: only the caller's worker termination can stop it.
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
     }
     parentPort.postMessage({ id, stage: "result",
-      result: inspectStructureInWorker(module, value, stereoReference) });
+      result: inspectStructureInWorker(module, value, stereoReference, details) });
   } catch (error) {
     parentPort.postMessage({ id, stage: "error",
       message: error instanceof Error ? error.message : String(error) });

@@ -1,9 +1,11 @@
 import { createMassRegistration, massFragmentManifest, massFragmentPluginId } from "@chemdraft/plugin-mass-fragment";
 import {
   PluginApiVersion,
+  type PluginActiveDocumentChangedHandler,
   type PluginAssistantToolHandler,
   type PluginCommandHandler,
   type PluginManifest,
+  type PluginToolHandler,
   type PluginWorkerHandle
 } from "@chemdraft/plugin-api";
 import type { RegisterPluginOptions } from "@chemdraft/plugin-host";
@@ -11,7 +13,7 @@ import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 
 import { detectDesktopShortcutPlatform } from "../keyboardShortcuts";
 import type { DesktopPluginRuntime } from "./createPluginRuntime";
-import { PluginWorkerBridge } from "./PluginWorkerBridge";
+import { PluginWorkerBridge, PluginWorkerBridgeError } from "./PluginWorkerBridge";
 import { loadDisabledPluginIds } from "./pluginPreferences";
 
 export interface BundledPluginDescriptor {
@@ -103,6 +105,19 @@ export function createWorkerRoutedOptions(manifest: PluginManifest, bridge: Plug
     get onAssistantToolCall(): PluginAssistantToolHandler | undefined {
       return bridge.hasAssistantToolHandler()
         ? (context, call, signal) => bridge.invokeAssistantTool(context, call, signal)
+        : undefined;
+    },
+    get onToolCall(): PluginToolHandler | undefined {
+      return bridge.hasToolHandler() ? (context, call, signal) => bridge.invokeTool(context, call, signal) : undefined;
+    },
+    onDocumentChangeReady: listener => manifest.permissions.includes("document.read")
+      ? bridge.onDocumentChangeReady(listener) : () => {},
+    get onActiveDocumentChanged(): PluginActiveDocumentChangedHandler | undefined {
+      return manifest.permissions.includes("document.read") && bridge.hasActiveDocumentChangedHandler()
+        ? async event => {
+            const result = await bridge.notifyActiveDocumentChanged(event);
+            if (!result.ok) throw new PluginWorkerBridgeError(result.error);
+          }
         : undefined;
     }
   };

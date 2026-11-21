@@ -36,10 +36,21 @@ import type {
   PluginStorage
 } from "./index";
 import {
+  bindPluginRequestCapabilities, getPluginRequestCapability, pluginRequestPermissions,
+  type PluginActiveDocumentChangedHandler, type PluginToolCallResult, type PluginToolHandler
+} from "./requestCapabilities";
+import {
+  PluginActiveDocumentChangedSchema, PluginToolCallSchema, PluginToolCallResultSchema, pluginRequestFailure,
+  type PluginRequestResult
+} from "./requestSchemas";
+import { PluginRequestLimits, requestValidationCode } from "./requestPayload";
+import {
   PLUGIN_WORKER_PROTOCOL_VERSION,
   supportsPluginTableInsertion,
+  supportsPluginRequestTools,
   PluginWorkerErrorCodes,
   asHostToWorkerMessage,
+  isPinnedRequestToolCapability,
   toPluginWorkerErrorPayload,
   type HostToWorkerMessage,
   type CapabilityMethodOf,
@@ -57,6 +68,8 @@ export interface PluginWorkerRegistration {
   commandHandlers: Record<string, PluginCommandHandler>;
   onPanelClosed?: (panelId: string) => void;
   onAssistantToolCall?: PluginAssistantToolHandler;
+  onToolCall?: PluginToolHandler;
+  onActiveDocumentChanged?: PluginActiveDocumentChangedHandler;
 }
 
 /** An error that carries a stable code across the boundary, so a rejected capability call surfaces to
@@ -103,20 +116,14 @@ export function runPluginWorker(
 ): void {
   const permissions = new Set<PluginPermission>(registration.manifest.permissions);
   const has = (permission: PluginPermission): boolean => permissions.has(permission);
-  const requirePermission = (permission: PluginPermission): void => {
-    if (!has(permission)) {
-      throw new PluginWorkerCapabilityError({
-        code: "PLUGIN_PERMISSION_DENIED",
-        message: `Plugin "${registration.manifest.id}" requires permission "${permission}".`
-      });
-    }
-  };
-
+  const requestTools = supportsPluginRequestTools(registration.manifest.apiVersion);
   let nextCapabilityId = 1;
   const pendingCapabilities = new Map<
     number,
     { commandRequestId: number; resolve: (value: unknown) => void; reject: (error: unknown) => void }
   >();
+  const pendingRequestCapabilities = new Set<number>();
+  const requestToolAborts = new Map<number, AbortController>();
   /** Commands the host aborted/terminated: their pending capability calls are rejected so a handler
    *  can unwind. Normal command settlements are suppressed; assistant tools acknowledge settlement
    *  so the host can keep their concurrency slots until the handler actually finishes.
@@ -146,19 +153,47 @@ export function runPluginWorker(
     commandRequestId: number,
     namespace: PluginWorkerCapabilityNamespace,
     method: string,
-    args: readonly unknown[]
+    args: readonly unknown[],
+    requestBound = false
   ): Promise<unknown> =>
     new Promise<unknown>((resolve, reject) => {
-      if (abortedCommands.has(commandRequestId)) {
+      if (abortedCommands.has(commandRequestId) || requestToolAborts.get(commandRequestId)?.signal.aborted) {
         reject(new PluginWorkerCapabilityError({ code: PluginWorkerErrorCodes.Terminated, message: "Command was aborted." }));
         return;
       }
       const requestId = nextCapabilityId++;
       pendingCapabilities.set(requestId, { commandRequestId, resolve, reject });
-      post({ kind: "capabilityRequest", requestId, commandRequestId, namespace, method, args });
+      if (requestBound) pendingRequestCapabilities.add(requestId);
+      try {
+        post({ kind: "capabilityRequest", requestId, commandRequestId, namespace, method, args });
+      } catch (error) {
+        pendingCapabilities.delete(requestId);
+        pendingRequestCapabilities.delete(requestId);
+        reject(error);
+      }
     });
 
-  const buildContext = (commandRequestId: number, input?: PluginCommandInput): PluginCommandContext => {
+  const finishRequestCapabilities = (commandRequestId: number) => {
+    for (const requestId of pendingRequestCapabilities) {
+      const pending = pendingCapabilities.get(requestId);
+      if (pending?.commandRequestId !== commandRequestId) continue;
+      pendingCapabilities.delete(requestId);
+      pendingRequestCapabilities.delete(requestId);
+      pending.reject(new PluginWorkerCapabilityError({ code: PluginWorkerErrorCodes.Terminated, message: "Invocation ended." }));
+    }
+  };
+
+  const buildContext = (commandRequestId: number, isActive: () => boolean, input?: PluginCommandInput, readOnly = false): PluginCommandContext => {
+    const has = (permission: PluginPermission) => permissions.has(permission) &&
+      !(readOnly && (permission === "document.write" || permission === "document.proposePatch"));
+    const requirePermission = (permission: PluginPermission): void => {
+      if (!has(permission)) {
+        throw new PluginWorkerCapabilityError({
+          code: "PLUGIN_PERMISSION_DENIED",
+          message: `Plugin "${registration.manifest.id}" requires permission "${permission}".`
+        });
+      }
+    };
     // `method` is typed against PLUGIN_WORKER_CAPABILITY_METHODS rather than being a bare `string`, so
     // the stub and the host bridge's allow-list are one list instead of two. This is the fix for the
     // real defect: `nameToStructure` and `structureFromSmiles` were added here, and to the in-process
@@ -168,9 +203,42 @@ export function runPluginWorker(
       namespace: N,
       method: CapabilityMethodOf<N>,
       args: readonly unknown[]
-    ): Promise<unknown> => callCapability(commandRequestId, namespace, method, args);
+    ): Promise<unknown> => {
+      const pinned = requestToolAborts.has(commandRequestId) && isPinnedRequestToolCapability(namespace, method);
+      if (pinned && pendingRequestCapabilities.size >= PluginRequestLimits.pendingCapabilities) {
+        return Promise.reject(new PluginWorkerCapabilityError({
+          code: "limit", message: "Too many pending request capabilities."
+        }));
+      }
+      return callCapability(commandRequestId, namespace, method, args, pinned);
+    };
+
+    const requestCall = async (namespace: PluginWorkerCapabilityNamespace, method: string, raw: unknown) => {
+      if (!isActive() || abortedCommands.has(commandRequestId)) return pluginRequestFailure("cancelled", "The invocation ended.");
+      const capability = getPluginRequestCapability(namespace, method)!;
+      if (pendingRequestCapabilities.size >= PluginRequestLimits.pendingCapabilities) {
+        return pluginRequestFailure("limit", "Too many pending request capabilities.");
+      }
+      const label = `${namespace}.${method}`;
+      const parsed = capability.request.safeParse(raw);
+      if (!parsed.success) return pluginRequestFailure(requestValidationCode(parsed.error), `Invalid ${label} arguments.`);
+      if (!pluginRequestPermissions(namespace, method, parsed.data).every(has)) {
+        return pluginRequestFailure("permission", `Permission denied for ${label}.`);
+      }
+      try {
+        const value = await callCapability(commandRequestId, namespace, method, [parsed.data], true);
+        const response = capability.result.safeParse(value);
+        return response.success ? response.data :
+          pluginRequestFailure(requestValidationCode(response.error), `Invalid ${label} result.`);
+      } catch (error) {
+        return error instanceof PluginWorkerCapabilityError && error.code === PluginWorkerErrorCodes.Terminated
+          ? pluginRequestFailure("cancelled", "The invocation was cancelled.")
+          : pluginRequestFailure("failed", `${label} could not be completed.`);
+      }
+    };
 
     const documents: PluginDocumentAPI = {
+      ...(requestTools ? bindPluginRequestCapabilities("documents", has, (method, value) => requestCall("documents", method, value)) : {}),
       getActiveDocument: () => call("documents", "getActiveDocument", []) as ReturnType<PluginDocumentAPI["getActiveDocument"]>,
       proposePatch: (proposal) => call("documents", "proposePatch", [proposal]) as ReturnType<PluginDocumentAPI["proposePatch"]>,
       ...(has("document.write")
@@ -284,6 +352,7 @@ export function runPluginWorker(
     // `available: false` rather than the plugin having to guess from the capability's presence.
     const chemistry: PluginChemistryAPI | undefined = has("chemistry.compute")
       ? {
+          ...(requestTools ? bindPluginRequestCapabilities("chemistry", has, (method, value) => requestCall("chemistry", method, value)) : {}),
           properties: request => call("chemistry", "properties", [request]) as ReturnType<NonNullable<PluginChemistryAPI["properties"]>>,
           embed3d: request => call("chemistry", "embed3d", [request]) as ReturnType<NonNullable<PluginChemistryAPI["embed3d"]>>,
           minimize3d: request => call("chemistry", "minimize3d", [request]) as ReturnType<NonNullable<PluginChemistryAPI["minimize3d"]>>,
@@ -358,6 +427,13 @@ export function runPluginWorker(
       recognition,
       analysis,
       chemistry,
+      ...(requestTools && has("document.read") ? {
+        depiction: bindPluginRequestCapabilities("depiction", has, (method, value) => requestCall("depiction", method, value)) as PluginCommandContext["depiction"],
+        ...(has("selection.read") ? {
+          requests: bindPluginRequestCapabilities("requests", has, (method, value) => requestCall("requests", method, value)) as PluginCommandContext["requests"],
+          toolSessions: bindPluginRequestCapabilities("toolSessions", has, (method, value) => requestCall("toolSessions", method, value)) as PluginCommandContext["toolSessions"]
+        } : {})
+      } : {}),
       hasPermission: has,
       requirePermission
     };
@@ -366,6 +442,7 @@ export function runPluginWorker(
   const toolAborts = new Map<number, AbortController>();
   const invoke = (commandRequestId: number, commandId: string, input?: PluginCommandInput, tool?: PluginAssistantToolCall): void => {
     const controller = new AbortController();
+    let active = true;
     if (tool) toolAborts.set(commandRequestId, controller);
     const handler = tool ? registration.onAssistantToolCall &&
       ((context: PluginCommandContext) => {
@@ -387,9 +464,11 @@ export function runPluginWorker(
     }
     // Defer to a microtask so a synchronous throw is captured as a rejection, mirroring the host.
     Promise.resolve()
-      .then(() => handler(buildContext(commandRequestId, input)))
+      .then(() => handler(buildContext(commandRequestId, () => active && !controller.signal.aborted, input)))
       .then(
         (value) => {
+          active = false;
+          finishRequestCapabilities(commandRequestId);
           toolAborts.delete(commandRequestId);
           if (abortedCommands.has(commandRequestId)) {
             abortedCommands.delete(commandRequestId);
@@ -421,6 +500,8 @@ export function runPluginWorker(
           }
         },
         (error: unknown) => {
+          active = false;
+          finishRequestCapabilities(commandRequestId);
           toolAborts.delete(commandRequestId);
           if (abortedCommands.has(commandRequestId)) {
             abortedCommands.delete(commandRequestId);
@@ -431,8 +512,79 @@ export function runPluginWorker(
       );
   };
 
+  const invokeTool = async ({ commandRequestId, call, readOnly }: Extract<HostToWorkerMessage, { kind: "invokeTool" }>) => {
+    const settle = (result: PluginToolCallResult) =>
+      post({ kind: "toolCallSettled", commandRequestId, result });
+    const handler = registration.onToolCall;
+    if (!requestTools || !handler) {
+      settle(pluginRequestFailure("missingHandler", "This worker registered no request tool handler."));
+      return;
+    }
+    if (requestToolAborts.has(commandRequestId)) return;
+    if (requestToolAborts.size >= PluginRequestLimits.pendingToolCalls) {
+      settle(pluginRequestFailure("limit", "Too many pending tool calls."));
+      return;
+    }
+    const parsed = PluginToolCallSchema.safeParse(call);
+    if (!parsed.success) {
+      settle(pluginRequestFailure(requestValidationCode(parsed.error), "Invalid tool call."));
+      return;
+    }
+    const controller = new AbortController();
+    let active = true;
+    requestToolAborts.set(commandRequestId, controller);
+    try {
+      const value = await handler(buildContext(commandRequestId, () => active && !controller.signal.aborted, undefined, readOnly), parsed.data, controller.signal);
+      if (controller.signal.aborted) {
+        settle(pluginRequestFailure("cancelled", "The tool call was cancelled."));
+      } else {
+        const response = PluginToolCallResultSchema.safeParse(value);
+        settle(response.success ? response.data :
+          pluginRequestFailure(requestValidationCode(response.error), "Invalid tool call result."));
+      }
+    } catch {
+      settle(controller.signal.aborted ? pluginRequestFailure("cancelled", "The tool call was cancelled.") :
+        pluginRequestFailure("failed", "The tool handler failed."));
+    } finally {
+      active = false;
+      finishRequestCapabilities(commandRequestId);
+      requestToolAborts.delete(commandRequestId);
+      abortedCommands.delete(commandRequestId);
+    }
+  };
+
+  const notifyDocumentChanged = async ({ notificationId, event }: Extract<HostToWorkerMessage, { kind: "activeDocumentChanged" }>) => {
+    const settle = (result: PluginRequestResult<null>) => post({ kind: "activeDocumentChangedSettled", notificationId, result });
+    const handler = registration.onActiveDocumentChanged;
+    if (!requestTools || !handler) {
+      settle(pluginRequestFailure("missingHandler", "This worker registered no document-change handler."));
+      return;
+    }
+    if (!has("document.read")) {
+      settle(pluginRequestFailure("permission", "Document changes require document.read."));
+      return;
+    }
+    const parsed = PluginActiveDocumentChangedSchema.safeParse(event);
+    if (!parsed.success) {
+      settle(pluginRequestFailure(requestValidationCode(parsed.error), "Invalid document change."));
+      return;
+    }
+    try {
+      await handler(parsed.data);
+      settle({ ok: true, value: null });
+    } catch {
+      settle(pluginRequestFailure("failed", "The document-change handler failed."));
+    }
+  };
+
   const handle = (message: HostToWorkerMessage): void => {
     switch (message.kind) {
+      case "invokeTool":
+        void invokeTool(message);
+        return;
+      case "activeDocumentChanged":
+        void notifyDocumentChanged(message);
+        return;
       case "invokeAssistantTool":
         invoke(message.commandRequestId, message.name, undefined,
           { sessionId: message.sessionId, name: message.name, input: message.input });
@@ -446,6 +598,7 @@ export function runPluginWorker(
           return; // unknown / superseded / already-settled id
         }
         pendingCapabilities.delete(message.requestId);
+        pendingRequestCapabilities.delete(message.requestId);
         if (message.ok) {
           pending.resolve(message.value);
         } else {
@@ -457,6 +610,7 @@ export function runPluginWorker(
         registration.onPanelClosed?.(message.panelId);
         return;
       case "abort":
+        requestToolAborts.get(message.commandRequestId)?.abort();
         toolAborts.get(message.commandRequestId)?.abort();
         toolAborts.delete(message.commandRequestId);
         rememberAbortedCommand(message.commandRequestId);
@@ -467,6 +621,7 @@ export function runPluginWorker(
           }
           pending.reject(new PluginWorkerCapabilityError({ code: PluginWorkerErrorCodes.Terminated, message: "Command was aborted." }));
           pendingCapabilities.delete(requestId);
+          pendingRequestCapabilities.delete(requestId);
         }
         return;
     }
@@ -482,5 +637,10 @@ export function runPluginWorker(
 
   // Announce readiness last, so the listener is attached before the host can send an invocation.
   post({ kind: "ready", protocolVersion: PLUGIN_WORKER_PROTOCOL_VERSION, apiVersion: registration.manifest.apiVersion,
-    hasAssistantToolHandler: typeof registration.onAssistantToolCall === "function" });
+    hasAssistantToolHandler: typeof registration.onAssistantToolCall === "function",
+    ...(requestTools ? { features: {
+      requestCapabilities: true,
+      ...(typeof registration.onToolCall === "function" ? { toolCalls: true } : {}),
+      ...(has("document.read") && typeof registration.onActiveDocumentChanged === "function" ? { activeDocumentChanged: true } : {})
+    } } : {}) });
 }

@@ -10,6 +10,12 @@ export interface ArrangementOptions {
   /** Empty space between visible item bounds, in document CSS pixels. Explicit values are fixed.
    * Defaults to 48; Row/Column may reduce that to 12 when needed to fit pageBounds. */
   gap?: number;
+  /** Explicit top-left anchor keeps the supplied item order. */
+  anchor?: LayoutPoint;
+  /** Wrap rows or reduce grid columns to fit this width. A single wide item stays whole. */
+  wrapWidth?: number;
+  /** Vertical gap for wrapped rows and grid rows. Defaults to gap. */
+  rowGap?: number;
   /** Grid defaults to a roughly square number of columns. */
   columns?: number;
   /** Alignment of an incomplete final grid row. */
@@ -28,9 +34,14 @@ export function planObjectArrangement(
   layout: ArrangementLayout,
   options: ArrangementOptions = {}
 ): ArrangementPlan {
-  if (items.length < 2) return { ok: false, reason: "selection" };
+  if (items.length < (options.anchor ? 1 : 2)) return { ok: false, reason: "selection" };
   const gap = options.gap ?? 48;
-  if (!ArrangementLayouts.includes(layout) || !Number.isFinite(gap) || gap < 0 ||
+  const rowGap = options.rowGap ?? gap;
+  const wrapWidth = options.wrapWidth;
+  if (!Number.isFinite(rowGap) || rowGap < 0 ||
+      (wrapWidth !== undefined && (!Number.isFinite(wrapWidth) || wrapWidth <= 0)) ||
+      (options.anchor && (!Number.isFinite(options.anchor.x) || !Number.isFinite(options.anchor.y))) ||
+      !ArrangementLayouts.includes(layout) || !Number.isFinite(gap) || gap < 0 ||
       new Set(items.map((item) => item.id)).size !== items.length ||
       items.some((item) => !validBounds(item.bounds)) ||
       items.some(item => item.anchor && (!Number.isFinite(item.anchor.x) || !Number.isFinite(item.anchor.y))) ||
@@ -52,7 +63,7 @@ export function planObjectArrangement(
     const result = (Math.atan2(p.y - angleCenter.y, p.x - angleCenter.x) + Math.PI / 2 + Math.PI * 2) % (Math.PI * 2);
     return Math.PI * 2 - result < 1e-10 ? 0 : result;
   };
-  const ordered = [...items].sort((a, b) =>
+  const ordered = options.anchor ? [...items] : [...items].sort((a, b) =>
     layout === "circle" || layout === "oval" ? angle(a) - angle(b) :
     layout === "row" ? itemCenter(a).x - itemCenter(b).x :
     layout === "column" ? itemCenter(a).y - itemCenter(b).y :
@@ -93,7 +104,7 @@ export function planObjectArrangement(
     }));
   } else if (layout === "row" || layout === "column") {
     let linearGap = gap;
-    if (options.pageBounds && options.gap === undefined) {
+    if (ordered.length > 1 && options.pageBounds && options.gap === undefined) {
       const available = layout === "row" ? options.pageBounds.width : options.pageBounds.height;
       const occupied = ordered.reduce((sum, item) => sum + (layout === "row" ? item.bounds.width : item.bounds.height), 0);
       // Tighten only the default spacing. Preserve a visible clearance, and round down so
@@ -102,14 +113,27 @@ export function planObjectArrangement(
       linearGap = Math.min(gap, Math.max(12, fittingGap));
     }
     let cursor = 0;
-    targets = ordered.map((item) => {
+    let rowTop = 0;
+    let rowStart = 0;
+    targets = [];
+    const finishRow = () => {
+      const bounds = unionBounds(targets.slice(rowStart));
+      for (const target of targets.slice(rowStart)) target.y += rowTop - bounds.y;
+      rowTop += bounds.height + rowGap;
+      rowStart = targets.length;
+    };
+    for (const item of ordered) {
       const { width, height } = item.bounds;
-      const bounds = layout === "row"
+      if (layout === "row" && wrapWidth !== undefined && targets.length > rowStart && cursor + width > wrapWidth) {
+        finishRow();
+        cursor = 0;
+      }
+      targets.push(layout === "row"
         ? { x: cursor, y: item.bounds.y-itemCenter(item).y, width, height }
-        : { x: item.bounds.x-itemCenter(item).x, y: cursor, width, height };
+        : { x: item.bounds.x-itemCenter(item).x, y: cursor, width, height });
       cursor += (layout === "row" ? width : height) + linearGap;
-      return bounds;
-    });
+    }
+    if (layout === "row" && wrapWidth !== undefined) finishRow();
   } else {
     const columns = Math.min(ordered.length, options.columns ?? Math.ceil(Math.sqrt(ordered.length)));
     const rows = Math.ceil(ordered.length / columns);
@@ -123,11 +147,15 @@ export function planObjectArrangement(
       tops[row]=Math.max(tops[row],p.y-item.bounds.y);bottoms[row]=Math.max(bottoms[row],item.bounds.y+item.bounds.height-p.y);
       widths[col]=lefts[col]+rights[col];heights[row]=tops[row]+bottoms[row];
     });
-    const starts = (sizes: number[]) => {
+    if (wrapWidth !== undefined && columns > 1 &&
+        widths.reduce((sum, width) => sum + width, 0) + (columns - 1) * gap > wrapWidth) {
+      return planObjectArrangement(items, layout, { ...options, columns: columns - 1 });
+    }
+    const starts = (sizes: number[], spacing: number) => {
       let cursor = 0;
-      return sizes.map((size) => { const start = cursor; cursor += size + gap; return start; });
+      return sizes.map((size) => { const start = cursor; cursor += size + spacing; return start; });
     };
-    const xs = starts(widths), ys = starts(heights);
+    const xs = starts(widths, gap), ys = starts(heights, rowGap);
     targets = ordered.map((item, i) => {
       const col = i % columns, row = Math.floor(i / columns);
       return {
@@ -157,8 +185,8 @@ export function planObjectArrangement(
     return { ok: false, reason: "page" };
   }
   // Center the compounds' visible frame, keeping unequal-sized cycles stable on reapplication.
-  let x = center.x - itemBounds.width / 2 + localBounds.x - itemBounds.x;
-  let y = center.y - itemBounds.height / 2 + localBounds.y - itemBounds.y;
+  let x = options.anchor?.x ?? center.x - itemBounds.width / 2;
+  let y = options.anchor?.y ?? center.y - itemBounds.height / 2;
   if (page) {
     x = Math.max(page.x, Math.min(x, page.x + page.width - localBounds.width));
     y = Math.max(page.y, Math.min(y, page.y + page.height - localBounds.height));

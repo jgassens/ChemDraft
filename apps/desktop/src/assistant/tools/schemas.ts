@@ -2,6 +2,7 @@
 import { z } from "zod/v4";
 import { TABLE_LIMITS } from "@chemdraft/chem-core";
 import { TableSpecSchema } from "@chemdraft/document-workflow-core";
+import { MCP_PNG_MAX_DIMENSION } from "../mcpPng";
 
 // Zod 4 supplies the wire JSON schema. The shared builder's Zod 3 schema remains the
 // authority for cross-field validation (ragged rows, header totals, and matching spans).
@@ -61,7 +62,7 @@ export const toolSchemas = {
   get_structure: z.object({ objectId: id, format: z.enum(["smiles", "molfile"]) }).strict(),
   render: z.object({
     target: z.enum(["document", "selection", "objects"]), objectIds: z.array(id).min(1).max(50).optional(),
-    pageId: id.optional(), maxDimensionPx: z.number().int().min(256).max(2048).default(1568),
+    pageId: id.optional(), maxDimensionPx: z.number().int().min(256).max(MCP_PNG_MAX_DIMENSION).default(1568),
     background: z.union([color, z.literal("transparent")]).optional()
   }).strict(),
   name_to_structure: z.object({ name: text }).strict(),

@@ -1,7 +1,7 @@
 import type { ChemDraftDocument, DocumentObject, MoleculeObject } from "@chemdraft/chem-core";
 import { normalizeCommittedDocument } from "../documentWorkflow";
 import type { AssistantToolContext } from "./AssistantToolContext";
-import { assertCanonical, inspectMolecule } from "./writeBuilder";
+import { assertCanonical, inspectMolecule } from "../plugins/requestWrites/structureIdentity";
 
 const objectsById = (document: ChemDraftDocument) => new Map(document.pages.flatMap(page =>
   page.objects.map(object => [object.id, { pageId: page.id, object }] as const)));

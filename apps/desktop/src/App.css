@@ -107,6 +107,18 @@ body {
   overflow: hidden;
 }
 
+/* A palette, popover or tooltip page before React has mounted it: index.html sets the attribute
+   synchronously from ?window=, so the page paints its window's own token from its first frame
+   (an early or fallback reveal reads as an empty panel, not as --cd-bg-app). The app has only
+   these light tokens, whatever the system appearance; the document window is not matched. */
+html[data-cd-first-frame="panel"] {
+  background: var(--cd-bg-panel);
+}
+
+html[data-cd-first-frame="tooltip"] {
+  background: var(--cd-bg-control-opaque);
+}
+
 html.palette-window-html {
   min-width: 0;
   background: var(--cd-bg-panel);

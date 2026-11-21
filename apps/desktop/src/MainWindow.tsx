@@ -1,5 +1,8 @@
+import { basename } from "@tauri-apps/api/path";
 import { CanvasContextMenu, NATIVE_CANVAS_MENU_CLOSED_EVENT } from "./CanvasContextMenu";
 import { buildObjectCanvasMenu, pageCanvasMenu, SET_DEFAULT_ARROW_STYLE_COMMAND_ID } from "./canvasContextMenuModel";
+import { RequestWriteError } from "@chemdraft/plugin-host";
+import { createRequestHistory } from "./plugins/requestWrites/requestHistory";
 import { electronMarkInteractionFrames } from "./electronMarkInteraction";
 import { installPopoverEscapeRouting } from "./window-manager/popoverEscape";
 import { BracketLabelEditor, type BracketLabelEditorHandle } from "./BracketLabelEditor";
@@ -36,7 +39,7 @@ import { installNativeFlyoutKeyboard } from "./nativeFlyoutKeyboard";
 import { assertNoNewCleanupMoleculeOverlaps, cleanUpMoleculeSelections2d, cleanupSelectionAtomIds, nextObjectId, structureTemplateLayoutMessage, type PagePoint } from "@chemdraft/document-workflow-core";
 import { insertStructureTemplate } from "./structureTemplateInsertion";
 import { pageOcclusionRects, readCanvasOcclusion } from "./window-manager/canvasOcclusion";
-import { commitWithPageFit, PageEnlargementConsent, planDocumentPageFit } from "./pageEnlargement";
+import { commitWithPageFit, PageEnlargementConsent, planDocumentPageFit, planRequestPageFit } from "./pageEnlargement";
 import { abbreviationBondedSpellings, abbreviationSpellings, structureTemplates } from "@chemdraft/template-library";
 import { templateInsertActions, templateInsertCommandId } from "./templateCommands";
 import { isEditableTarget } from "./editableTarget";
@@ -1837,7 +1840,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.19.16.52-codex";
+const CURRENT_BUILD_STAMP = "11.21.13.55-opus";
 const TABLE_DRAFT_RECOVERY_WARNING = "session.tableDraftDropped";
 
 function clearTableDraftRecoveryWarnings(report: OpenWarningsReport | undefined): OpenWarningsReport | undefined {
@@ -2969,6 +2972,20 @@ export function MainWindow({
   // never on an ordinary edit, so a plugin write started before a replace and landing after it is
   // refused rather than silently inserted into the new document.
   const documentIdentityRef = useRef(0);
+  const requestDocumentKeysRef = useRef(new Map<string, string>());
+  const requestDocumentKey = useCallback((tabId: string) => {
+    let key = requestDocumentKeysRef.current.get(tabId);
+    if (!key) {
+      key = crypto.randomUUID();
+      requestDocumentKeysRef.current.set(tabId, key);
+    }
+    return key;
+  }, []);
+  const invalidateRequestDocument = useCallback((tabId: string) => {
+    const key = requestDocumentKeysRef.current.get(tabId);
+    requestDocumentKeysRef.current.delete(tabId);
+    if (key) pluginRuntimeRef.current?.host.closeRequestsForDocument(key);
+  }, []);
   // Counts undo and redo steps. A label-edit session closed by one must not write into the history
   // state it landed on (see the atom-label close effect).
   const historyNavigationCountRef = useRef(0);
@@ -3763,6 +3780,8 @@ export function MainWindow({
     // The document is being REPLACED, not edited — bump before installing the new history so a plugin
     // write already in flight against the old document key is refused rather than landing here.
     documentIdentityRef.current += 1;
+    const tabId = activeDocumentTabIdRef.current;
+    invalidateRequestDocument(tabId);
     installDocumentHistory(createDocumentHistory(normalizeCommittedDocument(
       admitParsedDocument(nextDocument), { preserveElectronMarks: true }
     )));
@@ -3774,7 +3793,8 @@ export function MainWindow({
     setOpenWarningsReport(undefined);
     setSaveWarningsReport(undefined);
     setOpenWarningsListOpen(false);
-  }, [installDocumentHistory]);
+    pluginRuntimeRef.current?.notifyActiveDocumentChanged(requestDocumentKey(tabId));
+  }, [installDocumentHistory, invalidateRequestDocument, requestDocumentKey]);
   const replacePresentDocument = useCallback((
     nextDocumentOrUpdate: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument),
     palettePreview = false
@@ -3938,12 +3958,15 @@ export function MainWindow({
       return tabId === activeDocumentTabIdRef.current
         ? documentHistoryRef.current : documentTabSnapshotsRef.current.get(tabId)?.history;
     };
-    const install = (tabId: string, update: (history: DocumentHistory) => DocumentHistory) => {
+    const install = (tabId: string, update: (history: DocumentHistory) => DocumentHistory, requestWrite = false) => {
       if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the assistant edit was refused.");
       if (!readHistory(tabId)) throw new Error("The assistant's document tab is closed; write refused.");
       if (tabId === activeDocumentTabIdRef.current) {
         // Record the user's session before entering the assistant-owned history write.
-        const resumeTextEdit = checkpointTextEditBeforeCommitRef.current();
+        if (requestWrite && textEditHistorySnapshotRef.current) {
+          throw new RequestWriteError("interrupted", "Finish the current text edit before committing the request.");
+        }
+        const resumeTextEdit = requestWrite ? undefined : checkpointTextEditBeforeCommitRef.current();
         let changed = false;
         assistantHistoryWritingRef.current = true;
         let templateMessages: string[] = [];
@@ -4023,6 +4046,13 @@ export function MainWindow({
       amend: (tabId, after, label, assertFinalDocument) => {
         const present = labelled(after, label, assertFinalDocument);
         install(tabId, history => ({ ...history, present }));
+      },
+      commitRequest: (tabId, after, label, amend, guard) => {
+        install(tabId, history => {
+          const present = labelled(after, label, guard);
+          return amend ? { ...history, present } :
+            { past: boundedHistoryPast([...history.past, history.present], present), present, future: [] };
+        }, true);
       },
       select: (tabId, objectIds, label) => {
         install(tabId, (history) => {
@@ -10173,7 +10203,8 @@ export function MainWindow({
     setObjectContextMenu(undefined);
     setArrowEditTargetId(undefined);
     setStatus(tableDraftStatusRef.current?.announced ?? snapshot.status);
-  }, [cancelDocumentTabSessions, clearDocumentInteractionState, installDocumentHistory]);
+    pluginRuntimeRef.current?.notifyActiveDocumentChanged(requestDocumentKey(id));
+  }, [cancelDocumentTabSessions, clearDocumentInteractionState, installDocumentHistory, requestDocumentKey]);
 
   const activateDocumentTab = useCallback((id: string, onRefused?: (message: string) => void) => {
     if (id === activeDocumentTabIdRef.current || closeTabPrompt) return;
@@ -10210,6 +10241,7 @@ export function MainWindow({
     let tabs = documentTabsRef.current;
     const index = tabs.findIndex((tab) => tab.id === id);
     if (index < 0) return;
+    invalidateRequestDocument(id);
     pluginRuntimeRef.current?.closeProposalDocumentTab(id, tabs[index]!.title);
     void dialogCoordinatorRef.current?.closeTab(id);
     setBrowserTemplates(current => current?.tabId === id ? undefined : current);
@@ -10233,7 +10265,7 @@ export function MainWindow({
     documentTabsRef.current = remaining;
     setDocumentTabs(remaining);
     setCloseTabPrompt(undefined);
-  }, [installDocumentTab, newDocumentTab, snapshotDocumentTab]);
+  }, [installDocumentTab, invalidateRequestDocument, newDocumentTab, snapshotDocumentTab]);
 
   const requestCloseDocumentTab = useCallback((id = activeDocumentTabIdRef.current) => {
     settlePalettePreviewRef.current("close");
@@ -10709,6 +10741,9 @@ export function MainWindow({
       previewArrangementSpacing: (tabId, percent) => previewSpacingRef.current(tabId, percent),
       applyArrangementSpacing: (tabId, percent) => applySpacingRef.current(tabId, percent),
       onSpacingSettled: tabId => { nativeSpacingSourcesRef.current.delete(tabId); }, onError: setStatus,
+      onPageEnlargementClosed: tabId => {
+        if (activeDocumentTabIdRef.current === tabId) canvasRegionRef.current?.focus({ preventScroll: true });
+      },
       export: (tabId, options, live, progress) => exportToTabRef.current(tabId, options, live, progress),
       previewExport: (tabId, options, live) => previewExportRef.current(tabId, options, live),
       chooseExportDestination: (tabId, options, live) => chooseExportDestinationRef.current(tabId, options, live),
@@ -10874,11 +10909,6 @@ export function MainWindow({
             }
           }
           if (!active) return;
-          const pristine = documentTabsRef.current.length === 1
-            && !nonPristineTabsRef.current.has(activeDocumentTabIdRef.current)
-            && !fileStateRef.current.path
-            && !fileStateRef.current.dirty
-            && documentIsBlank(documentRef.current);
           unrestoredSessionTabsRef.current = skipped;
           setUnrestoredSessionTabCount(skipped.length);
           const restoreNotice = unrestoredTabsNotice(skipped.length);
@@ -10891,12 +10921,22 @@ export function MainWindow({
             setStatus(`Could not restore the last session${restoreNotice}`);
             return;
           }
-          const restoredTabs = restored.map(({ id, session }) => ({ id, title: session.displayName }));
+          const restoredTabs = await Promise.all(restored.map(async ({ id, session }) => ({
+            id,
+            title: session.path ? await resolveNativePathBasename(session.path) : session.displayName
+          })));
+          if (!active) return;
+          const pristine = documentTabsRef.current.length === 1
+            && !nonPristineTabsRef.current.has(activeDocumentTabIdRef.current)
+            && !fileStateRef.current.path
+            && !fileStateRef.current.dirty
+            && documentIsBlank(documentRef.current);
           let tabs: Array<{ id: string; title: string }> = restoredTabs;
           if (!pristine) {
             snapshotDocumentTab(false);
             tabs = [...documentTabsRef.current, ...restoredTabs];
           } else {
+            invalidateRequestDocument(activeDocumentTabIdRef.current);
             documentTabSnapshotsRef.current.clear();
             nonPristineTabsRef.current.clear();
           }
@@ -10953,7 +10993,7 @@ export function MainWindow({
     return () => {
       active = false;
     };
-  }, [installDocumentTab, notifyInstalledDocumentCompatibility, officeObjectId, snapshotDocumentTab, startWithFreshDocument]);
+  }, [installDocumentTab, invalidateRequestDocument, notifyInstalledDocumentCompatibility, officeObjectId, snapshotDocumentTab, startWithFreshDocument]);
 
   // Write the working document + file association to the session file now. Reads refs only, so it
   // is stable and safe to call from the debounce below and from the quit flush. Gated on hydration
@@ -10998,7 +11038,7 @@ export function MainWindow({
         const draft = tab.id === committedDraft?.tabId ? committedDraft : undefined;
         const tabDocument = draft?.document ?? (tab.id === activeDocumentTabIdRef.current ? flushed : snapshot.history.present);
         const file = draft ? { ...snapshot.file, dirty: draft.dirty } : snapshot.file;
-        const displayName = file.path ? nativePathBasename(file.path) : tab.title;
+        const displayName = tab.title;
         const warning = draft?.warning;
         const openWarnings = warning ? {
           displayName, sourceLabel: snapshot.warnings?.sourceLabel ?? "a recovered session",
@@ -11442,7 +11482,7 @@ export function MainWindow({
     const savedDocument = active ? documentForFlush() : savingDocument;
     // The baseline and payload describe the same single draft snapshot.
     let payload = createDocumentFileSave(savedDocument);
-    const finishSave = (path?: string) => {
+    const finishSave = (destination?: { path: string; displayName: string }) => {
       savedDocumentsRef.current.set(savingTabId, savedDocument);
       documentSaveRevisionsRef.current.set(savingTabId, (documentSaveRevisionsRef.current.get(savingTabId) ?? 0) + 1);
       nonPristineTabsRef.current.add(savingTabId);
@@ -11450,8 +11490,8 @@ export function MainWindow({
         documentTabSnapshotsRef.current.get(savingTabId)?.history.present;
       // The editor may have committed/cancelled (or its tab switched) while the write awaited I/O.
       const dirty = !currentDocument || !assistantDocumentContentUnchanged(savedDocument, currentDocument);
-      const nextFileState = { path: path ?? savingFileState.path, dirty };
-      const displayName = path ? nativePathBasename(path) : payload.filename;
+      const nextFileState = { path: destination?.path ?? savingFileState.path, dirty };
+      const displayName = destination?.displayName ?? payload.filename;
       const warningsReport: OpenWarningsReport | undefined = payload.warnings.length > 0 ? {
         operation: "save", displayName, sourceLabel: payload.kind === "binary" ? "ChemDraft CDX envelope" : "ChemDraft CDXML envelope", warnings: payload.warnings
       } : undefined;
@@ -11476,7 +11516,7 @@ export function MainWindow({
         });
       }
       const tabs = documentTabsRef.current.map((tab) => tab.id === savingTabId
-        ? { ...tab, title: path ? nativePathBasename(path) : tab.title } : tab);
+        ? { ...tab, title: destination?.displayName ?? tab.title } : tab);
       documentTabsRef.current = tabs;
       setDocumentTabs(tabs);
     };
@@ -11499,8 +11539,11 @@ export function MainWindow({
       }
       const finalPath = ensureChemDraftFileExtension(path);
       payload = createDocumentFileSave(savedDocument, finalPath);
-      await writeNativeExportResult(finalPath, payload);
-      finishSave(finalPath);
+      const [displayName] = await Promise.all([
+        resolveNativePathBasename(finalPath),
+        writeNativeExportResult(finalPath, payload)
+      ]);
+      finishSave({ path: finalPath, displayName });
       return true;
     } catch (error) {
       const message = `Save failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -13110,6 +13153,44 @@ export function MainWindow({
     },
     getActiveDocument: () => documentRef.current,
     getActiveDocumentKey: () => String(documentIdentityRef.current),
+    captureRequestDocument: () => {
+      const tabId = activeDocumentTabIdRef.current;
+      const key = requestDocumentKey(tabId);
+      return {
+        key,
+        read: () => requestDocumentKeysRef.current.get(tabId) === key ? assistantHistoryPort.read(tabId) : undefined,
+        viewport: () => assistantHistoryPort.getViewportRect?.(tabId)
+      };
+    },
+    requestPageSpace: {
+      plan: planRequestPageFit,
+      confirm: async (signal, documentKey) => {
+        if (!isDesktopRuntime()) return new PageEnlargementConsent(shortcutPlatform).confirm(signal);
+        const coordinator = dialogCoordinatorRef.current;
+        // Own the question by the tab the request started in (resolved from the request document's
+        // key), not whichever tab is active now. A key with no tab means that document was closed.
+        const requestTabId = [...requestDocumentKeysRef.current].find(([, key]) => key === documentKey)?.[0];
+        if (coordinator && !requestTabId) return "unanswered";
+        if (coordinator) return coordinator.confirmPageEnlargement(requestTabId!, signal);
+        setStatus("Page enlargement could not open: the dialog host is unavailable.");
+        return signal?.aborted ? "keep" : "unanswered";
+      }
+    },
+    openRequestHistory: (document, label) => {
+      const tabId = [...requestDocumentKeysRef.current].find(([, key]) => key === document.key)?.[0];
+      if (!tabId) throw new RequestWriteError("stale", "The request document was closed or replaced.");
+      const release = assistantTransactions.reserveRequestHistory(tabId);
+      const history = createRequestHistory(document, {
+        run: apply => assistantHistoryPort.runWrite!(apply),
+        revision: () => {
+          const present = document.read();
+          return present && (assistantRecordedAfterRef.current.get(present) ?? present);
+        },
+        onEdit: listener => assistantHistoryPort.onUserEdit(id => { if (id === tabId) listener(); }),
+        commit: (after, label, amend, guard) => assistantHistoryPort.commitRequest!(tabId, after, label, amend, guard)
+      }, label);
+      return { ...history, close: () => { history.close?.(); release(); } };
+    },
     getActiveDocumentTab: () => ({ id: activeDocumentTabIdRef.current }),
     getDocumentForTab: (tabId) => assistantHistoryPort.read(tabId),
     getDialogCoordinator: () => dialogCoordinatorRef.current,
@@ -13166,13 +13247,14 @@ export function MainWindow({
         const prepared = normalizeCommittedDocument(placed);
         let committed = prepared;
         const pending = commitWithPageFit(before, prepared, (document, fitBaseline) => {
-          // User-approved page fitting is a host edit. Replay its exact transform on the baseline
-          // so it grants no scope for a plugin's own movement or normalization side effects.
+          // Compare the fitted commit against the original pages plus their consented deltas.
           const baseline = fitBaseline(before);
           const authoredPatch = rebasePluginPatch(before, patch).patch;
           let cleanup: ReturnType<typeof finishScopedRepeatUnitCleanup>;
           const assertFinalDocument = (document: ChemDraftDocument) => {
             assertPluginDocumentWriteScope(baseline, document, patch, writeScopeObjectIds);
+            signal?.throwIfAborted();
+            pluginRuntimeRef.current!.host.requirePermission(plugin.id, "document.write");
             cleanup = finishScopedRepeatUnitCleanup(repeatUnitCleanup, before, document, authoredPatch);
             committed = cleanup?.document ?? document;
             return committed;
@@ -13216,6 +13298,18 @@ export function MainWindow({
   const { isPluginCommand: pluginCommandExists, invokePluginCommand } = pluginRuntime;
   canvasOverlaysPresentRef.current = pluginRuntime.canvasOverlays.length > 0;
   pluginRuntimeRef.current = pluginRuntime.runtime;
+  useEffect(() => {
+    const runtime = pluginRuntime.runtime;
+    runtime.notifyActiveDocumentChanged(requestDocumentKey(activeDocumentTabIdRef.current));
+    return () => {
+      // StrictMode reattaches effects without changing the document instance.
+      queueMicrotask(() => {
+        if (mountedRef.current) return;
+        for (const key of requestDocumentKeysRef.current.values()) runtime.host.closeRequestsForDocument(key);
+        runtime.notifyActiveDocumentChanged(null);
+      });
+    };
+  }, [pluginRuntime.runtime, requestDocumentKey]);
 
   const availablePluginUpdateCount = pluginRuntime.cachedPluginUpdateResults.filter(result => result.status === "available").length;
   const bracketMenuItems = useMemo(() => bracketActions.filter(action => action.id === "bracket.repeatUnit.toggle").map(action => ({
@@ -15937,16 +16031,21 @@ export function MainWindow({
     };
   }, [openWarningsListShown]);
 
-  // Label the web document by its worktree so browser tabs and accessibility state distinguish
-  // nearby checkouts. On macOS, index.html's initial title can overwrite the Rust setup title without
-  // following this later React update, so the Tauri page-load hook separately reasserts the same
-  // baked label on the native NSWindow title bar. See AGENTS.md.
+  const activeDocumentName = documentTabs.find((tab) => tab.id === activeDocumentTabId)?.title ?? document.title;
+  const nativeTitleWriteRef = useRef(Promise.resolve());
   useEffect(() => {
     if (officeObjectId) return;
-    const tab = documentTabs.find((candidate) => candidate.id === activeDocumentTabId);
-    const name = fileState.path ? nativePathBasename(fileState.path) : tab?.title ?? document.title;
-    window.document.title = `${name}${fileState.dirty ? " •" : ""} — ChemDraft${__WORKTREE_LABEL__ ? ` — ${__WORKTREE_LABEL__}` : ""}`;
-  }, [activeDocumentTabId, document.title, documentTabs, fileState, officeObjectId]);
+    const title = `${activeDocumentName}${fileState.dirty ? " •" : ""} — ChemDraft${__WORKTREE_LABEL__ ? ` — ${__WORKTREE_LABEL__}` : ""}`;
+    window.document.title = title;
+    if (!isDesktopRuntime()) return;
+    let current = true;
+    nativeTitleWriteRef.current = nativeTitleWriteRef.current.then(async () => {
+      const { invoke } = await import("@tauri-apps/api/core");
+      // With no label, Tauri sets the title of the invoking document window.
+      if (current) await invoke("plugin:window|set_title", { value: title });
+    }).catch((error: unknown) => console.warn("Could not update the document window title", error));
+    return () => { current = false; };
+  }, [activeDocumentName, fileState.dirty, officeObjectId]);
 
   const handleOpenFile = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -23080,7 +23179,7 @@ export function MainWindow({
             {documentTabs.map((tab) => {
               const active = tab.id === activeDocumentTabId;
               const file = active ? fileState : documentTabSnapshotsRef.current.get(tab.id)?.file;
-              const title = file?.path ? nativePathBasename(file.path) : tab.title;
+              const title = tab.title;
               return (
                 <div className="document-tab" key={tab.id} data-active={active}>
                   <button type="button" role="tab" aria-selected={active}
@@ -31449,7 +31548,7 @@ const GraphicGlyph = memo(function GraphicGlyph({ object, definitionPrefix = "" 
               />
               {sketchPaths}
             </>
-          ) : object.graphicKind === "path" && pathD ? (
+          ) : pathD ? (
           <>
             <path
               className="graphic-glyph-hit-target"
@@ -34304,6 +34403,10 @@ export function documentTabPathKey(path: string, platform = detectDesktopShortcu
 
 export function nativePathBasename(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+}
+
+async function resolveNativePathBasename(path: string): Promise<string> {
+  return await basename(path).catch(() => undefined) ?? nativePathBasename(path);
 }
 
 export function nativePathDirname(path: string): string | undefined {

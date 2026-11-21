@@ -49,6 +49,10 @@ jobs:
       # tsc nor vitest sees, and needs no macOS runner. The Rust job builds this again because
       # tauri_build validates that `apps/desktop/dist` exists.
       - run: pnpm --filter @chemdraft/desktop build:web
+        env:
+          # vite build peaked at about 4.8 GB RSS (Node 24, macOS x86_64) on 2026-11-21, close to the old
+          # 3 GiB heap cap that OOMed twice in one day. 6 GiB leaves headroom on this 16 GB runner.
+          NODE_OPTIONS: --max-old-space-size=6144
 
   rust:
     name: Rust fmt, clippy, tests
@@ -72,10 +76,10 @@ jobs:
       # is gitignored, so cargo cannot even compile without this.
       - run: pnpm --filter @chemdraft/desktop build:web
         env:
-          # The macOS runner's default V8 heap (~2 GiB) is too small for this build since PR #219
-          # added the plugin 3D chemistry worker. Measured locally: main ~2.42 GB peak RSS, #219
-          # ~2.6 GB; a 2048 MiB heap OOMs. Allow 3 GiB on the 7 GB macOS runner, this step only.
-          NODE_OPTIONS: --max-old-space-size=3072
+          # The macOS runner's default V8 heap (~2 GiB) is too small for this build, and 3 GiB OOMed
+          # on 2026-11-21 (peak RSS is now about 4.8 GB, see the web job). Allow 5 GiB on the 7 GB
+          # arm64 runner (6 GiB is too close to its RAM), this step only.
+          NODE_OPTIONS: --max-old-space-size=5120
 
       # Downloads the pinned, SHA-256-verified Sparkle release. build.rs skips staging when the
       # framework is absent, which leaves the test executables unable to link against it.
@@ -129,6 +133,8 @@ jobs:
 
       # Also required by tauri_build (see the rust job). No Sparkle step: it is macOS-only.
       - run: pnpm --filter @chemdraft/desktop build:web
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144  # 16 GB runner
 
       - run: rustup show
 
@@ -172,7 +178,7 @@ jobs:
       # Also required by tauri_build (see the rust job).
       - run: pnpm --filter @chemdraft/desktop build:web
         env:
-          NODE_OPTIONS: --max-old-space-size=4096
+          NODE_OPTIONS: --max-old-space-size=6144  # 16 GB runner
 
       - run: rustup show
 

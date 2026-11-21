@@ -53,22 +53,82 @@ pub fn deadline_response(id: Value, method: &str) -> Value {
     }
 }
 
-pub fn deadline(method: &str, params: &Value) -> Duration {
-    Duration::from_secs(if method == "tools/list" {
-        10
-    } else {
-        match params.get("name").and_then(Value::as_str) {
-            Some("render") => 60,
-            Some("name_to_structure" | "structure_to_name") => 45,
-            // Allow preparation, the host's 300s human decision cap, and the write gate.
-            // Keep the client templates in external_tools/catalog.rs in step with this budget.
-            Some(
-                "insert_structures" | "insert_reaction" | "insert_text" | "insert_table"
-                | "edit_structure" | "delete_objects" | "style_objects" | "move_objects",
-            ) => 480,
-            _ => 120,
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DeadlineClass {
+    Naming,
+    Render,
+    ReadCompute,
+    RequestWrite,
+}
+
+impl DeadlineClass {
+    fn ceiling(self) -> Duration {
+        Duration::from_secs(match self {
+            Self::Naming => 45,
+            Self::Render => 60,
+            Self::ReadCompute => 120,
+            Self::RequestWrite => 480,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogEntry {
+    name: String,
+    deadline: DeadlineClass,
+}
+
+#[derive(Default, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionCatalog {
+    legacy: bool,
+    tools: Vec<CatalogEntry>,
+}
+
+impl SessionCatalog {
+    pub fn validate(&self) -> Result<(), String> {
+        let mut names = std::collections::HashSet::new();
+        if self.tools.len() > 32
+            || self.tools.iter().any(|entry| {
+                let name = entry.name.as_bytes();
+                name.len() > 48
+                    || !name.first().is_some_and(u8::is_ascii_lowercase)
+                    || !name
+                        .iter()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'_')
+                    || !names.insert(&entry.name)
+            })
+        {
+            return Err("Invalid MCP tool catalog".into());
         }
-    })
+        Ok(())
+    }
+
+    pub fn deadline(&self, method: &str, params: &Value) -> Option<Duration> {
+        if method == "tools/list" {
+            return Some(Duration::from_secs(10));
+        }
+        let name = params.get("name")?.as_str()?;
+        self.tools
+            .iter()
+            .find(|entry| entry.name == name)
+            .map(|entry| entry.deadline.ceiling())
+    }
+
+    pub fn unknown_tool(&self, id: Value, params: &Value) -> Value {
+        if self.legacy {
+            let Some(name) = params.get("name").and_then(Value::as_str) else {
+                return error(id, -32000, "An assistant tool name is required.");
+            };
+            return result(
+                id,
+                json!({"content":[{"type":"text","text":format!("Unknown assistant tool \"{name}\".")}],"isError":true}),
+            );
+        }
+        error(id, -32602, "Unknown session tool.")
+    }
 }
 
 pub fn initialize(params: &Value) -> Value {

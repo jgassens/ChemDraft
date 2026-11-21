@@ -1,6 +1,7 @@
 export { normalizeAtomIsotope } from "./isotopes";
 export { rGroupNumberFromLabel } from "./rGroups";
-export { bracketPairs, bracketPairUsage, sameBracketIdentity, retainBracketIdentity, withoutBracketPairMetadata,
+export { bracketPairSemantics, bracketPairUsage, bracketUsageSemantics, importedBracketUsage } from "./bracketSemantics";
+export { bracketPairs, sameBracketIdentity, retainBracketIdentity, withoutBracketPairMetadata,
   bracketChemistryWarnings, withBracketChemistryWarnings, moleculeBracketWarningMessages } from "./brackets";
 export { isRepeatUnitBoundaryBond, remapImportedRepeatUnitAfterMoleculeMerge, resolveRepeatUnitAtomMembership, type RepeatUnitAtomMembership, type RepeatUnitMembershipOptions } from "./repeatUnitMembership";
 export { rotatePointAboutCenter } from "./pointRotation";
@@ -17,6 +18,7 @@ export {
   ArrowObjectSchema,
   BracketObjectSchema,
   CdxmlBracketAtomSnapshotSchema,
+  checkChangedObjectReferences,
   ChemDraftDocumentSchema,
   ChemicalMetadataSchema,
   CompatibilityMetadataSchema,

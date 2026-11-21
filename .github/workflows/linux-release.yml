@@ -29,6 +29,7 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: read
 
 # Do not race two uploads to the same draft.
@@ -38,210 +39,10 @@ concurrency:
 
 jobs:
   build:
-    # No fork runs, PR events, fork checkouts, or credentials persisted in the checkout.
-    if: github.repository == 'jgassens/ChemDraft' && !github.event.repository.fork
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - runner: ubuntu-22.04
-            arch: amd64
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 120
-    env:
-      # apt must never stop at a prompt (needrestart, debconf) on a release runner.
-      DEBIAN_FRONTEND: noninteractive
-      NEEDRESTART_MODE: a
-    outputs:
-      commit: ${{ steps.source.outputs.commit }}
-      version: ${{ steps.bundle.outputs.version }}
-      deb: ${{ steps.bundle.outputs.deb-name }}
-      appimage: ${{ steps.bundle.outputs.appimage-name }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          ref: ${{ inputs.ref }}
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Validate release source
-        id: source
-        env:
-          BUILD_REF: ${{ inputs.ref }}
-          WORKFLOW_SHA: ${{ github.sha }}
-          RELEASE_TAG: ${{ inputs.upload_to_release }}
-        run: |
-          set -euo pipefail
-          sha=$(git rev-parse HEAD)
-          if ! [[ "$BUILD_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
-            tag=${BUILD_REF#refs/tags/}
-            git check-ref-format "refs/tags/$tag" || { echo '::error::ref must be a tag or full commit SHA.'; exit 1; }
-            tag_sha=$(git rev-parse --verify "refs/tags/${tag}^{commit}") || { echo '::error::ref must resolve to a repository tag.'; exit 1; }
-            [ "$tag_sha" = "$sha" ] || { echo '::error::ref must resolve to a repository tag.'; exit 1; }
-          fi
-          version=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
-          if [ -n "$RELEASE_TAG" ]; then
-            [ "$RELEASE_TAG" = "v$version" ] || { echo "::error::upload_to_release must be v$version (the app version)."; exit 1; }
-            [ "$sha" = "$WORKFLOW_SHA" ] || { echo '::error::Build ref must match the workflow commit. Dispatch with --ref <release-tag>.'; exit 1; }
-          fi
-          echo "commit=$sha" >> "$GITHUB_OUTPUT"
-          echo "Release source: $sha (version $version)"
-
-      # The Tauri Linux build set: WebKitGTK 4.1 for the webview, librsvg for icons, patchelf and
-      # file for linuxdeploy (AppImage), xdg-utils so the bundled app can open links and mail.
-      - name: Install Linux build dependencies
-        run: |
-          sudo apt-get update
-          sudo -E apt-get install -y --no-install-recommends \
-            build-essential pkg-config file patchelf squashfs-tools xdg-utils \
-            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
-            libayatana-appindicator3-dev libsoup-3.0-dev libssl-dev libxdo-dev
-
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      # rust-toolchain.toml is the single source of truth, as in the CI jobs.
-      - run: rustup show
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          workspaces: apps/desktop/src-tauri
-          shared-key: linux-release-${{ matrix.arch }}
-      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
-        with:
-          distribution: temurin
-          java-version: '21' # jlink --compress=zip-9 requires JDK 21+.
-      - name: Build host-native OPSIN runtime and smoke test benzene
-        run: node scripts/build-opsin-runtime.mjs
-
-      - name: Build stable .deb and AppImage
-        env:
-          CHEMDRAFT_STABLE_BUILD: '1'
-          # GitHub runners have no FUSE; linuxdeploy (itself an AppImage) must extract to run.
-          APPIMAGE_EXTRACT_AND_RUN: '1'
-          # linuxdeploy's bundled strip predates the .relr.dyn sections newer toolchains emit.
-          NO_STRIP: 'true'
-          # The Vite build of the whole editor needs more than Node's default heap.
-          NODE_OPTIONS: --max-old-space-size=4096
-        # linuxdeploy resolves the dependencies of every ELF file in the AppDir, the bundled OPSIN
-        # JRE included. Its libraries need libjvm.so from the JRE's lib/server, which they find at
-        # run time through their own RUNPATH but linuxdeploy does not search: show it the folder.
-        run: |
-          export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/apps/desktop/src-tauri/resources/opsin/jre/lib/server"
-          pnpm --filter @chemdraft/desktop build --bundles deb,appimage
-
-      - name: Verify stable bundle identity
-        id: bundle
-        env:
-          ARCH: ${{ matrix.arch }}
-        run: |
-          set -euo pipefail
-          # tauri-build copies resource targets beside the release executable, as on Windows.
-          node tools/release/verify-bundle-licenses.mjs apps/desktop/src-tauri/target/release || { echo '::error::Required bundled licences are missing from the release resource staging directory.'; exit 1; }
-          conf=apps/desktop/src-tauri/tauri.conf.json
-          version=$(node -p "require('./$conf').version")
-          identifier=$(node -p "require('./$conf').identifier")
-          product=$(node -p "require('./$conf').productName")
-          [ "$identifier" = org.chemdraft.desktop ] && [ "$product" = ChemDraft ] || { echo '::error::Bundle has a development identity.'; exit 1; }
-          # build.rs re-emits the worktree label into the native title; a release must have none.
-          output=$(ls -t apps/desktop/src-tauri/target/release/build/chemdraft-*/output | head -n1)
-          grep -qx 'cargo:rustc-env=CHEMDRAFT_WORKTREE_LABEL=' "$output" || { echo '::error::Native build has a worktree label.'; exit 1; }
-          bundle=apps/desktop/src-tauri/target/release/bundle
-          deb="$bundle/deb/ChemDraft_${version}_${ARCH}.deb"
-          appimage="$bundle/appimage/ChemDraft_${version}_${ARCH}.AppImage"
-          [ -f "$deb" ] || { echo "::error::Missing $deb"; exit 1; }
-          [ -f "$appimage" ] || { echo "::error::Missing $appimage"; exit 1; }
-          # The .deb must carry the 3D sidecar, the OPSIN runtime and the bundled licences, as the
-          # other platforms do.
-          # (The Linux sidecar is still the placeholder from binaries/README.md; the app reports 3D
-          # as unavailable until a real Linux build replaces it.)
-          contents=$(dpkg-deb -c "$deb" | awk '{print $NF}' | sed 's|^\./||')
-          licences=$(node --input-type=module -e "import { requiredLicenseFiles } from './tools/release/required-license-files.mjs'; for (const { target } of requiredLicenseFiles) console.log('usr/lib/ChemDraft/' + target);")
-          for path in usr/bin/chemdraft usr/bin/avogadro3d-sidecar usr/lib/ChemDraft/resources/opsin/jre/bin/java $licences; do
-            grep -qxF "$path" <<<"$contents" || { echo "::error::$deb lacks $path"; exit 1; }
-          done
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "deb=$deb" >> "$GITHUB_OUTPUT"
-          echo "appimage=$appimage" >> "$GITHUB_OUTPUT"
-          echo "deb-name=$(basename "$deb")" >> "$GITHUB_OUTPUT"
-          echo "appimage-name=$(basename "$appimage")" >> "$GITHUB_OUTPUT"
-
-      - name: Repack AppImage with host Wayland and compiler runtimes
-        env:
-          APPIMAGE: ${{ steps.bundle.outputs.appimage }}
-        run: |
-          set -euo pipefail
-          image="$GITHUB_WORKSPACE/$APPIMAGE"
-          work=$(mktemp -d)
-          trap 'rm -rf -- "$work"' EXIT
-          cd "$work"
-
-          # A type 2 AppImage is its ELF runtime followed by SquashFS. Keep the runtime Tauri
-          # supplied and replace the filesystem after linuxdeploy completes, without FUSE.
-          offset=$("$image" --appimage-offset)
-          [[ "$offset" =~ ^[1-9][0-9]*$ ]]
-          "$image" --appimage-extract > original-extraction.log
-          test -x squashfs-root/AppRun
-          echo 'Graphics and compiler libraries in the original AppImage:'
-          find squashfs-root \( -name 'libwayland-*' -o -name 'libEGL*.so*' -o -name 'libgbm.so*' \
-            -o -name 'libstdc++.so*' -o -name 'libgcc_s.so*' \) -print
-          find squashfs-root \( -name 'libwayland-*' -o -name 'libstdc++.so*' \
-            -o -name 'libgcc_s.so*' \) -delete
-          # The AppImage runtime reads only zlib or zstd.
-          mksquashfs squashfs-root app.squashfs -noappend -all-root -comp zstd -no-progress
-          head -c "$offset" "$image" > repacked.AppImage
-          cat app.squashfs >> repacked.AppImage
-          chmod +x repacked.AppImage
-
-          mkdir verify
-          cd verify
-          ../repacked.AppImage --appimage-extract > repacked-extraction.log
-          test -x squashfs-root/AppRun
-          echo 'Shared libraries under usr/lib in the repacked AppImage:'
-          find squashfs-root/usr/lib \( -type f -o -type l \) \( -name '*.so' -o -name '*.so.*' \) -print | LC_ALL=C sort
-          leftovers=$(find squashfs-root \( -name 'libwayland-*' -o -name 'libstdc++.so*' \
-            -o -name 'libgcc_s.so*' \) -print)
-          if [[ -n "$leftovers" ]]; then
-            printf '::error::AppImage still contains host libraries\n%s\n' "$leftovers"
-            exit 1
-          fi
-          graphics=$(find squashfs-root \( -name 'libEGL*' -o -name 'libGL.so*' -o -name 'libGLX*' \
-            -o -name 'libOpenGL.so*' -o -name 'libGLESv1_CM.so*' -o -name 'libGLESv2.so*' -o -name 'libGLU.so*' \
-            -o -name 'libGLdispatch*' -o -name 'libgbm*' -o -name 'libdrm*' -o -name 'libglapi*' \
-            -o \( -name dri \( -type d -o -type l \) \) -o -name '*_dri.so' -o -name 'libvulkan*' \) \
-            -print | LC_ALL=C sort)
-          if [[ -n "$graphics" ]]; then
-            printf '::error::AppImage bundles graphics libraries or drivers that must come from the host\n%s\n' "$graphics"
-            exit 1
-          fi
-          mv ../repacked.AppImage "$image"
-
-      - name: Record and stage the final packages
-        env:
-          DEB: ${{ steps.bundle.outputs.deb }}
-          APPIMAGE: ${{ steps.bundle.outputs.appimage }}
-        run: |
-          set -euo pipefail
-          node tools/release/record-build.mjs --artifact "$DEB" --target x86_64-unknown-linux-gnu
-          node tools/release/record-build.mjs --artifact "$APPIMAGE" --target x86_64-unknown-linux-gnu
-          mkdir -p release-assets
-          cp "$DEB" "$DEB.build.json" "$APPIMAGE" "$APPIMAGE.build.json" release-assets/
-
-      - name: Print SHA-256 and sizes and write checksums
-        run: |
-          set -euo pipefail
-          cd release-assets
-          ls -l
-          sha256sum -- *.deb *.AppImage | tee SHA256SUMS-linux.txt
-
-      - name: Upload release artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: linux-release-${{ matrix.arch }}
-          path: release-assets/*
-          if-no-files-found: error
+    uses: ./.github/workflows/linux-build.yml
+    with:
+      ref: ${{ inputs.ref }}
+      upload_to_release: ${{ inputs.upload_to_release }}
 
   smoke:
     needs: build
@@ -277,7 +78,8 @@ jobs:
           (cd release-assets && sha256sum --check SHA256SUMS-linux.txt)
           sudo apt-get update
           sudo -E apt-get install -y --no-install-recommends \
-            dbus-bin dbus-daemon gdb openbox strace x11-utils xdotool xvfb \
+            at-spi2-core gir1.2-atspi-2.0 python3-gi fonts-dejavu-core \
+            dbus-bin dbus-daemon gdb imagemagick openbox strace x11-utils xclip xdotool xvfb \
             libgtk-3-bin libxdo3 libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri \
             libwayland-client0 libwayland-egl1 libwayland-cursor0 libwayland-server0
           chmod +x "$APPIMAGE_PACKAGE"
@@ -321,8 +123,17 @@ jobs:
           path: smoke-logs/
           if-no-files-found: ignore
 
+  container-smoke:
+    needs: build
+    uses: ./.github/workflows/linux-container-smoke.yml
+    permissions:
+      actions: read
+      contents: read
+    with:
+      artifact_name: linux-release-amd64
+
   upload:
-    needs: [build, smoke]
+    needs: [build, smoke, container-smoke]
     if: github.repository == 'jgassens/ChemDraft' && !github.event.repository.fork && inputs.upload_to_release != ''
     runs-on: ubuntu-latest
     concurrency:

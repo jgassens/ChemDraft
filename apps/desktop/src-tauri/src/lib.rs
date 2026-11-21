@@ -1,3 +1,7 @@
+#[cfg(target_os = "linux")]
+mod appimage_dialogs;
+#[cfg(target_os = "linux")]
+mod appimage_single_instance;
 mod assistant_mcp;
 mod canvas_context_menu;
 mod canvas_occlusion;
@@ -17,6 +21,9 @@ mod handler_list;
 mod installed_plugins;
 #[cfg(target_os = "linux")]
 mod linux_clipboard;
+mod linux_session_end;
+#[cfg(any(target_os = "linux", test))]
+mod linux_startup;
 mod local_engine;
 #[cfg(target_os = "macos")]
 mod macos_quit;
@@ -33,6 +40,7 @@ mod ocsr_engine;
 mod office_addin;
 mod office_ole;
 mod opsin;
+mod palette_first_paint;
 mod panel_full_size;
 mod panel_window;
 mod panel_window_controls;
@@ -48,9 +56,12 @@ mod structure_search;
 mod utility_suspension;
 #[cfg(test)]
 mod utility_suspension_tests;
+mod utility_window;
 mod webview_context_menus;
 #[cfg(test)]
 mod webview_context_menus_tests;
+#[cfg(any(target_os = "linux", test))]
+mod webview_recovery;
 mod window_drag;
 mod windows_activation_log;
 mod windows_clipboard;
@@ -192,6 +203,21 @@ impl WithoutConsoleWindow for Command {
         self
     }
 }
+
+/// AppRun's working folder is for WebKitGTK. App-owned children start in the user's home
+/// unless the caller sets a resource or workspace directory of its own.
+fn child_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let command = Command::new(program);
+    #[cfg(target_os = "linux")]
+    {
+        let mut command = command;
+        linux_startup::set_child_directory(&mut command);
+        command
+    }
+    #[cfg(not(target_os = "linux"))]
+    command
+}
+
 const SPIN3D_DEBUGGER_WINDOW_LABEL: &str = "spin3d-debugger";
 const SPIN3D_DEBUGGER_WINDOW_ROUTE: &str = "/?window=spin3d-debugger";
 const SPIN3D_DEBUGGER_TOGGLE_COMMAND_ID: &str = "view.toggle3dDebugger";
@@ -446,7 +472,7 @@ impl QuitFlow {
         true
     }
 
-    #[cfg(any(windows, test))]
+    #[cfg(any(windows, target_os = "linux", test))]
     fn flush_confirmed(&self, request_id: u64) -> bool {
         self.flush
             .lock()
@@ -629,7 +655,7 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
 /// the last moment. Ask the document window to flush first; it confirms through `quit_after_flush`,
 /// and a grace timer quits regardless if the webview can't answer.
 fn request_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
-    if windows_session_end::in_progress() {
+    if windows_session_end::in_progress() || linux_session_end::in_progress() {
         return;
     }
     #[cfg(windows)]
@@ -718,6 +744,7 @@ fn capture_quit_window_frames<R: Runtime>(app: &tauri::AppHandle<R>) {
 /// Session confirmation has priority; only then join geometry workers. The deadline never joins.
 fn complete_quit_flush_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, reason: QuitReason) {
     if windows_session_end::in_progress()
+        || linux_session_end::in_progress()
         || flow.position_drain_started.swap(true, Ordering::SeqCst)
     {
         return;
@@ -823,8 +850,8 @@ fn resume_prompted_quit_with<H: QuitHost>(
 /// The session is written, or its grace has run out. Reply to a deferred AppKit termination;
 /// otherwise arm the exit watchdog here and nowhere else, then request event-loop exit.
 fn quit_now_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, reason: QuitReason) {
-    if windows_session_end::in_progress() {
-        // WM_ENDSESSION is waiting for the document. Let Windows own teardown.
+    if windows_session_end::in_progress() || linux_session_end::in_progress() {
+        // The committed system shutdown owns the flush and the exit deadline.
         return;
     }
     #[cfg(any(target_os = "macos", test))]
@@ -884,6 +911,8 @@ async fn quit_after_flush(
 ) -> Result<(), String> {
     authorize_quit_window(window.label())?;
     if QUIT.confirm_flush(request_id) {
+        #[cfg(target_os = "linux")]
+        linux_session_end::acknowledge_flush();
         complete_quit_flush_with(&QUIT, &app, QuitReason::FlushConfirmed);
     }
     Ok(())
@@ -1416,6 +1445,8 @@ const MAIN_WINDOW_TITLE_GRAB_PT: f64 = 22.0;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    let startup = linux_startup::configure();
     // First, before GTK opens the display: see monitor_query.rs.
     #[cfg(target_os = "linux")]
     monitor_query::init_xlib_threads();
@@ -1425,6 +1456,10 @@ pub fn run() {
     windows_activation_log::init(perf_enabled);
     let perf_log = perf_log::PerfLog::new(perf_enabled);
     let builder = tauri::Builder::default().manage(office_launch);
+    #[cfg(target_os = "linux")]
+    let is_appimage = startup.appimage.is_some();
+    #[cfg(target_os = "linux")]
+    let builder = builder.manage(startup);
 
     // Both guards run before any webview or app setup can touch session/settings files.
     #[cfg(target_os = "macos")]
@@ -1445,8 +1480,19 @@ pub fn run() {
     } else {
         builder.enable_macos_default_menu(false)
     };
-    #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "android"
+    )))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(handle_second_launch));
+    #[cfg(target_os = "linux")]
+    let builder = builder.plugin(if is_appimage {
+        appimage_single_instance::init()
+    } else {
+        tauri_plugin_single_instance::init(handle_second_launch)
+    });
 
     let builder = if perf_enabled {
         builder.plugin(
@@ -1484,12 +1530,24 @@ pub fn run() {
         // handler rather than adding a scheme — a new scheme would be a new origin, and M35 measured
         // that a plugin package only loads same-origin. The origin is unchanged, so no origin-keyed
         // state (localStorage, IndexedDB) is disturbed. See `installed_plugins` for the full rationale.
-        .register_uri_scheme_protocol("tauri", installed_plugins::handle_tauri_request)
-        .plugin(tauri_plugin_dialog::init())
+        .register_uri_scheme_protocol("tauri", installed_plugins::handle_tauri_request);
+    let dialogs = tauri_plugin_dialog::init();
+    #[cfg(target_os = "linux")]
+    let builder = if is_appimage {
+        builder.plugin(appimage_dialogs::AppImageDialogs(dialogs))
+    } else {
+        builder.plugin(dialogs)
+    };
+    #[cfg(not(target_os = "linux"))]
+    let builder = builder.plugin(dialogs);
+    let builder = builder
         .plugin(tauri_plugin_fs::init())
         // Host-owned network transport for the allowlisted plugin-update catalog. Installed plugin
         // workers remain under connect-src 'self' and never receive this capability.
         .plugin(tauri_plugin_http::init());
+
+    #[cfg(target_os = "linux")]
+    let builder = builder.plugin(webview_recovery::plugin());
 
     // Windows app updates: a signed manifest on main (`plugins.updater` in tauri.windows.conf.json)
     // and a signed NSIS installer. The webview drives the flow, and only a stable build ever checks;
@@ -1555,11 +1613,9 @@ pub fn run() {
             if webview.label() == MAIN_WINDOW_LABEL
                 && matches!(payload.event(), PageLoadEvent::Finished)
             {
-                // WKWebView applies index.html's initial `<title>ChemDraft</title>` after setup,
-                // overwriting the label set by ensure_main_window_visible. Reassert the baked
-                // worktree title at the page-load boundary so the actual macOS title bar, not only
-                // the web document/build stamp, identifies this checkout.
-                let _ = webview.window().set_title(&main_window_title());
+                // WKWebView can apply index.html's title after setup. Restore the worktree label
+                // if the React document has yet to publish its title.
+                let _ = set_startup_title(&webview.window());
             }
         })
         .on_menu_event(|app, event| {
@@ -1604,6 +1660,7 @@ pub fn run() {
                     // Windows sends Resized when the owner is restored from the taskbar;
                     // macOS also reports its restored frame. Never release a prompt here.
                     schedule_suspended_utility_restore(window.app_handle());
+                    palette_first_paint::release_held(window.app_handle());
                     if let Err(error) = persist_main_window_geometry(window) {
                         eprintln!("Could not persist ChemDraft main window frame: {error}");
                     }
@@ -1650,6 +1707,7 @@ pub fn run() {
                         #[cfg(target_os = "macos")]
                         reattach_visible_plugin_panels(window.app_handle());
                         schedule_suspended_utility_restore(window.app_handle());
+                        palette_first_paint::release_held(window.app_handle());
                     }
                     _ => {}
                 }
@@ -1712,8 +1770,12 @@ pub fn run() {
                     .closed(window.label());
             }
 
-            // Focused is queued by Tao and may describe an older activation by delivery.
-            // Lease ownership is observed synchronously at the OS boundary instead.
+            #[cfg(target_os = "linux")]
+            if is_input_focus_window_label(window.label()) {
+                if let WindowEvent::Focused(active) = event {
+                    panel_window::linux::focus_changed(window, *active);
+                }
+            }
             if is_input_focus_window_label(window.label())
                 && matches!(event, WindowEvent::Destroyed)
             {
@@ -1846,6 +1908,9 @@ pub fn run() {
             }
         })
         .setup(move |app| {
+            app.add_capability(
+                r#"{"identifier":"document-window-title","webviews":["main"],"permissions":["core:window:allow-set-title"]}"#,
+            )?;
             #[cfg(target_os = "macos")]
             {
                 if let Err(error) = macos_quit::install(app.handle(), setup_secondary) {
@@ -2038,8 +2103,8 @@ pub fn run() {
                     api.prevent_exit();
                     return;
                 }
-                if windows_session_end::in_progress() {
-                    // A queued app quit can arrive while WM_ENDSESSION is pumping WebView2.
+                if windows_session_end::in_progress() || linux_session_end::blocks_exit() {
+                    // A queued app quit must give the committed OS flush time to finish.
                     api.prevent_exit();
                 } else if should_flush_exit_request(
                     cfg!(target_os = "macos"),
@@ -2118,6 +2183,10 @@ fn start_macos_primary(
 }
 
 fn setup_primary_app(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "linux")]
+    if let Err(error) = linux_session_end::install(app) {
+        eprintln!("Could not install ChemDraft Linux termination handlers: {error}");
+    }
     #[cfg(target_os = "macos")]
     panel_window::observe_document_pointer_release(app);
     file_warnings_window::observe_document(app)?;
@@ -2175,7 +2244,12 @@ fn setup_primary_app(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::E
 
     // Off macOS a document opened from the shell arrives as a launch argument. Keep the
     // existing queue-and-emit behavior, now that setup and the config window are ready.
-    #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "android"
+    )))]
     if let Ok(cwd) = std::env::current_dir() {
         let args = std::env::args_os()
             .skip(1)
@@ -2183,6 +2257,18 @@ fn setup_primary_app(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::E
         if let Err(error) = handle_opened_document_args(app, args, &cwd) {
             eprintln!("Could not open ChemDraft document from launch arguments: {error}");
         }
+    }
+    #[cfg(target_os = "linux")]
+    if let Err(error) = handle_opened_document_paths(
+        app,
+        app.state::<linux_startup::Startup>()
+            .documents
+            .iter()
+            .filter(|path| is_openable_document_path(path))
+            .cloned(),
+    ) {
+        eprintln!("Could not open ChemDraft document from launch arguments: {error}");
+        show_open_document_error(app, &error);
     }
 
     Ok(())
@@ -2302,10 +2388,9 @@ fn ensure_main_window_visible<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(
     let already_on_screen = window.is_visible().unwrap_or(false);
     main_window_placement::reveal_after_preparation(
         |errors| {
-            // Tauri auto-creates the config "main" window at startup (title "ChemDraft" from tauri.conf.json),
-            // so create_main_window's set_title never runs on that path — apply the worktree-labeled title
-            // here on the window we actually resolved, so every worktree's window is distinguishable.
-            errors.record("set title", window.set_title(&main_window_title()));
+            // The auto-created window starts with the config title. On subsequent reveals the
+            // active document's title is already set.
+            errors.record("set title", set_startup_title(&window.as_ref().window()));
             errors.record("set decorations", window.set_decorations(true));
             errors.record("configure webview", configure_document_webview(&window));
             errors.record("set focusable", window.set_focusable(true));
@@ -2409,7 +2494,18 @@ fn foreground_belongs_to_app() -> bool {
         .is_some_and(|mtm| objc2_app_kit::NSApplication::sharedApplication(mtm).isActive())
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(target_os = "linux")]
+fn foreground_belongs_to_app() -> bool {
+    use gtk::prelude::*;
+    gtk::is_initialized_main_thread()
+        && gtk::Window::list_toplevels().iter().any(|widget| {
+            widget
+                .downcast_ref::<gtk::Window>()
+                .is_some_and(|window| window.has_toplevel_focus())
+        })
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn foreground_belongs_to_app() -> bool {
     false
 }
@@ -2683,6 +2779,17 @@ fn main_window_title() -> String {
     window_title_for(option_env!("CHEMDRAFT_WORKTREE_LABEL"))
 }
 
+fn set_startup_title<R: Runtime>(window: &tauri::Window<R>) -> tauri::Result<()> {
+    if needs_initial_main_window_title(&window.title()?) {
+        window.set_title(&main_window_title())?;
+    }
+    Ok(())
+}
+
+fn needs_initial_main_window_title(current_title: &str) -> bool {
+    matches!(current_title, "" | "ChemDraft")
+}
+
 fn window_title_for(label: Option<&str>) -> String {
     match label {
         Some(label) if !label.trim().is_empty() => format!("ChemDraft — {}", label.trim()),
@@ -2692,7 +2799,7 @@ fn window_title_for(label: Option<&str>) -> String {
 
 #[cfg(test)]
 mod window_title_tests {
-    use super::window_title_for;
+    use super::{needs_initial_main_window_title, window_title_for};
 
     #[test]
     fn unlabeled_builds_get_the_plain_title() {
@@ -2708,6 +2815,18 @@ mod window_title_tests {
             "ChemDraft — chemdraw [x]"
         );
         assert_eq!(window_title_for(Some(" a [b] ")), "ChemDraft — a [b]");
+    }
+
+    #[test]
+    fn revealing_the_window_preserves_the_document_title() {
+        assert!(needs_initial_main_window_title(""));
+        assert!(needs_initial_main_window_title("ChemDraft"));
+        assert!(!needs_initial_main_window_title(
+            "Probe A.chemdraft — ChemDraft"
+        ));
+        assert!(!needs_initial_main_window_title(
+            "Probe A.chemdraft • — ChemDraft — worktree [branch]"
+        ));
     }
 }
 
@@ -3031,7 +3150,10 @@ async fn suspend_toolset_windows(
             }
             Ok(())
         } else {
-            restore_suspended_utility_windows(&app)?;
+            let restored = restore_suspended_utility_windows(&app);
+            // A palette whose first paint arrived during the suspension was held; show it now.
+            palette_first_paint::release_held(&app);
+            restored?;
             if let Some(session_id) = focus_export_session_id {
                 dialog_windows::focus_export_after_picker(&app, &session_id)?;
             }
@@ -3075,7 +3197,12 @@ fn schedule_suspended_utility_restore<R: Runtime>(app: &tauri::AppHandle<R>) {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .pending_restore();
-            restore_utility_labels(&app, labels)
+            let restored = restore_utility_labels(&app, labels);
+            // This restoration is what clears a suspension whose prompt ended while the document
+            // was minimized; the restore event's own retry ran while it was still active. Retry
+            // the held first-paint reveals now that it may have cleared.
+            palette_first_paint::release_held(&app);
+            restored
         });
         if let Err(error) = result
             .and_then(|result| result)
@@ -3386,9 +3513,15 @@ fn handle_second_launch(app: &tauri::AppHandle, argv: Vec<String>, cwd: String) 
     {
         return;
     }
-    let _ = handle_second_launch_with(app, || {
+    let result = handle_second_launch_with(app, || {
         handle_opened_document_args(app, argv.into_iter().skip(1), Path::new(&cwd))
     });
+    #[cfg(target_os = "linux")]
+    if let Some(Err(error)) = &result {
+        show_open_document_error(app, error);
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = result;
 }
 
 #[cfg(target_os = "macos")]
@@ -3561,16 +3694,28 @@ async fn open_toolset_window(
     window: Option<ToolsetWindowGeometry>,
 ) -> Result<ToolsetWindowState, String> {
     let owner = toolset_document_label(caller.label());
+    // Windows: recorded before waiting for the creation lock, so a close that arrives while this
+    // open waits, builds or arms wins over it (palette_first_paint.rs). No-op elsewhere.
+    palette_first_paint::requested(&owned_toolset_label(
+        owner,
+        &toolset_window_label(&toolset_id),
+    ));
     let _creation = lock_window_creation()?;
     if utility_windows_suspended() {
         return toolset_state_for(&app, owner, &toolset_id);
     }
     ensure_toolset_window(&app, owner, &toolset_id, window.as_ref())?;
-    if owner == MAIN_WINDOW_LABEL {
-        set_toolset_menu_checked(&app, &toolset_id, true)?;
-    }
 
     let state = toolset_state_for(&app, owner, &toolset_id)?;
+    if owner == MAIN_WINDOW_LABEL {
+        // Windows: a palette closed while this open was in flight stays closed, menu item included.
+        // macOS and Linux check it as before.
+        set_toolset_menu_checked(
+            &app,
+            &toolset_id,
+            state.open || !palette_first_paint::tracks_palettes(),
+        )?;
+    }
     let _ = emit_toolset_window_state(&app, owner, &state);
     Ok(state)
 }
@@ -3583,10 +3728,11 @@ fn close_toolset_window(
 ) -> Result<ToolsetWindowState, String> {
     let owner = toolset_document_label(caller.label());
     if owner != MAIN_WINDOW_LABEL {
-        if let Some(window) = app.get_webview_window(&owned_toolset_label(
-            owner,
-            &toolset_window_label(&toolset_id),
-        )) {
+        let label = owned_toolset_label(owner, &toolset_window_label(&toolset_id));
+        // Windows: as for the document window's palettes below, so an open still waiting for its
+        // first paint does not show the palette afterwards.
+        palette_first_paint::closed(&label);
+        if let Some(window) = app.get_webview_window(&label) {
             panel_window::end_for_hide(window.app_handle(), window.label());
             window.hide().map_err(|error| error.to_string())?;
         }
@@ -3597,6 +3743,9 @@ fn close_toolset_window(
     if utility_windows_suspended() {
         return toolset_state(&app, &toolset_id);
     }
+    // Windows: before anything else, and whether or not the window exists yet, so an open still
+    // waiting for, building or arming its window does not show it afterwards (a later open does).
+    palette_first_paint::closed(&toolset_window_label(&toolset_id));
     let window = app.get_webview_window(&toolset_window_label(&toolset_id));
     if let Some(window) = window.as_ref() {
         let webview: &tauri::Webview = window.as_ref();
@@ -4945,6 +5094,7 @@ fn plugin_panel_event_forward(
         return run_on_main_thread_blocking(&window, move || {
             if !utility_windows_suspended()
                 && !panel_window::palette_blocks_forwarded_shortcut(
+                    target.label(),
                     &shortcut.key,
                     shortcut.meta_key,
                     shortcut.ctrl_key,
@@ -5006,6 +5156,17 @@ async fn set_plugin_panel_input_focus(
     select_interaction: Option<bool>,
 ) -> Result<bool, String> {
     validate_plugin_panel_focus_caller(window.label())?;
+    #[cfg(target_os = "linux")]
+    if editing {
+        return panel_window::linux::acquire(
+            window,
+            &page_token,
+            generation,
+            click_sequence,
+            pointer_before.unwrap_or(0),
+        )
+        .await;
+    }
     if is_plugin_panel_window_label(window.label()) {
         return set_plugin_panel_activation(window, page_token, editing, generation);
     }
@@ -5056,6 +5217,7 @@ async fn set_plugin_panel_input_focus(
                 );
                 return Ok(false);
             }
+            #[cfg(not(target_os = "linux"))]
             if editing {
                 let result = (|| -> Result<bool, String> {
                     // An acquisition dispatched before a hide can arrive afterwards.
@@ -5102,7 +5264,7 @@ async fn set_plugin_panel_input_focus(
                             return Ok(true);
                         }
                     }
-                    #[cfg(not(any(target_os = "macos", windows)))]
+                    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
                     {
                         target
                             .set_focusable(false)
@@ -5121,7 +5283,7 @@ async fn set_plugin_panel_input_focus(
                         &*(target.ns_window().map_err(|error| error.to_string())? as *mut NSWindow)
                     }
                     .isKeyWindow());
-                    #[cfg(not(any(target_os = "macos", windows)))]
+                    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
                     target.is_focused().map_err(|error| error.to_string())
                 })();
                 let held = panel_window::acquired(
@@ -5144,33 +5306,31 @@ async fn set_plugin_panel_input_focus(
                 if !held && panel_window::is_current(&target, generation, epoch) {
                     let _ = target.set_focusable(false);
                 }
-                result.map(|_| held)
-            } else {
-                panel_window::end_pointer_guard(
-                    target.app_handle(),
-                    target.label(),
-                    panel_window::PointerGuardEnd::Released,
-                    click_sequence,
-                    before,
-                );
-                // Hand back before disabling key eligibility: AppKit can resign a panel as
-                // that flag changes. The helper checks the actual key/foreground window,
-                // current lease and app activation; native loss/cleanup never request it.
-                if let Err(error) = panel_window::return_focus_after_interaction(
-                    &target,
-                    return_focus.unwrap_or(false),
-                ) {
-                    palette_focus_log(format_args!(
-                        "hand-back label={} result=skipped reason=error error={error}",
-                        target.label()
-                    ));
-                    eprintln!("Could not return panel keyboard focus after release: {error}");
-                }
-                target
-                    .set_focusable(false)
-                    .map_err(|error| error.to_string())?;
-                Ok(false)
+                return result.map(|_| held);
             }
+            panel_window::end_pointer_guard(
+                target.app_handle(),
+                target.label(),
+                panel_window::PointerGuardEnd::Released,
+                click_sequence,
+                before,
+            );
+            // Hand back before disabling key eligibility: AppKit can resign a panel as
+            // that flag changes. The helper checks the actual key/foreground window,
+            // current lease and app activation; native loss/cleanup never request it.
+            if let Err(error) =
+                panel_window::return_focus_after_interaction(&target, return_focus.unwrap_or(false))
+            {
+                palette_focus_log(format_args!(
+                    "hand-back label={} result=skipped reason=error error={error}",
+                    target.label()
+                ));
+                eprintln!("Could not return panel keyboard focus after release: {error}");
+            }
+            target
+                .set_focusable(false)
+                .map_err(|error| error.to_string())?;
+            Ok(false)
         })?
     })();
     palette_focus_log(format_args!(
@@ -5182,7 +5342,8 @@ async fn set_plugin_panel_input_focus(
     ));
     result
 }
-// Plugin panels never enter the palette lease/acquisition/hand-back path above.
+// Panel releases only clear input bookkeeping. macOS and Windows already observe
+// pointer activation before their panel acquisition runs.
 fn set_plugin_panel_activation(
     window: tauri::WebviewWindow,
     page_token: String,
@@ -6755,8 +6916,9 @@ fn toolset_popover_title(label: &str, kind: &str) -> &'static str {
 }
 
 /// The actual builder configuration is also the test seam for native creation.
-/// `parent` is an owner on Windows (not a child HWND). Keep macOS popovers unparented:
-/// AppKit child windows can reveal hidden/prewarmed windows and alter their level/Spaces behavior.
+/// `parent` gives Windows an owner and Linux a GTK transient parent. Keep macOS popovers
+/// unparented because AppKit child windows can reveal hidden/prewarmed windows and alter their
+/// level/Spaces behavior.
 fn toolset_popover_window_config(
     label: &str,
     toolset_id: &str,
@@ -6775,9 +6937,9 @@ fn toolset_popover_window_config(
             .into(),
         ),
         title: toolset_popover_title(&toolset_popover_window_label(toolset_id), kind).into(),
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         parent: Some(toolset_window_parts(label).0.into()),
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "linux")))]
         parent: None,
         width: 320.0,
         height: 300.0,
@@ -6807,16 +6969,25 @@ fn build_toolset_popover_window(
     position: (f64, f64),
     focus_mode: ToolsetPopoverFocusMode,
 ) -> Result<(), String> {
-    let config = toolset_popover_window_config(label, toolset_id, kind, prewarm, focus_mode);
-    let window = WebviewWindowBuilder::from_config(app, &config)
-        .map_err(|error| error.to_string())?
-        .position(position.0, position.1)
-        .build()
-        .map_err(|error| error.to_string())?;
+    let native_wayland = utility_window::uses_native_wayland(app)?;
+    let mut config = toolset_popover_window_config(label, toolset_id, kind, prewarm, focus_mode);
+    config.resizable |= native_wayland;
+    let builder =
+        WebviewWindowBuilder::from_config(app, &config).map_err(|error| error.to_string())?;
+    // Windows: the palette background as its first frame. Still shown only by its own reveal.
+    let builder =
+        palette_first_paint::builder_step(builder, palette_first_paint::PaletteWindowKind::Popover);
+    let builder = if native_wayland {
+        builder
+    } else {
+        builder.position(position.0, position.1)
+    };
+    let window = builder.build().map_err(|error| error.to_string())?;
 
     #[cfg(windows)]
     office_ole::toolset_events::attach_utility(&window);
     disable_default_context_menus(&window);
+    utility_window::prepare(&window, utility_window::Kind::Popover, native_wayland)?;
     configure_toolset_popover_window(&window, focus_mode)?;
     install_toolset_input_focus(&window)?;
     panel_window::set_popover_content(&window, kind)?;
@@ -6841,6 +7012,11 @@ fn configure_toolset_popover_window<R: Runtime>(
         target
             .set_focusable(focus_mode == ToolsetPopoverFocusMode::Focus)
             .map_err(|error| error.to_string())?;
+        // Keyboard-opened popovers own their navigation keys without a field lease.
+        panel_window::set_keyboard_popover(
+            target.label(),
+            focus_mode == ToolsetPopoverFocusMode::Focus,
+        );
         #[cfg(windows)]
         {
             use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -6881,6 +7057,9 @@ fn close_toolset_popover(
     );
     if let Some(window) = app.get_webview_window(&label) {
         panel_window::end_for_hide(window.app_handle(), window.label());
+        #[cfg(target_os = "linux")]
+        utility_window::set_visible(&window, false)?;
+        #[cfg(not(target_os = "linux"))]
         window.hide().map_err(|error| error.to_string())?;
         toolset_popover_command_sources().remove(window.label());
     }
@@ -7014,6 +7193,7 @@ fn show_toolset_tooltip_window(
     {
         // The tooltip is built `focused(false)` (utility_window_builder), so this is
         // ShowWindow(SW_SHOWNOACTIVATE) on Windows and never takes activation from the document.
+        // On Linux Tao queues this after the position request, so it maps at the new anchor.
         window.show().map_err(|error| error.to_string())?;
     }
     // SW_SHOWNOACTIVATE keeps the hidden window's old z-order, which left the tooltip behind the
@@ -7145,7 +7325,7 @@ fn show_toolset_popover_window(
     #[cfg(not(target_os = "macos"))]
     // `focus: false` at creation makes Tao use SW_SHOWNOACTIVATE on Windows.
     // Keep its visibility state in sync (a raw ShowWindow alone breaks later hide()).
-    window.show().map_err(|error| error.to_string())?;
+    utility_window::set_visible(&window, true)?;
     raise_among_owned_windows(&window)?;
     let visibility = window.is_visible();
     #[cfg(windows)]
@@ -7249,6 +7429,10 @@ fn set_window_global_logical_position<R: Runtime>(
     x: f64,
     y: f64,
 ) -> Result<(), String> {
+    // On native Wayland the compositor positions transient toplevels.
+    if utility_window::uses_native_wayland(window.app_handle())? {
+        return Ok(());
+    }
     let monitors = monitor_query::available_monitors(window.app_handle())
         .unwrap_or_default()
         .iter()
@@ -7334,6 +7518,15 @@ fn resize_toolset_window(
         .map_err(|error| error.to_string())?
         .or_else(|| monitor_query::primary_monitor(app).ok().flatten())
         .ok_or("The tool palette's monitor is unavailable.")?;
+    if utility_window::uses_native_wayland(app)? {
+        window
+            .set_size(tauri::LogicalSize::new(
+                width,
+                height.min(monitor_logical_work_area(&monitor).height),
+            ))
+            .map_err(|error| error.to_string())?;
+        return Ok(true);
+    }
     let scale = monitor.scale_factor();
     #[cfg(not(target_os = "macos"))]
     let window_scale = window.scale_factor().unwrap_or(scale);
@@ -7444,7 +7637,9 @@ fn build_toolset_tooltip_window(app: &tauri::AppHandle, owner: &str) -> Result<(
     if app.get_webview_window(&label).is_some() {
         return Ok(());
     }
-    let window = utility_window_builder(
+
+    let native_wayland = utility_window::uses_native_wayland(app)?;
+    let builder = utility_window_builder(
         WebviewWindowBuilder::new(
             app,
             &label,
@@ -7454,23 +7649,27 @@ fn build_toolset_tooltip_window(app: &tauri::AppHandle, owner: &str) -> Result<(
         ),
         app,
         owner,
-    )
+    )?
     .title("ChemDraft tooltip")
     // The JS side sizes this to the rendered text before every show.
     .inner_size(120.0, 26.0)
     .min_inner_size(16.0, 14.0)
     .accept_first_mouse(false)
     .focusable(false)
-    .resizable(false)
+    .resizable(native_wayland)
     .decorations(false)
     .skip_taskbar(true)
-    .visible(false)
-    .build()
-    .map_err(|error| error.to_string())?;
+    .visible(false);
+    // Windows: the tooltip background as its first frame. Still shown only by its own reveal.
+    let window =
+        palette_first_paint::builder_step(builder, palette_first_paint::PaletteWindowKind::Tooltip)
+            .build()
+            .map_err(|error| error.to_string())?;
 
     #[cfg(windows)]
     office_ole::toolset_events::attach_utility(&window);
     disable_default_context_menus(&window);
+    utility_window::prepare(&window, utility_window::Kind::Tooltip, native_wayland)?;
     configure_toolset_utility_window(&window, false)?;
     // Pure chrome: click-through and invisible to hit-testing. Without this, the tooltip appearing
     // under the cursor would win windowNumberAtPoint in the pointer feed, read as "cursor left the
@@ -8629,6 +8828,19 @@ fn palette_focus_log(message: std::fmt::Arguments<'_>) {
     }
 }
 
+// Opt-in switch for the one `linux-acquire` line per field click. CI's Linux smoke and tester
+// reports need that line without the agent bridge, which would change what the smoke tests.
+#[cfg(target_os = "linux")]
+const PALETTE_FOCUS_LOG_ENV_VAR: &str = "CHEMDRAFT_PALETTE_FOCUS_LOG";
+
+#[cfg(target_os = "linux")]
+fn palette_focus_acquire_log(message: std::fmt::Arguments<'_>) {
+    let env_enabled = std::env::var(PALETTE_FOCUS_LOG_ENV_VAR).is_ok_and(|value| value == "1");
+    if agent_bridge_status().enabled || env_enabled {
+        eprintln!("[palette-focus] {message}");
+    }
+}
+
 fn agent_bridge_status_from<I, S>(env_value: Option<&str>, args: I) -> AgentBridgeStatus
 where
     I: IntoIterator<Item = S>,
@@ -8766,6 +8978,8 @@ fn resolve_engine3d_sidecar_path(env_override: Option<String>) -> Option<PathBuf
     // Development / explicit override: an absolute path to a locally built sidecar wins.
     if let Some(path) = env_override {
         let candidate = PathBuf::from(path.trim());
+        #[cfg(target_os = "linux")]
+        let candidate = linux_startup::user_path(&candidate).into_owned();
         if is_runnable_sidecar(&candidate) {
             return Some(candidate);
         }
@@ -8851,7 +9065,7 @@ fn start_engine3d_sidecar_session_from_path(
         std::process::id(),
         ENGINE3D_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
     );
-    let mut child = Command::new(path)
+    let mut child = child_command(path)
         .arg("--stdio")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -9405,7 +9619,15 @@ fn handle_opened_document_args<R: Runtime>(
     args: impl IntoIterator<Item = String>,
     cwd: &Path,
 ) -> Result<(), String> {
-    let payloads = openable_document_paths_from_args(args, cwd)
+    handle_opened_document_paths(app, openable_document_paths_from_args(args, cwd))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
+fn handle_opened_document_paths<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    paths: impl IntoIterator<Item = PathBuf>,
+) -> Result<(), String> {
+    let payloads = paths
         .into_iter()
         .map(|path| open_document_payload_from_path(&path));
     deliver_opened_documents(payloads, |payload| deliver_opened_document(app, payload))
@@ -9567,8 +9789,44 @@ fn decode_document_text(bytes: &[u8]) -> String {
 
 const MAX_OPEN_DOCUMENT_BYTES: u64 = 64 * 1024 * 1024;
 
+/// The renderer keeps an opened document's path as a JavaScript string and saves back through it.
+/// A path with no UTF-8 form cannot survive that trip, so on Linux (where file names are raw bytes)
+/// it is refused by name rather than replaced with a lossy look-alike that a save would miss.
+/// Other hosts keep their earlier conversion: macOS paths are always UTF-8, and `exact` stays off
+/// on Windows so its behavior does not change.
+fn open_document_path_text(path: &Path, exact: bool) -> Result<String, String> {
+    match path.to_str() {
+        Some(text) => Ok(text.to_owned()),
+        None if exact => Err(unsavable_document_path_message(path)),
+        None => Ok(path.to_string_lossy().into_owned()),
+    }
+}
+
+fn unsavable_document_path_message(path: &Path) -> String {
+    format!(
+        "Could not open \"{}\": its file name is not valid UTF-8, so ChemDraft could not save \
+         changes back to it. Rename the file and open it again.",
+        path.display()
+    )
+}
+
+/// Off macOS a failed shell open is otherwise reported only on stderr.
+#[cfg(target_os = "linux")]
+fn show_open_document_error<R: Runtime>(app: &tauri::AppHandle<R>, error: &str) {
+    let mut message = app
+        .dialog()
+        .message(error)
+        .title("ChemDraft Could Not Open a Document")
+        .kind(tauri_plugin_dialog::MessageDialogKind::Error);
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        message = message.parent(&window);
+    }
+    message.show(|_| {});
+}
+
 fn open_document_payload_from_path(path: &Path) -> Result<NativeOpenDocumentPayload, String> {
     use std::io::Read;
+    let path_text = open_document_path_text(path, cfg!(target_os = "linux"))?;
     let display_name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -9597,7 +9855,7 @@ fn open_document_payload_from_path(path: &Path) -> Result<NativeOpenDocumentPayl
     Ok(NativeOpenDocumentPayload {
         #[cfg(target_os = "macos")]
         receipt: None,
-        path: path.to_string_lossy().to_string(),
+        path: path_text,
         display_name,
         contents,
         bytes,
@@ -10954,7 +11212,11 @@ fn ensure_toolset_window<R: Runtime>(
         // display it lived on may have been unplugged while it was hidden. Re-clamp on the way in,
         // so re-opening from View ▸ Toolbars is always enough to recover a lost palette.
         recover_offscreen_toolset_window(app, &window, resizable);
-        window.show().map_err(|error| error.to_string())?;
+        // Its page has painted, so show it now — unless it is still waiting for its first paint
+        // (Windows, palette_first_paint.rs), whose reveal will show it.
+        if !palette_first_paint::reopened(&label) {
+            window.show().map_err(|error| error.to_string())?;
+        }
         configure_toolset_utility_window(&window, true)?;
         return Ok(());
     }
@@ -11014,12 +11276,7 @@ fn ensure_toolset_window<R: Runtime>(
         })?;
     #[cfg(not(target_os = "linux"))]
     let native_resizable = resizable;
-
-    // Record label -> id so the Moved/Destroyed handlers and enumeration can resolve the toolset
-    // without the manifest (the label itself is lossy).
-    if let Ok(mut labels) = app.state::<ToolsetWindowDirectory>().labels.lock() {
-        labels.insert(label.clone(), toolset_id.to_string());
-    }
+    let native_wayland = utility_window::uses_native_wayland(app)?;
 
     windows_activation_log::frame_set(&label, "toolbar creation", "logical", || {
         ((position.x, position.y), (width, height))
@@ -11038,7 +11295,7 @@ fn ensure_toolset_window<R: Runtime>(
         ),
         app,
         owner,
-    )
+    )?
     .title(title)
     .inner_size(width, height)
     .accept_first_mouse(true)
@@ -11050,14 +11307,21 @@ fn ensure_toolset_window<R: Runtime>(
     .shadow(true)
     .skip_taskbar(true);
     #[cfg(not(windows))]
-    let builder = builder.position(position.x, position.y);
+    let builder = if native_wayland {
+        builder
+    } else {
+        builder.position(position.x, position.y)
+    };
+    // Windows: hidden with the palette's background as its first frame, until its page paints.
+    let builder =
+        palette_first_paint::builder_step(builder, palette_first_paint::PaletteWindowKind::Toolbar);
     #[cfg(windows)]
     let builder = if placement.is_some() {
         // Tao's builder accepts logical positions only. Set the physical frame before showing
         // the window so it does not flash at an ambiguous logical position on another display.
-        builder.visible(false)
+        builder
     } else {
-        builder.visible(false).position(position.x, position.y)
+        builder.position(position.x, position.y)
     };
     // Only scrolling inspectors need a floor for manual resize. A toolbar's frame is fixed
     // at the DOM's measured size until the next fit. A floor here would leave narrow grids padded.
@@ -11066,6 +11330,11 @@ fn ensure_toolset_window<R: Runtime>(
     } else {
         builder
     };
+    // Record label -> id so the Moved/Destroyed handlers and enumeration can resolve the toolset
+    // without the manifest (the label itself is lossy).
+    if let Ok(mut labels) = app.state::<ToolsetWindowDirectory>().labels.lock() {
+        labels.insert(label.clone(), toolset_id.to_string());
+    }
     let window = match builder.build() {
         Ok(window) => window,
         Err(error) => {
@@ -11082,8 +11351,11 @@ fn ensure_toolset_window<R: Runtime>(
     #[cfg(windows)]
     office_ole::toolset_events::attach_utility(&window);
     disable_default_context_menus(&window);
+    utility_window::prepare(&window, utility_window::Kind::Toolbar, native_wayland)?;
     configure_toolset_utility_window(&window, true)?;
     install_toolset_input_focus(&window)?;
+    #[cfg(target_os = "linux")]
+    utility_window::set_visible(&window, true)?;
     #[cfg(windows)]
     {
         let target = window.clone();
@@ -11092,7 +11364,10 @@ fn ensure_toolset_window<R: Runtime>(
                 let webview: &tauri::Webview<R> = target.as_ref();
                 panel_full_size::apply(&webview.window(), placement, "initial toolbar placement")?;
             }
-            target.show().map_err(|error| error.to_string())
+            // Stays hidden until its page reports its first paint, or the fallback fires; a
+            // palette closed or minimized meanwhile is not shown by either (palette_first_paint.rs).
+            palette_first_paint::arm_toolbar(&target);
+            Ok::<(), String>(())
         })
         .and_then(|result| result);
         panel_window::finish_installation(placed, || {
@@ -11363,9 +11638,8 @@ fn toolset_window_hides_on_deactivate() -> bool {
     true
 }
 
-/// Off macOS there is no panel treatment to apply after the build: everything a utility window
-/// needs is set on its builder by [`utility_window_builder`]. (No menu bar needs stripping either —
-/// the app menu is attached to the document window only; see `install_app_menu`.)
+/// AppKit applies its panel level during reconfiguration. Linux applies its GTK hints only
+/// before the first show in [`utility_window::prepare`].
 #[cfg(not(target_os = "macos"))]
 fn configure_toolset_utility_window<R: Runtime>(
     _window: &tauri::WebviewWindow<R>,
@@ -11374,8 +11648,9 @@ fn configure_toolset_utility_window<R: Runtime>(
     Ok(())
 }
 
-/// Builder settings every floating utility window (palettes, popovers, the tooltip, plugin panels)
-/// shares. On Windows:
+/// Set ownership and initial activation for toolbars and the tooltip.
+/// On Linux, Tauri sets GTK's transient parent at construction. Keep the window hidden until
+/// [`utility_window::prepare`] applies the GTK hints. On Windows:
 /// - **owned by the document window**, given to tao at build time: an owned window stays above its
 ///   owner, hides while it is minimized and is destroyed with it — and tao creates it as a popup
 ///   without `WS_EX_APPWINDOW`. (Setting `GWLP_HWNDPARENT` afterwards left tao believing the window
@@ -11388,22 +11663,33 @@ fn utility_window_builder<'a, R: Runtime, M: Manager<R>>(
     builder: WebviewWindowBuilder<'a, R, M>,
     app: &tauri::AppHandle<R>,
     owner_label: &str,
-) -> WebviewWindowBuilder<'a, R, M> {
+) -> Result<WebviewWindowBuilder<'a, R, M>, String> {
     #[cfg(windows)]
     {
         let builder = builder.focused(false);
-        match app
+        let owner = app
             .get_webview_window(owner_label)
-            .and_then(|main| main.hwnd().ok())
-        {
+            .and_then(|main| main.hwnd().ok());
+        Ok(match owner {
             Some(owner) => builder.owner_raw(owner),
             None => builder,
-        }
+        })
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        let main = app
+            .get_webview_window(owner_label)
+            .ok_or("The document window is unavailable for this utility window.")?;
+        builder
+            .focused(false)
+            .visible(false)
+            .parent(&main)
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = (app, owner_label);
-        builder
+        Ok(builder)
     }
 }
 
@@ -11429,7 +11715,9 @@ fn toolset_state_for<R: Runtime>(
         &toolset_window_label(toolset_id),
     )) {
         Some(window) => {
-            let actual_visible = window.is_visible().unwrap_or(false);
+            // A palette still hidden until its first paint (Windows) is open, not closed.
+            let actual_visible = window.is_visible().unwrap_or(false)
+                || palette_first_paint::opening(window.label());
             let visible = UTILITY_SUSPENSION
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -11760,6 +12048,9 @@ fn recover_offscreen_toolset_window<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
     resizable: bool,
 ) {
+    if utility_window::uses_native_wayland(app).unwrap_or(true) {
+        return;
+    }
     let Some(position) = current_toolset_window_position(window) else {
         return;
     };
@@ -12871,6 +13162,44 @@ mod tests {
                 assert!(!should_focus_main_window(mode));
             }
         }
+    }
+
+    #[test]
+    fn opened_document_paths_are_exact_or_refused_by_name() {
+        let utf8 = std::env::temp_dir().join("caf\u{e9} drawing.chemdraft");
+        for exact in [true, false] {
+            assert_eq!(
+                open_document_path_text(&utf8, exact).as_deref(),
+                Ok(utf8.to_str().unwrap())
+            );
+        }
+
+        #[cfg(unix)]
+        let invalid = {
+            use std::os::unix::ffi::OsStrExt;
+            PathBuf::from(std::ffi::OsStr::from_bytes(b"/home/caf\xe9.chemdraft"))
+        };
+        #[cfg(windows)]
+        let invalid = {
+            use std::os::windows::ffi::OsStringExt;
+            let mut wide: Vec<u16> = "C:\\caf".encode_utf16().collect();
+            wide.push(0xD800);
+            wide.extend(".chemdraft".encode_utf16());
+            PathBuf::from(std::ffi::OsString::from_wide(&wide))
+        };
+        // Linux: never hand the renderer a look-alike path that a save would write elsewhere.
+        let error = open_document_path_text(&invalid, true).unwrap_err();
+        assert!(error.contains("not valid UTF-8"), "{error}");
+        assert!(error.contains("Rename the file"), "{error}");
+        // Other hosts keep their earlier conversion.
+        assert_eq!(
+            open_document_path_text(&invalid, false),
+            Ok(invalid.to_string_lossy().into_owned())
+        );
+        #[cfg(target_os = "linux")]
+        assert!(open_document_payload_from_path(&invalid)
+            .err()
+            .is_some_and(|error| error.contains("not valid UTF-8")));
     }
 
     fn opened_document_test_payload() -> NativeOpenDocumentPayload {
@@ -15456,9 +15785,9 @@ mod tests {
             ToolsetPopoverFocusMode::Preserve,
         );
         // These are passed directly to WebviewWindowBuilder::from_config.
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         assert_eq!(config.parent.as_deref(), Some(MAIN_WINDOW_LABEL));
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "linux")))]
         assert_eq!(config.parent, None);
         assert!(!config.focusable);
         assert!(!config.focus); // Tao's Windows SW_SHOWNOACTIVATE path.
@@ -15481,9 +15810,15 @@ mod tests {
         assert_eq!(toolset_popover_extended_style(style), style);
     }
 
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     #[test]
     fn bond_stereo_mouse_popover_is_unparented_and_nonactivating() {
+        assert_bond_stereo_mouse_creation();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bond_stereo_mouse_popover_is_transient_and_nonactivating() {
         assert_bond_stereo_mouse_creation();
     }
 
@@ -15516,9 +15851,9 @@ mod tests {
             );
             assert!(!config.focus);
             assert!(!config.visible);
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             assert_eq!(config.parent.as_deref(), Some(MAIN_WINDOW_LABEL));
-            #[cfg(not(windows))]
+            #[cfg(not(any(windows, target_os = "linux")))]
             assert_eq!(config.parent, None);
         }
     }

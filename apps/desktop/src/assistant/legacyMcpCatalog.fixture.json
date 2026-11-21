@@ -1,0 +1,97 @@
+{
+  "legacy": true,
+  "tools": [
+    {
+      "name": "get_document",
+      "deadline": "readCompute"
+    },
+    {
+      "name": "get_selection",
+      "deadline": "readCompute"
+    },
+    {
+      "name": "get_structure",
+      "deadline": "readCompute"
+    },
+    {
+      "name": "render",
+      "deadline": "render"
+    },
+    {
+      "name": "name_to_structure",
+      "deadline": "naming"
+    },
+    {
+      "name": "validate_smiles",
+      "deadline": "readCompute"
+    },
+    {
+      "name": "structure_to_name",
+      "deadline": "naming"
+    },
+    {
+      "name": "insert_structures",
+      "deadline": "requestWrite"
+    },
+    {
+      "name": "insert_reaction",
+      "deadline": "requestWrite"
+    },
+    {
+      "name": "insert_text",
+      "deadline": "requestWrite"
+    },
+    {
+      "name": "insert_table",
+      "deadline": "requestWrite"
+    },
+    {
+      "name": "edit_structure",
+      "deadline": "requestWrite"
+    },
+    {
+      "name": "delete_objects",
+      "deadline": "requestWrite"
+    },
+    {
+      "name": "style_objects",
+      "deadline": "requestWrite"
+    },
+    {
+      "name": "move_objects",
+      "deadline": "requestWrite"
+    },
+    {
+      "name": "extra_0",
+      "deadline": "readCompute"
+    },
+    {
+      "name": "extra_1",
+      "deadline": "readCompute"
+    },
+    {
+      "name": "extra_2",
+      "deadline": "readCompute"
+    },
+    {
+      "name": "extra_3",
+      "deadline": "readCompute"
+    },
+    {
+      "name": "extra_4",
+      "deadline": "readCompute"
+    },
+    {
+      "name": "extra_5",
+      "deadline": "readCompute"
+    },
+    {
+      "name": "extra_6",
+      "deadline": "readCompute"
+    },
+    {
+      "name": "extra_7",
+      "deadline": "readCompute"
+    }
+  ]
+}

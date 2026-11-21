@@ -353,7 +353,7 @@ impl ExternalToolsState {
         }
         self.codex_processes.shutdown();
         for run in &runs {
-            run.wait_finished(Duration::from_secs(5));
+            run.wait_finished(run::supervision_limit(Duration::from_secs(5)));
         }
         for dir in dirs {
             let _ = fs::remove_dir_all(dir);
@@ -640,7 +640,7 @@ impl ExternalToolsState {
             run.cancel(KillReason::Cancelled);
         }
         for run in runs {
-            if !run.wait_finished(Duration::from_secs(5)) {
+            if !run.wait_finished(run::supervision_limit(Duration::from_secs(5))) {
                 return Err("External tool did not stop; its files were retained.".into());
             }
         }
@@ -1136,7 +1136,7 @@ fn conversation_clear_impl(
                     parent,
                     base,
                     matches!(status.source, Some(ToolSource::Managed)),
-                    Duration::from_secs(15),
+                    run::supervision_limit(Duration::from_secs(15)),
                     64 * 1024,
                 );
             }

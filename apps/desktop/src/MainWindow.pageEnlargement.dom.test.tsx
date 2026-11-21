@@ -75,18 +75,21 @@ describe.each(["macos", "windows"] as const)("mounted page commits on %s", platf
     const object = DocumentObjectSchema.parse({ id: "oversized", type: "plus", x: -24, y: -32, width: 176, height: 184 });
     const pluginId = "org.chemdraft.pageShift";
     const transactions = getAssistantTransactions(getAssistantHistoryPort());
-    const txId = path === "assistant patch" ? transactions.beginAssistantTransaction({ pluginId, runId: "shift-test",
-      label: "Insert large content", tabId: "initial", sendSelection: { objectIds: [] } }) : undefined;
     await act(async () => {
       runtime.registerPlugin({ id: pluginId, name: "Page shift", version: "0.1.0", apiVersion: "^0.1.20", entry: "test.js",
-        permissions: [path === "reviewed proposal" ? "document.proposePatch" : "document.write"],
+        permissions: path === "assistant patch" ? [...AssistantCapabilityPermissions] : [path === "reviewed proposal" ? "document.proposePatch" : "document.write"],
         contributes: { commands: [{ id: "plugin.pageShift.insert", title: "Insert" }] }
       }, { commandHandlers: { "plugin.pageShift.insert": async context => {
+        const tx = path === "assistant patch" ? await context.assistant!.beginRequest({ prompt: "Insert large content" }) : undefined;
         const patch = { reason: "Insert oversized content", patch: { op: "addObject" as const, pageId: page.id, object } };
         if (path === "reviewed proposal") await context.documents!.proposePatch(patch);
         else {
           if (!context.documents?.applyPatch) throw new Error("document.write capability is unavailable");
           await context.documents.applyPatch(patch);
+        }
+        if (tx) {
+          expect(await transactions.pageEnlargementConsent(tx.requestId, platform).confirm()).toBe(answer);
+          await context.assistant!.endRequest(tx);
         }
       } } });
       await runtime.invokeCommand("plugin.pageShift.insert");
@@ -95,10 +98,6 @@ describe.each(["macos", "windows"] as const)("mounted page commits on %s", platf
       await act(async () => container.querySelector<HTMLButtonElement>(".patch-review-badge")!.click());
       await act(async () => container.querySelector<HTMLButtonElement>(".patch-review-actions button")!.click());
     }
-    if (txId) await act(async () => {
-      expect(await transactions.pageEnlargementConsent(txId, platform).confirm()).toBe(answer);
-      transactions.endAssistantTransaction(txId, { touchedIds: [object.id] });
-    });
     const after = current();
     expect(after.selection.objectIds).toEqual([object.id]);
     expect(after.pages[1]).toEqual(before.pages[1]);
@@ -128,9 +127,6 @@ describe.each(["macos", "windows"] as const)("mounted page commits on %s", platf
     await act(async () => root.render(<MainWindow initialDocument={{ ...blank, pages: [{ ...page, objects: [molecule] }] }}
       shortcutPlatform={platform} initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
     const before = current(), runtime = captured.runtime!, pluginId = "org.chemdraft.pageScope";
-    const transactions = getAssistantTransactions(getAssistantHistoryPort());
-    const txId = path === "assistant patch" ? transactions.beginAssistantTransaction({ pluginId, runId: "page-scope",
-      label: "Insert large content", tabId: "initial", sendSelection: { objectIds: [] } }) : undefined;
     const object = DocumentObjectSchema.parse({ id: "oversized", type: "plus",
       x: answer === "fits" ? 400 : -24, y: answer === "fits" ? 400 : -32, width: 176, height: 184 });
     const atom = molecule.atoms[0]!;
@@ -152,11 +148,19 @@ describe.each(["macos", "windows"] as const)("mounted page commits on %s", platf
     }
     await act(async () => {
       runtime.registerPlugin({ id: pluginId, name: "Page scope", version: "0.1.0", apiVersion: "^0.1.20", entry: "test.js",
-        permissions: ["document.write"], contributes: { commands: [{ id: "plugin.pageScope.insert", title: "Insert" }] }
-      }, { commandHandlers: { "plugin.pageScope.insert": context => context.documents.applyPatch!({ reason: "Insert large content", patch: {
-        op: "batch", patches: (change === "charge mark" ? [object, mark] : [object])
-          .map(object => ({ op: "addObject", pageId: page.id, object }))
-      } }) } });
+        permissions: path === "assistant patch" ? [...AssistantCapabilityPermissions] : ["document.write"],
+        contributes: { commands: [{ id: "plugin.pageScope.insert", title: "Insert" }] }
+      }, { commandHandlers: { "plugin.pageScope.insert": async context => {
+        const tx = path === "assistant patch" ? await context.assistant!.beginRequest({ prompt: "Insert large content" }) : undefined;
+        try {
+          await context.documents.applyPatch!({ reason: "Insert large content", patch: {
+            op: "batch", patches: (change === "charge mark" ? [object, mark] : [object])
+              .map(object => ({ op: "addObject", pageId: page.id, object }))
+          } });
+        } finally {
+          if (tx) expect((await context.assistant!.endRequest(tx)).touchedIds).toEqual([]);
+        }
+      } } });
       await expect(runtime.invokeCommand("plugin.pageScope.insert")).rejects.toThrow(change === "charge mark"
         ? /Plugin write refused:.*atom.*formal charge/ : /Plugin write refused:.*atom.*x/);
     });
@@ -164,9 +168,7 @@ describe.each(["macos", "windows"] as const)("mounted page commits on %s", platf
     if (change === "late movement") expect(normalizationCalls).toBe(2);
     expect(current()).toBe(before);
     vi.restoreAllMocks();
-    if (txId) await act(async () => {
-      expect(transactions.endAssistantTransaction(txId, { touchedIds: [] }).touchedIds).toEqual([]);
-    });
+
     await command("edit.undo"); expect(current()).toBe(before);
     await command("edit.redo"); expect(current()).toBe(before);
   });
@@ -523,6 +525,129 @@ describe.each(["macos", "windows"] as const)("mounted page commits on %s", platf
     expect(current()).toEqual(after);
   });
 
+  it.each([false, true])("refuses late normalization outside request scope (approved fit=%s)", async approved => {
+    const blank = initial(200);
+    const pageId = blank.pages[0]!.id;
+    const drawing = applyPatch(blank, { op: "addObject", pageId,
+      object: DocumentObjectSchema.parse({ id: "existing", type: "plus", x: 50, y: 50, width: 10, height: 10 }) });
+    const prompt = vi.fn(async () => "enlarge");
+    restorePrompt = setNativePromptProvider(prompt);
+    await act(async () => root.render(<MainWindow initialDocument={drawing} shortcutPlatform={platform}
+      initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
+    const before = current();
+    const normalize = workflow.normalizeCommittedDocument;
+    let passes = 0;
+    vi.spyOn(workflow, "normalizeCommittedDocument").mockImplementation(doc => {
+      const normalized = normalize(doc);
+      if (++passes !== 2) return normalized;
+      if (!approved) return setDocumentCustomPageSize(normalized, { width: 400, height: 400, unit: "css-px" });
+      return { ...normalized, pages: normalized.pages.map(page => ({ ...page, objects: page.objects.map(object =>
+        object.id === "existing" ? { ...object, x: object.x + 7 } : object) })) };
+    });
+    const runtime = captured.runtime!;
+    runtime.registerPlugin({ id: "org.test.publicFit", name: "Public page fit", version: "1.0.0", apiVersion: "^0.1.26",
+      entry: "test.js", permissions: ["document.read", "selection.read", "document.write", "chemistry.compute"],
+      contributes: { commands: [{ id: "plugin.publicFit.insert", title: "Insert" }] }
+    }, { commandHandlers: { "plugin.publicFit.insert": async ctx => {
+      const request = await ctx.requests!.begin({ label: "Caption" });
+      if (!request.ok) throw new Error(request.error.message);
+      const { requestId } = request.value;
+      const result = await ctx.documents.applyRequestPatch!({ requestId, patch: { op: "addObject", pageId: before.pages[0]!.id,
+        object: DocumentObjectSchema.parse({ id: "plus", type: "plus", x: approved ? -20 : 20, y: 20, width: 10, height: 10 }) } });
+      await ctx.requests!.end({ requestId });
+      return result;
+    } } });
+    await act(async () => {
+      expect(await runtime.invokeCommand("plugin.publicFit.insert")).toMatchObject({ ok: false, error: { code: "scope" } });
+    });
+    expect(prompt).toHaveBeenCalledTimes(approved ? 1 : 0);
+    expect(current()).toBe(before);
+    await command("edit.undo");
+    expect(current()).toBe(before);
+  });
+
+  it.each(["fits", "keep", "enlarge", "cancelled"] as const)(
+    "request page space / %s reuses the explicit decision for its patch only", async answer => {
+      const blank = initial(100);
+      const pageId = blank.pages[0]!.id;
+      const existing = createSmilesMolecule(blank, { x: 50, y: 50 }, depictSmiles2D("CC"), "CC");
+      const drawing = applyPatch(blank, { op: "addObject", pageId, object: existing });
+      const prompt = vi.fn(async (): Promise<string> => answer);
+      restorePrompt = setNativePromptProvider(prompt);
+      await act(async () => root.render(<MainWindow initialDocument={drawing} shortcutPlatform={platform}
+        initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
+      const before = current(), runtime = captured.runtime!;
+      const commandId = "plugin.pageRequest.draw";
+      const geometry = answer === "fits" ? { x: 20, y: 20, width: 5, height: 5 } :
+        { x: -24, y: -32, width: 176, height: 184 };
+      const patch = { op: "addObject" as const, pageId,
+        object: DocumentObjectSchema.parse({ id: "arranged", type: "plus", ...geometry }) };
+      let resolveLateAnswer: (answer: string) => void;
+      if (answer === "cancelled") {
+        prompt.mockImplementation(() => new Promise(resolve => { resolveLateAnswer = resolve; }));
+      }
+      const draw = vi.fn(async (ctx: import("@chemdraft/plugin-api").PluginCommandContext) => {
+        const requests = ctx.requests!;
+        const started = await requests.begin({ label: "Place content" });
+        if (!started.ok) throw new Error(started.error.message);
+        const { requestId } = started.value;
+        const context = await requests.getContext({ requestId });
+        if (!context.ok) throw new Error(context.error.message);
+        const { revision } = context.value.pages[0]!;
+        const bounds = { x: geometry.x - 1, y: geometry.y - 1, width: geometry.width + 2, height: geometry.height + 2 };
+        const pending = requests.requestPageSpace!({ requestId, pageId, revision, requiredBounds: bounds });
+        if (answer === "cancelled") {
+          await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce());
+          await requests.end({ requestId });
+          expect(await pending).toEqual({ ok: true, value: { outcome: "unanswered" } });
+          resolveLateAnswer("enlarge");
+          expect(await ctx.documents.applyRequestPatch!({ requestId, patch })).toMatchObject({ ok: false, error: { code: "cancelled" } });
+          return;
+        }
+        const decision = await pending;
+        if (!decision.ok || decision.value.outcome === "unanswered") throw new Error(JSON.stringify(decision));
+        expect(decision.value.outcome).toBe(answer);
+        const pageSpace = { pageId, decisionId: decision.value.decisionId };
+        expect(await ctx.documents.applyRequestPatch!({ requestId, patch, pageSpace: { ...pageSpace, decisionId: "forged" } }))
+          .toMatchObject({ ok: false, error: { code: "stale" } });
+        if (answer !== "fits") {
+          expect(await ctx.documents.applyRequestPatch!({ requestId, pageSpace, patch: {
+            ...patch, object: { ...patch.object, x: -500 }
+          } })).toMatchObject({ ok: false, error: { code: "stale" } });
+        }
+        expect(await ctx.documents.applyRequestPatch!({ requestId, patch, pageSpace })).toMatchObject({ ok: true });
+        expect(await ctx.documents.applyRequestPatch!({ requestId, patch, pageSpace }))
+          .toMatchObject({ ok: false, error: { code: "stale" } });
+        // A second write at a new revision and rectangle needs a separate decision.
+        if (answer !== "fits") await ctx.documents.applyPatch!({ reason: "Add a second mark", patch: {
+          ...patch, object: { ...patch.object, id: "second", x: 500, y: 50 }
+        } });
+        await requests.end({ requestId });
+      });
+      await act(async () => {
+        runtime.registerPlugin({ id: "org.test.pageRequest", name: "Page Request", version: "1.0.0", apiVersion: "^0.1.26",
+          entry: "test.js", permissions: ["document.read", "selection.read", "document.write", "chemistry.compute"],
+          contributes: { commands: [{ id: commandId, title: "Place content" }] }
+        }, { commandHandlers: { [commandId]: draw } });
+        await runtime.invokeCommand(commandId);
+      });
+      const after = current();
+      expect(prompt).toHaveBeenCalledTimes(answer === "fits" ? 0 : answer === "cancelled" ? 1 : 2);
+      if (answer === "cancelled") {
+        expect(after).toBe(before);
+        return;
+      }
+      expect(after.selection.objectIds).toEqual(answer === "fits" ? ["arranged"] : ["arranged", "second"]);
+      if (answer === "enlarge") {
+        expect(after.pages[0]!.width).toBeGreaterThan(500);
+        expect(after.pages[0]!.objects[0]).toMatchObject({ x: existing.x + 24, y: existing.y + 32 });
+      } else expect(after.pages[0]!.layout).toEqual(before.pages[0]!.layout);
+      await command("edit.undo"); expect(current()).toEqual(before);
+      await command("edit.redo"); expect(current()).toEqual(after);
+      expect(draw).toHaveBeenCalledOnce();
+    }
+  );
+
   it.each(actions.flatMap(action => (["fits", "enlarge", "keep"] as const).map(answer => ({ action, answer }))))(
     "$action / $answer asks once, selects the result, and undoes page + content together", async ({ action, answer }) => {
     const size = answer === "fits" ? 2000 : 20;
@@ -728,27 +853,27 @@ describe.each(["macos", "windows"] as const)("mounted page commits on %s", platf
     const before = current(), runtime = captured.runtime!;
     const pluginId = "org.chemdraft.pageUnanswered";
     const transactions = getAssistantTransactions(getAssistantHistoryPort());
-    const txId = transactions.beginAssistantTransaction({ pluginId, runId: "unanswered-test",
-      label: "Insert large content", tabId: "initial", sendSelection: { objectIds: [] } });
-    const deadline = new AbortController();
-    const pending = transactions.pageEnlargementConsent(txId, platform).confirm(deadline.signal);
-    deadline.abort();
-    expect(await pending).toBe("unanswered");
     let failure: unknown;
     await act(async () => {
       runtime.registerPlugin({ id: pluginId, name: "Unanswered", version: "0.1.0", apiVersion: "^0.1.20",
-        entry: "test.js", permissions: ["document.write"],
+        entry: "test.js", permissions: [...AssistantCapabilityPermissions],
         contributes: { commands: [{ id: "plugin.pageUnanswered.insert", title: "Insert" }] }
       }, { commandHandlers: { "plugin.pageUnanswered.insert": async context => {
-        if (!context.documents?.applyPatch) throw new Error("document.write capability is unavailable");
-        await context.documents.applyPatch({ reason: "Insert", patch: { op: "addObject", pageId: before.pages[0]!.id,
-          object: DocumentObjectSchema.parse({ id: "unanswered-overflow", type: "plus", x: 0, y: 0, width: 1000, height: 1000 }) } });
+        const tx = await context.assistant!.beginRequest({ prompt: "Insert large content" });
+        try {
+          const deadline = new AbortController();
+          const pending = transactions.pageEnlargementConsent(tx.requestId, platform).confirm(deadline.signal);
+          deadline.abort();
+          expect(await pending).toBe("unanswered");
+          await context.documents.applyPatch!({ reason: "Insert", patch: { op: "addObject", pageId: before.pages[0]!.id,
+            object: DocumentObjectSchema.parse({ id: "unanswered-overflow", type: "plus", x: 0, y: 0, width: 1000, height: 1000 }) } });
+        } finally { await context.assistant!.endRequest(tx); }
       } } });
       try { await runtime.invokeCommand("plugin.pageUnanswered.insert"); } catch (error) { failure = error; }
     });
     expect(failure).toBeInstanceOf(Error);
     expect((failure as Error).message).toContain("No answer to the enlarge-page question");
-    await act(async () => { answer("enlarge"); transactions.endAssistantTransaction(txId, { touchedIds: [] }); });
+    await act(async () => { answer("enlarge"); });
     expect(current()).toEqual(before);
     expect(prompt).toHaveBeenCalledOnce();
   });

@@ -6,7 +6,8 @@ import type { ChemDraftDocument, NormalizedProposedDocumentPatch } from "@chemdr
 export function rebasePluginPatch(
   document: ChemDraftDocument,
   proposed: NormalizedProposedDocumentPatch,
-  retargetMissingPages = false
+  retargetMissingPages = false,
+  forwardUpdateReferences = false
 ): NormalizedProposedDocumentPatch {
   const patch = proposed.patch as DocumentPatch;
   if (patch.op === "batch") BatchDocumentPatchSchema.parse(patch);
@@ -57,7 +58,8 @@ export function rebasePluginPatch(
     if (op.op !== "addObject" && op.op !== "addAnnotation") {
       if ("objectId" in op) {
         if (op.op !== "updateObject") return { ...op, objectId: remap(op.objectId) };
-        const changes = remapObjectReferences(op.changes, remap);
+        const changes = remapObjectReferences(op.changes, reference =>
+          remappedIds.get(reference) ?? (forwardUpdateReferences ? insertionIds.get(reference) : undefined) ?? reference);
         if (remappedIds.has(op.objectId) && "pairId" in changes && changes.pairId) {
           changes.pairId = pairIds.get(changes.pairId) ?? changes.pairId;
         }

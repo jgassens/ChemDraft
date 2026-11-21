@@ -1,4 +1,4 @@
-import type { AssistantStructureInspection } from "../assistant/AssistantToolContext";
+import type { StructureInspection } from "../plugins/requestWrites/structureIdentity";
 import type { IdentityWorkerPort, StructureInspector } from "./identityProtocol";
 
 export const IDENTITY_VERIFICATION_BUDGET_MS = 4_000;
@@ -38,16 +38,16 @@ export function createIdentityWorkerClient(
     ready = false;
   };
 
-  return (format, value, stereoReference, signal) => {
+  return (format, value, stereoReference, signal, details) => {
     let cancel: (() => void) | undefined;
-    const run = (): Promise<AssistantStructureInspection> => {
+    const run = (): Promise<StructureInspection> => {
       signal?.throwIfAborted();
       return new Promise((resolve, reject) => {
         clearTimeout(idleTimer);
         const id = ++nextId;
         let timer: ReturnType<typeof setTimeout> | undefined;
         let done = false;
-        const finish = (result?: AssistantStructureInspection, error?: unknown, kill = false): void => {
+        const finish = (result?: StructureInspection, error?: unknown, kill = false): void => {
           if (done) return;
           done = true;
           cancel = undefined;
@@ -70,7 +70,7 @@ export function createIdentityWorkerClient(
           const requestBudgetMs = typeof budgetMs === "function" ? budgetMs(stereoReference) : budgetMs;
           timer = setTimeout(() => finish(undefined,
             new IdentityVerificationTimeoutError(requestBudgetMs), true), requestBudgetMs);
-          worker?.postMessage({ id, format, value, stereoReference });
+          worker?.postMessage({ id, format, value, stereoReference, ...(details ? { details } : {}) });
         };
         try {
           worker ??= factory();

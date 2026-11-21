@@ -1,12 +1,59 @@
 //! Test-only filesystem/process boundary. No vendor discovery or account-home fallback.
-use super::env::ParentEnv;
+use super::{env::ParentEnv, run::RunStatus};
 use std::{
     fs,
     path::{Path, PathBuf},
     sync::Mutex,
+    time::Duration,
 };
 
 static ROOTS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+static TIMEOUT_HOLDS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// Holds the timeout of every run whose working directory is `cwd` until the guard drops.
+/// The timeout still counts from spawn, so it fires as soon as the hold is released if it has
+/// already elapsed: a test arms a short timeout only once its child has signalled it is ready.
+pub(super) struct TimeoutHold(PathBuf);
+pub(super) fn hold_timeouts(cwd: &Path) -> TimeoutHold {
+    TIMEOUT_HOLDS.lock().unwrap().push(cwd.to_owned());
+    TimeoutHold(cwd.to_owned())
+}
+impl Drop for TimeoutHold {
+    fn drop(&mut self) {
+        let mut holds = TIMEOUT_HOLDS.lock().unwrap();
+        if let Some(index) = holds.iter().position(|held| held == &self.0) {
+            holds.swap_remove(index);
+        }
+    }
+}
+pub(super) fn timeouts_held(cwd: &Path) -> bool {
+    TIMEOUT_HOLDS.lock().unwrap().iter().any(|held| held == cwd)
+}
+
+/// One finished run, as the watchdog saw it: the timeout it was configured with and the
+/// terminal status it published.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct FinishedRun {
+    pub(super) timeout: Duration,
+    pub(super) status: RunStatus,
+}
+static FINISHED_RUNS: Mutex<Vec<(PathBuf, FinishedRun)>> = Mutex::new(Vec::new());
+pub(super) fn record_finished(cwd: &Path, timeout: Duration, status: RunStatus) {
+    FINISHED_RUNS
+        .lock()
+        .unwrap()
+        .push((cwd.to_owned(), FinishedRun { timeout, status }));
+}
+/// Every finished run whose working directory is `cwd`, oldest first.
+pub(super) fn finished_runs(cwd: &Path) -> Vec<FinishedRun> {
+    FINISHED_RUNS
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(dir, _)| dir == cwd)
+        .map(|(_, run)| run.clone())
+        .collect()
+}
 
 pub(super) fn register(root: &Path) {
     let resolved = fs::canonicalize(root).expect("test root must exist");

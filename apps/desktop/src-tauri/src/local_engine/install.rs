@@ -347,7 +347,7 @@ impl<S: EngineSpec> InstallIo for SystemInstallIo<S> {
         watch: Option<RunWatch<'_>>,
     ) -> Result<(), InstallError> {
         check_cancel::<S>(cancel)?;
-        let mut command = Command::new(program);
+        let mut command = crate::child_command(program);
         scrub_environment(&mut command);
         command
             .args(args)
@@ -433,7 +433,7 @@ impl<S: EngineSpec> ProbeIo for SystemInstallIo<S> {
         cancel: &AtomicBool,
     ) -> Result<String, InstallError> {
         check_cancel::<S>(cancel)?;
-        let mut command = Command::new(program);
+        let mut command = crate::child_command(program);
         scrub_environment(&mut command);
         command
             .args(args)

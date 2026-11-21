@@ -1,10 +1,11 @@
 import { z } from "zod";
 import { NativeFieldPatternSchema } from "./nativeFieldPatterns";
-import { NativeExtensionsSchema, NativeVersionSchema } from "./nativeCompatibilityState";
+import { isNativeRecord, NativeExtensionsSchema, NativeVersionSchema, ownNativeValue } from "./nativeCompatibilityState";
 import { normalizeAtomIsotope } from "./isotopes";
 import { atomicNumberForElementSymbol } from "./elements";
 import { decodeImageBase64, imageBase64Error } from "./imageBytes";
 import { imagePixelLimitError, validatePngImage } from "./imageInfo";
+import { compileObjectReferenceCheck, objectReferenceField, type ObjectLink } from "./objectReferenceFields";
 import {
   PageOrientations,
   PageSizePresetIds,
@@ -16,8 +17,37 @@ import {
 export const DocumentSchemaVersion = "chemdraft.document.v1" as const;
 
 const IdSchema = z.string().min(1);
+// Live links use this schema (or a qualified reference field). Local and provenance IDs use IdSchema.
+const ObjectReferenceIdSchema = objectReferenceField(IdSchema.describe("Page object reference"), id => [[id]]);
 const IsoDateSchema = z.string().datetime();
 const MetadataSchema = z.record(z.string(), z.unknown());
+
+/** The compatibility bag remains permissive for imports. These are the native links that
+ * bracket membership and reaction export resolve against the current page. */
+function compatibilityObjectLinks(metadata: Record<string, unknown>): ObjectLink[] {
+  const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
+  const string = (value: unknown) => typeof value === "string" ? value : undefined;
+  const steps = metadata.cdxmlStepReferences;
+  const links: ObjectLink[] = [];
+  if (isNativeRecord(steps)) {
+    for (const key of Object.keys(steps).sort()) {
+      for (const id of list(steps[key])) if (typeof id === "string") links.push([id, "step", key]);
+    }
+  }
+  for (const id of list(metadata.cdxmlBracketMemberObjectIds)) {
+    if (typeof id === "string") links.push([id, "member object"]);
+  }
+  for (const member of list(metadata.cdxmlBracketMembers)) {
+    const id = ownNativeValue(member, "objectId");
+    if (typeof id === "string") links.push([id, "member", string(ownNativeValue(member, "sourceId")), string(ownNativeValue(member, "atomId"))]);
+  }
+  for (const crossing of list(metadata.cdxmlBracketCrossings)) {
+    const ref = ownNativeValue(crossing, "ref");
+    const id = ownNativeValue(ref, "objectId");
+    if (typeof id === "string") links.push([id, "crossing", string(ownNativeValue(ref, "bondId")), string(ownNativeValue(crossing, "innerAtomId"))]);
+  }
+  return links;
+}
 
 export const CompatibilityWarningSchema = z
   .object({
@@ -32,7 +62,7 @@ export const CompatibilityMetadataSchema = z
     sourceFormat: z.string().optional(),
     originalId: z.string().optional(),
     warnings: z.array(CompatibilityWarningSchema).default([]),
-    unknown: MetadataSchema.default({})
+    unknown: objectReferenceField(MetadataSchema.default({}), compatibilityObjectLinks)
   })
   .strict();
 
@@ -120,7 +150,7 @@ export const VisualEffectStyleSchema = z
   })
   .strict();
 
-export const AnchorSchema = z
+export const AnchorSchema = objectReferenceField(z
   .object({
     kind: z.enum(["point", "object", "atom", "bond"]),
     point: PointSchema.optional(),
@@ -128,7 +158,7 @@ export const AnchorSchema = z
     atomId: z.string().optional(),
     bondId: z.string().optional()
   })
-  .strict();
+  .strict(), anchor => anchor.objectId === undefined ? [] : [[anchor.objectId, anchor.kind, anchor.atomId, anchor.bondId]]);
 
 // Optional metadata keeps older documents loadable without adding a preset during parsing.
 const ObjectStyleMetadataSchema = z.object({
@@ -143,7 +173,7 @@ export const ArrowAttachmentFrameSchema = z.object({
   Math.abs(frame.tangent.x * frame.normal.x + frame.tangent.y * frame.normal.y) < 1e-6,
   "Arrow attachment axes must be perpendicular unit vectors");
 export const ArrowAttachmentSchema = z.object({
-  kind: z.literal("conditions"), parentObjectId: IdSchema,
+  kind: z.literal("conditions"), parentObjectId: ObjectReferenceIdSchema,
   side: z.enum(["above", "below"]), frame: ArrowAttachmentFrameSchema, offset: PointSchema,
   placement: z.enum(["auto", "manual"]).optional()
 }).strict();
@@ -439,12 +469,12 @@ export const MoleculeBondSchema = z
     return bond;
   });
 
-export const BondRefSchema = z
+export const BondRefSchema = objectReferenceField(z
   .object({
     objectId: IdSchema,
     bondId: IdSchema
   })
-  .strict();
+  .strict(), ref => [[ref.objectId, ref.bondId]]);
 
 function bondRefKey(ref: z.infer<typeof BondRefSchema>): string {
   return `${ref.objectId}::${ref.bondId}`;
@@ -499,20 +529,20 @@ export const MoleculeObjectSchema = BaseObjectSchema.extend({
   rGroups: z.array(RGroupDisplaySchema).default([])
 }).strict();
 
-export const ReactionComponentSchema = z
+export const ReactionComponentSchema = objectReferenceField(z
   .object({
     role: z.enum(["reactant", "agent", "product"]),
     objectId: IdSchema
   })
-  .strict();
+  .strict(), component => [[component.objectId, component.role]]);
 
 export const ReactionObjectSchema = BaseObjectSchema.extend({
   type: z.literal("reaction"),
   components: z.array(ReactionComponentSchema),
-  conditionsTextObjectIds: z.array(IdSchema).default([]),
+  conditionsTextObjectIds: z.array(ObjectReferenceIdSchema).default([]),
   /** Shared drawable objects; a multi-step intermediate is referenced, never copied. */
-  arrowObjectIds: z.array(IdSchema).optional(),
-  plusObjectIds: z.array(IdSchema).optional(),
+  arrowObjectIds: z.array(ObjectReferenceIdSchema).optional(),
+  plusObjectIds: z.array(ObjectReferenceIdSchema).optional(),
   mappingState: z.enum(["absent", "partial", "complete", "unknown"]).default("unknown")
 }).strict();
 
@@ -521,7 +551,7 @@ export const ArrowObjectSchema = BaseObjectSchema.extend({
   arrowKind: z.enum(["forward", "resonance", "equilibrium", "retrosynthesis", "unknown"]),
   start: AnchorSchema,
   end: AnchorSchema,
-  labels: z.array(IdSchema).default([])
+  labels: z.array(ObjectReferenceIdSchema).default([])
 }).strict();
 
 export const MechanismArrowObjectSchema = BaseObjectSchema.extend({
@@ -533,7 +563,7 @@ export const MechanismArrowObjectSchema = BaseObjectSchema.extend({
   warnings: z.array(CompatibilityWarningSchema).default([])
 }).strict();
 
-export const ElectronMarkObjectSchema = BaseObjectSchema.extend({
+export const ElectronMarkObjectSchema = objectReferenceField(BaseObjectSchema.extend({
   type: z.literal("electron-mark"),
   markKind: z.enum(["lone-pair", "radical-dot", "charge", "unknown"]),
   anchor: AnchorSchema,
@@ -545,7 +575,8 @@ export const ElectronMarkObjectSchema = BaseObjectSchema.extend({
   chargeStyle: z.enum(["circled", "plain"]).optional(),
   /** A charge mark with `radical` is a radical ion symbol (•+ / •−): one unpaired electron rides along. */
   radical: z.boolean().optional()
-}).strict();
+}).strict(), ({ anchor, atomAssociation }) => anchor.objectId !== undefined
+  ? [[anchor.objectId, atomAssociation]] : []);
 
 export const TextSpanSchema = z
   .object({
@@ -674,15 +705,15 @@ export const BracketObjectSchema = BaseObjectSchema.extend({
   repeatCount: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
   crossingBondIds: z.array(BondRefSchema).optional(),
   label: z.string().optional(),
-  containedObjectIds: z.array(IdSchema).default([]),
+  containedObjectIds: z.array(ObjectReferenceIdSchema).default([]),
   compatibility: CompatibilityMetadataSchema.extend({
-    unknown: z.object({
+    unknown: objectReferenceField(z.object({
       // Source ids bind these snapshots to cdxmlBracketMembers. Copying a pair remaps the
       // member's objectId but keeps molecule-local atom/bond ids, so this also survives copies.
       cdxmlBracketAtomSnapshots: z.array(CdxmlBracketAtomSnapshotSchema).optional(),
       // Source member and local atom id pairs whose deletion was observed while identity was known.
       cdxmlBracketDeletedAtoms: z.array(z.tuple([IdSchema, IdSchema])).optional()
-    }).catchall(z.unknown()).default({})
+    }).catchall(z.unknown()).default({}), compatibilityObjectLinks)
   }).optional()
 }).strict();
 
@@ -720,12 +751,12 @@ export const PlusObjectSchema = BaseObjectSchema.extend({
 
 export const GroupObjectSchema = BaseObjectSchema.extend({
   type: z.literal("group"),
-  childObjectIds: z.array(IdSchema)
+  childObjectIds: z.array(ObjectReferenceIdSchema)
 }).strict();
 
 export const AnnotationObjectSchema = BaseObjectSchema.extend({
   type: z.literal("annotation"),
-  targetObjectIds: z.array(IdSchema).default([]),
+  targetObjectIds: z.array(ObjectReferenceIdSchema).default([]),
   message: z.string()
 }).strict();
 
@@ -777,6 +808,9 @@ export const DocumentObjectSchema = z.discriminatedUnion("type", [
   if (object.type === "table") refineTable(object, context);
   if (object.type === "graphic") validateGraphicImage(object, context);
 });
+
+export const checkChangedObjectReferences: (before: DocumentObject | undefined, after: DocumentObject,
+  check: (id: string) => void) => void = compileObjectReferenceCheck(DocumentObjectSchema);
 
 export const PageSizePresetIdSchema = z.enum(PageSizePresetIds);
 export const PageSizeUnitSchema = z.enum(PageSizeUnits);

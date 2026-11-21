@@ -3,6 +3,7 @@ import { applyPatch, createCustomPageLayout, createEmptyDocument, DocumentObject
 import { AssistantCapabilityPermissions, ProposedDocumentPatchSchema, runPluginWorker, parsePluginManifest, type PluginWorkerHandle,
   type PluginCommandContext, type PluginAssistantToolHandler } from "@chemdraft/plugin-api";
 import { PluginHost } from "@chemdraft/plugin-host";
+import legacyCatalog from "./legacyMcpCatalog.fixture.json";
 import { AssistantToolsController } from "./AssistantToolsController";
 import { AssistantTransactions } from "./assistantTransaction";
 import type { AssistantHistoryPort } from "./historyPort";
@@ -751,6 +752,73 @@ describe("assistant requests and MCP bridge", () => {
       expect(result.previewSvg).toMatch(/^data:image\/svg\+xml;charset=utf-8,/);
     } finally { await s.finish(); }
   });
+  it("legacy begin and end never lend the request's selection to a retained ordinary writer", async () => {
+    const s = setup(undefined, true);
+    try {
+      // The surrounding command started with no selection. The legacy assistant's later
+      // selection is a grant for its built-in tools, not for the command's document writer.
+      const write = s.commandContext.documents.applyPatch!;
+      const patch = { reason: "Edit later selection", patch: { op: "moveObject" as const, objectId: s.molecule.id, x: 52, y: 28 } };
+      const tx = await s.commandContext.assistant!.beginRequest({ prompt: "Test request ownership" });
+      await expect(write(patch)).rejects.toThrow(/not selected/);
+      await s.commandContext.assistant!.endRequest(tx);
+      await expect(write(patch)).rejects.toThrow(/not selected/);
+      expect(s.history).toHaveLength(0);
+    } finally { await s.finish(); }
+  });
+
+  it("refuses a queued tool commit after its caller receives the independent write deadline", async () => {
+    vi.useFakeTimers();
+    const s = setup();
+    let release!: () => void;
+    const wait = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn(s.gate, "run").mockImplementation(async apply => { await wait; return apply(); });
+    try {
+      await s.controller.beginRequest(s.plugin, { prompt: "caption" });
+      const pending = s.controller.callTool(s.plugin, { name: "insert_text", input: { text: "Expired" } });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(s.gate.run).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(61_000);
+      expect(await pending).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("timed out") }] });
+      release();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(s.history).toHaveLength(0);
+    } finally { release(); await s.finish(); }
+  });
+
+  it("holds all four render slots after the callers time out until rasterization settles", async () => {
+    vi.useFakeTimers();
+    const s = setup();
+    const rasterizations: (() => void)[] = [];
+    const png = { bytes: Uint8Array.of(137, 80, 78, 71, 13, 10, 26, 10), width: 1, height: 1 };
+    const render = vi.fn(() => new Promise<typeof png>(resolve => { rasterizations.push(() => resolve(png)); }));
+    s.context.render = render;
+    const input = { name: "render", input: { target: "document" } };
+    try {
+      await s.controller.beginRequest(s.plugin, { prompt: "render" });
+      const pending = Array.from({ length: 4 }, () => s.controller.callTool(s.plugin, input));
+      await vi.advanceTimersByTimeAsync(1);
+      expect(render).toHaveBeenCalledTimes(4);
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(await Promise.all(pending)).toEqual(Array(4).fill({
+        isError: true, content: [{ type: "text", text: "Assistant tool render timed out after 30000 ms." }]
+      }));
+      await expect(s.controller.callTool(s.plugin, input)).rejects.toThrow("At most four");
+      expect(render).toHaveBeenCalledTimes(4);
+
+      rasterizations[0]!();
+      await vi.advanceTimersByTimeAsync(0);
+      const replacement = s.controller.callTool(s.plugin, input);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(render).toHaveBeenCalledTimes(5);
+      rasterizations[4]!();
+      await expect(replacement).resolves.toMatchObject({ content: [{ type: "image", mimeType: "image/png" }] });
+    } finally {
+      rasterizations.forEach(settle => settle());
+      await s.finish();
+    }
+  });
+
   it("returns the gesture timeout as a tool error and never applies the abandoned write", async () => {
     vi.useFakeTimers();
     const s = setup();
@@ -982,6 +1050,17 @@ describe("session-scoped plugin assistant tools", () => {
       await pending;
       expect(s.writeSignals[0]!.aborted).toBe(true);
     } finally { release?.(); await s.finish(); }
+  });
+
+  it("opens the exact legacy native deadline table with all eight extras", async () => {
+    const s = setup(() => ({ content: [] }));
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "List tools" });
+      const extraTools = Array.from({ length: 8 }, (_, index) => ({ ...EXTRA_TOOL, name: "extra_" + index }));
+      const session = await s.controller.createToolSession(s.plugin, { requestId, extraTools });
+      expect(s.engine.open).toHaveBeenCalledWith(s.plugin, expect.any(Function), legacyCatalog);
+      expect(session.tools).toEqual(legacyCatalog.tools.map(tool => tool.name));
+    } finally { await s.finish(); }
   });
 
   it("lists the session's tools and routes calls to its owning handler with declared capabilities", async () => {

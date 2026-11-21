@@ -23,6 +23,7 @@ function allowed(file: string, specifier: string) {
   if (!specifier.startsWith(".")) return false;
   const target = resolve(dirname(file), specifier);
   return target.startsWith(root + sep) || target === resolve(root, "../plugins/reservedObjectIds") ||
+    target === resolve(root, "../plugins/requestWrites/structureIdentity") ||
     target === resolve(root, "../documentWorkflow"); // SVG export only, asserted below
 }
 describe("assistant import boundary", () => {

@@ -114,15 +114,16 @@ const fallbackAdvances = [0, 1, 2, 3].map(face => {
  * after EVERY character; the final character's tracking is clamped at zero so negative
  * tracking never removes the final advance. This shared
  * result feeds both automatic stored-box sizing and the transient editor frame. */
-export function measureNativeTextSpanLineWidth(spans: readonly TextSpan[], style: NativeTextStyle): number {
+export function measureNativeTextSpanLineWidth(spans: readonly TextSpan[], style: NativeTextStyle,
+  renderedFontSize?: (span: TextSpan) => number): number {
   let legacyWidth = 0;
   let metricWidth = 0;
   let count = 0;
   let finalLetterSpacing = 0;
   for (const span of spans) {
-    const fontSize = span.script === "normal"
+    const fontSize = renderedFontSize?.(span) ?? (span.script === "normal"
       ? (typeof span.style.fontSizePx === "number" ? span.style.fontSizePx : style.fontSizePx)
-      : style.fontSizePx * nativeTextScriptFontScale;
+      : style.fontSizePx * nativeTextScriptFontScale);
     const letterSpacing = typeof span.style.letterSpacingPx === "number" ? span.style.letterSpacingPx : style.letterSpacingPx;
     const bold = (typeof span.style.fontWeight === "number" ? span.style.fontWeight : style.fontWeight) >= 600;
     const italic = (span.style.fontStyle ?? style.fontStyle) === "italic";

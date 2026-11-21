@@ -303,6 +303,10 @@ fn codex_run_exit_cancel_timeout_and_shutdown_reconcile_before_completion() {
         } else {
             mode
         };
+        // Hold the run's timeout until the stub has refreshed auth, so the 1 s timeout can only
+        // fire after the refresh it must reconcile, however slowly the stub starts.
+        let cwd = conversation_dir(&base, &req.plugin_id, &req.conversation_id).unwrap();
+        let hold = test_support::hold_timeouts(&cwd);
         let started = state
             .start(
                 &base,
@@ -312,17 +316,19 @@ fn codex_run_exit_cancel_timeout_and_shutdown_reconcile_before_completion() {
                 false,
             )
             .unwrap();
+        assert_eq!(started.cwd, cwd);
         let run = state.run_by_id(&started.run_id).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !started.cwd.join("refresh-ready").exists() {
-            assert!(Instant::now() < deadline, "stub did not refresh auth");
-            thread::sleep(Duration::from_millis(10));
-        }
+        wait_for_marker(
+            &started.cwd.join("refresh-ready"),
+            || !run.status().is_running(),
+            "stub did not refresh auth",
+        );
         match mode {
             "cancel" => run.cancel(KillReason::Cancelled),
             "shutdown" => state.shutdown(),
             _ => (),
         }
+        drop(hold);
         let result = finished(&run);
         assert_no_auth_tokens(&serde_json::to_string(&result).unwrap());
         assert!(matches!(
@@ -331,6 +337,16 @@ fn codex_run_exit_cancel_timeout_and_shutdown_reconcile_before_completion() {
                 | RunStatus::Exited { code: Some(7), .. }
                 | RunStatus::Killed { .. }
         ));
+        // The stub in "wait" mode outlives every limit, so only the intended path can end it.
+        let killed_by = match mode {
+            "cancel" => Some(KillReason::Cancelled),
+            "timeout" => Some(KillReason::Timeout),
+            "shutdown" => Some(KillReason::AppExit),
+            _ => None,
+        };
+        if let Some(reason) = killed_by {
+            assert_eq!(result.status, RunStatus::Killed { reason }, "{mode}");
+        }
         let target = base.join("codex-home/auth.json");
         if mode == "conflict" {
             assert!(fs::read_to_string(&auth).unwrap() == original);
@@ -388,7 +404,7 @@ fn codex_probe_exit_reconciles_refreshed_credentials() {
             (&parent, Some(&context)),
             &temp.0,
             false,
-            Duration::from_secs(5),
+            HANG_GUARD,
             16 * 1024,
         )
         .unwrap();
@@ -420,31 +436,49 @@ fn codex_shutdown_waits_for_probe_reconciliation_and_refuses_late_probes() {
     let state = ExternalToolsState::default();
     let context = codex_auth::CodexAuth::new(ProbePlatform::current(), &base, &parent)
         .tracked(&state.codex_processes);
+    // Build the stub before the probe starts so its compile time never counts against a wait.
+    let stub_path = stub();
     thread::scope(|scope| {
+        // "wait" outlives every hang guard, so only a kill ends the stub. The probe's own timeout
+        // is held until shutdown has claimed the run, so it cannot be what ends it. If this test
+        // fails first, the hold drops as the closure unwinds and that timeout reaps the stub
+        // before the scope's join returns.
+        let hold = test_support::hold_timeouts(&temp.0);
         let probe = scope.spawn(|| {
             probe::execute_in_home(
-                stub(),
+                stub_path,
                 &["codex-refresh-probe", "wait"],
                 (&parent, Some(&context)),
                 &temp.0,
                 false,
-                Duration::from_secs(30),
+                HANG_GUARD,
                 16 * 1024,
             )
         });
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !temp.0.join("refresh-ready").exists() {
-            assert!(Instant::now() < deadline, "probe did not refresh auth");
-            thread::sleep(Duration::from_millis(10));
-        }
+        wait_for_marker(
+            &temp.0.join("refresh-ready"),
+            || probe.is_finished(),
+            "probe did not refresh auth",
+        );
         state.shutdown();
+        drop(hold);
         let error = probe
             .join()
             .unwrap()
             .err()
             .expect("shutdown should kill the probe");
+        // The probe reports every kill the same way; the watchdog's record names the cause.
+        assert_eq!(error, "External tool probe timed out.");
         assert_no_auth_tokens(&error);
     });
+    let runs = test_support::finished_runs(&temp.0);
+    assert_eq!(runs.len(), 1);
+    assert_eq!(
+        runs[0].status,
+        RunStatus::Killed {
+            reason: KillReason::AppExit
+        }
+    );
     let json: serde_json::Value = serde_json::from_slice(&fs::read(&auth).unwrap()).unwrap();
     assert!(json["tokens"]["refresh_token"] == "fake-new-secret");
     assert_private_auth(&auth);
@@ -454,7 +488,7 @@ fn codex_shutdown_waits_for_probe_reconciliation_and_refuses_late_probes() {
         (&parent, Some(&context)),
         &temp.0,
         false,
-        Duration::from_secs(5),
+        HANG_GUARD,
         16 * 1024,
     )
     .err()
@@ -1456,7 +1490,7 @@ fn pinned_claude_accepts_rendered_run() {
     // Always kill/reap before assertions (including failure), leaving no CLI behind.
     run.cancel(run::KillReason::Cancelled);
     assert!(
-        run.wait_finished(Duration::from_secs(5)),
+        run.wait_finished(HANG_GUARD),
         "Claude parity process did not stop"
     );
     assert!(
@@ -1846,14 +1880,16 @@ fn main() {
     let staged=home.join("vendor.tmp");fs::write(&staged,refreshed).unwrap();
     fs::rename(&staged,home.join("auth.json")).unwrap();
     fs::write("refresh-ready","ready").unwrap();
-    if args.iter().any(|s|s=="wait") {thread::sleep(Duration::from_secs(30));}
+    if args.iter().any(|s|s=="wait") {thread::sleep(Duration::from_secs(600));}
     if args.iter().any(|s|s=="fail") {std::process::exit(7);}
   },
   "auth"=>{println!("{{\"loggedIn\":true,\"authMethod\":\"claude.ai\"}}");},
   "login"=>{eprintln!("Logged in using ChatGPT");},
   "lines"=>{
-   println!("out-1");io::stdout().flush().unwrap();thread::sleep(Duration::from_millis(60));
-   eprintln!("err-1");io::stderr().flush().unwrap();thread::sleep(Duration::from_millis(60));
+   // Each line waits for the host to acknowledge the previous one, so the order never depends
+   // on how fast the stdout and stderr reader threads are scheduled.
+   println!("out-1");io::stdout().flush().unwrap();await_file("ack-out-1");
+   eprintln!("err-1");io::stderr().flush().unwrap();await_file("ack-err-1");
    println!("out-2");let mut input=String::new();io::stdin().read_to_string(&mut input).unwrap();println!("stdin:{input}");
   },
   "long"=>{println!("{}", "x".repeat(300_000));println!("after");},
@@ -1862,28 +1898,34 @@ fn main() {
   "descendant"=>{
     // Ignore Ctrl-C so cancellation must use the hard-kill path.
     #[cfg(unix)] unsafe { unsafe extern "C" {fn signal(sig:i32,handler:usize)->usize;} signal(2,1); }
-    fs::write(&args[2],"ready").unwrap();thread::sleep(Duration::from_secs(4));fs::write(&args[3],"survived").unwrap();thread::sleep(Duration::from_secs(30));
+    // Writes "survived" only once the test releases it, after the tree kill should be over.
+    fs::write(&args[2],"ready").unwrap();await_file(&args[4]);fs::write(&args[3],"survived").unwrap();thread::sleep(Duration::from_secs(600));
   },
   "tree"=>{
     #[cfg(unix)] unsafe { unsafe extern "C" {fn signal(sig:i32,handler:usize)->usize;} signal(2,1); }
     let mut command=Command::new(env::current_exe().unwrap());
-    command.args(["descendant",&args[2],&args[3]]).stdin(Stdio::null());
+    command.args(["descendant",&args[2],&args[3],&args[4]]).stdin(Stdio::null());
     #[cfg(windows)] {use std::os::windows::process::CommandExt;command.creation_flags(0x08000000);}
-    let _child=command.spawn().unwrap();thread::sleep(Duration::from_secs(30));
+    let _child=command.spawn().unwrap();thread::sleep(Duration::from_secs(600));
   },
-  "sleep"=>{thread::sleep(Duration::from_secs(30));},
+  // Outlives every test hang guard, so only a kill ends it; an orphan still exits eventually.
+  "sleep"=>{thread::sleep(Duration::from_secs(600));},
   "flood"=>{for _ in 0..70_000 {print!("x");}println!();},
   _=>{},
  }
 }
 
+fn await_file(path: &str) {
+ for _ in 0..60_000 { if std::path::Path::new(path).exists() {return;} thread::sleep(Duration::from_millis(10)); }
+ panic!("{path} never appeared");
+}
 fn json_string<'a>(text: &'a str, key: &str) -> &'a str {
  text.split(&format!("\"{key}\":\"")).nth(1).unwrap().split('"').next().unwrap()
 }
 fn post(url: &str, token: &str, session: bool, body: &str) -> String {
  let (host,path)=url.strip_prefix("http://").unwrap().split_once('/').unwrap();
  let mut socket=std::net::TcpStream::connect(host).unwrap();
- socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+ socket.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
  let session_header=if session {format!("Mcp-Session-Id: {}\r\n",path.strip_prefix("mcp/").unwrap())} else {String::new()};
  let request=format!("POST /{path} HTTP/1.1\r\nHost: {host}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n{session_header}\r\n{body}",body.len());
  socket.write_all(request.as_bytes()).unwrap();
@@ -1944,22 +1986,28 @@ fn spawn(args: &[&str], stdin: Option<&str>, cwd: &Path, timeout: Duration) -> A
     .unwrap()
 }
 fn finished(run: &ToolRun) -> run::ExternalToolRunPoll {
-    assert!(run.wait_finished(Duration::from_secs(8)));
+    assert!(run.wait_finished(HANG_GUARD));
     run.poll(0, 5000, 0)
 }
 #[test]
 fn line_streams_stdin_and_cursor_delivery() {
     let temp = TempDir::new();
-    let run = spawn(&["lines"], Some("hello"), &temp.0, Duration::from_secs(10));
+    let run = spawn(&["lines"], Some("hello"), &temp.0, HANG_GUARD);
     let mut cursor = 0;
     let mut lines = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + HANG_GUARD;
     loop {
         assert!(Instant::now() < deadline);
         let poll = run.poll(cursor, 1, 1000);
         assert!(poll.lines.len() <= 1);
         cursor = poll.next_cursor;
         let empty = poll.lines.is_empty();
+        // Release the stub's next line only once this one has been delivered.
+        for line in &poll.lines {
+            if ["out-1", "err-1"].contains(&line.text.as_str()) {
+                fs::write(temp.0.join(format!("ack-{}", line.text)), "ack").unwrap();
+            }
+        }
         lines.extend(poll.lines);
         if !poll.status.is_running() && empty {
             break;
@@ -1984,20 +2032,20 @@ fn line_streams_stdin_and_cursor_delivery() {
 #[test]
 fn truncated_lines_and_both_ring_limits() {
     let temp = TempDir::new();
-    let run = spawn(&["long"], None, &temp.0, Duration::from_secs(10));
+    let run = spawn(&["long"], None, &temp.0, HANG_GUARD);
     let poll = finished(&run);
     assert_eq!(poll.lines.len(), 2);
     assert_eq!(poll.lines[0].text.len(), run::MAX_LINE_BYTES);
     assert!(poll.lines[0].truncated);
     assert_eq!(poll.lines[1].text, "after");
-    let run = spawn(&["overflow"], None, &temp.0, Duration::from_secs(10));
-    assert!(run.wait_finished(Duration::from_secs(10)));
+    let run = spawn(&["overflow"], None, &temp.0, HANG_GUARD);
+    assert!(run.wait_finished(HANG_GUARD));
     let poll = run.poll(0, usize::MAX, 0);
     assert_eq!(poll.lines.len(), 5000);
     assert_eq!(poll.dropped_lines, 1000);
     assert_eq!(poll.lines[0].seq, 1000);
     assert_eq!(poll.next_cursor, 6000);
-    let run = spawn(&["bytes"], None, &temp.0, Duration::from_secs(10));
+    let run = spawn(&["bytes"], None, &temp.0, HANG_GUARD);
     let poll = finished(&run);
     assert_eq!(poll.dropped_lines, 4);
     assert_eq!(poll.lines.len(), 16);
@@ -2006,34 +2054,59 @@ fn truncated_lines_and_both_ring_limits() {
         run::MAX_BYTES
     );
 }
-fn wait_file(path: &Path) {
-    let until = Instant::now() + Duration::from_secs(30);
-    while !path.exists() {
-        assert!(Instant::now() < until, "child never started");
+/// Only turns a hang into a failure; no test should need to beat it.
+const HANG_GUARD: Duration = Duration::from_secs(60);
+/// Waits until a child has written `marker`, however long a loaded host takes to get there.
+/// Fails early, with `message`, if the child finished without writing it.
+fn wait_for_marker(marker: &Path, exited: impl Fn() -> bool, message: &str) {
+    let guard = Instant::now() + HANG_GUARD;
+    while !marker.exists() {
+        // Re-check after observing an exit: the marker may have landed just before it.
+        assert!(
+            !exited() || marker.exists(),
+            "{message}: child exited first"
+        );
+        assert!(Instant::now() < guard, "{message}: hang guard expired");
         thread::sleep(Duration::from_millis(10));
     }
 }
+/// How long a descendant that escaped a tree kill gets to prove it is alive. It writes its marker
+/// within milliseconds of release, so a slow host can only hide a survivor, never fail the test.
+const SURVIVOR_WINDOW: Duration = Duration::from_secs(2);
 #[test]
 fn timeout_and_cancel_kill_descendants() {
     for cancel in [false, true] {
         let temp = TempDir::new();
         let ready = temp.0.join("ready");
         let survived = temp.0.join("survived");
+        let release = temp.0.join("release");
+        // The 1 s timeout is held until the descendant exists, so a slow start-up can never let
+        // it kill the tree first. A cancelled run's timeout is far beyond every wait below.
+        let hold = test_support::hold_timeouts(&temp.0);
         let run = spawn(
-            &["tree", ready.to_str().unwrap(), survived.to_str().unwrap()],
+            &[
+                "tree",
+                ready.to_str().unwrap(),
+                survived.to_str().unwrap(),
+                release.to_str().unwrap(),
+            ],
             None,
             &temp.0,
             if cancel {
-                Duration::from_secs(20)
+                HANG_GUARD * 10
             } else {
                 Duration::from_secs(1)
             },
         );
-        wait_file(&ready);
-        let started = Instant::now();
+        wait_for_marker(
+            &ready,
+            || !run.status().is_running(),
+            "descendant never started",
+        );
         if cancel {
             run.cancel(KillReason::Cancelled);
         }
+        drop(hold);
         let poll = finished(&run);
         assert_eq!(
             poll.status,
@@ -2045,8 +2118,9 @@ fn timeout_and_cancel_kill_descendants() {
                 }
             }
         );
-        // The stub writes after four seconds. Observe past that deadline even for a fast cancel.
-        thread::sleep(Duration::from_millis(4500).saturating_sub(started.elapsed()));
+        // Only now may the descendant write "survived"; it can do so only if it is still alive.
+        fs::write(&release, "release").unwrap();
+        thread::sleep(SURVIVOR_WINDOW);
         assert!(!survived.exists(), "descendant survived tree kill");
     }
 }
@@ -2061,7 +2135,8 @@ fn request(tool: ToolId, conversation: &str) -> ExternalToolRunRequest {
         model: None,
         effort: None,
         mcp_session_id: "mcp12345".into(),
-        timeout_ms: Some(10_000),
+        // Far beyond every test wait: a run ends by exiting, a kill, or a test's own timeout.
+        timeout_ms: Some(600_000),
     }
 }
 
@@ -2414,7 +2489,7 @@ fn command_start_renders_and_stages_host_inputs_and_tracks_session() {
         r#"{"mcpServers":{}}"#
     );
     let run = state.run_by_id(&started.run_id).unwrap();
-    assert!(run.wait_finished(Duration::from_secs(5)));
+    assert!(run.wait_finished(HANG_GUARD));
     assert_eq!(
         state.inner.lock().unwrap().runs[&started.run_id].mcp_session_id,
         ""
@@ -2503,7 +2578,7 @@ fn busy_directory_reuse_ownership_and_shutdown() {
     );
     let run = state.owned_run(&first.run_id, &req.plugin_id).unwrap();
     run.cancel(KillReason::Cancelled);
-    assert!(run.wait_finished(Duration::from_secs(5)));
+    assert!(run.wait_finished(HANG_GUARD));
     fs::write(first.cwd.join("persistent"), "resume state").unwrap();
     let second = state
         .start(
@@ -2724,7 +2799,7 @@ fn clearing_plugin_consent_cancels_only_that_plugins_runs() {
         .unwrap();
     consent_clear_plugin_impl(&temp.0, &state, &first.plugin_id).unwrap();
     let run = state.run_by_id(&first_run.run_id).unwrap();
-    assert!(run.wait_finished(Duration::from_secs(5)));
+    assert!(run.wait_finished(HANG_GUARD));
     assert_eq!(
         run.status(),
         RunStatus::Killed {
@@ -2841,7 +2916,7 @@ fn codex_probes_and_run_share_prepared_home_and_log_fallback() {
             rendered(&["codex-home-run"], None),
             &temp.0,
             &environment,
-            Duration::from_secs(5),
+            HANG_GUARD,
             None,
             Some(auth),
         )
@@ -2861,9 +2936,11 @@ fn codex_probes_and_run_share_prepared_home_and_log_fallback() {
 #[test]
 fn probe_timeout_output_cap_and_login_shell_capture() {
     let temp = TempDir::new();
+    // Build the stub first so its compile time is not measured below.
+    let stub_path = stub();
     let start = Instant::now();
     let error = probe::execute(
-        stub(),
+        stub_path,
         &["sleep"],
         &ParentEnv::new(),
         &temp.0,
@@ -2873,15 +2950,27 @@ fn probe_timeout_output_cap_and_login_shell_capture() {
     )
     .err()
     .unwrap();
-    assert!(error.contains("timed out"));
-    assert!(start.elapsed() < Duration::from_secs(4));
+    // "sleep" outlives the hang guard, so only a kill can end it: the watchdog's record shows the
+    // probe ran with exactly the 50 ms it was given and that its timeout ended it.
+    assert_eq!(error, "External tool probe timed out.");
+    assert_eq!(
+        test_support::finished_runs(&temp.0),
+        [test_support::FinishedRun {
+            timeout: Duration::from_millis(50),
+            status: RunStatus::Killed {
+                reason: KillReason::Timeout
+            },
+        }]
+    );
+    // Only a hang guard: the probe returned without waiting for the stub.
+    assert!(start.elapsed() < HANG_GUARD);
     let error = probe::execute(
-        stub(),
+        stub_path,
         &["flood"],
         &ParentEnv::new(),
         &temp.0,
         false,
-        Duration::from_secs(5),
+        HANG_GUARD,
         64 * 1024,
     )
     .err()
@@ -2940,14 +3029,16 @@ fn request_validation_and_serialization_match_the_wire_contract() {
 #[test]
 fn long_poll_caps_wait_and_shims_are_rejected_at_spawn() {
     let temp = TempDir::new();
-    let run = spawn(&["sleep"], None, &temp.0, Duration::from_secs(10));
+    let run = spawn(&["sleep"], None, &temp.0, HANG_GUARD);
     let start = Instant::now();
-    let poll = run.poll(0, 5001, 10_000);
+    // Ask for ten minutes: the cap (`run::poll_wait`, exact value unit-tested in run.rs) is the
+    // only way this poll returns before the hang guard.
+    let poll = run.poll(0, 5001, 600_000);
     assert!(poll.lines.is_empty());
     assert!(start.elapsed() >= Duration::from_millis(900));
-    assert!(start.elapsed() < Duration::from_millis(1800));
+    assert!(start.elapsed() < HANG_GUARD);
     run.cancel(KillReason::Cancelled);
-    assert!(run.wait_finished(Duration::from_secs(5)));
+    assert!(run.wait_finished(HANG_GUARD));
     let mut batch = rendered(&[], None);
     batch.program = temp.0.join("codex.CMD");
     assert!(
@@ -3085,7 +3176,7 @@ async fn live_mcp_run_binding_ownership_credentials_and_cleanup() {
         let rendered = render_run(&tool.spec(), input).unwrap();
         assert!(rendered.args.iter().all(|a| !a.contains(&token)));
         let run = state.run_by_id(&started.run_id).unwrap();
-        assert!(run.wait_finished(Duration::from_secs(10)));
+        assert!(run.wait_finished(HANG_GUARD));
         let poll = run.poll(0, 5000, 0);
         assert!(
             matches!(poll.status, RunStatus::Exited { code: Some(0), .. }),
@@ -3126,8 +3217,12 @@ async fn live_mcp_run_binding_ownership_credentials_and_cleanup() {
     req.system_prompt = "mcp-live-wait".into();
     // Cancel, timeout, and shutdown all release the supervisor's binding.
     for mode in ["cancel", "timeout", "shutdown"] {
-        req.timeout_ms = Some(if mode == "timeout" { 1000 } else { 10_000 });
+        req.timeout_ms = Some(if mode == "timeout" { 1000 } else { 600_000 });
+        // Hold the 1 s timeout until the Busy check below has run against the live binding.
+        let cwd = conversation_dir(&temp.0, plugin, &req.conversation_id).unwrap();
+        let hold = test_support::hold_timeouts(&cwd);
         let started = run_start_impl(&temp.0, &state, req.clone(), &ParentEnv::new()).unwrap();
+        assert_eq!(started.cwd, cwd);
         let run = state.run_by_id(&started.run_id).unwrap();
         // Bind is already reserved before the child makes any MCP request.
         let mut second = req.clone();
@@ -3144,7 +3239,8 @@ async fn live_mcp_run_binding_ownership_credentials_and_cleanup() {
             "shutdown" => state.shutdown(),
             _ => {}
         }
-        assert!(run.wait_finished(Duration::from_secs(10)));
+        drop(hold);
+        assert!(run.wait_finished(HANG_GUARD));
         let expected = match mode {
             "cancel" => KillReason::Cancelled,
             "shutdown" => KillReason::AppExit,
@@ -3210,7 +3306,7 @@ fn failed_run_preparation_and_spawn_release_mcp_binding() {
                 RunErrorCode::InvalidArgs
             }
             "busy" => {
-                let run = spawn(&["sleep"], None, &temp.0, Duration::from_secs(10));
+                let run = spawn(&["sleep"], None, &temp.0, HANG_GUARD);
                 state.inner.lock().unwrap().runs.insert(
                     "active".into(),
                     OwnedRun {
@@ -3248,7 +3344,7 @@ fn failed_run_preparation_and_spawn_release_mcp_binding() {
         drop(session::bind_session(&req.mcp_session_id, &req.plugin_id, "after-failure").unwrap());
         if let Some(run) = active {
             run.cancel(KillReason::Cancelled);
-            assert!(run.wait_finished(Duration::from_secs(5)));
+            assert!(run.wait_finished(HANG_GUARD));
         }
     }
     fs::create_dir(cwd.join("claude-mcp.json")).unwrap();

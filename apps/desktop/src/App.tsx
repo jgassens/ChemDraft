@@ -10,6 +10,7 @@ import { installSecondaryWindowEditHistory } from "./editHistoryRouting";
 import { installBrowserReloadGuard } from "./browserReloadGuard";
 import { OfficeObjectLoadingState } from "./OfficeObjectLoadingState";
 import { officeObjectLoadingRoute } from "./officeObjectLoading";
+import { acknowledgeFirstPaintOnce } from "./paletteFirstPaint";
 
 const MainWindow = lazy(() => import("./MainWindow").then(m => ({ default: m.MainWindow })));
 const PaletteWindow = lazy(() => import("./PaletteWindow").then(m => ({ default: m.PaletteWindow })));
@@ -69,6 +70,15 @@ function SecondaryWindowEditHistory({ dialog = false }: { dialog?: boolean }): n
   return null;
 }
 
+/**
+ * Rendered beside a palette, popover or tooltip window, inside the same Suspense boundary, so its
+ * effect runs once that window's first render has committed.
+ */
+function FirstPaintAcknowledgement(): null {
+  useEffect(() => acknowledgeFirstPaintOnce(), []);
+  return null;
+}
+
 export function dialogRoute(): string | undefined {
   if (typeof window === "undefined") return undefined;
   const params = new URLSearchParams(window.location.search);
@@ -87,21 +97,24 @@ function secondaryWindowContent(): ReactElement | undefined {
   const popoverRoute = toolsetPopoverRoute();
   if (popoverRoute) {
     return (
-      <PalettePopoverWindow
-        toolsetId={popoverRoute.toolsetId}
-        kind={popoverRoute.kind}
-        prewarm={popoverRoute.prewarm}
-      />
+      <>
+        <PalettePopoverWindow
+          toolsetId={popoverRoute.toolsetId}
+          kind={popoverRoute.kind}
+          prewarm={popoverRoute.prewarm}
+        />
+        <FirstPaintAcknowledgement />
+      </>
     );
   }
 
   if (isToolsetTooltipRoute()) {
-    return <PaletteTooltipWindow />;
+    return <><PaletteTooltipWindow /><FirstPaintAcknowledgement /></>;
   }
 
   const toolset = toolsetRoute();
   if (toolset) {
-    return <PaletteWindow {...toolset} />;
+    return <><PaletteWindow {...toolset} /><FirstPaintAcknowledgement /></>;
   }
 
   const pluginPanelId = pluginPanelRouteId();

@@ -137,16 +137,27 @@ mod palette_command_hit_box_tests {
     }
 }
 pub(crate) use installation::finish_installation;
+#[cfg(target_os = "linux")]
+pub(crate) use key_guard::linux::{self, set_keyboard_popover};
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn set_keyboard_popover(_label: &str, _keyboard: bool) {}
 pub(crate) use key_guard::{
     keeps_palette_focus, observe_document_pointer_release, End as PointerGuardEnd,
 };
 
 pub(crate) fn palette_blocks_forwarded_shortcut(
+    label: &str,
     key: &str,
     meta: bool,
     ctrl: bool,
     alt: bool,
 ) -> bool {
+    #[cfg(target_os = "linux")]
+    if !linux::has_confirmed_focus(label) {
+        return true;
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = label;
     key_guard::blocks_forwarded_shortcut(
         key_guard::blocks_document(super::MAIN_WINDOW_LABEL),
         key,
@@ -219,6 +230,9 @@ impl InputFocusState {
     fn acquired(&mut self, generation: u64, epoch: u64, focused: bool) -> bool {
         match self {
             Self::Palette(lease) => lease.acquired(generation, epoch, focused),
+            #[cfg(target_os = "linux")]
+            Self::Panel(panel) => panel.acquired_presentation(generation, epoch, focused),
+            #[cfg(not(target_os = "linux"))]
             Self::Panel(panel) => panel.acquired(generation, epoch, focused),
         }
     }
@@ -433,6 +447,8 @@ pub(crate) fn request<R: tauri::Runtime>(
         .or_insert_with(|| InputFocusState::new(window.label()));
     let epoch = page_token.parse().ok()?;
     let accepted = match lease {
+        #[cfg(target_os = "linux")]
+        InputFocusState::Panel(panel) if editing => panel.record_request(generation, epoch, true),
         InputFocusState::Panel(panel) => panel.request(generation, epoch, editing),
         InputFocusState::Palette(lease) => {
             let accepted = lease.request(generation, epoch, editing);
@@ -479,10 +495,8 @@ pub(crate) fn is_current<R: tauri::Runtime>(
         .is_some_and(|lease| lease.is_current(generation, epoch))
 }
 
-// Called synchronously from WM_ACTIVATE/WM_ACTIVATEAPP or AppKit key notifications,
-// never from WebView2 child focus messages or delayed Tauri Focused events.
-// Linux has no native activation hook (WM_ACTIVATE / AppKit key notifications) to call this.
-#[cfg_attr(target_os = "linux", allow(dead_code))]
+// Windows and macOS report activation at their native hooks. GTK reports loss
+// here and commits activation only when its timestamped acquisition completes.
 pub(crate) fn activation<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>, active: bool) {
     activation_with_reason(window, active, "window");
 }

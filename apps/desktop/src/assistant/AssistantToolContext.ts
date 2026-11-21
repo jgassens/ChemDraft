@@ -1,5 +1,5 @@
 import type { ChemDraftDocument, DocumentPatch } from "@chemdraft/chem-core";
-import type { ChemicalIdentityFacts, ReactionSchemeLayoutOptions } from "@chemdraft/document-workflow-core";
+import type { ReactionSchemeLayoutOptions } from "@chemdraft/document-workflow-core";
 import type {
   PluginManifest, PluginNameToStructureRequest, PluginNameToStructureResult,
   PluginStructureFromSmilesRequest, PluginStructureFromSmilesResult,
@@ -7,14 +7,13 @@ import type {
 } from "@chemdraft/plugin-api";
 
 export interface AssistantRect { x: number; y: number; width: number; height: number }
+export const PAGE_GROWTH_UNANSWERED = "declined: no answer to the enlarge-page question within 5 minutes";
 export interface AssistantPageGrowth {
   pageId: string; width: number; height: number; description: string; itemCount: number;
   pages?: { pageId: string; width: number; height: number; objectIds?: string[] }[];
 }
-export type AssistantStructureInspection =
-  | { valid: true; canonicalSmiles: string; identitySmiles: string; identityFacts?: ChemicalIdentityFacts;
-      formula: string; heavyAtoms: number; warnings: string[] }
-  | { valid: false; reason: string };
+import type { StructureInspection } from "../plugins/requestWrites/structureIdentity";
+export type { StructureInspection as AssistantStructureInspection } from "../plugins/requestWrites/structureIdentity";
 
 /** All hooks are bound to the run's tab, never the currently active tab. */
 export interface AssistantToolContext {
@@ -36,7 +35,7 @@ export interface AssistantToolContext {
    * expectedSmiles comes only from the typed insert/edit builders; other writes preserve identity.
    * The host verifies the fully normalized desktop document before committing. */
   write(patch: DocumentPatch, signal?: AbortSignal, checkPreconditions?: (document: ChemDraftDocument) => void,
-    expectedSmiles?: ReadonlyMap<string, string>): Promise<{ objectIds: string[] }>;
+    expectedSmiles?: ReadonlyMap<string, string>): Promise<{ objectIds: string[]; pageSpaceUnanswered?: true }>;
   chemistry: {
     /** Host loads the existing chemistry adapter; tool builders remain engine-independent. */
     reactionProductAligner?(): Promise<NonNullable<ReactionSchemeLayoutOptions["alignProduct"]>>;
@@ -49,7 +48,7 @@ export interface AssistantToolContext {
      * identitySmiles removes ordinary explicit H, preserving isotopic H. With stereoReference,
      * it compares only stereo specified by that input, while canonicalSmiles stays unmasked. */
     inspectStructure(format: "smiles" | "molfile", value: string,
-      stereoReference?: string): Promise<AssistantStructureInspection>;
+      stereoReference?: string): Promise<StructureInspection>;
   };
   render(svg: string, opts: { maxDimensionPx: number; background?: string }): Promise<{
     bytes: Uint8Array; width: number; height: number;

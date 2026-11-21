@@ -81,6 +81,7 @@ import {
 } from "@chemdraft/art-engine";
 import {
   adoptDerivedDocument,
+  toEngineDocument,
   copyNativeObjectExtensions,
   preservedNativeChemistryValues,
   readDocument,
@@ -13644,11 +13645,10 @@ function translateDocumentObjectByPatches(
     preserveChargeAnchor?: boolean;
     /** Whole insert/page translations also carry stored attachment points and text frames. */
     translateAbsoluteCoordinates?: boolean;
-  } = {}
+  } = {},
+  object = objectOnPage(pageContainingObject(document, objectId), objectId)
 ): DocumentPatch[] {
-  const page = pageContainingObject(document, objectId);
-  const object = objectOnPage(page, objectId);
-  if (!page || !object || (dx === 0 && dy === 0)) {
+  if (!object || (dx === 0 && dy === 0)) {
     return [];
   }
 
@@ -14077,12 +14077,49 @@ export function translateInsertedDocumentObjects(
 export function translateDocumentPage(
   document: ChemDraftDocument, pageId: string, dx: number, dy: number
 ): ChemDraftDocument {
-  const page = document.pages.find(candidate => candidate.id === pageId);
+  const pages = document.pages.filter(candidate => candidate.id === pageId);
+  if (pages.length > 1) throw new Error(`Cannot translate ambiguous page "${pageId}".`);
+  const page = pages[0];
   if (!page || (dx === 0 && dy === 0)) return document;
-  const patches = page.objects.flatMap(object => translateDocumentObjectByPatches(document, object.id, dx, dy, {
+  // Patch targets are ID-only. Restrict their lookup and application to the addressed page.
+  if (new Set(page.objects.map(object => object.id)).size !== page.objects.length) {
+    throw new Error(`Cannot translate page "${pageId}" with ambiguous object IDs.`);
+  }
+  const local = adoptDerivedDocument(toEngineDocument(document), { ...document, pages: [page] });
+  const patches = page.objects.flatMap(object => translateDocumentObjectByPatches(local, object.id, dx, dy, {
     translateAnchoredGeometry: true, preserveChargeAnchor: true, translateAbsoluteCoordinates: true
-  }));
-  return applyPatches(document, patches, { now: phase4Timestamp });
+  }, object));
+  const moved = applyPatches(local, patches, { now: phase4Timestamp });
+  return adoptDerivedDocument(document, { ...document, pages: document.pages.map(p => p === page ? moved.pages[0]! : p) });
+}
+
+/** The page-fit grant covers only these absolute coordinates. Project them from each original
+ * object without running the mover or accepting any patch fields from it. */
+export function expectedPageTranslation(object: DocumentObject, dx: number, dy: number): DocumentObject {
+  if (!dx && !dy) return object;
+  const position = (point: PagePoint) => ({ x: point.x + dx, y: point.y + dy });
+  const anchor = (value: Anchor): Anchor => value.point ? { ...value, point: position(value.point) } : value;
+  const attachments = <T extends { attachmentPoints: Anchor[] }>(value: T): T =>
+    ({ ...value, attachmentPoints: value.attachmentPoints.map(anchor) });
+  const frame = position(object);
+  switch (object.type) {
+    case "molecule": return { ...object, ...frame, atoms: object.atoms.map(atom => ({ ...atom, ...position(atom) })),
+      superatoms: object.superatoms.map(attachments), rGroups: object.rGroups.map(attachments) };
+    case "electron-mark": return { ...object, ...frame, anchor: anchor(object.anchor) };
+    case "reaction-arrow": return { ...object, ...frame, start: anchor(object.start), end: anchor(object.end) };
+    case "mechanism-arrow": return { ...object, ...frame, source: anchor(object.source), target: anchor(object.target),
+      controlPoints: object.controlPoints.map(position) };
+    case "graphic": return { ...object, ...frame, data: translateGraphicObjectData(object.data, dx, dy) };
+    case "superatom": return { ...object, ...frame, metadata: attachments(object.metadata) };
+    case "r-group-label": return { ...object, ...frame, display: attachments(object.display) };
+    case "text": {
+      const attachment = object.arrowAttachment;
+      if (attachment) return { ...object, ...frame, arrowAttachment: { ...attachment,
+        frame: { ...attachment.frame, origin: position(attachment.frame.origin) } } };
+      return { ...object, ...frame };
+    }
+    default: return { ...object, ...frame };
+  }
 }
 
 export type DocumentAlignMode = ObjectAlignMode;

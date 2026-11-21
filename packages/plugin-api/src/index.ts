@@ -3,6 +3,12 @@ import { z } from "zod";
 import { panelReportLimitIssue, PluginPanelReportLimits, snapshotPanelReport } from "./reportLimits";
 export { PluginPanelReportLimits, snapshotPanelReport } from "./reportLimits";
 export * from "./chemistry3d";
+export * from "./requestSchemas";
+export * from "./requestCapabilities";
+export { PluginRequestLimits, requestValidationCode, type PluginRequestJson, type PluginRequestJsonObject } from "./requestPayload";
+export { PluginToolDefinitionSchema, type PluginToolDefinition, type PluginToolInputSchema } from "./toolSessionSchemas";
+import type { PluginDepictionAPI, PluginRequestChemistryAPI, PluginRequestDocumentAPI, PluginRequestsAPI,
+  PluginToolSessionsAPI } from "./requestCapabilities";
 import type { PluginEmbed3DRequest, PluginEmbed3DResult, PluginMinimize3DRequest, PluginMinimize3DResult,
   PluginFlatten3DRequest, PluginFlatten3DResult } from "./chemistry3d";
 
@@ -39,6 +45,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * 0.1.23 adds bondStyle 'wavy' (single-bond either stereo, #327).
  * 0.1.24 adds binary CDX import/export (#316) and optional reaction arrowObjectIds/plusObjectIds (#335); shared scheme arrows and plus signs are referenced by id, never copied.
  * 0.1.25 adds optional native bracketUsage, repeatCount and scoped crossingBondIds (#338 bracketed groups).
+ * 0.1.26 adds optional request-bound document access, tool sessions, chemistry and depiction, and document-change events.
  *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
  * the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` — the NMR
@@ -48,7 +55,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * local structure recognition, `^0.1.7` for structure naming, `^0.1.8` for external tools), which this host satisfies and an
  * older one correctly does not.
  */
-export const PluginApiVersion = "0.1.25" as const;
+export const PluginApiVersion = "0.1.26" as const;
 
 export const pluginPermissions = [
   "document.read",
@@ -768,7 +775,7 @@ class BoundedPanelReportSchema extends z.ZodType<z.output<typeof PanelReportObje
     return PanelReportSnapshotSchema.safeParseAsync(snapshotPanelReport(data), params);
   }
 
-  ["~validate"](data: unknown) {
+  ["~validate"](data: unknown): ReturnType<z.ZodType<this["_output"]>["~validate"]> {
     return PanelReportSnapshotSchema["~validate"](snapshotPanelReport(data));
   }
 }
@@ -1048,7 +1055,7 @@ export interface PluginTableSpec {
   style?: { preset?: "three-line" | "grid"; headerBold?: boolean; fontFamily?: string; fontSizePx?: number };
 }
 
-export interface PluginDocumentAPI {
+export interface PluginDocumentAPI extends PluginRequestDocumentAPI {
   getActiveDocument(): Promise<ChemDraftDocument | undefined>;
   proposePatch(proposal: ProposedDocumentPatch): Promise<ProposedPatchReceipt>;
   /** Present only with `document.write`; valid only during one of this plugin's command invocations.
@@ -1470,7 +1477,7 @@ export const PluginChemistryPropertiesResultSchema = z.discriminatedUnion("avail
 ]);
 export type PluginChemistryPropertiesResult = z.infer<typeof PluginChemistryPropertiesResultSchema>;
 
-export interface PluginChemistryAPI {
+export interface PluginChemistryAPI extends PluginRequestChemistryAPI {
   /** API 0.1.21: source composition and masses, through the host's RDKit analysis. */
   properties?(request: PluginChemistryPropertiesRequest): Promise<PluginChemistryPropertiesResult>;
   /** API 0.1.15: chemistry.compute only, during this plugin's own command. Explicit Hs;
@@ -1740,7 +1747,7 @@ export interface PluginAssistantToolResult {
   structuredContent?: Record<string, unknown>;
   isError?: boolean;
 }
-export const PluginAssistantToolResultSchema = z.object({
+export const PluginMcpToolResultSchema = z.object({
   content: z.array(z.discriminatedUnion("type", [
     z.object({ type: z.literal("text"), text: z.string() }).strict(),
     z.object({ type: z.literal("image"), data: z.string(), mimeType: z.literal("image/png") }).strict()
@@ -1748,6 +1755,8 @@ export const PluginAssistantToolResultSchema = z.object({
   structuredContent: z.record(z.unknown()).optional(),
   isError: z.boolean().optional()
 }).strict();
+export type PluginMcpToolResult = z.infer<typeof PluginMcpToolResultSchema>;
+export const PluginAssistantToolResultSchema = PluginMcpToolResultSchema;
 /** Session-local tool definitions; the host also refuses collisions with its own tools. */
 export const PluginAssistantExtraToolSchema = z.object({
   name: z.string().regex(/^[a-z][a-z0-9_]{0,47}$/, "Invalid extra tool name"),
@@ -1819,6 +1828,10 @@ export interface PluginCommandContext {
   /** Present only when the plugin declares both "assistant.run" and "native.execute". */
   tools?: PluginToolsAPI;
   assistant?: PluginAssistantAPI;
+  /** Request lifecycle and page-space decisions (API 0.1.26). */
+  requests?: PluginRequestsAPI;
+  toolSessions?: PluginToolSessionsAPI;
+  depiction?: PluginDepictionAPI;
   hasPermission(permission: PluginPermission): boolean;
   requirePermission(permission: PluginPermission): void;
 }
@@ -1974,8 +1987,11 @@ export {
   PluginWorkerErrorCodes,
   isPluginApiVersionCompatible,
   supportsPluginTableInsertion,
+  supportsPluginRequestTools,
+  isPinnedRequestToolCapability,
   checkWorkerHandshake,
   type PluginWorkerCapabilityNamespace,
+  type PluginWorkerFeatures,
   type PluginWorkerErrorPayload,
   type WorkerToHostMessage,
   type HostToWorkerMessage,

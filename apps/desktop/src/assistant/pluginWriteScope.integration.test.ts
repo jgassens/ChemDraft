@@ -2,10 +2,11 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import { applyPatch, toEngineDocument, type BracketObject } from "@chemdraft/chem-core";
 import { createSmilesMolecule, inspectHydrogenNormalizedIdentity, pastedStructureDepictionFromMolfile } from "@chemdraft/document-workflow-core";
 import { PluginApiVersion, type PluginCommandContext } from "@chemdraft/plugin-api";
-import { PluginHost, type PluginPatchApplicationRequest } from "@chemdraft/plugin-host";
+import { assertPluginDocumentWriteScope, PluginHost, type PluginPatchApplicationRequest } from "@chemdraft/plugin-host";
 import { installNodeRdkitModuleLoader } from "@chemdraft/rdkit-adapter/node";
 import { ensureRdkit, generateSmiles2DMolfile } from "../../../../packages/rdkit-adapter/src/conformer";
 import { applyPluginDocumentPatch } from "../plugins/applyPluginDocumentPatch";
+import { normalizeCommittedDocument } from "../documentWorkflow";
 import { assistantScope } from "./AssistantToolContext";
 import { callAssistantTool } from "./assistantTools";
 import { buildEditStructure } from "./writeBuilder";
@@ -68,7 +69,9 @@ function fixture(selected = true, membership?: Membership, selectBrackets = fals
 
   const apply = vi.fn((application: PluginPatchApplicationRequest) => {
     const result = applyPluginDocumentPatch(context.getDocument()!, application.patch);
-    replace(result.document);
+    const final = normalizeCommittedDocument(result.document);
+    assertPluginDocumentWriteScope(context.getDocument()!, final, application.patch, application.writeScopeObjectIds);
+    replace(final);
     return result.receipt;
   });
   const host = new PluginHost({ getActiveDocument: context.getDocument, applyDocumentPatch: apply });

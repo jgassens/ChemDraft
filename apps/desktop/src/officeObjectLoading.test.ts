@@ -19,7 +19,8 @@ const capabilityDirectory = new URL("../src-tauri/capabilities/", import.meta.ur
  * `hidden` starts the page hidden, and `hide()` hides it later.
  */
 function runInlineLoader(search: string, tauri = false, hidden = false) {
-  const script = /<script>([\s\S]*?)<\/script>/.exec(html)?.[1];
+  // The Office loader is the body's inline script; the head's script sets palette first frames.
+  const script = /<body>[\s\S]*?<script>([\s\S]*?)<\/script>/.exec(html)?.[1];
   if (!script) throw new Error("index.html has no inline loader");
   const classes = new Set<string>();
   const root = { children: [] as Array<Record<string, unknown>>, appendChild(node: Record<string, unknown>) { this.children.push(node); } };
@@ -135,7 +136,7 @@ describe("Office editor loading state", () => {
     expect(turned.listeners.size).toBe(0);
   });
 
-  it("reveals through the generic first-paint command, granted only to the office-object window", () => {
+  it("reveals through the generic first-paint command, granted only to the office-object window and Windows palettes", () => {
     expect(html).not.toContain("office_toolset_emit");
     expect(html).not.toContain("office-object-painted");
     const shipped = (source: string) => source.slice(0, source.indexOf("#[cfg(test)]\nmod tests"));
@@ -150,8 +151,10 @@ describe("Office editor loading state", () => {
         identifier: string; windows: string[]; platforms?: string[]; permissions: unknown[];
       });
     const holders = grants.filter(grant => grant.permissions.includes(`allow-${WINDOW_FIRST_PAINT_COMMAND.replaceAll("_", "-")}`));
-    expect(holders.map(grant => [grant.identifier, grant.windows, grant.platforms])).toEqual([
-      ["office-object", ["office-object-*"], ["windows"]]
+    // Windows palettes report their first paint through the same command (toolset-first-paint).
+    expect(holders.map(grant => [grant.identifier, grant.windows, grant.platforms]).sort()).toEqual([
+      ["office-object", ["office-object-*"], ["windows"]],
+      ["toolset-first-paint", ["toolset-core-*", "toolset-plugin-*", "toolset-user-*", "toolset-popover-*", "toolset-tooltip"], ["windows"]]
     ]);
   });
 });

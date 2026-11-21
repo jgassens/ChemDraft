@@ -5,7 +5,7 @@ import { nativeTextObjectLineMetrics, reactionConditionsFrame } from "./arrowAtt
 export * from "./arrowAttachmentFrames";
 
 type Point = { x: number; y: number };
-const localPoint = (frame: ArrowAttachmentFrame, point: Point): Point => ({
+export const arrowAttachmentOffset = (frame: ArrowAttachmentFrame, point: Point): Point => ({
   x: (point.x - frame.origin.x) * frame.tangent.x + (point.y - frame.origin.y) * frame.tangent.y,
   y: (point.x - frame.origin.x) * frame.normal.x + (point.y - frame.origin.y) * frame.normal.y
 });
@@ -42,7 +42,7 @@ export function resolveArrowAttachments(page: DocumentPage, options: ArrowAttach
       const resized=height>object.height+1e-7;
       if(resized) {object={...object,height,y:object.y+(object.height-height)/2};result=object;}
       const unchangedParent = sameFrame(attachment.frame, frame);
-      const current=localPoint(frame,{x:object.x+object.width/2,y:object.y+object.height/2});
+      const current=arrowAttachmentOffset(frame,{x:object.x+object.width/2,y:object.y+object.height/2});
       const moved=unchangedParent && !near(current,attachment.offset);
       const placement=moved?'manual':attachment.placement??'auto';
       const scale=options.scale?.objectIds.has(parent!.id) ? options.scale : undefined;

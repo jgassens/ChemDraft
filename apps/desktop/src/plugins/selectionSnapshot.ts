@@ -7,6 +7,7 @@ import {
   type PluginSelectionSnapshot,
   type PluginStructureFormat
 } from "@chemdraft/plugin-api";
+import type { RequestSnapshotBudget } from "@chemdraft/plugin-host";
 
 /**
  * The structure a plugin should analyze for `molecule`.
@@ -195,7 +196,14 @@ function moleculeSourceFingerprint(
  * This stays a thin read over current document state. That kept plugin code untouched when the
  * selection-policy refactor landed (docs/shipped/selection-policy-refactor.md); keep it thin.
  */
-export function buildPluginSelectionSnapshot(document: ChemDraftDocument, warnings: string[] = []): PluginSelectionSnapshot {
+export function buildPluginSelectionSnapshot(
+  document: ChemDraftDocument,
+  warnings: string[] = [],
+  budget?: RequestSnapshotBudget
+): PluginSelectionSnapshot {
+  const molecules: PluginSelectedMolecule[] = [];
+  const snapshot = { objectIds: document.selection.objectIds, molecules };
+  budget?.(snapshot);
   const located = new Map<string, { pageId: string; molecule: MoleculeObject }>();
   for (const page of document.pages) {
     for (const object of page.objects) {
@@ -205,14 +213,13 @@ export function buildPluginSelectionSnapshot(document: ChemDraftDocument, warnin
     }
   }
 
-  const molecules: PluginSelectedMolecule[] = [];
   for (const objectId of document.selection.objectIds) {
     const hit = located.get(objectId);
     if (!hit) {
       continue;
     }
     const facing = pluginFacingStructure(hit.molecule, warnings);
-    molecules.push({
+    const molecule = {
       objectId,
       documentId: document.id,
       pageId: hit.pageId,
@@ -220,10 +227,12 @@ export function buildPluginSelectionSnapshot(document: ChemDraftDocument, warnin
       structure: facing.structure,
       // Retain stereo geometry while keeping pure translations and rotations out of the key.
       sourceFingerprint: moleculeSourceFingerprint(document, hit.pageId, hit.molecule)
-    });
+    };
+    budget?.(molecule, molecules.length > 0 ? 1 : 0); // The empty array was charged with the snapshot header.
+    molecules.push(molecule);
   }
 
-  return { objectIds: document.selection.objectIds, molecules };
+  return snapshot;
 }
 
 /**

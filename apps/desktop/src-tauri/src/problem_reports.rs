@@ -67,7 +67,7 @@ pub(crate) fn open_external_address(url: &str) -> Result<(), String> {
     };
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let mut command = {
-        let mut command = std::process::Command::new("xdg-open");
+        let mut command = crate::child_command("xdg-open");
         command.arg(url);
         command
     };

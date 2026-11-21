@@ -12,6 +12,7 @@
 import {
   PLUGIN_WORKER_PROTOCOL_VERSION,
   PluginApiVersion,
+  PluginRequestLimits,
   PluginWorkerErrorCodes,
   parsePluginManifest,
   runPluginWorker,
@@ -26,7 +27,8 @@ import {
   type PluginSelectionSnapshot,
   type PluginWorkerEndpoint,
   type PluginWorkerHandle,
-  type PluginWorkerRegistration
+  type PluginWorkerRegistration,
+  type PluginToolCall
 } from "@chemdraft/plugin-api";
 import { createMassRegistration, massAnalyzeCommandId, massFragmentManifest } from "@chemdraft/plugin-mass-fragment";
 import { PluginHost, type RegisterPluginOptions } from "@chemdraft/plugin-host";
@@ -34,8 +36,12 @@ import { describe, expect, it, vi } from "vitest";
 import { AssistantCapabilityPermissions } from "@chemdraft/plugin-api";
 
 import { createBundledPluginDescriptors, createWorkerRoutedOptions } from "./registerBundledPlugins";
+import { createPluginRuntime } from "./createPluginRuntime";
+import { deferred } from "../testSupport/deferred";
 import { PluginWorkerBridge, PluginWorkerBridgeError } from "./PluginWorkerBridge";
-import { createEmptyDocument, MoleculeObjectSchema } from "@chemdraft/chem-core";
+import { applyPatch, createEmptyDocument, MoleculeObjectSchema } from "@chemdraft/chem-core";
+import { ToolSessionController } from "./toolSessions/ToolSessionController";
+import type { McpBridgeRequest, McpBridgeResponse } from "./toolSessions/transport";
 import { buildPluginTablePatch } from "./buildPluginTablePatch";
 
 type MessageListener = (event: { data: unknown }) => void;
@@ -1306,6 +1312,576 @@ describe("API 0.1.21 worker capabilities and plugin assistant handlers", () => {
     } finally {
       for (const id of ["org.test.first", "org.test.second"]) if (host.getPlugin(id)) host.unregisterPlugin(id);
       bridges.forEach(bridge => bridge.terminate());
+    }
+  });
+});
+
+
+const requestCommand = "plugin.requests.run";
+const requestPage = { requestId: "r", pageId: "p" };
+const requestCall = { requestId: "r", sessionId: "s", name: "lookup", input: { value: "find" } };
+const requestBounds = { x: 0, y: 0, width: 100, height: 100 };
+const targetRegion = { kind: "region", bounds: requestBounds } as const;
+const requestLayout = { ...requestPage, spec: { kind: "grid" as const, objectIds: ["m"],
+  anchor: { x: 0, y: 0 }, columns: 1, columnGap: 10, rowGap: 10 } };
+
+function requestManifest(permissions: PluginManifest["permissions"] = ["document.read", "selection.read", "document.write", "chemistry.compute"]) {
+  return parsePluginManifest({ id: "org.test.requests", name: "Request Tools", version: "0",
+    apiVersion: "^0.1.26", entry: "worker.js", permissions, contributes: { commands: [{ id: requestCommand, title: "Requests" }] } });
+}
+
+function exerciseRequestMethods(context: PluginCommandContext) {
+  return Promise.all([
+    context.requests!.begin({ label: "Draw" }),
+    context.requests!.getContext({ requestId: "r" }),
+    context.requests!.end({ requestId: "r" }),
+    context.requests!.requestPageSpace!({ ...requestPage, requiredBounds: requestBounds, revision: "v" }),
+    context.documents.readRequest!({ ...requestPage, cursor: "start", objectIds: ["m"] }),
+    context.documents.applyRequestPatch!({ requestId: "r", patch: { op: "moveObject", objectId: "m", x: 10, y: 10 } }),
+    context.toolSessions!.open({ requestId: "r", definitions: [{ name: "lookup", description: "Lookup", inputSchema: { type: "object" } }] }),
+    context.toolSessions!.close({ sessionId: "s" }),
+    context.chemistry!.inspectStructure!({ kind: "molecule", ...requestPage, objectId: "m" }),
+    context.chemistry!.rings!({ ...requestPage, objectId: "m", representation: "drawable" }),
+    context.depiction!.measure({ ...requestPage, target: targetRegion }),
+    context.depiction!.renderRegion({ ...requestPage, target: targetRegion, widthPx: 1, heightPx: 1 }),
+    context.depiction!.planLayout(requestLayout),
+    context.depiction!.listStylePresets({ requestId: "r" }),
+    context.depiction!.planStyle({ ...requestPage, objectIds: ["m"], targetBondLength: 22 })
+  ]);
+}
+
+describe("request-bound plugin worker transport", () => {
+  it("round-trips valid results from every new capability method", async () => {
+    const bridge = startWorkerRoutedPlugin({ manifest: requestManifest(), commandHandlers: { [requestCommand]: exerciseRequestMethods } });
+    const success = <T>(value: T) => ({ ok: true as const, value });
+    const reply = (value: unknown) => vi.fn(async () => success(value));
+    const object = MoleculeObjectSchema.parse({ id: "m", type: "molecule",
+      x: 0, y: 0, width: 100, height: 100, structureFormat: "smiles", structure: "C" });
+    const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jf1sAAAAASUVORK5CYII=";
+    const providers = {
+      requests: {
+        begin: reply({ requestId: "r" }),
+        getContext: reply({ requestId: "r", documentKey: "doc", pages: [{ pageId: "p", width: 100, height: 100, revision: "v" }],
+          selection: [], insertions: [], objectRevisions: [] }),
+        end: reply({ touched: [] }),
+        requestPageSpace: reply({ outcome: "enlarge", decisionId: "d" })
+      },
+      documents: {
+        readRequest: reply({ pageId: "p", revision: "v", objects: [{ object, revision: "v" }], nextCursor: "next" }),
+        applyRequestPatch: reply({ touched: [{ pageId: "p", objectId: "m" }], insertions: [] })
+      },
+      toolSessions: { open: reply({ sessionId: "s", tools: ["lookup"] }), close: reply(null) },
+      chemistry: {
+        inspectStructure: reply({ source: { format: "smiles", structure: "C" }, canonicalIsomericSmiles: "C",
+          formula: "CH4", stereochemistry: [], heavyAtoms: 1, warnings: [] }),
+        rings: reply({ representation: "drawable", revision: "v",
+          rings: [{ key: "ring", atomIds: ["a", "b", "c"], bondIds: ["ab", "bc", "ca"] }], warnings: [] })
+      },
+      depiction: {
+        measure: reply({ units: "document", bounds: requestBounds, objects: [], unsupported: [], warnings: [] }),
+        renderRegion: reply({ mimeType: "image/png", base64: png, widthPx: 1, heightPx: 1, bounds: requestBounds, warnings: [] }),
+        planLayout: reply({ objects: [], transforms: [{ objectId: "m", dx: 1, dy: 2, changes: { x: 1, y: 2 } }], warnings: [] }),
+        listStylePresets: reply({ presets: [{ id: "default", name: "Default", bondLengthPx: 22, bondStrokeWidthPx: 1,
+          bondBoldWidthPx: 2, atomLabelFontFamily: "Arial", atomLabelFontSizePx: 12, atomLabelFontWeight: 400 }], defaults: { drawing: {}, text: {} } }),
+        planStyle: reply({ updates: [{ op: "updateObject", objectId: "m", changes: { x: 1 } }], affectedObjectIds: ["m"], movedMarkIds: [], warnings: [] })
+      }
+    };
+    const context = { ...providers, hasPermission: () => true } as unknown as PluginCommandContext;
+    try {
+      const result = await bridge.invokeCommand(requestCommand, context);
+      const handlers = Object.values(providers).flatMap(methods => Object.values(methods));
+      expect(handlers).toHaveLength(15);
+      for (const handler of handlers) expect(handler).toHaveBeenCalledExactlyOnceWith(expect.any(Object));
+      expect(result).toEqual(await Promise.all(handlers.map(handler => handler.mock.results[0].value)));
+      expect(providers.documents.readRequest).toHaveBeenCalledWith({ ...requestPage, cursor: "start", objectIds: ["m"] });
+      expect(providers.depiction.renderRegion).toHaveBeenCalledWith({ ...requestPage, target: targetRegion, widthPx: 1, heightPx: 1 });
+    } finally {
+      bridge.terminate();
+    }
+  });
+
+  it("returns typed unsupported stubs in-process and across the worker without writing", async () => {
+    const applyDocumentPatch = vi.fn();
+    const host = new PluginHost({ applyDocumentPatch });
+    const manifest = requestManifest();
+    const bridge = startWorkerRoutedPlugin({ manifest, commandHandlers: { [requestCommand]: exerciseRequestMethods } });
+    host.registerPlugin(manifest, createWorkerRoutedOptions(manifest, bridge));
+    try {
+      const replies = await exerciseRequestMethods(host.createCommandContext(manifest.id));
+      expect(replies).toHaveLength(15);
+      for (const reply of replies) expect(reply).toMatchObject({ ok: false, error: { code: "unsupported" } });
+      await expect(host.invokeCommand(requestCommand)).resolves.toEqual(replies);
+      expect(applyDocumentPatch).not.toHaveBeenCalled();
+    } finally {
+      bridge.terminate();
+    }
+  });
+
+  it.each([
+    { atoms: [], bonds: [] },
+    { structureFormat: "smiles", structure: "C", atoms: [{ id: "a", element: "C" }], bonds: [] }
+  ])("rejects a malformed native molecule from a pinned read provider (%j)", async fields => {
+    const bridge = startWorkerRoutedPlugin({ manifest: requestManifest(), commandHandlers: {
+      [requestCommand]: context => context.documents.readRequest!(requestPage)
+    } });
+    const object = { id: "m", type: "molecule", ...requestBounds, ...fields };
+    const readRequest = vi.fn(async () => ({ ok: true, value: { pageId: "p", revision: "v",
+      objects: [{ object, revision: "v" }] } }));
+    const context = { documents: { readRequest }, hasPermission: () => true } as unknown as PluginCommandContext;
+    try {
+      await expect(bridge.invokeCommand(requestCommand, context))
+        .resolves.toMatchObject({ ok: false, error: { code: "invalid" } });
+      expect(readRequest).toHaveBeenCalledExactlyOnceWith(requestPage);
+    } finally {
+      bridge.terminate();
+    }
+  });
+
+  it("round-trips native defaults from pinned reads and layout plans", async () => {
+    const bridge = startWorkerRoutedPlugin({ manifest: requestManifest(), commandHandlers: {
+      [requestCommand]: context => Promise.all([context.documents.readRequest!(requestPage),
+        context.depiction!.planLayout(requestLayout)])
+    } });
+    const object = { id: "m", type: "molecule", ...requestBounds, structureFormat: "smiles", structure: "C" };
+    const read = { pageId: "p", revision: "page-rev", objects: [{ object, revision: "object-rev" }], nextCursor: "next" };
+    const plan = { objects: [object], transforms: [{ objectId: "m", dx: 1, dy: 2, changes: { x: 1, y: 2 } }], warnings: [] };
+    const context = {
+      documents: { readRequest: async () => ({ ok: true, value: read }) },
+      depiction: { planLayout: async () => ({ ok: true, value: plan }) },
+      hasPermission: () => true
+    } as unknown as PluginCommandContext;
+    const normalized = { ...object, rotation: 0, style: {}, atoms: [], bonds: [], superatoms: [], rGroups: [] };
+    try {
+      await expect(bridge.invokeCommand(requestCommand, context)).resolves.toEqual([
+        { ok: true, value: { ...read, objects: [{ ...read.objects[0], object: normalized }] } },
+        { ok: true, value: { ...plan, objects: [normalized] } }
+      ]);
+    } finally {
+      bridge.terminate();
+    }
+  });
+
+  it("rejects a layout result containing a malformed native molecule", async () => {
+    const bridge = startWorkerRoutedPlugin({ manifest: requestManifest(), commandHandlers: {
+      [requestCommand]: context => context.depiction!.planLayout(requestLayout)
+    } });
+    const object = { id: "m", type: "molecule", ...requestBounds };
+    const context = {
+      depiction: { planLayout: async () => ({ ok: true, value: { objects: [object], transforms: [], warnings: [] } }) },
+      hasPermission: () => true
+    } as unknown as PluginCommandContext;
+    try {
+      await expect(bridge.invokeCommand(requestCommand, context)).resolves.toMatchObject({ ok: false, error: { code: "invalid" } });
+    } finally {
+      bridge.terminate();
+    }
+  });
+
+  it("delivers the latest document key after more than 16 pending notifications", async () => {
+    const runtime = createPluginRuntime({ getActiveDocument: () => undefined });
+    const manifest = requestManifest();
+    const ready = deferred<void>();
+    const received: string[] = [];
+    const bridge = startWorkerRoutedPlugin({ manifest, commandHandlers: {}, onActiveDocumentChanged: async event => {
+      await ready.promise;
+      received.push(event.documentKey!);
+    } });
+    runtime.registerPlugin(manifest, createWorkerRoutedOptions(manifest, bridge));
+    try {
+      await bridge.whenReady();
+      for (let index = 1; index <= 24; index++) runtime.notifyActiveDocumentChanged(String(index));
+      ready.resolve();
+      await vi.waitFor(() => expect(received.at(-1)).toBe("24"));
+      expect(received).toEqual([...new Set(received)].sort((a, b) => Number(a) - Number(b)));
+      expect(received.length).toBeLessThanOrEqual(16);
+    } finally {
+      ready.resolve();
+      runtime.unregisterPlugin(manifest.id);
+      bridge.terminate();
+    }
+  });
+
+  it("retries the current document key when the worker rejects delivery", async () => {
+    const runtime = createPluginRuntime({ getActiveDocument: () => undefined });
+    const manifest = requestManifest();
+    const handler = vi.fn().mockRejectedValueOnce(new Error("Delivery failed")).mockResolvedValue(undefined);
+    const bridge = startWorkerRoutedPlugin({ manifest, commandHandlers: {}, onActiveDocumentChanged: handler });
+    runtime.registerPlugin(manifest, createWorkerRoutedOptions(manifest, bridge));
+    try {
+      await bridge.whenReady();
+      runtime.notifyActiveDocumentChanged("current");
+      await vi.waitFor(() => expect(handler.mock.calls).toEqual([
+        [{ documentKey: "current", sequence: 1 }], [{ documentKey: "current", sequence: 1 }]
+      ]));
+    } finally {
+      runtime.unregisterPlugin(manifest.id);
+      bridge.terminate();
+    }
+  });
+
+  it("routes tool calls and document notifications through the registered handlers", async () => {
+    const manifest = requestManifest();
+    const host = new PluginHost();
+    const onActiveDocumentChanged = vi.fn((event: { documentKey: string | null }) => {
+      if (event.documentKey === null) throw new Error("test failure");
+    });
+    const applyPatch = vi.fn();
+    const bridge = startWorkerRoutedPlugin({ manifest, commandHandlers: {}, onActiveDocumentChanged,
+      onToolCall: async (context, call) => {
+        const rejected = await context.documents.applyPatch!({
+          patch: { op: "moveObject", objectId: "m", x: 0, y: 0 }, reason: "Move object"
+        }).then(() => false, (error: PluginWorkerBridgeError) => error.code === PluginWorkerErrorCodes.CapabilityNotGranted);
+        const reply = await context.requests!.getContext({ requestId: call.requestId });
+        return { ok: true, value: { input: call.input, supported: reply.ok, rejected } };
+      }
+    });
+    host.registerPlugin(manifest, createWorkerRoutedOptions(manifest, bridge));
+    try {
+      expect(host.getToolHandler(manifest.id)).toBeUndefined();
+      expect(host.getActiveDocumentChangedHandler(manifest.id)).toBeUndefined();
+      await bridge.whenReady();
+      const context = host.createCommandContext(manifest.id);
+      const contextWithWrite = { ...context, documents: { ...context.documents, applyPatch } };
+      await expect(host.getToolHandler(manifest.id)!(contextWithWrite, requestCall, new AbortController().signal))
+        .resolves.toEqual({ ok: true, value: { input: requestCall.input, supported: false, rejected: true } });
+      expect(applyPatch).not.toHaveBeenCalled();
+      await host.getActiveDocumentChangedHandler(manifest.id)!({ documentKey: "next", sequence: 1 });
+      expect(onActiveDocumentChanged).toHaveBeenCalledExactlyOnceWith({ documentKey: "next", sequence: 1 });
+      await expect(host.getActiveDocumentChangedHandler(manifest.id)!({ documentKey: null, sequence: 2 }))
+        .rejects.toMatchObject({ code: "failed" });
+      host.unregisterPlugin(manifest.id);
+      expect(bridge.hasToolHandler()).toBe(true);
+      expect(bridge.hasActiveDocumentChangedHandler()).toBe(true);
+      expect(host.getToolHandler(manifest.id)).toBeUndefined();
+      expect(host.getActiveDocumentChangedHandler(manifest.id)).toBeUndefined();
+    } finally {
+      bridge.terminate();
+    }
+  });
+
+  it("opens a worker-owned session and dispatches a read-only call over its channel", async () => {
+    let channel!: (message: McpBridgeRequest) => void;
+    const respond = vi.fn(async (_sessionId: string, _callId: string, _response: McpBridgeResponse) => {});
+    const close = vi.fn(async () => {});
+    const sessions = new ToolSessionController({
+      open: async (_, listener) => { channel = listener; return { sessionId: "session", serverName: "chemdraft" }; },
+      respond, close
+    }, () => undefined);
+    const document = createEmptyDocument({ title: "Pinned drawing" });
+    const host = new PluginHost({ toolSessions: sessions, getActiveDocumentKey: () => "tab", getActiveDocument: () => document,
+      captureRequestDocument: () => ({ key: "pinned", read: () => document }) });
+    let release!: () => void;
+    const released = new Promise<void>(resolve => { release = resolve; });
+    let opened = false;
+    const manifest = requestManifest();
+    const bridge = startWorkerRoutedPlugin({ manifest, commandHandlers: { [requestCommand]: async ctx => {
+      const request = await ctx.requests!.begin({ label: "Read" });
+      if (!request.ok) throw new Error(request.error.message);
+      const session = await ctx.toolSessions!.open({ requestId: request.value.requestId, definitions: [{
+        name: "inspect", readOnly: true, description: "Read this drawing", inputSchema: { type: "object" }
+      }] });
+      if (!session.ok) throw new Error(session.error.message);
+      opened = true;
+      await released;
+    } }, onToolCall: async (ctx, call) => {
+      const pinned = await ctx.requests!.getContext({ requestId: call.requestId });
+      if (!pinned.ok) return pinned;
+      return { ok: true, value: { document: pinned.value.documentKey, canWrite: ctx.hasPermission("document.write"),
+        offersWrite: !!ctx.documents.applyRequestPatch } };
+    } });
+    try {
+      await bridge.whenReady();
+      host.registerPlugin(manifest, createWorkerRoutedOptions(manifest, bridge));
+      const command = host.invokeCommand(requestCommand);
+      await vi.waitFor(() => expect(opened).toBe(true));
+      channel({ sessionId: "session", requestId: "call", method: "tools/call", params: { name: "inspect" } });
+      await vi.waitFor(() => expect(respond).toHaveBeenCalledWith("session", "call", { result: {
+        content: [{ type: "text", text: JSON.stringify({ document: "pinned", canWrite: false, offersWrite: false }) }],
+        structuredContent: { document: "pinned", canWrite: false, offersWrite: false }
+      } }));
+      release(); await command;
+      expect(close).toHaveBeenCalledWith("session");
+    } finally { release(); bridge.terminate(); }
+  });
+
+  it("services pinned reads and bound patch and table writes through a request tool worker", async () => {
+    const manifest = requestManifest();
+    let pinned = createEmptyDocument(), active = pinned;
+    const pageId = pinned.pages[0]!.id;
+    const object = { id: "anchor", type: "text" as const, text: "Anchor", spans: [], style: {}, x: 100, y: 30,
+      width: 60, height: 20, rotation: 0 };
+    pinned = applyPatch(pinned, { op: "batch", patches: [{ op: "addObject", pageId, object },
+      { op: "setSelection", pageId, objectIds: ["anchor"] }] });
+    active = pinned;
+    const ordinary = vi.fn();
+    const host = new PluginHost({ getActiveDocument: () => active, getActiveDocumentKey: () => active.title,
+      getSelection: () => ({ objectIds: active.selection.objectIds, molecules: [] }),
+      captureRequestDocument: () => ({ key: "pinned", read: () => pinned }), applyDocumentPatch: ordinary,
+      buildTablePatch: buildPluginTablePatch, openRequestHistory: () => ({
+        run: async commit => commit(), verify: async (_before, draft) => draft,
+        write: (after, _ids, guard) => { guard(after); pinned = after; }
+      }) });
+    const contexts = vi.spyOn(host, "createCommandContext");
+    const bridge = startWorkerRoutedPlugin({ manifest, commandHandlers: {}, onToolCall: async ctx => {
+      const doc = await ctx.documents.getActiveDocument();
+      const selected = await ctx.selection!.getSelection();
+      const patch = await ctx.documents.applyPatch!({ reason: "Edit anchor",
+        patch: { op: "updateObject", objectId: "anchor", changes: { text: "Edited" } } });
+      const table = await ctx.documents.insertTable!({ columns: [{ header: "Name" }], rows: [["Entry"]] });
+      return { ok: true, value: { title: doc!.title, selection: [...selected.objectIds],
+        patches: patch.objectIds.length, tables: table.objectIds.length } };
+    } });
+    try {
+      await bridge.whenReady();
+      host.registerPlugin(manifest, { ...createWorkerRoutedOptions(manifest, bridge), commandHandlers: {
+        [requestCommand]: async ctx => {
+          const owner = contexts.mock.calls[0]![1]!;
+          const result = await ctx.requests!.begin({ label: "Worker request" });
+          if (!result.ok) throw new Error(result.error.message);
+          active = createEmptyDocument({ title: "Other tab" });
+          const { requestId } = result.value;
+          return host.invokeRequestTool(manifest.id, requestId, owner, { ...requestCall, requestId }, new AbortController().signal, false);
+        }
+      } });
+      await expect(host.invokeCommand(requestCommand)).resolves.toEqual({ ok: true, value: {
+        title: pinned.title, selection: ["anchor"], patches: 1, tables: 1
+      } });
+      expect(pinned.pages[0]!.objects).toMatchObject([{ id: "anchor", text: "Edited" }, { type: "table" }]);
+      expect(active.pages[0]!.objects).toEqual([]);
+      expect(ordinary).not.toHaveBeenCalled();
+    } finally { bridge.terminate(); }
+  });
+
+  it("limits raw worker frames for ordinary reads before invoking pinned host capabilities", async () => {
+    const manifest = requestManifest();
+    const { mainSide, workerSide } = linkedEndpoints();
+    const bridge = new PluginWorkerBridge({ pluginId: manifest.id, createWorker: () => asHandle(mainSide) });
+    const doc = createEmptyDocument({ title: "Pinned" });
+    const host = new PluginHost({
+      getActiveDocumentKey: () => "pinned", captureRequestDocument: () => ({ key: "pinned", read: () => doc })
+    });
+    const contexts = vi.spyOn(host, "createCommandContext");
+    const replies = vi.fn();
+    const limit = PluginRequestLimits.pendingCapabilities;
+    let commandRequestId: number | undefined;
+    workerSide.addEventListener("message", ({ data }: { data: HostToWorkerMessage }) => {
+      if (data.kind === "invokeTool") {
+        commandRequestId = data.commandRequestId;
+        const send = (requestId: number, namespace: string, method: string, args: unknown[] = []) =>
+          workerSide.postMessage({ kind: "capabilityRequest", requestId, commandRequestId: data.commandRequestId,
+            namespace, method, args });
+        send(1, "requests", "getContext", [{ requestId: data.call.requestId }]);
+        send(2, "selection", "getSelection");
+        for (let id = 3; id <= limit + 1; id++) send(id, "documents", "getActiveDocument");
+        send(limit + 2, "selection", "getSelection");
+        send(limit + 3, "requests", "getContext", [{ requestId: data.call.requestId }]);
+      } else if (data.kind === "capabilityResult") replies(data);
+    });
+    workerSide.postMessage({ kind: "ready", protocolVersion: 1, apiVersion: manifest.apiVersion,
+      features: { requestCapabilities: true, toolCalls: true } });
+    try {
+      await bridge.whenReady();
+      const documentReads = vi.fn();
+      const selectionReads = vi.fn();
+      host.registerPlugin(manifest, { onToolCall: (ctx, call, signal) => {
+        const readDocument = ctx.documents.getActiveDocument;
+        const readSelection = ctx.selection!.getSelection;
+        ctx.documents.getActiveDocument = () => { documentReads(); return readDocument(); };
+        ctx.selection!.getSelection = () => { selectionReads(); return readSelection(); };
+        return bridge.invokeTool(ctx, call, signal);
+      }, commandHandlers: { [requestCommand]: async ctx => {
+        const owner = contexts.mock.calls[0]![1]!;
+        const begun = await ctx.requests!.begin({ label: "Inspect" });
+        if (!begun.ok) throw new Error(begun.error.message);
+        const { requestId } = begun.value;
+        return host.invokeRequestTool(manifest.id, requestId, owner, { ...requestCall, requestId }, new AbortController().signal, false);
+      } } });
+      const invocation = host.invokeCommand(requestCommand);
+      await vi.waitFor(() => expect(replies).toHaveBeenCalledTimes(limit + 3));
+      expect(documentReads).toHaveBeenCalledTimes(limit - 2);
+      expect(selectionReads).toHaveBeenCalledTimes(1);
+      expect(replies).toHaveBeenCalledWith(expect.objectContaining({ requestId: 3, ok: true, value: doc }));
+      for (const requestId of [limit + 1, limit + 2]) {
+        expect(replies).toHaveBeenCalledWith(expect.objectContaining({ requestId, ok: false, error: { code: "limit", message: expect.any(String) } }));
+      }
+      expect(replies).toHaveBeenCalledWith(expect.objectContaining({ requestId: limit + 3, ok: true,
+        value: { ok: false, error: { code: "limit", message: expect.any(String) } } }));
+      workerSide.postMessage({ kind: "toolCallSettled", commandRequestId, result: { ok: true, value: null } });
+      await expect(invocation).resolves.toEqual({ ok: true, value: null });
+    } finally { bridge.terminate(); }
+  });
+
+  it("snapshots only the known handshake opt-ins as booleans", async () => {
+    const { mainSide, workerSide } = linkedEndpoints();
+    const manifest = requestManifest();
+    const bridge = new PluginWorkerBridge({ pluginId: manifest.id, createWorker: () => asHandle(mainSide) });
+    const ready = bridge.whenReady();
+    let deliveredFeatures: Record<string, unknown> | undefined;
+    mainSide.addEventListener("message", ({ data }: { data: { features: Record<string, unknown> } }) => {
+      deliveredFeatures = data.features;
+    });
+    workerSide.postMessage({ kind: "ready", protocolVersion: 1, apiVersion: manifest.apiVersion,
+      features: { requestCapabilities: true, toolCalls: "true", activeDocumentChanged: true, unknown: { nested: true } } });
+    try {
+      await ready;
+      expect(bridge).toHaveProperty("features", { requestCapabilities: true, toolCalls: false, activeDocumentChanged: true });
+      Object.assign(deliveredFeatures!, { requestCapabilities: false, toolCalls: true, activeDocumentChanged: false });
+      expect(bridge.hasToolHandler()).toBe(false);
+      expect(bridge.hasActiveDocumentChangedHandler()).toBe(true);
+    } finally {
+      bridge.terminate();
+    }
+  });
+
+  it("refuses a missing handler and keeps the old worker's messages intact", async () => {
+    const host = new PluginHost();
+    const manifest = requestManifest();
+    host.registerPlugin(manifest);
+    const context = host.createCommandContext(manifest.id);
+    const signal = new AbortController().signal;
+    const current = startWorkerRoutedPlugin({ manifest, commandHandlers: {} });
+    try {
+      await expect(current.invokeTool(context, requestCall, signal)).resolves.toMatchObject({ ok: false, error: { code: "missingHandler" } });
+      await expect(current.notifyActiveDocumentChanged({ documentKey: null, sequence: 1 }))
+        .resolves.toMatchObject({ ok: false, error: { code: "missingHandler" } });
+    } finally {
+      current.terminate();
+    }
+    for (const apiVersion of ["^0.1.9", "^0.1.25"]) {
+      const { mainSide, workerSide } = linkedEndpoints();
+      const legacy = new PluginWorkerBridge({ pluginId: manifest.id, createWorker: () => asHandle(mainSide) });
+      const messages: string[] = [];
+      workerSide.addEventListener("message", ({ data }: { data: HostToWorkerMessage }) => {
+        messages.push(data.kind);
+        if (data.kind === "invokeCommand" || data.kind === "invokeAssistantTool") workerSide.postMessage({
+          kind: "commandSettled", commandRequestId: data.commandRequestId, ok: true, value: { content: [] }
+        });
+      });
+      workerSide.postMessage({ kind: "ready", protocolVersion: 1, apiVersion, hasAssistantToolHandler: true });
+      try {
+        await legacy.whenReady();
+        await expect(legacy.invokeTool(context, requestCall, signal)).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+        await expect(legacy.notifyActiveDocumentChanged({ documentKey: null, sequence: 1 }))
+          .resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+        await expect(legacy.invokeCommand(requestCommand, context)).resolves.toEqual({ content: [] });
+        await expect(legacy.invokeAssistantTool(context, { name: "lookup", sessionId: "s", input: {} }, signal)).resolves.toEqual({ content: [] });
+        expect(messages).toEqual(["invokeCommand", "invokeAssistantTool"]);
+      } finally {
+        legacy.terminate();
+      }
+    }
+  });
+
+  it("refuses forged capability methods, oversized requests, and undeclared pinned reads", async () => {
+    const { mainSide, workerSide } = linkedEndpoints();
+    const manifest = requestManifest();
+    const bridge = new PluginWorkerBridge({ pluginId: manifest.id, createWorker: () => asHandle(mainSide) });
+    workerSide.postMessage({ kind: "ready", protocolVersion: 1, apiVersion: manifest.apiVersion, features: { requestCapabilities: true } });
+    const handler = vi.fn();
+    const context = { requests: { begin: handler, constructor: handler }, chemistry: { inspectStructure: handler },
+      hasPermission: (permission: string) => permission === "chemistry.compute" } as unknown as PluginCommandContext;
+    const results: unknown[] = [];
+    workerSide.addEventListener("message", ({ data }: { data: HostToWorkerMessage }) => {
+      if (data.kind === "invokeCommand") {
+        const commandRequestId = data.commandRequestId;
+        workerSide.postMessage({ kind: "capabilityRequest", commandRequestId, namespace: "requests", method: "constructor",
+          requestId: 1, args: [{ label: "Forged" }] });
+        workerSide.postMessage({ kind: "capabilityRequest", commandRequestId, namespace: "requests", method: "begin",
+          requestId: 2, args: [{ label: "x".repeat(PluginRequestLimits.requestBytes) }] });
+        workerSide.postMessage({ kind: "capabilityRequest", commandRequestId, namespace: "chemistry", method: "inspectStructure",
+          requestId: 3, args: [{ kind: "molecule", ...requestPage, objectId: "m" }] });
+      } else if (data.kind === "capabilityResult") {
+        results.push(data.ok ? data.value : data.error);
+        if (results.length === 3) workerSide.postMessage({ kind: "commandSettled", commandRequestId: 1, ok: true, value: results });
+      }
+    });
+    try {
+      await expect(bridge.invokeCommand(requestCommand, context)).resolves.toEqual([
+        expect.objectContaining({ code: PluginWorkerErrorCodes.UnknownCapabilityMethod }),
+        expect.objectContaining({ error: expect.objectContaining({ code: "limit" }) }),
+        expect.objectContaining({ error: expect.objectContaining({ code: "permission" }) })
+      ]);
+      expect(handler).not.toHaveBeenCalled();
+    } finally {
+      bridge.terminate();
+    }
+  });
+
+  it("limits tool data and holds an aborted call until the worker handler settles", async () => {
+    const manifest = requestManifest();
+    const host = new PluginHost();
+    host.registerPlugin(manifest);
+    const context = host.createCommandContext(manifest.id);
+    let finish: (() => void) | undefined;
+    const onToolCall = vi.fn(async (_ctx: PluginCommandContext, call: PluginToolCall, signal: AbortSignal) => {
+      if (call.name === "large") return { ok: true as const, value: "x".repeat(PluginRequestLimits.resultBytes + 1) };
+      return new Promise<{ ok: true; value: string }>(resolve => {
+        signal.addEventListener("abort", () => { finish = () => resolve({ ok: true, value: "late" }); }, { once: true });
+      });
+    });
+    const bridge = startWorkerRoutedPlugin({ manifest, commandHandlers: {}, onToolCall });
+    const cancel = new AbortController();
+    try {
+      await expect(bridge.invokeTool(context, { ...requestCall, input: { text: "x".repeat(PluginRequestLimits.requestBytes) } }, cancel.signal))
+        .resolves.toMatchObject({ ok: false, error: { code: "limit" } });
+      expect(onToolCall).not.toHaveBeenCalled();
+      await expect(bridge.invokeTool(context, { ...requestCall, name: "large" }, cancel.signal))
+        .resolves.toMatchObject({ ok: false, error: { code: "limit" } });
+      let settled = false;
+      const pending = bridge.invokeTool(context, requestCall, cancel.signal).then(result => { settled = true; return result; });
+      await vi.waitFor(() => expect(onToolCall).toHaveBeenCalledTimes(2));
+      cancel.abort();
+      await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+      expect(settled).toBe(false);
+      finish!();
+      await expect(pending).resolves.toMatchObject({ ok: false, error: { code: "cancelled" } });
+    } finally {
+      bridge.terminate();
+    }
+  });
+
+  it("reserves tool slots before snapshotting or waiting for a slow handshake", async () => {
+    const { mainSide, workerSide } = linkedEndpoints();
+    const manifest = requestManifest();
+    const host = new PluginHost();
+    host.registerPlugin(manifest);
+    const context = host.createCommandContext(manifest.id);
+    const bridge = new PluginWorkerBridge({ pluginId: manifest.id, createWorker: () => asHandle(mainSide) });
+    const dispatched: number[] = [];
+    workerSide.addEventListener("message", ({ data }: { data: HostToWorkerMessage }) => {
+      if (data.kind === "invokeTool") dispatched.push(data.commandRequestId);
+    });
+    const controllers = Array.from({ length: PluginRequestLimits.pendingToolCalls }, () => new AbortController());
+    const results = controllers.map(({ signal }) => bridge.invokeTool(context, requestCall, signal));
+    const ownKeys = vi.fn(() => []);
+    const overflow = { ...requestCall, input: new Proxy({}, { ownKeys }) };
+    const signal = new AbortController().signal;
+    const limit = { ok: false, error: { code: "limit" } };
+    try {
+      await expect(Promise.race([bridge.invokeTool(context, overflow, signal), flush()])).resolves.toMatchObject(limit);
+      expect(ownKeys).not.toHaveBeenCalled();
+      expect(dispatched).toEqual([]);
+
+      controllers[0].abort();
+      await expect(results[0]).resolves.toMatchObject({ ok: false, error: { code: "cancelled" } });
+      await expect(Promise.race([bridge.invokeTool(context, { ...requestCall, name: "" }, signal), flush()]))
+        .resolves.toMatchObject({ ok: false, error: { code: "invalid" } });
+      const replacement = bridge.invokeTool(context, requestCall, signal);
+      workerSide.postMessage({ kind: "ready", protocolVersion: 1, apiVersion: manifest.apiVersion,
+        features: { requestCapabilities: true, toolCalls: true } });
+      await flush();
+      expect(dispatched).toHaveLength(PluginRequestLimits.pendingToolCalls);
+      controllers[1].abort();
+      await expect(Promise.race([bridge.invokeTool(context, requestCall, signal), flush()])).resolves.toMatchObject(limit);
+      for (const commandRequestId of dispatched) {
+        workerSide.postMessage({ kind: "toolCallSettled", commandRequestId, result: { ok: true, value: null } });
+      }
+      await expect(results[1]).resolves.toMatchObject({ ok: false, error: { code: "cancelled" } });
+      await expect(Promise.all([...results.slice(2), replacement])).resolves.toEqual(
+        Array(PluginRequestLimits.pendingToolCalls - 1).fill({ ok: true, value: null })
+      );
+    } finally {
+      bridge.terminate();
     }
   });
 });

@@ -9,10 +9,10 @@ export function startIdentityWorker(scope: {
 }): void {
   registerRdkitWasmLoader();
   const loaded = ensureRdkit();
-  scope.onRequest(({ data: { id, value, stereoReference } }) => {
+  scope.onRequest(({ data: { id, value, stereoReference, details } }) => {
     void loaded.then(module => {
       scope.postMessage({ id, stage: "result",
-        result: inspectStructureInWorker(module, value, stereoReference) });
+        result: inspectStructureInWorker(module, value, stereoReference, details) });
     }).catch(error => {
       scope.postMessage({ id, stage: "error",
         message: error instanceof Error ? error.message : String(error) });

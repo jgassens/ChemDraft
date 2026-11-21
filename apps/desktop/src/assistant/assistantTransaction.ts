@@ -1,3 +1,4 @@
+import { RequestWriteError } from "@chemdraft/plugin-host";
 import { adoptDerivedDocument, isEngineDocument, type ChemDraftDocument } from "@chemdraft/chem-core";
 import { getAssistantHistoryPort, type AssistantHistoryPort } from "./historyPort";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
@@ -32,6 +33,7 @@ export interface AssistantTransactionResult {
 
 export class AssistantTransactions {
   private readonly transactions = new Map<string, Transaction>();
+  private readonly publicHistoryTabs = new Set<string>();
   private unsubscribe: (() => void) | undefined;
 
   constructor(private readonly port: AssistantHistoryPort) {}
@@ -50,7 +52,16 @@ export class AssistantTransactions {
 
   dispose(): void { this.unsubscribe?.(); this.unsubscribe = undefined; this.transactions.clear(); }
 
+  reserveRequestHistory(tabId: string): () => void {
+    if (this.publicHistoryTabs.has(tabId) || [...this.transactions.values()].some(tx => !tx.ended && tx.tabId === tabId)) {
+      throw new RequestWriteError("busy", "Another request owns this tab's undo history.");
+    }
+    this.publicHistoryTabs.add(tabId);
+    return () => { this.publicHistoryTabs.delete(tabId); };
+  }
+
   beginAssistantTransaction(input: BeginAssistantTransaction): string {
+    if (this.publicHistoryTabs.has(input.tabId)) throw new RequestWriteError("busy", "A plugin request owns this tab's undo history.");
     for (const tx of this.transactions.values()) {
       if (!tx.ended && tx.tabId === input.tabId) throw new Error("An assistant request is already running in this tab.");
     }

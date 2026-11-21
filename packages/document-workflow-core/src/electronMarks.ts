@@ -137,6 +137,18 @@ export function nativeElectronMarkAssignments(
   return { anchorByMarkId, assignedChargeByAtomKey, assignedRadicalsByAtomKey };
 }
 
+/** Compare effective owners, including legacy proximity associations and floating marks. */
+export function changedElectronMarkAssignments(before: DocumentPage, after: DocumentPage) {
+  const isMark = (object: DocumentPage["objects"][number]) => object.type === "electron-mark";
+  if (!before.objects.some(isMark) && !after.objects.some(isMark)) return [];
+  const previous = nativeElectronMarkAssignments(before).anchorByMarkId;
+  const next = nativeElectronMarkAssignments(after).anchorByMarkId;
+  return [...new Set([...previous.keys(), ...next.keys()])].flatMap(markId => {
+    const from = previous.get(markId), to = next.get(markId);
+    return from?.objectId === to?.objectId && from?.atomId === to?.atomId ? [] : [{ markId, from, to }];
+  });
+}
+
 export function isEditableNativeMoleculeGraph(molecule: MoleculeObject): boolean {
   const atomIds = new Set(molecule.atoms.map((atom) => atom.id));
   const supportedBondOrders = new Set<MoleculeBond["order"]>(["single", "double", "triple", "aromatic", "unknown"]);

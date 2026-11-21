@@ -7,6 +7,9 @@ export interface NativeRasterExportOptions {
   background?: string;
   jpegQuality?: number;
   maxDimensionPx?: number;
+  maxPngBytes?: number;
+  /** Cap decoded picture working-set input for callers exporting a bounded preview. */
+  pictureBudgetBytes?: number;
   /**
    * The CSS pixels-per-inch convention the source SVG's own units represent (96, for every SVG
    * this app emits). When set, PNG output embeds a pHYs chunk whose density is derived from this
@@ -36,6 +39,10 @@ interface NativeRasterExportResponse {
   warnings?: NativeRasterExportWarning[];
 }
 
+export class PngOutputLimitError extends Error {
+  constructor() { super("PNG output exceeds the requested byte limit."); }
+}
+
 export async function rasterizeSvgNative(
   svg: string,
   format: NativeRasterExportFormat,
@@ -45,7 +52,7 @@ export async function rasterizeSvgNative(
   // PNG pictures are decoded here, in the webview, and reach Rust as checked RGBA pixels: native
   // code never decodes a bitmap (see rasterPictureDecode.ts). Base64 fields keep the request JSON;
   // the command's argument shape is unchanged when a drawing has no PNG pictures.
-  const prepared = await prepareRasterPictures(svg);
+  const prepared = await prepareRasterPictures(svg, { budgetBytes: options.pictureBudgetBytes });
   const response = await invoke<NativeRasterExportResponse>("rasterize_svg", {
     request: {
       svg: prepared.svg,
@@ -55,9 +62,16 @@ export async function rasterizeSvgNative(
       background: options.background,
       jpegQuality: options.jpegQuality,
       maxDimensionPx: options.maxDimensionPx,
+      ...(options.maxPngBytes === undefined ? {} : { maxPngBytes: options.maxPngBytes }),
       cssPxPerInch: options.cssPxPerInch
     }
+  }).catch(error => {
+    if (error === "PNG output exceeds the requested byte limit.") throw new PngOutputLimitError();
+    throw error;
   });
+  if (format === "png" && options.maxPngBytes !== undefined && response.bytes.length > options.maxPngBytes) {
+    throw new PngOutputLimitError();
+  }
 
   return {
     bytes: response.bytes instanceof Uint8Array ? response.bytes : Uint8Array.from(response.bytes),

@@ -141,7 +141,7 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 ```
 
 `apiVersion` in your manifest declares the SDK contract you target (`PluginApiVersion`, currently
-`0.1.25`). API 0.1.21 adds plugin chemistry properties and plugin assistant tools (#310).
+`0.1.26`). API 0.1.21 adds plugin chemistry properties and plugin assistant tools (#310).
 API 0.1.22 adds optional name-to-structure `source`, `matchedName` and `matchedCas` provenance for the offline name dictionary (#318).
 API 0.1.23 adds native wavy single bonds (#327).
 Set `MoleculeBond.display.bondStyle: "wavy"` only with `order: "single"`; the schema rejects other orders.
@@ -150,6 +150,7 @@ assign R/S there. The SDK exports `MoleculeBond` and `MoleculeBondDisplay`; plug
 should declare `^0.1.23`.
 API 0.1.24 adds reaction `arrowObjectIds`/`plusObjectIds` for shared scheme arrows and plus signs (#335),
 and binary CDX import/export (#316). API 0.1.25 adds optional bracketUsage, repeatCount and scoped crossingBondIds (#338 bracketed groups).
+API 0.1.26 adds [request-bound plugin tools](#request-bound-plugin-tools), depiction, and document-change notifications.
 API 0.1.20 adds optional `tableStyle.autoColumnMinEm`, the minimum auto column width in em. API 0.1.19 bounds panel reports: strings, collection sizes, aggregate work and UTF-8 JSON
 size are validated before a report is forwarded to the renderer (see [Panel report limits](#panel-report-limits)).
 API 0.1.17 adds optional `MoleculeBond.stereo: "either"` for an E/Z-unspecified double bond.
@@ -176,6 +177,7 @@ it declares.
 
 | API version | Additive capability | Permission |
 | --- | --- | --- |
+| 0.1.26 | Request lifecycle, pinned document reads and patches, session-local tools, chemistry and depiction, and document-change notifications | Existing permissions, listed below |
 | 0.1.25 | Optional bracketUsage, repeatCount and crossingBondIds (scoped objectId/bondId references); legacy repeatUnit remains supported | No new permission |
 | 0.1.24 | Binary CDX import/export (#316) and optional reaction `arrowObjectIds`/`plusObjectIds` (#335); shared scheme arrows and plus signs are referenced by id, never copied | No new permission |
 | 0.1.23 | bondStyle 'wavy' (single-bond either stereo) | No new permission |
@@ -187,6 +189,121 @@ it declares.
 | 0.1.17 | Optional bond `stereo: "either"` for E/Z-unspecified double bonds | No new permission |
 | 0.1.16 | Optional atom `isotope` fields | No new permission |
 | 0.1.15 | `chemistry.embed3d`, `minimize3d`, `flatten3d` | `chemistry.compute`, during the plugin's own command |
+
+## Request-bound plugin tools
+
+Declare `apiVersion: "^0.1.26"` to use these optional capabilities. Methods return
+`{ ok: true, value }` or `{ ok: false, error: { code, message } }`. Embedding hosts may return
+`unsupported` for a capability they have yet to implement. The SDK exports request and result
+schemas by method in `PluginRequestCapabilities` and corresponding types through
+`PluginRequestArguments<Namespace, Method>` and `PluginCapabilityResult<Namespace, Method>`.
+
+| Method | Arguments and successful value | Permissions |
+| --- | --- | --- |
+| `requests.begin` | `{ label }` → `{ requestId }`. Starts from the document and selection of the initiating user command. | `document.read` and `selection.read` for the captured context |
+| `requests.getContext` | `{ requestId }` → pinned document key, page sizes and revisions, optional viewport, initial selection, committed insertions and object revisions. | `document.read` and `selection.read` for both snapshots |
+| `requests.end` | `{ requestId }` → `{ touched }` and releases the request. | Same permissions as the request lifecycle |
+| `requests.requestPageSpace` | `{ requestId, pageId, requiredBounds, revision }` → `fits`, `keep`, `enlarge` with a decision ID on each, or `unanswered`. Requires the `requests` namespace. | `document.read`, `selection.read`, and `document.write` because a subsequent patch may resize the page |
+| `documents.readRequest` | `{ requestId, pageId, cursor?, objectIds? }` → page revision, native objects with revisions, and optional next cursor. Reuse the same filter for subsequent pages. | `document.read` for native objects |
+| `documents.applyRequestPatch` | `{ requestId, patch, preconditions?, expectedStructures?, pageSpace? }` → `{ touched, insertions }`. | `document.read`, `selection.read`, `document.write` and `chemistry.compute` |
+| `toolSessions.open` | `{ requestId, definitions, hostTools? }` → `{ sessionId, tools }`. | `document.read` and `selection.read` to bind the session to the captured request |
+| `toolSessions.close` | `{ sessionId }` → `null` and releases the session. | Same permissions as opening |
+| `chemistry.inspectStructure` | `{ kind: "serialized", source }` or `{ kind: "molecule", requestId, pageId, objectId }` → source serialization, canonical isomeric SMILES, heavy atom count and warnings. Source formats are `smiles`, `molfile-v2000` and `molfile-v3000`. | `chemistry.compute` plus `document.read` for a pinned molecule |
+| `chemistry.rings` | `{ requestId, pageId, objectId, representation }` → revision, warnings and native atom and bond IDs for each ring. Only `drawable` rings carry renderer keys. | `chemistry.compute` and `document.read` for the pinned graph and depiction |
+| `depiction.measure` | `{ requestId, pageId, target, preview? }` → ink bounds, object and atom label bounds, nominal and measured bond lengths, unsupported object types and warnings. Units are document units. | `document.read` for pinned depiction data |
+| `depiction.renderRegion` | `{ requestId, pageId, target, widthPx, heightPx, preview? }` → PNG base64, page-space bounds, image dimensions and warnings. | `document.read` for the pinned image |
+| `depiction.planLayout` | `{ requestId, pageId, spec, preview? }` → proposed objects, translations and warnings. Specs describe a reaction or a grid. | `document.read` for pinned objects and style defaults |
+| `depiction.listStylePresets` | `{ requestId }` → native preset IDs/names and the pinned document's effective drawing and text defaults. | `document.read` for document defaults |
+| `depiction.planStyle` | `{ requestId, pageId, objectIds, presetId?, targetBondLength?, preview? }` → proposed updates, affected IDs and warnings. Supply a preset, a target bond length in document units, or both. | `document.read` for pinned objects and styles |
+
+Selections, revisions and insertion receipts use page-scoped object IDs. A request ID identifies
+host state. Subsequent calls also need a live invocation bound to the request or session. The
+request follows its original document when the active tab changes. Replacing or closing that
+document ends the request and its tool sessions. A region target has `kind: "region"` and
+`bounds: { x, y, width, height }` in page units. An objects target has `kind: "objects"` and
+`objectIds`. Preview patches are flat native patches evaluated as temporary inputs to the planner
+or renderer.
+
+Patch preconditions are `{ kind: "objectRevision", pageId, objectId, token }` and
+`{ kind: "pageAtLeast", pageId, width, height }`. Revision tokens come from the pinned context
+or read. Preconditions can depend on read-only anchors. Edits remain scoped to the initial
+selection and committed insertions. Chemical expectations pair `sourceSmiles` with either
+`{ kind: "object", pageId, objectId }` for an edited molecule or
+`{ kind: "insertion", opIndex }` for an inserted molecule. `opIndex` is the zero-based position
+in the flat patch or zero for a single operation. Each insertion receipt maps that index to the
+final page ID, object ID and revision. Failures include `stale`, `scope`, `chemistry`,
+`cancelled`, `limit` and `interrupted`. A refused patch yields no receipt or undo entry.
+
+Successful writes through `applyRequestPatch`, `applyPatch` or `insertTable` during the bound
+invocation share a single labelled Undo entry. The host verifies the final normalized chemistry and
+selects the changed objects. A drawing edit after the request's first write makes further writes
+return `interrupted` if they would need another entry. Undo and redo restore the recorded states.
+
+Use `requestPageSpace` to ask about a proposed rectangle in page units before committing. Use the
+page revision from the pinned context or read. Pass an answered decision back with
+`pageSpace: { pageId, decisionId }`. The decision applies to that request, page instance, revision
+and bounds. A write requiring space outside those bounds or using a stale decision is refused.
+`fits` needs no question. `keep` allows reflow or a write at the existing page size. After
+`enlarge`, the host computes page growth and any whole-page translation from the actual patch.
+An overflow write without a decision reference asks about the normalized fit. Repeating a
+page-space question at the same revision with the same bounds reuses the answer. A new revision
+or different bounds require a fresh decision. Timeout or cancellation leaves the question
+unanswered.
+
+```ts
+// Inside the initiating command or a dispatched tool with write permissions.
+// Obtain pageId and revision from getContext or readRequest.
+const space = await context.requests?.requestPageSpace?.({
+  requestId, pageId, revision, requiredBounds: { x: -12, y: 40, width: 230, height: 90 }
+});
+if (space?.ok && space.value.outcome !== "unanswered") {
+  const receipt = await context.documents.applyRequestPatch?.({
+    requestId, patch,
+    pageSpace: { pageId, decisionId: space.value.decisionId }
+  });
+  // Check receipt.ok before using the committed object IDs.
+}
+```
+
+An open session freezes its definitions. Each definition supplies a unique `name`,
+`description` and object-root `inputSchema`. Omit `hostTools` for a catalog consisting only
+of plugin definitions. An explicit `hostTools` list selects published compatibility tools and
+must have distinct names across both providers. Neither operation confers external process or
+transport permissions. The embedding host checks those permissions and user consent separately.
+Register `onToolCall(context, { requestId, sessionId, name, input }, signal)` for session calls.
+It returns a typed result with JSON data on success. The host validates arguments against the
+session schema before dispatch. Check the abort signal during work and release resources on
+cancellation. Only dispatched tools receive an invocation context.
+
+Tool input schemas accept single `type` declarations for object, array, string, integer, number,
+boolean and null. Every type may have `description` and `enum`. Objects support `properties`,
+`required` (declared property names), and boolean `additionalProperties` (JSON Schema's default
+is true). Arrays require a single schema in `items` and support `minItems` and `maxItems`.
+Strings support `minLength` and `maxLength`, and numbers and integers support inclusive
+`minimum` and `maximum`. Keywords outside this subset, including references, combinators,
+formats and patterns, are rejected.
+
+With `document.read`, a plugin may register `onActiveDocumentChanged({ documentKey, sequence })`.
+The opaque key identifies the newly active document instance, or is `null` when no document is
+active. The sequence orders notifications on tab switches, document replacement and close.
+Edits that keep the same document instance leave its key and sequence unchanged. A packaged
+worker receives the current event once it starts and opts in. Disabling the plugin removes
+its subscription. Events grant no invocation context and leave existing request bindings intact.
+Protocol v1 workers opt in during startup to request capabilities, tool calls and
+document-change delivery.
+
+`PluginRequestLimits` defines independent work limits. A session has up to 32 tools across
+providers, names of 1–48 lowercase letters/digits/underscores starting with a letter, descriptions
+of up to 1,000 characters, 16 KiB per schema and 128 KiB for the complete open request. Direct
+requests and results use 1 MiB and 8 MiB UTF-8 JSON envelopes, with at most 32 nesting levels,
+250,000 values and 1,024 keys per object. Reads return at most 64 objects per result and context
+includes up to 256 pages. Patches, object targets and proposed results use at most 256 entries
+per list, with 2,500 atoms and 5,000 bonds per native molecule. Inspection is limited to 500
+heavy atoms, 5,000 characters for SMILES and 262,144 UTF-16 code units for a molfile. PNGs use at
+most 4,096 pixels per edge, 4,194,304 pixels total and 2 MiB decoded. Per worker, the transport
+allows up to 16 pending request capability calls, 16 pending document-change notifications and
+four concurrent tool calls. A cancelled tool keeps its slot until the handler settles or its
+worker stops.
 
 ## Manifest + registration
 
@@ -588,9 +705,10 @@ selected, and host-shifted objects do not enter the plugin's editable scope. Und
 page size and all positions exactly; redo restores the saved result without another question.
 **Keep Page Size** applies the same objects at the same coordinates without resizing. A command asks
 at most once across all its patch calls (each call still has its own undo entry), and its receipt is returned only after the answer and commit. A changed or closed
-drawing invalidates a pending plan. Assistant tool calls and direct patches share one decision for
-the entire request and retain the request's single undo entry; an explicit Keep Page Size now keeps
-all requested content. Cancellation and unanswered assistant questions retain their refusal behavior.
+drawing invalidates a pending plan. Legacy assistant tool calls and direct patches share one decision
+for the entire request. Public request tools bind consent to the page revision and geometry. Both
+paths retain a single undo entry per request. An explicit Keep Page Size keeps all requested content.
+Cancellation and unanswered assistant questions retain their refusal behavior.
 See [the page-enlargement inventory and translation policy](../architecture/page-enlargement.md).
 Colliding inserted object ids are rebased to fresh ids. All native references within the batch,
 including attachment points on superatoms and R-groups (standalone or inside molecules), follow
@@ -1040,7 +1158,7 @@ machine-readable lines in its GitHub release body. The exact format is
 each on its own line with one space after the colon. For example:
 
 ```text
-ChemDraft-Plugin-API: ^0.1.25
+ChemDraft-Plugin-API: ^0.1.26
 ChemDraft-Min-App: 1.2.0
 ```
 

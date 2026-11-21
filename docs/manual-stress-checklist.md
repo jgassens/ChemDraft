@@ -87,6 +87,34 @@ While atom labels, text, table cells, form controls or editable plugin text hold
 real arrow caret/navigation behavior and no canvas movement. Cmd/Ctrl/Alt+arrows retain their
 usual behavior.
 Brackets (macOS and Windows): drag square/round pairs in both directions, including over a molecule; verify matching sides, both visibly selected after returning to Select, one labeled Undo/Redo, and Escape cancellation. Right-click either side, mark a repeat unit, then double-click the painted n and type m without switching tools (Enter/blur commits once; Escape cancels). A single Select click only selects, matching text objects. Duplicate, copy/paste, save/reopen and compare canvas/SVG/PDF placement. Select only the molecule: Copy As SMILES and SMILES file export must name the omitted repeat label and atom count. Both MOL text formats must contain an SRU SGroup (including membership/crossing bonds, repeat label and EU connectivity), or warn naming the bracket if it cannot be represented. Recheck CDXML label/connectivity limitations. Open Main with a saved pre-Round-Bracket order: Round Bracket belongs immediately after Square Bracket; explicit custom placement remains where saved.
+On Linux (XWayland and native Wayland), open Drawn Structure Settings and a plugin panel with a
+text field. Check that showing each leaves the document focused. Click Target bond length and type
+`30`, then repeat in the panel field. Verify both fields receive the digits, including after hiding
+and reopening each window. Repeat with a digit immediately after the click. No ring should appear.
+Click the drawing and verify its shortcuts work again. Run this pass under KDE Plasma (Wayland
+session, where both packages use XWayland) as well as GNOME: their window managers answer a
+palette's focus request differently.
+
+On Linux (XWayland and native Wayland with `GDK_BACKEND=wayland`), maximize the document, open
+several floating toolbars, and click the canvas. Verify the toolbars stay above the document and
+have no standalone taskbar or pager entries. Switch to another app and check that its window can
+cover the toolbars. Hover for a tooltip, open and reopen a palette popover, and open a file warning.
+Check that each opens after prewarming or reuse and that mouse-opened utilities leave the document
+focused. On native Wayland, the compositor places these windows.
+
+Palette first paint (Windows): quit ChemDraft, then cold-launch it. The Main toolbar and the other
+open palettes appear with their content in the palette's light grey, with no black frame and no
+blank light frames first. Press and hold a flyout button and open a color picker: each popover, and
+the first hovered tooltip, appears with its content and no black or blank frame. Focus stays on the
+document throughout (its title bar stays active and M switches tools). Close a palette from
+View ▸ Toolbars right after launch: it stays closed. Minimize the document right after launch,
+before the palettes appear: no palette shows until the document is restored, and then they all do.
+If a palette appears before its content, it shows only an empty panel in the palette's own grey,
+never the darker document-window grey. With the agent bridge diagnostics on, the
+`[windows-activation]` log has one `palette reveal label=... ms=... trigger=ack|fallback|release
+result=...` line per palette; on a cold launch `trigger=ack` is expected, since the fallback waits
+5 s.
+
 Palette field input (macOS and Windows): in Drawn Structure Settings, click Target bond length,
 type 30 and press Return; the value changes, the canvas does not, and no hotkey fires. Switch to
 another app and back, then click the field again; Customize gallery search still types.
@@ -330,6 +358,55 @@ and on load failure. Probe external fetch/module imports: the installed worker a
 must still be blocked by CSP without host permission. On macOS, confirm the entry and nested
 worker still load directly from `tauri://localhost` with working prediction. In a Windows web
 preview, confirm construction remains native; classic and cross-origin calls must remain unchanged.
+
+Request tools: perform each check in packaged builds on macOS Apple silicon and Intel (WKWebView)
+and Windows x64 (WebView2). Record the build, platform, probe results and any errors.
+
+- Install [Request Tools Probe](../examples/plugins/request-tools-probe/README.md) through
+  **Plugins > Add or Remove Plugins… > Add plugin from package…**. Check that the nine **Probe**
+  commands appear in **Plugins**. The API 0.1.26 worker opts in to request capabilities, tool
+  calls and document-change delivery.
+- Package the [Request Tools Legacy Fixture](../examples/plugins/request-tools-legacy-fixture/README.md)
+  with `pnpm plugin:package -- examples/plugins/request-tools-legacy-fixture` and install its ZIP
+  with the adjacent `.sha256` file. Verify that **Legacy Fixture: Read active document** and
+  **Legacy Fixture: Read selection** report the current document and selection.
+  **Legacy Fixture: Attempt to start request** should report `unsupported`. Switch tabs and run
+  **Legacy Fixture: Show document-change events**. The report should show zero received events.
+- In tab A, click **Plugins > Probe: Read pinned document**. When the report says **Switch tab now**,
+  click distinct tab B. Verify that the report shows A's document and captured selection.
+- In tab A, click **Plugins > Probe: Insert text and molecule**, then switch to B when prompted.
+  Verify B is unchanged, then switch back to A and check that both insertions appear and are selected there. **Edit > Undo** restores the
+  exact original state in one step. **Edit > Redo** restores the result without another prompt.
+- Select one object and leave a text object unselected. Click **Plugins > Probe: Attempt out-of-scope edit**.
+  Expect a `scope` refusal, unchanged documents and no new history entry.
+- Click **Plugins > Probe: Request page space**, then **Ask for page space** in the panel. Use a fresh
+  request for each answer. **Keep Page Size** preserves the page
+  dimensions and requested positions; **Enlarge** fits the content and includes any page translation
+  in the single undo entry. Undo and redo restore the exact page and object states. Dismiss the prompt: it acts as **Keep Page Size** and inserts at the requested position. Undo it.
+  In a fresh request, leave the prompt unanswered for five minutes: expect `unanswered` and no write
+  or history entry.
+- Repeat **Probe: Request page space** and click **Ask and end after 10 seconds**. Leave the prompt
+  open past the timer, then answer it if it remains visible. Verify the report says `PASSED`, no write or history entry appears, and
+  the request and its session ended.
+- Use **Plugins > Probe: Print active-document events** before and after a tab switch, opening a
+  file into a pristine tab, and closing a tab. Verify that
+  keys identify the current document instance (or null when none is active), sequences increase, and
+  an edit within one instance does not generate a change. Closing or replacing the pinned document
+  ends its request and session.
+- Click **Plugins > Probe: Open tool session**. Verify that the panel lists `get_document` and
+  `get_selection`. Inspect listeners with `lsof -iTCP -sTCP:LISTEN` on macOS or `netstat -ano` on
+  Windows and verify that the server listens on 127.0.0.1 only. Click **Plugins > Probe: End request**
+  and verify the listener disappears when the probe owns the only session. With a host-authorized
+  client, check separately that the tools return the pinned context after switching tabs and fail
+  after the request ends.
+- Select a text object or molecule and click **Plugins > Probe: Measure selection**. Inspect the
+  reported ink bounds and document units.
+- Click **Plugins > Probe: Render selection PNG** with the same selection. Verify that the panel
+  displays the 400 × 300 PNG of the measured region.
+- Run **Probe: Open tool session** and disable the probe in **Plugins > Add or Remove Plugins…**.
+  Verify that its commands and listener disappear. Switch tabs and re-enable the probe. Verify
+  that **Probe: Print active-document events** shows a fresh worker log. With a host-authorized
+  client, verify separately that subsequent calls to the original session fail.
 
 Plugin panel focus (both macOS and Windows): open/re-show a panel from Analyze or a plugin command;
 click a panel button, heading, chart, empty area and title/drag area, hover its controls and scroll.
@@ -887,7 +964,7 @@ and Art toolbars open, including at 125%/150% display scale:
   Before insertion, expect exactly one native box: "This doesn't fit on the page. Enlarge the page
   to fit? Content on the page may shift to make room." with Enlarge / Keep Page Size. Enlarge and all content undo together; Keep Page Size keeps
   the exact proposed positions without resizing. Fitting content asks nothing. Repeat with an
-  assistant request containing several tool calls and direct patches: only one question per request,
+  legacy assistant request containing several tool calls and direct patches: only one question per request,
   one Undo, and Redo never reopens the question. Check template/table dialogs targeting an inactive
   tab, changes or tab closure while a question is pending, and Stop during an assistant question.
   Duplicate, structure-editor Save, Spin Flatten/Release and native ring/bracket/symbol/art stamps
@@ -1683,3 +1760,28 @@ Windows with Word and PowerPoint, and the Mac items on a Mac with both apps. Say
 - A refused update (for example a grouped or cropped picture): the original picture stays and no
   duplicate picture is left on the slide or page.
 - A picture without a ChemDraft carrier is refused with a reason and is not altered.
+
+## Linux startup and session end
+
+- Disable “Start with a fresh document”, make an unsaved edit, and log out before the autosave
+  debounce expires. Log back in and verify that the last edit is recovered. Repeat with
+  `kill -TERM`, `kill -HUP`, and `kill -INT` against ChemDraft, including with the Save on Quit
+  prompt open. Stall the renderer and verify that shutdown is bounded and reports an
+  unconfirmed flush. On GNOME, a stalled renderer at logout must make the session manager
+  name ChemDraft with "ChemDraft could not save your open documents", and logout must still
+  finish within a few seconds.
+- In a directory containing `drawing.cdxml`, launch `/path/to/ChemDraft.AppImage drawing.cdxml`.
+  Verify that the drawing opens, then launch from a different directory containing a second
+  `drawing.cdxml` and check that the running instance opens that file. With no remembered folder,
+  verify that Open and Save for an untitled document start in the primary launch folder, or home
+  when `OWD` is unavailable. Repeat from a launch folder with mode `000` (accessible parents):
+  the dialogs must start in home.
+- Create a drawing whose file name is not valid UTF-8 (for example
+  `cp drawing.cdxml "$(printf 'caf\351.cdxml')"`). Opening it from the first launch must show
+  an error naming the file, not open it. With ChemDraft running, launch the AppImage with that
+  file and a normal one: the normal file opens in the running instance, the second launch shows
+  the same error and exits with status 1. Check that opening a report link, revealing saved screen captures,
+  and running OPSIN work while WebKit runs from the AppRun working folder.
+- Start a native Wayland session with XWayland disabled. With `DISPLAY` and `GDK_BACKEND` unset,
+  launch both packages and verify that the document window and drawing canvas appear. Repeat
+  on Wayland with XWayland enabled and check the default and an explicit Wayland override.

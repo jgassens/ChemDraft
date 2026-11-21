@@ -6,7 +6,11 @@ on:
       - .github/workflows/linux-container-smoke.yml
       - .github/workflows/linux-release.yml
       - .github/workflows/linux-package-smoke/**
-      - apps/desktop/src-tauri/src/main.rs
+      - apps/desktop/src-tauri/src/**
+      - apps/desktop/src/**
+      - apps/desktop/src-tauri/Cargo.toml
+      - apps/desktop/src-tauri/Cargo.lock
+      - .github/workflows/linux-build.yml
       - apps/desktop/src-tauri/tauri.conf.json
       - apps/desktop/src-tauri/binaries/avogadro3d-sidecar-x86_64-unknown-linux-gnu
       - scripts/build-opsin-runtime.mjs
@@ -41,11 +45,9 @@ concurrency:
 jobs:
   build:
     if: inputs.artifact_run_id == '' && inputs.artifact_name == ''
-    uses: ./.github/workflows/linux-release.yml
+    uses: ./.github/workflows/linux-build.yml
     permissions:
-      # The reusable workflow declares an upload job with write permission. Its build job has
-      # read access and workflow_call accepts only a source ref, so this call cannot publish.
-      contents: write
+      contents: read
     with:
       ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
@@ -68,14 +70,21 @@ jobs:
             image: debian:sid
           - distro: fedora
             image: fedora:latest
+          - distro: arch
+            image: archlinux:latest
+            package: appimage
+            backend: x11
+            native_wayland: 0
           - distro: debian
             image: debian:sid
             package: deb
             backend: wayland
             native_wayland: '1'
-          # The AppImage cannot run natively on Wayland: linuxdeploy-plugin-gtk's AppRun hook
-          # always exports GDK_BACKEND=x11 before ChemDraft starts, so it always uses XWayland.
-          # Native Wayland is covered by the .deb job.
+          - distro: debian
+            image: debian:sid
+            package: appimage
+            backend: wayland
+            native_wayland: '1'
     container:
       image: ${{ matrix.image }}
       # strace needs ptrace and glycin's bubblewrap needs user namespaces.
@@ -87,6 +96,7 @@ jobs:
       DISTRO: ${{ matrix.distro }}
       PACKAGE: ${{ matrix.package }}
       BACKEND: ${{ matrix.backend }}
+      NATIVE_WAYLAND: ${{ matrix.native_wayland }}
       DEBIAN_FRONTEND: noninteractive
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -125,7 +135,7 @@ jobs:
             if [[ "$PACKAGE" == deb ]]; then
               apt-get install -y --no-install-recommends "${bundles[0]}"
             fi
-          else
+          elif [[ "$DISTRO" == fedora ]]; then
             dnf install -y /usr/bin/dbus-run-session procps-ng shadow-utils strace util-linux weston xorg-x11-server-Xwayland xorg-x11-server-Xvfb \
               gtk3 libxdo mesa-dri-drivers mesa-libEGL libglvnd-egl libglvnd-glx libgpg-error \
               libwayland-client libwayland-egl libwayland-cursor libwayland-server
@@ -134,6 +144,45 @@ jobs:
               dnf install -y /usr/bin/dpkg-deb webkit2gtk4.1
               dpkg-deb -x "${bundles[0]}" /
             fi
+          else
+            pacman -Syu --noconfirm --needed bash dbus procps-ng shadow strace util-linux \
+              xorg-server-xvfb gtk3 xdotool mesa libglvnd libdrm libgpg-error wayland
+          fi
+
+          if [[ "$BACKEND" == x11 ]]; then
+            case "$DISTRO" in
+              debian)
+                apt-get install -y --no-install-recommends at-spi2-core gir1.2-atspi-2.0 python3-gi \
+                  fonts-dejavu-core imagemagick openbox x11-utils xclip xdotool
+                ;;
+              fedora)
+                dnf install -y at-spi2-core python3-gobject-base dejavu-sans-fonts ImageMagick \
+                  openbox /usr/bin/xdpyinfo /usr/bin/xprop xclip xdotool
+                ;;
+              arch)
+                pacman -S --noconfirm --needed at-spi2-core python-gobject ttf-dejavu imagemagick \
+                  openbox xorg-xdpyinfo xorg-xprop xclip
+                ;;
+            esac
+          elif [[ "$NATIVE_WAYLAND" != 1 ]]; then
+            # The toolbar field checks drive ChemDraft's XWayland windows in a Weston session and
+            # in a virtual KWin session (Plasma's compositor, whose X window manager honors a
+            # client's own focus request).
+            case "$DISTRO" in
+              debian)
+                apt-get install -y --no-install-recommends at-spi2-core gir1.2-atspi-2.0 python3-gi \
+                  fonts-dejavu-core x11-utils xclip xdotool kwin-wayland
+                ;;
+              fedora)
+                dnf install -y at-spi2-core python3-gobject-base dejavu-sans-fonts /usr/bin/xprop \
+                  xclip xdotool /usr/bin/kwin_wayland
+                ;;
+            esac
+            if ! command -v kwin_wayland >/dev/null; then
+              echo "::error::The $DISTRO KWin package did not install kwin_wayland"
+              exit 1
+            fi
+            kwin_wayland --version || true
           fi
 
           if [[ "$PACKAGE" == appimage ]]; then
@@ -145,10 +194,14 @@ jobs:
           useradd --create-home smoke
           install -d -m 1777 /tmp/.X11-unix
 
-      # Xvfb catches missing libraries and baseline startup failures in both packages. Weston
-      # exercises the XWayland default and native Wayland launches of both packages with the opt-out.
-      # Both virtual displays exercise WebKit startup on newer host libraries without a GPU.
-      - name: Launch and watch the WebKit process
+      - name: Check AppImage library resolution against host Mesa
+        if: matrix.package == 'appimage'
+        run: bash .github/workflows/linux-package-smoke/host-mesa.sh "$BUNDLE"
+
+      # Xvfb also runs the document, menu and clipboard checks. Weston exercises the XWayland
+      # default, the .deb's native Wayland opt-out, and the AppImage without XWayland. Both use
+      # virtual displays without a GPU.
+      - name: Smoke test the Linux package
         uses: ./.github/workflows/linux-package-smoke
         with:
           bundle: ${{ env.BUNDLE }}
@@ -157,6 +210,45 @@ jobs:
           native-wayland: ${{ matrix.native_wayland }}
           logs: ${{ github.workspace }}/smoke-logs
           container-user: smoke
+          check-window: ${{ matrix.backend == 'x11' }}
+
+      # Both packages use XWayland in a Wayland session by default. Type into a floating
+      # toolbar's number field there with a real click and keys, and require the document's
+      # chemistry not to change. Weston cannot test click-to-focus: its X window manager resets
+      # every client focus change and activates a window only on Wayland seat input, which
+      # XTEST never reaches. So this step checks setup, accessibility and chemistry only, and
+      # notes an unchanged field without failing. The KWin step below is the focus gate.
+      # Native Wayland is not covered: Weston has no protocol that lets a test client type
+      # into another client's window.
+      - name: Type into a toolbar number field under Weston (no focus check)
+        if: matrix.backend == 'wayland' && matrix.native_wayland != '1'
+        run: |
+          set -euo pipefail
+          logs="$GITHUB_WORKSPACE/smoke-logs/toolbar-field"
+          install -d -o smoke "$logs"
+          runuser -u smoke -- env WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 dbus-run-session -- \
+            /usr/bin/python3 "$GITHUB_WORKSPACE/.github/workflows/linux-package-smoke/toolbar-field.py" \
+            --compositor weston "$BUNDLE" "$PACKAGE" "$logs" 2>&1 | tee "$logs/harness.log"
+
+      # The same check under a virtual KWin, the compositor of KDE Plasma. KWin's X window
+      # manager honors a client's own focus request, so here the field must change: this is
+      # the pass/fail check for click-to-focus in a toolbar number field. It clicks the
+      # document first, as a user would, because ChemDraft (like Windows and macOS) gives a
+      # field the keyboard only when ChemDraft had focus at the click. Its log prints
+      # ChemDraft's "[palette-focus] linux-acquire" line for the click, which shows the app's
+      # focus inputs (app-foreground=..., app-focus-lost=...), its decision (request=...),
+      # the XSetInputFocus call and the outcome.
+      - name: Type into a toolbar number field under KWin (focus check)
+        if: >-
+          !cancelled() && matrix.backend == 'wayland' && matrix.native_wayland != '1' &&
+          (matrix.distro == 'debian' || matrix.distro == 'fedora')
+        run: |
+          set -euo pipefail
+          logs="$GITHUB_WORKSPACE/smoke-logs/toolbar-field-kwin"
+          install -d -o smoke "$logs"
+          runuser -u smoke -- env WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 dbus-run-session -- \
+            /usr/bin/python3 "$GITHUB_WORKSPACE/.github/workflows/linux-package-smoke/toolbar-field.py" \
+            --compositor kwin "$BUNDLE" "$PACKAGE" "$logs" 2>&1 | tee "$logs/harness.log"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()

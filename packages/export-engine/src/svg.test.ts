@@ -11,7 +11,7 @@ import {
 } from "@chemdraft/chem-core";
 import { nativeTextObjectLineMetrics, planNativeArtVisual } from "@chemdraft/layout-engine";
 import { describe, expect, it } from "vitest";
-import { exportDocumentToSvg } from "./svg";
+import { exportDocumentToSvg, SvgByteLimitError } from "./svg";
 
 const timestamp = "2026-05-29T00:00:00.000Z";
 
@@ -21,6 +21,18 @@ it("uses a clean document title for the SVG accessible name", () => {
   expect(exportDocumentToSvg(imported).contents).toContain('aria-label="Untitled"');
   expect(exportDocumentToSvg({ ...imported, title: "Saved.chemdraft" }).contents).toContain('aria-label="Saved"');
   expect(exportDocumentToSvg({ ...imported, title: "Untitled" }).contents).toContain('aria-label="Untitled"');
+});
+
+it("charges escaped UTF-8 and markup against the raster SVG budget", () => {
+  const document = createEmptyDocument({ title: "x".repeat(8191) + "🧪&<", now: timestamp });
+  document.pages[0]!.objects.push(nativeBondMolecule());
+  const bounds = { x: 95, y: 115, width: 10, height: 10 };
+  const render = (maxSvgBytes: number) => exportDocumentToSvg(document, { rasterRegion: { bounds, maxSvgBytes } }).contents;
+  const expected = render(1024 * 1024);
+  expect(expected).toContain("🧪&amp;&lt;");
+  const size = new TextEncoder().encode(expected).byteLength;
+  expect(render(size)).toBe(expected);
+  expect(() => render(size - 1)).toThrow(SvgByteLimitError);
 });
 
 it("matches electron-mark rendering options and keeps authored styling across opt-out", () => {

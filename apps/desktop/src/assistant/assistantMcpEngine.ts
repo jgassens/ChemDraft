@@ -1,26 +1,19 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 
-export interface McpBridgeRequest {
-  sessionId: string;
-  requestId: string;
-  method: string;
-  params: unknown;
-}
-export type McpBridgeResponse = { result: unknown } | { error: { code: number; message: string; data?: unknown } };
-export interface AssistantMcpEngine {
-  open(plugin: { id: string; name: string }, listener: (request: McpBridgeRequest) => void): Promise<{ sessionId: string; serverName: "chemdraft" }>;
-  close(sessionId: string): Promise<void>;
-  respond(sessionId: string, requestId: string, response: McpBridgeResponse): Promise<void>;
+import type { McpBridgeRequest, McpBridgeResponse, NativeToolCatalog, ToolSessionTransport } from "../plugins/toolSessions/transport";
+export type { McpBridgeRequest, McpBridgeResponse } from "../plugins/toolSessions/transport";
+
+export interface AssistantMcpEngine extends ToolSessionTransport {
   status(): Promise<{ listening: boolean; sessionCount: number }>;
 }
 
 export class TauriAssistantMcpEngine implements AssistantMcpEngine {
   constructor(private readonly call: typeof invoke = invoke, private readonly channel = () => new Channel<McpBridgeRequest>()) {}
-  open(plugin: { id: string; name: string }, listener: (request: McpBridgeRequest) => void) {
+  open(plugin: { id: string; name: string }, listener: (request: McpBridgeRequest) => void, catalog: NativeToolCatalog) {
     const onRequest = this.channel();
     onRequest.onmessage = listener;
     return this.call<{ sessionId: string; serverName: "chemdraft" }>("assistant_mcp_session_open", {
-      pluginId: plugin.id, pluginName: plugin.name, onRequest
+      pluginId: plugin.id, pluginName: plugin.name, onRequest, catalog
     });
   }
   close(sessionId: string) { return this.call<void>("assistant_mcp_session_close", { sessionId }); }

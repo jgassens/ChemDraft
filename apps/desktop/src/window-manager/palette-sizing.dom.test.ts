@@ -165,9 +165,22 @@ describe("palette work-area sizing", () => {
   it("fits a restored inspector frame to the work area before creating or showing the window", () => {
     const nativeSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/lib.rs"), "utf8");
     const open = nativeSource.split("fn ensure_toolset_window<")[1]!.split("fn install_toolset_input_focus<")[0]!;
-    expect(open).toMatch(/recover_offscreen_toolset_window\(app, &window, resizable\);\s*window\.show\(/);
+    expect(open).toMatch(
+      /recover_offscreen_toolset_window\(app, &window, resizable\);(?:\s*\/\/[^\n]*)*\s*if !palette_first_paint::reopened\(&label\) \{\s*window\.show\(/,
+    );
     expect(open).toMatch(/let \(position, width, height\) = clamp_toolset_frame\([\s\S]*?\.inner_size\(width, height\)/);
-    expect(open).toMatch(/clamp_windows_toolset_frame\([\s\S]*?\.visible\(false\)[\s\S]*?panel_full_size::apply\([\s\S]*?target\.show\(/);
+    // Windows: clamp, build hidden through palette_first_paint, place, then the reveal is armed.
+    expect(open).toMatch(
+      /clamp_windows_toolset_frame\([\s\S]*?palette_first_paint::builder_step\([\s\S]*?builder\.build\(\)[\s\S]*?panel_full_size::apply\([\s\S]*?palette_first_paint::arm_toolbar\(&target\)/,
+    );
+    // The new window is never shown directly: only palette_first_paint reveals it. The creation path
+    // (everything from the builder on) has no `.show(` call on any receiver.
+    const creationStart = open.indexOf("let builder = utility_window_builder(");
+    expect(creationStart).toBeGreaterThan(open.indexOf("palette_first_paint::reopened(&label)"));
+    const creation = open.slice(creationStart);
+    expect(creation).toContain("builder.build()");
+    expect(creation).not.toMatch(/\.show\s*\(/);
+    expect(creation).not.toMatch(/\bshow\s*\(\s*&?(?:window|target)\b/);
   });
 
   it("sends the requested size unchanged when it fits within the work area", async () => {

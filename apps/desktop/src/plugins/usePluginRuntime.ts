@@ -1,3 +1,4 @@
+import type { PluginHostOptions } from "@chemdraft/plugin-host";
 import { nameToStructureForPlugin } from "./pluginChemistry";
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import type {
@@ -79,6 +80,9 @@ export interface PluginRuntimeProviders {
    *  `DesktopPluginRuntimeOptions.getActiveDocumentKey`). Without one, two documents created by
    *  File > New in one session are indistinguishable to the write-binding check. */
   getActiveDocumentKey?: () => string | undefined;
+  captureRequestDocument?: PluginHostOptions["captureRequestDocument"];
+  openRequestHistory?: PluginHostOptions["openRequestHistory"];
+  requestPageSpace?: PluginHostOptions["requestPageSpace"];
   getActiveDocumentTab?: () => Pick<ProposalDocumentTab, "id">;
   getDocumentForTab?: DesktopPluginRuntimeOptions["getDocumentForTab"];
   /** MainWindow's native dialog authority, when this is a desktop document window. */
@@ -189,6 +193,12 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
       getActiveDocumentTab: providers.getActiveDocumentTab
         ? () => providersRef.current.getActiveDocumentTab!()
         : undefined,
+      captureRequestDocument: providers.captureRequestDocument && (() => providersRef.current.captureRequestDocument?.()),
+      openRequestHistory: providers.openRequestHistory && ((document, label) => providersRef.current.openRequestHistory!(document, label)),
+      requestPageSpace: providers.requestPageSpace && {
+        plan: (...args) => providersRef.current.requestPageSpace!.plan(...args),
+        confirm: (signal, documentKey) => providersRef.current.requestPageSpace!.confirm(signal, documentKey)
+      },
       getDocumentTabTitle: (tabId) => providersRef.current.getDocumentTabTitle?.(tabId),
       getDocumentForTab: (tabId) => providersRef.current.getDocumentForTab?.(tabId),
       getSelection: (warnings) => providersRef.current.getSelection(warnings),

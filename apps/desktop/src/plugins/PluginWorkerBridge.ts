@@ -21,19 +21,62 @@
  * {@link PluginWorkerHandle}, which a real `Worker` satisfies and tests supply as a linked fake.
  */
 
+import { isRequestToolContext } from "@chemdraft/plugin-host";
+import { DocumentObjectSchema } from "@chemdraft/chem-core";
+import type { z } from "zod";
 import {
   PLUGIN_WORKER_CAPABILITY_METHODS,
+  PluginActiveDocumentChangedSchema,
+  PluginEmptyRequestResultSchema,
+  PluginPlanLayoutResultSchema,
+  PluginReadRequestResultSchema,
+  PluginRequestLimits,
+  PluginToolCallResultSchema,
+  PluginToolCallSchema,
   PluginWorkerErrorCodes,
   checkWorkerHandshake,
+  getPluginRequestCapability,
+  isPinnedRequestToolCapability,
+  pluginRequestFailure,
+  pluginRequestPermissions,
+  requestValidationCode,
+  supportsPluginRequestTools,
   type HostToWorkerMessage,
+  type PluginActiveDocumentChanged,
   type PluginCommandContext,
   type PluginAssistantToolCall,
   type PluginAssistantToolResult,
+  type PluginRequestResult,
+  type PluginToolCall,
+  type PluginToolCallResult,
   type PluginWorkerCapabilityNamespace,
   type PluginWorkerErrorPayload,
+  type PluginWorkerFeatures,
   type PluginWorkerHandle,
   type WorkerToHostMessage
 } from "@chemdraft/plugin-api";
+
+function parseNativeObject(value: unknown) {
+  const parsed = DocumentObjectSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+}
+
+function parseNativeObjectResult<Result extends { objects: unknown[] }>(
+  response: z.SafeParseReturnType<unknown, PluginRequestResult<Result>>,
+  label: string,
+  parseEntry: (entry: Result["objects"][number]) => unknown
+) {
+  if (!response.success) return pluginRequestFailure(requestValidationCode(response.error), `Invalid ${label} result.`);
+  const result = response.data;
+  if (!result.ok) return result;
+  const objects: unknown[] = [];
+  for (const entry of result.value.objects) {
+    const parsed = parseEntry(entry);
+    if (parsed === undefined) return pluginRequestFailure("invalid", `Invalid ${label} native object.`);
+    objects.push(parsed);
+  }
+  return { ...result, value: { ...result.value, objects } };
+}
 
 export interface PluginWorkerBridgeOptions {
   /** Plugin id this bridge fronts (for diagnostics). */
@@ -68,10 +111,19 @@ export function configureChemistry3dReplyLogger(logger: PluginChemistry3dReplyLo
 
 interface PendingInvocation {
   context: PluginCommandContext;
-  tool: boolean;
+  boundRequest?: string;
+  tool: "external" | "request" | undefined;
   aborted: boolean;
   resolve: (value: unknown) => void;
   reject: (error: unknown) => void;
+}
+
+type ToolInvocation = { kind: "invokeAssistantTool"; call: PluginAssistantToolCall } |
+  { kind: "invokeTool"; call: PluginToolCall };
+
+interface InvocationState {
+  dispatch?: { commandId: string; context: PluginCommandContext; tool?: ToolInvocation };
+  commandRequestId?: number;
 }
 
 /** Public cancellation handle for one bridge invocation. Callers never need the bridge's private
@@ -93,13 +145,18 @@ export class PluginWorkerBridge {
 
   private worker: PluginWorkerHandle | undefined;
   private readyPromise: Promise<void> | undefined;
+  private readonly documentChangeReady = new Set<() => void>();
   private rejectStartup: ((error: unknown) => void) | undefined;
   private startupTimer: ReturnType<typeof setTimeout> | undefined;
   private terminated = false;
   private assistantToolHandler = false;
+  private features: Record<keyof PluginWorkerFeatures, boolean> | undefined;
 
   private nextCommandRequestId = 1;
+  private pendingToolCalls = 0;
   private readonly pending = new Map<number, PendingInvocation>();
+  private readonly pendingRequestCapabilities = new Map<number, object>();
+  private readonly documentChanges = new Map<number, (result: PluginRequestResult<null>) => void>();
 
   constructor(options: PluginWorkerBridgeOptions) {
     this.pluginId = options.pluginId;
@@ -117,6 +174,19 @@ export class PluginWorkerBridge {
 
   hasAssistantToolHandler(): boolean {
     return this.assistantToolHandler;
+  }
+
+  hasToolHandler(): boolean {
+    return this.features?.toolCalls === true;
+  }
+
+  hasActiveDocumentChangedHandler(): boolean {
+    return this.features?.activeDocumentChanged === true;
+  }
+
+  onDocumentChangeReady(listener: () => void): () => void {
+    if (!this.terminated) this.documentChangeReady.add(listener);
+    return () => { this.documentChangeReady.delete(listener); };
   }
 
   /**
@@ -137,35 +207,60 @@ export class PluginWorkerBridge {
     finally { signal.removeEventListener("abort", cancel); }
   }
 
+  async invokeTool(context: PluginCommandContext, call: PluginToolCall, signal: AbortSignal): Promise<PluginToolCallResult> {
+    if (signal.aborted) return pluginRequestFailure("cancelled", "The tool call was cancelled.");
+    if (this.pendingToolCalls >= PluginRequestLimits.pendingToolCalls) {
+      return pluginRequestFailure("limit", "Too many pending tool calls.");
+    }
+    this.pendingToolCalls++;
+    try {
+      const parsed = PluginToolCallSchema.safeParse(call);
+      if (!parsed.success) return pluginRequestFailure(requestValidationCode(parsed.error), "Invalid tool call.");
+      const invocation = this.invokeCancellable(parsed.data.name, context, { kind: "invokeTool", call: parsed.data });
+      const cancel = () => invocation.abort();
+      signal.addEventListener("abort", cancel, { once: true });
+      try {
+        if (signal.aborted) cancel();
+        return await invocation.promise as PluginToolCallResult;
+      } finally {
+        signal.removeEventListener("abort", cancel);
+      }
+    } catch {
+      return signal.aborted ? pluginRequestFailure("cancelled", "The tool call was cancelled.") :
+        pluginRequestFailure("failed", "The worker could not complete the tool call.");
+    } finally {
+      this.pendingToolCalls--;
+    }
+  }
+
   /** Invoke with a usable cancellation handle instead of exposing an internal request id. */
   invokeCommandCancellable(commandId: string, context: PluginCommandContext, tool?: PluginAssistantToolCall): PluginWorkerInvocation {
-    const state: { aborted: boolean; commandRequestId?: number } = { aborted: false };
+    return this.invokeCancellable(commandId, context, tool ? { kind: "invokeAssistantTool", call: tool } : undefined);
+  }
+
+  private invokeCancellable(commandId: string, context: PluginCommandContext, tool?: ToolInvocation): PluginWorkerInvocation {
+    const state: InvocationState = { dispatch: { commandId, context, tool } };
     let rejectBeforeDispatch!: (error: unknown) => void;
     const cancelled = new Promise<never>((_resolve, reject) => {
       rejectBeforeDispatch = reject;
     });
-    const execution = this.startInvocation(commandId, context, state, tool);
+    const execution = this.startInvocation(state);
     const promise = Promise.race([execution, cancelled]);
     return {
       promise,
       abort: () => {
-        if (state.aborted) return;
-        state.aborted = true;
         if (state.commandRequestId !== undefined) {
           this.abortCommand(state.commandRequestId);
-        } else {
+        } else if (state.dispatch) {
+          // Release the queued payload even if the worker's shared startup promise is still pending.
+          state.dispatch = undefined;
           rejectBeforeDispatch(this.abortedError("before dispatch"));
         }
       }
     };
   }
 
-  private async startInvocation(
-    commandId: string,
-    context: PluginCommandContext,
-    state: { aborted: boolean; commandRequestId?: number },
-    tool?: PluginAssistantToolCall
-  ): Promise<unknown> {
+  private async startInvocation(state: InvocationState): Promise<unknown> {
     if (this.terminated) {
       throw this.terminatedError();
     }
@@ -173,16 +268,28 @@ export class PluginWorkerBridge {
     if (this.terminated) {
       throw this.terminatedError();
     }
-    if (state.aborted) {
+    const dispatch = state.dispatch;
+    state.dispatch = undefined;
+    if (!dispatch) {
       throw this.abortedError("before dispatch");
+    }
+    const { commandId, context, tool } = dispatch;
+    if (tool?.kind === "invokeTool" && !this.hasToolHandler()) {
+      return this.features?.requestCapabilities
+        ? pluginRequestFailure("missingHandler", "This worker registered no request tool handler.")
+        : pluginRequestFailure("unsupported", "This worker does not support request tool calls.");
     }
     const commandRequestId = this.nextCommandRequestId++;
     state.commandRequestId = commandRequestId;
     return new Promise<unknown>((resolve, reject) => {
-      this.pending.set(commandRequestId, { context, resolve, reject, tool: !!tool, aborted: false });
+      const toolType = tool?.kind === "invokeTool" ? "request" : tool ? "external" : undefined;
+      this.pending.set(commandRequestId, { context, resolve, reject, tool: toolType,
+        boundRequest: tool?.kind === "invokeTool" ? tool.call.requestId : undefined, aborted: false });
       try {
-        this.postToWorker(tool ? { kind: "invokeAssistantTool", commandRequestId, ...tool } :
-          { kind: "invokeCommand", commandRequestId, commandId, ...(context.input === undefined ? {} : { input: context.input }) });
+        if (tool?.kind === "invokeTool") this.postToWorker({ kind: "invokeTool", commandRequestId, call: tool.call,
+          ...(!context.hasPermission("document.write") && { readOnly: true as const }) });
+        else if (tool) this.postToWorker({ kind: "invokeAssistantTool", commandRequestId, ...tool.call });
+        else this.postToWorker({ kind: "invokeCommand", commandRequestId, commandId, ...(context.input === undefined ? {} : { input: context.input }) });
       } catch (error) {
         this.pending.delete(commandRequestId);
         reject(this.wrapCrash(error));
@@ -199,11 +306,35 @@ export class PluginWorkerBridge {
     this.postToWorker({ kind: "panelClosed", panelId });
   }
 
-  /** Cancel capabilities immediately. Assistant tool invocations stay pending until the worker
+  /** Notify a running worker that opted in. No command context or capability token is issued. */
+  async notifyActiveDocumentChanged(event: PluginActiveDocumentChanged): Promise<PluginRequestResult<null>> {
+    if (!this.hasActiveDocumentChangedHandler() || !this.worker) {
+      return this.features?.requestCapabilities
+        ? pluginRequestFailure("missingHandler", "This worker has no document-change subscription.")
+        : pluginRequestFailure("unsupported", "This worker does not support document-change notifications.");
+    }
+    if (this.documentChanges.size >= PluginRequestLimits.pendingCapabilities) {
+      return pluginRequestFailure("limit", "Too many pending document-change notifications.");
+    }
+    const parsed = PluginActiveDocumentChangedSchema.safeParse(event);
+    if (!parsed.success) return pluginRequestFailure(requestValidationCode(parsed.error), "Invalid document change.");
+    const notificationId = this.nextCommandRequestId++;
+    return new Promise(resolve => {
+      this.documentChanges.set(notificationId, resolve);
+      try {
+        this.postToWorker({ kind: "activeDocumentChanged", notificationId, event: parsed.data });
+      } catch {
+        this.documentChanges.delete(notificationId);
+        resolve(pluginRequestFailure("failed", "Could not deliver the document change."));
+      }
+    });
+  }
+
+  /** Cancel capabilities immediately. Tool invocations stay pending until the worker
    *  handler settles, so callers can account for work that ignores its abort signal. */
   abortCommand(commandRequestId: number): void {
     const invocation = this.pending.get(commandRequestId);
-    if (!invocation) {
+    if (!invocation || invocation.aborted) {
       return;
     }
     invocation.aborted = true;
@@ -221,7 +352,9 @@ export class PluginWorkerBridge {
       return;
     }
     this.terminated = true;
+    this.documentChangeReady.clear();
     this.assistantToolHandler = false;
+    this.clearRequestTransport();
     const error = this.terminatedError();
     this.clearStartupTimer();
     const rejectStartup = this.rejectStartup;
@@ -267,10 +400,11 @@ export class PluginWorkerBridge {
     this.worker = worker;
 
     const settleReady = (message: WorkerToHostMessage): void => {
-      if (message.kind !== "ready" || this.worker !== worker || this.terminated) {
+      if (message.kind !== "ready" || this.worker !== worker || this.terminated || !this.rejectStartup) {
         return;
       }
-      const mismatch = checkWorkerHandshake(message, this.hostApiVersion);
+      const mismatch = typeof message.apiVersion === "string" ? checkWorkerHandshake(message, this.hostApiVersion) :
+        "The plugin worker did not declare an API version.";
       if (mismatch) {
         this.failStartup(
           new PluginWorkerBridgeError({ code: PluginWorkerErrorCodes.VersionMismatch, message: mismatch })
@@ -280,14 +414,39 @@ export class PluginWorkerBridge {
       this.clearStartupTimer();
       this.rejectStartup = undefined;
       this.assistantToolHandler = message.hasAssistantToolHandler === true;
+      if (supportsPluginRequestTools(message.apiVersion) &&
+          (this.hostApiVersion === undefined || supportsPluginRequestTools(this.hostApiVersion))) {
+        const features = message.features;
+        const optedIn = (key: keyof PluginWorkerFeatures) =>
+          typeof features === "object" && features !== null && Object.getOwnPropertyDescriptor(features, key)?.value === true;
+        this.features = {
+          requestCapabilities: optedIn("requestCapabilities"),
+          toolCalls: optedIn("toolCalls"),
+          activeDocumentChanged: optedIn("activeDocumentChanged")
+        };
+      }
       resolveStartup();
+      if (this.hasActiveDocumentChangedHandler()) {
+        for (const listener of this.documentChangeReady) listener();
+      }
     };
+
+    this.startupTimer = setTimeout(() => {
+      if (this.worker !== worker || this.terminated) return;
+      this.failStartup(
+        new PluginWorkerBridgeError({
+          code: PluginWorkerErrorCodes.WorkerCrashed,
+          message: `Plugin worker for "${this.pluginId}" did not complete its startup handshake within ${this.startupTimeoutMs} ms.`
+        })
+      );
+    }, this.startupTimeoutMs);
 
     worker.addEventListener("message", (event: { data: unknown }) => {
       if (this.worker !== worker || this.terminated) {
         return;
       }
       const message = event.data as WorkerToHostMessage;
+      if (typeof message !== "object" || message === null) return;
       // The very first message must be the handshake; route it there, then hand off to the router.
       if (message.kind === "ready") {
         settleReady(message);
@@ -305,17 +464,6 @@ export class PluginWorkerBridge {
         this.failStartup(this.wrapCrash(event));
       }
     });
-    this.startupTimer = setTimeout(() => {
-      if (this.worker !== worker || this.terminated) {
-        return;
-      }
-      this.failStartup(
-        new PluginWorkerBridgeError({
-          code: PluginWorkerErrorCodes.WorkerCrashed,
-          message: `Plugin worker for "${this.pluginId}" did not complete its startup handshake within ${this.startupTimeoutMs} ms.`
-        })
-      );
-    }, this.startupTimeoutMs);
     return readyPromise;
   }
 
@@ -323,6 +471,7 @@ export class PluginWorkerBridge {
    *  worker so a later invocation restarts cleanly. */
   private failStartup(error: unknown): void {
     this.assistantToolHandler = false;
+    this.clearRequestTransport();
     const inFlight = [...this.pending.values()];
     this.pending.clear();
     this.clearStartupTimer();
@@ -339,6 +488,13 @@ export class PluginWorkerBridge {
     for (const invocation of inFlight) {
       invocation.reject(error);
     }
+  }
+
+  private clearRequestTransport(): void {
+    this.features = undefined;
+    this.pendingRequestCapabilities.clear();
+    for (const settle of this.documentChanges.values()) settle(pluginRequestFailure("cancelled", "The worker stopped."));
+    this.documentChanges.clear();
   }
 
   private clearStartupTimer(): void {
@@ -358,7 +514,7 @@ export class PluginWorkerBridge {
         return;
       case "commandSettled": {
         const invocation = this.pending.get(message.commandRequestId);
-        if (!invocation) {
+        if (!invocation || invocation.tool === "request") {
           return;
         }
         this.pending.delete(message.commandRequestId);
@@ -369,6 +525,27 @@ export class PluginWorkerBridge {
         } else {
           invocation.reject(new PluginWorkerBridgeError(message.error));
         }
+        return;
+      }
+      case "toolCallSettled": {
+        const invocation = this.pending.get(message.commandRequestId);
+        if (invocation?.tool !== "request") return;
+        this.pending.delete(message.commandRequestId);
+        if (invocation.aborted) {
+          invocation.resolve(pluginRequestFailure("cancelled", "The tool call was cancelled."));
+        } else {
+          const parsed = PluginToolCallResultSchema.safeParse(message.result);
+          invocation.resolve(parsed.success ? parsed.data :
+            pluginRequestFailure(requestValidationCode(parsed.error), "Invalid tool call result."));
+        }
+        return;
+      }
+      case "activeDocumentChangedSettled": {
+        const settle = this.documentChanges.get(message.notificationId);
+        if (!settle) return;
+        this.documentChanges.delete(message.notificationId);
+        const parsed = PluginEmptyRequestResultSchema.safeParse(message.result);
+        settle(parsed.success ? parsed.data : pluginRequestFailure(requestValidationCode(parsed.error), "Invalid document-change result."));
         return;
       }
       case "ready":
@@ -387,6 +564,26 @@ export class PluginWorkerBridge {
       this.sendCapabilityError(message.requestId, {
         code: PluginWorkerErrorCodes.NoActiveCommand,
         message: `No active command ${message.commandRequestId} for a ${message.namespace}.${message.method} request.`
+      });
+      return;
+    }
+
+    if (typeof message.namespace !== "string" || typeof message.method !== "string" || !Array.isArray(message.args)) {
+      this.sendCapabilityError(message.requestId, {
+        code: PluginWorkerErrorCodes.MalformedMessage, message: "Invalid capability request frame."
+      });
+      return;
+    }
+    const requestCapability = getPluginRequestCapability(message.namespace, message.method);
+    if (requestCapability) {
+      void this.serviceRequestCapability(message, invocation, requestCapability);
+      return;
+    }
+    const requestTool = invocation.tool === "request";
+    if (requestTool && (!isPinnedRequestToolCapability(message.namespace, message.method) || !invocation.boundRequest ||
+        !isRequestToolContext(invocation.context, invocation.boundRequest))) {
+      this.sendCapabilityError(message.requestId, {
+        code: PluginWorkerErrorCodes.CapabilityNotGranted, message: "This invocation only supports request capabilities."
       });
       return;
     }
@@ -433,6 +630,10 @@ export class PluginWorkerBridge {
       });
       return;
     }
+    const release = requestTool ? this.reserveRequestCapability(message, () => {
+      this.sendCapabilityError(message.requestId, { code: "limit", message: "Too many pending request capabilities." });
+    }) : undefined;
+    if (requestTool && !release) return;
     // A restarted runtime begins capability ids at 1 again. A promise owned by
     // the old worker must never send its late result/error to the current worker.
     const worker = this.worker;
@@ -477,7 +678,75 @@ export class PluginWorkerBridge {
           }
           if (!droppedAsStale) this.sendCapabilityError(message.requestId, toErrorPayload(error));
         }
-      );
+      ).finally(release);
+  }
+
+  private reserveRequestCapability(
+    message: Extract<WorkerToHostMessage, { kind: "capabilityRequest" }>, onLimit: () => void
+  ): (() => void) | undefined {
+    const { requestId } = message;
+    if (!Number.isSafeInteger(requestId) || requestId < 1 || this.pendingRequestCapabilities.has(requestId)) return;
+    if (this.pendingRequestCapabilities.size >= PluginRequestLimits.pendingCapabilities) {
+      onLimit();
+      return;
+    }
+    this.pendingRequestCapabilities.set(requestId, message);
+    return () => {
+      if (this.pendingRequestCapabilities.get(requestId) === message) this.pendingRequestCapabilities.delete(requestId);
+    };
+  }
+
+  private async serviceRequestCapability(
+    message: Extract<WorkerToHostMessage, { kind: "capabilityRequest" }>,
+    invocation: PendingInvocation,
+    capability: NonNullable<ReturnType<typeof getPluginRequestCapability>>
+  ): Promise<void> {
+    const { namespace, method, requestId, commandRequestId, args } = message;
+    const send = (value: unknown) => this.sendCapabilityValue(requestId, value);
+    if (this.features?.requestCapabilities !== true) {
+      send(pluginRequestFailure("unsupported", "This worker did not negotiate request capabilities."));
+      return;
+    }
+    const release = this.reserveRequestCapability(message, () => send(pluginRequestFailure("limit", "Too many pending request capabilities.")));
+    if (!release) return;
+    const label = `${namespace}.${method}`;
+    const worker = this.worker;
+    try {
+      const parsed = capability.request.safeParse(args.length === 1 ? args[0] : undefined);
+      if (!parsed.success) {
+        send(pluginRequestFailure(requestValidationCode(parsed.error), `Invalid ${label} arguments.`));
+        return;
+      }
+      const target = this.resolveCapability(invocation.context, namespace) as CapabilityMethods | undefined;
+      const handler = target?.[method];
+      if (typeof handler !== "function" || !pluginRequestPermissions(namespace, method, parsed.data).every(
+        permission => invocation.context.hasPermission(permission)
+      )) {
+        send(pluginRequestFailure("permission", `Permission denied for ${label}.`));
+        return;
+      }
+      const value = await handler.call(target, parsed.data);
+      if (this.worker !== worker || this.pending.get(commandRequestId) !== invocation || invocation.aborted) return;
+      if (namespace === "documents" && method === "readRequest") {
+        send(parseNativeObjectResult(PluginReadRequestResultSchema.safeParse(value), label, entry => {
+          const object = parseNativeObject(entry.object);
+          return object && { ...entry, object };
+        }));
+        return;
+      }
+      if (namespace === "depiction" && method === "planLayout") {
+        send(parseNativeObjectResult(PluginPlanLayoutResultSchema.safeParse(value), label, parseNativeObject));
+        return;
+      }
+      const response = capability.result.safeParse(value);
+      send(response.success ? response.data : pluginRequestFailure(requestValidationCode(response.error), `Invalid ${label} result.`));
+    } catch {
+      if (this.worker === worker && this.pending.get(commandRequestId) === invocation && !invocation.aborted) {
+        send(pluginRequestFailure("failed", `${label} could not be completed.`));
+      }
+    } finally {
+      release();
+    }
   }
 
   private resolveCapability(context: PluginCommandContext, namespace: PluginWorkerCapabilityNamespace): unknown {
@@ -506,6 +775,12 @@ export class PluginWorkerBridge {
         return context.tools;
       case "assistant":
         return context.assistant;
+      case "requests":
+        return context.requests;
+      case "toolSessions":
+        return context.toolSessions;
+      case "depiction":
+        return context.depiction;
     }
   }
 

@@ -1,4 +1,4 @@
-import { moleculeToMolfileV2000, type MoleculeObject } from "@chemdraft/chem-core";
+import { moleculeToMolfileV2000, moleculeToMolfileV3000, type MoleculeObject } from "@chemdraft/chem-core";
 import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import { expandNativeMoleculeLabelGroups, nativeSingleHeavyElementLabelValence } from "./atoms";
 import type { RdkitJsMol, RdkitJson, RdkitMinimalModule } from "@chemdraft/rdkit-adapter";
@@ -237,10 +237,17 @@ export class ChemicalIdentityMismatchError extends Error {
 
 /** Identity sees the chemical expansion of editable labels, as export and analysis do. */
 export function chemicalIdentityMolfile(drawn: MoleculeObject, warnings: string[] = []): string {
+  return chemicalIdentitySource(drawn, warnings, "v2000").molfile;
+}
+
+/** Also retain the graph in CTAB order for callers that map engine indices to drawn IDs. */
+export function chemicalIdentitySource(drawn: MoleculeObject, warnings: string[], version: "v2000" | "v3000") {
   const { molecule, placeholderAtoms } = expandNativeMoleculeLabelGroups(drawn);
-  return moleculeToMolfileV2000(molecule, { fromDocFrame: true, unknownBondOrders: "refuse", warnings,
+  const write = version === "v2000" ? moleculeToMolfileV2000 : moleculeToMolfileV3000;
+  const molfile = write(molecule, { fromDocFrame: true, unknownBondOrders: "refuse", warnings,
     abbreviations: "rgroup", placeholderAtoms, spellLabel: nativeSingleHeavyElementLabelValence,
     kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders }).contents;
+  return { molfile, molecule };
 }
 
 /** Verify the actual native graph, including stereo and isotope positions, with the caller's engine. */

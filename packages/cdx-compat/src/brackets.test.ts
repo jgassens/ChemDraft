@@ -163,6 +163,27 @@ describe("native bracket group interchange", () => {
     }
   });
 
+  it("round-trips legacy polymer usage, subscript and atom membership through visible CDXML and CDX", () => {
+    const { document, brackets } = rotatedPartialUnit(0);
+    for (const bracket of brackets) {
+      bracket.bracketKind = "polymer";
+      delete bracket.repeatUnit;
+    }
+    const expected = { usage: "sru", label: "n" };
+    const [original] = repeatUnits(document);
+    expect(original).toMatchObject(expected);
+    expect(original.members[0].atomIds).toEqual(["a1", "a2", "a3"]);
+    const options = { embedNativePayload: false };
+    for (const reopened of [openChemDraftPayload(exportDocumentToCdxml(document, options).contents),
+      importCdx(exportDocumentToCdx(document, options).bytes)]) {
+      const [unit] = repeatUnits(reopened.document!);
+      expect(unit).toMatchObject(expected);
+      const [member] = unit.members;
+      expect(member.molecule.atoms.filter(atom => member.atomIds.includes(atom.id)).map(atom => atom.x))
+        .toEqual([20, 40, 60].map(x => expect.closeTo(x, 3)));
+    }
+  });
+
   it.each([90, 37])("exports and reimports the enclosed subset in the renderer's %s degree frame", rotation => {
     const { document, molecule, brackets } = rotatedPartialUnit(rotation);
     expect(resolveRepeatUnitAtomMembership(brackets, document.pages[0].objects)).toMatchObject({
@@ -535,6 +556,21 @@ describe("native bracket group interchange", () => {
     expect(xml).toContain('Value="retain me"');
     const reopened = openChemDraftPayload(xml).document!;
     expect(reopened.pages[0].objects.find(object => object.type === "bracket" && object.side === "open")!.compatibility!.unknown.cdxmlCurveColor).toBe("#336699");
+  });
+
+  it.each(["HeadToTail", "", undefined])("exports the closing glyph's retained repeat pattern %j", pattern => {
+    const { document, brackets } = importedGlyphPair("SRU", "SRU", pattern === undefined ? "" : `PolymerRepeatPattern="${pattern}"`);
+    const open = brackets.find(bracket => bracket.side === "open")!;
+    const compatibility = open.compatibility!;
+    const group = compatibility.unknown.bracketedGroup as { attributes: Record<string, string> };
+    const edited = applyPatch(document, { op: "updateObject", objectId: open.id, changes: {
+      compatibility: { ...compatibility, unknown: { ...compatibility.unknown, bracketedGroup: {
+        ...group, attributes: { ...group.attributes, PolymerRepeatPattern: "HeadToHead" }
+      } } }
+    } });
+    const exported = exportDocumentToCdxml(edited, { embedNativePayload: false }).contents;
+    const visibleGroup = exported.match(/<bracketedgroup\b[^>]*>/)![0];
+    expect(visibleGroup.match(/ PolymerRepeatPattern="([^"]*)"/)?.[1]).toBe(pattern);
   });
 
   it("maps crossing BondID through the allocator when a source id collides", () => {

@@ -1,18 +1,21 @@
+import { objectAnchors } from "@chemdraft/plugin-host";
 import {
   applyPatch, DocumentObjectSchema, type Anchor, type ChemDraftDocument,
   type DocumentObject, type DocumentPatch, type MoleculeObject, type NativeTextStyle
 } from "@chemdraft/chem-core";
 import {
-  assertMoleculeMatchesSmiles, chemicalIdentityMolfile, buildTableObject, createNativeTextObject, layoutReactionSchemeAsync, nextObjectId,
+  buildTableObject, createNativeTextObject, layoutReactionSchemeAsync, nextObjectId,
   nativeTextObjectSizeForText, documentDrawingDefaults,
   nativeAtomLabelReading, nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles,
   normalizeNativeMoleculeGeometry, defaultNativeMoleculeTransform, type ReactionAlignmentWarning
 } from "@chemdraft/document-workflow-core";
 import { nativeMoleculeRings } from "@chemdraft/layout-engine";
 import { assistantDocumentContentUnchanged } from "./historyPort";
+import { assertCanonical, inspectSmiles } from "../plugins/requestWrites/structureIdentity";
+export { assertCanonical, inspectMolecule, inspectSmiles } from "../plugins/requestWrites/structureIdentity";
 import { RESERVED_PLUGIN_OBJECT_IDS } from "../plugins/reservedObjectIds";
 import {
-  assistantScope, recordAssistantInsertions, requireDocument,
+  assistantScope, recordAssistantInsertions, requireDocument, PAGE_GROWTH_UNANSWERED,
   type AssistantToolContext, type AssistantPageGrowth
 } from "./AssistantToolContext";
 import {
@@ -62,34 +65,6 @@ export function findObject(document: ChemDraftDocument, id: string) {
   throw new Error(`Object "${id}" does not exist in the assistant's document.`);
 }
 
-export async function inspectSmiles(context: AssistantToolContext, smiles: string) {
-  const result = await context.chemistry.inspectStructure("smiles", smiles);
-  if (!result.valid) throw new Error(result.reason);
-  if (!Number.isInteger(result.heavyAtoms) || result.heavyAtoms < 0 || result.heavyAtoms > 500) {
-    throw new Error(`Structure exceeds the 500 heavy atom limit (${result.heavyAtoms}).`);
-  }
-  if (!result.canonicalSmiles) throw new Error("RDKit did not return a canonical SMILES.");
-  return result;
-}
-export async function inspectMolecule(context: AssistantToolContext, molecule: MoleculeObject) {
-  const warnings: string[] = [];
-  const molfile = chemicalIdentityMolfile(molecule, warnings);
-  if (warnings.length) throw new Error(warnings.join(" "));
-  const result = await context.chemistry.inspectStructure("molfile", molfile);
-  if (!result.valid) throw new Error(result.reason);
-  if (!result.canonicalSmiles) throw new Error("RDKit did not return a canonical SMILES.");
-  return { ...result, molfile };
-}
-export async function assertCanonical(
-  context: AssistantToolContext, molecule: MoleculeObject, input: string
-) {
-  await assertMoleculeMatchesSmiles(molecule, input, async (format, value, stereoReference) => {
-    const result = format === "smiles" ? await inspectSmiles(context, value)
-      : await context.chemistry.inspectStructure(format, value, stereoReference);
-    return result.valid
-      ? { valid: true, canonicalSmiles: result.identitySmiles, facts: result.identityFacts } : result;
-  });
-}
 async function buildMolecule(context: AssistantToolContext, smiles: string): Promise<MoleculeObject> {
   await inspectSmiles(context, smiles); // cap before expensive depiction
   const result = await context.chemistry.structureFromSmiles({ smiles, origin: context.plugin.name });
@@ -152,7 +127,6 @@ export async function applyAssistantWrite(context: AssistantToolContext, built: 
       const ids = new Set(built.pageGrowth.items.flatMap(item => item.objectIds));
       patch = { op: "batch", patches: built.pageGrowth.items.length
         ? patch.patches.filter(op => op.op !== "addObject" || !ids.has(op.object.id)) : [] };
-      summary = `Inserted ${patch.patches.length} fitting objects; ${declineReason}: ${declined.join(", ")}.`;
     }
   }
   // The pinned tab may close or a user may edit while chemistry is awaited. Never apply a stale plan.
@@ -162,13 +136,21 @@ export async function applyAssistantWrite(context: AssistantToolContext, built: 
     throw new Error("The document changed while the assistant prepared this write; read it again and retry.");
   }
   const result = patch.patches.length ? await context.write(patch, context.signal, built.checkPreconditions, built.expectedSmiles) : { objectIds: [] };
+  if (result.pageSpaceUnanswered) {
+    declined = ["This content"];
+    declineReason = PAGE_GROWTH_UNANSWERED;
+  }
+  if (declined.length) {
+    const count = result.pageSpaceUnanswered ? 0 : patch.patches.length;
+    summary = `Inserted ${count} fitting objects; ${declineReason}: ${declined.join(", ")}.`;
+  }
   const inserted = patch.patches.filter(patch => patch.op === "addObject" || patch.op === "addAnnotation");
   if (inserted.length) {
     const insertedIds = new Set(inserted.map(patch => patch.op === "addObject" ? patch.object.id : patch.annotation.id));
     // The host may rebase ids. Its returned ids are authoritative; update-only calls never widen scope.
     recordAssistantInsertions(context, result.objectIds.filter(id => insertedIds.has(id) || !document.pages.some(page => page.objects.some(object => object.id === id))));
   }
-  return { ...result, summary, warnings: built.warnings,
+  return { objectIds: result.objectIds, summary, warnings: built.warnings,
     ...(built.alignmentWarnings ? { alignmentWarnings: built.alignmentWarnings } : {}),
     ...(declined.length ? { declined, reason: declineReason } : {}) };
 }
@@ -468,19 +450,6 @@ export function buildMoveObjects(context: AssistantToolContext, input: ToolInput
     return { op: "updateObject", objectId: object.id, changes };
   });
   return { patch: { op: "batch", patches }, summary: `Moved ${patches.length} objects`, warnings: [], checkPreconditions };
-}
-
-/** All AnchorSchema fields in chem-core, including molecule attachment metadata. */
-function objectAnchors(object: DocumentObject): readonly Anchor[] {
-  switch (object.type) {
-    case "electron-mark": return [object.anchor];
-    case "mechanism-arrow": return [object.source, object.target];
-    case "reaction-arrow": return [object.start, object.end];
-    case "superatom": return object.metadata.attachmentPoints;
-    case "r-group-label": return object.display.attachmentPoints;
-    case "molecule": return [...object.superatoms, ...object.rGroups].flatMap(item => item.attachmentPoints);
-    default: return [];
-  }
 }
 
 /** Refuse rather than leave mechanism annotations or attachment points referencing removed geometry. */

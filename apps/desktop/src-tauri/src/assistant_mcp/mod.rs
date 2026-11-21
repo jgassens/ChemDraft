@@ -20,9 +20,10 @@ impl BridgeSink for Channel<McpBridgeRequest> {
 pub async fn assistant_mcp_session_open(
     plugin_id: String,
     plugin_name: String,
+    catalog: protocol::SessionCatalog,
     on_request: Channel<McpBridgeRequest>,
 ) -> Result<SessionOpened, String> {
-    manager().open(plugin_id, plugin_name, Arc::new(on_request))
+    manager().open_catalog(plugin_id, plugin_name, catalog, Arc::new(on_request))
 }
 
 #[tauri::command]

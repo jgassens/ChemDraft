@@ -197,6 +197,18 @@ importers:
         specifier: workspace:*
         version: link:../../../packages/plugin-host
 
+  examples/plugins/request-tools-legacy-fixture:
+    dependencies:
+      '@chemdraft/plugin-api':
+        specifier: workspace:*
+        version: link:../../../packages/plugin-api
+
+  examples/plugins/request-tools-probe:
+    dependencies:
+      '@chemdraft/plugin-api':
+        specifier: workspace:*
+        version: link:../../../packages/plugin-api
+
   packages/analysis-core:
     dependencies:
       zod:

@@ -96,6 +96,13 @@ describe("picture page raster requests", () => {
     expect(request.svg).not.toContain(picturePngBase64);
   });
 
+  it("forwards the PNG byte budget to the encoder and surfaces its refusal", async () => {
+    native.invoke.mockRejectedValueOnce("PNG output exceeds the requested byte limit.");
+    await expect(rasterizeSvgNative('<svg xmlns="http://www.w3.org/2000/svg"/>', "png", { maxPngBytes: 1024 }))
+      .rejects.toThrow("PNG output exceeds the requested byte limit.");
+    expect(native.invoke).toHaveBeenLastCalledWith("rasterize_svg", { request: expect.objectContaining({ maxPngBytes: 1024 }) });
+  });
+
   it("decodes pictures for every caller of the native rasterizer, including Copy as PNG and plugin renders", async () => {
     stubWebviewDecoder(144, 72, [255, 0, 0, 128]);
     native.invoke.mockResolvedValue({ bytes: [1], width: 1, height: 1, warnings: [] });

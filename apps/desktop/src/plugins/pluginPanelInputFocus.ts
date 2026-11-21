@@ -543,11 +543,12 @@ export function listenPanelDeactivation(listener: () => void): () => void {
   return () => { deactivationListeners.delete(listener); };
 }
 
-async function requestNativeInputFocus(editing: boolean, generation: number): Promise<boolean> {
+async function requestNativeInputFocus(editing: boolean, generation: number, pointerBefore?: number): Promise<boolean> {
   if (!isDesktopRuntime()) return editing;
   const token = await registerNativeInputFocus();
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<boolean>("set_plugin_panel_input_focus", { editing, generation, pageToken: token });
+  return invoke<boolean>("set_plugin_panel_input_focus", { editing, generation, pageToken: token,
+    ...(pointerBefore === undefined ? {} : { pointerBefore }) });
 }
 
 export interface PanelShortcutHandler {
@@ -558,7 +559,7 @@ export interface PanelShortcutHandler {
 /** A trusted click keeps the panel key until native deactivation, independently of DOM editing. */
 export function installPluginPanelInputFocus(
   shell: HTMLElement,
-  requestFocus: (editing: boolean, generation: number) => Promise<boolean> = requestNativeInputFocus,
+  requestFocus: typeof requestNativeInputFocus = requestNativeInputFocus,
   platform: ShortcutPlatform = detectDesktopShortcutPlatform(),
   subscribeFocus: (listener: (event: NativePanelFocusEvent) => void) => Promise<() => void> = listenNativePanelFocus,
   shortcuts?: PanelShortcutHandler
@@ -568,19 +569,22 @@ export function installPluginPanelInputFocus(
       console.error("Could not register panel input focus:", error));
   }
   let focused = false;
+  let acquired = false;
   let revision = 0;
   let disposed = false;
   let pending = Promise.resolve();
   const consumedKeys = new Set<string>();
-  const setFocused = (next: boolean): void => {
+  const setFocused = (next: boolean, pointerBefore?: number): void => {
     focused = next;
+    acquired = false;
     const generation = revision = ++nextGeneration;
     pending = pending.catch(() => undefined).then(async () => {
       await subscribed;
       if (revision !== generation) return;
-      let acquired: boolean;
+      let granted: boolean;
       try {
-        acquired = await requestFocus(next, generation);
+        granted = pointerBefore === undefined ? await requestFocus(next, generation)
+          : await requestFocus(next, generation, pointerBefore);
       } catch (error) {
         if (revision === generation) {
           focused = false;
@@ -588,6 +592,7 @@ export function installPluginPanelInputFocus(
         throw error;
       }
       if (revision !== generation) return;
+      acquired = next && granted;
       if (next && !acquired) {
         focused = false;
         clearInteraction();
@@ -640,11 +645,9 @@ export function installPluginPanelInputFocus(
   }
   const pointerDown = (event: PointerEvent): void => {
     if (!event.isTrusted || !shell.contains(event.target as Node)) return;
-    // Native pointer activation has already made the window key. This request only focuses
-    // its webview, and native code refuses it if the user has since switched windows.
-    // A new native activation can precede delivery of the previous loss notification.
-    // Fence it off immediately, even if JS still thinks the preceding episode is focused.
-    setFocused(true);
+    // Fence off the previous episode before its replies arrive. GTK also needs the
+    // click time captured here, before IPC can be queued behind another acquisition.
+    setFocused(true, platform === "linux" ? Date.now() : undefined);
   };
   const hasReportSelection = (): boolean => {
     const selection = document.getSelection();
@@ -728,6 +731,13 @@ export function installPluginPanelInputFocus(
     }
     if (event.target instanceof Element && event.target.closest("button, a, [role=button]") &&
       ["Enter", " ", "Tab", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+    // Only the reply for this click authorizes Linux panel shortcuts. A delayed
+    // compositor focus-in can otherwise deliver keys after the field was blurred.
+    if (platform === "linux" && !acquired) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     if (!event.isTrusted) {
       if (reload) event.preventDefault();
       return;

@@ -59,6 +59,7 @@ export * from "./arrowAttachments";
 export * from "./reactionConditionsLayout";
 import { resolveArrowAttachments } from "./arrowAttachments";
 import {
+  graphicArrowAttachmentFrame,
   svgPathSamplePoints,
   planNativeArtVisual as planNativeArtVisualFromArtEngine,
   visualEffectPlansForStyle,
@@ -101,7 +102,7 @@ import {
   type NativeBondOrderResolution,
   type NativeElementSymbol
 } from "./valence";
-import { planTableObjectSvg } from "./table";
+import { planTableObjectSvg, tableVisualBoundsForArrangement } from "./table";
 import { textAdvanceEm, measureTextRun, measureNativeTextSpanLineWidth, nativeTextMetrics, isPatrickHandFont, patrickHandTextAdvanceEm, patrickHandTextInkBoundsEm } from "./textMetrics";
 import { planTextObjectPlacement } from "./textPlacement";
 import { formatNumber } from "./formatNumber";
@@ -3670,7 +3671,8 @@ function nativeStereoAtomIndicatorIds(object: MoleculeObject): Set<string> {
   return ids;
 }
 
-function nativeEnhancedStereoAtomIndicators(
+/** @internal Native stereogroup metadata, independent of indicator visibility. */
+export function nativeEnhancedStereoAtomIndicators(
   object: MoleculeObject
 ): Array<{ atomId: string; label: string }> {
   // Enhanced stereochemistry (ABS/OR/AND/REL/RAC) is a chemical assertion that lives ONLY in
@@ -3980,17 +3982,7 @@ function planConditionsTextObjectSvg(object: TextObject, layerIndex: number): Pa
       })
     ]);
   }
-  const textStyle = nativeTextStyleFromObjectStyle(object.style);
-  const layout = nativeTextObjectLineMetrics(object);
-  const scripted=layout.lines.some(line=>line.spans.some(span=>span.script!=='normal' ||
-    nativeTextSpanMetrics(span,object.style).fontSize!==textStyle.fontSizePx));
-  const textAnchor = textStyle.textAlign === "center"
-    ? "middle"
-    : textStyle.textAlign === "right" ? "end" : "start";
-  const x = textStyle.textAlign === "center"
-    ? object.x + object.width / 2
-    : textStyle.textAlign === "right" ? object.x + object.width : object.x;
-  const y = object.y + (scripted?layout.lines[0].baseline:textStyle.fontSizePx);
+  const { style: textStyle, textAnchor, x, y, layout, scripted } = conditionsTextPlacement(object);
   const lineFragments = layout.lines.length > 0
     ? layout.lines.flatMap((line, lineIndex) => conditionsTextSpanLineFragments(line.spans, lineIndex, x, object.y+line.baseline, object.style,scripted))
     : [elementFragment("tspan", `text-empty-${object.id}`, { x }, [])];
@@ -4008,6 +4000,14 @@ function planConditionsTextObjectSvg(object: TextObject, layerIndex: number): Pa
     fill: textStyle.color,
     transform: rotationTransform(object)
   }), lineFragments);
+}
+
+function conditionsTextPlacement(object: TextObject) {
+  const placement = planTextObjectPlacement(object);
+  const layout = nativeTextObjectLineMetrics(object);
+  const scripted = layout.lines.some(line => line.spans.some(span => span.script !== "normal" ||
+    nativeTextSpanMetrics(span, object.style).fontSize !== placement.style.fontSizePx));
+  return { ...placement, layout, scripted, y: scripted ? object.y + layout.lines[0].baseline : placement.y };
 }
 
 function conditionsTextSpanLineFragments(
@@ -4880,7 +4880,7 @@ function graphicObjectFragment(
       ...cleanStrokeAttrs,
       transform: plan.projectionTransform
     }));
-  } else if (object.graphicKind === "path" && plan.pathD) {
+  } else if (plan.pathD) {
     renderedGraphic = true;
     const source = !hasSketchEffect
       ? elementFragment("path", `graphic-effect-source-${object.id}`, {
@@ -5604,7 +5604,10 @@ export function planNativeArtVisual(
   object: GraphicObject,
   options: { coordinateSpace?: NativeArtVisualCoordinateSpace } = {}
 ): NativeArtVisualPlan {
-  return planNativeArtVisualFromArtEngine(object, options);
+  // Dual-shaft geometry is a compound path, including on legacy line-kind graphics.
+  const graphic = object.graphicKind === "line" && object.data.dualShaft && object.data.lineStart && object.data.lineEnd
+    ? { ...object, graphicKind: "path" as const, data: { ...object.data, artPathKind: "line" as const } } : object;
+  return planNativeArtVisualFromArtEngine(graphic, options);
 }
 
 function reactionArrowFragment(object: ArrowObject, layerIndex: number): PageSvgElementFragment {
@@ -6678,6 +6681,247 @@ export function moleculeInkBounds(object: MoleculeObject): LayoutBounds {
   const x = Math.min(...points.map(point => point.x)), y = Math.min(...points.map(point => point.y));
   return { x, y, width: Math.max(...points.map(point => point.x)) - x,
     height: Math.max(...points.map(point => point.y)) - y };
+}
+
+export function unionLayoutBounds(bounds: readonly LayoutBounds[]): LayoutBounds | null {
+  if (!bounds.length) return null;
+  const x = Math.min(...bounds.map(box => box.x));
+  const y = Math.min(...bounds.map(box => box.y));
+  return { x, y, width: Math.max(...bounds.map(box => box.x + box.width)) - x,
+    height: Math.max(...bounds.map(box => box.y + box.height)) - y };
+}
+
+function inkBoundsForPoints(points: readonly LayoutPoint[], padding = 0): LayoutBounds | null {
+  if (!points.length) return null;
+  let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+  for (const { x, y } of points) {
+    left = Math.min(left, x); top = Math.min(top, y);
+    right = Math.max(right, x); bottom = Math.max(bottom, y);
+  }
+  return { x: left - padding, y: top - padding, width: right - left + padding * 2, height: bottom - top + padding * 2 };
+}
+
+function rotateInkBounds(object: DocumentObject, box: LayoutBounds): LayoutBounds {
+  const { x, y, width, height } = box;
+  return inkBoundsForPoints([{ x, y }, { x: x + width, y }, { x: x + width, y: y + height }, { x, y: y + height }]
+    .map(point => transformPointForObject(object, point)))!;
+}
+
+/** Text ink uses layout font metrics and the same explicit lines and baselines as the renderer. */
+function textInkBounds(object: TextObject): LayoutBounds | null {
+  const conditions = object.arrowAttachment?.kind === "conditions" ? conditionsTextPlacement(object) : undefined;
+  const { x, y, style, alignment, lineAdvance } = conditions ?? planTextObjectPlacement(object);
+  const boxes = textObjectSpanLines(object).flatMap((line, index) => {
+    if (!line.some(span => span.text.trim())) return [];
+    const width = measureNativeTextSpanLineWidth(line, style,
+      conditions?.scripted ? span => nativeTextSpanMetrics(span, object.style).fontSize : undefined);
+    const baseline = conditions?.scripted ? object.y + conditions.layout.lines[index]!.baseline : y + index * lineAdvance;
+    let top = Infinity, bottom = -Infinity;
+    for (const span of line) {
+      if (!span.text.trim()) continue;
+      const metrics = conditions?.scripted ? nativeTextSpanMetrics(span, object.style) : undefined;
+      const size = metrics?.fontSize ?? (span.script === "normal"
+        ? metadataNumber(span.style.fontSizePx) ?? style.fontSizePx : style.fontSizePx * nativeTextScriptFontScale);
+      const shift = metrics?.offset ?? (span.script === "subscript" ? style.fontSizePx * nativeTextSubscriptOffsetEm
+        : span.script === "superscript" ? -style.fontSizePx * nativeTextSuperscriptOffsetEm : 0);
+      top = Math.min(top, baseline + shift - size);
+      bottom = Math.max(bottom, baseline + shift + size * nativeTextMetrics.descentEm);
+    }
+    return [rotateInkBounds(object, { x: x - alignment * width, y: top, width, height: bottom - top })];
+  });
+  return unionLayoutBounds(boxes);
+}
+
+type ArrowInkSubpath = { points: LayoutPoint[]; closed?: boolean };
+
+/** Preserve the emitted vertices and independent caps of compound paths such as dual shafts. */
+function arrowInkSubpaths(path: string): ArrowInkSubpath[] {
+  const subpaths = /m/.test(path) ? [path] : path.trim().split(/(?=M)/);
+  return subpaths.map(subpath => {
+    const closed = /[Zz]\s*$/.test(subpath);
+    if (!/^[MLZ\s\d.,+eE-]+$/.test(subpath)) return { points: svgPathSamplePoints(subpath), closed };
+    const values = subpath.match(/[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/gi) ?? [];
+    const points: LayoutPoint[] = [];
+    for (let i = 0; i + 1 < values.length; i += 2) points.push({ x: Number(values[i]), y: Number(values[i + 1]) });
+    return { points, closed };
+  });
+}
+
+/** Graphic paths and their effect layers can carry an inner projection and shadow offset.
+ * SVG applies these transforms in reverse list order, then rotates the outer object. */
+function graphicInkTransform(transform: string): (point: LayoutPoint) => LayoutPoint {
+  const transforms = [...transform.matchAll(/(matrix|translate)\(([^)]+)\)/g)].reverse()
+    .map(([, kind, args]) => ({ kind, values: args!.trim().split(/[\s,]+/).map(Number) }));
+  return point => transforms.reduce((point, { kind, values: [a, b, c, d, e, f] }) =>
+    kind === "translate" ? { x: point.x + a!, y: point.y + (b ?? 0) }
+      : { x: a! * point.x + c! * point.y + e!, y: b! * point.x + d! * point.y + f! }, point);
+}
+
+/** Compute the stroke outline in SVG user coordinates, before projection and rotation. */
+function arrowStrokeExtrema(subpath: ArrowInkSubpath, attrs: PageSvgElementFragment["attrs"],
+  radius: number, roundAxes: readonly LayoutPoint[]): LayoutPoint[] {
+  const points = subpath.closed ? [...subpath.points, subpath.points[0]].filter(point => point !== undefined) : subpath.points;
+  const segments = points.slice(1).flatMap((end, i) => {
+    const start = points[i]!;
+    const dx = end.x - start.x, dy = end.y - start.y;
+    const length = Math.hypot(dx, dy);
+    if (length === 0) return [];
+    return [{ start, end, tangent: { x: dx / length, y: dy / length }, normal: { x: -dy / length, y: dx / length } }];
+  });
+  const extrema: LayoutPoint[] = [];
+  const offset = (point: LayoutPoint, direction: LayoutPoint, distance = radius) =>
+    extrema.push({ x: point.x + direction.x * distance, y: point.y + direction.y * distance });
+  const cap = (point: LayoutPoint, tangent: LayoutPoint, normal: LayoutPoint, sign: number) => {
+    if (attrs["stroke-linecap"] === "square") {
+      const edge = { x: point.x + tangent.x * radius * sign, y: point.y + tangent.y * radius * sign };
+      offset(edge, normal);
+      offset(edge, normal, -radius);
+    } else if (attrs["stroke-linecap"] === "round") {
+      for (const axis of roundAxes) if (dot(axis, tangent) * sign >= 0) offset(point, axis);
+    }
+  };
+  for (const { start, end, tangent, normal } of segments) {
+    for (const point of [start, end]) {
+      offset(point, normal);
+      offset(point, normal, -radius);
+    }
+    // A dash can place a cap anywhere along this segment.
+    if (attrs["stroke-dasharray"] && attrs["stroke-dasharray"] !== "none") {
+      cap(start, tangent, normal, -1);
+      cap(end, tangent, normal, 1);
+    }
+  }
+  const first = segments[0], last = segments.at(-1);
+  if (!first || !last) {
+    if (!subpath.closed && points[0] && attrs["stroke-linecap"] === "round") {
+      for (const axis of roundAxes) offset(points[0], axis);
+    }
+    return extrema;
+  }
+  if (!subpath.closed) {
+    cap(first.start, first.tangent, first.normal, -1);
+    cap(last.end, last.tangent, last.normal, 1);
+  }
+  for (let i = subpath.closed ? 0 : 1; i < segments.length; i++) {
+    const before = segments[i - 1] ?? last, after = segments[i]!;
+    const turn = cross(before.tangent, after.tangent);
+    const alignment = dot(before.tangent, after.tangent);
+    if (attrs["stroke-linejoin"] === "round") {
+      for (const axis of roundAxes) {
+        // The outer arc lies between the two segment normals, on the outside of the turn.
+        if (dot(axis, before.tangent) >= 0 && dot(axis, after.tangent) <= 0) offset(after.start, axis);
+      }
+    } else if (attrs["stroke-linejoin"] !== "bevel" && turn !== 0 && alignment > -1) {
+      const ratio = Math.sqrt(2 / (1 + alignment));
+      if (ratio <= Number(attrs["stroke-miterlimit"] ?? 4)) {
+        offset(after.start, { x: before.normal.x + after.normal.x, y: before.normal.y + after.normal.y },
+          -Math.sign(turn) * radius / (1 + alignment));
+      }
+    }
+  }
+  return extrema;
+}
+
+/** Ink of the path, line, and polygon arrow parts emitted by the page render plan. */
+function arrowFragmentInkBounds(object: DocumentObject, fragment: PageSvgElementFragment): LayoutBounds | null {
+  const boxes = fragment.children.flatMap(child => {
+    if (child.kind !== "element") return [];
+    const attrs = child.attrs;
+    const subpaths: ArrowInkSubpath[] = child.tag === "line"
+      ? [{ points: [{ x: Number(attrs.x1), y: Number(attrs.y1) }, { x: Number(attrs.x2), y: Number(attrs.y2) }] }]
+      : child.tag === "polygon" ? [{ closed: true, points: String(attrs.points).trim().split(/\s+/).map(pair => {
+        const [x, y] = pair.split(",").map(Number);
+        return { x: x!, y: y! };
+      }) }] : child.tag === "path" ? arrowInkSubpaths(String(attrs.d)) : [];
+    const points = child.tag === "circle" ? [
+        { x: Number(attrs.cx) - Number(attrs.r), y: Number(attrs.cy) - Number(attrs.r) },
+        { x: Number(attrs.cx) + Number(attrs.r), y: Number(attrs.cy) - Number(attrs.r) },
+        { x: Number(attrs.cx) - Number(attrs.r), y: Number(attrs.cy) + Number(attrs.r) },
+        { x: Number(attrs.cx) + Number(attrs.r), y: Number(attrs.cy) + Number(attrs.r) }
+      ] : subpaths.flatMap(subpath => subpath.points);
+    const project = object.type === "graphic" && attrs.transform ? graphicInkTransform(String(attrs.transform)) : undefined;
+    const transform = (point: LayoutPoint) => {
+      const projected = project?.(point) ?? point;
+      return fragment.attrs.transform ? transformPointForObject(object, projected) : projected;
+    };
+    const radius = Number(attrs["stroke-width"] ?? 0) / 2;
+    let bounds: LayoutBounds | null;
+    if (object.type === "graphic" && points.length) {
+      const origin = transform({ x: 0, y: 0 }), x = transform({ x: 1, y: 0 }), y = transform({ x: 0, y: 1 });
+      // Rows of the linear transform give the local directions of the page-axis extrema of a circle.
+      const axes = [
+        { x: x.x - origin.x, y: y.x - origin.x },
+        { x: x.y - origin.y, y: y.y - origin.y }
+      ].flatMap(vector => {
+        const axis = normalizeOrUndefined(vector);
+        return axis ? [axis, { x: -axis.x, y: -axis.y }] : [];
+      });
+      const outline = child.tag === "circle" ? axes.map(axis => ({
+        x: Number(attrs.cx) + axis.x * (Number(attrs.r) + radius),
+        y: Number(attrs.cy) + axis.y * (Number(attrs.r) + radius)
+      })) : [...points, ...(radius > 0 && attrs.stroke && attrs.stroke !== "none"
+        ? subpaths.flatMap(subpath => arrowStrokeExtrema(subpath, attrs, radius, axes)) : [])];
+      bounds = inkBoundsForPoints(outline.map(transform));
+    } else {
+      bounds = inkBoundsForPoints(points.map(transform), radius);
+    }
+    return bounds ? [bounds] : [];
+  });
+  return unionLayoutBounds(boxes);
+}
+
+export interface ObjectDepictionBounds {
+  bounds: LayoutBounds | null;
+  labelBounds?: LayoutBounds;
+  atomLabels?: { atomId: string; bounds: LayoutBounds }[];
+}
+
+/** Page-axis bounds from the same drawable geometry as the canvas. The caller resolves page
+ * attachments first. Undefined means this renderer has no measurement for the object kind. */
+export function measureObjectDepiction(page: DocumentPage, object: DocumentObject): ObjectDepictionBounds | undefined {
+  switch (object.type) {
+    case "molecule": {
+      if (!isNativeMoleculeGraph(object)) return undefined;
+      const atomLabels = planMoleculeAtomLabels(object).map(plan => {
+        const glyph = atomLabelGlyphBounds(plan);
+        return { atomId: plan.atom.id, bounds: rotateInkBounds(object, {
+          ...glyph, x: plan.anchor.x + glyph.x, y: plan.anchor.y + glyph.y
+        }) };
+      });
+      const indicators = moleculeStructureIndicatorFragments(object, nativeDrawingStyleFromObjectStyle(object.style), 1);
+      const indicatorBoxes = indicators.map(({ attrs, children }) => {
+        const label = children[0];
+        const size = Number(attrs["font-size"]);
+        const width = measureTextRun(label?.kind === "text" ? label.text : "", {
+          fontSizePx: size, fontWeight: Number(attrs["font-weight"])
+        });
+        // The renderer centres both the text anchor and the dominant baseline.
+        return rotateInkBounds(object, { x: Number(attrs.x) - width / 2, y: Number(attrs.y) - size / 2, width, height: size });
+      });
+      return { bounds: unionLayoutBounds([moleculeInkBounds(object), ...atomLabels.map(label => label.bounds), ...indicatorBoxes]), atomLabels };
+    }
+    case "text": {
+      if (object.text === "+" && object.style.reactionPlus === true) {
+        return { bounds: arrowFragmentInkBounds(object, planTextObjectSvg(object, 0)) };
+      }
+      const bounds = textInkBounds(object);
+      return bounds ? { bounds, labelBounds: bounds } : { bounds };
+    }
+    case "reaction-arrow":
+      return { bounds: arrowFragmentInkBounds(object, reactionArrowFragment(object, 0)) };
+    case "mechanism-arrow": {
+      const fragment = mechanismArrowFragment(object, page, 0);
+      return fragment ? { bounds: arrowFragmentInkBounds(object, fragment) } : undefined;
+    }
+    case "table":
+      return { bounds: tableVisualBoundsForArrangement(object) };
+    case "graphic": {
+      if (!graphicArrowAttachmentFrame(object)) return undefined;
+      return { bounds: arrowFragmentInkBounds(object, graphicObjectFragment(object, [], 0)) };
+    }
+    default:
+      return undefined;
+  }
 }
 
 /** Plus glyphs use the same resolved label size and stroke as the structures beside them. */
@@ -9226,7 +9470,8 @@ function inverseTransformPointForObject(object: DocumentObject, point: LayoutPoi
   return rotatePoint(point, objectRotationCenter(object), degreesToRadians(-object.rotation));
 }
 
-function objectRotationCenter(object: DocumentObject): LayoutPoint {
+/** @internal Preserve the renderer's pivot when an operation replaces the stored frame. */
+export function objectRotationCenter(object: DocumentObject): LayoutPoint {
   return {
     x: object.x + object.width / 2,
     y: object.y + object.height / 2

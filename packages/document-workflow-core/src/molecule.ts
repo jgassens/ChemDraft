@@ -15,7 +15,8 @@ import {
   type MoleculeTransformState
 } from "@chemdraft/chem-core";
 import { type ParsedMolfileGraph, parseMolfileGraph } from "@chemdraft/clipboard-adapter";
-import { molfileCoordinateScale, isDefaultCenteredDoubleBond, nativeBondOrderResolution, ringInteriorDoubleBondSides } from "@chemdraft/layout-engine";
+import { molfileCoordinateScale, isDefaultCenteredDoubleBond, nativeBondOrderResolution, objectRotationCenter,
+  ringInteriorDoubleBondSides } from "@chemdraft/layout-engine";
 import { nativeElementFromAtomLabel, nativeSingleBondGraphMetadata } from "./atoms";
 import {
   distance,
@@ -336,7 +337,7 @@ export function applyMoleculeTargetBondLength(
 
 /** Plan the existing centre-preserving resize without applying a document patch. */
 export function moleculeTargetBondLengthChanges(
-  object: MoleculeObject, targetBondLengthPx: number
+  object: MoleculeObject, targetBondLengthPx: number, options: { preserveFrameCenter?: boolean } = {}
 ): Partial<MoleculeObject> {
   if (!Number.isFinite(targetBondLengthPx) || targetBondLengthPx <= 0) return {};
   const representative = representativeNativeMoleculeBondLength(object);
@@ -358,6 +359,16 @@ export function moleculeTargetBondLengthChanges(
   const scaled = representative
     ? scaledMoleculeToTargetBondLength(object, targetBondLengthPx, representative, nextStyle)
     : normalizeNativeMoleculeGeometry({ ...object, style: nextStyle });
+  if (options.preserveFrameCenter && representative) {
+    // The minimum storage frame can be asymmetric around short bonds. Keep its old pivot
+    // while enclosing the resized graph, so rotating about that pivot cannot shift the drawing.
+    const center = objectRotationCenter(object);
+    const halfWidth = Math.max(center.x - scaled.x, scaled.x + scaled.width - center.x);
+    const halfHeight = Math.max(center.y - scaled.y, scaled.y + scaled.height - center.y);
+    return moleculeObjectChanges(object, {
+      ...scaled, x: center.x - halfWidth, y: center.y - halfHeight, width: 2 * halfWidth, height: 2 * halfHeight
+    });
+  }
   return moleculeObjectChanges(object, scaled);
 }
 

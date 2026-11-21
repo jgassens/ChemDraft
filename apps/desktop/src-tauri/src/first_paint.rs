@@ -39,7 +39,7 @@ use tauri::{Manager, Runtime, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 /// The one builder step: hidden, with `background` as the first frame (the window and the
 /// webview). Every other setting the caller made (focus, owner or parent, taskbar, position,
 /// size, decorations) is left exactly as it was.
-#[cfg_attr(not(windows), allow(dead_code))] // only the Windows Office editor uses it so far
+#[cfg_attr(not(windows), allow(dead_code))] // only Windows palettes use it so far
 pub fn hidden_until_first_paint<'a, R: Runtime, M: Manager<R>>(
     builder: WebviewWindowBuilder<'a, R, M>,
     background: Color,
@@ -604,7 +604,7 @@ mod tests {
     }
 
     #[test]
-    fn first_paint_command_is_registered_permitted_and_granted_only_to_the_office_editor() {
+    fn first_paint_command_is_registered_permitted_and_granted_only_to_palettes_and_office() {
         let lib = include_str!("lib.rs");
         let handler = &lib[lib.find("generate_handler![").unwrap()..];
         let handler = &handler[..handler.find("\n        ])").unwrap()];
@@ -633,12 +633,25 @@ mod tests {
                 }
             }
         }
+        holders.sort_by(|a, b| a.0.cmp(&b.0));
         assert_eq!(
             holders,
-            [(
-                "office-object".to_owned(),
-                serde_json::json!(["office-object-*"])
-            )]
+            [
+                (
+                    "office-object".to_owned(),
+                    serde_json::json!(["office-object-*"])
+                ),
+                (
+                    "toolset-first-paint".to_owned(),
+                    serde_json::json!([
+                        "toolset-core-*",
+                        "toolset-plugin-*",
+                        "toolset-user-*",
+                        "toolset-popover-*",
+                        "toolset-tooltip"
+                    ])
+                )
+            ]
         );
     }
 }

@@ -1,13 +1,22 @@
 import {
   NativeStylePresets, SketchStylePreset, nativeDrawingStyleFromObjectStyle, nativeTextStyleFromObjectStyle, stylePresetToObjectStyle,
   type ChemDraftDocument, type DocumentObject, type DocumentPatch, type CompatibilityWarning,
-  type DocumentPage, type MoleculeObject
+  type DocumentPage, type ElectronMarkObject, type MoleculeObject
 } from "@chemdraft/chem-core";
+import { transformPointForObject } from "@chemdraft/layout-engine";
 import { moleculeTargetBondLengthChanges, representativeNativeMoleculeBondLength } from "./molecule";
 import { isEditableNativeMoleculeGraph, nativeChargeMarkCenter, nativeElectronMarkAssignments,
   nativeElectronMarkAtomKey, type NativeElectronMarkAssignments } from "./electronMarks";
 
 export type NativeStylePresetScope = "selection" | "document";
+type StylePreset = typeof NativeStylePresets[number];
+type StyleUpdate = Extract<DocumentPatch, { op: "updateObject" }>;
+
+export function findNativeStylePreset(presetId: string): StylePreset {
+  const preset = NativeStylePresets.find(candidate => candidate.id === presetId);
+  if (!preset) throw new Error(`Unknown native style preset "${presetId}".`);
+  return preset;
+}
 
 /**
  * Plan one atomic style edit. An empty batch means nothing changed; callers skip applying it.
@@ -19,8 +28,7 @@ export function applyNativeStylePreset(
   document: ChemDraftDocument, presetId: string, scope: NativeStylePresetScope,
   warnings: CompatibilityWarning[] = []
 ): Extract<DocumentPatch, { op: "batch" }> {
-  const preset = NativeStylePresets.find(candidate => candidate.id === presetId);
-  if (!preset) throw new Error(`Unknown native style preset "${presetId}".`);
+  const preset = findNativeStylePreset(presetId);
   if (scope !== "selection" && scope !== "document") throw new Error(`Unknown style preset scope "${scope}".`);
   const page = document.pages.find(candidate => candidate.id === document.selection.pageId) ?? document.pages[0]!;
   const selected = new Set<string>();
@@ -32,98 +40,14 @@ export function applyNativeStylePreset(
     if (object.type === "group") object.childObjectIds.forEach(visit);
   };
   document.selection.objectIds.forEach(visit);
-  const text = {
-    fontFamily: preset.drawing.atomLabelFontFamily,
-    fontSizePx: preset.drawing.atomLabelFontSizePx,
-    fontWeight: preset.drawing.atomLabelFontWeight,
-    // The bundled handwriting face is regular; avoid synthesizing an imported italic.
-    ...(preset.id === SketchStylePreset.id ? { fontStyle: "normal" as const } : {})
-  };
+  const text = presetTextStyle(preset);
   const patches: DocumentPatch[] = [];
   const changedOnPage: string[] = [];
   for (const currentPage of document.pages) {
-    const beforeAssignments = nativeElectronMarkAssignments(currentPage);
-    let workingPage = currentPage;
-    for (const object of currentPage.objects) {
-      if (scope === "selection" && (currentPage.id !== page.id || !selected.has(object.id))) continue;
-      let changes: Partial<DocumentObject>;
-      let markPatches: Extract<DocumentPatch, { op: "updateObject" }>[] = [];
-      if (object.type === "molecule") {
-        // Presets own the sketch treatment; preserve independently authored art effects.
-        const style = { ...object.style, ...stylePresetToObjectStyle(preset) };
-        const effects = Array.isArray(object.style.visualEffects) ? object.style.visualEffects : [];
-        const visualEffects = [
-          ...effects.filter(effect => effect?.kind !== "sketch"),
-          ...("visualEffects" in preset.drawing ? preset.drawing.visualEffects : [])
-        ];
-        if (visualEffects.length) style.visualEffects = visualEffects;
-        else delete style.visualEffects;
-        if (Array.isArray(style.effects)) {
-          const remainingEffects = style.effects.filter(effect =>
-            typeof effect !== "object" || effect === null || !("kind" in effect) || effect.kind !== "sketch");
-          if (remainingEffects.length) style.effects = remainingEffects;
-          else delete style.effects;
-        }
-        const geometryChanges = moleculeTargetBondLengthChanges(object, preset.drawing.bondLengthPx);
-        changes = {
-          ...geometryChanges,
-          style
-        };
-        const scaled = { ...object, ...changes } as MoleculeObject;
-        const representative = representativeNativeMoleculeBondLength(object);
-        const scale = representative ? preset.drawing.bondLengthPx / representative : 1;
-        // Resolve on the original geometry, including legacy point/atom anchors. Unassociated
-        // marks remain where they were. Pin resolved anchors so a neighbour cannot steal them.
-        if (geometryChanges.atoms) {
-          const nextAtoms = new Map(scaled.atoms.map(atom => [atom.id, atom]));
-          markPatches = currentPage.objects.flatMap(mark => {
-            if (mark.type !== "electron-mark") return [];
-            const anchor = beforeAssignments.anchorByMarkId.get(mark.id);
-            if (anchor?.objectId !== object.id) return [];
-            const atom = object.atoms.find(candidate => candidate.id === anchor.atomId)!;
-            const next = nextAtoms.get(anchor.atomId)!;
-            const centre = nativeChargeMarkCenter(mark);
-            return [{ op: "updateObject" as const, objectId: mark.id, changes: {
-              x: next.x + (centre.x - atom.x) * scale - mark.width / 2,
-              y: next.y + (centre.y - atom.y) * scale - mark.height / 2,
-              anchor: { kind: "atom" as const, objectId: object.id, atomId: atom.id }
-            } }];
-          });
-        }
-        // Without marks or recorded contributions, reconciliation cannot alter chemistry.
-        // Keep ordinary mark-free documents linear rather than checking the page per molecule.
-        if (beforeAssignments.anchorByMarkId.size || object.atoms.some(atom =>
-          (atom.markCharge ?? 0) !== 0 || (atom.markRadicals ?? 0) !== 0)) {
-          const candidates = new Map<string, DocumentObject>([[object.id, scaled]]);
-          for (const patch of markPatches) {
-            const mark = currentPage.objects.find(candidate => candidate.id === patch.objectId)!;
-            candidates.set(mark.id, { ...mark, ...patch.changes } as DocumentObject);
-          }
-          const candidatePage = { ...workingPage,
-            objects: workingPage.objects.map(candidate => candidates.get(candidate.id) ?? candidate) };
-          const mismatch = presetChemistryMismatch(workingPage, candidatePage, object.id);
-          if (mismatch) {
-            warnings.push({ code: "style_preset.chemistry_change_refused", objectId: object.id,
-              message: `Skipped a structure because it would change a ${mismatch}.` });
-            continue;
-          }
-          workingPage = candidatePage;
-        }
-      } else if (object.type === "text") {
-        changes = {
-          style: { ...object.style, ...text, stylePresetId: preset.id },
-          spans: object.spans.map(span => ({ ...span, style: { ...span.style, ...text } }))
-        };
-      } else continue;
-      if (Object.entries(changes).every(([key, value]) =>
-        JSON.stringify(object[key as keyof typeof object]) === JSON.stringify(value))) continue;
-      patches.push({ op: "updateObject", objectId: object.id, changes });
-      if (currentPage.id === page.id) changedOnPage.push(object.id);
-      for (const patch of markPatches) {
-        patches.push(patch);
-        if (currentPage.id === page.id) changedOnPage.push(patch.objectId);
-      }
-    }
+    if (scope === "selection" && currentPage.id !== page.id) continue;
+    const updates = planPageStyleUpdates(currentPage, scope === "selection" ? selected : undefined, preset, undefined, warnings);
+    patches.push(...updates);
+    if (currentPage.id === page.id) changedOnPage.push(...updates.map(update => update.objectId));
   }
   if (scope === "document") {
     const storedText = document.styles.text;
@@ -141,6 +65,131 @@ export function applyNativeStylePreset(
     patches.push({ op: "setSelection", pageId: page.id, objectIds: changedOnPage });
   }
   return { op: "batch", patches };
+}
+
+function presetTextStyle(preset: StylePreset) {
+  return {
+    fontFamily: preset.drawing.atomLabelFontFamily,
+    fontSizePx: preset.drawing.atomLabelFontSizePx,
+    fontWeight: preset.drawing.atomLabelFontWeight,
+    // The bundled handwriting face is regular; avoid synthesizing an imported italic.
+    ...(preset.id === SketchStylePreset.id ? { fontStyle: "normal" as const } : {})
+  };
+}
+
+/** Per-page proposals shared by the native preset command and explicit figure plans. */
+export function planPageStyleUpdates(
+  currentPage: DocumentPage,
+  targets: ReadonlySet<string> | undefined,
+  preset: StylePreset | undefined,
+  targetBondLength: number | undefined,
+  warnings: CompatibilityWarning[],
+  explicitTargets = false
+): StyleUpdate[] {
+  const bondLengthPx = targetBondLength ?? preset?.drawing.bondLengthPx;
+  if (bondLengthPx === undefined) return [];
+  const text = preset && presetTextStyle(preset);
+  const patches: StyleUpdate[] = [];
+  const beforeAssignments = nativeElectronMarkAssignments(currentPage);
+  const marksByMolecule = new Map<string, ElectronMarkObject[]>();
+  for (const mark of currentPage.objects) {
+    if (mark.type !== "electron-mark") continue;
+    const owner = beforeAssignments.anchorByMarkId.get(mark.id)?.objectId;
+    if (!owner) continue;
+    const marks = marksByMolecule.get(owner);
+    if (marks) marks.push(mark);
+    else marksByMolecule.set(owner, [mark]);
+  }
+  let workingPage = currentPage;
+  for (const object of currentPage.objects) {
+    if (targets && !targets.has(object.id)) continue;
+    let changes: Partial<DocumentObject>;
+    let markPatches: StyleUpdate[] = [];
+    if (object.type === "molecule") {
+      const marks = marksByMolecule.get(object.id) ?? [];
+      const missingMarks = explicitTargets ? marks.filter(mark => !targets?.has(mark.id)) : [];
+      if (missingMarks.length) {
+        warnings.push({ code: "style_preset.missing_marks", objectId: object.id,
+          message: `Molecule "${object.id}" requires electron marks among the targets: ${missingMarks.map(mark => mark.id).join(", ")}.` });
+        continue;
+      }
+      const representative = representativeNativeMoleculeBondLength(object);
+      if (targetBondLength !== undefined && !representative) {
+        warnings.push({ code: "style_preset.no_measurable_bond", objectId: object.id,
+          message: `Molecule "${object.id}" has no measurable bond length.` });
+        if (!preset) continue;
+      }
+      const geometryChanges = explicitTargets && !representative ? {} :
+        moleculeTargetBondLengthChanges(object, bondLengthPx, { preserveFrameCenter: explicitTargets });
+      changes = geometryChanges;
+      if (preset) {
+        // Presets own the sketch treatment; preserve independently authored art effects.
+        const style: MoleculeObject["style"] = { ...object.style, ...stylePresetToObjectStyle(preset), bondLengthPx };
+        const effects = Array.isArray(object.style.visualEffects) ? object.style.visualEffects : [];
+        const visualEffects = [
+          ...effects.filter(effect => effect?.kind !== "sketch"),
+          ...("visualEffects" in preset.drawing ? preset.drawing.visualEffects : [])
+        ];
+        if (visualEffects.length) style.visualEffects = visualEffects;
+        else delete style.visualEffects;
+        if (Array.isArray(style.effects)) {
+          const remainingEffects = style.effects.filter(effect =>
+            typeof effect !== "object" || effect === null || !("kind" in effect) || effect.kind !== "sketch");
+          if (remainingEffects.length) style.effects = remainingEffects;
+          else delete style.effects;
+        }
+        changes = { ...geometryChanges, style };
+      }
+      const scaled = { ...object, ...changes } as MoleculeObject;
+      const scale = representative ? bondLengthPx / representative : 1;
+      // Resolve on the original geometry, including legacy point/atom anchors. Unassociated
+      // marks remain where they were. Pin resolved anchors so a neighbour cannot steal them.
+      if (geometryChanges.atoms) {
+        const nextAtoms = new Map(scaled.atoms.map(atom => [atom.id, atom]));
+        markPatches = marks.map(mark => {
+          const anchor = beforeAssignments.anchorByMarkId.get(mark.id)!;
+          const atom = object.atoms.find(candidate => candidate.id === anchor.atomId)!;
+          const previousPosition = transformPointForObject(object, atom);
+          const nextPosition = transformPointForObject(scaled, nextAtoms.get(anchor.atomId)!);
+          const centre = nativeChargeMarkCenter(mark);
+          return { op: "updateObject", objectId: mark.id, changes: {
+            x: nextPosition.x + (centre.x - previousPosition.x) * scale - mark.width / 2,
+            y: nextPosition.y + (centre.y - previousPosition.y) * scale - mark.height / 2,
+            anchor: { kind: "atom" as const, objectId: object.id, atomId: atom.id }
+          } };
+        });
+      }
+      // Without marks or recorded contributions, reconciliation cannot alter chemistry.
+      // Keep ordinary mark-free documents linear rather than checking the page per molecule.
+      if (beforeAssignments.anchorByMarkId.size || object.atoms.some(atom =>
+        (atom.markCharge ?? 0) !== 0 || (atom.markRadicals ?? 0) !== 0)) {
+        const candidates = new Map<string, DocumentObject>([[object.id, scaled]]);
+        for (const patch of markPatches) {
+          const mark = currentPage.objects.find(candidate => candidate.id === patch.objectId)!;
+          candidates.set(mark.id, { ...mark, ...patch.changes } as DocumentObject);
+        }
+        const candidatePage = { ...workingPage,
+          objects: workingPage.objects.map(candidate => candidates.get(candidate.id) ?? candidate) };
+        const mismatch = presetChemistryMismatch(workingPage, candidatePage, object.id);
+        if (mismatch) {
+          warnings.push({ code: "style_preset.chemistry_change_refused", objectId: object.id,
+            message: `Skipped a structure because it would change a ${mismatch}.` });
+          continue;
+        }
+        workingPage = candidatePage;
+      }
+    } else if (object.type === "text" && preset && text) {
+      changes = {
+        style: { ...object.style, ...text, stylePresetId: preset.id },
+        spans: object.spans.map(span => ({ ...span, style: { ...span.style, ...text } }))
+      };
+    } else continue;
+    if (Object.entries(changes).every(([key, value]) =>
+      JSON.stringify(object[key as keyof typeof object]) === JSON.stringify(value))) continue;
+    patches.push({ op: "updateObject", objectId: object.id, changes });
+    patches.push(...markPatches);
+  }
+  return patches;
 }
 
 function normalizedAtomChemistry(molecule: MoleculeObject, assignments: NativeElectronMarkAssignments) {
@@ -171,6 +220,12 @@ function presetChemistryMismatch(before: DocumentPage, after: DocumentPage, targ
           return field === "markRadicals" ? "radical" : "charge";
         }
       }
+    }
+  }
+  for (const [markId, anchor] of beforeAssignments.anchorByMarkId) {
+    const next = assignments.anchorByMarkId.get(markId);
+    if (anchor?.objectId !== next?.objectId || anchor?.atomId !== next?.atomId) {
+      return `mark association for "${markId}"`;
     }
   }
 }

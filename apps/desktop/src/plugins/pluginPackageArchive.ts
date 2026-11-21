@@ -25,6 +25,9 @@
  * methods other than store/deflate, and any entry path that could escape the staging directory.
  */
 
+import { crc32 } from "../crc32";
+export { crc32 } from "../crc32";
+
 /** Stable, programmatic codes. Human-readable text rides on the error's `message` (AGENTS.md). */
 export const PluginPackageErrorCodes = {
   MalformedArchive: "PLUGIN_PACKAGE_MALFORMED_ARCHIVE",
@@ -469,27 +472,6 @@ function rejectZip64(zipBytes: Uint8Array, eocdOffset: number): void {
 
 function decodeUtf8(bytes: Uint8Array): string {
   return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
-}
-
-const CRC32_TABLE = /* @__PURE__ */ (() => {
-  const table = new Uint32Array(256);
-  for (let index = 0; index < 256; index++) {
-    let value = index;
-    for (let bit = 0; bit < 8; bit++) {
-      value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
-    }
-    table[index] = value >>> 0;
-  }
-  return table;
-})();
-
-/** Standard CRC-32 (the zip variant), used to prove each entry against the archive's own record. */
-export function crc32(bytes: Uint8Array): number {
-  let crc = 0xffffffff;
-  for (let index = 0; index < bytes.length; index++) {
-    crc = CRC32_TABLE[(crc ^ bytes[index]) & 0xff] ^ (crc >>> 8);
-  }
-  return (crc ^ 0xffffffff) >>> 0;
 }
 
 function malformed(message: string): PluginPackageError {

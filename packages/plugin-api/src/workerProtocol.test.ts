@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { AssistantCapabilityPermissions, PluginApiVersion, parsePluginManifest, type PluginManifest } from "./index";
+import { AssistantCapabilityPermissions, PluginApiVersion, PluginRequestLimits, parsePluginManifest, type PluginManifest } from "./index";
 import {
   PLUGIN_WORKER_CAPABILITY_METHODS,
   PLUGIN_WORKER_PROTOCOL_VERSION,
@@ -136,12 +136,14 @@ describe("isPluginApiVersionCompatible", () => {
     expect(isPluginApiVersionCompatible("^0.1.14", "0.1.13")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.15", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.15", "0.1.14")).toBe(false);
-    expect(PluginApiVersion).toBe("0.1.25");
+    expect(PluginApiVersion).toBe("0.1.26");
     expect(isPluginApiVersionCompatible("^0.1.23", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.24", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.24", "0.1.23")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.25", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.25", "0.1.24")).toBe(false);
+    expect(isPluginApiVersionCompatible("^0.1.26", PluginApiVersion)).toBe(true);
+    expect(isPluginApiVersionCompatible("^0.1.26", "0.1.25")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.23", "0.1.22")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.16", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.16", "0.1.15")).toBe(false);
@@ -164,9 +166,10 @@ describe("chemistry worker capability allowlist", () => {
   it("includes command-scoped table insertion", () => {
     expect(PLUGIN_WORKER_CAPABILITY_METHODS.documents).toContain("insertTable");
   });
-  it("includes all optional API 0.1.15 methods", () => {
+  it("includes all chemistry methods through API 0.1.26", () => {
     expect(PLUGIN_WORKER_CAPABILITY_METHODS.chemistry).toEqual([
-      "properties", "isotopeEnvelope", "nameToStructure", "structureFromSmiles", "structureToName", "embed3d", "minimize3d", "flatten3d"
+      "properties", "isotopeEnvelope", "nameToStructure", "structureFromSmiles", "structureToName", "embed3d", "minimize3d", "flatten3d",
+      "inspectStructure", "rings"
     ]);
   });
   it("includes structureToName", () => {
@@ -304,6 +307,56 @@ describe("runPluginWorker", () => {
     runPluginWorker({ manifest: manifest([...AssistantCapabilityPermissions]), commandHandlers: {},
       onAssistantToolCall: async () => ({ content: [] }) }, endpoint);
     expect(endpoint.sent[0]).toMatchObject({ kind: "ready", hasAssistantToolHandler: true });
+  });
+
+  it("advertises request features independently and settles invalid or unhandled new messages", async () => {
+    const endpoint = new ControlledEndpoint();
+    const currentManifest = { ...manifest([]), apiVersion: "^0.1.26" };
+    runPluginWorker({ manifest: currentManifest, commandHandlers: {}, onActiveDocumentChanged: () => {
+      throw new Error("A worker without document.read cannot receive this event.");
+    } }, endpoint);
+    expect(endpoint.sent[0]).toEqual({
+      kind: "ready", protocolVersion: 1, apiVersion: currentManifest.apiVersion,
+      hasAssistantToolHandler: false, features: { requestCapabilities: true }
+    });
+    endpoint.deliver({ kind: "invokeTool", commandRequestId: 1, call: { requestId: "r", sessionId: "s", name: "find", input: {} } });
+    endpoint.deliver({ kind: "activeDocumentChanged", notificationId: 2, event: { documentKey: "doc", sequence: 1 } });
+    await flush();
+    expect(endpoint.sent.slice(1)).toEqual([
+      { kind: "toolCallSettled", commandRequestId: 1, result: { ok: false,
+        error: { code: "missingHandler", message: expect.any(String) } } },
+      { kind: "activeDocumentChangedSettled", notificationId: 2, result: { ok: false,
+        error: { code: "permission", message: expect.any(String) } } }
+    ]);
+  });
+
+  it("charges ordinary request tool reads to the same outbound budget as request methods", async () => {
+    const endpoint = new ControlledEndpoint();
+    const call = { requestId: "r", sessionId: "s", name: "read", input: {} };
+    const registration = { ...manifest(["document.read", "selection.read"]), apiVersion: "^0.1.26" };
+    runPluginWorker({ manifest: registration, commandHandlers: {}, onToolCall: async ctx => {
+      const reads = [
+        ctx.requests!.getContext({ requestId: call.requestId }),
+        ctx.selection!.getSelection(),
+        ...Array.from({ length: PluginRequestLimits.pendingCapabilities - 2 }, () => ctx.documents.getActiveDocument())
+      ];
+      await Promise.all([
+        expect(ctx.documents.getActiveDocument()).rejects.toMatchObject({ code: "limit" }),
+        expect(ctx.selection!.getSelection()).rejects.toMatchObject({ code: "limit" }),
+        expect(ctx.requests!.getContext({ requestId: call.requestId })).resolves.toMatchObject({ ok: false, error: { code: "limit" } })
+      ]);
+      await Promise.all(reads);
+      return { ok: true, value: null };
+    } }, endpoint);
+    endpoint.deliver({ kind: "invokeTool", commandRequestId: 1, call });
+    const requests = endpoint.sent.filter(message => message.kind === "capabilityRequest");
+    expect(requests).toHaveLength(PluginRequestLimits.pendingCapabilities);
+    expect(requests.slice(0, 2).map(request => request.method)).toEqual(["getContext", "getSelection"]);
+    for (const request of requests) {
+      endpoint.deliver({ kind: "capabilityResult", requestId: request.requestId, ok: true, value: undefined });
+    }
+    await flush();
+    expect(endpoint.sent.at(-1)).toEqual({ kind: "toolCallSettled", commandRequestId: 1, result: { ok: true, value: null } });
   });
 
   it.each([false, true])("acknowledges an aborted assistant tool only when its handler settles (reject: %s)", async reject => {

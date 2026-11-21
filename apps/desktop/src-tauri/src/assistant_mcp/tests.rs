@@ -43,14 +43,24 @@ impl Reply {
     }
 }
 
+fn session_catalog() -> protocol::SessionCatalog {
+    serde_json::from_value(json!({"legacy":false,"tools":[
+        {"name":"get_document","deadline":"readCompute"},
+        {"name":"render","deadline":"render"},
+        {"name":"insert_structures","deadline":"requestWrite"}
+    ]}))
+    .unwrap()
+}
+
 impl Fixture {
     async fn new(timeout: Option<Duration>) -> Self {
         let manager = Arc::new(SessionManager::with_timeout(timeout));
         let (sender, receiver) = mpsc::channel();
         let opened = manager
-            .open(
+            .open_catalog(
                 "org.chemdraft.assistant".into(),
                 "Assistant".into(),
+                session_catalog(),
                 Arc::new(sender),
             )
             .unwrap();
@@ -550,30 +560,136 @@ fn tool_timeout_is_a_model_visible_result() {
 
 #[test]
 fn tool_deadlines_preserve_reads_and_allow_bounded_confirmation() {
-    for (method, name, seconds) in [
-        ("tools/list", "", 10),
-        ("tools/call", "render", 60),
-        ("tools/call", "name_to_structure", 45),
-        ("tools/call", "structure_to_name", 45),
-        ("tools/call", "get_document", 120),
-        ("tools/call", "plugin_lookup", 120),
-        ("tools/call", "get_selection", 120),
-        ("tools/call", "get_structure", 120),
-        ("tools/call", "validate_smiles", 120),
-        ("tools/call", "insert_structures", 480),
-        ("tools/call", "insert_reaction", 480),
-        ("tools/call", "insert_text", 480),
-        ("tools/call", "insert_table", 480),
-        ("tools/call", "edit_structure", 480),
-        ("tools/call", "delete_objects", 480),
-        ("tools/call", "style_objects", 480),
-        ("tools/call", "move_objects", 480),
-    ] {
+    let classes = [
+        ("readCompute", 120),
+        ("requestWrite", 480),
+        ("render", 60),
+        ("naming", 45),
+    ];
+    for (class, seconds) in classes {
+        let catalog: protocol::SessionCatalog = serde_json::from_value(json!({"legacy":false,
+            "tools":[{"name":"unfamiliar","deadline":class}]}))
+        .unwrap();
+        assert!(catalog.validate().is_ok());
         assert_eq!(
-            protocol::deadline(method, &json!({"name":name})),
-            Duration::from_secs(seconds)
+            catalog.deadline("tools/list", &json!({})),
+            Some(Duration::from_secs(10))
+        );
+        assert_eq!(
+            catalog.deadline("tools/call", &json!({"name":"unfamiliar"})),
+            Some(Duration::from_secs(seconds))
+        );
+        assert_eq!(
+            catalog.deadline("tools/call", &json!({"name":"render"})),
+            None
         );
     }
+    for entries in [
+        json!([{"name":"ok","deadline":480000}]),
+        json!([{"name":"ok","deadline":"forever"}]),
+        json!([{"name":"ok","deadline":"readCompute","milliseconds":100}]),
+    ] {
+        assert!(serde_json::from_value::<protocol::SessionCatalog>(
+            json!({"legacy":false,"tools":entries})
+        )
+        .is_err());
+    }
+    for names in [vec!["x", "x"], vec!["X"], vec!["x"; 33]] {
+        let catalog: protocol::SessionCatalog = serde_json::from_value(json!({"legacy":false,
+            "tools":names.iter().map(|name| json!({"name":name,"deadline":"readCompute"})).collect::<Vec<_>>()})).unwrap();
+        assert!(catalog.validate().is_err());
+    }
+}
+
+#[test]
+fn legacy_catalog_deadlines_match_the_desktop_adapter() {
+    let catalog: protocol::SessionCatalog = serde_json::from_str(include_str!(
+        "../../../src/assistant/legacyMcpCatalog.fixture.json"
+    ))
+    .unwrap();
+    catalog.validate().unwrap();
+    for (name, seconds) in [
+        ("render", 60),
+        ("name_to_structure", 45),
+        ("structure_to_name", 45),
+        ("get_document", 120),
+        ("get_selection", 120),
+        ("get_structure", 120),
+        ("validate_smiles", 120),
+        ("insert_structures", 480),
+        ("insert_reaction", 480),
+        ("insert_text", 480),
+        ("insert_table", 480),
+        ("edit_structure", 480),
+        ("delete_objects", 480),
+        ("style_objects", 480),
+        ("move_objects", 480),
+        ("extra_7", 120),
+    ] {
+        assert_eq!(
+            catalog.deadline("tools/call", &json!({"name":name})),
+            Some(Duration::from_secs(seconds))
+        );
+    }
+    assert_eq!(
+        catalog.unknown_tool(json!(1), &json!({"name":"missing"}))["result"]["content"][0]["text"],
+        "Unknown assistant tool \"missing\"."
+    );
+}
+
+#[tokio::test]
+async fn catalog_membership_and_disconnect_over_http() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (sender, receiver) = mpsc::channel();
+    let (manager, session) = super::session::memory_session(Arc::new(sender), session_catalog());
+    let call = |name: &str| {
+        let (mut client, stream) = tokio::io::duplex(8192);
+        let manager = Arc::downgrade(&manager);
+        tokio::spawn(async move {
+            let service = hyper::service::service_fn(move |req| {
+                let manager = manager.clone();
+                async move {
+                    let reply = super::server::handle(req, 1234, manager).await;
+                    Ok::<_, std::convert::Infallible>(reply)
+                }
+            });
+            let _ = hyper::server::conn::http1::Builder::new()
+                .keep_alive(false)
+                .serve_connection(hyper_util::rt::TokioIo::new(stream), service)
+                .await;
+        });
+        let body = json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":name}})
+            .to_string();
+        let raw = format!("POST /mcp/session HTTP/1.1\r\nHost: 127.0.0.1:1234\r\nAuthorization: Bearer rust-only\r\nMcp-Session-Id: session\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+        async move {
+            client.write_all(raw.as_bytes()).await.unwrap();
+            client
+        }
+    };
+    let mut omitted = call("missing").await;
+    let mut reply = String::new();
+    omitted.read_to_string(&mut reply).await.unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(reply.split_once("\r\n\r\n").unwrap().1).unwrap()["error"]
+            ["code"],
+        -32602
+    );
+    assert!(receiver.try_recv().is_err());
+
+    let client = call("get_document").await;
+    let receive = |receiver: mpsc::Receiver<McpBridgeRequest>| {
+        tokio::task::spawn_blocking(move || {
+            let message = receiver.recv_timeout(Duration::from_secs(3)).unwrap();
+            (receiver, message)
+        })
+    };
+    let (receiver, request) = receive(receiver).await.unwrap();
+    assert_eq!(request.method, "tools/call");
+    drop(client);
+    let (_, cancelled) = receive(receiver).await.unwrap();
+    assert_eq!(cancelled.method, "cancel");
+    assert_eq!(cancelled.request_id, request.request_id);
+    assert!(session.pending.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -664,7 +780,12 @@ async fn result_limit_and_dead_webview_breaks_session() {
     }
     let opened = f
         .manager
-        .open("org.test".into(), "Gone".into(), Arc::new(Gone))
+        .open_catalog(
+            "org.test".into(),
+            "Gone".into(),
+            session_catalog(),
+            Arc::new(Gone),
+        )
         .unwrap();
     let (url, token) = f.manager.credentials(&opened.session_id).unwrap();
     let path = url.strip_prefix(&format!("http://{}", f.host)).unwrap();
@@ -692,7 +813,12 @@ async fn lazy_listener_session_limits_randomness_close_and_shutdown() {
         ("good", &"x".repeat(257)),
     ] {
         assert!(manager
-            .open(plugin.into(), name.into(), Arc::new(sender.clone()))
+            .open_catalog(
+                plugin.into(),
+                name.into(),
+                session_catalog(),
+                Arc::new(sender.clone())
+            )
             .is_err());
     }
     let mut ids = Vec::new();
@@ -700,9 +826,10 @@ async fn lazy_listener_session_limits_randomness_close_and_shutdown() {
         for _ in 0..2 {
             ids.push(
                 manager
-                    .open(
+                    .open_catalog(
                         format!("plugin.{plugin}"),
                         "Test".into(),
+                        session_catalog(),
                         Arc::new(sender.clone()),
                     )
                     .unwrap()
@@ -710,15 +837,21 @@ async fn lazy_listener_session_limits_randomness_close_and_shutdown() {
             );
         }
         assert!(manager
-            .open(
+            .open_catalog(
                 format!("plugin.{plugin}"),
                 "Test".into(),
+                session_catalog(),
                 Arc::new(sender.clone())
             )
             .is_err());
     }
     assert!(manager
-        .open("plugin.other".into(), "Test".into(), Arc::new(sender))
+        .open_catalog(
+            "plugin.other".into(),
+            "Test".into(),
+            session_catalog(),
+            Arc::new(sender)
+        )
         .is_err());
     let credentials = ids
         .iter()
@@ -749,7 +882,12 @@ async fn lazy_listener_session_limits_randomness_close_and_shutdown() {
     assert!(TcpStream::connect(host).is_err());
     let (sender, _) = mpsc::channel();
     assert!(manager
-        .open("plugin.new".into(), "Test".into(), Arc::new(sender))
+        .open_catalog(
+            "plugin.new".into(),
+            "Test".into(),
+            session_catalog(),
+            Arc::new(sender)
+        )
         .is_err());
 }
 

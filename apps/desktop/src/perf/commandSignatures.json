@@ -1,10 +1,26 @@
 [
   {
+    "file": "appimage_dialogs.rs",
+    "name": "open",
+    "async": true,
+    "generics": "<R: Runtime>",
+    "parameters": "window: Window<R>, options: Options,",
+    "returnType": "tauri_plugin_dialog::Result<Selection>"
+  },
+  {
+    "file": "appimage_dialogs.rs",
+    "name": "save",
+    "async": true,
+    "generics": "<R: Runtime>",
+    "parameters": "window: Window<R>, options: Options,",
+    "returnType": "tauri_plugin_dialog::Result<Option<FilePath>>"
+  },
+  {
     "file": "assistant_mcp/mod.rs",
     "name": "assistant_mcp_session_open",
     "async": true,
     "generics": "",
-    "parameters": "plugin_id: String, plugin_name: String, on_request: Channel<McpBridgeRequest>,",
+    "parameters": "plugin_id: String, plugin_name: String, catalog: protocol::SessionCatalog, on_request: Channel<McpBridgeRequest>,",
     "returnType": "Result<SessionOpened, String>"
   },
   {
@@ -270,6 +286,14 @@
     "generics": "",
     "parameters": "window: tauri::WebviewWindow",
     "returnType": "()"
+  },
+  {
+    "file": "first_paint.rs",
+    "name": "window_first_paint",
+    "async": false,
+    "generics": "",
+    "parameters": "window: WebviewWindow",
+    "returnType": "Result<(), String>"
   },
   {
     "file": "fonts.rs",

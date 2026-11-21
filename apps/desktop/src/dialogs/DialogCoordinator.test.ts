@@ -4,11 +4,11 @@ import { DialogCoordinator } from "./DialogCoordinator";
 import { dialogEnvelope, type DialogCloseReason, type DialogMessage } from "./dialogProtocol";
 import type { DialogDelivery, DialogTransport } from "./dialogTransport";
 
-function host(options: { timeout?: number } = {}) {
+function host(options: { timeout?: number; kind?: string } = {}) {
   const calls: string[] = [];
   let handler: (delivery: DialogDelivery) => void = () => {};
   let snapshot!: Extract<DialogMessage, { type: "snapshot" }>;
-  const registration = { hostId: "opaque", windowLabel: "dialog-main-pageSize-1" };
+  const registration = { hostId: "opaque", windowLabel: `dialog-main-${options.kind ?? "pageSize"}-1` };
   const transport: DialogTransport = {
     subscribe: vi.fn(async h => { calls.push("subscribe"); handler = h; return vi.fn(); }),
     open: vi.fn(async s => { calls.push("open"); snapshot = s as typeof snapshot; return registration; }),
@@ -23,6 +23,38 @@ function host(options: { timeout?: number } = {}) {
 }
 afterEach(() => vi.useRealTimers());
 describe("DialogCoordinator", () => {
+  it("closes a ready page question on abort and ignores a late Enlarge answer", async () => {
+    const h = host({ kind: "pageEnlargement" });
+    const abort = new AbortController();
+    const returnedFocus = vi.fn();
+    const coordinator = new DialogCoordinator(h.transport, { ...h.owner, onPageEnlargementClosed: returnedFocus });
+    const decision = coordinator.confirmPageEnlargement("tab-1", abort.signal);
+    await vi.waitFor(() => expect(h.transport.open).toHaveBeenCalledOnce());
+    const deliver = (message: DialogMessage) =>
+      coordinator.receive({ message, senderWindowId: "dialog-main-pageEnlargement-1", windowLabel: "dialog-main-pageEnlargement-1" });
+    await deliver(h.message("ready", {}));
+    abort.abort();
+    await expect(decision).resolves.toBe("keep");
+    expect(h.transport.close).toHaveBeenCalledExactlyOnceWith("opaque", "cancel");
+    expect(returnedFocus).toHaveBeenCalledExactlyOnceWith("tab-1");
+    await deliver(h.message("action", { action: "enlarge" }));
+    expect(h.transport.close).toHaveBeenCalledOnce();
+    await coordinator.dispose();
+  });
+  it("closes the native window that registers after a page question is aborted", async () => {
+    const h = host();
+    let register!: (value: { hostId: string; windowLabel: string }) => void;
+    vi.mocked(h.transport.open).mockImplementation(() => new Promise(resolve => { register = resolve; }));
+    const abort = new AbortController();
+    const decision = h.coordinator.confirmPageEnlargement("tab-1", abort.signal);
+    await vi.waitFor(() => expect(h.transport.open).toHaveBeenCalledOnce());
+    abort.abort();
+    expect(h.transport.close).not.toHaveBeenCalled();
+    register({ hostId: "late", windowLabel: "dialog-main-pageEnlargement-1" });
+    await expect(decision).resolves.toBe("keep");
+    expect(h.transport.close).toHaveBeenCalledExactlyOnceWith("late", "cancel");
+    await h.coordinator.dispose();
+  });
   it("keeps conditions tied to their original tab and arrow, deduplicates Save and refuses another arrow", async () => {
     const h = host();
     const apply = vi.fn(), settled = vi.fn();

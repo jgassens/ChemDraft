@@ -76,7 +76,7 @@ jobs:
         env:
           # Stable resource/product layout for inspection; no stable app is installed or launched.
           CHEMDRAFT_STABLE_BUILD: '1'
-          NODE_OPTIONS: --max-old-space-size=3072
+          NODE_OPTIONS: --max-old-space-size=6144  # 14 GB runner; build:web peaks near 4.8 GB (see ci.yml)
         run: pnpm --filter @chemdraft/desktop build --target x86_64-apple-darwin --bundles app --ci
       - name: Inspect Intel app architecture, minimum OS, runtime and feed
         shell: bash

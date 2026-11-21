@@ -80,6 +80,50 @@ function selectText(start: Element, end: Element = start): void {
   document.dispatchEvent(new Event("selectionchange"));
 }
 
+it("keeps Linux drawing shortcuts blocked after a refused field click until a new click acquires focus", async () => {
+  const { shell, request, forward, press, key, native } = mount("<input>", "linux");
+  const field = shell.querySelector("input")!;
+  request.mockResolvedValueOnce(false);
+  press(field);
+  field.focus();
+  await flush();
+  expect(document.activeElement).not.toBe(field);
+  native("activated");
+  expect(key(shell, "3").defaultPrevented).toBe(true);
+  expect(key(shell, "z", { ctrlKey: true }).defaultPrevented).toBe(true);
+  expect(forward).not.toHaveBeenCalled();
+
+  press(shell);
+  key(shell, "z", { ctrlKey: true });
+  expect(forward).not.toHaveBeenCalled();
+  await flush();
+  key(shell, "z", { ctrlKey: true });
+  expect(forward).toHaveBeenCalledExactlyOnceWith("edit.undo");
+});
+
+it("a superseded Linux acquisition reply cannot enable shortcuts for the second click", async () => {
+  const { shell, request, forward, press, key } = mount("<input>", "linux");
+  let settleFirst!: (granted: boolean) => void;
+  let settleSecond!: (granted: boolean) => void;
+  request.mockImplementationOnce(() => new Promise(resolve => { settleFirst = resolve; }))
+    .mockImplementationOnce(() => new Promise(resolve => { settleSecond = resolve; }));
+  const clock = vi.spyOn(Date, "now").mockReturnValue(100);
+  press();
+  await flush();
+  clock.mockReturnValue(200);
+  press();
+  clock.mockReturnValue(300);
+  settleFirst(true);
+  await flush();
+  expect(request).toHaveBeenLastCalledWith(true, expect.any(Number), 200);
+  expect(key(shell, "z", { ctrlKey: true }).defaultPrevented).toBe(true);
+  expect(forward).not.toHaveBeenCalled();
+  settleSecond(true);
+  await flush();
+  key(shell, "z", { ctrlKey: true });
+  expect(forward).toHaveBeenCalledExactlyOnceWith("edit.undo");
+});
+
 describe.each(["macos", "windows"] as const)("persistent panel focus (%s)", (platform) => {
   it.each([
     "<input>", "<textarea></textarea>", "<select><option>One</option></select>",

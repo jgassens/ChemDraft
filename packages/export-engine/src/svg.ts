@@ -9,6 +9,7 @@ import {
   planPageSvgRender,
   planNativeArtVisual,
   isPatrickHandFont,
+  type LayoutBounds,
   type PageSvgAttributeValue,
   type PageSvgFragment
 } from "@chemdraft/layout-engine";
@@ -28,6 +29,8 @@ export interface SvgExportOptions {
    * background rect entirely so downstream raster/PNG export can preserve transparency.
    */
   background?: string;
+  /** Bounded raster previews keep page context for crossings and omit nonvisual structure metadata. */
+  rasterRegion?: { bounds: LayoutBounds; objectIds?: readonly string[]; maxSvgBytes: number };
   /** Explicit dimensions without outputUnit are pixels; all objects scale with the page. */
   outputWidth?: number;
   outputHeight?: number;
@@ -111,24 +114,9 @@ export function exportDocumentToSvg(document: ChemDraftDocument, options: SvgExp
   const images = new Map(page.objects.filter((object) => object.type === "graphic" && object.graphicKind === "image" && object.data.image)
     .map((object) => [object.id, object]));
   const renderedImages = new Set<string>();
-  const body = plan.fragments.map((fragment) => {
-    const image = fragment.kind === "element" ? images.get(String(fragment.attrs["data-object-id"])) : undefined;
-    if (!image || fragment.kind !== "element" || image.type !== "graphic" || !image.data.image) return serializeSvgFragment(fragment, 2);
-    if (renderedImages.has(image.id)) return "";
-    renderedImages.add(image.id);
-    // Raster sampling and previews scale the whole page, including picture frames.
-    const frame = pixelOutput ? { x: image.x, y: image.y, width: image.width, height: image.height }
-      : physicalPictureFrame(image, pointsPerUnit);
-    const opacity = planNativeArtVisual(image).opacity;
-    return serializeSvgFragment({ ...fragment, tag: "g", attrs: {
-      ...fragment.attrs, opacity: opacity === 1 ? undefined : opacity
-    }, children: [{ kind: "element", key: `image-${image.id}`, tag: "image", attrs: {
-      ...Object.fromEntries(Object.entries(frame).map(([key, value]) => [key, String(value)])),
-      // Keep the native frame so later document-style conversion cannot rescale the picture twice.
-      "data-chemdraft-picture-frame": `${image.x} ${image.y} ${image.width} ${image.height} ${image.rotation}`,
-      preserveAspectRatio: "none", href: `data:${image.data.image.mimeType};base64,${image.data.image.dataBase64}`
-    }, children: [] }] }, 2);
-  }).join("\n");
+  const region = options.rasterRegion;
+  const selected = region?.objectIds && new Set(region.objectIds);
+  const writer = new SvgWriter(region?.maxSvgBytes);
   // Only rendered text on this page needs a font. Preserve all other SVG bytes.
   const fontMarkup = needsHandwriting(plan.fragments)
     ? `  <defs><style>${requireHandwritingFontFaceCss()}</style></defs>`
@@ -155,21 +143,52 @@ export function exportDocumentToSvg(document: ChemDraftDocument, options: SvgExp
     ? ""
     : `  <rect width="${page.width}" height="${page.height}" fill="${escapeXml(background)}" />`;
 
-  return {
-    format: "svg",
-    contents: [
-      `<svg xmlns="http://www.w3.org/2000/svg" width="${outputWidth}" height="${outputHeight}" viewBox="0 0 ${page.width} ${page.height}" role="img" aria-label="${escapeXml(svgTitle(options.title ?? document.title, options.title === undefined))}">`,
-      fontMarkup,
-      backgroundMarkup,
-      pageGuideMarkup,
-      body,
-      warningMarkup,
-      "</svg>"
-    ]
-      .filter(Boolean)
-      .join("\n"),
-    warnings
-  };
+  const viewBox = region ? [region.bounds.x, region.bounds.y, region.bounds.width, region.bounds.height].join(" ")
+    : `0 0 ${page.width} ${page.height}`;
+  writer.append(`<svg xmlns="http://www.w3.org/2000/svg" width="${outputWidth}" height="${outputHeight}" viewBox="${viewBox}"`);
+  if (region) writer.append(' preserveAspectRatio="none"');
+  writer.append(' role="img" aria-label="');
+  writer.escaped(svgTitle(options.title ?? document.title, options.title === undefined));
+  writer.append('">');
+  for (const markup of [fontMarkup, backgroundMarkup, pageGuideMarkup]) {
+    if (markup) writer.append(`\n${markup}`);
+  }
+  for (const fragment of plan.fragments) {
+    const id = String(fragment.attrs["data-object-id"] ?? "");
+    if (selected && id && !selected.has(id)) continue;
+    if (shouldSkipExportFragment(fragment)) {
+      // Unbounded document exports retain their established fragment separators.
+      if (!region && plan.fragments.length > 1) writer.append("\n");
+      continue;
+    }
+    const image = images.get(id);
+    if (!image || image.type !== "graphic" || !image.data.image) {
+      writer.append("\n");
+      serializeSvgFragment(writer, fragment, 2);
+      continue;
+    }
+    if (renderedImages.has(image.id)) {
+      if (!region) writer.append("\n");
+      continue;
+    }
+    renderedImages.add(image.id);
+    // Raster sampling and previews scale the whole page, including picture frames.
+    const frame = pixelOutput ? { x: image.x, y: image.y, width: image.width, height: image.height }
+      : physicalPictureFrame(image, pointsPerUnit);
+    const opacity = planNativeArtVisual(image).opacity;
+    writer.append("\n");
+    serializeSvgFragment(writer, { ...fragment, tag: "g", attrs: {
+      ...fragment.attrs, opacity: opacity === 1 ? undefined : opacity
+    }, children: [{ kind: "element", key: `image-${image.id}`, tag: "image", attrs: {
+      ...Object.fromEntries(Object.entries(frame).map(([key, value]) => [key, String(value)])),
+      // Keep the native frame so later document-style conversion cannot rescale the picture twice.
+      "data-chemdraft-picture-frame": `${image.x} ${image.y} ${image.width} ${image.height} ${image.rotation}`,
+      preserveAspectRatio: "none", href: `data:${image.data.image.mimeType};base64,${image.data.image.dataBase64}`
+    }, children: [] }] }, 2);
+  }
+  if (warningMarkup) writer.append(`\n${warningMarkup}`);
+  writer.append("\n</svg>");
+  return { format: "svg", contents: writer.contents(), warnings };
 }
 
 function physicalPictureFrame(frame: { x: number; y: number; width: number; height: number }, pointsPerUnit: number) {
@@ -185,55 +204,73 @@ function svgLengthInPoints(length: string | number): number {
   return value / CSS_PX_PER_INCH * 72;
 }
 
-function serializeSvgFragment(fragment: PageSvgFragment, indent: number, insideText = false): string {
-  const pad = " ".repeat(indent);
-  if (fragment.kind === "text") {
-    return `${pad}${escapeXml(fragment.text)}`;
-  }
-
-  if (shouldSkipExportFragment(fragment)) {
-    return "";
-  }
-
-  const attrs = serializeSvgAttributes(fragment.attrs);
-  // SVG treats formatting whitespace inside text as visible content. Keep the entire
-  // text subtree inline (including nested tspans), just as the canvas's DOM plan does.
-  const inline = insideText || fragment.tag === "text" || fragment.tag === "tspan";
-  const children = fragment.children
-    .map((child) => serializeSvgFragment(child, inline ? 0 : indent + 2, inline))
-    .filter((child) => child.length > 0);
-  if (fragment.children.length === 0) {
-    return `${pad}<${fragment.tag}${attrs} />`;
-  }
-
-  if (inline) {
-    return `${pad}<${fragment.tag}${attrs}>${children.join("")}</${fragment.tag}>`;
-  }
-
-  if (fragment.children.every((child) => child.kind === "text")) {
-    return `${pad}<${fragment.tag}${attrs}>${fragment.children.map((child) => child.kind === "text" ? escapeXml(child.text) : "").join("")}</${fragment.tag}>`;
-  }
-
-  return [
-    `${pad}<${fragment.tag}${attrs}>`,
-    ...children,
-    `${pad}</${fragment.tag}>`
-  ].join("\n");
+export class SvgByteLimitError extends Error {
+  constructor() { super("Page SVG exceeds the raster input limit."); }
 }
 
-function serializeSvgAttributes(attrs: Record<string, PageSvgAttributeValue>): string {
-  const serialized = Object.entries(attrs)
-    .flatMap(([key, value]) => {
-      if (key === "class" || value === undefined || value === false || value === "") {
-        return [];
-      }
-      if (value === true) {
-        return [key];
-      }
-      return [`${key}="${escapeXml(svgAttributeValue(value))}"`];
-    });
+/** Charge UTF-8 output as it is emitted. Large text/attributes are escaped in bounded pieces. */
+class SvgWriter {
+  private readonly parts: string[] = [];
+  private readonly encoder = new TextEncoder();
+  constructor(private remaining?: number) {}
 
-  return serialized.length > 0 ? ` ${serialized.join(" ")}` : "";
+  get rasterPreview() { return this.remaining !== undefined; }
+
+  append(value: string): void {
+    if (this.remaining !== undefined) {
+      if (value.length > this.remaining) throw new SvgByteLimitError();
+      const size = /^[\x00-\x7f]*$/.test(value) ? value.length : this.encoder.encode(value).byteLength;
+      if (size > this.remaining) throw new SvgByteLimitError();
+      this.remaining -= size;
+    }
+    this.parts.push(value);
+  }
+
+  escaped(value: string): void {
+    if (this.remaining === undefined) { this.append(escapeXml(value)); return; }
+    if (value.length > this.remaining) throw new SvgByteLimitError();
+    for (let start = 0; start < value.length;) {
+      let end = Math.min(start + 8192, value.length);
+      const last = value.charCodeAt(end - 1);
+      if (end < value.length && last >= 0xd800 && last <= 0xdbff) end++;
+      this.append(escapeXml(value.slice(start, end)));
+      start = end;
+    }
+  }
+
+  contents(): string { return this.parts.join(""); }
+}
+
+function serializeSvgFragment(writer: SvgWriter, fragment: PageSvgFragment, indent: number, insideText = false): void {
+  const pad = " ".repeat(indent);
+  if (fragment.kind === "text") {
+    writer.append(pad);
+    writer.escaped(fragment.text);
+    return;
+  }
+  writer.append(`${pad}<${fragment.tag}`);
+  for (const [key, value] of Object.entries(fragment.attrs)) {
+    if (key === "class" || value === undefined || value === false || value === "" ||
+        (writer.rasterPreview && key === "data-structure")) continue;
+    writer.append(` ${key}`);
+    if (value !== true) {
+      writer.append('="');
+      writer.escaped(svgAttributeValue(value));
+      writer.append('"');
+    }
+  }
+  if (!fragment.children.length) { writer.append(" />"); return; }
+  writer.append(">");
+  // Formatting whitespace inside text is visible in SVG.
+  const inline = insideText || fragment.tag === "text" || fragment.tag === "tspan" ||
+    fragment.children.every(child => child.kind === "text");
+  for (const child of fragment.children) {
+    if (shouldSkipExportFragment(child)) continue;
+    if (!inline) writer.append("\n");
+    serializeSvgFragment(writer, child, inline ? 0 : indent + 2, inline);
+  }
+  if (!inline) writer.append(`\n${pad}`);
+  writer.append(`</${fragment.tag}>`);
 }
 
 function shouldSkipExportFragment(fragment: PageSvgFragment): boolean {

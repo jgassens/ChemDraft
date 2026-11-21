@@ -5,6 +5,7 @@ import { createSmilesMolecule, stereoPerceptionMolfile } from "@chemdraft/docume
 import { depictSmiles2D } from "@chemdraft/ocl-adapter";
 import { applyPageFitDecision, commitWithPageFit, PageEnlargementConsent, planDocumentPageFit } from "./pageEnlargement";
 import { applyChargeToolAtNativeAtom, insertTableIntoDocument, normalizeCommittedDocument, setDocumentCustomPageSize, translateDocumentPage } from "./documentWorkflow";
+import * as workflow from "./documentWorkflow";
 import { setNativePromptProvider } from "./nativePrompt";
 
 const plus = (id: string, x: number, y: number, width = 8, height = 8) =>
@@ -24,6 +25,36 @@ it("retains right/bottom-only growth without shifting or fitting unrelated exist
   const proposed = applyPatch(before, { op: "addObject", pageId: page.id, object: plus("new", 132, 132) });
   const after = applyPageFitDecision(planDocumentPageFit(before, proposed), true);
   expect(after.pages[0]).toMatchObject({ width: 140, height: 140, objects: proposed.pages[0]!.objects });
+});
+
+it("translates only the approved page when the same ID occurs on another page", () => {
+  const blank = createEmptyDocument(), first = blank.pages[0]!;
+  const before = { ...blank, pages: [{ ...first, objects: [plus("shared", 20, 30)] },
+    { ...first, id: "second", objects: [plus("shared", 80, 90)] }] };
+  const shifted = translateDocumentPage(before, "second", 12, 24);
+  expect(shifted.pages[0]).toEqual(before.pages[0]);
+  expect(shifted.pages[1]!.objects).toEqual([plus("shared", 92, 114)]);
+  const duplicatePages = { ...before, pages: [first, first] };
+  expect(() => translateDocumentPage(duplicatePages, first.id, 12, 24)).toThrow(/ambiguous page/);
+  const duplicateObjects = { ...before, pages: [{ ...first, objects: [plus("shared", 20, 30), plus("shared", 80, 90)] }] };
+  expect(() => translateDocumentPage(duplicateObjects, first.id, 12, 24)).toThrow(/ambiguous object/);
+});
+
+it("computes the authorized baseline independently of the fitted document's translation", async () => {
+  const blank = setDocumentCustomPageSize(createEmptyDocument(), { width: 100, height: 100, unit: "css-px" });
+  const page = blank.pages[0]!;
+  const before = { ...blank, pages: [{ ...page, objects: [plus("original", 10, 10)] }] };
+  const proposed = applyPatch(before, { op: "addObject", pageId: page.id, object: plus("outside", -24, 10) });
+  const translate = workflow.translateDocumentPage;
+  vi.spyOn(workflow, "translateDocumentPage").mockImplementation((doc, pageId, dx, dy) =>
+    translate(doc, pageId, dx + 5, dy));
+  const restore = setNativePromptProvider(async () => "enlarge");
+  try {
+    await commitWithPageFit(before, proposed, (after, baseline) => {
+      expect(after.pages[0]!.objects[0]!.x).toBe(39);
+      expect(baseline(before).pages[0]!.objects[0]!.x).toBe(34);
+    });
+  } finally { restore(); }
 });
 
 describe.each(["macos", "windows"] as const)("page-wide enlargement translation on %s", platform => {
@@ -118,6 +149,7 @@ it("translates every native object kind, absolute anchors, graphics and attachme
   const after = translateDocumentPage(before, page.id, 24, 32);
   for (const original of objects) {
     const shifted = after.pages[0]!.objects.find(object => object.id === original.id)!;
+    expect(workflow.expectedPageTranslation(original, 24, 32)).toStrictEqual(shifted);
     expect(shifted.x).toBe(original.x + 24); expect(shifted.y).toBe(original.y + 32);
     expect(shifted.width).toBe(original.width); expect(shifted.height).toBe(original.height);
   }

@@ -1,4 +1,4 @@
-use std::io::{Cursor, Read};
+use std::io::{self, Cursor, Read, Write};
 
 use image::{codecs::jpeg::JpegEncoder, ColorType, DynamicImage, ImageEncoder, ImageFormat};
 use resvg::{tiny_skia, usvg};
@@ -60,6 +60,7 @@ pub(crate) struct RasterExportRequest {
     background: Option<String>,
     jpeg_quality: Option<u8>,
     max_dimension_px: Option<u32>,
+    max_png_bytes: Option<usize>,
     /// The physical size, in CSS pixels per inch (96, by the CSS/SVG convention every source SVG
     /// this app emits is authored in), that the SOURCE SVG's own units represent — NOT the final
     /// stamped density. The actual density is derived from this times the scale really applied
@@ -194,6 +195,14 @@ fn rasterize_svg_impl(mut request: RasterExportRequest) -> Result<RasterExportRe
         background,
         request.jpeg_quality,
         tiff_pixels_per_inch,
+        // A pHYs chunk adds 21 bytes after encoding.
+        request.max_png_bytes.map(|limit| {
+            limit.saturating_sub(if request.css_px_per_inch.is_some() {
+                21
+            } else {
+                0
+            })
+        }),
     )?;
     warnings.extend(encode_warnings);
     if request.format == RasterExportFormat::Png {
@@ -361,12 +370,72 @@ fn target_size(
     Ok((width, height, scale_x, scale_y, warnings))
 }
 
+const PNG_OUTPUT_LIMIT: &str = "PNG output exceeds the requested byte limit.";
+
+struct PngOutput {
+    bytes: Vec<u8>,
+    limit: usize,
+}
+
+impl Write for PngOutput {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        if data.len() > self.limit - self.bytes.len() {
+            return Err(io::Error::other(PNG_OUTPUT_LIMIT));
+        }
+        self.bytes.extend_from_slice(data);
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The image PNG encoder buffers a complete compressed IDAT before writing to its sink.
+/// For a bounded preview, stream straight RGBA scanlines to zlib with a capped IDAT sink.
+fn bounded_preview_png(pixmap: &tiny_skia::Pixmap, budget: usize) -> Result<Vec<u8>, String> {
+    // Signature, IHDR (13 data bytes), IDAT framing, and IEND.
+    const FRAMING: usize = 8 + 25 + 12 + 12;
+    let limit = budget.checked_sub(FRAMING).ok_or(PNG_OUTPUT_LIMIT)?;
+    let sink = PngOutput {
+        bytes: Vec::new(),
+        limit,
+    };
+    let mut encoder = flate2::write::ZlibEncoder::new(sink, flate2::Compression::default());
+    for row in pixmap.data().chunks_exact(pixmap.width() as usize * 4) {
+        encoder
+            .write_all(&[0])
+            .and_then(|()| encoder.write_all(&straight_rgba(row)))
+            .map_err(|error| error.to_string())?;
+    }
+    let data = encoder.finish().map_err(|error| error.to_string())?.bytes;
+    let mut bytes = Vec::with_capacity(FRAMING + data.len());
+    bytes.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+    let mut header = [0; 13];
+    header[..4].copy_from_slice(&pixmap.width().to_be_bytes());
+    header[4..8].copy_from_slice(&pixmap.height().to_be_bytes());
+    header[8..10].copy_from_slice(&[8, 6]); // 8-bit RGBA
+    for (kind, payload) in [
+        (b"IHDR", header.as_slice()),
+        (b"IDAT", data.as_slice()),
+        (b"IEND", &[]),
+    ] {
+        bytes.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        let start = bytes.len();
+        bytes.extend_from_slice(kind);
+        bytes.extend_from_slice(payload);
+        bytes.extend_from_slice(&png_crc32(&bytes[start..]).to_be_bytes());
+    }
+    Ok(bytes)
+}
+
 fn encode_raster(
     pixmap: &tiny_skia::Pixmap,
     format: RasterExportFormat,
     background: Option<[u8; 3]>,
     jpeg_quality: Option<u8>,
     tiff_pixels_per_inch: f64,
+    max_png_bytes: Option<usize>,
 ) -> Result<(Vec<u8>, Vec<RasterExportWarning>), String> {
     let width = pixmap.width();
     let height = pixmap.height();
@@ -375,6 +444,9 @@ fn encode_raster(
 
     match format {
         RasterExportFormat::Png => {
+            if let Some(budget) = max_png_bytes {
+                return Ok((bounded_preview_png(pixmap, budget)?, warnings));
+            }
             let image = image::RgbaImage::from_raw(width, height, straight_rgba(pixmap.data()))
                 .ok_or("Could not prepare PNG raster export data.")?;
             DynamicImage::ImageRgba8(image)
@@ -613,15 +685,9 @@ fn png_with_physical_density(bytes: Vec<u8>, pixels_per_inch: f64) -> Result<Vec
 }
 
 fn png_crc32(data: &[u8]) -> u32 {
-    let mut crc = 0xffff_ffffu32;
-    for &byte in data {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
-            let mask = (crc & 1).wrapping_neg();
-            crc = (crc >> 1) ^ (0xedb8_8320 & mask);
-        }
-    }
-    !crc
+    let mut crc = flate2::Crc::new();
+    crc.update(data);
+    crc.sum()
 }
 
 fn warning(code: &'static str, message: String) -> RasterExportWarning {
@@ -701,6 +767,7 @@ mod tests {
             background: None,
             jpeg_quality: None,
             max_dimension_px: None,
+            max_png_bytes: None,
             css_px_per_inch: None,
             pictures: Vec::new(),
         }
@@ -905,6 +972,50 @@ mod tests {
             let response = rasterize_svg_impl(request(format)).expect("export without pictures");
             assert!(response.warnings.is_empty());
         }
+    }
+
+    #[test]
+    fn enforces_png_byte_limit_before_returning_ipc_bytes() {
+        for density in [None, Some(96.0)] {
+            let render = |max_png_bytes| {
+                rasterize_svg_impl(RasterExportRequest {
+                    max_png_bytes,
+                    css_px_per_inch: density,
+                    ..request(RasterExportFormat::Png)
+                })
+            };
+            let expected = render(Some(2 * 1024 * 1024)).unwrap().bytes;
+            assert_eq!(
+                image::load_from_memory(&expected).unwrap().to_rgba8(),
+                image::load_from_memory(&render(None).unwrap().bytes)
+                    .unwrap()
+                    .to_rgba8()
+            );
+            assert_eq!(render(Some(expected.len())).unwrap().bytes, expected);
+            assert_eq!(
+                render(Some(expected.len() - 1)).unwrap_err(),
+                PNG_OUTPUT_LIMIT
+            );
+            assert_eq!(render(Some(16)).unwrap_err(), PNG_OUTPUT_LIMIT);
+        }
+    }
+
+    #[test]
+    fn refuses_high_detail_preview_at_two_mib_during_compression() {
+        let mut pixmap = tiny_skia::Pixmap::new(1024, 1024).unwrap();
+        let mut seed: u32 = 42;
+        for pixel in pixmap.data_mut().chunks_exact_mut(4) {
+            // Deterministic opaque noise exceeds the output cap within the permitted pixel count.
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            pixel.copy_from_slice(&seed.to_le_bytes());
+            pixel[3] = 255;
+        }
+        assert_eq!(
+            bounded_preview_png(&pixmap, 2 * 1024 * 1024).unwrap_err(),
+            PNG_OUTPUT_LIMIT
+        );
     }
 
     #[test]

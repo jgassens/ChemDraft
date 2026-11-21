@@ -4,6 +4,10 @@ Defines public plugin API types, Zod-backed manifest schemas, permission names, 
 
 This package must not contain app-specific implementation code or direct document mutation logic.
 
+API 0.1.26 defines request-bound document access, tool sessions, chemistry and depiction methods,
+and active-document notifications. See the [authoring guide](../../docs/plugin-architecture/AUTHORING.md#request-bound-plugin-tools)
+for the contracts, permissions, and transport limits.
+
 API 0.1.23 adds bondStyle 'wavy' (single-bond either stereo), exposed through the public
 `MoleculeBond` / `MoleculeBondDisplay` types. Set `display.bondStyle: "wavy"` only on a single bond;
 its `fromAtomId` is the explicitly unknown stereocentre. Preserve its direction when copying.
@@ -101,3 +105,92 @@ API 0.1.25 additively exposes native bracketUsage, repeatCount and molecule-scop
 
 API 0.1.24 includes binary CDX import/export and optional reaction `arrowObjectIds`/`plusObjectIds`;
 shared scheme arrows and plus signs are referenced by id, never copied.
+
+### Request tool sessions in 0.1.26
+
+Open a session from the command that began the request. Supply `definitions` for the tools your
+worker handles and `hostTools` for any published host tools you want to include. The plugin must
+declare every selected host tool's permissions, including `chemistry.compute` for verified writes.
+Names are unique across the two lists. Only the opening invocation may close the session. Ending the
+request also closes its sessions and cancels calls. A tool definition may set `readOnly: true` to remove write
+capabilities for that call, including when its plugin has a write grant.
+
+The catalog supports up to 32 tools, a 128 KiB UTF-8 catalog and 16 KiB per plugin schema.
+Use an object-root schema. Supported types are object, array, string, number, integer, boolean and
+null. All accept `description` and `enum`. Objects accept `properties`, `required` and boolean
+`additionalProperties` (default true). Arrays require `items` and accept `minItems` and `maxItems`.
+Strings accept `minLength` and `maxLength` in Unicode code points. Numbers accept inclusive
+`minimum` and `maximum`. The host checks arguments against these constraints before dispatch.
+
+During a request tool call, `documents.getActiveDocument()` and `selection.getSelection()` each
+allow up to 4 MiB of UTF-8 JSON. Larger snapshots reject with error code `limit`. Use
+`documents.readRequest()` with a page ID and the returned cursor to paginate document objects.
+
+Return `{ ok: true, value }` from `onToolCall`. A value with valid MCP text or PNG
+`content` blocks passes through as a tool result. PNGs must have a valid signature, an IHDR first,
+image data in IDAT chunks, and an IEND last. Every chunk must pass its CRC check. PNG dimensions
+are capped at 2048 pixels per side and both raw and base64 data are capped at 4 MiB. Other JSON
+values are returned as text, with object values also available as `structuredContent`. The complete
+response must fit 8 MiB.
+
+### Chemistry and depiction in 0.1.26
+
+`chemistry.inspectStructure` returns the source, RDKit's canonical isomeric SMILES, formula,
+heavy-atom count and stereo summary. Stereo indices refer to the source order. Pinned molecule
+sources use V3000 and expand supported condensed labels. Inspection declines above 500 heavy atoms
+and returns `unavailable` if the RDKit worker cannot initialize.
+
+`chemistry.rings` uses `representation: "both"` by default. It returns `chemicalRings` and
+`drawableRings` for the same object revision. Each chemical ring lists its native atom IDs in cycle
+order and its bond IDs in edge order. Drawable rings include the renderer key used by
+`molecule.style.ringStyles`. Request `"chemical"` or `"drawable"` to receive only that
+representation in `rings`. A warning identifies chemical cycles in expanded labels that lack a
+complete mapping to drawn IDs.
+
+`depiction.measure` returns page-space bounds for supported objects. Text and attached conditions
+include `labelBounds`, and molecules report `atomLabels` by native atom ID. Region queries return
+whole-object bounds for intersecting objects. Layout estimates use the canvas's font metrics and
+geometry plans. Check `unsupported` for objects without an ink measurement.
+
+`depiction.renderRegion` crops a transparent PNG to the supplied rectangle or the requested object
+bounds. The rectangle maps to the requested pixel width and height. Object crops can use stored
+frames with a warning when ink bounds are unavailable. Direct PNG results allow up to 4,096 pixels
+per side, 4,194,304 pixels total and 2 MiB decoded. The page SVG and decoded picture budget each
+allow up to 16 MiB. The tool-session image block limits above also apply when returning a direct PNG
+as a tool image.
+
+Both depiction methods allow up to 256 page objects, 2,500 page atoms and 5,000 page bonds. An
+optional `preview` applies a validated page-local patch or flat batch of up to 256 operations to a
+temporary draft. Preview additions use the caller's proposed IDs. Only a successful request write
+returns committed IDs.
+
+`depiction.listStylePresets({ requestId })` lists native drawing presets with bond length,
+normal and bold line widths, and atom-label font metrics in canvas units. Its `defaults`
+field gives the effective drawing and text defaults of the request document.
+
+`depiction.planStyle({ requestId, pageId, objectIds, presetId?, targetBondLength? })`
+returns native `updateObject` operations, the affected IDs, moved electron-mark IDs, and
+warnings. Supply the children of any targeted group and the associated electron marks as
+explicit IDs. A target bond length overrides a preset's bond length and rescales the graph
+around its existing centre. The returned operations address objects individually.
+
+`depiction.planLayout` takes a page and one of four specs in `spec`:
+
+- `row` and `grid` arrange `objectIds` in input order from a top-left `anchor`. Use `gap` and
+  optional `wrapWidth` in canvas units. Grids also accept `columns`, `columnGap`, and `rowGap`.
+- `reaction` places `reactants` and `products` from an `anchor` on the reaction centreline.
+  A component can be a page object ID or `{ ref, smiles }` for a proposed molecule. SMILES
+  depiction requires `chemistry.compute` alongside `document.read`. The step accepts
+  `arrowKind`, optional `bondLength`, `above` and `below` condition lines, and optional `compoundNumbers` entries of
+  `{ component, text }`. Use a page ID or `{ ref }` as the label's component.
+- `reactionRows` takes `steps` with those reaction fields and one shared `anchor`, `maxWidth`,
+  optional `bondLength`, and optional `gap`. `breakBefore` contains zero-based step indices.
+  Reuse a proposed intermediate with `{ ref }`, or an existing intermediate by its page
+  object ID. A reused intermediate keeps one drawing even across row breaks.
+
+Both planners accept a validated page-local `preview`. To preview or submit a layout, turn
+each returned object into an `addObject` operation with its returned local ID, and turn each
+transform into an `updateObject` operation using its `changes` field. Match the
+`insertionSources` by local object ID and pass the corresponding batch operation index
+and `sourceSmiles` in `expectedStructures`. Write through `documents.applyRequestPatch` to
+get the committed IDs and the host's scope and chemistry checks.

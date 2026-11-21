@@ -9,6 +9,17 @@ the retained native window without replacing the draft or moving it. Browser bui
 surface as a browser limitation, with the same `PageSizeForm` and validation. Native creation
 failure reports an error in the document status; it never creates an in-page desktop fallback.
 
+## Drawing view recovery on Linux
+
+If the document's WebKitGTK web process stops, ChemDraft logs the reason and shows a native message
+box with terminal commands for the installed app and the AppImage. The commands try Mesa software
+rendering (`LIBGL_ALWAYS_SOFTWARE=1`) or disable WebKitGTK accelerated compositing
+(`WEBKIT_DISABLE_COMPOSITING_MODE=1`).
+Closing the first message reloads the drawing view once per document window during the app session.
+A later termination in that window shows a message asking the user to restart ChemDraft.
+Reload uses the normal session restore path. Pending edits can be lost because the autosave and
+quit flush both require the drawing view to serialize them.
+
 ## Authority and files
 
 - `apps/desktop/src/dialogs/DialogCoordinator.ts`: one coordinator owned by MainWindow; subscriptions,
@@ -362,11 +373,26 @@ body, and an owner callback in the coordinator. Extend Rust's kind/label allowli
 capability window matcher; URLs remain host IDs. Keep files, history, settings and plugin operations
 in MainWindow. Add contract, lifecycle, originating-context and both-platform manual tests.
 
-Plugin prompts, report readers, plugin manager and toolbar customization
+General plugin prompts, report readers, plugin manager and toolbar customization
 are deliberately unimplemented. Modal plugin prompts need an explicit document input lease at the
 coordinator seam, including all command/pointer/menu/clipboard paths and dependent prompt stacking;
 Page Size has no such lease. Other kinds will need their own busy/progress contracts,
 snapshot revisions and cancellation semantics before they can use the host.
+
+## Request-bound page enlargement
+
+The `pageEnlargement` kind asks whether to make room for a plugin request. It uses a small,
+content-fit native window with the document as owner and its own private session. The fixed
+snapshot identifies the dialog. Its two actions are Enlarge and Keep Page Size, and two
+simultaneous requests never share an answer. The owner retains all approval and write authority.
+
+Escape cancels on key release so key repeats stay inside the dialog. Cmd+. cancels on macOS.
+Both shortcuts consume the event in the dialog webview. The title-bar close also chooses
+Keep Page Size. Clicking outside leaves the question open. On dismissal the native host returns
+focus to the visible document window when the question held focus, and the document restores
+focus to the active canvas. If the request aborts or times out, its signal closes even a question
+still opening and settles the dialog as Keep Page Size. An already-aborted request retains the
+plugin host's existing unanswered outcome.
 
 ## Stage 2: modeless Export
 

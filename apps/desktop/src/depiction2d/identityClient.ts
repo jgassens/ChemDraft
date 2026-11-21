@@ -1,11 +1,11 @@
-import { createIdentityWorkerClient } from "./identityWorkerClient";
+import { createIdentityWorkerClient, IdentityWorkerUnavailableError } from "./identityWorkerClient";
 import type { IdentityWorkerPort, StructureInspector } from "./identityProtocol";
 
 let browserInspect: StructureInspector | undefined;
 
 /** Shared by paste, plugins and assistant inspections; no in-thread fallback. */
 export const inspectStructureOffThread: StructureInspector = async (
-  format, value, stereoReference, signal
+  format, value, stereoReference, signal, details
 ) => {
   signal?.throwIfAborted();
   if (typeof Worker !== "undefined") {
@@ -21,14 +21,14 @@ export const inspectStructureOffThread: StructureInspector = async (
       worker.onmessageerror = () => port.onmessageerror?.();
       return port;
     });
-    return browserInspect(format, value, stereoReference, signal);
+    return browserInspect(format, value, stereoReference, signal, details);
   }
   // Test-only Node transport, excluded from the web bundle. Desktop WebViews always have Worker.
   if (typeof process !== "undefined" && process.versions?.node) {
     const nodeEntry = "../test/identityNodeClient.mjs";
     const node: { inspectStructureOffThread: StructureInspector } =
       await import(/* @vite-ignore */ nodeEntry);
-    return node.inspectStructureOffThread(format, value, stereoReference, signal);
+    return node.inspectStructureOffThread(format, value, stereoReference, signal, details);
   }
-  throw new Error("Chemical identity verification requires a module worker in this environment.");
+  throw new IdentityWorkerUnavailableError("Chemical identity verification requires a module worker in this environment.");
 };

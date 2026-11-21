@@ -1,5 +1,6 @@
 import type { PluginCommandInput, PluginSelectionSnapshot } from "@chemdraft/plugin-api";
-import { toEngineDocument } from "@chemdraft/chem-core";
+import { toEngineDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import * as chemCore from "@chemdraft/chem-core";
 import { AssistantCapabilityPermissions } from "@chemdraft/plugin-api";
 import { AssistantTransactions } from "../assistant/assistantTransaction";
 import { testContext } from "../assistant/tools/testContext";
@@ -14,6 +15,10 @@ import { describe, expect, it, vi } from "vitest";
 import { createPhase4Document } from "../documentWorkflow";
 import { RECOGNITION_FIXTURE_COMMAND_ID, recognitionFixtureDescriptor } from "../testSupport/recognitionFixturePlugin";
 import { createPluginRuntime } from "./createPluginRuntime";
+import { planRequestPageFit } from "../pageEnlargement";
+import { deferred } from "../testSupport/deferred";
+import { buildPluginSelectionSnapshot } from "./selectionSnapshot";
+import { ToolSessionController } from "./toolSessions/ToolSessionController";
 import * as pluginChemistry from "./pluginChemistry";
 import { canvasOverlayPrompt } from "./pluginCanvasOverlayControls";
 import { ImageSourceRegistry } from "./ImageSourceProvider";
@@ -27,6 +32,49 @@ import type {
 } from "./structureRecognitionEngine";
 
 const emptySelection: PluginSelectionSnapshot = { objectIds: [], molecules: [] };
+
+it("expires page consent once per request and ignores a late affirmative answer", async () => {
+  vi.useFakeTimers();
+  const document = createPhase4Document("Page consent");
+  const late = deferred<"enlarge">();
+  const confirm = vi.fn(() => late.promise);
+  const runtime = createPluginRuntime({
+    getActiveDocument: () => document,
+    captureRequestDocument: () => ({ key: "document", read: () => document }),
+    requestPageSpace: { confirm, plan: planRequestPageFit }
+  });
+  const ready = deferred<void>();
+  const pluginId = "org.test.pageTimeout", commandId = "plugin.pageTimeout.run";
+  runtime.registerPlugin({ id: pluginId, name: "Page Timeout", version: "1.0.0", apiVersion: "^0.1.26",
+    entry: "test.js", permissions: ["document.read", "selection.read", "document.write"],
+    contributes: { commands: [{ id: commandId, title: "Ask about space" }] }
+  }, { commandHandlers: { [commandId]: async ctx => {
+    const requests = ctx.requests!;
+    const begin = await requests.begin({ label: "Page fit" });
+    if (!begin.ok) throw new Error(begin.error.message);
+    const { requestId } = begin.value;
+    const context = await requests.getContext({ requestId });
+    if (!context.ok) throw new Error(context.error.message);
+    const { pageId, revision } = context.value.pages[0]!;
+    const input = { requestId, pageId, revision, requiredBounds: { x: -10, y: 0, width: 30, height: 20 } };
+    const answer = requests.requestPageSpace!(input);
+    ready.resolve();
+    expect(await answer).toEqual({ ok: true, value: { outcome: "unanswered" } });
+    expect(confirm).toHaveBeenCalledExactlyOnceWith(expect.any(AbortSignal), "document");
+    late.resolve("enlarge");
+    expect(await requests.requestPageSpace!(input)).toEqual({ ok: true, value: { outcome: "unanswered" } });
+  } } });
+  try {
+    const run = runtime.invokeCommand(commandId);
+    await Promise.race([ready.promise, run]);
+    await vi.advanceTimersByTimeAsync(300_000);
+    await run;
+    expect(confirm).toHaveBeenCalledOnce();
+  } finally {
+    runtime.unregisterPlugin(pluginId);
+    vi.useRealTimers();
+  }
+});
 
 describe("structureFromSmiles command lifetime", () => {
   it.each([false, true])("aborts outstanding structureFromSmiles when the plugin command ends (throws=%s)", async (throws) => {
@@ -309,6 +357,118 @@ describe("createPluginRuntime panel input", () => {
 });
 
 describe("createPluginRuntime assistant integration", () => {
+  it.each([
+    { count: 2, overLimit: false },
+    { count: 128, overLimit: true }
+  ])("budgets request-tool selection serialization for $count graph-backed molecules", async ({ count, overLimit }) => {
+    const document = chemCore.createEmptyDocument();
+    const objects = Array.from({ length: count }, (_, index): MoleculeObject => ({
+      id: `mol_${index}`, type: "molecule", structureFormat: "smiles", structure: "",
+      x: 0, y: 0, width: 800, height: 10, rotation: 0, style: {},
+      superatoms: [], rGroups: [],
+      atoms: Array.from({ length: 400 }, (_, i) => ({
+        id: `a${i}`, element: "C", x: i * 2, y: (i % 2) * 10 + index, formalCharge: 0
+      })),
+      bonds: Array.from({ length: 399 }, (_, i) => ({
+        id: `b${i}`, fromAtomId: `a${i}`, toAtomId: `a${i + 1}`, order: "single"
+      }))
+    }));
+    document.pages[0]!.objects = objects;
+    document.selection.objectIds = objects.map(object => object.id).reverse();
+    const runtime = createPluginRuntime({
+      getActiveDocument: () => document,
+      getSelection: warnings => buildPluginSelectionSnapshot(document, warnings),
+      captureRequestDocument: () => ({ key: document.id, read: () => document }),
+      assistantMcpEngine: { open: vi.fn(), close: vi.fn(), respond: vi.fn(), status: vi.fn() }
+    });
+    const id = "org.test.selection-budget";
+    const command = "plugin.selection-budget.read";
+    const serialize = vi.spyOn(chemCore, "moleculeToMolfileV2000");
+    const open = vi.spyOn(ToolSessionController.prototype, "open").mockImplementationOnce(async (binding, { requestId }) => {
+      const result = await binding.invoke({ requestId, sessionId: "session", name: "read", input: {} },
+        new AbortController().signal, false, {});
+      expect(result).toEqual({ ok: true, value: null });
+      return { sessionId: "session", tools: [] };
+    });
+    try {
+      let ordinary: PluginSelectionSnapshot;
+      runtime.registerPlugin({
+        id, name: "Selection budget", version: "1", apiVersion: "^0.1.26", entry: "worker.js",
+        permissions: ["document.read", "selection.read"], contributes: { commands: [{ id: command, title: "Read selection" }] }
+      }, {
+        commandHandlers: { [command]: async ctx => {
+          ordinary = await ctx.selection!.getSelection();
+          expect(ordinary.molecules.map(molecule => molecule.objectId)).toEqual(document.selection.objectIds);
+          expect(ordinary.molecules.every(molecule => molecule.structureFormat === "molfile-v2000")).toBe(true);
+          expect(serialize).toHaveBeenCalledTimes(count);
+          serialize.mockClear();
+          const request = await ctx.requests!.begin({ label: "Read selection" });
+          if (!request.ok) throw new Error(request.error.message);
+          return ctx.toolSessions!.open({ requestId: request.value.requestId, definitions: [] });
+        } },
+        onToolCall: async ctx => {
+          const selection = ctx.selection!.getSelection();
+          if (!overLimit) {
+            await expect(selection).resolves.toEqual(ordinary);
+            expect(serialize).toHaveBeenCalledTimes(count);
+          } else {
+            const cap = 4 * 1024 * 1024;
+            await expect(selection).rejects.toMatchObject({ code: "limit", message: expect.stringContaining("documents.readRequest") });
+            const serialized = serialize.mock.calls.length;
+            expect(serialized).toBeGreaterThan(1);
+            expect(serialized).toBeLessThan(count);
+            const bytesThrough = (length: number) => Buffer.byteLength(JSON.stringify({
+              ...ordinary, molecules: ordinary.molecules.slice(0, length)
+            }));
+            expect(bytesThrough(serialized - 1)).toBeLessThanOrEqual(cap);
+            expect(bytesThrough(serialized)).toBeGreaterThan(cap);
+          }
+          return { ok: true, value: null };
+        }
+      });
+      await expect(runtime.invokeCommand(command)).resolves.toMatchObject({ ok: true });
+    } finally {
+      runtime.unregisterPlugin(id);
+      open.mockRestore();
+      serialize.mockRestore();
+    }
+  });
+
+  it("excludes public and legacy requests in the same tab before either has written", async () => {
+    const { context } = testContext();
+    const transactions = new AssistantTransactions({
+      read: context.getDocument, push: () => {}, amend: () => {}, select: () => {},
+      onUserEdit: () => () => {}, undo: () => false
+    });
+    const runtime = createPluginRuntime({
+      getActiveDocument: context.getDocument, getActiveDocumentTab: () => ({ id: context.tabId }),
+      getActiveDocumentKey: () => context.tabId,
+      captureRequestDocument: () => ({ key: "instance", read: context.getDocument }),
+      getAssistantDocument: context.getDocument, assistantTransactions: () => transactions
+    });
+    const legacyId = "org.test.compat";
+    runtime.registerPlugin({ id: legacyId, name: "Compatibility", entry: "worker.js", version: "1", apiVersion: "^0.1.21",
+      permissions: [...AssistantCapabilityPermissions], contributes: {} });
+    const legacy = runtime.host.createCommandContext(legacyId).assistant!;
+    const command = "plugin.requests.begin";
+    const publicId = "org.test.requests";
+    runtime.registerPlugin({ id: publicId, name: "Request", entry: "worker.js", version: "1", apiVersion: "^0.1.26",
+      permissions: ["document.read", "selection.read"], contributes: { commands: [{ id: command, title: "Begin" }] }
+    }, { commandHandlers: { [command]: async ctx => {
+      const request = await ctx.requests!.begin({ label: "Read" });
+      if (!request.ok) return request.error.code;
+      await expect(legacy.beginRequest({ prompt: "Draw" })).rejects.toThrow("already running");
+      return (await ctx.requests!.end(request.value)).ok;
+    } } });
+    try {
+      await expect(runtime.invokeCommand(command)).resolves.toBe(true);
+      const legacyRequest = await legacy.beginRequest({ prompt: "Draw" });
+      await expect(runtime.invokeCommand(command)).resolves.toBe("busy");
+      await legacy.endRequest(legacyRequest);
+      await expect(runtime.invokeCommand(command)).resolves.toBe(true);
+    } finally { runtime.unregisterPlugin(publicId); runtime.unregisterPlugin(legacyId); transactions.dispose(); }
+  });
+
   it("builds structures through the retained chemistry context after the creating command ends", async () => {
     const inspector = vi.spyOn(identityClient, "inspectStructureOffThread");
     const { context } = testContext();

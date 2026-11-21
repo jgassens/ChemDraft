@@ -3,9 +3,9 @@ import { requireDocument, type AssistantToolContext } from "../AssistantToolCont
 import { documentSummary } from "../documentSummary";
 import { findObject, inspectMolecule } from "../writeBuilder";
 import { objectRect, unionRects } from "../placement";
+import { checkPngDimensions, checkPngEncodedSize, checkPngRawSize, hasPngSignature } from "../mcpPng";
 import type { ToolInput } from "./schemas";
 
-export const PNG_MAX_BYTES = 4 * 1024 * 1024;
 export function getDocument(context: AssistantToolContext, input: ToolInput<"get_document">) {
   return documentSummary(context, input);
 }
@@ -52,13 +52,11 @@ export async function render(context: AssistantToolContext, input: ToolInput<"re
       .replace(/viewBox="[^"]*"/, `viewBox="${bounds.x - 12} ${bounds.y - 12} ${width} ${height}"`));
   }
   const png = await context.render(svg, { maxDimensionPx: input.maxDimensionPx, background: input.background });
-  if (!Number.isInteger(png.width) || !Number.isInteger(png.height) || png.width <= 0 || png.height <= 0 ||
-      Math.max(png.width, png.height) > input.maxDimensionPx) throw new Error("The rendered PNG exceeds the requested dimensions.");
-  if (png.bytes.length > PNG_MAX_BYTES) throw new Error("Rendered PNG exceeds the 4 MiB limit.");
-  const signature = [137, 80, 78, 71, 13, 10, 26, 10];
-  if (signature.some((byte, index) => png.bytes[index] !== byte)) throw new Error("The renderer did not return a PNG.");
+  checkPngDimensions(png.width, png.height, input.maxDimensionPx);
+  checkPngRawSize(png.bytes.length);
+  if (!hasPngSignature(png.bytes)) throw new Error("The renderer did not return a PNG.");
   const data = base64(png.bytes);
-  if (data.length > PNG_MAX_BYTES) throw new Error("Encoded PNG exceeds the 4 MiB payload limit.");
+  checkPngEncodedSize(data.length);
   return { content: [{ type: "image" as const, mimeType: "image/png" as const, data }],
     structuredContent: { width: png.width, height: png.height } };
 }

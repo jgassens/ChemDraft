@@ -387,22 +387,29 @@ test("required CI jobs run the Node suites and release upload checks destination
 
 test("Linux records the smoke-tested packages before staging and checks the destination before upload", () => {
   const workflow = readFileSync(new URL("../../.github/workflows/linux-release.yml", import.meta.url), "utf8");
+  const packageBuild = readFileSync(new URL("../../.github/workflows/linux-build.yml", import.meta.url), "utf8");
   const container = readFileSync(new URL("../../.github/workflows/linux-container-smoke.yml", import.meta.url), "utf8");
   const windows = readFileSync(new URL("../../.github/workflows/windows-release.yml", import.meta.url), "utf8");
   const [build, upload] = workflow.split("\n  upload:");
-  assert.match(build, /commit: \$\{\{ steps\.source\.outputs\.commit \}\}/);
-  assert.match(build, /\[ "\$sha" = "\$WORKFLOW_SHA" \]/);
-  assert.match(build, /Repack AppImage[\s\S]+Smoke test the repacked AppImage\n\s+uses: \.\/\.github\/workflows\/linux-package-smoke[\s\S]+package: appimage/);
+  assert.match(packageBuild, /commit: \$\{\{ steps\.source\.outputs\.commit \}\}/);
+  assert.match(packageBuild, /\[ "\$sha" = "\$WORKFLOW_SHA" \]/);
+  assert.match(packageBuild, /Repack AppImage/);
+  assert.match(build, /Smoke test the repacked AppImage\n\s+uses: \.\/\.github\/workflows\/linux-package-smoke[\s\S]+package: appimage/);
+  assert.match(build, /container-smoke:[\s\S]+uses: \.\/\.github\/workflows\/linux-container-smoke/);
+  assert.match(upload, /needs: \[build, smoke, container-smoke\]/);
+  assert.match(container, /apps\/desktop\/src-tauri\/src\/\*\*/);
+  assert.match(container, /apps\/desktop\/src-tauri\/Cargo\.toml[\s\S]+apps\/desktop\/src-tauri\/Cargo\.lock/);
+  assert.match(container, /distro: arch[\s\S]+host-mesa\.sh/);
   assert.match(container, /uses: \.\/\.github\/workflows\/linux-package-smoke/);
   for (const variable of ["DEB", "APPIMAGE"]) {
-    const record = build.indexOf(`record-build.mjs --artifact "$${variable}" --target x86_64-unknown-linux-gnu`);
-    assert.ok(record > build.indexOf("Repack AppImage"));
-    assert.ok(record < build.indexOf("mkdir -p release-assets"));
-    assert.ok(build.includes(`"$${variable}.build.json"`));
+    const record = packageBuild.indexOf(`record-build.mjs --artifact "$${variable}" --target x86_64-unknown-linux-gnu`);
+    assert.ok(record > packageBuild.indexOf("Repack AppImage"));
+    assert.ok(record < packageBuild.indexOf("mkdir -p release-assets"));
+    assert.ok(packageBuild.includes(`"$${variable}.build.json"`));
   }
   const jobs = [...workflow.matchAll(/^  ([\w-]+):\n([\s\S]*?)(?=^  [\w-]+:\n|$(?![\s\S]))/gm)];
-  assert.match(build, /uses: actions\/upload-artifact@[^\n]+\n\s+with:\n\s+name: linux-release-\$\{\{ matrix\.arch \}\}\n\s+path: release-assets\/\*/);
-  assert.match(build, /arch: amd64/);
+  assert.match(packageBuild, /uses: actions\/upload-artifact@[^\n]+\n\s+with:\n\s+name: linux-release-\$\{\{ matrix\.arch \}\}\n\s+path: release-assets\/\*/);
+  assert.match(packageBuild, /arch: amd64/);
   const smokeJobs = jobs.filter(([, , body]) => body.includes("uses: ./.github/workflows/linux-package-smoke"));
   assert.ok(smokeJobs.length > 0);
   for (const [, name, body] of smokeJobs) {

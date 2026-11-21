@@ -219,6 +219,31 @@ Nested blobs inherit the installed worker's restrictive CSP; their static import
 `script-src 'self'`, and worker construction still obeys `worker-src 'self' blob:`. Neither the
 bootstrap query nor the shim grants host capabilities or bypasses manifest permissions.
 
+## Request-bound tools
+
+The initiating command captures an opaque document-instance key and selection. Request context
+resolves page revisions and viewport for that instance. Reads, planning, inspection and
+rendering use the pinned document. A tab
+switch sends an active-document notification. Replacing or closing the pinned document aborts
+its requests and closes their sessions. Workers with `document.read` opt in to notifications in
+the startup handshake. The runtime sends the current key on startup and sends changes in
+sequence while the registration is live. The runtime awaits worker acknowledgement, coalesces
+overflow to the latest key, and retries the current key after a delivery failure. Notifications
+carry no command context.
+
+The host uses one commit path for explicit request patches, bound direct patches and table
+insertion. An explicit `requestPageSpace` can prompt before a plugin submits any patch, even
+if the request ends without writing. For implicit fitting, the host verifies chemistry and measures
+the normalized drawing before asking. An answer belongs to the request, page revision and required
+geometry. After a gesture wait, the commit checks the normalized fit against the authorized page
+size, translation and set of moved objects. It checks chemistry and scope against a baseline
+independently projected by the approved transform before recording the Undo entry and publishing
+insertion IDs. A user edit after the first write interrupts further writes into that entry.
+
+The packaged fixture compares `get_document`, `get_selection`, `get_structure` and `render` against
+legacy reads on the same drawing using a Node worker. Installed worker loading in WKWebView on
+macOS and WebView2 on Windows is covered by the [manual checklist](../manual-stress-checklist.md).
+
 ## Panel-close lifecycle (ADR-0012)
 
 `RegisterPluginOptions.onPanelClosed(panelId)` lets a plugin cancel in-flight work

@@ -237,7 +237,11 @@ fn valid_origin(origin: &str) -> bool {
                 .is_ok_and(|ip| ip.is_loopback()))
 }
 
-async fn handle(request: Request<Incoming>, port: u16, manager: Weak<SessionManager>) -> Reply {
+pub(super) async fn handle(
+    request: Request<Incoming>,
+    port: u16,
+    manager: Weak<SessionManager>,
+) -> Reply {
     if request.method() != http::Method::POST {
         let mut response = reply(StatusCode::METHOD_NOT_ALLOWED, None);
         response
@@ -417,6 +421,10 @@ async fn forward(
     let Ok(_permit) = session.permits.clone().try_acquire_owned() else {
         return rpc(protocol::error(id, -32000, "busy"));
     };
+    let Some(deadline) = session.catalog.deadline(method, &params) else {
+        return rpc(session.catalog.unknown_tool(id, &params));
+    };
+    let deadline = manager.timeout_override.unwrap_or(deadline);
     let request_id = session.next_id();
     let (answer, receiver) = oneshot::channel();
     {
@@ -436,9 +444,6 @@ async fn forward(
         session: session.clone(),
         request_id: request_id.clone(),
     };
-    let deadline = manager
-        .timeout_override
-        .unwrap_or_else(|| protocol::deadline(method, &params));
     if session
         .sink
         .send(McpBridgeRequest {

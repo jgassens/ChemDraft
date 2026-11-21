@@ -34,6 +34,8 @@ export interface ReactionSchemeComponent {
   molecule: MoleculeObject;
   /** Legacy hint; measured renderer ink bounds are authoritative. */
   bounds?: LayoutBounds;
+  /** Keep the original editable graph and label spelling of a pinned component. */
+  preserveLabels?: boolean;
 }
 
 export interface ReactionAlignmentWarning {
@@ -72,6 +74,10 @@ export interface ReactionSchemeLayoutOptions {
   gutter: number;
   bondLength: number;
   pagePadding: number;
+  /** Allow a caller to measure and anchor a step in an independently packed row. */
+  preserveAnchor?: boolean;
+  /** Drawing metrics for a continuation whose compounds already appear on an earlier row. */
+  drawingReference?: MoleculeObject;
   /** Host supplies the adapter after loading its engine. Core never loads an engine. */
   alignProduct?: ReactionProductAligner;
   /** Injectable clock/yield for deterministic budget tests. */
@@ -138,7 +144,7 @@ function condenseSchemeLabels(molecule: MoleculeObject): MoleculeObject {
       (a.hydrogenCount === undefined || a.hydrogenCount === 1));
     if (sodium && hydroxide) return rebuild([{ ...sodium, element: "NaOH", schemeAbbreviation: "NaOH", formalCharge: 0, labelVisible: true }], []);
   }
-  let atoms = [...molecule.atoms], bonds = [...molecule.bonds];
+  let atoms = molecule.atoms, bonds = molecule.bonds;
   for (const metal of molecule.atoms.filter(a => a.element === "Mg" && a.formalCharge === 0 && !a.hydrogenCount && eligible(a))) {
     const incident = bonds.filter(b => b.fromAtomId === metal.id || b.toAtomId === metal.id);
     if (incident.length !== 2) continue;
@@ -161,8 +167,7 @@ function condenseSchemeLabels(molecule: MoleculeObject): MoleculeObject {
       (atoms[0]!.hydrogenCount === undefined || atoms[0]!.hydrogenCount === 2) && eligible(atoms[0]!)) {
     atoms = [{ ...atoms[0]!, element: "H2O", labelVisible: true }];
   }
-  return atoms.length !== molecule.atoms.length || atoms.some((atom, index) => atom !== molecule.atoms[index])
-    ? rebuild(atoms, bonds) : molecule;
+  return atoms === molecule.atoms ? molecule : rebuild(atoms, bonds);
 }
 
 /** Read the native roles of every step in page order, including shared intermediates. */
@@ -194,17 +199,25 @@ export function layoutReactionScheme(options: Omit<ReactionSchemeLayoutOptions, 
   // Bounds supplied by older callers may include storage padding. Always measure the same bond
   // and atom-label plans that paint the canvas, after orientation matching has finished.
   const measure = (component: ReactionSchemeComponent) => {
-    const molecule = condenseSchemeLabels(component.molecule);
+    const condensed = condenseSchemeLabels(component.molecule);
+    const molecule = component.preserveLabels ? component.molecule : condensed;
+    if (molecule !== condensed) {
+      const originals = new Set(molecule.atoms);
+      const labels = condensed.atoms.filter(atom => !originals.has(atom)).map(atom => atom.element);
+      const retained = labels.includes("NaOH") ? "keeps Na⁺ and OH⁻ separate" : "keeps its original atoms";
+      warnings.push(`Pinned component "${molecule.id}" ${retained}. Native layout would use ${labels.join(", ")}, which can shift the reaction arrow.`);
+    }
     const b = moleculeInkBounds(molecule);
     return { molecule, bounds: { minX: b.x, minY: b.y, maxX: b.x + b.width, maxY: b.y + b.height } };
   };
   const reactants = options.reactants.map(measure);
   const measuredProducts = options.products.map(measure);
   const visible = [...reactants, ...measuredProducts];
-  if (visible.length === 0) throw new Error("A reaction scheme needs at least one molecule.");
-  const bondLength = representativeMoleculeBondLength(visible[0]!.molecule) ?? options.bondLength;
+  const reference = visible[0]?.molecule ?? options.drawingReference;
+  if (!reference) throw new Error("A reaction scheme needs at least one molecule.");
+  const bondLength = representativeMoleculeBondLength(reference) ?? options.bondLength;
   const gap = 1.25 * bondLength;
-  const drawing = reactionSchemeDrawingMetrics(visible[0]!.molecule);
+  const drawing = reactionSchemeDrawingMetrics(reference);
   const plusStyle = { ...textStyle, fontSizePx: drawing.fontSizePx, textAlign: "center" as const };
 
   const labelPlan = planReactionLabels({
@@ -285,8 +298,8 @@ export function layoutReactionScheme(options: Omit<ReactionSchemeLayoutOptions, 
   // top/left margin, translate the complete scheme together, never individual text blocks.
   const bounds = objectBounds([...molecules, ...moleculeFrames, arrow, ...pluses,
     ...[above, below, caption].filter((text) => text !== undefined)]);
-  const dx = Math.max(0, options.pagePadding - bounds.minX);
-  const dy = Math.max(0, options.pagePadding - bounds.minY);
+  const dx = options.preserveAnchor ? 0 : Math.max(0, options.pagePadding - bounds.minX);
+  const dy = options.preserveAnchor ? 0 : Math.max(0, options.pagePadding - bounds.minY);
   if (dx || dy) {
     molecules = molecules.map((molecule) => translateMolecule(molecule, molecule.id, dx, dy));
     arrow = {
@@ -368,7 +381,7 @@ function translateMolecule(molecule: MoleculeObject, id: string, dx: number, dy:
   };
 }
 
-function createLayoutText(
+export function createLayoutText(
   id: string,
   point: { x: number; y: number },
   text: string,

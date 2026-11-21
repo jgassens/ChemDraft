@@ -109,6 +109,7 @@ jobs:
         env:
           CHEMDRAFT_STABLE_BUILD: '1'
           CHEMDRAFT_SKIP_UPDATER_SIGNING: '1'
+          NODE_OPTIONS: --max-old-space-size=6144  # 16 GB runner; build:web peaks near 4.8 GB (see ci.yml)
         run: pnpm --filter @chemdraft/desktop build --bundles nsis
 
       - name: Verify stable bundle identity and stage unsigned installer

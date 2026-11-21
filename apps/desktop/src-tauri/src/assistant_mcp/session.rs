@@ -1,5 +1,5 @@
 //! Rust-only credentials and lifecycle. No credential type implements Serialize or Debug.
-use super::protocol::{McpBridgeRequest, McpBridgeResponse};
+use super::protocol::{McpBridgeRequest, McpBridgeResponse, SessionCatalog};
 use serde::Serialize;
 use serde_json::Value;
 use std::{
@@ -26,6 +26,7 @@ pub(super) struct Session {
     pub plugin_id: String,
     token: String,
     pub sink: Arc<dyn BridgeSink>,
+    pub catalog: SessionCatalog,
     pub initialized: AtomicBool,
     pub closed: AtomicBool,
     pub pending: Mutex<HashMap<String, Pending>>,
@@ -115,10 +116,22 @@ impl SessionManager {
         }
     }
 
+    // Runner tests open a list-only session to exercise exclusive process binding.
+    #[cfg(test)]
     pub fn open(
         self: &Arc<Self>,
         plugin_id: String,
         plugin_name: String,
+        sink: Arc<dyn BridgeSink>,
+    ) -> Result<SessionOpened, String> {
+        self.open_catalog(plugin_id, plugin_name, SessionCatalog::default(), sink)
+    }
+
+    pub fn open_catalog(
+        self: &Arc<Self>,
+        plugin_id: String,
+        plugin_name: String,
+        catalog: SessionCatalog,
         sink: Arc<dyn BridgeSink>,
     ) -> Result<SessionOpened, String> {
         if !crate::external_tools::valid_plugin_id(&plugin_id)
@@ -127,6 +140,7 @@ impl SessionManager {
         {
             return Err("Invalid MCP plugin identity".into());
         }
+        catalog.validate()?;
         let mut inner = self.inner.lock().unwrap();
         if inner.shutting_down {
             return Err("MCP server is shutting down".into());
@@ -162,6 +176,7 @@ impl SessionManager {
                 plugin_id,
                 token,
                 sink,
+                catalog,
                 initialized: AtomicBool::new(false),
                 closed: AtomicBool::new(false),
                 pending: Mutex::new(HashMap::new()),
@@ -355,6 +370,35 @@ pub(crate) fn bind_session(
     manager().bind(session_id, plugin_id, run_id)
 }
 
+/// Native HTTP and lifecycle tests can exercise a real catalog without a listening socket.
+#[cfg(test)]
+pub(super) fn memory_session(
+    sink: Arc<dyn BridgeSink>,
+    catalog: SessionCatalog,
+) -> (Arc<SessionManager>, Arc<Session>) {
+    let manager = Arc::new(SessionManager::default());
+    let session = Arc::new(Session {
+        id: "session".into(),
+        plugin_id: "plugin.a".into(),
+        token: "rust-only".into(),
+        sink,
+        catalog,
+        initialized: AtomicBool::new(true),
+        closed: AtomicBool::new(false),
+        pending: Mutex::new(HashMap::new()),
+        permits: Arc::new(Semaphore::new(4)),
+        sequence: AtomicU64::new(1),
+        bound_run: Mutex::new(None),
+    });
+    manager
+        .inner
+        .lock()
+        .unwrap()
+        .sessions
+        .insert(session.id.clone(), session.clone());
+    (manager, session)
+}
+
 #[cfg(test)]
 mod binding_tests {
     use super::*;
@@ -366,28 +410,8 @@ mod binding_tests {
         }
     }
 
-    /// Exercise reservation policy without needing permission to bind a test socket.
     fn fixture() -> (Arc<SessionManager>, Arc<Session>) {
-        let manager = Arc::new(SessionManager::default());
-        let session = Arc::new(Session {
-            id: "session".into(),
-            plugin_id: "plugin.a".into(),
-            token: "rust-only".into(),
-            sink: Arc::new(Sink),
-            initialized: AtomicBool::new(true),
-            closed: AtomicBool::new(false),
-            pending: Mutex::new(HashMap::new()),
-            permits: Arc::new(Semaphore::new(4)),
-            sequence: AtomicU64::new(1),
-            bound_run: Mutex::new(None),
-        });
-        manager
-            .inner
-            .lock()
-            .unwrap()
-            .sessions
-            .insert(session.id.clone(), session.clone());
-        (manager, session)
+        memory_session(Arc::new(Sink), SessionCatalog::default())
     }
 
     #[test]

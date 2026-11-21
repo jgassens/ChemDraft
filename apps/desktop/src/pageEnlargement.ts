@@ -1,8 +1,11 @@
-import { applyPatch, createCustomPageLayout, cssPxToPageSize, pageLayoutSourceUnit, type ChemDraftDocument } from "@chemdraft/chem-core";
+import { applyPatch, createCustomPageLayout, cssPxToPageSize, pageMarginFromLayout, pageLayoutSourceUnit, type ChemDraftDocument } from "@chemdraft/chem-core";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
-import { moleculeVisualBoundsForArrangement, objectFrameBoundsForPageFit, tableVisualBoundsForArrangement, textVisualBoundsForPageFit } from "@chemdraft/layout-engine";
+import type { RequestPageSpaceProvider } from "@chemdraft/plugin-host";
+import { moleculeVisualBoundsForArrangement, objectFrameBoundsForPageFit, tableVisualBoundsForArrangement,
+  textVisualBoundsForPageFit, unionLayoutBounds, type LayoutBounds } from "@chemdraft/layout-engine";
 import { nativePrompt } from "./nativePrompt";
-import { documentObjectVisualBounds, translateDocumentPage } from "./documentWorkflow";
+import { PAGE_ENLARGEMENT_MESSAGE } from "./dialogs/dialogProtocol";
+import { documentObjectVisualBounds, expectedPageTranslation, translateDocumentPage } from "./documentWorkflow";
 
 export type PageEnlargementDecision = "enlarge" | "keep" | "unanswered";
 
@@ -20,7 +23,7 @@ export class PageEnlargementConsent {
       return "unanswered";
     }
     const decision = this.decision ??= nativePrompt({ title: "ChemDraft", owner: "document", kind: "info",
-      message: "This doesn't fit on the page. Enlarge the page to fit? Content on the page may shift to make room.",
+      message: PAGE_ENLARGEMENT_MESSAGE,
       choices: [{ id: "enlarge", label: "Enlarge" }, { id: "keep", label: "Keep Page Size", cancel: true }]
     }, async () => "keep", this.promptAbort.signal, undefined, this.platform)
       .then(choice => this.promptAbort.signal.aborted ? "unanswered" : choice === "enlarge" ? "enlarge" : "keep");
@@ -57,7 +60,8 @@ const visualBounds = (object: ChemDraftDocument["pages"][number]["objects"][numb
  * placement for Keep Page Size. Once triggered, measure the whole affected page so a uniform
  * left/top translation also fits pre-existing content at the opposite edge.
  */
-export function planDocumentPageFit(before: ChemDraftDocument, proposed: ChemDraftDocument): PageFitPlan {
+export function planDocumentPageFit(before: ChemDraftDocument, proposed: ChemDraftDocument,
+  requiredBoundsByPage?: Map<string, LayoutBounds>): PageFitPlan {
   const growth: PageFitPlan["growth"] = [];
   let keep = proposed;
   for (const page of proposed.pages) {
@@ -72,10 +76,11 @@ export function planDocumentPageFit(before: ChemDraftDocument, proposed: ChemDra
     });
     if (!changed.length) continue;
     const rects = changed.map(object => visualBounds(object, page.objects));
-    const outside = rects.some(rect => rect.x < -1e-6 || rect.y < -1e-6 ||
-      rect.x + rect.width > previous.width + 1e-6 || rect.y + rect.height > previous.height + 1e-6);
+    const outside = (rect: (typeof rects)[number]) => rect.x < -1e-6 || rect.y < -1e-6 ||
+      rect.x + rect.width > previous.width + 1e-6 || rect.y + rect.height > previous.height + 1e-6;
+    const overflow = rects.filter(outside);
     const grew = page.width > previous.width || page.height > previous.height;
-    if (!outside && !grew) continue;
+    if (!overflow.length && !grew) continue;
     const allRects = page.objects.filter(object => object.type !== "group" && object.type !== "reaction")
       .map(object => visualBounds(object, page.objects));
     const left = Math.max(0, ...allRects.map(rect => -rect.x));
@@ -87,12 +92,10 @@ export function planDocumentPageFit(before: ChemDraftDocument, proposed: ChemDra
     const fitRects = shiftX || shiftY ? allRects : rects;
     const width = Math.max(previous.width, page.width, ...fitRects.map(rect => rect.x + rect.width)) + shiftX;
     const height = Math.max(previous.height, page.height, ...fitRects.map(rect => rect.y + rect.height)) + shiftY;
+    requiredBoundsByPage?.set(page.id, unionLayoutBounds(overflow.length ? overflow : rects)!);
     growth.push({ pageId: page.id, width: Math.ceil(width * 0.75) / 0.75, height: Math.ceil(height * 0.75) / 0.75,
       shiftX, shiftY,
-      objectIds: changed.filter((_, index) => {
-        const rect = rects[index]!;
-        return rect.x < -1e-6 || rect.y < -1e-6 || rect.x + rect.width > previous.width + 1e-6 || rect.y + rect.height > previous.height + 1e-6;
-      }).map(object => object.id) });
+      objectIds: changed.filter((_, index) => outside(rects[index]!)).map(object => object.id) });
     if (page.width !== previous.width || page.height !== previous.height) {
       keep = { ...keep, pages: keep.pages.map(candidate => candidate.id === page.id
         ? { ...candidate, width: previous.width, height: previous.height, layout: previous.layout, margin: previous.margin }
@@ -104,21 +107,54 @@ export function planDocumentPageFit(before: ChemDraftDocument, proposed: ChemDra
 
 /** Page layout and content are returned together, for ONE existing history commit. */
 export function applyPageFitDecision(plan: PageFitPlan, enlarge: boolean): ChemDraftDocument {
-  return applyPageFitTransform(plan.keep, enlarge ? plan.growth : []);
-}
-
-/** Replay only the host-owned resize and translation on any baseline. Use the SAME growth
- * records as the committed insertion; replanning without that insertion would give a different fit.
- */
-export function applyPageFitTransform(document: ChemDraftDocument, growth: PageFitPlan["growth"]): ChemDraftDocument {
+  const growth = enlarge ? plan.growth : [];
   return growth.reduce((document, growth) => {
     const page = document.pages.find(page => page.id === growth.pageId)!;
     const unit = pageLayoutSourceUnit(page.layout);
     const resized = applyPatch(document, { op: "updatePageLayout", pageId: page.id,
       layout: createCustomPageLayout(cssPxToPageSize(growth.width, unit), cssPxToPageSize(growth.height, unit), unit, page.margin) });
     return translateDocumentPage(resized, page.id, growth.shiftX ?? 0, growth.shiftY ?? 0);
-  }, document);
+  }, plan.keep);
 }
+
+/** Compute the authorized result directly from the baseline, independent of the page mover. */
+function projectPageFit(baseline: ChemDraftDocument, plan: PageFitPlan): ChemDraftDocument {
+  const pages = baseline.pages.map(page => {
+    const growth = plan.growth.find(item => item.pageId === page.id);
+    if (!growth) return page;
+    const unit = pageLayoutSourceUnit(page.layout);
+    const layout = createCustomPageLayout(cssPxToPageSize(growth.width, unit), cssPxToPageSize(growth.height, unit), unit, page.margin);
+    return { ...page, layout, width: layout.widthPx, height: layout.heightPx, margin: pageMarginFromLayout(layout),
+      objects: page.objects.map(object => expectedPageTranslation(object, growth.shiftX ?? 0, growth.shiftY ?? 0)) };
+  });
+  return { ...baseline, pages };
+}
+
+export const planRequestPageFit: RequestPageSpaceProvider["plan"] = (before, proposed, minimum) => {
+  const requiredBounds = new Map<string, LayoutBounds>();
+  const plan = planDocumentPageFit(before, proposed, requiredBounds);
+  if (minimum) {
+    const growth = plan.growth.find(item => item.pageId === minimum.pageId);
+    if (growth) {
+      growth.width = Math.max(growth.width, minimum.width);
+      growth.height = Math.max(growth.height, minimum.height);
+    } else {
+      const page = before.pages.find(page => page.id === minimum.pageId);
+      if (page && (minimum.width > page.width || minimum.height > page.height)) {
+        plan.growth.push({ ...minimum, width: Math.max(page.width, minimum.width), height: Math.max(page.height, minimum.height) });
+        requiredBounds.set(page.id, { x: 0, y: 0, width: minimum.width, height: minimum.height });
+      }
+    }
+  }
+  return {
+    growth: plan.growth.map(({ pageId, width, height, shiftX = 0, shiftY = 0 }) => ({
+      pageId, requiredBounds: requiredBounds.get(pageId)!, width, height, shiftX, shiftY,
+      movedObjectIds: shiftX || shiftY ? proposed.pages.find(page => page.id === pageId)!.objects.map(object => object.id).sort() : []
+    })),
+    apply: () => applyPageFitDecision(plan, true),
+    project: baseline => projectPageFit(baseline, plan)
+  };
+};
 
 /** Fitting commits stay synchronous. The caller owns history and rechecks its captured tab/document
  * after the native box: a late answer must never overwrite a gesture, edit, undo or replaced tab.
@@ -137,7 +173,7 @@ export function commitWithPageFit(before: ChemDraftDocument, proposed: ChemDraft
     if (decision === "unanswered") throw new Error("No answer to the enlarge-page question; nothing was inserted.");
     if (options.isCurrent && !options.isCurrent()) throw new Error("The drawing changed while the page question was open; try the action again.");
     const document = applyPageFitDecision(plan, decision === "enlarge");
-    commit(document, baseline => applyPageFitTransform(baseline, decision === "enlarge" ? plan.growth : []));
+    commit(document, baseline => decision === "enlarge" ? projectPageFit(baseline, plan) : baseline);
     options.onCommit?.(document, { decision, plan });
   });
 }

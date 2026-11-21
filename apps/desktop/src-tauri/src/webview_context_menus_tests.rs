@@ -176,8 +176,13 @@ fn constructor(tokens: &[Token]) -> Option<usize> {
 
 /// Functions that take a window builder and return that same builder with settings added, so the
 /// built result is still the window they were given. `builder_wrappers_return_their_builder`
-/// checks each signature.
-const BUILDER_WRAPPERS: [&str; 2] = ["utility_window_builder", "hidden_until_first_paint"];
+/// checks each signature and that every value each body can return derives from its `builder`
+/// parameter ([`returns_its_builder`]).
+const BUILDER_WRAPPERS: [&str; 3] = [
+    "utility_window_builder",
+    "hidden_until_first_paint",
+    "builder_step",
+];
 
 #[derive(Default, Clone)]
 struct Value {
@@ -637,6 +642,7 @@ fn guard_tracks_split_builders_aliases_wrappers_and_inline_results() {
         "fn create() { let window = utility_window_builder(WebviewWindowBuilder::new(app, label, url), app).build()?; disable_default_context_menus(&window); }",
         "fn create() { let window = crate::first_paint::hidden_until_first_paint(WebviewWindowBuilder::new(app, label, url), Color(1, 2, 3, 0xff)).build()?; disable_default_context_menus(&window); }",
         "fn create() { let result = hidden_until_first_paint(WebviewWindowBuilder::new(app, label, url), color).build(); let window = match result { Ok(window) => window, Err(error) => { return; } }; crate::disable_default_context_menus(&window); }",
+        "fn create() { let builder = WebviewWindowBuilder::new(app, label, url); let builder = palette_first_paint::builder_step(builder, kind); let window = builder.build()?; disable_default_context_menus(&window); }",
     ] {
         let guard = Guard::scan(source);
         assert!(!guard.sites.is_empty());
@@ -644,9 +650,153 @@ fn guard_tracks_split_builders_aliases_wrappers_and_inline_results() {
     }
 }
 
+/// Whether every value a wrapper's body (`block`, the tokens inside its braces) can return derives
+/// from its `builder` parameter: the parameter itself, a method chain on it, `Ok(..)` of one, a
+/// wrapper called with it first, or a block or `match` whose every tail is one of those. Rebinding
+/// `builder` must derive from it too, and the body may not construct or build any window. Fails
+/// closed on anything else.
+fn returns_its_builder(block: &[Token]) -> Result<(), String> {
+    fn constructs(tokens: &[Token]) -> bool {
+        tokens.iter().enumerate().any(|(index, token)| {
+            constructor(&tokens[index..]).is_some()
+                || is(&tokens[index..], &[".", "build", "("])
+                || constructs(&token.children)
+        })
+    }
+    fn text(tokens: &[Token]) -> String {
+        tokens
+            .iter()
+            .map(|token| token.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+    fn tails(block: &[Token]) -> Result<(), String> {
+        let mut index = 0;
+        let mut tail = None;
+        while index < block.len() {
+            if is(&block[index..], &["#", "["]) {
+                index += 2;
+                continue;
+            }
+            // A bare block statement, such as one `#[cfg(..)] { .. }` arm of several: each is a
+            // possible tail.
+            if block[index].text == "{" {
+                tails(&block[index].children)?;
+                index += 1;
+                continue;
+            }
+            let end = block[index..]
+                .iter()
+                .position(|token| token.text == ";")
+                .map(|offset| index + offset);
+            let statement = &block[index..end.unwrap_or(block.len())];
+            match end {
+                Some(end) => {
+                    if statement.first().is_some_and(|token| token.text == "let") {
+                        let name = if statement.get(1).is_some_and(|token| token.text == "mut") {
+                            2
+                        } else {
+                            1
+                        };
+                        if statement
+                            .get(name)
+                            .is_some_and(|token| token.text == "builder")
+                        {
+                            let equals = statement
+                                .iter()
+                                .position(|token| token.text == "=")
+                                .ok_or_else(|| text(statement))?;
+                            derives(&statement[equals + 1..])?;
+                        }
+                    }
+                    index = end + 1;
+                }
+                None => {
+                    tail = Some(statement);
+                    index = block.len();
+                }
+            }
+        }
+        match tail {
+            Some(tail) => derives(tail),
+            None if block.iter().any(|token| token.text == "{") => Ok(()),
+            None => Err(format!("no returned value in {}", text(block))),
+        }
+    }
+    fn derives(expression: &[Token]) -> Result<(), String> {
+        let rejected = || Err(format!("not derived from `builder`: {}", text(expression)));
+        let Some(first) = expression.first() else {
+            return rejected();
+        };
+        if first.text == "builder" && expression.get(1).is_none_or(|token| token.text == ".") {
+            return Ok(());
+        }
+        if first.text == "{" && expression.len() == 1 {
+            return tails(&first.children);
+        }
+        if is(expression, &["Ok", "("]) && expression.len() == 2 {
+            return derives(&expression[1].children);
+        }
+        if first.text == "match" && expression.len() >= 3 {
+            let arms = &expression[expression.len() - 1];
+            if arms.text != "{" {
+                return rejected();
+            }
+            let arms = arms.children.as_slice();
+            let mut index = 0;
+            let mut count = 0;
+            while index < arms.len() {
+                let arrow = arms[index..]
+                    .windows(2)
+                    .position(|pair| pair[0].text == "=" && pair[1].text == ">")
+                    .map(|offset| index + offset + 2)
+                    .ok_or_else(|| format!("malformed match: {}", text(expression)))?;
+                let end = if arms.get(arrow).is_some_and(|token| token.text == "{") {
+                    arrow + 1
+                } else {
+                    arms[arrow..]
+                        .iter()
+                        .position(|token| token.text == ",")
+                        .map_or(arms.len(), |offset| arrow + offset)
+                };
+                derives(&arms[arrow..end])?;
+                count += 1;
+                index = end + usize::from(arms.get(end).is_some_and(|token| token.text == ","));
+            }
+            return if count == 0 { rejected() } else { Ok(()) };
+        }
+        // `wrapper(builder, ..)`, optionally through a path such as `crate::first_paint::`.
+        let call = expression.iter().position(|token| token.text == "(");
+        if let Some(call) = call.filter(|call| *call + 1 == expression.len()) {
+            let path = &expression[..call];
+            let path_only = path.iter().all(|token| {
+                token.text == ":" || token.text.chars().all(|c| c.is_alphanumeric() || c == '_')
+            });
+            let name = path.last().map(|token| token.text.as_str());
+            if path_only && name.is_some_and(|name| BUILDER_WRAPPERS.contains(&name)) {
+                let arguments = &expression[call].children;
+                let first = arguments
+                    .iter()
+                    .position(|token| token.text == ",")
+                    .unwrap_or(arguments.len());
+                return derives(&arguments[..first]);
+            }
+        }
+        rejected()
+    }
+    if constructs(block) {
+        return Err("the wrapper constructs or builds a window".into());
+    }
+    tails(block)
+}
+
 #[test]
 fn builder_wrappers_return_their_builder() {
-    let sources = [include_str!("lib.rs"), include_str!("first_paint.rs")];
+    let sources = [
+        include_str!("lib.rs"),
+        include_str!("first_paint.rs"),
+        include_str!("palette_first_paint.rs"),
+    ];
     for wrapper in BUILDER_WRAPPERS {
         let definitions: Vec<&str> = sources
             .iter()
@@ -664,11 +814,51 @@ fn builder_wrappers_return_their_builder() {
             first.starts_with("builder: WebviewWindowBuilder<'a, R, M>,"),
             "{wrapper} must take the builder first: {signature}"
         );
-        assert_eq!(
-            returned.trim(),
-            "WebviewWindowBuilder<'a, R, M>",
-            "{wrapper} must return a builder, not a window"
+        // utility_window_builder can fail (Linux needs the document window as its parent).
+        assert!(
+            [
+                "WebviewWindowBuilder<'a, R, M>",
+                "Result<WebviewWindowBuilder<'a, R, M>, String>"
+            ]
+            .contains(&returned.trim()),
+            "{wrapper} must return a builder, not a window: {signature}"
         );
+        // And it returns the builder it was given, not another one of the same type.
+        let parsed: Vec<Vec<Token>> = sources.iter().map(|source| tokens(source)).collect();
+        let body = parsed
+            .iter()
+            .find_map(|tokens| function_body(tokens, wrapper))
+            .expect(wrapper);
+        if let Err(error) = returns_its_builder(body) {
+            panic!("{wrapper} must return the builder it was given: {error}");
+        }
+    }
+}
+
+#[test]
+fn returned_builder_check_rejects_a_wrapper_that_swaps_its_builder() {
+    let body = |source: &str| {
+        let tokens = tokens(source);
+        returns_its_builder(function_body(&tokens, "wrap").unwrap())
+    };
+    for accepted in [
+        "fn wrap(builder: B) -> B { builder.visible(false).background_color(color) }",
+        "fn wrap(builder: B) -> B { match kind { A => builder, B | C => { crate::first_paint::hidden_until_first_paint(builder, color) } } }",
+        "fn wrap(builder: B) -> Result<B, String> { #[cfg(windows)] { let builder = builder.focused(false); Ok(match owner { Some(owner) => builder.owner_raw(owner), None => builder, }) } #[cfg(not(windows))] { let _ = app; Ok(builder) } }",
+    ] {
+        assert_eq!(body(accepted), Ok(()), "{accepted}");
+    }
+    for rejected in [
+        "fn wrap(builder: B) -> B { let _ = builder; WebviewWindowBuilder::new(app, label, url) }",
+        "fn wrap(builder: B) -> B { let builder = WebviewWindowBuilder::new(app, label, url); builder }",
+        "fn wrap(builder: B) -> B { let builder = other; builder }",
+        "fn wrap(builder: B) -> B { other }",
+        "fn wrap(builder: B) -> Result<B, String> { #[cfg(windows)] { Ok(other) } #[cfg(not(windows))] { Ok(builder) } }",
+        "fn wrap(builder: B) -> B { match kind { A => builder, B => fresh(), } }",
+        "fn wrap(builder: B) -> B { hidden_until_first_paint(other, builder) }",
+        "fn wrap(builder: B) -> B { let window = builder.build(); builder }",
+    ] {
+        assert!(body(rejected).is_err(), "{rejected}");
     }
 }
 

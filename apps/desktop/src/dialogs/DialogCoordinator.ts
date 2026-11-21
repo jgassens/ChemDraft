@@ -1,7 +1,7 @@
 import { VIBE_CODE_GUIDE } from "./vibeCodeGuideText";
 import type { ConditionsSnapshot } from "./dialogProtocol";
 import type { ReactionConditionsDraft } from "@chemdraft/document-workflow-core";
-import { dialogEnvelope, parseDialogMessage, validateDialogDelivery, type DialogCloseReason, type DialogMessage, type DialogRegistration, type PageSize, type SpacingSnapshot, type ExportDialogResult, SPACING_PREVIEW_CHUNK_SIZE, SPACING_PREVIEW_MAX_CHUNKS } from "./dialogProtocol";
+import { dialogEnvelope, parseDialogMessage, validateDialogDelivery, type DialogCloseReason, type DialogEnvelope, type DialogMessage, type DialogRegistration, type PageSize, type SpacingSnapshot, type ExportDialogResult, PAGE_ENLARGEMENT_TITLE, SPACING_PREVIEW_CHUNK_SIZE, SPACING_PREVIEW_MAX_CHUNKS } from "./dialogProtocol";
 import type { ExportOptions, ExportFrame, ExportPreviewResult } from "./exportOptions";
 import type { DialogDelivery, DialogTransport } from "./dialogTransport";
 import type { DialogKind, EngineInstallSnapshot, EngineInstallAction, ToolInstallSnapshot, ToolInstallAction } from "./dialogProtocol";
@@ -10,6 +10,7 @@ import type { InsertTableOptions } from "./dialogProtocol";
 import type { StructureTemplatesSnapshot } from "./dialogProtocol";
 import type { AtomProblemSnapshot, AtomProblemAction } from "./dialogProtocol";
 import type { CustomColorSnapshot } from "./dialogProtocol";
+import type { PageEnlargementDecision } from "../pageEnlargement";
 
 export interface EngineInstallPresenter {
   action(action: EngineInstallAction): void | Promise<void>;
@@ -19,6 +20,17 @@ export interface ToolInstallPresenter {
   action(action: ToolInstallAction): void | Promise<void>;
   closed(afterClose?: Promise<void>): void;
   failed?(error: unknown): void;
+}
+
+interface PageEnlargementQuestion {
+  signal?: AbortSignal;
+  resolve(decision: PageEnlargementDecision): void;
+  opening?: Promise<DialogRegistration>;
+  removeAbortListener?: () => void;
+}
+
+function sessionKey({ documentTabId, dialogKind, sessionId }: DialogEnvelope): string {
+  return dialogKind === "pageEnlargement" ? `${documentTabId}:${dialogKind}:${sessionId}` : `${documentTabId}:${dialogKind}`;
 }
 
 interface Session {
@@ -38,6 +50,7 @@ interface Session {
   frameKey?: string;
   engineInstall?: EngineInstallPresenter;
   toolInstall?: ToolInstallPresenter;
+  pageEnlargement?: PageEnlargementQuestion;
 }
 /** Document-owned authority. A future modal kind can acquire an input lease here; pageSize never does. */
 export class DialogCoordinator {
@@ -62,6 +75,7 @@ export class DialogCoordinator {
     chooseExportDestination?(tabId: string, options: ExportOptions, live: () => boolean): Promise<ExportDialogResult>;
     vibeCodeGuideAction?(action: "saveStarter" | "openPluginManager"): void | Promise<void>;
     onError(message: string): void;
+    onPageEnlargementClosed?(tabId: string): void;
     onSettled?(tabId: string, reason: DialogCloseReason, kind?: DialogKind): void;
   }, private options: { readyTimeoutMs?: number; ownerWindowId?: string } = {}) {}
 
@@ -106,6 +120,16 @@ export class DialogCoordinator {
   async openVibeCodeGuide(): Promise<void> { return this.open("vibeCodeGuide", "vibeCodeGuide", { title: VIBE_CODE_GUIDE.title }); }
   async openPageSize(tabId: string, data: PageSize & { title: string }): Promise<void> {
     return this.open(tabId, "pageSize", data);
+  }
+  confirmPageEnlargement(tabId: string, signal?: AbortSignal): Promise<PageEnlargementDecision> {
+    if (signal?.aborted) return Promise.resolve("keep");
+    return new Promise(resolve => {
+      void this.open(tabId, "pageEnlargement", { title: PAGE_ENLARGEMENT_TITLE }, undefined, undefined, undefined, { signal, resolve })
+        .catch(error => {
+          if (!signal?.aborted) this.owner.onError(`Page enlargement could not open: ${String(error)}`);
+          resolve(signal?.aborted ? "keep" : "unanswered");
+        });
+    });
   }
   async openAtomProblem(tabId: string, data: AtomProblemSnapshot): Promise<void> {
     // Serialize opens across tabs so concurrent commands cannot create two problem windows.
@@ -183,9 +207,11 @@ export class DialogCoordinator {
       throw new Error("Finish the open Reaction conditions editor before editing another arrow in this drawing.");
     return this.open(tabId, "reactionConditions", data);
   }
-  private async open(tabId: string, kind: DialogKind, data: Extract<DialogMessage, { type: "snapshot" }>["data"], engineInstall?: EngineInstallPresenter, toolInstall?: ToolInstallPresenter, afterClose?: Promise<void>): Promise<void> {
+  private async open(tabId: string, kind: DialogKind, data: Extract<DialogMessage, { type: "snapshot" }>["data"], engineInstall?: EngineInstallPresenter, toolInstall?: ToolInstallPresenter, afterClose?: Promise<void>, pageEnlargement?: PageEnlargementQuestion): Promise<void> {
     if (this.stopped) throw new Error("The document window is closing");
-    const key = `${tabId}:${kind}`;
+    const snapshot: Session["snapshot"] = { protocolVersion: 1, ownerWindowId: this.options.ownerWindowId ?? "main", documentTabId: tabId,
+      dialogKind: kind, sessionId: crypto.randomUUID(), requestId: crypto.randomUUID(), snapshotRevision: 1, type: "snapshot", data } as Session["snapshot"];
+    const key = sessionKey(snapshot);
     const existing = this.sessions.get(key);
     if (existing) {
       // Reuse the retained snapshot and native window, preserving its local draft and position.
@@ -197,24 +223,31 @@ export class DialogCoordinator {
       }
       return;
     }
-    const snapshot: Session["snapshot"] = { protocolVersion: 1, ownerWindowId: this.options.ownerWindowId ?? "main", documentTabId: tabId,
-      dialogKind: kind, sessionId: crypto.randomUUID(), requestId: crypto.randomUUID(), snapshotRevision: 1, type: "snapshot", data } as Session["snapshot"];
     if (perfProbe) perfHook(() => perfProbe?.expectCompletion("dialog-open", snapshot.sessionId));
-    const title = kind === "customColor" ? "Custom Color" : kind === "vibeCodeGuide" ? VIBE_CODE_GUIDE.title : kind === "reactionConditions" ? "Reaction conditions" : kind === "atomProblem" ? "Atom problem" : kind === "insertTable" ? "Insert Table" : kind === "structureTemplates" ? "Templates" : kind === "engineInstall" ? "Engine installation" : kind === "toolInstall" ? "Tool installation" : kind === "export" ? "Export" : kind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size";
+    const title = kind === "pageEnlargement" ? PAGE_ENLARGEMENT_TITLE : kind === "customColor" ? "Custom Color" : kind === "vibeCodeGuide" ? VIBE_CODE_GUIDE.title : kind === "reactionConditions" ? "Reaction conditions" : kind === "atomProblem" ? "Atom problem" : kind === "insertTable" ? "Insert Table" : kind === "structureTemplates" ? "Templates" : kind === "engineInstall" ? "Engine installation" : kind === "toolInstall" ? "Tool installation" : kind === "export" ? "Export" : kind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size";
     if (!parseDialogMessage(snapshot)) throw new Error(`Invalid ${title} snapshot`);
-    const session: Session = { snapshot, engineInstall, toolInstall, receipts: new Map(), inFlight: new Map(), settled: false, ready: false,
+    const session: Session = { snapshot, engineInstall, toolInstall, pageEnlargement, receipts: new Map(), inFlight: new Map(), settled: false, ready: false,
       frameKey: snapshot.dialogKind === "export" ? JSON.stringify(snapshot.data.frame) : undefined,
       timer: setTimeout(() => { this.owner.onError(`${title} did not become ready. Open it again to try again.`); void this.settle(session, "error"); }, this.options.readyTimeoutMs ?? 10000) };
     this.sessions.set(key, session);
+    if (pageEnlargement?.signal) {
+      const signal = pageEnlargement.signal;
+      const abort = () => { void this.settle(session, "cancel"); };
+      signal.addEventListener("abort", abort, { once: true });
+      pageEnlargement.removeAbortListener = () => signal.removeEventListener("abort", abort);
+      if (signal.aborted) abort();
+    }
     try {
       // Track the opening before the first await so tab close/dispose can cancel it.
       await this.ensureSubscription();
       if (afterClose) await afterClose;
       if (session.settled || this.stopped) return;
-      session.registration = await this.transport.open(snapshot);
+      const opening = this.transport.open(snapshot);
+      if (pageEnlargement) pageEnlargement.opening = opening;
+      session.registration = await opening;
       if (!session.settled && session.ready && (session.snapshot.dialogKind === "engineInstall" || session.snapshot.dialogKind === "toolInstall" || session.snapshot.dialogKind === "atomProblem")) await this.transport.publish(session.registration.hostId, session.snapshot);
       await this.flushExportFrame(session);
-      if (session.settled) await this.transport.close(session.registration.hostId, session.settledReason ?? "error");
+      if (session.settled && !pageEnlargement) await this.transport.close(session.registration.hostId, session.settledReason ?? "error");
       else if (session.ready && session.previewRequest) {
         await this.preview(session, session.previewRequest.requestId, session.previewRequest.percent);
       }
@@ -227,14 +260,14 @@ export class DialogCoordinator {
   async receive(delivery: DialogDelivery): Promise<void> {
     const parsed = parseDialogMessage(delivery.message);
     if (!parsed) return;
-    const session = this.sessions.get(`${parsed.documentTabId}:${parsed.dialogKind}`);
+    const session = this.sessions.get(sessionKey(parsed));
     if (!session || session.settled) return;
     // Native callbacks can arrive before the open IPC reply. Rust supplies the registered label.
     const label = session.registration?.windowLabel ?? delivery.windowLabel;
     const message = validateDialogDelivery(parsed, delivery.senderWindowId, session.snapshot, label);
     if (!message) return;
     if (message.type === "closed") {
-      if (message.data.reason === "error") this.owner.onError(`${parsed.dialogKind === "customColor" ? "Custom Color" : parsed.dialogKind === "reactionConditions" ? "Reaction conditions" : parsed.dialogKind === "atomProblem" ? "Atom problem" : parsed.dialogKind === "insertTable" ? "Insert Table" : parsed.dialogKind === "structureTemplates" ? "Templates" : parsed.dialogKind === "engineInstall" ? "Engine installation" : parsed.dialogKind === "toolInstall" ? "Tool installation" : parsed.dialogKind === "export" ? "Export" : parsed.dialogKind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size"} could not show its native window. Open it again to try again.`);
+      if (message.data.reason === "error") this.owner.onError(`${parsed.dialogKind === "pageEnlargement" ? PAGE_ENLARGEMENT_TITLE : parsed.dialogKind === "customColor" ? "Custom Color" : parsed.dialogKind === "reactionConditions" ? "Reaction conditions" : parsed.dialogKind === "atomProblem" ? "Atom problem" : parsed.dialogKind === "insertTable" ? "Insert Table" : parsed.dialogKind === "structureTemplates" ? "Templates" : parsed.dialogKind === "engineInstall" ? "Engine installation" : parsed.dialogKind === "toolInstall" ? "Tool installation" : parsed.dialogKind === "export" ? "Export" : parsed.dialogKind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size"} could not show its native window. Open it again to try again.`);
       await this.settle(session, message.data.reason, false); return;
     }
     if (message.type === "ready") {
@@ -247,6 +280,10 @@ export class DialogCoordinator {
       return;
     }
     if (message.type !== "action" || !session.ready) return;
+    if (session.pageEnlargement) {
+      await this.settle(session, message.data.action === "enlarge" ? "apply" : "cancel");
+      return;
+    }
     if (message.data.action === "preview" && "percent" in message.data) {
       if (!session.registration) { session.previewRequest = { requestId: message.requestId, percent: message.data.percent }; return; }
       await this.preview(session, message.requestId, message.data.percent); return;
@@ -456,8 +493,27 @@ export class DialogCoordinator {
     session.settled = true;
     session.settledReason = reason;
     clearTimeout(session.timer);
-    const key = `${session.snapshot.documentTabId}:${session.snapshot.dialogKind}`;
+    const key = sessionKey(session.snapshot);
     if (this.sessions.get(key) === session) this.sessions.delete(key);
+    const question = session.pageEnlargement;
+    if (question) {
+      question.removeAbortListener?.();
+      const kept = reason === "cancel" || reason === "close" || reason === "destroy";
+      let decision: PageEnlargementDecision = reason === "apply" ? "enlarge" : kept ? "keep" : "unanswered";
+      try {
+        // An abort can precede the registration reply. Close that exact window as soon as its ID is available.
+        const registration = close ? session.registration ?? await question.opening?.catch(() => undefined) : undefined;
+        if (registration) await this.transport.close(registration.hostId, reason);
+        if (session.ready && decision !== "unanswered") {
+          this.owner.onPageEnlargementClosed?.(session.snapshot.documentTabId);
+        }
+      } catch (error) {
+        decision = "unanswered";
+        this.owner.onError(`Could not close page enlargement: ${String(error)}`);
+      }
+      question.resolve(question.signal?.aborted ? "keep" : decision);
+      return;
+    }
     if (session.snapshot.dialogKind === "arrangementSpacing") this.owner.onSpacingSettled?.(session.snapshot.documentTabId);
     if (session.snapshot.dialogKind === "reactionConditions") this.owner.onConditionsSettled?.(session.snapshot.documentTabId);
     // Preserve the existing Page Size callback contract.

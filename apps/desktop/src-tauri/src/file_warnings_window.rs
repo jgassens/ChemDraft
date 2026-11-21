@@ -198,14 +198,17 @@ fn publish(state: &State) -> Result<(), String> {
     Ok(())
 }
 
-fn window_config(windows: bool) -> tauri::utils::config::WindowConfig {
+fn window_config(
+    has_document_parent: bool,
+    native_wayland: bool,
+) -> tauri::utils::config::WindowConfig {
     tauri::utils::config::WindowConfig {
         label: LABEL.into(),
         url: WebviewUrl::App("/?window=fileWarnings".into()),
         title: "File warnings — ChemDraft".into(),
-        // `parent` is a document HWND owner on Windows. Never an AppKit child:
-        // addChildWindow would reset the separately configured floating + 1 level.
-        parent: windows.then(|| super::MAIN_WINDOW_LABEL.into()),
+        // An HWND owner on Windows and a transient on Linux. AppKit needs an independent
+        // window to keep its separately configured floating + 1 level.
+        parent: has_document_parent.then(|| super::MAIN_WINDOW_LABEL.into()),
         width: WIDTH,
         height: HEIGHT,
         focus: false,
@@ -213,7 +216,7 @@ fn window_config(windows: bool) -> tauri::utils::config::WindowConfig {
         skip_taskbar: true,
         visible: false,
         decorations: false,
-        resizable: false,
+        resizable: native_wayland,
         shadow: true,
         accept_first_mouse: true,
         always_on_top: false,
@@ -261,7 +264,7 @@ fn configure<R: Runtime>(window: &tauri::WebviewWindow<R>, reveal: bool) -> Resu
     if reveal {
         // focus:false uses SW_SHOWNOACTIVATE; HWND_TOP then raises among the
         // document's owned windows without activation or HWND_TOPMOST.
-        window.show().map_err(|e| e.to_string())?;
+        super::utility_window::set_visible(window, true)?;
         super::raise_among_owned_windows(window)?;
     }
     Ok(())
@@ -382,16 +385,23 @@ pub(crate) async fn file_warnings_open(
     let target = match app.get_webview_window(LABEL) {
         Some(target) => target,
         None => {
-            let target = WebviewWindowBuilder::from_config(app, &window_config(cfg!(windows)))
+            let native_wayland = super::utility_window::uses_native_wayland(app)?;
+            let config = window_config(cfg!(any(windows, target_os = "linux")), native_wayland);
+            let target = WebviewWindowBuilder::from_config(app, &config)
                 .map_err(|e| e.to_string())?
                 .build()
                 .map_err(|e| e.to_string())?;
             super::disable_default_context_menus(&target);
+            super::utility_window::prepare(
+                &target,
+                super::utility_window::Kind::FileWarnings,
+                native_wayland,
+            )?;
             configure(&target, false)?;
             target
         }
     };
-    target.hide().map_err(|e| e.to_string())?;
+    super::utility_window::set_visible(&target, false)?;
     place(&target, &window, anchor)?;
     let mut state = STATE.lock().map_err(|e| e.to_string())?;
     state.session = Some(Session {
@@ -556,7 +566,7 @@ fn dismiss_session(state: &Mutex<State>) -> bool {
 pub(crate) fn dismiss<R: Runtime>(app: &tauri::AppHandle<R>) {
     if dismiss_session(&STATE) {
         if let Some(window) = app.get_webview_window(LABEL) {
-            let _ = window.hide();
+            let _ = super::utility_window::set_visible(&window, false);
         }
     }
 }
@@ -717,12 +727,16 @@ mod tests {
         );
     }
     #[test]
-    fn config_is_owned_only_on_windows_and_never_activates_on_show() {
-        for windows in [false, true] {
-            let config = window_config(windows);
-            assert_eq!(config.parent.as_deref(), windows.then_some("main"));
+    fn config_preserves_document_parent_and_avoids_activation_on_show() {
+        for (has_document_parent, native_wayland) in [(false, false), (true, false), (true, true)] {
+            let config = window_config(has_document_parent, native_wayland);
+            assert_eq!(
+                config.parent.as_deref(),
+                has_document_parent.then_some("main")
+            );
             assert!(!config.focus);
             assert!(config.focusable); // Tab and Escape after keyboard open or an explicit click.
+            assert_eq!(config.resizable, native_wayland);
             assert!(config.skip_taskbar);
             assert!(!config.visible);
             assert!(!config.always_on_top);

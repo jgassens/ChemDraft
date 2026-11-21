@@ -89,6 +89,11 @@ it("gates every palette-focus diagnostic on the existing native agent bridge swi
   const logger = source.split("fn palette_focus_log(")[1]!.split("\nfn ")[0]!;
   expect(logger).toContain("if agent_bridge_status().enabled");
   expect(logger).toContain('eprintln!("[palette-focus] {message}")');
+  const acquire = source.split("fn palette_focus_acquire_log(")[1]!.split("\nfn ")[0]!;
+  expect(acquire).toContain("agent_bridge_status().enabled");
+  expect(acquire).toContain("std::env::var(PALETTE_FOCUS_LOG_ENV_VAR)");
+  expect(acquire).toContain('value == "1"');
+  expect(source).toContain('const PALETTE_FOCUS_LOG_ENV_VAR: &str = "CHEMDRAFT_PALETTE_FOCUS_LOG";');
   const gate = source.split("fn agent_bridge_status()")[1]!.split("\n}")[0]!;
   expect(gate).toContain("std::env::var(AGENT_BRIDGE_ENV_VAR)");
   expect(gate).toContain("agent_bridge_status_from(env_value.as_deref(), std::env::args())");

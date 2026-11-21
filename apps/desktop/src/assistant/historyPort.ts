@@ -31,6 +31,8 @@ export interface AssistantHistoryPort {
     assertFinalDocument?: (document: ChemDraftDocument) => ChemDraftDocument | void): void;
   amend(tabId: string, after: ChemDraftDocument, label: string,
     assertFinalDocument?: (document: ChemDraftDocument) => ChemDraftDocument | void): void;
+  commitRequest?(tabId: string, after: ChemDraftDocument, label: string, amend: boolean,
+    assertFinalDocument: (document: ChemDraftDocument) => void): void;
   select(tabId: string, objectIds: readonly string[], label: string): void;
   onUserEdit(listener: (tabId: string) => void): () => void;
   undo(tabId: string, expected: ChemDraftDocument): boolean;

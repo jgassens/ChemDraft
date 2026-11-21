@@ -31,7 +31,7 @@ function temporaryPlugin(source: string): string {
 /** Plugins that are contracted to depend only on the plugin SDK and are therefore extractable (M33).
  *  The NMR predictor left this list when it was stripped from the core build (M39); it is packaged
  *  and installed as a zip from its own repo, so its boundary is enforced there. */
-const EXTRACTABLE_PLUGINS = ["mass-fragment-demo"];
+const EXTRACTABLE_PLUGINS = ["mass-fragment-demo", "request-tools-probe", "request-tools-legacy-fixture"];
 
 describe("plugin import boundary", () => {
   it.each(EXTRACTABLE_PLUGINS)(`%s runtime source imports only ${PLUGIN_SDK_PACKAGE}`, (name) => {

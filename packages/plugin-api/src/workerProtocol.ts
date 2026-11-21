@@ -14,6 +14,8 @@
  */
 
 import { PluginApiVersion, PluginCommandInputSchema, type PluginCommandInput } from "./index";
+import { pluginRequestMethods, type PluginActiveDocumentChanged, type PluginToolCall, type PluginToolCallResult } from "./requestCapabilities";
+import type { PluginRequestResult } from "./requestSchemas";
 
 /**
  * Protocol wire version. Bumped only on a breaking change to the message shapes below. The worker
@@ -46,6 +48,9 @@ export type PluginWorkerCapabilityNamespace =
   | "images"
   | "recognition"
   | "tools"
+  | "requests"
+  | "toolSessions"
+  | "depiction"
   | "assistant";
 
 /**
@@ -71,14 +76,18 @@ export const PLUGIN_WORKER_CAPABILITY_METHODS = {
   selection: ["getSelection"],
   analysis: ["write", "list", "getLatest"],
   storage: ["get", "set", "delete", "listKeys"],
-  documents: ["getActiveDocument", "proposePatch", "applyPatch", "insertTable"],
+  documents: ["getActiveDocument", "proposePatch", "applyPatch", "insertTable", ...pluginRequestMethods("documents")],
   panels: ["showReport"],
   overlays: ["setStatus", "setTranscript", "setContent", "open"],
-  chemistry: ["properties", "isotopeEnvelope", "nameToStructure", "structureFromSmiles", "structureToName", "embed3d", "minimize3d", "flatten3d"],
+  chemistry: ["properties", "isotopeEnvelope", "nameToStructure", "structureFromSmiles", "structureToName", "embed3d", "minimize3d", "flatten3d",
+    ...pluginRequestMethods("chemistry")],
   dialogs: ["promptText"],
   images: ["requestImage"],
   recognition: ["recognizeStructure"],
   tools: ["status", "install", "signIn", "run", "poll", "cancel", "clearConversation"],
+  requests: pluginRequestMethods("requests"),
+  toolSessions: pluginRequestMethods("toolSessions"),
+  depiction: pluginRequestMethods("depiction"),
   assistant: ["listTools", "callTool", "beginRequest", "endRequest", "createToolSession", "closeToolSession"]
 } as const satisfies Readonly<Record<PluginWorkerCapabilityNamespace, readonly string[]>>;
 
@@ -98,9 +107,15 @@ export interface PluginWorkerErrorPayload {
   message: string;
 }
 
+export interface PluginWorkerFeatures {
+  requestCapabilities?: true;
+  toolCalls?: true;
+  activeDocumentChanged?: true;
+}
+
 /** worker → host messages. */
 export type WorkerToHostMessage =
-  | { kind: "ready"; protocolVersion: number; apiVersion: string; hasAssistantToolHandler?: boolean }
+  | { kind: "ready"; protocolVersion: number; apiVersion: string; hasAssistantToolHandler?: boolean; features?: PluginWorkerFeatures }
   | {
       kind: "capabilityRequest";
       requestId: number;
@@ -112,18 +127,22 @@ export type WorkerToHostMessage =
       args: readonly unknown[];
     }
   | { kind: "commandSettled"; commandRequestId: number; ok: true; value: unknown }
-  | { kind: "commandSettled"; commandRequestId: number; ok: false; error: PluginWorkerErrorPayload };
+  | { kind: "commandSettled"; commandRequestId: number; ok: false; error: PluginWorkerErrorPayload }
+  | { kind: "toolCallSettled"; commandRequestId: number; result: PluginToolCallResult }
+  | { kind: "activeDocumentChangedSettled"; notificationId: number; result: PluginRequestResult<null> };
 
 /** host → worker messages. */
 export type HostToWorkerMessage =
   | { kind: "invokeAssistantTool"; commandRequestId: number; sessionId: string; name: string; input: unknown }
+  | { kind: "invokeTool"; commandRequestId: number; call: PluginToolCall; readOnly?: true }
+  | { kind: "activeDocumentChanged"; notificationId: number; event: PluginActiveDocumentChanged }
   | { kind: "invokeCommand"; commandRequestId: number; commandId: string; input?: PluginCommandInput }
   | { kind: "capabilityResult"; requestId: number; ok: true; value: unknown }
   | { kind: "capabilityResult"; requestId: number; ok: false; error: PluginWorkerErrorPayload }
   /** Reverse signal: a contributed panel closed (ADR-0012) so the plugin can cancel in-flight work. */
   | { kind: "panelClosed"; panelId: string }
   /** Reverse signal: cancel an invocation's capabilities and signal its handler. Normal commands
-   * suppress late settlement; assistant tools still acknowledge when the handler finishes. */
+   * suppress late settlement; tool calls acknowledge when the handler finishes. */
   | { kind: "abort"; commandRequestId: number };
 
 /** Stable error codes emitted by the boundary itself (as opposed to a plugin's own error payloads). */
@@ -147,6 +166,12 @@ export const PluginWorkerErrorCodes = {
   /** A message crossing the boundary did not match the protocol shape and was refused. */
   MalformedMessage: "PLUGIN_WORKER_MALFORMED_MESSAGE"
 } as const;
+
+/** Ordinary worker capabilities that the host can bind to a request's document instance. */
+export function isPinnedRequestToolCapability(namespace: string, method: string): boolean {
+  return (namespace === "documents" && ["getActiveDocument", "applyPatch", "insertTable"].includes(method)) ||
+    (namespace === "selection" && method === "getSelection");
+}
 
 /**
  * Normalize an arbitrary value into a usable error payload.
@@ -179,7 +204,12 @@ export function asHostToWorkerMessage(data: unknown): HostToWorkerMessage | unde
   }
   const message = data as { kind?: unknown; [key: string]: unknown };
   const isIndex = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value);
+  const isCorrelationId = (value: unknown) => isIndex(value) && Number.isSafeInteger(value) && value > 0;
   switch (message.kind) {
+    case "invokeTool":
+      return isCorrelationId(message.commandRequestId) ? message as unknown as HostToWorkerMessage : undefined;
+    case "activeDocumentChanged":
+      return isCorrelationId(message.notificationId) ? message as unknown as HostToWorkerMessage : undefined;
     case "invokeAssistantTool":
       return isIndex(message.commandRequestId) && typeof message.sessionId === "string" && typeof message.name === "string"
         ? message as unknown as HostToWorkerMessage : undefined;
@@ -247,6 +277,12 @@ function compareSemver(a: Semver, b: Semver): number {
 export function supportsPluginTableInsertion(declaredRange: string): boolean {
   const minimum = parseSemver(declaredRange.trim().replace(/^[~^]/, ""));
   return minimum !== undefined && compareSemver(minimum, { major: 0, minor: 1, patch: 18 }) >= 0;
+}
+
+/** The first SDK release whose workers can opt into request-bound tools. */
+export function supportsPluginRequestTools(declaredRange: string): boolean {
+  const minimum = parseSemver(declaredRange.trim().replace(/^[~^]/, ""));
+  return minimum !== undefined && compareSemver(minimum, { major: 0, minor: 1, patch: 26 }) >= 0;
 }
 
 /**

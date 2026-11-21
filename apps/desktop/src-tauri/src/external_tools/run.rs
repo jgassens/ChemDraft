@@ -158,9 +158,23 @@ impl CodexProcesses {
             run.cancel(KillReason::AppExit);
         }
         for run in &runs {
-            run.wait_finished(Duration::from_secs(5));
+            run.wait_finished(supervision_limit(Duration::from_secs(5)));
         }
     }
+}
+/// A host-side limit on waiting for a child (stop, probe, shutdown). Production uses `limit`
+/// unchanged. Under `cfg(test)` it is raised to a one-minute hang guard so a loaded test host
+/// never races it; no test relies on one of these limits expiring.
+pub(super) fn supervision_limit(limit: Duration) -> Duration {
+    if cfg!(test) {
+        limit.max(Duration::from_secs(60))
+    } else {
+        limit
+    }
+}
+/// How long one poll may wait for new output: the caller's `wait_ms`, capped at one second.
+pub(super) fn poll_wait(wait_ms: u64) -> Duration {
+    Duration::from_millis(wait_ms.min(1000))
 }
 // Keep credential-file lifetime within the bound run, including failed spawns.
 pub(super) struct RunConfigCleanup(pub(super) Option<PathBuf>);
@@ -360,13 +374,25 @@ impl ToolRun {
             }
             drop(stdin);
         });
+        // Test seams: a test may hold this run's timeout until its child is ready, and observe the
+        // configured timeout and terminal status of each run in its directory.
+        #[cfg(test)]
+        let test_cwd = cwd.to_owned();
+        #[cfg(test)]
+        let timeout_armed = {
+            let cwd = test_cwd.clone();
+            move || !super::test_support::timeouts_held(&cwd)
+        };
+        #[cfg(not(test))]
+        let timeout_armed = || true;
         thread::spawn(move || {
             let pid = child.id();
             let mut interrupt_at = None;
             let status = loop {
+                let armed = timeout_armed();
                 let reason = {
                     let mut b = shared.buffer.lock().unwrap();
-                    if b.cancel.is_none() && started.elapsed() >= timeout {
+                    if b.cancel.is_none() && started.elapsed() >= timeout && armed {
                         b.cancel = Some(KillReason::Timeout);
                     }
                     b.cancel
@@ -458,6 +484,9 @@ impl ToolRun {
                 .cancel
                 .map(|reason| RunStatus::Killed { reason })
                 .unwrap_or(status);
+            // Recorded before completion is published, so a caller that saw it finish can read it.
+            #[cfg(test)]
+            super::test_support::record_finished(&test_cwd, timeout, b.status.clone());
             b.finished_at = Some(Instant::now());
             shared.changed.notify_all();
         });
@@ -471,7 +500,7 @@ impl ToolRun {
             b = self
                 .shared
                 .changed
-                .wait_timeout_while(b, Duration::from_millis(wait_ms.min(1000)), |b| {
+                .wait_timeout_while(b, poll_wait(wait_ms), |b| {
                     cursor >= b.next && b.status.is_running()
                 })
                 .unwrap()
@@ -733,6 +762,17 @@ impl Drop for WindowsJob {
 #[cfg(test)]
 mod retention_tests {
     use super::*;
+
+    #[test]
+    fn long_poll_wait_is_capped_at_one_second() {
+        assert_eq!(poll_wait(600_000), Duration::from_secs(1));
+        assert_eq!(poll_wait(u64::MAX), Duration::from_secs(1));
+        assert_eq!(poll_wait(1001), Duration::from_secs(1));
+        assert_eq!(poll_wait(1000), Duration::from_secs(1));
+        assert_eq!(poll_wait(999), Duration::from_millis(999));
+        assert_eq!(poll_wait(250), Duration::from_millis(250));
+        assert_eq!(poll_wait(0), Duration::ZERO);
+    }
 
     #[test]
     fn finished_runs_expire_even_without_a_poll() {

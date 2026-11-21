@@ -9,7 +9,7 @@ import { setNativePromptProvider, type NativePromptOptions } from "./nativePromp
 import { withNativeUtilitySuspension } from "./nativeUtilitySuspension";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { posix, resolve, win32 } from "node:path";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Molecule } from "openchemlib";
@@ -148,8 +148,12 @@ vi.mock("./window-manager/tauriEvents", async (original) => {
 vi.mock("@tauri-apps/api/core", async (original) => ({
   ...await original<typeof import("@tauri-apps/api/core")>(),
   isTauri: () => native.suspendUtilities,
-  invoke: vi.fn(async (command: string, options?: { suspended?: boolean }) => {
+  invoke: vi.fn(async (command: string, options?: { suspended?: boolean; path?: string }) => {
     if (command === "take_pending_open_document") return native.drainOpenDocuments();
+    if (command === "plugin:path|basename" && options?.path) {
+      const pathApi = /^[a-z]:|^\\\\/i.test(options.path) ? win32 : posix;
+      return pathApi.basename(options.path);
+    }
     if (command === "read_clipboard_payload") return native.clipboardPending ?? { types: [], textItems: [] };
     if (command === "suspend_toolset_windows") {
       if (native.suspendFailure && options?.suspended) throw new Error("Native utility hide refused");
@@ -943,6 +947,38 @@ describe("documents in one window", () => {
     await decide("rejectPluginProposal", proposal.id);
     expect(runtime().host.listProposedPatches("pending")).toEqual([]);
     expect(bridge().snapshot().document).toEqual(other);
+  });
+
+  it.each([
+    { platform: "macOS", first: "/tmp/Probe First.chemdraft", renamed: "/tmp/Probe A.chemdraft" },
+    { platform: "Windows", first: "C:\\Drawings\\Probe First.chemdraft", renamed: "C:\\Drawings\\Probe A.chemdraft" }
+  ])("uses the chosen file name for first Save and Save As on $platform", async ({ first, renamed }) => {
+    const expectTitle = (name: string, dirty: boolean) => {
+      const tab = tabs()[0]!;
+      expect(tab.title).toBe(name);
+      expect(Boolean(tab.querySelector('[aria-label="Unsaved changes"]'))).toBe(dirty);
+      const title = `${name}${dirty ? " •" : ""} — ChemDraft — ${__WORKTREE_LABEL__}`;
+      expect(document.title).toBe(title);
+      expect(vi.mocked(nativeInvoke).mock.calls.filter(([id]) => id === "plugin:window|set_title").at(-1))
+        .toEqual(["plugin:window|set_title", { value: title }]);
+    };
+
+    await paste("First edit");
+    expectTitle("Untitled", true);
+    native.savePicker.mockResolvedValueOnce(first);
+    await command("document.save");
+    expect(native.writeFile).toHaveBeenCalledWith(first, expect.any(String));
+    expectTitle("Probe First.chemdraft", false);
+
+    await paste("Second edit");
+    expectTitle("Probe First.chemdraft", true);
+    native.savePicker.mockResolvedValueOnce(renamed);
+    await command("document.saveAs");
+    expect(native.writeFile).toHaveBeenLastCalledWith(renamed, expect.any(String));
+    expectTitle("Probe A.chemdraft", false);
+    expect((await autosave()).tabs?.[0]).toMatchObject({
+      path: renamed, displayName: "Probe A.chemdraft", dirty: false
+    });
   });
 
   it.each([false, true])("uses the Save As title for proposal labels and the Accept refusal (multiple: %s)", async (multiple) => {

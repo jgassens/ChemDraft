@@ -51,14 +51,15 @@ export function listAssistantTools() {
   return ASSISTANT_TOOLS.map(({ name, description, inputSchema, readOnly }) => ({ name, description,
     inputSchema: structuredClone(inputSchema), annotations: { readOnlyHint: readOnly, idempotentHint: readOnly } }));
 }
-function result(value: unknown): AssistantToolResult {
+export function toolResult(value: unknown): AssistantToolResult {
   if (value && typeof value === "object" && "content" in value) return value as AssistantToolResult;
   return { content: [{ type: "text", text: JSON.stringify(value) }],
     ...(value && typeof value === "object" ? { structuredContent: value as Record<string, unknown> } : {}) };
 }
 
 /** Runtime validation and permission enforcement also apply to in-process callers. */
-export async function callAssistantTool(context: AssistantToolContext, name: string, input: unknown): Promise<AssistantToolResult> {
+export async function callAssistantTool(context: AssistantToolContext, name: string, input: unknown,
+  onWorkStarted?: (work: Promise<unknown>) => void): Promise<AssistantToolResult> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let active = true;
   const abort = new AbortController();
@@ -93,8 +94,10 @@ export async function callAssistantTool(context: AssistantToolContext, name: str
         return written;
       }
     };
+    const work = Promise.resolve().then(() => tool.handler(guarded, input));
+    onWorkStarted?.(work);
     const value = await Promise.race([
-      Promise.resolve().then(() => tool.handler(guarded, input)), new Promise<never>((_, reject) => {
+      work, new Promise<never>((_, reject) => {
         const deadline = (ms: number) => {
           if (timer) clearTimeout(timer);
           timer = setTimeout(() => { active = false; abort.abort(); reject(new Error(`Assistant tool ${name} timed out after ${ms} ms.`)); }, ms);
@@ -106,7 +109,7 @@ export async function callAssistantTool(context: AssistantToolContext, name: str
         deadline(tool.timeoutMs);
       })
     ]);
-    return result(value);
+    return toolResult(value);
   } catch (error) {
     return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true };
   } finally {
