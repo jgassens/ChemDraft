@@ -14,7 +14,7 @@ import { act, createElement, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createSpectrumEnvelope, LinkedFigureView, restoreLinkedFigureWindowFrame, sampleStyledEnvelope } from "./LinkedFigureView";
+import { createSpectrumEnvelope, formatNucleus, LinkedFigureView, restoreLinkedFigureWindowFrame, sampleStyledEnvelope } from "./LinkedFigureView";
 import { copySpectrumToClipboard, exportSpectrumFigure, saveTextFile, standaloneSpectrumSvg } from "./spectrumExport";
 import { installPluginPanelInputFocus, type NativePanelFocusEvent } from "./pluginPanelInputFocus";
 
@@ -688,8 +688,8 @@ describe("LinkedFigureView", () => {
       expect.arrayContaining(["3.10", "7.30"])
     );
     expect(container!.querySelector("path.lf-curve.is-low-confidence")).toBeNull();
-    expect(container!.querySelector('[data-atom-index="0"] .lf-shift-label.is-rough')).not.toBeNull();
-    expect(container!.querySelector('[data-atom-index="1"] .lf-shift-label.is-good')).not.toBeNull();
+    expect(container!.querySelector('[data-atom-index="0"] .lf-shift-label.is-low')).not.toBeNull();
+    expect(container!.querySelector('[data-atom-index="1"] .lf-shift-label.is-high')).not.toBeNull();
     expect(container!.querySelector(".lf-spectrum-note")!.textContent).not.toContain("lower confidence");
   });
 
@@ -704,6 +704,39 @@ describe("LinkedFigureView", () => {
     const apexY = Math.min(...pathYs(container!.querySelector(".lf-curve")!));
     const labelY = Number(container!.querySelector('[data-peak-id="d"] .lf-peak-label')!.getAttribute("y"));
     expect(labelY).toBeLessThan(apexY);
+  });
+
+  it.each([
+    ["31P", 300, "³¹P", "121.44"], ["31P", 400, "³¹P", "161.92"], ["31P", 600, "³¹P", "242.88"],
+    ["19F", 400, "¹⁹F", "376.35"], ["2H", 600, "²H", "92.10"], ["15N", 600, "¹⁵N", "60.80"],
+    ["11B", 300, "¹¹B", "96.25"], ["29Si", 400, "²⁹Si", "79.48"], ["1H", 600, "¹H", "600"]
+  ] as const)("shows the %s observe frequency at a %s MHz proton field", (nucleus, field, label, expected) => {
+    mount(createElement(LinkedFigureView, { spectrum: { ...spectrum, nucleus }, defaultSpectrometerMHz: field }));
+    expect(container!.querySelector(".lf-observe-frequency")!.textContent).toBe(`Observe ${label}: ${expected} MHz`);
+    expect(container!.querySelector(".lf-spectrum")!.getAttribute("data-observe-frequency-mhz")).toBe(expected);
+  });
+
+  it("shows no observe frequency for a nucleus outside the gyromagnetic table, never the 1H value", () => {
+    const platinum: PluginLinkedFigureSpectrum = {
+      ...spectrum,
+      nucleus: "195Pt",
+      peaks: [{ id: "pt", ppm: 4, intensity: 1, label: "4.00", atomIndices: [0], couplings: [{ jHz: 300, partnerCount: 1 }] }]
+    };
+    mount(createElement(LinkedFigureView, { spectrum: platinum }));
+    expect(container!.querySelector(".lf-observe-frequency")).toBeNull();
+    expect(container!.querySelector(".lf-spectrum")!.hasAttribute("data-observe-frequency-mhz")).toBe(false);
+    expect(container!.textContent).not.toMatch(/Observe/);
+    // Still renders, with the proper nucleus symbol, as an unsplit resonance with finite geometry.
+    expect(container!.querySelector(".lf-axis-name")!.textContent).toBe("¹⁹⁵Pt");
+    expect(container!.querySelector('[data-peak-id="pt"]')!.getAttribute("data-line-count")).toBe("1");
+    expect(container!.querySelector(".lf-curve")!.getAttribute("d")).not.toMatch(/NaN|Infinity/);
+  });
+
+  it.each([
+    ["1H", "¹H"], ["13C", "¹³C"], ["31P", "³¹P"], ["195Pt", "¹⁹⁵Pt"], ["29Si", "²⁹Si"], ["2H", "²H"],
+    ["119Sn", "¹¹⁹Sn"], ["10B", "¹⁰B"], ["H", "H"], ["P31", "P31"], ["31p", "31p"], ["", ""]
+  ])("formats nucleus %j as %j", (nucleus, expected) => {
+    expect(formatNucleus(nucleus)).toBe(expected);
   });
 
   it("offers Copy, Export (JCAMP-DX), and Full size actions in the toolbar", () => {
@@ -1582,6 +1615,78 @@ describe("LinkedFigureView", () => {
     checkBackgrounds(exported.querySelector("svg")!, ".lf-peak-label");
   });
 
+  it("stops structure bonds outside drawn element labels in the panel and its serialized SVG", () => {
+    // Display geometry only: a charged nitrogen, an oxide and a tin center among bare carbons.
+    const labeled: PluginLinkedFigureStructure = {
+      atoms: [
+        { index: 0, x: 0, y: 0, element: "C" },
+        { index: 1, x: 1, y: 0, element: "N+" },
+        { index: 2, x: 1.5, y: 0.87, element: "O\u2212" },
+        { index: 3, x: 2, y: 0, element: "C" },
+        { index: 4, x: 3, y: 0, element: "Sn" },
+        { index: 5, x: 3.5, y: -0.87, element: "C" },
+        { index: 6, x: 3, y: 1, element: "C" },
+        { index: 7, x: 0.5, y: -0.87, element: "C" }
+      ],
+      bonds: [
+        { from: 0, to: 1, order: 1 }, { from: 1, to: 2, order: 1 }, { from: 1, to: 3, order: 2 },
+        { from: 3, to: 4, order: 1 }, { from: 4, to: 5, order: 1 }, { from: 4, to: 6, order: 3 },
+        { from: 0, to: 7, order: 2 }
+      ]
+    };
+    mount(createElement(LinkedFigureView, {
+      spectrum: { ...spectrum, peaks: [{ id: "c", ppm: 2, intensity: 1, label: "2.00", atomIndices: [0] }] },
+      structure: labeled
+    }));
+    const live = container!.querySelector<SVGSVGElement>(".lf-structure")!;
+    const serialized = new DOMParser().parseFromString(standaloneSpectrumSvg(live), "image/svg+xml").documentElement;
+    const strokeCount = labeled.bonds.reduce((sum, bond) => sum + bond.order, 0);
+    for (const svg of [live, serialized]) {
+      const vertices = new Map([...svg.querySelectorAll("[data-atom-index]")].map((group) => {
+        const hit = group.querySelector("circle.lf-hit")!;
+        return [Number(group.getAttribute("data-atom-index")), { x: Number(hit.getAttribute("cx")), y: Number(hit.getAttribute("cy")) }];
+      }));
+      // Independent label extent: centered text, one em tall, from the drawn text and font size.
+      const labelBoxes = [...svg.querySelectorAll<SVGTextElement>(".lf-atom-label")].map((text) => {
+        const fontSize = parseFloat(text.getAttribute("style")!.match(/font-size:\s*([\d.]+)/)![1]);
+        const width = estimateAnnotationTextWidth(text.textContent ?? "", fontSize);
+        return {
+          text: text.textContent,
+          x: Number(text.getAttribute("x")) - width / 2, y: Number(text.getAttribute("y")) - fontSize / 2, width, height: fontSize
+        };
+      });
+      expect(labelBoxes.map((box) => box.text).sort()).toEqual(["N+", "O\u2212", "Sn"].sort());
+      const lines = [...svg.querySelectorAll(".lf-bond line")];
+      expect(lines).toHaveLength(strokeCount);
+      const ends = lines.flatMap((line) => [
+        { x: Number(line.getAttribute("x1")), y: Number(line.getAttribute("y1")) },
+        { x: Number(line.getAttribute("x2")), y: Number(line.getAttribute("y2")) }
+      ]);
+      for (const end of ends) {
+        for (const box of labelBoxes) {
+          const inside = end.x > box.x && end.x < box.x + box.width && end.y > box.y && end.y < box.y + box.height;
+          expect(inside, `bond end ${end.x},${end.y} inside ${box.text}`).toBe(false);
+        }
+      }
+      // Bare carbons keep their center-to-center geometry: the C–C double bond is untouched,
+      // and every bond touching a carbon still reaches that carbon's vertex (within rounding).
+      const fitScale = Number(svg.querySelector("[data-atom-index] circle.lf-hit")!.getAttribute("r")) / 13;
+      const c0 = vertices.get(0)!, c7 = vertices.get(7)!;
+      const length = Math.hypot(c7.x - c0.x, c7.y - c0.y);
+      const n = { x: -(c7.y - c0.y) / length, y: (c7.x - c0.x) / length };
+      const ccLines = lines.slice(-2).map((line) => ["x1", "y1", "x2", "y2"].map((key) => Number(line.getAttribute(key))));
+      for (const [i, offset] of [-1.5 * fitScale, 1.5 * fitScale].entries()) {
+        expect(ccLines[i][0]).toBeCloseTo(c0.x + n.x * offset, 1);
+        expect(ccLines[i][1]).toBeCloseTo(c0.y + n.y * offset, 1);
+        expect(ccLines[i][2]).toBeCloseTo(c7.x + n.x * offset, 1);
+        expect(ccLines[i][3]).toBeCloseTo(c7.y + n.y * offset, 1);
+      }
+      for (const carbon of [0, 3, 5, 6].map((index) => vertices.get(index)!)) {
+        expect(ends.some((end) => Math.hypot(end.x - carbon.x, end.y - carbon.y) < 0.08)).toBe(true);
+      }
+    }
+  });
+
   it("paints routed carbon leaders beneath the molecule and preserves shift assignments", () => {
     const depiction = depictSmiles2D("Cc1ccccc1");
     mount(createElement(LinkedFigureView, {
@@ -1680,7 +1785,7 @@ describe("LinkedFigureView", () => {
     expect(fontOf(24)).toBeLessThan(9); // crowded → shrunk so numbers don't overlap
   });
 
-  it("colors structure shift labels by estimation quality and shows the legend", () => {
+  it("colors structure shift labels by the plugin's confidence tier and names the tiers in the legend", () => {
     const qualitySpectrum: PluginLinkedFigureSpectrum = {
       nucleus: "1H",
       domain: { min: 0, max: 8 },
@@ -1691,10 +1796,32 @@ describe("LinkedFigureView", () => {
       ]
     };
     mount(createElement(LinkedFigureView, { spectrum: qualitySpectrum, structure }));
-    expect(container!.querySelector('[data-atom-index="0"] .lf-shift-label.is-good')).not.toBeNull();
-    expect(container!.querySelector('[data-atom-index="1"] .lf-shift-label.is-rough')).not.toBeNull();
+    expect(container!.querySelector('[data-atom-index="0"] .lf-shift-label.is-high')).not.toBeNull();
+    expect(container!.querySelector('[data-atom-index="1"] .lf-shift-label.is-low')).not.toBeNull();
     expect(container!.querySelector(".lf-legend")).not.toBeNull();
     expect(container!.querySelector(".lf-legend")!.textContent).toContain("prediction confidence");
+    const items = [...container!.querySelectorAll(".lf-legend-item")];
+    expect(items.map((item) => item.textContent)).toEqual(["high", "medium", "low"]);
+    expect(items.map((item) => item.className)).toEqual([
+      "lf-legend-item is-high", "lf-legend-item is-medium", "lf-legend-item is-low"
+    ]);
+    expect(container!.querySelector(".lf-legend")!.textContent).not.toMatch(/good|rough/);
+    expect(container!.querySelector(".is-good, .is-rough")).toBeNull();
+  });
+
+  it("maps each plugin confidence word to the same-named shift class", () => {
+    const tiers: PluginLinkedFigureSpectrum = {
+      nucleus: "1H", domain: { min: 0, max: 8 }, reversed: true,
+      peaks: [
+        { id: "h", ppm: 7.3, intensity: 1, label: "7.30", atomIndices: [0], confidence: "high" },
+        { id: "m", ppm: 5.1, intensity: 1, label: "5.10", atomIndices: [1], confidence: "medium" },
+        { id: "l", ppm: 2.4, intensity: 1, label: "2.40", atomIndices: [2], confidence: "low" }
+      ]
+    };
+    mount(createElement(LinkedFigureView, { spectrum: tiers, structure }));
+    expect(container!.querySelector('[data-atom-index="0"] .lf-shift-label')!.getAttribute("class")).toBe("lf-shift-label is-high");
+    expect(container!.querySelector('[data-atom-index="1"] .lf-shift-label')!.getAttribute("class")).toBe("lf-shift-label is-medium");
+    expect(container!.querySelector('[data-atom-index="2"] .lf-shift-label')!.getAttribute("class")).toBe("lf-shift-label is-low");
   });
 
   // Regression guard for the update flicker: when a new prediction with a wider ppm domain replaces the

@@ -15,12 +15,35 @@ export interface AnnotationAtom {
   annotation?: string;
 }
 
-/** Centered bond strokes for declarative annotation figures, scaled with the fitted drawing. */
+/** Clearance between a trimmed bond end and its atom label box, in unscaled figure units. */
+export const ANNOTATION_BOND_LABEL_MARGIN = 2;
+
+/** An annotation figure draws a text label for every atom except a bare carbon vertex. */
+export function annotationAtomDrawsLabel(element: string | undefined): boolean {
+  return element !== undefined && element !== "" && element !== "C";
+}
+
+/** Extent of an atom's drawn element label: centered on the vertex, one em tall, measured with the
+ * same estimator as the annotations. `undefined` for an atom that draws no label. */
+export function annotationAtomLabelBox(
+  atom: { x: number; y: number; element?: string },
+  atomFontSize: number
+): AnnotationLabelBox | undefined {
+  if (!annotationAtomDrawsLabel(atom.element) || !Number.isFinite(atomFontSize) || atomFontSize <= 0) return undefined;
+  const width = estimateAnnotationTextWidth(atom.element!, atomFontSize);
+  return { x: atom.x - width / 2, y: atom.y - atomFontSize / 2, width, height: atomFontSize };
+}
+
+/** Centered bond strokes for declarative annotation figures, scaled with the fitted drawing.
+ * An end at an atom that draws a label (see annotationAtomLabelBox) stops outside that label's
+ * box plus a margin; ends at unlabeled carbons, or atoms given without an element, stay at the vertex.
+ * A stroke hidden entirely behind its two labels is omitted. */
 export function annotationBondLines(
-  a: { x: number; y: number },
-  b: { x: number; y: number },
+  a: { x: number; y: number; element?: string },
+  b: { x: number; y: number; element?: string },
   order: number,
-  fitScale = 1
+  fitScale = 1,
+  atomFontSize = 15 * fitScale
 ): { x1: number; y1: number; x2: number; y2: number }[] {
   if (![a.x, a.y, b.x, b.y, order, fitScale].every(Number.isFinite)) return [];
   const dx = b.x - a.x;
@@ -31,13 +54,59 @@ export function annotationBondLines(
   const gap = 3 * fitScale;
   const count = order >= 1 && order <= 3 ? order : 1;
   const offsets = count === 1 ? [0] : count === 2 ? [-gap / 2, gap / 2] : [-gap, 0, gap];
+  const margin = ANNOTATION_BOND_LABEL_MARGIN * fitScale;
+  const clearance = (atom: typeof a): AnnotationLabelBox | undefined => {
+    const box = annotationAtomLabelBox(atom, atomFontSize);
+    return box && { x: box.x - margin, y: box.y - margin, width: box.width + margin * 2, height: box.height + margin * 2 };
+  };
+  const startBox = clearance(a);
+  const endBox = clearance(b);
   const round = (value: number): number => Math.round(value * 10) / 10;
-  return offsets.map((offset) => ({
-    x1: round(a.x + nx * offset),
-    y1: round(a.y + ny * offset),
-    x2: round(b.x + nx * offset),
-    y2: round(b.y + ny * offset)
-  })).filter((line) => Object.values(line).every(Number.isFinite));
+  return offsets.flatMap((offset) => {
+    const x1 = a.x + nx * offset;
+    const y1 = a.y + ny * offset;
+    const x2 = b.x + nx * offset;
+    const y2 = b.y + ny * offset;
+    let start = 0;
+    let end = 1;
+    // Leave a label box where the stroke exits it; enter the far label box where the stroke meets it.
+    const exitStart = startBox && segmentBoxSpan(x1, y1, x2, y2, startBox);
+    if (exitStart && exitStart.low <= 0) start = exitStart.high;
+    const enterEnd = endBox && segmentBoxSpan(x1, y1, x2, y2, endBox);
+    if (enterEnd && enterEnd.high >= 1) end = enterEnd.low;
+    if (end - start <= 1e-9) return [];
+    // An untrimmed end keeps its exact vertex coordinate (no interpolation drift).
+    return [{
+      x1: round(start === 0 ? x1 : x1 + (x2 - x1) * start),
+      y1: round(start === 0 ? y1 : y1 + (y2 - y1) * start),
+      x2: round(end === 1 ? x2 : x1 + (x2 - x1) * end),
+      y2: round(end === 1 ? y2 : y1 + (y2 - y1) * end)
+    }];
+  }).filter((line) => Object.values(line).every(Number.isFinite));
+}
+
+/** Parameter interval [low, high] (unclamped) of the infinite line through (x1,y1)→(x2,y2) inside
+ * the box, or undefined when the line misses it. */
+function segmentBoxSpan(
+  x1: number, y1: number, x2: number, y2: number, box: AnnotationLabelBox
+): { low: number; high: number } | undefined {
+  let low = -Infinity;
+  let high = Infinity;
+  for (const [start, delta, min, max] of [
+    [x1, x2 - x1, box.x, box.x + box.width],
+    [y1, y2 - y1, box.y, box.y + box.height]
+  ]) {
+    if (delta === 0) {
+      if (start < min || start > max) return undefined;
+      continue;
+    }
+    const t1 = (min - start) / delta;
+    const t2 = (max - start) / delta;
+    low = Math.max(low, Math.min(t1, t2));
+    high = Math.min(high, Math.max(t1, t2));
+    if (low > high) return undefined;
+  }
+  return { low, high };
 }
 
 /** Arial/Helvetica bold advance, shared with the explicit SVG textLength on annotations.

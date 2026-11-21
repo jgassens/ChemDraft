@@ -18,6 +18,7 @@ export { planTextObjectPlacement, planTextObjectEditorPlacement, cssTextFirstBas
 export { medianLength, representativeMoleculeBondLength, scalePageGeometry } from "./pageScale";
 export {
   layoutAtomAnnotationLabels, estimateAnnotationTextWidth, annotationLabelBoxesOverlap, annotationBondLines,
+  annotationAtomDrawsLabel, annotationAtomLabelBox, ANNOTATION_BOND_LABEL_MARGIN,
   type AnnotationAtom, type AnnotationLabelBox
 } from "./atomAnnotationLabels";
 export {

@@ -7656,14 +7656,14 @@ body.file-warnings-window {
   fill: var(--cd-accent-text);
 }
 
-/* Estimation quality: a shift's color tells the reader how much to trust it. */
-.lf-shift-label.is-good {
+/* Confidence tier (high / medium / low): a shift's color tells the reader how much to trust it. */
+.lf-shift-label.is-high {
   fill: #2f6fed;
 }
 .lf-shift-label.is-medium {
   fill: #c026a8;
 }
-.lf-shift-label.is-rough {
+.lf-shift-label.is-low {
   fill: #d0421b;
 }
 
@@ -7691,13 +7691,13 @@ body.file-warnings-window {
 .lf-legend-item {
   font-weight: 600;
 }
-.lf-legend-item.is-good {
+.lf-legend-item.is-high {
   color: #2f6fed;
 }
 .lf-legend-item.is-medium {
   color: #c026a8;
 }
-.lf-legend-item.is-rough {
+.lf-legend-item.is-low {
   color: #d0421b;
 }
 

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ANNOTATION_BOND_LABEL_MARGIN,
+  annotationAtomDrawsLabel,
+  annotationAtomLabelBox,
   annotationBondLines,
   annotationLabelBoxesOverlap,
   estimateAnnotationTextWidth,
@@ -8,6 +11,100 @@ import {
   type AnnotationAtom,
   type AnnotationLabelBox
 } from "./atomAnnotationLabels";
+
+// Independent oracle for the drawn element label: centered text, one em tall.
+function elementLabelBox(atom: { x: number; y: number; element: string }, fontSize: number): AnnotationLabelBox {
+  const width = estimateAnnotationTextWidth(atom.element, fontSize);
+  return { x: atom.x - width / 2, y: atom.y - fontSize / 2, width, height: fontSize };
+}
+
+// Strictly inside the box shrunk by the margin minus tenth-unit rounding slack.
+function insideLabelClearance(point: { x: number; y: number }, box: AnnotationLabelBox, margin: number): boolean {
+  const slack = margin - 0.08;
+  return point.x > box.x - slack && point.x < box.x + box.width + slack &&
+    point.y > box.y - slack && point.y < box.y + box.height + slack;
+}
+
+describe("annotation bond ends at element labels", () => {
+  const labeled = ["N+", "O−", "Sn", "N", "Cl", "CH3"];
+
+  it("treats every atom except a bare carbon as a drawn label", () => {
+    for (const element of labeled) expect(annotationAtomDrawsLabel(element)).toBe(true);
+    expect(annotationAtomDrawsLabel("C")).toBe(false);
+    expect(annotationAtomDrawsLabel("")).toBe(false);
+    expect(annotationAtomDrawsLabel(undefined)).toBe(false);
+    expect(annotationAtomLabelBox({ x: 5, y: 5, element: "C" }, 15)).toBeUndefined();
+    expect(annotationAtomLabelBox({ x: 5, y: 5, element: "Sn" }, 15)).toEqual(elementLabelBox({ x: 5, y: 5, element: "Sn" }, 15));
+  });
+
+  it.each([1, 0.5, 2])("stops every stroke outside the label box plus margin at fit scale %s", (fitScale) => {
+    const fontSize = 15 * fitScale;
+    const margin = ANNOTATION_BOND_LABEL_MARGIN * fitScale;
+    const length = 60 * fitScale;
+    for (const element of labeled) {
+      for (let step = 0; step < 24; step += 1) {
+        const angle = step * Math.PI / 12;
+        const labeledAtom = { x: 100, y: 100, element };
+        const carbon = { x: 100 + Math.cos(angle) * length, y: 100 + Math.sin(angle) * length, element: "C" };
+        const box = elementLabelBox(labeledAtom, fontSize);
+        for (const order of [1, 2, 3]) {
+          for (const [a, b] of [[labeledAtom, carbon], [carbon, labeledAtom]]) {
+            const lines = annotationBondLines(a, b, order, fitScale);
+            expect(lines).toHaveLength(order);
+            const plain = annotationBondLines({ x: a.x, y: a.y }, { x: b.x, y: b.y }, order, fitScale);
+            for (const [i, line] of lines.entries()) {
+              const labeledEnd = a === labeledAtom ? { x: line.x1, y: line.y1 } : { x: line.x2, y: line.y2 };
+              expect(insideLabelClearance(labeledEnd, box, margin), `${element} order ${order} angle ${step}`).toBe(false);
+              // Trimmed only by the label extent plus margin, not arbitrarily shortened.
+              const vertexDistance = Math.hypot(labeledEnd.x - labeledAtom.x, labeledEnd.y - labeledAtom.y);
+              expect(vertexDistance).toBeLessThanOrEqual(Math.hypot(box.width / 2 + margin, box.height / 2 + margin) + gapAllowance(fitScale));
+              // The unlabeled carbon end keeps its exact untrimmed coordinate.
+              const carbonEnd = a === carbon ? { x: line.x1, y: line.y1 } : { x: line.x2, y: line.y2 };
+              const plainEnd = a === carbon ? { x: plain[i].x1, y: plain[i].y1 } : { x: plain[i].x2, y: plain[i].y2 };
+              expect(carbonEnd).toEqual(plainEnd);
+            }
+          }
+        }
+      }
+    }
+  });
+
+  it("keeps carbon-carbon geometry identical to bonds given without elements", () => {
+    const pairs = [[{ x: 10, y: 20 }, { x: 40, y: 20 }], [{ x: 1, y: 2 }, { x: 4, y: 6 }], [{ x: 0, y: 0 }, { x: 0, y: 10 }]];
+    for (const [a, b] of pairs) {
+      for (const order of [1, 2, 3, 4]) {
+        for (const fitScale of [1, 0.5]) {
+          expect(annotationBondLines({ ...a, element: "C" }, { ...b, element: "C" }, order, fitScale))
+            .toEqual(annotationBondLines(a, b, order, fitScale));
+        }
+      }
+    }
+  });
+
+  it("trims both ends between two labels and omits a bond hidden behind them", () => {
+    const lines = annotationBondLines({ x: 0, y: 0, element: "N+" }, { x: 60, y: 0, element: "O−" }, 2);
+    expect(lines).toHaveLength(2);
+    const left = elementLabelBox({ x: 0, y: 0, element: "N+" }, 15);
+    const right = elementLabelBox({ x: 60, y: 0, element: "O−" }, 15);
+    for (const line of lines) {
+      expect(line.x1).toBeCloseTo(left.x + left.width + ANNOTATION_BOND_LABEL_MARGIN, 1);
+      expect(line.x2).toBeCloseTo(right.x - ANNOTATION_BOND_LABEL_MARGIN, 1);
+    }
+    expect(annotationBondLines({ x: 0, y: 0, element: "Sn" }, { x: 12, y: 0, element: "Sn" }, 1)).toEqual([]);
+  });
+
+  it("uses the given atom font size for the label extent", () => {
+    const [small] = annotationBondLines({ x: 0, y: 0, element: "Sn" }, { x: 80, y: 0 }, 1, 1, 10);
+    const [large] = annotationBondLines({ x: 0, y: 0, element: "Sn" }, { x: 80, y: 0 }, 1, 1, 20);
+    expect(small.x1).toBeCloseTo(estimateAnnotationTextWidth("Sn", 10) / 2 + ANNOTATION_BOND_LABEL_MARGIN, 1);
+    expect(large.x1).toBeCloseTo(estimateAnnotationTextWidth("Sn", 20) / 2 + ANNOTATION_BOND_LABEL_MARGIN, 1);
+  });
+});
+
+// Offset strokes of a multiple bond sit up to one gap off the axis.
+function gapAllowance(fitScale: number): number {
+  return 3 * fitScale + 0.1;
+}
 
 describe("annotation bond lines", () => {
   it("keeps single strokes and scales centered double/triple gaps with the fitted drawing", () => {
