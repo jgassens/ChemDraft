@@ -27,6 +27,8 @@ PowerPoint files and from a copied Office picture (GVML or PNG; EMF+ is not read
 - **Windows**: a ChemDraft structure is ChemDraft's own embedded OLE object. Double-click opens it in
   ChemDraft and saving writes it back. No add-in, so an organization's add-in settings cannot block
   it; Office's OLE settings still can (section 4).
+  Owner decision, 2026-11-22: this note goes wherever Word on Windows usage is described:
+  > "In Word on Windows, insert structures with Insert > Object > ChemDraft to keep them editable. Pictures pasted or inserted into Word lose their ChemDraft data when Word saves the document."
 - **Mac**: Office for Mac has no third-party OLE, so the Mac route is the task-pane add-in (sections
   1–3, 5), with a paste-back fallback for organizations that switch add-ins off.
 
@@ -222,11 +224,14 @@ which PowerPoint's managed-security defaults do.
 - **Refusal has a time limit.** Thirty seconds after a session end begins, ChemDraft stops refusing
   it, even if a drawing is still unsaved in Office or its newest copy is not written yet. It logs
   each such drawing and says whether its recovery copy holds its newest drawing.
-- **Committed session end** (WM_ENDSESSION with TRUE). Before the message returns, ChemDraft waits
-  (still pumping messages) until the writer has nothing queued or in flight, logs what is still at
-  risk, and then closes the writer so nothing new starts. The 3-second watchdog does the same before
-  it ends the process. It never kills a copy mid-write; the byte budget bounds how long it waits. If
-  the disk itself hangs, Windows ends the process, not ChemDraft.
+- **Committed session end** (WM_ENDSESSION with TRUE). Every wait is bounded, measured from the
+  message (`windows_session_end.rs`). Before the message returns, ChemDraft waits (still pumping
+  messages) for the recovery copies until 2.5 s, then logs what is still at risk and waits for the
+  writer to close until 2.75 s. The watchdog fires at 3 s, waits for the writer until 4 s at most
+  (below the 5 s after which Windows lists an app as not responding), and then always force-exits,
+  even if a write is in flight. A copy that finishes after its deadline is deleted and never renamed
+  over the last good copy, and the next start removes any leftover `.partial` files
+  (`remove_stale_partials`).
 
 **Palette clicks in an editor.** A click in an editor's palette arms a native key guard for up to
 one second, while the palette works out whether the click takes keyboard focus. Meanwhile Delete,
@@ -493,7 +498,8 @@ valid structure as one undo entry, left selected.
 - **Finding carriers** (`packages/clipboard-adapter/src/officeImport.ts`, `importOfficeStructures`):
   pure, and built on the slice 0 pieces: `readZip`, the namespace-aware XML reader and
   `readChemDraftSelectionFromPng`. PowerPoint: slides in `p:sldIdLst` order, then each slide's
-  `p:pic/p:blipFill/a:blip`, groups included. Word: the main document's DrawingML `a:blip` and VML
+  `p:pic/p:blipFill/a:blip`, groups included, in reading order within the slide (left to right, then
+  top to bottom; the same row rule as paste-back), not drawing order. Word: the main document's DrawingML `a:blip` and VML
   `v:imagedata` in body order, with the paragraph they fall in. In both, ChemDraft embedded objects
   are read too (see "paste and import of ChemDraft embedded objects" below). Both read
   only the chosen branch of `mc:AlternateContent`, so a picture is not counted twice through its
@@ -537,7 +543,8 @@ ChemDraft: the editable structure is pasted, not a flat picture.
   macOS), a ZIP that keeps the picture's original media bytes even when Office re-encodes the PNG it
   also puts on the clipboard: `readZip`, the root and drawing relationships (falling back to every
   PNG part when an archive lacks them), then `readChemDraftSelectionFromPng` on each picture, in
-  drawing order. Then the PNG flavor (ChemDraft's own, or Office's when it kept the chunk), only
+  reading order: left to right, then top to bottom (`inReadingOrder`: pictures whose vertical
+  centers are within half the smaller height share a row), not drawing order. Then the PNG flavor (ChemDraft's own, or Office's when it kept the chunk), only
   when the archive gave no structure. Carriers are judged by `readCarrierEnvelope`, which the file
   importer now uses too, so both refuse the same carriers with the same words.
 - **EMF+ is not read**, and the result says so when an EMF flavor is present: ChemDraft has no EMF
@@ -576,8 +583,13 @@ comes in, with the same checks, warnings and refusals as a picture's carrier. Th
   copied object as "Embedded Object"; ChemDraft's own server offers "Embed Source". Unless
   ChemDraft's selection flavor is on the clipboard, the reader asks OLE for the first of the two
   (`OleGetClipboard`, `IDataObject::GetData` with `TYMED_ISTORAGE`, or `TYMED_HGLOBAL` opened with
-  `StgOpenStorageOnILockBytes`, at most 50 MiB) on a thread of its own (OLE needs a single-threaded
-  apartment) and waits at most 10 seconds. OLE opens the clipboard itself, so this happens before the
+  `StgOpenStorageOnILockBytes`, at most 50 MiB) on the shared single-flight reader (one long-lived
+  thread, made on first use, because OLE needs a single-threaded apartment) and waits at most 10
+  seconds. Only one read is outstanding at a time. A paste that arrives while an earlier read is
+  still outstanding starts no OLE read: it skips the embedded object and uses the other formats. If
+  nothing else on the clipboard can be read, or the clipboard cannot be opened because of that read,
+  the paste says "Windows is still reading the previous clipboard item. Try pasting again in a
+  moment." OLE opens the clipboard itself, so this happens before the
   ordinary read opens it, and the result is kept only if the same format is still on offer then.
 - **One storage reader.** The object is read by the OLE server's own code
   (`office_ole/server/persist.rs`, `pasted_drawing`): the storage's class (`ReadClassStg`) must be
@@ -617,3 +629,31 @@ comes in, with the same checks, warnings and refusals as a picture's carrier. Th
   ChemDraft's class and `ChemDraftDocument`, and that a saved file's `oleObject*.bin` reads the
   same. On macOS, what Office for Mac puts on the pasteboard when a Windows object is copied there is
   not handled.
+
+## Planned for 1.3 (tracked, not built)
+
+Findings from Windows hands-on testing (2026-11-22, Word for Windows; carrier PNG of 15069 bytes
+with a 3064-byte iTXt chunk):
+
+- **Insert > Pictures, Word's default (compress images).** The carrier is kept in memory (copying
+  the picture back pastes an editable structure) but lost at save: Word writes a palette PNG
+  (2415 bytes, no iTXt).
+- **Insert > Pictures with "Do not compress images in file" on.** Kept byte for byte, and
+  File > Import works. The option is per document, so it is not a fix.
+- **Ctrl+V of a ChemDraft copy (either option).** Word picks ChemDraft's SVG clipboard flavor over
+  the OLE object and the PNG. It stores an SVG (1302 bytes) plus a fallback PNG without the chunk, so
+  the carrier is lost at paste.
+- **PowerPoint** keeps the carrier on save. The Windows OLE object route keeps its drawing, because
+  the drawing is not stored in the picture.
+
+Owner decision, 2026-11-22: tell users to insert through Insert > Object (the note in "Owner
+decision" above). The two items below are the follow-up.
+
+- **(b) Make the SVG flavor, or the clipboard choice, carry the drawing.** Either carry the drawing
+  in the SVG flavor too (an SVG `<metadata>` element with the same JSON, read from SVG media parts),
+  or change ChemDraft's Windows clipboard so Office picks the carrier PNG or the OLE object. Open
+  check first: whether Word stores ChemDraft's SVG byte for byte.
+- **(c) Durable fix: store the drawing in the .docx outside the picture bytes.** Tie it to the
+  picture, through its alt-text description or a custom XML part keyed by the picture's ID. The Mac
+  add-in writes it, and so does ChemDraft's Copy where possible; import, paste-back and the add-in
+  read it. Word documents then stay editable across Mac and Windows under Word's default settings.
