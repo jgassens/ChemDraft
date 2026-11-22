@@ -119,6 +119,23 @@ fn server_is(existing: &str, exe: &OsStr) -> bool {
     existing.eq_ignore_ascii_case(&exe.to_string_lossy())
 }
 
+/// What an unregister may remove, given each registry view's `LocalServer32` (64-bit view first).
+/// A view whose CLSID names another executable keeps its CLSID. Windows redirects the CLSID branch
+/// per view but shares the ProgID keys between them, so another executable's registration in
+/// either view keeps the ProgIDs too.
+fn unregister_allowance(servers: &[Option<String>], exe: &OsStr) -> (Vec<bool>, bool) {
+    let owned: Vec<bool> = servers
+        .iter()
+        .map(|server| {
+            server
+                .as_deref()
+                .is_none_or(|server| server_is(server, exe))
+        })
+        .collect();
+    let prog_ids = owned.iter().all(|&owned| owned);
+    (owned, prog_ids)
+}
+
 #[cfg(windows)]
 mod native {
     use super::*;
@@ -156,8 +173,33 @@ mod native {
             let exe = std::env::current_exe()?;
             let branches = plan(self, exe.as_os_str());
             let mut report = Vec::new();
+            let views = [KEY_WOW64_64KEY, KEY_WOW64_32KEY];
+            // An unregister reads both views' owners before it removes anything: the ProgID keys
+            // are shared, so another executable's registration in either view keeps them.
+            let mut servers = Vec::new();
+            if !install {
+                for view in views {
+                    let server = match optional(hive.open_subkey_transacted_with_flags(
+                        r"Software\Classes",
+                        &transaction,
+                        KEY_READ | view,
+                    ))? {
+                        Some(classes) => optional(classes.open_subkey_transacted_with_flags(
+                            format!(r"CLSID\{}\LocalServer32", self.clsid),
+                            &transaction,
+                            KEY_READ | view,
+                        ))?
+                        .map(|key| optional(key.get_value::<String, _>("")))
+                        .transpose()?
+                        .flatten(),
+                        None => None,
+                    };
+                    servers.push(server);
+                }
+            }
+            let (owned_views, owns_prog_ids) = unregister_allowance(&servers, exe.as_os_str());
             // CLSID is redirected on 64-bit Windows. ProgID branches may be shared between views.
-            for view in [KEY_WOW64_64KEY, KEY_WOW64_32KEY] {
+            for (index, view) in views.into_iter().enumerate() {
                 let flags = KEY_READ | KEY_WRITE | view;
                 let classes = if install {
                     hive.create_subkey_transacted_with_flags(
@@ -177,25 +219,21 @@ mod native {
                     };
                     classes
                 };
-                if !install {
-                    let server = optional(classes.open_subkey_transacted_with_flags(
-                        format!(r"CLSID\{}\LocalServer32", self.clsid),
-                        &transaction,
-                        KEY_READ | view,
-                    ))?
-                    .map(|key| optional(key.get_value::<String, _>("")))
-                    .transpose()?
-                    .flatten();
-                    if let Some(server) =
-                        server.filter(|server| !server_is(server, exe.as_os_str()))
-                    {
+                if !install && !owned_views[index] {
+                    report.push(format!(
+                        "Kept registration: LocalServer32 is {}, not this executable",
+                        servers[index].as_deref().unwrap_or_default()
+                    ));
+                    continue;
+                }
+                for branch in &branches {
+                    if !install && !owns_prog_ids && !branch.root.starts_with(r"CLSID\") {
                         report.push(format!(
-                            "Kept registration: LocalServer32 is {server}, not this executable"
+                            "Kept shared ProgID {}: another executable owns this class's registration",
+                            branch.root
                         ));
                         continue;
                     }
-                }
-                for branch in &branches {
                     let root = PathBuf::from(&branch.root);
                     let existing = optional(classes.open_subkey_transacted_with_flags(
                         &root,
@@ -472,6 +510,39 @@ mod tests {
             exe
         ));
         assert!(!server_is(r#""C:\Program Files\ChemDraft\Other.exe""#, exe));
+    }
+
+    /// The 64-bit view names another ChemDraft and the 32-bit CLSID is missing. The shared ProgIDs
+    /// stay; only a CLSID this executable owns may go.
+    #[test]
+    fn unregistering_keeps_shared_prog_ids_another_executable_owns_in_either_view() {
+        let exe = OsStr::new(r"C:\Program Files\ChemDraft\ChemDraft.exe");
+        let ours = Some(r#""C:\Program Files\ChemDraft\ChemDraft.exe""#.to_owned());
+        let other = Some(r#""C:\Users\me\AppData\Local\ChemDraft\ChemDraft.exe""#.to_owned());
+        assert_eq!(
+            unregister_allowance(&[other.clone(), None], exe),
+            (vec![false, true], false)
+        );
+        assert_eq!(
+            unregister_allowance(&[None, other.clone()], exe),
+            (vec![true, false], false)
+        );
+        assert_eq!(
+            unregister_allowance(&[ours.clone(), other], exe),
+            (vec![true, false], false)
+        );
+        assert_eq!(
+            unregister_allowance(&[ours.clone(), None], exe),
+            (vec![true, true], true)
+        );
+        assert_eq!(
+            unregister_allowance(&[None, None], exe),
+            (vec![true, true], true)
+        );
+        assert_eq!(
+            unregister_allowance(&[ours.clone(), ours], exe),
+            (vec![true, true], true)
+        );
     }
 
     #[test]

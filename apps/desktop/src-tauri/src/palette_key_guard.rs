@@ -34,11 +34,48 @@ fn publish<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: Option<(String, 
         // drops only editing keydowns until this sequence is cleared or expires.
         // A clear carries the pending owner's label, even when main/app loss ended it.
         let owner = crate::toolset_document_label(&label);
-        let _ = app.emit_to(owner, EVENT, event);
+        send(app, owner, event);
         if !label.is_empty() && label != owner {
-            let _ = app.emit_to(label.as_str(), EVENT, event);
+            send(app, &label, event);
         }
     }
+}
+
+/// Office editors and their toolsets subscribe through the Office DOM bridge
+/// (`listenCurrentWindowEvent` in `tauriEvents.ts`), which Tauri events never reach. Every other
+/// window subscribes through Tauri.
+fn uses_office_bridge(label: &str) -> bool {
+    crate::is_office_document_window(crate::toolset_document_label(label))
+}
+
+fn send<R: tauri::Runtime>(app: &tauri::AppHandle<R>, label: &str, event: state::Event) {
+    if uses_office_bridge(label) {
+        deliver_to_office(app, label, event);
+    } else {
+        let _ = app.emit_to(label, EVENT, event);
+    }
+}
+
+#[cfg(windows)]
+fn deliver_to_office<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    label: &str,
+    event: state::Event,
+) {
+    if let (Some(window), Ok(payload)) =
+        (app.get_webview_window(label), serde_json::to_string(&event))
+    {
+        crate::office_ole::toolset_events::deliver(&window, EVENT, &payload);
+    }
+}
+
+/// Office editors exist only on Windows (`is_office_document_window`), so nothing is delivered.
+#[cfg(not(windows))]
+fn deliver_to_office<R: tauri::Runtime>(
+    _app: &tauri::AppHandle<R>,
+    _label: &str,
+    _event: state::Event,
+) {
 }
 
 pub(super) fn end<R: tauri::Runtime>(
@@ -327,4 +364,30 @@ pub(super) use linux::install;
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub(super) fn install<R: tauri::Runtime>(_window: &tauri::WebviewWindow<R>) -> Result<(), String> {
     Ok(())
+}
+
+#[cfg(test)]
+mod office_route_tests {
+    use super::uses_office_bridge;
+
+    /// The Office editor and its palettes listen through the Office DOM bridge, so a pending click
+    /// must reach them there, or Delete reaches the drawing before the palette arms its guard.
+    #[test]
+    fn office_editors_and_their_toolsets_get_pending_clicks_through_the_office_bridge() {
+        for label in [
+            "office-object-17",
+            "office-utility-office-object-17--toolset-core-main",
+        ] {
+            assert_eq!(uses_office_bridge(label), cfg!(windows), "{label}");
+        }
+        for label in [
+            "main",
+            "toolset-core-main",
+            "",
+            "office-object-",
+            "office-utility-main--toolset-core-main",
+        ] {
+            assert!(!uses_office_bridge(label), "{label}");
+        }
+    }
 }

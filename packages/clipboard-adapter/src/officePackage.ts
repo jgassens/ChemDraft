@@ -583,6 +583,7 @@ export function flatOpcBinaryParts(flatOpcXml: string): FlatOpcBinaryPart[] {
   const parts: { name: string; contentType: string; start: number; end: number; length: number }[] = [];
   let binary: { name: string; contentType: string; start: number; size: Base64Size } | undefined;
   let totalLength = 0;
+  const names = new Set<string>();
   for (const { element, closingAt } of xmlElements(flatOpcXml, (code) => {
     if (binary && !isXmlSpace(code)) binary.size.add(code);
   })) {
@@ -600,6 +601,10 @@ export function flatOpcBinaryParts(flatOpcXml: string): FlatOpcBinaryPart[] {
     const name = namespacedAttr(part, "name", [FLAT_OPC]);
     const contentType = namespacedAttr(part, "contentType", [FLAT_OPC]);
     if (!name || !contentType) throw new Error("Flat OPC binary part is missing its name or content type.");
+    // OPC part names compare case-insensitively; two parts with one name leave the target ambiguous.
+    const key = name.toLowerCase();
+    if (names.has(key)) throw new Error("Flat OPC package has duplicate part names.");
+    names.add(key);
     const remaining = MAX_INFLATED_BYTES - totalLength;
     const limit = Math.min(MAX_ENTRY_BYTES, remaining);
     const reason = limit === MAX_ENTRY_BYTES ? "Flat OPC binary part exceeds 50 MB." : "Flat OPC binary data exceeds 200 MB.";
@@ -648,7 +653,18 @@ function resolveMediaTarget(target: string): string | null {
   return part?.startsWith("ppt/media/") ? part : null;
 }
 
-const understoodSlideNamespaces: ReadonlySet<string> = new Set([...PRESENTATION, ...DRAWING, ...OFFICE_RELS]);
+// PowerPoint 2010 and later select a Choice that requires p14, so the reader does too.
+const understoodSlideNamespaces: ReadonlySet<string> = new Set([
+  ...PRESENTATION, ...DRAWING, ...OFFICE_RELS, "http://schemas.microsoft.com/office/powerpoint/2010/main",
+]);
+
+/**
+ * Whether an `mc:Choice` that requires these namespace URIs is the branch a slide reader selects.
+ * Shared with the PowerPoint adapter, which reads the same slide through the DOM.
+ */
+export function pptxChoiceIsUnderstood(namespaceUris: readonly (string | null)[]): boolean {
+  return namespaceUris.length > 0 && namespaceUris.every((uri) => uri !== null && understoodSlideNamespaces.has(uri));
+}
 
 const WORD_MAIN = [TRANSITIONAL + "wordprocessingml/2006/main", STRICT + "wordprocessingml/main"];
 const VML = "urn:schemas-microsoft-com:vml";

@@ -8,8 +8,8 @@ import { Molecule } from "openchemlib";
 import { describe, expect, it, vi } from "vitest";
 import app from "../../package.json";
 import {
-  createPhase4Document, createSelectionClipboardPayload, insertNativeMolfileMolecule, insertNativeTextObject,
-  parseSelectionClipboardPayload, serializeSelectionClipboardPayload,
+  createPhase4Document, createSelectionClipboardPayload, groupSelectedDocumentObjects, insertNativeMolfileMolecule,
+  insertNativeTextObject, parseSelectionClipboardPayload, selectDocumentObjects, serializeSelectionClipboardPayload,
 } from "../documentWorkflow";
 import { openOfficeDrawing, prepareOfficePicture } from "./drawing";
 import { noStructure, type OfficeDocument, type OfficeHostAdapter, type SelectionResult } from "./host";
@@ -152,6 +152,55 @@ describe("Office task-pane selection", () => {
     expect(session.snapshot().status).toBe("Structure updated. " + warning);
   });
 
+  it("stays bound to a replacement with a new key when the drawing changed during the write", async () => {
+    const { session, replaceSelectedStructure, readSelectedStructure, structure } = paneSession();
+    await vi.waitFor(() => expect(session.snapshot().selected).toBe(true));
+    let document = session.snapshot().document!;
+    session.attachEditor(session.snapshot().loadId, () => document);
+    document = insertNativeTextObject(document, { x: 100, y: 100 }, "Figure label");
+    session.observeEditor();
+    const loadId = session.snapshot().loadId;
+    replaceSelectedStructure.mockImplementation(async (_png, replacement) => {
+      // PowerPoint inserts a new shape, so the replacement has a new key.
+      readSelectedStructure.mockResolvedValue({ ...structure, key: "replacement", json: replacement });
+      document = insertNativeTextObject(document, { x: 160, y: 160 }, "Typed during Update");
+      return { kind: "replaced" };
+    });
+    await session.update();
+    session.observeEditor();
+    expect(session.snapshot()).toMatchObject({
+      selected: true, dirty: true, confirmDiscard: false, loadId, status: "Structure updated.",
+    });
+    replaceSelectedStructure.mockResolvedValue({ kind: "replaced" });
+    await session.update();
+    expect(replaceSelectedStructure).toHaveBeenCalledTimes(2);
+    expect(parseSelectionClipboardPayload(replaceSelectedStructure.mock.calls[1]![1])?.objects).toHaveLength(3);
+  });
+
+  it("keeps the Update warnings when a newer selection read supersedes the post-write read", async () => {
+    const { session, replaceSelectedStructure, readSelectedStructure, structure } = paneSession();
+    await vi.waitFor(() => expect(session.snapshot().selected).toBe(true));
+    let document = session.snapshot().document!;
+    session.attachEditor(session.snapshot().loadId, () => document);
+    document = insertNativeTextObject(document, { x: 100, y: 100 }, "Figure label");
+    session.observeEditor();
+    const warning = "Not carried over from the old picture: animations.";
+    let finish!: (result: SelectionResult) => void;
+    let replaced = "";
+    replaceSelectedStructure.mockImplementation(async (_png, replacement) => {
+      replaced = replacement;
+      readSelectedStructure.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+      return { kind: "replaced", warnings: [warning] };
+    });
+    const update = session.update();
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    readSelectedStructure.mockResolvedValue({ ...structure, key: "replacement", json: replaced });
+    await session.refresh();
+    finish({ ...structure, key: "replacement", json: replaced });
+    await update;
+    expect(session.snapshot()).toMatchObject({ selected: true, status: "Structure updated. " + warning });
+  });
+
   it("preserves canonical isomeric SMILES through an edit-free open and PNG update payload", async () => {
     const opened = openOfficeDrawing(json);
     const expected = chemistry(json);
@@ -162,6 +211,24 @@ describe("Office task-pane selection", () => {
     expect(picture.size.width).toBeGreaterThan(0);
     expect(chemistry(picture.json)).toEqual(expected);
     expect(await readChemDraftSelectionFromPng(picture.png)).toMatchObject({ kind: "found", json: picture.json });
+  });
+
+  it("opens and updates a drawing that contains a group", async () => {
+    let grouped = insertNativeTextObject(source, { x: 420, y: 240 }, "Label");
+    const page = grouped.pages[0]!;
+    grouped = groupSelectedDocumentObjects(selectDocumentObjects(grouped, page.id, page.objects.map(object => object.id)));
+    const carrier = serializeSelectionClipboardPayload(createSelectionClipboardPayload(grouped)!);
+    expect(parseSelectionClipboardPayload(carrier)?.objects.map(object => object.type)).toEqual(["molecule", "text", "group"]);
+    const opened = openOfficeDrawing(carrier).document.pages[0]!;
+    expect(opened.objects.map(object => object.type)).toEqual(["molecule", "text", "group"]);
+    const [molecule, text, group] = opened.objects;
+    expect(group!.type === "group" && group.childObjectIds).toEqual([molecule!.id, text!.id]);
+    // The group frame moves with the drawing it wraps.
+    expect(group!.x).toBeCloseTo(Math.min(molecule!.x, text!.x), 6);
+    expect(group!.y).toBeCloseTo(Math.min(molecule!.y, text!.y), 6);
+    const picture = await prepareOfficePicture(openOfficeDrawing(carrier).document);
+    expect(parseSelectionClipboardPayload(picture.json)?.objects.map(object => object.type)).toEqual(["molecule", "text", "group"]);
+    expect(chemistry(picture.json)).toEqual(chemistry(json));
   });
 
   it("does not write if the host selection changes while preparing the image", async () => {

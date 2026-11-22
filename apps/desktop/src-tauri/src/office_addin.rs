@@ -267,36 +267,169 @@ impl Fs<'_> {
         fs::create_dir(path)
     }
 
-    fn remove_file(&self, path: &Path) -> io::Result<()> {
-        (self.gate)(Op::Remove, path)?;
-        fs::remove_file(path)
-    }
-
     fn remove_dir(&self, path: &Path) -> io::Result<()> {
         (self.gate)(Op::Remove, path)?;
         fs::remove_dir(path)
     }
 
-    /// Write through a temporary sibling and rename it into place, removing the temporary file on
-    /// every failure, so a denial partway through never leaves a stray file in Office's folder.
-    fn write_atomic(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
-        static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    /// Write `contents` to a new private file beside `path`, removing it again on every failure,
+    /// so a denial partway through never leaves a stray file in Office's folder.
+    fn stage(&self, path: &Path, contents: &[u8]) -> io::Result<PathBuf> {
         (self.gate)(Op::Write, path)?;
-        let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let mut tmp = path.as_os_str().to_owned();
-        tmp.push(format!(".{}.{}.tmp", std::process::id(), sequence));
-        let tmp = PathBuf::from(tmp);
+        let tmp = scratch_path(path);
         let mut file = fs::File::create_new(&tmp)?;
         let written = file.write_all(contents);
         drop(file);
-        let renamed = written
-            .and_then(|()| (self.gate)(Op::Rename, path))
-            .and_then(|()| fs::rename(&tmp, path));
-        if renamed.is_err() {
+        if let Err(error) = written.and_then(|()| (self.gate)(Op::Rename, path)) {
             let _ = fs::remove_file(&tmp);
+            return Err(error);
         }
-        renamed
+        Ok(tmp)
     }
+
+    /// Change `path` from exactly `expected` (`None`: no file) to `contents` (`None`: no file),
+    /// never replacing or deleting a file another process put there meanwhile. `ACTION_LOCK`
+    /// serializes only this process, so the file found is first moved to a private name and
+    /// compared before it is deleted, and a new file goes in with a rename that fails if anything
+    /// is at the path.
+    fn commit(
+        &self,
+        path: &Path,
+        expected: Option<&[u8]>,
+        contents: Option<&[u8]>,
+    ) -> Result<Committed, Failure> {
+        let staged = match contents {
+            Some(contents) => Some(self.stage(path, contents)?),
+            None => {
+                (self.gate)(Op::Remove, path)?;
+                None
+            }
+        };
+        let result = swap_in(path, expected, staged.as_deref());
+        if let Some(staged) = &staged {
+            // Already gone if it was renamed into place.
+            let _ = fs::remove_file(staged);
+        }
+        result
+    }
+}
+
+/// What `Fs::commit` found in place of the file it expected.
+enum Committed {
+    Done,
+    /// A Remove found nothing at the path.
+    Gone,
+    /// Another file is at the path now and was left there: its bytes, or `None` if it is not a
+    /// regular file ChemDraft could read.
+    Conflict(Option<Vec<u8>>),
+}
+
+/// A new private name beside `path`, for a file being staged or set aside.
+fn scratch_path(path: &Path) -> PathBuf {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(".{}.{}.tmp", std::process::id(), sequence));
+    PathBuf::from(tmp)
+}
+
+/// Rename `from` to `to` only if nothing is at `to`. `renamex_np` with `RENAME_EXCL` checks and
+/// renames in one step, so a file another process puts at `to` is never replaced. A volume
+/// without that flag falls back to a check followed by a plain rename.
+fn rename_excl(from: &Path, to: &Path) -> io::Result<()> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+
+    let source = CString::new(from.as_os_str().as_bytes())?;
+    let target = CString::new(to.as_os_str().as_bytes())?;
+    // SAFETY: both arguments are NUL-terminated paths that outlive the call.
+    if unsafe { libc::renamex_np(source.as_ptr(), target.as_ptr(), libc::RENAME_EXCL) } == 0 {
+        return Ok(());
+    }
+    let error = io::Error::last_os_error();
+    if !matches!(error.raw_os_error(), Some(libc::ENOTSUP | libc::EINVAL)) {
+        return Err(error);
+    }
+    match fs::symlink_metadata(to) {
+        Ok(_) => Err(io::Error::from(ErrorKind::AlreadyExists)),
+        Err(error) if error.kind() == ErrorKind::NotFound => fs::rename(from, to),
+        Err(error) => Err(error),
+    }
+}
+
+/// The bytes of the regular file at `path`, without following a link.
+fn read_regular(path: &Path) -> Option<Vec<u8>> {
+    fs::symlink_metadata(path)
+        .ok()
+        .filter(fs::Metadata::is_file)
+        .and_then(|_| fs::read(path).ok())
+}
+
+/// `Fs::commit` after its gate checks: set aside and compare what is at `path`, then rename the
+/// staged file (if any) into place without replacing anything.
+fn swap_in(
+    path: &Path,
+    expected: Option<&[u8]>,
+    staged: Option<&Path>,
+) -> Result<Committed, Failure> {
+    let mut aside = None;
+    if let Some(expected) = expected {
+        let moved = scratch_path(path);
+        match rename_excl(path, &moved) {
+            Ok(()) => {
+                let found = read_regular(&moved);
+                if found.as_deref() != Some(expected) {
+                    // Another process replaced the file: put theirs back, never over a newer one.
+                    return match rename_excl(&moved, path) {
+                        Ok(()) => Ok(Committed::Conflict(found)),
+                        Err(error) => Err(Failure::other(format!(
+                            "{} changed while ChemDraft was working, and ChemDraft could not put the new file back ({error}); it is at {}.",
+                            path.display(),
+                            moved.display()
+                        ))),
+                    };
+                }
+                aside = Some(moved);
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                if staged.is_none() {
+                    return Ok(Committed::Gone);
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    if let Some(staged) = staged {
+        if let Err(error) = rename_excl(staged, path) {
+            let taken = error.kind() == ErrorKind::AlreadyExists;
+            if let Some(moved) = &aside {
+                // Put the expected file back. If another process wrote the path meanwhile, keep
+                // theirs and drop ours, which this change was replacing anyway.
+                let put_back = if taken {
+                    Err(io::Error::from(ErrorKind::AlreadyExists))
+                } else {
+                    rename_excl(moved, path)
+                };
+                if put_back.is_err_and(|error| error.kind() == ErrorKind::AlreadyExists) {
+                    let _ = fs::remove_file(moved);
+                }
+            }
+            return if taken {
+                Ok(Committed::Conflict(read_regular(path)))
+            } else {
+                Err(error.into())
+            };
+        }
+    }
+    if let Some(moved) = aside {
+        if let Err(error) = fs::remove_file(&moved) {
+            if staged.is_none() {
+                // A Remove that cannot delete the file puts it back rather than hide it.
+                let _ = rename_excl(&moved, path);
+                return Err(error.into());
+            }
+        }
+    }
+    Ok(Committed::Done)
 }
 
 fn directory_exists(fs: &Fs, path: &Path) -> Result<bool, Failure> {
@@ -596,15 +729,25 @@ fn perform(fs: &Fs, plan: &Plan, addin: &Addin, action: Action) -> Result<Perfor
                     return Err(failure);
                 }
             };
-            if let Err(error) = fs.write_atomic(&plan.path, addin.manifest.as_bytes()) {
-                remove_created(fs, &created);
-                return Err(error.into());
+            match fs.commit(
+                &plan.path,
+                previous.as_deref(),
+                Some(addin.manifest.as_bytes()),
+            ) {
+                Ok(Committed::Done | Committed::Gone) => Ok(Performed::Changed(Change {
+                    created,
+                    status,
+                    previous,
+                })),
+                Ok(Committed::Conflict(found)) => {
+                    remove_created(fs, &created);
+                    conflict(&plan.path, found, addin)
+                }
+                Err(failure) => {
+                    remove_created(fs, &created);
+                    Err(failure)
+                }
             }
-            Ok(Performed::Changed(Change {
-                created,
-                status,
-                previous,
-            }))
         }
         Action::Remove => {
             let (status, previous) = match manifest_status(fs, &plan.path, addin)? {
@@ -612,18 +755,35 @@ fn perform(fs: &Fs, plan: &Plan, addin: &Addin, action: Action) -> Result<Perfor
                 (Status::NotInstalled, _) => return Ok(Performed::Gone),
                 found => found,
             };
-            match fs.remove_file(&plan.path) {
-                Ok(()) => Ok(Performed::Changed(Change {
+            match fs.commit(&plan.path, previous.as_deref(), None)? {
+                Committed::Done => Ok(Performed::Changed(Change {
                     created: Vec::new(),
                     status,
                     previous,
                 })),
-                Err(error) if error.kind() == ErrorKind::NotFound => Ok(Performed::Gone),
-                Err(error) => Err(error.into()),
+                Committed::Gone => Ok(Performed::Gone),
+                Committed::Conflict(found) => conflict(&plan.path, found, addin),
             }
         }
         #[cfg(test)]
         Action::Status => Ok(Performed::Gone),
+    }
+}
+
+/// A file another process put at `path` after the re-read, which `commit` left in place. One that
+/// is not a ChemDraft manifest skips its app, as when the re-read finds it; any other change stops
+/// the action, so the other app's change is undone.
+fn conflict(path: &Path, found: Option<Vec<u8>>, addin: &Addin) -> Result<Performed, Failure> {
+    match found.as_deref().map(std::str::from_utf8) {
+        Some(Ok(xml)) if addin.identifies(xml) => Err(Failure::other(format!(
+            "{} changed while ChemDraft was working, so ChemDraft left it in place.",
+            path.display()
+        ))),
+        Some(_) => Ok(Performed::Unrecognized),
+        None => Err(Failure::other(format!(
+            "{} must be a regular file.",
+            path.display()
+        ))),
     }
 }
 
@@ -660,9 +820,9 @@ fn undo(
     if current.as_deref() != expected {
         return Err(replaced_since(path, current.as_deref(), addin));
     }
-    match &change.previous {
-        Some(previous) => fs.write_atomic(path, previous)?,
-        None => fs.remove_file(path)?,
+    // `commit` keeps a file another process puts there after this read, too.
+    if let Committed::Conflict(found) = fs.commit(path, expected, change.previous.as_deref())? {
+        return Err(replaced_since(path, found.as_deref(), addin));
     }
     remove_created(fs, &change.created);
     Ok(())
@@ -1478,6 +1638,131 @@ mod tests {
             );
             assert_eq!(fs::read_to_string(&word_manifest).unwrap(), swapped_in);
         }
+    }
+
+    /// Another process (not covered by `ACTION_LOCK`) replaces Word's file after the re-read, just
+    /// before the file is renamed into place or removed. Its file is never replaced or deleted.
+    #[test]
+    fn a_manifest_replaced_after_the_reread_is_left_in_place() {
+        let addin = Addin::for_build(STABLE_IDENTIFIER, false, Some(""));
+        let foreign = addin.manifest.replace(
+            "<ProviderName>ChemDraft</ProviderName>",
+            "<ProviderName>Someone Else</ProviderName>",
+        );
+        for (action, op) in [(Action::Install, Op::Rename), (Action::Remove, Op::Remove)] {
+            let (home, _word, _powerpoint) = office_home();
+            if action == Action::Remove {
+                apply(&home.0, &addin, Action::Install);
+            }
+            let word_manifest = manifest_path(&home.0, OfficeApp::Word, &addin);
+            let swapped = std::cell::Cell::new(false);
+            let swap = |seen, path: &Path| {
+                if seen == op && path == word_manifest && !swapped.replace(true) {
+                    fs::write(&word_manifest, &foreign).unwrap();
+                }
+                Ok(())
+            };
+            let [word_result, powerpoint_result] =
+                apply_with(&Fs { gate: &swap }, &home.0, &addin, action);
+            assert!(swapped.get(), "{action:?}");
+            assert_eq!(
+                (word_result.status, word_result.changed, word_result.error),
+                (Status::Unrecognized, false, None),
+                "{action:?}"
+            );
+            assert_eq!(fs::read_to_string(&word_manifest).unwrap(), foreign);
+            // No staged or set-aside file is left in Word's folder.
+            assert_eq!(
+                fs::read_dir(word_manifest.parent().unwrap())
+                    .unwrap()
+                    .count(),
+                1,
+                "{action:?}"
+            );
+            assert!(powerpoint_result.changed, "{action:?}");
+            assert_eq!(
+                manifest_path(&home.0, OfficeApp::PowerPoint, &addin).exists(),
+                action == Action::Install
+            );
+        }
+    }
+
+    /// An upgrade whose file another process replaces with a different ChemDraft manifest after
+    /// the re-read keeps that file and stops, so PowerPoint is not left changed alone.
+    #[test]
+    fn an_upgrade_never_replaces_a_manifest_changed_after_the_reread() {
+        let addin = Addin::for_build(STABLE_IDENTIFIER, false, Some(""));
+        let older = addin.manifest.replace("<Version>", "<Version>9");
+        let other = addin.manifest.replace("<Version>", "<Version>8");
+        let (home, word, _powerpoint) = office_home();
+        let word_wef = word.join("Data").join("Documents").join("wef");
+        fs::create_dir_all(&word_wef).unwrap();
+        let word_manifest = word_wef.join(addin.filename);
+        fs::write(&word_manifest, &older).unwrap();
+        let swap = |seen, path: &Path| {
+            if seen == Op::Rename && path == word_manifest {
+                fs::write(&word_manifest, &other).unwrap();
+            }
+            Ok(())
+        };
+        let [word_result, powerpoint_result] =
+            apply_with(&Fs { gate: &swap }, &home.0, &addin, Action::Install);
+        let error = word_result.error.unwrap();
+        assert!(
+            error.ends_with("changed while ChemDraft was working, so ChemDraft left it in place."),
+            "{error}"
+        );
+        assert!(!word_result.changed);
+        assert_eq!(fs::read_to_string(&word_manifest).unwrap(), other);
+        assert_eq!(fs::read_dir(&word_wef).unwrap().count(), 1);
+        assert!(!powerpoint_result.changed);
+        assert!(!manifest_path(&home.0, OfficeApp::PowerPoint, &addin).exists());
+    }
+
+    /// Word's Remove succeeded and PowerPoint's failed. Between the undo's check that Word's path
+    /// is empty and the restore, another process creates a file there: the undo keeps it.
+    #[test]
+    fn an_undo_after_remove_never_replaces_a_file_created_after_its_check() {
+        let addin = Addin::for_build(STABLE_IDENTIFIER, false, Some(""));
+        let foreign = addin.manifest.replace(
+            "<ProviderName>ChemDraft</ProviderName>",
+            "<ProviderName>Someone Else</ProviderName>",
+        );
+        let (home, _word, powerpoint) = office_home();
+        apply(&home.0, &addin, Action::Install);
+        let word_manifest = manifest_path(&home.0, OfficeApp::Word, &addin);
+        let gate = |seen, path: &Path| {
+            if seen == Op::Remove && path.starts_with(&powerpoint) {
+                return Err(io::Error::from_raw_os_error(1));
+            }
+            // The undo's restore of Word's manifest, after its read found the path empty.
+            if seen == Op::Rename && path == word_manifest {
+                fs::write(&word_manifest, &foreign).unwrap();
+            }
+            Ok(())
+        };
+        let [word_result, powerpoint_result] =
+            apply_with(&Fs { gate: &gate }, &home.0, &addin, Action::Remove);
+        assert_eq!(
+            powerpoint_result.error_kind,
+            Some(FailureKind::PermissionDenied)
+        );
+        assert!(!word_result.rolled_back);
+        let error = word_result.error.unwrap();
+        assert!(
+            error.ends_with(&format!(
+                "{} is not a ChemDraft add-in manifest, so ChemDraft did not replace it.",
+                word_manifest.display()
+            )),
+            "{error}"
+        );
+        assert_eq!(fs::read_to_string(&word_manifest).unwrap(), foreign);
+        assert_eq!(
+            fs::read_dir(word_manifest.parent().unwrap())
+                .unwrap()
+                .count(),
+            1
+        );
     }
 
     #[test]

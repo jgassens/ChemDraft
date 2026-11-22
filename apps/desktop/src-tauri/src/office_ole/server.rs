@@ -41,11 +41,12 @@ use windows::{
 use super::{
     bridge,
     contracts::{
-        editor_verb, CloseDecision, CloseOption, CloseReadiness, EditorVerb, PersistState,
+        destroyed_editor_saves, editor_verb, sent_close_wait, CloseDecision, CloseOption,
+        CloseReadiness, EditorVerb, PersistState,
     },
     presentation::Content,
     recovery::{self, CancelReport, Report},
-    session_publish::{Answer, Job, Outcome, Risk, Tracker},
+    session_publish::{display_name, Answer, Job, Outcome, Risk, Tracker},
     OleClass,
 };
 
@@ -753,6 +754,8 @@ struct Embedded {
     signals: RefCell<Option<Arc<WindowSignals>>>,
     channel: RefCell<Option<Channel<bridge::CloseRequest>>>,
     close_request: Cell<Option<u32>>,
+    /// The pending `close_request` came from `OLECLOSE_NOSAVE`.
+    close_discards: Cell<bool>,
     native_close: Cell<NativeClose>,
     published: Cell<bool>,
     updating_client: Cell<bool>,
@@ -782,6 +785,7 @@ impl Embedded {
             signals: Default::default(),
             channel: Default::default(),
             close_request: Cell::new(None),
+            close_discards: Cell::new(false),
             native_close: Cell::new(NativeClose::Idle),
             published: Cell::new(false),
             updating_client: Cell::new(false),
@@ -892,19 +896,29 @@ impl Embedded_Impl {
         if signals.destroyed.load(Ordering::Acquire) {
             self.signals.take();
             self.channel.take();
+            // A pending OLECLOSE_NOSAVE still forbids the save once the window has gone.
+            let save = destroyed_editor_saves(
+                self.published.get(),
+                self.close_request.get().is_some() && self.close_discards.get(),
+            );
             self.close_request.set(None);
             self.native_close.set(NativeClose::Idle);
-            if let Err(error) = self.finish(self.published.get(), false) {
+            if let Err(error) = self.finish(save, false) {
                 // Keep the object and its latest published content available for retry.
                 eprintln!("Could not save the destroyed Office editor: {error}");
-                if let Some(id) = self.session.borrow().as_deref() {
-                    // No renderer can answer a pending session end now; retry what Office lacks.
+                let id = self.session.borrow().clone();
+                // No renderer can answer a pending session end now; retry what Office lacks.
+                let retried = id.as_deref().is_some_and(|id| {
                     self.sta
                         .control
                         .tracker
                         .lock()
                         .unwrap()
-                        .renderer_gone(id, Instant::now());
+                        .renderer_gone(id, Instant::now())
+                });
+                if !retried {
+                    // Outside a session end nothing retries this save: keep a durable copy.
+                    self.keep_recovery_copy(id.as_deref().unwrap_or("unknown"), &error);
                 }
             }
         } else {
@@ -932,6 +946,41 @@ impl Embedded_Impl {
         }
     }
 
+    /// Write the drawing a destroyed editor could not save into Office to the recovery folder, and
+    /// say so once in the Office log. Called once per destroyed window; nothing retries the write.
+    fn keep_recovery_copy(&self, id: &str, error: &Error) {
+        let (app, document) = self.host.borrow().clone();
+        let json = self.content.borrow().json.clone();
+        let written = self
+            .sta
+            .app
+            .path()
+            .app_data_dir()
+            .map_err(|e| e.to_string())
+            .and_then(|dir| {
+                recovery::write_unsaved(
+                    &dir.join(recovery::FOLDER),
+                    &recovery::stamp(chrono::Utc::now()),
+                    id,
+                    &app,
+                    &document,
+                    &json,
+                )
+                .map_err(|e| e.to_string())
+            });
+        let name = display_name(&app, &document);
+        match written {
+            Ok(path) => crate::windows_session_end::log_office_loss(
+                &self.sta.app,
+                format_args!("Office object {id} in {name}: ChemDraft could not save its drawing into Office after its editor window closed ({error}); wrote its last drawing to {}. Nothing restores this copy automatically.", path.display()),
+            ),
+            Err(write_error) => crate::windows_session_end::log_office_loss(
+                &self.sta.app,
+                format_args!("Office object {id} in {name}: ChemDraft could not save its drawing into Office after its editor window closed ({error}), and could not write a recovery copy: {write_error}."),
+            ),
+        }
+    }
+
     fn close_with_option(&self, option: CloseOption) -> Result<()> {
         match self.close_readiness() {
             CloseReadiness::Closed => return Ok(()),
@@ -956,6 +1005,7 @@ impl Embedded_Impl {
         }
         let request_id = next_close_request();
         self.close_request.set(Some(request_id));
+        self.close_discards.set(discard);
         if prompt {
             if let Some(id) = self.session.borrow().clone() {
                 let app = self.sta.app.clone();
@@ -970,13 +1020,13 @@ impl Embedded_Impl {
         }
         let result = (|| {
             let connect_deadline = Instant::now() + Duration::from_secs(10);
-            let mut sent = false;
+            let mut sent: Option<Instant> = None;
             while !self.closed.get() && self.close_request.get() == Some(request_id) {
                 self.sta.drain();
                 if self.closed.get() || self.close_request.get().is_none() {
                     break;
                 }
-                if !sent {
+                if sent.is_none() {
                     if let Some(channel) = self.channel.borrow().as_ref() {
                         channel
                             .send(bridge::CloseRequest {
@@ -986,7 +1036,7 @@ impl Embedded_Impl {
                                 discard,
                             })
                             .map_err(|e| Error::new(E_FAIL, e.to_string()))?;
-                        sent = true;
+                        sent = Some(Instant::now());
                     } else if Instant::now() >= connect_deadline {
                         return Err(Error::new(
                             OLE_E_PROMPTSAVECANCELLED,
@@ -994,9 +1044,16 @@ impl Embedded_Impl {
                         ));
                     }
                 }
-                if self.sta.control.stop.load(Ordering::Acquire)
-                    || !self.sta.pump(if sent { INFINITE } else { 100 })
-                {
+                let timeout = match sent {
+                    None => 100,
+                    // A silent request the editor never answers leaves the object open; Office
+                    // may retry. A prompt waits for the user.
+                    Some(at) => match sent_close_wait(prompt, at, Instant::now()) {
+                        Some(timeout) => timeout,
+                        None => return Err(close_retry()),
+                    },
+                };
+                if self.sta.control.stop.load(Ordering::Acquire) || !self.sta.pump(timeout) {
                     break;
                 }
             }
@@ -1007,6 +1064,7 @@ impl Embedded_Impl {
             }
         })();
         self.close_request.set(None);
+        self.close_discards.set(false);
         self.sta.waiting_for_editor.set(false);
         result
     }
@@ -1212,7 +1270,9 @@ impl IOleObject_Impl for Embedded_Impl {
             if let Some(previous) = &previous {
                 self.sta.editor_closed(previous);
             }
-            if let Some(site) = self.site.borrow().clone() {
+            // End the borrow first: the container may call SetClientSite from OnShowWindow.
+            let site = self.site.borrow().clone();
+            if let Some(site) = site {
                 unsafe {
                     let _ = site.OnShowWindow(true);
                 }

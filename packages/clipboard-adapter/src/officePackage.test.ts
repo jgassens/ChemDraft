@@ -269,23 +269,31 @@ describe("PowerPoint picture media lookup", () => {
 
   function alternate(branches: string, tail = ""): string {
     return `<p:sld xmlns:p="${presentation}" xmlns:a="${drawing}" xmlns:r="${officeRelationships}"
-      xmlns:mc="${markupCompatibility}" xmlns:p14="http://schemas.microsoft.com/office/powerpoint/2010/main">
+      xmlns:mc="${markupCompatibility}" xmlns:p14="http://schemas.microsoft.com/office/powerpoint/2010/main"
+      xmlns:future="urn:example:future-presentation">
       <mc:AlternateContent>${branches}</mc:AlternateContent>${tail}
     </p:sld>`;
   }
 
   it("uses the first Choice whose scoped namespace URIs are all understood", () => {
     const xml = alternate(`
-      <mc:Choice Requires="p p14">${picture(3, "rId4")}</mc:Choice>
+      <mc:Choice Requires="p future">${picture(3, "rId4")}</mc:Choice>
       <mc:Choice Requires="draw r" xmlns:draw="${drawing}">${picture(3, "rId2")}</mc:Choice>
       <mc:Choice Requires="p">${picture(3, "rId3")}</mc:Choice>
       <mc:Fallback>${picture(3, "rId3")}</mc:Fallback>`);
     expect(pptxSlidePictureMedia(xml, relationships, 3)).toBe("ppt/media/image1.png");
   });
 
+  it("selects a Choice that requires the PowerPoint 2010 namespace, as PowerPoint does", () => {
+    const xml = alternate(`
+      <mc:Choice Requires="p14">${picture(3, "rId3")}</mc:Choice>
+      <mc:Fallback>${picture(3, "rId2")}</mc:Fallback>`);
+    expect(pptxSlidePictureMedia(xml, relationships, 3)).toBe("ppt/media/group & child.png");
+  });
+
   it("uses the fallback when all choices require unsupported namespaces", () => {
     const xml = alternate(`
-      <mc:Choice Requires="p14">${picture(3, "rId2")}</mc:Choice>
+      <mc:Choice Requires="future">${picture(3, "rId2")}</mc:Choice>
       <mc:Choice Requires="a" xmlns:a="urn:unsupported">${picture(3, "rId2")}</mc:Choice>
       <mc:Fallback>${picture(3, "rId3")}</mc:Fallback>`);
     expect(pptxSlidePictureMedia(xml, relationships, 3)).toBe("ppt/media/group & child.png");
@@ -295,7 +303,7 @@ describe("PowerPoint picture media lookup", () => {
     const xml = alternate(`<mc:Choice Requires="p">
       <p:pic><p:nvPicPr><p:cNvPr id="3"/></p:nvPicPr><p:blipFill>
         <mc:AlternateContent>
-          <mc:Choice Requires="p14"><a:blip r:embed="rId3"/></mc:Choice>
+          <mc:Choice Requires="future"><a:blip r:embed="rId3"/></mc:Choice>
           <mc:Fallback><a:blip r:embed="rId2"/></mc:Fallback>
         </mc:AlternateContent>
       </p:blipFill></p:pic>
@@ -306,7 +314,7 @@ describe("PowerPoint picture media lookup", () => {
   it("rejects a target ID in multiple effective branches", () => {
     const xml = alternate(
       `<mc:Choice Requires="p">${picture(3, "rId2")}</mc:Choice>`,
-      alternate(`<mc:Choice Requires="p14">${picture(4, "rId4")}</mc:Choice>
+      alternate(`<mc:Choice Requires="future">${picture(4, "rId4")}</mc:Choice>
         <mc:Fallback>${picture(3, "rId3")}</mc:Fallback>`),
     );
     expect(() => pptxSlidePictureMedia(xml, relationships, 3)).toThrow(/Duplicate shape ID/);
@@ -355,6 +363,17 @@ describe("Flat OPC binary parts", () => {
   it("normalizes literal attribute whitespace and preserves referenced characters", () => {
     const xml = flatOpcBinary("QQ==").replace("image.png", "one\r\ntwo&#9;&#x1F4C4;.png");
     expect(flatOpcBinaryParts(xml)[0].name).toBe("/word/media/one two\t📄.png");
+  });
+
+  it("rejects duplicate part names, compared case-insensitively, before decoding", () => {
+    const part = (name: string, data: string) =>
+      `<pkg:part pkg:name="${name}" pkg:contentType="image/png"><pkg:binaryData>${data}</pkg:binaryData></pkg:part>`;
+    const xml = (second: string) => `<pkg:package xmlns:pkg="${flatOpc}">
+      ${part("/word/media/image1.png", "QUJD")}${part(second, "REVG")}</pkg:package>`;
+    expect(() => flatOpcBinaryParts(xml("/word/media/image1.png"))).toThrow(/duplicate part names/);
+    expect(() => flatOpcBinaryParts(xml("/Word/Media/IMAGE1.png"))).toThrow(/duplicate part names/);
+    expect(flatOpcBinaryParts(xml("/word/media/image2.png")).map(({ name }) => name))
+      .toEqual(["/word/media/image1.png", "/word/media/image2.png"]);
   });
 
   it("treats markup-like CDATA as literal text and rejects elements inside binaryData", () => {

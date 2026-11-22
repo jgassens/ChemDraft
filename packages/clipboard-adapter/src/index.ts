@@ -2,7 +2,7 @@ import { MAX_IMAGE_OBJECT_BYTES, normalizeAtomIsotope, isSvgImageSource, readSvg
 export { CHEMDRAFT_PNG_SELECTION_KEYWORD, pngWithChemDraftSelection, readChemDraftSelectionFromPng } from "./pngSelection";
 export type { CarrierReadResult } from "./pngSelection";
 export { decodeBase64Bounded, UnsupportedDecompressionError } from "./carrierBytes";
-export { flatOpcBinaryParts, pptxSlidePictureMedia, readZip, readZipFromBase64 } from "./officePackage";
+export { flatOpcBinaryParts, pptxChoiceIsUnderstood, pptxSlidePictureMedia, readZip, readZipFromBase64 } from "./officePackage";
 export type { FlatOpcBinaryPart, OfficeZipCaps, OfficeZipEntry } from "./officePackage";
 export { importOfficeStructures, OFFICE_IMPORT_LIMITS, OfficeImportError, readCarrierEnvelope, SUPPORTED_CARRIER_VERSIONS } from "./officeImport";
 export {

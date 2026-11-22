@@ -1,5 +1,7 @@
 //! OLE decisions shared by the Windows implementation and host-independent tests.
 
+use std::time::{Duration, Instant};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PersistState {
     Uninitialized,
@@ -87,6 +89,31 @@ impl CloseOption {
             _ => CloseDecision::Finish { save: dirty },
         }
     }
+}
+
+/// Whether an editor whose window was destroyed saves its published drawing into Office. A pending
+/// `OLECLOSE_NOSAVE` close still holds: Office asked for no save, and losing the window does not
+/// change that. Every other close, and none, keeps the save attempt.
+pub(super) fn destroyed_editor_saves(published: bool, discarding: bool) -> bool {
+    published && !discarding
+}
+
+/// How long `IOleObject::Close` waits for the editor's answer to a close request the user does not
+/// see (`OLECLOSE_SAVEIFDIRTY` or `OLECLOSE_NOSAVE` with the window open).
+pub(super) const EDITOR_CLOSE_RESPONSE: Duration = Duration::from_secs(10);
+
+/// The STA's next wait, in milliseconds, for the editor's answer to a close request sent at `sent`;
+/// `None` once a silent request has gone unanswered too long and `Close` must return a retryable
+/// error. A prompt waits for the user without a deadline (`u32::MAX` is Windows' `INFINITE`).
+pub(super) fn sent_close_wait(prompt: bool, sent: Instant, now: Instant) -> Option<u32> {
+    if prompt {
+        return Some(u32::MAX);
+    }
+    let left = (sent + EDITOR_CLOSE_RESPONSE).saturating_duration_since(now);
+    if left.is_zero() {
+        return None;
+    }
+    Some(left.as_millis().clamp(1, u128::from(u32::MAX - 1)) as u32)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -210,6 +237,49 @@ mod tests {
                     prompt: true,
                     discard: false
                 }
+            );
+        }
+    }
+
+    #[test]
+    fn a_destroyed_editor_honors_a_pending_no_save_close() {
+        assert!(destroyed_editor_saves(true, false));
+        assert!(!destroyed_editor_saves(true, true));
+        assert!(!destroyed_editor_saves(false, false));
+        assert!(!destroyed_editor_saves(false, true));
+    }
+
+    #[test]
+    fn a_silent_close_request_has_a_deadline_and_a_prompt_does_not() {
+        let sent = Instant::now();
+        let later = |ms| sent + Duration::from_millis(ms);
+        assert_eq!(
+            sent_close_wait(true, sent, later(3_600_000)),
+            Some(u32::MAX)
+        );
+        assert_eq!(sent_close_wait(false, sent, sent), Some(10_000));
+        assert_eq!(sent_close_wait(false, sent, later(9_999)), Some(1));
+        assert_eq!(sent_close_wait(false, sent, later(4_000)), Some(6_000));
+        assert_eq!(sent_close_wait(false, sent, later(10_000)), None);
+        assert_eq!(sent_close_wait(false, sent, later(60_000)), None);
+    }
+
+    /// A temporary in an `if let` or `match` scrutinee lives through the whole block, so a client
+    /// site borrowed there stays borrowed while the container runs a callback such as
+    /// `OnShowWindow`; a nested `SetClientSite` on the same STA would then panic in COM.
+    #[test]
+    fn the_client_site_is_never_borrowed_across_a_container_call() {
+        let server = include_str!("server.rs");
+        for (index, line) in server.lines().enumerate() {
+            if !line.contains("self.site.borrow()") {
+                continue;
+            }
+            let statement = line.trim_start();
+            assert!(
+                statement.starts_with("let site = self.site.borrow().clone()")
+                    || statement == "self.site.borrow().clone().ok_or_else(|| E_FAIL.into())",
+                "server.rs:{}: {statement}",
+                index + 1
             );
         }
     }

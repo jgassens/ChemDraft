@@ -10,7 +10,9 @@ import { chunk, chunks } from '../png.mjs';
 import { readZip } from '../zip.mjs';
 import { CLSID, DOCUMENT_STREAM, MAX_CFB_BYTES, PROG_ID, USER_TYPE, readCfb, writeCfb } from './cfb-writer.mjs';
 import { decodePng, previewEmf } from './emf-writer.mjs';
-import { inspectOle } from './inspect-ole.mjs';
+import { emfInWmf, inspectOle } from './inspect-ole.mjs';
+import { makeOleDocuments } from './make-ole-docs.mjs';
+import { inspectOleMarkup } from './ole-markup.mjs';
 import { writeZip } from './zip-compat.mjs';
 
 const png = readFileSync('packages/fixtures/office/carriers/png-itxt.png');
@@ -586,5 +588,74 @@ describe('Office packages', () => {
       oleObjects: [{ matchesManifest: false, orphan: true,
         document: { present: true, sha256: sha256(edited), matchesManifest: false } }],
     });
+  });
+});
+
+describe('review fixes', () => {
+  it('assembles WMFC chunks only when they are consecutive and match their declared record count', () => {
+    const emf = Buffer.from('0123456789abcdef');
+    const record = (offset: number, count: number) => {
+      const data = emf.subarray(offset, offset + 8);
+      const item = Buffer.alloc(44 + data.length);
+      item.writeUInt32LE(item.length / 2);
+      item.writeUInt16LE(0x0626, 4);
+      item.writeUInt16LE(0x000f, 6);
+      item.writeUInt16LE(34 + data.length, 8);
+      item.writeUInt32LE(0x43464d57, 10);
+      item.writeUInt32LE(1, 14);
+      item.writeUInt32LE(count, 28);
+      item.writeUInt32LE(data.length, 32);
+      item.writeUInt32LE(emf.length - offset - data.length, 36);
+      item.writeUInt32LE(emf.length, 40);
+      data.copy(item, 44);
+      return item;
+    };
+    const other = Buffer.from([4, 0, 0, 0, 0x03, 0x01, 8, 0]);
+    const wmf = (records: Buffer[]) => {
+      const header = Buffer.alloc(18);
+      header.writeUInt16LE(1);
+      header.writeUInt16LE(9, 2);
+      header.writeUInt16LE(0x300, 4);
+      return Buffer.concat([header, ...records, Buffer.from([3, 0, 0, 0, 0, 0])]);
+    };
+    expect(emfInWmf(wmf([other, record(0, 2), record(8, 2), other]))).toEqual(emf);
+    expect(() => emfInWmf(wmf([record(0, 2), other, record(8, 2)]))).toThrow('interrupted by another record');
+    expect(() => emfInWmf(wmf([record(0, 3), record(8, 3)]))).toThrow('Incomplete EMF in WMF comments');
+  });
+
+  it('reads cached EMF only under the standard CF_ENHMETAFILE format ID, not a registered name', () => {
+    const emf = readFileSync(join(output, 'preview.emf'));
+    const [object] = inspectOle(writeZip([
+      ['ppt/embeddings/oleObject1.bin', compoundWithCache(cachedPresentation('CF_ENHMETAFILE', emf))],
+    ])).oleObjects;
+    expect(object.presentations).toMatchObject([{ clipboardFormat: { id: null, name: 'CF_ENHMETAFILE' }, preview: null, error: null }]);
+  });
+
+  it('hashes the baseline PNG through IEND, so a padded input still matches its EMF+ copy', () => {
+    const out = join(temp, 'padded');
+    const manifest = makeOleDocuments({ png: Buffer.concat([png, Buffer.alloc(1)]), document, outDir: out });
+    expect(manifest.sha256.png).toBe(sha256(png));
+    expect(inspectOle(readFileSync(join(out, 'ole-ppt.pptx')), manifest).previews)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ originalPngInEmfPlus: true })]));
+  });
+
+  it('gives a fallback picture to OLE frames only when each Choice holds exactly one frame', () => {
+    const ns = 'http://schemas.openxmlformats.org';
+    const frame = (id: number) => `<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="${id}" name="f"/></p:nvGraphicFramePr>` +
+      '<a:graphic><a:graphicData uri="x"><p:oleObj r:id="rId2"><p:embed/></p:oleObj></a:graphicData></a:graphic></p:graphicFrame>';
+    const picture = '<p:pic><p:nvPicPr><p:cNvPr id="9" name="p"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr>' +
+      '<p:blipFill><a:blip r:embed="rId3"/></p:blipFill></p:pic>';
+    const previews = (choices: string) => inspectOleMarkup(new Map([
+      ['ppt/slides/slide1.xml', Buffer.from(`<p:sld xmlns:p="${ns}/presentationml/2006/main" xmlns:a="${ns}/drawingml/2006/main" ` +
+        `xmlns:r="${ns}/officeDocument/2006/relationships" xmlns:mc="${ns}/markup-compatibility/2006"><p:cSld><p:spTree>` +
+        `<mc:AlternateContent>${choices}<mc:Fallback>${picture}</mc:Fallback></mc:AlternateContent></p:spTree></p:cSld></p:sld>`)],
+      ['ppt/slides/_rels/slide1.xml.rels', Buffer.from(`<Relationships xmlns="${ns}/package/2006/relationships">` +
+        `<Relationship Id="rId2" Type="${ns}/officeDocument/2006/relationships/oleObject" Target="../embeddings/oleObject1.bin"/>` +
+        `<Relationship Id="rId3" Type="${ns}/officeDocument/2006/relationships/image" Target="../media/image1.emf"/></Relationships>`)],
+      ['ppt/embeddings/oleObject1.bin', Buffer.alloc(1)],
+      ['ppt/media/image1.emf', Buffer.alloc(1)],
+    ])).embeddings.map((embedding: { previews: unknown[] }) => embedding.previews.length);
+    expect(previews(`<mc:Choice Requires="v">${frame(2)}${frame(3)}</mc:Choice>`)).toEqual([0, 0]);
+    expect(previews(`<mc:Choice Requires="v">${frame(2)}</mc:Choice><mc:Choice Requires="w">${frame(2)}</mc:Choice>`)).toEqual([1, 1]);
   });
 });

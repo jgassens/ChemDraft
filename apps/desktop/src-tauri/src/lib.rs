@@ -950,16 +950,26 @@ enum QuitCancelOutcome {
     Committed,
 }
 
+#[cfg(test)]
 fn cancel_quit_with(flow: &QuitFlow, request_id: u64) -> QuitCancelOutcome {
+    cancel_quit_prompt(flow, request_id).0
+}
+
+/// The cancellation's outcome, and whether this call ended a prompt that was still waiting for the
+/// user. A retried cancellation reports `Cancelled` again but ends nothing, so only the first one
+/// releases the Office quit reservation: a retry arriving while a later quit prepares its Office
+/// editors (its own prompt not yet requested) must not release that quit's reservation.
+fn cancel_quit_prompt(flow: &QuitFlow, request_id: u64) -> (QuitCancelOutcome, bool) {
     let mut prompt = flow.prompt.lock().unwrap();
     if prompt.1 == QuitPromptPhase::Flushing || flow.in_progress() {
-        return QuitCancelOutcome::Committed;
+        return (QuitCancelOutcome::Committed, false);
     }
     if request_id == 0 || prompt.0 != request_id {
-        return QuitCancelOutcome::Superseded;
+        return (QuitCancelOutcome::Superseded, false);
     }
+    let ended = prompt.1 != QuitPromptPhase::Idle;
     prompt.1 = QuitPromptPhase::Idle;
-    QuitCancelOutcome::Cancelled
+    (QuitCancelOutcome::Cancelled, ended)
 }
 
 #[tauri::command]
@@ -1016,13 +1026,15 @@ async fn cancel_quit(
     request_id: u64,
 ) -> Result<QuitCancelOutcome, String> {
     authorize_quit_window(window.label())?;
-    let outcome = cancel_quit_with(&QUIT, request_id);
+    let (outcome, ended_prompt) = cancel_quit_prompt(&QUIT, request_id);
     #[cfg(windows)]
-    if outcome == QuitCancelOutcome::Cancelled {
+    if ended_prompt {
         if let Some(server) = window.try_state::<office_ole::server::Server>() {
             server.cancel_quit();
         }
     }
+    #[cfg(not(windows))]
+    let _ = ended_prompt;
     Ok(outcome)
 }
 
@@ -14663,6 +14675,34 @@ mod tests {
         assert_eq!(cancel_quit_with(flow, id), QuitCancelOutcome::Cancelled);
         assert!(!prompt_waits_for_user(flow));
         assert!(lock_window_creation_with(flow).is_ok());
+    }
+
+    /// Only the cancellation that ends a waiting prompt releases the Office quit reservation. A
+    /// retried cancellation of an earlier prompt, arriving while a later quit is still preparing
+    /// its Office editors, still answers `Cancelled` but releases nothing.
+    #[test]
+    fn a_retried_cancel_never_releases_a_later_quits_office_reservation() {
+        let flow = test_quit_flow(Duration::from_millis(400), Duration::from_millis(20));
+        let host = StuckAppHost::new(true);
+        let first = request_prompted_quit_with(flow, &host).unwrap();
+        assert_eq!(
+            cancel_quit_prompt(flow, first),
+            (QuitCancelOutcome::Cancelled, true)
+        );
+        assert_eq!(
+            cancel_quit_prompt(flow, first),
+            (QuitCancelOutcome::Cancelled, false)
+        );
+        let next = request_prompted_quit_with(flow, &host).unwrap();
+        assert!(acknowledge_quit_prompt(flow, next, true));
+        assert_eq!(
+            cancel_quit_prompt(flow, first),
+            (QuitCancelOutcome::Superseded, false)
+        );
+        assert_eq!(
+            cancel_quit_prompt(flow, next),
+            (QuitCancelOutcome::Cancelled, true)
+        );
     }
 
     #[test]

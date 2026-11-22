@@ -32,6 +32,12 @@ export class OfficePaneSession {
   private readEditor?: () => ChemDraftDocument;
   private selectionVersion = 0;
   private writing = false;
+  /**
+   * Set by a successful Update until a selection read completes. The host may give the replacement a
+   * new key (PowerPoint inserts a new shape), so the picture carrying the JSON just written stays bound
+   * to the editor, and the Update's message, warnings included, survives a newer selection read.
+   */
+  private written?: { json: string; message: string };
   private disposed = false;
 
   constructor(
@@ -129,13 +135,21 @@ export class OfficePaneSession {
       result = refuse("Could not read the Office selection. " + errorMessage(error));
     }
     if (this.disposed || request !== this.selectionVersion) return;
-    if (this.active && sameStructure(this.active, result)) {
+    const written = this.written;
+    this.written = undefined;
+    success ??= written?.message;
+    const replacement = result.kind === "structure" && result.json === written?.json;
+    if (this.active && result.kind === "structure" && (replacement || sameStructure(this.active, result))) {
+      this.active = result;
       this.patch({
         busy: false, selected: true, confirmDiscard: false, updateRefusal: result.updateRefusal,
         status: success ?? result.updateRefusal ?? "Structure ready to edit.",
       });
     } else if (this.isDirty()) {
-      this.patch({ busy: false, selected: false, confirmDiscard: true, status: "Discard your edits and open the Office selection?" });
+      this.patch({
+        busy: false, selected: false, confirmDiscard: true,
+        status: [success, "Discard your edits and open the Office selection?"].filter(Boolean).join(" "),
+      });
     } else {
       this.load(result, success);
     }
@@ -170,14 +184,13 @@ export class OfficePaneSession {
       this.baseline = document;
       this.active = this.active ? { ...this.active, json } : undefined;
       resultMessage = ["Structure updated.", ...warnings, ...(result.warnings ?? [])].join(" ");
+      this.written = { json, message: resultMessage };
     } catch (error) {
       resultMessage = errorMessage(error);
     } finally {
       this.writing = false;
     }
-    if (updated) {
-      await this.refresh({ success: resultMessage });
-    } else if (version !== this.selectionVersion) {
+    if (updated || version !== this.selectionVersion) {
       await this.refresh();
     } else {
       this.patch({ busy: false, status: resultMessage });

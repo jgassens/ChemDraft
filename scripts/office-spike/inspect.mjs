@@ -72,13 +72,19 @@ const xmlText = text => text.replace(/&(#x[\da-f]+|#\d+|amp|quot|apos|lt|gt);/gi
   if (entity[0] === '#') return String.fromCodePoint(parseInt(entity.slice(entity[1] === 'x' ? 2 : 1), entity[1] === 'x' ? 16 : 10));
   return { amp: '&', quot: '"', apos: "'", lt: '<', gt: '>' }[entity];
 });
+// Relationship parts may be UTF-16 with a byte order mark, as ole-markup.mjs also accepts.
+function xmlPartText(bytes) {
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder('utf-16le').decode(bytes.subarray(2));
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder('utf-16be').decode(bytes.subarray(2));
+  return bytes.toString('utf8');
+}
 function relationshipReferences(entries) {
   const references = new Map();
   for (const rel of entries.filter(x => /(?:^|\/)_rels\/[^/]*\.rels$/.test(x.name))) {
     const match = /^(?:(.*)\/)?_rels\/(.*)\.rels$/.exec(rel.name);
     if (!match) continue;
     const part = posix.join(match[1] ?? '', match[2]);
-    const xml = rel.data.toString('utf8').replace(/<!--[\s\S]*?-->/g, '');
+    const xml = xmlPartText(rel.data).replace(/<!--[\s\S]*?-->/g, '');
     for (const tag of xml.matchAll(/<(?:[\w.-]+:)?Relationship\b([^>]*?)\/?\s*>/g)) {
       const attrs = Object.fromEntries([...tag[1].matchAll(/([\w:]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)].map(m => [m[1], xmlText(m[2] ?? m[3])]));
       if (!attrs.Target || attrs.TargetMode === 'External') continue;
@@ -99,7 +105,12 @@ export function inspectPath(path, expect, traversal = { depth: 0, budget: { coun
     if (traversal.depth >= 4) return failure('Input directory depth exceeds 4');
     const names = readdirSync(path).filter(name => name !== 'index.json' && name !== 'manifest.json');
     if (names.length > 2000 - traversal.budget.count) return failure('Input path count exceeds 2000');
-    return names.flatMap(name => inspectPath(join(path, name), expect, { depth: traversal.depth + 1, budget: traversal.budget }));
+    // A child that cannot be read (for example removed after the listing) gets its own error row.
+    return names.flatMap(name => {
+      const child = join(path, name);
+      try { return inspectPath(child, expect, { depth: traversal.depth + 1, budget: traversal.budget }); }
+      catch (error) { return [{ container: child, entry: name, error: error.message }]; }
+    });
   }
   if (stat.size > 200 * 1024 * 1024) return failure('Input exceeds 200 MB');
   const buf = readFileSync(path);
@@ -120,8 +131,8 @@ export function inspectPath(path, expect, traversal = { depth: 0, budget: { coun
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   const args = process.argv.slice(2), json = args.includes('--json');
   const index = args.indexOf('--expect');
-  const expect = index < 0 ? undefined : args[index + 1];
-  if (index >= 0 && !/^[a-f\d]{64}$/i.test(expect ?? '')) throw new Error('--expect requires a SHA-256 hex digest');
+  const expect = index < 0 ? undefined : args[index + 1]?.toLowerCase();
+  if (index >= 0 && !/^[a-f\d]{64}$/.test(expect ?? '')) throw new Error('--expect requires a SHA-256 hex digest');
   if (index >= 0) args.splice(index, 2);
   const outIndex = args.indexOf('--out');
   const out = outIndex < 0 ? undefined : args[outIndex + 1];

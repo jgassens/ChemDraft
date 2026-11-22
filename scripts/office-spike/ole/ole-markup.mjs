@@ -262,17 +262,22 @@ export function inspectOleMarkup(parts) {
         if (is(branch, mc, 'Fallback')) fallbackEmbeddings.add(group);
         if (!embedding.live || !is(branch, mc, 'Choice')) continue;
         if (!choiceEmbeddings.has(group)) choiceEmbeddings.set(group, []);
-        choiceEmbeddings.get(group).push(embedding);
+        choiceEmbeddings.get(group).push({ embedding, branch });
       }
     }
 
-    // A fallback can replace a single OLE frame with a picture outside p:oleObj.
+    // A fallback can replace a single OLE frame with a picture outside p:oleObj. Each Choice must
+    // hold exactly one frame: two frames in one Choice leave the picture ambiguous even when they
+    // share an object part, while mutually exclusive Choices may each describe the one frame.
     for (const [group, pictures] of pictureFallbacks) {
       const choices = choiceEmbeddings.get(group) ?? [];
+      const framesPerChoice = new Map();
+      for (const { branch } of choices) framesPerChoice.set(branch, (framesPerChoice.get(branch) ?? 0) + 1);
       if (fallbackEmbeddings.has(group) || pictures.length !== 1 ||
-          new Set(choices.map(embedding => embedding.target)).size !== 1) continue;
+          [...framesPerChoice.values()].some(count => count !== 1) ||
+          new Set(choices.map(({ embedding }) => embedding.target)).size !== 1) continue;
       const previews = pictureBlips(pictures[0]).map(blip => image(part, relationshipId(blip, 'embed'), blip));
-      for (const embedding of choices) embedding.previews.push(...previews);
+      for (const { embedding } of choices) embedding.previews.push(...previews);
     }
   }
 

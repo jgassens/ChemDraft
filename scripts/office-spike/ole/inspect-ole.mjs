@@ -85,14 +85,14 @@ const WMF_ESCAPE = 0x0626, MFCOMMENT = 0x000f, WMFC = 0x43464d57;
 // GetWinMetaFileBits stores the source EMF in META_ESCAPE MFCOMMENT records ("WMFC"
 // comments, MS-WMF META_ESCAPE_ENHANCED_METAFILE) ahead of the WMF rendering. Windows'
 // OLE cache writes a CF_ENHMETAFILE presentation that way, so reassemble that EMF.
-function emfInWmf(wmf) {
+export function emfInWmf(wmf) {
   let at = wmf.length >= 22 && wmf.readUInt32LE(0) === 0x9ac6cdd7 ? 22 : 0; // Placeable header.
   if (wmf.length - at < 18) throw new Error('Truncated WMF header');
   const headerWords = wmf.readUInt16LE(at + 2);
   if (headerWords !== 9) throw new Error('Invalid WMF header size');
   at += 18;
   const chunks = [];
-  let total = null, collected = 0, records = 0;
+  let total = null, collected = 0, records = 0, declaredRecords = null, sequenceRecords = 0;
   while (at < wmf.length) {
     if (++records > 100000) throw new Error('WMF record count exceeds 100000');
     if (wmf.length - at < 6) throw new Error('Truncated WMF record');
@@ -101,8 +101,18 @@ function emfInWmf(wmf) {
     const record = wmf.subarray(at, at + words * 2);
     at += record.length;
     if (func === 0) break; // META_EOF.
+    const inSequence = total !== null && collected < total;
     if (func !== WMF_ESCAPE || record.length < 44 || record.readUInt16LE(6) !== MFCOMMENT ||
-        record.readUInt32LE(10) !== WMFC || record.readUInt32LE(14) !== 1) continue;
+        record.readUInt32LE(10) !== WMFC || record.readUInt32LE(14) !== 1) {
+      // MS-WMF: the comment records carrying one EMF are consecutive.
+      if (inSequence) throw new Error('EMF chunks in WMF comments are interrupted by another record');
+      continue;
+    }
+    const commentRecords = record.readUInt32LE(28);
+    if (declaredRecords === null) declaredRecords = commentRecords;
+    if (commentRecords !== declaredRecords || ++sequenceRecords > declaredRecords) {
+      throw new Error('Inconsistent EMF comment record count in WMF');
+    }
     const byteCount = record.readUInt16LE(8), current = record.readUInt32LE(32);
     const remaining = record.readUInt32LE(36), size = record.readUInt32LE(40);
     if (total === null) total = size;
@@ -114,7 +124,7 @@ function emfInWmf(wmf) {
     collected += current;
   }
   if (total === null) return null;
-  if (collected !== total) throw new Error('Incomplete EMF in WMF comments');
+  if (collected !== total || sequenceRecords !== declaredRecords) throw new Error('Incomplete EMF in WMF comments');
   return Buffer.concat(chunks, total);
 }
 
@@ -163,7 +173,8 @@ function presentationReport(name, bytes, expected) {
     at += 28;
     if (size > bytes.length - at) throw new Error('Truncated presentation data');
     let preview = null;
-    if (clipboardFormat?.name === 'CF_ENHMETAFILE') {
+    // Dispatch on the standard format ID; a registered format may carry any name.
+    if (clipboardFormat?.id === 14) {
       const cached = cachedEnhancedMetafile(bytes.subarray(at, at + size));
       dataType = cached.dataType;
       embeddedEmfSize = cached.dataType === 'wmf' ? cached.emf?.length ?? null : null;

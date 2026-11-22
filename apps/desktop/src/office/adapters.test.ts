@@ -3,7 +3,7 @@ import { Resvg } from "@resvg/resvg-js";
 import { flatOpcBinaryParts, pngWithChemDraftSelection } from "@chemdraft/clipboard-adapter";
 import { strToU8, zipSync } from "fflate";
 import { describe, expect, it, vi } from "vitest";
-import { type OfficeContext, type OfficeDocument } from "./host";
+import { readOfficeDocument, type OfficeContext, type OfficeDocument } from "./host";
 import { A, OPC, P, PIC, PKG_REL, R, WORD, WP, WP14, xmlDocument } from "./ooxml";
 import { powerpointAdapter, type PowerPointApi } from "./powerpoint";
 import { wordAdapter, type WordApi } from "./word";
@@ -138,6 +138,33 @@ describe("Word Office adapter", () => {
   });
 });
 
+describe("Office compressed-file reads", () => {
+  it("opens one file of a document at a time, so Office never sees a third open file", async () => {
+    const archive = zipSync({ "a.xml": strToU8("<a/>") });
+    const host = office({ sets: ["CompressedFile 1.1"], archive });
+    let open = 0;
+    let most = 0;
+    const closes: (() => void)[] = [];
+    host.document.getFileAsync.mockImplementation((_type, _options, result) => {
+      if (open === 2) return result({ status: "failed", value: undefined!, error: { message: "Too many open files." } });
+      most = Math.max(most, ++open);
+      result({ status: "succeeded", value: {
+        size: archive.length, sliceCount: 1,
+        getSliceAsync: (index, done) => done({ status: "succeeded", value: { index, size: archive.length, data: [...archive] } }),
+        // Office closes the file later, after the read has finished with it.
+        closeAsync: done => closes.push(() => { open--; done({ status: "succeeded", value: undefined }); }),
+      } });
+    });
+    const reads = [readOfficeDocument(host), readOfficeDocument(host), readOfficeDocument(host)];
+    for (let index = 0; index < 3; index++) {
+      await vi.waitFor(() => expect(closes).toHaveLength(index + 1));
+      closes[index]!();
+    }
+    for (const read of reads) expect((await read).map(entry => entry.name)).toEqual(["a.xml"]);
+    expect(most).toBe(1);
+  });
+});
+
 interface PptxOptions {
   rotation?: number; crop?: boolean; group?: boolean; noCarrier?: boolean;
   /** Attributes and children added to the picture's p:cNvPr. */
@@ -150,16 +177,21 @@ interface PptxOptions {
   animated?: boolean;
   /** The picture fills a slide layout placeholder (p:nvPicPr/p:nvPr/p:ph). */
   placeholder?: boolean;
+  /** Repeat the picture in an mc:Choice and its mc:Fallback, as PowerPoint 2010 and later may write it. */
+  alternate?: boolean;
 }
 
 function pptx({ rotation = 0, crop = false, group = false, noCarrier = false, properties = {}, shapeProperties = "",
-  relationships = "", animated = false, placeholder = false }: PptxOptions = {}) {
+  relationships = "", animated = false, placeholder = false, alternate = false }: PptxOptions = {}) {
   const picture = '<p:pic><p:nvPicPr><p:cNvPr id="22" name="Original figure"' + (properties.attributes ?? "") + '>' +
     (properties.children ?? "") + '</p:cNvPr>' +
     (placeholder ? '<p:cNvPicPr/><p:nvPr><p:ph type="pic" idx="13"/></p:nvPr>' : "") + '</p:nvPicPr>' +
     '<p:blipFill><a:blip r:embed="rId7"/><a:srcRect' + (crop ? ' t="1000"' : "") + '/></p:blipFill>' +
     '<p:spPr><a:xfrm rot="' + rotation * 60000 + '"/>' + shapeProperties + '</p:spPr></p:pic>';
-  const wrapped = group ? "<p:grpSp>" + picture + "</p:grpSp>" : picture;
+  const branches = alternate ? '<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">' +
+    '<mc:Choice xmlns:p14="http://schemas.microsoft.com/office/powerpoint/2010/main" Requires="p14">' + picture +
+    "</mc:Choice><mc:Fallback>" + picture + "</mc:Fallback></mc:AlternateContent>" : picture;
+  const wrapped = group ? "<p:grpSp>" + branches + "</p:grpSp>" : branches;
   const timing = animated ? '<p:timing><p:tnLst><p:par><p:cTn id="1"><p:childTnLst><p:anim><p:cBhvr><p:tgtEl>' +
     '<p:spTgt spid="22"/></p:tgtEl></p:cBhvr></p:anim></p:childTnLst></p:cTn></p:par></p:tnLst></p:timing>' : "";
   const slide = '<p:sld xmlns:p="' + P + '" xmlns:a="' + A + '" xmlns:r="' + R +
@@ -446,6 +478,29 @@ describe("PowerPoint Office adapter", () => {
 
   it("does not warn about an outline with no fill or an empty effect list", async () => {
     const { host, powerpoint } = powerpointHost({ shapeProperties: '<a:ln><a:noFill/></a:ln><a:effectLst/>' });
+    const adapter = powerpointAdapter(host, powerpoint);
+    await adapter.readSelectedStructure();
+    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({ kind: "replaced" });
+  });
+
+  it("reads a picture repeated in an mc:Choice and its mc:Fallback, counting only the selected branch", async () => {
+    const { host, powerpoint } = powerpointHost({ alternate: true });
+    const adapter = powerpointAdapter(host, powerpoint);
+    expect(await adapter.readSelectedStructure()).toMatchObject({ kind: "structure", json: sourceJson });
+    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({ kind: "replaced" });
+  });
+
+  it("names a picture shape other than a rectangle in the warning after Update", async () => {
+    for (const geometry of ['<a:prstGeom prst="ellipse"><a:avLst/></a:prstGeom>',
+      '<a:custGeom><a:pathLst><a:path w="1" h="1"><a:close/></a:path></a:pathLst></a:custGeom>']) {
+      const { host, powerpoint } = powerpointHost({ shapeProperties: geometry });
+      const adapter = powerpointAdapter(host, powerpoint);
+      await adapter.readSelectedStructure();
+      expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({
+        kind: "replaced", warnings: ["Not carried over from the old picture: its picture shape."],
+      });
+    }
+    const { host, powerpoint } = powerpointHost({ shapeProperties: '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>' });
     const adapter = powerpointAdapter(host, powerpoint);
     await adapter.readSelectedStructure();
     expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({ kind: "replaced" });

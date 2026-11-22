@@ -49,8 +49,14 @@ export function makePng(buf, envelope, kind, dpi) {
   }
   return Buffer.concat(output);
 }
+// All carrier chunks of one PNG share this budget, so many small, highly compressed chunks cannot
+// expand to gigabytes. One ordinary carrier is at most MAX_ENVELOPE.
+export const MAX_PNG_DECODED = 4 * MAX_ENVELOPE;
+
 export function pngFindings(buf) {
   const found = [], list = chunks(buf), ihdr = list[0].data;
+  let remaining = MAX_PNG_DECODED;
+  const exhausted = () => new Error(`PNG carrier data exceeds ${MAX_PNG_DECODED / 1024 / 1024} MB in total`);
   if (ihdr.length !== 13) throw new Error('Invalid PNG IHDR');
   let dpi = null;
   for (const { type, data } of list) {
@@ -64,8 +70,18 @@ export function pngFindings(buf) {
         offset = 12;
         for (let i = 0; i < 2; i++) { offset = data.indexOf(0, offset); if (offset < 0) throw new Error('Malformed iTXt'); offset++; }
       } else if (type === 'zTXt' && data[10] !== 0) throw new Error('Unsupported zTXt compression');
-      const envelope = compressed ? inflateSync(data.subarray(offset), { maxOutputLength: MAX_ENVELOPE }) : data.subarray(offset);
+      if (!remaining) throw exhausted();
+      const limit = Math.min(MAX_ENVELOPE, remaining);
+      let envelope;
+      try {
+        envelope = compressed ? inflateSync(data.subarray(offset), { maxOutputLength: limit }) : data.subarray(offset);
+      } catch (error) {
+        if (error.code === 'ERR_BUFFER_TOO_LARGE' && limit < MAX_ENVELOPE) throw exhausted();
+        throw error;
+      }
       if (envelope.length > MAX_ENVELOPE) throw new Error('PNG envelope exceeds 20 MB');
+      if (envelope.length > remaining) throw exhausted();
+      remaining -= envelope.length;
       found.push({ carrier: `png ${type}`, envelope });
     } catch (error) { found.push({ carrier: `png ${type}`, error: error.message }); }
   }

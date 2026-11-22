@@ -74,10 +74,23 @@ export function officeAsync<T>(call: (done: Done<T>) => void): Promise<T> {
   }));
 }
 
-export async function readOfficeDocument(context: OfficeContext) {
+/**
+ * Office keeps at most two files of a document open and rejects a third `getFileAsync`, so reads of
+ * one document run one at a time: each waits until the previous one has closed its file.
+ */
+const documentReads = new WeakMap<OfficeDocument, Promise<unknown>>();
+
+export function readOfficeDocument(context: OfficeContext) {
   if (!context.requirements.isSetSupported("CompressedFile", "1.1")) {
-    throw new Error("This version of Office cannot read the compressed document.");
+    return Promise.reject(new Error("This version of Office cannot read the compressed document."));
   }
+  const previous = documentReads.get(context.document) ?? Promise.resolve();
+  const read = previous.then(() => readCompressedFile(context), () => readCompressedFile(context));
+  documentReads.set(context.document, read.catch(() => undefined));
+  return read;
+}
+
+async function readCompressedFile(context: OfficeContext) {
   const sliceSize = 1024 * 1024;
   const file = await officeAsync<OfficeFile>(done => context.document.getFileAsync("compressed", { sliceSize }, done));
   let bytes: Uint8Array;

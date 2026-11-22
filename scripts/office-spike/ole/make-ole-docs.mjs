@@ -169,6 +169,8 @@ const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 export function makeOleDocuments({ png, document, outDir }) {
   JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(document));
   const pngChunks = chunks(png);
+  // inspect-ole.mjs hashes a PNG it finds in an EMF+ record through IEND, without trailing padding.
+  const pngThroughIend = png.subarray(0, pngChunks.reduce((end, item) => end + 12 + item.data.length, 8));
   const header = pngChunks[0].data;
   if (header.length !== 13) throw new Error('Invalid PNG IHDR length');
   const width = header.readUInt32BE(0);
@@ -186,7 +188,7 @@ export function makeOleDocuments({ png, document, outDir }) {
   const manifest = {
     clsid: CLSID, progId: PROG_ID,
     widthPx: width, heightPx: height, dpi, displayWidthIn: cx / inch, displayHeightIn: cy / inch,
-    sha256: { png: sha256(png), emf: sha256(emf), oleObject: sha256(object), json: sha256(document) },
+    sha256: { png: sha256(pngThroughIend), emf: sha256(emf), oleObject: sha256(object), json: sha256(document) },
   };
   const files = [
     ['preview.emf', emf],

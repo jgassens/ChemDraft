@@ -113,7 +113,8 @@ impl<T> Editor<T> {
     }
 }
 
-fn display_name<'a>(app: &'a str, document: &'a str) -> &'a str {
+/// The name a log or recovery file gives an object: its document, else its app.
+pub(super) fn display_name<'a>(app: &'a str, document: &'a str) -> &'a str {
     [document, app]
         .into_iter()
         .map(str::trim)

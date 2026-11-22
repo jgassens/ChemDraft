@@ -3,10 +3,11 @@ import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSyn
 import { join, resolve, posix } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { deflateRawSync } from 'node:zlib';
+import { writeZip } from './ole/zip-compat.mjs';
+import { deflateRawSync, deflateSync } from 'node:zlib';
 import { runInNewContext } from 'node:vm';
 import { makeEnvelope, checkEnvelope, sha256, MAX_ENVELOPE } from './payload.mjs';
-import { chunks, chunk, makePng, pngFindings, crc32 } from './png.mjs';
+import { chunks, chunk, makePng, pngFindings, crc32, MAX_PNG_DECODED } from './png.mjs';
 import { isSvg, makeSvg, svgFindings } from './svg.mjs';
 import { readZip } from './zip.mjs';
 import { makePdf, readPdf, pdfFindings } from './pdf.mjs';
@@ -1138,4 +1139,75 @@ it('runs both CLIs through a symlinked directory (a junction on Windows)', () =>
   const make = spawnSync(process.execPath, [join(link, 'make-carriers.mjs'), '--payload', join(fixtureDir, 'sample-document.json'), '--png', join(fixtureDir, 'sample.png'), '--svg', join(fixtureDir, 'sample.svg'), '--pdf', join(fixtureDir, 'sample.pdf'), '--out', out], { encoding: 'utf8' });
   expect(make.status, make.stderr).toBe(0);
   expect(JSON.parse(readFileSync(join(out, 'manifest.json'), 'utf8'))).toHaveLength(8);
+});
+
+describe('review fixes', () => {
+  it('bounds the carrier bytes decoded from one PNG in total, keeping each single carrier', () => {
+    const header = Buffer.alloc(13);
+    header.writeUInt32BE(1);
+    header.writeUInt32BE(1, 4);
+    header[8] = 8;
+    const carrier = chunk('zTXt', Buffer.concat([Buffer.from('chemdraft\0\0'), deflateSync(Buffer.alloc(MAX_ENVELOPE - 100, 32))]));
+    const bytes = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), chunk('IHDR', header),
+      ...Array(MAX_PNG_DECODED / MAX_ENVELOPE + 2).fill(carrier), chunk('IEND', Buffer.alloc(0))]);
+    const found = pngFindings(bytes).found;
+    expect(found.slice(0, -2).every(item => item.envelope?.length === MAX_ENVELOPE - 100)).toBe(true);
+    expect(found.slice(-2).map(item => item.error)).toEqual(Array(2).fill('PNG carrier data exceeds 80 MB in total'));
+  });
+
+  it('matches whole XML names for the SVG root and the payload element', () => {
+    expect(isSvg(Buffer.from('<svg-icon xmlns="http://www.w3.org/2000/svg"/>'))).toBe(false);
+    expect(isSvg(Buffer.from('<s:svg xmlns:s="http://www.w3.org/2000/svg"/>'))).toBe(true);
+    const encoded = deflateRawSync(envelope).toString('base64');
+    const svgWith = (name: string) => Buffer.from('<svg xmlns="http://www.w3.org/2000/svg">' +
+      `<${name} xmlns:cd="https://chemdraft.ai/ns/spike/1" encoding="base64-deflate">${encoded}</${name}></svg>`);
+    expect(svgFindings(svgWith('cd:payload-')).some(item => item.carrier === 'svg metadata')).toBe(false);
+    expect(svgFindings(svgWith('cd:payload')).some(item => item.carrier === 'svg metadata' && item.envelope)).toBe(true);
+  });
+
+  it('shares one decoding budget across an SVG\'s payloads', () => {
+    const large = deflateRawSync(Buffer.alloc(MAX_ENVELOPE - 10, 32)).toString('base64');
+    const text = '<svg xmlns="http://www.w3.org/2000/svg">' + `<!-- chemdraft:${large} -->`.repeat(3) + '</svg>';
+    expect(svgFindings(Buffer.from(text)).map(item => item.error ?? item.envelope?.length)).toEqual([
+      MAX_ENVELOPE - 10, 'SVG payloads exceed the 20 MB decoding budget', 'SVG payloads exceed the 20 MB decoding budget',
+    ]);
+  });
+
+  it('inserts the SVG carrier at the document root, keeping a prefixed root\'s namespace', () => {
+    const source = '<?xml version="1.0"?><!-- an <svg> mention --><svg:svg xmlns:svg="http://www.w3.org/2000/svg"><svg:rect/></svg:svg>';
+    const made = makeSvg(Buffer.from(source), envelope, 'metadata').toString();
+    expect(made.startsWith('<?xml version="1.0"?><!-- an <svg> mention --><svg:svg xmlns:svg="http://www.w3.org/2000/svg"><svg:metadata>')).toBe(true);
+    expect(made).toContain('</svg:metadata><svg:rect/>');
+    expect(svgFindings(Buffer.from(made)).some(item => item.envelope?.equals(envelope))).toBe(true);
+    expect(() => makeSvg(Buffer.from('<svg/>'), envelope, 'comment')).toThrow('SVG root start tag not found');
+  });
+
+  it('keeps sibling rows when one directory child cannot be read', () => {
+    const dir = join(temp, 'broken-child');
+    mkdirSync(dir);
+    writeFileSync(join(dir, 'a.png'), png);
+    symlinkSync(join(dir, 'missing'), join(dir, 'b.png'));
+    const rows = inspectPath(dir);
+    expect(rows.find(row => row.entry === 'a.png')?.error).toBeNull();
+    expect(rows.find(row => row.entry === 'b.png')?.error).toMatch(/ENOENT/);
+  });
+
+  it('reads UTF-16 relationship parts when listing media references', () => {
+    const rels = '<?xml version="1.0" encoding="UTF-16"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+      '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/></Relationships>';
+    const file = join(temp, 'utf16-rels.docx');
+    writeFileSync(file, writeZip([
+      ['word/_rels/document.xml.rels', Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(rels, 'utf16le')])],
+      ['word/media/image1.png', png],
+    ]));
+    expect(inspectPath(file).find(row => row.entry === 'word/media/image1.png')?.references).toEqual(['word/document.xml']);
+  });
+
+  it('accepts an uppercase --expect digest', () => {
+    const carrierPng = join(fixtureDir, 'carriers/png-itxt.png');
+    const digest = inspectPath(carrierPng)[0].findings[0].envelope.sha256;
+    const run = spawnSync(process.execPath, ['scripts/office-spike/inspect.mjs', carrierPng, '--json', '--expect', digest.toUpperCase()], { encoding: 'utf8' });
+    expect(run.status, run.stderr).toBe(0);
+    expect(JSON.parse(run.stdout)[0].findings[0].matchesExpect).toBe(true);
+  });
 });

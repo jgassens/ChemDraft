@@ -1,4 +1,4 @@
-import { pptxSlidePictureMedia, readZipFromBase64, type OfficeZipEntry } from "@chemdraft/clipboard-adapter";
+import { pptxChoiceIsUnderstood, pptxSlidePictureMedia, readZipFromBase64, type OfficeZipEntry } from "@chemdraft/clipboard-adapter";
 import {
   errorMessage, noStructure, officeAsync, readCarrier, readOfficeDocument, refuse, replacementImage, selectionChanged,
   type NoStructure, type OfficeContext, type OfficeHostAdapter, type Refusal, type SelectedStructure,
@@ -53,6 +53,24 @@ const needsRotation = "This picture is rotated. Updating it needs PowerPointApi 
 const grouped = "Grouped pictures cannot be edited in PowerPoint.";
 const marker = "CHEMDRAFT";
 const DECORATIVE = "http://schemas.microsoft.com/office/drawing/2017/decorative";
+const MC = "http://schemas.openxmlformats.org/markup-compatibility/2006";
+
+/**
+ * Whether a node lies in the branch of every enclosing mc:AlternateContent that PowerPoint, and
+ * `pptxSlidePictureMedia`, select: the first understood mc:Choice, otherwise mc:Fallback.
+ */
+function inSelectedBranches(node: Element) {
+  for (let branch = node.parentElement; branch?.parentElement; branch = branch.parentElement) {
+    const alternate = branch.parentElement;
+    if (alternate.namespaceURI !== MC || alternate.localName !== "AlternateContent") continue;
+    const selected = [...alternate.children].find(candidate => candidate.namespaceURI === MC &&
+      (candidate.localName === "Fallback" || (candidate.localName === "Choice" && pptxChoiceIsUnderstood(
+        (candidate.getAttribute("Requires") ?? "").split(/\s+/).filter(Boolean)
+          .map(prefix => candidate.lookupNamespaceURI(prefix))))));
+    if (selected !== branch) return false;
+  }
+  return true;
+}
 
 /**
  * Shape state read from the slide XML. Office.js cannot read most of it, so the XML is the only way to
@@ -104,6 +122,11 @@ function pictureState(doc: Document, shape: Element, properties: Element, rels: 
     return effect && (name !== "effectLst" || effect.children.length > 0);
   });
   if (outlined || effects || child(shape, P, "style")) lost.push("its border and effects");
+  // The replacement is inserted as a plain rectangle; a picture cut to an ellipse or other shape is not.
+  const geometry = child(spPr, A, "prstGeom");
+  if (child(spPr, A, "custGeom") || (geometry && (geometry.getAttribute("prst") ?? "rect") !== "rect")) {
+    lost.push("its picture shape");
+  }
   const blip = child(child(shape, P, "blipFill"), A, "blip");
   if (blip && [...blip.children].some(node => node.localName !== "extLst")) lost.push("its color adjustments");
   return {
@@ -153,7 +176,9 @@ async function readPicture(entries: OfficeZipEntry[], shapeId: string, slideId?:
   if (!rels) throw new Error("The selected PowerPoint slide has no image relationships.");
   const xml = decodeXml(slide.data);
   const doc = xmlDocument(xml);
-  const properties = [...doc.getElementsByTagNameNS(P, "cNvPr")].filter(node => node.getAttribute("id") === shapeId);
+  // Only the branches PowerPoint shows count: a picture may repeat in an inactive mc:Choice or mc:Fallback.
+  const properties = [...doc.getElementsByTagNameNS(P, "cNvPr")]
+    .filter(node => node.getAttribute("id") === shapeId && inSelectedBranches(node));
   if (properties.length > 1) throw new Error("The selected picture has an ambiguous shape ID.");
   const shape = properties[0]?.parentElement?.parentElement;
   if (shape?.localName !== "pic" || shape.namespaceURI !== P) return noStructure;

@@ -20,8 +20,19 @@ export function openOfficeDrawing(json: string) {
     ...draft, pages: [{ ...page, objects: payload.objects }],
     selection: { pageId: page.id, objectIds: [] },
   });
-  const fit = doc.pages[0]!;
-  if (fit.objects.length !== payload.objects.length) throw new Error("Some ChemDraft drawing objects could not be opened.");
+  // The copy scope leaves out group wrappers, which only frame their children. Put them back in
+  // page order, moved by the same offset as the drawing, so an Update keeps the grouping.
+  const fitted = new Map(doc.pages[0]!.objects.filter(object => object.type !== "group").map(object => [object.id, object]));
+  const moved = payload.objects.find(object => object.type !== "group");
+  const placed = moved && fitted.get(moved.id);
+  const dx = placed ? placed.x - moved.x : 0;
+  const dy = placed ? placed.y - moved.y : 0;
+  const objects = payload.objects.map(object =>
+    object.type === "group" ? { ...object, x: object.x + dx, y: object.y + dy } : fitted.get(object.id));
+  if (fitted.size !== objects.filter(object => object?.type !== "group").length || objects.some(object => !object)) {
+    throw new Error("Some ChemDraft drawing objects could not be opened.");
+  }
+  const fit = { ...doc.pages[0]!, objects: objects as typeof payload.objects };
   const width = Math.max(fit.width, 640);
   const height = Math.max(fit.height, 640);
   const layout = createCustomPageLayout(width, height, "css-px", { top: 0, right: 0, bottom: 0, left: 0 });

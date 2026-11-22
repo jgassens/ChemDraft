@@ -39,6 +39,9 @@ function* markup(text) {
   }
 }
 
+// A whole qualified name: `svg-icon` and `svgx` are not SVG roots.
+const svgRoot = /^<(?:([\w.-]+):)?svg(?=[\s/>]|$)/i;
+
 export function isSvg(buf) {
   // Avoid decoding a whole binary blob merely to sniff its type. An all-whitespace
   // prefix is allowed to continue so long SVG prologs are still recognised.
@@ -47,7 +50,7 @@ export function isSvg(buf) {
   let end = 0;
   for (const token of markup(text)) {
     if (text.slice(end, token.start).trim()) return false;
-    if (!/^<(!|\?)/.test(token.raw)) return /^<(?:[\w.-]+:)?svg\b/i.test(token.raw);
+    if (!/^<(!|\?)/.test(token.raw)) return svgRoot.test(token.raw);
     end = token.end;
   }
   return false;
@@ -55,13 +58,17 @@ export function isSvg(buf) {
 
 export function makeSvg(input, envelope, kind) {
   const text = input.toString('utf8');
-  const root = /<svg\b(?:[^>"']|"[^"]*"|'[^']*')*>/i.exec(text);
-  if (!root || /\/$/.test(root[0].slice(0, -1).trim())) throw new Error('SVG root start tag not found');
+  // The first element after the prolog, found by the same lexical scan the reader uses, so a
+  // comment or declaration that mentions <svg> is never taken for the root.
+  const root = [...markup(text)].find(token => !/^<[!?]/.test(token.raw));
+  const name = root && svgRoot.exec(root.raw);
+  if (!name || !root.raw.endsWith('>') || /\/\s*>$/.test(root.raw)) throw new Error('SVG root start tag not found');
   const value = deflateRawSync(envelope).toString('base64');
+  const metadata = name[1] ? `${name[1]}:metadata` : 'metadata';
   const child = kind === 'metadata'
-    ? `<metadata><chemdraft:payload xmlns:chemdraft="https://chemdraft.ai/ns/spike/1" encoding="base64-deflate">${value}</chemdraft:payload></metadata>`
+    ? `<${metadata}><chemdraft:payload xmlns:chemdraft="https://chemdraft.ai/ns/spike/1" encoding="base64-deflate">${value}</chemdraft:payload></${metadata}>`
     : `<!-- chemdraft:${value} -->`;
-  const at = root.index + root[0].length;
+  const at = root.end;
   return Buffer.from(text.slice(0, at) + child + text.slice(at));
 }
 
@@ -92,9 +99,18 @@ function attributes(raw) {
 
 export function svgFindings(buf) {
   const text = buf.toString('utf8'), result = [];
+  // Comments and metadata share one budget for everything this SVG decodes.
+  let remaining = MAX_ENVELOPE;
   const decode = (carrier, encoded) => {
-    try { result.push({ carrier, envelope: inflateRawSync(Buffer.from(encoded, 'base64'), { maxOutputLength: MAX_ENVELOPE }) }); }
-    catch (error) { result.push({ carrier, error: error.message }); }
+    if (!remaining) return result.push({ carrier, error: 'SVG payloads exceed the 20 MB decoding budget' });
+    try {
+      const envelope = inflateRawSync(Buffer.from(encoded, 'base64'), { maxOutputLength: remaining });
+      remaining -= envelope.length;
+      result.push({ carrier, envelope });
+    } catch (error) {
+      result.push({ carrier, error: error.code === 'ERR_BUFFER_TOO_LARGE'
+        ? 'SVG payloads exceed the 20 MB decoding budget' : error.message });
+    }
   };
   const stack = [];
   for (const token of markup(text)) {
@@ -105,7 +121,7 @@ export function svgFindings(buf) {
       if (/^[A-Za-z0-9+/=\s]+$/.test(encoded)) decode('svg comment', encoded);
       continue;
     }
-    const tag = /^<(\/)?([\w.-]+(?::[\w.-]+)?)\b/.exec(token.raw);
+    const tag = /^<(\/)?([\w.-]+(?::[\w.-]+)?)(?=[\s/>]|$)/.exec(token.raw);
     if (!tag) continue;
     const name = tag[2];
     if (tag[1]) {

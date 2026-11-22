@@ -83,7 +83,7 @@ slide's `p:timing` and relationships), because Office.js cannot read most of it.
 | Rotation | Restored and read back with PowerPointApi 1.10; without it a rotated picture is refused before anything is inserted |
 | Alt text title and description, decorative flag | Written with PowerPointApi 1.10 (`altTextTitle`, `altTextDescription`, `isDecorative`) and read back, so the new picture never keeps alt text PowerPoint generated for it. Title and description are read back whether or not the picture is decorative; a mismatch on a non-decorative picture fails the update and removes the new picture; on a decorative picture PowerPoint may clear them, so the update goes ahead and the warning names "its alt text". Without 1.10, alt text or a decorative flag on the old picture is named in the warning |
 | A plain click hyperlink to an external address | Written with `Shape.setHyperlink` (PowerPointApi 1.10). Office.js cannot read a shape's hyperlink back, so a write that fails, or a host without the method, is named in the warning instead |
-| Animations targeting the picture, links to slides, action settings, mouse-over actions, the hidden setting, locks, a border, effects or a style, color adjustments on the picture, membership of a slide layout placeholder (`p:nvPicPr/p:nvPr/p:ph`) | No Office.js API writes these; when the slide XML shows the old picture had any of them, Update still succeeds and, after it, the pane names them: "Not carried over from the old picture: animations, its link, its place in the slide layout (placeholder)." The new picture is an ordinary picture. No warning is shown when the old picture had none |
+| Animations targeting the picture, links to slides, action settings, mouse-over actions, the hidden setting, locks, a border, effects or a style, color adjustments on the picture, a picture shape other than a rectangle (`a:prstGeom` other than `rect`, or `a:custGeom`), membership of a slide layout placeholder (`p:nvPicPr/p:nvPr/p:ph`) | No Office.js API writes these; when the slide XML shows the old picture had any of them, Update still succeeds and, after it, the pane names them: "Not carried over from the old picture: animations, its link, its place in the slide layout (placeholder)." The new picture is an ordinary picture. No warning is shown when the old picture had none |
 
 Rollback: once `setSelectedDataAsync` has inserted the new picture, every later step (identifying
 it, restoring its state, verifying, deleting the old one) runs inside the rollback path. On any
@@ -266,9 +266,11 @@ The add-in is the Mac route only (owner, 2026-11-20). It is also what Office on 
      folders), and that Don't Allow leaves Office unchanged. The Remove confirmation says macOS may
      ask, why, and that Don't Allow leaves Office unchanged.
    - **All or nothing.** `office_addin.rs` reads both apps' state before writing either. A read that
-     fails writes nothing. If the second app's write fails, the first app's change is undone: a new
-     manifest is deleted with any folders created for it, a replaced one is restored byte for byte,
-     and a removed one is written back. Each write goes through a temporary sibling that is deleted
+     fails writes nothing. If the second app's write fails, ChemDraft tries to undo the first app's
+     change: a new manifest is deleted with any folders created for it, a replaced one is restored
+     byte for byte, and a removed one is written back. The undo is conditional: if the file changed
+     in the meantime it is left alone (see below), so the report then gives each app's state, and the
+     user should check both before retrying. Each write goes through a temporary sibling that is deleted
      on failure. A missing app or an unrecognized file at ChemDraft's filename is a skip, not a
      failure, so the other app still proceeds.
    - **Checked again at the moment of change.** The file can change between the first read and the
@@ -302,7 +304,7 @@ The add-in is the Mac route only (owner, 2026-11-20). It is also what Office on 
 | Route | Who | Notes |
 | --- | --- | --- |
 | Microsoft AppSource (store) | Everyone on a Mac | The production route. Free listing; Microsoft validates the add-in. Users add it from Office's Add-ins button, and it follows their Microsoft account. |
-| Installed by ChemDraft, preview | Testing | The `wef` folder in Word's and PowerPoint's containers. Microsoft describes this as sideloading for testing. Behind a preference, off by default; never the release route. |
+| Installed by ChemDraft, preview | Testing | The `wef` folder in Word's and PowerPoint's containers. Microsoft describes this as sideloading for testing. On macOS, Help ▸ *Install Office Add-in…* (no preference needed); restart Word or PowerPoint afterwards and **Edit Structure** appears on the Home tab. Never the release route. |
 | Organization deployment | Labs and companies | The Microsoft 365 admin pushes it to everyone, subject to tenant requirements. |
 
 **Managed-tenant risk.** University and company Microsoft 365 tenants can switch add-ins off. On
@@ -331,8 +333,10 @@ Other add-in details:
   does not load within 10 seconds the pane says the network may be blocking it.
 - **Offline**: Office needs both sites to load the pane; offline behavior is not guaranteed. The
   paste-back route above is the offline fallback.
-- **AGENTS.md §13 allowlists**: the add-in runs inside Office, not inside the ChemDraft app, so it
-  adds nothing to `src-tauri/capabilities/`. The app gains no network path.
+- **AGENTS.md §13 allowlists**: the pane runs inside Office, not inside the ChemDraft app, so it needs
+  no Tauri capability and gives the app no network path. The app's own Help commands that install
+  and remove the add-in are a separate, macOS-only grant (`capabilities/office-addin.json`, the
+  `office_addin_install` and `office_addin_remove` commands).
 - **Where the code lives**: the editor is part of `apps/desktop`, and packages must not import
   `apps/`. So the pane is a second web entry of the desktop app's web build (`office.html`), running
   the same editor in an "Office host" mode, with the Word and PowerPoint adapters in
@@ -416,7 +420,8 @@ private runbooks.
   PowerPoint adapters behind one interface, selection-change loading.
 - Tests: canonical SMILES before and after open and update; OOXML and .pptx fixtures for inline,
   floating, resized and grouped pictures; refusal for pictures without a carrier.
-- Preview install preference (macOS only, with the matching `cfg` side compiled out on Windows);
+- Preview install from Help ▸ *Install Office Add-in…* (macOS only, with the matching `cfg` side
+  compiled out on Windows; restart Word or PowerPoint to see **Edit Structure** on the Home tab);
   manifest validation.
 
 ### Slice 2: Windows OLE object

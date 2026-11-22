@@ -1,7 +1,8 @@
-//! Recovery copies of embedded Office drawings that a Windows session end put at risk. Each file
-//! holds one editor's last known drawing JSON (the selection JSON stored in `ChemDraftDocument`),
-//! named by its object ID and container document. Nothing restores them automatically; the
-//! session-end log names every file written.
+//! Recovery copies of embedded Office drawings that a Windows session end put at risk, or that
+//! Office did not take when their editor window closed outside one. Each file holds one editor's
+//! last known drawing JSON (the selection JSON stored in `ChemDraftDocument`), named by its object
+//! ID and container document. Nothing restores them automatically; the Office log
+//! (`office-session-end.log`) names every file written.
 
 use std::{
     fs,
@@ -11,7 +12,7 @@ use std::{
 };
 
 use super::{
-    session_publish::{Answer, Drawing, Recovery, Tracker},
+    session_publish::{display_name, Answer, Drawing, Recovery, Tracker, SAVING_REASON},
     storage::MAX_DOCUMENT_BYTES,
 };
 
@@ -68,6 +69,23 @@ fn write_file(dir: &Path, name: &str, json: &str) -> io::Result<PathBuf> {
     drop(file);
     fs::rename(&partial, &path)?;
     Ok(path)
+}
+
+/// A recovery copy of a drawing Office did not take when its editor window closed outside a
+/// Windows session end, where nothing retries the save. Named like a session end's copies.
+pub(super) fn write_unsaved(
+    dir: &Path,
+    stamp: &str,
+    object: &str,
+    app: &str,
+    document: &str,
+    json: &str,
+) -> io::Result<PathBuf> {
+    write_file(
+        dir,
+        &file_name(stamp, object, display_name(app, document)),
+        json,
+    )
 }
 
 #[derive(Default)]
@@ -132,22 +150,54 @@ fn apply<T: Drawing>(
     }
 }
 
+/// Passes `settle` makes while the session end stays refused. A drawing that changes during them
+/// keeps the session end refused, and the next settle (the session timer's) writes it.
+const REFUSED_PASSES: usize = 2;
+/// Most passes `settle` makes before it lets the session end. Only an editor Office closed can
+/// still need a copy then, and its drawing no longer changes, so one more pass is normally enough.
+const MAX_PASSES: usize = 4;
+
 /// Bring the recovery folder in line with the tracker, then answer the session end. File I/O runs
-/// outside the lock. A second pass catches a drawing that changed while the first was written.
+/// outside the lock. The answer is read under the same lock as a plan with nothing left to do, so
+/// `Allow` is never returned while a drawing that changed or closed during a pass (an editor's
+/// reply collected after the last plan, then Office closing that object) has only an older copy.
 pub(super) fn settle<T: Drawing>(
     tracker: &Mutex<Tracker<T>>,
     dir: Option<&Path>,
 ) -> (Answer, Report) {
+    settle_observed(tracker, dir, |_| {})
+}
+
+/// `settle`, calling `after_pass` after each pass's file I/O, so a test can change the tracker
+/// exactly where another thread could.
+fn settle_observed<T: Drawing>(
+    tracker: &Mutex<Tracker<T>>,
+    dir: Option<&Path>,
+    mut after_pass: impl FnMut(&Mutex<Tracker<T>>),
+) -> (Answer, Report) {
     let mut report = Report::default();
-    for _ in 0..2 {
-        let plan = tracker.lock().unwrap().recovery();
+    let mut passes = 0;
+    loop {
+        let (plan, answer) = {
+            let locked = tracker.lock().unwrap();
+            (locked.recovery(), locked.answer())
+        };
         if plan.write.is_empty() && plan.remove.is_empty() {
-            break;
+            return (answer, report);
+        }
+        if passes >= MAX_PASSES || (passes >= REFUSED_PASSES && answer.blocks()) {
+            // Still refusing is always safe: the session timer settles again.
+            let answer = if answer.blocks() {
+                answer
+            } else {
+                Answer::Block(SAVING_REASON.into())
+            };
+            return (answer, report);
         }
         apply(tracker, plan, dir, &mut report);
+        passes += 1;
+        after_pass(tracker);
     }
-    let answer = tracker.lock().unwrap().answer();
-    (answer, report)
 }
 
 pub(super) fn cancel<T: Drawing>(
@@ -275,6 +325,47 @@ mod tests {
         assert!(folder.files().is_empty());
     }
 
+    /// Editor 18 answers after the last planned pass and Office then closes its object, while 17
+    /// is saved. The session end must not be allowed until 18's copy holds the drawing collected
+    /// from its editor, not the older one the first pass wrote while it was still waiting.
+    #[test]
+    fn session_end_recovery_keeps_a_closed_drawing_current_before_allowing() {
+        let folder = Folder::new("closed-late");
+        let tracker = tracker();
+        let mut pass = 0;
+        let (answer, report) = settle_observed(&tracker, Some(&folder.0), |tracker| {
+            pass += 1;
+            let mut locked = tracker.lock().unwrap();
+            match pass {
+                // 17 answers during the first pass's writes.
+                1 => assert!(locked.collect(4, "17", "{new}")),
+                // After the second pass: 18 answers, Office closes 18, and Office saves 17.
+                2 => {
+                    assert!(locked.collect(4, "18", "{deck, edited}"));
+                    assert!(locked.closed("18").is_some());
+                    for (request, id, job) in locked.take_jobs(Instant::now(), false) {
+                        assert!(matches!(job, Job::Install("{new}")));
+                        locked.finish_job(request, &id, Outcome::Saved, Instant::now());
+                    }
+                }
+                _ => {}
+            }
+        });
+        assert_eq!(answer, Answer::Allow);
+        assert!(report.errors.is_empty());
+        let copy = folder
+            .0
+            .join("20261120T224719Z-object-18-Microsoft PowerPoint.json");
+        assert_eq!(fs::read_to_string(&copy).unwrap(), "{deck, edited}");
+        assert_eq!(
+            folder.files(),
+            ["20261120T224719Z-object-18-Microsoft PowerPoint.json"]
+        );
+        let risks = tracker.lock().unwrap().risks();
+        assert_eq!(risks.len(), 1);
+        assert_eq!(risks[0].snapshot.as_ref(), Some(&copy));
+    }
+
     #[test]
     fn session_end_recovery_reports_write_failures_once_and_enforces_the_ipc_limit() {
         let tracker = tracker();
@@ -294,6 +385,47 @@ mod tests {
         let exact = write_file(&folder.0, "ok.json", "{}").unwrap();
         assert_eq!(folder.files(), ["ok.json"]);
         assert_eq!(fs::read_to_string(exact).unwrap(), "{}");
+    }
+
+    #[test]
+    fn an_unsaved_drawing_from_a_closed_editor_gets_a_durable_copy() {
+        let folder = Folder::new("unsaved");
+        let path = write_unsaved(
+            &folder.0,
+            "20261121T101500Z",
+            "23",
+            "Microsoft Word",
+            "Report.docx",
+            "{latest}",
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{latest}");
+        // Without a document name the app names the file, as for a session end's copies.
+        write_unsaved(
+            &folder.0,
+            "20261121T101500Z",
+            "24",
+            "Microsoft PowerPoint",
+            " ",
+            "{deck}",
+        )
+        .unwrap();
+        assert_eq!(
+            folder.files(),
+            [
+                "20261121T101500Z-object-23-Report.docx.json",
+                "20261121T101500Z-object-24-Microsoft PowerPoint.json"
+            ]
+        );
+        assert!(write_unsaved(
+            &folder.0,
+            "S",
+            "25",
+            "Word",
+            "Big.docx",
+            &" ".repeat(MAX_DOCUMENT_BYTES + 1)
+        )
+        .is_err());
     }
 
     #[test]
