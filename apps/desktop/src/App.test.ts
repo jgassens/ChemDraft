@@ -3007,11 +3007,30 @@ describe("ChemDraft desktop shell", () => {
   });
 
   it("keeps palette buttons backed by command ids", () => {
-    const markup = renderToStaticMarkup(createElement(PaletteWindow));
-
+    // The desktop build keeps every palette button, Interactive 3D included, while its sidecar
+    // status is pending (a static render never runs the effect that reads it).
+    const tauriGlobal = globalThis as { __TAURI_INTERNALS__?: unknown };
+    tauriGlobal.__TAURI_INTERNALS__ = {};
+    const desktopMarkup = (() => {
+      try {
+        return renderToStaticMarkup(createElement(PaletteWindow));
+      } finally {
+        delete tauriGlobal.__TAURI_INTERNALS__;
+      }
+    })();
+    expect(paletteGroups.flat().some((command) => command.id === structureInteractive3dCommandId)).toBe(true);
     for (const command of paletteGroups.flat()) {
-      expect(markup).toContain(`data-command-id="${command.id}"`);
-      expect(markup).toContain(command.title);
+      expect(desktopMarkup).toContain(`data-command-id="${command.id}"`);
+      expect(desktopMarkup).toContain(command.title);
+    }
+
+    // The browser build (no desktop bridge, so no 3D sidecar) leaves out Interactive 3D only.
+    const browserMarkup = renderToStaticMarkup(createElement(PaletteWindow));
+    expect(browserMarkup).not.toContain(`data-command-id="${structureInteractive3dCommandId}"`);
+    for (const command of paletteGroups.flat()) {
+      if (command.id === structureInteractive3dCommandId) continue;
+      expect(browserMarkup).toContain(`data-command-id="${command.id}"`);
+      expect(browserMarkup).toContain(command.title);
     }
   });
 
