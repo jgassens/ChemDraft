@@ -33,6 +33,7 @@
     "allow-list-toolset-window-states",
     "allow-open-toolset-popover",
     "allow-close-toolset-popover",
-    "allow-window-logical-position"
+    "allow-window-logical-position",
+    "allow-palette-key-guard-clear"
   ]
 }

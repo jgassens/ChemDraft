@@ -59,7 +59,7 @@
         // The window is built hidden; reveal it once this screen has painted. Same rule as
         // ackFirstPaint() in src/firstPaint.ts (this runs before any module can load it): two
         // animation frames while visible, at once while hidden (a hidden page gets no frames).
-        // Rust shows the window anyway after 1.5 s; only the first reveal counts (first_paint.rs).
+        // Rust shows the window anyway after 4 s; only the first reveal counts (first_paint.rs).
         var tauri = window.__TAURI_INTERNALS__;
         if (!tauri) return;
         var sent = false;

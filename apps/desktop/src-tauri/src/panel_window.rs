@@ -10,7 +10,7 @@ mod focus_return;
 #[path = "panel_window_installation.rs"]
 mod installation;
 #[path = "palette_key_guard.rs"]
-mod key_guard;
+pub(crate) mod key_guard;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -141,9 +141,7 @@ pub(crate) use installation::finish_installation;
 pub(crate) use key_guard::linux::{self, set_keyboard_popover};
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn set_keyboard_popover(_label: &str, _keyboard: bool) {}
-pub(crate) use key_guard::{
-    keeps_palette_focus, observe_document_pointer_release, End as PointerGuardEnd,
-};
+pub(crate) use key_guard::{keeps_palette_focus, End as PointerGuardEnd};
 
 pub(crate) fn palette_blocks_forwarded_shortcut(
     label: &str,

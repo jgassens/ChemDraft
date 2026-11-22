@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "palette-key-guard-clear",
+  "description": "Let the document window release a palette click pending in its own palettes when the page sees a pointerdown outside them. Office editors get the same command in office-object.",
+  "windows": ["main"],
+  "permissions": ["allow-palette-key-guard-clear"]
+}

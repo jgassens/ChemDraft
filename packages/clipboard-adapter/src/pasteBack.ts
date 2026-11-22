@@ -5,7 +5,7 @@ import {
   OFFICE_IMPORT_LIMITS, readCarrierEnvelope, unsafeEntryNameReason, type OfficeCarrierWarningReason,
 } from "./officeImport";
 import {
-  drawingPictureRelationshipIds, isOfficeRelationshipType, officeRelationships, readZip, resolvePartTarget,
+  drawingPictureRelationshipIds, folderOf, isOfficeRelationshipType, officeRelationships, readZip, relsPartFor, resolvePartTarget,
   type OfficeRelationship, type OfficeZipEntry,
 } from "./officePackage";
 import { CHEMDRAFT_PNG_SELECTION_KEYWORD, readChemDraftSelectionFromPng } from "./pngSelection";
@@ -121,16 +121,6 @@ export function trimZipPadding(bytes: Uint8Array, maxPadding: number): Uint8Arra
     if (bytes.subarray(end).every((byte) => byte === 0)) return bytes.subarray(0, end);
   }
   return bytes;
-}
-
-function folderOf(part: string): string {
-  const slash = part.lastIndexOf("/");
-  return slash < 0 ? "" : part.slice(0, slash);
-}
-
-function relsPartFor(part: string): string {
-  const slash = part.lastIndexOf("/");
-  return `${part.slice(0, slash + 1)}_rels/${part.slice(slash + 1)}.rels`;
 }
 
 function wantedEntry(name: string): boolean {

@@ -199,7 +199,6 @@ async function readPicture(entries: OfficeZipEntry[], shapeId: string, slideId?:
 }
 
 type Selection = NoStructure | Refusal | (SelectedStructure & { state: PictureState });
-type Placement = { left: number; top: number; width: number; height: number };
 const altText = ["altTextTitle", "altTextDescription", "isDecorative"] as const;
 
 /** Shown when the rollback cannot tell which shape ChemDraft inserted. Nothing is deleted by position. */
@@ -352,6 +351,7 @@ export function powerpointAdapter(office: OfficeContext, powerpoint: PowerPointA
             }
             const canRename = writableProperty(inserted, "name");
             if (canRename) inserted.name = original.name;
+            else lost.push("its name");
             // Alt text and the decorative flag (PowerPointApi 1.10) are written whenever the host can,
             // so the new picture never keeps alt text PowerPoint generated for it.
             const altWritable = supports("1.10") ? altText.filter(key => writableProperty(inserted, key)) : [];

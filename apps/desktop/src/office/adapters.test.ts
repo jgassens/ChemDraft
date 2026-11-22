@@ -212,6 +212,8 @@ function pptx({ rotation = 0, crop = false, group = false, noCarrier = false, pr
 interface HostOptions extends PptxOptions {
   version?: number;
   writableRotation?: boolean;
+  /** The inserted picture's name cannot be written. */
+  unwritableName?: boolean;
   /** Fail the nth context.sync() after the picture is inserted. */
   failSyncAfterInsert?: number;
   /** Insert a second, unrelated picture alongside the new one. */
@@ -226,7 +228,7 @@ interface HostOptions extends PptxOptions {
   ignoresAltTextWrites?: boolean;
 }
 
-function powerpointHost({ version = 10, writableRotation = true, failSyncAfterInsert, extraInsert = false,
+function powerpointHost({ version = 10, writableRotation = true, unwritableName = false, failSyncAfterInsert, extraInsert = false,
   undeletable = false, oldUndeletable = false, decorativeClearsAltText = false, ignoresAltTextWrites = false, ...pptxOptions }: HostOptions = {}) {
   const rotation = pptxOptions.rotation ?? 0;
   const archive = pptx(pptxOptions);
@@ -285,6 +287,7 @@ function powerpointHost({ version = 10, writableRotation = true, failSyncAfterIn
       const inserted = { ...shape("24", "Inserted"), ...{ left: options.imageLeft, top: options.imageTop, width: options.imageWidth, height: options.imageHeight },
         get zOrderPosition(): number { return stack.indexOf(this); },
       };
+      if (unwritableName) Object.defineProperty(inserted, "name", { writable: false });
       if (decorativeClearsAltText) {
         let decorative = inserted.isDecorative;
         Object.defineProperty(inserted, "isDecorative", {
@@ -411,6 +414,16 @@ describe("PowerPoint Office adapter", () => {
     await adapter.readSelectedStructure();
     expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({
       kind: "replaced", warnings: ["Not carried over from the old picture: its alt text."],
+    });
+    expect(stack.map(item => item.id)).toEqual(["21", "24", "23"]);
+  });
+
+  it("warns that the name was not carried over when PowerPoint cannot write the picture's name", async () => {
+    const { host, powerpoint, stack } = powerpointHost({ unwritableName: true });
+    const adapter = powerpointAdapter(host, powerpoint);
+    await adapter.readSelectedStructure();
+    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({
+      kind: "replaced", warnings: ["Not carried over from the old picture: its name."],
     });
     expect(stack.map(item => item.id)).toEqual(["21", "24", "23"]);
   });

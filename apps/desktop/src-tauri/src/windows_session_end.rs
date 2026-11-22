@@ -3,25 +3,32 @@
 //!
 //! Embedded Office editors (docs/architecture/office-editing.md): WM_QUERYENDSESSION asks every
 //! open editor for its drawing, and the Office STA saves each one into Office as it arrives.
-//! While any drawing is neither confirmed saved in Office nor beyond saving, ChemDraft refuses the
-//! session end with a reason (ShutdownBlockReasonCreate) and keeps collecting and retrying; once
-//! everything is saved it destroys the reason and lets the next request through. A drawing still
-//! at risk when Windows ends the session anyway has a recovery copy under the app data folder,
-//! named in `office-session-end.log`. The main thread only pumps and polls shared state here: it
-//! never waits on the STA, and the STA never waits on it.
+//! While any drawing is neither confirmed saved in Office nor beyond saving, or a recovery copy it
+//! needs is not durable yet, ChemDraft refuses the session end with a reason
+//! (ShutdownBlockReasonCreate) and keeps collecting and retrying; once everything is saved it
+//! destroys the reason and lets the next request through. Refusal is bounded: past
+//! `recovery::SESSION_END_LIMIT` the session end is always allowed, and the drawings that may lack
+//! a current copy are logged. A drawing still at risk when Windows ends the session has a recovery
+//! copy under the app data folder, named in `office-session-end.log`.
+//!
+//! The main thread only pumps and polls shared state here: it never waits on the STA, and never
+//! touches the disk. The Office recovery writer thread (`office_ole::recovery`) writes every copy
+//! and log entry. A committed session end waits, pumping, until that writer is idle and then
+//! closes it; its watchdog does the same before it ends the process, so it never cuts a copy short.
 
-#[cfg(any(windows, test))]
-use crate::{QuitHost, QuitReason};
 #[cfg(any(windows, test))]
 use std::{sync::mpsc, time::Duration};
 
+/// Shaped like `shutdown::watch_flush` on the session-flush side: `on_stall` runs only if the flush
+/// has not disarmed the watchdog within `remaining`.
 #[cfg(any(windows, test))]
-const HARD_LIMIT: Duration = Duration::from_secs(3);
-
-#[cfg(any(windows, test))]
-pub(super) fn watch_flush(watchdog: mpsc::Receiver<()>, remaining: Duration, host: &impl QuitHost) {
+pub(super) fn watch_flush(
+    watchdog: mpsc::Receiver<()>,
+    remaining: Duration,
+    on_stall: impl FnOnce(),
+) {
     if watchdog.recv_timeout(remaining) == Err(mpsc::RecvTimeoutError::Timeout) {
-        host.force_exit(HARD_LIMIT, QuitReason::GraceExpired);
+        on_stall();
     }
 }
 
@@ -37,10 +44,22 @@ pub(super) use windows::{in_progress, install};
 
 #[cfg(windows)]
 pub(crate) fn log_office_loss(app: &tauri::AppHandle, message: std::fmt::Arguments<'_>) {
+    use crate::office_ole::{recovery, server::Server};
     use std::{fs, io::Write};
     use tauri::Manager;
 
     eprintln!("ChemDraft: {message}");
+    let mut entry = format!("{} {message}\n", chrono::Utc::now().to_rfc3339());
+    // During a session end the recovery writer appends it, so the thread answering Windows never
+    // touches the disk. Otherwise, or once a committed session end closed the writer, write here.
+    if let Some(server) = app.try_state::<Server>() {
+        if server.session_ending() || in_progress() {
+            match server.log_recovery(entry) {
+                Ok(()) => return,
+                Err(refused) => entry = refused,
+            }
+        }
+    }
     // Release builds are GUI executables and may have no stderr to capture.
     let result = (|| -> Result<(), Box<dyn std::error::Error>> {
         let directory = app.path().app_log_dir()?;
@@ -48,8 +67,7 @@ pub(crate) fn log_office_loss(app: &tauri::AppHandle, message: std::fmt::Argumen
         let mut log = fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(directory.join("office-session-end.log"))?;
-        let entry = format!("{} {message}\n", chrono::Utc::now().to_rfc3339());
+            .open(directory.join(recovery::LOG))?;
         log.write_all(entry.as_bytes())?;
         Ok(())
     })();
@@ -60,17 +78,18 @@ pub(crate) fn log_office_loss(app: &tauri::AppHandle, message: std::fmt::Argumen
 
 #[cfg(windows)]
 mod windows {
-    use super::{watch_flush, HARD_LIMIT};
+    use super::watch_flush;
     use crate::{
         office_ole::{
-            bridge::owner_id, recovery, server::Server, session_publish::Answer,
+            bridge::owner_id,
+            recovery::{self, Decision},
+            server::Server,
             toolset_events::deliver,
         },
-        request_document_quit_flush, APP_QUITTING, QUIT,
+        request_document_quit_flush, QuitHost, QuitReason, APP_QUITTING, QUIT,
     };
     use std::{
         cell::{Cell, RefCell},
-        path::PathBuf,
         ptr::null_mut,
         sync::{
             atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -102,9 +121,12 @@ mod windows {
     }
 
     const FLUSH_BUDGET: Duration = Duration::from_secs(2);
-    // Collect and save Office drawings for at most 3 seconds during the query, below the 5 seconds
-    // Windows waits before it lists an app as not responding. Anything slower is refused with a
-    // reason and finishes in the background.
+    // The committed flush's watchdog. It first waits for the recovery writer (at most
+    // recovery::BUDGET_BYTES of copies), so it never ends the process during a write.
+    const HARD_LIMIT: Duration = Duration::from_secs(3);
+    // Collect, save and copy Office drawings for at most 3 seconds during the query, below the 5
+    // seconds Windows waits before it lists an app as not responding. Anything slower is refused
+    // with a reason and finishes in the background.
     const OFFICE_QUERY_BUDGET: Duration = Duration::from_secs(3);
     // While a refused session end is pending, update recovery copies and re-check Windows.
     const SESSION_TIMER: usize = 0x0FF1_CE5E;
@@ -120,6 +142,10 @@ mod windows {
         static BLOCK: RefCell<Option<String>> = const { RefCell::new(None) };
         static TIMER: Cell<bool> = const { Cell::new(false) };
         static QUIET: Cell<u8> = const { Cell::new(0) };
+        // When the pending session end began; recovery::SESSION_END_LIMIT runs from here.
+        static SINCE: Cell<Option<Instant>> = const { Cell::new(None) };
+        // The limit already let this session end through (logged once).
+        static OVERDUE: Cell<bool> = const { Cell::new(false) };
     }
 
     pub(crate) fn in_progress() -> bool {
@@ -214,14 +240,19 @@ mod windows {
 
     /// WM_QUERYENDSESSION: true lets the session end.
     fn query(app: &tauri::AppHandle, hwnd: HWND) -> bool {
-        let deadline = Instant::now() + OFFICE_QUERY_BUDGET;
+        let now = Instant::now();
         let server = app.state::<Server>();
         // A repeated query keeps collecting into the pending session end.
         if let Some((request, editors)) =
             server.begin_session_end(recovery::stamp(chrono::Utc::now()))
         {
+            SINCE.set(Some(now));
+            OVERDUE.set(false);
             ask_editors(app, &server, request, &editors);
         }
+        let since = SINCE.get().unwrap_or(now);
+        SINCE.set(Some(since));
+        let deadline = (now + OFFICE_QUERY_BUDGET).min(since + recovery::SESSION_END_LIMIT);
         while Instant::now() < deadline && server.session_end_answer().blocks() {
             if !pump_webviews() {
                 break;
@@ -262,55 +293,50 @@ mod windows {
         }
     }
 
-    fn recovery_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
-        match app.path().app_data_dir() {
-            Ok(dir) => Some(dir.join(recovery::FOLDER)),
-            Err(error) => {
-                super::log_office_loss(
-                    app,
-                    format_args!("No app data folder for Office recovery copies: {error}"),
-                );
-                None
-            }
-        }
-    }
-
-    /// Bring recovery copies in line with what is still at risk, and log what changed.
-    fn update_recovery(app: &tauri::AppHandle, server: &Server) -> Answer {
-        let dir = recovery_dir(app);
-        let (answer, report) = server.settle_session_end(dir.as_deref());
-        for (id, path) in &report.written {
-            super::log_office_loss(app, format_args!("Office object {id}: its drawing is not saved in Office yet; wrote its last known drawing to {}. Nothing restores this copy automatically.", path.display()));
-        }
-        for path in &report.removed {
-            super::log_office_loss(
-                app,
-                format_args!(
-                    "Removed the recovery copy {}: Office has the drawing.",
-                    path.display()
-                ),
-            );
-        }
-        for error in &report.errors {
-            super::log_office_loss(app, format_args!("{error}"));
-        }
-        answer
-    }
-
-    /// Update recovery copies and the shutdown block reason. True lets the session end.
+    /// Update the shutdown block reason from the session end's answer, within its time limit.
+    /// True lets the session end. Reads shared state only: the recovery writer does the I/O.
     fn settle(app: &tauri::AppHandle, hwnd: HWND) -> bool {
         let server = app.state::<Server>();
-        match update_recovery(app, &server) {
-            Answer::Allow => {
+        let elapsed = SINCE.get().map_or(Duration::ZERO, |since| since.elapsed());
+        match recovery::decide(server.session_end_answer(), elapsed) {
+            Decision::Allow => {
                 if release_block(hwnd) {
                     super::log_office_loss(app, format_args!("Every Office drawing is saved; ChemDraft no longer refuses the Windows session end."));
                 }
                 true
             }
-            Answer::Block(reason) => {
+            Decision::Block(reason) => {
                 show_block(app, &server, hwnd, reason);
                 false
             }
+            Decision::Overdue(reason) => {
+                release_block(hwnd);
+                if !OVERDUE.replace(true) {
+                    super::log_office_loss(app, format_args!("Stopped refusing the Windows session end after {} seconds, ChemDraft's limit, although: {reason}.", recovery::SESSION_END_LIMIT.as_secs()));
+                    log_risks(
+                        app,
+                        &server,
+                        "when ChemDraft stopped refusing the session end",
+                    );
+                }
+                true
+            }
+        }
+    }
+
+    /// Log every drawing still at risk, and whether its recovery copy holds its newest drawing.
+    fn log_risks(app: &tauri::AppHandle, server: &Server, when: &str) {
+        for risk in server.session_end_risks() {
+            let error = risk.error.map(|e| format!(" ({e})")).unwrap_or_default();
+            let copy = match (risk.snapshot, risk.current) {
+                (Some(path), true) => format!("its last known drawing is in {}", path.display()),
+                (Some(path), false) => format!(
+                    "it may lack a current recovery copy (an older drawing is in {})",
+                    path.display()
+                ),
+                (None, _) => "it may lack a current recovery copy (none was written)".to_owned(),
+            };
+            super::log_office_loss(app, format_args!("Office object {} in {}: {}{error} {when}; {copy}. Unsaved edits may be lost; nothing restores this copy automatically.", risk.editor, risk.document, risk.state));
         }
     }
 
@@ -401,32 +427,18 @@ mod windows {
     }
 
     /// Windows cancelled the session end. With `confirmed`, recovery copies of drawings still open
-    /// in their editors are removed; a drawing Office closed keeps its copy either way.
+    /// in their editors are removed; a drawing Office closed keeps its copy either way. The
+    /// recovery writer applies that and logs the copies it keeps.
     fn cancel(app: &tauri::AppHandle, hwnd: HWND, confirmed: bool) {
         stop_timer(hwnd);
         release_block(hwnd);
+        SINCE.set(None);
+        OVERDUE.set(false);
         let server = app.state::<Server>();
-        let dir = if server.session_end_pending() {
-            recovery_dir(app)
-        } else {
-            None
-        };
-        let Some(cancelled) = server.cancel_session_end(dir.as_deref(), confirmed) else {
+        let Some(request) = server.cancel_session_end(confirmed) else {
             return;
         };
-        for error in &cancelled.report.errors {
-            super::log_office_loss(app, format_args!("{error}"));
-        }
-        for path in &cancelled.kept {
-            super::log_office_loss(
-                app,
-                format_args!(
-                    "The Windows session end was cancelled; kept the recovery copy {}.",
-                    path.display()
-                ),
-            );
-        }
-        let request = cancelled.request.to_string();
+        let request = request.to_string();
         for window in app.webview_windows().into_values() {
             if owner_id(window.label()).is_ok() {
                 deliver(&window, "office-session-cancel", &request);
@@ -438,27 +450,27 @@ mod windows {
         let start = Instant::now();
         stop_timer(hwnd);
         // The nested WebView2 pump can enter a native callback. Keep a hard ceiling even if
-        // that callback stalls. Windows has already committed to ending this session.
+        // that callback stalls. Windows has already committed to ending this session. The
+        // ceiling never cuts a recovery copy short: the watchdog first waits for the writer to
+        // finish what is queued or in flight, then closes it so nothing new starts.
         let (disarm, watchdog) = mpsc::channel::<()>();
         let watchdog_app = app.clone();
         thread::spawn(move || {
-            watch_flush(
-                watchdog,
-                HARD_LIMIT.saturating_sub(start.elapsed()),
-                &watchdog_app,
-            );
+            watch_flush(watchdog, HARD_LIMIT.saturating_sub(start.elapsed()), || {
+                watchdog_app.state::<Server>().close_recovery_when_idle();
+                watchdog_app.force_exit(start.elapsed(), QuitReason::GraceExpired);
+            });
         });
 
         // Without an earlier query (or after Windows stopped reporting it), ask the editors now.
+        // Beginning the session end wakes the recovery writer, so copies of every last known
+        // drawing are already being written while this thread waits for anything.
         let server = app.state::<Server>();
         if let Some((request, editors)) =
             server.begin_session_end(recovery::stamp(chrono::Utc::now()))
         {
             ask_editors(app, &server, request, &editors);
         }
-        // Windows may end the process as soon as this message returns, and the watchdog may end
-        // it sooner: write recovery copies before waiting for anything.
-        update_recovery(app, &server);
 
         // Join an existing app quit or ask the document once. Pump WebView2 and its IPC so the
         // worker can persist the renderer's snapshot and acknowledge this specific request; the
@@ -481,17 +493,27 @@ mod windows {
         if !document_saved() {
             eprintln!("ChemDraft: session-end flush was not confirmed before shutdown");
         }
-        update_recovery(app, &server);
-        for risk in server.session_end_risks() {
-            let error = risk.error.map(|e| format!(" ({e})")).unwrap_or_default();
-            let copy = risk.snapshot.map_or_else(
-                || "no recovery copy could be written".to_owned(),
-                |path| format!("its last known drawing is in {}", path.display()),
-            );
-            super::log_office_loss(app, format_args!("Office object {} in {}: {}{error} when Windows ended the session; {copy}. Unsaved edits may be lost; nothing restores this copy automatically.", risk.editor, risk.document, risk.state));
-        }
+        // Windows may end the process as soon as this message returns: let every queued copy
+        // land first. The writer's work is bounded by recovery::BUDGET_BYTES.
+        pump_until(|| server.recovery_idle());
+        log_risks(app, &server, "when Windows ended the session");
         release_block(hwnd);
+        // Let the writer append that log, then start nothing new.
+        pump_until(|| server.try_close_recovery());
         drop(disarm);
+    }
+
+    /// Pump this thread's messages until `done`. After WM_QUIT keep waiting without pumping, so
+    /// the quit stays for the outer loop. Never touches the disk itself.
+    fn pump_until(mut done: impl FnMut() -> bool) {
+        let mut pumping = true;
+        while !done() {
+            if pumping {
+                pumping = pump_webviews();
+            } else {
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
     }
 
     fn pump_webviews() -> bool {

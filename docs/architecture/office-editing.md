@@ -192,11 +192,12 @@ which PowerPoint's managed-security defaults do.
   shows it sharply, prints it at full resolution, and refreshes it after an edit. Slice 2 measures
   this before building the rest.
 
-**Windows session end** (`windows_session_end.rs`, `office_ole/session_publish.rs`)
+**Windows session end** (`windows_session_end.rs`, `office_ole/session_publish.rs`,
+`office_ole/recovery.rs`)
 
 - When Windows asks to end the session, every open editor is asked for its drawing, and ChemDraft
-  refuses the session end with a reason until each drawing is saved in Office or beyond saving. A
-  drawing still at risk has a recovery copy under the app data folder.
+  refuses the session end with a reason until each drawing is saved in Office or beyond saving, for
+  at most 30 seconds (below). A drawing still at risk has a recovery copy under the app data folder.
 - The editors asked are fixed when the session end begins. Registering a newly activated editor
   and beginning a session end are one decision under one lock: an editor that finishes activating
   after the session end began is refused, its window is closed and Office's activation fails, so no
@@ -205,6 +206,34 @@ which PowerPoint's managed-security defaults do.
   silent. ChemDraft then stops waiting for it, keeps refusing the session end with the document's
   name, and keeps a recovery copy of its last known drawing; the editor unlocks, so Update and
   Close work again once the user cancels the sign-out.
+- **Recovery copies are written off the message thread** (`office_ole/recovery.rs`). One writer
+  thread does every disk operation of a session end: each recovery copy (written to `.partial`,
+  synced, then renamed into place), each stale copy's removal, and the Office log
+  (`office-session-end.log`). It starts as soon as the session end begins and is woken whenever an
+  editor's drawing arrives or Office saves or closes an object, so copies are written while the
+  editors are still being asked. The thread that answers Windows only reads shared state and pumps
+  messages; it never touches the disk.
+- **Queued is not durable.** A copy counts only once the writer has synced and renamed it and
+  recorded it in the tracker. Until then the session end stays refused with the generic reason,
+  even if Office holds every drawing it can still take. So a drawing Office closed is never allowed
+  through with only an older copy.
+- **Byte budget.** One session end writes at most 50 MiB of copies (two drawings at the 25 MiB
+  IPC limit). A drawing past the budget gets no copy; the log says so, as for any failed write.
+- **Refusal has a time limit.** Thirty seconds after a session end begins, ChemDraft stops refusing
+  it, even if a drawing is still unsaved in Office or its newest copy is not written yet. It logs
+  each such drawing and says whether its recovery copy holds its newest drawing.
+- **Committed session end** (WM_ENDSESSION with TRUE). Before the message returns, ChemDraft waits
+  (still pumping messages) until the writer has nothing queued or in flight, logs what is still at
+  risk, and then closes the writer so nothing new starts. The 3-second watchdog does the same before
+  it ends the process. It never kills a copy mid-write; the byte budget bounds how long it waits. If
+  the disk itself hangs, Windows ends the process, not ChemDraft.
+
+**Palette clicks in an editor.** A click in an editor's palette arms a native key guard for up to
+one second, while the palette works out whether the click takes keyboard focus. Meanwhile Delete,
+Paste, Undo and Redo are held back from the drawing. A pointerdown on the editor's page releases the
+guard through the `palette_key_guard_clear` command. That command releases only a click pending in
+the calling window's own palettes. It is granted to the document window and `office-object-*`.
+Office windows have no app-wide event-emit permission, and the page does not need one.
 
 **What other machines see (expected; to be measured)**
 

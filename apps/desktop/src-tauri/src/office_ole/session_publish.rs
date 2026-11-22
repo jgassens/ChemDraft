@@ -163,10 +163,18 @@ pub(super) struct Write {
     pub json: Arc<str>,
 }
 
+/// Recovery file work for one session end, identified by its request.
 #[derive(Default)]
 pub(super) struct Recovery {
+    pub request: u32,
     pub write: Vec<Write>,
     pub remove: Vec<(String, PathBuf)>,
+}
+
+impl Recovery {
+    pub fn is_empty(&self) -> bool {
+        self.write.is_empty() && self.remove.is_empty()
+    }
 }
 
 pub(super) struct Cancelled {
@@ -174,6 +182,10 @@ pub(super) struct Cancelled {
     pub recovery: Recovery,
     /// Recovery files left in place, already written.
     pub kept: Vec<PathBuf>,
+    /// Editors whose copies this cancellation removes. A copy the writer was still writing when
+    /// the session end was cancelled (so it was never recorded) is removed too if its editor is
+    /// listed here, and kept otherwise.
+    pub discard: Vec<String>,
 }
 
 /// A drawing at risk, for the log Windows leaves when it ends the session.
@@ -183,6 +195,8 @@ pub(crate) struct Risk {
     pub state: &'static str,
     pub error: Option<String>,
     pub snapshot: Option<PathBuf>,
+    /// `snapshot` holds the newest drawing known; false if it is older, or none was written.
+    pub current: bool,
 }
 
 /// A save failure that has not been logged yet.
@@ -263,6 +277,11 @@ impl<T: Drawing> Tracker<T> {
         self.session.is_some()
     }
 
+    /// The pending session end's request, if any.
+    pub fn request(&self) -> Option<u32> {
+        self.session.as_ref().map(|session| session.request)
+    }
+
     /// Start asking every open editor for its drawing. Returns the editors to ask, or `None` if a
     /// session end is already pending (a repeated query keeps collecting into it).
     pub fn begin(&mut self, request: u32, stamp: String) -> Option<Vec<String>> {
@@ -315,6 +334,7 @@ impl<T: Drawing> Tracker<T> {
     pub fn recovery(&self) -> Recovery {
         let mut plan = Recovery::default();
         if let Some(session) = &self.session {
+            plan.request = session.request;
             for (id, editor) in &session.editors {
                 plan_editor(&mut plan, &session.stamp, id, editor);
             }
@@ -322,17 +342,42 @@ impl<T: Drawing> Tracker<T> {
         plan
     }
 
-    pub fn wrote(&mut self, editor: &str, json: &Arc<str>, path: Option<PathBuf>) {
-        if let Some(entry) = self.editor_mut(editor) {
-            entry.snapshot = Some(Attempt {
-                path,
-                json: json.clone(),
-            });
-        }
+    /// Whether `recovery` has anything to do: a drawing at risk whose newest version has not had
+    /// a copy attempted, or a copy of a drawing now safe. A copy counts only once `wrote` records
+    /// it, so a write that is queued or still in flight keeps this true.
+    pub fn recovery_pending(&self) -> bool {
+        self.session.as_ref().is_some_and(|session| {
+            session.editors.values().any(|editor| {
+                if editor.stage.at_risk() {
+                    !editor.copy_attempted()
+                } else {
+                    editor.snapshot.as_ref().is_some_and(|a| a.path.is_some())
+                }
+            })
+        })
     }
 
-    pub fn removed(&mut self, editor: &str, path: &Path) {
-        if let Some(entry) = self.editor_mut(editor) {
+    /// Record a finished copy attempt (`path` is `None` if it failed). False if `request` is no
+    /// longer the pending session end: it was cancelled while the copy was being written.
+    pub fn wrote(
+        &mut self,
+        request: u32,
+        editor: &str,
+        json: &Arc<str>,
+        path: Option<PathBuf>,
+    ) -> bool {
+        let Some(entry) = self.request_editor_mut(request, editor) else {
+            return false;
+        };
+        entry.snapshot = Some(Attempt {
+            path,
+            json: json.clone(),
+        });
+        true
+    }
+
+    pub fn removed(&mut self, request: u32, editor: &str, path: &Path) {
+        if let Some(entry) = self.request_editor_mut(request, editor) {
             if entry
                 .snapshot
                 .as_ref()
@@ -347,8 +392,12 @@ impl<T: Drawing> Tracker<T> {
     /// removed when `remove_open` is set; a drawing Office closed keeps its copy either way.
     pub fn cancel(&mut self, remove_open: bool) -> Option<Cancelled> {
         let session = self.session.take()?;
-        let mut recovery = Recovery::default();
+        let mut recovery = Recovery {
+            request: session.request,
+            ..Recovery::default()
+        };
         let mut kept = Vec::new();
+        let mut discard = Vec::new();
         for (id, editor) in &session.editors {
             let path = editor.snapshot.as_ref().and_then(|a| a.path.clone());
             if editor.orphaned() {
@@ -357,8 +406,14 @@ impl<T: Drawing> Tracker<T> {
                 if recovery.write.len() == planned {
                     kept.extend(path);
                 }
-            } else if let Some(path) = path {
-                if remove_open || !editor.stage.at_risk() {
+                continue;
+            }
+            let discards = remove_open || !editor.stage.at_risk();
+            if discards {
+                discard.push(id.clone());
+            }
+            if let Some(path) = path {
+                if discards {
                     recovery.remove.push((id.clone(), path));
                 } else {
                     kept.push(path);
@@ -369,6 +424,7 @@ impl<T: Drawing> Tracker<T> {
             request: session.request,
             recovery,
             kept,
+            discard,
         })
     }
 
@@ -389,6 +445,8 @@ impl<T: Drawing> Tracker<T> {
                     _ => None,
                 },
                 snapshot: editor.snapshot.as_ref().and_then(|a| a.path.clone()),
+                current: editor.copy_attempted()
+                    && editor.snapshot.as_ref().is_some_and(|a| a.path.is_some()),
             })
             .collect()
     }
@@ -550,11 +608,26 @@ impl<T: Drawing> Tracker<T> {
     fn editor_mut(&mut self, editor: &str) -> Option<&mut Editor<T>> {
         self.session.as_mut()?.editors.get_mut(editor)
     }
+
+    fn request_editor_mut(&mut self, request: u32, editor: &str) -> Option<&mut Editor<T>> {
+        self.session
+            .as_mut()
+            .filter(|session| session.request == request)?
+            .editors
+            .get_mut(editor)
+    }
 }
 
 impl<T> Editor<T> {
     fn orphaned(&self) -> bool {
         matches!(self.stage, Stage::Closed { unsaved: true })
+    }
+
+    /// A copy of this exact drawing was attempted (written or failed).
+    fn copy_attempted(&self) -> bool {
+        self.snapshot
+            .as_ref()
+            .is_some_and(|attempt| Arc::ptr_eq(&attempt.json, &self.json))
     }
 }
 
@@ -562,11 +635,7 @@ impl<T> Editor<T> {
 /// remove the copy of a drawing that is safe.
 fn plan_editor<T>(plan: &mut Recovery, stamp: &str, id: &str, editor: &Editor<T>) {
     if editor.stage.at_risk() {
-        let current = editor
-            .snapshot
-            .as_ref()
-            .is_some_and(|attempt| Arc::ptr_eq(&attempt.json, &editor.json));
-        if !current {
+        if !editor.copy_attempted() {
             plan.write.push(Write {
                 editor: id.to_owned(),
                 name: super::recovery::file_name(stamp, id, editor.name()),
@@ -855,8 +924,9 @@ mod tests {
         assert_eq!(&*plan.write[1].json, "{n-updated}");
         for write in &plan.write {
             let path = PathBuf::from(format!("/r/{}", write.name));
-            t.wrote(&write.editor, &write.json, Some(path));
+            assert!(t.wrote(5, &write.editor, &write.json, Some(path)));
         }
+        assert!(!t.recovery_pending());
         assert!(
             t.recovery().write.is_empty(),
             "unchanged drawings are not rewritten"
@@ -867,7 +937,14 @@ mod tests {
         let plan = t.recovery();
         assert_eq!(plan.write.len(), 1);
         assert_eq!(&*plan.write[0].json, "{new}");
-        t.wrote("17", &plan.write[0].json, None);
+        assert!(t.recovery_pending(), "queued, not yet written");
+        assert!(
+            !t.wrote(4, "17", &plan.write[0].json, None),
+            "another request's result is not recorded"
+        );
+        assert!(t.recovery_pending());
+        assert!(t.wrote(5, "17", &plan.write[0].json, None));
+        assert!(!t.recovery_pending());
         assert!(
             t.recovery().write.is_empty(),
             "a failed write is not retried for one drawing"
@@ -889,10 +966,17 @@ mod tests {
         assert!(plan.write.is_empty());
         let removed = PathBuf::from("/r/20261120T224719Z-object-18-Notes.docx.json");
         assert_eq!(plan.remove, [("18".to_owned(), removed.clone())]);
-        t.removed("18", Path::new("/r/other"));
+        assert!(
+            t.recovery_pending(),
+            "a copy of a saved drawing is still to remove"
+        );
+        t.removed(5, "18", Path::new("/r/other"));
         assert_eq!(t.recovery().remove.len(), 1);
-        t.removed("18", &removed);
+        t.removed(4, "18", &removed);
+        assert_eq!(t.recovery().remove.len(), 1, "another request's removal");
+        t.removed(5, "18", &removed);
         assert!(t.recovery().remove.is_empty());
+        assert!(!t.recovery_pending());
     }
 
     #[test]
@@ -907,7 +991,7 @@ mod tests {
         t.collect(6, "2", "{b2}");
         for write in t.recovery().write {
             let path = PathBuf::from(format!("/r/{}", write.editor));
-            t.wrote(&write.editor, &write.json, Some(path));
+            t.wrote(6, &write.editor, &write.json, Some(path));
         }
         t.collect(6, "3", "{c2}");
         t.closed("2");
@@ -926,14 +1010,19 @@ mod tests {
         assert_eq!(cancelled.recovery.write.len(), 1);
         assert_eq!(cancelled.recovery.write[0].editor, "3");
         assert_eq!(&*cancelled.recovery.write[0].json, "{c2}");
+        assert_eq!(cancelled.recovery.request, 6);
+        // A copy of editor 1 still in flight at the cancellation goes too; closed ones stay.
+        assert_eq!(cancelled.discard, ["1"]);
+        assert!(!t.wrote(6, "1", &"{a}".into(), Some(PathBuf::from("/r/late"))));
 
         // When Windows only stopped reporting a shutdown, every copy stays.
         let mut t = tracker(&[("1", "A.docx", "{a}")]);
         t.begin(7, STAMP.into());
         for write in t.recovery().write {
-            t.wrote(&write.editor, &write.json, Some(PathBuf::from("/r/1")));
+            t.wrote(7, &write.editor, &write.json, Some(PathBuf::from("/r/1")));
         }
         let cancelled = t.cancel(false).unwrap();
+        assert!(cancelled.discard.is_empty());
         assert!(cancelled.recovery.remove.is_empty());
         assert!(cancelled.recovery.write.is_empty());
         assert_eq!(cancelled.kept, [PathBuf::from("/r/1")]);

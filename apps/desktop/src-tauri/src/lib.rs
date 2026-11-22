@@ -1945,8 +1945,6 @@ pub fn run() {
                     return Ok(());
                 }
             }
-            #[cfg(not(target_os = "macos"))]
-            panel_window::observe_document_pointer_release(app.handle());
             let headless_office = app
                 .state::<office_ole::launch::Launch>()
                 .setup(app.handle())?;
@@ -1970,6 +1968,7 @@ pub fn run() {
             office_ole::bridge::office_object_close,
             office_ole::bridge::prepare_office_editors_for_update,
             first_paint::window_first_paint,
+            panel_window::key_guard::palette_key_guard_clear,
             canvas_context_menu::popup_canvas_context_menu,
             file_warnings_window::file_warnings_open,
             file_warnings_window::file_warnings_request,
@@ -2212,8 +2211,6 @@ fn setup_primary_app(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::E
     if let Err(error) = linux_session_end::install(app) {
         eprintln!("Could not install ChemDraft Linux termination handlers: {error}");
     }
-    #[cfg(target_os = "macos")]
-    panel_window::observe_document_pointer_release(app);
     file_warnings_window::observe_document(app)?;
     // Programmatic panel removal hides a reusable window, so it produces neither
     // CloseRequested nor Destroyed. Cancel its native restore work via the same bridge
@@ -14831,7 +14828,9 @@ mod tests {
     fn session_end_watchdog_forces_exit_only_if_the_flush_stalls() {
         let host = StuckAppHost::new(true);
         let (disarm, watchdog) = mpsc::channel();
-        windows_session_end::watch_flush(watchdog, Duration::ZERO, &host);
+        windows_session_end::watch_flush(watchdog, Duration::ZERO, || {
+            host.force_exit(Duration::ZERO, QuitReason::GraceExpired)
+        });
         assert_eq!(host.calls(), ["force exit"]);
         assert_eq!(host.forced_reason(), Some(QuitReason::GraceExpired));
         drop(disarm);
@@ -14839,7 +14838,9 @@ mod tests {
         let host = StuckAppHost::new(true);
         let (disarm, watchdog) = mpsc::channel();
         drop(disarm);
-        windows_session_end::watch_flush(watchdog, Duration::ZERO, &host);
+        windows_session_end::watch_flush(watchdog, Duration::ZERO, || {
+            host.force_exit(Duration::ZERO, QuitReason::GraceExpired)
+        });
         assert!(host.calls().is_empty());
     }
 

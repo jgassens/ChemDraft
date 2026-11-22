@@ -912,3 +912,13 @@ export function docxPictureReferences(documentXml: string): WordPictureReference
   }
   return references;
 }
+
+export function folderOf(part: string): string {
+  const slash = part.lastIndexOf("/");
+  return slash < 0 ? "" : part.slice(0, slash);
+}
+
+export function relsPartFor(part: string): string {
+  const slash = part.lastIndexOf("/");
+  return `${part.slice(0, slash + 1)}_rels/${part.slice(slash + 1)}.rels`;
+}

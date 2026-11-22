@@ -1,6 +1,6 @@
 import {
-  docxPictureReferences, isOfficeRelationshipType, officeMainPartKind, officeRelationships, pptxSlidePictureRelationshipIds,
-  pptxSlideRelationshipIds, readZip, resolvePartTarget, type OfficeRelationship, type OfficeZipEntry,
+  docxPictureReferences, folderOf, isOfficeRelationshipType, officeMainPartKind, officeRelationships, pptxSlidePictureRelationshipIds,
+  pptxSlideRelationshipIds, readZip, relsPartFor, resolvePartTarget, type OfficeRelationship, type OfficeZipEntry,
 } from "./officePackage";
 import { readChemDraftSelectionFromPng, type CarrierReadResult } from "./pngSelection";
 
@@ -159,16 +159,6 @@ export function unsafeEntryNameReason(name: string): string | undefined {
 }
 
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
-
-function relsPartFor(part: string): string {
-  const slash = part.lastIndexOf("/");
-  return `${part.slice(0, slash + 1)}_rels/${part.slice(slash + 1)}.rels`;
-}
-
-function folderOf(part: string): string {
-  const slash = part.lastIndexOf("/");
-  return slash < 0 ? "" : part.slice(0, slash);
-}
 
 /** Bytes of the PNG pictures we may need, and the XML parts that lead to them. */
 function wantedEntry(name: string): boolean {

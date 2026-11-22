@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-palette-key-guard-clear"
+description = "Enables the palette_key_guard_clear command without any pre-configured scope."
+commands.allow = ["palette_key_guard_clear"]
+
+[[permission]]
+identifier = "deny-palette-key-guard-clear"
+description = "Denies the palette_key_guard_clear command without any pre-configured scope."
+commands.deny = ["palette_key_guard_clear"]

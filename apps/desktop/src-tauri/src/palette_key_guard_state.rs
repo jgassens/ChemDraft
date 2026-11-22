@@ -168,6 +168,21 @@ impl Guard {
             None
         }
     }
+
+    /// A document page's pointerdown outside its palettes: release the pending click only if one
+    /// of that document's own palettes holds it (`owns` maps a palette label to that answer), with
+    /// the same sequence and timestamp rules as any other `Released`.
+    pub fn release_for(
+        &mut self,
+        owns: impl FnOnce(&str) -> bool,
+        sequence: Option<u64>,
+        before: u64,
+    ) -> Option<(String, Event)> {
+        if !self.pending.as_ref().is_some_and(|p| owns(&p.label)) {
+            return None;
+        }
+        self.end("", End::Released, sequence, before)
+    }
 }
 
 // A GTK presentation completes on a later window event. Keeping the reply with the
@@ -1264,6 +1279,39 @@ mod tests {
         assert!(guard.timeout(second.sequence, 1_009).is_none());
         assert!(!guard.blocks(1_010)); // Native monitor's clock needs no timer delivery.
         assert!(!guard.timeout(second.sequence, 1_010).unwrap().1.pending);
+    }
+
+    #[test]
+    fn a_document_page_releases_only_a_click_pending_in_its_own_palettes() {
+        let mut guard = Guard::new();
+        let office = "office-utility-office-object-17--toolset-core-main";
+        let click = guard.pointer(office, 0, 100);
+        let owner_is = |document: &'static str| {
+            move |label: &str| {
+                label == document || label.starts_with(&format!("office-utility-{document}--"))
+            }
+        };
+        // Another document's page (the main window, or a different Office editor) cannot clear it.
+        assert!(guard
+            .release_for(owner_is("main"), Some(click.sequence), 200)
+            .is_none());
+        assert!(guard
+            .release_for(owner_is("office-object-18"), Some(click.sequence), 200)
+            .is_none());
+        assert!(guard.blocks(10));
+        // Its own page cannot clear a later click with an older sequence.
+        assert!(guard
+            .release_for(owner_is("office-object-17"), Some(click.sequence + 1), 200)
+            .is_none());
+        let (label, event) = guard
+            .release_for(owner_is("office-object-17"), Some(click.sequence), 200)
+            .unwrap();
+        assert_eq!(label, office);
+        assert!(!event.pending);
+        assert!(!guard.blocks(10));
+        assert!(guard
+            .release_for(owner_is("office-object-17"), Some(click.sequence), 200)
+            .is_none());
     }
 
     #[test]
