@@ -922,6 +922,7 @@ import {
 } from "./keyboardShortcuts";
 import { installBrowserReloadGuard, wasBrowserReloadPrevented } from "./browserReloadGuard";
 import { assertDocumentSize, decodeNativeDocumentContents, documentContentsKey, readBrowserDocumentFile, readNativeDocumentFile, type DocumentContents } from "./documentText";
+import { importOfficeStructuresCommand, pickOfficeImportFile, runOfficeStructureImport } from "./officeStructureImport";
 import { createDocumentFileSave, exportDocumentCdx } from "./documentFileFormats";
 import { getDesktopExportFormatDescriptor as getExportFormatDescriptor } from "./desktopExportFormats";
 import { exportDefaultPath, stripExportFileExtension } from "./exportFilename";
@@ -12252,6 +12253,19 @@ export function MainWindow({
     );
 
     officeAddin.bindings.forEach(({ action, spec }) => register(spec, () => officeAddin.run(action)));
+
+    // File ▸ Import Structures from Word or PowerPoint… : every valid structure in one undo step.
+    register(importOfficeStructuresCommand, async () => {
+      await runOfficeStructureImport({
+        pickFile: () => pickOfficeImportFile(nativePathBasename),
+        getDocument: () => documentRef.current,
+        commit: (next, undoLabel) => commitDocumentChange(next, undoLabel),
+        report: (message, details) => {
+          setStatus(message);
+          if (details.length) console.warn(`[office-import] ${message}\n${details.join("\n")}`);
+        }
+      });
+    });
 
     // File ▸ Check for Updates… on Windows. macOS answers the same menu id natively (Sparkle), and
     // other builds have no update channel, so the command exists only where it can work.

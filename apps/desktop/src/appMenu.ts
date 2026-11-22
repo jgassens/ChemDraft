@@ -6,6 +6,7 @@ import { convertTextToAtomLabelCommandId, nativeStylePresetActions } from "./com
 import { formatShortcutLabel } from "./toolsets";
 import { VIBE_CODE_STARTER_COMMAND_ID, vibeCodeStarterCommand } from "./commands/vibeCodeStarter";
 import type { CommandSpec } from "./commands";
+import { IMPORT_OFFICE_STRUCTURES_COMMAND_ID, IMPORT_OFFICE_STRUCTURES_TITLE } from "./officeStructureImport";
 
 /**
  * Declarative model for the in-viewport application menu bar.
@@ -279,6 +280,7 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
       items: [
         command("document.new", "New", { accelerator: "Cmd+N" }),
         command("document.open", "Open…", { accelerator: "Cmd+O" }),
+        command(IMPORT_OFFICE_STRUCTURES_COMMAND_ID, IMPORT_OFFICE_STRUCTURES_TITLE),
         command("document.save", "Save", { accelerator: "Cmd+S" }),
         command("document.saveAs", "Save As…", { accelerator: "Shift+Cmd+S" }),
         separator(),

@@ -4,6 +4,11 @@ export type { CarrierReadResult } from "./pngSelection";
 export { decodeBase64Bounded, UnsupportedDecompressionError } from "./carrierBytes";
 export { flatOpcBinaryParts, pptxSlidePictureMedia, readZip, readZipFromBase64 } from "./officePackage";
 export type { FlatOpcBinaryPart, OfficeZipCaps, OfficeZipEntry } from "./officePackage";
+export { importOfficeStructures, OFFICE_IMPORT_LIMITS, OfficeImportError, SUPPORTED_CARRIER_VERSIONS } from "./officeImport";
+export type {
+  OfficeCarrierWarning, OfficeCarrierWarningReason, OfficeFileKind, OfficeImportErrorCode, OfficeImportLimits, OfficeImportResult,
+  OfficeStructure, OfficeStructureSource,
+} from "./officeImport";
 
 export type ClipboardPayloadKind = "svg" | "png" | "text/plain" | "smiles" | "mol" | "rxn" | "cdxml" | "cdx";
 

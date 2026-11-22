@@ -336,8 +336,9 @@ Other add-in details:
 - **Where the code lives**: the editor is part of `apps/desktop`, and packages must not import
   `apps/`. So the pane is a second web entry of the desktop app's web build (`office.html`), running
   the same editor in an "Office host" mode, with the Word and PowerPoint adapters in
-  `apps/desktop/src/office/`. The carrier reader and the OOXML and .pptx lookups are pure functions
-  in `packages/clipboard-adapter`, shared with the desktop paste path. The manifest lives in
+  `apps/desktop/src/office/`. The carrier reader, the OOXML and .pptx lookups and the whole-file
+  importer (`officeImport.ts`) are pure functions in `packages/clipboard-adapter`, shared with the
+  desktop paste path and File ▸ Import Structures from Word or PowerPoint…. The manifest lives in
   `apps/desktop/office/`.
 
 ### Why the two platforms differ (AGENTS.md §1)
@@ -445,3 +446,46 @@ private runbooks.
 - Paste reads the carrier from GVML, EMF+ and PNG clipboard data (using slice 0).
 - Paste of the "Embedded Object" clipboard format (Windows) and of ChemDraft OLE packages; import
   structures from a .pptx or .docx file.
+
+**Done (2026-11-21): import structures from a .pptx or .docx file.** File ▸ *Import Structures from
+Word or PowerPoint…* (command `document.importOfficeStructures`, the same item in the native menu on
+macOS and Windows and in the web menu) opens the native file dialog filtered to `.docx` and `.pptx`,
+reads the file through the bounded read behind File ▸ Open (`readNativeFileBytes`), and inserts every
+valid structure as one undo entry, left selected.
+
+- **Finding carriers** (`packages/clipboard-adapter/src/officeImport.ts`, `importOfficeStructures`):
+  pure, and built on the slice 0 pieces: `readZip`, the namespace-aware XML reader and
+  `readChemDraftSelectionFromPng`. PowerPoint: slides in `p:sldIdLst` order, then each slide's
+  `p:pic/p:blipFill/a:blip`, groups included. Word: the main document's DrawingML `a:blip` and VML
+  `v:imagedata` (embedded-object previews) in body order, with the paragraph they fall in. Both read
+  only the chosen branch of `mc:AlternateContent`, so a picture is not counted twice through its
+  fallback. Headers, footers, notes, slide layouts and masters are not searched.
+- **Untrusted input.** The file is refused, with a specific message, when it is over 64 MB (the
+  open-document limit), has more than 2000 entries, an entry over 50 MB or more than 200 MB in all
+  once inflated (checked against the declared sizes before anything is inflated, and inflation is
+  capped at the declared size), is not a ZIP, or has crafted entry names (a backslash, an absolute
+  path, a drive letter, a control character, a `.` or `..` segment, or two names that differ only by
+  case). Only `.xml`, `.rels` and `.png` entries are inflated. A relationship target that leaves the
+  package gives a per-picture warning and is not read; linked (external) pictures are skipped. At most
+  500 pictures are checked, and a note says so when there are more. One carrier's JSON may be at most
+  8 MB, all carriers together 64 MB.
+- **Per-picture warnings** for a carrier that is present but unusable: damaged (CRC, framing, invalid
+  UTF-8 or JSON, not a ChemDraft drawing), an unknown data version (only version 1 is read), or over
+  the size limits. Pictures without a carrier are not reported.
+- **Chemistry check** (`apps/desktop/src/officeStructureImport.ts`, AGENTS.md §7). The carrier records
+  no SMILES, so each drawing is read with the same parser as a ChemDraft paste
+  (`parseSelectionClipboardPayload`), must keep every molecule with all its atoms and bonds, and must
+  survive serialize → parse with the same `chem-core` identity (element, charge, isotope, radical,
+  bond-order and connectivity signature, wedge and hash markers). After placement each new molecule is
+  compared with its drawing again. A drawing that fails either check is not inserted and is counted
+  in the report. Tests also compare canonical SMILES before and after import.
+- **Layout and report.** Drawings are laid out by their real extent (never the bounds the file
+  claims), left to right in rows that wrap at the page width, below existing content or centered on
+  an empty page. The status line says what happened: "Imported 3 structures from Slides.pptx.",
+  "Skipped 1: 1 has damaged ChemDraft data.", "No ChemDraft structures were found in Report.docx.
+  Only pictures placed from ChemDraft can be imported.", or "Could not import structures from …:"
+  with the reason. Per-structure reasons go to the log.
+- **Native code.** One `lib.rs` change: the File menu item and its `MENU_COMMAND_IDS` entry, with no
+  `cfg` branch. The dialog and file read use permissions the app already had.
+- Still to do in slice 3: the clipboard paths (GVML, EMF+, PNG and the Windows embedded-object
+  formats).

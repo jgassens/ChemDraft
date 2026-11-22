@@ -18,6 +18,7 @@ export const NATIVE_MENU_COMMAND_IDS: ReadonlySet<string> = new Set([
   "clipboard.copyAs.png",
   "document.new",
   "document.open",
+  "document.importOfficeStructures",
   "document.save",
   "document.saveAs",
   "export.open",

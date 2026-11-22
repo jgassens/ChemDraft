@@ -19,6 +19,8 @@ const ascii = new TextDecoder("ascii");
 export interface OfficeZipEntry {
   name: string;
   data: Uint8Array;
+  /** Set when `OfficeZipCaps.include` declined the entry: it was validated but not inflated. */
+  skipped?: true;
 }
 
 interface ZipEntryHeader {
@@ -35,12 +37,27 @@ interface ZipEntryHeader {
 export interface OfficeZipCaps {
   /** Optional lower input limit for the archive. The hard limit is 200 MiB. */
   maxArchiveBytes?: number;
+  /** Optional lower limit on the number of entries. The hard limit is 2000. */
+  maxEntries?: number;
+  /** Optional lower limit on one entry's inflated size. The hard limit is 50 MiB. */
+  maxEntryBytes?: number;
+  /** Optional lower limit on the sum of every entry's declared inflated size. The hard limit is 200 MiB. */
+  maxInflatedBytes?: number;
+  /**
+   * Inflate only the entries this accepts; the others are still validated (headers, bounds, sizes)
+   * but returned with empty data and `skipped: true`. Defaults to every entry.
+   */
+  include?: (name: string) => boolean;
+}
+
+function capLimit(value: number | undefined, hard: number, what: string): number {
+  const limit = value ?? hard;
+  if (!Number.isSafeInteger(limit) || limit < 0) throw new Error(`Invalid ZIP ${what} limit.`);
+  return Math.min(limit, hard);
 }
 
 function archiveLimit(caps: OfficeZipCaps): number {
-  const limit = caps.maxArchiveBytes ?? MAX_ARCHIVE_BYTES;
-  if (!Number.isSafeInteger(limit) || limit < 0) throw new Error("Invalid ZIP archive byte limit.");
-  return Math.min(limit, MAX_ARCHIVE_BYTES);
+  return capLimit(caps.maxArchiveBytes, MAX_ARCHIVE_BYTES, "archive byte");
 }
 
 function checkZipExtraFields(view: DataView, start: number, end: number): void {
@@ -92,6 +109,9 @@ export async function readZipFromBase64(base64: string, caps: OfficeZipCaps = {}
 /** Validate a classic single-disk ZIP and return its entries in central-directory order. */
 export async function readZip(bytes: Uint8Array, caps: OfficeZipCaps = {}): Promise<OfficeZipEntry[]> {
   const limit = archiveLimit(caps);
+  const maxEntries = capLimit(caps.maxEntries, MAX_ENTRIES, "entry count");
+  const maxEntryBytes = capLimit(caps.maxEntryBytes, MAX_ENTRY_BYTES, "entry byte");
+  const maxInflatedBytes = capLimit(caps.maxInflatedBytes, MAX_INFLATED_BYTES, "inflated byte");
   if (bytes.length > limit) throw new Error(`ZIP archive exceeds the ${limit}-byte input limit.`);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const u16 = (offset: number) => view.getUint16(offset, true);
@@ -115,7 +135,7 @@ export async function readZip(bytes: Uint8Array, caps: OfficeZipCaps = {}): Prom
   if (u16(endRecord + 4) || u16(endRecord + 6) || diskCount !== count) {
     throw new Error("Multi-disk ZIP is unsupported.");
   }
-  if (count > MAX_ENTRIES) throw new Error("ZIP exceeds 2000 entries.");
+  if (count > maxEntries) throw new Error(`ZIP exceeds ${maxEntries} entries.`);
   if (directory + size !== endRecord) throw new Error("Invalid ZIP central directory bounds.");
 
   const entries: ZipEntryHeader[] = [];
@@ -144,9 +164,15 @@ export async function readZip(bytes: Uint8Array, caps: OfficeZipCaps = {}): Prom
     if (u16(position + 34)) throw new Error("Multi-disk ZIP is unsupported.");
     if (method !== 0 && method !== 8) throw new Error(`Unsupported ZIP compression method ${method}.`);
     checkZipExtraFields(view, extraStart, extraStart + extraLength);
-    if (length > MAX_ENTRY_BYTES) throw new Error("ZIP entry exceeds 50 MB inflated.");
+    if (length > maxEntryBytes) {
+      throw new Error(maxEntryBytes === MAX_ENTRY_BYTES ? "ZIP entry exceeds 50 MB inflated."
+        : `ZIP entry exceeds the ${maxEntryBytes}-byte inflated limit.`);
+    }
     totalLength += length;
-    if (totalLength > MAX_INFLATED_BYTES) throw new Error("ZIP exceeds 200 MB inflated.");
+    if (totalLength > maxInflatedBytes) {
+      throw new Error(maxInflatedBytes === MAX_INFLATED_BYTES ? "ZIP exceeds 200 MB inflated."
+        : `ZIP exceeds the ${maxInflatedBytes}-byte total inflated limit.`);
+    }
 
     const nameBytes = bytes.subarray(nameStart, extraStart);
     const name = zipName(nameBytes, flags);
@@ -198,6 +224,10 @@ export async function readZip(bytes: Uint8Array, caps: OfficeZipCaps = {}): Prom
 
   const results: OfficeZipEntry[] = [];
   for (const { name, method, checksum, length, dataStart, compressedLength } of entries) {
+    if (caps.include && !caps.include(name)) {
+      results.push({ name, data: new Uint8Array(0), skipped: true });
+      continue;
+    }
     const compressed = bytes.subarray(dataStart, dataStart + compressedLength);
     let data = compressed;
     if (method === 8) {
@@ -586,7 +616,13 @@ export function flatOpcBinaryParts(flatOpcXml: string): FlatOpcBinaryPart[] {
   });
 }
 
-function resolveMediaTarget(target: string): string | null {
+/**
+ * Resolve a relationship target, relative to the folder of the part that owns the relationship
+ * (`ppt/slides` for `ppt/slides/slide1.xml`), to a package part name. Returns null for anything
+ * that is not a plain path inside the package: a URL or scheme, a backslash, NUL, a query or
+ * fragment, or `..` that climbs above the package root.
+ */
+export function resolvePartTarget(sourceFolder: string, target: string): string | null {
   if (/[?#]/.test(target)) return null;
   let path: string;
   try {
@@ -595,7 +631,7 @@ function resolveMediaTarget(target: string): string | null {
     return null;
   }
   if (/^[a-z][a-z\d+.-]*:|^\/\/|[\\\0]/i.test(path)) return null;
-  const segments = path.startsWith("/") ? [] : ["ppt", "slides"];
+  const segments = path.startsWith("/") ? [] : sourceFolder.split("/").filter(Boolean);
   for (const segment of path.split("/")) {
     if (segment === "..") {
       if (!segments.length) return null;
@@ -604,19 +640,38 @@ function resolveMediaTarget(target: string): string | null {
       segments.push(segment);
     }
   }
-  return segments[0] === "ppt" && segments[1] === "media" && segments.length > 2 ? segments.join("/") : null;
+  return segments.length ? segments.join("/") : null;
 }
 
-const understoodSlideNamespaces = new Set([...PRESENTATION, ...DRAWING, ...OFFICE_RELS]);
+function resolveMediaTarget(target: string): string | null {
+  const part = resolvePartTarget("ppt/slides", target);
+  return part?.startsWith("ppt/media/") ? part : null;
+}
 
-function choiceIsUnderstood(element: XmlElement, namespaces: ReadonlyMap<string, string>): boolean {
+const understoodSlideNamespaces: ReadonlySet<string> = new Set([...PRESENTATION, ...DRAWING, ...OFFICE_RELS]);
+
+const WORD_MAIN = [TRANSITIONAL + "wordprocessingml/2006/main", STRICT + "wordprocessingml/main"];
+const VML = "urn:schemas-microsoft-com:vml";
+const understoodWordNamespaces: ReadonlySet<string> = new Set([
+  ...WORD_MAIN, ...DRAWING, ...OFFICE_RELS,
+  TRANSITIONAL + "drawingml/2006/wordprocessingDrawing", STRICT + "drawingml/wordprocessingDrawing",
+  TRANSITIONAL + "drawingml/2006/picture", STRICT + "drawingml/picture",
+  "http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing",
+  "http://schemas.microsoft.com/office/word/2010/wordprocessingShape",
+  "http://schemas.microsoft.com/office/word/2010/wordprocessingGroup",
+  "http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas",
+]);
+
+function choiceIsUnderstood(
+  element: XmlElement, namespaces: ReadonlyMap<string, string>, understoodNamespaces: ReadonlySet<string>,
+): boolean {
   const requires = element.attrs.get("Requires") ?? "";
   let hasPrefix = false;
   let understood = true;
   for (const [prefix] of requires.matchAll(/[^ \t\r\n]+/g)) {
     hasPrefix = true;
     const namespace = boundNamespace(namespaces, prefix);
-    if (!understoodSlideNamespaces.has(namespace)) understood = false;
+    if (!understoodNamespaces.has(namespace)) understood = false;
   }
   if (!hasPrefix) throw new Error("mc:Choice is missing its Requires prefixes.");
   return understood;
@@ -629,7 +684,9 @@ interface SlideFrame {
 }
 
 // AlternateContent and its selected branch are transparent to the picture lookup.
-function* effectiveSlideElements(slideXml: string): Generator<XmlElement> {
+function* effectiveSlideElements(
+  slideXml: string, understoodNamespaces: ReadonlySet<string> = understoodSlideNamespaces,
+): Generator<XmlElement> {
   const stack: SlideFrame[] = [];
   for (const event of xmlElements(slideXml, (code) => {
     if (!isXmlSpace(code) && stack.at(-1)?.alternate) {
@@ -653,7 +710,7 @@ function* effectiveSlideElements(slideXml: string): Generator<XmlElement> {
       if (alternate.sawFallback || (!choice && !fallback) || (fallback && !alternate.sawChoice)) {
         throw new Error("Invalid mc:AlternateContent branch order or content.");
       }
-      const supported = fallback || choiceIsUnderstood(element, namespaces);
+      const supported = fallback || choiceIsUnderstood(element, namespaces, understoodNamespaces);
       const active = !alternate.selected && supported;
       alternate.sawChoice ||= choice;
       alternate.sawFallback = fallback;
@@ -717,4 +774,103 @@ export function pptxSlidePictureMedia(slideXml: string, slideRelsXml: string, sh
     return null;
   }
   return resolveMediaTarget(target);
+}
+
+export interface OfficeRelationship {
+  id: string;
+  type: string;
+  target: string;
+  external: boolean;
+}
+
+/** Read a relationships part (`*.rels`). Refuses duplicate relationship IDs. */
+export function officeRelationships(relsXml: string): Map<string, OfficeRelationship> {
+  const relationships = new Map<string, OfficeRelationship>();
+  for (const { element, closingAt } of xmlElements(relsXml)) {
+    if (closingAt !== undefined || element.ns !== PACKAGE_RELS || element.local !== "Relationship" ||
+        element.parent?.ns !== PACKAGE_RELS || element.parent.local !== "Relationships") continue;
+    const id = element.attrs.get("Id");
+    const type = element.attrs.get("Type");
+    const target = element.attrs.get("Target");
+    if (!id || !type || target === undefined) throw new Error("Office relationship is missing its Id, Type or Target.");
+    if (relationships.has(id)) throw new Error(`Duplicate Office relationship ID: ${id}`);
+    const mode = element.attrs.get("TargetMode");
+    relationships.set(id, { id, type, target, external: mode !== undefined && mode !== "Internal" });
+  }
+  return relationships;
+}
+
+/** True when a relationship type is the given OOXML relationship (transitional or strict). */
+export function isOfficeRelationshipType(type: string, name: "officeDocument" | "slide" | "image"): boolean {
+  return OFFICE_RELS.some((namespace) => type === `${namespace}/${name}`);
+}
+
+export type OfficeMainPartKind = "word" | "powerpoint" | "other";
+
+/** Identify a main part by its root element: `w:document` or `p:presentation`. */
+export function officeMainPartKind(xml: string): OfficeMainPartKind {
+  for (const { element } of xmlElements(xml)) {
+    if (element.local === "document" && WORD_MAIN.includes(element.ns)) return "word";
+    if (element.local === "presentation" && PRESENTATION.includes(element.ns)) return "powerpoint";
+    return "other";
+  }
+  return "other";
+}
+
+/** Relationship IDs of a presentation's slides, in slide order (`p:sldIdLst`). */
+export function pptxSlideRelationshipIds(presentationXml: string): string[] {
+  const ids: string[] = [];
+  for (const { element, closingAt } of xmlElements(presentationXml)) {
+    const list = element.parent;
+    if (closingAt !== undefined || element.local !== "sldId" || !PRESENTATION.includes(element.ns) ||
+        list?.local !== "sldIdLst" || !PRESENTATION.includes(list.ns)) continue;
+    const id = namespacedAttr(element, "id", OFFICE_RELS);
+    if (!id) throw new Error("Presentation slide entry is missing its relationship ID.");
+    ids.push(id);
+  }
+  return ids;
+}
+
+/**
+ * Relationship IDs of every picture on a slide (`p:pic/p:blipFill/a:blip`), in drawing order,
+ * including pictures inside groups and the chosen branch of `mc:AlternateContent`.
+ */
+export function pptxSlidePictureRelationshipIds(slideXml: string): string[] {
+  const ids: string[] = [];
+  for (const element of effectiveSlideElements(slideXml)) {
+    const fill = element.parent;
+    const picture = fill?.parent;
+    if (element.local !== "blip" || !DRAWING.includes(element.ns) || fill?.local !== "blipFill" ||
+        !PRESENTATION.includes(fill.ns) || picture?.local !== "pic" || !PRESENTATION.includes(picture.ns)) continue;
+    const id = namespacedAttr(element, "embed", OFFICE_RELS);
+    if (id) ids.push(id);
+  }
+  return ids;
+}
+
+export interface WordPictureReference {
+  relationshipId: string;
+  /** 1-based count of paragraphs started before or at the picture, in body order. */
+  paragraph: number;
+}
+
+/**
+ * Every embedded picture in a Word main document, in body order: DrawingML `a:blip r:embed` and
+ * VML `v:imagedata r:id` (embedded-object previews). Only the chosen branch of
+ * `mc:AlternateContent` is read, so a picture is not reported twice through its fallback.
+ */
+export function docxPictureReferences(documentXml: string): WordPictureReference[] {
+  const references: WordPictureReference[] = [];
+  let paragraph = 0;
+  for (const element of effectiveSlideElements(documentXml, understoodWordNamespaces)) {
+    if (element.local === "p" && WORD_MAIN.includes(element.ns)) {
+      paragraph++;
+      continue;
+    }
+    let id: string | undefined;
+    if (element.local === "blip" && DRAWING.includes(element.ns)) id = namespacedAttr(element, "embed", OFFICE_RELS);
+    else if (element.local === "imagedata" && element.ns === VML) id = namespacedAttr(element, "id", OFFICE_RELS);
+    if (id) references.push({ relationshipId: id, paragraph: Math.max(paragraph, 1) });
+  }
+  return references;
 }

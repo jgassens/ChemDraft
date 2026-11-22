@@ -1702,6 +1702,21 @@ Windows with Word and PowerPoint, and the Mac items on a Mac with both apps. Say
 - Copy a structure in ChemDraft and Paste Special in Word and PowerPoint: the list offers the
   embedded object and a picture. The pasted object opens with double-click.
 
+### Import structures from Word or PowerPoint (macOS and Windows)
+
+- File > Import Structures from Word or PowerPoint…: the dialog shows only `.docx` and `.pptx`
+  files. Pick a deck with three ChemDraft structures on two slides and one ordinary photo. The status
+  says "Imported 3 structures from <name>.pptx."; the three appear left to right, not overlapping
+  each other or existing content, and are selected. One Undo removes all three; Redo brings them back.
+- Copy SMILES from each imported structure and from the original drawings: they match, including
+  charges, isotopes and wedges.
+- A Word document with structures in several paragraphs: they come in, in document order.
+- A file with no ChemDraft pictures says "No ChemDraft structures were found in <name>. Only pictures
+  placed from ChemDraft can be imported." and changes nothing. A renamed `.txt` or a damaged file
+  says it is not a Word or PowerPoint file, and changes nothing. Cancel in the dialog changes nothing.
+- On Windows, pick a file from a path with spaces and non-ASCII letters, and from a network or
+  OneDrive folder; on macOS, from iCloud Drive.
+
 ### Windows installer registration
 
 - Fresh install: Insert > Object lists ChemDraft Structure, and a double-click on an existing object

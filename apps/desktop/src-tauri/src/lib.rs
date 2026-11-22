@@ -1075,6 +1075,7 @@ const MENU_COMMAND_IDS: &[&str] = &[
     "clipboard.copyAs.png",
     "document.new",
     "document.open",
+    "document.importOfficeStructures",
     "document.save",
     "document.saveAs",
     "export.open",
@@ -10586,6 +10587,13 @@ fn create_document_menu<R: Runtime>(
             &[
                 &MenuItem::with_id(app, "document.new", "New", true, Some("CmdOrCtrl+N"))?,
                 &MenuItem::with_id(app, "document.open", "Open...", true, Some("CmdOrCtrl+O"))?,
+                &MenuItem::with_id(
+                    app,
+                    "document.importOfficeStructures",
+                    "Import Structures from Word or PowerPoint…",
+                    true,
+                    None::<&str>,
+                )?,
                 &MenuItem::with_id(app, "document.save", "Save", true, Some("CmdOrCtrl+S"))?,
                 &MenuItem::with_id(
                     app,
