@@ -6,7 +6,7 @@ import {
 } from "./officeImport";
 import { isChemDraftOleClassId } from "./oleObject";
 import {
-  drawingPictureRelationshipIds, folderOf, isOfficeRelationshipType, officeRelationships, readZip, relsPartFor, resolvePartTarget,
+  drawingPictureReferences, folderOf, inReadingOrder, isOfficeRelationshipType, officeRelationships, readZip, relsPartFor, resolvePartTarget,
   type OfficeRelationship, type OfficeZipEntry,
 } from "./officePackage";
 import { CHEMDRAFT_PNG_SELECTION_KEYWORD, readChemDraftSelectionFromPng } from "./pngSelection";
@@ -143,8 +143,10 @@ function wantedEntry(name: string): boolean {
 const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
 
 /**
- * The archive's pictures, one entry per picture in the order its drawing lists them (`a:blip
- * r:embed` in the main part), so two pictures that share one media part are two entries. A drawing
+ * The archive's pictures, one entry per picture its drawing lists (`a:blip r:embed` in the main
+ * part), so two pictures that share one media part are two entries. They come in reading order:
+ * left to right, then top to bottom, by their place in the copied drawing, not their stacking
+ * order (`inReadingOrder`); pictures without a place follow in drawing order. A drawing
  * that names no picture falls back to its image relationships, once each; an archive without that
  * layout falls back to every PNG part, by name.
  */
@@ -168,8 +170,9 @@ function archivePictureParts(parts: ReadonlyMap<string, OfficeZipEntry>): string
       return part ? [part] : [];
     };
     const drawing = text(mainPart);
-    const pictures = (drawing === undefined ? [] : drawingPictureRelationshipIds(drawing))
-      .flatMap((id) => imagePart(relationships.get(id)));
+    const references = drawing === undefined ? [] : drawingPictureReferences(drawing);
+    const pictures = inReadingOrder(references, (reference) => reference.box)
+      .flatMap(({ relationshipId }) => imagePart(relationships.get(relationshipId)));
     if (pictures.length) return pictures;
     const related = [...new Set([...relationships.values()].flatMap(imagePart))];
     if (related.length) return related;

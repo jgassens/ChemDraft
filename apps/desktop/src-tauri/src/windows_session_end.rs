@@ -14,10 +14,46 @@
 //! The main thread only pumps and polls shared state here: it never waits on the STA, and never
 //! touches the disk. The Office recovery writer thread (`office_ole::recovery`) writes every copy
 //! and log entry. A committed session end waits, pumping, until that writer is idle and then
-//! closes it; its watchdog does the same before it ends the process, so it never cuts a copy short.
+//! closes it; its watchdog waits for it too before it ends the process. Both waits are bounded: a
+//! disk that never returns is abandoned at a fixed deadline, and the last copy it finished is kept.
 
 #[cfg(any(windows, test))]
-use std::{sync::mpsc, time::Duration};
+use std::{
+    sync::mpsc,
+    time::{Duration, Instant},
+};
+
+// A committed session end's deadlines, from WM_ENDSESSION(TRUE). Shutdown is always bounded.
+/// How long the committed flush waits for queued recovery copies.
+#[cfg(any(windows, test))]
+pub(super) const RECOVERY_LIMIT: Duration = Duration::from_millis(2_500);
+/// How long the committed flush waits for the recovery writer to log what is at risk and close.
+/// A writer still busy then is abandoned: its unfinished copy is never published.
+#[cfg(any(windows, test))]
+pub(super) const CLOSE_LIMIT: Duration = Duration::from_millis(2_750);
+/// The watchdog ends the process by now even if a recovery write never returns, below the 5
+/// seconds Windows waits before it lists an app as not responding.
+#[cfg(any(windows, test))]
+pub(super) const EXIT_LIMIT: Duration = Duration::from_secs(4);
+
+/// Run `step` between checks until `done`, or until `clock` reaches `deadline`. True if `done`.
+#[cfg(any(windows, test))]
+pub(super) fn wait_until(
+    deadline: Instant,
+    clock: impl Fn() -> Instant,
+    mut done: impl FnMut() -> bool,
+    mut step: impl FnMut(),
+) -> bool {
+    loop {
+        if done() {
+            return true;
+        }
+        if clock() >= deadline {
+            return false;
+        }
+        step();
+    }
+}
 
 /// Shaped like `shutdown::watch_flush` on the session-flush side: `on_stall` runs only if the flush
 /// has not disarmed the watchdog within `remaining`.
@@ -51,7 +87,8 @@ pub(crate) fn log_office_loss(app: &tauri::AppHandle, message: std::fmt::Argumen
     eprintln!("ChemDraft: {message}");
     let mut entry = format!("{} {message}\n", chrono::Utc::now().to_rfc3339());
     // During a session end the recovery writer appends it, so the thread answering Windows never
-    // touches the disk. Otherwise, or once a committed session end closed the writer, write here.
+    // touches the disk. Otherwise, or once a committed session end closed the writer, write here;
+    // a writer abandoned on a stuck disk takes and drops the entry instead.
     if let Some(server) = app.try_state::<Server>() {
         if server.session_ending() || in_progress() {
             match server.log_recovery(entry) {
@@ -78,7 +115,7 @@ pub(crate) fn log_office_loss(app: &tauri::AppHandle, message: std::fmt::Argumen
 
 #[cfg(windows)]
 mod windows {
-    use super::watch_flush;
+    use super::{watch_flush, CLOSE_LIMIT, EXIT_LIMIT, RECOVERY_LIMIT};
     use crate::{
         office_ole::{
             bridge::owner_id,
@@ -121,8 +158,8 @@ mod windows {
     }
 
     const FLUSH_BUDGET: Duration = Duration::from_secs(2);
-    // The committed flush's watchdog. It first waits for the recovery writer (at most
-    // recovery::BUDGET_BYTES of copies), so it never ends the process during a write.
+    // The committed flush's watchdog fires here if the flush has not returned. It waits for the
+    // recovery writer until EXIT_LIMIT, then ends the process even if a write is in flight.
     const HARD_LIMIT: Duration = Duration::from_secs(3);
     // Collect, save and copy Office drawings for at most 3 seconds during the query, below the 5
     // seconds Windows waits before it lists an app as not responding. Anything slower is refused
@@ -451,13 +488,15 @@ mod windows {
         stop_timer(hwnd);
         // The nested WebView2 pump can enter a native callback. Keep a hard ceiling even if
         // that callback stalls. Windows has already committed to ending this session. The
-        // ceiling never cuts a recovery copy short: the watchdog first waits for the writer to
-        // finish what is queued or in flight, then closes it so nothing new starts.
+        // watchdog first waits for the writer to finish what is queued or in flight, but only
+        // until EXIT_LIMIT: a write that never returns is abandoned, never published.
         let (disarm, watchdog) = mpsc::channel::<()>();
         let watchdog_app = app.clone();
         thread::spawn(move || {
             watch_flush(watchdog, HARD_LIMIT.saturating_sub(start.elapsed()), || {
-                watchdog_app.state::<Server>().close_recovery_when_idle();
+                watchdog_app
+                    .state::<Server>()
+                    .close_recovery_by(start + EXIT_LIMIT);
                 watchdog_app.force_exit(start.elapsed(), QuitReason::GraceExpired);
             });
         });
@@ -494,26 +533,37 @@ mod windows {
             eprintln!("ChemDraft: session-end flush was not confirmed before shutdown");
         }
         // Windows may end the process as soon as this message returns: let every queued copy
-        // land first. The writer's work is bounded by recovery::BUDGET_BYTES.
-        pump_until(|| server.recovery_idle());
-        log_risks(app, &server, "when Windows ended the session");
-        release_block(hwnd);
-        // Let the writer append that log, then start nothing new.
-        pump_until(|| server.try_close_recovery());
+        // land first, log what is still at risk, let the writer append that and start nothing
+        // new. Each wait stops at its deadline, so a disk that never returns cannot hold it.
+        let settled = server.close_recovery_committed(
+            start + RECOVERY_LIMIT,
+            start + CLOSE_LIMIT,
+            pump_until,
+            || {
+                log_risks(app, &server, "when Windows ended the session");
+                release_block(hwnd);
+            },
+        );
+        if !settled {
+            eprintln!(
+                "ChemDraft: stopped waiting for the Office recovery writer at the session end; \
+                 the copies it finished are kept"
+            );
+        }
         drop(disarm);
     }
 
-    /// Pump this thread's messages until `done`. After WM_QUIT keep waiting without pumping, so
-    /// the quit stays for the outer loop. Never touches the disk itself.
-    fn pump_until(mut done: impl FnMut() -> bool) {
+    /// Pump this thread's messages until `done` or `deadline`; true if `done`. After WM_QUIT keep
+    /// waiting without pumping, so the quit stays for the outer loop. Never touches the disk.
+    fn pump_until(deadline: Instant, done: &mut dyn FnMut() -> bool) -> bool {
         let mut pumping = true;
-        while !done() {
+        super::wait_until(deadline, Instant::now, done, || {
             if pumping {
                 pumping = pump_webviews();
             } else {
                 thread::sleep(Duration::from_millis(5));
             }
-        }
+        })
     }
 
     fn pump_webviews() -> bool {

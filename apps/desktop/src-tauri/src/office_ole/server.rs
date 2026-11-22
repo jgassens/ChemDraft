@@ -267,25 +267,30 @@ impl Server {
         self.control.tracker.lock().unwrap().risks()
     }
 
-    /// Every copy the session end needs is durable (or failed) and the writer has nothing in
-    /// flight. Never waits for the disk.
-    pub(crate) fn recovery_idle(&self) -> bool {
-        let pending = self.control.tracker.lock().unwrap().recovery_pending();
-        self.control.recovery.idle(pending)
+    /// A committed session end's last step on the thread answering Windows, bounded however the
+    /// disk behaves (`recovery::Writer::close_committed`). True if the writer settled in time.
+    pub(crate) fn close_recovery_committed(
+        &self,
+        copies_by: Instant,
+        close_by: Instant,
+        wait: impl FnMut(Instant, &mut dyn FnMut() -> bool) -> bool,
+        log: impl FnOnce(),
+    ) -> bool {
+        self.control.recovery.close_committed(
+            || self.control.tracker.lock().unwrap().recovery_pending(),
+            copies_by,
+            close_by,
+            wait,
+            log,
+        )
     }
 
-    /// `recovery_idle`, and then the writer starts nothing new, so the process can end without
-    /// cutting a copy short. Never waits for the disk.
-    pub(crate) fn try_close_recovery(&self) -> bool {
-        let pending = self.control.tracker.lock().unwrap().recovery_pending();
-        self.control.recovery.try_close(pending)
-    }
-
-    /// The watchdog thread's `try_close_recovery`: waits for what is queued or in flight.
-    pub(crate) fn close_recovery_when_idle(&self) {
-        self.control
-            .recovery
-            .close_when_idle(|| self.control.tracker.lock().unwrap().recovery_pending());
+    /// The watchdog thread's close: waits for what is queued or in flight until `deadline`, then
+    /// abandons it. True if the writer settled in time.
+    pub(crate) fn close_recovery_by(&self, deadline: Instant) -> bool {
+        self.control.recovery.close_by(deadline, Instant::now, || {
+            self.control.tracker.lock().unwrap().recovery_pending()
+        })
     }
 
     /// Append an Office log entry on the writer thread. Returns it if the writer is closed.

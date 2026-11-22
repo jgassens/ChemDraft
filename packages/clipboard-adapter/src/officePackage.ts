@@ -848,12 +848,116 @@ export function pptxSlideRelationshipIds(presentationXml: string): string[] {
   return ids;
 }
 
+/** A shape's place on its slide or drawing, in EMUs, after its groups' transforms. */
+export interface DrawingBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 /** A picture, or an embedded OLE object, found in a slide or a Word document. */
 export interface OfficeDrawingReference {
   /** The picture's image relationship, or the object's `oleObject` relationship. */
   relationshipId: string;
   /** Set only for an embedded OLE object: its ProgID as the markup names it ("" when it names none). */
   oleProgId?: string;
+  /**
+   * Where the shape sits on a slide or a clipboard drawing, when its markup says (`xfrm`). Absent
+   * for a shape that inherits its place, such as a picture placeholder, and for Word pictures.
+   */
+  box?: DrawingBox;
+}
+
+interface ShapeFrame {
+  off?: [number, number];
+  ext?: [number, number];
+  chOff?: [number, number];
+  chExt?: [number, number];
+}
+
+/**
+ * Collects shape transforms (`a:xfrm` in `spPr`/`grpSpPr`, `p:xfrm` on a graphic frame) while a
+ * drawing's effective elements are walked, then places a shape through its groups' child frames.
+ */
+class DrawingGeometry {
+  private readonly frames = new Map<XmlElement, ShapeFrame>();
+
+  /** Feed every effective element, in document order. */
+  observe(element: XmlElement): void {
+    const xfrm = element.parent;
+    if (!xfrm || xfrm.local !== "xfrm" || !DRAWING.includes(element.ns) ||
+        !(DRAWING.includes(xfrm.ns) || PRESENTATION.includes(xfrm.ns))) return;
+    const holder = xfrm.parent;
+    const shape = holder?.local === "spPr" || holder?.local === "grpSpPr" ? holder.parent
+      : holder?.local === "graphicFrame" ? holder : undefined;
+    if (!shape) return;
+    const pair = (first: string, second: string): [number, number] | undefined => {
+      const a = Number(element.attrs.get(first));
+      const b = Number(element.attrs.get(second));
+      return Number.isFinite(a) && Number.isFinite(b) ? [a, b] : undefined;
+    };
+    const frame = this.frames.get(shape) ?? {};
+    if (element.local === "off") frame.off ??= pair("x", "y");
+    else if (element.local === "ext") frame.ext ??= pair("cx", "cy");
+    else if (element.local === "chOff") frame.chOff ??= pair("x", "y");
+    else if (element.local === "chExt") frame.chExt ??= pair("cx", "cy");
+    else return;
+    this.frames.set(shape, frame);
+  }
+
+  /** The shape's box on the page, or undefined when the shape itself has no offset and extent. */
+  box(shape: XmlElement | undefined): DrawingBox | undefined {
+    const own = shape ? this.frames.get(shape) : undefined;
+    if (!shape || !own?.off || !own.ext) return undefined;
+    let [x, y] = own.off;
+    let [width, height] = own.ext;
+    for (let group = shape.parent; group; group = group.parent) {
+      const frame = this.frames.get(group);
+      if (!frame?.off || !frame.ext || !frame.chOff || !frame.chExt) continue;
+      const scaleX = frame.chExt[0] ? frame.ext[0] / frame.chExt[0] : 1;
+      const scaleY = frame.chExt[1] ? frame.ext[1] / frame.chExt[1] : 1;
+      x = frame.off[0] + (x - frame.chOff[0]) * scaleX;
+      y = frame.off[1] + (y - frame.chOff[1]) * scaleY;
+      width *= scaleX;
+      height *= scaleY;
+    }
+    return { x, y, width: Math.abs(width), height: Math.abs(height) };
+  }
+}
+
+/**
+ * Pictures in reading order: left to right, then top to bottom, by their place on the page, not
+ * their stacking (document) order. Rows are formed top to bottom by vertical center: a picture
+ * joins a row when its center is within half the smaller height of the row's first picture's
+ * center; each row then reads left to right. Pictures without a known place follow, in their
+ * original order. Ties keep the original order.
+ */
+export function inReadingOrder<T>(items: readonly T[], boxOf: (item: T) => DrawingBox | undefined): T[] {
+  const placed: { item: T; index: number; box: DrawingBox; center: number }[] = [];
+  const unplaced: T[] = [];
+  items.forEach((item, index) => {
+    const box = boxOf(item);
+    if (box) placed.push({ item, index, box, center: box.y + box.height / 2 });
+    else unplaced.push(item);
+  });
+  placed.sort((a, b) => a.center - b.center || a.box.x - b.box.x || a.index - b.index);
+  const rows: (typeof placed)[] = [];
+  for (const entry of placed) {
+    const row = rows.at(-1);
+    const first = row?.[0];
+    if (row && first && Math.abs(entry.center - first.center) <= Math.min(entry.box.height, first.box.height) / 2) row.push(entry);
+    else rows.push([entry]);
+  }
+  for (const row of rows) row.sort((a, b) => a.box.x - b.box.x || a.center - b.center || a.index - b.index);
+  return [...rows.flat().map((entry) => entry.item), ...unplaced];
+}
+
+function ancestorNamed(element: XmlElement, local: string, namespaces: readonly string[]): XmlElement | undefined {
+  for (let parent = element.parent; parent; parent = parent.parent) {
+    if (parent.local === local && namespaces.includes(parent.ns)) return parent;
+  }
+  return undefined;
 }
 
 function hasAncestor(element: XmlElement, local: string, namespaces: readonly string[]): boolean {
@@ -869,11 +973,13 @@ function hasAncestor(element: XmlElement, local: string, namespaces: readonly st
  * An object's preview picture (a `p:pic` inside its `p:oleObj`) is part of the object, not listed.
  */
 export function pptxSlideDrawingReferences(slideXml: string): OfficeDrawingReference[] {
-  const references: OfficeDrawingReference[] = [];
+  const found: { reference: OfficeDrawingReference; shape?: XmlElement }[] = [];
+  const geometry = new DrawingGeometry();
   for (const element of effectiveSlideElements(slideXml)) {
+    geometry.observe(element);
     if (element.local === "oleObj" && PRESENTATION.includes(element.ns)) {
       const id = namespacedAttr(element, "id", OFFICE_RELS);
-      if (id) references.push({ relationshipId: id, oleProgId: element.attrs.get("progId") ?? "" });
+      if (id) found.push({ reference: { relationshipId: id, oleProgId: element.attrs.get("progId") ?? "" }, shape: ancestorNamed(element, "graphicFrame", PRESENTATION) });
       continue;
     }
     const fill = element.parent;
@@ -882,9 +988,13 @@ export function pptxSlideDrawingReferences(slideXml: string): OfficeDrawingRefer
         !PRESENTATION.includes(fill.ns) || picture?.local !== "pic" || !PRESENTATION.includes(picture.ns) ||
         hasAncestor(picture, "oleObj", PRESENTATION)) continue;
     const id = namespacedAttr(element, "embed", OFFICE_RELS);
-    if (id) references.push({ relationshipId: id });
+    if (id) found.push({ reference: { relationshipId: id }, shape: picture });
   }
-  return references;
+  // A shape's transform follows its picture fill, so places are known only once the slide is read.
+  return found.map(({ reference, shape }) => {
+    const box = geometry.box(shape);
+    return box ? { ...reference, box } : reference;
+  });
 }
 
 // Office's clipboard drawing (GVML): DrawingML pictures, usually inside a locked canvas.
@@ -895,18 +1005,25 @@ const understoodDrawingNamespaces: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Relationship IDs of every embedded picture (`a:blip r:embed`) in a DrawingML part, in document
- * order and once per occurrence: two pictures that share one image part are two entries. Only the
- * chosen branch of `mc:AlternateContent` is read, so a picture is not reported twice.
+ * Every embedded picture (`a:blip r:embed`) in a DrawingML part, in document order and once per
+ * occurrence: two pictures that share one image part are two entries. Each carries its place on the
+ * drawing when its picture shape has one. Only the chosen branch of `mc:AlternateContent` is read,
+ * so a picture is not reported twice.
  */
-export function drawingPictureRelationshipIds(drawingXml: string): string[] {
-  const ids: string[] = [];
+export function drawingPictureReferences(drawingXml: string): OfficeDrawingReference[] {
+  const found: { relationshipId: string; shape?: XmlElement }[] = [];
+  const geometry = new DrawingGeometry();
   for (const element of effectiveSlideElements(drawingXml, understoodDrawingNamespaces)) {
+    geometry.observe(element);
     if (element.local !== "blip" || !DRAWING.includes(element.ns)) continue;
     const id = namespacedAttr(element, "embed", OFFICE_RELS);
-    if (id) ids.push(id);
+    const picture = element.parent?.local === "blipFill" ? element.parent.parent : undefined;
+    if (id) found.push({ relationshipId: id, shape: picture?.local === "pic" ? picture : undefined });
   }
-  return ids;
+  return found.map(({ relationshipId, shape }) => {
+    const box = geometry.box(shape);
+    return box ? { relationshipId, box } : { relationshipId };
+  });
 }
 
 export interface WordDrawingReference extends OfficeDrawingReference {

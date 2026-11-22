@@ -1,5 +1,5 @@
 import {
-  docxDrawingReferences, folderOf, isOfficeRelationshipType, officeMainPartKind, officeRelationships, pptxSlideDrawingReferences,
+  docxDrawingReferences, folderOf, inReadingOrder, isOfficeRelationshipType, officeMainPartKind, officeRelationships, pptxSlideDrawingReferences,
   pptxSlideRelationshipIds, readZip, relsPartFor, resolvePartTarget, type OfficeRelationship, type OfficeZipEntry,
 } from "./officePackage";
 import { isChemDraftOleProgId, readChemDraftOleObject } from "./oleObject";
@@ -47,7 +47,10 @@ export type OfficeStructureSource =
   | { kind: "paragraph"; paragraph: number };
 
 export interface OfficeStructure {
-  /** 1-based position among every picture checked, in document order. */
+  /**
+   * 1-based position among every picture checked: slides in order, each slide's pictures and
+   * objects left to right, then top to bottom; a Word document's in body order.
+   */
   picture: number;
   source: OfficeStructureSource;
   /** Plain words for the source: "slide 2", "paragraph 14". */
@@ -188,7 +191,8 @@ interface PictureRef {
 }
 
 /**
- * Read every ChemDraft structure in a Word (.docx) or PowerPoint (.pptx) file, in document order.
+ * Read every ChemDraft structure in a Word (.docx) or PowerPoint (.pptx) file, in reading order:
+ * a Word document's in body order, a deck's slide by slide, each slide's by place on the slide.
  * Throws `OfficeImportError` when the file itself is refused (too large, not a ZIP, crafted entry
  * names, not a Word or PowerPoint package); returns per-picture warnings for unusable carriers.
  * `limits` may only lower the built-in limits (tests use it to check the bounds cheaply).
@@ -323,7 +327,8 @@ export async function importOfficeStructures(
         throw malformed(`slide ${slide}`, error);
       }
       const relationships = relationshipsOf(slidePart);
-      for (const { relationshipId, oleProgId } of references) {
+      // A slide reads left to right, then top to bottom, whatever order its shapes are stacked in.
+      for (const { relationshipId, oleProgId } of inReadingOrder(references, (reference) => reference.box)) {
         pictureRefs.push({ source: { kind: "slide", slide }, relationshipId, ...(oleProgId === undefined ? {} : { oleProgId }),
           ownerPart: slidePart, relationships });
       }
@@ -361,7 +366,10 @@ export async function importOfficeStructures(
 
   const structures: OfficeStructure[] = [];
   const warnings: OfficeCarrierWarning[] = [];
+  // A part that several references share is read once, a picture's PNG or an object's compound
+  // file alike; each reference still counts against the limits, as a structure of its own.
   const readByPart = new Map<string, Awaited<ReturnType<typeof readChemDraftSelectionFromPng>>>();
+  const objectByPart = new Map<string, ReturnType<typeof readChemDraftOleObject>>();
   let totalJsonBytes = 0;
 
   for (const [index, ref] of checkedRefs.entries()) {
@@ -383,7 +391,11 @@ export async function importOfficeStructures(
     if (embedded) {
       if (!entry || entry.skipped) continue;
       // The object's class decides, not its preview: a ChemDraft object's preview holds no carrier.
-      const object = readChemDraftOleObject(entry.data, limits.maxCarrierJsonBytes);
+      let object = objectByPart.get(entry.name);
+      if (!object) {
+        object = readChemDraftOleObject(entry.data, limits.maxCarrierJsonBytes);
+        objectByPart.set(entry.name, object);
+      }
       if (object.kind === "other") continue; // another program's object
       if (object.kind === "too-large") {
         warnings.push({ picture, source, location, mediaPart: entry.name, reason: "too-large",

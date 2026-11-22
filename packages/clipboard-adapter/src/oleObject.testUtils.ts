@@ -1,15 +1,18 @@
 /**
- * Test-only: a minimal version 3 compound file writer (MS-CFB), laid out like the native writer's
+ * Test-only: a minimal compound file writer (MS-CFB), laid out like the native writer's
  * (`office_ole/storage.rs`): root-level streams, those under 4096 bytes in the mini stream.
+ * Version 3 (512-byte sectors) by default, or version 4 (4096-byte sectors). `minFatSectors` pads
+ * the FAT so that more than the header's 109 FAT sector slots are needed, which adds a DIFAT chain.
  * Returns the file and where its tables are, so tests can damage them.
  */
 
-const SECTOR = 512;
 const MINI = 64;
 const CUTOFF = 4096;
 const FREE = 0xffffffff;
 const END = 0xfffffffe;
 const FAT_SECTOR = 0xfffffffd;
+const DIFAT_SECTOR = 0xfffffffc;
+const HEADER_DIFAT = 109;
 
 export interface TestCompoundFile {
   bytes: Uint8Array;
@@ -21,6 +24,14 @@ export interface TestCompoundFile {
   directoryOffset: number;
   /** Each stream's first sector (regular) or mini sector (small), in the order given. */
   starts: number[];
+  /** The DIFAT sectors, in chain order (empty when the header holds every FAT sector). */
+  difatSectors: number[];
+  sectorBytes: number;
+}
+
+export interface TestCompoundFileOptions {
+  version?: 3 | 4;
+  minFatSectors?: number;
 }
 
 function classIdBytes(clsid: string): Uint8Array {
@@ -34,7 +45,12 @@ function classIdBytes(clsid: string): Uint8Array {
   return bytes;
 }
 
-export function writeTestCompoundFile(clsid: string, streams: { name: string; data: Uint8Array | string }[]): TestCompoundFile {
+export function writeTestCompoundFile(
+  clsid: string, streams: { name: string; data: Uint8Array | string }[], options: TestCompoundFileOptions = {},
+): TestCompoundFile {
+  const version = options.version ?? 3;
+  const SECTOR = version === 4 ? 4096 : 512;
+  const perSector = SECTOR / 4;
   const encoded = streams.map((stream) => ({
     name: stream.name, data: typeof stream.data === "string" ? new TextEncoder().encode(stream.data) : stream.data,
   }));
@@ -60,12 +76,15 @@ export function writeTestCompoundFile(clsid: string, streams: { name: string; da
   const miniStreamSectors = sectorsFor(miniStream.length);
   const largeSectors = encoded.map((stream, index) => miniStarts[index] === undefined ? sectorsFor(stream.data.length) : 0);
   const content = directorySectors + miniFatSectors + miniStreamSectors + largeSectors.reduce((sum, count) => sum + count, 0);
-  let fatSectors = 1;
-  while (fatSectors * (SECTOR / 4) < fatSectors + content) fatSectors++;
-  if (fatSectors > 109) throw new Error("Test compound file is too large for a header-only DIFAT.");
-  const fat: number[] = new Array(fatSectors * (SECTOR / 4)).fill(FREE);
+  const difatFor = (fat: number) => Math.max(0, Math.ceil((fat - HEADER_DIFAT) / (perSector - 1)));
+  let fatSectors = Math.max(1, options.minFatSectors ?? 1);
+  while (fatSectors * perSector < fatSectors + difatFor(fatSectors) + content) fatSectors++;
+  const difatCount = difatFor(fatSectors);
+  const fat: number[] = new Array(fatSectors * perSector).fill(FREE);
   for (let index = 0; index < fatSectors; index++) fat[index] = FAT_SECTOR;
-  let next = fatSectors;
+  const difatSectors = Array.from({ length: difatCount }, (_, index) => fatSectors + index);
+  for (const id of difatSectors) fat[id] = DIFAT_SECTOR;
+  let next = fatSectors + difatCount;
   const allocate = (count: number) => {
     if (!count) return END;
     const start = next;
@@ -78,22 +97,32 @@ export function writeTestCompoundFile(clsid: string, streams: { name: string; da
   const miniStreamStart = allocate(miniStreamSectors);
   const largeStarts = largeSectors.map(allocate);
 
-  const bytes = new Uint8Array((fatSectors + content + 1) * SECTOR);
+  const bytes = new Uint8Array((fatSectors + difatCount + content + 1) * SECTOR);
   const view = new DataView(bytes.buffer);
   const at = (sector: number) => (sector + 1) * SECTOR;
   bytes.set([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
   view.setUint16(24, 0x3e, true);
-  view.setUint16(26, 3, true);
+  view.setUint16(26, version, true);
   view.setUint16(28, 0xfffe, true);
-  view.setUint16(30, 9, true);
+  view.setUint16(30, version === 4 ? 12 : 9, true);
   view.setUint16(32, 6, true);
   view.setUint32(44, fatSectors, true);
   view.setUint32(48, directoryStart, true);
   view.setUint32(56, CUTOFF, true);
   view.setUint32(60, miniFatStart, true);
   view.setUint32(64, miniFatSectors, true);
-  view.setUint32(68, END, true);
-  for (let index = 0; index < 109; index++) view.setUint32(76 + index * 4, index < fatSectors ? index : FREE, true);
+  if (version === 4) view.setUint32(40, directorySectors, true);
+  view.setUint32(68, difatCount ? difatSectors[0]! : END, true);
+  view.setUint32(72, difatCount, true);
+  for (let index = 0; index < HEADER_DIFAT; index++) view.setUint32(76 + index * 4, index < fatSectors ? index : FREE, true);
+  difatSectors.forEach((id, chainIndex) => {
+    bytes.fill(0xff, at(id), at(id) + SECTOR);
+    for (let slot = 0; slot < perSector - 1; slot++) {
+      const fatIndex = HEADER_DIFAT + chainIndex * (perSector - 1) + slot;
+      if (fatIndex < fatSectors) view.setUint32(at(id) + slot * 4, fatIndex, true);
+    }
+    view.setUint32(at(id) + SECTOR - 4, difatSectors[chainIndex + 1] ?? END, true);
+  });
   fat.forEach((entry, index) => view.setUint32(at(0) + index * 4, entry, true));
   if (miniFatSectors) {
     bytes.fill(0xff, at(miniFatStart), at(miniFatStart) + miniFatSectors * SECTOR);
@@ -127,5 +156,6 @@ export function writeTestCompoundFile(clsid: string, streams: { name: string; da
   return {
     bytes, fatOffset: at(0), miniFatOffset: miniFatSectors ? at(miniFatStart) : -1, directoryOffset: at(directoryStart),
     starts: encoded.map((_, index) => miniStarts[index] ?? largeStarts[index]!),
+    difatSectors, sectorBytes: SECTOR,
   };
 }

@@ -10,7 +10,9 @@
 //! records it in the tracker only once it is durable, so a copy that is queued or still being
 //! written keeps the session end refused. It also appends the Office log while a session end is
 //! pending. Its state machine ([`RecoveryWrite`]) mirrors `FlushWrite` on the session-flush side
-//! (`shutdown.rs`), and a committed session end's watchdog waits for it before it ends the process.
+//! (`shutdown.rs`). A committed session end waits for it only until fixed deadlines: a disk that
+//! never returns is abandoned ([`Writer::abandon`]), its unfinished `.partial` is never renamed
+//! over the last good copy, and the next start removes it ([`remove_stale_partials`]).
 
 use std::{
     collections::VecDeque,
@@ -18,7 +20,7 @@ use std::{
     io::{self, Write as _},
     path::{Path, PathBuf},
     sync::{Condvar, Mutex, PoisonError},
-    time::Duration,
+    time::{Duration, Instant, SystemTime},
 };
 
 use super::{
@@ -41,6 +43,9 @@ pub(crate) const BUDGET_BYTES: usize = 2 * MAX_DOCUMENT_BYTES;
 pub(crate) const SESSION_END_LIMIT: Duration = Duration::from_secs(30);
 /// While a session end is pending the writer re-reads the tracker this often, even unwoken.
 const POLL: Duration = Duration::from_millis(250);
+/// Why a copy finished after its committed session end's deadline was not published.
+const ABANDONED: &str =
+    "ChemDraft stopped waiting for it when Windows ended the session, so the previous copy is kept";
 
 /// The session end's UTC start, shared by its files so a later session end never overwrites them.
 pub(crate) fn stamp(now: chrono::DateTime<chrono::Utc>) -> String {
@@ -85,12 +90,13 @@ fn check_size(json: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// Written whole and synced, then renamed into place; `publishing` runs just before the rename.
+/// Written whole and synced, then renamed into place. `publishing` runs just before the rename and
+/// may refuse it: the copy is then removed, and the file it would have replaced is left as it was.
 fn write_file(
     dir: &Path,
     name: &str,
     json: &str,
-    publishing: &mut dyn FnMut(),
+    publishing: &mut dyn FnMut() -> bool,
 ) -> io::Result<PathBuf> {
     check_size(json)?;
     fs::create_dir_all(dir)?;
@@ -100,9 +106,42 @@ fn write_file(
     file.write_all(json.as_bytes())?;
     file.sync_all()?;
     drop(file);
-    publishing();
+    if !publishing() {
+        let _ = fs::remove_file(&partial);
+        return Err(io::Error::other(ABANDONED));
+    }
     fs::rename(&partial, &path)?;
     Ok(path)
+}
+
+/// Remove the `.partial` copies in `dir` last written before `before` (when this run's writer was
+/// made): writes an earlier run abandoned at a stuck disk, or that failed. Nothing reads them; the
+/// published copies beside them are untouched. Returns what was removed.
+pub(super) fn remove_stale_partials(dir: &Path, before: SystemTime) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut removed = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let stale = path
+            .extension()
+            .is_some_and(|extension| extension == "partial")
+            && entry.metadata().is_ok_and(|metadata| {
+                metadata.is_file() && metadata.modified().is_ok_and(|written| written < before)
+            });
+        if !stale {
+            continue;
+        }
+        match fs::remove_file(&path) {
+            Ok(()) => removed.push(path),
+            Err(error) => eprintln!(
+                "ChemDraft: could not remove the unfinished recovery copy {}: {error}",
+                path.display()
+            ),
+        }
+    }
+    removed
 }
 
 /// A recovery copy of a drawing Office did not take when its editor window closed outside a
@@ -119,7 +158,7 @@ pub(super) fn write_unsaved(
         dir,
         &file_name(stamp, object, display_name(app, document)),
         json,
-        &mut || {},
+        &mut || true,
     )
 }
 
@@ -155,12 +194,13 @@ pub(crate) fn decide(answer: Answer, elapsed: Duration) -> Decision {
 
 /// The writer's disk operations. Tests substitute one that stops inside a write.
 pub(super) trait Files {
+    /// Like `write_file`: `publishing` may refuse the rename.
     fn write(
         &mut self,
         dir: &Path,
         name: &str,
         json: &str,
-        publishing: &mut dyn FnMut(),
+        publishing: &mut dyn FnMut() -> bool,
     ) -> io::Result<PathBuf>;
     fn remove(&mut self, path: &Path) -> io::Result<()>;
     fn append(&mut self, log: &Path, entries: &str) -> io::Result<()>;
@@ -174,7 +214,7 @@ impl Files for Disk {
         dir: &Path,
         name: &str,
         json: &str,
-        publishing: &mut dyn FnMut(),
+        publishing: &mut dyn FnMut() -> bool,
     ) -> io::Result<PathBuf> {
         write_file(dir, name, json, publishing)
     }
@@ -210,7 +250,8 @@ pub(crate) enum RecoveryWrite {
 }
 
 impl RecoveryWrite {
-    /// Like `FlushWrite::grace_can_end_quit`: only now may the watchdog end the process.
+    /// Like `FlushWrite::grace_can_end_quit`: only now may the watchdog end the process before its
+    /// deadline. At the deadline it ends it anyway (`Writer::close_by`).
     pub(crate) fn watchdog_can_exit(self) -> bool {
         self == Self::Idle
     }
@@ -222,8 +263,12 @@ struct State {
     again: bool,
     /// A session end was pending at the end of the last pass, so the writer polls the tracker.
     active: bool,
-    /// Set once a committed session end saw the writer idle: nothing new starts after it.
+    /// Set once a committed session end saw the writer idle, or abandoned it: nothing new starts
+    /// after it, and nothing in flight is published.
     closed: bool,
+    /// A committed session end's deadline passed with the writer still busy: its disk may never
+    /// return, so nothing may be handed back to be written on another thread.
+    abandoned: bool,
     stopped: bool,
     /// Bytes started for copies of one session end, by its request.
     spent: (u32, usize),
@@ -243,6 +288,8 @@ pub(crate) struct Writer {
     /// The Office log, if the app has a log folder.
     log: Option<PathBuf>,
     budget: usize,
+    /// Older `.partial` copies are from an earlier run (`remove_stale_partials`).
+    started: SystemTime,
 }
 
 impl Writer {
@@ -253,6 +300,7 @@ impl Writer {
                 again: false,
                 active: false,
                 closed: false,
+                abandoned: false,
                 stopped: false,
                 spent: (0, 0),
                 cancelled: VecDeque::new(),
@@ -263,6 +311,7 @@ impl Writer {
             dir,
             log,
             budget: BUDGET_BYTES,
+            started: SystemTime::now(),
         }
     }
 
@@ -285,9 +334,14 @@ impl Writer {
         self.queue(&mut state);
     }
 
-    /// Append an entry to the Office log on the writer thread. Returns it if the writer is closed.
+    /// Append an entry to the Office log on the writer thread. Returns it if the writer is closed,
+    /// for the caller to write. Once the writer was abandoned the entry is dropped instead (the
+    /// caller has printed it): the disk may be stuck, and the caller must not wait on it.
     pub(crate) fn log(&self, entry: String) -> Result<(), String> {
         let mut state = self.lock();
+        if state.abandoned {
+            return Ok(());
+        }
         if state.closed || state.stopped {
             return Err(entry);
         }
@@ -338,23 +392,65 @@ impl Writer {
         self.settled(pending, true)
     }
 
-    /// The watchdog's side of `try_close`: waits for what is queued or in flight (a session end
-    /// writes at most `BUDGET_BYTES`), then closes. `pending` reads the tracker.
-    pub(crate) fn close_when_idle(&self, mut pending: impl FnMut() -> bool) {
+    /// Close now, even mid-write: a committed session end's deadline passed. Nothing new starts, a
+    /// copy still in flight is never renamed into place (`publish`), so the last good copy stays,
+    /// and its `.partial` is removed when the write returns or at the next start.
+    pub(crate) fn abandon(&self) {
+        let mut state = self.lock();
+        state.closed = true;
+        state.abandoned = true;
+        self.changed.notify_all();
+    }
+
+    /// The watchdog's side of `try_close`, bounded: waits for what is queued or in flight until
+    /// `deadline` on `clock`, then abandons it, so a write that never returns cannot hold the
+    /// process. `pending` reads the tracker. True if the writer settled in time.
+    pub(crate) fn close_by(
+        &self,
+        deadline: Instant,
+        clock: impl Fn() -> Instant,
+        mut pending: impl FnMut() -> bool,
+    ) -> bool {
         loop {
-            let pending = pending();
-            if self.try_close(pending) {
-                return;
+            if self.try_close(pending()) {
+                return true;
+            }
+            let left = deadline.saturating_duration_since(clock());
+            if left.is_zero() {
+                self.abandon();
+                return false;
             }
             let state = self.lock();
-            if !state.stopped && !state.stage.watchdog_can_exit() {
+            if !state.stopped && !state.closed && !state.stage.watchdog_can_exit() {
                 drop(
                     self.changed
-                        .wait_timeout(state, POLL)
+                        .wait_timeout(state, left.min(POLL))
                         .unwrap_or_else(PoisonError::into_inner),
                 );
             }
         }
+    }
+
+    /// A committed session end's last step on the thread answering Windows, bounded whatever the
+    /// disk does. `wait(deadline, done)` pumps until `done` or `deadline`. It waits for every
+    /// queued copy until `copies_by`, runs `log` (what is still at risk), then waits for the writer
+    /// to append that and closes it, until `close_by`. A writer still busy is abandoned. True if
+    /// it settled in time.
+    pub(crate) fn close_committed(
+        &self,
+        mut pending: impl FnMut() -> bool,
+        copies_by: Instant,
+        close_by: Instant,
+        mut wait: impl FnMut(Instant, &mut dyn FnMut() -> bool) -> bool,
+        log: impl FnOnce(),
+    ) -> bool {
+        let settled = wait(copies_by, &mut || self.idle(pending()));
+        log();
+        if settled && wait(close_by, &mut || self.try_close(pending())) {
+            return true;
+        }
+        self.abandon();
+        false
     }
 
     pub(crate) fn stop(&self) {
@@ -364,6 +460,18 @@ impl Writer {
 
     fn set_stage(&self, stage: RecoveryWrite) {
         self.lock().stage = stage;
+    }
+
+    /// Just before a synced copy is renamed into place. Refused once the writer is closed, which
+    /// mid-write means abandoned: a copy finished after its deadline never replaces the last good
+    /// one. A rename already under way completes; it replaces one whole copy with another.
+    fn publish(&self) -> bool {
+        let mut state = self.lock();
+        if state.closed || state.stopped {
+            return false;
+        }
+        state.stage = RecoveryWrite::Publishing;
+        true
     }
 
     /// Mark an operation in flight, unless the writer is closed.
@@ -484,9 +592,7 @@ impl Writer {
             state.stage = RecoveryWrite::Writing;
             dir
         };
-        let result = files.write(dir, &write.name, &write.json, &mut || {
-            self.set_stage(RecoveryWrite::Publishing);
-        });
+        let result = files.write(dir, &write.name, &write.json, &mut || self.publish());
         self.set_stage(RecoveryWrite::Queued);
         Some(result.map_err(|error| error.to_string()))
     }
@@ -631,14 +737,20 @@ impl Drop for Stopping<'_> {
     }
 }
 
-/// The writer thread: one pass per wake (and per `POLL` while a session end is pending) until
-/// `stop`.
+/// The writer thread: removes copies an earlier run left unfinished, then one pass per wake (and
+/// per `POLL` while a session end is pending) until `stop`.
 pub(super) fn run<T: Drawing>(
     writer: &Writer,
     tracker: &Mutex<Tracker<T>>,
     files: &mut impl Files,
 ) {
     let _stopping = Stopping(writer);
+    if let Ok(dir) = &writer.dir {
+        let removed = remove_stale_partials(dir, writer.started).len();
+        if removed > 0 {
+            eprintln!("ChemDraft: removed {removed} unfinished Office recovery copies");
+        }
+    }
     while writer.next_round() {
         writer.round(tracker, files);
     }
@@ -648,14 +760,16 @@ pub(super) fn run<T: Drawing>(
 mod tests {
     use super::super::session_publish::{Job, Outcome};
     use super::*;
+    use crate::windows_session_end::{
+        wait_until, watch_flush, CLOSE_LIMIT, EXIT_LIMIT, RECOVERY_LIMIT,
+    };
     use chrono::TimeZone;
     use std::{
         sync::{
-            atomic::{AtomicBool, Ordering},
+            atomic::{AtomicBool, AtomicU32, Ordering},
             mpsc,
         },
         thread,
-        time::Instant,
     };
 
     struct Folder(PathBuf);
@@ -742,7 +856,7 @@ mod tests {
             dir: &Path,
             name: &str,
             json: &str,
-            publishing: &mut dyn FnMut(),
+            publishing: &mut dyn FnMut() -> bool,
         ) -> io::Result<PathBuf> {
             self.entered.send(name.to_owned()).unwrap();
             self.proceed.recv().unwrap();
@@ -762,6 +876,126 @@ mod tests {
         let (entered, writes) = mpsc::channel();
         let (release, proceed) = mpsc::channel();
         (Gated { entered, proceed }, writes, release)
+    }
+
+    /// A disk that hangs inside each copy: half the drawing reaches its `.partial`, and the write
+    /// never returns.
+    struct Stuck {
+        entered: mpsc::Sender<String>,
+    }
+
+    impl Files for Stuck {
+        fn write(
+            &mut self,
+            dir: &Path,
+            name: &str,
+            json: &str,
+            _publishing: &mut dyn FnMut() -> bool,
+        ) -> io::Result<PathBuf> {
+            fs::create_dir_all(dir)?;
+            let half = &json.as_bytes()[..json.len() / 2];
+            fs::write(dir.join(format!("{name}.partial")), half)?;
+            self.entered.send(name.to_owned()).unwrap();
+            loop {
+                thread::park();
+            }
+        }
+
+        fn remove(&mut self, path: &Path) -> io::Result<()> {
+            Disk.remove(path)
+        }
+
+        fn append(&mut self, log: &Path, entries: &str) -> io::Result<()> {
+            Disk.append(log, entries)
+        }
+    }
+
+    /// A clock that moves on by `step` each time it is read, so a deadline passes after a few
+    /// readings without the test waiting for it.
+    struct Clock {
+        base: Instant,
+        step: Duration,
+        reads: AtomicU32,
+    }
+
+    impl Clock {
+        fn new(step: Duration) -> Self {
+            Self {
+                base: Instant::now(),
+                step,
+                reads: AtomicU32::new(0),
+            }
+        }
+
+        fn now(&self) -> Instant {
+            self.base + self.step * self.reads.fetch_add(1, Ordering::SeqCst)
+        }
+
+        /// The last reading, without moving on.
+        fn last(&self) -> Instant {
+            let reads = self.reads.load(Ordering::SeqCst);
+            self.base + self.step * reads.saturating_sub(1)
+        }
+    }
+
+    const COPY_17: &str = "20261120T224719Z-object-17-Report.docx.json";
+    const COPY_18: &str = "20261120T224719Z-object-18-Microsoft PowerPoint.json";
+
+    /// A committed session end whose disk hangs: both drawings have a published copy, then object
+    /// 17 gets a newer drawing and Office closes it, and the write of its new copy never returns.
+    /// The writer thread is left blocked for good, so the writer and tracker are leaked.
+    struct StuckSessionEnd {
+        folder: Folder,
+        writer: &'static Writer,
+        tracker: &'static Mutex<Tracker<&'static str>>,
+        published: Vec<u8>,
+    }
+
+    impl StuckSessionEnd {
+        fn new(name: &str) -> Self {
+            let folder = Folder::new(name);
+            let writer: &'static Writer = Box::leak(Box::new(folder.writer()));
+            let tracker: &'static Mutex<_> = Box::leak(Box::new(tracker()));
+            writer.round(tracker, &mut Disk);
+            let published = fs::read(folder.copies().join(COPY_17)).unwrap();
+            assert_eq!(published, b"{old}");
+            {
+                let mut locked = tracker.lock().unwrap();
+                assert!(locked.collect(4, "17", "{new}"));
+                assert!(locked.closed("17").is_some());
+            }
+            let (entered, writes) = mpsc::channel();
+            thread::spawn(move || run(writer, tracker, &mut Stuck { entered }));
+            writer.wake();
+            assert_eq!(writes.recv().unwrap(), COPY_17);
+            assert_eq!(writer.stage(), RecoveryWrite::Writing);
+            assert!(answer_of(tracker).blocks(), "the new copy is not durable");
+            Self {
+                folder,
+                writer,
+                tracker,
+                published,
+            }
+        }
+
+        fn pending(&self) -> bool {
+            self.tracker.lock().unwrap().recovery_pending()
+        }
+
+        /// The last good copy is byte-identical, the abandoned write was never renamed over it,
+        /// and the next start removes the unfinished copy and nothing else.
+        fn assert_last_good_copy_kept(&self) {
+            let copies = self.folder.copies();
+            let partial = copies.join(format!("{COPY_17}.partial"));
+            assert_eq!(fs::read(copies.join(COPY_17)).unwrap(), self.published);
+            assert_eq!(fs::read(&partial).unwrap(), b"{n", "never published");
+            assert!(!self.tracker.lock().unwrap().risks()[0].current);
+            // The next start's writer is made after this run ended.
+            let next_start = SystemTime::now() + Duration::from_secs(1);
+            assert_eq!(remove_stale_partials(&copies, next_start), [partial]);
+            assert_eq!(self.folder.copy_names(), [COPY_17, COPY_18]);
+            assert_eq!(fs::read(copies.join(COPY_17)).unwrap(), self.published);
+        }
     }
 
     #[test]
@@ -823,7 +1057,11 @@ mod tests {
             let (_disarm, watchdog) = mpsc::channel::<()>();
             scope.spawn(|| {
                 crate::windows_session_end::watch_flush(watchdog, Duration::ZERO, || {
-                    writer.close_when_idle(|| tracker.lock().unwrap().recovery_pending());
+                    let deadline = Instant::now() + Duration::from_secs(60);
+                    assert!(writer.close_by(deadline, Instant::now, || tracker
+                        .lock()
+                        .unwrap()
+                        .recovery_pending()));
                     watchdog_done.store(true, Ordering::SeqCst);
                 });
             });
@@ -860,6 +1098,137 @@ mod tests {
             folder.copy_names(),
             ["20261120T224719Z-object-17-Report.docx.json"]
         );
+    }
+
+    /// The thread answering a committed session end stops waiting for a write that never returns
+    /// at its deadline, logs what is at risk and closes the writer anyway, so the message returns
+    /// and the process can end.
+    #[test]
+    fn a_committed_flush_stops_waiting_for_a_recovery_write_that_never_returns() {
+        let stuck = StuckSessionEnd::new("stuck-flush");
+        let clock = Clock::new(Duration::from_millis(100));
+        let start = clock.base;
+        let real = Instant::now();
+        let mut logged = false;
+        let settled = stuck.writer.close_committed(
+            || stuck.pending(),
+            start + RECOVERY_LIMIT,
+            start + CLOSE_LIMIT,
+            |deadline, done| {
+                wait_until(
+                    deadline,
+                    || clock.now(),
+                    done,
+                    || thread::sleep(Duration::from_millis(1)),
+                )
+            },
+            || logged = true,
+        );
+        assert!(!settled, "the write never returned");
+        assert!(
+            logged,
+            "what is at risk is logged before the writer is closed"
+        );
+        let gave_up = clock.last();
+        assert!(
+            gave_up >= start + RECOVERY_LIMIT,
+            "it waits until its deadline"
+        );
+        assert!(gave_up < start + CLOSE_LIMIT, "and not past it");
+        assert!(real.elapsed() < Duration::from_secs(5));
+        // Closed: nothing new starts, and a late log entry is not handed back to be written on
+        // the thread answering Windows, which would then wait on the stuck disk itself.
+        assert!(stuck.writer.idle(true) && stuck.writer.try_close(true));
+        assert_eq!(stuck.writer.log("late entry\n".into()), Ok(()));
+        assert_eq!(stuck.writer.stage(), RecoveryWrite::Writing, "still stuck");
+        stuck.assert_last_good_copy_kept();
+    }
+
+    /// The watchdog fires while the thread answering Windows is stuck elsewhere. It waits for a
+    /// write that never returns only until its own deadline, then reaches the process exit.
+    #[test]
+    fn the_watchdog_ends_the_process_by_its_deadline_while_a_recovery_write_never_returns() {
+        let stuck = StuckSessionEnd::new("stuck-watchdog");
+        let clock = Clock::new(Duration::from_secs(2));
+        let start = clock.base;
+        let real = Instant::now();
+        let exited = Mutex::new(None);
+        let (_disarm, watchdog) = mpsc::channel::<()>();
+        watch_flush(watchdog, Duration::ZERO, || {
+            let settled =
+                stuck
+                    .writer
+                    .close_by(start + EXIT_LIMIT, || clock.now(), || stuck.pending());
+            // force_exit
+            *exited.lock().unwrap() = Some((settled, clock.last()));
+        });
+        let (settled, at) = exited
+            .into_inner()
+            .unwrap()
+            .expect("the watchdog must reach the exit");
+        assert!(!settled, "the write never returned");
+        assert!(at >= start + EXIT_LIMIT, "it waits until its deadline");
+        assert!(at < start + EXIT_LIMIT + clock.step, "and not past it");
+        assert!(real.elapsed() < Duration::from_secs(5));
+        assert!(stuck.writer.try_close(true), "nothing new starts");
+        assert_eq!(stuck.writer.stage(), RecoveryWrite::Writing, "still stuck");
+        stuck.assert_last_good_copy_kept();
+    }
+
+    /// A write that returns after its deadline passed is not renamed into place: the last good
+    /// copy stays and the unfinished one is removed.
+    #[test]
+    fn a_recovery_write_that_returns_after_it_was_abandoned_is_never_published() {
+        let folder = Folder::new("late-write");
+        let writer = folder.writer();
+        let tracker = tracker();
+        writer.round(&tracker, &mut Disk);
+        {
+            let mut locked = tracker.lock().unwrap();
+            assert!(locked.collect(4, "17", "{new}"));
+            assert!(locked.closed("17").is_some());
+        }
+        let (mut files, writes, release) = gated();
+        thread::scope(|scope| {
+            scope.spawn(|| run(&writer, &tracker, &mut files));
+            writer.wake();
+            assert_eq!(writes.recv().unwrap(), COPY_17);
+            let pending = || tracker.lock().unwrap().recovery_pending();
+            assert!(!writer.close_by(Instant::now(), Instant::now, pending));
+            release.send(()).unwrap();
+            while writer.stage() != RecoveryWrite::Idle {
+                thread::sleep(Duration::from_millis(5));
+            }
+            writer.stop();
+        });
+        let copy = folder.copies().join(COPY_17);
+        assert_eq!(fs::read_to_string(&copy).unwrap(), "{old}");
+        assert_eq!(
+            folder.copy_names(),
+            [COPY_17, COPY_18],
+            "no .partial is left"
+        );
+        assert!(!tracker.lock().unwrap().risks()[0].current);
+    }
+
+    #[test]
+    fn the_next_start_removes_only_unfinished_copies_from_an_earlier_run() {
+        let folder = Folder::new("stale-partials");
+        fs::create_dir_all(folder.0.join("folder.partial")).unwrap();
+        for name in ["a.json", "a.json.partial", "notes.txt"] {
+            fs::write(folder.0.join(name), name).unwrap();
+        }
+        assert!(
+            remove_stale_partials(&folder.0, SystemTime::UNIX_EPOCH).is_empty(),
+            "written by this run"
+        );
+        let later = SystemTime::now() + Duration::from_secs(1);
+        assert_eq!(
+            remove_stale_partials(&folder.0, later),
+            [folder.0.join("a.json.partial")]
+        );
+        assert_eq!(folder.files(), ["a.json", "folder.partial", "notes.txt"]);
+        assert!(remove_stale_partials(&folder.0.join("missing"), later).is_empty());
     }
 
     #[test]
@@ -973,11 +1342,15 @@ mod tests {
 
         let limit = Folder::new("limit");
         let too_large = " ".repeat(MAX_DOCUMENT_BYTES + 1);
-        let error = write_file(&limit.0, "big.json", &too_large, &mut || {}).unwrap_err();
+        let error = write_file(&limit.0, "big.json", &too_large, &mut || true).unwrap_err();
         assert!(error.to_string().contains("25 MiB"));
         assert!(limit.files().is_empty());
         let mut published = false;
-        let exact = write_file(&limit.0, "ok.json", "{}", &mut || published = true).unwrap();
+        let exact = write_file(&limit.0, "ok.json", "{}", &mut || {
+            published = true;
+            true
+        })
+        .unwrap();
         assert!(published);
         assert_eq!(limit.files(), ["ok.json"]);
         assert_eq!(fs::read_to_string(exact).unwrap(), "{}");

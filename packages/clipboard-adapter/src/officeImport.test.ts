@@ -1,9 +1,16 @@
 import { crc32, deflateRawSync } from "node:zlib";
 import { Resvg } from "@resvg/resvg-js";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { importOfficeStructures, OfficeImportError, pngWithChemDraftSelection, type OfficeImportResult } from "./index";
-import { docxDrawingReferences, pptxSlideDrawingReferences, resolvePartTarget } from "./officePackage";
+import { docxDrawingReferences, inReadingOrder, pptxSlideDrawingReferences, resolvePartTarget, type DrawingBox } from "./officePackage";
+import { readChemDraftOleObject } from "./oleObject";
 import { writeTestCompoundFile } from "./oleObject.testUtils";
+
+// The real reader, counted, so a test can check that a shared object part is parsed once.
+vi.mock("./oleObject", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./oleObject")>();
+  return { ...actual, readChemDraftOleObject: vi.fn(actual.readChemDraftOleObject) };
+});
 
 // A minimal ZIP writer (stored or deflated, no descriptors): enough for real Office packages.
 function makeZip(entries: { name: string; data: Uint8Array | string; deflate?: boolean }[]): Uint8Array {
@@ -75,6 +82,13 @@ const rootRels = (main: string) => rels([["rId1", "officeDocument", main]]);
 function slidePicture(id: number, embed: string): string {
   return `<p:pic><p:nvPicPr><p:cNvPr id="${id}" name="Picture ${id}"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr>` +
     `<p:blipFill><a:blip r:embed="${embed}"/></p:blipFill><p:spPr/></p:pic>`;
+}
+
+/** A slide picture placed at `[x, y, cx, cy]` (EMUs). */
+function placedPicture(id: number, embed: string, [x, y, cx, cy]: [number, number, number, number]): string {
+  return `<p:pic><p:nvPicPr><p:cNvPr id="${id}" name="Picture ${id}"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr>` +
+    `<p:blipFill><a:blip r:embed="${embed}"/></p:blipFill>` +
+    `<p:spPr><a:xfrm><a:off x="${x}" y="${y}"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm></p:spPr></p:pic>`;
 }
 
 function slide(body: string): string {
@@ -183,6 +197,36 @@ describe("importOfficeStructures: PowerPoint", () => {
     expect(result.warnings[0]!.message).toContain("CRC mismatch");
     expect(result.warnings[1]!.message).toContain("data version 7");
     expect(result.warnings[4]!.message).toContain("limit for one structure");
+  });
+
+  it("reads each slide's pictures and objects left to right, then top to bottom, not in stacking order", async () => {
+    const STABLE = "{CE37136C-13F0-4A5A-954F-0EF6DFE359D0}";
+    const object = writeTestCompoundFile(STABLE, [{ name: "ChemDraftDocument", data: selection("object") }]).bytes;
+    // Added right first, so the left picture is stacked above it and comes later in the slide.
+    const first = slide(placedPicture(2, "rIdR", [6000, 0, 1000, 1000]) + placedPicture(3, "rIdL", [0, 0, 1000, 1000]));
+    // Second row, stacked: a grouped picture whose group moves it to the far right, an embedded
+    // object in the middle, an unplaced picture, and a picture on the left a little lower.
+    const second = slide(
+      `<p:grpSp><p:nvGrpSpPr><p:cNvPr id="4" name="Group"/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="8000" y="3000"/>` +
+      `<a:ext cx="2000" cy="2000"/><a:chOff x="0" y="0"/><a:chExt cx="1000" cy="1000"/></a:xfrm></p:grpSpPr>` +
+      placedPicture(5, "rIdG", [0, 0, 500, 500]) + "</p:grpSp>" +
+      `<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="6" name="Object"/></p:nvGraphicFramePr>` +
+      `<p:xfrm><a:off x="4000" y="3000"/><a:ext cx="1000" cy="1000"/></p:xfrm><a:graphic><a:graphicData uri="${P.replace("main", "ole")}">` +
+      `<p:oleObj r:id="rIdO" progId="ChemDraft.Structure.1"><p:embed/></p:oleObj></a:graphicData></a:graphic></p:graphicFrame>` +
+      slidePicture(7, "rIdU") + placedPicture(8, "rIdB", [0, 3300, 1000, 1000]));
+    const bytes = pptx([
+      { xml: first, rels: rels([["rIdR", "image", "../media/right.png"], ["rIdL", "image", "../media/left.png"]]) },
+      { xml: second, rels: rels([["rIdG", "image", "../media/grouped.png"], ["rIdO", "oleObject", "../embeddings/oleObject1.bin"],
+        ["rIdU", "image", "../media/unplaced.png"], ["rIdB", "image", "../media/lower-left.png"]]) },
+    ], [
+      ...["right", "left", "grouped", "unplaced", "lower-left"].map((label) => ({ name: `ppt/media/${label}.png`, data: carrier(selection(label)) })),
+      { name: "ppt/embeddings/oleObject1.bin", data: object },
+    ]);
+    const result = await importOfficeStructures(bytes);
+    expect(labels(result)).toEqual([["slide 1", "left"], ["slide 1", "right"],
+      ["slide 2", "lower-left"], ["slide 2", "object"], ["slide 2", "grouped"], ["slide 2", "unplaced"]]);
+    expect(result.structures.map((structure) => structure.picture)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(pptxSlideDrawingReferences(second)[0]).toEqual({ relationshipId: "rIdG", box: { x: 8000, y: 3000, width: 1000, height: 1000 } });
   });
 
   it("caps the number of pictures examined and says so", async () => {
@@ -396,6 +440,29 @@ describe("importOfficeStructures: ChemDraft embedded objects (made on Windows)",
     expect(result.warnings[3]!.message).toBe("The structure on paragraph 4 is larger than the 0 MB limit for one structure.");
   });
 
+  it("parses an object part once however many references share it, and counts each reference", async () => {
+    const count = 6;
+    const bytes = docx(Array.from({ length: count }, () => `<w:p>${wordObject("rIdPrev", "rIdOle")}</w:p>`).join(""), rels([
+      ["rIdPrev", "image", "media/preview.png"], ["rIdOle", "oleObject", "embeddings/oleObject1.bin"],
+    ]), [
+      { name: "word/media/preview.png", data: plainPng },
+      { name: "word/embeddings/oleObject1.bin", data: oleBin(selection("shared")) },
+    ]);
+    vi.mocked(readChemDraftOleObject).mockClear();
+    const result = await importOfficeStructures(bytes);
+    expect(readChemDraftOleObject).toHaveBeenCalledTimes(1);
+    expect(result.structures.map((structure) => [structure.picture, structure.location, structure.document.label]))
+      .toEqual(Array.from({ length: count }, (_, index) => [index + 1, `paragraph ${index + 1}`, "shared"]));
+    // Each reference still counts against the limits.
+    const jsonBytes = new TextEncoder().encode(selection("shared")).length;
+    vi.mocked(readChemDraftOleObject).mockClear();
+    const budget = await importOfficeStructures(bytes, { limits: { maxPictures: 4, maxTotalCarrierJsonBytes: 2 * jsonBytes } });
+    expect(readChemDraftOleObject).toHaveBeenCalledTimes(1);
+    expect(budget.structures).toHaveLength(2);
+    expect(budget.warnings.map(({ picture, reason }) => [picture, reason])).toEqual([[3, "too-large"], [4, "too-large"]]);
+    expect(budget.notes).toEqual([`Only the first 4 of ${count} pictures were checked for ChemDraft structures.`]);
+  });
+
   it("folds a Word object's previews into the object, and keeps a linked object's preview as a picture", () => {
     const W14 = `xmlns:w="${W}" xmlns:a="${A}" xmlns:r="${R}" xmlns:v="${V}" xmlns:o="${O}"`;
     expect(docxDrawingReferences(`<w:document ${W14}><w:body><w:p><w:object><w:drawing><a:blip r:embed="rIdPrev"/></w:drawing>` +
@@ -404,5 +471,30 @@ describe("importOfficeStructures: ChemDraft embedded objects (made on Windows)",
       { relationshipId: "rIdOle", paragraph: 1, oleProgId: "ChemDraft.Structure.1" },
       { relationshipId: "rIdLinkPrev", paragraph: 2 },
     ]);
+  });
+});
+
+describe("inReadingOrder", () => {
+  const order = (boxes: [label: string, box?: [number, number, number, number]][]) =>
+    inReadingOrder(boxes, ([, box]) => box && ({ x: box[0], y: box[1], width: box[2], height: box[3] } satisfies DrawingBox))
+      .map(([label]) => label);
+
+  it("reads left to right, then top to bottom, whatever the input order", () => {
+    expect(order([["B", [10, 0, 5, 5]], ["A", [0, 0, 5, 5]]])).toEqual(["A", "B"]);
+    expect(order([["D", [10, 10, 5, 5]], ["C", [0, 10, 5, 5]], ["B", [10, 0, 5, 5]], ["A", [0, 0, 5, 5]]])).toEqual(["A", "B", "C", "D"]);
+  });
+
+  it("puts pictures in one row when their centers are within half the smaller height", () => {
+    // Centers 2.5 apart; half the smaller height is 2.5: one row.
+    expect(order([["right", [10, 0, 5, 5]], ["left", [0, 2.5, 5, 5]]])).toEqual(["left", "right"]);
+    // A tall picture and a short one beside its middle: one row.
+    expect(order([["short", [10, 8, 5, 4]], ["tall", [0, 0, 5, 20]]])).toEqual(["tall", "short"]);
+    // Centers 3 apart: separate rows, so the higher one leads even on the right.
+    expect(order([["right", [10, 0, 5, 5]], ["left", [0, 3, 5, 5]]])).toEqual(["right", "left"]);
+  });
+
+  it("keeps the input order for identical places and puts unplaced pictures last", () => {
+    expect(order([["first", [0, 0, 5, 5]], ["second", [0, 0, 5, 5]]])).toEqual(["first", "second"]);
+    expect(order([["none"], ["B", [10, 0, 5, 5]], ["also none"], ["A", [0, 0, 5, 5]]])).toEqual(["A", "B", "none", "also none"]);
   });
 });

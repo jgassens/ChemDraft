@@ -102,10 +102,16 @@ function gvml(media: Uint8Array[], extra: { name: string; data: Uint8Array | str
  * each picture's `r:embed`, in drawing order; `targets` maps relationship IDs to `clipboard/media/`
  * parts; `media` holds the PNG parts by name.
  */
-function gvmlDrawing(pictures: string[], targets: [id: string, name: string][], media: [name: string, data: Uint8Array][]): Uint8Array {
+function gvmlDrawing(
+  pictures: string[], targets: [id: string, name: string][], media: [name: string, data: Uint8Array][],
+  /** Each picture's place, `[x, y, cx, cy]` in EMUs; a picture without one has an empty `a:spPr`. */
+  boxes: ([x: number, y: number, cx: number, cy: number] | undefined)[] = [],
+): Uint8Array {
   const LC = "http://schemas.openxmlformats.org/drawingml/2006/lockedCanvas";
+  const spPr = (box: [number, number, number, number] | undefined) => box
+    ? `<a:spPr><a:xfrm><a:off x="${box[0]}" y="${box[1]}"/><a:ext cx="${box[2]}" cy="${box[3]}"/></a:xfrm></a:spPr>` : "<a:spPr/>";
   const pics = pictures.map((id, index) => `<a:pic><a:nvPicPr><a:cNvPr id="${index + 2}" name="Picture ${index + 1}"/><a:cNvPicPr/></a:nvPicPr>` +
-    `<a:blipFill><a:blip r:embed="${id}"/></a:blipFill><a:spPr/></a:pic>`).join("");
+    `<a:blipFill><a:blip r:embed="${id}"/></a:blipFill>${spPr(boxes[index])}</a:pic>`).join("");
   return makeZip([
     { name: "[Content_Types].xml", data: "<Types/>" },
     { name: "_rels/.rels", data: rels([["rId1", "officeDocument", "clipboard/drawings/drawing1.xml"]]) },
@@ -169,6 +175,30 @@ describe("recoverPasteBackStructures: the Office picture archive", () => {
       bytes: gvmlDrawing(["rId2", "rId1"], [["rId1", "image1.png"], ["rId2", "image2.png"]],
         [["image1.png", carrier(selection("A"))], ["image2.png", carrier(selection("B"))]]) }]);
     expect(result.kind === "found" && result.structures.map((structure) => structure.document.label)).toEqual(["B", "A"]);
+  });
+
+  it("orders placed pictures left to right, then top to bottom, not by stacking order", async () => {
+    const labelsOf = async (pictures: [label: string, box?: [number, number, number, number]][]) => {
+      const result = await recoverPasteBackStructures([{ type: GVML, bytes: gvmlDrawing(
+        pictures.map((_, index) => `rId${index + 1}`),
+        pictures.map((_, index) => [`rId${index + 1}`, `image${index + 1}.png`]),
+        pictures.map(([label], index) => [`image${index + 1}.png`, carrier(selection(label))]),
+        pictures.map(([, box]) => box)) }]);
+      return result.kind === "found" ? result.structures.map((structure) => structure.document.label) : result;
+    };
+    // Two pictures added right one first: the left one is stacked on top, so it comes last in the drawing.
+    expect(await labelsOf([["right", [5000, 0, 1000, 1000]], ["left", [0, 0, 1000, 1000]]])).toEqual(["left", "right"]);
+    // A 2 × 2 grid stacked in reverse; the second row starts lower than the first row ends.
+    expect(await labelsOf([
+      ["D", [4000, 3000, 2000, 2000]], ["C", [0, 3000, 2000, 2000]], ["B", [4000, 0, 2000, 2000]], ["A", [0, 0, 2000, 2000]],
+    ])).toEqual(["A", "B", "C", "D"]);
+    // Centers within half the smaller height share a row and read left to right, even when the left one sits a little lower ...
+    expect(await labelsOf([["right", [3000, 0, 1000, 1000]], ["left", [0, 400, 1000, 1000]]])).toEqual(["left", "right"]);
+    // ... while a small vertical overlap puts the higher picture first, even when it is to the right.
+    expect(await labelsOf([["lower", [0, 800, 1000, 1000]], ["higher", [3000, 0, 1000, 1000]]])).toEqual(["higher", "lower"]);
+    // A picture without a place follows the placed ones.
+    expect(await labelsOf([["unplaced"], ["right", [5000, 0, 1000, 1000]], ["left", [0, 0, 1000, 1000]]]))
+      .toEqual(["left", "right", "unplaced"]);
   });
 
   it("counts every occurrence of a shared picture against the picture and size limits", async () => {

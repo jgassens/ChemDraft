@@ -431,8 +431,195 @@ pub(crate) fn png_to_dibv5(png: &[u8]) -> Result<Vec<u8>, String> {
     Ok(dib)
 }
 
+/// One OLE clipboard read at a time, on one long-lived thread made on first use. OLE calls into
+/// the program that copied (Word, PowerPoint), which can take long or never answer, and a thread
+/// stuck in `OleGetClipboard` or `GetData` cannot be stopped. So a read that outlives its paste's
+/// wait stays outstanding, and until it returns later pastes start no OLE read ([`Flight::Busy`])
+/// instead of stacking threads and apartments on the clipboard. Host-neutral, so it is tested on
+/// every platform.
+#[cfg(any(windows, test))]
+mod single_flight {
+    use std::{
+        panic::{catch_unwind, AssertUnwindSafe},
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            mpsc, Mutex, PoisonError,
+        },
+        time::Duration,
+    };
+
+    type Job<J, R> = (J, mpsc::Sender<R>);
+
+    pub(super) struct SingleFlight<J, R> {
+        name: &'static str,
+        work: fn(J) -> R,
+        /// A read is outstanding. Set by the paste that starts it; cleared by the reader thread
+        /// once the read returns, whether or not that paste still waits for it.
+        busy: AtomicBool,
+        /// The reader thread's queue, once it started.
+        queue: Mutex<Option<mpsc::Sender<Job<J, R>>>>,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    pub(super) enum Flight<R> {
+        Done(R),
+        /// A read an earlier paste started has not returned, so none was started.
+        Busy,
+        /// No answer within the wait. The read stays outstanding, and `Busy`, until it returns.
+        TimedOut,
+        /// The reader thread could not start, or stopped during the read.
+        Failed(String),
+    }
+
+    impl<J: Send + 'static, R: Send + 'static> SingleFlight<J, R> {
+        pub(super) const fn new(name: &'static str, work: fn(J) -> R) -> Self {
+            Self {
+                name,
+                work,
+                busy: AtomicBool::new(false),
+                queue: Mutex::new(None),
+            }
+        }
+
+        /// Waits at most `wait`, and never for a read an earlier paste started.
+        pub(super) fn read(&'static self, job: J, wait: Duration) -> Flight<R> {
+            if self.busy.swap(true, Ordering::AcqRel) {
+                return Flight::Busy;
+            }
+            let (reply, answer) = mpsc::channel();
+            if let Err(error) = self.send((job, reply)) {
+                self.busy.store(false, Ordering::Release);
+                return Flight::Failed(error);
+            }
+            match answer.recv_timeout(wait) {
+                Ok(result) => Flight::Done(result),
+                Err(mpsc::RecvTimeoutError::Timeout) => Flight::TimedOut,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    Flight::Failed(format!("{} stopped during the read", self.name))
+                }
+            }
+        }
+
+        /// Hand the job to the reader thread, starting it on first use or after it stopped.
+        fn send(&'static self, job: Job<J, R>) -> Result<(), String> {
+            let mut queue = self.queue.lock().unwrap_or_else(PoisonError::into_inner);
+            if queue.is_none() {
+                let (sender, jobs) = mpsc::channel();
+                std::thread::Builder::new()
+                    .name(self.name.into())
+                    .spawn(move || self.serve(jobs))
+                    .map_err(|error| format!("Could not start {}: {error}", self.name))?;
+                *queue = Some(sender);
+            }
+            if queue
+                .as_ref()
+                .is_some_and(|sender| sender.send(job).is_ok())
+            {
+                return Ok(());
+            }
+            *queue = None;
+            Err(format!("{} has stopped", self.name))
+        }
+
+        fn serve(&'static self, jobs: mpsc::Receiver<Job<J, R>>) {
+            for (job, reply) in jobs {
+                let result = catch_unwind(AssertUnwindSafe(|| (self.work)(job)));
+                // Free before answering, so the paste that gets this answer can read again.
+                self.busy.store(false, Ordering::Release);
+                if let Ok(result) = result {
+                    // The paste may have stopped waiting.
+                    let _ = reply.send(result);
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::{
+            thread::{self, ThreadId},
+            time::Instant,
+        };
+
+        type Gate = Option<mpsc::Receiver<()>>;
+        type TestReader = SingleFlight<(u32, Gate), (u32, ThreadId)>;
+
+        /// Waits for its gate, if any; panics on 0.
+        fn doubled((value, gate): (u32, Gate)) -> (u32, ThreadId) {
+            if let Some(gate) = gate {
+                let _ = gate.recv();
+            }
+            assert_ne!(value, 0, "a deliberate panic: this OLE read failed");
+            (value * 2, thread::current().id())
+        }
+
+        fn reader() -> &'static TestReader {
+            Box::leak(Box::new(SingleFlight::new(
+                "ChemDraft OLE paste (test)",
+                doubled,
+            )))
+        }
+
+        fn wait_until_free(reader: &TestReader) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while reader.busy.load(Ordering::Acquire) {
+                assert!(Instant::now() < deadline, "the read never returned");
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+
+        const WAIT: Duration = Duration::from_secs(10);
+
+        /// A read that outlives its paste's wait keeps later pastes off OLE, without making
+        /// them wait, until it returns. Every read runs on one thread, made on first use.
+        #[test]
+        fn one_ole_read_at_a_time_on_one_thread_and_later_pastes_skip_a_late_read() {
+            let reader = reader();
+            assert!(
+                reader.queue.lock().unwrap().is_none(),
+                "no thread before a paste"
+            );
+            let Flight::Done((4, ole_thread)) = reader.read((2, None), WAIT) else {
+                panic!("the first read answers");
+            };
+            assert_ne!(ole_thread, thread::current().id());
+
+            let (release, gate) = mpsc::channel();
+            let short = Duration::from_millis(20);
+            assert_eq!(reader.read((3, Some(gate)), short), Flight::TimedOut);
+            let started = Instant::now();
+            assert_eq!(reader.read((4, None), WAIT), Flight::Busy);
+            assert_eq!(reader.read((5, None), WAIT), Flight::Busy);
+            assert!(
+                started.elapsed() < Duration::from_secs(1),
+                "Busy never waits"
+            );
+
+            release.send(()).unwrap();
+            wait_until_free(reader);
+            assert_eq!(reader.read((6, None), WAIT), Flight::Done((12, ole_thread)));
+        }
+
+        #[test]
+        fn a_failed_ole_read_frees_the_reader_for_the_next_paste() {
+            let reader = reader();
+            let Flight::Failed(reason) = reader.read((0, None), WAIT) else {
+                panic!("a read that panics fails");
+            };
+            assert_eq!(reason, "ChemDraft OLE paste (test) stopped during the read");
+            wait_until_free(reader);
+            assert!(matches!(
+                reader.read((7, None), WAIT),
+                Flight::Done((14, _))
+            ));
+        }
+    }
+}
+
 #[cfg(windows)]
 pub(crate) mod native {
+    use super::single_flight::{Flight, SingleFlight};
     use super::*;
     use crate::clipboard_formats::{
         build_cf_html, clipboard_utf8, parse_cf_html, ClipboardWriteData, ClipboardWriteResult,
@@ -764,13 +951,29 @@ pub(crate) mod native {
     /// How long paste waits for Word or PowerPoint to hand over a copied object.
     const EMBEDDED_OBJECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+    /// The class and drawing of a copied ChemDraft object, or why it could not be read.
+    type OleRead = Result<Option<(&'static str, String)>, String>;
+
+    /// OLE needs a single-threaded apartment, which this command's worker thread may not be. One
+    /// shared reader thread does every OLE read, one at a time.
+    static OLE_READER: SingleFlight<&'static str, OleRead> =
+        SingleFlight::new("ChemDraft OLE paste", read_ole_object);
+
+    /// Paste's answer when only an earlier, unfinished OLE read stood between it and the data.
+    const STILL_READING: &str =
+        "Windows is still reading the previous clipboard item. Try pasting again in a moment.";
+
+    /// An OLE read an earlier paste started has not returned, so this paste read no copied object.
+    struct StillReading;
+
     /// A copied ChemDraft OLE object for paste-back: "Embedded Object" from Word or PowerPoint,
     /// "Embed Source" from its server (the macOS and Linux readers have no such format). Read
     /// through OLE, which opens the clipboard itself, so `read_payload` calls this before it opens
     /// the clipboard. Only ChemDraft's own classes are read
     /// (`office_ole::storage::read_pasted_document`); another program's object, and any failure,
-    /// leave the paste to the other formats.
-    fn read_embedded_object() -> Option<ClipboardOfficeItem> {
+    /// leave the paste to the other formats. While an earlier read is outstanding no OLE read
+    /// starts (`StillReading`), and the paste also goes on with the other formats.
+    fn read_embedded_object() -> Result<Option<ClipboardOfficeItem>, StillReading> {
         let available = [CHEMDRAFT_SELECTION_TYPE]
             .into_iter()
             .chain(OFFICE_EMBEDDED_OBJECT_TYPES)
@@ -781,38 +984,32 @@ pub(crate) mod native {
             })
             .map(str::to_string)
             .collect::<Vec<_>>();
-        let source = office_embedded_object_type(&available)?;
-        let (sender, receiver) = std::sync::mpsc::channel();
-        // OLE needs a single-threaded apartment, which this command's worker thread may not be.
-        let spawned = std::thread::Builder::new()
-            .name("ChemDraft OLE paste".into())
-            .spawn(move || {
-                let _ = sender.send(read_ole_object(source));
-            });
-        let outcome = match spawned {
-            Err(error) => Err(format!("Could not start the OLE reader: {error}")),
-            Ok(_) => match receiver.recv_timeout(EMBEDDED_OBJECT_TIMEOUT) {
-                Ok(outcome) => outcome,
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    Err(format!("{source} was not ready within 10 seconds"))
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    Err(format!("The OLE reader stopped while reading {source}"))
-                }
-            },
+        let Some(source) = office_embedded_object_type(&available) else {
+            return Ok(None);
         };
-        match outcome {
+        let outcome = match OLE_READER.read(source, EMBEDDED_OBJECT_TIMEOUT) {
+            Flight::Done(outcome) => outcome,
+            Flight::Busy => {
+                eprintln!(
+                    "Paste-back skipped the copied object: an earlier OLE read is unfinished"
+                );
+                return Err(StillReading);
+            }
+            Flight::TimedOut => Err(format!("{source} was not ready within 10 seconds")),
+            Flight::Failed(reason) => Err(format!("{source}: {reason}")),
+        };
+        Ok(match outcome {
             Ok(Some((clsid, json))) => Some(office_embedded_object_item(source, clsid, &json)),
             Ok(None) => None,
             Err(reason) => {
                 eprintln!("Paste-back skipped the copied Office object: {reason}");
                 None
             }
-        }
+        })
     }
 
-    /// The class and drawing of the copied object, on a thread of its own.
-    fn read_ole_object(source: &'static str) -> Result<Option<(&'static str, String)>, String> {
+    /// The class and drawing of the copied object, on the OLE reader thread.
+    fn read_ole_object(source: &'static str) -> OleRead {
         use windows::Win32::System::Ole::{OleInitialize, OleUninitialize};
         // SAFETY: balanced by OleUninitialize below, on this thread.
         unsafe { OleInitialize(None) }.map_err(|error| format!("Could not start OLE: {error}"))?;
@@ -899,7 +1096,16 @@ pub(crate) mod native {
     pub(crate) fn read_payload() -> Result<ClipboardReadPayload, String> {
         // OLE opens the clipboard itself, so a copied object is read before this thread does.
         let embedded_object = read_embedded_object();
-        let _clipboard = OpenedClipboard::open(std::ptr::null_mut())?;
+        let still_reading = embedded_object.is_err();
+        let embedded_object = embedded_object.ok().flatten();
+        // The unfinished OLE read may be what holds the clipboard open.
+        let _clipboard = OpenedClipboard::open(std::ptr::null_mut()).map_err(|error| {
+            if still_reading {
+                STILL_READING.into()
+            } else {
+                error
+            }
+        })?;
         let mut types = Vec::new();
         let mut text_items = Vec::new();
         let mut budget = ClipboardReadBudget::default();
@@ -997,6 +1203,13 @@ pub(crate) mod native {
             },
             None => read_office_items(&types, &mut budget),
         };
+        if still_reading
+            && text_items.is_empty()
+            && image_items.is_empty()
+            && office_items.is_empty()
+        {
+            return Err(STILL_READING.into());
+        }
         Ok(ClipboardReadPayload {
             types,
             text_items,

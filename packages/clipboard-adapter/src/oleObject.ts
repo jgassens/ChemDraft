@@ -148,12 +148,13 @@ function readCompoundFile(bytes: Uint8Array, maxDocumentBytes: number, known: { 
     fatSectors.push(id);
   };
   for (let index = 0; index < HEADER_DIFAT_ENTRIES; index++) addFatSector(u32(76 + index * 4));
-  const difatSectors: number[] = [];
+  // A Set, not an array scan: a crafted 50 MiB file can chain about 100,000 DIFAT sectors.
+  const difatSectors = new Set<number>();
   let difat = u32(68);
   for (let index = 0; index < difatSectorCount; index++) {
-    if (difatSectors.includes(difat)) fail("the sector tables are damaged");
+    if (difatSectors.has(difat)) fail("the sector tables are damaged");
     const data = sectorView(sector(difat));
-    difatSectors.push(difat);
+    difatSectors.add(difat);
     for (let slot = 0; slot < entriesPerSector - 1; slot++) addFatSector(data.getUint32(slot * 4, true));
     difat = data.getUint32(sectorBytes - 4, true);
   }
@@ -165,7 +166,7 @@ function readCompoundFile(bytes: Uint8Array, maxDocumentBytes: number, known: { 
     const data = sectorView(sector(id));
     for (let slot = 0; slot < entriesPerSector; slot++) fat[index * entriesPerSector + slot] = data.getUint32(slot * 4, true);
   }
-  if (fatSectors.some((id) => fat[id] !== FAT_SECTOR) || difatSectors.some((id) => fat[id] !== DIFAT_SECTOR)) {
+  if (fatSectors.some((id) => fat[id] !== FAT_SECTOR) || [...difatSectors].some((id) => fat[id] !== DIFAT_SECTOR)) {
     fail("the sector tables are damaged");
   }
 

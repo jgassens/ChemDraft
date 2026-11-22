@@ -91,4 +91,56 @@ describe("readChemDraftOleObject", () => {
     view(outside.bytes).setUint32(outside.directoryOffset + 128 + 72, 9999, true);
     expect(readChemDraftOleObject(outside.bytes, MB)).toMatchObject({ kind: "invalid", reason: "a directory entry points past the directory" });
   });
+
+  it("reads version 4 files (4096-byte sectors) and FAT sectors listed in a DIFAT chain", () => {
+    const large = JSON.stringify({ kind: "chemdraft-selection", version: 1, objects: [], label: "x".repeat(9000) });
+    for (const document of [json, large]) {
+      const v4 = writeTestCompoundFile(STABLE, objectStreams(document), { version: 4 });
+      expect(v4.sectorBytes).toBe(4096);
+      expect(readChemDraftOleObject(v4.bytes, MB)).toEqual({ kind: "chemdraft", clsid: STABLE, json: document });
+    }
+    // 240 FAT sectors: 109 in the header, the rest in two DIFAT sectors (127 slots each).
+    const chained = writeTestCompoundFile(STABLE, objectStreams(large), { minFatSectors: 240 });
+    expect(chained.difatSectors).toHaveLength(2);
+    expect(readChemDraftOleObject(chained.bytes, MB)).toEqual({ kind: "chemdraft", clsid: STABLE, json: large });
+    const v4Chained = writeTestCompoundFile(STABLE, objectStreams(large), { version: 4, minFatSectors: 110 });
+    expect(v4Chained.difatSectors).toHaveLength(1);
+    expect(readChemDraftOleObject(v4Chained.bytes, MB)).toEqual({ kind: "chemdraft", clsid: STABLE, json: large });
+  });
+
+  it("refuses a looping DIFAT chain", () => {
+    const looped = writeTestCompoundFile(STABLE, objectStreams(json), { minFatSectors: 240 });
+    const [first, second] = looped.difatSectors as [number, number];
+    const view = new DataView(looped.bytes.buffer);
+    view.setUint32((second + 1) * 512 + 508, first, true); // the second DIFAT sector points back to the first
+    view.setUint32(72, 5, true);
+    expect(readChemDraftOleObject(looped.bytes, MB)).toEqual({ kind: "invalid", reason: "the sector tables are damaged" });
+  });
+
+  it("walks a crafted DIFAT chain as long as the file allows in linear time", () => {
+    // 50 MiB of version 3 sectors, nearly all of them one DIFAT chain of empty slots.
+    const bytes = new Uint8Array(50 * MB).fill(0xff);
+    const view = new DataView(bytes.buffer);
+    bytes.set([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+    bytes.fill(0, 8, 76);
+    view.setUint16(24, 0x3e, true);
+    view.setUint16(26, 3, true);
+    view.setUint16(28, 0xfffe, true);
+    view.setUint16(30, 9, true);
+    view.setUint16(32, 6, true);
+    view.setUint32(44, 1, true); // one FAT sector, sector 0
+    view.setUint32(48, 0xfffffffe, true);
+    view.setUint32(56, 4096, true);
+    view.setUint32(60, 0xfffffffe, true);
+    const sectorCount = bytes.length / 512 - 1;
+    view.setUint32(68, 1, true);
+    view.setUint32(72, sectorCount - 1, true);
+    view.setUint32(76, 0, true);
+    for (let id = 1; id < sectorCount; id++) view.setUint32((id + 1) * 512 + 508, id + 1 < sectorCount ? id + 1 : 0xfffffffe, true);
+    view.setUint32(512, 0xfffffffd, true);
+    const started = performance.now();
+    expect(readChemDraftOleObject(bytes, MB)).toEqual({ kind: "invalid", reason: "the sector tables are damaged" });
+    // About 100,000 DIFAT sectors: a quadratic membership check took over a second here, a Set about 0.1 s.
+    expect(performance.now() - started).toBeLessThan(750);
+  });
 });
