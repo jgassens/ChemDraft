@@ -506,8 +506,8 @@ describe("PowerPoint Office adapter", () => {
     expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({ kind: "replaced" });
   });
 
-  it.each([1, 2])("removes the inserted picture when sync %i after the insert fails", async failSyncAfterInsert => {
-    const { host, powerpoint, stack, mutations } = powerpointHost({ failSyncAfterInsert });
+  it("removes the inserted picture when the sync after the ID is learned fails", async () => {
+    const { host, powerpoint, stack, mutations } = powerpointHost({ failSyncAfterInsert: 2 });
     const adapter = powerpointAdapter(host, powerpoint);
     await adapter.readSelectedStructure();
     expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toMatchObject({
@@ -516,6 +516,19 @@ describe("PowerPoint Office adapter", () => {
     expect(mutations).toContain("delete:24");
     expect(mutations).not.toContain("delete:22");
     expect(stack.map(item => item.id)).toEqual(["21", "22", "23"]);
+  });
+
+  it("leaves the inserted picture and asks the user to delete it when the first sync fails before its ID is learned", async () => {
+    // Changed from "removes the inserted picture when sync 1 after the insert fails": that case was
+    // rolled back by the exact-placement fallback the owner retired on 2026-11-22.
+    const { host, powerpoint, stack, mutations } = powerpointHost({ failSyncAfterInsert: 1 });
+    const adapter = powerpointAdapter(host, powerpoint);
+    await adapter.readSelectedStructure();
+    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toMatchObject({
+      kind: "refusal", reason: expect.stringContaining("Couldn't find the inserted structure to remove — delete it by hand."),
+    });
+    expect(mutations.filter(mutation => mutation.startsWith("delete:"))).toEqual([]);
+    expect(stack.map(item => item.id)).toEqual(["21", "22", "23", "24"]);
   });
 
   it("removes the inserted picture when deleting the old one throws", async () => {
@@ -530,14 +543,28 @@ describe("PowerPoint Office adapter", () => {
     expect(stack.map(item => item.id)).toEqual(["21", "22", "23"]);
   });
 
-  it("finds and removes an unidentified new picture by the placement it was inserted at", async () => {
-    const { host, powerpoint, stack } = powerpointHost({ extraInsert: true });
+  it("deletes only the inserted picture, found by its ID, and nothing else", async () => {
+    const { host, powerpoint, stack, mutations } = powerpointHost({ failSyncAfterInsert: 2 });
+    const adapter = powerpointAdapter(host, powerpoint);
+    await adapter.readSelectedStructure();
+    await adapter.replaceSelectedStructure(updated, updateJson, size);
+    expect(mutations.filter(mutation => mutation.startsWith("delete:"))).toEqual(["delete:24"]);
+    expect(stack.map(item => item.id)).toEqual(["21", "22", "23"]);
+  });
+
+  it("deletes nothing and tells the user to delete by hand when the inserted picture's ID is unknown, even with a shape at its exact placement", async () => {
+    // Two new pictures, so the update cannot tell which is its own; shape 24 sits at the exact
+    // placement the insert asked for, which the retired fallback would have deleted.
+    const { host, powerpoint, stack, mutations } = powerpointHost({ extraInsert: true });
     const adapter = powerpointAdapter(host, powerpoint);
     await adapter.readSelectedStructure();
     const result = await adapter.replaceSelectedStructure(updated, updateJson, size);
-    expect(result).toMatchObject({ kind: "refusal", reason: expect.stringContaining("could not be identified") });
+    expect(result).toMatchObject({
+      kind: "refusal", reason: expect.stringContaining("Couldn't find the inserted structure to remove — delete it by hand."),
+    });
     expect(result).not.toMatchObject({ reason: expect.stringContaining("may remain") });
-    expect(stack.map(item => item.id)).toEqual(["21", "22", "23", "25"]);
+    expect(mutations.filter(mutation => mutation.startsWith("delete:"))).toEqual([]);
+    expect(stack.map(item => item.id)).toEqual(["21", "22", "23", "24", "25"]);
   });
 
   it("says the new picture may remain when the rollback cannot remove it", async () => {

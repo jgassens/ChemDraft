@@ -87,10 +87,13 @@ slide's `p:timing` and relationships), because Office.js cannot read most of it.
 
 Rollback: once `setSelectedDataAsync` has inserted the new picture, every later step (identifying
 it, restoring its state, verifying, deleting the old one) runs inside the rollback path. On any
-failure before the old picture is deleted, a fresh batch removes the new picture: by its shape ID
-when the update got far enough to learn it, otherwise as the only new picture at the exact
-position and size the insert was asked for (an image cannot carry a tag or name until it exists).
-If neither finds exactly one picture, or the delete fails, the error says the new picture may
+failure before the old picture is deleted, a fresh batch removes the new picture by its shape ID,
+which the update learns when it identifies the new picture. A shape is never deleted by its position
+or size. If the update failed before it learned the ID (for example two new pictures appeared and
+the update could not tell which was its own), or no new shape carries that ID, the rollback leaves
+the slide unchanged and the error ends with "Couldn't find the inserted structure to remove —
+delete it by hand." (the owner retired the older exact-placement fallback on 2026-11-22). If the ID
+is known but the delete fails, the error says the new picture may
 remain on the slide. The old picture counts as deleted only once its `delete()` call has returned:
 a `delete()` that throws leaves the old picture, so the new one is removed. A failure in the sync
 after a successful `delete()` leaves the outcome unknown, and the error asks the user to check the

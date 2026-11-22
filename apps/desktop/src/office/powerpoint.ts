@@ -202,27 +202,27 @@ type Selection = NoStructure | Refusal | (SelectedStructure & { state: PictureSt
 type Placement = { left: number; top: number; width: number; height: number };
 const altText = ["altTextTitle", "altTextDescription", "isDecorative"] as const;
 
+/** Shown when the rollback cannot tell which shape ChemDraft inserted. Nothing is deleted by position. */
+const insertedNotFoundMessage = "Couldn't find the inserted structure to remove — delete it by hand.";
+
 /**
  * Removes the picture an Update inserted, in a fresh batch so a failed batch cannot block it. The
- * picture is found by its ID when the update got that far, otherwise as the one new picture at the
- * placement the insert was asked for.
+ * picture is found only by the shape ID the update learned. With no ID, or no new shape carrying it,
+ * nothing is deleted: a shape is never removed by where it sits.
  */
 async function removeInserted(
-  powerpoint: PowerPointApi, slideId: string, ids: Set<string>, insertedId: string | undefined, placement: Placement,
-) {
+  powerpoint: PowerPointApi, slideId: string, ids: Set<string>, insertedId: string | undefined,
+): Promise<"removed" | "not-found" | "failed"> {
+  if (insertedId === undefined) return "not-found";
   return powerpoint.run(async context => {
-    const shapes = context.presentation.slides.getItem(slideId).shapes
-      .load("items/id,items/type,items/left,items/top,items/width,items/height");
+    const shapes = context.presentation.slides.getItem(slideId).shapes.load("items/id");
     await context.sync();
-    const added = shapes.items.filter(shape => !ids.has(shape.id));
-    const matches = insertedId !== undefined ? added.filter(shape => shape.id === insertedId) : added.filter(shape =>
-      (shape.type === "Image" || shape.type === "Graphic") &&
-      (["left", "top", "width", "height"] as const).every(key => Math.abs(shape[key] - placement[key]) <= 0.5));
-    if (matches.length !== 1) return false;
+    const matches = shapes.items.filter(shape => !ids.has(shape.id) && shape.id === insertedId);
+    if (matches.length !== 1) return "not-found" as const;
     matches[0]!.delete();
     await context.sync();
-    return true;
-  });
+    return "removed" as const;
+  }).catch(() => "failed" as const);
 }
 
 function writableProperty(value: object, property: string) {
@@ -417,9 +417,9 @@ export function powerpointAdapter(office: OfficeContext, powerpoint: PowerPointA
           });
         } catch (error) {
           if (deletionRequested) throw new Error(errorMessage(error) + " Check the slide before retrying.");
-          const removed = await removeInserted(powerpoint, original.slideId, original.ids, insertedId, placement)
-            .catch(() => false);
-          if (!removed) throw new Error(errorMessage(error) + " The newly inserted picture may remain on the slide.");
+          const removed = await removeInserted(powerpoint, original.slideId, original.ids, insertedId);
+          if (removed === "not-found") throw new Error(errorMessage(error) + " " + insertedNotFoundMessage);
+          if (removed === "failed") throw new Error(errorMessage(error) + " The newly inserted picture may remain on the slide.");
           throw error;
         }
         const warning = lostStateWarning(lost);
