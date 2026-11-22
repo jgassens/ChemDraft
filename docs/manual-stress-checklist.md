@@ -1815,6 +1815,17 @@ Run under KDE Plasma (Wayland session, so the app uses XWayland) and on GNOME.
   horizontal scrollbar disappears and the palette loses the scrollbar's height. Drag it back to
   the narrow monitor: it is capped at that screen's width again and scrolls sideways with the bar
   fully visible. Neither move leaves the palette flickering or resizing on its own.
+- Live resolution change without touching the toolbar (Linux, under XWayland; 1.2.2 retest
+  regression): drag the Main toolbar to the screen's left edge first, so the window manager has no
+  reason to move it, then park the pointer over the document canvas, well away from every palette.
+  Switch the display live from 1680x1050 to 1280x800. Without moving the pointer, the Main toolbar
+  becomes 1280 px wide within about a second, starting at the left edge, with nothing off the
+  right edge of the screen (`xwininfo` on it, or a screenshot). Switch to 1024x768: within about a
+  second it is 1024 px wide and scrolls sideways, the scrollbar fully visible. Switch back to
+  1680x1050: within about a second it has its full width again, no scrollbar and no scrollbar
+  height. Leave the pointer still for 10 s after each switch: the toolbar does not flicker or
+  resize again on its own. toolbar-state.json still holds the position it had before the first
+  switch.
 - Palette positions after Save/Open: place Main and Art somewhere distinctive, then press
   Shift+Ctrl+S and Esc, and Ctrl+O and Esc, several times. Every palette comes back exactly where
   it was, and after quitting and relaunching it opens at that same spot (toolbar-state.json is

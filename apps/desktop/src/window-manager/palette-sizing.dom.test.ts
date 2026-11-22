@@ -291,7 +291,7 @@ describe("palette work-area sizing", () => {
         await act(async () => root.unmount());
         container.remove();
       };
-      return { shell, scroller, nativeResize, moveToWorkArea, nativeResizeTo, unmount };
+      return { shell, scroller, settle, nativeResize, moveToWorkArea, nativeResizeTo, unmount };
     };
 
     const expectNoOverflow = (scroller: HTMLElement) => {
@@ -421,6 +421,142 @@ describe("palette work-area sizing", () => {
       } finally {
         await unmount();
       }
+    });
+
+    describe("a live resolution change that leaves the window where it is", () => {
+      // 1.2.2 VM retest (KDE Plasma, XWayland): Main at x = 0, 1311 px wide, with its width pinned by
+      // the min = max hints, so 1680 -> 1280 or 1024 neither moves nor resizes the window and fires
+      // no tauri://move, tauri://scale-change or webview resize. Main stayed 1311 px wide, its right
+      // end off-screen, for 20 s and more, until the pointer entered it. Only the interval is faked,
+      // so the mount's zero-delay settling still runs on real timers.
+      const POLL_MS = 1000;
+      const changeResolution = async (settle: () => Promise<void>, right: number, bottom: number) => {
+        native.workArea.mockResolvedValue({ left: 0, top: 0, right, bottom });
+        // No native event: the work area is all that changed.
+        await settle();
+      };
+      const nextPoll = async (settle: () => Promise<void>) => {
+        await act(async () => { vi.advanceTimersByTime(POLL_MS); });
+        await settle();
+      };
+
+      it("refits a Linux Main toolbar within one poll, both ways, and then sends nothing more", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+        const { scroller, settle, nativeResize, nativeResizeTo, unmount } = await mountMain("linux", 1680);
+        try {
+          expectNoOverflow(scroller);
+          const before = resizeRequests().length;
+
+          await changeResolution(settle, 1024, 768);
+          // Nothing else would ever re-run the fit: this is the gap the poll closes.
+          expect(resizeRequests()).toHaveLength(before);
+          await nextPoll(settle);
+          // Re-sent with the viewport still 1680 wide, so Rust caps the window to the work area.
+          expect(resizeRequests().slice(before)).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }]);
+          await nativeResizeTo(1024);
+          expect(scroller.style.overflowX).toBe("auto");
+          expect(scroller.style.maxWidth).toBe("1024px");
+          expect(resizeRequests().slice(before)).toEqual([
+            { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT },
+            { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT + SCROLLBAR }
+          ]);
+          // Settled: further polls on the same work area and the resize after the height fit send nothing.
+          await nativeResize();
+          await nextPoll(settle);
+          await nextPoll(settle);
+          expect(resizeRequests()).toHaveLength(before + 2);
+
+          await changeResolution(settle, 1680, 1050);
+          expect(resizeRequests()).toHaveLength(before + 2);
+          await nextPoll(settle);
+          expect(resizeRequests().slice(before + 2)).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT + SCROLLBAR }]);
+          await nativeResizeTo(NATURAL_WIDTH);
+          expectNoOverflow(scroller);
+          expect(resizeRequests().slice(before + 2)).toEqual([
+            { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT + SCROLLBAR },
+            { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }
+          ]);
+          await nativeResize();
+          await nextPoll(settle);
+          await nextPoll(settle);
+          expect(resizeRequests()).toHaveLength(before + 4);
+        } finally {
+          await unmount();
+          vi.useRealTimers();
+        }
+      });
+
+      it("retries a refit the native side refused on the next poll", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+        const { settle, unmount } = await mountMain("linux", 1680);
+        try {
+          const before = resizeRequests().length;
+          // A transient frame (the document minimized mid-switch): resize_toolset_window says no once.
+          const answer = native.invoke.getMockImplementation()!;
+          let refusals = 1;
+          native.invoke.mockImplementation(async (command, payload) => {
+            if (command === "resize_toolset_window" && refusals > 0) {
+              refusals -= 1;
+              return false;
+            }
+            return answer(command, payload);
+          });
+          await changeResolution(settle, 1024, 768);
+          await nextPoll(settle);
+          expect(refusals).toBe(0);
+          await nextPoll(settle);
+          const refit = { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT };
+          expect(resizeRequests().slice(before)).toEqual([refit, refit]);
+          // Accepted now: later polls on the same work area send nothing.
+          await nextPoll(settle);
+          await nextPoll(settle);
+          expect(resizeRequests()).toHaveLength(before + 2);
+        } finally {
+          await unmount();
+          vi.useRealTimers();
+        }
+      });
+
+      it("polls nothing while the palette is hidden, and refits once it is shown", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+        const { settle, unmount } = await mountMain("linux", 1680);
+        try {
+          const before = resizeRequests().length;
+          hidden.mockReturnValue(true);
+          await changeResolution(settle, 1024, 768);
+          await nextPoll(settle);
+          expect(resizeRequests()).toHaveLength(before);
+          hidden.mockReturnValue(false);
+          await nextPoll(settle);
+          expect(resizeRequests().slice(before)).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }]);
+        } finally {
+          await unmount();
+          vi.useRealTimers();
+        }
+      });
+
+      it.each(["macos", "windows"] as const)("keeps %s to its move, scale and resize triggers", async platform => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+        const { scroller, settle, unmount } = await mountMain(platform, 1680);
+        try {
+          const before = resizeRequests().length;
+          const areaQueries = () => native.invoke.mock.calls.filter(([name]) => name === "current_window_logical_work_area").length;
+          const queries = areaQueries();
+          await changeResolution(settle, 1024, 768);
+          await nextPoll(settle);
+          await nextPoll(settle);
+          expect(resizeRequests()).toHaveLength(before);
+          expect(areaQueries()).toBe(queries);
+          expectNoOverflow(scroller);
+        } finally {
+          await unmount();
+          vi.useRealTimers();
+        }
+      });
     });
 
     it("gives a Linux palette that fits its window no scrollbar", async () => {

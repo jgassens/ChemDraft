@@ -138,6 +138,18 @@ function pendingPlaceholderToolset(toolsetId: string): DesktopToolsetDefinition 
 /** Rounding slack between the reported content width and the window's integer viewport width. */
 const LINUX_PALETTE_OVERFLOW_TOLERANCE_PX = 1;
 
+/** Linux: how often a content-fit palette compares its monitor's work area with its last fit. */
+const LINUX_PALETTE_WORK_AREA_POLL_MS = 1000;
+
+/** Linux: what Rust caps a palette's width against (toolset_content_placement): the work area of the
+ *  window's monitor and its scale. A fit is accepted against one key; a different key means a re-send. */
+function linuxPalettePlacementKey(
+  area: { left: number; top: number; right: number; bottom: number },
+  devicePixelRatio: number = window.devicePixelRatio || 1
+): string {
+  return `${area.left}:${area.top}:${area.right}:${area.bottom}@${devicePixelRatio}`;
+}
+
 /**
  * Linux only (B3 follow-up). Rust caps a palette window's width at the monitor work area, but the
  * shell is width:max-content with a nowrap row, so on a narrow screen the right end of the Main
@@ -618,7 +630,7 @@ export function PaletteWindow({
         // width alone) never re-sends; an identical request on an unchanged monitor gives the same
         // frame, so a forced re-send settles after at most one more fit. macOS and Windows keep the
         // plain size dedupe.
-        const placementKey = `${area.left}:${area.top}:${area.right}:${area.bottom}@${window.devicePixelRatio || 1}`;
+        const placementKey = linuxPalettePlacementKey(area);
         const placementChanged = platform === "linux" && fittedPlacementKey !== undefined && (
           placementKey !== fittedPlacementKey
           || (viewportWidth !== fittedViewportWidth && viewportWidth !== fittedPaletteWidthRef.current));
@@ -655,11 +667,43 @@ export function PaletteWindow({
       if (disposed) cleanup();
       else unlisten = cleanup;
     });
+    // Linux: a live resolution or panel change need not touch this window at all. The 1.2.2 VM
+    // (KDE, XWayland) left Main at x = 0 and 1311 px wide on a 1280 or 1024 screen: its width is
+    // pinned by the X11 min = max hints (B1), so the window manager cannot shrink it, and it was
+    // already at the left edge, so nothing moved it. With no resize, move or scale event the fit
+    // above never re-ran until the pointer happened to enter the toolbar. Poll the work area, as the
+    // inspector does, and refit whenever it no longer matches the one the last fit was accepted
+    // against. Level-triggered on that accepted fit, so a refused fit is retried and an accepted one
+    // ends it; applySize's own dedupe keeps this from ever sending a size it already sent for this
+    // monitor. macOS and Windows never cap a palette's width (toolset_content_placement) and keep
+    // their move, scale and resize triggers only.
+    let placementTimer: number | undefined;
+    if (platform === "linux") {
+      let checkingPlacement = false;
+      const checkPlacement = async () => {
+        if (checkingPlacement || disposed || document.hidden || fittedPlacementKey === undefined) return;
+        checkingPlacement = true;
+        try {
+          const placementKey = linuxPalettePlacementKey(await currentWindowLogicalWorkArea());
+          if (!disposed && fittedPlacementKey !== undefined && placementKey !== fittedPlacementKey) {
+            // Directly, not through scheduleSize: the poll runs after layout, and a window the
+            // compositor is not repainting may not run animation frames.
+            await applySize();
+          }
+        } finally {
+          checkingPlacement = false;
+        }
+      };
+      placementTimer = window.setInterval(() => {
+        void checkPlacement().catch(() => undefined);
+      }, LINUX_PALETTE_WORK_AREA_POLL_MS);
+    }
 
     return () => {
       disposed = true;
       observer?.disconnect();
       unlisten?.();
+      window.clearInterval(placementTimer);
       if (sizeAnimationFrameRef.current !== undefined) {
         window.cancelAnimationFrame(sizeAnimationFrameRef.current);
         sizeAnimationFrameRef.current = undefined;
