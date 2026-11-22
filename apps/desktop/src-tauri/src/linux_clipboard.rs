@@ -195,6 +195,8 @@ pub(crate) fn read_payload() -> Result<ClipboardReadPayload, String> {
         image_items,
         skipped_image_items,
         skipped_items: budget.skipped_items,
+        // Office runs on macOS and Windows only; there is no picture archive to read here.
+        office_items: Vec::new(),
     })
 }
 

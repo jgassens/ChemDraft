@@ -923,6 +923,7 @@ import {
 import { installBrowserReloadGuard, wasBrowserReloadPrevented } from "./browserReloadGuard";
 import { assertDocumentSize, decodeNativeDocumentContents, documentContentsKey, readBrowserDocumentFile, readNativeDocumentFile, type DocumentContents } from "./documentText";
 import { importOfficeStructuresCommand, pickOfficeImportFile, runOfficeStructureImport } from "./officeStructureImport";
+import { OFFICE_PASTE_BACK_UNDO_LABEL, officePasteBackDecision, type OfficePasteBackDecision } from "./officePasteBack";
 import { createDocumentFileSave, exportDocumentCdx } from "./documentFileFormats";
 import { getDesktopExportFormatDescriptor as getExportFormatDescriptor } from "./desktopExportFormats";
 import { exportDefaultPath, stripExportFileExtension } from "./exportFilename";
@@ -7955,7 +7956,8 @@ export function MainWindow({
     applySyncClipboardPayload(detectedPayload, anchor);
   }, [applySyncClipboardPayload, applyTableClipboardResult, renderPastedSmiles, renderPastedSmilesList]);
 
-  const applySelectionClipboardPayload = useCallback((payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>, anchor: ReturnType<typeof captureClipboardPasteAnchor>) => {
+  const applySelectionClipboardPayload = useCallback((payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>, anchor: ReturnType<typeof captureClipboardPasteAnchor>,
+    statusMessage = "Pasted ChemDraft selection") => {
     smilesListPasteAbortRef.current?.abort();
     if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
     const warnings: string[] = [];
@@ -7978,8 +7980,24 @@ export function MainWindow({
     setSelectedNativeMoleculePart(undefined);
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
-    setStatus(["Pasted ChemDraft selection", ...warnings].join("; "));
+    setStatus([statusMessage, ...warnings].join("; "));
   }, [assignHoveredNativeDeleteTarget, commitClipboardPaste]);
+
+  /** Paste-back from a copied Office picture; false lets the ordinary paste go ahead. */
+  const applyOfficePasteBack = useCallback((decision: OfficePasteBackDecision, anchor: ReturnType<typeof captureClipboardPasteAnchor>): boolean => {
+    if (decision.details.length) console.warn(`[paste-back]\n${decision.details.join("\n")}`);
+    // The decision was awaited: a quit that began meanwhile cancels the ordinary paste too.
+    if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return true; }
+    if (decision.kind === "none") return false;
+    if (decision.kind === "refused") {
+      setStatus(decision.message);
+    } else if (decision.kind === "selection") {
+      applySelectionClipboardPayload(decision.payload, anchor, decision.message);
+    } else if (commitDocumentChange(decision.document, OFFICE_PASTE_BACK_UNDO_LABEL)) {
+      setStatus(decision.message);
+    }
+    return true;
+  }, [applySelectionClipboardPayload, commitDocumentChange]);
 
   const deleteSelectionAfterClipboardCut = useCallback((
     payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>,
@@ -8261,6 +8279,8 @@ export function MainWindow({
         applySelectionClipboardPayload(decision.payload, anchor);
         return;
       }
+      // ChemDraft's own selection won above; next, the structure in a copied Office picture.
+      if (applyOfficePasteBack(await officePasteBackDecision(payload, () => documentRef.current), anchor)) return;
       if (decision.kind === "table") {
         applyTableClipboardResult(decision.result, anchor);
         return;
@@ -8282,7 +8302,7 @@ export function MainWindow({
     setStatus(readFailure !== undefined
       ? `Couldn't read the clipboard: ${readFailure}`
       : "Couldn't paste: the clipboard contains no supported drawing or text content.");
-  }, [applyDetectedClipboardPayload, applySelectionClipboardPayload, applyTableClipboardResult, captureClipboardPasteAnchor]);
+  }, [applyDetectedClipboardPayload, applyOfficePasteBack, applySelectionClipboardPayload, applyTableClipboardResult, captureClipboardPasteAnchor]);
 
   const updateTextObjectContent = useCallback((objectId: string, text: string) => {
     const edit = textEditHistorySnapshotRef.current;
@@ -14517,7 +14537,7 @@ export function MainWindow({
         void pasteClipboard(domPayload, anchor);
         return;
       }
-      void domPayload.then((unguardedPayload) => {
+      void domPayload.then(async (unguardedPayload) => {
         if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
         const guarded = guardedClipboardPasteDecision(unguardedPayload);
         if (guarded.kind === "refused") { setStatus(guarded.message); return; }
@@ -14526,6 +14546,7 @@ export function MainWindow({
           applySelectionClipboardPayload(decision.payload, anchor);
           return;
         }
+        if (applyOfficePasteBack(await officePasteBackDecision(payload, () => documentRef.current), anchor)) return;
         if (decision.kind === "table") {
           applyTableClipboardResult(decision.result, anchor);
           return;
@@ -14551,7 +14572,7 @@ export function MainWindow({
       window.removeEventListener("cut", handleCut);
       window.removeEventListener("paste", handlePaste);
     };
-  }, [applyDetectedClipboardPayload, applySelectionClipboardPayload, applyTableClipboardResult, captureClipboardPasteAnchor, copySelectionToClipboard, deleteSelectionAfterClipboardCut, pasteClipboard, shortcutPlatform]);
+  }, [applyDetectedClipboardPayload, applyOfficePasteBack, applySelectionClipboardPayload, applyTableClipboardResult, captureClipboardPasteAnchor, copySelectionToClipboard, deleteSelectionAfterClipboardCut, pasteClipboard, shortcutPlatform]);
 
   const clearFreehandArtPreview = useCallback(() => {
     if (freehandArtPreviewFrameRef.current !== undefined) {

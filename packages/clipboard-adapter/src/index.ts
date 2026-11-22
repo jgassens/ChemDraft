@@ -4,10 +4,16 @@ export type { CarrierReadResult } from "./pngSelection";
 export { decodeBase64Bounded, UnsupportedDecompressionError } from "./carrierBytes";
 export { flatOpcBinaryParts, pptxSlidePictureMedia, readZip, readZipFromBase64 } from "./officePackage";
 export type { FlatOpcBinaryPart, OfficeZipCaps, OfficeZipEntry } from "./officePackage";
-export { importOfficeStructures, OFFICE_IMPORT_LIMITS, OfficeImportError, SUPPORTED_CARRIER_VERSIONS } from "./officeImport";
+export { importOfficeStructures, OFFICE_IMPORT_LIMITS, OfficeImportError, readCarrierEnvelope, SUPPORTED_CARRIER_VERSIONS } from "./officeImport";
+export {
+  OFFICE_PICTURE_ARCHIVE_TYPES, PASTE_BACK_LIMITS, recoverPasteBackFromClipboard, recoverPasteBackStructures, trimZipPadding,
+} from "./pasteBack";
+export type {
+  PasteBackClipboardItem, PasteBackLimits, PasteBackNoneReason, PasteBackRefusal, PasteBackResult, PasteBackSource, PasteBackStructure,
+} from "./pasteBack";
 export type {
   OfficeCarrierWarning, OfficeCarrierWarningReason, OfficeFileKind, OfficeImportErrorCode, OfficeImportLimits, OfficeImportResult,
-  OfficeStructure, OfficeStructureSource,
+  OfficeStructure, OfficeStructureSource, CarrierEnvelope,
 } from "./officeImport";
 
 export type ClipboardPayloadKind = "svg" | "png" | "text/plain" | "smiles" | "mol" | "rxn" | "cdxml" | "cdx";
@@ -28,6 +34,12 @@ export interface ClipboardImageItem {
   pixelsPerMeter?: { x: number; y: number };
   pixelWidth?: number;
   pixelHeight?: number;
+}
+
+/** A binary flavor read only for paste-back: Office's picture archive (GVML), by native name. */
+export interface ClipboardOfficeItem {
+  type: string;
+  bytesBase64: string;
 }
 
 export interface ClipboardSkippedImageItem {
@@ -59,6 +71,8 @@ export interface ClipboardReadPayload {
   imageItems?: ClipboardImageItem[];
   skippedImageItems?: ClipboardSkippedImageItem[];
   skippedItems?: ClipboardSkippedItem[];
+  /** Office's picture archive, for paste-back only; never inspected as text or as a picture. */
+  officeItems?: ClipboardOfficeItem[];
 }
 
 export type ClipboardMolfileFormat = "molfile-v2000" | "molfile-v3000";

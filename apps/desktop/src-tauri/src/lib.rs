@@ -1327,6 +1327,9 @@ struct ClipboardReadPayload {
     skipped_image_items: Vec<SkippedClipboardImageItem>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     skipped_items: Vec<clipboard_limits::SkippedClipboardItem>,
+    /// Office's picture archive (GVML) for paste-back; empty unless an Office picture was copied.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    office_items: Vec<clipboard_images::ClipboardOfficeItem>,
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -8051,6 +8054,7 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
         }
     }
     text_items.sort_by_key(|item| types.iter().position(|kind| kind == &item.r#type));
+    let office_items = clipboard_office_items(&pasteboard, &types, &mut budget);
 
     Ok(ClipboardReadPayload {
         types,
@@ -8058,7 +8062,42 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
         image_items,
         skipped_image_items,
         skipped_items: budget.skipped_items,
+        office_items,
     })
+}
+
+/// Office's picture archive for paste-back (the Windows side is `windows_clipboard::native`).
+#[cfg(target_os = "macos")]
+fn clipboard_office_items(
+    pasteboard: &NSPasteboard,
+    types: &[String],
+    budget: &mut clipboard_limits::ClipboardReadBudget,
+) -> Vec<clipboard_images::ClipboardOfficeItem> {
+    let Some(source) = clipboard_images::office_picture_archive_type(types) else {
+        return Vec::new();
+    };
+    let Some(data) = pasteboard.dataForType(&NSString::from_str(source)) else {
+        return Vec::new();
+    };
+    let byte_length = data.length();
+    let refused = |reason: String| {
+        eprintln!("Paste-back skipped the Office picture archive: {reason}");
+        Vec::new()
+    };
+    if byte_length > clipboard_images::MAX_OFFICE_ARCHIVE_BYTES {
+        return refused(format!("{source} is over the 32 MB limit"));
+    }
+    if let Err(reason) = budget.reserve(source, byte_length) {
+        return refused(reason);
+    }
+    // SAFETY: NSData is retained and immutable; it is encoded without a byte copy.
+    match clipboard_images::office_archive_item(source, unsafe { data.as_bytes_unchecked() }) {
+        Ok(item) => vec![item],
+        Err(reason) => {
+            budget.release(byte_length);
+            refused(reason)
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -8529,6 +8568,7 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
         image_items: Vec::new(),
         skipped_image_items: Vec::new(),
         skipped_items: Vec::new(),
+        office_items: Vec::new(),
     })
 }
 

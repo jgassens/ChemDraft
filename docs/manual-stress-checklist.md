@@ -1717,6 +1717,26 @@ Windows with Word and PowerPoint, and the Mac items on a Mac with both apps. Say
 - On Windows, pick a file from a path with spaces and non-ASCII letters, and from a network or
   OneDrive folder; on macOS, from iCloud Drive.
 
+### Paste back from Word or PowerPoint (macOS and Windows)
+
+Run every step on both platforms, in Word and in PowerPoint.
+
+- Copy a structure in ChemDraft and paste it into the document as a picture (on Windows, Paste
+  Special > Picture (PNG), so it is not the embedded object). Save, close and reopen the document.
+  Select the picture, copy it, quit and restart ChemDraft (so its own copy is gone), and paste
+  into an empty drawing: the editable structure appears, selected, and the status says "Pasted the
+  ChemDraft structure from the copied picture." Copy SMILES from it and from the original: they
+  match, including charges, isotopes and wedges. One Undo removes it.
+- Repeat with a picture that was resized and cropped in Office: the full structure still comes back.
+- Copy two ChemDraft pictures together (PowerPoint: select both; Word: both in one selection):
+  both come back as one paste, left to right, and one Undo removes both.
+- Copy an ordinary photo or a screenshot from the document and paste: it pastes as a picture,
+  exactly as before.
+- Copy a structure in ChemDraft and paste it back into ChemDraft while Word or PowerPoint is open:
+  ChemDraft's own copy is pasted ("Pasted ChemDraft selection"), not a picture.
+- A carrier from a newer ChemDraft (data version above 1, from a test file) pastes nothing and the
+  status names the data version. The log (`[paste-back]`) gives the details.
+
 ### Windows installer registration
 
 - Fresh install: Insert > Object lists ChemDraft Structure, and a double-click on an existing object

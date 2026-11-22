@@ -2,7 +2,7 @@ import {
   docxPictureReferences, isOfficeRelationshipType, officeMainPartKind, officeRelationships, pptxSlidePictureRelationshipIds,
   pptxSlideRelationshipIds, readZip, resolvePartTarget, type OfficeRelationship, type OfficeZipEntry,
 } from "./officePackage";
-import { readChemDraftSelectionFromPng } from "./pngSelection";
+import { readChemDraftSelectionFromPng, type CarrierReadResult } from "./pngSelection";
 
 /**
  * Find every ChemDraft structure (a carrier PNG) in a .docx or .pptx file. Pure and bounded: the
@@ -85,6 +85,49 @@ export interface OfficeImportResult {
 
 export const SUPPORTED_CARRIER_VERSIONS: readonly number[] = [1];
 
+export type CarrierEnvelope =
+  | { ok: true; json: string; document: Record<string, unknown> }
+  /** `phrase` completes "The structure on slide 2 …" or "The copied structure …". */
+  | { ok: false; reason: OfficeCarrierWarningReason; phrase: string };
+
+/**
+ * Turn one carrier read into the parsed `chemdraft-selection` envelope of a supported version, or
+ * the reason it is unusable. Shared by the file importer and clipboard paste-back, so both refuse
+ * the same carriers with the same words. `admitJsonBytes` may refuse by size (a phrase) before the
+ * JSON is parsed. Returns undefined for a picture without a carrier.
+ */
+export function readCarrierEnvelope(
+  read: CarrierReadResult, maxJsonBytes: number, admitJsonBytes?: (bytes: number) => string | undefined,
+): CarrierEnvelope | undefined {
+  if (read.kind === "absent") return undefined;
+  if (read.kind === "unsupported") return { ok: false, reason: "unsupported", phrase: `could not be read on this system: ${read.reason}` };
+  if (read.kind === "invalid") {
+    return { ok: false, reason: /limit/.test(read.reason) ? "too-large" : "malformed", phrase: `has damaged ChemDraft data: ${read.reason}` };
+  }
+  const jsonBytes = new TextEncoder().encode(read.json).length;
+  if (jsonBytes > maxJsonBytes) {
+    return { ok: false, reason: "too-large", phrase: `is larger than the ${megabytes(maxJsonBytes)} limit for one structure.` };
+  }
+  const refusal = admitJsonBytes?.(jsonBytes);
+  if (refusal !== undefined) return { ok: false, reason: "too-large", phrase: refusal };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(read.json);
+  } catch {
+    return { ok: false, reason: "malformed", phrase: "has damaged ChemDraft data: it is not valid JSON." };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed) ||
+      (parsed as { kind?: unknown }).kind !== "chemdraft-selection") {
+    return { ok: false, reason: "malformed", phrase: "has damaged ChemDraft data: it is not a ChemDraft drawing." };
+  }
+  const version = (parsed as { version?: unknown }).version;
+  if (typeof version !== "number" || !SUPPORTED_CARRIER_VERSIONS.includes(version)) {
+    return { ok: false, reason: "unknown-version", phrase: `was made by a newer or unknown ChemDraft (data version ${
+      typeof version === "number" || typeof version === "string" ? String(version).slice(0, 20) : "missing"}).` };
+  }
+  return { ok: true, json: read.json, document: parsed as Record<string, unknown> };
+}
+
 function limitsWith(overrides: Partial<OfficeImportLimits>): OfficeImportLimits {
   const limits: OfficeImportLimits = { ...OFFICE_IMPORT_LIMITS };
   for (const [key, value] of Object.entries(overrides) as [keyof OfficeImportLimits, number | undefined][]) {
@@ -105,7 +148,7 @@ function megabytes(bytes: number): string {
  * writes them to disk, but a name that would escape a folder, or that only some platforms read as a
  * path, is a sign of a crafted file and is refused rather than silently ignored.
  */
-function unsafeEntryNameReason(name: string): string | undefined {
+export function unsafeEntryNameReason(name: string): string | undefined {
   if (name.includes("\\")) return "contains a backslash";
   if (name.startsWith("/")) return "is an absolute path";
   if (/^[A-Za-z]:/.test(name)) return "starts with a drive letter";
@@ -292,7 +335,6 @@ export async function importOfficeStructures(
   const structures: OfficeStructure[] = [];
   const warnings: OfficeCarrierWarning[] = [];
   const readByPart = new Map<string, Awaited<ReturnType<typeof readChemDraftSelectionFromPng>>>();
-  const encoder = new TextEncoder();
   let totalJsonBytes = 0;
 
   for (const [index, ref] of pictureRefs.slice(0, limits.maxPictures).entries()) {
@@ -315,43 +357,20 @@ export async function importOfficeStructures(
       read = await readChemDraftSelectionFromPng(entry.data);
       readByPart.set(entry.name, read);
     }
-    const warn = (reason: OfficeCarrierWarningReason, message: string) =>
-      warnings.push({ picture, source, location, mediaPart: entry.name, reason, message });
-    if (read.kind === "absent") continue;
-    if (read.kind === "unsupported") { warn("unsupported", `The structure on ${location} could not be read on this system: ${read.reason}`); continue; }
-    if (read.kind === "invalid") {
-      warn(/limit/.test(read.reason) ? "too-large" : "malformed", `The structure on ${location} has damaged ChemDraft data: ${read.reason}`);
+    const envelope = readCarrierEnvelope(read, limits.maxCarrierJsonBytes, (jsonBytes) => {
+      if (totalJsonBytes + jsonBytes > limits.maxTotalCarrierJsonBytes) {
+        return `was not read: the file's structures together exceed ${megabytes(limits.maxTotalCarrierJsonBytes)}.`;
+      }
+      totalJsonBytes += jsonBytes;
+      return undefined;
+    });
+    if (!envelope) continue;
+    if (!envelope.ok) {
+      warnings.push({ picture, source, location, mediaPart: entry.name, reason: envelope.reason,
+        message: `The structure on ${location} ${envelope.phrase}` });
       continue;
     }
-    const jsonBytes = encoder.encode(read.json).length;
-    if (jsonBytes > limits.maxCarrierJsonBytes) {
-      warn("too-large", `The structure on ${location} is larger than the ${megabytes(limits.maxCarrierJsonBytes)} limit for one structure.`);
-      continue;
-    }
-    if (totalJsonBytes + jsonBytes > limits.maxTotalCarrierJsonBytes) {
-      warn("too-large", `The structure on ${location} was not read: the file's structures together exceed ${megabytes(limits.maxTotalCarrierJsonBytes)}.`);
-      continue;
-    }
-    totalJsonBytes += jsonBytes;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(read.json);
-    } catch {
-      warn("malformed", `The structure on ${location} has damaged ChemDraft data: it is not valid JSON.`);
-      continue;
-    }
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed) ||
-        (parsed as { kind?: unknown }).kind !== "chemdraft-selection") {
-      warn("malformed", `The structure on ${location} has damaged ChemDraft data: it is not a ChemDraft drawing.`);
-      continue;
-    }
-    const version = (parsed as { version?: unknown }).version;
-    if (typeof version !== "number" || !SUPPORTED_CARRIER_VERSIONS.includes(version)) {
-      warn("unknown-version", `The structure on ${location} was made by a newer or unknown ChemDraft (data version ${
-        typeof version === "number" || typeof version === "string" ? String(version).slice(0, 20) : "missing"}).`);
-      continue;
-    }
-    structures.push({ picture, source, location, mediaPart: entry.name, json: read.json, document: parsed as Record<string, unknown> });
+    structures.push({ picture, source, location, mediaPart: entry.name, json: envelope.json, document: envelope.document });
   }
 
   return { kind, structures, warnings, notes, picturesChecked: Math.min(pictureRefs.length, limits.maxPictures) };

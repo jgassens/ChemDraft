@@ -19,8 +19,8 @@ Two containers carry the drawing:
   embeds a carrier PNG. The native stream is the source of truth for the object; the preview's copy
   lets a Mac or the paste-back route recover the drawing.
 
-ChemDraft can write the carrier today but cannot read it back: no paste path reads the carrier, GVML
-or EMF+ yet. Slice 0 adds the reader that every later slice uses.
+Slice 0 added the carrier reader that every later slice uses; slice 3 reads it back from Word and
+PowerPoint files and from a copied Office picture (GVML or PNG; EMF+ is not read).
 
 ## Owner decision, 2026-11-20
 
@@ -487,5 +487,44 @@ valid structure as one undo entry, left selected.
   with the reason. Per-structure reasons go to the log.
 - **Native code.** One `lib.rs` change: the File menu item and its `MENU_COMMAND_IDS` entry, with no
   `cfg` branch. The dialog and file read use permissions the app already had.
-- Still to do in slice 3: the clipboard paths (GVML, EMF+, PNG and the Windows embedded-object
-  formats).
+
+**Built (2026-11-21), not yet checked in real Office: paste-back from a copied Office picture,
+macOS and Windows.** Copy a ChemDraft structure picture in Word or PowerPoint and paste it into
+ChemDraft: the editable structure is pasted, not a flat picture.
+
+- **Finding carriers** (`packages/clipboard-adapter/src/pasteBack.ts`, `recoverPasteBackStructures`
+  and `recoverPasteBackFromClipboard`): pure and bounded, on the slice 0 pieces. First Office's
+  picture archive, GVML (`Art::GVML ClipFormat` on Windows, `com.microsoft.Art--GVML-ClipFormat` on
+  macOS), a ZIP that keeps the picture's original media bytes even when Office re-encodes the PNG it
+  also puts on the clipboard: `readZip`, the root and drawing relationships (falling back to every
+  PNG part when an archive lacks them), then `readChemDraftSelectionFromPng` on each picture, in
+  drawing order. Then the PNG flavor (ChemDraft's own, or Office's when it kept the chunk), only
+  when the archive gave no structure. Carriers are judged by `readCarrierEnvelope`, which the file
+  importer now uses too, so both refuse the same carriers with the same words.
+- **EMF+ is not read**, and the result says so when an EMF flavor is present: ChemDraft has no EMF
+  reader (its only EMF code is the slice 2 preview writer, in Rust), and GVML holds the same media.
+- **Untrusted input.** The archive is refused, with a note in the log, when it is over 32 MB (the
+  native readers refuse it before copying), has more than 200 entries, a part over 25 MB, more than
+  64 MB inflated, a crafted or duplicated entry name, or damaged relationships; the PNG is still read
+  then. Up to 4 KB of zero bytes after the ZIP end record (Windows reports the allocation size) are
+  trimmed. At most 50 pictures are checked; one carrier's JSON may be 8 MB, all together 16 MB.
+- **Precedence.** ChemDraft's own selection flavor wins, as before: with it on the clipboard the
+  native readers do not fetch the archive and paste-back does nothing. A picture without a carrier
+  pastes as a picture, as before. A carrier that is present but unusable (damaged, unknown data
+  version, over the limits) pastes nothing and the status says why.
+- **Chemistry check** (`apps/desktop/src/officePasteBack.ts`): the importer's own,
+  `checkOfficeStructure` then a trial placement with `insertOfficeStructures`. A drawing that fails
+  is not pasted: "The copied structure failed the chemistry check: … Nothing was pasted." One
+  structure pastes like a ChemDraft selection, at the paste position; several are laid out like
+  File ▸ Import Structures, as one undo step. Details go to the log (`[paste-back]`).
+- **Native code** (the same on both platforms; AGENTS.md §1). The clipboard read gains an
+  `officeItems` list: `clipboard_images.rs` names the two archive formats, picks the one to read only
+  when ChemDraft's selection flavor is absent, and checks the 32 MB cap and ZIP signature;
+  `lib.rs` (macOS, `clipboard_office_items`) and `windows_clipboard.rs` (`read_office_items`) each read
+  the one flavor within the shared read budget, checking its size before copying. Linux returns an
+  empty list. The macOS text reader no longer tries GVML as text (`clipboard_limits.rs`). The Office
+  formats in `windows_clipboard.rs` are otherwise unchanged; GVML stays out of the text reader there.
+- Unverified until run on real Office: the exact GVML layout Mac Office writes (the PNG fallback
+  covers a different layout), and that Office renders GVML promptly on request. See
+  `docs/manual-stress-checklist.md`, "Paste back from Word or PowerPoint".
+- Still to do in slice 3: the Windows "Embedded Object" clipboard format and ChemDraft OLE packages.

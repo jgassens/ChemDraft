@@ -438,8 +438,9 @@ pub(crate) mod native {
         ValidatedClipboardItem,
     };
     use crate::clipboard_images::{
-        dib_image_item, png_image_item, svg_image_item, ClipboardImageItem,
-        SkippedClipboardImageItem,
+        dib_image_item, office_archive_item, office_picture_archive_type, png_image_item,
+        svg_image_item, ClipboardImageItem, ClipboardOfficeItem, SkippedClipboardImageItem,
+        MAX_OFFICE_ARCHIVE_BYTES,
     };
     use crate::clipboard_limits::{ClipboardReadBudget, ClipboardReadStep};
     use crate::{is_opaque_clipboard_type, ClipboardReadPayload, ClipboardTextItem};
@@ -708,6 +709,56 @@ pub(crate) mod native {
         }
     }
 
+    /// Office's picture archive for paste-back (the macOS side is `clipboard_office_items` in
+    /// lib.rs). The one Office-rendered format fetched on purpose, and only when ChemDraft's own
+    /// selection is absent: its media keep the carrier the PNG rendition may have dropped.
+    fn read_office_items(
+        types: &[String],
+        budget: &mut ClipboardReadBudget,
+    ) -> Vec<ClipboardOfficeItem> {
+        let Some(source) = office_picture_archive_type(types) else {
+            return Vec::new();
+        };
+        let refused = |reason: String| {
+            eprintln!("Paste-back skipped the Office picture archive: {reason}");
+            Vec::new()
+        };
+        let id = registered(source);
+        // SAFETY: read_payload holds the clipboard open and the ID came from
+        // RegisterClipboardFormatW. The pointer is read only while locked, within GlobalSize.
+        unsafe {
+            if id == 0 || IsClipboardFormatAvailable(id) == 0 {
+                return Vec::new();
+            }
+            let handle = GetClipboardData(id);
+            if handle.is_null() {
+                return refused(format!("Could not read {source} clipboard data"));
+            }
+            let size = GlobalSize(handle as HGLOBAL);
+            if size > MAX_OFFICE_ARCHIVE_BYTES {
+                return refused(format!("{source} is over the 32 MB limit"));
+            }
+            if let Err(reason) = budget.reserve(source, size) {
+                return refused(reason);
+            }
+            let pointer = GlobalLock(handle as HGLOBAL) as *const u8;
+            if pointer.is_null() {
+                budget.release(size);
+                return refused(format!("Could not lock {source} clipboard data"));
+            }
+            // GlobalSize may include padding after the archive; the TypeScript reader trims it.
+            let item = office_archive_item(source, std::slice::from_raw_parts(pointer, size));
+            GlobalUnlock(handle as HGLOBAL);
+            match item {
+                Ok(item) => vec![item],
+                Err(reason) => {
+                    budget.release(size);
+                    refused(reason)
+                }
+            }
+        }
+    }
+
     pub(crate) fn read_payload() -> Result<ClipboardReadPayload, String> {
         let _clipboard = OpenedClipboard::open(std::ptr::null_mut())?;
         let mut types = Vec::new();
@@ -793,12 +844,14 @@ pub(crate) mod native {
             }
         }
         text_items.sort_by_key(|item| types.iter().position(|kind| kind == &item.r#type));
+        let office_items = read_office_items(&types, &mut budget);
         Ok(ClipboardReadPayload {
             types,
             text_items,
             image_items,
             skipped_image_items,
             skipped_items: budget.skipped_items,
+            office_items,
         })
     }
 
