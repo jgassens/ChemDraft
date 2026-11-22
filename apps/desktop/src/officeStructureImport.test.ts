@@ -9,8 +9,8 @@ import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import { depictSmiles2D } from "@chemdraft/ocl-adapter";
 import { buildAppMenuModel, flattenAppMenuCommands, nativeRoutedCommandIds } from "./appMenu";
 import {
-  createPhase4Document, createSelectionClipboardPayload, insertNativeMolfileMolecule, selectionBounds,
-  serializeSelectionClipboardPayload,
+  createPhase4Document, createSelectionClipboardPayload, insertNativeBracket, insertNativeMolfileMolecule, selectDocumentObjects,
+  selectionBounds, serializeSelectionClipboardPayload,
 } from "./documentWorkflow";
 import {
   checkOfficeStructure, IMPORT_OFFICE_STRUCTURES_COMMAND_ID, IMPORT_OFFICE_STRUCTURES_UNDO_LABEL, importOfficeStructuresCommand,
@@ -40,6 +40,24 @@ function structure(json: string, slide: number, picture = slide): OfficeStructur
 
 function result(structures: OfficeStructure[], warnings: OfficeImportResult["warnings"] = []): OfficeImportResult {
   return { kind: "powerpoint", structures, warnings, notes: [], picturesChecked: structures.length + warnings.length };
+}
+
+/** Ethanol inside a bracket pair, everything selected. */
+function bracketedSource(): ChemDraftDocument {
+  let document = insertNativeMolfileMolecule(createPhase4Document(), { x: 200, y: 200 }, depictSmiles2D("CCO").molfile, "molfile-v2000");
+  document = insertNativeBracket(document, { x: 100, y: 100 }, "square", { x: 300, y: 300 });
+  return selectDocumentObjects(document, document.pages[0]!.id, document.pages[0]!.objects.map((object) => object.id));
+}
+
+/**
+ * A bracketed drawing whose brackets also list a member that is not in the carrier, so placing it
+ * cannot keep that membership; `extra` merges into the envelope (for warnings stored in the carrier).
+ */
+function bracketedWithGhostMember(extra: Record<string, unknown> = {}): string {
+  const raw = JSON.parse(serializeSelectionClipboardPayload(createSelectionClipboardPayload(bracketedSource())!)) as
+    { objects: { type: string; containedObjectIds?: string[] }[] };
+  for (const object of raw.objects) if (object.type === "bracket") object.containedObjectIds!.push("ghost");
+  return JSON.stringify({ ...raw, ...extra });
 }
 
 const alanine = drawing("C[C@H]([NH3+])C(=O)[O-]");
@@ -104,6 +122,23 @@ describe("planning an Office import", () => {
       const previous = boxes[index - 1];
       if (previous) expect(box.x).toBeGreaterThanOrEqual(previous.x + previous.width);
     }
+  });
+
+  it("warns, in the status line and the log, when a drawing's bracket data cannot be kept", () => {
+    const carrierWarning = "Bracket bracket_002: preserved cdxmlBracketMembers data was dropped because its complete pair was not copied.";
+    const outcome = planOfficeStructureImport(createPhase4Document(), "Slides.pptx",
+      result([structure(bracketedWithGhostMember({ warnings: [carrierWarning] }), 1), structure(alanine.json, 2)]));
+
+    // The drawing still goes in, as an ordinary paste would, but the loss is not silent (AGENTS.md §7).
+    expect(outcome).toMatchObject({ inserted: 2, skipped: 0 });
+    expect(outcome.message).toBe("Imported 2 structures from Slides.pptx. " +
+      `Warning for the structure on slide 1: ${carrierWarning} 2 more warnings are in the log.`);
+    expect(outcome.details).toEqual([
+      `Warning for the structure on slide 1: ${carrierWarning}`,
+      expect.stringMatching(/^Warning for the structure on slide 1: Bracket \S+: membership ghost was dropped because the object was not copied\.$/),
+      expect.stringMatching(/^Warning for the structure on slide 1: Bracket \S+: membership ghost was dropped because the object was not copied\.$/),
+    ]);
+    expect(molecules(outcome.document!).map(canonical)).toEqual([canonical(molecules(bracketedSource())[0]!), alanine.smiles]);
   });
 
   it("says plainly when no structures were found, or when all were skipped", () => {

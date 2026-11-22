@@ -1,7 +1,7 @@
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import { recoverPasteBackFromClipboard, type ClipboardReadPayload } from "@chemdraft/clipboard-adapter";
 import type { ChemDraftSelectionClipboardPayload } from "./documentWorkflow";
-import { checkOfficeStructure, insertOfficeStructures } from "./officeStructureImport";
+import { checkOfficeStructure, insertOfficeStructures, placementWarnings } from "./officeStructureImport";
 
 /**
  * Paste-back (docs/architecture/office-editing.md, slice 3): paste a ChemDraft structure picture
@@ -64,6 +64,11 @@ export async function officePasteBackDecision(
   details.push(...failures);
 
   const placed = insertion?.placed ?? [];
+  // What placing a drawing could not keep (AGENTS.md §7). One structure is pasted again by the
+  // window's selection paste, which shows the same warnings in its status, so only the log gets
+  // them here; several structures are committed as laid out, so the message carries them.
+  const lost = placementWarnings(placed, (location) => `the structure in ${location}`);
+  details.push(...lost.details);
   const skipped = failures.length + result.refusals.length;
   if (!placed.length) {
     return { kind: "refused", message: `${(failures[0] ?? result.refusals[0]?.message ?? "The copied structure could not be read.").replace(
@@ -76,5 +81,5 @@ export async function officePasteBackDecision(
     return { kind: "selection", payload, message: `Pasted the ChemDraft structure from the copied picture.${skippedNote}`, details };
   }
   return { kind: "document", document: insertion!.document,
-    message: `Pasted ${plural(placed.length, "ChemDraft structure")} from the copied pictures.${skippedNote}`, details };
+    message: `Pasted ${plural(placed.length, "ChemDraft structure")} from the copied pictures.${skippedNote}${lost.message}`, details };
 }

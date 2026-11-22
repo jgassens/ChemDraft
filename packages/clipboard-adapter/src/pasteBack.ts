@@ -5,7 +5,8 @@ import {
   OFFICE_IMPORT_LIMITS, readCarrierEnvelope, unsafeEntryNameReason, type OfficeCarrierWarningReason,
 } from "./officeImport";
 import {
-  isOfficeRelationshipType, officeRelationships, readZip, resolvePartTarget, type OfficeRelationship, type OfficeZipEntry,
+  drawingPictureRelationshipIds, isOfficeRelationshipType, officeRelationships, readZip, resolvePartTarget,
+  type OfficeRelationship, type OfficeZipEntry,
 } from "./officePackage";
 import { CHEMDRAFT_PNG_SELECTION_KEYWORD, readChemDraftSelectionFromPng } from "./pngSelection";
 
@@ -140,26 +141,37 @@ function wantedEntry(name: string): boolean {
 const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
 
 /**
- * The archive's pictures, in the order its drawing lists them: the main part's image
- * relationships. An archive without that layout falls back to every PNG part, by name.
+ * The archive's pictures, one entry per picture in the order its drawing lists them (`a:blip
+ * r:embed` in the main part), so two pictures that share one media part are two entries. A drawing
+ * that names no picture falls back to its image relationships, once each; an archive without that
+ * layout falls back to every PNG part, by name.
  */
 function archivePictureParts(parts: ReadonlyMap<string, OfficeZipEntry>): string[] {
+  const text = (part: string): string | undefined => {
+    const entry = parts.get(part.toLowerCase());
+    return entry && !entry.skipped ? utf8.decode(entry.data) : undefined;
+  };
   const relationshipsOf = (part: string): Map<string, OfficeRelationship> => {
-    const entry = parts.get(relsPartFor(part).toLowerCase());
-    return entry ? officeRelationships(utf8.decode(entry.data)) : new Map();
+    const xml = text(relsPartFor(part));
+    return xml === undefined ? new Map() : officeRelationships(xml);
   };
   const main = [...relationshipsOf("").values()].find((relationship) =>
     !relationship.external && isOfficeRelationshipType(relationship.type, "officeDocument"));
   const mainPart = main ? resolvePartTarget("", main.target) : null;
-  const pictures: string[] = [];
   if (mainPart) {
-    for (const relationship of relationshipsOf(mainPart).values()) {
-      if (relationship.external || !isOfficeRelationshipType(relationship.type, "image")) continue;
+    const relationships = relationshipsOf(mainPart);
+    const imagePart = (relationship: OfficeRelationship | undefined): string[] => {
+      if (!relationship || relationship.external || !isOfficeRelationshipType(relationship.type, "image")) return [];
       const part = resolvePartTarget(folderOf(mainPart), relationship.target);
-      if (part && !pictures.includes(part)) pictures.push(part);
-    }
+      return part ? [part] : [];
+    };
+    const drawing = text(mainPart);
+    const pictures = (drawing === undefined ? [] : drawingPictureRelationshipIds(drawing))
+      .flatMap((id) => imagePart(relationships.get(id)));
+    if (pictures.length) return pictures;
+    const related = [...new Set([...relationships.values()].flatMap(imagePart))];
+    if (related.length) return related;
   }
-  if (pictures.length) return pictures;
   return [...parts.values()].filter((entry) => entry.name.toLowerCase().endsWith(".png"))
     .map((entry) => entry.name).sort();
 }
@@ -250,9 +262,17 @@ export async function recoverPasteBackStructures(
     collected.notes.push(archiveRefusal(options.unreadableArchive));
   }
   let totalJsonBytes = 0;
+  // A media part shared by several pictures is decoded once; each picture still counts against
+  // the size budget, since each becomes a structure of its own.
+  const readByPart = new Map<string, Awaited<ReturnType<typeof readChemDraftSelectionFromPng>>>();
   const readCarrier: CarrierCollector = async (source, format, png, mediaPart) => {
     collected.picturesRead++;
-    const envelope = readCarrierEnvelope(await readChemDraftSelectionFromPng(png), limits.maxCarrierJsonBytes, (jsonBytes) => {
+    let read = mediaPart === undefined ? undefined : readByPart.get(mediaPart);
+    if (!read) {
+      read = await readChemDraftSelectionFromPng(png);
+      if (mediaPart !== undefined) readByPart.set(mediaPart, read);
+    }
+    const envelope = readCarrierEnvelope(read, limits.maxCarrierJsonBytes, (jsonBytes) => {
       if (totalJsonBytes + jsonBytes > limits.maxTotalCarrierJsonBytes) {
         return `was not read: the copied structures together exceed ${Math.round(limits.maxTotalCarrierJsonBytes / (1024 * 1024))} MB.`;
       }

@@ -864,6 +864,28 @@ export function pptxSlidePictureRelationshipIds(slideXml: string): string[] {
   return ids;
 }
 
+// Office's clipboard drawing (GVML): DrawingML pictures, usually inside a locked canvas.
+const understoodDrawingNamespaces: ReadonlySet<string> = new Set([
+  ...DRAWING, ...OFFICE_RELS,
+  TRANSITIONAL + "drawingml/2006/picture", STRICT + "drawingml/picture",
+  TRANSITIONAL + "drawingml/2006/lockedCanvas", STRICT + "drawingml/lockedCanvas",
+]);
+
+/**
+ * Relationship IDs of every embedded picture (`a:blip r:embed`) in a DrawingML part, in document
+ * order and once per occurrence: two pictures that share one image part are two entries. Only the
+ * chosen branch of `mc:AlternateContent` is read, so a picture is not reported twice.
+ */
+export function drawingPictureRelationshipIds(drawingXml: string): string[] {
+  const ids: string[] = [];
+  for (const element of effectiveSlideElements(drawingXml, understoodDrawingNamespaces)) {
+    if (element.local !== "blip" || !DRAWING.includes(element.ns)) continue;
+    const id = namespacedAttr(element, "embed", OFFICE_RELS);
+    if (id) ids.push(id);
+  }
+  return ids;
+}
+
 export interface WordPictureReference {
   relationshipId: string;
   /** 1-based count of paragraphs started before or at the picture, in body order. */

@@ -7,8 +7,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MainWindow } from "./MainWindow";
 import {
-  CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, createPhase4Document, createSelectionClipboardPayload, insertNativeSingleBondMolecule,
-  insertNativeTextObject, serializeSelectionClipboardPayload,
+  CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, createPhase4Document, createSelectionClipboardPayload, insertNativeBracket,
+  insertNativeSingleBondMolecule, insertNativeTextObject, selectDocumentObjects, serializeSelectionClipboardPayload,
 } from "./documentWorkflow";
 import { readClipboardPayload } from "./clipboard";
 import { officePasteBackDecision } from "./officePasteBack";
@@ -105,6 +105,17 @@ const brokenJson = JSON.stringify({ kind: "chemdraft-selection", version: 1, sel
   bounds: { x: 0, y: 0, width: 10, height: 10, centerX: 5, centerY: 5 },
   objects: [{ id: "m", type: "molecule", atoms: [{ id: "a1" }], bonds: [{ id: "b1", from: "a1", to: "missing" }] }] });
 
+/** A bracketed molecule whose brackets also list a member the carrier lacks: placing it drops that membership. */
+function bracketedWithGhostMember(): string {
+  const drawn = insertNativeBracket(molecule(), { x: 250, y: 250 }, "square", { x: 350, y: 350 });
+  const selected = selectDocumentObjects(drawn, drawn.pages[0]!.id, drawn.pages[0]!.objects.map(object => object.id));
+  const raw = JSON.parse(serializeSelectionClipboardPayload(createSelectionClipboardPayload(selected)!)) as
+    { objects: { type: string; containedObjectIds?: string[] }[] };
+  for (const object of raw.objects) if (object.type === "bracket") object.containedObjectIds!.push("ghost");
+  return JSON.stringify(raw);
+}
+const GHOST_WARNING = /Bracket \S+: membership ghost was dropped because the object was not copied\./;
+
 const ARCHIVE_FORMAT = { macos: "com.microsoft.Art--GVML-ClipFormat", windows: "Art::GVML ClipFormat" } as const;
 
 describe.each(["macos", "windows"] as const)("Office paste-back on %s", platform => {
@@ -184,5 +195,23 @@ describe.each(["macos", "windows"] as const)("Office paste-back on %s", platform
     expect(decision.kind === "document" && decision.document.pages[0]!.objects.map(object => object.type)).toEqual(["molecule", "molecule"]);
     const plain = await officePasteBackDecision({ ...read, officeItems: undefined }, () => createPhase4Document());
     expect(plain).toEqual({ kind: "none", details: [expect.stringContaining("EMF")] });
+  });
+
+  it("shows the warning when a copied structure's bracket data cannot be kept", async () => {
+    await pasteInto(officeClipboard(gvml([carrier(bracketedWithGhostMember())])));
+    await vi.waitFor(() => expect(objects().map(object => object.type).sort()).toEqual(["bracket", "bracket", "molecule"]));
+    expect(status()).toContain("Pasted the ChemDraft structure from the copied picture.");
+    expect(status()).toMatch(GHOST_WARNING);
+  });
+
+  it("shows the warning when one of several copied structures loses bracket data", async () => {
+    const read = officeClipboard(gvml([carrier(moleculeJson()), carrier(bracketedWithGhostMember())]));
+    const decision = await officePasteBackDecision(read, () => createPhase4Document());
+    expect(decision.kind).toBe("document");
+    if (decision.kind !== "document") return;
+    expect(decision.document.pages[0]!.objects.map(object => object.type)).toEqual(["molecule", "molecule", "bracket", "bracket"]);
+    expect(decision.message).toMatch(new RegExp(`^Pasted 2 ChemDraft structures from the copied pictures\\. ` +
+      `Warning for the structure in copied picture 2: ${GHOST_WARNING.source} 1 more warning is in the log\\.$`));
+    expect(decision.details).toEqual([expect.stringMatching(GHOST_WARNING), expect.stringMatching(GHOST_WARNING)]);
   });
 });

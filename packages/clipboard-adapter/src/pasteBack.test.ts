@@ -97,6 +97,25 @@ function gvml(media: Uint8Array[], extra: { name: string; data: Uint8Array | str
   ]);
 }
 
+/**
+ * A GVML archive whose drawing lists its pictures explicitly, as Office writes it: `pictures` holds
+ * each picture's `r:embed`, in drawing order; `targets` maps relationship IDs to `clipboard/media/`
+ * parts; `media` holds the PNG parts by name.
+ */
+function gvmlDrawing(pictures: string[], targets: [id: string, name: string][], media: [name: string, data: Uint8Array][]): Uint8Array {
+  const LC = "http://schemas.openxmlformats.org/drawingml/2006/lockedCanvas";
+  const pics = pictures.map((id, index) => `<a:pic><a:nvPicPr><a:cNvPr id="${index + 2}" name="Picture ${index + 1}"/><a:cNvPicPr/></a:nvPicPr>` +
+    `<a:blipFill><a:blip r:embed="${id}"/></a:blipFill><a:spPr/></a:pic>`).join("");
+  return makeZip([
+    { name: "[Content_Types].xml", data: "<Types/>" },
+    { name: "_rels/.rels", data: rels([["rId1", "officeDocument", "clipboard/drawings/drawing1.xml"]]) },
+    { name: "clipboard/drawings/drawing1.xml", deflate: true, data: `<a:graphic xmlns:a="${A}" xmlns:r="${R}">` +
+      `<a:graphicData uri="${LC}"><lc:lockedCanvas xmlns:lc="${LC}">${pics}</lc:lockedCanvas></a:graphicData></a:graphic>` },
+    { name: "clipboard/drawings/_rels/drawing1.xml.rels", data: rels(targets.map(([id, name]) => [id, "image", `../media/${name}`])) },
+    ...media.map(([name, data]) => ({ name: `clipboard/media/${name}`, data })),
+  ]);
+}
+
 const base64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64");
 
 function officeRead(archive: Uint8Array | undefined, png?: Uint8Array, format = GVML): ClipboardReadPayload {
@@ -131,6 +150,36 @@ describe("recoverPasteBackStructures: the Office picture archive", () => {
   it("returns every carrier in drawing order and skips pictures without one", async () => {
     const result = await recoverPasteBackStructures([{ type: GVML, bytes: gvml([carrier(selection("A")), plainPng(), carrier(selection("B"))]) }]);
     expect(result.kind === "found" && result.structures.map((structure) => structure.document.label)).toEqual(["A", "B"]);
+  });
+
+  it("returns one structure per picture when two pictures share one media part", async () => {
+    // PowerPoint stores a picture pasted twice once; both pictures point at the same part.
+    const shared = await recoverPasteBackStructures([{ type: GVML,
+      bytes: gvmlDrawing(["rId1", "rId1"], [["rId1", "image1.png"]], [["image1.png", carrier(selection("A"))]]) }]);
+    expect(shared.kind === "found" && shared.structures.map((structure) => [structure.document.label, structure.mediaPart]))
+      .toEqual([["A", "clipboard/media/image1.png"], ["A", "clipboard/media/image1.png"]]);
+    // Two relationships to one part are two pictures as well.
+    const aliased = await recoverPasteBackStructures([{ type: GVML, bytes: gvmlDrawing(["rId1", "rId2"],
+      [["rId1", "image1.png"], ["rId2", "image1.png"]], [["image1.png", carrier(selection("A"))]]) }]);
+    expect(aliased.kind === "found" && aliased.structures.map((structure) => structure.document.label)).toEqual(["A", "A"]);
+  });
+
+  it("follows the drawing's picture order, not the relationships file's", async () => {
+    const result = await recoverPasteBackStructures([{ type: GVML,
+      bytes: gvmlDrawing(["rId2", "rId1"], [["rId1", "image1.png"], ["rId2", "image2.png"]],
+        [["image1.png", carrier(selection("A"))], ["image2.png", carrier(selection("B"))]]) }]);
+    expect(result.kind === "found" && result.structures.map((structure) => structure.document.label)).toEqual(["B", "A"]);
+  });
+
+  it("counts every occurrence of a shared picture against the picture and size limits", async () => {
+    const archive = gvmlDrawing(["rId1", "rId1", "rId1"], [["rId1", "image1.png"]], [["image1.png", carrier(selection("A"))]]);
+    const capped = await recoverPasteBackStructures([{ type: GVML, bytes: archive }], { limits: { maxPictures: 2 } });
+    expect(capped).toMatchObject({ kind: "found", notes: ["Only the first 2 of 3 copied pictures were checked for ChemDraft data."] });
+    expect(capped.kind === "found" && capped.structures).toHaveLength(2);
+    const bytes = new TextEncoder().encode(selection("A")).length;
+    const budget = await recoverPasteBackStructures([{ type: GVML, bytes: archive }], { limits: { maxTotalCarrierJsonBytes: 2 * bytes } });
+    expect(budget).toMatchObject({ kind: "found", refusals: [{ reason: "too-large", mediaPart: "clipboard/media/image1.png" }] });
+    expect(budget.kind === "found" && budget.structures).toHaveLength(2);
   });
 
   it("reads an archive with Windows allocation padding after its end record", async () => {

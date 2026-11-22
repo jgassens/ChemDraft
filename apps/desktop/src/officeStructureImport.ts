@@ -94,6 +94,12 @@ export function checkOfficeStructure(structure: Pick<OfficeStructure, "json" | "
 export interface PlacedStructure {
   location: string;
   objectIds: string[];
+  /**
+   * What placing it could not keep (bracket membership or crossing references, an explicit
+   * electron-mark association) and the warnings stored with the drawing. The drawing is placed, as
+   * an ordinary paste places it, but the user must be told (AGENTS.md §7).
+   */
+  warnings: string[];
 }
 
 export interface OfficeStructureInsertion {
@@ -109,7 +115,8 @@ const LAYOUT_MARGIN = 36;
  * Insert checked drawings into the first page, left to right in rows that wrap at the page
  * width, below any existing content (or centered on an empty page), without overlap. Every
  * placed molecule is compared with the drawing it came from; a drawing whose chemistry changed
- * on placement is left out and reported. The inserted objects end up selected.
+ * on placement is left out and reported; one that loses other data keeps the paste's warnings. The
+ * inserted objects end up selected.
  */
 export function insertOfficeStructures(
   document: ChemDraftDocument,
@@ -147,9 +154,10 @@ export function insertOfficeStructures(
       const point = { x: left + width / 2, y: top + row.height / 2 };
       left += width + LAYOUT_GAP;
       const before = new Set(current.pages[0]!.objects.map((object) => object.id));
+      const warnings: string[] = [];
       let next: ChemDraftDocument;
       try {
-        next = pasteSelectionClipboardPayload(current, payload, point, []);
+        next = pasteSelectionClipboardPayload(current, payload, point, warnings);
       } catch (error) {
         failed.push({ location, reason: `it could not be placed (${error instanceof Error ? error.message : String(error)})` });
         continue;
@@ -160,13 +168,27 @@ export function insertOfficeStructures(
         failed.push({ location, reason: `its chemistry changed when placed (${changed})` });
         continue;
       }
-      placed.push({ location, objectIds: [...next.selection.objectIds] });
+      placed.push({ location, objectIds: [...next.selection.objectIds], warnings: [...new Set(warnings)] });
       current = next;
     }
     top += row.height + LAYOUT_GAP;
   }
   if (placed.length) current = selectDocumentObjects(current, page.id, placed.flatMap((item) => item.objectIds));
   return { document: current, placed, failed };
+}
+
+/**
+ * The placement warnings: every one for the log, the first (and how many more) for the status
+ * line. `subject` names a drawing by its location, e.g. "the structure on slide 2".
+ */
+export function placementWarnings(
+  placed: readonly PlacedStructure[], subject: (location: string) => string,
+): { message: string; details: string[] } {
+  const details = placed.flatMap(({ location, warnings }) =>
+    warnings.map((warning) => `Warning for ${subject(location)}: ${warning.trim().replace(/\.?$/, ".")}`));
+  const more = details.length - 1;
+  if (more < 0) return { message: "", details };
+  return { message: ` ${details[0]}${more ? ` ${more} more ${more === 1 ? "warning is" : "warnings are"} in the log.` : ""}`, details };
 }
 
 const WARNING_WORDS: Record<OfficeCarrierWarningReason, [one: string, many: string]> = {
@@ -228,8 +250,10 @@ export function planOfficeStructureImport(
   } else {
     message = `No ChemDraft structures were found in ${fileName}. Only pictures placed from ChemDraft can be imported.`;
   }
+  const lost = placementWarnings(insertion?.placed ?? [], (location) => `the structure on ${location}`);
+  message += lost.message;
   if (result.notes.length) message += ` ${result.notes.join(" ")}`;
-  return { message, details: [...details, ...result.notes], document: inserted ? insertion!.document : undefined, inserted, skipped };
+  return { message, details: [...details, ...lost.details, ...result.notes], document: inserted ? insertion!.document : undefined, inserted, skipped };
 }
 
 export interface OfficeImportFile {
