@@ -4,7 +4,7 @@ Status: plan approved by the owner 2026-11-10; revised 2026-11-20 for the one-co
 return trip (owner direction below), and again the same afternoon after the hand-built "MOF-5" turned
 out to be the wrong structure because it was built on one cell (see "MOF-5 correctness" under Test
 results; open question 9, now answered). The new `runCompanion` method widens the security contract, so the
-master session's OK and the Kimi review (condition 3) cover it too. The master session OKed the revised plan, including the `runCompanion` security contract scoped to official catalog plugins (2026-11-20); the usual gates apply when code starts. Questions 1–10 are answered (2026-11-20); questions 11 and 12 are open (2026-11-21). **Kimi plan review, 2026-11-21: not ready for Phase 1 as written; every finding is folded in below** (see "Kimi plan review (2026-11-21)", next section). Target: after ChemDraft 1.2.2 ships (1.2.x has priority; nothing here touches
+master session's OK and the Kimi review (condition 3) cover it too. The master session OKed the revised plan, including the `runCompanion` security contract scoped to official catalog plugins (2026-11-20); the usual gates apply when code starts. Questions 1–10 are answered (2026-11-20); questions 11 and 12 were answered by the owner overnight 2026-11-21. **Kimi plan review: PASS on 2026-11-22** (`run-20261122-120216-0753a8`, after two revisions; see "Kimi plan review (2026-11-21)", next section). The plan is approved; code waits for ChemDraft 1.2.2 to ship and then starts as a 1.2.3/1.3 slice. Target: after ChemDraft 1.2.2 ships (1.2.x has priority; nothing here touches
 `release/1.2-rc` or `main`). Final home of this document: `docs/plans/send-to-crystal-builder.md` on
 local branch `plan/crystal-builder` (see "After approval").
 
@@ -23,8 +23,11 @@ Approved in principle, with these conditions:
    **Consent: resolved, pending Kimi** (master, 2026-11-10). One-time consent per plugin and app is
    accepted, provided (a) every handoff still comes only from a user-started command; (b) the consent
    is listed and revocable in Preferences or the plugin's settings; (c) a different app, or a changed
-   app path or bundle ID, asks again; (d) the loss message box shows every time something would be
-   lost. This settles owner question 2.
+   app path or bundle ID, asks again; (d) the loss message box shows every time something specific
+   would be lost (the "Warn before send" rows in Decision 1); losses inherent to every 3D file
+   (layout, labels, colors, implicit hydrogens made explicit, the vacuum box) are always disclosed
+   in the consent box, the status line after each send, and the file, with no extra box and no
+   checkbox or opt-out (amended 2026-11-22 to match owner question 12). This settles owner question 2.
 4. **Keep §7:** the handoff warns about or refuses charge, stereo, and abbreviation loss, per the
    table in Decision 1.
 
@@ -211,10 +214,8 @@ Provenance goes in CIF comment lines and `_audit_*` items: source SMILES, net ch
 
 "Always disclosed" items (layout, labels, colors, implicit hydrogens made explicit, the vacuum box)
 are inherent to any 3D handoff: they are stated in the one-time consent box, the status line after
-each send, and the file. Master condition 3(d) asks for a box "every time something would be lost";
-owner question 2 chose "a box only when something specific would be lost". These two readings meet
-only if the inherent items count as format behavior, not specific losses; that is question 12, for
-the owner and the master session.
+each send, and the file. They never get a box of their own, and the disclosure has no checkbox or
+opt-out (owner question 12; master condition 3(d) amended to match, 2026-11-22).
 
 "Warn before send" means a native message box listing the specific losses, with **Send** and
 **Cancel**. With nothing specific to warn about, the send proceeds without a box (after the one-time
@@ -321,7 +322,7 @@ pipeline in Decision 3, rule 14) and the plugin compares:
 plugin uses one generic rule: build with the chosen combination; the host parses the "Joint twist left" row **fail closed** (missing,
 malformed, or non-numeric counts as "not zero"); if it is not zero, the result box says so with the
 number and, when the combination declares `rebuildAs`, offers **Rebuild at 2×2×2**, a new
-host-authenticated user action that rebuilds exactly the first input (rules 2 and 16) (question 11, option (b), recommended by the conductor and by Kimi). A failed
+host-authenticated user action that rebuilds exactly the first input (rules 2 and 16) (question 11, option (b): owner decision, 2026-11-21). A failed
 rebuild never names or reopens the first output as if it were the answer. A twist of zero is
 necessary, not sufficient: naming still needs the full target check above. The repeat is **not
 hard-coded per MOF** (`docs/plans/notes/crystal-builder-0.4-source-map.md`); the per-material
@@ -805,13 +806,15 @@ For the owner:
    new command invocation; (c) keep presetting the repeat per table row and use the twist only to
    refuse the name. Recommended: (b), because every build stays one user action. The Kimi review
    (2026-11-21) also recommends (b), as a new host-authenticated user action with rule 3 unchanged;
-   the plan is now written for (b) (task 1H). **Owner to confirm.**
+   the plan is now written for (b) (task 1H). **Answered (owner, 2026-11-21 overnight): (b), the
+   Rebuild button,** run by Rust from its result session (rule 16).
 12. **Inherent format losses and master condition 3(d) (new, 2026-11-21, from the Kimi review).**
    Layout, labels, colors, implicit hydrogens made explicit, and the vacuum box are lost on every send
    by the nature of a 3D file. Owner question 2 chose a box only for specific losses; condition 3(d)
    reads as a box whenever anything is lost. Recommended: treat these as format behavior, always
-   disclosed in the consent box, status line, and file, and amend condition 3(d) to say so. **Owner
-   and master session to confirm.**
+   disclosed in the consent box, status line, and file, and amend condition 3(d) to say so.
+   **Answered (owner, 2026-11-21 overnight): always disclose the inherent losses, with no checkbox or
+   opt-out box.** Condition 3(d) is amended to match (2026-11-22).
 
 For Crystal Builder's author: **nothing required.** No email is needed for the plan (owner, 2026-11-18); question 10 was answered no contact (owner, 2026-11-20). A1–A4 and A6 were
 answered by testing on macOS and by reading its MIT source (see "Test results" under Decision 1b).
