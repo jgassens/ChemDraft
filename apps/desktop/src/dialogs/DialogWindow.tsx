@@ -272,7 +272,14 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
       onCopy={() => sendDialogMessage(hostId, { ...dialogEnvelope(snapshot), requestId: crypto.randomUUID(), type: "action", data: { action: "copyVersion" } })} />
   </Suspense>;
   if (snapshot.dialogKind === "guidedTour") return <Suspense fallback={<p>Opening tour…</p>}>
-    <TourForm scheme={snapshot.data.scheme} plugins={snapshot.data.plugins} onReady={reportReady} busy={busy} error={error} onAction={sendAction} />
+    <TourForm scheme={snapshot.data.scheme} plugins={snapshot.data.plugins} onReady={reportReady} busy={busy} error={error}
+      onAction={action => {
+        if (action.action !== "openGuide") { sendAction(action); return; }
+        // Rust opens the guide in the system browser. It is not a pending action and never reaches the owner.
+        setError(undefined);
+        void sendDialogMessage(hostId, { ...dialogEnvelope(snapshot), requestId: crypto.randomUUID(), type: "action", data: action })
+          .catch(e => setError(String(e)));
+      }} />
   </Suspense>;
   if (snapshot.dialogKind === "vibeCodeGuide") return <Suspense fallback={<p>Opening guide…</p>}><VibeCodeGuideForm onReady={reportReady} onAction={action => sendAction({ action })} /></Suspense>;
   if (snapshot.dialogKind === "structureTemplates") return <Suspense fallback={<p role="status">Opening Templates…</p>}>

@@ -10,6 +10,11 @@ export const TOUR_INSPECTOR_COMMAND = "analyze.molecularProperties";
 
 export const TOUR_TITLE = "Take the Tour";
 
+/** Where to learn to write a plugin, linked from the plugins card. The native tour window opens only
+ *  this exact address, in the system browser (`GUIDED_TOUR_GUIDE_URL` in `src-tauri/src/dialog_windows.rs`
+ *  must stay equal to it; a test compares them). */
+export const PLUGIN_AUTHORING_GUIDE_URL = "https://github.com/jgassens/ChemDraft/blob/main/docs/plugin-architecture/AUTHORING.md";
+
 export type TourTryCommand = typeof TOUR_SAMPLE_COMMAND | typeof TOUR_NAME_COMMAND | typeof TOUR_INSPECTOR_COMMAND | typeof KEYBOARD_PREFERENCES_COMMAND_ID;
 
 /** Every plugin command a tour step teaches. Each one comes from an official plugin that may not be
@@ -30,4 +35,7 @@ export function availableTourPluginCommands(menuItems: readonly PluginAppMenuIte
 export type TourAction =
   | { action: "cancel" | "finish" }
   | { action: "chooseShortcuts"; scheme: KeybindingScheme }
-  | { action: "tryTourCommand"; command: TourTryCommand };
+  | { action: "tryTourCommand"; command: TourTryCommand }
+  /** Open the plugin authoring guide in the system browser. The native host handles this itself and
+   *  never relays it to the document window. */
+  | { action: "openGuide"; url: typeof PLUGIN_AUTHORING_GUIDE_URL };

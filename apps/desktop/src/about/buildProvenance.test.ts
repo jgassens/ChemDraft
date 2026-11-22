@@ -59,7 +59,11 @@ describe("About provenance", () => {
       expect.objectContaining({ name: "FreeType 2.13.3 (inside the RDKit MinimalLib WASM)", version: "2.13.3", license: expect.stringContaining("elected: FTL") }),
       expect.objectContaining({ name: "zlib 1.3.2 (inside the RDKit MinimalLib WASM)", version: "1.3.2" }),
       expect.objectContaining({ name: "Telex Regular (font embedded in the RDKit MinimalLib WASM)", license: expect.stringContaining("SIL Open Font License") }),
-      expect.objectContaining({ name: "avogadrolibs (Avogadro Core + Calc)", version: "416651ddaef33a4e20392392e7c0b505d446491b" })
+      expect.objectContaining({ name: "avogadrolibs (Avogadro Core + Calc)", version: "416651ddaef33a4e20392392e7c0b505d446491b" }),
+      expect.objectContaining({
+        name: "CppNumericalSolvers (cppoptlib)", license: expect.stringContaining("MIT"),
+        licenseText: "native/avogadro3d-sidecar/licenses/cppoptlib-LICENSE.txt"
+      })
     ]));
     for (const component of provenance.components) {
       expect(component.purpose).toBeTruthy();
@@ -89,6 +93,7 @@ describe("About provenance", () => {
     expect(holders("@tanstack/react-hotkeys")).toBe("Copyright (c) 2026 Tanner Linsley");
     // Never invented: a holder is absent where no record names one.
     expect(holders("Eigen 3.4.0")).toBe(SEE_LICENSE);
+    expect(holders("CppNumericalSolvers (cppoptlib)")).toContain("Patrick Wieschollek");
     // From the committed holderData.json, so the same on a host with no install.
     expect(holders("react")).toMatch(/Meta Platforms/);
     expect(holders("zod")).toMatch(/Colin McDonnell/);

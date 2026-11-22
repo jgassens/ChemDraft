@@ -327,6 +327,9 @@ export class DialogCoordinator {
     }
     if (session.snapshot.dialogKind === "guidedTour") {
       const data = message.data as TourAction;
+      // The native host opens the guide link itself and never relays it; should one arrive, it is not
+      // the owner's to act on.
+      if (data.action === "openGuide") return;
       if (session.receipts.has(message.requestId)) return;
       const receipt: DialogMessage = { ...dialogEnvelope(message), type: "result", data: { status: "cancelled" } };
       session.receipts.set(message.requestId, receipt);

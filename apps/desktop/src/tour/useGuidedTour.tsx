@@ -5,7 +5,7 @@ import type { DialogCoordinator } from "../dialogs/DialogCoordinator";
 import type { KeybindingScheme } from "../keybindingSettings";
 import { updateShortcutPreference } from "../useShortcutPreference";
 import { isDesktopRuntime } from "../window-manager";
-import { TOUR_NAME_COMMAND, TOUR_SAMPLE_COMMAND, type TourAction, type TourPluginCommand } from "./tourCommands";
+import { PLUGIN_AUTHORING_GUIDE_URL, TOUR_NAME_COMMAND, TOUR_SAMPLE_COMMAND, type TourAction, type TourPluginCommand } from "./tourCommands";
 import { saveTourSeen, useAutomaticTour, type TourMode } from "./tourState";
 
 const TourForm = lazy(() => import("./TourForm").then(module => ({ default: module.TourForm })));
@@ -72,6 +72,12 @@ export function useGuidedTour(options: {
           await commands.invoke(TOUR_SAMPLE_COMMAND);
         }
         await commands.invoke(action.command);
+        break;
+      case "openGuide":
+        // On the desktop the native tour window opens the guide itself (Rust checks the address); the
+        // owner never receives this. In the browser build the tour is part of this page.
+        if (isDesktopRuntime() || action.url !== PLUGIN_AUTHORING_GUIDE_URL) throw new Error("The tour could not open the plugin authoring guide.");
+        window.open(PLUGIN_AUTHORING_GUIDE_URL, "_blank", "noopener,noreferrer");
         break;
     }
   };

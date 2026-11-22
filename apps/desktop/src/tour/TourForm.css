@@ -7,10 +7,53 @@
   font: 14px/1.45 system-ui, sans-serif;
 }
 
+/* content-box: the reserve and the ceiling TourForm sets (max-height) are the text's own height, without
+   the padding, so they agree with the reserving float below. */
 .guided-tour-content {
+  box-sizing: content-box;
   flex: 1 1 0;
   overflow: auto;
   padding: 22px 24px;
+}
+
+/* Reserves the tallest step's height (measured by TourForm) without wrapping the step's content: the
+   scroll container is a block formatting context, so it grows to contain this zero-width float. The
+   native host measures that height, so every step fits and the window never jumps between steps. */
+.guided-tour-content::before {
+  content: "";
+  float: left;
+  width: 0;
+  height: var(--guided-tour-step-reserve, 0px);
+}
+
+/* Hidden copies of every step, measured in the same width, then removed before paint. */
+.guided-tour-sizer {
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.guided-tour-sizer-step {
+  display: flow-root;
+}
+
+/* Step actions never scroll: Try it and its error sit between the step's text and the footer. */
+/* margin-top: auto keeps the actions and footer at the bottom of a window taller than the capped text. */
+.guided-tour-actions {
+  display: flex;
+  flex: none;
+  margin-top: auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  box-sizing: border-box;
+  padding: 4px 24px 12px;
+}
+
+.guided-tour-actions p {
+  flex: 1 1 200px;
+  margin: 0;
 }
 
 .guided-tour h1 {
@@ -100,4 +143,14 @@
   overflow-wrap: anywhere;
   user-select: text;
   -webkit-user-select: text;
+}
+
+.guided-tour-url a {
+  color: #154c8f;
+}
+
+.guided-tour-url a:focus-visible {
+  outline: 2px solid #154c8f;
+  outline-offset: 2px;
+  border-radius: 2px;
 }

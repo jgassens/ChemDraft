@@ -63,9 +63,11 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             maximizable: false,
             resizable: true,
             title: "Take the Tour",
+            // Height before ready, and the fallback without a measurement. TourForm reserves its
+            // tallest step, so ready's height fits every step and Try it never falls below the fold.
             size: (520.0, 375.0),
             min_size: (360.0, 260.0),
-            fit_content: false,
+            fit_content: true,
             preserve_user_frame: false,
         }),
         "vibeCodeGuide" => Ok(DialogKindSpec {
@@ -246,6 +248,72 @@ enum GuidedTourAction {
         #[serde(rename = "command")]
         _command: GuidedTourCommand,
     },
+    /// The plugins card's link. Handled here, never relayed to the owner, and opened only when
+    /// `url` is exactly `GUIDED_TOUR_GUIDE_URL` (`open_guided_tour_guide`).
+    OpenGuide {
+        url: String,
+    },
+}
+
+/// The one web address the guided tour may open: the plugin authoring guide its plugins card
+/// shows. Keep it equal to `PLUGIN_AUTHORING_GUIDE_URL` in `tour/tourCommands.ts` (a TypeScript test
+/// compares them).
+const GUIDED_TOUR_GUIDE_URL: &str =
+    "https://github.com/jgassens/ChemDraft/blob/main/docs/plugin-architecture/AUTHORING.md";
+
+/// Opens the plugin authoring guide in the system browser through `open`, never in the tour's
+/// webview. Any address other than exactly `GUIDED_TOUR_GUIDE_URL` is refused and logged.
+fn open_guided_tour_guide(
+    url: &str,
+    open: impl FnOnce(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    if url != GUIDED_TOUR_GUIDE_URL {
+        eprintln!("Refused a guided tour link that is not the plugin authoring guide: {url:?}");
+        return Err("The tour can open only the plugin authoring guide.".into());
+    }
+    open(GUIDED_TOUR_GUIDE_URL).map_err(|error| {
+        eprintln!("Could not open the plugin authoring guide: {error}");
+        format!("Could not open the plugin authoring guide in your browser: {error}")
+    })
+}
+
+/// The scheme and host the app document is served from, as `installed_plugins::APP_ORIGIN`: the
+/// custom scheme on macOS and Linux, and `http://tauri.localhost` on Windows (WebView2).
+#[cfg(not(windows))]
+const APP_DOCUMENT_ORIGIN: (&str, &str) = ("tauri", "localhost");
+#[cfg(windows)]
+const APP_DOCUMENT_ORIGIN: (&str, &str) = ("http", "tauri.localhost");
+
+/// Whether the guided tour's webview may load `target`: only the app's own document, on
+/// `app_origin` (scheme, host) or, in a development build, on the dev server's origin `dev_url`.
+/// Every other address, the plugin authoring guide included, is refused: the guide opens only in
+/// the system browser through `open_guided_tour_guide`, never by navigating the tour (a dropped or
+/// otherwise followed link).
+fn guided_tour_navigation_allowed(
+    target: &tauri::Url,
+    app_origin: (&str, &str),
+    dev_url: Option<&tauri::Url>,
+) -> bool {
+    if !target.username().is_empty() || target.password().is_some() {
+        return false;
+    }
+    let app = target.scheme() == app_origin.0
+        && target.host_str() == Some(app_origin.1)
+        && target.port().is_none();
+    let dev = dev_url.is_some_and(|dev| {
+        target.scheme() == dev.scheme()
+            && target.host_str().is_some()
+            && target.host_str() == dev.host_str()
+            && target.port_or_known_default() == dev.port_or_known_default()
+    });
+    app || dev
+}
+
+/// The guided tour's answer to a request for a new window (a middle-click, modified click or
+/// `target` link): never a new webview. Only the exact plugin authoring guide address opens, in the
+/// system browser through `open_guided_tour_guide`; anything else is refused and logged there.
+fn guided_tour_new_window(target: &tauri::Url, open: impl FnOnce(&str) -> Result<(), String>) {
+    let _ = open_guided_tour_guide(target.as_str(), open);
 }
 
 #[derive(Deserialize)]
@@ -1904,6 +1972,28 @@ pub(crate) async fn dialog_open(
             }
             tauri::webview::NewWindowResponse::Deny
         })
+    } else if message.dialog_kind == "guidedTour" {
+        // The tour shows only the app's own document. Its guide link opens through `dialog_send`
+        // (`open_guided_tour_guide`); dragging, middle-clicking or modified-clicking the link must
+        // not load the guide, or anything else, in this window or in a new one.
+        let dev_url = if tauri::is_dev() {
+            app.config().build.dev_url.clone()
+        } else {
+            None
+        };
+        builder
+            .on_navigation(move |url| {
+                let allowed =
+                    guided_tour_navigation_allowed(url, APP_DOCUMENT_ORIGIN, dev_url.as_ref());
+                if !allowed {
+                    eprintln!("Refused a guided tour navigation away from the app: {url}");
+                }
+                allowed
+            })
+            .on_new_window(|url, _| {
+                guided_tour_new_window(&url, super::problem_reports::open_external_address);
+                tauri::webview::NewWindowResponse::Deny
+            })
     } else {
         builder
     };
@@ -2036,6 +2126,20 @@ pub(crate) async fn dialog_send(
                         required: true,
                     }],
                 )?);
+            }
+            if message.dialog_kind == "guidedTour" {
+                if let Ok(GuidedTourAction::OpenGuide { url }) =
+                    serde_json::from_value::<GuidedTourAction>(message.data.clone())
+                {
+                    // The link opens in the system browser and is not a terminal action: it
+                    // reserves nothing and never reaches the owner.
+                    drop(registry);
+                    drop(creation);
+                    return open_guided_tour_guide(
+                        &url,
+                        super::problem_reports::open_external_address,
+                    );
+                }
             }
             if let Some(receipt) = session.receipts.get(&message.request_id) {
                 return send_host(session, receipt);
@@ -5629,6 +5733,8 @@ mod tests {
     fn guided_tour_is_a_resizable_modeless_kind_with_typed_actions() {
         let spec = kind_spec("guidedTour").unwrap();
         assert!(spec.resizable && !spec.maximizable);
+        // Sized to the tallest step's measured content, clamped to the work area.
+        assert!(spec.fit_content && !spec.preserve_user_frame);
         assert_eq!(
             native_window_title("guidedTour", spec.title, spec.title),
             "Take the Tour"
@@ -5701,6 +5807,165 @@ mod tests {
         }
         message.data = json!({"action":"tryTourCommand","command":"document.save"});
         assert!(message.validate().is_err());
+    }
+
+    #[test]
+    fn guided_tour_opens_only_the_plugin_authoring_guide() {
+        let mut message = snapshot();
+        message.dialog_kind = "guidedTour".into();
+        message.message_type = "action".into();
+        message.data = json!({"action":"openGuide","url":GUIDED_TOUR_GUIDE_URL});
+        assert_eq!(message.validate(), Ok(()));
+        for data in [
+            json!({"action":"openGuide"}),
+            json!({"action":"openGuide","url":1}),
+            json!({"action":"openGuide","url":GUIDED_TOUR_GUIDE_URL,"extra":true}),
+        ] {
+            message.data = data.clone();
+            assert!(message.validate().is_err(), "{data}");
+        }
+
+        let mut opened = Vec::new();
+        assert_eq!(
+            open_guided_tour_guide(GUIDED_TOUR_GUIDE_URL, |url| {
+                opened.push(url.to_string());
+                Ok(())
+            }),
+            Ok(())
+        );
+        assert_eq!(opened, [GUIDED_TOUR_GUIDE_URL]);
+        assert!(
+            open_guided_tour_guide(GUIDED_TOUR_GUIDE_URL, |_| Err("no opener".into()))
+                .is_err_and(|error| error.contains("no opener"))
+        );
+
+        let lookalikes = [
+            format!("{GUIDED_TOUR_GUIDE_URL}/extra"),
+            format!("{GUIDED_TOUR_GUIDE_URL}?x=1"),
+            format!("{GUIDED_TOUR_GUIDE_URL}#top"),
+            format!("{GUIDED_TOUR_GUIDE_URL} "),
+            GUIDED_TOUR_GUIDE_URL.replace("https://", "http://"),
+            GUIDED_TOUR_GUIDE_URL.replace("github.com", "github.com.example.net"),
+            GUIDED_TOUR_GUIDE_URL.replace("github.com", "evil.example"),
+            GUIDED_TOUR_GUIDE_URL.replace("https://github.com", "https://user@github.com"),
+            GUIDED_TOUR_GUIDE_URL.to_uppercase(),
+            "file:///etc/passwd".to_string(),
+            String::new(),
+        ];
+        for url in lookalikes {
+            let mut called = false;
+            assert!(
+                open_guided_tour_guide(&url, |_| {
+                    called = true;
+                    Ok(())
+                })
+                .is_err(),
+                "{url}"
+            );
+            assert!(!called, "{url}");
+        }
+    }
+
+    #[test]
+    fn guided_tour_window_stays_on_the_app_document_on_every_platform() {
+        let url = |text: &str| tauri::Url::parse(text).expect(text);
+        let dev = url("http://127.0.0.1:5174");
+        // macOS and Linux serve the app from its custom scheme; Windows (WebView2) from http.
+        for (origin, own, other) in [
+            (
+                ("tauri", "localhost"),
+                "tauri://localhost/?window=dialog&hostId=h",
+                "http://tauri.localhost/?window=dialog&hostId=h",
+            ),
+            (
+                ("http", "tauri.localhost"),
+                "http://tauri.localhost/?window=dialog&hostId=h",
+                "tauri://localhost/?window=dialog&hostId=h",
+            ),
+        ] {
+            assert!(
+                guided_tour_navigation_allowed(&url(own), origin, None),
+                "{own}"
+            );
+            assert!(
+                guided_tour_navigation_allowed(&url(own), origin, Some(&dev)),
+                "{own}"
+            );
+            assert!(
+                !guided_tour_navigation_allowed(&url(other), origin, None),
+                "{other}"
+            );
+            // The dev server's own origin is allowed only when this is a development build.
+            let served = "http://127.0.0.1:5174/?window=dialog&hostId=h";
+            assert!(guided_tour_navigation_allowed(
+                &url(served),
+                origin,
+                Some(&dev)
+            ));
+            assert!(!guided_tour_navigation_allowed(&url(served), origin, None));
+            for refused in [
+                GUIDED_TOUR_GUIDE_URL,
+                "https://github.com/",
+                "http://example.com/",
+                "https://tauri.localhost/",
+                "tauri://localhost.example/",
+                "tauri://localhost:8080/",
+                "http://tauri.localhost:8080/",
+                "tauri://user@localhost/",
+                "http://user:pw@tauri.localhost/",
+                "http://127.0.0.1:5173/",
+                "http://localhost:5174/",
+                "https://127.0.0.1:5174/",
+                "file:///etc/passwd",
+                "about:blank",
+                "data:text/html,hi",
+                "javascript:alert(1)",
+            ] {
+                assert!(
+                    !guided_tour_navigation_allowed(&url(refused), origin, Some(&dev)),
+                    "{refused}"
+                );
+            }
+        }
+        // The platform's own constant agrees with the origin installed plugins are served from.
+        let own = format!("{}://{}/", APP_DOCUMENT_ORIGIN.0, APP_DOCUMENT_ORIGIN.1);
+        assert!(guided_tour_navigation_allowed(
+            &url(&own),
+            APP_DOCUMENT_ORIGIN,
+            None
+        ));
+        #[cfg(windows)]
+        assert_eq!(own, "http://tauri.localhost/");
+        #[cfg(not(windows))]
+        assert_eq!(own, "tauri://localhost/");
+    }
+
+    #[test]
+    fn guided_tour_new_windows_open_only_the_guide_in_the_system_browser() {
+        let url = |text: &str| tauri::Url::parse(text).expect(text);
+        let mut opened = Vec::new();
+        guided_tour_new_window(&url(GUIDED_TOUR_GUIDE_URL), |address| {
+            opened.push(address.to_string());
+            Ok(())
+        });
+        assert_eq!(opened, [GUIDED_TOUR_GUIDE_URL]);
+        // A failing opener is logged, never a panic.
+        guided_tour_new_window(&url(GUIDED_TOUR_GUIDE_URL), |_| Err("no opener".into()));
+        for refused in [
+            format!("{GUIDED_TOUR_GUIDE_URL}?x=1"),
+            format!("{GUIDED_TOUR_GUIDE_URL}#top"),
+            GUIDED_TOUR_GUIDE_URL.replace("https://", "http://"),
+            "https://example.com/".to_string(),
+            "tauri://localhost/".to_string(),
+            "file:///etc/passwd".to_string(),
+        ] {
+            let mut called = false;
+            guided_tour_new_window(&url(&refused), |_| {
+                called = true;
+                Ok(())
+            });
+            assert!(!called, "{refused}");
+        }
     }
 
     #[test]
