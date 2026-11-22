@@ -1871,8 +1871,9 @@ Run under KDE Plasma (Wayland session, so the app uses XWayland) from a terminal
   `<- event coordinatesChanged reason=settle`, each answered by `<- response ok`.
 - Arrow keys and typing a number (for example "90" then Enter) with the canvas focused do not
   rotate the 3D view: Interactive 3D has no keyboard rotation on any platform. They must not
-  change the drawing either; Esc still closes the view with "Spin canceled" and the original 2D
-  drawing.
+  change the drawing either; Esc still closes the view with "Interactive 3D canceled" (never
+  "Spin canceled") and the original 2D drawing. Open Spin 3D (bottom row of Main) on the same
+  molecule and press Esc: that one says "Spin canceled", and the drawing is unchanged too.
 - Click outside the selection box: the view flattens to the rotated perspective as one undo step.
   Repeat with `C[C@H](O)CC` ((S)-butan-2-ol, one wedged stereocenter): rotate, pull and flatten,
   and the Molecular Inspector still reports (S) afterwards.
