@@ -1339,7 +1339,8 @@ struct ClipboardReadPayload {
     skipped_image_items: Vec<SkippedClipboardImageItem>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     skipped_items: Vec<clipboard_limits::SkippedClipboardItem>,
-    /// Office's picture archive (GVML) for paste-back; empty unless an Office picture was copied.
+    /// Paste-back data: a copied ChemDraft OLE object's drawing (Windows only) or else Office's
+    /// picture archive (GVML); empty unless an Office picture or object was copied.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     office_items: Vec<clipboard_images::ClipboardOfficeItem>,
 }
@@ -8076,6 +8077,7 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
 }
 
 /// Office's picture archive for paste-back (the Windows side is `windows_clipboard::native`).
+/// The macOS pasteboard has no OLE "Embedded Object", so there is no embedded object to read.
 #[cfg(target_os = "macos")]
 fn clipboard_office_items(
     pasteboard: &NSPasteboard,

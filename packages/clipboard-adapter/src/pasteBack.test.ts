@@ -280,3 +280,80 @@ describe("recoverPasteBackFromClipboard", () => {
     expect(result.kind === "none" && result.message).toContain("exceeds the 64-byte limit");
   });
 });
+
+describe("paste-back of a copied ChemDraft OLE object (Windows)", () => {
+  const STABLE = "{CE37136C-13F0-4A5A-954F-0EF6DFE359D0}";
+  const DEV = "{8D23DEDA-8B23-4D62-BEEC-6C6168D48BB4}";
+  const EQUATION = "{0002CE02-0000-0000-C000-000000000046}";
+  const text = (json: string) => new TextEncoder().encode(json);
+  const object = (json: string, clsid: string | null = STABLE, type = "Embedded Object") =>
+    ({ type, bytes: text(json), ...clsid === null ? {} : { clsid } });
+
+  it("prefers a ChemDraft object over the picture archive and the PNG, and reads neither", async () => {
+    const result = await recoverPasteBackStructures([
+      { type: "PNG", bytes: carrier(selection("P")) },
+      { type: GVML, bytes: new Uint8Array([1, 2, 3]) }, // an unreadable archive would leave a note
+      object(selection("O")),
+    ]);
+    expect(result).toEqual({ kind: "found", refusals: [], notes: [], structures: [
+      { source: "embedded-object", format: "Embedded Object", json: selection("O"), document: JSON.parse(selection("O")) },
+    ] });
+  });
+
+  it.each([
+    ["the dev build's class", DEV, "Embed Source"],
+    ["a class in lower case without braces", STABLE.slice(1, -1).toLowerCase(), "Embedded Object"],
+  ])("reads %s", async (_, clsid, type) => {
+    const result = await recoverPasteBackStructures([object(selection("O"), clsid, type), { type: GVML, bytes: gvml([carrier(selection("A"))]) }]);
+    expect(result.kind === "found" && result.structures.map((structure) => [structure.source, structure.format])).toEqual([["embedded-object", type]]);
+  });
+
+  it.each([
+    ["another program's object", EQUATION],
+    ["an object without a class", null],
+    ["the nil class", "{00000000-0000-0000-0000-000000000000}"],
+  ])("ignores %s and falls through to the archive, then the PNG", async (_, clsid) => {
+    const archive = await recoverPasteBackStructures([object(selection("O"), clsid), { type: GVML, bytes: gvml([carrier(selection("A"))]) },
+      { type: "PNG", bytes: carrier(selection("P")) }]);
+    expect(archive.kind === "found" && archive.structures.map((structure) => [structure.source, structure.document.label])).toEqual([["office-archive", "A"]]);
+    const png = await recoverPasteBackStructures([object(selection("O"), clsid), { type: "PNG", bytes: carrier(selection("P")) }]);
+    expect(png.kind === "found" && png.structures.map((structure) => [structure.source, structure.document.label])).toEqual([["png", "P"]]);
+    expect(await recoverPasteBackStructures([object("not even JSON", clsid)])).toMatchObject({ kind: "none", reason: "no-pictures" });
+  });
+
+  it("refuses a ChemDraft object with damaged, unknown-version or oversized data, with the carrier's words", async () => {
+    const damagedJson = await recoverPasteBackStructures([object("{\"kind\":")]);
+    expect(damagedJson).toMatchObject({ kind: "refused", refusals: [{ source: "embedded-object", format: "Embedded Object", reason: "malformed" }] });
+    expect(damagedJson.kind === "refused" && damagedJson.message).toBe("The copied structure has damaged ChemDraft data: it is not valid JSON.");
+    const notUtf8 = await recoverPasteBackStructures([{ type: "Embedded Object", clsid: STABLE, bytes: new Uint8Array([0xff, 0xfe]) }]);
+    expect(notUtf8.kind === "refused" && notUtf8.message).toBe("The copied structure has damaged ChemDraft data: the object's drawing is not UTF-8 text");
+    const newer = await recoverPasteBackStructures([object(selection("O", { version: 2 }))]);
+    expect(newer.kind === "refused" && newer.message).toBe("The copied structure was made by a newer or unknown ChemDraft (data version 2).");
+    const large = await recoverPasteBackStructures([object(selection("O"))], { limits: { maxCarrierJsonBytes: 10 } });
+    expect(large).toMatchObject({ kind: "refused", refusals: [{ reason: "too-large", source: "embedded-object" }] });
+    // An unusable object does not hide a good carrier in the same copy; the refusal is still reported.
+    const fallback = await recoverPasteBackStructures([object(selection("O", { version: 2 })), { type: GVML, bytes: gvml([carrier(selection("A"))]) }]);
+    expect(fallback).toMatchObject({ kind: "found", refusals: [{ source: "embedded-object", reason: "unknown-version" }],
+      structures: [{ source: "office-archive" }] });
+  });
+
+  it("decodes the native read's object, which only a ChemDraft class may supply", async () => {
+    const read = (clsid: string | undefined): ClipboardReadPayload => ({
+      types: ["Object Descriptor", "Embedded Object", GVML, "PNG", "image/emf"], textItems: [],
+      officeItems: [{ type: "Embedded Object", bytesBase64: base64(text(selection("O"))), ...clsid === undefined ? {} : { clsid } }],
+      imageItems: [{ type: "image/png", bytesBase64: base64(carrier(selection("P"))) }],
+    });
+    const found = await recoverPasteBackFromClipboard(read(STABLE));
+    expect(found.kind === "found" && found.structures).toEqual([
+      { source: "embedded-object", format: "Embedded Object", json: selection("O"), document: JSON.parse(selection("O")) },
+    ]);
+    for (const clsid of [EQUATION, undefined]) {
+      const other = await recoverPasteBackFromClipboard(read(clsid));
+      expect(other.kind === "found" && other.structures.map((structure) => structure.source)).toEqual(["png"]);
+    }
+    const native = await recoverPasteBackFromClipboard({ ...read(STABLE), types: [CHEMDRAFT_PNG_SELECTION_KEYWORD, ...read(STABLE).types] });
+    expect(native).toMatchObject({ kind: "none", reason: "native-data" });
+    const broken = await recoverPasteBackFromClipboard({ ...read(STABLE), officeItems: [{ type: "Embedded Object", clsid: STABLE, bytesBase64: "*" }] });
+    expect(broken).toMatchObject({ kind: "found", refusals: [{ source: "embedded-object", reason: "malformed" }], structures: [{ source: "png" }] });
+  });
+});

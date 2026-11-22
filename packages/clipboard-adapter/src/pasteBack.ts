@@ -2,8 +2,9 @@ import { MAX_IMAGE_OBJECT_BYTES } from "@chemdraft/chem-core";
 import { decodeBase64Bounded } from "./carrierBytes";
 import type { ClipboardReadPayload } from "./index";
 import {
-  OFFICE_IMPORT_LIMITS, readCarrierEnvelope, unsafeEntryNameReason, type OfficeCarrierWarningReason,
+  OFFICE_IMPORT_LIMITS, readCarrierEnvelope, unsafeEntryNameReason, type CarrierText, type OfficeCarrierWarningReason,
 } from "./officeImport";
+import { isChemDraftOleClassId } from "./oleObject";
 import {
   drawingPictureRelationshipIds, folderOf, isOfficeRelationshipType, officeRelationships, readZip, relsPartFor, resolvePartTarget,
   type OfficeRelationship, type OfficeZipEntry,
@@ -16,15 +17,22 @@ import { CHEMDRAFT_PNG_SELECTION_KEYWORD, readChemDraftSelectionFromPng } from "
  * re-encoded without the carrier chunk, but its picture archive (GVML, a ZIP) keeps the original
  * media bytes. Pure and bounded: the clipboard is untrusted input. Reads, in order:
  *
- * 1. The GVML archive, with the slice 0 ZIP and relationship readers and the carrier reader.
- * 2. The PNG rendition, with the same carrier reader (ChemDraft's own PNG, or Office's when it kept
+ * 1. A copied ChemDraft OLE object (Windows "Embedded Object" or "Embed Source"): the native reader
+ *    checks the object's class and reads its `ChemDraftDocument` stream with the OLE server's own
+ *    storage reader; here its class is checked again and its text is judged like a carrier's.
+ *    Another program's object is ignored.
+ * 2. The GVML archive, with the slice 0 ZIP and relationship readers and the carrier reader.
+ * 3. The PNG rendition, with the same carrier reader (ChemDraft's own PNG, or Office's when it kept
  *    the chunk).
- * 3. EMF/EMF+ is not read: ChemDraft has no EMF reader (its only EMF code is the Windows preview
+ * 4. EMF/EMF+ is not read: ChemDraft has no EMF reader (its only EMF code is the Windows preview
  *    writer, in Rust), so an EMF rendition is noted and skipped.
  */
 
 /** Office's picture archive on Windows and on macOS. */
 export const OFFICE_PICTURE_ARCHIVE_TYPES: readonly string[] = ["Art::GVML ClipFormat", "com.microsoft.Art--GVML-ClipFormat"];
+
+/** A copied OLE object on Windows: from Word or PowerPoint, then from the object's own server. */
+export const OFFICE_EMBEDDED_OBJECT_TYPES: readonly string[] = ["Embedded Object", "Embed Source"];
 
 const PNG_TYPES: ReadonlySet<string> = new Set(["image/png", "PNG", "public.png"]);
 
@@ -46,6 +54,8 @@ export const PASTE_BACK_LIMITS = Object.freeze({
   maxPictures: 50,
   maxCarrierJsonBytes: OFFICE_IMPORT_LIMITS.maxCarrierJsonBytes,
   maxTotalCarrierJsonBytes: 16 * 1024 * 1024,
+  /** A copied object's drawing as the native reader sends it (its 25 MiB `ChemDraftDocument` cap). */
+  maxEmbeddedObjectBytes: 25 * 1024 * 1024,
 });
 
 export type PasteBackLimits = { -readonly [K in keyof typeof PASTE_BACK_LIMITS]: number };
@@ -54,17 +64,19 @@ export type PasteBackLimits = { -readonly [K in keyof typeof PASTE_BACK_LIMITS]:
 export interface PasteBackClipboardItem {
   type: string;
   bytes: Uint8Array;
+  /** For an embedded object: the OLE class it was stored under. Its bytes are the drawing's text. */
+  clsid?: string;
 }
 
-export type PasteBackSource = "office-archive" | "png";
+export type PasteBackSource = "embedded-object" | "office-archive" | "png";
 
 export interface PasteBackStructure {
   source: PasteBackSource;
-  /** The clipboard format it came from, e.g. `Art::GVML ClipFormat`. */
+  /** The clipboard format it came from, e.g. `Embedded Object` or `Art::GVML ClipFormat`. */
   format: string;
   /** The archive part holding the picture, for the archive. */
   mediaPart?: string;
-  /** The carrier's exact UTF-8 JSON. */
+  /** The carrier's (or the embedded object's `ChemDraftDocument`) exact UTF-8 JSON. */
   json: string;
   /** The parsed `chemdraft-selection` envelope; the app still runs its chemistry check. */
   document: Record<string, unknown>;
@@ -82,7 +94,7 @@ export interface PasteBackRefusal {
 export type PasteBackNoneReason =
   /** ChemDraft's own selection flavor is on the clipboard; it wins, as it always has. */
   | "native-data"
-  /** No picture archive and no PNG. */
+  /** No ChemDraft object, no picture archive and no PNG. */
   | "no-pictures"
   /** Pictures were read and none holds ChemDraft data. */
   | "no-carrier"
@@ -231,10 +243,16 @@ async function readArchive(
 
 type CarrierCollector = (source: PasteBackSource, format: string, png: Uint8Array, mediaPart?: string) => Promise<void>;
 
+/** A copied embedded object of ChemDraft's own class; another program's is never read. */
+function isChemDraftObjectItem(item: { type: string; clsid?: string }): boolean {
+  return OFFICE_EMBEDDED_OBJECT_TYPES.includes(item.type) && isChemDraftOleClassId(item.clsid);
+}
+
 /**
- * Recover the ChemDraft structures from raw clipboard flavors (by native format name). GVML is
- * read first; the PNG only when the archive yields no structure. `advertisedTypes` (every format
- * on the clipboard, read or not) lets the result say when an EMF rendition was skipped.
+ * Recover the ChemDraft structures from raw clipboard flavors (by native format name). A ChemDraft
+ * embedded object is read first; GVML only when it yields no structure; the PNG only when neither
+ * does. `advertisedTypes` (every format on the clipboard, read or not) lets the result say when an
+ * EMF rendition was skipped.
  */
 export async function recoverPasteBackStructures(
   items: readonly PasteBackClipboardItem[],
@@ -243,6 +261,8 @@ export async function recoverPasteBackStructures(
     limits?: Partial<PasteBackLimits>;
     /** Set when the caller could not even decode the archive flavor: why. */
     unreadableArchive?: string;
+    /** Set when the caller could not decode a ChemDraft object's drawing: its format and why. */
+    unreadableEmbeddedObject?: { format: string; reason: string };
   } = {},
 ): Promise<PasteBackResult> {
   const limits = limitsWith(options.limits ?? {});
@@ -252,16 +272,7 @@ export async function recoverPasteBackStructures(
     collected.notes.push(archiveRefusal(options.unreadableArchive));
   }
   let totalJsonBytes = 0;
-  // A media part shared by several pictures is decoded once; each picture still counts against
-  // the size budget, since each becomes a structure of its own.
-  const readByPart = new Map<string, Awaited<ReturnType<typeof readChemDraftSelectionFromPng>>>();
-  const readCarrier: CarrierCollector = async (source, format, png, mediaPart) => {
-    collected.picturesRead++;
-    let read = mediaPart === undefined ? undefined : readByPart.get(mediaPart);
-    if (!read) {
-      read = await readChemDraftSelectionFromPng(png);
-      if (mediaPart !== undefined) readByPart.set(mediaPart, read);
-    }
+  const collect = (source: PasteBackSource, format: string, read: CarrierText, mediaPart?: string) => {
     const envelope = readCarrierEnvelope(read, limits.maxCarrierJsonBytes, (jsonBytes) => {
       if (totalJsonBytes + jsonBytes > limits.maxTotalCarrierJsonBytes) {
         return `was not read: the copied structures together exceed ${Math.round(limits.maxTotalCarrierJsonBytes / (1024 * 1024))} MB.`;
@@ -273,16 +284,45 @@ export async function recoverPasteBackStructures(
     if (envelope.ok) collected.structures.push({ source, format, ...(mediaPart ? { mediaPart } : {}), json: envelope.json, document: envelope.document });
     else collected.refusals.push({ source, format, ...(mediaPart ? { mediaPart } : {}), reason: envelope.reason, message: `The copied structure ${envelope.phrase}` });
   };
+  // A media part shared by several pictures is decoded once; each picture still counts against
+  // the size budget, since each becomes a structure of its own.
+  const readByPart = new Map<string, Awaited<ReturnType<typeof readChemDraftSelectionFromPng>>>();
+  const readCarrier: CarrierCollector = async (source, format, png, mediaPart) => {
+    collected.picturesRead++;
+    let read = mediaPart === undefined ? undefined : readByPart.get(mediaPart);
+    if (!read) {
+      read = await readChemDraftSelectionFromPng(png);
+      if (mediaPart !== undefined) readByPart.set(mediaPart, read);
+    }
+    collect(source, format, read, mediaPart);
+  };
 
+  // The drawing of a ChemDraft object: its text is judged, and refused, like a carrier's.
+  if (options.unreadableEmbeddedObject) {
+    collect("embedded-object", options.unreadableEmbeddedObject.format, { kind: "invalid", reason: options.unreadableEmbeddedObject.reason });
+  }
+  const objects = items.filter(isChemDraftObjectItem).slice(0, 1);
+  for (const object of objects) {
+    let read: CarrierText;
+    try {
+      read = { kind: "found", json: utf8.decode(object.bytes) };
+    } catch {
+      read = { kind: "invalid", reason: "the object's drawing is not UTF-8 text" };
+    }
+    collect("embedded-object", object.type, read);
+  }
   const archives = items.filter((item) => OFFICE_PICTURE_ARCHIVE_TYPES.includes(item.type));
-  for (const archive of archives.slice(0, 1)) await readArchive(archive.type, archive.bytes, limits, collected, readCarrier);
+  if (!collected.structures.length) {
+    for (const archive of archives.slice(0, 1)) await readArchive(archive.type, archive.bytes, limits, collected, readCarrier);
+  }
   if (!collected.structures.length) {
     for (const png of items.filter((item) => PNG_TYPES.has(item.type)).slice(0, 1)) {
       await readCarrier("png", png.type, png.bytes);
     }
   }
   const emf = [...options.advertisedTypes ?? [], ...items.map((item) => item.type)].find(isEmfType);
-  if (emf && !collected.structures.length) {
+  // A ChemDraft object's EMF is only its preview; its drawing was read from the object itself.
+  if (emf && !collected.structures.length && !objects.length && !options.unreadableEmbeddedObject) {
     collected.notes.push(`The ${emf} picture was not checked: ChemDraft cannot read ChemDraft data from EMF pictures.`);
   }
 
@@ -299,9 +339,10 @@ export async function recoverPasteBackStructures(
 }
 
 /**
- * The same recovery from a native clipboard read: decodes the archive (`officeItems`) and the PNG
- * (`imageItems`) within their caps. ChemDraft's own selection flavor takes precedence, so its
- * presence returns `none` without reading anything.
+ * The same recovery from a native clipboard read: decodes a ChemDraft object's drawing and the
+ * archive (`officeItems`) and the PNG (`imageItems`) within their caps. An embedded object of
+ * another class is left out. ChemDraft's own selection flavor takes precedence, so its presence
+ * returns `none` without reading anything.
  */
 export async function recoverPasteBackFromClipboard(
   read: ClipboardReadPayload, options: { limits?: Partial<PasteBackLimits> } = {},
@@ -311,6 +352,15 @@ export async function recoverPasteBackFromClipboard(
   }
   const limits = limitsWith(options.limits ?? {});
   const items: PasteBackClipboardItem[] = [];
+  let unreadableEmbeddedObject: { format: string; reason: string } | undefined;
+  const object = read.officeItems?.find(isChemDraftObjectItem);
+  if (object) {
+    try {
+      items.push({ type: object.type, clsid: object.clsid, bytes: decodeBase64Bounded(object.bytesBase64, limits.maxEmbeddedObjectBytes) });
+    } catch (error) {
+      unreadableEmbeddedObject = { format: object.type, reason: error instanceof Error ? error.message : String(error) };
+    }
+  }
   let unreadableArchive: string | undefined;
   const archive = read.officeItems?.find((item) => OFFICE_PICTURE_ARCHIVE_TYPES.includes(item.type));
   if (archive) {
@@ -328,5 +378,5 @@ export async function recoverPasteBackFromClipboard(
       // The ordinary picture paste reports an unreadable PNG; here it simply holds no carrier.
     }
   }
-  return recoverPasteBackStructures(items, { advertisedTypes: read.types, limits, unreadableArchive });
+  return recoverPasteBackStructures(items, { advertisedTypes: read.types, limits, unreadableArchive, unreadableEmbeddedObject });
 }

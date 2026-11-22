@@ -1,7 +1,9 @@
 use super::super::{
     contracts::{PersistError, PersistState, Saved},
     emf::MAX_PNG_BYTES,
-    storage::{decode_document, document_bytes, DOCUMENT, MAX_DOCUMENT_BYTES},
+    storage::{
+        decode_document, document_bytes, read_pasted_document, DOCUMENT, MAX_DOCUMENT_BYTES,
+    },
 };
 use super::*;
 
@@ -105,6 +107,17 @@ fn check_class(storage: &IStorage, class: GUID, allow_empty: bool) -> Result<()>
         OLE_E_WRONGCOMPOBJ,
         format!("Office storage CLSID {found:?} does not match ChemDraft class {class:?}"),
     ))
+}
+
+/// A copied object's drawing for paste-back ("Embedded Object" or "Embed Source",
+/// `windows_clipboard`), read with `Load`'s own stream reader and decoder. `Ok(None)` when the
+/// storage holds another program's object: that paste falls through to the other formats.
+pub(crate) fn pasted_drawing(storage: &IStorage) -> Result<Option<(&'static str, String)>> {
+    let class = unsafe { ReadClassStg(storage)? };
+    read_pasted_document(&format!("{{{class:?}}}"), |name, limit| {
+        read_stream(storage, name, limit)
+    })
+    .map_err(invalid)
 }
 
 fn state_error(error: PersistError) -> Error {
@@ -289,6 +302,52 @@ mod tests {
             );
             write_stream(&store, DOCUMENT, b"{}")?;
             assert_eq!(read_stream(&store, DOCUMENT, 2)?, b"{}");
+            Ok(())
+        })();
+        unsafe {
+            OleUninitialize();
+        }
+        result
+    }
+
+    #[test]
+    fn pasted_storage_is_read_only_for_chemdraft_classes() -> Result<()> {
+        unsafe {
+            OleInitialize(None)?;
+        }
+        let result = (|| {
+            let memory = unsafe { CreateILockBytesOnHGlobal(None, true)? };
+            let store = unsafe {
+                StgCreateDocfileOnILockBytes(
+                    &memory,
+                    STGM_CREATE | STGM_SHARE_EXCLUSIVE | STGM_READWRITE,
+                    0,
+                )?
+            };
+            let json = r#"{"kind":"chemdraft-selection","version":1}"#;
+            write_stream(&store, DOCUMENT, json.as_bytes())?;
+            // No class, or another program's class: nothing is read and nothing fails.
+            assert_eq!(pasted_drawing(&store)?, None);
+            let other = GUID::try_from("0002CE02-0000-0000-C000-000000000046")?;
+            unsafe {
+                WriteClassStg(&store, &other)?;
+            }
+            assert_eq!(pasted_drawing(&store)?, None);
+            for class in [OleClass::STABLE, OleClass::DEV] {
+                let guid = GUID::try_from(class.clsid.trim_matches(['{', '}']))?;
+                unsafe {
+                    WriteClassStg(&store, &guid)?;
+                }
+                assert_eq!(
+                    pasted_drawing(&store)?,
+                    Some((class.clsid, json.to_string()))
+                );
+            }
+            write_stream(&store, DOCUMENT, b"not json")?;
+            assert_eq!(
+                pasted_drawing(&store).unwrap_err().code(),
+                STG_E_INVALIDHEADER
+            );
             Ok(())
         })();
         unsafe {

@@ -1000,6 +1000,14 @@
     "returnType": "Result<OpsinConversion, OpsinError>"
   },
   {
+    "file": "palette_key_guard.rs",
+    "name": "palette_key_guard_clear",
+    "async": false,
+    "generics": "<R: tauri::Runtime>",
+    "parameters": "window: tauri::WebviewWindow<R>, sequence: u64, pointer_before: u64,",
+    "returnType": "()"
+  },
+  {
     "file": "panel_window_controls.rs",
     "name": "hide_plugin_panel_window",
     "async": true,

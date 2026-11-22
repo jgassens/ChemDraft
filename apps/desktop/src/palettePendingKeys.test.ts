@@ -32,7 +32,7 @@ describe("palette click-outside release", () => {
   });
 
   it("never emits an app-wide event, which Office editor windows are denied", () => {
-    const source = readFileSync(new URL("./palettePendingKeys.ts", import.meta.url), "utf8");
+    const source = readFileSync("apps/desktop/src/palettePendingKeys.ts", "utf8");
     expect(source).not.toMatch(/\.emit\(|emitTo\(|@tauri-apps\/api\/event|webviewWindow/);
   });
 

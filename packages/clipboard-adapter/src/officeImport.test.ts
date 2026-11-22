@@ -2,7 +2,8 @@ import { crc32, deflateRawSync } from "node:zlib";
 import { Resvg } from "@resvg/resvg-js";
 import { describe, expect, it } from "vitest";
 import { importOfficeStructures, OfficeImportError, pngWithChemDraftSelection, type OfficeImportResult } from "./index";
-import { docxPictureReferences, pptxSlidePictureRelationshipIds, resolvePartTarget } from "./officePackage";
+import { docxDrawingReferences, pptxSlideDrawingReferences, resolvePartTarget } from "./officePackage";
+import { writeTestCompoundFile } from "./oleObject.testUtils";
 
 // A minimal ZIP writer (stored or deflated, no descriptors): enough for real Office packages.
 function makeZip(entries: { name: string; data: Uint8Array | string; deflate?: boolean }[]): Uint8Array {
@@ -214,7 +215,7 @@ describe("importOfficeStructures: Word", () => {
     expect(result.kind).toBe("word");
     expect(labels(result)).toEqual([["paragraph 1", "one"], ["paragraph 3", "two"], ["paragraph 4", "three"], ["paragraph 5", "four"]]);
     expect(result.warnings).toEqual([]);
-    expect(docxPictureReferences(`<w:document xmlns:w="${W}" xmlns:a="${A}" xmlns:r="${R}"><w:body><w:p/><w:p>` +
+    expect(docxDrawingReferences(`<w:document xmlns:w="${W}" xmlns:a="${A}" xmlns:r="${R}"><w:body><w:p/><w:p>` +
       `<a:blip r:embed="rIdX"/></w:p></w:body></w:document>`)).toEqual([{ relationshipId: "rIdX", paragraph: 2 }]);
   });
 
@@ -309,6 +310,99 @@ describe("importOfficeStructures: untrusted input", () => {
 
   it("lists slide pictures only from p:pic blip fills", () => {
     const xml = slide(`<p:sp><p:spPr><a:blipFill><a:blip r:embed="rIdFill"/></a:blipFill></p:spPr></p:sp>${slidePicture(2, "rIdPic")}`);
-    expect(pptxSlidePictureRelationshipIds(xml)).toEqual(["rIdPic"]);
+    expect(pptxSlideDrawingReferences(xml)).toEqual([{ relationshipId: "rIdPic" }]);
+  });
+});
+
+describe("importOfficeStructures: ChemDraft embedded objects (made on Windows)", () => {
+  const STABLE = "{CE37136C-13F0-4A5A-954F-0EF6DFE359D0}";
+  const DEV = "{8D23DEDA-8B23-4D62-BEEC-6C6168D48BB4}";
+  const O = "urn:schemas-microsoft-com:office:office";
+  const oleBin = (json: string, clsid = STABLE) => writeTestCompoundFile(clsid, [
+    { name: "\u0001CompObj", data: new Uint8Array(40) }, { name: "\u0001Ole", data: new Uint8Array(20) },
+    { name: "ChemDraftDocument", data: json },
+  ]).bytes;
+  // Word writes an embedded object as VML: its preview picture, then the object itself.
+  const wordObject = (preview: string, object: string, progId = "ChemDraft.Structure.1", type = "Embed") =>
+    `<w:r><w:object xmlns:o="${O}"><v:shape><v:imagedata r:id="${preview}"/></v:shape>` +
+    `<o:OLEObject Type="${type}" ProgID="${progId}" ShapeID="_x0000_i1025" DrawAspect="Content" r:id="${object}"/></w:object></w:r>`;
+  // PowerPoint picks the VML branch it understands; this reader, like Office for Mac, the fallback with its preview picture.
+  const slideObject = (preview: string, object: string, progId = "ChemDraft.Structure.1") =>
+    `<p:graphicFrame><a:graphic><a:graphicData uri="${P.replace("main", "ole")}"><mc:AlternateContent>` +
+    `<mc:Choice xmlns:v="urn:schemas-microsoft-com:vml" Requires="v"><p:oleObj spid="_x0000_s1026" r:id="${object}" progId="${progId}"><p:embed/></p:oleObj></mc:Choice>` +
+    `<mc:Fallback><p:oleObj r:id="${object}" progId="${progId}"><p:embed/>${slidePicture(9, preview)}</p:oleObj></mc:Fallback>` +
+    `</mc:AlternateContent></a:graphicData></a:graphic></p:graphicFrame>`;
+
+  it("reads a Word object's drawing from its compound file, in body order, and never its preview", async () => {
+    const bytes = docx(`<w:p>${wordObject("rIdPrev", "rIdOle")}</w:p><w:p>${wordPicture("rIdPic")}</w:p>`, rels([
+      ["rIdPrev", "image", "media/image1.png"], ["rIdOle", "oleObject", "embeddings/oleObject1.bin"], ["rIdPic", "image", "media/image2.png"],
+    ]), [
+      // A preview that happens to carry a drawing is still only the object's picture.
+      { name: "word/media/image1.png", data: carrier(selection("preview")) },
+      { name: "word/embeddings/oleObject1.bin", data: oleBin(selection("object")) },
+      { name: "word/media/image2.png", data: carrier(selection("picture")) },
+    ]);
+    const result = await importOfficeStructures(bytes);
+    expect(labels(result)).toEqual([["paragraph 1", "object"], ["paragraph 2", "picture"]]);
+    expect(result.structures[0]).toMatchObject({ picture: 1, mediaPart: "word/embeddings/oleObject1.bin", json: selection("object") });
+    expect(result).toMatchObject({ warnings: [], picturesChecked: 2 });
+  });
+
+  it("reads a PowerPoint object, and the dev build's class, from the chosen branch only", async () => {
+    const bytes = pptx([{ xml: slide(slideObject("rIdPrev", "rIdOle")),
+      rels: rels([["rIdPrev", "image", "../media/image1.png"], ["rIdOle", "oleObject", "../embeddings/oleObject1.bin"]]) }], [
+      { name: "ppt/media/image1.png", data: carrier(selection("preview")) },
+      { name: "ppt/embeddings/oleObject1.bin", data: oleBin(selection("object"), DEV) },
+    ]);
+    const result = await importOfficeStructures(bytes);
+    expect(labels(result)).toEqual([["slide 1", "object"]]);
+    expect(result).toMatchObject({ warnings: [], picturesChecked: 1 });
+  });
+
+  it("skips another program's object and a linked object without a word", async () => {
+    const bytes = docx(`<w:p>${wordObject("rIdPrev", "rIdOle", "Equation.3")}</w:p><w:p>${wordObject("rIdPrev2", "rIdLink", "ChemDraft.Structure.1", "Link")}</w:p>`, rels([
+      ["rIdPrev", "image", "media/image1.png"], ["rIdOle", "oleObject", "embeddings/oleObject1.bin"],
+      ["rIdPrev2", "image", "media/image2.png"], ["rIdLink", "oleObject", "file:///C:/Structures/linked.chemdraft", true],
+    ]), [
+      { name: "word/media/image1.png", data: plainPng },
+      { name: "word/embeddings/oleObject1.bin", data: oleBin(selection("equation"), "{0002CE02-0000-0000-C000-000000000046}") },
+      { name: "word/media/image2.png", data: plainPng },
+    ]);
+    expect(await importOfficeStructures(bytes)).toMatchObject({ structures: [], warnings: [], picturesChecked: 2 });
+  });
+
+  it("warns, with the carrier's words, for a ChemDraft object that is damaged, newer or too large", async () => {
+    const bytes = docx([1, 2, 3, 4].map((n) => `<w:p>${wordObject(`rIdPrev${n}`, `rIdOle${n}`)}</w:p>`).join(""), rels([1, 2, 3, 4].flatMap((n) => [
+      [`rIdPrev${n}`, "image", "media/preview.png"], [`rIdOle${n}`, "oleObject", `embeddings/oleObject${n}.bin`],
+    ] as [string, string, string][])), [
+      { name: "word/media/preview.png", data: plainPng },
+      { name: "word/embeddings/oleObject1.bin", data: oleBin(selection("newer", { version: 3 })) },
+      { name: "word/embeddings/oleObject2.bin", data: oleBin("{not json") },
+      { name: "word/embeddings/oleObject3.bin", data: new TextEncoder().encode("not a compound file") },
+      { name: "word/embeddings/oleObject4.bin", data: oleBin(selection("large", { padding: "x".repeat(400) })) },
+    ]);
+    const result = await importOfficeStructures(bytes, { limits: { maxCarrierJsonBytes: 300 } });
+    expect(result.structures).toEqual([]);
+    expect(result.warnings.map(({ location, reason, mediaPart }) => [location, reason, mediaPart])).toEqual([
+      ["paragraph 1", "unknown-version", "word/embeddings/oleObject1.bin"],
+      ["paragraph 2", "malformed", "word/embeddings/oleObject2.bin"],
+      ["paragraph 3", "malformed", "word/embeddings/oleObject3.bin"],
+      ["paragraph 4", "too-large", "word/embeddings/oleObject4.bin"],
+    ]);
+    expect(result.warnings[0]!.message).toBe("The structure on paragraph 1 was made by a newer or unknown ChemDraft (data version 3).");
+    expect(result.warnings[1]!.message).toBe("The structure on paragraph 2 has damaged ChemDraft data: it is not valid JSON.");
+    expect(result.warnings[2]!.message).toBe("The embedded ChemDraft object on paragraph 3 could not be read: the embedded object is not an " +
+      "OLE compound file. Open the file in Word or PowerPoint on Windows, copy the object and paste it into ChemDraft.");
+    expect(result.warnings[3]!.message).toBe("The structure on paragraph 4 is larger than the 0 MB limit for one structure.");
+  });
+
+  it("folds a Word object's previews into the object, and keeps a linked object's preview as a picture", () => {
+    const W14 = `xmlns:w="${W}" xmlns:a="${A}" xmlns:r="${R}" xmlns:v="${V}" xmlns:o="${O}"`;
+    expect(docxDrawingReferences(`<w:document ${W14}><w:body><w:p><w:object><w:drawing><a:blip r:embed="rIdPrev"/></w:drawing>` +
+      `<w:objectEmbed w:progId="ChemDraft.Structure.1" r:id="rIdOle"/></w:object></w:p><w:p><w:object><v:shape><v:imagedata r:id="rIdLinkPrev"/></v:shape>` +
+      `<o:OLEObject Type="Link" ProgID="ChemDraft.Structure.1" r:id="rIdLink"/></w:object></w:p></w:body></w:document>`)).toEqual([
+      { relationshipId: "rIdOle", paragraph: 1, oleProgId: "ChemDraft.Structure.1" },
+      { relationshipId: "rIdLinkPrev", paragraph: 2 },
+    ]);
   });
 });

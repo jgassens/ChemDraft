@@ -494,7 +494,8 @@ valid structure as one undo entry, left selected.
   pure, and built on the slice 0 pieces: `readZip`, the namespace-aware XML reader and
   `readChemDraftSelectionFromPng`. PowerPoint: slides in `p:sldIdLst` order, then each slide's
   `p:pic/p:blipFill/a:blip`, groups included. Word: the main document's DrawingML `a:blip` and VML
-  `v:imagedata` (embedded-object previews) in body order, with the paragraph they fall in. Both read
+  `v:imagedata` in body order, with the paragraph they fall in. In both, ChemDraft embedded objects
+  are read too (see "paste and import of ChemDraft embedded objects" below). Both read
   only the chosen branch of `mc:AlternateContent`, so a picture is not counted twice through its
   fallback. Headers, footers, notes, slide layouts and masters are not searched.
 - **Untrusted input.** The file is refused, with a specific message, when it is over 64 MB (the
@@ -502,7 +503,8 @@ valid structure as one undo entry, left selected.
   once inflated (checked against the declared sizes before anything is inflated, and inflation is
   capped at the declared size), is not a ZIP, or has crafted entry names (a backslash, an absolute
   path, a drive letter, a control character, a `.` or `..` segment, or two names that differ only by
-  case). Only `.xml`, `.rels` and `.png` entries are inflated. A relationship target that leaves the
+  case). Only `.xml`, `.rels` and `.png` entries are inflated, then, in a second pass with the same
+  limits, the parts of the embedded objects the document places. A relationship target that leaves the
   package gives a per-picture warning and is not read; linked (external) pictures are skipped. At most
   500 pictures are checked, and a note says so when there are more. One carrier's JSON may be at most
   8 MB, all carriers together 64 MB.
@@ -564,4 +566,54 @@ ChemDraft: the editable structure is pasted, not a flat picture.
 - Unverified until run on real Office: the exact GVML layout Mac Office writes (the PNG fallback
   covers a different layout), and that Office renders GVML promptly on request. See
   `docs/manual-stress-checklist.md`, "Paste back from Word or PowerPoint".
-- Still to do in slice 3: the Windows "Embedded Object" clipboard format and ChemDraft OLE packages.
+
+**Built (2026-11-22), not yet checked in real Office: paste and import of ChemDraft embedded
+objects.** Copy a ChemDraft object (slice 2) in Word or PowerPoint on Windows and paste it into
+ChemDraft, or import a .docx or .pptx that holds one, on either platform: the editable structure
+comes in, with the same checks, warnings and refusals as a picture's carrier. This completes slice 3.
+
+- **Clipboard, Windows** (`windows_clipboard.rs`, `read_embedded_object`). Word and PowerPoint offer a
+  copied object as "Embedded Object"; ChemDraft's own server offers "Embed Source". Unless
+  ChemDraft's selection flavor is on the clipboard, the reader asks OLE for the first of the two
+  (`OleGetClipboard`, `IDataObject::GetData` with `TYMED_ISTORAGE`, or `TYMED_HGLOBAL` opened with
+  `StgOpenStorageOnILockBytes`, at most 50 MiB) on a thread of its own (OLE needs a single-threaded
+  apartment) and waits at most 10 seconds. OLE opens the clipboard itself, so this happens before the
+  ordinary read opens it, and the result is kept only if the same format is still on offer then.
+- **One storage reader.** The object is read by the OLE server's own code
+  (`office_ole/server/persist.rs`, `pasted_drawing`): the storage's class (`ReadClassStg`) must be
+  ChemDraft's, stable or dev (`office_ole/storage.rs`, `read_pasted_document`, tested on every host),
+  and then `ChemDraftDocument`, at most 25 MiB, is read by `IPersistStorage::Load`'s stream reader and
+  checked by its decoder (`decode_document`). Another program's object is not read at all and is not
+  an error: the paste falls through to GVML and PNG. A ChemDraft object whose storage cannot be read
+  is logged and falls through the same way.
+- **Precedence.** ChemDraft's own selection flavor, then a ChemDraft embedded object, then GVML,
+  then the PNG. The native reader does not fetch GVML when it has the object; the TypeScript layer
+  (`recoverPasteBackStructures`) applies the same order and checks the class again
+  (`isChemDraftOleClassId`). An object whose drawing is unusable (damaged, a newer data version, over
+  8 MB) is refused with the carrier's words ("The copied structure was made by a newer or unknown
+  ChemDraft (data version 2)."); GVML and the PNG are still read then, and a good carrier there is
+  pasted with the refusal in the log. The object's own EMF is its preview and is not mentioned.
+- **Chemistry check**: the same as a picture's (`officePasteBack.ts`: `checkOfficeStructure`, then a
+  trial placement). The status names the source: "Pasted the ChemDraft structure from the copied
+  object." Tests compare chemical identity and canonical SMILES (stereo, charges, isotopes).
+- **Import** (`importOfficeStructures`). Word: a `w:object` with `o:OLEObject Type="Embed"` (or
+  `w:objectEmbed`); PowerPoint: `p:oleObj`, on the chosen `mc:AlternateContent` branch. The object
+  takes the place of its preview pictures, which are not read (a linked object's preview stays a
+  picture). Each object's `oleObject` part is read by a bounded compound-file reader
+  (`packages/clipboard-adapter/src/oleObject.ts`, MS-CFB versions 3 and 4, at most 50 MB, no
+  dependency; its sector, mini-sector and directory walks refuse loops and out-of-range indexes). It
+  reads the root class and, only for ChemDraft's, `ChemDraftDocument`, refused unread over 8 MB.
+  Another program's object is skipped silently. A ChemDraft object (by class or ProgID) that cannot be
+  read is reported per object: "The embedded ChemDraft object on paragraph 3 could not be read: … Open
+  the file in Word or PowerPoint on Windows, copy the object and paste it into ChemDraft."
+- **Class list.** `CHEMDRAFT_OLE_CLASSES` in TypeScript mirrors `OleClass` in `office_ole/mod.rs`;
+  `officeEmbeddedObjects.test.ts` fails if they drift.
+- **Native code.** `clipboard_images.rs` names the two formats and builds the item (`officeItems`
+  gains an optional `clsid`); `windows_clipboard.rs` reads it and no longer offers "Embedded Object"
+  to the text reader; `office_ole/storage.rs` and `server/persist.rs` as above. macOS and Linux have
+  no OLE clipboard format and return no embedded object; their readers are unchanged.
+- Unverified until run on real Office on Windows: that Word and PowerPoint hand over the object's
+  storage promptly (and which medium they use), that the storage Office keeps still carries
+  ChemDraft's class and `ChemDraftDocument`, and that a saved file's `oleObject*.bin` reads the
+  same. On macOS, what Office for Mac puts on the pasteboard when a Windows object is copied there is
+  not handled.

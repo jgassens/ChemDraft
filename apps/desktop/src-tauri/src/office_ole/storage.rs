@@ -4,7 +4,7 @@ use cfb::{CompoundFile, Version};
 
 use super::{OleClass, OleError};
 
-const MAX_STORAGE_BYTES: usize = 50 * 1024 * 1024;
+pub(crate) const MAX_STORAGE_BYTES: usize = 50 * 1024 * 1024;
 pub(super) const MAX_DOCUMENT_BYTES: usize = 25 * 1024 * 1024;
 const MAX_METADATA_BYTES: usize = 64 * 1024;
 const COMP_OBJ: &str = "\x01CompObj";
@@ -102,6 +102,41 @@ pub(crate) fn read_object_storage(bytes: &[u8]) -> Result<ObjectContents, OleErr
         prog_id,
         json,
     })
+}
+
+/// ChemDraft's own OLE class (stable or dev build) for `clsid`, written with or without braces, in
+/// any case. Another program's class, and the nil CLSID, are `None`.
+fn chemdraft_class(clsid: &str) -> Option<OleClass> {
+    let bare = |text: &'static str| text.trim_start_matches('{').trim_end_matches('}');
+    let clsid = clsid
+        .strip_prefix('{')
+        .and_then(|clsid| clsid.strip_suffix('}'))
+        .unwrap_or(clsid);
+    [OleClass::STABLE, OleClass::DEV]
+        .into_iter()
+        .find(|class| bare(class.clsid).eq_ignore_ascii_case(clsid))
+}
+
+/// The drawing in a pasted OLE object (Windows "Embedded Object" or "Embed Source", paste-back in
+/// docs/architecture/office-editing.md, slice 3), read the way the server's `IPersistStorage::Load`
+/// reads one: the storage class must be ChemDraft's, then `ChemDraftDocument`, at most 25 MiB, is
+/// decoded by `decode_document`. `read_stream(name, limit)` reads one stream of the object's
+/// storage and must refuse a stream over `limit` before copying it. Returns the class's CLSID and
+/// the drawing JSON, or `None` for another program's object, whose paste falls through to the
+/// other clipboard formats.
+pub(crate) fn read_pasted_document<E: std::fmt::Display>(
+    clsid: &str,
+    read_stream: impl FnOnce(&str, usize) -> Result<Vec<u8>, E>,
+) -> Result<Option<(&'static str, String)>, OleError> {
+    let Some(class) = chemdraft_class(clsid) else {
+        return Ok(None);
+    };
+    let document = read_stream(DOCUMENT, MAX_DOCUMENT_BYTES).map_err(|error| {
+        OleError(format!(
+            "Could not read the copied ChemDraft object: {error}"
+        ))
+    })?;
+    Ok(Some((class.clsid, decode_document(document)?)))
 }
 
 fn validate_embedded_ole(ole: &[u8]) -> Result<(), OleError> {
@@ -488,5 +523,69 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("Invalid OLE compound file"));
+    }
+
+    #[test]
+    fn pasted_objects_are_read_only_for_chemdraft_classes() {
+        let json = r#"{"kind":"chemdraft-selection","version":1}"#;
+        let lower = OleClass::DEV.clsid.to_lowercase();
+        let bare = OleClass::STABLE.clsid.trim_matches(['{', '}']);
+        for (clsid, expected) in [
+            (OleClass::STABLE.clsid, OleClass::STABLE.clsid),
+            (OleClass::DEV.clsid, OleClass::DEV.clsid),
+            (lower.as_str(), OleClass::DEV.clsid),
+            (bare, OleClass::STABLE.clsid),
+        ] {
+            let read = read_pasted_document(clsid, |name, limit| {
+                assert_eq!((name, limit), (DOCUMENT, MAX_DOCUMENT_BYTES));
+                Ok::<_, OleError>(json.as_bytes().to_vec())
+            });
+            assert_eq!(read.unwrap(), Some((expected, json.to_string())));
+        }
+        // Another program's object, the test-only probe class and the nil class are never read.
+        for clsid in [
+            OleClass::PROBE.clsid,
+            "{00000000-0000-0000-0000-000000000000}",
+            "{0002CE02-0000-0000-C000-000000000046}",
+            "{CE37136C-13F0-4A5A-954F-0EF6DFE359D0",
+            "",
+        ] {
+            let read = read_pasted_document(clsid, |_, _| -> Result<Vec<u8>, OleError> {
+                panic!("read the document of {clsid:?}")
+            });
+            assert_eq!(read.unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn pasted_chemdraft_objects_keep_the_document_bounds() {
+        let error = read_pasted_document(OleClass::STABLE.clsid, |name, limit| {
+            Err(format!("Office stream {name} exceeds {limit} bytes"))
+        })
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("ChemDraftDocument exceeds 26214400 bytes"));
+        for (bytes, reason) in [
+            (vec![0xff, 0xfe], "UTF-8"),
+            (b"not json".to_vec(), "Invalid ChemDraftDocument JSON"),
+            (vec![b' '; MAX_DOCUMENT_BYTES + 1], "25 MiB"),
+        ] {
+            let error =
+                read_pasted_document(OleClass::DEV.clsid, move |_, _| Ok::<_, OleError>(bytes))
+                    .unwrap_err();
+            assert!(error.to_string().contains(reason), "{error}");
+        }
+
+        // A whole stored object, through the same compound-file reader as `read_object_storage`.
+        let json = r#"{"kind":"chemdraft-selection","version":1,"objects":[]}"#;
+        let stored = write_object_storage(json, &OleClass::STABLE).unwrap();
+        let mut file = CompoundFile::open(Cursor::new(stored)).unwrap();
+        let clsid = format!("{{{:X}}}", file.root_entry().clsid());
+        let read = read_pasted_document(&clsid, |name, limit| {
+            read_stream(&mut file, name, limit, "25 MiB")
+        })
+        .unwrap();
+        assert_eq!(read, Some((OleClass::STABLE.clsid, json.to_string())));
     }
 }

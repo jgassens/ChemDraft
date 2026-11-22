@@ -215,3 +215,83 @@ describe.each(["macos", "windows"] as const)("Office paste-back on %s", platform
     expect(decision.details).toEqual([expect.stringMatching(GHOST_WARNING), expect.stringMatching(GHOST_WARNING)]);
   });
 });
+
+describe("Paste of a ChemDraft embedded object copied in Word or PowerPoint on Windows", () => {
+  const STABLE = "{CE37136C-13F0-4A5A-954F-0EF6DFE359D0}";
+  const EQUATION = "{0002CE02-0000-0000-C000-000000000046}";
+  const textCarrier = () => carrier(serializeSelectionClipboardPayload(createSelectionClipboardPayload(
+    insertNativeTextObject(createPhase4Document(), { x: 50, y: 50 }, "From the picture"))!));
+  /** What the native read returns once it has read the object's storage (`windows_clipboard.rs`). */
+  const objectClipboard = (json: string, clsid = STABLE, archive?: Uint8Array, format = "Embedded Object"): ClipboardReadPayload => ({
+    types: ["Object Descriptor", format, ...archive ? [ARCHIVE_FORMAT.windows] : [], "PNG", "image/emf"],
+    textItems: [],
+    officeItems: [{ type: format, clsid, bytesBase64: base64(new TextEncoder().encode(json)) },
+      ...archive ? [{ type: ARCHIVE_FORMAT.windows, bytesBase64: base64(archive) }] : []],
+    imageItems: [{ type: "image/png", bytesBase64: base64(plainPng()), pixelWidth: 2, pixelHeight: 2 }],
+  });
+
+  let container: HTMLDivElement;
+  let root: Root;
+  beforeEach(() => {
+    runtime.desktop = false;
+    window.history.replaceState(null, "", "/?agentBridge=1");
+    vi.stubGlobal("localStorage", new MemoryStorage());
+    vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+    vi.mocked(readClipboardPayload).mockReset();
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  });
+  afterEach(async () => {
+    runtime.desktop = false;
+    await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals();
+    window.history.replaceState(null, "", "/"); delete window.__CHEMDRAFT_AGENT__;
+  });
+
+  async function pasteInto(clipboard: ClipboardReadPayload) {
+    vi.mocked(readClipboardPayload).mockResolvedValue(clipboard);
+    await act(async () => root.render(<MainWindow initialDocument={createPhase4Document()} shortcutPlatform="windows"
+      initialActiveToolCommandId="tool.select" initialCrosshairsVisible={false}
+      initialPaletteMode="hidden" initialRulersVisible={false} nativePalette />));
+    runtime.desktop = true;
+    await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "clipboard.paste" } })); });
+    await vi.waitFor(() => expect(readClipboardPayload).toHaveBeenCalled());
+  }
+  const objects = () => window.__CHEMDRAFT_AGENT__!.snapshot().document.pages[0]!.objects;
+  const status = () => container.querySelector('[role="status"]')?.textContent ?? "";
+
+  it.each(["Embedded Object", "Embed Source"])("pastes the identical editable structure from a ChemDraft %s", async format => {
+    await pasteInto(objectClipboard(moleculeJson(), STABLE, undefined, format));
+    await vi.waitFor(() => expect(objects()).toHaveLength(1));
+    const pasted = objects()[0] as MoleculeObject;
+    const source = molecule().pages[0]!.objects[0] as MoleculeObject;
+    expect(pasted.type).toBe("molecule");
+    expect(diffChemicalIdentity(snapshotChemicalIdentity(source), snapshotChemicalIdentity(pasted)).verdict).not.toBe("changed");
+    expect(status()).toContain("Pasted the ChemDraft structure from the copied object.");
+  });
+
+  it("prefers the object over the picture archive's carrier", async () => {
+    await pasteInto(objectClipboard(moleculeJson(), STABLE, gvml([textCarrier()])));
+    await vi.waitFor(() => expect(objects()).toHaveLength(1));
+    expect(objects()[0]!.type).toBe("molecule");
+  });
+
+  it("ignores another program's object and pastes from the picture archive", async () => {
+    await pasteInto(objectClipboard(moleculeJson(), EQUATION, gvml([textCarrier()])));
+    await vi.waitFor(() => expect(objects()).toHaveLength(1));
+    expect(objects()[0]!.type).toBe("text");
+    expect(status()).toContain("Pasted the ChemDraft structure from the copied picture.");
+  });
+
+  it("pastes nothing and says why when the object's drawing fails the chemistry check", async () => {
+    await pasteInto(objectClipboard(brokenJson));
+    await vi.waitFor(() => expect(status()).toContain("Nothing was pasted."));
+    expect(status()).toMatch(/^The copied structure failed the chemistry check: /);
+    expect(objects()).toHaveLength(0);
+  });
+
+  it("refuses an object from a newer ChemDraft with the carrier's words", async () => {
+    const decision = await officePasteBackDecision(objectClipboard(JSON.stringify({ ...JSON.parse(moleculeJson()), version: 2 })),
+      () => createPhase4Document());
+    expect(decision).toEqual({ kind: "refused", details: [expect.any(String)],
+      message: "The copied structure was made by a newer or unknown ChemDraft (data version 2). Nothing was pasted." });
+  });
+});

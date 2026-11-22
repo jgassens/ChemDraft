@@ -6,14 +6,19 @@ export { flatOpcBinaryParts, pptxChoiceIsUnderstood, pptxSlidePictureMedia, read
 export type { FlatOpcBinaryPart, OfficeZipCaps, OfficeZipEntry } from "./officePackage";
 export { importOfficeStructures, OFFICE_IMPORT_LIMITS, OfficeImportError, readCarrierEnvelope, SUPPORTED_CARRIER_VERSIONS } from "./officeImport";
 export {
-  OFFICE_PICTURE_ARCHIVE_TYPES, PASTE_BACK_LIMITS, recoverPasteBackFromClipboard, recoverPasteBackStructures, trimZipPadding,
+  OFFICE_EMBEDDED_OBJECT_TYPES, OFFICE_PICTURE_ARCHIVE_TYPES, PASTE_BACK_LIMITS, recoverPasteBackFromClipboard, recoverPasteBackStructures,
+  trimZipPadding,
 } from "./pasteBack";
+export {
+  CHEMDRAFT_DOCUMENT_STREAM, CHEMDRAFT_OLE_CLASSES, isChemDraftOleClassId, isChemDraftOleProgId, MAX_COMPOUND_FILE_BYTES, readChemDraftOleObject,
+} from "./oleObject";
+export type { ChemDraftOleClass, ChemDraftOleRead } from "./oleObject";
 export type {
   PasteBackClipboardItem, PasteBackLimits, PasteBackNoneReason, PasteBackRefusal, PasteBackResult, PasteBackSource, PasteBackStructure,
 } from "./pasteBack";
 export type {
   OfficeCarrierWarning, OfficeCarrierWarningReason, OfficeFileKind, OfficeImportErrorCode, OfficeImportLimits, OfficeImportResult,
-  OfficeStructure, OfficeStructureSource, CarrierEnvelope,
+  OfficeStructure, OfficeStructureSource, CarrierEnvelope, CarrierText,
 } from "./officeImport";
 
 export type ClipboardPayloadKind = "svg" | "png" | "text/plain" | "smiles" | "mol" | "rxn" | "cdxml" | "cdx";
@@ -40,6 +45,8 @@ export interface ClipboardImageItem {
 export interface ClipboardOfficeItem {
   type: string;
   bytesBase64: string;
+  /** For a copied OLE object (Windows): the class it was stored under; its bytes are the drawing's text. */
+  clsid?: string;
 }
 
 export interface ClipboardSkippedImageItem {
@@ -71,7 +78,10 @@ export interface ClipboardReadPayload {
   imageItems?: ClipboardImageItem[];
   skippedImageItems?: ClipboardSkippedImageItem[];
   skippedItems?: ClipboardSkippedItem[];
-  /** Office's picture archive, for paste-back only; never inspected as text or as a picture. */
+  /**
+   * Paste-back only, never inspected as text or as a picture: a copied ChemDraft OLE object's
+   * drawing (Windows), or else Office's picture archive.
+   */
   officeItems?: ClipboardOfficeItem[];
 }
 

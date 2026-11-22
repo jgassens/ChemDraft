@@ -668,6 +668,7 @@ export function pptxChoiceIsUnderstood(namespaceUris: readonly (string | null)[]
 
 const WORD_MAIN = [TRANSITIONAL + "wordprocessingml/2006/main", STRICT + "wordprocessingml/main"];
 const VML = "urn:schemas-microsoft-com:vml";
+const OFFICE_VML = "urn:schemas-microsoft-com:office:office";
 const understoodWordNamespaces: ReadonlySet<string> = new Set([
   ...WORD_MAIN, ...DRAWING, ...OFFICE_RELS,
   TRANSITIONAL + "drawingml/2006/wordprocessingDrawing", STRICT + "drawingml/wordprocessingDrawing",
@@ -817,7 +818,7 @@ export function officeRelationships(relsXml: string): Map<string, OfficeRelation
 }
 
 /** True when a relationship type is the given OOXML relationship (transitional or strict). */
-export function isOfficeRelationshipType(type: string, name: "officeDocument" | "slide" | "image"): boolean {
+export function isOfficeRelationshipType(type: string, name: "officeDocument" | "slide" | "image" | "oleObject"): boolean {
   return OFFICE_RELS.some((namespace) => type === `${namespace}/${name}`);
 }
 
@@ -847,21 +848,43 @@ export function pptxSlideRelationshipIds(presentationXml: string): string[] {
   return ids;
 }
 
+/** A picture, or an embedded OLE object, found in a slide or a Word document. */
+export interface OfficeDrawingReference {
+  /** The picture's image relationship, or the object's `oleObject` relationship. */
+  relationshipId: string;
+  /** Set only for an embedded OLE object: its ProgID as the markup names it ("" when it names none). */
+  oleProgId?: string;
+}
+
+function hasAncestor(element: XmlElement, local: string, namespaces: readonly string[]): boolean {
+  for (let parent = element.parent; parent; parent = parent.parent) {
+    if (parent.local === local && namespaces.includes(parent.ns)) return true;
+  }
+  return false;
+}
+
 /**
- * Relationship IDs of every picture on a slide (`p:pic/p:blipFill/a:blip`), in drawing order,
- * including pictures inside groups and the chosen branch of `mc:AlternateContent`.
+ * Every picture on a slide (`p:pic/p:blipFill/a:blip`) and every embedded OLE object (`p:oleObj`),
+ * in drawing order, including those inside groups and the chosen branch of `mc:AlternateContent`.
+ * An object's preview picture (a `p:pic` inside its `p:oleObj`) is part of the object, not listed.
  */
-export function pptxSlidePictureRelationshipIds(slideXml: string): string[] {
-  const ids: string[] = [];
+export function pptxSlideDrawingReferences(slideXml: string): OfficeDrawingReference[] {
+  const references: OfficeDrawingReference[] = [];
   for (const element of effectiveSlideElements(slideXml)) {
+    if (element.local === "oleObj" && PRESENTATION.includes(element.ns)) {
+      const id = namespacedAttr(element, "id", OFFICE_RELS);
+      if (id) references.push({ relationshipId: id, oleProgId: element.attrs.get("progId") ?? "" });
+      continue;
+    }
     const fill = element.parent;
     const picture = fill?.parent;
     if (element.local !== "blip" || !DRAWING.includes(element.ns) || fill?.local !== "blipFill" ||
-        !PRESENTATION.includes(fill.ns) || picture?.local !== "pic" || !PRESENTATION.includes(picture.ns)) continue;
+        !PRESENTATION.includes(fill.ns) || picture?.local !== "pic" || !PRESENTATION.includes(picture.ns) ||
+        hasAncestor(picture, "oleObj", PRESENTATION)) continue;
     const id = namespacedAttr(element, "embed", OFFICE_RELS);
-    if (id) ids.push(id);
+    if (id) references.push({ relationshipId: id });
   }
-  return ids;
+  return references;
 }
 
 // Office's clipboard drawing (GVML): DrawingML pictures, usually inside a locked canvas.
@@ -886,29 +909,59 @@ export function drawingPictureRelationshipIds(drawingXml: string): string[] {
   return ids;
 }
 
-export interface WordPictureReference {
-  relationshipId: string;
-  /** 1-based count of paragraphs started before or at the picture, in body order. */
+export interface WordDrawingReference extends OfficeDrawingReference {
+  /** 1-based count of paragraphs started before or at the picture or object, in body order. */
   paragraph: number;
 }
 
 /**
- * Every embedded picture in a Word main document, in body order: DrawingML `a:blip r:embed` and
- * VML `v:imagedata r:id` (embedded-object previews). Only the chosen branch of
+ * Every embedded picture and embedded OLE object in a Word main document, in body order: DrawingML
+ * `a:blip r:embed`, VML `v:imagedata r:id`, and in a `w:object` the object itself (`o:OLEObject`
+ * of type Embed, or `w:objectEmbed`). An object stands in for its preview pictures, at the place
+ * of the first one; a linked object's preview stays a picture. Only the chosen branch of
  * `mc:AlternateContent` is read, so a picture is not reported twice through its fallback.
  */
-export function docxPictureReferences(documentXml: string): WordPictureReference[] {
-  const references: WordPictureReference[] = [];
+export function docxDrawingReferences(documentXml: string): WordDrawingReference[] {
+  const found: { reference: WordDrawingReference; object?: XmlElement }[] = [];
   let paragraph = 0;
   for (const element of effectiveSlideElements(documentXml, understoodWordNamespaces)) {
     if (element.local === "p" && WORD_MAIN.includes(element.ns)) {
       paragraph++;
       continue;
     }
-    let id: string | undefined;
-    if (element.local === "blip" && DRAWING.includes(element.ns)) id = namespacedAttr(element, "embed", OFFICE_RELS);
-    else if (element.local === "imagedata" && element.ns === VML) id = namespacedAttr(element, "id", OFFICE_RELS);
-    if (id) references.push({ relationshipId: id, paragraph: Math.max(paragraph, 1) });
+    let object: XmlElement | undefined;
+    for (let parent = element.parent; parent && !object; parent = parent.parent) {
+      if (parent.local === "object" && WORD_MAIN.includes(parent.ns)) object = parent;
+    }
+    const at = Math.max(paragraph, 1);
+    let reference: WordDrawingReference | undefined;
+    if (element.local === "OLEObject" && element.ns === OFFICE_VML) {
+      const id = namespacedAttr(element, "id", OFFICE_RELS);
+      if (id && element.attrs.get("Type") !== "Link") reference = { relationshipId: id, paragraph: at, oleProgId: element.attrs.get("ProgID") ?? "" };
+    } else if (element.local === "objectEmbed" && WORD_MAIN.includes(element.ns)) {
+      const id = namespacedAttr(element, "id", OFFICE_RELS);
+      if (id) reference = { relationshipId: id, paragraph: at, oleProgId: namespacedAttr(element, "progId", WORD_MAIN) ?? "" };
+    } else {
+      let id: string | undefined;
+      if (element.local === "blip" && DRAWING.includes(element.ns)) id = namespacedAttr(element, "embed", OFFICE_RELS);
+      else if (element.local === "imagedata" && element.ns === VML) id = namespacedAttr(element, "id", OFFICE_RELS);
+      if (id) reference = { relationshipId: id, paragraph: at };
+    }
+    if (reference) found.push({ reference, ...(object ? { object } : {}) });
+  }
+  const objects = new Map<XmlElement, WordDrawingReference>();
+  for (const { reference, object } of found) {
+    if (object && reference.oleProgId !== undefined && !objects.has(object)) objects.set(object, reference);
+  }
+  const references: WordDrawingReference[] = [];
+  const placed = new Set<XmlElement>();
+  for (const { reference, object } of found) {
+    const embedded = object ? objects.get(object) : undefined;
+    if (!object || !embedded) references.push(reference);
+    else if (!placed.has(object)) {
+      placed.add(object);
+      references.push(embedded);
+    }
   }
   return references;
 }

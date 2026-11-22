@@ -56,9 +56,10 @@ fn image_read_formats(png_id: u32, mime_png_id: u32, svg_id: u32) -> [(&'static 
 /// and `FileName` (an 8.3 path), which the text fallback used to turn into a junk text object — and
 /// the formats Office renders on demand: fetching those makes Excel/Word/PowerPoint serialize the
 /// whole selection again (WM_RENDERFORMAT) while ChemDraft's thread waits, for nothing it can use.
-const NON_TEXT_FORMATS: [&str; 40] = [
+const NON_TEXT_FORMATS: [&str; 41] = [
     PNG_FORMAT,
     CDX_FORMAT,
+    "Embedded Object",
     "Embed Source",
     "Link Source",
     "Object Descriptor",
@@ -438,9 +439,10 @@ pub(crate) mod native {
         ValidatedClipboardItem,
     };
     use crate::clipboard_images::{
-        dib_image_item, office_archive_item, office_picture_archive_type, png_image_item,
-        svg_image_item, ClipboardImageItem, ClipboardOfficeItem, SkippedClipboardImageItem,
-        MAX_OFFICE_ARCHIVE_BYTES,
+        dib_image_item, office_archive_item, office_embedded_object_item,
+        office_embedded_object_type, office_picture_archive_type, png_image_item, svg_image_item,
+        ClipboardImageItem, ClipboardOfficeItem, SkippedClipboardImageItem,
+        CHEMDRAFT_SELECTION_TYPE, MAX_OFFICE_ARCHIVE_BYTES, OFFICE_EMBEDDED_OBJECT_TYPES,
     };
     use crate::clipboard_limits::{ClipboardReadBudget, ClipboardReadStep};
     use crate::{is_opaque_clipboard_type, ClipboardReadPayload, ClipboardTextItem};
@@ -759,7 +761,144 @@ pub(crate) mod native {
         }
     }
 
+    /// How long paste waits for Word or PowerPoint to hand over a copied object.
+    const EMBEDDED_OBJECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// A copied ChemDraft OLE object for paste-back: "Embedded Object" from Word or PowerPoint,
+    /// "Embed Source" from its server (the macOS and Linux readers have no such format). Read
+    /// through OLE, which opens the clipboard itself, so `read_payload` calls this before it opens
+    /// the clipboard. Only ChemDraft's own classes are read
+    /// (`office_ole::storage::read_pasted_document`); another program's object, and any failure,
+    /// leave the paste to the other formats.
+    fn read_embedded_object() -> Option<ClipboardOfficeItem> {
+        let available = [CHEMDRAFT_SELECTION_TYPE]
+            .into_iter()
+            .chain(OFFICE_EMBEDDED_OBJECT_TYPES)
+            .filter(|name| {
+                let id = registered(name);
+                // SAFETY: plain Win32 call; it needs no open clipboard.
+                id != 0 && unsafe { IsClipboardFormatAvailable(id) } != 0
+            })
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let source = office_embedded_object_type(&available)?;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        // OLE needs a single-threaded apartment, which this command's worker thread may not be.
+        let spawned = std::thread::Builder::new()
+            .name("ChemDraft OLE paste".into())
+            .spawn(move || {
+                let _ = sender.send(read_ole_object(source));
+            });
+        let outcome = match spawned {
+            Err(error) => Err(format!("Could not start the OLE reader: {error}")),
+            Ok(_) => match receiver.recv_timeout(EMBEDDED_OBJECT_TIMEOUT) {
+                Ok(outcome) => outcome,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    Err(format!("{source} was not ready within 10 seconds"))
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    Err(format!("The OLE reader stopped while reading {source}"))
+                }
+            },
+        };
+        match outcome {
+            Ok(Some((clsid, json))) => Some(office_embedded_object_item(source, clsid, &json)),
+            Ok(None) => None,
+            Err(reason) => {
+                eprintln!("Paste-back skipped the copied Office object: {reason}");
+                None
+            }
+        }
+    }
+
+    /// The class and drawing of the copied object, on a thread of its own.
+    fn read_ole_object(source: &'static str) -> Result<Option<(&'static str, String)>, String> {
+        use windows::Win32::System::Ole::{OleInitialize, OleUninitialize};
+        // SAFETY: balanced by OleUninitialize below, on this thread.
+        unsafe { OleInitialize(None) }.map_err(|error| format!("Could not start OLE: {error}"))?;
+        let result = read_ole_clipboard_object(source);
+        // SAFETY: read_ole_clipboard_object released every interface and medium it obtained.
+        unsafe { OleUninitialize() };
+        result
+    }
+
+    fn read_ole_clipboard_object(
+        source: &'static str,
+    ) -> Result<Option<(&'static str, String)>, String> {
+        use windows::Win32::System::Com::{
+            DVASPECT_CONTENT, FORMATETC, TYMED_HGLOBAL, TYMED_ISTORAGE,
+        };
+        use windows::Win32::System::Ole::{OleGetClipboard, ReleaseStgMedium};
+        let format = u16::try_from(registered(source))
+            .map_err(|_| format!("{source} has no clipboard format ID"))?;
+        // SAFETY: OLE is initialized on this thread (read_ole_object).
+        let data = unsafe { OleGetClipboard() }
+            .map_err(|error| format!("Could not open the OLE clipboard: {error}"))?;
+        let request = FORMATETC {
+            cfFormat: format,
+            ptd: std::ptr::null_mut(),
+            dwAspect: DVASPECT_CONTENT.0,
+            lindex: -1,
+            tymed: (TYMED_ISTORAGE.0 | TYMED_HGLOBAL.0) as u32,
+        };
+        // SAFETY: `request` outlives the call; the medium is released below.
+        let mut medium = unsafe { data.GetData(&request) }
+            .map_err(|error| format!("Could not read {source}: {error}"))?;
+        let result = read_object_medium(source, &medium);
+        // SAFETY: the medium came from GetData, and nothing taken from it is still alive.
+        unsafe { ReleaseStgMedium(&mut medium) };
+        result
+    }
+
+    /// The object's storage, as OLE hands it over (TYMED_ISTORAGE), or opened over the flattened
+    /// compound file a flushed clipboard holds (TYMED_HGLOBAL), within the 50 MiB storage limit.
+    fn read_object_medium(
+        source: &str,
+        medium: &windows::Win32::System::Com::STGMEDIUM,
+    ) -> Result<Option<(&'static str, String)>, String> {
+        use crate::office_ole::storage::MAX_STORAGE_BYTES;
+        use windows::Win32::System::Com::StructuredStorage::{
+            CreateILockBytesOnHGlobal, IStorage, StgOpenStorageOnILockBytes,
+        };
+        use windows::Win32::System::Com::{
+            STGM_READ, STGM_SHARE_EXCLUSIVE, TYMED_HGLOBAL, TYMED_ISTORAGE,
+        };
+        let storage = if medium.tymed == TYMED_ISTORAGE.0 as u32 {
+            // SAFETY: tymed says the union holds a storage; the clone holds its own reference.
+            unsafe { (*medium.u.pstg).clone() }.ok_or_else(|| format!("{source} has no storage"))?
+        } else if medium.tymed == TYMED_HGLOBAL.0 as u32 {
+            // SAFETY: tymed says the union holds a global memory handle, owned by the medium.
+            let memory = unsafe { medium.u.hGlobal };
+            // SAFETY: a valid handle from GetData.
+            if unsafe { windows::Win32::System::Memory::GlobalSize(memory) } > MAX_STORAGE_BYTES {
+                return Err(format!("{source} is over the 50 MiB limit"));
+            }
+            // SAFETY: the lock bytes and the storage are dropped before the medium is released,
+            // and they never free the memory (fDeleteOnRelease is false).
+            let bytes = unsafe { CreateILockBytesOnHGlobal(Some(memory), false) }
+                .map_err(|error| format!("Could not read {source}: {error}"))?;
+            unsafe {
+                StgOpenStorageOnILockBytes(
+                    &bytes,
+                    None::<&IStorage>,
+                    STGM_READ | STGM_SHARE_EXCLUSIVE,
+                    None,
+                    None,
+                )
+            }
+            .map_err(|error| format!("{source} is not an OLE storage: {error}"))?
+        } else {
+            return Err(format!(
+                "{source} came in an unexpected medium ({})",
+                medium.tymed
+            ));
+        };
+        crate::office_ole::server::pasted_drawing(&storage).map_err(|error| error.message())
+    }
+
     pub(crate) fn read_payload() -> Result<ClipboardReadPayload, String> {
+        // OLE opens the clipboard itself, so a copied object is read before this thread does.
+        let embedded_object = read_embedded_object();
         let _clipboard = OpenedClipboard::open(std::ptr::null_mut())?;
         let mut types = Vec::new();
         let mut text_items = Vec::new();
@@ -844,7 +983,20 @@ pub(crate) mod native {
             }
         }
         text_items.sort_by_key(|item| types.iter().position(|kind| kind == &item.r#type));
-        let office_items = read_office_items(&types, &mut budget);
+        // A ChemDraft object wins over Office's picture archive, which is then not fetched. The
+        // object was read before the clipboard was opened, so it must still be on offer.
+        let office_items = match embedded_object
+            .filter(|item| office_embedded_object_type(&types) == Some(item.r#type.as_str()))
+        {
+            Some(item) => match budget.reserve(&item.r#type, item.bytes_base64.len()) {
+                Ok(()) => vec![item],
+                Err(reason) => {
+                    eprintln!("Paste-back skipped the copied Office object: {reason}");
+                    read_office_items(&types, &mut budget)
+                }
+            },
+            None => read_office_items(&types, &mut budget),
+        };
         Ok(ClipboardReadPayload {
             types,
             text_items,

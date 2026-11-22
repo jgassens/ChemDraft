@@ -5,6 +5,8 @@
 mod data;
 mod persist;
 
+pub(crate) use persist::pasted_drawing;
+
 use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet},

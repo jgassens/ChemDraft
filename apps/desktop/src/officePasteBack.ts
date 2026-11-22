@@ -4,11 +4,12 @@ import type { ChemDraftSelectionClipboardPayload } from "./documentWorkflow";
 import { checkOfficeStructure, insertOfficeStructures, placementWarnings } from "./officeStructureImport";
 
 /**
- * Paste-back (docs/architecture/office-editing.md, slice 3): paste a ChemDraft structure picture
- * copied in Word or PowerPoint as the editable structure its carrier holds. The package layer
- * (`recoverPasteBackFromClipboard`) finds the carriers; this layer runs the importer's own
- * chemistry check (`checkOfficeStructure`, then a trial placement with `insertOfficeStructures`),
- * so a drawing is pasted only if its chemistry survives (AGENTS.md §7).
+ * Paste-back (docs/architecture/office-editing.md, slice 3): paste a ChemDraft structure picture,
+ * or a ChemDraft embedded object (Windows), copied in Word or PowerPoint as the editable structure
+ * its carrier or object holds. The package layer (`recoverPasteBackFromClipboard`) finds the
+ * drawings; this layer runs the importer's own chemistry check (`checkOfficeStructure`, then a
+ * trial placement with `insertOfficeStructures`), so a drawing is pasted only if its chemistry
+ * survives (AGENTS.md §7). An embedded object gets exactly the same checks as a picture.
  */
 
 export const OFFICE_PASTE_BACK_UNDO_LABEL = "Paste Structures";
@@ -50,12 +51,13 @@ export async function officePasteBackDecision(
   }
 
   const details = [...carrierDetails];
-  const checked: { location: string; payload: ChemDraftSelectionClipboardPayload }[] = [];
+  const checked: { location: string; copied: string; payload: ChemDraftSelectionClipboardPayload }[] = [];
   const failures: string[] = [];
   for (const [index, structure] of result.structures.entries()) {
-    const location = result.structures.length === 1 ? "the copied picture" : `copied picture ${index + 1}`;
+    const copied = structure.source === "embedded-object" ? "object" : "picture";
+    const location = result.structures.length === 1 ? `the copied ${copied}` : `copied ${copied} ${index + 1}`;
     const check = checkOfficeStructure(structure);
-    if (check.ok) checked.push({ location, payload: check.payload });
+    if (check.ok) checked.push({ location, copied, payload: check.payload });
     else failures.push(`The structure in ${location} failed the chemistry check: ${check.reason}.`);
   }
   // The importer's placement check: each drawing must keep its chemistry once placed.
@@ -72,13 +74,13 @@ export async function officePasteBackDecision(
   const skipped = failures.length + result.refusals.length;
   if (!placed.length) {
     return { kind: "refused", message: `${(failures[0] ?? result.refusals[0]?.message ?? "The copied structure could not be read.").replace(
-      /^The structure in the copied picture/, "The copied structure")} Nothing was pasted.`, details };
+      /^The structure in the copied (?:picture|object)/, "The copied structure")} Nothing was pasted.`, details };
   }
   const skippedNote = skipped
     ? ` Skipped ${plural(skipped, "other structure")} with damaged data or a failed chemistry check.` : "";
   if (placed.length === 1) {
-    const { payload } = checked.find((drawing) => drawing.location === placed[0]!.location)!;
-    return { kind: "selection", payload, message: `Pasted the ChemDraft structure from the copied picture.${skippedNote}`, details };
+    const { payload, copied } = checked.find((drawing) => drawing.location === placed[0]!.location)!;
+    return { kind: "selection", payload, message: `Pasted the ChemDraft structure from the copied ${copied}.${skippedNote}`, details };
   }
   return { kind: "document", document: insertion!.document,
     message: `Pasted ${plural(placed.length, "ChemDraft structure")} from the copied pictures.${skippedNote}${lost.message}`, details };

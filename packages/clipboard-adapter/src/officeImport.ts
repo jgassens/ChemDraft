@@ -1,13 +1,15 @@
 import {
-  docxPictureReferences, folderOf, isOfficeRelationshipType, officeMainPartKind, officeRelationships, pptxSlidePictureRelationshipIds,
+  docxDrawingReferences, folderOf, isOfficeRelationshipType, officeMainPartKind, officeRelationships, pptxSlideDrawingReferences,
   pptxSlideRelationshipIds, readZip, relsPartFor, resolvePartTarget, type OfficeRelationship, type OfficeZipEntry,
 } from "./officePackage";
+import { isChemDraftOleProgId, readChemDraftOleObject } from "./oleObject";
 import { readChemDraftSelectionFromPng, type CarrierReadResult } from "./pngSelection";
 
 /**
- * Find every ChemDraft structure (a carrier PNG) in a .docx or .pptx file. Pure and bounded: the
- * file is untrusted input, so the ZIP layer, the XML layer and the carrier reader each enforce
- * their own limits, and this layer adds a lower archive limit, entry-name checks and a picture cap.
+ * Find every ChemDraft structure (a carrier PNG, or a ChemDraft embedded OLE object made on
+ * Windows) in a .docx or .pptx file. Pure and bounded: the file is untrusted input, so the ZIP
+ * layer, the XML layer, the compound-file reader and the carrier reader each enforce their own
+ * limits, and this layer adds a lower archive limit, entry-name checks and a picture cap.
  */
 
 /** The file limits, lower than the generic Office ZIP reader's hard limits. */
@@ -50,7 +52,10 @@ export interface OfficeStructure {
   source: OfficeStructureSource;
   /** Plain words for the source: "slide 2", "paragraph 14". */
   location: string;
-  /** The package part holding the PNG, e.g. `ppt/media/image3.png`. */
+  /**
+   * The package part holding the PNG, e.g. `ppt/media/image3.png`, or the embedded object, e.g.
+   * `word/embeddings/oleObject1.bin`.
+   */
   mediaPart: string;
   /** The carrier's exact UTF-8 JSON. */
   json: string;
@@ -85,6 +90,9 @@ export interface OfficeImportResult {
 
 export const SUPPORTED_CARRIER_VERSIONS: readonly number[] = [1];
 
+/** A carrier's text from a picture (`CarrierReadResult`) or from a ChemDraft OLE object's document stream. */
+export type CarrierText = Exclude<CarrierReadResult, { kind: "found" }> | { kind: "found"; json: string };
+
 export type CarrierEnvelope =
   | { ok: true; json: string; document: Record<string, unknown> }
   /** `phrase` completes "The structure on slide 2 …" or "The copied structure …". */
@@ -97,7 +105,7 @@ export type CarrierEnvelope =
  * JSON is parsed. Returns undefined for a picture without a carrier.
  */
 export function readCarrierEnvelope(
-  read: CarrierReadResult, maxJsonBytes: number, admitJsonBytes?: (bytes: number) => string | undefined,
+  read: CarrierText, maxJsonBytes: number, admitJsonBytes?: (bytes: number) => string | undefined,
 ): CarrierEnvelope | undefined {
   if (read.kind === "absent") return undefined;
   if (read.kind === "unsupported") return { ok: false, reason: "unsupported", phrase: `could not be read on this system: ${read.reason}` };
@@ -173,6 +181,8 @@ function locationOf(source: OfficeStructureSource): string {
 interface PictureRef {
   source: OfficeStructureSource;
   relationshipId: string;
+  /** Set for an embedded OLE object: the ProgID its markup names. */
+  oleProgId?: string;
   ownerPart: string;
   relationships: ReadonlyMap<string, OfficeRelationship>;
 }
@@ -284,12 +294,13 @@ export async function importOfficeStructures(
   if (kind === "word") {
     let references;
     try {
-      references = docxPictureReferences(mainXml);
+      references = docxDrawingReferences(mainXml);
     } catch (error) {
       throw malformed(`document body ${mainPart}`, error);
     }
-    for (const { relationshipId, paragraph } of references) {
-      pictureRefs.push({ source: { kind: "paragraph", paragraph }, relationshipId, ownerPart: mainPart, relationships: mainRelationships });
+    for (const { relationshipId, paragraph, oleProgId } of references) {
+      pictureRefs.push({ source: { kind: "paragraph", paragraph }, relationshipId, ...(oleProgId === undefined ? {} : { oleProgId }),
+        ownerPart: mainPart, relationships: mainRelationships });
     }
   } else {
     let slideIds: string[];
@@ -305,15 +316,16 @@ export async function importOfficeStructures(
         ? resolvePartTarget(folderOf(mainPart), relationship.target) : null;
       const slideXml = slidePart ? text(slidePart) : undefined;
       if (!slidePart || slideXml === undefined) continue;
-      let ids: string[];
+      let references: ReturnType<typeof pptxSlideDrawingReferences>;
       try {
-        ids = pptxSlidePictureRelationshipIds(slideXml);
+        references = pptxSlideDrawingReferences(slideXml);
       } catch (error) {
         throw malformed(`slide ${slide}`, error);
       }
       const relationships = relationshipsOf(slidePart);
-      for (const relationshipId of ids) {
-        pictureRefs.push({ source: { kind: "slide", slide }, relationshipId, ownerPart: slidePart, relationships });
+      for (const { relationshipId, oleProgId } of references) {
+        pictureRefs.push({ source: { kind: "slide", slide }, relationshipId, ...(oleProgId === undefined ? {} : { oleProgId }),
+          ownerPart: slidePart, relationships });
       }
     }
   }
@@ -322,30 +334,78 @@ export async function importOfficeStructures(
   if (pictureRefs.length > limits.maxPictures) {
     notes.push(`Only the first ${limits.maxPictures} of ${pictureRefs.length} pictures were checked for ChemDraft structures.`);
   }
+  const checkedRefs = pictureRefs.slice(0, limits.maxPictures);
+  // An embedded object's own part is inflated only when the document places the object, in a
+  // second, equally bounded pass over the same archive.
+  const objectParts = new Set<string>();
+  for (const ref of checkedRefs) {
+    const relationship = ref.oleProgId === undefined ? undefined : ref.relationships.get(ref.relationshipId);
+    if (!relationship || relationship.external || !isOfficeRelationshipType(relationship.type, "oleObject")) continue;
+    const part = resolvePartTarget(folderOf(ref.ownerPart), relationship.target);
+    if (part && parts.get(part.toLowerCase())?.skipped) objectParts.add(part.toLowerCase());
+  }
+  if (objectParts.size) {
+    try {
+      const objects = await readZip(bytes, {
+        maxArchiveBytes: limits.maxArchiveBytes,
+        maxEntries: limits.maxEntries,
+        maxEntryBytes: limits.maxEntryBytes,
+        maxInflatedBytes: limits.maxInflatedBytes,
+        include: (name) => objectParts.has(name.toLowerCase()),
+      });
+      for (const entry of objects) if (!entry.skipped) parts.set(entry.name.toLowerCase(), entry);
+    } catch (error) {
+      throw malformed("embedded objects", error);
+    }
+  }
+
   const structures: OfficeStructure[] = [];
   const warnings: OfficeCarrierWarning[] = [];
   const readByPart = new Map<string, Awaited<ReturnType<typeof readChemDraftSelectionFromPng>>>();
   let totalJsonBytes = 0;
 
-  for (const [index, ref] of pictureRefs.slice(0, limits.maxPictures).entries()) {
+  for (const [index, ref] of checkedRefs.entries()) {
     const picture = index + 1;
     const { source } = ref;
     const location = locationOf(source);
     const relationship = ref.relationships.get(ref.relationshipId);
-    // Linked (external) pictures and non-image relationships cannot hold a carrier.
-    if (!relationship || relationship.external || !isOfficeRelationshipType(relationship.type, "image")) continue;
+    const embedded = ref.oleProgId !== undefined;
+    // Linked (external) pictures and objects, and other relationships, cannot hold a drawing.
+    if (!relationship || relationship.external || !isOfficeRelationshipType(relationship.type, embedded ? "oleObject" : "image")) continue;
     const mediaPart = resolvePartTarget(folderOf(ref.ownerPart), relationship.target);
     if (!mediaPart) {
       warnings.push({ picture, source, location, reason: "malformed",
-        message: `The picture on ${location} points outside the file, so it was not read.` });
+        message: `The ${embedded ? "object" : "picture"} on ${location} points outside the file, so it was not read.` });
       continue;
     }
     const entry = parts.get(mediaPart.toLowerCase());
-    if (!entry || entry.skipped || entry.data[0] !== 0x89 || entry.data[1] !== 0x50) continue; // not a PNG
-    let read = readByPart.get(entry.name);
-    if (!read) {
-      read = await readChemDraftSelectionFromPng(entry.data);
-      readByPart.set(entry.name, read);
+    let read: CarrierText;
+    if (embedded) {
+      if (!entry || entry.skipped) continue;
+      // The object's class decides, not its preview: a ChemDraft object's preview holds no carrier.
+      const object = readChemDraftOleObject(entry.data, limits.maxCarrierJsonBytes);
+      if (object.kind === "other") continue; // another program's object
+      if (object.kind === "too-large") {
+        warnings.push({ picture, source, location, mediaPart: entry.name, reason: "too-large",
+          message: `The structure on ${location} is larger than the ${megabytes(limits.maxCarrierJsonBytes)} limit for one structure.` });
+        continue;
+      }
+      if (object.kind === "invalid") {
+        if (!isChemDraftOleProgId(ref.oleProgId) && !object.clsid) continue; // unreadable, and not marked as ChemDraft's
+        warnings.push({ picture, source, location, mediaPart: entry.name, reason: "malformed",
+          message: `The embedded ChemDraft object on ${location} could not be read: ${object.reason}. ` +
+            "Open the file in Word or PowerPoint on Windows, copy the object and paste it into ChemDraft." });
+        continue;
+      }
+      read = { kind: "found", json: object.json };
+    } else {
+      if (!entry || entry.skipped || entry.data[0] !== 0x89 || entry.data[1] !== 0x50) continue; // not a PNG
+      let png = readByPart.get(entry.name);
+      if (!png) {
+        png = await readChemDraftSelectionFromPng(entry.data);
+        readByPart.set(entry.name, png);
+      }
+      read = png;
     }
     const envelope = readCarrierEnvelope(read, limits.maxCarrierJsonBytes, (jsonBytes) => {
       if (totalJsonBytes + jsonBytes > limits.maxTotalCarrierJsonBytes) {
