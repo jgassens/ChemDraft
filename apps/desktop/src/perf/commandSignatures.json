@@ -748,7 +748,7 @@
     "name": "engine3d_sidecar_status",
     "async": false,
     "generics": "",
-    "parameters": "",
+    "parameters": "diagnostic: Option<String>",
     "returnType": "Engine3dSidecarStatus"
   },
   {
