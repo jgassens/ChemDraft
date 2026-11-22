@@ -1055,7 +1055,7 @@ mod tests {
         for (remove_open, survives) in [(true, false), (false, true)] {
             let folder = Folder::new(&format!("cancel-in-flight-{remove_open}"));
             let writer = folder.writer();
-            let tracker = Mutex::new(Tracker::new());
+            let tracker: Mutex<Tracker<&'static str>> = Mutex::new(Tracker::new());
             tracker
                 .lock()
                 .unwrap()
