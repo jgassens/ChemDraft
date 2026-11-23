@@ -24,8 +24,23 @@ describe("Office paste-back commit", () => {
     const placed = translateInsertedDocumentObjects(prepared, prepared.selection.objectIds,
       atom.x - payload.bounds.centerX, atom.y - 8 - payload.bounds.centerY);
     const normalized = normalizeCommittedDocument(placed);
-    expect(normalized.pages[0]!.objects[0]).toMatchObject({ atoms: [expect.objectContaining({ formalCharge: 1 }), expect.anything()] });
-    expect(() => assertOfficePastePreservesExistingChemistry(before, normalized))
+    // Main keeps a copied loose mark loose, so it no longer charges the atom beside it.
+    const normalizedMolecule = normalized.pages[0]!.objects.find((object) => object.type === "molecule");
+    if (!normalizedMolecule || normalizedMolecule.type !== "molecule") throw new Error("Expected a native molecule.");
+    expect(normalizedMolecule.atoms[0]!.formalCharge).toBe(0);
+    expect(normalized.pages[0]!.objects.some((object) => object.type === "electron-mark" && object.anchor.kind === "point")).toBe(true);
+    expect(() => assertOfficePastePreservesExistingChemistry(before, normalized)).not.toThrow();
+    // The guard still refuses a final document that changes an existing atom's chemistry.
+    const charged = {
+      ...normalized,
+      pages: normalized.pages.map((page, index) => index !== 0 ? page : {
+        ...page,
+        objects: page.objects.map((object) => object.type === "molecule" && object.id === molecule.id
+          ? { ...object, atoms: object.atoms.map((candidate) => candidate.id === atom.id ? { ...candidate, formalCharge: 1 } : candidate) }
+          : object),
+      }),
+    };
+    expect(() => assertOfficePastePreservesExistingChemistry(before, charged))
       .toThrow(/formal charge on C atom .* would change from 0 to 1\. Nothing was pasted\./);
     expect(atom.formalCharge).toBe(0);
   });
