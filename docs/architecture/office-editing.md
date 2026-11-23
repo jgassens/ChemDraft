@@ -499,7 +499,8 @@ valid structure as one undo entry, left selected.
   pure, and built on the slice 0 pieces: `readZip`, the namespace-aware XML reader and
   `readChemDraftSelectionFromPng`. PowerPoint: slides in `p:sldIdLst` order, then each slide's
   `p:pic/p:blipFill/a:blip`, groups included, in reading order within the slide (left to right, then
-  top to bottom; the same row rule as paste-back), not drawing order. Word: the main document's DrawingML `a:blip` and VML
+  top to bottom; the same row rule as paste-back; positions include group and picture flips and
+  rotations), not drawing order. Word: the main document's DrawingML `a:blip` and VML
   `v:imagedata` in body order, with the paragraph they fall in. In both, ChemDraft embedded objects
   are read too (see "paste and import of ChemDraft embedded objects" below). Both read
   only the chosen branch of `mc:AlternateContent`, so a picture is not counted twice through its
@@ -544,7 +545,8 @@ ChemDraft: the editable structure is pasted, not a flat picture.
   also puts on the clipboard: `readZip`, the root and drawing relationships (falling back to every
   PNG part when an archive lacks them), then `readChemDraftSelectionFromPng` on each picture, in
   reading order: left to right, then top to bottom (`inReadingOrder`: pictures whose vertical
-  centers are within half the smaller height share a row), not drawing order. Then the PNG flavor (ChemDraft's own, or Office's when it kept the chunk), only
+  centers are within half the smaller height share a row; positions include group and picture flips
+  and rotations), not drawing order. Then the PNG flavor (ChemDraft's own, or Office's when it kept the chunk), only
   when the archive gave no structure. Carriers are judged by `readCarrierEnvelope`, which the file
   importer now uses too, so both refuse the same carriers with the same words.
 - **EMF+ is not read**, and the result says so when an EMF flavor is present: ChemDraft has no EMF

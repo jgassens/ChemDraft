@@ -874,23 +874,60 @@ interface ShapeFrame {
   ext?: [number, number];
   chOff?: [number, number];
   chExt?: [number, number];
+  /** Rotation in degrees, clockwise, about the shape's own center (`rot` is in 60000ths of a degree). */
+  rotation?: number;
+  flipH?: boolean;
+  flipV?: boolean;
+}
+
+type Point = [number, number];
+
+function drawingFlag(value: string | undefined): boolean {
+  return value === "1" || value === "true";
+}
+
+/** Rotates a point clockwise (the page's y axis points down) about a center. */
+function rotateAbout(point: Point, center: Point, degrees: number): Point {
+  if (!degrees) return point;
+  const radians = (degrees * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const dx = point[0] - center[0];
+  const dy = point[1] - center[1];
+  return [center[0] + dx * cos - dy * sin, center[1] + dx * sin + dy * cos];
 }
 
 /**
  * Collects shape transforms (`a:xfrm` in `spPr`/`grpSpPr`, `p:xfrm` on a graphic frame) while a
- * drawing's effective elements are walked, then places a shape through its groups' child frames.
+ * drawing's effective elements are walked, then places a shape through its groups' child frames,
+ * including each shape's and group's flips and rotation.
  */
 class DrawingGeometry {
   private readonly frames = new Map<XmlElement, ShapeFrame>();
 
+  private shapeOf(xfrm: XmlElement): XmlElement | undefined {
+    if (xfrm.local !== "xfrm" || !(DRAWING.includes(xfrm.ns) || PRESENTATION.includes(xfrm.ns))) return undefined;
+    const holder = xfrm.parent;
+    return holder?.local === "spPr" || holder?.local === "grpSpPr" ? holder.parent
+      : holder?.local === "graphicFrame" ? holder : undefined;
+  }
+
   /** Feed every effective element, in document order. */
   observe(element: XmlElement): void {
+    if (element.local === "xfrm") {
+      const shape = this.shapeOf(element);
+      if (!shape) return;
+      const frame = this.frames.get(shape) ?? {};
+      const rot = Number(element.attrs.get("rot") ?? 0);
+      frame.rotation ??= Number.isFinite(rot) ? rot / 60000 : 0;
+      frame.flipH ??= drawingFlag(element.attrs.get("flipH"));
+      frame.flipV ??= drawingFlag(element.attrs.get("flipV"));
+      this.frames.set(shape, frame);
+      return;
+    }
     const xfrm = element.parent;
-    if (!xfrm || xfrm.local !== "xfrm" || !DRAWING.includes(element.ns) ||
-        !(DRAWING.includes(xfrm.ns) || PRESENTATION.includes(xfrm.ns))) return;
-    const holder = xfrm.parent;
-    const shape = holder?.local === "spPr" || holder?.local === "grpSpPr" ? holder.parent
-      : holder?.local === "graphicFrame" ? holder : undefined;
+    if (!xfrm || !DRAWING.includes(element.ns)) return;
+    const shape = this.shapeOf(xfrm);
     if (!shape) return;
     const pair = (first: string, second: string): [number, number] | undefined => {
       const a = Number(element.attrs.get(first));
@@ -906,23 +943,39 @@ class DrawingGeometry {
     this.frames.set(shape, frame);
   }
 
-  /** The shape's box on the page, or undefined when the shape itself has no offset and extent. */
+  /**
+   * The shape's box on the page, or undefined when the shape itself has no offset and extent. It is
+   * the bounding box of the shape's four corners after its own rotation and each enclosing group's
+   * child-space mapping, flips and rotation (innermost group first, as DrawingML composes them).
+   */
   box(shape: XmlElement | undefined): DrawingBox | undefined {
     const own = shape ? this.frames.get(shape) : undefined;
     if (!shape || !own?.off || !own.ext) return undefined;
-    let [x, y] = own.off;
-    let [width, height] = own.ext;
+    const [x, y] = own.off;
+    const [width, height] = own.ext;
+    const center: Point = [x + width / 2, y + height / 2];
+    let corners: Point[] = ([[x, y], [x + width, y], [x + width, y + height], [x, y + height]] as Point[])
+      .map((corner) => rotateAbout(corner, center, own.rotation ?? 0));
     for (let group = shape.parent; group; group = group.parent) {
       const frame = this.frames.get(group);
       if (!frame?.off || !frame.ext || !frame.chOff || !frame.chExt) continue;
-      const scaleX = frame.chExt[0] ? frame.ext[0] / frame.chExt[0] : 1;
-      const scaleY = frame.chExt[1] ? frame.ext[1] / frame.chExt[1] : 1;
-      x = frame.off[0] + (x - frame.chOff[0]) * scaleX;
-      y = frame.off[1] + (y - frame.chOff[1]) * scaleY;
-      width *= scaleX;
-      height *= scaleY;
+      const { off, ext, chOff, chExt } = frame;
+      const scaleX = chExt[0] ? ext[0] / chExt[0] : 1;
+      const scaleY = chExt[1] ? ext[1] / chExt[1] : 1;
+      const groupCenter: Point = [off[0] + ext[0] / 2, off[1] + ext[1] / 2];
+      corners = corners.map(([cx, cy]) => {
+        let px = off[0] + (cx - chOff[0]) * scaleX;
+        let py = off[1] + (cy - chOff[1]) * scaleY;
+        if (frame.flipH) px = 2 * groupCenter[0] - px;
+        if (frame.flipV) py = 2 * groupCenter[1] - py;
+        return rotateAbout([px, py], groupCenter, frame.rotation ?? 0);
+      });
     }
-    return { x, y, width: Math.abs(width), height: Math.abs(height) };
+    const xs = corners.map((corner) => corner[0]);
+    const ys = corners.map((corner) => corner[1]);
+    const left = Math.min(...xs);
+    const top = Math.min(...ys);
+    return { x: left, y: top, width: Math.max(...xs) - left, height: Math.max(...ys) - top };
   }
 }
 

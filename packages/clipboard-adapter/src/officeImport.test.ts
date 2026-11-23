@@ -498,3 +498,78 @@ describe("inReadingOrder", () => {
     expect(order([["none"], ["B", [10, 0, 5, 5]], ["also none"], ["A", [0, 0, 5, 5]]])).toEqual(["A", "B", "none", "also none"]);
   });
 });
+
+describe("reading order through group and picture flips and rotations", () => {
+  type Rect = [number, number, number, number];
+  const picture = (embed: string, [x, y, cx, cy]: Rect, attrs = "") =>
+    `<p:pic><p:nvPicPr><p:cNvPr id="1" name="${embed}"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr>` +
+    `<p:blipFill><a:blip r:embed="${embed}"/></p:blipFill>` +
+    `<p:spPr><a:xfrm${attrs}><a:off x="${x}" y="${y}"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm></p:spPr></p:pic>`;
+  /** A group whose child space equals its own frame unless `child` says otherwise. */
+  const group = (frame: Rect, attrs: string, body: string, child: Rect = frame) =>
+    `<p:grpSp><p:nvGrpSpPr><p:cNvPr id="9" name="Group"/></p:nvGrpSpPr><p:grpSpPr><a:xfrm${attrs}>` +
+    `<a:off x="${frame[0]}" y="${frame[1]}"/><a:ext cx="${frame[2]}" cy="${frame[3]}"/>` +
+    `<a:chOff x="${child[0]}" y="${child[1]}"/><a:chExt cx="${child[2]}" cy="${child[3]}"/></a:xfrm></p:grpSpPr>${body}</p:grpSp>`;
+  const read = (body: string) => {
+    const references = pptxSlideDrawingReferences(slide(body));
+    return { order: inReadingOrder(references, (reference) => reference.box).map((reference) => reference.relationshipId), references };
+  };
+  const boxOf = (references: ReturnType<typeof pptxSlideDrawingReferences>, id: string) => references.find((reference) => reference.relationshipId === id)?.box;
+  const expectBox = (actual: DrawingBox | undefined, expected: Rect) => {
+    expect(actual).toBeDefined();
+    expect([actual!.x, actual!.y, actual!.width, actual!.height].map(Math.round)).toEqual(expected);
+  };
+
+  it("leaves an unflipped, unrotated group in its stored order", () => {
+    const pictures = picture("A", [0, 0, 500, 1000]) + picture("B", [1500, 0, 500, 1000]);
+    expect(read(group([0, 0, 2000, 1000], "", pictures)).order).toEqual(["A", "B"]);
+  });
+
+  it("reverses the order of a horizontally flipped group", () => {
+    const { order, references } = read(group([0, 0, 2000, 1000], ' flipH="1"', picture("A", [0, 0, 500, 1000]) + picture("B", [1500, 0, 500, 1000])));
+    expect(order).toEqual(["B", "A"]);
+    expectBox(boxOf(references, "A"), [1500, 0, 500, 1000]);
+    expectBox(boxOf(references, "B"), [0, 0, 500, 1000]);
+  });
+
+  it("reverses the rows of a vertically flipped group", () => {
+    const body = picture("A", [500, 0, 500, 1000]) + picture("B", [0, 2000, 500, 1000]);
+    expect(read(group([0, 0, 1000, 3000], "", body)).order).toEqual(["A", "B"]);
+    const flipped = read(group([0, 0, 1000, 3000], ' flipV="1"', body));
+    expect(flipped.order).toEqual(["B", "A"]);
+    expectBox(boxOf(flipped.references, "A"), [500, 2000, 500, 1000]);
+  });
+
+  it("turns a column into a row when the group is rotated 90 degrees", () => {
+    const body = picture("A", [0, 0, 1000, 1000]) + picture("B", [0, 2000, 1000, 1000]);
+    // Unrotated, A is above B; a quarter turn clockwise puts A on the right and B on the left.
+    expect(read(group([0, 0, 1000, 3000], "", body)).order).toEqual(["A", "B"]);
+    const rotated = read(group([0, 0, 1000, 3000], ' rot="5400000"', body));
+    expect(rotated.order).toEqual(["B", "A"]);
+    expectBox(boxOf(rotated.references, "A"), [1000, 1000, 1000, 1000]);
+    expectBox(boxOf(rotated.references, "B"), [-1000, 1000, 1000, 1000]);
+  });
+
+  it("composes a rotated group nested in a flipped group, and maps child space to the frame", () => {
+    const inner = group([0, 0, 2000, 1000], ' rot="10800000"', picture("A", [0, 0, 500, 500]) + picture("B", [1500, 500, 500, 500]));
+    const { order, references } = read(group([0, 0, 4000, 1000], ' flipH="1"', inner + picture("C", [2500, 0, 500, 1000])));
+    expectBox(boxOf(references, "A"), [2000, 500, 500, 500]);
+    expectBox(boxOf(references, "B"), [3500, 0, 500, 500]);
+    expectBox(boxOf(references, "C"), [1000, 0, 500, 1000]);
+    expect(order).toEqual(["C", "B", "A"]);
+    // Child space scaled into the frame, then flipped: chExt 1000 -> ext 2000, so x 100..600 -> 200..1200 -> 800..1800.
+    const scaled = read(group([0, 0, 2000, 1000], ' flipH="1"', picture("S", [100, 0, 500, 1000]), [0, 0, 1000, 500]));
+    expectBox(boxOf(scaled.references, "S"), [800, 0, 1000, 2000]);
+  });
+
+  it("uses an individually rotated picture's bounds for the row rule", () => {
+    // R is 3000 wide and 1000 high, so it shares no row with P (3000 high) until a quarter turn
+    // makes it 3000 high too: then it reads before P, which sits to its right.
+    const tall = picture("P", [5000, 0, 1000, 3000]);
+    const flat = (attrs: string) => picture("R", [0, 1900, 3000, 1000], attrs);
+    expect(read(tall + flat("")).order).toEqual(["P", "R"]);
+    const rotated = read(tall + flat(' rot="5400000"'));
+    expectBox(boxOf(rotated.references, "R"), [1000, 900, 1000, 3000]);
+    expect(rotated.order).toEqual(["R", "P"]);
+  });
+});
