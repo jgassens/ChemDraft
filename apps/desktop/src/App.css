@@ -1166,7 +1166,12 @@ textarea:focus-visible,
 
 .ring-inspector-controls {
   grid-template-columns: minmax(0, 1fr);
-  max-height: 320px;
+  max-height: none;
+}
+
+.ring-inspector-controls .molecule-inspector-target-key {
+  /* The controls set the palette width. Long ring keys still ellipsize in the target row. */
+  contain: inline-size;
 }
 
 .molecule-inspector-tab-rail {

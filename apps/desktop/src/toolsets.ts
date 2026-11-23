@@ -667,7 +667,7 @@ const HORIZONTAL_PALETTE_FRAME_WIDTH = 7 + 2 * 6 + 2;
 const HORIZONTAL_PALETTE_FRAME_HEIGHT = 22 + 3 + 4;
 
 export function toolsetUsesResizableWindow(id: string): boolean {
-  return id === "core.molecularInspector" || id === "core.drawnStructureSettings" || id === "core.ringInspector";
+  return id === "core.molecularInspector" || id === "core.drawnStructureSettings";
 }
 
 export function initialToolsetWindowSize(

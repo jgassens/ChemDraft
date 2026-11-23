@@ -14,7 +14,8 @@ import {
   commandShortcutDisplay,
   compactMacShortcutLabel,
   formatShortcutLabel,
-  platformShortcutLabel
+  platformShortcutLabel,
+  toolsetUsesResizableWindow
 } from "./toolsets";
 import { formatMenuShortcut } from "./appMenu";
 
@@ -86,6 +87,11 @@ function registry(toolsets: ToolsetDefinition[]): DesktopToolsetRegistry {
 }
 
 describe("desktop toolset mapping", () => {
+  it("reserves manual resizing for the two dynamic inspectors", () => {
+    expect(desktopToolsets.filter(toolset => toolsetUsesResizableWindow(toolset.id)).map(toolset => toolset.id))
+      .toEqual(["core.drawnStructureSettings", "core.molecularInspector"]);
+  });
+
   it("keeps Round Bracket beside Square Bracket in defaults and older saved orders", () => {
     const defaults = getToolsetItemGroups("core.main").flat().map(item => item.id);
     expect(defaults[defaults.indexOf("tool.squareBracket") + 1]).toBe("tool.roundBracket");
