@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { defineConfig, mergeConfig, normalizePath, type Plugin } from "vite";
 import desktopConfig from "../vite.config";
 import app from "../package.json";
+import { renderOfficeManifest } from "./manifest";
 
 const path = (name: string) => fileURLToPath(new URL(name, import.meta.url));
 // Vite compares and returns module IDs with forward slashes; fileURLToPath gives backslashes on Windows.
@@ -25,11 +26,7 @@ function officeAssets(): Plugin {
       delete bundle["office.html"];
       pane.fileName = "taskpane.html";
       bundle[pane.fileName] = pane;
-      const version = /^\d+\.\d+\.\d+/.exec(app.version)?.[0];
-      if (!version) throw new Error("Invalid ChemDraft app version.");
-      const source = readFileSync(path("./manifest.xml"), "utf8")
-        .replaceAll("{{AppVersion}}", app.version)
-        .replaceAll("{{ManifestVersion}}", version + ".0");
+      const source = renderOfficeManifest(readFileSync(path("./manifest.xml"), "utf8"), app.version);
       this.emitFile({ type: "asset", fileName: "manifest.xml", source });
       for (const size of [16, 32, 80]) {
         const fileName = "icon-" + size + ".png";

@@ -21,14 +21,13 @@ import { MemoryStorage } from "./testSupport/memoryStorage";
 const tauri = vi.hoisted(() => ({
   desktop: true,
   invoke: vi.fn<(command: string, args?: InvokeArgs, options?: InvokeOptions) => Promise<unknown>>(),
-  setTitle: vi.fn<(title: string) => Promise<void>>(),
   message: vi.fn<(message: string, options: unknown) => Promise<string>>()
 }));
 vi.mock("@tauri-apps/api/core", async original => ({
   ...await original<typeof import("@tauri-apps/api/core")>(), invoke: tauri.invoke, isTauri: () => tauri.desktop
 }));
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ label: "office-object-17", setTitle: tauri.setTitle })
+  getCurrentWindow: () => ({ label: "office-object-17" })
 }));
 vi.mock("./window-manager", async original => ({
   ...await original<typeof import("./window-manager")>(), isDesktopRuntime: () => tauri.desktop
@@ -98,7 +97,6 @@ describe("Office embedded document window", () => {
     openPayload = { objectId: "17", json: selectionJson, containerApp: "Microsoft Word", containerDocument: "Report.docx" };
     window.history.replaceState(null, "", "/?officeObject=17");
     tauri.desktop = true;
-    tauri.setTitle.mockReset().mockResolvedValue(undefined);
     tauri.message.mockReset().mockResolvedValue("Cancel");
     tauri.invoke.mockReset().mockImplementation(async (command, args) => {
       const params = args as Record<string, unknown> | undefined;
@@ -167,7 +165,7 @@ describe("Office embedded document window", () => {
     expect(tauri.invoke.mock.calls.map(([name]) => name)).not.toContain("office_object_connect");
   });
 
-  it("connects once and waits for the document before processing native close", async () => {
+  it("connects once, sets the caller's title, and waits for the document before processing native close", async () => {
     const invoke = tauri.invoke.getMockImplementation()!;
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
@@ -181,7 +179,9 @@ describe("Office embedded document window", () => {
     await deliverClose();
     expect(officeCalls()).toEqual([]);
     await act(async () => release());
-    expect(tauri.setTitle).toHaveBeenCalledExactlyOnceWith("ChemDraft Structure in Report.docx — test");
+    expect(tauri.invoke.mock.calls.filter(([name]) => name === "office_object_set_title")).toEqual([
+      ["office_object_set_title", { title: "ChemDraft Structure in Report.docx — test" }]
+    ]);
     expect(document.title).toBe("ChemDraft Structure in Report.docx — test");
     expect(officeCalls()).toEqual([["office_object_close", { objectId: "17", saveChanges: true }]]);
     expect(tauri.invoke.mock.calls.map(([name]) => name)).not.toContain("load_document_session");

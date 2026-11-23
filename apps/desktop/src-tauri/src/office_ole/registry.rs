@@ -136,6 +136,13 @@ fn unregister_allowance(servers: &[Option<String>], exe: &OsStr) -> (Vec<bool>, 
     (owned, prog_ids)
 }
 
+// After removing the default and known children, a CLSID root can be deleted with its
+// verified ownership value. If anything else remains, keep that value for a later install.
+#[cfg(any(windows, test))]
+fn can_remove_registration_key(subkeys: u32, values: u32, clsid_root: bool) -> bool {
+    subkeys == 0 && values == u32::from(clsid_root)
+}
+
 #[cfg(windows)]
 mod native {
     use super::*;
@@ -306,12 +313,9 @@ mod native {
                                 continue;
                             };
                             optional(key.delete_value(""))?;
-                            if child.is_empty() && branch.root.starts_with(r"CLSID\") {
-                                optional(key.delete_value("CLSID"))?;
-                            }
-                            if key.enum_keys().next().transpose()?.is_none()
-                                && key.enum_values().next().transpose()?.is_none()
-                            {
+                            let info = key.query_info()?;
+                            let clsid_root = child.is_empty() && branch.root.starts_with(r"CLSID\");
+                            if can_remove_registration_key(info.sub_keys, info.values, clsid_root) {
                                 drop(key);
                                 classes.delete_subkey_transacted_with_flags(
                                     &path,
@@ -491,6 +495,15 @@ mod tests {
         assert!(parse(&["--register-office-object=machine"])
             .unwrap_err()
             .contains("--register-office-object=all-users"));
+    }
+
+    #[test]
+    fn unregister_keeps_the_clsid_marker_when_unrelated_entries_remain() {
+        assert!(can_remove_registration_key(0, 1, true));
+        assert!(!can_remove_registration_key(1, 1, true));
+        assert!(!can_remove_registration_key(0, 2, true));
+        assert!(can_remove_registration_key(0, 0, false));
+        assert!(!can_remove_registration_key(0, 1, false));
     }
 
     #[test]

@@ -124,7 +124,7 @@ pub(super) fn display_name<'a>(app: &'a str, document: &'a str) -> &'a str {
 
 struct SessionEnd<T> {
     request: u32,
-    stamp: String,
+    namespace: String,
     editors: BTreeMap<String, Editor<T>>,
 }
 
@@ -208,6 +208,7 @@ pub(crate) struct Failure {
 pub(super) struct Tracker<T> {
     known: BTreeMap<String, Known>,
     session: Option<SessionEnd<T>>,
+    sealed: bool,
 }
 
 impl<T: Drawing> Tracker<T> {
@@ -215,6 +216,7 @@ impl<T: Drawing> Tracker<T> {
         Self {
             known: BTreeMap::new(),
             session: None,
+            sealed: false,
         }
     }
 
@@ -225,7 +227,7 @@ impl<T: Drawing> Tracker<T> {
     /// and get no recovery copy. The caller must then tear its editor down. Registration and
     /// `begin` share this tracker's lock, so every editor is either in the session end or refused.
     pub fn opened(&mut self, editor: &str, app: &str, document: &str, json: &str) -> bool {
-        if self.session.is_some() {
+        if self.sealed || self.session.is_some() {
             return false;
         }
         self.known.insert(
@@ -250,11 +252,27 @@ impl<T: Drawing> Tracker<T> {
         }
     }
 
-    /// The STA installed a new drawing in this edit session's object.
-    pub fn replaced(&mut self, editor: &str, json: &str) {
-        if let Some(known) = self.known.get_mut(editor) {
-            known.json = json.into();
+    /// The STA installed a new drawing. True if it also refreshed the pending recovery fallback.
+    pub fn replaced(&mut self, editor: &str, json: &str) -> bool {
+        let Some(known) = self.known.get_mut(editor) else {
+            return false;
+        };
+        if known.json.as_ref() == json {
+            return false;
         }
+        known.json = json.into();
+        let fallback = known.json.clone();
+        if self.sealed {
+            return false;
+        }
+        let Some(entry) = self
+            .editor_mut(editor)
+            .filter(|entry| matches!(entry.stage, Stage::Waiting | Stage::Unsent))
+        else {
+            return false;
+        };
+        entry.json = fallback;
+        true
     }
 
     /// The STA removed the edit session. Returns what this did to a pending session end.
@@ -284,8 +302,8 @@ impl<T: Drawing> Tracker<T> {
 
     /// Start asking every open editor for its drawing. Returns the editors to ask, or `None` if a
     /// session end is already pending (a repeated query keeps collecting into it).
-    pub fn begin(&mut self, request: u32, stamp: String) -> Option<Vec<String>> {
-        if self.session.is_some() {
+    pub fn begin(&mut self, request: u32, namespace: String) -> Option<Vec<String>> {
+        if self.sealed || self.session.is_some() {
             return None;
         }
         let editors: BTreeMap<_, _> = self
@@ -306,7 +324,7 @@ impl<T: Drawing> Tracker<T> {
         let ids = editors.keys().cloned().collect();
         self.session = Some(SessionEnd {
             request,
-            stamp,
+            namespace,
             editors,
         });
         Some(ids)
@@ -336,7 +354,7 @@ impl<T: Drawing> Tracker<T> {
         if let Some(session) = &self.session {
             plan.request = session.request;
             for (id, editor) in &session.editors {
-                plan_editor(&mut plan, &session.stamp, id, editor);
+                plan_editor(&mut plan, &session.namespace, id, editor);
             }
         }
         plan
@@ -355,6 +373,11 @@ impl<T: Drawing> Tracker<T> {
                 }
             })
         })
+    }
+
+    /// Stop renderer replies and fallback refreshes at the final close decision.
+    pub fn seal(&mut self) {
+        self.sealed = true;
     }
 
     /// Record a finished copy attempt (`path` is `None` if it failed). False if `request` is no
@@ -402,7 +425,7 @@ impl<T: Drawing> Tracker<T> {
             let path = editor.snapshot.as_ref().and_then(|a| a.path.clone());
             if editor.orphaned() {
                 let planned = recovery.write.len();
-                plan_editor(&mut recovery, &session.stamp, id, editor);
+                plan_editor(&mut recovery, &session.namespace, id, editor);
                 if recovery.write.len() == planned {
                     kept.extend(path);
                 }
@@ -456,17 +479,22 @@ impl<T: Drawing> Tracker<T> {
     /// Whether this request still takes the editor's answer. An editor that reported a failure
     /// may still answer later with its drawing.
     pub fn accepting(&self, request: u32, editor: &str) -> bool {
-        self.session
-            .as_ref()
-            .filter(|session| session.request == request)
-            .and_then(|session| session.editors.get(editor))
-            .is_some_and(|entry| matches!(entry.stage, Stage::Waiting | Stage::Unsent))
+        !self.sealed
+            && self
+                .session
+                .as_ref()
+                .filter(|session| session.request == request)
+                .and_then(|session| session.editors.get(editor))
+                .is_some_and(|entry| matches!(entry.stage, Stage::Waiting | Stage::Unsent))
     }
 
     /// The renderer could not render or send its drawing. Stop waiting on it: the editor stays
     /// at risk (refusing the session end with its document's name) and keeps a recovery copy of
     /// its last known drawing. Only a waiting editor can fail.
     pub fn unsent(&mut self, request: u32, editor: &str) -> bool {
+        if self.sealed {
+            return false;
+        }
         let waiting = self
             .session
             .as_ref()
@@ -633,12 +661,12 @@ impl<T> Editor<T> {
 
 /// Write a copy of an at-risk drawing unless one was already attempted for this exact drawing;
 /// remove the copy of a drawing that is safe.
-fn plan_editor<T>(plan: &mut Recovery, stamp: &str, id: &str, editor: &Editor<T>) {
+fn plan_editor<T>(plan: &mut Recovery, namespace: &str, id: &str, editor: &Editor<T>) {
     if editor.stage.at_risk() {
         if !editor.copy_attempted() {
             plan.write.push(Write {
                 editor: id.to_owned(),
-                name: super::recovery::file_name(stamp, id, editor.name()),
+                name: super::recovery::file_name(namespace, id, editor.name()),
                 json: editor.json.clone(),
             });
         }
@@ -854,6 +882,43 @@ mod tests {
         assert!(t.collect(2, "17", "{late}"));
         saved_by_sta(&mut t, |_| Outcome::Saved);
         assert!(!t.answer().blocks());
+    }
+
+    #[test]
+    fn an_in_flight_interactive_update_only_refreshes_uncollected_fallbacks() {
+        let mut t = tracker(&[
+            ("17", "Report.docx", "{old}"),
+            ("18", "Slides.pptx", "{old}"),
+            ("19", "Notes.docx", "{old}"),
+        ]);
+        t.begin(4, STAMP.into());
+        for write in t.recovery().write {
+            let path = PathBuf::from(write.name);
+            assert!(t.wrote(4, &write.editor, &write.json, Some(path)));
+        }
+        assert!(!t.recovery_pending());
+        assert!(t.unsent(4, "18"));
+        assert!(t.collect(4, "19", "{renderer}"));
+
+        assert!(t.replaced("17", "{interactive}"));
+        assert!(!t.replaced("17", "{interactive}"));
+        assert!(t.replaced("18", "{interactive}"));
+        assert!(!t.replaced("19", "{older}"));
+        assert!(t.recovery_pending());
+        let plan = t.recovery();
+        let drawings: Vec<_> = plan
+            .write
+            .iter()
+            .map(|w| (w.editor.as_str(), &*w.json))
+            .collect();
+        assert_eq!(
+            drawings,
+            [
+                ("17", "{interactive}"),
+                ("18", "{interactive}"),
+                ("19", "{renderer}")
+            ]
+        );
     }
 
     #[test]

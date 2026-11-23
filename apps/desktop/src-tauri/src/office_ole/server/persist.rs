@@ -11,6 +11,9 @@ use super::*;
 // here as well so GetData can supply the original carrier when Word repacks the storage.
 const PREVIEW: &str = "ChemDraftPreview";
 const EXTENT: &str = "ChemDraftExtent";
+const DRAWING: PCWSTR = w!("ChemDraftDrawing");
+const PENDING: PCWSTR = w!("ChemDraftDrawingPending");
+const PREVIOUS: PCWSTR = w!("ChemDraftDrawingPrevious");
 
 fn read_stream(storage: &IStorage, name: &str, limit: usize) -> Result<Vec<u8>> {
     let stream = unsafe {
@@ -98,6 +101,79 @@ fn write_stream(storage: &IStorage, name: &str, bytes: &[u8]) -> Result<()> {
     })
 }
 
+fn open_generation(storage: &IStorage, name: PCWSTR) -> Result<Option<IStorage>> {
+    match unsafe {
+        storage.OpenStorage(
+            name,
+            None::<&IStorage>,
+            STGM_READ | STGM_SHARE_EXCLUSIVE,
+            std::ptr::null(),
+            0,
+        )
+    } {
+        Ok(generation) => Ok(Some(generation)),
+        Err(error) if error.code() == STG_E_FILENOTFOUND => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn drawing_storage(storage: &IStorage) -> Result<IStorage> {
+    if let Some(drawing) = open_generation(storage, DRAWING)? {
+        return Ok(drawing);
+    }
+    // A failed publish can leave the last complete generation here. Older objects
+    // store their drawing directly in the object storage.
+    Ok(open_generation(storage, PREVIOUS)?.unwrap_or_else(|| storage.clone()))
+}
+
+fn remove_element(storage: &IStorage, name: PCWSTR) -> Result<()> {
+    match unsafe { storage.DestroyElement(name) } {
+        Err(error) if error.code() == STG_E_FILENOTFOUND => Ok(()),
+        result => result,
+    }
+}
+
+fn save_generation(
+    storage: &IStorage,
+    document: &[u8],
+    preview: Option<&[u8]>,
+    extent: Option<&[u8]>,
+    write: impl Fn(&IStorage, &str, &[u8]) -> Result<()>,
+) -> Result<()> {
+    remove_element(storage, PENDING)?;
+    let staged = (|| {
+        let pending =
+            unsafe { storage.CreateStorage(PENDING, STGM_READWRITE | STGM_SHARE_EXCLUSIVE, 0, 0)? };
+        write(&pending, DOCUMENT, document)?;
+        if let Some(preview) = preview {
+            write(&pending, PREVIEW, preview)?;
+        }
+        if let Some(extent) = extent {
+            write(&pending, EXTENT, extent)?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = staged {
+        let _ = remove_element(storage, PENDING);
+        return Err(error);
+    }
+
+    // IStorage can be direct-mode. Publish the complete substorage with one rename.
+    // Keep the old drawing readable through PREVIOUS if the final rename fails.
+    if open_generation(storage, DRAWING)?.is_some() {
+        remove_element(storage, PREVIOUS)?;
+        unsafe { storage.RenameElement(DRAWING, PREVIOUS)? };
+    }
+    unsafe { storage.RenameElement(PENDING, DRAWING)? };
+
+    // The new generation is live. Cleanup cannot turn a published save into a failed save.
+    let _ = remove_element(storage, PREVIOUS);
+    for name in [DOCUMENT, PREVIEW, EXTENT] {
+        let _ = unsafe { storage.DestroyElement(&HSTRING::from(name)) };
+    }
+    Ok(())
+}
+
 fn check_class(storage: &IStorage, class: GUID, allow_empty: bool) -> Result<()> {
     let found = unsafe { ReadClassStg(storage)? };
     if found == class || allow_empty && found == GUID::zeroed() {
@@ -115,7 +191,7 @@ fn check_class(storage: &IStorage, class: GUID, allow_empty: bool) -> Result<()>
 pub(crate) fn pasted_drawing(storage: &IStorage) -> Result<Option<(&'static str, String)>> {
     let class = unsafe { ReadClassStg(storage)? };
     read_pasted_document(&format!("{{{class:?}}}"), |name, limit| {
-        read_stream(storage, name, limit)
+        read_stream(&drawing_storage(storage)?, name, limit)
     })
     .map_err(invalid)
 }
@@ -174,13 +250,14 @@ impl IPersistStorage_Impl for Embedded_Impl {
         let next = self.persistence.get().initialize().map_err(state_error)?;
         let store = store.ok()?;
         check_class(store, self.sta.guid, false)?;
-        let json =
-            decode_document(read_stream(store, DOCUMENT, MAX_DOCUMENT_BYTES)?).map_err(invalid)?;
+        let drawing = drawing_storage(store)?;
+        let json = decode_document(read_stream(&drawing, DOCUMENT, MAX_DOCUMENT_BYTES)?)
+            .map_err(invalid)?;
         // Early compound files have only ChemDraftDocument. They can be opened and edited;
         // their container supplies the cached preview until the first editor update.
-        let png = optional_stream(store, PREVIEW, MAX_PNG_BYTES)?;
+        let png = optional_stream(&drawing, PREVIEW, MAX_PNG_BYTES)?;
         let content = Content::load(json, png).map_err(invalid)?;
-        let extent = optional_stream(store, EXTENT, 8)?
+        let extent = optional_stream(&drawing, EXTENT, 8)?
             .map(|v| {
                 let bytes: [u8; 8] = v
                     .try_into()
@@ -214,27 +291,15 @@ impl IPersistStorage_Impl for Embedded_Impl {
         let extent = self.extent.get();
         let doc = document_bytes(&content.json).map_err(invalid)?;
         self.write_class_metadata(store)?;
-        write_stream(store, DOCUMENT, doc)?;
-        for (name, bytes) in [
-            (
-                PREVIEW,
-                content.image.as_ref().map(|image| image.png.as_slice()),
-            ),
-            (
-                EXTENT,
-                extent
-                    .map(|[cx, cy]| [cx.to_le_bytes(), cy.to_le_bytes()].concat())
-                    .as_deref(),
-            ),
-        ] {
-            if let Some(bytes) = bytes {
-                write_stream(store, name, bytes)?;
-            } else if let Err(e) = unsafe { store.DestroyElement(&HSTRING::from(name)) } {
-                if e.code() != STG_E_FILENOTFOUND {
-                    return Err(e);
-                }
-            }
-        }
+        save_generation(
+            store,
+            doc,
+            content.image.as_ref().map(|image| image.png.as_slice()),
+            extent
+                .map(|[cx, cy]| [cx.to_le_bytes(), cy.to_le_bytes()].concat())
+                .as_deref(),
+            write_stream,
+        )?;
         // The container owns IStorage::Commit. Remain dirty during NoScribble.
         self.persistence.set(next);
         Ok(())
@@ -266,6 +331,82 @@ impl IPersistStorage_Impl for Embedded_Impl {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_storage_keeps_the_complete_drawing_when_the_preview_write_fails() -> Result<()> {
+        unsafe { OleInitialize(None)? };
+        let result = (|| {
+            let memory = unsafe { CreateILockBytesOnHGlobal(None, true)? };
+            let store = unsafe {
+                StgCreateDocfileOnILockBytes(
+                    &memory,
+                    STGM_CREATE | STGM_DIRECT | STGM_SHARE_EXCLUSIVE | STGM_READWRITE,
+                    0,
+                )?
+            };
+            let assert_old_generation = || -> Result<()> {
+                let drawing = drawing_storage(&store)?;
+                assert_eq!(read_stream(&drawing, DOCUMENT, 32)?, b"old document");
+                assert_eq!(read_stream(&drawing, PREVIEW, 32)?, b"old preview");
+                assert_eq!(read_stream(&drawing, EXTENT, 8)?, b"old size");
+                Ok(())
+            };
+            write_stream(&store, DOCUMENT, b"old document")?;
+            write_stream(&store, PREVIEW, b"old preview")?;
+            write_stream(&store, EXTENT, b"old size")?;
+            let fail_preview = |pending: &IStorage, name: &str, bytes: &[u8]| {
+                if name == PREVIEW {
+                    assert_eq!(read_stream(pending, DOCUMENT, 32)?, b"new document");
+                    write_stream(pending, PREVIEW, b"partial")?;
+                    return Err(STG_E_MEDIUMFULL.into());
+                }
+                write_stream(pending, name, bytes)
+            };
+            // Test both the legacy flat layout and a drawing that has already been staged.
+            for staged in [false, true] {
+                if staged {
+                    save_generation(
+                        &store,
+                        b"old document",
+                        Some(b"old preview"),
+                        Some(b"old size"),
+                        write_stream,
+                    )?;
+                }
+                let error = save_generation(
+                    &store,
+                    b"new document",
+                    Some(b"new preview"),
+                    Some(b"new size"),
+                    fail_preview,
+                )
+                .unwrap_err();
+                assert_eq!(error.code(), STG_E_MEDIUMFULL);
+                assert_old_generation()?;
+                assert!(open_generation(&store, PENDING)?.is_none());
+            }
+
+            // Losing the last rename still leaves the previous drawing readable and retryable.
+            unsafe { store.RenameElement(DRAWING, PREVIOUS)? };
+            assert_old_generation()?;
+            save_generation(
+                &store,
+                b"replacement document",
+                Some(b"replacement preview"),
+                Some(b"new size"),
+                write_stream,
+            )?;
+            save_generation(&store, b"new document", None, None, write_stream)?;
+            let drawing = drawing_storage(&store)?;
+            assert_eq!(read_stream(&drawing, DOCUMENT, 32)?, b"new document");
+            assert!(optional_stream(&drawing, PREVIEW, 32)?.is_none());
+            assert!(optional_stream(&drawing, EXTENT, 8)?.is_none());
+            assert!(open_generation(&store, PREVIOUS)?.is_none());
+            Ok(())
+        })();
+        unsafe { OleUninitialize() };
+        result
+    }
 
     #[test]
     fn storage_checks_class_stream_size_missing_document_and_overwrite() -> Result<()> {
@@ -343,7 +484,13 @@ mod tests {
                     Some((class.clsid, json.to_string()))
                 );
             }
-            write_stream(&store, DOCUMENT, b"not json")?;
+            let updated = r#"{"kind":"chemdraft-selection","version":1,"objects":[]}"#;
+            save_generation(&store, updated.as_bytes(), None, None, write_stream)?;
+            assert_eq!(
+                pasted_drawing(&store)?,
+                Some((OleClass::DEV.clsid, updated.to_string()))
+            );
+            save_generation(&store, b"not json", None, None, write_stream)?;
             assert_eq!(
                 pasted_drawing(&store).unwrap_err().code(),
                 STG_E_INVALIDHEADER

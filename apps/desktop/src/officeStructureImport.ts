@@ -50,6 +50,32 @@ function identityDifference(before: readonly MoleculeObject[], after: readonly M
   return undefined;
 }
 
+/** Refuse an Office paste if normalization changes a molecule already on the page. */
+export function assertOfficePastePreservesExistingChemistry(before: ChemDraftDocument, after: ChemDraftDocument): void {
+  const finalMolecules = new Map(after.pages.flatMap((page) => moleculesOf(page.objects).map((molecule) => [molecule.id, molecule] as const)));
+  for (const page of before.pages) {
+    for (const molecule of moleculesOf(page.objects)) {
+      const final = finalMolecules.get(molecule.id);
+      if (final === molecule) continue;
+      const refusal = (reason: string) => new Error(`Paste refused because it would change existing chemistry: ${reason}. Nothing was pasted.`);
+      if (!final) throw refusal(`structure ${molecule.id} would be lost`);
+      const finalAtoms = new Map(final.atoms.map((atom) => [atom.id, atom] as const));
+      for (const atom of molecule.atoms) {
+        const next = finalAtoms.get(atom.id);
+        if (!next) throw refusal(`atom ${atom.id} would be lost`);
+        if (atom.formalCharge !== next.formalCharge) {
+          throw refusal(`the formal charge on ${atom.element} atom ${atom.id} would change from ${atom.formalCharge} to ${next.formalCharge}`);
+        }
+        if ((atom.markRadicals ?? 0) !== (next.markRadicals ?? 0)) {
+          throw refusal(`the radical marks on ${atom.element} atom ${atom.id} would change`);
+        }
+      }
+      const changed = identityDifference([molecule], [final]);
+      if (changed) throw refusal(`structure ${molecule.id} would change (${changed})`);
+    }
+  }
+}
+
 type RawMolecule = { atoms: unknown[]; bonds: unknown[] };
 
 function rawMolecules(document: Record<string, unknown>): RawMolecule[] | undefined {
@@ -125,18 +151,20 @@ export function insertOfficeStructures(
   const page = document.pages[0];
   if (!page) throw new Error("The document has no page to import structures into.");
   const existing = selectionBounds(page.objects, page.objects.map((object) => object.id));
-  const rowLimit = Math.max(page.width - 2 * LAYOUT_MARGIN, ...drawings.map(({ payload }) => payload.bounds.width));
+  const preferredLeft = Math.max(LAYOUT_MARGIN, existing?.x ?? LAYOUT_MARGIN);
+  const right = page.width - LAYOUT_MARGIN;
 
-  const rows: { items: typeof drawings[number][]; width: number; height: number }[] = [];
+  const rows: { items: typeof drawings[number][]; left: number; width: number; height: number }[] = [];
   for (const drawing of drawings) {
     const { width, height } = drawing.payload.bounds;
     const row = rows.at(-1);
-    if (row && row.width + LAYOUT_GAP + width <= rowLimit) {
+    if (row && row.left + row.width + LAYOUT_GAP + width <= right) {
       row.items.push(drawing);
       row.width += LAYOUT_GAP + width;
       row.height = Math.max(row.height, height);
     } else {
-      rows.push({ items: [drawing], width, height });
+      const left = preferredLeft + width <= right ? preferredLeft : LAYOUT_MARGIN;
+      rows.push({ items: [drawing], left, width, height });
     }
   }
   const blockHeight = rows.reduce((sum, row) => sum + row.height, 0) + LAYOUT_GAP * Math.max(rows.length - 1, 0);
@@ -148,7 +176,7 @@ export function insertOfficeStructures(
   const placed: PlacedStructure[] = [];
   const failed: OfficeStructureInsertion["failed"] = [];
   for (const row of rows) {
-    let left = existing ? existing.x : Math.max(LAYOUT_MARGIN, page.width / 2 - row.width / 2);
+    let left = existing ? row.left : Math.max(LAYOUT_MARGIN, page.width / 2 - row.width / 2);
     for (const { location, payload } of row.items) {
       const { width } = payload.bounds;
       const point = { x: left + width / 2, y: top + row.height / 2 };
@@ -263,15 +291,17 @@ export interface OfficeImportFile {
 
 export interface OfficeImportDeps {
   pickFile(): Promise<OfficeImportFile | undefined>;
-  getDocument(): ChemDraftDocument;
+  getDocumentKey(): string;
+  getDocument(key: string): ChemDraftDocument | undefined;
   /** Commit one undo entry with this label. */
-  commit(document: ChemDraftDocument, undoLabel: string): boolean | void;
+  commit(key: string, document: ChemDraftDocument, undoLabel: string): boolean | void;
   report(message: string, details: readonly string[]): void;
   importStructures?: typeof importOfficeStructures;
 }
 
 /** The command handler: pick, read, find, check, insert as one undo entry, report. */
 export async function runOfficeStructureImport(deps: OfficeImportDeps): Promise<OfficeImportOutcome | undefined> {
+  const documentKey = deps.getDocumentKey();
   const file = await deps.pickFile();
   if (!file) {
     deps.report("Import canceled", []);
@@ -281,15 +311,19 @@ export async function runOfficeStructureImport(deps: OfficeImportDeps): Promise<
   try {
     const bytes = await file.read();
     const result = await (deps.importStructures ?? importOfficeStructures)(bytes);
-    // Plan against the document as it is after the (possibly long) read, not as it was at pick time.
-    outcome = planOfficeStructureImport(deps.getDocument(), file.name, result);
+    const document = deps.getDocument(documentKey);
+    if (!document) {
+      deps.report("Import canceled because the originating drawing was closed or replaced.", []);
+      return undefined;
+    }
+    outcome = planOfficeStructureImport(document, file.name, result);
+    if (outcome.document) deps.commit(documentKey, outcome.document, IMPORT_OFFICE_STRUCTURES_UNDO_LABEL);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     const detail = error instanceof OfficeImportError && error.detail ? [error.detail] : [];
     deps.report(`Could not import structures from ${file.name}: ${reason}`, detail);
     return undefined;
   }
-  if (outcome.document) deps.commit(outcome.document, IMPORT_OFFICE_STRUCTURES_UNDO_LABEL);
   deps.report(outcome.message, outcome.details);
   return outcome;
 }

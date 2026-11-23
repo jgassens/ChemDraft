@@ -650,7 +650,7 @@ export function resolvePartTarget(sourceFolder: string, target: string): string 
 
 function resolveMediaTarget(target: string): string | null {
   const part = resolvePartTarget("ppt/slides", target);
-  return part?.startsWith("ppt/media/") ? part : null;
+  return part?.toLowerCase().startsWith("ppt/media/") ? part : null;
 }
 
 // PowerPoint 2010 and later select a Choice that requires p14, so the reader does too.
@@ -836,16 +836,23 @@ export function officeMainPartKind(xml: string): OfficeMainPartKind {
 
 /** Relationship IDs of a presentation's slides, in slide order (`p:sldIdLst`). */
 export function pptxSlideRelationshipIds(presentationXml: string): string[] {
-  const ids: string[] = [];
+  const ids = new Set<string>();
+  const slideIds = new Set<string>();
   for (const { element, closingAt } of xmlElements(presentationXml)) {
     const list = element.parent;
     if (closingAt !== undefined || element.local !== "sldId" || !PRESENTATION.includes(element.ns) ||
         list?.local !== "sldIdLst" || !PRESENTATION.includes(list.ns)) continue;
     const id = namespacedAttr(element, "id", OFFICE_RELS);
     if (!id) throw new Error("Presentation slide entry is missing its relationship ID.");
-    ids.push(id);
+    if (ids.has(id)) throw new Error(`Duplicate slide relationship ID: ${id}.`);
+    ids.add(id);
+    const slideId = element.attrs.get("id");
+    if (slideId !== undefined) {
+      if (slideIds.has(slideId)) throw new Error(`Duplicate slide ID: ${slideId}.`);
+      slideIds.add(slideId);
+    }
   }
-  return ids;
+  return [...ids];
 }
 
 /** A shape's place on its slide or drawing, in EMUs, after its groups' transforms. */

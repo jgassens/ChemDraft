@@ -194,18 +194,19 @@ function archiveRefusal(detail: string): string {
 }
 
 async function readArchive(
-  format: string, bytes: Uint8Array, limits: PasteBackLimits, collected: Collected, readCarrier: CarrierCollector,
+  archive: PasteBackClipboardItem, limits: PasteBackLimits, collected: Collected, readCarrier: CarrierCollector,
 ): Promise<void> {
   const unreadable = (detail: string) => {
     collected.archiveUnreadable = true;
     collected.notes.push(archiveRefusal(detail));
   };
-  if (bytes.length > limits.maxArchiveBytes + limits.maxArchivePaddingBytes) {
-    unreadable(`it is larger than the ${Math.round(limits.maxArchiveBytes / (1024 * 1024))} MB limit`);
-    return;
-  }
   let entries: OfficeZipEntry[];
   try {
+    const bytes = archive.bytes;
+    if (bytes.length > limits.maxArchiveBytes + limits.maxArchivePaddingBytes) {
+      unreadable(`it is larger than the ${Math.round(limits.maxArchiveBytes / (1024 * 1024))} MB limit`);
+      return;
+    }
     entries = await readZip(trimZipPadding(bytes, limits.maxArchivePaddingBytes), {
       maxArchiveBytes: limits.maxArchiveBytes,
       maxEntries: limits.maxEntries,
@@ -240,7 +241,7 @@ async function readArchive(
   for (const part of pictures.slice(0, limits.maxPictures)) {
     const entry = parts.get(part.toLowerCase());
     if (!entry || entry.skipped || entry.data[0] !== 0x89 || entry.data[1] !== 0x50) continue; // not a PNG
-    await readCarrier("office-archive", format, entry.data, entry.name);
+    await readCarrier("office-archive", archive.type, entry.data, entry.name);
   }
 }
 
@@ -314,10 +315,8 @@ export async function recoverPasteBackStructures(
     }
     collect("embedded-object", object.type, read);
   }
-  const archives = items.filter((item) => OFFICE_PICTURE_ARCHIVE_TYPES.includes(item.type));
-  if (!collected.structures.length) {
-    for (const archive of archives.slice(0, 1)) await readArchive(archive.type, archive.bytes, limits, collected, readCarrier);
-  }
+  const archive = items.find((item) => OFFICE_PICTURE_ARCHIVE_TYPES.includes(item.type));
+  if (!collected.structures.length && archive) await readArchive(archive, limits, collected, readCarrier);
   if (!collected.structures.length) {
     for (const png of items.filter((item) => PNG_TYPES.has(item.type)).slice(0, 1)) {
       await readCarrier("png", png.type, png.bytes);
@@ -335,17 +334,17 @@ export async function recoverPasteBackStructures(
   if (collected.archiveUnreadable) {
     return { kind: "none", reason: "archive-unreadable", message: notes.find((note) => note.startsWith("Office's")) ?? archiveRefusal("unknown error"), notes };
   }
-  if (collected.picturesRead || archives.length) {
+  if (collected.picturesRead || archive) {
     return { kind: "none", reason: "no-carrier", message: "The copied picture has no ChemDraft data.", notes };
   }
   return { kind: "none", reason: "no-pictures", message: "The clipboard has no picture to read ChemDraft data from.", notes };
 }
 
 /**
- * The same recovery from a native clipboard read: decodes a ChemDraft object's drawing and the
- * archive (`officeItems`) and the PNG (`imageItems`) within their caps. An embedded object of
- * another class is left out. ChemDraft's own selection flavor takes precedence, so its presence
- * returns `none` without reading anything.
+ * The same recovery from a native clipboard read. `officeItems` can hold both a ChemDraft object's
+ * drawing and its GVML fallback. Decode the archive only if the drawing is absent or refused.
+ * An embedded object of another class is left out. ChemDraft's own selection flavor takes
+ * precedence, so its presence returns `none` without reading anything.
  */
 export async function recoverPasteBackFromClipboard(
   read: ClipboardReadPayload, options: { limits?: Partial<PasteBackLimits> } = {},
@@ -364,14 +363,14 @@ export async function recoverPasteBackFromClipboard(
       unreadableEmbeddedObject = { format: object.type, reason: error instanceof Error ? error.message : String(error) };
     }
   }
-  let unreadableArchive: string | undefined;
   const archive = read.officeItems?.find((item) => OFFICE_PICTURE_ARCHIVE_TYPES.includes(item.type));
   if (archive) {
-    try {
-      items.push({ type: archive.type, bytes: decodeBase64Bounded(archive.bytesBase64, limits.maxArchiveBytes + limits.maxArchivePaddingBytes) });
-    } catch (error) {
-      unreadableArchive = error instanceof Error ? error.message : String(error);
-    }
+    items.push({
+      type: archive.type,
+      get bytes() {
+        return decodeBase64Bounded(archive.bytesBase64, limits.maxArchiveBytes + limits.maxArchivePaddingBytes);
+      },
+    });
   }
   const png = read.imageItems?.find((item) => item.type === "image/png");
   if (png) {
@@ -381,5 +380,5 @@ export async function recoverPasteBackFromClipboard(
       // The ordinary picture paste reports an unreadable PNG; here it simply holds no carrier.
     }
   }
-  return recoverPasteBackStructures(items, { advertisedTypes: read.types, limits, unreadableArchive, unreadableEmbeddedObject });
+  return recoverPasteBackStructures(items, { advertisedTypes: read.types, limits, unreadableEmbeddedObject });
 }

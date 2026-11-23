@@ -252,6 +252,13 @@ describe("PowerPoint picture media lookup", () => {
     expect(pptxSlidePictureMedia(slide, relationships, "6")).toBe("ppt/media/group & child.png");
   });
 
+  it("resolves ASCII case variants of the PowerPoint media directory and preserves target spelling", () => {
+    expect(pptxSlidePictureMedia(slide, relationships.replace("../media/image1.png", "../MEDIA/Image1.png"), 3))
+      .toBe("ppt/MEDIA/Image1.png");
+    expect(pptxSlidePictureMedia(slide, relationships.replace("../media/image1.png", "../MEDIAX/Image1.png"), 3))
+      .toBeNull();
+  });
+
   it("returns null for shape fills, group IDs, missing shapes and missing relationships", () => {
     for (const id of [4, 5, 7, 999]) expect(pptxSlidePictureMedia(slide, relationships, id)).toBeNull();
   });

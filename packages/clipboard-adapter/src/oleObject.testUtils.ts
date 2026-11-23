@@ -147,10 +147,14 @@ export function writeTestCompoundFile(
     view.setUint32(offset + 120, fields.size, true);
   };
   for (let id = 0; id < directorySectors * (SECTOR / 128); id++) entry(id, { name: "", type: 0, start: 0, size: 0 });
-  entry(0, { name: "Root Entry", type: 5, child: encoded.length ? 1 : FREE, clsid,
+  // CFB orders names by UTF-16 length, then by uppercase code units, independent of input order.
+  const ordered = encoded.map((stream, index) => ({ name: stream.name.toUpperCase(), length: stream.name.length, id: index + 1 }))
+    .sort((a, b) => a.length - b.length || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  const right = new Map(ordered.map((stream, index) => [stream.id, ordered[index + 1]?.id ?? FREE]));
+  entry(0, { name: "Root Entry", type: 5, child: ordered[0]?.id ?? FREE, clsid,
     start: miniStream.length ? miniStreamStart : END, size: miniStream.length });
   encoded.forEach((stream, index) => entry(index + 1, {
-    name: stream.name, type: 2, right: index + 1 < encoded.length ? index + 2 : FREE,
+    name: stream.name, type: 2, right: right.get(index + 1),
     start: miniStarts[index] ?? largeStarts[index]!, size: stream.data.length,
   }));
   return {

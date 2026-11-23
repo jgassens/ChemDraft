@@ -961,6 +961,14 @@
   },
   {
     "file": "office_ole/bridge.rs",
+    "name": "office_object_set_title",
+    "async": false,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, title: String,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "office_ole/bridge.rs",
     "name": "office_object_update",
     "async": true,
     "generics": "",

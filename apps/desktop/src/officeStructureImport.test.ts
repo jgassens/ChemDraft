@@ -10,11 +10,11 @@ import { depictSmiles2D } from "@chemdraft/ocl-adapter";
 import { buildAppMenuModel, flattenAppMenuCommands, nativeRoutedCommandIds } from "./appMenu";
 import {
   createPhase4Document, createSelectionClipboardPayload, insertNativeBracket, insertNativeMolfileMolecule, selectDocumentObjects,
-  selectionBounds, serializeSelectionClipboardPayload,
+  selectionBounds, serializeSelectionClipboardPayload, setDocumentCustomPageSize, translateInsertedDocumentObjects,
 } from "./documentWorkflow";
 import {
   checkOfficeStructure, IMPORT_OFFICE_STRUCTURES_COMMAND_ID, IMPORT_OFFICE_STRUCTURES_UNDO_LABEL, importOfficeStructuresCommand,
-  OFFICE_IMPORT_FILE_FILTERS, planOfficeStructureImport, runOfficeStructureImport,
+  insertOfficeStructures, OFFICE_IMPORT_FILE_FILTERS, planOfficeStructureImport, runOfficeStructureImport,
 } from "./officeStructureImport";
 
 vi.mock("@tauri-apps/plugin-fs", () => ({ stat: vi.fn(), open: vi.fn() }));
@@ -97,6 +97,28 @@ describe("Office structure chemistry check", () => {
 });
 
 describe("planning an Office import", () => {
+  it.each([true, false])("lays out from the actual row origin (one drawing fits at that origin: %s)", (fitsAtOrigin) => {
+    const seed = insertNativeMolfileMolecule(createPhase4Document(), { x: 150, y: 150 }, depictSmiles2D("CCO").molfile, "molfile-v2000");
+    const copied = createSelectionClipboardPayload(seed)!;
+    const check = checkOfficeStructure(structure(serializeSelectionClipboardPayload(copied), 1));
+    if (!check.ok) throw new Error(check.reason);
+    const payload = check.payload;
+    const width = payload.bounds.width;
+    const right = 600 - 36;
+    const origin = right - width + (fitsAtOrigin ? -1 : 1);
+    const moved = translateInsertedDocumentObjects(seed, copied.selectionIds, origin - copied.bounds.x, 0);
+    const start = setDocumentCustomPageSize(moved, { width: 600, height: moved.pages[0]!.height, unit: "css-px" });
+    const inserted = insertOfficeStructures(start, [{ location: "slide 1", payload }, { location: "slide 2", payload }]);
+    expect(inserted.failed).toEqual([]);
+    expect(inserted.placed).toHaveLength(2);
+    const [first, second] = inserted.placed.map(({ objectIds }) => selectionBounds(inserted.document.pages[0]!.objects, objectIds)!);
+    expect(first!.x).toBeCloseTo(fitsAtOrigin ? origin : 36);
+    expect(first!.x + first!.width).toBeLessThanOrEqual(right);
+    expect(second!.x + second!.width).toBeLessThanOrEqual(right);
+    if (fitsAtOrigin) expect(second!.y).toBeGreaterThan(first!.y + first!.height);
+    else expect(second!.y).toBeCloseTo(first!.y);
+  });
+
   it("inserts every valid structure left to right without overlap, keeps their chemistry, and selects them", () => {
     const start = insertNativeMolfileMolecule(createPhase4Document(), { x: 150, y: 150 }, depictSmiles2D("CCO").molfile, "molfile-v2000");
     const warning = { picture: 4, source: { kind: "slide", slide: 3 } as const, location: "slide 3", reason: "malformed" as const,
@@ -221,10 +243,11 @@ function deck(jsons: string[]): Uint8Array {
 describe("the Import Structures command", () => {
   function harness(file: { name: string; bytes: Uint8Array } | undefined) {
     let document = createPhase4Document();
-    const commit = vi.fn((next: ChemDraftDocument) => { document = next; return true; });
+    const commit = vi.fn((_key: string, next: ChemDraftDocument, _label: string) => { document = next; return true; });
     const report = vi.fn();
     const deps = {
       pickFile: vi.fn(async () => file && { name: file.name, read: async () => file.bytes }),
+      getDocumentKey: () => "origin",
       getDocument: () => document,
       commit,
       report,
@@ -236,9 +259,45 @@ describe("the Import Structures command", () => {
     const { deps, commit, report, current } = harness({ name: "Slides.pptx", bytes: deck([alanine.json, labelled.json, pyridinium.json]) });
     const outcome = await runOfficeStructureImport(deps);
     expect(commit).toHaveBeenCalledOnce();
-    expect(commit).toHaveBeenCalledWith(outcome!.document, IMPORT_OFFICE_STRUCTURES_UNDO_LABEL);
+    expect(commit).toHaveBeenCalledWith("origin", outcome!.document, IMPORT_OFFICE_STRUCTURES_UNDO_LABEL);
     expect(report).toHaveBeenCalledWith("Imported 3 structures from Slides.pptx.", []);
     expect(molecules(current()).map(canonical)).toEqual([alanine.smiles, labelled.smiles, pyridinium.smiles]);
+  });
+
+  it.each([false, true])("keeps a pending import bound to its originating tab (closed: %s)", async (closed) => {
+    let activeKey = "origin";
+    const otherDocument = createPhase4Document("Other tab");
+    const documents = new Map([["origin", createPhase4Document("Origin tab")], ["other", otherDocument]]);
+    const commit = vi.fn((key: string, document: ChemDraftDocument, _label: string) => { documents.set(key, document); });
+    const report = vi.fn();
+    let finishRead!: (bytes: Uint8Array) => void;
+    const pendingRead = new Promise<Uint8Array>(resolve => { finishRead = resolve; });
+    const latestOrigin = insertNativeMolfileMolecule(documents.get("origin")!, { x: 200, y: 200 },
+      depictSmiles2D("CCO").molfile, "molfile-v2000");
+    const pending = runOfficeStructureImport({
+      getDocumentKey: () => activeKey,
+      getDocument: (key) => documents.get(key),
+      pickFile: async () => {
+        activeKey = "other";
+        return { name: "Slides.pptx", read: () => pendingRead };
+      },
+      commit,
+      report,
+    });
+    await Promise.resolve();
+    if (closed) documents.delete("origin");
+    else documents.set("origin", latestOrigin);
+    finishRead(deck([alanine.json]));
+    const outcome = await pending;
+    expect(documents.get("other")).toBe(otherDocument);
+    if (closed) {
+      expect(outcome).toBeUndefined();
+      expect(commit).not.toHaveBeenCalled();
+      expect(report).toHaveBeenCalledWith("Import canceled because the originating drawing was closed or replaced.", []);
+    } else {
+      expect(commit).toHaveBeenCalledWith("origin", outcome!.document, IMPORT_OFFICE_STRUCTURES_UNDO_LABEL);
+      expect(molecules(documents.get("origin")!).map(canonical)).toEqual([canonical(molecules(latestOrigin)[0]!), alanine.smiles]);
+    }
   });
 
   it("commits nothing when canceled, when nothing is found, or when the file is refused", async () => {
@@ -293,7 +352,8 @@ describe("the Import Structures command", () => {
     const window = readFileSync(new URL("./MainWindow.tsx", import.meta.url), "utf8");
     const handler = window.split("register(importOfficeStructuresCommand")[1]!.split("\n    });")[0]!;
     expect(handler).toContain("runOfficeStructureImport(");
-    expect(handler).toContain("commit: (next, undoLabel) => commitDocumentChange(next, undoLabel)");
+    expect(handler).toContain("getDocumentKey: () => requestDocumentKey(activeDocumentTabIdRef.current)");
+    expect(handler).toContain("documentTabForKey(key)");
     expect(handler).toContain("pickOfficeImportFile(nativePathBasename)");
   });
 });

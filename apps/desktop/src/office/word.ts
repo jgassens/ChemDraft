@@ -7,7 +7,7 @@ import { A, PIC, OPC, PKG_REL, R, WORD, WP, WP14, child, decodeXml, hasCrop, par
 
 interface WordRange {
   getOoxml(): { value: string };
-  insertOoxml(xml: string, location: "Replace"): unknown;
+  insertOoxml(xml: string, location: "Replace"): WordRange;
 }
 interface WordContext {
   document: { getSelection(): WordRange };
@@ -188,9 +188,21 @@ export function wordAdapter(office: OfficeContext, word: WordApi | undefined): O
           // Compare the bytes as well, since a document edit can replace the media without changing the drawing XML.
           const stored = await wordCarrier(office, picture, source.value);
           if (stored.kind !== "found" || stored.json !== expected.json || selected !== expected) return refuse(selectionChanged);
-          range.insertOoxml(replacementOoxml(picture, image.base64, image.aspect), "Replace");
+          const replacement = range.insertOoxml(replacementOoxml(picture, image.base64, image.aspect), "Replace");
           await context.sync();
-          return { kind: "replaced" };
+          // Word may renumber picture IDs during insertion. Read the returned range, since the
+          // user may already have selected another picture.
+          try {
+            const insertedXml = replacement.getOoxml();
+            await context.sync();
+            const inserted = parseSelection(insertedXml.value);
+            if (inserted.kind === "picture" && (inserted.anchorId || Number(inserted.id) > 0)) {
+              return { kind: "replaced", key: inserted.key };
+            }
+          } catch {
+            // The write was already confirmed. Report the missing identity without retrying it.
+          }
+          return { kind: "replaced", key: undefined, warnings: ["Could not identify the replacement Word picture."] };
         });
       } catch (error) {
         return refuse("Could not replace the Word picture. " + errorMessage(error));

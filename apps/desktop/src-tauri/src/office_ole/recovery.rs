@@ -4,8 +4,8 @@
 //! ID and container document. Nothing restores them automatically; the Office log
 //! (`office-session-end.log`) names every file written.
 //!
-//! During a session end one [`Writer`] thread does every disk operation, never the thread that
-//! answers Windows. Whenever the tracker changes it takes the tracker's plan as owned snapshots
+//! One [`Writer`] thread writes the recovery copies and log, leaving the Office STA and the
+//! thread that answers Windows free. Whenever the tracker changes it takes its plan as owned snapshots
 //! (each drawing is an `Arc<str>`), writes each copy atomically (`.partial`, sync, rename) and
 //! records it in the tracker only once it is durable, so a copy that is queued or still being
 //! written keeps the session end refused. It also appends the Office log while a session end is
@@ -19,14 +19,15 @@ use std::{
     fs,
     io::{self, Write as _},
     path::{Path, PathBuf},
-    sync::{Condvar, Mutex, PoisonError},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Condvar, Mutex, OnceLock, PoisonError,
+    },
     time::{Duration, Instant, SystemTime},
 };
 
 use super::{
-    session_publish::{
-        display_name, Answer, Cancelled, Drawing, Recovery, Tracker, Write, SAVING_REASON,
-    },
+    session_publish::{Answer, Cancelled, Drawing, Recovery, Tracker, Write, SAVING_REASON},
     storage::MAX_DOCUMENT_BYTES,
 };
 
@@ -47,12 +48,22 @@ const POLL: Duration = Duration::from_millis(250);
 const ABANDONED: &str =
     "ChemDraft stopped waiting for it when Windows ended the session, so the previous copy is kept";
 
-/// The session end's UTC start, shared by its files so a later session end never overwrites them.
-pub(crate) fn stamp(now: chrono::DateTime<chrono::Utc>) -> String {
-    now.format("%Y%m%dT%H%M%SZ").to_string()
+/// Keep the UTC timestamp readable and distinguish copies even when the clock repeats.
+pub(super) fn copy_namespace(now: chrono::DateTime<chrono::Utc>) -> String {
+    static RUN: OnceLock<u64> = OnceLock::new();
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let run = RUN.get_or_init(|| {
+        let mut bytes = [0; 8];
+        match getrandom::fill(&mut bytes) {
+            Ok(()) => u64::from_ne_bytes(bytes),
+            Err(_) => u64::from(std::process::id()),
+        }
+    });
+    let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
+    format!("{}-{run:016x}-{sequence:x}", now.format("%Y%m%dT%H%M%SZ"))
 }
 
-pub(super) fn file_name(stamp: &str, object: &str, document: &str) -> String {
+pub(super) fn file_name(namespace: &str, object: &str, document: &str) -> String {
     let object: String = object
         .chars()
         .filter(char::is_ascii_alphanumeric)
@@ -76,7 +87,7 @@ pub(super) fn file_name(stamp: &str, object: &str, document: &str) -> String {
     } else {
         document
     };
-    format!("{stamp}-object-{object}-{document}.json")
+    format!("{namespace}-object-{object}-{document}.json")
 }
 
 /// The same bound as the IPC update frame's selection JSON.
@@ -142,24 +153,6 @@ pub(super) fn remove_stale_partials(dir: &Path, before: SystemTime) -> Vec<PathB
         }
     }
     removed
-}
-
-/// A recovery copy of a drawing Office did not take when its editor window closed outside a
-/// Windows session end, where nothing retries the save. Named like a session end's copies.
-pub(super) fn write_unsaved(
-    dir: &Path,
-    stamp: &str,
-    object: &str,
-    app: &str,
-    document: &str,
-    json: &str,
-) -> io::Result<PathBuf> {
-    write_file(
-        dir,
-        &file_name(stamp, object, display_name(app, document)),
-        json,
-        &mut || true,
-    )
 }
 
 /// The session end's answer: the tracker's, but refused with the generic reason while a recovery
@@ -273,11 +266,20 @@ struct State {
     /// Bytes started for copies of one session end, by its request.
     spent: (u32, usize),
     cancelled: VecDeque<Cancelled>,
+    unsaved: VecDeque<Unsaved>,
+    /// Bytes of destroyed-editor drawings queued or being written.
+    unsaved_bytes: usize,
     /// Office log entries, each ending in a newline, for the writer to append.
     entries: String,
     /// Copies written for a session end that was cancelled while they were in flight, so the
     /// tracker never recorded them. Its cancellation decides whether each stays.
     late: Vec<(u32, String, PathBuf)>,
+}
+
+struct Unsaved {
+    name: String,
+    json: String,
+    context: String,
 }
 
 pub(crate) struct Writer {
@@ -304,6 +306,8 @@ impl Writer {
                 stopped: false,
                 spent: (0, 0),
                 cancelled: VecDeque::new(),
+                unsaved: VecDeque::new(),
+                unsaved_bytes: 0,
                 entries: String::new(),
                 late: Vec::new(),
             }),
@@ -331,7 +335,9 @@ impl Writer {
     /// The tracker changed: start (or repeat) a pass. Never waits for the disk.
     pub(crate) fn wake(&self) {
         let mut state = self.lock();
-        self.queue(&mut state);
+        if !state.closed && !state.stopped {
+            self.queue(&mut state);
+        }
     }
 
     /// Append an entry to the Office log on the writer thread. Returns it if the writer is closed,
@@ -353,8 +359,40 @@ impl Writer {
     /// Apply a cancelled session end's plan, after any copy still in flight for it.
     pub(super) fn cancel(&self, cancelled: Cancelled) {
         let mut state = self.lock();
-        state.cancelled.push_back(cancelled);
+        if !state.closed && !state.stopped {
+            state.cancelled.push_back(cancelled);
+            self.queue(&mut state);
+        }
+    }
+
+    /// Own a destroyed editor's drawing through the write result, within the outstanding budget.
+    pub(super) fn queue_unsaved(
+        &self,
+        editor: &str,
+        document: &str,
+        json: String,
+        context: &str,
+    ) -> Result<(), String> {
+        check_size(&json).map_err(|error| error.to_string())?;
+        let name = file_name(&copy_namespace(chrono::Utc::now()), editor, document);
+        let mut state = self.lock();
+        if state.closed || state.stopped {
+            return Err("the Office recovery writer is closed".into());
+        }
+        if state.unsaved_bytes.saturating_add(json.len()) > self.budget {
+            return Err(format!(
+                "the queued Office recovery copies reached ChemDraft's {} MiB limit",
+                self.budget >> 20
+            ));
+        }
+        state.unsaved_bytes += json.len();
+        state.unsaved.push_back(Unsaved {
+            name,
+            json,
+            context: context.to_owned(),
+        });
         self.queue(&mut state);
+        Ok(())
     }
 
     #[cfg(test)]
@@ -388,14 +426,23 @@ impl Writer {
 
     /// `idle`, and then nothing new starts: a committed session end's last step, so the process
     /// can end without cutting a copy short. The message thread pumps between calls.
-    pub(crate) fn try_close(&self, pending: bool) -> bool {
-        self.settled(pending, true)
+    fn try_close<T: Drawing>(&self, tracker: &Mutex<Tracker<T>>) -> bool {
+        let mut tracker = tracker.lock().unwrap_or_else(PoisonError::into_inner);
+        if !self.settled(tracker.recovery_pending(), true) {
+            return false;
+        }
+        tracker.seal();
+        true
     }
 
     /// Close now, even mid-write: a committed session end's deadline passed. Nothing new starts, a
     /// copy still in flight is never renamed into place (`publish`), so the last good copy stays,
     /// and its `.partial` is removed when the write returns or at the next start.
-    pub(crate) fn abandon(&self) {
+    fn abandon<T: Drawing>(&self, tracker: &Mutex<Tracker<T>>) {
+        // Both close paths acquire the tracker before the writer. The writer never holds its
+        // state lock while acquiring the tracker or doing disk I/O.
+        let mut tracker = tracker.lock().unwrap_or_else(PoisonError::into_inner);
+        tracker.seal();
         let mut state = self.lock();
         state.closed = true;
         state.abandoned = true;
@@ -404,20 +451,20 @@ impl Writer {
 
     /// The watchdog's side of `try_close`, bounded: waits for what is queued or in flight until
     /// `deadline` on `clock`, then abandons it, so a write that never returns cannot hold the
-    /// process. `pending` reads the tracker. True if the writer settled in time.
-    pub(crate) fn close_by(
+    /// process. True if the writer settled in time.
+    pub(super) fn close_by<T: Drawing>(
         &self,
+        tracker: &Mutex<Tracker<T>>,
         deadline: Instant,
         clock: impl Fn() -> Instant,
-        mut pending: impl FnMut() -> bool,
     ) -> bool {
         loop {
-            if self.try_close(pending()) {
+            if self.try_close(tracker) {
                 return true;
             }
             let left = deadline.saturating_duration_since(clock());
             if left.is_zero() {
-                self.abandon();
+                self.abandon(tracker);
                 return false;
             }
             let state = self.lock();
@@ -436,20 +483,27 @@ impl Writer {
     /// queued copy until `copies_by`, runs `log` (what is still at risk), then waits for the writer
     /// to append that and closes it, until `close_by`. A writer still busy is abandoned. True if
     /// it settled in time.
-    pub(crate) fn close_committed(
+    pub(super) fn close_committed<T: Drawing>(
         &self,
-        mut pending: impl FnMut() -> bool,
+        tracker: &Mutex<Tracker<T>>,
         copies_by: Instant,
         close_by: Instant,
         mut wait: impl FnMut(Instant, &mut dyn FnMut() -> bool) -> bool,
         log: impl FnOnce(),
     ) -> bool {
-        let settled = wait(copies_by, &mut || self.idle(pending()));
+        wait(copies_by, &mut || {
+            self.idle(
+                tracker
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .recovery_pending(),
+            )
+        });
         log();
-        if settled && wait(close_by, &mut || self.try_close(pending())) {
+        if wait(close_by, &mut || self.try_close(tracker)) {
             return true;
         }
-        self.abandon();
+        self.abandon(tracker);
         false
     }
 
@@ -484,11 +538,11 @@ impl Writer {
         true
     }
 
-    /// Queue a log entry from the writer itself; the pass appends it.
-    fn note(&self, message: std::fmt::Arguments<'_>) {
+    /// Report a recovery outcome and queue the log entry without touching the Office log file.
+    pub(super) fn note(&self, message: std::fmt::Arguments<'_>) {
         eprintln!("ChemDraft: {message}");
         let entry = format!("{} {message}\n", chrono::Utc::now().to_rfc3339());
-        self.lock().entries.push_str(&entry);
+        let _ = self.log(entry);
     }
 
     /// Wait for a wake, or poll while a session end is pending. False once stopped.
@@ -532,9 +586,8 @@ impl Writer {
         self.lock().cancelled.pop_front()
     }
 
-    /// One pass: cancelled session ends in order, then the pending one's plan until nothing is
-    /// left, then the log. A plan always shrinks (every copy attempted is recorded, written or
-    /// failed, and the budget caps the bytes), so the pass ends.
+    /// Drain cancellations, the pending session plan, the log and destroyed-editor copies.
+    /// Check for session work between destroyed-editor copies.
     fn round<T: Drawing>(&self, tracker: &Mutex<Tracker<T>>, files: &mut impl Files) {
         loop {
             while let Some(cancelled) = self.next_cancelled() {
@@ -547,10 +600,14 @@ impl Writer {
             let worked = !plan.is_empty();
             self.apply(plan, tracker, files);
             self.append_log(files);
+            self.write_next_unsaved(files);
             let mut state = self.lock();
             state.active = active;
-            let more =
-                state.again || worked || !state.cancelled.is_empty() || !state.entries.is_empty();
+            let more = state.again
+                || worked
+                || !state.cancelled.is_empty()
+                || !state.entries.is_empty()
+                || !state.unsaved.is_empty();
             if state.closed || state.stopped || !more {
                 state.stage = RecoveryWrite::Idle;
                 self.changed.notify_all();
@@ -558,6 +615,41 @@ impl Writer {
             }
             state.again = false;
         }
+    }
+
+    fn write_next_unsaved(&self, files: &mut impl Files) {
+        let job = {
+            let mut state = self.lock();
+            if state.closed || state.stopped {
+                return;
+            }
+            let Some(job) = state.unsaved.pop_front() else {
+                return;
+            };
+            state.stage = RecoveryWrite::Writing;
+            job
+        };
+        let result = self.dir.as_ref().map_err(String::clone).and_then(|dir| {
+            files
+                .write(dir, &job.name, &job.json, &mut || self.publish())
+                .map_err(|error| error.to_string())
+        });
+        match result {
+            Ok(path) => self.note(format_args!(
+                "{}; wrote its last drawing to {}. Nothing restores this copy automatically.",
+                job.context,
+                path.display()
+            )),
+            Err(error) => self.note(format_args!(
+                "{}, and could not write a recovery copy: {error}.",
+                job.context
+            )),
+        }
+        let bytes = job.json.len();
+        drop(job);
+        let mut state = self.lock();
+        state.unsaved_bytes -= bytes;
+        state.stage = RecoveryWrite::Queued;
     }
 
     /// One copy, within its session end's byte budget. `None` once the writer is closed.
@@ -858,8 +950,8 @@ mod tests {
             json: &str,
             publishing: &mut dyn FnMut() -> bool,
         ) -> io::Result<PathBuf> {
-            self.entered.send(name.to_owned()).unwrap();
-            self.proceed.recv().unwrap();
+            let _ = self.entered.send(name.to_owned());
+            self.proceed.recv().map_err(io::Error::other)?;
             Disk.write(dir, name, json, publishing)
         }
 
@@ -876,6 +968,56 @@ mod tests {
         let (entered, writes) = mpsc::channel();
         let (release, proceed) = mpsc::channel();
         (Gated { entered, proceed }, writes, release)
+    }
+
+    // Owned inside the scoped closure, so unwinding stops and releases the writer before joining.
+    struct ReleaseWriter<'a> {
+        writer: &'a Writer,
+        release: mpsc::Sender<()>,
+    }
+
+    impl Drop for ReleaseWriter<'_> {
+        fn drop(&mut self) {
+            self.writer.stop();
+            let _ = self.release.send(());
+        }
+    }
+
+    #[test]
+    fn a_failed_gated_assertion_releases_the_writer_before_joining() {
+        let folder = Folder::new("gated-unwind");
+        let writer = folder.writer();
+        let tracker = tracker();
+        let (mut files, writes, release) = gated();
+        let rescue = release.clone();
+        thread::scope(|scope| {
+            let worker = scope.spawn(|| run(&writer, &tracker, &mut files));
+            let result = std::panic::catch_unwind(|| {
+                let _gate = ReleaseWriter {
+                    writer: &writer,
+                    release,
+                };
+                writer.wake();
+                assert!(writes.recv_timeout(Duration::from_secs(5)).is_ok());
+                panic!("simulated assertion failure inside the gate");
+            });
+            let stopped = wait_until(
+                Instant::now() + Duration::from_secs(5),
+                Instant::now,
+                || worker.is_finished(),
+                || thread::sleep(Duration::from_millis(5)),
+            );
+            if !stopped {
+                writer.stop();
+                let _ = rescue.send(());
+            }
+            let panic = result.expect_err("the test assertion should unwind");
+            assert_eq!(
+                panic.downcast_ref::<&str>().copied(),
+                Some("simulated assertion failure inside the gate")
+            );
+            assert!(stopped);
+        });
     }
 
     /// A disk that hangs inside each copy: half the drawing reaches its `.partial`, and the write
@@ -978,10 +1120,6 @@ mod tests {
             }
         }
 
-        fn pending(&self) -> bool {
-            self.tracker.lock().unwrap().recovery_pending()
-        }
-
         /// The last good copy is byte-identical, the abandoned write was never renamed over it,
         /// and the next start removes the unfinished copy and nothing else.
         fn assert_last_good_copy_kept(&self) {
@@ -1003,7 +1141,7 @@ mod tests {
         let start = chrono::Utc
             .with_ymd_and_hms(2026, 11, 20, 22, 47, 19)
             .unwrap();
-        assert_eq!(stamp(start), "20261120T224719Z");
+        assert!(copy_namespace(start).starts_with("20261120T224719Z-"));
         assert_eq!(
             file_name("S", "17", r"C:\Docs\Report?.docx. "),
             "S-object-17-C__Docs_Report_.docx.json"
@@ -1017,6 +1155,40 @@ mod tests {
             long.len(),
             "S-object-1-".len() + MAX_NAME_CHARS + ".json".len()
         );
+    }
+
+    #[test]
+    fn a_second_session_in_the_same_second_keeps_the_previous_copy() {
+        let folder = Folder::new("same-second");
+        let writer = folder.writer();
+        let tracker = Mutex::new(Tracker::new());
+        let start = chrono::Utc
+            .with_ymd_and_hms(2026, 11, 20, 22, 47, 19)
+            .unwrap();
+        {
+            let mut locked = tracker.lock().unwrap();
+            locked.opened("17", "Microsoft Word", "Report.docx", "{old}");
+            locked.begin(4, copy_namespace(start)).unwrap();
+        }
+        writer.round(&tracker, &mut Disk);
+        let first = tracker.lock().unwrap().risks()[0].snapshot.clone().unwrap();
+        {
+            let mut locked = tracker.lock().unwrap();
+            writer.cancel(locked.cancel(false).unwrap());
+            locked.begin(5, copy_namespace(start)).unwrap();
+        }
+        writer.round(&tracker, &mut Disk);
+        let second = tracker.lock().unwrap().risks()[0].snapshot.clone().unwrap();
+        assert!(tracker.lock().unwrap().collect(5, "17", "{new}"));
+        writer.round(&tracker, &mut Disk);
+        assert_ne!(first, second);
+        assert_eq!(fs::read_to_string(&first).unwrap(), "{old}");
+        assert_eq!(fs::read_to_string(&second).unwrap(), "{new}");
+        assert_eq!(
+            tracker.lock().unwrap().risks()[0].snapshot.as_ref(),
+            Some(&second)
+        );
+        assert_eq!(folder.copy_names().len(), 2);
     }
 
     /// The session end may end only after the closed drawing's copy is durable: queued and in
@@ -1041,9 +1213,13 @@ mod tests {
         let watchdog_done = AtomicBool::new(false);
         thread::scope(|scope| {
             scope.spawn(|| run(&writer, &tracker, &mut files));
+            let gate = ReleaseWriter {
+                writer: &writer,
+                release,
+            };
             writer.wake();
             assert_eq!(
-                writes.recv().unwrap(),
+                writes.recv_timeout(Duration::from_secs(5)).unwrap(),
                 "20261120T224719Z-object-17-Report.docx.json"
             );
             // In flight: still refused, and nothing durable yet.
@@ -1051,17 +1227,17 @@ mod tests {
             assert!(answer_of(&tracker).blocks());
             assert!(!tracker.lock().unwrap().risks()[0].current);
             assert!(!writer.idle(tracker.lock().unwrap().recovery_pending()));
-            assert!(!writer.try_close(false), "never closes mid-write");
+            assert!(!writer.try_close(&tracker), "never closes mid-write");
 
             // The committed session end's watchdog fires now, and must wait for the copy.
             let (_disarm, watchdog) = mpsc::channel::<()>();
-            scope.spawn(|| {
+            let watchdog_done = &watchdog_done;
+            let writer = &writer;
+            let tracker = &tracker;
+            let watched = scope.spawn(move || {
                 crate::windows_session_end::watch_flush(watchdog, Duration::ZERO, || {
-                    let deadline = Instant::now() + Duration::from_secs(60);
-                    assert!(writer.close_by(deadline, Instant::now, || tracker
-                        .lock()
-                        .unwrap()
-                        .recovery_pending()));
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    assert!(writer.close_by(tracker, deadline, Instant::now));
                     watchdog_done.store(true, Ordering::SeqCst);
                 });
             });
@@ -1072,17 +1248,15 @@ mod tests {
             );
             assert_eq!(writer.stage(), RecoveryWrite::Writing);
 
-            release.send(()).unwrap();
-            while !watchdog_done.load(Ordering::SeqCst) {
-                thread::sleep(Duration::from_millis(5));
-            }
+            gate.release.send(()).unwrap();
+            watched.join().unwrap();
+            assert!(watchdog_done.load(Ordering::SeqCst));
             // Durable and closed: the session end may end, and a later change starts nothing.
-            assert_eq!(answer_of(&tracker), Answer::Allow);
-            assert!(writer.try_close(true));
+            assert_eq!(answer_of(tracker), Answer::Allow);
+            assert!(writer.try_close(tracker));
             assert!(writer.log("late entry\n".into()).is_err());
             writer.wake();
             assert!(writes.try_recv().is_err());
-            writer.stop();
         });
 
         let copy = folder
@@ -1111,7 +1285,7 @@ mod tests {
         let real = Instant::now();
         let mut logged = false;
         let settled = stuck.writer.close_committed(
-            || stuck.pending(),
+            stuck.tracker,
             start + RECOVERY_LIMIT,
             start + CLOSE_LIMIT,
             |deadline, done| {
@@ -1131,17 +1305,68 @@ mod tests {
         );
         let gave_up = clock.last();
         assert!(
-            gave_up >= start + RECOVERY_LIMIT,
-            "it waits until its deadline"
+            gave_up >= start + CLOSE_LIMIT,
+            "it waits through the close interval after the copy deadline"
         );
-        assert!(gave_up < start + CLOSE_LIMIT, "and not past it");
+        assert!(
+            gave_up < start + CLOSE_LIMIT + clock.step,
+            "and not past it"
+        );
         assert!(real.elapsed() < Duration::from_secs(5));
         // Closed: nothing new starts, and a late log entry is not handed back to be written on
         // the thread answering Windows, which would then wait on the stuck disk itself.
-        assert!(stuck.writer.idle(true) && stuck.writer.try_close(true));
+        assert!(!stuck.tracker.lock().unwrap().collect(4, "18", "{late}"));
+        assert!(stuck.writer.idle(true) && stuck.writer.try_close(stuck.tracker));
         assert_eq!(stuck.writer.log("late entry\n".into()), Ok(()));
         assert_eq!(stuck.writer.stage(), RecoveryWrite::Writing, "still stuck");
         stuck.assert_last_good_copy_kept();
+    }
+
+    #[test]
+    fn the_risk_log_flushes_when_the_disk_returns_during_the_close_interval() {
+        let folder = Folder::new("close-interval");
+        let writer = folder.writer();
+        let tracker = tracker();
+        assert!(tracker.lock().unwrap().unchanged(4, "18"));
+        let (mut files, writes, release) = gated();
+        thread::scope(|scope| {
+            scope.spawn(|| run(&writer, &tracker, &mut files));
+            let gate = ReleaseWriter {
+                writer: &writer,
+                release,
+            };
+            writer.wake();
+            assert_eq!(
+                writes.recv_timeout(Duration::from_secs(5)).unwrap(),
+                COPY_17
+            );
+            let clock = Clock::new(RECOVERY_LIMIT);
+            let start = clock.base;
+            let close_by = start + CLOSE_LIMIT;
+            assert!(writer.close_committed(
+                &tracker,
+                start + RECOVERY_LIMIT,
+                close_by,
+                |deadline, done| {
+                    if deadline == close_by {
+                        gate.release.send(()).unwrap();
+                        // Hold the simulated clock within the final interval while the real
+                        // writer drains the copy and log.
+                        return wait_until(
+                            Instant::now() + Duration::from_secs(5),
+                            Instant::now,
+                            done,
+                            || thread::sleep(Duration::from_millis(5)),
+                        );
+                    }
+                    wait_until(deadline, || clock.now(), done, || {})
+                },
+                || writer
+                    .log("the drawing was still at risk\n".into())
+                    .unwrap(),
+            ));
+        });
+        assert!(folder.log().contains("the drawing was still at risk"));
     }
 
     /// The watchdog fires while the thread answering Windows is stuck elsewhere. It waits for a
@@ -1155,10 +1380,9 @@ mod tests {
         let exited = Mutex::new(None);
         let (_disarm, watchdog) = mpsc::channel::<()>();
         watch_flush(watchdog, Duration::ZERO, || {
-            let settled =
-                stuck
-                    .writer
-                    .close_by(start + EXIT_LIMIT, || clock.now(), || stuck.pending());
+            let settled = stuck
+                .writer
+                .close_by(stuck.tracker, start + EXIT_LIMIT, || clock.now());
             // force_exit
             *exited.lock().unwrap() = Some((settled, clock.last()));
         });
@@ -1170,7 +1394,8 @@ mod tests {
         assert!(at >= start + EXIT_LIMIT, "it waits until its deadline");
         assert!(at < start + EXIT_LIMIT + clock.step, "and not past it");
         assert!(real.elapsed() < Duration::from_secs(5));
-        assert!(stuck.writer.try_close(true), "nothing new starts");
+        assert!(!stuck.tracker.lock().unwrap().collect(4, "18", "{late}"));
+        assert!(stuck.writer.try_close(stuck.tracker), "nothing new starts");
         assert_eq!(stuck.writer.stage(), RecoveryWrite::Writing, "still stuck");
         stuck.assert_last_good_copy_kept();
     }
@@ -1191,15 +1416,23 @@ mod tests {
         let (mut files, writes, release) = gated();
         thread::scope(|scope| {
             scope.spawn(|| run(&writer, &tracker, &mut files));
+            let gate = ReleaseWriter {
+                writer: &writer,
+                release,
+            };
             writer.wake();
-            assert_eq!(writes.recv().unwrap(), COPY_17);
-            let pending = || tracker.lock().unwrap().recovery_pending();
-            assert!(!writer.close_by(Instant::now(), Instant::now, pending));
-            release.send(()).unwrap();
-            while writer.stage() != RecoveryWrite::Idle {
-                thread::sleep(Duration::from_millis(5));
-            }
-            writer.stop();
+            assert_eq!(
+                writes.recv_timeout(Duration::from_secs(5)).unwrap(),
+                COPY_17
+            );
+            assert!(!writer.close_by(&tracker, Instant::now(), Instant::now));
+            gate.release.send(()).unwrap();
+            assert!(wait_until(
+                Instant::now() + Duration::from_secs(5),
+                Instant::now,
+                || writer.stage() == RecoveryWrite::Idle,
+                || thread::sleep(Duration::from_millis(5)),
+            ));
         });
         let copy = folder.copies().join(COPY_17);
         assert_eq!(fs::read_to_string(&copy).unwrap(), "{old}");
@@ -1437,15 +1670,21 @@ mod tests {
             let (mut files, writes, release) = gated();
             thread::scope(|scope| {
                 scope.spawn(|| run(&writer, &tracker, &mut files));
+                let gate = ReleaseWriter {
+                    writer: &writer,
+                    release,
+                };
                 writer.wake();
-                writes.recv().unwrap();
+                writes.recv_timeout(Duration::from_secs(5)).unwrap();
                 let cancelled = tracker.lock().unwrap().cancel(remove_open).unwrap();
                 writer.cancel(cancelled);
-                release.send(()).unwrap();
-                while !writer.idle(false) {
-                    thread::sleep(Duration::from_millis(5));
-                }
-                writer.stop();
+                gate.release.send(()).unwrap();
+                assert!(wait_until(
+                    Instant::now() + Duration::from_secs(5),
+                    Instant::now,
+                    || writer.idle(false),
+                    || thread::sleep(Duration::from_millis(5)),
+                ));
             });
             let left = folder.copy_names();
             assert_eq!(left.len(), usize::from(survives), "{remove_open}: {left:?}");
@@ -1457,29 +1696,29 @@ mod tests {
         }
     }
 
-    /// The committed session end's last step: it closes only once idle, and a missed wake is
-    /// caught by reading the tracker.
     #[test]
-    fn closing_waits_for_queued_work_and_then_starts_nothing() {
+    fn closing_accounts_for_publications_that_won_the_race_and_rejects_later_ones() {
         let folder = Folder::new("close");
         let writer = folder.writer();
         let tracker = tracker();
-        assert!(!writer.try_close(true), "the tracker has copies to write");
+        // Both fallbacks are durable and the writer is idle.
+        writer.round(&tracker, &mut Disk);
+        // A renderer accepted just before close can be between collecting and sending its wake.
+        assert!(tracker.lock().unwrap().collect(4, "17", "{new}"));
+        assert!(!writer.try_close(&tracker));
         assert_eq!(writer.stage(), RecoveryWrite::Queued);
         writer.round(&tracker, &mut Disk);
-        assert!(writer.idle(false));
-        assert!(writer.try_close(false));
-
-        assert!(tracker.lock().unwrap().collect(4, "17", "{new}"));
-        writer.wake();
-        writer.round(&tracker, &mut Disk);
-        let copy = folder
-            .copies()
-            .join("20261120T224719Z-object-17-Report.docx.json");
+        assert!(tracker.lock().unwrap().unsent(4, "18"));
+        assert!(writer.try_close(&tracker));
+        let mut locked = tracker.lock().unwrap();
+        assert!(!locked.accepting(4, "18"));
+        assert!(!locked.collect(4, "18", "{late}"));
+        assert!(!locked.unchanged(4, "18"));
+        assert!(!locked.replaced("18", "{interactive}"));
+        assert!(!locked.recovery_pending());
         assert_eq!(
-            fs::read_to_string(copy).unwrap(),
-            "{old}",
-            "nothing starts once closed"
+            fs::read_to_string(folder.copies().join(COPY_17)).unwrap(),
+            "{new}"
         );
     }
 
@@ -1504,43 +1743,82 @@ mod tests {
     }
 
     #[test]
-    fn an_unsaved_drawing_from_a_closed_editor_gets_a_durable_copy() {
+    fn destroyed_editor_copies_keep_their_bytes_until_written_and_drain_at_exit() {
         let folder = Folder::new("unsaved");
-        let path = write_unsaved(
-            &folder.0,
-            "20261121T101500Z",
-            "23",
-            "Microsoft Word",
-            "Report.docx",
-            "{latest}",
-        )
-        .unwrap();
-        assert_eq!(fs::read_to_string(&path).unwrap(), "{latest}");
-        // Without a document name the app names the file, as for a session end's copies.
-        write_unsaved(
-            &folder.0,
-            "20261121T101500Z",
-            "24",
-            "Microsoft PowerPoint",
-            " ",
-            "{deck}",
-        )
-        .unwrap();
+        let mut writer = folder.writer();
+        writer.budget = 6;
+        let tracker = Mutex::new(Tracker::<&str>::new());
+        let (mut files, writes, release) = gated();
+        thread::scope(|scope| {
+            scope.spawn(|| run(&writer, &tracker, &mut files));
+            let gate = ReleaseWriter {
+                writer: &writer,
+                release,
+            };
+            writer
+                .queue_unsaved("23", "Report.docx", "{a}".into(), "Office refused A")
+                .unwrap();
+            let first = writes.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(first.ends_with("-object-23-Report.docx.json"));
+            assert!(!folder.copies().join(&first).exists());
+            writer
+                .queue_unsaved("24", "Slides.pptx", "{b}".into(), "Office refused B")
+                .unwrap();
+            assert!(writer
+                .queue_unsaved("25", "Notes.docx", "{c}".into(), "Office refused C")
+                .is_err());
+            assert!(
+                !writer.try_close(&tracker),
+                "ordinary exit must wait for the pending copy"
+            );
+            gate.release.send(()).unwrap();
+            let second = writes.recv_timeout(Duration::from_secs(5)).unwrap();
+            gate.release.send(()).unwrap();
+            assert!(writer.close_by(
+                &tracker,
+                Instant::now() + Duration::from_secs(5),
+                Instant::now
+            ));
+            for (name, drawing) in [(first, "{a}"), (second, "{b}")] {
+                assert_eq!(
+                    fs::read_to_string(folder.copies().join(name)).unwrap(),
+                    drawing
+                );
+            }
+        });
+        let log = folder.log();
+        assert!(log.contains("Office refused A; wrote its last drawing"));
+        assert!(log.contains("Office refused B; wrote its last drawing"));
+    }
+
+    #[test]
+    fn the_destroyed_editor_copy_reports_a_write_failure_and_releases_its_budget() {
+        let folder = Folder::new("unsaved-failure");
+        let mut writer = folder.writer();
+        writer.dir = Err("no recovery folder".into());
+        writer.budget = 3;
+        let tracker = Mutex::new(Tracker::<&str>::new());
+        for _ in 0..2 {
+            writer
+                .queue_unsaved("23", "Report.docx", "{a}".into(), "Office refused A")
+                .unwrap();
+            writer.round(&tracker, &mut Disk);
+        }
         assert_eq!(
-            folder.files(),
-            [
-                "20261121T101500Z-object-23-Report.docx.json",
-                "20261121T101500Z-object-24-Microsoft PowerPoint.json"
-            ]
+            folder
+                .log()
+                .matches("could not write a recovery copy: no recovery folder")
+                .count(),
+            2
         );
-        assert!(write_unsaved(
-            &folder.0,
-            "S",
-            "25",
-            "Word",
-            "Big.docx",
-            &" ".repeat(MAX_DOCUMENT_BYTES + 1)
-        )
-        .is_err());
+        assert!(writer
+            .queue_unsaved(
+                "23",
+                "Big.docx",
+                " ".repeat(MAX_DOCUMENT_BYTES + 1),
+                "Office refused"
+            )
+            .unwrap_err()
+            .contains("25 MiB"));
     }
 }

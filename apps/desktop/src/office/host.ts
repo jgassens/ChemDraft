@@ -23,8 +23,8 @@ export interface Refusal {
 }
 
 export type SelectionResult = SelectedStructure | NoStructure | Refusal;
-/** `warnings` names shape state the host could not carry over to the replacement. */
-export type ReplaceResult = { kind: "replaced"; warnings?: string[] } | Refusal;
+/** A missing key means the host wrote the picture but could not identify it for rebinding. */
+export type ReplaceResult = { kind: "replaced"; key: string | undefined; warnings?: string[] } | Refusal;
 
 export interface OfficeHostAdapter {
   readSelectedStructure(): Promise<SelectionResult>;
@@ -93,6 +93,7 @@ export function readOfficeDocument(context: OfficeContext) {
 async function readCompressedFile(context: OfficeContext) {
   const sliceSize = 1024 * 1024;
   const file = await officeAsync<OfficeFile>(done => context.document.getFileAsync("compressed", { sliceSize }, done));
+  const close = () => officeAsync<void>(done => file.closeAsync(done));
   let bytes: Uint8Array;
   try {
     if (!Number.isSafeInteger(file.size) || file.size < 1 || file.size > 200 * 1024 * 1024 ||
@@ -113,9 +114,16 @@ async function readCompressedFile(context: OfficeContext) {
       offset += slice.size;
     }
     if (offset !== bytes.length) throw new Error("Office returned an incomplete document.");
-  } finally {
-    await officeAsync<void>(done => file.closeAsync(done));
+  } catch (readError) {
+    try {
+      await close();
+    } catch (closeError) {
+      throw new Error(errorMessage(readError) + " Closing the Office document also failed. " + errorMessage(closeError),
+        { cause: readError });
+    }
+    throw readError;
   }
+  await close();
   return readZip(bytes);
 }
 

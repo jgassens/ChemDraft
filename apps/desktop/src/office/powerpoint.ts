@@ -302,9 +302,11 @@ export function powerpointAdapter(office: OfficeContext, powerpoint: PowerPointA
           if (!active || JSON.stringify([active.slide.id, active.shape.id]) !== expected.key) throw new Error(selectionChanged);
           const { slide, shape } = active;
           const all = slide.shapes.load("items/id");
+          const activeSlides = context.presentation.getSelectedSlides().load("items/id");
           shape.load("name,left,top,width,height,zOrderPosition" + (canRotate ? ",rotation" : ""));
           shape.tags.load("items/key,items/value");
           await context.sync();
+          if (activeSlides.items.length !== 1 || activeSlides.items[0]?.id !== slide.id) throw new Error(selectionChanged);
           const ids = new Set(all.items.map(item => item.id));
           if (!ids.has(shape.id)) throw new Error(grouped);
           if (canRotate && (!Number.isFinite(shape.rotation) ||
@@ -329,14 +331,19 @@ export function powerpointAdapter(office: OfficeContext, powerpoint: PowerPointA
           coercionType: "image", imageLeft: placement.left, imageTop: placement.top,
           imageWidth: placement.width, imageHeight: placement.height,
         }, done));
-        // From here on a picture has been inserted: every failure before the old one is deleted removes it.
+        // Rollback can remove the new picture once its ID is known.
         let insertedId: string | undefined;
         let deletionRequested = false;
+        let key: string;
         try {
-          await powerpoint.run(async context => {
+          key = await powerpoint.run(async context => {
             const slide = context.presentation.slides.getItem(original.slideId);
             const shapes = slide.shapes.load("items/id,items/type,items/zOrderPosition");
+            const activeSlides = context.presentation.getSelectedSlides().load("items/id");
             await context.sync();
+            if (activeSlides.items.length !== 1 || activeSlides.items[0]?.id !== original.slideId) {
+              throw new Error("The active PowerPoint slide changed during the update.");
+            }
             const added = shapes.items.filter(shape => !original.ids.has(shape.id));
             if (added.length !== 1 || added[0]!.type !== "Image") throw new Error("The new picture could not be identified.");
             const inserted = added[0]!;
@@ -414,6 +421,7 @@ export function powerpointAdapter(office: OfficeContext, powerpoint: PowerPointA
             old.delete();
             deletionRequested = true;
             await context.sync();
+            return JSON.stringify([original.slideId, inserted.id]);
           });
         } catch (error) {
           if (deletionRequested) throw new Error(errorMessage(error) + " Check the slide before retrying.");
@@ -423,7 +431,7 @@ export function powerpointAdapter(office: OfficeContext, powerpoint: PowerPointA
           throw error;
         }
         const warning = lostStateWarning(lost);
-        return warning ? { kind: "replaced", warnings: [warning] } : { kind: "replaced" };
+        return warning ? { kind: "replaced", key, warnings: [warning] } : { kind: "replaced", key };
       } catch (error) {
         return refuse("Could not replace the PowerPoint picture. " + errorMessage(error));
       }

@@ -164,7 +164,7 @@ export function useOfficeObject(objectId: string | undefined, editor: OfficeObje
         setContainer(name);
         document.title = windowTitle;
         editorRef.current.setStatus([`Opened structure from ${name}.`, ...warnings].join(" "));
-        void currentWindow.setTitle(windowTitle).catch(error => {
+        void invoke("office_object_set_title", { title: windowTitle }).catch(error => {
           if (!disposed) editorRef.current.setStatus(`Could not set the Office editor title: ${diagnostic(error)}`);
         });
       } catch (error) {

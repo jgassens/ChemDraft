@@ -36,7 +36,7 @@ function office({ sets = [], archive }: { sets?: string[]; archive?: Uint8Array 
   } satisfies OfficeContext;
 }
 
-function wordDocument({ floating = false, crop = false, group = false, text = "", id = 17 } = {}) {
+function wordDocument({ floating = false, crop = false, group = false, text = "", id = 17, anchorId = "2200ACD1" } = {}) {
   const placement = floating ? "anchor" : "inline";
   const props = '<wp:docPr id="' + id + '" name="Figure 1" descr="Figure description"/>';
   const picture = '<pic:pic><pic:blipFill><a:blip r:embed="rId7"/><a:srcRect' + (crop ? ' l="3500"' : '') +
@@ -45,7 +45,7 @@ function wordDocument({ floating = false, crop = false, group = false, text = ""
     '<wp:positionV relativeFrom="paragraph"><wp:posOffset>127000</wp:posOffset></wp:positionV>' : "";
   return '<w:document xmlns:w="' + WORD + '" xmlns:wp="' + WP + '" xmlns:a="' + A + '" xmlns:r="' + R +
     '" xmlns:pic="' + PIC + '" xmlns:wp14="' + WP14 + '"><w:body><w:p><w:r>' + text + '<w:drawing><wp:' + placement +
-    ' wp14:anchorId="2200ACD1"' + (floating ? ' distL="114300" relativeHeight="251658240"' : '') + '>' + anchor +
+    ' wp14:anchorId="' + anchorId + '"' + (floating ? ' distL="114300" relativeHeight="251658240"' : '') + '>' + anchor +
     '<wp:extent cx="3810000" cy="1905000"/>' + (floating ? '<wp:wrapSquare wrapText="bothSides"/>' : "") + props +
     '<a:graphic><a:graphicData uri="' + PIC + '">' +
     (group ? '<wpg:wgp xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup">' + picture + '</wpg:wgp>' : picture) +
@@ -62,10 +62,14 @@ function flatOpc(document: string, png?: Uint8Array) {
 
 function wordHost(xml: string) {
   const getOoxml = vi.fn(() => ({ value: xml }));
-  const insertOoxml = vi.fn<(xml: string, location: "Replace") => void>();
+  const getInsertedOoxml = vi.fn((insertedXml: string) => ({ value: insertedXml }));
+  const insertOoxml = vi.fn((replacement: string, _location: "Replace") => ({
+    getOoxml: () => getInsertedOoxml(replacement),
+    insertOoxml() { throw new Error("Unexpected second insert."); },
+  }));
   const word = { run: async work => work({ document: { getSelection: () => ({ getOoxml, insertOoxml }) },
     sync: async () => undefined }) } satisfies WordApi;
-  return { word, getOoxml, insertOoxml };
+  return { word, getOoxml, insertOoxml, getInsertedOoxml };
 }
 
 describe("Word Office adapter", () => {
@@ -73,7 +77,7 @@ describe("Word Office adapter", () => {
     const { word, insertOoxml } = wordHost(flatOpc(wordDocument({ floating }), carrier));
     const adapter = wordAdapter(office({ sets: ["WordApi 1.1"] }), word);
     expect(await adapter.readSelectedStructure()).toMatchObject({ kind: "structure", json: sourceJson });
-    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({ kind: "replaced" });
+    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({ kind: "replaced", key: expect.any(String) });
     const [xml, location] = insertOoxml.mock.calls[0]!;
     expect(location).toBe("Replace");
     const document = xmlDocument(xml);
@@ -107,7 +111,7 @@ describe("Word Office adapter", () => {
     const adapter = wordAdapter(host, word);
     expect(await adapter.readSelectedStructure()).toMatchObject({ kind: "structure", json: sourceJson });
     expect(host.document.getFileAsync).toHaveBeenCalledWith("compressed", { sliceSize: 1048576 }, expect.any(Function));
-    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({ kind: "replaced" });
+    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({ kind: "replaced", key: expect.any(String) });
     expect(insertOoxml).toHaveBeenCalledOnce();
   });
 
@@ -136,6 +140,37 @@ describe("Word Office adapter", () => {
     });
     expect(insertOoxml).not.toHaveBeenCalled();
   });
+
+  it("returns the inserted Word range's identity when the selection has moved to an identical carrier", async () => {
+    const { word, getOoxml, getInsertedOoxml } = wordHost(flatOpc(wordDocument(), carrier));
+    const adapter = wordAdapter(office({ sets: ["WordApi 1.1"] }), word);
+    await adapter.readSelectedStructure();
+    const inserted = flatOpc(wordDocument({ id: 31, anchorId: "2200ACD2" }), updated);
+    const other = flatOpc(wordDocument({ id: 46, anchorId: "2200ACD3" }), updated);
+    getInsertedOoxml.mockImplementationOnce(() => {
+      getOoxml.mockReturnValue({ value: other });
+      return { value: inserted };
+    });
+    const replacement = await adapter.replaceSelectedStructure(updated, updateJson, size);
+    const selected = await adapter.readSelectedStructure();
+    expect(selected).toMatchObject({ kind: "structure", json: updateJson });
+    getOoxml.mockReturnValue({ value: inserted });
+    const actual = await adapter.readSelectedStructure();
+    expect(actual).toMatchObject({ kind: "structure", json: updateJson });
+    expect(replacement).toEqual({ kind: "replaced", key: actual.kind === "structure" ? actual.key : undefined });
+    expect(replacement).not.toMatchObject({ key: selected.kind === "structure" ? selected.key : undefined });
+  });
+
+  it("reports a completed Word write when the new range cannot be identified", async () => {
+    const { word, getInsertedOoxml, insertOoxml } = wordHost(flatOpc(wordDocument(), carrier));
+    const adapter = wordAdapter(office({ sets: ["WordApi 1.1"] }), word);
+    await adapter.readSelectedStructure();
+    getInsertedOoxml.mockImplementationOnce(() => { throw new Error("The inserted range is unavailable."); });
+    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({
+      kind: "replaced", key: undefined, warnings: ["Could not identify the replacement Word picture."],
+    });
+    expect(insertOoxml).toHaveBeenCalledOnce();
+  });
 });
 
 describe("Office compressed-file reads", () => {
@@ -162,6 +197,29 @@ describe("Office compressed-file reads", () => {
     }
     for (const read of reads) expect((await read).map(entry => entry.name)).toEqual(["a.xml"]);
     expect(most).toBe(1);
+  });
+
+  it.each([
+    [true, "Office returned an incomplete document. Closing the Office document also failed. Close failed."],
+    [false, "Close failed."],
+  ])("reports the primary Office file error when close fails (incomplete=%s)", async (incomplete, message) => {
+    const archive = zipSync({ "a.xml": strToU8("<a/>") });
+    const host = office({ sets: ["CompressedFile 1.1"], archive });
+    const close = vi.fn();
+    host.document.getFileAsync.mockImplementation((_type, _options, result) => {
+      result({ status: "succeeded", value: {
+        size: archive.length, sliceCount: 1,
+        getSliceAsync: (index, done) => done({
+          status: "succeeded", value: { index, size: archive.length, data: incomplete ? [] : [...archive] },
+        }),
+        closeAsync: done => {
+          close();
+          done({ status: "failed", value: undefined, error: { message: "Close failed." } });
+        },
+      } });
+    });
+    await expect(readOfficeDocument(host)).rejects.toMatchObject({ message });
+    expect(close).toHaveBeenCalledOnce();
   });
 });
 
@@ -218,6 +276,8 @@ interface HostOptions extends PptxOptions {
   failSyncAfterInsert?: number;
   /** Insert a second, unrelated picture alongside the new one. */
   extraInsert?: boolean;
+  /** Switch slides as the insert runs, and add an unrelated picture to the original slide. */
+  insertOnOtherSlide?: boolean;
   /** Make the rollback unable to delete the inserted picture. */
   undeletable?: boolean;
   /** Make delete() of the old picture throw. */
@@ -229,7 +289,8 @@ interface HostOptions extends PptxOptions {
 }
 
 function powerpointHost({ version = 10, writableRotation = true, unwritableName = false, failSyncAfterInsert, extraInsert = false,
-  undeletable = false, oldUndeletable = false, decorativeClearsAltText = false, ignoresAltTextWrites = false, ...pptxOptions }: HostOptions = {}) {
+  insertOnOtherSlide = false, undeletable = false, oldUndeletable = false, decorativeClearsAltText = false,
+  ignoresAltTextWrites = false, ...pptxOptions }: HostOptions = {}) {
   const rotation = pptxOptions.rotation ?? 0;
   const archive = pptx(pptxOptions);
   const sets = ["CompressedFile 1.1", "ImageCoercion 1.1"];
@@ -273,10 +334,13 @@ function powerpointHost({ version = 10, writableRotation = true, unwritableName 
   old.tags.add("ORIGINAL", "keep");
   stack.push(shape("21", "Behind"), old, shape("23", "Front"));
   const slide = { id: "307", shapes: collection(stack), exportAsBase64: vi.fn(() => ({ value: b64(archive) })) };
+  const otherSlide = { ...slide, id: "308", shapes: collection<Shape>([]) };
+  let activeSlide = slide;
+  const getSelectedSlides = vi.fn(() => collection([activeSlide]));
   const powerpoint = { run: async work => work({
     presentation: {
-      getSelectedShapes: () => collection([old]), getSelectedSlides: () => collection([slide]),
-      slides: { getItem: () => slide },
+      getSelectedShapes: () => collection([old]), getSelectedSlides,
+      slides: { getItem: id => id === otherSlide.id ? otherSlide : slide },
     }, sync: async () => {
       if (syncsAfterInsert === undefined) return;
       if (++syncsAfterInsert === failSyncAfterInsert) throw new Error("PowerPoint sync failed.");
@@ -304,14 +368,19 @@ function powerpointHost({ version = 10, writableRotation = true, unwritableName 
           Object.defineProperty(inserted, key, { get: () => kept, set: () => undefined });
         }
       }
-      stack.push(inserted);
-      if (extraInsert) stack.push({ ...shape("25", "Unrelated"), left: 400, get zOrderPosition() { return stack.indexOf(this); } });
+      if (insertOnOtherSlide) activeSlide = otherSlide;
+      activeSlide.shapes.items.push(inserted);
+      if (extraInsert || insertOnOtherSlide) {
+        stack.push({ ...shape("25", "Unrelated"), left: 400, get zOrderPosition() { return stack.indexOf(this); } });
+      }
       mutations.push("insert");
       syncsAfterInsert = 0;
       done({ status: "succeeded", value: undefined });
     });
-  return { host, powerpoint, slide, old, stack, mutations };
+  return { host, powerpoint, slide, otherSlide, getSelectedSlides, old, stack, mutations };
 }
+
+const replacementShapeKey = JSON.stringify(["307", "24"]);
 
 describe("PowerPoint Office adapter", () => {
   it("uses slide export, replaces at the same width, and restores rotation, name, z-order and tags", async () => {
@@ -320,7 +389,7 @@ describe("PowerPoint Office adapter", () => {
     expect(await adapter.readSelectedStructure()).toMatchObject({ kind: "structure", json: sourceJson });
     expect(slide.exportAsBase64).toHaveBeenCalledOnce();
     expect(host.document.getFileAsync).not.toHaveBeenCalled();
-    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({ kind: "replaced" });
+    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({ kind: "replaced", key: replacementShapeKey });
     expect(host.document.setSelectedDataAsync).toHaveBeenCalledWith(b64(updated), {
       coercionType: "image", imageLeft: 27, imageTop: 16, imageWidth: 300, imageHeight: 100,
     }, expect.any(Function));
@@ -386,7 +455,7 @@ describe("PowerPoint Office adapter", () => {
     const adapter = powerpointAdapter(host, powerpoint);
     await adapter.readSelectedStructure();
     expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({
-      kind: "replaced", warnings: ["Not carried over from the old picture: animations."],
+      kind: "replaced", key: replacementShapeKey, warnings: ["Not carried over from the old picture: animations."],
     });
     const inserted = stack.find(item => item.id === "24")!;
     expect(inserted).toMatchObject({ altTextTitle: "Benzene", altTextDescription: "A benzene ring", isDecorative: false });
@@ -400,7 +469,7 @@ describe("PowerPoint Office adapter", () => {
     const { host, powerpoint, stack } = powerpointHost({ properties: { children: decorative } });
     const adapter = powerpointAdapter(host, powerpoint);
     await adapter.readSelectedStructure();
-    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({ kind: "replaced" });
+    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({ kind: "replaced", key: replacementShapeKey });
     expect(stack.find(item => item.id === "24")).toMatchObject({ altTextTitle: "", altTextDescription: "", isDecorative: true });
   });
 
@@ -413,7 +482,7 @@ describe("PowerPoint Office adapter", () => {
     const adapter = powerpointAdapter(host, powerpoint);
     await adapter.readSelectedStructure();
     expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({
-      kind: "replaced", warnings: ["Not carried over from the old picture: its alt text."],
+      kind: "replaced", key: replacementShapeKey, warnings: ["Not carried over from the old picture: its alt text."],
     });
     expect(stack.map(item => item.id)).toEqual(["21", "24", "23"]);
   });
@@ -423,7 +492,7 @@ describe("PowerPoint Office adapter", () => {
     const adapter = powerpointAdapter(host, powerpoint);
     await adapter.readSelectedStructure();
     expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({
-      kind: "replaced", warnings: ["Not carried over from the old picture: its name."],
+      kind: "replaced", key: replacementShapeKey, warnings: ["Not carried over from the old picture: its name."],
     });
     expect(stack.map(item => item.id)).toEqual(["21", "24", "23"]);
   });
@@ -448,7 +517,7 @@ describe("PowerPoint Office adapter", () => {
     });
     const adapter = powerpointAdapter(host, powerpoint);
     await adapter.readSelectedStructure();
-    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({ kind: "replaced" });
+    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({ kind: "replaced", key: replacementShapeKey });
     expect(stack.find(item => item.id === "24")).toMatchObject({
       altTextTitle: "Benzene", altTextDescription: "A benzene ring", isDecorative: true,
     });
@@ -459,7 +528,7 @@ describe("PowerPoint Office adapter", () => {
     const adapter = powerpointAdapter(host, powerpoint);
     await adapter.readSelectedStructure();
     expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({
-      kind: "replaced", warnings: ["Not carried over from the old picture: its place in the slide layout (placeholder)."],
+      kind: "replaced", key: replacementShapeKey, warnings: ["Not carried over from the old picture: its place in the slide layout (placeholder)."],
     });
     expect(stack.map(item => item.id)).toEqual(["21", "24", "23"]);
   });
@@ -471,7 +540,7 @@ describe("PowerPoint Office adapter", () => {
     const adapter = powerpointAdapter(host, powerpoint);
     await adapter.readSelectedStructure();
     expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({
-      kind: "replaced", warnings: ["Not carried over from the old picture: its alt text, its link."],
+      kind: "replaced", key: replacementShapeKey, warnings: ["Not carried over from the old picture: its alt text, its link."],
     });
     expect(stack.find(item => item.id === "24")!.setHyperlink).not.toHaveBeenCalled();
   });
@@ -484,7 +553,7 @@ describe("PowerPoint Office adapter", () => {
     const adapter = powerpointAdapter(host, powerpoint);
     await adapter.readSelectedStructure();
     expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({
-      kind: "replaced", warnings: ["Not carried over from the old picture: its action setting, its mouse-over action, " +
+      kind: "replaced", key: replacementShapeKey, warnings: ["Not carried over from the old picture: its action setting, its mouse-over action, " +
         "its hidden setting, its border and effects."],
     });
   });
@@ -493,14 +562,14 @@ describe("PowerPoint Office adapter", () => {
     const { host, powerpoint } = powerpointHost({ shapeProperties: '<a:ln><a:noFill/></a:ln><a:effectLst/>' });
     const adapter = powerpointAdapter(host, powerpoint);
     await adapter.readSelectedStructure();
-    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({ kind: "replaced" });
+    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({ kind: "replaced", key: replacementShapeKey });
   });
 
   it("reads a picture repeated in an mc:Choice and its mc:Fallback, counting only the selected branch", async () => {
     const { host, powerpoint } = powerpointHost({ alternate: true });
     const adapter = powerpointAdapter(host, powerpoint);
     expect(await adapter.readSelectedStructure()).toMatchObject({ kind: "structure", json: sourceJson });
-    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({ kind: "replaced" });
+    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({ kind: "replaced", key: replacementShapeKey });
   });
 
   it("names a picture shape other than a rectangle in the warning after Update", async () => {
@@ -510,13 +579,13 @@ describe("PowerPoint Office adapter", () => {
       const adapter = powerpointAdapter(host, powerpoint);
       await adapter.readSelectedStructure();
       expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({
-        kind: "replaced", warnings: ["Not carried over from the old picture: its picture shape."],
+        kind: "replaced", key: replacementShapeKey, warnings: ["Not carried over from the old picture: its picture shape."],
       });
     }
     const { host, powerpoint } = powerpointHost({ shapeProperties: '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>' });
     const adapter = powerpointAdapter(host, powerpoint);
     await adapter.readSelectedStructure();
-    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({ kind: "replaced" });
+    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({ kind: "replaced", key: replacementShapeKey });
   });
 
   it("removes the inserted picture when the sync after the ID is learned fails", async () => {
@@ -529,6 +598,33 @@ describe("PowerPoint Office adapter", () => {
     expect(mutations).toContain("delete:24");
     expect(mutations).not.toContain("delete:22");
     expect(stack.map(item => item.id)).toEqual(["21", "22", "23"]);
+  });
+
+  it("refuses to insert when the active PowerPoint slide changes before insertion", async () => {
+    const { host, powerpoint, slide, otherSlide, getSelectedSlides, mutations } = powerpointHost();
+    const adapter = powerpointAdapter(host, powerpoint);
+    await adapter.readSelectedStructure();
+    const slides = getSelectedSlides();
+    getSelectedSlides.mockReturnValueOnce(slides).mockReturnValueOnce(slides)
+      .mockReturnValueOnce({ ...slides, items: [otherSlide] });
+    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toMatchObject({
+      kind: "refusal", reason: expect.stringContaining("selection changed"),
+    });
+    expect(host.document.setSelectedDataAsync).not.toHaveBeenCalled();
+    expect(mutations).toEqual([]);
+    expect(slide.shapes.items.map(item => item.id)).toEqual(["21", "22", "23"]);
+  });
+
+  it("deletes neither picture when insertion switches slides and an unrelated picture appears on the original slide", async () => {
+    const { host, powerpoint, otherSlide, stack, mutations } = powerpointHost({ insertOnOtherSlide: true });
+    const adapter = powerpointAdapter(host, powerpoint);
+    await adapter.readSelectedStructure();
+    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toMatchObject({
+      kind: "refusal", reason: expect.stringMatching(/active PowerPoint slide changed.*delete it by hand/),
+    });
+    expect(stack.map(item => item.id)).toEqual(["21", "22", "23", "25"]);
+    expect(otherSlide.shapes.items.map(item => item.id)).toEqual(["24"]);
+    expect(mutations).toEqual(["insert"]);
   });
 
   it("leaves the inserted picture and asks the user to delete it when the first sync fails before its ID is learned", async () => {

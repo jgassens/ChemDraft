@@ -68,6 +68,33 @@ pub(super) fn watch_flush(
     }
 }
 
+#[cfg(any(windows, test))]
+#[derive(Default)]
+struct BlockReason {
+    pending: Option<String>,
+    registered: bool,
+}
+
+#[cfg(any(windows, test))]
+impl BlockReason {
+    fn is_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// Update the refusal and retry if Windows did not register its reason. Returns whether
+    /// the refusal changed, so callers log it once even if registration keeps failing.
+    fn update(&mut self, reason: &str, register: impl FnOnce(&str, bool) -> bool) -> bool {
+        let changed = self.pending.as_deref() != Some(reason);
+        if changed || !self.registered {
+            self.registered = register(reason, self.registered);
+        }
+        if changed {
+            self.pending = Some(reason.to_owned());
+        }
+        changed
+    }
+}
+
 #[cfg(not(windows))]
 pub(super) fn in_progress() -> bool {
     false
@@ -86,16 +113,19 @@ pub(crate) fn log_office_loss(app: &tauri::AppHandle, message: std::fmt::Argumen
 
     eprintln!("ChemDraft: {message}");
     let mut entry = format!("{} {message}\n", chrono::Utc::now().to_rfc3339());
-    // During a session end the recovery writer appends it, so the thread answering Windows never
-    // touches the disk. Otherwise, or once a committed session end closed the writer, write here;
-    // a writer abandoned on a stuck disk takes and drops the entry instead.
+    // During a committed session end the recovery writer is the only thread that may append it.
+    // Outside that deadline, fall back to writing here if no writer took the entry.
+    let committed = in_progress();
     if let Some(server) = app.try_state::<Server>() {
-        if server.session_ending() || in_progress() {
+        if server.session_ending() || committed {
             match server.log_recovery(entry) {
                 Ok(()) => return,
                 Err(refused) => entry = refused,
             }
         }
+    }
+    if committed {
+        return;
     }
     // Release builds are GUI executables and may have no stderr to capture.
     let result = (|| -> Result<(), Box<dyn std::error::Error>> {
@@ -115,7 +145,7 @@ pub(crate) fn log_office_loss(app: &tauri::AppHandle, message: std::fmt::Argumen
 
 #[cfg(windows)]
 mod windows {
-    use super::{watch_flush, CLOSE_LIMIT, EXIT_LIMIT, RECOVERY_LIMIT};
+    use super::{watch_flush, BlockReason, CLOSE_LIMIT, EXIT_LIMIT, RECOVERY_LIMIT};
     use crate::{
         office_ole::{
             bridge::owner_id,
@@ -175,8 +205,11 @@ mod windows {
     static TARGET: AtomicUsize = AtomicUsize::new(0);
 
     thread_local! {
-        // Main thread only. The reason Windows currently shows for ChemDraft, if any.
-        static BLOCK: RefCell<Option<String>> = const { RefCell::new(None) };
+        // Main thread only. The pending refusal and whether Windows registered its reason.
+        static BLOCK: RefCell<BlockReason> = const { RefCell::new(BlockReason {
+            pending: None,
+            registered: false,
+        }) };
         static TIMER: Cell<bool> = const { Cell::new(false) };
         static QUIET: Cell<u8> = const { Cell::new(0) };
         // When the pending session end began; recovery::SESSION_END_LIMIT runs from here.
@@ -280,9 +313,7 @@ mod windows {
         let now = Instant::now();
         let server = app.state::<Server>();
         // A repeated query keeps collecting into the pending session end.
-        if let Some((request, editors)) =
-            server.begin_session_end(recovery::stamp(chrono::Utc::now()))
-        {
+        if let Some((request, editors)) = server.begin_session_end() {
             SINCE.set(Some(now));
             OVERDUE.set(false);
             ask_editors(app, &server, request, &editors);
@@ -321,7 +352,7 @@ mod windows {
         let handle = app.clone();
         let posted = app.run_on_main_thread(move || {
             let hwnd = TARGET.load(Ordering::Acquire) as HWND;
-            if !hwnd.is_null() && !in_progress() && BLOCK.with_borrow(Option::is_some) {
+            if !hwnd.is_null() && !in_progress() && BLOCK.with_borrow(BlockReason::is_pending) {
                 settle(&handle, hwnd);
             }
         });
@@ -378,19 +409,25 @@ mod windows {
     }
 
     fn show_block(app: &tauri::AppHandle, server: &Server, hwnd: HWND, reason: String) {
-        if BLOCK.with_borrow(|shown| shown.as_deref() == Some(reason.as_str())) {
-            return;
-        }
-        let wide: Vec<u16> = reason.encode_utf16().chain(std::iter::once(0)).collect();
-        // SAFETY: hwnd is Tao's event target, created by this thread, and wide ends in NUL.
-        unsafe {
-            if BLOCK.with_borrow(Option::is_some) {
-                ShutdownBlockReasonDestroy(hwnd);
-            }
-            if ShutdownBlockReasonCreate(hwnd, wide.as_ptr()) == 0 {
+        let changed = BLOCK.with_borrow_mut(|block| {
+            block.update(&reason, |reason, registered| {
+                let wide: Vec<u16> = reason.encode_utf16().chain(std::iter::once(0)).collect();
+                // SAFETY: hwnd is Tao's event target, created by this thread, and wide ends in NUL.
+                unsafe {
+                    if registered {
+                        ShutdownBlockReasonDestroy(hwnd);
+                    }
+                    if ShutdownBlockReasonCreate(hwnd, wide.as_ptr()) != 0 {
+                        return true;
+                    }
+                }
                 let error = std::io::Error::last_os_error();
                 eprintln!("ChemDraft: could not set the shutdown block reason: {error}");
-            }
+                false
+            })
+        });
+        if !changed {
+            return;
         }
         super::log_office_loss(
             app,
@@ -406,17 +443,16 @@ mod windows {
                 ),
             );
         }
-        BLOCK.set(Some(reason));
     }
 
-    /// Returns whether a block reason was shown.
+    /// Returns whether the session end was being refused.
     fn release_block(hwnd: HWND) -> bool {
-        let shown = BLOCK.take().is_some();
-        if shown {
+        let block = BLOCK.take();
+        if block.registered {
             // SAFETY: hwnd is Tao's event target, created by this thread.
             unsafe { ShutdownBlockReasonDestroy(hwnd) };
         }
-        shown
+        block.is_pending()
     }
 
     fn start_timer(hwnd: HWND) {
@@ -447,7 +483,7 @@ mod windows {
             stop_timer(hwnd);
             return;
         }
-        if BLOCK.with_borrow(Option::is_some) {
+        if BLOCK.with_borrow(BlockReason::is_pending) {
             settle(app, hwnd);
         }
         // SAFETY: GetSystemMetrics has no preconditions.
@@ -505,9 +541,7 @@ mod windows {
         // Beginning the session end wakes the recovery writer, so copies of every last known
         // drawing are already being written while this thread waits for anything.
         let server = app.state::<Server>();
-        if let Some((request, editors)) =
-            server.begin_session_end(recovery::stamp(chrono::Utc::now()))
-        {
+        if let Some((request, editors)) = server.begin_session_end() {
             ask_editors(app, &server, request, &editors);
         }
 
@@ -589,5 +623,39 @@ mod windows {
             unsafe { DispatchMessageW(&message) };
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BlockReason;
+
+    #[test]
+    fn a_pending_refusal_retries_until_windows_registers_the_reason() {
+        let mut block = BlockReason::default();
+        let reason = "Saving ChemDraft structures in Office documents";
+        assert!(block.update(reason, |attempted, registered| {
+            assert_eq!(attempted, reason);
+            assert!(!registered);
+            false
+        }));
+        assert!(block.is_pending());
+        assert!(!block.registered);
+        assert!(!block.update(reason, |attempted, registered| {
+            assert_eq!(attempted, reason);
+            assert!(!registered);
+            true
+        }));
+        assert!(block.registered);
+        assert!(!block.update(reason, |_, _| panic!("already registered")));
+
+        let next = "Could not save the ChemDraft structure in Report.docx";
+        assert!(block.update(next, |attempted, registered| {
+            assert_eq!(attempted, next);
+            assert!(registered, "replace the previous reason");
+            false
+        }));
+        assert!(block.is_pending());
+        assert!(!block.registered);
     }
 }

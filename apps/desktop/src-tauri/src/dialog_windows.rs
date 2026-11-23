@@ -2110,17 +2110,33 @@ pub(crate) async fn dialog_close(
     if !valid_reason(&reason) {
         return Err("Invalid dialog close reason".into());
     }
-    {
-        let registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(session) = registry.sessions.get(&host_id) {
-            authorize(session, window.label(), true, None)?;
-        } else if !super::is_document_window(window.label()) {
-            return Err("Unknown dialog owner".into());
-        }
+    let session = take_owned_session(
+        &mut REGISTRY.lock().unwrap_or_else(|p| p.into_inner()),
+        &host_id,
+        window.label(),
+    )?;
+    if let Some(session) = session {
+        destroy_session(&app, session, &reason);
     }
-    close_session(&app, &host_id, &reason);
     Ok(())
 }
+
+fn take_owned_session(
+    registry: &mut Registry,
+    host_id: &str,
+    owner: &str,
+) -> Result<Option<Session>, String> {
+    let Some(session) = registry.sessions.get(host_id) else {
+        return if super::is_document_window(owner) {
+            Ok(None)
+        } else {
+            Err("Unknown dialog owner".into())
+        };
+    };
+    authorize(session, owner, true, None)?;
+    Ok(registry.sessions.remove(host_id))
+}
+
 fn notify_closed(session: &Session, reason: &str) {
     super::UTILITY_SUSPENSION
         .lock()
@@ -2137,28 +2153,32 @@ fn close_session<R: Runtime>(app: &tauri::AppHandle<R>, host_id: &str, reason: &
         .unwrap_or_else(|p| p.into_inner())
         .sessions
         .remove(host_id);
-    if let Some(mut session) = session {
-        flush_position(app, &mut session);
-        if is_question_kind(&session.snapshot.dialog_kind) {
-            if let Some(window) = app.get_webview_window(&session.registration.window_label) {
-                let restore_focus = matches!(reason, "apply" | "cancel" | "close");
-                let target = window.clone();
-                if let Err(error) = super::run_on_main_thread_blocking(&window, move || {
-                    close_page_enlargement_on_main(&target, restore_focus)
-                })
-                .and_then(|result| result)
-                {
-                    eprintln!("Could not close question window: {error}");
-                    let _ = window.destroy();
-                }
+    if let Some(session) = session {
+        destroy_session(app, session, reason);
+    }
+}
+
+fn destroy_session<R: Runtime>(app: &tauri::AppHandle<R>, mut session: Session, reason: &str) {
+    flush_position(app, &mut session);
+    if is_question_kind(&session.snapshot.dialog_kind) {
+        if let Some(window) = app.get_webview_window(&session.registration.window_label) {
+            let restore_focus = matches!(reason, "apply" | "cancel" | "close");
+            let target = window.clone();
+            if let Err(error) = super::run_on_main_thread_blocking(&window, move || {
+                close_page_enlargement_on_main(&target, restore_focus)
+            })
+            .and_then(|result| result)
+            {
+                eprintln!("Could not close question window: {error}");
+                let _ = window.destroy();
             }
-            notify_closed(&session, reason);
-            return;
         }
         notify_closed(&session, reason);
-        if let Some(window) = app.get_webview_window(&session.registration.window_label) {
-            let _ = window.destroy();
-        }
+        return;
+    }
+    notify_closed(&session, reason);
+    if let Some(window) = app.get_webview_window(&session.registration.window_label) {
+        let _ = window.destroy();
     }
 }
 /// Request-bound questions: closing one returns focus to the document when it held focus.
@@ -9969,6 +9989,29 @@ mod tests {
         stale.snapshot_revision += 1;
         assert!(authorize(s, &r.window_label, false, Some(&stale)).is_err());
     }
+    #[test]
+    fn close_takes_only_the_session_it_authorized() {
+        let mut registry = Registry::default();
+        let future_id = "h0000000000000001";
+        assert!(take_owned_session(&mut registry, future_id, "main")
+            .unwrap()
+            .is_none());
+        #[cfg(windows)]
+        assert!(
+            take_owned_session(&mut registry, future_id, "office-object-17")
+                .unwrap()
+                .is_none()
+        );
+        let (registration, _) = register(&mut registry, snapshot(), false).unwrap();
+        assert_eq!(registration.host_id, future_id);
+        assert!(take_owned_session(&mut registry, future_id, "office-object-17").is_err());
+        let session = take_owned_session(&mut registry, future_id, "main")
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.registration.window_label, registration.window_label);
+        assert!(registry.sessions.is_empty());
+    }
+
     #[test]
     fn quit_refuses_and_concurrent_same_session_builds_once() {
         assert!(register(&mut Registry::default(), snapshot(), true).is_err());

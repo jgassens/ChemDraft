@@ -165,7 +165,7 @@ fn toolset_owner_query(label: &str) -> String {
 
 #[cfg(test)]
 mod document_window_tests {
-    use super::is_document_window;
+    use super::{dialog_windows, is_document_window, is_suspended_utility_label};
 
     #[test]
     fn recognizes_only_document_window_labels() {
@@ -181,6 +181,22 @@ mod document_window_tests {
             "",
         ] {
             assert!(!is_document_window(label));
+        }
+    }
+
+    #[test]
+    fn main_picker_suspends_only_main_document_utilities() {
+        let office_dialog = "dialog-office-object-17-pageSize-1";
+        assert_eq!(
+            dialog_windows::is_dialog_label(office_dialog),
+            cfg!(windows)
+        );
+        assert!(!is_suspended_utility_label(office_dialog));
+        assert!(!is_suspended_utility_label(
+            "office-utility-office-object-17--toolset-core-main"
+        ));
+        for label in ["toolset-core-main", "dialog-main-pageSize-1", "preferences"] {
+            assert!(is_suspended_utility_label(label), "{label}");
         }
     }
 }
@@ -1964,6 +1980,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             office_addin::office_addin_remove,
             office_ole::bridge::office_object_connect,
+            office_ole::bridge::office_object_set_title,
             office_ole::toolset_events::office_toolset_emit,
             office_ole::bridge::office_object_update,
             office_ole::bridge::office_object_close,
@@ -2931,10 +2948,11 @@ fn utility_windows_suspended() -> bool {
 }
 
 fn is_suspended_utility_label(label: &str) -> bool {
-    // Plugin panels float above their owner too: Windows owned windows and macOS child windows.
+    // Only the main document owns this suspension. Its plugin panels float above it too.
     label.starts_with("toolset-")
         || is_plugin_panel_window_label(label)
-        || dialog_windows::is_dialog_label(label)
+        || (dialog_windows::is_dialog_label(label)
+            && dialog_windows::dialog_owner_label(label) == MAIN_WINDOW_LABEL)
 }
 
 fn utility_restore_priority(label: &str) -> u8 {
@@ -3287,7 +3305,10 @@ fn restore_utility_labels<R: Runtime>(
         if !foreground_belongs_to_app() {
             break;
         }
-        let Some(window) = app.get_webview_window(&label) else {
+        let Some(window) = app
+            .get_webview_window(&label)
+            .filter(|_| is_suspended_utility_label(&label))
+        else {
             let mut suspension = UTILITY_SUSPENSION
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());

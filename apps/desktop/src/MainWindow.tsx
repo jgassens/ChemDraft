@@ -923,7 +923,7 @@ import {
 } from "./keyboardShortcuts";
 import { installBrowserReloadGuard, wasBrowserReloadPrevented } from "./browserReloadGuard";
 import { assertDocumentSize, decodeNativeDocumentContents, documentContentsKey, readBrowserDocumentFile, readNativeDocumentFile, type DocumentContents } from "./documentText";
-import { importOfficeStructuresCommand, pickOfficeImportFile, runOfficeStructureImport } from "./officeStructureImport";
+import { assertOfficePastePreservesExistingChemistry, importOfficeStructuresCommand, pickOfficeImportFile, runOfficeStructureImport } from "./officeStructureImport";
 import { OFFICE_PASTE_BACK_UNDO_LABEL, officePasteBackDecision, type OfficePasteBackDecision } from "./officePasteBack";
 import { createDocumentFileSave, exportDocumentCdx } from "./documentFileFormats";
 import { getDesktopExportFormatDescriptor as getExportFormatDescriptor } from "./desktopExportFormats";
@@ -7629,7 +7629,7 @@ export function MainWindow({
   // Record the committed snapshot only after insertion; async SMILES preparation must not
   // clear the preceding paste's placement while loading/verifying its depiction.
   const commitClipboardPaste = useCallback((nextDocument: ChemDraftDocument, anchor: ReturnType<typeof captureClipboardPasteAnchor>, label?: string,
-    nativePayload?: ChemDraftSelectionClipboardPayload): boolean => {
+    nativePayload?: ChemDraftSelectionClipboardPayload, assertFinalDocument?: (document: ChemDraftDocument) => void): boolean => {
     const before = documentRef.current;
     if (nextDocument === before) return false;
     const payload = nativePayload ?? createSelectionClipboardPayload(nextDocument);
@@ -7638,7 +7638,7 @@ export function MainWindow({
     if (payload.bounds.width > page.width || payload.bounds.height > page.height) {
       // Oversized content retains its prepared placement and the existing explicit page-size
       // choice. Repeat offsets and clamping apply only when the payload fits the current page.
-      return commitDocumentChangeWithPageFit(nextDocument, label);
+      return commitDocumentChangeWithPageFit(nextDocument, label, undefined, assertFinalDocument);
     }
     const placement = nextSelectionClipboardPastePlacement(payload, selectionClipboardPasteStateRef.current,
       page, anchor.pointer, nativePayload ? 1 : 0);
@@ -7646,7 +7646,7 @@ export function MainWindow({
     const insertedIds = nextDocument.pages[0]!.objects.filter(object => !existingIds.has(object.id)).map(object => object.id);
     const placed = translateInsertedDocumentObjects(nextDocument, insertedIds,
       placement.point.x - payload.bounds.centerX, placement.point.y - payload.bounds.centerY);
-    if (!commitDocumentChange(placed, label)) return false;
+    if (!commitDocumentChange(placed, label, false, assertFinalDocument)) return false;
     selectionClipboardPasteStateRef.current = { ...placement.state, document: documentRef.current };
     return true;
   }, [commitDocumentChange, commitDocumentChangeWithPageFit]);
@@ -7966,7 +7966,7 @@ export function MainWindow({
   }, [applySyncClipboardPayload, applyTableClipboardResult, renderPastedSmiles, renderPastedSmilesList]);
 
   const applySelectionClipboardPayload = useCallback((payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>, anchor: ReturnType<typeof captureClipboardPasteAnchor>,
-    statusMessage = "Pasted ChemDraft selection") => {
+    statusMessage = "Pasted ChemDraft selection", assertFinalDocument?: (document: ChemDraftDocument) => void) => {
     smilesListPasteAbortRef.current?.abort();
     if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
     const warnings: string[] = [];
@@ -7981,7 +7981,7 @@ export function MainWindow({
       return;
     }
 
-    if (!commitClipboardPaste(nextDocument, anchor, undefined, payload)) return;
+    if (!commitClipboardPaste(nextDocument, anchor, undefined, payload, assertFinalDocument)) return;
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
@@ -8000,10 +8000,18 @@ export function MainWindow({
     if (decision.kind === "none") return false;
     if (decision.kind === "refused") {
       setStatus(decision.message);
-    } else if (decision.kind === "selection") {
-      applySelectionClipboardPayload(decision.payload, anchor, decision.message);
-    } else if (commitDocumentChange(decision.document, OFFICE_PASTE_BACK_UNDO_LABEL)) {
-      setStatus(decision.message);
+      return true;
+    }
+    const before = documentRef.current;
+    const assertFinalDocument = (after: ChemDraftDocument) => assertOfficePastePreservesExistingChemistry(before, after);
+    try {
+      if (decision.kind === "selection") {
+        applySelectionClipboardPayload(decision.payload, anchor, decision.message, assertFinalDocument);
+      } else if (commitDocumentChange(decision.document, OFFICE_PASTE_BACK_UNDO_LABEL, false, assertFinalDocument)) {
+        setStatus(decision.message);
+      }
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
     }
     return true;
   }, [applySelectionClipboardPayload, commitDocumentChange]);
@@ -11629,7 +11637,7 @@ export function MainWindow({
     const entries = toolsetRegistry.listToolsets()
       .filter(toolset => toolset.id !== molecularInspectorToolsetId)
       .map(toolset => ({ toolsetId: toolset.id, title: toolset.title, visible: visibleToolsetIds.has(toolset.id) }));
-    void setToolbarsMenu(entries, rulersVisible, crosshairsVisible, false, officeUpdateTitle);
+    void setToolbarsMenu(entries, rulersVisible, crosshairsVisible, false, officeUpdateTitle).catch(() => undefined);
   }, [crosshairsVisible, officeObjectId, officeUpdateTitle, rulersVisible, toolsetRegistry, visibleToolsetIds]);
 
   // Own a native suspension through the modal and its nested Save As panels.
@@ -12291,9 +12299,27 @@ export function MainWindow({
     // File ▸ Import Structures from Word or PowerPoint… : every valid structure in one undo step.
     register(importOfficeStructuresCommand, async () => {
       await runOfficeStructureImport({
+        getDocumentKey: () => requestDocumentKey(activeDocumentTabIdRef.current),
         pickFile: () => pickOfficeImportFile(nativePathBasename),
-        getDocument: () => documentRef.current,
-        commit: (next, undoLabel) => commitDocumentChange(next, undoLabel),
+        getDocument: (key) => {
+          const tab = documentTabForKey(key);
+          return tab ? assistantHistoryPort.read(tab.id) : undefined;
+        },
+        commit: (key, next, undoLabel) => {
+          if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending import was not applied.");
+          const tab = documentTabForKey(key);
+          if (!tab) throw new Error("The originating drawing was closed or replaced.");
+          if (tab.id === activeDocumentTabIdRef.current) return commitDocumentChange(next, undoLabel);
+          const snapshot = documentTabSnapshotsRef.current.get(tab.id)!;
+          const present = prepareDocumentCommit(next, undoLabel);
+          for (const listener of assistantUserEditListenersRef.current) listener(tab.id);
+          documentTabSnapshotsRef.current.set(tab.id, { ...snapshot,
+            history: { past: boundedHistoryPast([...snapshot.history.past, snapshot.history.present], present), present, future: [] },
+            parts: [], file: { ...snapshot.file, dirty: true } });
+          nonPristineTabsRef.current.add(tab.id);
+          setDocumentTabs([...documentTabsRef.current]);
+          return true;
+        },
         report: (message, details) => {
           setStatus(message);
           if (details.length) console.warn(`[office-import] ${message}\n${details.join("\n")}`);
@@ -13034,6 +13060,7 @@ export function MainWindow({
     return bindings;
   }, [
     isSnapshotSessionActive, replacePresentDocument, prepareDocumentCommit, selectedNativeMoleculeParts,
+    assistantHistoryPort, documentTabForKey, requestDocumentKey,
     officeObject, officeObjectId, officeAddin,
     customSwatchActions, tableActions, activeTableCell, bracketActions, clearScheduledTextEditorFocus,
     activateDocumentTab,

@@ -99,6 +99,23 @@ pub(crate) async fn office_object_connect(
     }
 }
 
+#[tauri::command]
+pub(crate) fn office_object_set_title(
+    window: tauri::WebviewWindow,
+    title: String,
+) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        owner_id(window.label())?;
+        window.set_title(&title).map_err(|error| error.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (window, title);
+        Err("Office embedded-object editing requires Windows".into())
+    }
+}
+
 /// A renderer's answer to a Windows session-end request (`office-session-publish`).
 #[cfg(any(windows, test))]
 #[derive(Debug, PartialEq, Eq)]
@@ -572,8 +589,9 @@ mod tests {
     /// fails until it is added.
     #[test]
     fn office_ole_commands_are_permitted_and_granted_only_to_their_windows() {
-        let expected: [(&str, &[&str]); 5] = [
+        let expected: [(&str, &[&str]); 6] = [
             ("office_object_connect", &["office-object"]),
+            ("office_object_set_title", &["office-object"]),
             ("office_object_update", &["office-object"]),
             ("office_object_close", &["office-object"]),
             ("office_toolset_emit", &["office-object", "office-toolset"]),
@@ -599,6 +617,13 @@ mod tests {
             if path.extension().is_some_and(|e| e == "json") {
                 let json: serde_json::Value =
                     serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+                if json["identifier"] == "office-object" {
+                    assert!(!json["permissions"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|permission| permission == "core:window:allow-set-title"));
+                }
                 capabilities.push(json);
             }
         }

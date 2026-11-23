@@ -19,6 +19,7 @@ fn main() {
             "office_addin_install",
             "office_addin_remove",
             "office_object_connect",
+            "office_object_set_title",
             "office_toolset_emit",
             "office_object_update",
             "office_object_close",

@@ -386,4 +386,29 @@ describe("paste-back of a copied ChemDraft OLE object (Windows)", () => {
     const broken = await recoverPasteBackFromClipboard({ ...read(STABLE), officeItems: [{ type: "Embedded Object", clsid: STABLE, bytesBase64: "*" }] });
     expect(broken).toMatchObject({ kind: "found", refusals: [{ source: "embedded-object", reason: "malformed" }], structures: [{ source: "png" }] });
   });
+
+  it("decodes the native GVML fallback only when the OLE drawing is refused", async () => {
+    const bytesBase64 = base64(gvml([carrier(selection("A"))]));
+    let archiveReads = 0;
+    const read = (version: number): ClipboardReadPayload => ({
+      types: ["Embedded Object", GVML, "image/png"],
+      textItems: [],
+      officeItems: [
+        { type: "Embedded Object", clsid: STABLE, bytesBase64: base64(text(selection("O", { version }))) },
+        { type: GVML, get bytesBase64() { archiveReads++; return bytesBase64; } },
+      ],
+      imageItems: [{ type: "image/png", bytesBase64: base64(plainPng()) }],
+    });
+    expect(await recoverPasteBackFromClipboard(read(1))).toMatchObject({
+      kind: "found", structures: [{ source: "embedded-object", document: { label: "O" } }],
+      refusals: [], notes: [],
+    });
+    expect(archiveReads).toBe(0);
+
+    expect(await recoverPasteBackFromClipboard(read(2))).toMatchObject({
+      kind: "found", structures: [{ source: "office-archive", document: { label: "A" } }],
+      refusals: [{ source: "embedded-object", reason: "unknown-version" }],
+    });
+    expect(archiveReads).toBe(1);
+  });
 });

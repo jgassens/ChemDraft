@@ -112,11 +112,11 @@ struct Control {
     resume: AtomicBool,
     exit_intent: AtomicU8,
     session_ending: AtomicBool,
-    /// Open edit sessions and a pending Windows session end. Never held across a COM call, and
-    /// never held while calling into `recovery`.
+    /// Open edit sessions and a pending Windows session end. Never held across a COM call.
+    /// When both locks are needed, take the tracker before the recovery writer's state lock.
     tracker: Mutex<Tracker<Content>>,
-    /// Writes the session end's recovery copies and Office log on its own thread. Woken after
-    /// every tracker change that can need a copy.
+    /// Writes recovery copies and the Office log on its own thread. Woken after every tracker
+    /// change that can need a copy.
     recovery: recovery::Writer,
 }
 
@@ -240,11 +240,12 @@ impl Server {
 
     /// Ask every open editor for its drawing, unless a session end is already pending. Returns
     /// the request ID and the editors to ask.
-    pub(crate) fn begin_session_end(&self, stamp: String) -> Option<(u32, Vec<String>)> {
+    pub(crate) fn begin_session_end(&self) -> Option<(u32, Vec<String>)> {
         let request = next_close_request();
+        let namespace = recovery::copy_namespace(chrono::Utc::now());
         let editors = {
             let mut tracker = self.control.tracker.lock().unwrap();
-            let editors = tracker.begin(request, stamp)?;
+            let editors = tracker.begin(request, namespace)?;
             self.control.session_ending.store(true, Ordering::Release);
             editors
         };
@@ -276,21 +277,17 @@ impl Server {
         wait: impl FnMut(Instant, &mut dyn FnMut() -> bool) -> bool,
         log: impl FnOnce(),
     ) -> bool {
-        self.control.recovery.close_committed(
-            || self.control.tracker.lock().unwrap().recovery_pending(),
-            copies_by,
-            close_by,
-            wait,
-            log,
-        )
+        self.control
+            .recovery
+            .close_committed(&self.control.tracker, copies_by, close_by, wait, log)
     }
 
     /// The watchdog thread's close: waits for what is queued or in flight until `deadline`, then
     /// abandons it. True if the writer settled in time.
     pub(crate) fn close_recovery_by(&self, deadline: Instant) -> bool {
-        self.control.recovery.close_by(deadline, Instant::now, || {
-            self.control.tracker.lock().unwrap().recovery_pending()
-        })
+        self.control
+            .recovery
+            .close_by(&self.control.tracker, deadline, Instant::now)
     }
 
     /// Append an Office log entry on the writer thread. Returns it if the writer is closed.
@@ -360,7 +357,8 @@ impl Server {
     /// that are still open in their editors. The writer applies that after any copy still in
     /// flight and logs the copies it keeps. Returns the cancelled request.
     pub(crate) fn cancel_session_end(&self, remove_open: bool) -> Option<u32> {
-        let cancelled = self.control.tracker.lock().unwrap().cancel(remove_open);
+        let mut tracker = self.control.tracker.lock().unwrap();
+        let cancelled = tracker.cancel(remove_open);
         self.control.session_ending.store(false, Ordering::Release);
         let cancelled = cancelled?;
         let request = cancelled.request;
@@ -369,13 +367,23 @@ impl Server {
     }
 
     pub(crate) fn shutdown(&self) {
+        let deadline = Instant::now() + Duration::from_secs(2);
         self.control.stop.store(true, Ordering::Release);
         self.wake();
         if let Ok(stopped) = self.stopped.lock() {
-            if stopped.recv_timeout(Duration::from_secs(2)).is_err() {
+            if stopped
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .is_err()
+            {
                 eprintln!("Office STA did not acknowledge shutdown within two seconds");
             }
         }
+        // The STA may have queued a destroyed editor's drawing just before stopping. Give the
+        // writer the remaining exit time. Windows sign-out already closed it on its own deadline.
+        if !crate::windows_session_end::in_progress() && !self.close_recovery_by(deadline) {
+            eprintln!("ChemDraft: stopped waiting for queued Office recovery copies at exit");
+        }
+        self.control.recovery.stop();
     }
 }
 
@@ -430,7 +438,7 @@ pub(crate) fn start(
             let _ = done.send(());
         })?;
     started.recv_timeout(Duration::from_secs(10))??;
-    // Session-end recovery copies and the Office log, off every thread Windows waits on.
+    // Recovery copies and the Office log, off the COM STA and the thread answering Windows.
     let writer = control.clone();
     if let Err(error) = std::thread::Builder::new()
         .name("ChemDraft Office recovery".into())
@@ -919,12 +927,16 @@ impl Embedded_Impl {
             return Err((Some(content), close_retry()));
         }
         if let Some(id) = self.session.borrow().as_deref() {
-            self.sta
+            let fallback_changed = self
+                .sta
                 .control
                 .tracker
                 .lock()
                 .unwrap()
                 .replaced(id, &content.json);
+            if fallback_changed {
+                self.sta.control.recovery.wake();
+            }
         }
         self.content.replace(Rc::new(content));
         self.published.set(true);
@@ -1017,38 +1029,17 @@ impl Embedded_Impl {
         }
     }
 
-    /// Write the drawing a destroyed editor could not save into Office to the recovery folder, and
-    /// say so once in the Office log. Called once per destroyed window; nothing retries the write.
+    /// Hand the drawing a destroyed editor could not save into Office to the recovery writer.
     fn keep_recovery_copy(&self, id: &str, error: &Error) {
         let (app, document) = self.host.borrow().clone();
-        let json = self.content.borrow().json.clone();
-        let written = self
-            .sta
-            .app
-            .path()
-            .app_data_dir()
-            .map_err(|e| e.to_string())
-            .and_then(|dir| {
-                recovery::write_unsaved(
-                    &dir.join(recovery::FOLDER),
-                    &recovery::stamp(chrono::Utc::now()),
-                    id,
-                    &app,
-                    &document,
-                    &json,
-                )
-                .map_err(|e| e.to_string())
-            });
         let name = display_name(&app, &document);
-        match written {
-            Ok(path) => crate::windows_session_end::log_office_loss(
-                &self.sta.app,
-                format_args!("Office object {id} in {name}: ChemDraft could not save its drawing into Office after its editor window closed ({error}); wrote its last drawing to {}. Nothing restores this copy automatically.", path.display()),
-            ),
-            Err(write_error) => crate::windows_session_end::log_office_loss(
-                &self.sta.app,
-                format_args!("Office object {id} in {name}: ChemDraft could not save its drawing into Office after its editor window closed ({error}), and could not write a recovery copy: {write_error}."),
-            ),
+        let json = self.content.borrow().json.clone();
+        let context = format!("Office object {id} in {name}: ChemDraft could not save its drawing into Office after its editor window closed ({error})");
+        let recovery = &self.sta.control.recovery;
+        if let Err(error) = recovery.queue_unsaved(id, name, json, &context) {
+            recovery.note(format_args!(
+                "{context}, and could not write a recovery copy: {error}."
+            ));
         }
     }
 

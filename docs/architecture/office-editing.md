@@ -14,7 +14,9 @@ Two containers carry the drawing:
 - The **carrier PNG**: a high-DPI PNG with the ChemDraft drawing in a text chunk (today an
   uncompressed iTXt chunk with the keyword `application/x-chemdraft-selection+json`, written by
   `packages/clipboard-adapter/src/pngSelection.ts`). Phase 0 showed Word and PowerPoint save it
-  byte-identical on both platforms and across Mac↔Windows moves. This is what the Mac route edits.
+  byte-identical in the tested cases on both platforms and across Mac↔Windows moves. Windows Word
+  can strip the carrier on save with default image compression, or on plain paste; use Insert → Object
+  there for a durable drawing (see the Windows findings below). This is what the Mac route edits.
 - The **Windows OLE object** (section 4): a native stream holding the same JSON, plus a preview that
   embeds a carrier PNG. The native stream is the source of truth for the object; the preview's copy
   lets a Mac or the paste-back route recover the drawing.
@@ -93,8 +95,9 @@ failure before the old picture is deleted, a fresh batch removes the new picture
 which the update learns when it identifies the new picture. A shape is never deleted by its position
 or size. If the update failed before it learned the ID (for example two new pictures appeared and
 the update could not tell which was its own), or no new shape carries that ID, the rollback leaves
-the slide unchanged and the error ends with "Couldn't find the inserted structure to remove —
-delete it by hand." (the owner retired the older exact-placement fallback on 2026-11-22). If the ID
+does nothing further; the inserted picture may remain and need manual removal before retrying. The
+error ends with "Couldn't find the inserted structure to remove — delete it by hand." (the owner
+retired the older exact-placement fallback on 2026-11-22). If the ID
 is known but the delete fails, the error says the new picture may
 remain on the slide. The old picture counts as deleted only once its `delete()` call has returned:
 a `delete()` that throws leaves the old picture, so the new one is removed. A failure in the sync
@@ -591,8 +594,8 @@ comes in, with the same checks, warnings and refusals as a picture's carrier. Th
   still outstanding starts no OLE read: it skips the embedded object and uses the other formats. If
   nothing else on the clipboard can be read, or the clipboard cannot be opened because of that read,
   the paste says "Windows is still reading the previous clipboard item. Try pasting again in a
-  moment." OLE opens the clipboard itself, so this happens before the
-  ordinary read opens it, and the result is kept only if the same format is still on offer then.
+  moment." The ordinary formats are snapshotted first; OLE opens the clipboard separately, and its
+  result is kept only if the clipboard sequence still matches the snapshot.
 - **One storage reader.** The object is read by the OLE server's own code
   (`office_ole/server/persist.rs`, `pasted_drawing`): the storage's class (`ReadClassStg`) must be
   ChemDraft's, stable or dev (`office_ole/storage.rs`, `read_pasted_document`, tested on every host),
@@ -601,12 +604,15 @@ comes in, with the same checks, warnings and refusals as a picture's carrier. Th
   an error: the paste falls through to GVML and PNG. A ChemDraft object whose storage cannot be read
   is logged and falls through the same way.
 - **Precedence.** ChemDraft's own selection flavor, then a ChemDraft embedded object, then GVML,
-  then the PNG. The native reader does not fetch GVML when it has the object; the TypeScript layer
+  then the PNG. The Windows native reader attempts GVML even when it has an object, using a separate
+  single-flight read with a one-second timeout; a busy, timed-out, unavailable, or refused archive
+  is skipped. The TypeScript layer
   (`recoverPasteBackStructures`) applies the same order and checks the class again
   (`isChemDraftOleClassId`). An object whose drawing is unusable (damaged, a newer data version, over
   8 MB) is refused with the carrier's words ("The copied structure was made by a newer or unknown
-  ChemDraft (data version 2)."); GVML and the PNG are still read then, and a good carrier there is
-  pasted with the refusal in the log. The object's own EMF is its preview and is not mentioned.
+  ChemDraft (data version 2)."); it can fall back to a good GVML carrier if the archive was read,
+  then to a good PNG carrier, with the refusal in the log. The object's own EMF is its preview and
+  is not mentioned.
 - **Chemistry check**: the same as a picture's (`officePasteBack.ts`: `checkOfficeStructure`, then a
   trial placement). The status names the source: "Pasted the ChemDraft structure from the copied
   object." Tests compare chemical identity and canonical SMILES (stereo, charges, isotopes).

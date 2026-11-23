@@ -32,12 +32,8 @@ export class OfficePaneSession {
   private readEditor?: () => ChemDraftDocument;
   private selectionVersion = 0;
   private writing = false;
-  /**
-   * Set by a successful Update until a selection read completes. The host may give the replacement a
-   * new key (PowerPoint inserts a new shape), so the picture carrying the JSON just written stays bound
-   * to the editor, and the Update's message, warnings included, survives a newer selection read.
-   */
-  private written?: { json: string; message: string };
+  /** Retain the Update result until the latest selection read completes. */
+  private updateNotice?: { message: string; failed: boolean };
   private disposed = false;
 
   constructor(
@@ -98,7 +94,7 @@ export class OfficePaneSession {
     }
   }
 
-  private load(result: SelectionResult, success?: string) {
+  private load(result: SelectionResult, notice?: string) {
     this.active = undefined;
     this.baseline = undefined;
     this.readEditor = undefined;
@@ -108,7 +104,7 @@ export class OfficePaneSession {
     };
     if (result.kind !== "structure") {
       const status = result.kind === "refusal" ? result.reason : selectStructure;
-      this.patch({ ...unloaded, status: success ? success + " " + status : status });
+      this.patch({ ...unloaded, status: notice ? notice + " " + status : status });
       return;
     }
     try {
@@ -116,15 +112,15 @@ export class OfficePaneSession {
       this.active = result;
       this.patch({
         ...unloaded, document: opened.document, selected: true, updateRefusal: result.updateRefusal,
-        status: [success ?? (result.updateRefusal ? undefined : "Structure ready to edit."),
+        status: [notice ?? (result.updateRefusal ? undefined : "Structure ready to edit."),
           result.updateRefusal, ...opened.warnings].filter(Boolean).join(" "),
       });
     } catch (error) {
-      this.patch({ ...unloaded, status: errorMessage(error) });
+      this.patch({ ...unloaded, status: [notice, errorMessage(error)].filter(Boolean).join(" ") });
     }
   }
 
-  async refresh({ success }: { success?: string } = {}) {
+  async refresh() {
     const request = ++this.selectionVersion;
     if (this.writing || this.disposed) return;
     this.patch({ busy: true, selected: false });
@@ -135,23 +131,22 @@ export class OfficePaneSession {
       result = refuse("Could not read the Office selection. " + errorMessage(error));
     }
     if (this.disposed || request !== this.selectionVersion) return;
-    const written = this.written;
-    this.written = undefined;
-    success ??= written?.message;
-    const replacement = result.kind === "structure" && result.json === written?.json;
-    if (this.active && result.kind === "structure" && (replacement || sameStructure(this.active, result))) {
+    const notice = this.updateNotice;
+    this.updateNotice = undefined;
+    if (this.active && sameStructure(this.active, result)) {
       this.active = result;
       this.patch({
         busy: false, selected: true, confirmDiscard: false, updateRefusal: result.updateRefusal,
-        status: success ?? result.updateRefusal ?? "Structure ready to edit.",
+        status: [notice?.message, result.updateRefusal ??
+          (!notice || notice.failed ? "Structure ready to edit." : undefined)].filter(Boolean).join(" "),
       });
     } else if (this.isDirty()) {
       this.patch({
         busy: false, selected: false, confirmDiscard: true,
-        status: [success, "Discard your edits and open the Office selection?"].filter(Boolean).join(" "),
+        status: [notice?.message, "Discard your edits and open the Office selection?"].filter(Boolean).join(" "),
       });
     } else {
-      this.load(result, success);
+      this.load(result, notice?.message);
     }
   }
 
@@ -182,15 +177,15 @@ export class OfficePaneSession {
       if (result.kind === "refusal") throw new Error(result.reason);
       updated = true;
       this.baseline = document;
-      this.active = this.active ? { ...this.active, json } : undefined;
+      this.active = result.key === undefined ? undefined : { kind: "structure", key: result.key, json };
       resultMessage = ["Structure updated.", ...warnings, ...(result.warnings ?? [])].join(" ");
-      this.written = { json, message: resultMessage };
     } catch (error) {
       resultMessage = errorMessage(error);
     } finally {
       this.writing = false;
     }
     if (updated || version !== this.selectionVersion) {
+      this.updateNotice = { message: resultMessage, failed: !updated };
       await this.refresh();
     } else {
       this.patch({ busy: false, status: resultMessage });

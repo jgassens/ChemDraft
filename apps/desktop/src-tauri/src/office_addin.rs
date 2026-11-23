@@ -59,15 +59,19 @@ impl Addin {
 
     fn is_current(&self, installed: &str) -> bool {
         let version = env!("CARGO_PKG_VERSION").split(['-', '+']).next().unwrap();
+        let version = format!("{version}.0");
         let source = concat!(
             "https://chemdraft.ai/office/",
             env!("CARGO_PKG_VERSION"),
             "/taskpane"
         );
         // The source URL also distinguishes prereleases with the same numeric Office version.
-        installed.contains(&format!("<Id>{}</Id>", self.id))
-            && installed.contains(&format!("<Version>{version}.0</Version>"))
-            && installed.contains(&format!("<SourceLocation DefaultValue=\"{source}\""))
+        manifest_fields(installed).is_some_and(|fields| {
+            fields.id.eq_ignore_ascii_case(self.id)
+                && fields.provider == PROVIDER_NAME
+                && fields.version.as_deref() == Some(version.as_str())
+                && fields.source == Some(source)
+        })
     }
 }
 
@@ -305,7 +309,7 @@ impl Fs<'_> {
                 None
             }
         };
-        let result = swap_in(path, expected, staged.as_deref());
+        let result = swap_in(path, expected, staged.as_deref(), rename_excl);
         if let Some(staged) = &staged {
             // Already gone if it was renamed into place.
             let _ = fs::remove_file(staged);
@@ -370,16 +374,17 @@ fn swap_in(
     path: &Path,
     expected: Option<&[u8]>,
     staged: Option<&Path>,
+    rename: impl Fn(&Path, &Path) -> io::Result<()>,
 ) -> Result<Committed, Failure> {
     let mut aside = None;
     if let Some(expected) = expected {
         let moved = scratch_path(path);
-        match rename_excl(path, &moved) {
+        match rename(path, &moved) {
             Ok(()) => {
                 let found = read_regular(&moved);
                 if found.as_deref() != Some(expected) {
                     // Another process replaced the file: put theirs back, never over a newer one.
-                    return match rename_excl(&moved, path) {
+                    return match rename(&moved, path) {
                         Ok(()) => Ok(Committed::Conflict(found)),
                         Err(error) => Err(Failure::other(format!(
                             "{} changed while ChemDraft was working, and ChemDraft could not put the new file back ({error}); it is at {}.",
@@ -394,12 +399,16 @@ fn swap_in(
                 if staged.is_none() {
                     return Ok(Committed::Gone);
                 }
+                return Err(Failure::other(format!(
+                    "{} disappeared while ChemDraft was working.",
+                    path.display()
+                )));
             }
             Err(error) => return Err(error.into()),
         }
     }
     if let Some(staged) = staged {
-        if let Err(error) = rename_excl(staged, path) {
+        if let Err(error) = rename(staged, path) {
             let taken = error.kind() == ErrorKind::AlreadyExists;
             if let Some(moved) = &aside {
                 // Put the expected file back. If another process wrote the path meanwhile, keep
@@ -407,10 +416,21 @@ fn swap_in(
                 let put_back = if taken {
                     Err(io::Error::from(ErrorKind::AlreadyExists))
                 } else {
-                    rename_excl(moved, path)
+                    rename(moved, path)
                 };
-                if put_back.is_err_and(|error| error.kind() == ErrorKind::AlreadyExists) {
-                    let _ = fs::remove_file(moved);
+                if let Err(restore_error) = put_back {
+                    if restore_error.kind() == ErrorKind::AlreadyExists {
+                        let _ = fs::remove_file(moved);
+                    } else {
+                        let message = format!(
+                            "Could not install {} ({error}). Could not restore the original manifest ({restore_error}). The original is at {}.",
+                            path.display(),
+                            moved.display()
+                        );
+                        let mut failure = Failure::from(error);
+                        failure.message = message;
+                        return Err(failure);
+                    }
                 }
             }
             return if taken {
@@ -424,7 +444,7 @@ fn swap_in(
         if let Err(error) = fs::remove_file(&moved) {
             if staged.is_none() {
                 // A Remove that cannot delete the file puts it back rather than hide it.
-                let _ = rename_excl(&moved, path);
+                let _ = rename(&moved, path);
                 return Err(error.into());
             }
         }
@@ -472,20 +492,44 @@ fn local_name(name: &str) -> &str {
     name.rsplit(':').next().unwrap_or(name)
 }
 
-/// The raw text of the root `OfficeApp` element's direct `Id` and `ProviderName` children.
+fn attribute_value<'a>(mut attributes: &'a str, wanted: &str) -> Option<&'a str> {
+    let mut found = None;
+    while !attributes.trim_start().is_empty() {
+        let (name, value) = attributes.split_once('=')?;
+        let value = value.trim_start();
+        let quote = value.chars().next().filter(|ch| matches!(ch, '"' | '\''))?;
+        let (value, rest) = value[1..].split_once(quote)?;
+        if name.trim() == wanted && found.replace(value).is_some() {
+            return None;
+        }
+        attributes = rest;
+    }
+    found
+}
+
+struct ManifestFields<'a> {
+    id: String,
+    provider: String,
+    version: Option<String>,
+    source: Option<&'a str>,
+}
+
+/// Read the direct identity and version elements and the task pane's DefaultSettings URL.
 ///
 /// A deliberately small well-formedness check rather than a general parser: it accepts the XML
 /// declaration, comments, processing instructions and CDATA, and rejects a DOCTYPE, mismatched
 /// or unclosed tags, stray text outside the root, a root other than `OfficeApp`, and a duplicated
 /// `Id` or `ProviderName`. Anything it cannot read is simply not identified, which leaves the file
 /// alone; that is the safe failure.
-fn manifest_identity(xml: &str) -> Option<(String, String)> {
+fn manifest_fields(xml: &str) -> Option<ManifestFields<'_>> {
     let mut rest = xml.strip_prefix('\u{feff}').unwrap_or(xml);
     let mut stack: Vec<&str> = Vec::new();
     let mut saw_root = false;
     let mut text = String::new();
     let mut id = None;
     let mut provider = None;
+    let mut version = None;
+    let mut source = None;
     loop {
         let Some(start) = rest.find('<') else {
             if !rest.trim().is_empty() || !stack.is_empty() || !saw_root {
@@ -535,6 +579,15 @@ fn manifest_identity(xml: &str) -> Option<(String, String)> {
                 let slot = match local_name(name.trim_end()) {
                     "Id" => &mut id,
                     "ProviderName" => &mut provider,
+                    "Version" => {
+                        // Keep recognizing the identity if the installed version is malformed.
+                        version = Some(if version.is_none() {
+                            value
+                        } else {
+                            String::new()
+                        });
+                        continue;
+                    }
                     _ => continue,
                 };
                 if slot.replace(value).is_some() {
@@ -560,21 +613,41 @@ fn manifest_identity(xml: &str) -> Option<(String, String)> {
             }
             saw_root = true;
         }
+        if stack.len() == 2
+            && local_name(stack[1]) == "DefaultSettings"
+            && local_name(name) == "SourceLocation"
+        {
+            // An ambiguous or missing attribute cannot mark an installed manifest current.
+            source = Some(if source.is_none() {
+                attribute_value(&body[name.len()..], "DefaultValue").unwrap_or_default()
+            } else {
+                ""
+            });
+        }
         if !self_closing {
             stack.push(name);
-        } else if stack.len() == 1 && matches!(local_name(name), "Id" | "ProviderName") {
-            // An empty `<Id/>` cannot be ChemDraft's.
-            return None;
+        } else if stack.len() == 1 {
+            match local_name(name) {
+                // An empty `<Id/>` cannot be ChemDraft's.
+                "Id" | "ProviderName" => return None,
+                "Version" => version = Some(String::new()),
+                _ => {}
+            }
         }
     }
-    Some((id?, provider?))
+    Some(ManifestFields {
+        id: id?,
+        provider: provider?,
+        version,
+        source,
+    })
 }
 
 impl Addin {
     /// Whether `installed` is this flavor's ChemDraft manifest, of any version.
     fn identifies(&self, installed: &str) -> bool {
-        manifest_identity(installed).is_some_and(|(id, provider)| {
-            id.eq_ignore_ascii_case(self.id) && provider == PROVIDER_NAME
+        manifest_fields(installed).is_some_and(|fields| {
+            fields.id.eq_ignore_ascii_case(self.id) && fields.provider == PROVIDER_NAME
         })
     }
 }
@@ -603,7 +676,7 @@ fn manifest_status(
         return Ok((Status::NotInstalled, None));
     };
     let status = match std::str::from_utf8(&installed) {
-        Ok(xml) if addin.identifies(xml) && addin.is_current(xml) => Status::InstalledSameVersion,
+        Ok(xml) if addin.is_current(xml) => Status::InstalledSameVersion,
         Ok(xml) if addin.identifies(xml) => Status::InstalledOtherVersion,
         _ => return Ok((Status::Unrecognized, None)),
     };
@@ -701,7 +774,7 @@ enum Performed {
     Unrecognized,
 }
 
-/// Make one app's change. On failure nothing of it is left behind.
+/// Make one app's change, restoring the original on failure when possible.
 ///
 /// The file is read again right before it is replaced or removed: `inspect` ran earlier, possibly
 /// before the other app's inspection waited on macOS's permission prompt, and the file may have
@@ -831,9 +904,9 @@ fn undo(
 /// Check, install or remove the add-in in Word and PowerPoint as one change.
 ///
 /// Both apps are inspected before anything is written, and nothing is written if either cannot be
-/// read. If the second app's write fails (most often macOS's permission denial), the first app's
-/// change is undone, so Office is never left with the add-in in only one app. An unrecognized file
-/// or a missing app is not a failure: that app is skipped and reported, and the other proceeds.
+/// read. If the second app's write fails (most often macOS's permission denial), ChemDraft tries
+/// to undo the first app's change and reports any rollback failure. An unrecognized file or a
+/// missing app is skipped and reported, and the other app proceeds.
 fn apply_with(fs: &Fs, home: &Path, addin: &Addin, action: Action) -> [OfficeAddinResult; 2] {
     let mut results = change_both(fs, home, addin, action);
     for result in &mut results {
@@ -1176,6 +1249,55 @@ mod tests {
             STABLE_ID.to_uppercase()
         );
         assert!(stable.identifies(&minimal));
+    }
+
+    #[test]
+    fn install_uses_the_parsed_version_and_default_task_pane_url() {
+        let addin = Addin::for_build(STABLE_IDENTIFIER, false, Some(""));
+        let (home, _word, _powerpoint) = office_home();
+        apply(&home.0, &addin, Action::Install);
+        let path = manifest_path(&home.0, OfficeApp::Word, &addin);
+        let current = addin.manifest.as_ref();
+        let url = concat!(
+            "https://chemdraft.ai/office/",
+            env!("CARGO_PKG_VERSION"),
+            "/taskpane"
+        );
+        let source = format!("<SourceLocation DefaultValue=\"{url}\"/>");
+        let current_version = current
+            .split_once("<Version>")
+            .unwrap()
+            .1
+            .split_once("</Version>")
+            .unwrap()
+            .0;
+        let other_build = concat!(env!("CARGO_PKG_VERSION"), "-previous");
+        let old_source = current.replacen(
+            &source,
+            &format!(
+                "<!-- {source} --><SourceLocation DefaultValue='https://chemdraft.ai/office/{other_build}/taskpane'/>"
+            ),
+            1,
+        );
+        let old_version = current.replacen(
+            "<Version>",
+            &format!("<!-- <Version>{current_version}</Version> --><Version>9"),
+            1,
+        );
+        for outdated in [old_source, old_version] {
+            fs::write(&path, outdated).unwrap();
+            let [word, _] = apply(&home.0, &addin, Action::Install);
+            assert_eq!(
+                (word.status, word.changed),
+                (Status::InstalledSameVersion, true)
+            );
+            assert_eq!(fs::read_to_string(&path).unwrap(), current);
+        }
+        assert!(addin.is_current(&current.replacen(
+            &source,
+            &format!("<SourceLocation\n DefaultValue = '{url}'/>"),
+            1,
+        )));
     }
 
     #[test]
@@ -1717,6 +1839,77 @@ mod tests {
         assert_eq!(fs::read_dir(&word_wef).unwrap().count(), 1);
         assert!(!powerpoint_result.changed);
         assert!(!manifest_path(&home.0, OfficeApp::PowerPoint, &addin).exists());
+    }
+
+    #[test]
+    fn rollback_of_an_upgrade_keeps_a_concurrently_deleted_manifest_absent() {
+        let addin = Addin::for_build(STABLE_IDENTIFIER, false, Some(""));
+        let (home, _word, powerpoint) = office_home();
+        apply(&home.0, &addin, Action::Install);
+        let word = manifest_path(&home.0, OfficeApp::Word, &addin);
+        let slides = manifest_path(&home.0, OfficeApp::PowerPoint, &addin);
+        let old = addin.manifest.replace("<Version>", "<Version>9");
+        fs::write(&word, &old).unwrap();
+        fs::write(&slides, &old).unwrap();
+        let renames = std::cell::Cell::new(0);
+        let gate = |op, path: &Path| {
+            if op == Op::Rename && path.starts_with(&powerpoint) {
+                return Err(io::Error::from(ErrorKind::PermissionDenied));
+            }
+            if op == Op::Rename && path == word {
+                let count = renames.get() + 1;
+                renames.set(count);
+                if count == 2 {
+                    fs::remove_file(path).unwrap();
+                }
+            }
+            Ok(())
+        };
+        let [word_result, slides_result] =
+            apply_with(&Fs { gate: &gate }, &home.0, &addin, Action::Install);
+        assert_eq!(renames.get(), 2);
+        assert!(!word_result.rolled_back);
+        assert!(word_result.error.unwrap().contains("disappeared"));
+        assert_eq!(
+            slides_result.error_kind,
+            Some(FailureKind::PermissionDenied)
+        );
+        assert!(!word.exists());
+        assert_eq!(fs::read_to_string(slides).unwrap(), old);
+    }
+
+    #[test]
+    fn failed_manifest_publish_and_restore_reports_the_recovery_path() {
+        let home = TempHome::new();
+        let path = home.0.join("manifest.xml");
+        let staged = home.0.join("staged.xml");
+        let original = b"original manifest";
+        fs::write(&path, original).unwrap();
+        fs::write(&staged, b"new manifest").unwrap();
+        let recovery = std::cell::RefCell::new(None);
+        let publish_error = "publish failure";
+        let restore_error = "restore failure";
+        let rename = |from: &Path, to: &Path| {
+            if from == path {
+                rename_excl(from, to)?;
+                recovery.replace(Some(to.to_owned()));
+                return Ok(());
+            }
+            Err(io::Error::other(if from == staged {
+                publish_error
+            } else {
+                restore_error
+            }))
+        };
+        let Err(failure) = swap_in(&path, Some(original), Some(&staged), rename) else {
+            panic!("publish and restore should fail");
+        };
+        let recovery = recovery.into_inner().unwrap();
+        assert!(failure.message.contains(publish_error));
+        assert!(failure.message.contains(restore_error));
+        assert!(failure.message.contains(&recovery.display().to_string()));
+        assert_eq!(fs::read(&recovery).unwrap(), original);
+        assert!(!path.exists());
     }
 
     /// Word's Remove succeeded and PowerPoint's failed. Between the undo's check that Word's path

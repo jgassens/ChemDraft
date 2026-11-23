@@ -1,7 +1,8 @@
-import { crc32, deflateRawSync } from "node:zlib";
+import { crc32, deflateRawSync, deflateSync } from "node:zlib";
 import { Resvg } from "@resvg/resvg-js";
 import { describe, expect, it, vi } from "vitest";
-import { importOfficeStructures, OfficeImportError, pngWithChemDraftSelection, type OfficeImportResult } from "./index";
+import { CHEMDRAFT_PNG_SELECTION_KEYWORD, importOfficeStructures, OfficeImportError, pngWithChemDraftSelection,
+  readChemDraftSelectionFromPng, type OfficeImportResult } from "./index";
 import { docxDrawingReferences, inReadingOrder, pptxSlideDrawingReferences, resolvePartTarget, type DrawingBox } from "./officePackage";
 import { readChemDraftOleObject } from "./oleObject";
 import { writeTestCompoundFile } from "./oleObject.testUtils";
@@ -10,6 +11,10 @@ import { writeTestCompoundFile } from "./oleObject.testUtils";
 vi.mock("./oleObject", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./oleObject")>();
   return { ...actual, readChemDraftOleObject: vi.fn(actual.readChemDraftOleObject) };
+});
+vi.mock("./pngSelection", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./pngSelection")>();
+  return { ...actual, readChemDraftSelectionFromPng: vi.fn(actual.readChemDraftSelectionFromPng) };
 });
 
 // A minimal ZIP writer (stored or deflated, no descriptors): enough for real Office packages.
@@ -72,6 +77,15 @@ function selection(label: string, extra: Record<string, unknown> = {}): string {
 }
 const carrier = (json: string) => pngWithChemDraftSelection(plainPng, json);
 
+function compressedCarrier(json: string): Uint8Array {
+  const body = Buffer.concat([Buffer.from(`iTXt${CHEMDRAFT_PNG_SELECTION_KEYWORD}\0\x01\0\0\0`), deflateSync(json)]);
+  const size = Buffer.alloc(4);
+  size.writeUInt32BE(body.length - 4);
+  const checksum = Buffer.alloc(4);
+  checksum.writeUInt32BE(crc32(body));
+  return Buffer.concat([plainPng.subarray(0, -12), size, body, checksum, plainPng.subarray(-12)]);
+}
+
 function rels(entries: [id: string, type: string, target: string, external?: boolean][]): string {
   return `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="${PKG}">${entries.map(([id, type, target, external]) =>
     `<Relationship Id="${id}" Type="${R}/${type}" Target="${target}"${external ? ' TargetMode="External"' : ""}/>`).join("")}</Relationships>`;
@@ -118,12 +132,14 @@ function wordPicture(embed: string): string {
     `<a:blip r:embed="${embed}"/></pic:blipFill></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`;
 }
 
-function docx(body: string, relationships: string, media: { name: string; data: Uint8Array }[]): Uint8Array {
+function docx(body: string, relationships: string, media: { name: string; data: Uint8Array }[],
+  { root = rootRels("word/document.xml"), contentTypes = "<Types/>" }: { root?: string | Uint8Array; contentTypes?: string } = {},
+): Uint8Array {
   const document = `<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="${W}" xmlns:wp="${WP}" xmlns:a="${A}" ` +
     `xmlns:pic="${PIC}" xmlns:r="${R}" xmlns:mc="${MC}" xmlns:wps="${WPS}" xmlns:v="${V}"><w:body>${body}</w:body></w:document>`;
   return makeZip([
-    { name: "[Content_Types].xml", data: "<Types/>" },
-    { name: "_rels/.rels", data: rootRels("word/document.xml") },
+    { name: "[Content_Types].xml", data: contentTypes },
+    { name: "_rels/.rels", data: root },
     { name: "word/document.xml", data: document, deflate: true },
     { name: "word/_rels/document.xml.rels", data: relationships },
     ...media,
@@ -143,15 +159,17 @@ describe("importOfficeStructures: PowerPoint", () => {
     const first = slide(slidePicture(2, "rId1") + slidePicture(3, "rId2") + slidePicture(4, "rId3"));
     const second = slide(`<p:grpSp><p:nvGrpSpPr><p:cNvPr id="5" name="Group"/></p:nvGrpSpPr>${slidePicture(6, "rId1")}</p:grpSp>` +
       `<mc:AlternateContent><mc:Choice Requires="p">${slidePicture(7, "rId2")}</mc:Choice>` +
-      `<mc:Fallback>${slidePicture(8, "rId2")}</mc:Fallback></mc:AlternateContent>`);
+      `<mc:Fallback>${slidePicture(8, "rIdFallback")}</mc:Fallback></mc:AlternateContent>`);
     const bytes = pptx([
       { xml: first, rels: rels([["rId1", "image", "../media/a.png"], ["rId2", "image", "../media/plain.png"], ["rId3", "image", "../media/b.png"]]) },
-      { xml: second, rels: rels([["rId1", "image", "../media/c.png"], ["rId2", "image", "/ppt/media/d.png"]]) },
+      { xml: second, rels: rels([["rId1", "image", "../media/c.png"], ["rId2", "image", "/ppt/media/d.png"],
+        ["rIdFallback", "image", "../media/fallback.png"]]) },
     ], [
       { name: "ppt/media/a.png", data: carrier(selection("A")) },
       { name: "ppt/media/b.png", data: carrier(selection("B")) },
       { name: "ppt/media/c.png", data: carrier(selection("C")) },
       { name: "ppt/media/d.png", data: carrier(selection("D")) },
+      { name: "ppt/media/fallback.png", data: carrier(selection("Fallback")) },
       { name: "ppt/media/plain.png", data: plainPng },
     ]);
     const result = await importOfficeStructures(bytes);
@@ -230,13 +248,40 @@ describe("importOfficeStructures: PowerPoint", () => {
   });
 
   it("caps the number of pictures examined and says so", async () => {
-    const xml = slide(Array.from({ length: 5 }, (_, index) => slidePicture(index + 2, "rId1")).join(""));
-    const bytes = pptx([{ xml, rels: rels([["rId1", "image", "../media/a.png"]]) }],
-      [{ name: "ppt/media/a.png", data: carrier(selection("A")) }]);
+    const xml = slide(Array.from({ length: 3 }, (_, index) => slidePicture(index + 2, "rId1")).join(""));
+    const bytes = pptx([
+      { xml, rels: rels([["rId1", "image", "../media/a.png"]]) },
+      { xml: slide(slidePicture(2, "rId2") + slidePicture(3, "rId2")), rels: rels([["rId2", "image", "../media/b.png"]]) },
+    ], [{ name: "ppt/media/a.png", data: carrier(selection("A")) }, { name: "ppt/media/b.png", data: carrier(selection("B")) }]);
+    vi.mocked(readChemDraftSelectionFromPng).mockClear();
     const result = await importOfficeStructures(bytes, { limits: { maxPictures: 3 } });
-    expect(result.structures).toHaveLength(3);
+    expect(labels(result)).toEqual([["slide 1", "A"], ["slide 1", "A"], ["slide 1", "A"]]);
+    expect(readChemDraftSelectionFromPng).toHaveBeenCalledTimes(1);
     expect(result.picturesChecked).toBe(3);
     expect(result.notes).toEqual(["Only the first 3 of 5 pictures were checked for ChemDraft structures."]);
+  });
+
+  it.each([
+    [256, "rId2", "slides/slide2.xml", /Duplicate slide ID/],
+    [257, "rId1", "slides/slide2.xml", /Duplicate slide relationship ID/],
+    [257, "rId2", "SLIDES/SLIDE1.XML", /Duplicate slide part/],
+  ] as const)("rejects a duplicate slide identity before traversing slides (%s, %s, %s)", async (id, relationship, target, reason) => {
+    const bytes = makeZip([
+      { name: "_rels/.rels", data: rootRels("ppt/presentation.xml") },
+      { name: "ppt/presentation.xml", data: `<p:presentation xmlns:p="${P}" xmlns:r="${R}"><p:sldIdLst>` +
+        `<p:sldId id="256" r:id="rId1"/><p:sldId id="${id}" r:id="${relationship}"/></p:sldIdLst></p:presentation>` },
+      { name: "ppt/_rels/presentation.xml.rels", data: rels([["rId1", "slide", "slides/slide1.xml"], ["rId2", "slide", target]]) },
+      { name: "ppt/slides/slide1.xml", data: "<broken" },
+    ]);
+    expect(await refusal(bytes)).toMatchObject({ code: "malformed-package", message: expect.stringMatching(reason) });
+  });
+
+  it("finds a PNG when the relationship and its package part differ in case", async () => {
+    const bytes = pptx([{ xml: slide(slidePicture(2, "rId1")), rels: rels([["rId1", "image", "../MEDIA/IMAGE.PNG"]]) }],
+      [{ name: "ppt/media/image.png", data: carrier(selection("case variant")) }]);
+    const result = await importOfficeStructures(bytes);
+    expect(labels(result)).toEqual([["slide 1", "case variant"]]);
+    expect(result.structures[0]?.mediaPart).toBe("ppt/media/image.png");
   });
 });
 
@@ -245,15 +290,17 @@ describe("importOfficeStructures: Word", () => {
     const body = `<w:p>${wordPicture("rId1")}</w:p><w:p/><w:p>${wordPicture("rId2")}${wordPicture("rId9")}</w:p>` +
       `<w:p><w:r><mc:AlternateContent><mc:Choice Requires="wps"><w:drawing><wps:wsp><wps:spPr><a:blipFill>` +
       `<a:blip r:embed="rId3"/></a:blipFill></wps:spPr></wps:wsp></w:drawing></mc:Choice>` +
-      `<mc:Fallback><w:pict><v:shape><v:imagedata r:id="rId3"/></v:shape></w:pict></mc:Fallback></mc:AlternateContent></w:r></w:p>` +
+      `<mc:Fallback><w:pict><v:shape><v:imagedata r:id="rIdFallback"/></v:shape></w:pict></mc:Fallback></mc:AlternateContent></w:r></w:p>` +
       `<w:p><w:r><w:pict><v:shape><v:imagedata r:id="rId4"/></v:shape></w:pict></w:r></w:p>`;
     const relationships = rels([["rId1", "image", "media/one.png"], ["rId2", "image", "media/two.png"],
-      ["rId3", "image", "media/three.png"], ["rId4", "image", "media/four.png"], ["rId9", "image", "https://example.org/x.png", true]]);
+      ["rId3", "image", "media/three.png"], ["rId4", "image", "media/four.png"], ["rId9", "image", "https://example.org/x.png", true],
+      ["rIdFallback", "image", "media/fallback.png"]]);
     const bytes = docx(body, relationships, [
       { name: "word/media/one.png", data: carrier(selection("one")) },
       { name: "word/media/two.png", data: carrier(selection("two")) },
       { name: "word/media/three.png", data: carrier(selection("three")) },
       { name: "word/media/four.png", data: carrier(selection("four")) },
+      { name: "word/media/fallback.png", data: carrier(selection("Fallback")) },
     ]);
     const result = await importOfficeStructures(bytes);
     expect(result.kind).toBe("word");
@@ -261,6 +308,29 @@ describe("importOfficeStructures: Word", () => {
     expect(result.warnings).toEqual([]);
     expect(docxDrawingReferences(`<w:document xmlns:w="${W}" xmlns:a="${A}" xmlns:r="${R}"><w:body><w:p/><w:p>` +
       `<a:blip r:embed="rIdX"/></w:p></w:body></w:document>`)).toEqual([{ relationshipId: "rIdX", paragraph: 2 }]);
+  });
+
+  it.each(["UTF-8", "UTF-16LE", "UTF-16BE"] as const)("reads %s root relationships", async (encoding) => {
+    const xml = rootRels("word/document.xml").replace('encoding="UTF-8"',
+      encoding === "UTF-8" ? 'encoding="UTF-8"' : 'encoding="UTF-16"');
+    const root = encoding === "UTF-8" ? Buffer.from(xml, "utf8") : Buffer.from(`\uFEFF${xml}`, "utf16le");
+    if (encoding === "UTF-16BE") root.swap16();
+    const bytes = docx(`<w:p>${wordPicture("rId1")}</w:p>`, rels([["rId1", "image", "media/drawing.png"]]),
+      [{ name: "word/media/drawing.png", data: carrier(selection("drawing")) }], { root });
+    expect(labels(await importOfficeStructures(bytes))).toEqual([["paragraph 1", "drawing"]]);
+  });
+
+  it("refuses malformed UTF-16 root relationships", async () => {
+    const bytes = docx("", rels([]), [], { root: Uint8Array.of(0xff, 0xfe, 0x3c) });
+    expect(await refusal(bytes)).toMatchObject({ code: "malformed-package", message: expect.stringContaining("not valid UTF-16LE XML") });
+  });
+
+  it("loads a referenced PNG with a content type override and a non-PNG extension", async () => {
+    const contentTypes = '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+      '<Override PartName="/word/media/drawing.bin" ContentType="image/png"/></Types>';
+    const bytes = docx(`<w:p>${wordPicture("rId1")}</w:p>`, rels([["rId1", "image", "media/drawing.bin"]]),
+      [{ name: "word/media/drawing.bin", data: carrier(selection("drawing")) }], { contentTypes });
+    expect(labels(await importOfficeStructures(bytes))).toEqual([["paragraph 1", "drawing"]]);
   });
 
   it("returns nothing for a document whose pictures are not ChemDraft structures", async () => {
@@ -413,6 +483,59 @@ describe("importOfficeStructures: ChemDraft embedded objects (made on Windows)",
       { name: "word/media/image2.png", data: plainPng },
     ]);
     expect(await importOfficeStructures(bytes)).toMatchObject({ structures: [], warnings: [], picturesChecked: 2 });
+  });
+
+  it("warns only for a missing known ChemDraft object part and gives recovery guidance", async () => {
+    const bytes = docx(`<w:p>${wordObject("rIdPrev", "rIdOle")}</w:p><w:p>${wordObject("rIdPrev", "rIdOther", "Equation.3")}</w:p>`,
+      rels([["rIdOle", "oleObject", "embeddings/missing.bin"], ["rIdOther", "oleObject", "embeddings/other.bin"]]), []);
+    const result = await importOfficeStructures(bytes);
+    expect(result.structures).toEqual([]);
+    expect(result.warnings).toEqual([{
+      picture: 1, source: { kind: "paragraph", paragraph: 1 }, location: "paragraph 1",
+      mediaPart: "word/embeddings/missing.bin", reason: "malformed",
+      message: "The embedded ChemDraft object on paragraph 1 could not be read: the embedded part word/embeddings/missing.bin is missing. " +
+        "Open the file in Word or PowerPoint on Windows, copy the object and paste it into ChemDraft.",
+    }]);
+  });
+
+  it("refuses oversized compressed PNGs and shares the picture and JSON budgets across PNG and OLE", async () => {
+    const object = selection("object");
+    const small = selection("small");
+    const oversized = selection("oversized", { padding: "x".repeat(4096) });
+    const overTotal = selection("over total", { padding: "x".repeat(200) });
+    const bytes = docx(`<w:p>${wordPicture("rIdBig")}${wordObject("rIdPrev", "rIdOle")}` +
+      `${wordPicture("rIdOver")}${wordPicture("rIdBig")}${wordPicture("rIdSmall")}${wordPicture("rIdOver")}${wordPicture("rIdLate")}</w:p>`,
+      rels([["rIdBig", "image", "media/big.png"], ["rIdOle", "oleObject", "embeddings/object.bin"],
+        ["rIdOver", "image", "media/over.png"], ["rIdSmall", "image", "media/small.png"], ["rIdLate", "image", "media/late.png"]]), [
+        { name: "word/media/big.png", data: compressedCarrier(oversized) },
+        { name: "word/media/over.png", data: compressedCarrier(overTotal) },
+        { name: "word/media/small.png", data: compressedCarrier(small) },
+        { name: "word/media/late.png", data: carrier(selection("late")) },
+        { name: "word/embeddings/object.bin", data: oleBin(object) },
+      ]);
+    vi.mocked(readChemDraftSelectionFromPng).mockClear();
+    const actual = await vi.importActual<typeof import("./pngSelection")>("./pngSelection");
+    const oversizedJsonAccess = vi.fn();
+    vi.mocked(readChemDraftSelectionFromPng).mockImplementationOnce(async (png) => {
+      const decoded = await actual.readChemDraftSelectionFromPng(png);
+      if (decoded.kind !== "found") return decoded;
+      return { kind: "found", chunk: decoded.chunk, get json() {
+        oversizedJsonAccess();
+        return decoded.json;
+      } };
+    });
+    const result = await importOfficeStructures(bytes, { limits: { maxPictures: 6, maxCarrierJsonBytes: 512,
+      maxTotalCarrierJsonBytes: Buffer.byteLength(object) + Buffer.byteLength(small) } });
+    expect(labels(result)).toEqual([["paragraph 1", "object"], ["paragraph 1", "small"]]);
+    expect(result.warnings.map(({ picture, reason, message }) => [picture, reason, message])).toEqual([
+      [1, "too-large", expect.stringContaining("limit for one structure")],
+      [3, "too-large", expect.stringContaining("structures together exceed")],
+      [4, "too-large", expect.stringContaining("limit for one structure")],
+      [6, "too-large", expect.stringContaining("structures together exceed")],
+    ]);
+    expect(readChemDraftSelectionFromPng).toHaveBeenCalledTimes(3);
+    expect(oversizedJsonAccess).toHaveBeenCalledOnce();
+    expect(result.notes).toEqual(["Only the first 6 of 7 pictures were checked for ChemDraft structures."]);
   });
 
   it("warns, with the carrier's words, for a ChemDraft object that is damaged, newer or too large", async () => {

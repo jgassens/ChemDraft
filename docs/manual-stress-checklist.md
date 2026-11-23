@@ -1794,8 +1794,9 @@ Run every step on both platforms, in Word and in PowerPoint.
   **Allow** (choose Install again): both apps are installed. Repeat with Remove: Don't Allow leaves
   both manifests in place, Allow removes both. After a Don't Allow, if macOS does not ask again, the
   given `tccutil` command makes it ask on the next Install.
-- Restart Word and PowerPoint: the Edit Structure button is in the ribbon. Choose Help > Remove
-  Office Add-in…, confirm, and check that the button is gone after a restart.
+- Choose Help > Install Office Add-in… and confirm. Restart Word and PowerPoint: the Edit Structure
+  button is in the ribbon. Choose Help > Remove Office Add-in…, confirm, and check that the button
+  is gone after a restart. Reinstall the add-in and restart both apps for the following checks.
 - Word: select a ChemDraft picture with the pane open. It loads without a click. Edit and Update: the
   picture is replaced in place, size, wrapping and position are kept, and Undo restores it. Selecting
   anything else shows "Select a ChemDraft structure".
