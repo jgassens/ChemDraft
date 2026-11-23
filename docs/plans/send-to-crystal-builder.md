@@ -382,7 +382,7 @@ What this changes:
 |---|---|---|
 | (a) Temp file + "open with this app" | **Use now** | Works on every Crystal Builder install with no setup; no network; the plugin never sees a path; the same launch shape on macOS and Windows |
 | (b) `xtal` CLI | **Use for the build step** (revised 2026-11-20) | It cannot load a file into the window, but it builds headlessly (`xtal run mof.build … -o out.cif --json`), and (a) then opens the result. That is what makes the one-command build possible without the MCP server. It ships inside the app the user picked (`Contents/MacOS/xtal` on macOS; the Windows name is checked by the Windows session) |
-| (c) localhost MCP/HTTP | **Later, with the author** (Phase 4) | Off by default; needs `network.fetch` to localhost plus reading another app's token file; its doc is a design record, not verified shipped behavior. It is the right route for "open in the already-running window" and for calling its MOF builder, but only once the author confirms a stable contract |
+| (c) localhost MCP/HTTP | **Later** (Phase 4) | Off by default; needs `network.fetch` to localhost plus reading another app's token file; its doc is a design record, not verified shipped behavior. It is a possible later route for "open in the already-running window" and for calling its MOF builder, judged from its shipped source and behavior if Phase 4 starts; no answer from the author is needed |
 
 Platform parity for (a):
 
