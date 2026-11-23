@@ -562,6 +562,30 @@ describe("reading order through group and picture flips and rotations", () => {
     expectBox(boxOf(scaled.references, "S"), [800, 0, 1000, 2000]);
   });
 
+  it("subtracts a distant child offset (chOff) before placing a group's pictures", () => {
+    // The group sits at the left of the slide; its child space starts far away. A and B are
+    // stored right-then-left, and C sits between them on the slide. Only with chOff subtracted
+    // do B and A land at 0 and 1500 around C; unsubtracted they would both read after C.
+    const far = 10_000_000;
+    const body = picture("A", [far + 1500, far, 500, 1000]) + picture("B", [far, far, 500, 1000]);
+    const middle = picture("C", [1000, 0, 500, 1000]);
+    const { order, references } = read(group([0, 0, 2000, 1000], "", body, [far, far, 2000, 1000]) + middle);
+    expectBox(boxOf(references, "A"), [1500, 0, 500, 1000]);
+    expectBox(boxOf(references, "B"), [0, 0, 500, 1000]);
+    expect(order).toEqual(["B", "C", "A"]);
+  });
+
+  it("subtracts chOff and then scales when the child extent differs from the frame", () => {
+    // Child space 1000 x 500 at (far, far) maps onto a 2000 x 1000 frame at the origin (scale 2).
+    const far = 10_000_000;
+    const body = picture("A", [far + 750, far, 250, 500]) + picture("B", [far, far, 250, 500]);
+    const middle = picture("C", [1000, 0, 500, 1000]);
+    const { order, references } = read(group([0, 0, 2000, 1000], "", body, [far, far, 1000, 500]) + middle);
+    expectBox(boxOf(references, "A"), [1500, 0, 500, 1000]);
+    expectBox(boxOf(references, "B"), [0, 0, 500, 1000]);
+    expect(order).toEqual(["B", "C", "A"]);
+  });
+
   it("uses an individually rotated picture's bounds for the row rule", () => {
     // R is 3000 wide and 1000 high, so it shares no row with P (3000 high) until a quarter turn
     // makes it 3000 high too: then it reads before P, which sits to its right.
