@@ -4,7 +4,7 @@ Status: plan approved by the owner 2026-11-10; revised 2026-11-20 for the one-co
 return trip (owner direction below), and again the same afternoon after the hand-built "MOF-5" turned
 out to be the wrong structure because it was built on one cell (see "MOF-5 correctness" under Test
 results; open question 9, now answered). The new `runCompanion` method widens the security contract, so the
-master session's OK and the Kimi review (condition 3) cover it too. The master session OKed the revised plan, including the `runCompanion` security contract scoped to official catalog plugins (2026-11-20); the usual gates apply when code starts. Questions 1–10 are answered (2026-11-20); questions 11 and 12 were answered by the owner overnight 2026-11-21. **Kimi plan review: PASS on 2026-11-22** (`run-20261122-120216-0753a8`, after two revisions; see "Kimi plan review (2026-11-21)", next section). The plan is approved; code waits for ChemDraft 1.2.2 to ship and then starts as a 1.2.3/1.3 slice. Target: after ChemDraft 1.2.2 ships (1.2.x has priority; nothing here touches
+master session's OK and the Kimi review (condition 3) cover it too. The master session OKed the revised plan, including the `runCompanion` security contract scoped to official catalog plugins (2026-11-20); the usual gates apply when code starts. Questions 1–10 are answered (2026-11-20); questions 11 and 12 were answered by the owner overnight 2026-11-21. **Kimi plan review: PASS on 2026-11-22** (`run-20261122-120216-0753a8`, after two revisions; see "Kimi plan review (2026-11-21)", next section). The plan is approved; code waits for ChemDraft 1.2.2 to ship and then starts as a **1.2.3** slice (owner, 2026-11-23). Target: after ChemDraft 1.2.2 ships (1.2.x has priority; nothing here touches
 `release/1.2-rc` or `main`). Final home of this document: `docs/plans/send-to-crystal-builder.md` on
 local branch `plan/crystal-builder` (see "After approval").
 
@@ -12,7 +12,7 @@ local branch `plan/crystal-builder` (see "After approval").
 
 Approved in principle, with these conditions:
 
-1. **No code until 1.2.2 ships** (master session, 2026-11-20). This is 1.3 work. Main is already at
+1. **No code until 1.2.2 ships** (master session, 2026-11-20). This is 1.2.3 work (owner, 2026-11-23; was 1.3). Main is already at
    plugin API 0.1.26 (request-bound tools, PR #418), so this capability takes the **next patch
    version, 0.1.27 as of main 8125b66a**; the worker re-reads `PluginApiVersion` when Phase 1 starts.
 2. ~~**Build phase runs from a MacBook session.**~~ **Changed (owner, 2026-11-20): workers run on the
@@ -138,8 +138,9 @@ Two facts shape everything:
    converts but has no "load this into the open window" command; its window MCP server is opt-in, off
    by default, on `127.0.0.1:7781` with a per-launch bearer token in a discovery file. SMILES is
    accepted only through a GUI command that needs its optional RDKit extra. Builds are ad-hoc signed
-   (macOS) or unsigned. The bundle identifier is `org.crystalbuilder.CrystalBuilder` (test A3); it is
-   used only for change detection, never to find the app.
+   (macOS) or unsigned. The bundle identifier is `org.crystalbuilder.CrystalBuilder` (test A3); the host
+   never hard-codes it: it reads the identifier from the app the user picked and uses it only for
+   change detection, never to find the app.
 
 ## Decision 1: what to send
 
@@ -277,8 +278,8 @@ click builds:
 |---|---|---|---|
 | Zn²⁺ ions (any count), with or without O²⁻ | **terephthalate exactly** (after the cut, the linker graph equals C₆H₄X₂ with the X para) | combination `pcu-N16-2x2x2` (Zn₄O(CO₂)₆; see below) | "matches the MOF-5 target checks", only when every check passes; never "MOF-5" alone |
 | Zn²⁺, or nothing | any other ditopic carboxylate | same net, node, and repeat; labelled "suggested; no metal drawn" when no metal is drawn | **Never a material name**: "Zn₄O pcu framework with this linker" plus the measured numbers (Kimi 2026-11-21: no "MOF-5 family" or IRMOF label from a proxy) |
-| Cu²⁺ | tritopic carboxylate | net `tbo`, Cu paddlewheel node `N17` (Cu₂(CO₂)₄ with axial O; task 0.4) | **Row disabled in 1.3** until a real N17/tbo build plus `inspect` fixture gives its full target record; then named HKUST-1 only for trimesate exactly |
-| anything else | any | no suggestion. In 1.3 the dialog offers only the validated rows above (no free node list), so no unvalidated id is ever built from the dialog | — |
+| Cu²⁺ | tritopic carboxylate | net `tbo`, Cu paddlewheel node `N17` (Cu₂(CO₂)₄ with axial O; task 0.4) | **Row disabled in 1.2.3** until a real N17/tbo build plus `inspect` fixture gives its full target record; then named HKUST-1 only for trimesate exactly |
+| anything else | any | no suggestion. In 1.2.3 the dialog offers only the validated rows above (no free node list), so no unvalidated id is ever built from the dialog | — |
 
 Drawn ions only pick the node; they are never sent as atoms, because a 2D drawing of four loose
 ions is not the cluster's geometry (the 2026-11-20 demo showed this). The dialog says so: "Node N16
@@ -489,7 +490,7 @@ Rules the host enforces (each one gets a test):
      (a) the **native menu**, including its keyboard accelerators, whose events arrive in Rust; and
      (b) buttons in **host-owned native boxes shown from Rust** (the consent box, the build
      confirmation, the result box with Rebuild, task 1H). Toolbar buttons, palettes, overlays, and
-     webview-only shortcuts cannot start a handoff command in 1.3; they show the menu path instead.
+     webview-only shortcuts cannot start a handoff command in 1.2.3; they show the menu path instead.
      There is **no renderer IPC command that creates an arming.**
    - **No credential ever reaches the renderer** (revised 2026-11-22 after the Kimi re-check: a
      bearer token handed to the renderer could be observed and raced by other main-renderer code,
@@ -592,7 +593,7 @@ Rules the host enforces (each one gets a test):
 12. **Consent names the pipeline.** The consent box shows the tool's name and each declared step's
     command line with its placeholders ("xtal run mof.build … -o <output>.cif"). A changed pipeline
     fails the digest (rule 5) and asks again.
-13. **Official plugins only in 1.3** (owner question 8; added 2026-11-21, Kimi blocker). A host-owned
+13. **Official plugins only in 1.2.3** (owner question 8; added 2026-11-21, Kimi blocker). A host-owned
     allowlist in Phase 1, `OFFICIAL_COMPANION_PLUGINS` (plugin id plus its release repository), is
     checked when the plugin registers and on every `runCompanion` call. A plugin passes only if its
     installed package came through the host's catalog or update path from that repository with a
@@ -762,7 +763,7 @@ The picture-only fallback was considered and dropped (owner, 2026-11-20).
 
 For the owner:
 
-1. ~~**Release target.**~~ **Answered (owner, 2026-11-20): ship the host capability in 1.3** (API 0.1.27; main took 0.1.26 for request-bound tools).
+1. ~~**Release target.**~~ **Answered (owner, 2026-11-20): 1.3; changed (owner, 2026-11-23): ship the host capability in 1.2.3** (API 0.1.27, the next free patch when Phase 1 starts; main took 0.1.26 for request-bound tools).
 2. ~~**How often to ask.**~~ **Answered (owner, 2026-11-20): consent once per plugin and app, then a
    message box only when something specific would be lost.** Consent once per plugin and app, then a message box only when something
    specific would be lost (recommended), or a confirmation on every send?
@@ -783,11 +784,11 @@ For the owner:
    visualization" non-goal (PLAN.md §5) is lifted for one native `crystal3d` object that can be moved,
    rotated, and exported. The picture-only fallback is dropped. The PLAN.md §5 wording changes in
    Phase 5's first pull request (task 5A), not before, since nothing touches `main` until 1.2 ships.
-8. ~~**`runCompanion` scope.**~~ **Answered (owner, 2026-11-20): official catalog plugins only in 1.3,**
+8. ~~**`runCompanion` scope.**~~ **Answered (owner, 2026-11-20): official catalog plugins only in 1.2.3 (was 1.3; release moved 2026-11-23),**
    opened up later after a clean release. Original question: The new host method runs a tool inside an app the user picked, from a
    template fixed in the plugin's manifest. It is general (any plugin could declare one) but tightly
    bounded (rule 11). Accept it as general, or allow it only for official catalog plugins at first?
-   Recommended: official catalog plugins only in 1.3, opened up after a release without problems.
+   Recommended: official catalog plugins only in the first release, opened up after a release without problems.
 9. ~~**How to get the alternating Zn₄O orientation.**~~ **Answered (2026-11-20): no change to
    Crystal Builder is needed.** Its manual says one pcu cell cannot alternate, and a 2×2×2 build with
    its default settings gives real MOF-5 (Test results, "MOF-5 correctness"). The suggestion row asks
@@ -821,6 +822,26 @@ answered by testing on macOS and by reading its MIT source (see "Test results" u
 The Windows details (tab behavior, executable and folder names) are checked by the Windows session
 against the official installer, and the app is picked by the user anyway. A5 (the window MCP server)
 matters only for Phase 4 and can be read from its source when Phase 4 starts.
+
+**No dependency on the author (owner, 2026-11-23).** There is no note to the author and none is
+planned; A1–A5 are not blockers for any phase. Phase 1 is designed so nothing in the host depends on
+an answer from the author; every app-specific fact is either read from the installed app or is data
+in the plugin's manifest, never host code:
+
+- **Which app:** the user picks it, and rule 6 records its identity (executable and tool hashes,
+  code-signing identity) from the pick. No app name, bundle identifier, or folder is built in.
+- **Where the tool is:** the manifest's `tool` entry, resolved inside the picked app (macOS) or
+  beside the picked `.exe` (Windows), with the same path guards. A missing tool returns
+  `tool-missing`; the path it looked for appears only in the host's own box (rule 8). If the installed layout differs from the source
+  (`packaging/windows.spec`), the fix is a plugin manifest change, not a host release.
+- **Which version:** the `preflight` step (`xtal capabilities --json`) reads the installed version;
+  outside `testedVersions` the call fails with `version-untested` (rule 14). Supporting a new Crystal
+  Builder release is a plugin manifest change after a real build plus `inspect`, not a host release.
+- **Already-running behavior** (new tab, new window, or second copy): the host launches detached and
+  never depends on which; the status line says only that the file was opened. Task 1C tests the
+  launch with no assumption about it.
+- **Windows names and tab behavior** stay checks for the Windows session on the official installer;
+  a difference changes the plugin manifest or a docs line, never the host contract.
 
 ## Verification
 
