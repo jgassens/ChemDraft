@@ -54,14 +54,14 @@ test("selects the three 1.2 release installers and displays the version", async 
   const elements = Object.fromEntries(ids.flatMap((id) => [
     [`#download-${id}`, new Anchor()], [`#release-meta-${id}`, new Element()],
   ]));
-  const names = ["ChemDraft_1.2.0_aarch64.dmg", "ChemDraft_1.2.0_x86_64.dmg", "ChemDraft_1.2.0_x64-setup.exe"];
-  const decoys = ["ChemDraft_1.2.0_x64-setup.exe.sig", "ChemDraft_1.2.0_aarch64.app.tar.gz", "latest.json", "appcast.xml", "appcast-intel.xml", "ChemDraft_1.2.0_arm64-setup.exe"];
+  const names = ["ChemDraft_1.2.2_aarch64.dmg", "ChemDraft_1.2.2_x86_64.dmg", "ChemDraft_1.2.2_x64-setup.exe"];
+  const decoys = ["ChemDraft_1.2.2_x64-setup.exe.sig", "ChemDraft_1.2.2_aarch64.app.tar.gz", "latest.json", "appcast.xml", "appcast-intel.xml", "ChemDraft_1.2.2_arm64-setup.exe"];
   const assets = [...decoys, names[1], names[2], names[0]].map((name) => ({
     name, browser_download_url: `https://example.test/${name}`, size: 1024,
   }));
   globalThis.document = { querySelector: (selector) => elements[selector] };
   globalThis.fetch = async () => ({ ok: true, json: async () => ({
-    tag_name: "v1.2.0", published_at: "2026-11-10T00:00:00Z", assets,
+    tag_name: "v1.2.2", published_at: "2026-11-23T00:00:00Z", assets,
   }) });
   try {
     await import("./app.js?release-1.2");
@@ -69,7 +69,7 @@ test("selects the three 1.2 release installers and displays the version", async 
     for (const [index, id] of ids.entries()) {
       assert.equal(elements[`#download-${id}`].href, `https://example.test/${names[index]}`);
       assert.equal(elements[`#download-${id}`].option.hidden, false);
-      assert.match(elements[`#release-meta-${id}`].textContent, /v1\.2\.0/);
+      assert.match(elements[`#release-meta-${id}`].textContent, /v1\.2\.2/);
       assert.equal(elements[`#release-meta-${id}`].hidden, false);
     }
   } finally {
