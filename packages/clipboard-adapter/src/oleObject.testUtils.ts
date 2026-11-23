@@ -1,6 +1,9 @@
 /**
  * Test-only: a minimal compound file writer (MS-CFB), laid out like the native writer's
- * (`office_ole/storage.rs`): root-level streams, those under 4096 bytes in the mini stream.
+ * (`office_ole/storage.rs`): root-level streams, those under 4096 bytes in the mini stream. A name
+ * `Storage/Stream` puts the stream in a child storage of the root, as the Windows server's staged
+ * saves do (`ChemDraftDrawing/ChemDraftDocument`, `office_ole/server/persist.rs`); the storage
+ * entries follow the streams in the directory.
  * Version 3 (512-byte sectors) by default, or version 4 (4096-byte sectors). `minFatSectors` pads
  * the FAT so that more than the header's 109 FAT sector slots are needed, which adds a DIFAT chain.
  * Returns the file and where its tables are, so tests can damage them.
@@ -51,9 +54,15 @@ export function writeTestCompoundFile(
   const version = options.version ?? 3;
   const SECTOR = version === 4 ? 4096 : 512;
   const perSector = SECTOR / 4;
-  const encoded = streams.map((stream) => ({
-    name: stream.name, data: typeof stream.data === "string" ? new TextEncoder().encode(stream.data) : stream.data,
-  }));
+  const encoded = streams.map((stream) => {
+    const path = stream.name.split("/");
+    if (path.length > 2 || path.some((part) => !part)) throw new Error(`unsupported test stream path ${stream.name}`);
+    return {
+      name: path[path.length - 1]!, parent: path.length === 2 ? path[0]! : "",
+      data: typeof stream.data === "string" ? new TextEncoder().encode(stream.data) : stream.data,
+    };
+  });
+  const storages = [...new Set(encoded.map((stream) => stream.parent).filter(Boolean))];
   const miniFat: number[] = [];
   const miniParts: Uint8Array[] = [];
   const miniStarts = encoded.map((stream) => {
@@ -71,7 +80,7 @@ export function writeTestCompoundFile(
   miniParts.reduce((at, part) => (miniStream.set(part, at), at + part.length), 0);
 
   const sectorsFor = (bytes: number) => Math.ceil(bytes / SECTOR);
-  const directorySectors = sectorsFor((encoded.length + 1) * 128);
+  const directorySectors = sectorsFor((encoded.length + storages.length + 1) * 128);
   const miniFatSectors = sectorsFor(miniFat.length * 4);
   const miniStreamSectors = sectorsFor(miniStream.length);
   const largeSectors = encoded.map((stream, index) => miniStarts[index] === undefined ? sectorsFor(stream.data.length) : 0);
@@ -148,11 +157,23 @@ export function writeTestCompoundFile(
   };
   for (let id = 0; id < directorySectors * (SECTOR / 128); id++) entry(id, { name: "", type: 0, start: 0, size: 0 });
   // CFB orders names by UTF-16 length, then by uppercase code units, independent of input order.
-  const ordered = encoded.map((stream, index) => ({ name: stream.name.toUpperCase(), length: stream.name.length, id: index + 1 }))
-    .sort((a, b) => a.length - b.length || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-  const right = new Map(ordered.map((stream, index) => [stream.id, ordered[index + 1]?.id ?? FREE]));
-  entry(0, { name: "Root Entry", type: 5, child: ordered[0]?.id ?? FREE, clsid,
+  // Each storage's children are one sibling list, linked through right siblings.
+  const storageId = (name: string) => encoded.length + 1 + storages.indexOf(name);
+  const right = new Map<number, number>();
+  const firstChild = (parent: string) => {
+    const children = [
+      ...encoded.flatMap((stream, index) => stream.parent === parent ? [{ name: stream.name, id: index + 1 }] : []),
+      ...(parent ? [] : storages.map((name) => ({ name, id: storageId(name) }))),
+    ].map((child) => ({ upper: child.name.toUpperCase(), length: child.name.length, id: child.id }))
+      .sort((a, b) => a.length - b.length || (a.upper < b.upper ? -1 : a.upper > b.upper ? 1 : 0));
+    children.forEach((child, index) => right.set(child.id, children[index + 1]?.id ?? FREE));
+    return children[0]?.id ?? FREE;
+  };
+  entry(0, { name: "Root Entry", type: 5, child: firstChild(""), clsid,
     start: miniStream.length ? miniStreamStart : END, size: miniStream.length });
+  for (const name of storages) {
+    entry(storageId(name), { name, type: 1, right: right.get(storageId(name)), child: firstChild(name), start: 0, size: 0 });
+  }
   encoded.forEach((stream, index) => entry(index + 1, {
     name: stream.name, type: 2, right: right.get(index + 1),
     start: miniStarts[index] ?? largeStarts[index]!, size: stream.data.length,

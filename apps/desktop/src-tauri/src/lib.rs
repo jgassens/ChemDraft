@@ -1355,8 +1355,10 @@ struct ClipboardReadPayload {
     skipped_image_items: Vec<SkippedClipboardImageItem>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     skipped_items: Vec<clipboard_limits::SkippedClipboardItem>,
-    /// Paste-back data: a copied ChemDraft OLE object's drawing (Windows only) or else Office's
-    /// picture archive (GVML); empty unless an Office picture or object was copied.
+    /// Paste-back data: a copied ChemDraft OLE object's drawing (Windows only), Office's picture
+    /// archive (GVML), or both: Windows reads GVML beside an OLE drawing, and the TypeScript
+    /// adapter decodes it only when the drawing is absent or refused. Empty unless an Office
+    /// picture or object was copied.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     office_items: Vec<clipboard_images::ClipboardOfficeItem>,
 }

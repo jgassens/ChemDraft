@@ -67,6 +67,84 @@ describe("readChemDraftOleObject", () => {
     expect(readChemDraftOleObject(binary.bytes, MB)).toMatchObject({ kind: "invalid", reason: "ChemDraftDocument is not UTF-8 text" });
   });
 
+  describe("staged saves (office_ole/server/persist.rs)", () => {
+    const drawing = (label: string) => JSON.stringify({ kind: "chemdraft-selection", version: 1, objects: [], label });
+    // A generation storage's streams, as `save_generation` writes them.
+    const generation = (storage: string, document: string | Uint8Array) => [
+      { name: `${storage}/ChemDraftDocument`, data: document },
+      { name: `${storage}/ChemDraftPreview`, data: new Uint8Array(5000).fill(9) },
+      { name: `${storage}/ChemDraftExtent`, data: new Uint8Array(8) },
+    ];
+    const metadata = objectStreams(json).slice(0, 2);
+    const read = (streams: { name: string; data: string | Uint8Array }[], options?: { version?: 3 | 4 }) =>
+      readChemDraftOleObject(writeTestCompoundFile(STABLE, streams, options).bytes, MB);
+
+    it("reads ChemDraftDrawing, in mini and regular sectors, before every other copy", () => {
+      const large = drawing("x".repeat(9000));
+      for (const document of [drawing("published"), large]) {
+        for (const version of [3, 4] as const) {
+          expect(read([...metadata, ...generation("ChemDraftDrawing", document)], { version }))
+            .toEqual({ kind: "chemdraft", clsid: STABLE, json: document });
+        }
+      }
+      // A publish that lost its cleanup, mid-save of a legacy object: the live storage still wins.
+      const everything = [
+        ...metadata, { name: "ChemDraftDocument", data: drawing("legacy") },
+        ...generation("ChemDraftDrawingPrevious", drawing("previous")),
+        ...generation("ChemDraftDrawingPending", drawing("pending")),
+        ...generation("ChemDraftDrawing", drawing("published")),
+      ];
+      expect(read(everything)).toEqual({ kind: "chemdraft", clsid: STABLE, json: drawing("published") });
+      // CFB names compare without case.
+      expect(read([...metadata, { name: "chemdraftdrawing/CHEMDRAFTDOCUMENT", data: drawing("cased") }]))
+        .toEqual({ kind: "chemdraft", clsid: STABLE, json: drawing("cased") });
+    });
+
+    it("reads ChemDraftDrawingPrevious when the final rename was lost", () => {
+      for (const extra of [[], [{ name: "ChemDraftDocument", data: drawing("legacy") }], generation("ChemDraftDrawingPending", drawing("pending"))]) {
+        expect(read([...metadata, ...extra, ...generation("ChemDraftDrawingPrevious", drawing("previous"))]))
+          .toEqual({ kind: "chemdraft", clsid: STABLE, json: drawing("previous") });
+      }
+    });
+
+    it("never reads ChemDraftDrawingPending", () => {
+      expect(read([...metadata, ...generation("ChemDraftDrawingPending", drawing("pending"))])).toEqual({
+        kind: "invalid", clsid: STABLE,
+        reason: "the ChemDraft object holds only an unfinished save (ChemDraftDrawingPending), which is not read",
+      });
+      // An unfinished save beside a legacy object leaves the legacy drawing in force.
+      expect(read([...metadata, { name: "ChemDraftDocument", data: drawing("legacy") }, ...generation("ChemDraftDrawingPending", drawing("pending"))]))
+        .toEqual({ kind: "chemdraft", clsid: STABLE, json: drawing("legacy") });
+    });
+
+    it("still reads a legacy object's root ChemDraftDocument", () => {
+      expect(read([...metadata, { name: "ChemDraftDocument", data: drawing("legacy") }, { name: "ChemDraftPreview", data: new Uint8Array(5000) }]))
+        .toEqual({ kind: "chemdraft", clsid: STABLE, json: drawing("legacy") });
+    });
+
+    it("keeps the size limit and refuses a storage without its drawing instead of falling back", () => {
+      const document = drawing("published");
+      const fixture = writeTestCompoundFile(STABLE, [...metadata, ...generation("ChemDraftDrawing", document)]);
+      expect(readChemDraftOleObject(fixture.bytes, 16))
+        .toEqual({ kind: "too-large", clsid: STABLE, documentBytes: new TextEncoder().encode(document).length });
+      const emptied = [
+        ...metadata, { name: "ChemDraftDrawing/ChemDraftPreview", data: new Uint8Array(10) },
+        ...generation("ChemDraftDrawingPrevious", drawing("previous")),
+      ];
+      expect(read(emptied)).toEqual({
+        kind: "invalid", clsid: STABLE, reason: "the ChemDraft object's ChemDraftDrawing storage has no ChemDraftDocument stream",
+      });
+    });
+
+    it("refuses a storage whose children loop back into the directory", () => {
+      const fixture = writeTestCompoundFile(STABLE, [...metadata, ...generation("ChemDraftDrawing", drawing("published"))]);
+      const view = new DataView(fixture.bytes.buffer, fixture.bytes.byteOffset, fixture.bytes.byteLength);
+      // Entry 6 is the ChemDraftDrawing storage (after five streams); point its child at the root's first child.
+      view.setUint32(fixture.directoryOffset + 128 * 6 + 76, view.getUint32(fixture.directoryOffset + 76, true), true);
+      expect(readChemDraftOleObject(fixture.bytes, MB)).toEqual({ kind: "invalid", clsid: STABLE, reason: "the directory is damaged" });
+    });
+  });
+
   it("refuses files that are not compound files, or are cut short", () => {
     const whole = writeTestCompoundFile(STABLE, objectStreams(json)).bytes;
     for (const bytes of [new Uint8Array(0), new Uint8Array(1024), new TextEncoder().encode("%PDF-1.7".padEnd(600, " "))]) {

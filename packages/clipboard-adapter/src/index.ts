@@ -10,7 +10,8 @@ export {
   trimZipPadding,
 } from "./pasteBack";
 export {
-  CHEMDRAFT_DOCUMENT_STREAM, CHEMDRAFT_OLE_CLASSES, isChemDraftOleClassId, isChemDraftOleProgId, MAX_COMPOUND_FILE_BYTES, readChemDraftOleObject,
+  CHEMDRAFT_DOCUMENT_STREAM, CHEMDRAFT_DRAWING_STORAGE, CHEMDRAFT_OLE_CLASSES, CHEMDRAFT_PENDING_DRAWING_STORAGE,
+  CHEMDRAFT_PREVIOUS_DRAWING_STORAGE, isChemDraftOleClassId, isChemDraftOleProgId, MAX_COMPOUND_FILE_BYTES, readChemDraftOleObject,
 } from "./oleObject";
 export type { ChemDraftOleClass, ChemDraftOleRead } from "./oleObject";
 export type {
@@ -41,7 +42,10 @@ export interface ClipboardImageItem {
   pixelHeight?: number;
 }
 
-/** A binary flavor read only for paste-back: Office's picture archive (GVML), by native name. */
+/**
+ * A binary flavor read only for paste-back, by native name: Office's picture archive (GVML), or a
+ * copied ChemDraft OLE object's drawing (Windows).
+ */
 export interface ClipboardOfficeItem {
   type: string;
   bytesBase64: string;
@@ -80,7 +84,9 @@ export interface ClipboardReadPayload {
   skippedItems?: ClipboardSkippedItem[];
   /**
    * Paste-back only, never inspected as text or as a picture: a copied ChemDraft OLE object's
-   * drawing (Windows), or else Office's picture archive.
+   * drawing (Windows), Office's picture archive (GVML), or both. Windows reads GVML beside an OLE
+   * drawing; `recoverPasteBackFromClipboard` decodes the archive only when the drawing is absent or
+   * refused.
    */
   officeItems?: ClipboardOfficeItem[];
 }

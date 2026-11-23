@@ -237,10 +237,15 @@ interface PptxOptions {
   placeholder?: boolean;
   /** Repeat the picture in an mc:Choice and its mc:Fallback, as PowerPoint 2010 and later may write it. */
   alternate?: boolean;
+  /** The ZIP entry name of the picture's media, which the relationship targets as `../media/chemistry.png`. */
+  mediaName?: string;
+  /** Extra ZIP entries. */
+  extraEntries?: Record<string, Uint8Array>;
 }
 
 function pptx({ rotation = 0, crop = false, group = false, noCarrier = false, properties = {}, shapeProperties = "",
-  relationships = "", animated = false, placeholder = false, alternate = false }: PptxOptions = {}) {
+  relationships = "", animated = false, placeholder = false, alternate = false, mediaName = "ppt/media/chemistry.png",
+  extraEntries = {} }: PptxOptions = {}) {
   const picture = '<p:pic><p:nvPicPr><p:cNvPr id="22" name="Original figure"' + (properties.attributes ?? "") + '>' +
     (properties.children ?? "") + '</p:cNvPr>' +
     (placeholder ? '<p:cNvPicPr/><p:nvPr><p:ph type="pic" idx="13"/></p:nvPr>' : "") + '</p:nvPicPr>' +
@@ -262,8 +267,9 @@ function pptx({ rotation = 0, crop = false, group = false, noCarrier = false, pr
     "ppt/_rels/presentation.xml.rels": strToU8(rels("rId2", "slide", "slides/slide4.xml")),
     "ppt/slides/slide4.xml": strToU8(slide),
     "ppt/slides/_rels/slide4.xml.rels": strToU8(slideRels),
-    "ppt/media/chemistry.png": noCarrier ? plainPng : carrier,
+    [mediaName]: noCarrier ? plainPng : carrier,
     "ppt/media/unrelated.png": updated,
+    ...extraEntries,
   });
 }
 
@@ -570,6 +576,17 @@ describe("PowerPoint Office adapter", () => {
     const adapter = powerpointAdapter(host, powerpoint);
     expect(await adapter.readSelectedStructure()).toMatchObject({ kind: "structure", json: sourceJson });
     expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({ kind: "replaced", key: replacementShapeKey });
+  });
+
+  it("finds the picture's media when its ZIP entry differs in case from the relationship target", async () => {
+    for (const version of [10, 5]) { // slide export, and the compressed file of older PowerPoint
+      const { host, powerpoint } = powerpointHost({ version, mediaName: "ppt/Media/Chemistry.PNG" });
+      expect(await powerpointAdapter(host, powerpoint).readSelectedStructure()).toMatchObject({ kind: "structure", json: sourceJson });
+    }
+    const { host, powerpoint } = powerpointHost({ extraEntries: { "ppt/media/CHEMISTRY.png": plainPng } });
+    expect(await powerpointAdapter(host, powerpoint).readSelectedStructure()).toMatchObject({
+      kind: "refusal", reason: "The presentation stores more than one image under the picture’s name.",
+    });
   });
 
   it("names a picture shape other than a rectangle in the warning after Update", async () => {

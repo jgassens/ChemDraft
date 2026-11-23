@@ -2,7 +2,8 @@
  * ChemDraft's own OLE objects (docs/architecture/office-editing.md, "4. Windows: ChemDraft's own
  * embedded object"): their classes, and a bounded reader for an object's compound file (CFB), such
  * as `word/embeddings/oleObject1.bin` in a .docx, whose `ChemDraftDocument` stream holds the
- * drawing as carrier JSON. The classes match `OleClass` in
+ * drawing as carrier JSON. The Windows server saves that stream inside a `ChemDraftDrawing` storage
+ * (`office_ole/server/persist.rs`, see `readChemDraftOleObject` for where the stream is looked up). The classes match `OleClass` in
  * `apps/desktop/src-tauri/src/office_ole/mod.rs`. The reader follows MS-CFB and the slice 2 probe's
  * reader (`scripts/office-spike/ole/cfb-writer.mjs`); the app's native code reads the same storage
  * with the `cfb` crate (`office_ole/storage.rs`). It needs no dependency.
@@ -25,6 +26,17 @@ export const CHEMDRAFT_OLE_CLASSES: readonly ChemDraftOleClass[] = Object.freeze
 
 /** The stream holding the drawing (`DOCUMENT` in `office_ole/storage.rs`). */
 export const CHEMDRAFT_DOCUMENT_STREAM = "ChemDraftDocument";
+
+/**
+ * The storages of a staged save (`office_ole/server/persist.rs`). The server writes a complete
+ * drawing into `ChemDraftDrawingPending`, renames the live `ChemDraftDrawing` to
+ * `ChemDraftDrawingPrevious`, then renames the pending storage to `ChemDraftDrawing`. Each holds
+ * `ChemDraftDocument` and, when there is one, `ChemDraftPreview` and `ChemDraftExtent`.
+ */
+export const CHEMDRAFT_DRAWING_STORAGE = "ChemDraftDrawing";
+export const CHEMDRAFT_PREVIOUS_DRAWING_STORAGE = "ChemDraftDrawingPrevious";
+/** A save that was never published; it is never read. */
+export const CHEMDRAFT_PENDING_DRAWING_STORAGE = "ChemDraftDrawingPending";
 
 /** The whole compound file, as in the native reader (`MAX_STORAGE_BYTES`, 50 MiB). */
 export const MAX_COMPOUND_FILE_BYTES = 50 * 1024 * 1024;
@@ -100,6 +112,13 @@ interface DirectoryEntry {
 /**
  * Read a compound file's root class and, when it is ChemDraft's, its `ChemDraftDocument` stream.
  * `maxDocumentBytes` bounds that stream; a larger one is reported as `too-large` without being read.
+ *
+ * The stream is looked up where the native `IPersistStorage::Load` looks (`drawing_storage` in
+ * `office_ole/server/persist.rs`): in the `ChemDraftDrawing` storage when there is one; otherwise in
+ * `ChemDraftDrawingPrevious`, the last complete drawing a failed publish left behind; otherwise at
+ * the root, where objects saved before staged saves keep it. The storage that is present decides:
+ * a `ChemDraftDrawing` without the stream is invalid, not a reason to try the next one. A
+ * `ChemDraftDrawingPending` storage is an unfinished save and is never read.
  */
 export function readChemDraftOleObject(bytes: Uint8Array, maxDocumentBytes: number): ChemDraftOleRead {
   const known: { clsid?: string } = {};
@@ -209,26 +228,47 @@ function readCompoundFile(bytes: Uint8Array, maxDocumentBytes: number, known: { 
   if (!isChemDraftOleClassId(clsid)) return { kind: "other", clsid };
   known.clsid = clsid;
 
-  // The root's children form a tree through left and right siblings; names compare without case.
-  let document: DirectoryEntry | undefined;
-  const pending = [root.child];
+  // A storage's children form a tree through left and right siblings; names compare without case.
+  // `seen` is shared by every walk, so each directory entry is visited at most once in all.
   const seen = new Set<number>([0]);
-  const wanted = CHEMDRAFT_DOCUMENT_STREAM.toUpperCase();
-  while (pending.length) {
-    const id = pending.pop()!;
-    if (id === FREE) continue;
-    if (seen.has(id)) fail("the directory is damaged");
-    seen.add(id);
-    const child = entry(id);
-    pending.push(child.left, child.right);
-    if (child.type === STREAM && child.name.toUpperCase() === wanted) {
-      if (document) fail(`the object has two ${CHEMDRAFT_DOCUMENT_STREAM} streams`);
-      document = child;
-    } else if (child.type !== STREAM && child.type !== STORAGE) {
-      fail("the directory is damaged");
+  const children = (first: number): DirectoryEntry[] => {
+    const found: DirectoryEntry[] = [];
+    const pending = [first];
+    while (pending.length) {
+      const id = pending.pop()!;
+      if (id === FREE) continue;
+      if (seen.has(id)) fail("the directory is damaged");
+      seen.add(id);
+      const child = entry(id);
+      pending.push(child.left, child.right);
+      if (child.type !== STREAM && child.type !== STORAGE) fail("the directory is damaged");
+      found.push(child);
+    }
+    return found;
+  };
+  const named = (entries: DirectoryEntry[], name: string, type: number): DirectoryEntry | undefined => {
+    const wanted = name.toUpperCase();
+    const matches = entries.filter((child) => child.type === type && child.name.toUpperCase() === wanted);
+    if (matches.length > 1) fail(`the object has two ${name} ${type === STREAM ? "streams" : "storages"}`);
+    return matches[0];
+  };
+  const top = children(root.child);
+  let generation: { name: string; storage: DirectoryEntry } | undefined;
+  for (const name of [CHEMDRAFT_DRAWING_STORAGE, CHEMDRAFT_PREVIOUS_DRAWING_STORAGE]) {
+    const storage = named(top, name, STORAGE);
+    if (storage) {
+      generation = { name, storage };
+      break;
     }
   }
-  if (!document) fail(`the ChemDraft object has no ${CHEMDRAFT_DOCUMENT_STREAM} stream`);
+  const document = named(generation ? children(generation.storage.child) : top, CHEMDRAFT_DOCUMENT_STREAM, STREAM);
+  if (!document) {
+    if (generation) fail(`the ChemDraft object's ${generation.name} storage has no ${CHEMDRAFT_DOCUMENT_STREAM} stream`);
+    if (named(top, CHEMDRAFT_PENDING_DRAWING_STORAGE, STORAGE)) {
+      fail(`the ChemDraft object holds only an unfinished save (${CHEMDRAFT_PENDING_DRAWING_STORAGE}), which is not read`);
+    }
+    fail(`the ChemDraft object has no ${CHEMDRAFT_DOCUMENT_STREAM} stream`);
+  }
   if (document.size > maxDocumentBytes) return { kind: "too-large", clsid, documentBytes: document.size };
 
   let data: Uint8Array;

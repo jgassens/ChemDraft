@@ -168,6 +168,18 @@ function findSlide(entries: OfficeZipEntry[], slideId?: string) {
   return name && /^ppt\/slides\/[^/]+\.xml$/.test(name) ? entries.find(entry => entry.name === name) : undefined;
 }
 
+/**
+ * The ZIP entries for a picture's media part, as resolved by `pptxSlidePictureMedia`. OPC part
+ * names compare without case, so a relationship target may differ in case from its entry
+ * (`../media/image1.png` for `ppt/media/Image1.PNG`). Two entries that differ only in case leave
+ * the target ambiguous; the caller refuses them rather than pick one.
+ */
+function mediaEntries(entries: OfficeZipEntry[], media: string | null): OfficeZipEntry[] {
+  if (!media) return [];
+  const key = media.toLowerCase();
+  return entries.filter(entry => entry.name.toLowerCase() === key);
+}
+
 async function readPicture(entries: OfficeZipEntry[], shapeId: string, slideId?: string) {
   const slide = findSlide(entries, slideId);
   if (!slide) throw new Error("Could not identify the selected PowerPoint slide in the file.");
@@ -192,7 +204,9 @@ async function readPicture(entries: OfficeZipEntry[], shapeId: string, slideId?:
   if (!Number.isFinite(rotation)) return refuse("The picture has an invalid rotation.");
   const relsXml = decodeXml(rels.data);
   const media = pptxSlidePictureMedia(xml, relsXml, shapeId);
-  const carrier = await readCarrier(entries.find(entry => entry.name === media)?.data);
+  const stored = mediaEntries(entries, media);
+  if (stored.length > 1) return refuse("The presentation stores more than one image under the picture’s name.");
+  const carrier = await readCarrier(stored[0]?.data);
   if (carrier.kind !== "found") return carrier;
   const state = pictureState(doc, shape, properties[0]!, xmlDocument(relsXml).documentElement, shapeId);
   return { kind: "picture" as const, json: carrier.json, rotation, state };

@@ -462,6 +462,29 @@ describe("importOfficeStructures: ChemDraft embedded objects (made on Windows)",
     expect(result).toMatchObject({ warnings: [], picturesChecked: 2 });
   });
 
+  it("reads a Word object saved in the staged layout from ChemDraftDrawing, not the older copies", async () => {
+    // What `save_generation` (office_ole/server/persist.rs) leaves when its cleanup did not run.
+    const staged = writeTestCompoundFile(STABLE, [
+      { name: "\u0001CompObj", data: new Uint8Array(40) }, { name: "\u0001Ole", data: new Uint8Array(20) },
+      { name: "ChemDraftDocument", data: selection("legacy") },
+      { name: "ChemDraftDrawingPrevious/ChemDraftDocument", data: selection("previous") },
+      { name: "ChemDraftDrawingPending/ChemDraftDocument", data: selection("pending") },
+      { name: "ChemDraftDrawing/ChemDraftDocument", data: selection("published") },
+      { name: "ChemDraftDrawing/ChemDraftPreview", data: carrier(selection("preview")) },
+      { name: "ChemDraftDrawing/ChemDraftExtent", data: new Uint8Array(8) },
+    ]).bytes;
+    const bytes = docx(`<w:p>${wordObject("rIdPrev", "rIdOle")}</w:p>`, rels([
+      ["rIdPrev", "image", "media/image1.png"], ["rIdOle", "oleObject", "embeddings/oleObject1.bin"],
+    ]), [
+      { name: "word/media/image1.png", data: carrier(selection("preview")) },
+      { name: "word/embeddings/oleObject1.bin", data: staged },
+    ]);
+    const result = await importOfficeStructures(bytes);
+    expect(labels(result)).toEqual([["paragraph 1", "published"]]);
+    expect(result.structures[0]).toMatchObject({ mediaPart: "word/embeddings/oleObject1.bin", json: selection("published") });
+    expect(result).toMatchObject({ warnings: [], picturesChecked: 1 });
+  });
+
   it("reads a PowerPoint object, and the dev build's class, from the chosen branch only", async () => {
     const bytes = pptx([{ xml: slide(slideObject("rIdPrev", "rIdOle")),
       rels: rels([["rIdPrev", "image", "../media/image1.png"], ["rIdOle", "oleObject", "../embeddings/oleObject1.bin"]]) }], [

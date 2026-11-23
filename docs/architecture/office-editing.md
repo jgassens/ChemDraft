@@ -89,20 +89,21 @@ slide's `p:timing` and relationships), because Office.js cannot read most of it.
 | A plain click hyperlink to an external address | Written with `Shape.setHyperlink` (PowerPointApi 1.10). Office.js cannot read a shape's hyperlink back, so a write that fails, or a host without the method, is named in the warning instead |
 | Animations targeting the picture, links to slides, action settings, mouse-over actions, the hidden setting, locks, a border, effects or a style, color adjustments on the picture, a picture shape other than a rectangle (`a:prstGeom` other than `rect`, or `a:custGeom`), membership of a slide layout placeholder (`p:nvPicPr/p:nvPr/p:ph`) | No Office.js API writes these; when the slide XML shows the old picture had any of them, Update still succeeds and, after it, the pane names them: "Not carried over from the old picture: animations, its link, its place in the slide layout (placeholder)." The new picture is an ordinary picture. No warning is shown when the old picture had none |
 
-Rollback: once `setSelectedDataAsync` has inserted the new picture, every later step (identifying
-it, restoring its state, verifying, deleting the old one) runs inside the rollback path. On any
-failure before the old picture is deleted, a fresh batch removes the new picture by its shape ID,
-which the update learns when it identifies the new picture. A shape is never deleted by its position
-or size. If the update failed before it learned the ID (for example two new pictures appeared and
-the update could not tell which was its own), or no new shape carries that ID, the rollback leaves
-does nothing further; the inserted picture may remain and need manual removal before retrying. The
-error ends with "Couldn't find the inserted structure to remove — delete it by hand." (the owner
-retired the older exact-placement fallback on 2026-11-22). If the ID
-is known but the delete fails, the error says the new picture may
-remain on the slide. The old picture counts as deleted only once its `delete()` call has returned:
-a `delete()` that throws leaves the old picture, so the new one is removed. A failure in the sync
-after a successful `delete()` leaves the outcome unknown, and the error asks the user to check the
-slide before retrying.
+Rollback: before inserting, the update checks that the selected picture's slide is the one active
+slide; otherwise it refuses and inserts nothing. Once `setSelectedDataAsync` has inserted the new
+picture, every later step (identifying it, restoring its state, verifying, deleting the old one) runs
+inside the rollback path. That path first checks the active slide again, then identifies the new
+picture as the one new shape on the original slide, which must be an image, and learns its shape ID.
+On any failure before the old picture is deleted, a fresh batch removes the new picture by that ID.
+A shape is never deleted by its position or size. When identity is uncertain (the active slide
+changed during the insert, no new picture or more than one appeared, or no new shape carries the
+learned ID), the rollback deletes nothing; the error ends with "Couldn't find the inserted structure
+to remove — delete it by hand.", and the user removes the inserted picture by hand before retrying
+(the owner retired the older exact-placement fallback on 2026-11-22). If the ID is known but the
+delete fails, the error says the new picture may remain on the slide. The old picture counts as
+deleted only once its `delete()` call has returned: a `delete()` that throws leaves the old picture,
+so the new one is removed. A failure in the sync after a successful `delete()` leaves the outcome
+unknown, and the error asks the user to check the slide before retrying.
 
 Not used:
 
@@ -180,8 +181,24 @@ which PowerPoint's managed-security defaults do.
 
 **What the object holds**
 
-- Native data: one stream, `ChemDraftDocument`, in the object's storage, holding the same versioned
-  JSON as the carrier. Round-trip tests compare canonical SMILES (AGENTS.md §7).
+- Native data: one stream, `ChemDraftDocument`, holding the same versioned JSON as the carrier.
+  Round-trip tests compare canonical SMILES (AGENTS.md §7).
+- **Storage layout** (`office_ole/server/persist.rs`, `save_generation`). `IStorage` may be in direct
+  mode, so a save never overwrites the live drawing in place. It writes `ChemDraftDocument`, and
+  `ChemDraftPreview` (the source PNG) and `ChemDraftExtent` (two little-endian HIMETRIC `i32`s) when
+  there are any, into a new child storage `ChemDraftDrawingPending`. Only once every stream is
+  written does it publish: an existing `ChemDraftDrawing` is renamed to `ChemDraftDrawingPrevious`, then
+  `ChemDraftDrawingPending` is renamed to `ChemDraftDrawing`. After that it removes
+  `ChemDraftDrawingPrevious` and the legacy root streams; a failed cleanup does not fail the save. A
+  failed write removes the pending storage and leaves the old drawing in force; a failed final
+  rename leaves it readable as `ChemDraftDrawingPrevious`. Objects saved before this layout keep
+  the three streams at the root of the object's storage.
+- **Reading it** (`drawing_storage` for `IPersistStorage::Load` and paste; `readChemDraftOleObject`
+  in `packages/clipboard-adapter/src/oleObject.ts` for file import, tested in `oleObject.test.ts`).
+  The same precedence in both: `ChemDraftDrawing` when that storage exists, else
+  `ChemDraftDrawingPrevious`, else the root streams. The storage that exists decides; one without
+  `ChemDraftDocument` is an error, not a reason to try the next. `ChemDraftDrawingPending` is never
+  read: an object holding only a pending save is refused as unreadable.
 - Preview: what Office shows and prints, and what machines without ChemDraft see. Office's OLE cache
   takes Windows picture formats, so the preview is an **EMF holding the carrier PNG in an EMF+ image
   record, plus ordinary GDI records drawing the same image** (EMF+-only content is invisible to plain
@@ -513,8 +530,12 @@ valid structure as one undo entry, left selected.
   once inflated (checked against the declared sizes before anything is inflated, and inflation is
   capped at the declared size), is not a ZIP, or has crafted entry names (a backslash, an absolute
   path, a drive letter, a control character, a `.` or `..` segment, or two names that differ only by
-  case). Only `.xml`, `.rels` and `.png` entries are inflated, then, in a second pass with the same
-  limits, the parts of the embedded objects the document places. A relationship target that leaves the
+  case). Only `.xml` and `.rels` entries are inflated at first. Then, in a second pass with the same
+  limits, exactly the parts that the placed pictures' and embedded objects' relationships target
+  are inflated, matched without case (OPC part names are case-insensitive), whatever their
+  extension: a picture stored as `word/media/drawing.bin` under a content-type override, or targeted
+  as `../MEDIA/IMAGE.PNG`, is still read. A picture part is read as a PNG only when its bytes start
+  with the PNG signature. A relationship target that leaves the
   package gives a per-picture warning and is not read; linked (external) pictures are skipped. At most
   500 pictures are checked, and a note says so when there are more. One carrier's JSON may be at most
   8 MB, all carriers together 64 MB.
@@ -599,16 +620,21 @@ comes in, with the same checks, warnings and refusals as a picture's carrier. Th
 - **One storage reader.** The object is read by the OLE server's own code
   (`office_ole/server/persist.rs`, `pasted_drawing`): the storage's class (`ReadClassStg`) must be
   ChemDraft's, stable or dev (`office_ole/storage.rs`, `read_pasted_document`, tested on every host),
-  and then `ChemDraftDocument`, at most 25 MiB, is read by `IPersistStorage::Load`'s stream reader and
-  checked by its decoder (`decode_document`). Another program's object is not read at all and is not
+  and then `ChemDraftDocument`, at most 25 MiB, is read from the same generation `IPersistStorage::Load`
+  uses (`drawing_storage`, see "Storage layout" above) by `Load`'s stream reader and checked by its
+  decoder (`decode_document`). Another program's object is not read at all and is not
   an error: the paste falls through to GVML and PNG. A ChemDraft object whose storage cannot be read
   is logged and falls through the same way.
 - **Precedence.** ChemDraft's own selection flavor, then a ChemDraft embedded object, then GVML,
-  then the PNG. The Windows native reader attempts GVML even when it has an object, using a separate
-  single-flight read with a one-second timeout; a busy, timed-out, unavailable, or refused archive
-  is skipped. The TypeScript layer
-  (`recoverPasteBackStructures`) applies the same order and checks the class again
-  (`isChemDraftOleClassId`). An object whose drawing is unusable (damaged, a newer data version, over
+  then the PNG. The Windows native reader (`read_payload`) snapshots the ordinary formats first
+  (text, the PNG) before either optional read can block. It then reads the embedded object (up to
+  10 seconds, above) and, separately, GVML, on its own single-flight reader bounded at 1 second; a
+  busy, timed-out, unavailable, or refused archive is skipped and the snapshot's PNG is kept. GVML is
+  read even when an OLE drawing was read, so one payload's `officeItems` can carry both. The
+  TypeScript layer (`recoverPasteBackFromClipboard`, then `recoverPasteBackStructures`) checks the
+  object's class again (`isChemDraftOleClassId`), judges its drawing first, decodes the GVML archive
+  only when the OLE drawing is absent or refused, and falls back to the PNG only when neither gave a
+  structure. An object whose drawing is unusable (damaged, a newer data version, over
   8 MB) is refused with the carrier's words ("The copied structure was made by a newer or unknown
   ChemDraft (data version 2)."); it can fall back to a good GVML carrier if the archive was read,
   then to a good PNG carrier, with the refusal in the log. The object's own EMF is its preview and
@@ -622,7 +648,9 @@ comes in, with the same checks, warnings and refusals as a picture's carrier. Th
   picture). Each object's `oleObject` part is read by a bounded compound-file reader
   (`packages/clipboard-adapter/src/oleObject.ts`, MS-CFB versions 3 and 4, at most 50 MB, no
   dependency; its sector, mini-sector and directory walks refuse loops and out-of-range indexes). It
-  reads the root class and, only for ChemDraft's, `ChemDraftDocument`, refused unread over 8 MB.
+  reads the root class and, only for ChemDraft's, `ChemDraftDocument` from the place the storage
+  layout above sets (`ChemDraftDrawing`, else `ChemDraftDrawingPrevious`, else the root; never
+  `ChemDraftDrawingPending`), refused unread over 8 MB.
   Another program's object is skipped silently. A ChemDraft object (by class or ProgID) that cannot be
   read is reported per object: "The embedded ChemDraft object on paragraph 3 could not be read: … Open
   the file in Word or PowerPoint on Windows, copy the object and paste it into ChemDraft."
