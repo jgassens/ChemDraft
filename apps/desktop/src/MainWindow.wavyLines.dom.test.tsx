@@ -8,8 +8,10 @@ import { CommandRegistry } from "@chemdraft/plugin-host";
 import { MainWindow } from "./MainWindow";
 import { createNativeSingleBondMolecule, createPhase4Document, insertNativeArtGraphicObject, selectDocumentObjects } from "./documentWorkflow";
 import { objectWaveCommandId, objectWaveCommands, objectWaveForCommand } from "./commands";
-import { PALETTE_COMMAND_CANCEL_EVENT, PALETTE_COMMAND_COMMIT_EVENT, PALETTE_COMMAND_PREVIEW_EVENT } from "./window-manager";
+import { PALETTE_COMMAND_CANCEL_EVENT, PALETTE_COMMAND_COMMIT_EVENT, PALETTE_COMMAND_PREVIEW_EVENT, type ToolsetWindowState } from "./window-manager";
+import * as windowManager from "./window-manager";
 import { MemoryStorage } from "./testSupport/memoryStorage";
+import { paletteGestureTransport } from "./testSupport/paletteGestureTransport";
 
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("@scena/react-ruler", () => ({ default: () => <canvas /> }));
@@ -29,19 +31,26 @@ describe.each(["macos", "windows"] as const)("registered wave edits (%s)", platf
   let invokeSpy: MockInstance<CommandRegistry["invoke"]>;
   let waveIds: string[];
   let moleculeId: string;
+  let windowState: (state: ToolsetWindowState) => void;
+  let remote: ReturnType<typeof paletteGestureTransport> | undefined;
+  let sequence = Math.floor(performance.timeOrigin * 1000);
+  const gesture = () => `wave:${++sequence}`;
   const snapshot = () => window.__CHEMDRAFT_AGENT__!.snapshot().document;
   const objects = () => snapshot().pages[0].objects;
   const waves = () => objects().filter((object): object is GraphicObject => waveIds.includes(object.id) && object.type === "graphic");
   const molecule = () => objects().find(object => object.id === moleculeId) as MoleculeObject;
   const canonical = (object: MoleculeObject) => Molecule.fromMolfile(moleculeToMolfileV2000(object, { kekuleBondOrders: new Map() }).contents).toSmiles();
   const moleculeSvg = () => container.querySelector(`[data-object-id="${moleculeId}"].native-molecule-object`)?.innerHTML;
-  async function palette(event: string, commandId = objectWaveCommandId("height", 18)) {
-    await act(async () => { window.dispatchEvent(new CustomEvent(event, { detail: { commandId } })); });
+  async function palette(event: string, commandId = objectWaveCommandId("height", 18), gestureId?: string) {
+    await act(async () => { window.dispatchEvent(new CustomEvent(event, { detail: { commandId, gestureId } })); });
   }
   async function command(id: string) {
     await act(async () => { await window.__CHEMDRAFT_AGENT__!.command(id); });
   }
   beforeEach(async () => {
+    vi.spyOn(windowManager, "listenForToolsetWindowStates").mockImplementation(async handler => {
+      windowState = handler; return () => undefined;
+    });
     vi.stubGlobal("localStorage", new MemoryStorage());
     vi.stubGlobal("ResizeObserver", TestResizeObserver);
     vi.stubGlobal("CSS", { escape: (value: string) => value });
@@ -81,9 +90,122 @@ describe.each(["macos", "windows"] as const)("registered wave edits (%s)", platf
     expect(registry).toBeDefined();
   });
   afterEach(async () => {
+    await remote?.destroy(); remote = undefined;
     await act(async () => root.unmount()); container.remove();
     window.history.replaceState(null, "", "/"); delete window.__CHEMDRAFT_AGENT__;
-    vi.restoreAllMocks(); vi.unstubAllGlobals();
+    vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals();
+  });
+
+  async function openRemote() {
+    remote = paletteGestureTransport(snapshot, platform);
+    await remote.open();
+    await act(async () => { windowState({ toolsetId: "core.art", open: true, focused: false }); });
+    return remote;
+  }
+  async function documentEscape() {
+    await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+  }
+  function expectCancelled(before: ReturnType<typeof objects>) {
+    expect(objects()).toEqual(before);
+    expect(container.querySelector("main")?.getAttribute("data-can-undo")).toBe("false");
+    expect(container.querySelector("main")?.getAttribute("data-can-redo")).toBe("false");
+    expect(invokeSpy.mock.calls.filter(([id]) => id.startsWith("object.wave."))).toEqual([]);
+  }
+  async function freshRemoteDrag(before: ReturnType<typeof objects>, whileArmed?: () => Promise<void>) {
+    await remote!.pointer("pointerdown", "width");
+    await whileArmed?.();
+    await remote!.pointer("pointerup", "width");
+    await remote!.flush();
+    expect(waves().every(object => object.data.waveWidth === 62)).toBe(true);
+    await command("edit.undo");
+    expect(objects()).toEqual(before);
+    expect(container.querySelector("main")?.getAttribute("data-can-undo")).toBe("false");
+  }
+
+  it("retires a destroyed toolbar mid-barrier, rejects its late traffic, and accepts a reopened toolbar", async () => {
+    const link = await openRemote();
+    const before = structuredClone(objects());
+    await link.pointer("pointerdown");
+    await link.deliver();
+    expect(objects()).not.toEqual(before);
+    await documentEscape();
+    // Neither the request nor subsequent old-sender traffic reaches its destination yet.
+    await link.pointer("pointermove");
+    await link.pointer("pointerup");
+    await link.destroy();
+    await act(async () => { windowState({ toolsetId: "core.art", open: false, focused: false }); });
+    expect(link.messages.filter(message => message.from === "document")).toHaveLength(1);
+    expectCancelled(before);
+    await link.open();
+    await act(async () => { windowState({ toolsetId: "core.art", open: true, focused: false }); });
+    await link.pointer("pointerdown", "width");
+    // An old request delivered to the replacement window must not cancel its new drag.
+    await link.flush();
+    await link.pointer("pointerup", "width");
+    await link.flush();
+    expect(waves().every(object => object.data.waveWidth === 62 && object.data.waveHeight !== 24)).toBe(true);
+    await command("edit.undo");
+    expect(objects()).toEqual(before);
+    expect(container.querySelector("main")?.getAttribute("data-can-undo")).toBe("false");
+  });
+
+  it.each(["missing ack", "rejected ack", "rejected request", "missing request"] as const)(
+    "resolves a %s as cancelled within the bound and accepts subsequent pointer input", async failure => {
+      const link = await openRemote();
+      const before = structuredClone(objects());
+      const startValue = link.slider().value;
+      if (failure === "rejected ack") link.rejectWhen(message => message.commandId.startsWith("palette.wave.cancel-ack:"));
+      if (failure === "rejected request") link.rejectWhen(message => message.from === "document");
+      await link.pointer("pointerdown");
+      // Esc can beat even the first preview, including when its request is lost entirely.
+      await documentEscape();
+      const request = link.messages.findIndex(message => message.from === "document");
+      let delayedRequest: typeof link.messages[number] | undefined;
+      if (failure === "missing request") {
+        expect(request).toBeGreaterThanOrEqual(0);
+        [delayedRequest] = link.messages.splice(request, 1);
+      } else if (request >= 0) {
+        await link.deliver(request); // The real toolbar handler generates the ack (or send failure).
+        expect(link.slider().value).toBe(startValue);
+      }
+      const ack = link.messages.findIndex(message => message.commandId.startsWith("palette.wave.cancel-ack:"));
+      if (failure === "missing ack") {
+        expect(ack).toBeGreaterThanOrEqual(0);
+        link.messages.splice(ack, 1); // Drop an actual ack; never synthesize one.
+      }
+      // Retain old pointer messages until after the receiver has recovered.
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 1_000)); });
+      await link.pointer("pointerup");
+      await link.flush();
+      expectCancelled(before);
+      link.rejectWhen();
+      await freshRemoteDrag(before, async () => {
+        if (delayedRequest) {
+          link.messages.push(delayedRequest);
+          await link.deliver(link.messages.length - 1); // Expired request must not cancel a new drag.
+        }
+      });
+    }
+  );
+
+  it("cancels current B when document Esc still knows A across opposite transport directions", async () => {
+    const link = await openRemote();
+    const before = structuredClone(objects());
+    await link.pointer("pointerdown");
+    await link.deliver(); // A-preview reaches the document.
+    expect(objects()).not.toEqual(before);
+    await link.escapeToolbar(); // A-cancel is held in transit.
+    const startValue = link.slider("width").value;
+    await link.pointer("pointerdown", "width"); // B-preview is also held in transit.
+    await documentEscape(); // The document can only name A here.
+    const request = link.messages.findIndex(message => message.from === "document");
+    expect(request).toBeGreaterThanOrEqual(0);
+    await link.deliver(request);
+    expect(link.slider("width").value).toBe(startValue);
+    await link.pointer("pointerup", "width");
+    await link.flush();
+    expectCancelled(before);
+    await freshRemoteDrag(before);
   });
 
   it("executes every registered slider value and leaves the mixed selection's molecule and other graphics unchanged", async () => {
@@ -224,6 +346,153 @@ describe.each(["macos", "windows"] as const)("registered wave edits (%s)", platf
     expect(modal.hidden).toBe(true);
     expect(objects()).toEqual(preview);
     await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    expect(objects()).toEqual(before);
+    expect(container.querySelector("main")?.getAttribute("data-can-undo")).toBe("false");
+  });
+
+  it.each(["smoothness", "height", "width"] as const)("rejects a %s release before the detached toolbar receives Escape cancellation", async setting => {
+    const before = structuredClone(objects());
+    const gestureId = gesture();
+    const id = objectWaveCommandId(setting, 24);
+    await palette(PALETTE_COMMAND_PREVIEW_EVENT, id, gestureId);
+    expect(objects()).not.toEqual(before);
+    // Only the document receives Esc. Hold the outgoing notification so the detached toolbar
+    // still believes it owns the pointer and sends its final preview and release commit.
+    const notifyToolbar = vi.spyOn(windowManager, "sendPaletteCommandCancel").mockResolvedValue(undefined);
+    await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    expect(objects()).toEqual(before);
+    invokeSpy.mockClear();
+    await palette(PALETTE_COMMAND_COMMIT_EVENT, id, gestureId);
+    expect(objects()).toEqual(before);
+    await palette(PALETTE_COMMAND_PREVIEW_EVENT, objectWaveCommandId(setting, 30), gestureId);
+    expect(objects()).toEqual(before);
+    expect(notifyToolbar).toHaveBeenCalledExactlyOnceWith(expect.stringMatching(/^palette\.wave\.cancel-request:/), gestureId);
+    expect(invokeSpy.mock.calls.filter(([commandId]) => commandId.startsWith("object.wave."))).toEqual([]);
+    expect(container.querySelector("main")?.getAttribute("data-can-undo")).toBe("false");
+    expect(container.querySelector("main")?.getAttribute("data-can-redo")).toBe("false");
+
+    // A new drag still commits, even if the old cancel notification arrives while it previews.
+    const request = notifyToolbar.mock.calls[0][0];
+    await palette(PALETTE_COMMAND_CANCEL_EVENT, request.replace("cancel-request:", "cancel-ack:"), gestureId);
+    const nextGestureId = gesture();
+    await palette(PALETTE_COMMAND_PREVIEW_EVENT, id, nextGestureId);
+    const nextPreview = structuredClone(objects());
+    await palette(PALETTE_COMMAND_CANCEL_EVENT, "palette.preview.cancel", gestureId);
+    await palette(PALETTE_COMMAND_PREVIEW_EVENT, objectWaveCommandId("width", 30), gestureId);
+    await palette(PALETTE_COMMAND_COMMIT_EVENT, objectWaveCommandId("width", 30), gestureId);
+    expect(objects()).toEqual(nextPreview);
+    await palette(PALETTE_COMMAND_COMMIT_EVENT, id, nextGestureId);
+    expect(invokeSpy.mock.calls.filter(([commandId]) => commandId === id)).toHaveLength(1);
+    await command("edit.undo");
+    expect(objects()).toEqual(before);
+    expect(container.querySelector("main")?.getAttribute("data-can-undo")).toBe("false");
+  });
+
+  it("rejects queued previews and releases after a toolbar cancellation reaches the document first", async () => {
+    const before = structuredClone(objects());
+    const gestureId = gesture();
+    const id = objectWaveCommandId("height", 24);
+    // Cancellation can beat even the first queued preview from the other window.
+    await palette(PALETTE_COMMAND_CANCEL_EVENT, "palette.preview.cancel", gestureId);
+    await palette(PALETTE_COMMAND_PREVIEW_EVENT, id, gestureId);
+    expect(objects()).toEqual(before);
+    await palette(PALETTE_COMMAND_COMMIT_EVENT, id, gestureId);
+    expect(objects()).toEqual(before);
+    expect(container.querySelector("main")?.getAttribute("data-can-undo")).toBe("false");
+    // Keyboard steps have no drag ID and retain their normal command/history behavior.
+    await command(id);
+    await command("edit.undo");
+    expect(objects()).toEqual(before);
+    expect(container.querySelector("main")?.getAttribute("data-can-undo")).toBe("false");
+  });
+
+  it("cancels a pending drag when Escape beats its first preview and release", async () => {
+    await command("view.toolset.toggle.core.art");
+    const before = structuredClone(objects());
+    const id = gesture();
+    const notify = vi.spyOn(windowManager, "sendPaletteCommandCancel").mockResolvedValue(undefined);
+    await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    await palette(PALETTE_COMMAND_PREVIEW_EVENT, objectWaveCommandId("height", 24), id);
+    await palette(PALETTE_COMMAND_COMMIT_EVENT, objectWaveCommandId("height", 24), id);
+    expect(objects()).toEqual(before);
+    expect(notify).toHaveBeenCalledOnce();
+    const request = notify.mock.calls[0][0];
+    await palette(PALETTE_COMMAND_CANCEL_EVENT, request.replace("cancel-request:", "cancel-ack:"), id);
+    await palette(PALETTE_COMMAND_PREVIEW_EVENT, objectWaveCommandId("height", 30), id);
+    await palette(PALETTE_COMMAND_COMMIT_EVENT, objectWaveCommandId("height", 30), id);
+    expect(objects()).toEqual(before);
+    expect(container.querySelector("main")?.getAttribute("data-can-undo")).toBe("false");
+    const next = gesture();
+    await palette(PALETTE_COMMAND_PREVIEW_EVENT, objectWaveCommandId("width", 24), next);
+    await palette(PALETTE_COMMAND_COMMIT_EVENT, objectWaveCommandId("width", 24), next);
+    expect(waves().every(object => object.data.waveWidth === 24)).toBe(true);
+    await command("edit.undo");
+    expect(objects()).toEqual(before);
+  });
+
+  it("restores cancelled Height A when Width B arrives before A's cancel", async () => {
+    const before = structuredClone(objects());
+    const a = gesture(), b = gesture();
+    await palette(PALETTE_COMMAND_PREVIEW_EVENT, objectWaveCommandId("height", 24), a);
+    // The toolbar has cancelled A locally, but transport delivery of that cancel is delayed.
+    await palette(PALETTE_COMMAND_PREVIEW_EVENT, objectWaveCommandId("width", 30), b);
+    expect(waves().every(object => object.data.waveHeight !== 24)).toBe(true);
+    await palette(PALETTE_COMMAND_COMMIT_EVENT, objectWaveCommandId("width", 30), b);
+    const after = structuredClone(objects());
+    await palette(PALETTE_COMMAND_CANCEL_EVENT, "palette.preview.cancel", a);
+    await palette(PALETTE_COMMAND_PREVIEW_EVENT, objectWaveCommandId("height", 35), a);
+    await palette(PALETTE_COMMAND_COMMIT_EVENT, objectWaveCommandId("height", 35), a);
+    expect(objects()).toEqual(after);
+    await command("edit.undo");
+    expect(objects()).toEqual(before);
+    expect(container.querySelector("main")?.getAttribute("data-can-undo")).toBe("false");
+  });
+
+  it("keeps a fresh drag whose messages beat the cancellation acknowledgement", async () => {
+    const before = structuredClone(objects());
+    const a = gesture(), b = gesture();
+    await palette(PALETTE_COMMAND_PREVIEW_EVENT, objectWaveCommandId("height", 24), a);
+    const notify = vi.spyOn(windowManager, "sendPaletteCommandCancel").mockResolvedValue(undefined);
+    await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    // The toolbar handled Esc, then started B; its acknowledgement has not reached the document.
+    await palette(PALETTE_COMMAND_PREVIEW_EVENT, objectWaveCommandId("width", 30), b);
+    await palette(PALETTE_COMMAND_COMMIT_EVENT, objectWaveCommandId("width", 30), b);
+    expect(objects()).toEqual(before);
+    const request = notify.mock.calls[0][0];
+    await palette(PALETTE_COMMAND_CANCEL_EVENT, request.replace("cancel-request:", "cancel-ack:"), a);
+    expect(waves().every(object => object.data.waveWidth === 30 && object.data.waveHeight !== 24)).toBe(true);
+    await palette(PALETTE_COMMAND_CANCEL_EVENT, "palette.preview.cancel", a);
+    await command("edit.undo");
+    expect(objects()).toEqual(before);
+    expect(container.querySelector("main")?.getAttribute("data-can-undo")).toBe("false");
+  });
+
+  it("refuses a delayed preview or duplicate release after a committed gesture", async () => {
+    const before = structuredClone(objects());
+    const id = gesture();
+    await palette(PALETTE_COMMAND_PREVIEW_EVENT, objectWaveCommandId("height", 24), id);
+    await palette(PALETTE_COMMAND_COMMIT_EVENT, objectWaveCommandId("height", 24), id);
+    const committed = structuredClone(objects());
+    await palette(PALETTE_COMMAND_PREVIEW_EVENT, objectWaveCommandId("height", 35), id);
+    await palette(PALETTE_COMMAND_COMMIT_EVENT, objectWaveCommandId("height", 35), id);
+    expect(objects()).toEqual(committed);
+    await command("edit.undo");
+    expect(objects()).toEqual(before);
+    expect(container.querySelector("main")?.getAttribute("data-can-undo")).toBe("false");
+  });
+
+  it("cancels on native toolbar hide before its input acquires focus", async () => {
+    await command("view.toolset.toggle.core.art");
+    const slider = container.querySelector<HTMLInputElement>('[aria-label="Wave height"]')!;
+    vi.spyOn(slider, "getBoundingClientRect").mockReturnValue({ x: 0, y: 0, left: 0, top: 0,
+      right: 100, bottom: 20, width: 100, height: 20, toJSON: () => ({}) });
+    const before = structuredClone(objects());
+    await act(async () => { slider.dispatchEvent(pointer("pointerdown", { clientX: 55, buttons: 1 })); });
+    expect(document.activeElement).not.toBe(slider);
+    expect(objects()).not.toEqual(before);
+    await act(async () => { windowState({ toolsetId: "core.art", open: false, focused: false }); });
+    expect(objects()).toEqual(before);
+    await act(async () => { slider.dispatchEvent(pointer("pointerup", { clientX: 55 })); });
     expect(objects()).toEqual(before);
     expect(container.querySelector("main")?.getAttribute("data-can-undo")).toBe("false");
   });

@@ -64,6 +64,93 @@ afterEach(() => {
 });
 
 describe("window-manager palette preview transport", () => {
+  it.each(["macos", "windows"])("bounds a stuck cancellation emit so the next pointer gesture is delivered (%s)", async platform => {
+    const detectedPlatform = vi.spyOn(navigator, "platform", "get").mockReturnValue(platform === "macos" ? "MacIntel" : "Win32");
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    await sendPaletteCommandPreview("object.wave.height:24", "wave:1");
+    tauriEventBus.emit.mockClear();
+    vi.useFakeTimers();
+    let release!: () => void;
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    tauriEventBus.emit.mockImplementationOnce(async () => { entered(); await blocked; });
+    const cancellation = sendPaletteCommandCancel("palette.preview.cancel", "wave:1");
+    // Observe rejection immediately to avoid an unhandled rejection when the deadline fires.
+    const settled = cancellation.catch(() => undefined);
+    await started;
+    const nextPreview = sendPaletteCommandPreview("object.wave.width:30", "wave:2");
+    const nextCommit = sendPaletteCommandCommit("object.wave.width:30", { gestureId: "wave:2" });
+    try {
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(tauriEventBus.emit.mock.calls.map(([name]) => name)).toEqual([
+        "chemdraft://palette-command-cancel", "chemdraft://palette-command-preview", "chemdraft://palette-command-commit"
+      ]);
+      await Promise.all([settled, nextPreview, nextCommit]);
+    } finally {
+      release();
+      await Promise.all([settled, nextPreview, nextCommit]);
+      vi.useRealTimers();
+      detectedPlatform.mockRestore();
+    }
+  });
+
+  it.each(["macos", "windows"])("serializes cancel A before a new drag B (%s)", async platform => {
+    const detectedPlatform = vi.spyOn(navigator, "platform", "get").mockReturnValue(platform === "macos" ? "MacIntel" : "Win32");
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    let release!: () => void;
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    await sendPaletteCommandPreview("object.wave.height:24", "wave:1");
+    tauriEventBus.emit.mockClear();
+    tauriEventBus.emit.mockImplementationOnce(async () => { entered(); await blocked; });
+    const cancel = sendPaletteCommandCancel("palette.preview.cancel", "wave:1");
+    await started;
+    const preview = sendPaletteCommandPreview("object.wave.width:30", "wave:2");
+    const commit = sendPaletteCommandCommit("object.wave.width:30", { gestureId: "wave:2" });
+    try {
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+      expect(tauriEventBus.emit.mock.calls).toEqual([
+        ["chemdraft://palette-command-cancel", { commandId: "palette.preview.cancel", gestureId: "wave:1" }]
+      ]);
+    } finally {
+      release();
+      await Promise.all([cancel, preview, commit]);
+      detectedPlatform.mockRestore();
+    }
+    expect(tauriEventBus.emit.mock.calls.map(([name]) => name)).toEqual([
+      "chemdraft://palette-command-cancel", "chemdraft://palette-command-preview", "chemdraft://palette-command-commit"
+    ]);
+  });
+
+  it.each([false, true])("preserves drag IDs on preview, commit and cancel (native=%s)", async nativeRuntime => {
+    if (nativeRuntime) (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    const preview = vi.fn(), commit = vi.fn(), cancel = vi.fn();
+    const unlistenPreview = await listenForPaletteCommandPreviews(preview);
+    const unlistenCommit = await listenForPaletteCommandCommits(commit);
+    const unlistenCancel = await listenForPaletteCommandCancels(cancel);
+    try {
+      const commandId = "object.wave.height:24", gestureId = "wave-drag";
+      await sendPaletteCommandPreview(commandId, gestureId);
+      await sendPaletteCommandCommit(commandId, { gestureId });
+      await sendPaletteCommandCancel("palette.preview.cancel", gestureId);
+      expect(preview).toHaveBeenCalledWith(commandId, gestureId);
+      expect(commit).toHaveBeenCalledWith(commandId, gestureId);
+      expect(cancel).toHaveBeenCalledWith("palette.preview.cancel", gestureId);
+      if (nativeRuntime) {
+        expect(tauriEventBus.emit.mock.calls).toEqual([
+          ["chemdraft://palette-command-preview", { commandId, gestureId }],
+          ["chemdraft://palette-command-commit", { commandId, gestureId }],
+          ["chemdraft://palette-command-cancel", { commandId: "palette.preview.cancel", gestureId }]
+        ]);
+      }
+      expect(native.invoke).not.toHaveBeenCalled();
+    } finally {
+      unlistenPreview(); unlistenCommit(); unlistenCancel();
+    }
+  });
+
   it("fingerprints command content instead of fresh array/object identity", () => {
     const first = [{ id: "edit.undo", title: "Undo", icon: "undo", source: "core", enabled: false }] as const;
     const equalCopy = [{ ...first[0] }];

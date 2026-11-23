@@ -14,6 +14,7 @@ import { ELECTRON_MARK_EDITING_STORAGE_KEY, loadDirectElectronMarkEditing } from
 import { isKeybindingSettings, type KeybindingScheme, type KeybindingSettings } from "../keybindingSettings";
 import { migrateLegacyToolsetIds } from "../toolbars/legacyToolsetIds";
 import { listenCurrentWindowEvent, listenTauriEvent, safeTauriWindowListen } from "./tauriEvents";
+import { PALETTE_GESTURE_CANCEL_TIMEOUT_MS } from "./paletteGestures";
 import {
   compareToolsetPopoverOpenings, type AcceptedToolsetPopoverOpening, type ToolsetPopoverDismissPayload,
   type ToolsetPopoverOpening, type ToolsetFlyoutClosedNotice
@@ -21,6 +22,9 @@ import {
 
 export { compareToolsetPopoverOpenings } from "./flyoutOpeningRule";
 export type { AcceptedToolsetPopoverOpening, ToolsetPopoverDismissPayload, ToolsetPopoverOpening } from "./flyoutOpeningRule";
+export { nextPaletteGestureId, nextPaletteGestureGeneration, latestPaletteGestureId, PaletteGestureReceiver,
+  paletteGestureCancellationApplies, PALETTE_GESTURE_CANCEL_TIMEOUT_MS,
+  PALETTE_GESTURE_CANCEL_REQUEST, PALETTE_GESTURE_CANCEL_ACK } from "./paletteGestures";
 
 export const PALETTE_COMMAND_EVENT = "chemdraft://palette-command";
 export const PALETTE_COMMAND_PREVIEW_EVENT = "chemdraft://palette-command-preview";
@@ -78,6 +82,8 @@ export interface ToolsetWindowState {
 
 export interface ToolsetCommandPayload {
   commandId: string;
+  /** Identifies a pointer drag across the document and detached palette windows. */
+  gestureId?: string;
 }
 
 export type PaletteCommandPayload = ToolsetCommandPayload;
@@ -972,17 +978,17 @@ export async function sendPaletteCommand(commandId: string, options?: PaletteCom
   return routeToolsetCommand(commandId, options);
 }
 
-export async function sendPaletteCommandPreview(commandId: string): Promise<void> {
-  return emitToolsetCommandEvent(PALETTE_COMMAND_PREVIEW_EVENT, commandId);
+export async function sendPaletteCommandPreview(commandId: string, gestureId?: string): Promise<void> {
+  return emitToolsetCommandEvent(PALETTE_COMMAND_PREVIEW_EVENT, commandId, gestureId);
 }
 
-export async function sendPaletteCommandCommit(commandId: string, options?: { settleBeforeForward: true }): Promise<void> {
-  if (options?.settleBeforeForward && isDesktopRuntime()) return routeToolsetCommand(commandId, { commit: true });
-  return emitToolsetCommandEvent(PALETTE_COMMAND_COMMIT_EVENT, commandId);
+export async function sendPaletteCommandCommit(commandId: string, options?: { settleBeforeForward?: true; gestureId?: string }): Promise<void> {
+  if (options?.settleBeforeForward && !options.gestureId && isDesktopRuntime()) return routeToolsetCommand(commandId, { commit: true });
+  return emitToolsetCommandEvent(PALETTE_COMMAND_COMMIT_EVENT, commandId, options?.gestureId);
 }
 
-export async function sendPaletteCommandCancel(commandId: string): Promise<void> {
-  return emitToolsetCommandEvent(PALETTE_COMMAND_CANCEL_EVENT, commandId);
+export async function sendPaletteCommandCancel(commandId: string, gestureId?: string): Promise<void> {
+  return emitToolsetCommandEvent(PALETTE_COMMAND_CANCEL_EVENT, commandId, gestureId);
 }
 
 // Only shortcut-settle commits share this queue with app commands. Ordinary commits stay
@@ -1026,15 +1032,37 @@ export function routeToolsetCommand(
   return next;
 }
 
-function emitToolsetCommandEvent(eventName: string, commandId: string): Promise<void> {
-  const pending = deliverToolsetCommandEvent(eventName, commandId);
+function emitToolsetCommandEvent(eventName: string, commandId: string, gestureId?: string): Promise<void> {
+  // Each webview is one toolbar sender. Never let a new drag pass an earlier cancel or release.
+  const gesture = Boolean(gestureId || commandId.startsWith("palette.wave."));
+  const deliver = async () => {
+    if (!gesture) return deliverToolsetCommandEvent(eventName, commandId, gestureId);
+    // A stuck request/ack emit must not retain this webview's FIFO forever. Late arrivals are
+    // fenced by the receiver's watermark and the request's deadline/generation.
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        deliverToolsetCommandEvent(eventName, commandId, gestureId),
+        new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(() => reject(new Error("Palette gesture delivery timed out")), PALETTE_GESTURE_CANCEL_TIMEOUT_MS);
+        })
+      ]);
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+  const pending = gesture
+    ? paletteGestureQueue.then(deliver) : deliver();
+  if (gesture) paletteGestureQueue = pending.catch(() => undefined);
   pendingPaletteEvents.add(pending);
   void pending.then(() => pendingPaletteEvents.delete(pending), () => pendingPaletteEvents.delete(pending));
   return pending;
 }
 
-async function deliverToolsetCommandEvent(eventName: string, commandId: string): Promise<void> {
-  const payload = createToolsetCommandPayload(commandId);
+let paletteGestureQueue: Promise<void> = Promise.resolve();
+
+async function deliverToolsetCommandEvent(eventName: string, commandId: string, gestureId?: string): Promise<void> {
+  const payload = { ...createToolsetCommandPayload(commandId), ...(gestureId ? { gestureId } : {}) };
   dispatchDomToolsetEvent(eventName, payload);
   if (!isDesktopRuntime()) {
     return;
@@ -1268,16 +1296,39 @@ export async function listenForToolsetCommands(handler: (commandId: string) => v
   return listenForDomToolsetCommands(handler);
 }
 
-export async function listenForPaletteCommandPreviews(handler: (commandId: string) => void): Promise<Unlisten> {
+export async function listenForPaletteCommandPreviews(handler: (commandId: string, gestureId?: string) => void): Promise<Unlisten> {
   return listenForToolsetCommandPayload(PALETTE_COMMAND_PREVIEW_EVENT, handler);
 }
 
-export async function listenForPaletteCommandCommits(handler: (commandId: string) => void): Promise<Unlisten> {
+export async function listenForPaletteCommandCommits(handler: (commandId: string, gestureId?: string) => void): Promise<Unlisten> {
   return listenForToolsetCommandPayload(PALETTE_COMMAND_COMMIT_EVENT, handler);
 }
 
-export async function listenForPaletteCommandCancels(handler: (commandId: string) => void): Promise<Unlisten> {
+export async function listenForPaletteCommandCancels(handler: (commandId: string, gestureId?: string) => void): Promise<Unlisten> {
   return listenForToolsetCommandPayload(PALETTE_COMMAND_CANCEL_EVENT, handler);
+}
+
+/** Native utility windows may disappear without their range input ever acquiring focus. */
+export async function listenForPaletteGestureInterruptions(cancel: () => void, retireSender?: () => void): Promise<Unlisten> {
+  const closed = () => { cancel(); retireSender?.(); };
+  const hidden = () => { if (document.visibilityState === "hidden") closed(); };
+  window.addEventListener("blur", cancel);
+  window.addEventListener("pagehide", closed);
+  document.addEventListener("visibilitychange", hidden);
+  const native = await Promise.all([
+    listenCurrentWindowEvent("tauri://blur", cancel).catch(() => () => undefined),
+    ...["tauri://close-requested", "tauri://destroyed"]
+      .map(name => listenCurrentWindowEvent(name, closed).catch(() => () => undefined)),
+    listenCurrentWindowEvent<{ kind: string }>("chemdraft://plugin-panel-focus", ({ payload }) => {
+      if (payload.kind === "deactivated") cancel();
+    }).catch(() => () => undefined)
+  ]);
+  return () => {
+    window.removeEventListener("blur", cancel);
+    window.removeEventListener("pagehide", closed);
+    document.removeEventListener("visibilitychange", hidden);
+    native.forEach(stop => stop());
+  };
 }
 
 export async function listenForPaletteInspectorActions(
@@ -1795,23 +1846,25 @@ function listenForDomToolsetEvent(eventName: string, handler: (event: CustomEven
   return () => window.removeEventListener(eventName, listener);
 }
 
-function listenForDomToolsetCommandPayload(eventName: string, handler: (commandId: string) => void): Unlisten {
+function listenForDomToolsetCommandPayload(eventName: string, handler: (commandId: string, gestureId?: string) => void): Unlisten {
   return listenForDomToolsetEvent(eventName, (event) => {
     const payload = event.detail as Partial<ToolsetCommandPayload> | undefined;
     if (typeof payload?.commandId === "string") {
-      handler(payload.commandId);
+      if (typeof payload.gestureId === "string") handler(payload.commandId, payload.gestureId);
+      else handler(payload.commandId);
     }
   });
 }
 
-async function listenForToolsetCommandPayload(eventName: string, handler: (commandId: string) => void): Promise<Unlisten> {
+async function listenForToolsetCommandPayload(eventName: string, handler: (commandId: string, gestureId?: string) => void): Promise<Unlisten> {
   const unlistenDom = listenForDomToolsetCommandPayload(eventName, handler);
   if (!isDesktopRuntime()) {
     return unlistenDom;
   }
   const unlistenTauri = await listenTauriEvent<ToolsetCommandPayload>(eventName, (event) => {
     if (typeof event.payload?.commandId === "string") {
-      handler(event.payload.commandId);
+      if (typeof event.payload.gestureId === "string") handler(event.payload.commandId, event.payload.gestureId);
+      else handler(event.payload.commandId);
     }
   });
   return () => {

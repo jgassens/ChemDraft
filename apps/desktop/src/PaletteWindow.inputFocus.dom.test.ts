@@ -10,7 +10,8 @@ import { PaletteWindow } from "./PaletteWindow";
 import { PalettePopoverWindow } from "./PalettePopoverWindow";
 import { createMoleculeInspectorModel } from "./moleculeInspectorModel";
 import { allShellCommands, moleculeStructureBondLengthCommandId, objectCustomColorCommandId } from "./commands";
-import { createPhase4Document } from "./documentWorkflow";
+import { createPhase4Document, insertNativeArtGraphicObject } from "./documentWorkflow";
+import { createArtInspectorModel, selectedGraphicObjectsForArtInspector } from "./artInspectorModel";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import {
   DOM_COMMAND_EVENT, broadcastToolsetCustomizeMode, broadcastToolsetTextStyle, createToolsetTextStylePayload,
@@ -30,7 +31,8 @@ const native = vi.hoisted(() => ({
   popoverContent: undefined as ((payload: ToolsetPopoverContentPayload) => void) | undefined,
   platform: "macos" as "macos" | "windows",
   pointerNotify: undefined as ((event: { payload: PaletteClickPendingEvent }) => void) | undefined,
-  notify: undefined as ((event: { payload: NativePanelFocusEvent }) => void) | undefined
+  notify: undefined as ((event: { payload: NativePanelFocusEvent }) => void) | undefined,
+  focusListeners: new Set<(event: { payload: NativePanelFocusEvent }) => void>()
 }));
 vi.mock("@tauri-apps/api/core", async original => ({
   ...await original<typeof import("@tauri-apps/api/core")>(), invoke: native.invoke }));
@@ -50,12 +52,21 @@ vi.mock("./window-manager", async (original) => ({
 vi.mock("./window-manager/tauriEvents", async (original) => ({
   ...await original<typeof import("./window-manager/tauriEvents")>(),
   listenCurrentWindowEvent: vi.fn(async (name: string, listener: (event: { payload: NativePanelFocusEvent }) => void) => {
-    if (name === "chemdraft://plugin-panel-focus") native.notify = listener;
+    let notify: typeof native.notify;
+    if (name === "chemdraft://plugin-panel-focus") {
+      native.focusListeners.add(listener);
+      const attached = [...native.focusListeners];
+      notify = event => { for (const callback of attached) if (native.focusListeners.has(callback)) callback(event); };
+      native.notify = notify;
+    }
     if (name === PALETTE_CLICK_PENDING_EVENT) {
       if (native.failPointerSubscription) throw new Error("Pointer listen failed");
       native.pointerNotify = listener as unknown as typeof native.pointerNotify;
     }
-    return () => { if (native.notify === listener) native.notify = undefined; };
+    return () => {
+      native.focusListeners.delete(listener);
+      if (native.notify === notify) native.notify = undefined;
+    };
   })
 }));
 vi.mock("./keyboardShortcuts", async (original) => {
@@ -140,6 +151,7 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     windowListeners = vi.spyOn(window, "addEventListener");
     native.platform = platform;
     native.failPointerSubscription = false;
+    native.focusListeners.clear();
     native.invoke.mockReset().mockImplementation(async (command: string, args?: { editing: boolean }) =>
       command === "register_plugin_panel_input_focus" ? "palette-page" : args?.editing);
     vi.mocked(sendPaletteCommand).mockClear();
@@ -203,6 +215,77 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     await act(async () => input.dispatchEvent(event));
     return event;
   }
+
+  it("forwards a wave drag ID through previews, release and toolbar Escape", async () => {
+    await mountSettings("core.art");
+    const drawing = insertNativeArtGraphicObject(createPhase4Document(), { x: 220, y: 180 }, "tool.art.lineWavy");
+    const model = createArtInspectorModel({ document: drawing,
+      selectedGraphicObjects: selectedGraphicObjectsForArtInspector(drawing), requestedPaintTarget: "stroke" });
+    await act(async () => broadcastToolsetTextStyle(
+      createToolsetTextStylePayload(DefaultNativeTextStyle, "normal", model, "stroke")
+    ));
+    const slider = container.querySelector<HTMLInputElement>('[aria-label="Wave width"]')!;
+    vi.spyOn(slider, "getBoundingClientRect").mockReturnValue({ x: 0, y: 0, left: 0, top: 0,
+      right: 100, bottom: 20, width: 100, height: 20, toJSON: () => ({}) });
+    slider.hasPointerCapture = () => false;
+    slider.setPointerCapture = () => undefined;
+    await act(async () => { slider.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 50, buttons: 1 })); });
+    const [commandId, gestureId] = vi.mocked(sendPaletteCommandPreview).mock.calls.at(-1)!;
+    expect(gestureId).toEqual(expect.any(String));
+    await act(async () => { slider.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 50 })); });
+    expect(sendPaletteCommandCommit).toHaveBeenCalledExactlyOnceWith(commandId, { gestureId });
+    vi.mocked(sendPaletteCommandCommit).mockClear();
+
+    await act(async () => { slider.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 75, buttons: 1 })); });
+    const nextGestureId = vi.mocked(sendPaletteCommandPreview).mock.calls.at(-1)![1];
+    expect(nextGestureId).not.toBe(gestureId);
+    expect((await press(slider, "Escape")).defaultPrevented).toBe(true);
+    expect(sendPaletteCommandCancel).toHaveBeenCalledExactlyOnceWith("palette.preview.cancel", nextGestureId);
+    await act(async () => { slider.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 75 })); });
+    expect(sendPaletteCommandCommit).not.toHaveBeenCalled();
+  });
+
+  it.each(["hide", "app", "window", "acquisition rejected"] as const)("cancels a wave drag on native %s before focus acquisition", async reason => {
+    await mountSettings("core.art");
+    const drawing = insertNativeArtGraphicObject(createPhase4Document(), { x: 220, y: 180 }, "tool.art.lineWavy");
+    const model = createArtInspectorModel({ document: drawing,
+      selectedGraphicObjects: selectedGraphicObjectsForArtInspector(drawing), requestedPaintTarget: "stroke" });
+    await act(async () => broadcastToolsetTextStyle(
+      createToolsetTextStylePayload(DefaultNativeTextStyle, "normal", model, "stroke")
+    ));
+    const slider = container.querySelector<HTMLInputElement>('[aria-label="Wave height"]')!;
+    vi.spyOn(slider, "getBoundingClientRect").mockReturnValue({ x: 0, y: 0, left: 0, top: 0,
+      right: 100, bottom: 20, width: 100, height: 20, toJSON: () => ({}) });
+    const before = slider.value;
+    let settle!: (acquired: boolean) => void;
+    if (reason === "acquisition rejected") {
+      native.invoke.mockImplementationOnce(() => new Promise<boolean>(resolve => { settle = resolve; }));
+    }
+    await act(async () => {
+      if (reason === "acquisition rejected") pointer(slider, "pointerdown", 1, { clientX: 80, buttons: 1 });
+      else slider.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 80, buttons: 1 }));
+    });
+    const id = vi.mocked(sendPaletteCommandPreview).mock.calls.at(-1)![1];
+    expect(document.activeElement).not.toBe(slider);
+    if (reason === "acquisition rejected") {
+      await flush();
+      settle(false);
+      await flush();
+    } else {
+      await act(async () => { native.notify!({ payload: { kind: "deactivated", generation: 0, reason } }); });
+    }
+    expect(slider.value).toBe(before);
+    await act(async () => { slider.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 80 })); });
+    expect(sendPaletteCommandCancel).toHaveBeenCalledExactlyOnceWith("palette.preview.cancel", id);
+    expect(sendPaletteCommandCommit).not.toHaveBeenCalled();
+    // The next press owns a fresh gesture and still commits normally.
+    await act(async () => {
+      slider.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 50, buttons: 1 }));
+      slider.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 50 }));
+    });
+    expect(sendPaletteCommandCommit).toHaveBeenCalledOnce();
+    expect(vi.mocked(sendPaletteCommandCommit).mock.calls[0][1]?.gestureId).not.toBe(id);
+  });
 
   async function browserInput(input: HTMLInputElement, value: string, inputType = "") {
     await act(async () => {
@@ -352,7 +435,7 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     expect(sendPaletteCommandCommit).toHaveBeenCalledExactlyOnceWith(moleculeStructureBondLengthCommandId(30));
   });
 
-  function pointer(target: HTMLElement, type: "pointerdown" | "pointerup" | "click", detail = 1) {
+  function pointer(target: HTMLElement, type: "pointerdown" | "pointerup" | "click", detail = 1, options: MouseEventInit = {}) {
     const owner = container.querySelector(".palette-window-shell, .palette-popover-shell")!;
     const listener = type === "pointerup"
       ? windowListeners.mock.calls.find(([name, , options]) => name === type && options === true)![1]
@@ -363,7 +446,7 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     (listener as EventListener)({
       target, isTrusted: true, button: 0, pointerId: 1, clientX: 10, clientY: 10, detail
     } as unknown as Event);
-    const event = new MouseEvent(type, { button: 0, detail, bubbles: true, cancelable: true });
+    const event = new MouseEvent(type, { button: 0, detail, bubbles: true, cancelable: true, ...options });
     target.dispatchEvent(event);
     return event;
   }

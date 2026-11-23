@@ -31,6 +31,9 @@ import { cloneToolset, createCommandToolbarItem } from "./toolbars/CustomizeTool
 import { CommandRegistry } from "@chemdraft/plugin-host";
 import { createPluginRuntime } from "./plugins/createPluginRuntime";
 import { FIXTURE_PLUGIN_ID, FIXTURE_PLUGIN_PING_COMMAND_ID, FIXTURE_PLUGIN_TOOLSET_ID, createFixturePluginOptions, fixturePluginManifest } from "./plugins/fixturePlugin";
+import { PALETTE_COMMAND_CANCEL_EVENT, listenForPaletteCommandCancels, listenForPaletteCommandCommits,
+  sendPaletteCommandCancel, sendPaletteCommandCommit, sendPaletteCommandPreview } from "./window-manager";
+import * as tauriEvents from "./window-manager/tauriEvents";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -388,7 +391,7 @@ describe("ToolPalette art color popover", () => {
     commandId?: string;
     includeGrid?: boolean;
     currentArtStyle?: ReturnType<typeof createArtInspectorModel>;
-    onCancel?: () => void;
+    onCancel?: (gestureId?: string) => void;
     onRequestColorPopover?: (anchor: { left: number; top: number; right: number; bottom: number }) => void;
     includeCommands?: boolean;
   } = {}) {
@@ -476,15 +479,18 @@ describe("ToolPalette art color popover", () => {
       height.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 60, buttons: 1 }));
       height.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 82, buttons: 1 }));
     });
-    expect(onPreview).toHaveBeenLastCalledWith("object.wave.height:34.5");
+    const gestureId = onPreview.mock.calls.at(-1)![1];
+    expect(gestureId).toEqual(expect.any(String));
+    expect(onPreview).toHaveBeenLastCalledWith("object.wave.height:34.5", gestureId);
     expect(onCommit).not.toHaveBeenCalled();
     act(() => { height.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 82 })); });
-    expect(onCommit).toHaveBeenCalledExactlyOnceWith("object.wave.height:34.5");
+    expect(onCommit).toHaveBeenCalledExactlyOnceWith("object.wave.height:34.5", gestureId);
     act(() => {
       height.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 60, buttons: 1 }));
       height.dispatchEvent(new MouseEvent("pointercancel", { bubbles: true }));
     });
     expect(onCancel).toHaveBeenCalled();
+    expect(vi.mocked(onCancel).mock.calls.at(-1)![0]).not.toBe(gestureId);
     expect(onCommit).toHaveBeenCalledTimes(1);
     renderPalette({ currentArtStyle: artInspectorModelFor("tool.art.rect") });
     expect(container.querySelector('[aria-label="Wave height"]')).toBeNull();
@@ -571,6 +577,61 @@ describe("ToolPalette art color popover", () => {
     act(() => { slider.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
     expect(onCancel).toHaveBeenCalledTimes(1);
     act(() => { slider.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 82 })); });
+    expect(onCommit).not.toHaveBeenCalled();
+  });
+
+  it.each(["macos", "windows"].flatMap(platform =>
+    ["tauri://blur", "tauri://close-requested", "chemdraft://plugin-panel-focus"].map(event => ({ platform, event }))))(
+    "cancels a drag before focus on $event ($platform)", async ({ platform, event }) => {
+      const detectedPlatform = vi.spyOn(navigator, "platform", "get").mockReturnValue(platform === "macos" ? "MacIntel" : "Win32");
+      const handlers = new Map<string, (event: { payload: { kind: string } }) => void>();
+      const attach = vi.spyOn(tauriEvents, "listenCurrentWindowEvent").mockImplementation(async (name, handler) => {
+        handlers.set(name, handler as unknown as (event: { payload: { kind: string } }) => void);
+        return () => { handlers.delete(name); };
+      });
+      const cancelled = vi.fn(), committed = vi.fn();
+      const stopCancel = await listenForPaletteCommandCancels(cancelled);
+      const stopCommit = await listenForPaletteCommandCommits(committed);
+      try {
+        const onCancel = vi.fn((id?: string) => { void sendPaletteCommandCancel("palette.preview.cancel", id); });
+        const { onPreview, onCommit } = renderPalette({ currentArtStyle: artInspectorModelFor("tool.art.lineWavy"), onCancel });
+        onPreview.mockImplementation((id, gestureId) => { void sendPaletteCommandPreview(id, gestureId); });
+        onCommit.mockImplementation((id, gestureId) => { void sendPaletteCommandCommit(id, { gestureId }); });
+        const slider = container.querySelector<HTMLInputElement>('[aria-label="Wave height"]')!;
+        setSliderRect(slider);
+        const before = slider.value;
+        await act(async () => { slider.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 80, buttons: 1 })); });
+        expect(document.activeElement).not.toBe(slider);
+        await act(async () => { handlers.get(event)?.({ payload: { kind: "deactivated" } }); });
+        expect(slider.value).toBe(before);
+        await act(async () => { slider.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 80 })); });
+        expect(cancelled).toHaveBeenCalledExactlyOnceWith("palette.preview.cancel", onPreview.mock.calls[0][1]);
+        expect(committed).not.toHaveBeenCalled();
+      } finally {
+        stopCancel(); stopCommit(); attach.mockRestore(); detectedPlatform.mockRestore();
+      }
+    }
+  );
+
+  it("disarms only the cancelled wave drag when a delayed document cancellation arrives", () => {
+    const { onPreview, onCommit } = renderPalette({ currentArtStyle: artInspectorModelFor("tool.art.lineWavy") });
+    const slider = container.querySelector<HTMLInputElement>('[aria-label="Wave height"]')!;
+    setSliderRect(slider);
+    act(() => { slider.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 60, buttons: 1 })); });
+    const gestureId = onPreview.mock.calls.at(-1)![1];
+    act(() => {
+      window.dispatchEvent(new CustomEvent(PALETTE_COMMAND_CANCEL_EVENT, {
+        detail: { commandId: "palette.preview.cancel", gestureId: "older-drag" }
+      }));
+      slider.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 82, buttons: 1 }));
+    });
+    expect(onPreview).toHaveBeenLastCalledWith("object.wave.height:34.5", gestureId);
+    act(() => {
+      window.dispatchEvent(new CustomEvent(PALETTE_COMMAND_CANCEL_EVENT, {
+        detail: { commandId: "palette.preview.cancel", gestureId }
+      }));
+      slider.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 82 }));
+    });
     expect(onCommit).not.toHaveBeenCalled();
   });
 

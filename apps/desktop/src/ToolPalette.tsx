@@ -157,7 +157,10 @@ import {
 } from "./toolsets";
 import type { ArtInspectorEffectKind } from "./artInspectorModel";
 import { loadSystemFonts, type SystemFontFamily, type SystemFontFace } from "./systemFonts";
-import { isDesktopRuntime, listenForPaletteCommandCancels, type ToolsetArtPaintTarget, type ToolsetFlyoutSnapshot } from "./window-manager";
+import { isDesktopRuntime, listenForPaletteCommandCancels, listenForPaletteGestureInterruptions, nextPaletteGestureId,
+  nextPaletteGestureGeneration, paletteGestureCancellationApplies,
+  latestPaletteGestureId, sendPaletteCommandCancel, PALETTE_GESTURE_CANCEL_REQUEST, PALETTE_GESTURE_CANCEL_ACK,
+  type ToolsetArtPaintTarget, type ToolsetFlyoutSnapshot } from "./window-manager";
 import { registerInlinePopover } from "./window-manager/popoverEscape";
 
 export type ToolPaletteMode = "docked" | "floating";
@@ -2060,27 +2063,70 @@ function ArtToolbarStyleControls() {
   const gradientRailRef = useRef<HTMLDivElement | null>(null);
   const gradientStopColorPickerRef = useRef<HTMLDivElement | null>(null);
   const gradientStopDragRef = useRef<{ stopIndex: number; moved: boolean } | null>(null);
-  const sliderDragRef = useRef<{ sliderKey: string; pointerId: number; wave: boolean } | null>(null);
+  const [gestureSender] = useState<{ generation?: number }>(() => ({ generation: nextPaletteGestureGeneration() }));
+  const sliderDragRef = useRef<{ sliderKey: string; pointerId: number; wave: boolean; gestureId?: string;
+    input: HTMLInputElement; startValue: string } | null>(null);
+  const onSliderCancelRef = useRef(onCancel);
+  onSliderCancelRef.current = onCancel;
   useEffect(() => {
     let disposed = false;
-    let unlisten: (() => void) | undefined;
-    void listenForPaletteCommandCancels(() => {
-      if (sliderDragRef.current?.wave) sliderDragRef.current = null;
-    }).then((cleanup) => { if (disposed) cleanup(); else unlisten = cleanup; }).catch(() => undefined);
+    const cleanups: (() => void)[] = [];
+    const attach = (cleanup: () => void) => { if (disposed) cleanup(); else cleanups.push(cleanup); };
+    const disarm = () => {
+      const drag = sliderDragRef.current;
+      sliderDragRef.current = null;
+      if (drag?.wave) {
+        drag.input.value = drag.startValue;
+        if (drag.input.hasPointerCapture?.(drag.pointerId)) drag.input.releasePointerCapture(drag.pointerId);
+      }
+      return drag;
+    };
+    const cancel = () => {
+      if (!sliderDragRef.current?.wave) return;
+      const drag = disarm();
+      onSliderCancelRef.current?.(drag?.gestureId);
+    };
+    void listenForPaletteCommandCancels((commandId, gestureId) => {
+      if (commandId.startsWith(PALETTE_GESTURE_CANCEL_ACK)) return;
+      if (commandId.startsWith(PALETTE_GESTURE_CANCEL_REQUEST)) {
+        if (!gestureSender.generation || !paletteGestureCancellationApplies(commandId, gestureSender.generation)) return;
+        // A request is a fence across windows, not a delayed notice about the document's old id.
+        // Disarm whatever is current and capture the latest watermark in this same JS turn.
+        cancel();
+        const throughId = latestPaletteGestureId();
+        const barrier = commandId.slice(PALETTE_GESTURE_CANCEL_REQUEST.length);
+        void sendPaletteCommandCancel(`${PALETTE_GESTURE_CANCEL_ACK}${barrier}`, throughId).catch(() => undefined);
+      } else if (sliderDragRef.current?.wave && (!gestureId || sliderDragRef.current.gestureId === gestureId)) {
+        disarm();
+      }
+    }).then(attach).catch(() => undefined);
+    void listenForPaletteGestureInterruptions(cancel, () => {
+      // The menu may hide this webview for reuse rather than destroy it. Its first press after
+      // reopening belongs to a new sender lifetime, beyond the document's close fence.
+      gestureSender.generation = undefined;
+    }).then(attach).catch(() => undefined);
     const cancelWaveDrag = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || !sliderDragRef.current?.wave) return;
       // This capture listener runs before modal/menu handlers in the detached palette too.
       // Let the owning surface close without disarming the slider or swallowing its key.
       if (event.defaultPrevented || isBlockedByModalDialog(event.target) ||
           document.querySelector('[aria-haspopup="menu"][aria-expanded="true"]')) return;
-      sliderDragRef.current = null;
       event.preventDefault();
       event.stopImmediatePropagation();
-      onCancel?.();
+      cancel();
+    };
+    const cancelRejectedFocus = (event: Event) => {
+      if (event.target === sliderDragRef.current?.input) cancel();
     };
     window.addEventListener("keydown", cancelWaveDrag, true);
-    return () => { disposed = true; unlisten?.(); window.removeEventListener("keydown", cancelWaveDrag, true); };
-  }, [onCancel]);
+    window.addEventListener(PALETTE_INPUT_FOCUS_CANCEL_EVENT, cancelRejectedFocus, true);
+    return () => {
+      disposed = true; cleanups.forEach(cleanup => cleanup());
+      window.removeEventListener("keydown", cancelWaveDrag, true);
+      window.removeEventListener(PALETTE_INPUT_FOCUS_CANCEL_EVENT, cancelRejectedFocus, true);
+      cancel();
+    };
+  }, [gestureSender]);
   const [colorOpen, setColorOpen] = useState(false);
   const [effectColorOpen, setEffectColorOpen] = useState(false);
   const [draftColor, setDraftColor] = useState(currentColor);
@@ -2275,16 +2321,18 @@ function ArtToolbarStyleControls() {
     });
   }, [activeEffectKindsKey, activeEffectValue]);
 
-  const invokeOrCommit = (commandId: string) => {
+  const invokeOrCommit = (commandId: string, gestureId?: string) => {
     if (onCommit) {
-      onCommit(commandId);
+      if (gestureId) onCommit(commandId, gestureId);
+      else onCommit(commandId);
       return;
     }
     onInvoke(commandId);
   };
 
-  const previewCommand = (commandId: string) => {
-    onPreview?.(commandId);
+  const previewCommand = (commandId: string, gestureId?: string) => {
+    if (gestureId) onPreview?.(commandId, gestureId);
+    else onPreview?.(commandId);
   };
 
   const updateColor = (color: string) => {
@@ -2428,29 +2476,30 @@ function ArtToolbarStyleControls() {
     const commandForValue = (next: number) => commandId(numeric ? snap(next) : snap(next) / 100);
     const displayValue = numeric?.mixed ? "Mixed" : valueLabel ?? `${percent}${numeric?.unit ?? "%"}`;
     const sliderKey = label.toLowerCase().replace(/\s+/g, "-");
-    const applySliderPercent = (nextPercent: number, commit: boolean) => {
+    const applySliderPercent = (nextPercent: number, commit: boolean, gestureId?: string) => {
       const command = commandForValue(nextPercent);
       if (commit) {
-        invokeOrCommit(command);
+        invokeOrCommit(command, gestureId);
       } else {
-        previewCommand(command);
+        previewCommand(command, gestureId);
       }
     };
     const sliderOwnsPointer = (event: ReactPointerEvent<HTMLInputElement>) =>
       sliderDragRef.current?.sliderKey === sliderKey && sliderDragRef.current.pointerId === event.pointerId;
-    const applySliderPointer = (event: ReactPointerEvent<HTMLInputElement>, commit: boolean) => {
+    const applySliderPointer = (event: ReactPointerEvent<HTMLInputElement>, commit: boolean, gestureId?: string) => {
       const rect = event.currentTarget.getBoundingClientRect();
       const nextPercent = rect.width > 0 ? min + (event.clientX - rect.left) / rect.width * (max - min) : percent;
       event.currentTarget.value = `${snap(nextPercent)}`;
-      applySliderPercent(nextPercent, commit);
+      applySliderPercent(nextPercent, commit, gestureId);
     };
     const applySliderKey = (event: ReactKeyboardEvent<HTMLInputElement>) => {
       // Wave drags use the capture listener above so menus and modals retain Escape.
       if (valueLabel && event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
+        const gestureId = sliderDragRef.current?.sliderKey === sliderKey ? sliderDragRef.current.gestureId : undefined;
         sliderDragRef.current = null;
-        onCancel?.();
+        onCancel?.(gestureId);
         return;
       }
       const currentPercent = Number(event.currentTarget.value);
@@ -2490,15 +2539,18 @@ function ArtToolbarStyleControls() {
             data-palette-control="true"
             onPointerDown={(event) => {
               event.stopPropagation();
-              sliderDragRef.current = { sliderKey, pointerId: event.pointerId, wave: Boolean(numeric) };
+              if (numeric) gestureSender.generation ??= nextPaletteGestureGeneration();
+              const gestureId = numeric ? nextPaletteGestureId(gestureSender.generation) : undefined;
+              sliderDragRef.current = { sliderKey, pointerId: event.pointerId, wave: Boolean(numeric), gestureId,
+                input: event.currentTarget, startValue: event.currentTarget.value };
               if (typeof event.currentTarget.setPointerCapture === "function") {
                 event.currentTarget.setPointerCapture(event.pointerId);
               }
-              applySliderPointer(event, false);
+              applySliderPointer(event, false, gestureId);
             }}
             onPointerMove={(event) => {
               if (event.buttons === 1 && sliderOwnsPointer(event)) {
-                applySliderPointer(event, false);
+                applySliderPointer(event, false, sliderDragRef.current?.gestureId);
               }
             }}
             onPointerUp={(event) => {
@@ -2513,8 +2565,9 @@ function ArtToolbarStyleControls() {
               ) {
                 event.currentTarget.releasePointerCapture(event.pointerId);
               }
+              const gestureId = sliderDragRef.current?.gestureId;
               sliderDragRef.current = null;
-              applySliderPointer(event, true);
+              applySliderPointer(event, true, gestureId);
             }}
             onPointerCancel={(event) => {
               if (sliderOwnsPointer(event)) {
@@ -2525,20 +2578,22 @@ function ArtToolbarStyleControls() {
                 ) {
                   event.currentTarget.releasePointerCapture(event.pointerId);
                 }
+                const gestureId = sliderDragRef.current?.gestureId;
                 sliderDragRef.current = null;
-                if (numeric || valueLabel) onCancel?.();
+                if (numeric || valueLabel) onCancel?.(gestureId);
               }
             }}
             onChange={(event) => {
               if (sliderDragRef.current?.sliderKey === sliderKey) {
-                previewCommand(commandForValue(Number(event.currentTarget.value)));
+                previewCommand(commandForValue(Number(event.currentTarget.value)), sliderDragRef.current.gestureId);
               }
             }}
             onKeyDown={applySliderKey}
             onBlur={() => {
               if (sliderDragRef.current?.sliderKey === sliderKey) {
+                const gestureId = sliderDragRef.current.gestureId;
                 sliderDragRef.current = null;
-                if (numeric || valueLabel) onCancel?.();
+                if (numeric || valueLabel) onCancel?.(gestureId);
               }
             }}
           />

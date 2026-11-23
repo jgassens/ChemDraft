@@ -828,6 +828,8 @@ import {
   listToolsetWindowStates,
   listenForPaletteCommandCancels,
   sendPaletteCommandCancel,
+  PaletteGestureReceiver,
+  PALETTE_GESTURE_CANCEL_REQUEST,
   listenForPaletteInspectorActions,
   listenForPaletteCommandCommits,
   listenForPaletteCommandPreviews,
@@ -1839,7 +1841,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.21.17.20-sonnet";
+const CURRENT_BUILD_STAMP = "11.23.11.26-opus";
 const TABLE_DRAFT_RECOVERY_WARNING = "session.tableDraftDropped";
 
 function clearTableDraftRecoveryWarnings(report: OpenWarningsReport | undefined): OpenWarningsReport | undefined {
@@ -2373,14 +2375,15 @@ export function MainWindow({
   const objectResizeReadoutTimeoutRef = useRef<number | undefined>(undefined);
   const groupTransformDragRef = useRef<GroupTransformDragState | null>(null);
   const textResizeRef = useRef<TextResizeState | null>(null);
-  const artStylePreviewRef = useRef<{ startDocument: ChemDraftDocument; undoLabel: string; commandKey: string; commandId: string } | null>(null);
+  const artStylePreviewRef = useRef<{ startDocument: ChemDraftDocument; undoLabel: string; commandKey: string; commandId: string; gestureId?: string } | null>(null);
+  const artGesturesRef = useRef(new PaletteGestureReceiver());
   const moleculeInspectorPreviewRef = useRef<{ startDocument: ChemDraftDocument; undoLabel: string; commandKey: string; commandId: string } | null>(null);
   const settlePalettePreviewRef = useRef<(reason: string) => void>(() => undefined);
   const palettePreviewSettlingRef = useRef(false);
   const palettePreviewHandlersRef = useRef<{
-    preview: (commandId: string) => void;
-    commit: (commandId: string) => void;
-    cancel: () => void;
+    preview: (commandId: string, gestureId?: string) => void;
+    commit: (commandId: string, gestureId?: string) => void;
+    cancel: (gestureId?: string) => void;
   }>({
     preview: () => undefined,
     commit: () => undefined,
@@ -3916,6 +3919,7 @@ export function MainWindow({
     palettePreviewSettlingRef.current = true;
     // Clear ownership before installing history: recursive installs and late chooser
     // commit/cancel notifications must never restore this obsolete startDocument.
+    artGesturesRef.current.retire(artStylePreviewRef.current?.gestureId);
     artStylePreviewRef.current = null;
     moleculeInspectorPreviewRef.current = null;
     const previewDocument = documentRef.current;
@@ -9206,19 +9210,27 @@ export function MainWindow({
     return true;
   }, []);
 
-  const previewObjectStyleCommand = useCallback((commandId: string) => {
-    settleOtherPalettePreview(commandId);
-    const session = artStylePreviewRef.current;
-    const startDocument = session?.startDocument ?? documentRef.current;
-    const result = applyObjectStyleCommandToDocument(startDocument, commandId, effectiveArtPaintTarget, "keep");
-    if (!result.handled || !result.targeted) {
-      return;
-    }
+  const previewObjectStyleCommand = useCallback((commandId: string, gestureId?: string) => {
+    artGesturesRef.current.receive("preview", gestureId, () => {
+      // A new gesture cannot settle an abandoned drag into history, even if its cancel is late.
+      const previous = artStylePreviewRef.current;
+      if (previous?.gestureId && previous.gestureId !== gestureId) {
+        artStylePreviewRef.current = null;
+        replacePresentDocument(previous.startDocument, true);
+      }
+      settleOtherPalettePreview(commandId);
+      const session = artStylePreviewRef.current;
+      const startDocument = session?.startDocument ?? documentRef.current;
+      const result = applyObjectStyleCommandToDocument(startDocument, commandId, effectiveArtPaintTarget, "keep");
+      if (!result.handled || !result.targeted) {
+        return;
+      }
 
-    artStylePreviewRef.current = { startDocument, undoLabel: result.message, commandKey: palettePreviewCommandKey(commandId), commandId };
-    // Keep previews in the model: an edit computed from documentRef must include
-    // the visible colour before it interrupts this transaction.
-    replacePresentDocument(result.document, true);
+      artStylePreviewRef.current = { startDocument, undoLabel: result.message, commandKey: palettePreviewCommandKey(commandId), commandId, gestureId };
+      // Keep previews in the model: an edit computed from documentRef must include
+      // the visible colour before it interrupts this transaction.
+      replacePresentDocument(result.document, true);
+    });
   }, [applyObjectStyleCommandToDocument, effectiveArtPaintTarget, replacePresentDocument, settleOtherPalettePreview]);
 
   const commitObjectStylePreview = useCallback((commandId: string) => {
@@ -9258,26 +9270,54 @@ export function MainWindow({
     setStatus(changed ? objectStyleResultStatus(commandId, result.message) : "Selected object style unchanged");
   }, [applyObjectStyleCommand, applyObjectStyleCommandToDocument, commitDocumentHistoryFrom, effectiveArtPaintTarget, replacePresentDocument, settleOtherPalettePreview]);
 
-  const cancelObjectStylePreview = useCallback(() => {
+  const cancelObjectStylePreview = useCallback((gestureId?: string) => {
+    artGesturesRef.current.retire(gestureId);
     const session = artStylePreviewRef.current;
-    if (!session) {
+    if (!session || (gestureId && session.gestureId !== gestureId)) {
       return;
     }
 
+    artGesturesRef.current.retire(session.gestureId);
     artStylePreviewRef.current = null;
     replacePresentDocument(session.startDocument);
     setStatus("Canceled graphic style edit");
   }, [replacePresentDocument]);
 
+  const cancelPendingWaveGesture = useCallback(() => {
+    const session = artStylePreviewRef.current;
+    const wave = session && objectWaveForCommand(session.commandId);
+    const gestureId = wave ? session.gestureId : undefined;
+    if (wave) cancelObjectStylePreview();
+    const request = artGesturesRef.current.beginCancellation((discarded) => {
+      if (wave || discarded) setStatus("Canceled graphic style edit: toolbar did not respond; drag again to retry");
+    });
+    // Even a rejected emit can have enqueued the other webview's evaluation. Keep the fence until
+    // its deadline so a late request cannot disarm the next drag after recovery.
+    void sendPaletteCommandCancel(request, gestureId).catch(() => undefined);
+  }, [cancelObjectStylePreview]);
+  const retireWaveSenderRef = useRef<() => void>(() => undefined);
+  retireWaveSenderRef.current = () => {
+    const session = artStylePreviewRef.current;
+    if (session && objectWaveForCommand(session.commandId)) cancelObjectStylePreview();
+    artGesturesRef.current.senderClosed();
+  };
+
   // Both native palettes and the web fallback commit wave edits through their registered command.
   // The registered handler retains the preview's start document for one Undo entry per gesture.
-  const commitArtStyleCommand = useCallback((commandId: string) => {
-    if (objectWaveForCommand(commandId)) {
-      void invokeCommandRef.current(commandId);
-    } else {
-      commitObjectStylePreview(commandId);
-    }
-  }, [commitObjectStylePreview]);
+  const commitArtStyleCommand = useCallback((commandId: string, gestureId?: string) => {
+    artGesturesRef.current.receive("commit", gestureId, () => {
+      const previous = artStylePreviewRef.current;
+      if (previous?.gestureId && previous.gestureId !== gestureId) {
+        artStylePreviewRef.current = null;
+        replacePresentDocument(previous.startDocument, true);
+      }
+      if (objectWaveForCommand(commandId)) {
+        void invokeCommandRef.current(commandId);
+      } else {
+        commitObjectStylePreview(commandId);
+      }
+    });
+  }, [commitObjectStylePreview, replacePresentDocument]);
 
   const applyPendingMoleculeStyleOverrideChoice = useCallback((choice: "keep" | "clear" | "cancel") => {
     const prompt = moleculeStyleOverridePrompt;
@@ -9905,17 +9945,17 @@ export function MainWindow({
       paletteFocusDiagnostic(`${event} command=${commandId ?? session?.commandId ?? "none"} targets=${JSON.stringify(targets)} before=${before} outcome=${changed ? "changed" : "unchanged"} reason=${reason}`);
     };
     palettePreviewHandlersRef.current = {
-      preview: (commandId) => diagnose("preview", commandId, () => {
-        previewObjectStyleCommand(commandId);
-        previewMoleculeInspectorCommand(commandId);
+      preview: (commandId, gestureId) => diagnose("preview", commandId, () => {
+        previewObjectStyleCommand(commandId, gestureId);
+        if (!gestureId) previewMoleculeInspectorCommand(commandId);
       }),
-      commit: (commandId) => diagnose("commit", commandId, () => {
-        commitArtStyleCommand(commandId);
-        commitMoleculeInspectorPreview(commandId);
+      commit: (commandId, gestureId) => diagnose("commit", commandId, () => {
+        commitArtStyleCommand(commandId, gestureId);
+        if (!gestureId) commitMoleculeInspectorPreview(commandId);
       }),
-      cancel: () => diagnose("cancel", undefined, () => {
-        cancelObjectStylePreview();
-        cancelMoleculeInspectorPreview();
+      cancel: (gestureId) => diagnose("cancel", undefined, () => {
+        cancelObjectStylePreview(gestureId);
+        if (!gestureId) cancelMoleculeInspectorPreview();
       })
     };
   }, [
@@ -15019,14 +15059,14 @@ export function MainWindow({
       // The detached palette can leave keyboard focus in this document window during a drag.
       // Modal dialogs and expanded menus keep ownership of Escape, including when their
       // handler has already closed the surface and marked this event handled.
-      if (event.key === "Escape" && artStylePreviewRef.current &&
-          objectWaveForCommand(artStylePreviewRef.current.commandId) &&
-          !event.defaultPrevented && !isBlockedByModalDialog(event.target) &&
+      if (event.key === "Escape" && !event.defaultPrevented && !isBlockedByModalDialog(event.target) &&
           !window.document.querySelector('[aria-haspopup="menu"][aria-expanded="true"]')) {
-        event.preventDefault();
-        cancelObjectStylePreview();
-        void sendPaletteCommandCancel("palette.preview.cancel").catch(() => undefined);
-        return;
+        const session = artStylePreviewRef.current;
+        const wave = session && objectWaveForCommand(session.commandId);
+        if (wave || visibleToolsetIdsRef.current.has("core.art")) {
+          cancelPendingWaveGesture();
+          if (wave) { event.preventDefault(); return; }
+        }
       }
       if (tableCellEditRef.current) return;
       if (event.key === "Enter" && !event.ctrlKey && !event.metaKey && !event.altKey &&
@@ -15349,7 +15389,7 @@ export function MainWindow({
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [
-    cancelObjectStylePreview,
+    cancelPendingWaveGesture,
     cancelSelectionPointerGesture,
     cancelMechanismArrowDrag,
     cancelNativePlacementDrag,
@@ -15685,6 +15725,9 @@ export function MainWindow({
         setStatus("Toolset command bridge unavailable");
       });
     void listenForToolsetWindowStates((state) => {
+      if (state.toolsetId === "core.art" && !state.open) {
+        retireWaveSenderRef.current();
+      }
       setVisibleToolsetIds((current) => updateVisibleToolsets(current, state.toolsetId, state.open));
     })
       .then((cleanup) => {
@@ -15741,8 +15784,8 @@ export function MainWindow({
         unlistenTextStyleRequest = cleanup;
       })
       .catch(() => undefined);
-    void listenForPaletteCommandPreviews((commandId) => {
-      palettePreviewHandlersRef.current.preview(commandId);
+    void listenForPaletteCommandPreviews((commandId, gestureId) => {
+      palettePreviewHandlersRef.current.preview(commandId, gestureId);
     })
       .then((cleanup) => {
         if (!active) {
@@ -15752,8 +15795,8 @@ export function MainWindow({
         unlistenPreview = cleanup;
       })
       .catch(() => undefined);
-    void listenForPaletteCommandCommits((commandId) => {
-      palettePreviewHandlersRef.current.commit(commandId);
+    void listenForPaletteCommandCommits((commandId, gestureId) => {
+      palettePreviewHandlersRef.current.commit(commandId, gestureId);
     })
       .then((cleanup) => {
         if (!active) {
@@ -15763,8 +15806,10 @@ export function MainWindow({
         unlistenCommit = cleanup;
       })
       .catch(() => undefined);
-    void listenForPaletteCommandCancels(() => {
-      palettePreviewHandlersRef.current.cancel();
+    void listenForPaletteCommandCancels((commandId, gestureId) => {
+      if (commandId.startsWith(PALETTE_GESTURE_CANCEL_REQUEST)) return;
+      if (artGesturesRef.current.acknowledge(commandId, gestureId)) return;
+      palettePreviewHandlersRef.current.cancel(gestureId);
     })
       .then((cleanup) => {
         if (!active) {
@@ -15803,6 +15848,7 @@ export function MainWindow({
       unlistenCommit?.();
       unlistenCancel?.();
       unlistenInspector?.();
+      artGesturesRef.current.dispose();
     };
   }, []);
 
