@@ -154,13 +154,17 @@ jobs:
       - name: Check signing availability
         id: signing
         env:
+          AUTHENTICODE_SIGNING: ${{ vars.AUTHENTICODE_SIGNING }}
           SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
           SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG }}
           SIGNPATH_SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
         run: |
-          if ($env:SIGNPATH_API_TOKEN) {
+          if ($env:AUTHENTICODE_SIGNING -eq 'off') {
+            'authenticode=false' >> $env:GITHUB_OUTPUT
+            Write-Host '::warning::AUTHENTICODE_SIGNING is off. Skipping Authenticode; the installer is unsigned.'
+          } elseif ($env:SIGNPATH_API_TOKEN) {
             if (-not $env:SIGNPATH_ORGANIZATION_ID -or -not $env:SIGNPATH_PROJECT_SLUG -or -not $env:SIGNPATH_SIGNING_POLICY_SLUG) {
               throw 'SignPath token is set but required SignPath repository variables are missing.'
             }
@@ -295,13 +299,14 @@ jobs:
       - name: Require verified signatures before release upload
         shell: pwsh
         env:
+          AUTHENTICODE_SIGNING: ${{ vars.AUTHENTICODE_SIGNING }}
           AUTHENTICODE_SIGNED: ${{ needs.build.outputs.authenticode_signed }}
           UPDATER_SIGNED: ${{ needs.build.outputs.updater_signed }}
           ALLOW_UNSIGNED_UPLOAD: ${{ inputs.allow_unsigned_upload }}
         run: |
-          if ($env:AUTHENTICODE_SIGNED -ne 'true' -or $env:UPDATER_SIGNED -ne 'true') {
+          if ($env:UPDATER_SIGNED -ne 'true' -or ($env:AUTHENTICODE_SIGNING -ne 'off' -and $env:AUTHENTICODE_SIGNED -ne 'true')) {
             if ($env:ALLOW_UNSIGNED_UPLOAD -ne 'true') {
-              throw 'Refusing release upload: both Authenticode and updater signatures must be verified. Use allow_unsigned_upload only for an explicit unsigned dry run.'
+              throw 'Refusing release upload: the updater signature must be verified, and Authenticode must be verified unless AUTHENTICODE_SIGNING is off. Use allow_unsigned_upload only for an explicit unsigned dry run.'
             }
             Write-Host '::warning::UNSIGNED RELEASE UPLOAD OVERRIDE: one or both signatures are missing. These artifacts must not be published as a signed production update.'
           }

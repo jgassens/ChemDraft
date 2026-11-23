@@ -1,10 +1,10 @@
 import { changedElectronMarkAssignments, moleculeSmiles, nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles } from "@chemdraft/document-workflow-core";
 import { adoptDerivedDocument, type ChemDraftDocument, type DocumentObject, type MoleculeObject } from "@chemdraft/chem-core";
 import { retainedCtabCompatibility, RequestWriteError, type RequestHistory } from "@chemdraft/plugin-host";
-import { inspectStructureOffThread } from "../../depiction2d/identityClient";
 import { normalizeCommittedDocument } from "../../documentWorkflow";
-import { inspectMolecule, inspectSmiles, type StructureInspectionContext } from "./structureIdentity";
+import { desktopWriteInspectionContext, inspectMolecule, inspectSmiles, type StructureInspectionContext } from "./structureIdentity";
 import { inspectWriteSmiles, stableRecord, verifiedChemicalRecord, verifyStoredSources, withoutGeometry } from "./storedChemistry";
+import { ChemistryRefusal, PLUGIN_WRITE_REFUSED, refusalSentence } from "./chemistryRefusal";
 import { assertRepeatUnitIdentity } from "./repeatUnitIdentity";
 
 const objectsById = (document: ChemDraftDocument) => new Map(document.pages.flatMap(page =>
@@ -169,7 +169,15 @@ export async function verifyNormalizedWrite(context: StructureInspectionContext,
   })) });
 }
 
-export const verifyDesktopRequestWrite: RequestHistory["verify"] = (before, draft, scope, expected, signal) =>
-  verifyNormalizedWrite({
-    chemistry: { inspectStructure: (format, value, stereo) => inspectStructureOffThread(format, value, stereo, signal, "writeIdentity") }
-  }, before, draft, scope, expected);
+/** plugin-host rewraps whatever the verifier throws using its message, and it must stay app-free, so a
+ * refusal is turned into its plain user sentence here, before it crosses into plugin-host. The full
+ * technical text, with the molecule id, goes to the log. */
+export const verifyDesktopRequestWrite: RequestHistory["verify"] = async (before, draft, scope, expected, signal) => {
+  try {
+    return await verifyNormalizedWrite(desktopWriteInspectionContext(signal), before, draft, scope, expected);
+  } catch (error) {
+    if (!(error instanceof ChemistryRefusal)) throw error;
+    console.warn(`${PLUGIN_WRITE_REFUSED}: ${error.detail}`);
+    throw new Error(refusalSentence(PLUGIN_WRITE_REFUSED, error.reason));
+  }
+};

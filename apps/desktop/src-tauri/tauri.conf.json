@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "ChemDraft",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "identifier": "org.chemdraft.desktop",
   "build": {
     "beforeDevCommand": "npm run dev:web",
@@ -50,7 +50,10 @@
       "../../../LICENSE": "licenses/LICENSE",
       "../../../packages/export-engine/src/fonts/LICENSE_NOTO.txt": "licenses/LICENSE_NOTO.txt",
       "../../../packages/export-engine/src/fonts/LICENSE_DEJAVU.txt": "licenses/LICENSE_DEJAVU.txt",
-      "../../../packages/export-engine/src/fonts/LICENSE_PATRICK_HAND.txt": "licenses/LICENSE_PATRICK_HAND.txt"
+      "../../../packages/export-engine/src/fonts/LICENSE_PATRICK_HAND.txt": "licenses/LICENSE_PATRICK_HAND.txt",
+      "../../../native/avogadro3d-sidecar/licenses/avogadrolibs-LICENSE.txt": "licenses/avogadrolibs-LICENSE.txt",
+      "../../../native/avogadro3d-sidecar/licenses/Eigen-COPYING.MPL2.txt": "licenses/Eigen-COPYING.MPL2.txt",
+      "../../../native/avogadro3d-sidecar/licenses/cppoptlib-LICENSE.txt": "licenses/cppoptlib-LICENSE.txt"
     },
     "fileAssociations": [
       {

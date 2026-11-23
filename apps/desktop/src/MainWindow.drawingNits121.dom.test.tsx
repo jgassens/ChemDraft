@@ -112,21 +112,29 @@ describe.each(["macos", "windows"] as const)("drawing fixes on %s", shortcutPlat
     expect(status()).toBe("Selected bracket");
   });
 
-  it("updates the status when a charge mark replaces the bracket selection", async () => {
-    const drawing = applyChargeToolAtPoint(repeatUnit(), 1, { x: 340, y: 250 });
+  it("names the selected charge, radical and lone pair in the status line", async () => {
+    const marks = [
+      [{ kind: "charge", charge: 1 }, "Selected charge"],
+      [{ kind: "radical-dot" }, "Selected radical electron"],
+      [{ kind: "lone-pair" }, "Selected lone pair"]
+    ] as const;
+    const drawing = marks.reduce((document, [spec], index) =>
+      applyChargeToolAtPoint(document, spec, { x: 340 + index * 60, y: 250 }), repeatUnit());
     const page = drawing.pages[0];
     const bracket = page.objects.find(object => object.type === "bracket")!;
-    const mark = page.objects.find(object => object.type === "electron-mark")!;
     await mount(selectDocumentObjects(drawing, page.id, []));
     await pointer(objectVisual(bracket.id), "pointerdown", bracket.x, bracket.y + bracket.height / 2);
     await pointer(objectVisual(bracket.id), "pointerup", bracket.x, bracket.y + bracket.height / 2);
     expect(status()).toBe("Selected bracket");
-    const x = mark.x + mark.width / 2;
-    const y = mark.y + mark.height / 2;
-    await pointer(objectVisual(mark.id), "pointerdown", x, y);
-    await pointer(objectVisual(mark.id), "pointerup", x, y);
-    expect(snapshot().selection.objectIds).toEqual([mark.id]);
-    expect(status()).toBe("Selected object");
+    const electronMarks = page.objects.filter(object => object.type === "electron-mark");
+    for (const [index, mark] of electronMarks.entries()) {
+      const x = mark.x + mark.width / 2;
+      const y = mark.y + mark.height / 2;
+      await pointer(objectVisual(mark.id), "pointerdown", x, y);
+      await pointer(objectVisual(mark.id), "pointerup", x, y);
+      expect(snapshot().selection.objectIds).toEqual([mark.id]);
+      expect(status()).toBe(marks[index][1]);
+    }
   });
 
   it("reports the whole selection when clicking one of several selected brackets", async () => {

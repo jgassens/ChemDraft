@@ -4188,19 +4188,30 @@ export function textObjectSpansForRendering(object: Pick<TextObject, "text" | "s
   return [{ text: object.text, script: "normal", style: {} }];
 }
 
-/** Clear the whole rotated mark frame from label ink along its radial direction. */
+function electronMarkFrameHalfExtents(mark: Pick<ElectronMarkObject, "width" | "height" | "rotation">) {
+  const radians = degreesToRadians(mark.rotation);
+  return {
+    halfWidth: (Math.abs(Math.cos(radians)) * mark.width + Math.abs(Math.sin(radians)) * mark.height) / 2,
+    halfHeight: (Math.abs(Math.sin(radians)) * mark.width + Math.abs(Math.cos(radians)) * mark.height) / 2
+  };
+}
+
+function clampElectronMarkCenterToPage(
+  point: LayoutPoint, pageWidth: number, pageHeight: number, { halfWidth, halfHeight }: ReturnType<typeof electronMarkFrameHalfExtents>
+): LayoutPoint {
+  return {
+    x: clamp(point.x, halfWidth, Math.max(halfWidth, pageWidth - halfWidth)),
+    y: clamp(point.y, halfHeight, Math.max(halfHeight, pageHeight - halfHeight))
+  };
+}
+
+/** Clear the whole mark frame from label ink along its radial direction in the molecule's frame. */
 function electronMarkLabelClearer(
   molecule: MoleculeObject,
   atom: MoleculeAtom,
-  pageWidth: number,
-  pageHeight: number,
-  mark: Pick<ElectronMarkObject, "width" | "height" | "rotation">,
-  avoidLabelOverlap: boolean,
-  clampToPage = true
-): (point: LayoutPoint) => LayoutPoint | undefined {
-  const radians = degreesToRadians(mark.rotation);
-  const halfWidth = (Math.abs(Math.cos(radians)) * mark.width + Math.abs(Math.sin(radians)) * mark.height) / 2;
-  const halfHeight = (Math.abs(Math.sin(radians)) * mark.width + Math.abs(Math.cos(radians)) * mark.height) / 2;
+  { halfWidth, halfHeight }: ReturnType<typeof electronMarkFrameHalfExtents>,
+  avoidLabelOverlap: boolean
+) {
   const plan = avoidLabelOverlap ? planMoleculeAtomLabels(molecule).find(plan => plan.atom.id === atom.id) : undefined;
   const glyph = plan && atomLabelGlyphBounds(plan);
   const clearance = 2;
@@ -4212,7 +4223,7 @@ function electronMarkLabelClearer(
   } : undefined;
   const insideLabel = (point: LayoutPoint) => exclusion && point.x > exclusion.left && point.x < exclusion.right &&
     point.y > exclusion.top && point.y < exclusion.bottom;
-  return (point: LayoutPoint): LayoutPoint | undefined => {
+  const clearLabel = (point: LayoutPoint): LayoutPoint => {
     if (exclusion && insideLabel(point)) {
       const length = distance(atom, point);
       const dx = length > 0.0001 ? (point.x - atom.x) / length : Math.SQRT1_2;
@@ -4222,17 +4233,13 @@ function electronMarkLabelClearer(
       const radius = Math.min(exitX, exitY) + 0.001;
       point = { x: atom.x + dx * radius, y: atom.y + dy * radius };
     }
-    const bounded = {
-      x: clamp(point.x, halfWidth, Math.max(halfWidth, pageWidth - halfWidth)),
-      y: clamp(point.y, halfHeight, Math.max(halfHeight, pageHeight - halfHeight))
-    };
-    // A lone pair must retain its chosen ray and tangent; refuse if it cannot fit on-page.
-    if (!clampToPage && (bounded.x !== point.x || bounded.y !== point.y)) return undefined;
-    return insideLabel(bounded) ? undefined : bounded;
+    return point;
   };
+  return { clearLabel, insideLabel };
 }
 
 export interface LonePairPlacementPlan {
+  /** Page-coordinate center of the mark. */
   center: LayoutPoint;
   /** Tangent orientation in degrees, normalized to [0, 360). */
   rotation: number;
@@ -4269,17 +4276,15 @@ export function lonePairPlacementPlanForAtom(
 ): LonePairPlacementPlan | undefined {
   const atom = molecule.atoms.find(candidate => candidate.id === atomId);
   if (!atom || (directionRadians !== undefined && !Number.isFinite(directionRadians))) return undefined;
-  const angles = molecule.bonds
-    .filter(bond => bond.fromAtomId === atomId || bond.toAtomId === atomId)
-    .map(bond => molecule.atoms.find(candidate => candidate.id ===
-      (bond.fromAtomId === atomId ? bond.toAtomId : bond.fromAtomId)))
-    .filter((neighbor): neighbor is MoleculeAtom => neighbor !== undefined)
-    .map(neighbor => Math.atan2(neighbor.y - atom.y, neighbor.x - atom.x));
+  const turn = degreesToRadians(molecule.rotation);
+  const pageAtom = transformPointForObject(molecule, atom);
+  const angles = bondedNeighbors(molecule.atoms, molecule.bonds, atomId)
+    .map(neighbor => Math.atan2(neighbor.y - atom.y, neighbor.x - atom.x) + turn);
   for (const object of objects) {
     if (object.type !== "electron-mark" || object.anchor.kind !== "atom" ||
       object.anchor.objectId !== molecule.id || object.anchor.atomId !== atomId) continue;
-    const dx = object.x + object.width / 2 - atom.x;
-    const dy = object.y + object.height / 2 - atom.y;
+    const dx = object.x + object.width / 2 - pageAtom.x;
+    const dy = object.y + object.height / 2 - pageAtom.y;
     if (Math.hypot(dx, dy) > 1e-10) angles.push(Math.atan2(dy, dx));
   }
   const normalized = angles.map(normalizeAngle).sort((left, right) => left - right);
@@ -4298,16 +4303,24 @@ export function lonePairPlacementPlanForAtom(
     directions.push(candidate.bisector);
     gaps.splice(gaps.indexOf(candidate), 1);
   }
-  const radius = Math.max(18 * 1.35, nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx * 0.55);
+  const radius = Math.max(nativeChargeMarkSizePx * 1.35, nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx * 0.55);
   for (const angle of directions) {
     const direction = normalizeAngle(angle);
     const rotation = normalizeAngle(direction + Math.PI / 2) * 180 / Math.PI;
-    const center = electronMarkLabelClearer(molecule, atom, pageWidth, pageHeight,
-      { width: 18, height: 18, rotation }, true, false)({
-      x: atom.x + Math.cos(direction) * radius,
-      y: atom.y + Math.sin(direction) * radius
+    const mark = { width: nativeChargeMarkSizePx, height: nativeChargeMarkSizePx, rotation };
+    // Gap angles and the tangent are in page space. Clear the label in its own frame.
+    const localDirection = direction - turn;
+    const localFrame = electronMarkFrameHalfExtents({ ...mark, rotation: rotation - molecule.rotation });
+    const { clearLabel, insideLabel } = electronMarkLabelClearer(molecule, atom, localFrame, true);
+    const localCenter = clearLabel({
+      x: atom.x + Math.cos(localDirection) * radius,
+      y: atom.y + Math.sin(localDirection) * radius
     });
-    if (center) return { center, rotation };
+    if (insideLabel(localCenter)) continue;
+    const center = transformPointForObject(molecule, localCenter);
+    const bounded = clampElectronMarkCenterToPage(center, pageWidth, pageHeight, electronMarkFrameHalfExtents(mark));
+    // Clamping would shift the center off the chosen ray.
+    if (bounded.x === center.x && bounded.y === center.y) return { center, rotation };
   }
   return undefined;
 }
@@ -4362,12 +4375,8 @@ export function nativeRadicalPlacementPointForAtom(
     && object.anchor.kind === "atom" && object.anchor.objectId === molecule.id && object.anchor.atomId === atomId);
   if (!occupied) return nativeChargePlacementPointForAtom(molecule, atomId, objects, pageWidth, pageHeight);
   // Retain the existing distance score as a preference among unoccupied candidates.
-  const obstacles = objects.map(object => {
-    if (object.type !== "electron-mark" || object.markKind !== "radical-dot" && object.markKind !== "charge") return object;
-    // Stored handles are in page coordinates; the candidate search runs in the atom's frame.
-    const center = inverseTransformPointForObject(molecule, { x: object.x + object.width / 2, y: object.y + object.height / 2 });
-    return { ...object, markKind: "charge" as const, x: center.x - object.width / 2, y: center.y - object.height / 2 };
-  });
+  const obstacles = objects.map(object => object.type === "electron-mark" && object.markKind === "radical-dot"
+    ? { ...object, markKind: "charge" as const } : object);
   const localPoint = electronMarkPlacementPointForAtom(molecule, atomId, obstacles, pageWidth, pageHeight, {
     avoidLabelOverlap: false,
     occupiedMarks: objects.filter((object): object is ElectronMarkObject => object.type === "electron-mark"
@@ -4377,7 +4386,8 @@ export function nativeRadicalPlacementPointForAtom(
 }
 
 /**
- * Shared charge-tool/drop placement. The caller supplies its chain-growth slot, if any;
+ * Shared charge-tool/drop placement. Candidates, including any growth slot supplied by the
+ * caller, use the molecule's frame. Existing marks have page coordinates.
  * Drops clear the mark's whole rotated frame from the current atom-label ink; the charge tool
  * keeps its original placement and association radius by disabling label clearance.
  * Call after chemistry reconciliation when transferring a mark: charge changes implicit H.
@@ -4402,30 +4412,21 @@ export function electronMarkPlacementPointForAtom(
   // Charge/radical tools retain the growth slot unless another mark occupies it.
   if (!avoidLabelOverlap && options.growthPoint && !options.occupiedMarks?.length) return options.growthPoint;
   const mark = options.mark ?? { width: 18, height: 18, rotation: 0 };
-  const radians = degreesToRadians(mark.rotation);
-  const halfWidth = (Math.abs(Math.cos(radians)) * mark.width + Math.abs(Math.sin(radians)) * mark.height) / 2;
-  const halfHeight = (Math.abs(Math.sin(radians)) * mark.width + Math.abs(Math.cos(radians)) * mark.height) / 2;
+  const frame = electronMarkFrameHalfExtents(mark);
+  const { halfWidth, halfHeight } = frame;
   const clearance = 2;
-  const occupiedFrames = (options.occupiedMarks ?? []).map(mark => {
-    const radians = degreesToRadians(mark.rotation);
-    return {
-      x: mark.x + mark.width / 2, y: mark.y + mark.height / 2,
-      halfWidth: (Math.abs(Math.cos(radians)) * mark.width + Math.abs(Math.sin(radians)) * mark.height) / 2,
-      halfHeight: (Math.abs(Math.sin(radians)) * mark.width + Math.abs(Math.cos(radians)) * mark.height) / 2
-    };
-  });
-  const clearLabel = electronMarkLabelClearer(molecule, atom, pageWidth, pageHeight, mark, avoidLabelOverlap);
+  const occupiedFrames = (options.occupiedMarks ?? []).map(mark => ({
+    x: mark.x + mark.width / 2, y: mark.y + mark.height / 2, ...electronMarkFrameHalfExtents(mark)
+  }));
+  const { clearLabel, insideLabel } = electronMarkLabelClearer(molecule, atom, frame, avoidLabelOverlap);
   const clearPoint = (point: LayoutPoint): LayoutPoint | undefined => {
-    const bounded = clearLabel(point);
-    if (!bounded) return undefined;
+    const bounded = clampElectronMarkCenterToPage(clearLabel(point), pageWidth, pageHeight, frame);
+    if (insideLabel(bounded)) return undefined;
     if (occupiedFrames.length) {
       // Tool/import handles remain unrotated in page coordinates, even on a rotated molecule.
       // Match their final page-edge clamp before checking their whole frames, not just the ink.
       const pagePoint = transformPointForObject(molecule, bounded);
-      const center = {
-        x: clamp(pagePoint.x, halfWidth, Math.max(halfWidth, pageWidth - halfWidth)),
-        y: clamp(pagePoint.y, halfHeight, Math.max(halfHeight, pageHeight - halfHeight))
-      };
+      const center = clampElectronMarkCenterToPage(pagePoint, pageWidth, pageHeight, frame);
       if (occupiedFrames.some(frame => Math.abs(center.x - frame.x) < halfWidth + frame.halfWidth + clearance
         && Math.abs(center.y - frame.y) < halfHeight + frame.halfHeight + clearance)) return undefined;
     }
@@ -4464,7 +4465,7 @@ export function electronMarkPlacementPointForAtom(
   const otherAtoms = molecule.atoms.filter(candidate => candidate.id !== atomId);
   const chargeCenters = objects
     .filter((object): object is ElectronMarkObject => object.type === "electron-mark" && object.markKind === "charge")
-    .map(mark => ({ x: mark.x + mark.width / 2, y: mark.y + mark.height / 2 }));
+    .map(mark => inverseTransformPointForObject(molecule, { x: mark.x + mark.width / 2, y: mark.y + mark.height / 2 }));
   const ringStep = Math.max(mark.width, mark.height) + clearance;
   const ringCount = occupiedFrames.length ? 1 + Math.ceil(Math.hypot(pageWidth, pageHeight) / ringStep) : 1;
   for (let ring = 0; ring < ringCount; ring++) {
@@ -9462,7 +9463,8 @@ export function transformPointForObject(object: DocumentObject, point: LayoutPoi
   return rotatePoint(point, objectRotationCenter(object), degreesToRadians(object.rotation));
 }
 
-function inverseTransformPointForObject(object: DocumentObject, point: LayoutPoint): LayoutPoint {
+/** @internal Convert a page point into the object's unrotated coordinate frame. */
+export function inverseTransformPointForObject(object: DocumentObject, point: LayoutPoint): LayoutPoint {
   if (object.rotation === 0) {
     return point;
   }

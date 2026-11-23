@@ -40,6 +40,8 @@ import type {
 } from "@chemdraft/plugin-api";
 import {
   PluginHost,
+  resolveObjectOnPage,
+  resolveScopedObject,
   validateTrustedPluginManifest,
   type CommandDefinition,
   type CommandRegistry,
@@ -335,12 +337,15 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
         Promise.resolve({ available: false, reason: "Structure layout engine unavailable." }) :
         options.buildStructureFromSmiles ? options.buildStructureFromSmiles(request) : structureFromSmilesForPlugin(request, getDocument),
       inspectStructure: inspectStructureOffThread,
-      structureToName: async request => {
+      structureToName: async (request, pageId) => {
         const engine = options.structureNamingEngine ?? new TauriStructureNamingEngine();
         const status = await engine.status();
         if (status.state === "unsupported") return { status: "unsupported", reason: status.detail ?? "This computer cannot run the naming engine." };
         if (status.state !== "installed") return { status: "engineNotInstalled" };
-        const molecule = getDocument()?.pages.flatMap(page => page.objects).find(object => object.id === request.objectId);
+        const document = getDocument();
+        // By page and id: an id that also names an object on another page never resolves to it.
+        const molecule = !document ? undefined : pageId !== undefined ? resolveObjectOnPage(document, pageId, request.objectId)?.object
+          : resolveScopedObject(document, request.objectId).object;
         if (!molecule || molecule.type !== "molecule") throw new Error("The requested molecule is unavailable.");
         return nameStructureForPlugin(molecule, engine, status, options.namingCanonicalizer);
       }
@@ -361,6 +366,9 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       return port.runWrite(apply);
     }),
     readDocument: options.getAssistantDocument ?? (tabId => getAssistantHistoryPort().read(tabId)),
+    // The same per-tab document identity public requests use, so a legacy request never follows its
+    // tab into a replaced document.
+    captureDocument: options.captureRequestDocument,
     transactions: options.assistantTransactions,
   });
   const commandInvocations = new Map<symbol, { pluginId: string; stop: AbortController }>();

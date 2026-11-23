@@ -1,18 +1,31 @@
 import {
+  adoptDerivedDocument,
   applyPatch,
+  applyPatches,
+  isDativeBond,
   type ApplyPatchOptions,
   type ChemDraftDocument,
-  type DocumentObject
+  type DocumentObject,
+  type MoleculeObject
 } from "@chemdraft/chem-core";
+import { ChemistryRefusal, PLUGIN_WRITE_REFUSED, chemistryRefusalOf, refusalSentence } from "./requestWrites/chemistryRefusal";
 import {
   AppliedPatchReceiptSchema,
   type AppliedPatchReceipt,
   type NormalizedProposedDocumentPatch
 } from "@chemdraft/plugin-api";
-import { rebasePluginPatch, writePatchOps } from "@chemdraft/plugin-host";
+import { assertPluginDocumentWriteScope, bareIdTargetPage, objectInWriteScope, rebasePluginPatch,
+  retainedCtabCompatibility, storedCtabReference, writePatchOps, type PageObjectRef, type PluginWriteScopePages } from "@chemdraft/plugin-host";
 import { selectionBounds, translateInsertedDocumentObjects } from "../documentWorkflow";
 import { choosePlacement, objectRect, overlaps as boundsOverlap, pageContentRect, RELATIVE_GAP, unionRects } from "../assistant/placement";
 import type { ViewportRect } from "@chemdraft/viewport-engine";
+import { nativeSingleBondGraphMetadata, tryNativeSingleBondGraphSmiles } from "@chemdraft/document-workflow-core";
+import { nativeElementFromAtomLabel } from "@chemdraft/layout-engine";
+import {
+  assertChemistryClaims, assertRetainedAnnotationsKept, refreshVerifiedMoleculeChemistry, stableRecord, verifiedChemicalRecord,
+  verifyStoredSources, withoutGeometry
+} from "./requestWrites/storedChemistry";
+import { desktopWriteInspectionContext, inspectMolecule } from "./requestWrites/structureIdentity";
 
 export interface PluginPatchPlacementOptions extends ApplyPatchOptions {
   /** Page-space visible rectangle, read when the write actually commits (after gesture gating). */
@@ -24,6 +37,261 @@ export interface PluginPatchPlacementOptions extends ApplyPatchOptions {
 export interface AppliedPluginDocumentPatch {
   document: ChemDraftDocument;
   receipt: AppliedPatchReceipt;
+}
+
+/** The fields that carry a molecule's chemistry beside its editable graph, for save and export. */
+const STORED_CHEMISTRY_FIELDS = ["structure", "structureFormat", "chemistry", "compatibility", "superatoms", "rGroups"] as const;
+
+/** Match draft molecules with the graphs they had before the batch's updates.
+ * Reviewed proposals are authorized by acceptance and have no command selection scope, but their
+ * insertions are verified exactly like a scoped plugin's. */
+export function refreshPluginPatchChemistry(before: ChemDraftDocument, draft: ChemDraftDocument,
+  rebased: NormalizedProposedDocumentPatch, writeScopeObjectIds?: readonly string[], signal?: AbortSignal,
+  /** Legacy writes: a selected id is in scope only on the page its selection named. */
+  scopePages?: PluginWriteScopePages
+): Promise<ChemDraftDocument> | undefined {
+  const scope = writeScopeObjectIds && new Set(writeScopeObjectIds);
+  // Send-time pins resolve only on their own page; never a same-id object elsewhere.
+  const inserted = new Set<string>();
+  const atomUpdates = new Set<string>();
+  const storedUpdates = new Set<string>();
+  const positions = writePatchOps(rebased.patch).filter(op => {
+    if (op.op === "addObject") inserted.add(op.object.id);
+    if (op.op === "updateObject" && "atoms" in op.changes) atomUpdates.add(op.objectId);
+    if (op.op === "updateObject" && STORED_CHEMISTRY_FIELDS.some(key => key in op.changes)) storedUpdates.add(op.objectId);
+    return op.op === "addObject" || op.op === "addAnnotation" || op.op === "removeObject" ||
+      op.op === "removeAnnotation" || op.op === "reorderObject" || op.op === "setObjectOrder";
+  });
+  // Replay ordering and membership changes so molecule slots identify the same occurrence,
+  // even if a batch reordered duplicate ids or edited a molecule it had just inserted.
+  const baseline = positions.length ? applyPatches(before, positions, {
+    preserveRepeatUnitBrackets: true, deferGroupCleanup: true, now: draft.updatedAt
+  }) : before;
+  const context = desktopWriteInspectionContext(signal);
+  const edits: Promise<void>[] = [];
+  let retained = false;
+  const pages = draft.pages.map((page, pageIndex) => {
+    // Reviewed edits can also remove orphaned brackets and groups during patch application.
+    const prior = baseline.pages[pageIndex]!.objects.filter(object => object.type === "molecule");
+    let moleculeIndex = 0;
+    let objects = page.objects;
+    for (const [index, object] of page.objects.entries()) {
+      if (object.type !== "molecule") continue;
+      const previous = prior[moleculeIndex++];
+      const isInsertion = inserted.has(object.id);
+      if (previous?.id !== object.id || (scope && !isInsertion && !objectInWriteScope(scope, scopePages, page.id, object.id))) continue;
+      // Every insertion is verified, whether a scoped command wrote it or the user accepted it.
+      const verifyInsertion = isInsertion;
+      // An authored atom move can change 2D stereo, but only where geometry defines stereo, and
+      // never when every atom moved together keeping every stereo side. Host placement
+      // translates an insertion as a unit.
+      const graphChanged = object !== previous && (graphSignature(previous) !== graphSignature(object) ||
+        atomUpdates.has(object.id) && hasGeometryStereo(object) &&
+        !(movedAsUnit(previous, object) && keptStereoSides(previous, object)));
+      // A write to the stored records must agree with the graph the canvas draws, changed or not.
+      const storedChanged = object !== previous && storedUpdates.has(object.id) && storedRecord(previous) !== storedRecord(object);
+      if (!verifyInsertion && !graphChanged && !storedChanged) {
+        // The graph and its chemistry are unchanged, but a retained CTAB still holds the old atom
+        // coordinates. Keep them beside it, as a request write does, so a later edit can map its stereo.
+        if (object !== previous && atomUpdates.has(object.id)) {
+          const compatibility = retainedCtabCompatibility(previous, object);
+          if (compatibility !== previous.compatibility) {
+            if (objects === page.objects) objects = [...objects];
+            objects[index] = { ...object, compatibility };
+            retained = true;
+          }
+        }
+        continue;
+      }
+      // Records the canvas itself derives from this graph cannot disagree with it.
+      if (verifyInsertion && !graphChanged && !storedChanged && storesNativeDerivation(object)) continue;
+      // Give existing scope refusals priority over chemistry inspection of a draft that cannot commit.
+      if (!edits.length && writeScopeObjectIds) assertPluginDocumentWriteScope(before, draft, rebased, writeScopeObjectIds, scopePages);
+      if (objects === page.objects) objects = [...objects];
+      edits.push((async () => {
+        try {
+          if (!object.atoms.length) throw new ChemistryRefusal("the molecule has no drawn atoms to check against", "The molecule has no editable atoms to verify.");
+          if (verifyInsertion && !graphChanged && !storedChanged) {
+            // Verification only: an insertion that matches its graph keeps its records as authored.
+            const insertion = withoutBracketContext(object);
+            await verifiedChemicalRecord(context, insertion, await inspectMolecule(context, insertion));
+            return;
+          }
+          const original = withoutBracketContext(previous);
+          if (verifyInsertion) {
+            await verifiedChemicalRecord(context, original, await inspectMolecule(context, original));
+          } else if (previous.structure || previous.compatibility?.unknown.smiles !== undefined) {
+            const graph = await inspectMolecule(context, original);
+            await verifyStoredSources(context, previous, { graph, reference: storedCtabReference(previous) });
+          }
+          const graph = await inspectMolecule(context, withoutBracketContext(object));
+          if (storedChanged) assertRetainedAnnotationsKept(previous, object);
+          await verifyStoredSources(context, object, { graph, alreadyVerified: previous });
+          const refreshed = refreshVerifiedMoleculeChemistry(object, graph, previous.structureFormat);
+          // A supplied record is checked against the graph's, then replaced by it like every other field.
+          if (storedChanged) assertChemistryClaims(withoutBracketContext(object), withoutBracketContext(previous), refreshed);
+          if (refreshed.structureFormat === "molfile-v3000") await verifyStoredSources(context, refreshed, { graph });
+          objects[index] = refreshed;
+        } catch (error) {
+          signal?.throwIfAborted();
+          const technical = `Plugin write refused: cannot refresh stored chemistry for molecule "${object.id}". ${describePatchFailure(error)}`;
+          const refusal = chemistryRefusalOf(error);
+          if (!refusal) throw new Error(technical);
+          // The user sees the plain sentence; the full text, with the molecule id, goes to the log.
+          const detail = `Plugin write refused: cannot refresh stored chemistry for molecule "${object.id}". ${refusal.detail}`;
+          console.warn(detail);
+          throw new ChemistryRefusal(refusal.reason, detail, refusalSentence(PLUGIN_WRITE_REFUSED, refusal.reason));
+        }
+      })());
+    }
+    return objects === page.objects ? page : { ...page, objects };
+  });
+  if (edits.length) return Promise.all(edits).then(() => adoptDerivedDocument(draft, { ...draft, pages }));
+  if (retained) return Promise.resolve(adoptDerivedDocument(draft, { ...draft, pages }));
+}
+
+/** Everything a molecule stores for save and export beside its graph, without geometry. */
+function storedRecord(molecule: MoleculeObject): string {
+  const { superatoms, rGroups } = withoutGeometry(molecule);
+  return stableRecord([molecule.structure, molecule.structureFormat, withoutBracketContext(molecule).chemistry,
+    molecule.compatibility, superatoms, rGroups]);
+}
+
+function graphSignature(molecule: MoleculeObject): string {
+  return JSON.stringify([
+    molecule.atoms.map(atom => JSON.stringify([atom.id, atom.element, atom.formalCharge, atom.isotope,
+      atom.markRadicals, atom.schemeAbbreviation, atom.labelLiteral, atom.hydrogenCount,
+      atom.labelBondSide?.side, atom.labelBondSide?.atomId])).sort(),
+    molecule.bonds.map(bond => {
+      const style = bond.display?.bondStyle;
+      const stereo = bond.order === "single" && (style === "wedge" || style === "hashed" || style === "wavy") ? style : undefined;
+      const dative = isDativeBond(bond);
+      const endpoints = [bond.fromAtomId, bond.toAtomId];
+      if (!stereo && !dative) endpoints.sort();
+      return JSON.stringify([endpoints, bond.order, bond.stereo, stereo, dative]);
+    }).sort()
+  ]);
+}
+
+/** 2D coordinates define stereo only through wedges and hashes, or across a double bond whose
+ * ends both carry another substituent. Elsewhere a coordinate change cannot change chemistry. */
+function hasGeometryStereo({ bonds }: MoleculeObject): boolean {
+  const degree = new Map<string, number>();
+  for (const bond of bonds) {
+    for (const id of [bond.fromAtomId, bond.toAtomId]) degree.set(id, (degree.get(id) ?? 0) + 1);
+  }
+  return bonds.some(bond => bond.display?.bondStyle === "wedge" || bond.display?.bondStyle === "hashed" ||
+    bond.order === "double" && degree.get(bond.fromAtomId)! > 1 && degree.get(bond.toAtomId)! > 1);
+}
+
+/** True when the same atoms moved by one translation, rotation and uniform scale. Such a move
+ * keeps every wedge's handedness and every double bond's sides; a reflection or a reshaped
+ * molecule does not count. */
+function movedAsUnit(before: MoleculeObject, after: MoleculeObject): boolean {
+  const start = new Map(before.atoms.map(atom => [atom.id, atom]));
+  const pairs = after.atoms.map(atom => [start.get(atom.id), atom] as const);
+  if (pairs.length !== start.size || pairs.some(([from]) => !from)) return false;
+  if (!pairs.length) return true;
+  const centre = (points: readonly { x: number; y: number }[]) => ({
+    x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
+    y: points.reduce((sum, point) => sum + point.y, 0) / points.length
+  });
+  const a = centre(pairs.map(([from]) => from!)), b = centre(pairs.map(([, to]) => to));
+  const offsets = pairs.map(([from, to]) => ({ ux: from!.x - a.x, uy: from!.y - a.y, vx: to.x - b.x, vy: to.y - b.y }));
+  // The least-squares similarity maps u to z·u, with z = Σ v·conj(u) / Σ |u|² as a complex number.
+  let spread = 0, real = 0, imaginary = 0, extent = 0;
+  for (const { ux, uy, vx, vy } of offsets) {
+    spread += ux * ux + uy * uy;
+    real += vx * ux + vy * uy;
+    imaginary += vy * ux - vx * uy;
+    extent = Math.max(extent, Math.hypot(ux, uy), Math.hypot(vx, vy));
+  }
+  const tolerance = 1e-6 * Math.max(1, extent);
+  if (!(spread > 0)) return offsets.every(({ vx, vy }) => Math.hypot(vx, vy) <= tolerance);
+  const zx = real / spread, zy = imaginary / spread;
+  if (!(Math.hypot(zx, zy) > 1e-9)) return false;
+  return offsets.every(({ ux, uy, vx, vy }) => Math.hypot(vx - (zx * ux - zy * uy), vy - (zx * uy + zy * ux)) <= tolerance);
+}
+
+/** Smallest |sin| of the angle between a stereo bond and its reference that still reads as a side.
+ * Fixed rather than scaled by the molecule's size, so a near-collinear substituent never counts as
+ * kept, however large the drawing. */
+const STEREO_SIDE_EPSILON = 1e-3;
+
+/** True when every orientation that 2D geometry gives stereo is clearly the same before and after:
+ * each substituent's side of a stereo double bond, and the turn between each pair of neighbours of
+ * a wedged or hashed bond's atoms. `movedAsUnit` alone allows a residual that grows with the
+ * molecule's extent, which can hide a substituent crossing an axis; this check cannot. */
+function keptStereoSides(before: MoleculeObject, after: MoleculeObject): boolean {
+  const start = new Map(before.atoms.map(atom => [atom.id, atom]));
+  const end = new Map(after.atoms.map(atom => [atom.id, atom]));
+  const neighbours = new Map<string, string[]>();
+  for (const bond of after.bonds) {
+    neighbours.set(bond.fromAtomId, [...neighbours.get(bond.fromAtomId) ?? [], bond.toAtomId]);
+    neighbours.set(bond.toAtomId, [...neighbours.get(bond.toAtomId) ?? [], bond.fromAtomId]);
+  }
+  // +1 or -1 for the side of `other` relative to the ray from `centre` to `reference`, 0 if degenerate.
+  const side = (atoms: typeof start, centre: string, reference: string, other: string) => {
+    const c = atoms.get(centre), r = atoms.get(reference), o = atoms.get(other);
+    if (!c || !r || !o) return 0;
+    const rx = r.x - c.x, ry = r.y - c.y, ox = o.x - c.x, oy = o.y - c.y;
+    const lengths = Math.hypot(rx, ry) * Math.hypot(ox, oy);
+    if (!(lengths > 0) || !Number.isFinite(lengths)) return 0;
+    const sine = (rx * oy - ry * ox) / lengths;
+    return Math.abs(sine) >= STEREO_SIDE_EPSILON ? Math.sign(sine) : 0;
+  };
+  const kept = (centre: string, reference: string, other: string) => {
+    const was = side(start, centre, reference, other);
+    return was !== 0 && was === side(end, centre, reference, other);
+  };
+  for (const bond of after.bonds) {
+    const ends = [bond.fromAtomId, bond.toAtomId] as const;
+    if (bond.order === "double") {
+      const substituents = ends.map((centre, index) => (neighbours.get(centre) ?? []).filter(id => id !== ends[1 - index]));
+      if (substituents.every(list => list.length) && ends.some((centre, index) =>
+        substituents[index]!.some(other => !kept(centre, ends[1 - index]!, other)))) return false;
+    }
+    if (bond.display?.bondStyle === "wedge" || bond.display?.bondStyle === "hashed") {
+      for (const centre of ends) {
+        const around = neighbours.get(centre) ?? [];
+        for (let i = 0; i < around.length; i++) {
+          for (let j = i + 1; j < around.length; j++) if (!kept(centre, around[i]!, around[j]!)) return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+
+/** chem-core regenerates this page-context note on every commit. It does not describe the graph:
+ * the stored chemistry of a repeat-unit member is that of the one drawn copy. */
+function withoutBracketContext(molecule: MoleculeObject): MoleculeObject {
+  const warnings = molecule.chemistry?.warnings;
+  if (!warnings?.some(warning => warning.code === "chemistry.bracket_multiplier")) return molecule;
+  return { ...molecule, chemistry: { ...molecule.chemistry!,
+    warnings: warnings.filter(warning => warning.code !== "chemistry.bracket_multiplier") } };
+}
+
+/** The structure, cached SMILES and chemistry are exactly what the canvas derives from this graph
+ * (`refreshNativeSingleBondGraph`), so they cannot be stale. Limited to plain elements with no
+ * radicals, no unusual bonds and no geometry-defined stereo, which the native writer cannot record. */
+function storesNativeDerivation(molecule: MoleculeObject): boolean {
+  const { atoms, bonds } = molecule;
+  if (!atoms.length || molecule.superatoms.length || molecule.rGroups.length || molecule.structureFormat !== "smiles") return false;
+  if (atoms.some(atom => atom.labelLiteral || atom.schemeAbbreviation || atom.markRadicals || !nativeElementFromAtomLabel(atom.element))) {
+    return false;
+  }
+  if (bonds.some(bond => bond.stereo !== undefined || bond.display?.bondStyle === "wavy" || isDativeBond(bond) ||
+      (bond.order !== "single" && bond.order !== "double" && bond.order !== "triple")) || hasGeometryStereo(molecule)) {
+    return false;
+  }
+  const native = tryNativeSingleBondGraphSmiles(atoms, bonds);
+  if (!("smiles" in native) || !native.smiles || native.smiles !== molecule.structure) return false;
+  const retained = molecule.compatibility?.unknown ?? {};
+  if (Object.keys(retained).some(key => key !== "smiles") ||
+      (retained.smiles !== undefined && retained.smiles !== molecule.structure)) return false;
+  return !molecule.chemistry ||
+    stableRecord(withoutBracketContext(molecule).chemistry) === stableRecord(nativeSingleBondGraphMetadata(atoms, bonds));
 }
 
 /**
@@ -81,26 +349,32 @@ export function applyPluginDocumentPatch(
     }
     patched = translateInsertedDocumentObjects(patched, objects.map(object => object.id), x - bounds.x, y - bounds.y);
   }
+  // Record each touched object by page and id: the page an insertion names, and the page chem-core's
+  // bare-id op acted on (its first occurrence). A same-id object on another page is never "touched".
   const touched = new Set<string>();
+  const touchedRefs: PageObjectRef[] = [];
+  const touch = (pageId: string | undefined, objectId: string) => {
+    if (pageId === undefined || touched.has(`${pageId}\u0000${objectId}`)) return;
+    touched.add(`${pageId}\u0000${objectId}`);
+    touchedRefs.push({ pageId, objectId });
+  };
   for (const op of writePatchOps(proposed.patch)) {
     switch (op.op) {
-      case "addObject": touched.add(op.object.id); break;
-      case "addAnnotation": touched.add(op.annotation.id); break;
+      case "addObject": touch(op.pageId, op.object.id); break;
+      case "addAnnotation": touch(op.pageId, op.annotation.id); break;
       case "updateObject":
       case "moveObject":
-      case "reorderObject": touched.add(op.objectId); break;
-      case "setObjectOrder": op.objectIds.forEach((id) => touched.add(id)); break;
+      case "reorderObject": touch(bareIdTargetPage(patched, op.objectId), op.objectId); break;
+      case "setObjectOrder": op.objectIds.forEach((id) => touch(op.pageId, id)); break;
     }
   }
   const objectIds = patched.pages.flatMap((page) =>
-    page.objects.filter((object) => touched.has(object.id)).map((object) => object.id)
+    page.objects.filter((object) => touched.has(`${page.id}\u0000${object.id}`)).map((object) => object.id)
   );
 
   let selected = patched;
   if (objectIds.length > 0) {
-    const page = patched.pages.find((candidate) =>
-      objectIds.every((objectId) => candidate.objects.some((object) => object.id === objectId))
-    );
+    const page = patched.pages.find((candidate) => touchedRefs.every((ref) => ref.pageId === candidate.id));
     if (page) {
       selected = applyPatch(
         patched,
@@ -219,6 +493,8 @@ export function describePatchFailure(error: unknown): string {
     const detail = typeof first?.message === "string" ? first.message : "invalid value";
     return `the proposed structure is not valid (${path ? `${path}: ` : ""}${detail})`;
   }
+  const refusal = chemistryRefusalOf(error);
+  if (refusal) return refusal.reason;
   const message = error instanceof Error ? error.message : String(error);
   return message.split("\n")[0]!.replace(/\.$/, "") || "unknown error";
 }

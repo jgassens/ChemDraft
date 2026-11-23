@@ -3,7 +3,10 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { MemoryStorage } from "../testSupport/memoryStorage";
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("@tauri-apps/api/core", async (original) => ({
+  ...await original<typeof import("@tauri-apps/api/core")>(),
+  invoke: vi.fn().mockResolvedValue(undefined)
+}));
 let root: Root | undefined, runtime: typeof import("./runtime"), container: HTMLDivElement;
 afterEach(() => {
   act(() => root?.unmount()); root = undefined; container?.remove(); runtime?.perfProbe?.stop();

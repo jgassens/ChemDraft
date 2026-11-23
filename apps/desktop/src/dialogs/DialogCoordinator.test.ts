@@ -1,5 +1,7 @@
 import { exportFixture } from "./exportTestFixtures";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { TOUR_NAME_COMMAND } from "../tour/tourCommands";
+import { tourBondKeys } from "../tour/tourSteps";
 import { DialogCoordinator } from "./DialogCoordinator";
 import { dialogEnvelope, type DialogCloseReason, type DialogMessage } from "./dialogProtocol";
 import type { DialogDelivery, DialogTransport } from "./dialogTransport";
@@ -23,6 +25,27 @@ function host(options: { timeout?: number; kind?: string } = {}) {
 }
 afterEach(() => vi.useRealTimers());
 describe("DialogCoordinator", () => {
+  it("sends the guided tour snapshot consumed by the Rust dialog host", async () => {
+    const h = host({ kind: "guidedTour" });
+    const randomUUID = vi.spyOn(crypto, "randomUUID")
+      .mockReturnValueOnce("00000000-0000-4000-8000-000000000001")
+      .mockReturnValueOnce("00000000-0000-4000-8000-000000000002");
+    const bondKeys = tourBondKeys({
+      chemdraft: { atom: { "atom.addSingleBondToHoveredAtom": [] } },
+      chemdraw: { atom: { "atom.addSingleBondToHoveredAtom": ["j"] } }
+    });
+    try {
+      await h.coordinator.openGuidedTour("chemdraft", false, [TOUR_NAME_COMMAND], bondKeys);
+      expect(h.transport.open).toHaveBeenCalledOnce();
+      const [[snapshot]] = vi.mocked(h.transport.open).mock.calls;
+      await expect(JSON.stringify(snapshot, null, 2) + "\n")
+        .toMatchFileSnapshot("../../src-tauri/tests/fixtures/guided-tour-open.json");
+    } finally {
+      randomUUID.mockRestore();
+      await h.coordinator.dispose();
+    }
+  });
+
   it("closes a ready page question on abort and ignores a late Enlarge answer", async () => {
     const h = host({ kind: "pageEnlargement" });
     const abort = new AbortController();

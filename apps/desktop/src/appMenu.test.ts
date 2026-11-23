@@ -73,6 +73,24 @@ describe("app menu model", () => {
     expect(officeObjectFileMenu({ ...update, enabled: false }, close, "windows").items[0]).toMatchObject({ enabled: false });
   });
 
+  it.each([["macos", "app"], ["windows", "help"]] as const)("places About ChemDraft in the %s menu", (platform, sectionId) => {
+    const sections = buildAppMenuModel({ ...EMPTY_CONTEXT, platform });
+    const about = expect.objectContaining({ kind: "command", commandId: "help.about", label: "About ChemDraft", enabled: true });
+    const section = sections.find(section => section.id === sectionId)!;
+    expect(section.items).toContainEqual(about);
+    if (platform === "macos") expect(section.items[0]).toEqual(about);
+    expect(flattenAppMenuCommands(sections).filter(item => item.commandId === "help.about")).toHaveLength(1);
+  });
+
+  it("uses the same routed About command in the native app and Help menus", () => {
+    const native = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+    const macMenu = native.split("fn create_native_app_menu<R: Runtime>")[1]!.split("fn create_page_setup_menu")[0]!;
+    expect(macMenu).toMatch(/&\[\s*&about_menu_item\(app\)\?/);
+    const helpMenu = native.split(/"Help",\s*true,/)[1]!.split("],")[0]!;
+    expect(helpMenu).toMatch(/#\[cfg\(not\(target_os = "macos"\)\)\]\s*&about_menu_item\(app\)\?/);
+    expect(parseNativeMenuCommandIds()).toContain("help.about");
+  });
+
   it.each(["macos", "windows"] as const)("keeps a separate plugin alias block after the drawing styles on %s", platform => {
     const context = { ...EMPTY_CONTEXT, platform };
     const base = buildAppMenuModel(context).find(section => section.id === "structure")!;
@@ -406,7 +424,15 @@ describe("native Window and full-screen menus", () => {
     expect(windowMenu).toContain("PredefinedMenuItem::minimize(app, None)");
     expect(windowMenu).toContain("PredefinedMenuItem::maximize(app, None)");
     expect(windowMenu).toContain("CLOSE_WINDOW_WINDOW_MENU_ID");
-    expect(windowMenu).toMatch(/#\[cfg\(not\(target_os = "macos"\)\)\]\s*&PredefinedMenuItem::close_window\(app, None\)/);
+    // macOS and Windows keep muda's predefined items; Windows keeps the predefined Close Window.
+    expect(windowMenu).toMatch(/#\[cfg\(not\(target_os = "linux"\)\)\]\s*&PredefinedMenuItem::minimize\(app, None\)/);
+    expect(windowMenu).toMatch(/#\[cfg\(not\(target_os = "linux"\)\)\]\s*&PredefinedMenuItem::maximize\(app, None\)/);
+    expect(windowMenu).toMatch(/#\[cfg\(windows\)\]\s*&PredefinedMenuItem::close_window\(app, None\)/);
+    expect(windowMenu.match(/PredefinedMenuItem::(?:minimize|maximize|close_window)\(/g)).toHaveLength(3);
+    // muda leaves the predefined items out of GTK menus, so Linux builds ordinary items instead.
+    expect(windowMenu).toMatch(/#\[cfg\(target_os = "linux"\)\]\s*&linux_window_menu_item\(app, LINUX_MINIMIZE_MENU_ID\)\?/);
+    expect(windowMenu).toMatch(/#\[cfg\(target_os = "linux"\)\]\s*&linux_window_menu_item\(app, LINUX_TOGGLE_MAXIMIZE_MENU_ID\)\?/);
+    expect(windowMenu).toMatch(/#\[cfg\(target_os = "linux"\)\]\s*&linux_window_menu_item\(app, LINUX_CLOSE_WINDOW_WINDOW_MENU_ID\)\?/);
   });
 
   it("builds one native full-screen item in View with the current document state on macOS", () => {
@@ -467,7 +493,7 @@ describe("Preferences placement", () => {
     expect(appMenu.indexOf("&preferences_menu_item(app)?")).toBeLessThan(appMenu.indexOf("PredefinedMenuItem::services"));
     const item = source.split("fn preferences_menu_item<R: Runtime>")[1]!.split("fn create_view_menu")[0]!;
     expect(item).toContain("PREFERENCES_TOGGLE_COMMAND_ID");
-    expect(item).toContain('Some("CmdOrCtrl+,")');
+    expect(item).toContain('native_menu_shortcut(app, PREFERENCES_TOGGLE_COMMAND_ID, "CmdOrCtrl+,")');
     const viewMenu = source.split("fn create_view_menu<R: Runtime>")[1]!.split("fn create_toolbars_menu")[0]!;
     expect(viewMenu).not.toContain("preferences");
     expect(source).toContain('const PREFERENCES_TOGGLE_COMMAND_ID: &str = "view.togglePreferences";');

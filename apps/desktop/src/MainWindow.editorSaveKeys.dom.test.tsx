@@ -13,6 +13,7 @@ import { DOM_COMMAND_EVENT } from "./window-manager";
 import { setNativePromptProvider, type NativePromptOptions } from "./nativePrompt";
 import { saveAskToSaveBeforeQuit } from "./quitSettings";
 import { MemoryStorage } from "./testSupport/memoryStorage";
+import { KEYBINDING_STORAGE_KEY, saveKeybindingSettings } from "./keybindingSettings";
 
 const native = vi.hoisted(() => ({
   writeFile: vi.fn<(path: string, contents: string) => Promise<void>>(),
@@ -175,6 +176,23 @@ describe.each(["macos", "windows"] as const)("inline editor app shortcuts (%s)",
       expect([field.selectionStart, field.selectionEnd]).toEqual([1, 1]);
       expect(snapshot().file.dirty).toBe(false);
     });
+
+    it.each([["b", "document.save"], ["i", "document.saveAs"]] as const)(
+      "lets a Save shortcut configured on Mod+%s win over the editor's formatting chord", async (letter, commandId) => {
+        saveKeybindingSettings({ scheme: "chemdraft", overrides: { chemdraft: { commands: { [commandId]: [`Mod+${letter.toUpperCase()}`] } } } });
+        await act(async () => { window.dispatchEvent(new StorageEvent("storage", { key: KEYBINDING_STORAGE_KEY })); });
+        const draft = kind === "atom label" ? "OMe" : "abc";
+        await type(draft);
+        const before = structuredClone(snapshot().document.pages[0].objects[0]);
+        const chord = await key(letter);
+        expect(chord.defaultPrevented).toBe(true);
+        expect(native.writeFile, "the configured Save must run").toHaveBeenCalledTimes(1);
+        expect(native.saveDialog).toHaveBeenCalledTimes(commandId === "document.saveAs" ? 1 : 0);
+        expect(contents(persisted())).toBe(draft);
+        if (kind === "text box") {
+          expect({ ...persisted().pages[0].objects[0], text: "" }, "no formatting applied").toEqual({ ...before, text: "" });
+        }
+      });
 
     it("retains editor-local select/copy/paste/undo and leaves document history alone", async () => {
       const original = editor().value;

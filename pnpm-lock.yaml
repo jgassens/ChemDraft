@@ -131,6 +131,9 @@ importers:
       '@scena/react-ruler':
         specifier: ^0.19.0
         version: 0.19.0
+      '@tanstack/react-hotkeys':
+        specifier: 0.27.1
+        version: 0.27.1(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       '@tauri-apps/api':
         specifier: ^2.11.0
         version: 2.11.0
@@ -1381,6 +1384,17 @@ packages:
 
   '@swc/types@0.1.27':
     resolution: {integrity: sha512-K6h3iUlqeM946U4sXFYeahefR1YBbXJvko+hv8WS8/0BNJ4OHiHRywMnQUJCqkR7Y9+hqQ1TvEpiKqUhz7NEFg==}
+
+  '@tanstack/hotkeys@0.33.0':
+    resolution: {integrity: sha512-xZ7A28qJ2YUq+bxhclEquxvM6LpwGMLUK0daiNC2hJ5frXHeGFdyjgG+Onz77ZwQw2XWHK5hLnWhQQ1vCZUkQQ==}
+    engines: {node: '>=20'}
+
+  '@tanstack/react-hotkeys@0.27.1':
+    resolution: {integrity: sha512-HFs7zakSgaO3FqOPp2HHJpeixKdWL+LLG0l2oMloyY24xbVfsOKD/8YN8QCD4sseujG0/muXVrB8v5io3f0tDw==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      react: '>=18.0.0'
+      react-dom: '>=18.0.0'
 
   '@tauri-apps/api@2.11.0':
     resolution: {integrity: sha512-7CinYODhky9lmO23xHnUFv0Xt43fbtWMyxZcLcRBlFkcgXKuEirBvHpmtJ89YMhyeGcq20Wuc47Fa4XjyniywA==}
@@ -3950,6 +3964,14 @@ snapshots:
   '@swc/types@0.1.27':
     dependencies:
       '@swc/counter': 0.1.3
+
+  '@tanstack/hotkeys@0.33.0': {}
+
+  '@tanstack/react-hotkeys@0.27.1(react-dom@19.2.6(react@19.2.6))(react@19.2.6)':
+    dependencies:
+      '@tanstack/hotkeys': 0.33.0
+      react: 19.2.6
+      react-dom: 19.2.6(react@19.2.6)
 
   '@tauri-apps/api@2.11.0': {}
 

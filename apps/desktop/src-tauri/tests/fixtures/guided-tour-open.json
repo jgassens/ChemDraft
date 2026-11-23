@@ -1,0 +1,22 @@
+{
+  "protocolVersion": 1,
+  "ownerWindowId": "main",
+  "documentTabId": "guidedTour",
+  "dialogKind": "guidedTour",
+  "sessionId": "00000000-0000-4000-8000-000000000001",
+  "requestId": "00000000-0000-4000-8000-000000000002",
+  "snapshotRevision": 1,
+  "type": "snapshot",
+  "data": {
+    "title": "Take the Tour",
+    "scheme": "chemdraft",
+    "automatic": false,
+    "plugins": [
+      "plugin.opsinNameToStructure.convert"
+    ],
+    "bondKeys": {
+      "chemdraft": null,
+      "chemdraw": "j"
+    }
+  }
+}

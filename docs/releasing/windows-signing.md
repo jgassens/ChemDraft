@@ -83,6 +83,10 @@ certificate, or approval is supplied by the workflow.
 The official SignPath action is pinned to the full commit SHA of its `v2` release.
 Review action updates and trust policy changes as release infrastructure changes.
 
+Set the GitHub repository variable `AUTHENTICODE_SIGNING` to `off` (case-insensitive) while the
+release certificate is pending to skip Authenticode and keep `SIGNPATH_API_TOKEN` in place.
+Once the release certificate is active, delete the variable or set it to `on` to resume signing.
+
 ## Run a release
 
 Use a reviewed commit that has landed on the public repository's `main` branch, with the workflow
@@ -113,14 +117,14 @@ gap and its reason or says there are none. This workflow supplies the Windows ar
    pnpm version, the Rust version from `rust-toolchain.toml`, and Temurin JDK 21. It builds and
    smoke-tests OPSIN's host-native `jlink` runtime; the 3D sidecar is already committed.
 4. Review the logs: stable identifier `org.chemdraft.desktop`, product `ChemDraft`, empty native
-   worktree label, frontend commit stamp, `Authenticode: Valid`, updater verification, and final
-   SHA-256 hashes and byte sizes. Build-time label checks inspect the native build output and built
-   frontend assets. Install and launch the artifact on Windows to confirm its actual title and app
-   identity and complete the update/session-preservation checks in [windows-updates.md](windows-updates.md#verification).
+   worktree label, frontend commit stamp, `Authenticode: Valid` when Authenticode runs, updater
+   verification, and final SHA-256 hashes and byte sizes. Build-time label checks inspect the native
+   build output and built frontend assets. Install and launch the artifact on Windows to confirm its
+   actual title and app identity and complete the update/session-preservation checks in [windows-updates.md](windows-updates.md#verification).
 5. Download **`windows-release`**, which contains the final installer, its `.exe.build.json`,
    `.exe.sig`, `latest.json`, and `SHA256SUMS.txt`. The build record uses `git rev-parse HEAD`
    from the checked-out source and refuses a dirty tree; its SHA-256 and byte size cover the
-   final Authenticode-signed installer. Keep it beside the installer.
+   final installer. Keep it beside the installer.
    **`windows-nsis-unsigned` is input to SignPath, not the release installer.**
    For a local updater signature check, from the repository root run:
 
@@ -133,12 +137,12 @@ gap and its reason or says there are none. This workflow supplies the Windows ar
    `SHA256SUMS.txt` from the upload so a rerun cannot overwrite combined sums with Windows-only entries.
    It refuses a missing or already published release, and requires
    `v<app version>` because the generated feed points to that URL. Before uploading it fetches
-   and peels the destination tag and requires it to resolve to the built commit. It also requires both
-   `authenticode_signed` and `updater_signed` build outputs to be true; these are set only after
-   successful verification. The boolean input `allow_unsigned_upload` defaults to false. Setting it
-   to true explicitly permits an upload with missing signatures and prints a loud workflow warning;
-   use it only for draft dry runs. Only this job has
-   `contents: write`; the build/signing job retains read access. Leave the release draft while testing.
+   and peels the destination tag and requires it to resolve to the built commit. A release upload
+   requires a verified updater `.exe.sig` and generated `latest.json`, and it requires verified
+   Authenticode unless `AUTHENTICODE_SIGNING` is `off`. The boolean input `allow_unsigned_upload`
+   defaults to false. Setting it to true explicitly permits an upload with missing signatures and
+   prints a loud workflow warning. Use it only for draft dry runs. Only this job has
+   `contents: write`. The build/signing job retains read access. Leave the release draft while testing.
    If uploading manually, upload the same final artifacts, without rebuilding or re-signing.
 7. After uploading, the same upload job runs `node tools/release/release-checksums.mjs --tag vX.Y.Z`
    with its draft-visible token to download every attached asset and upload a freshly computed

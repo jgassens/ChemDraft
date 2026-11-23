@@ -76,7 +76,10 @@ export function inspectStructureInWorker(
         return { valid: false, code: "unsupported", reason: "The write cannot verify query atoms or indeterminate bonds." };
       }
       if (!withStereo.get_stereo_tags) return { valid: false, code: "unavailable", reason: "RDKit stereo inspection is unavailable." };
-      result.stereoTags = JSON.parse(withStereo.get_stereo_tags()) as StereoTags;
+      const tags = withStereo.get_stereo_tags();
+      result.stereoTags = JSON.parse(tags) as StereoTags;
+      result.stereochemistry = stereochemistryLabels(tags, 0);
+      result.formalCharge = composition.formalCharge;
       // Native CTAB order is stable across placements. Keep RDKit's atom-local charges,
       // isotopes, radical electrons and stereo, and its bond stereo and group memberships.
       // Canonical isomeric SMILES alone can hide a swap between symmetry-related sites.

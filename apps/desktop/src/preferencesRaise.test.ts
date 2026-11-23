@@ -17,13 +17,14 @@ it("restores the document without focus before creating or raising Preferences o
   const source = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
   const command = source.split("async fn toggle_preferences_window")[1]!.split("fn ensure_preferences_window")[0]!;
   const ensure = source.split("fn ensure_preferences_window")[1]!.split("fn agent_bridge_status")[0]!;
+  const createOrRaise = ensure.split("fn create_or_raise_preferences_window")[1]!;
   const dialogs = readFileSync(new URL("../src-tauri/src/dialog_windows.rs", import.meta.url), "utf8");
   const showPreferences = dialogs.split("fn show_preferences<R: Runtime>")[1]!.split("fn reveal_on_main")[0]!;
   const show = dialogs.split("fn show_on_main<R: Runtime>")[1]!.split("pub(crate) fn configure_on_main")[0]!;
-  expect(command).toContain("ensure_preferences_window(&app)");
+  expect(command).toContain("ensure_preferences_window(&app, keyboard.unwrap_or(false))");
   expect(command).not.toContain("hide()");
   // The tested restore/continue helper waits for native owner restoration on the main thread.
-  expect(ensure).toMatch(/with_preferences_owner_restored\([\s\S]*?run_on_main_thread_blocking\(app, move \|\| \{[\s\S]*?focus_main_document_window_impl\([\s\S]*?&target,\s*MainWindowFocusMode::RestoreForPreferences,[\s\S]*?create_or_raise_preferences_window\(app\)/);
+  expect(ensure).toMatch(/with_preferences_owner_restored\([\s\S]*?run_on_main_thread_blocking\(app, move \|\| \{[\s\S]*?focus_main_document_window_impl\([\s\S]*?&target,\s*MainWindowFocusMode::RestoreForPreferences,[\s\S]*?create_or_raise_preferences_window\(app, keyboard\)/);
   expect(ensure).not.toContain("MainWindowFocusMode::Force");
   const focus = source.split("fn focus_main_document_window_impl<R: Runtime>")[1]!.split("fn focus_native_document_window")[0]!;
   expect(focus).toMatch(/if !should_focus_main_window\(mode\) \{\s*clear_document_key_after_unhide_for_preferences\(\);\s*restore_main_document_window_without_focus\(&window\)\?;\s*return Ok\(true\);\s*\}[\s\S]*?focus_native_document_window\(&window\)\?;\s*window\.set_focus\(\)/);
@@ -32,7 +33,7 @@ it("restores the document without focus before creating or raising Preferences o
   expect(restore).toMatch(/#\[cfg\(windows\)\][\s\S]*?let mut enabled_guard = WindowEnabledGuard::disable\(window\)\?;\s*window\.unminimize\(\)\.map_err[\s\S]*?window\.show\(\)\.map_err[\s\S]*?enabled_guard\.restore\(\)\?;/);
   expect(restore).not.toMatch(/makeKey|makeMainWindow|set_focus\(/);
   // The shared dialog host owns placement and readiness before raising on either platform.
-  expect(ensure).toMatch(/if let Some\(window\) = app\.get_webview_window\(PREFERENCES_WINDOW_LABEL\)[\s\S]*?run_on_main_thread_blocking\(&window, move \|\| dialog_windows::show_preferences\(&target\)\)[\s\S]*?return Ok\(window\)/);
+  expect(createOrRaise).toMatch(/if let Some\(window\) = app\.get_webview_window\(PREFERENCES_WINDOW_LABEL\)[\s\S]*?run_on_main_thread_blocking\(&window, move \|\| dialog_windows::show_preferences\(&target\)\)[\s\S]*?return Ok\(window\)/);
   expect(ensure).not.toContain("hide()");
   expect(showPreferences).toMatch(/if ready \{[\s\S]*?show_on_main\(window\)\?/);
   expect(showPreferences).not.toContain("hide()");
@@ -43,8 +44,10 @@ it("restores the document without focus before creating or raising Preferences o
 
 it("makes retained Preferences key as well as frontmost on macOS, keeping Windows activation", () => {
   const main = readFileSync(new URL("./MainWindow.tsx", import.meta.url), "utf8");
-  const command = main.split("if (action.id === PREFERENCES_COMMAND_ID)")[1]!.split("if (action.id === SPIN3D_DEBUGGER_COMMAND_ID)")[0]!;
+  const command = main.split("if (action.id === PREFERENCES_COMMAND_ID || action.id === KEYBOARD_PREFERENCES_COMMAND_ID)")[1]!
+    .split("if (action.id === SPIN3D_DEBUGGER_COMMAND_ID)")[0]!;
   expect(command).toContain('await invoke("toggle_preferences_window")');
+  expect(command).toContain('await invoke("toggle_preferences_window", { keyboard: true })');
   const dialogs = readFileSync(new URL("../src-tauri/src/dialog_windows.rs", import.meta.url), "utf8");
   const raise = dialogs.split("fn bring_to_front_on_main<R: Runtime>")[1]!.split("fn place_window")[0]!;
   const macos = raise.split('#[cfg(target_os = "macos")]')[1]!.split("#[cfg(windows)]")[0]!;

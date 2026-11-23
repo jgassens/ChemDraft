@@ -132,7 +132,10 @@ describe("palette work-area sizing", () => {
   it("uses the calling palette's live position and native work area for title-strip recovery", () => {
     const nativeSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/lib.rs"), "utf8");
     const resize = nativeSource.split("fn resize_toolset_window(")[1]!.split("/// Pre-build")[0]!;
-    expect(resize).toMatch(/window\.outer_position\(\)[\s\S]*toolset_content_placement\([\s\S]*monitor_logical_work_area\(&monitor\)/);
+    expect(resize).toMatch(
+      /let area = monitor_logical_work_area\(&monitor\);[\s\S]*let position = window\.outer_position\(\)[^\n]*\n\s*let origin = \(position\.x, position\.y\);\s*let mut placement = toolset_content_placement\(origin, \(width, height\), scale, area\);/,
+    );
+    expect(resize.match(/let area = /g)).toHaveLength(1);
     expect(resize).toContain("toolset_position_in_work_area(position, width, height, area)");
     const recover = nativeSource.split("fn toolset_position_in_work_area(")[1]!.split("/// Pull a palette")[0]!;
     expect(recover).toContain("area.contains_title_strip(position.x, position.y, width, TOOLSET_TITLE_HEIGHT)");

@@ -89,6 +89,59 @@ pub(super) fn prepare<R: Runtime>(
     Ok(())
 }
 
+/// Fix an X11/XWayland content-fit palette at `size`, and mark its position as user-chosen.
+///
+/// Linux palettes stay GTK-resizable: GTK 3 holds a non-resizable X11 window to at least 200x200.
+/// Min = max size hints are what keep the user from resizing them instead. Set them before every
+/// content-fit resize, because GTK clamps a resize to the window's current hints.
+///
+/// The same hints carry USPosition/PPosition. Without them KWin places a palette as a new window
+/// each time it is mapped again, for example after a Save or Open dialog hid it
+/// (utility_suspension), and that new position was then saved. Every
+/// gtk_window_set_geometry_hints call replaces the whole set, so size and position go together.
+/// Tao only rewrites these hints from set_min_size/set_max_size, which palettes never call.
+#[cfg(target_os = "linux")]
+pub(super) fn pin_content_fit_frame<R: Runtime>(
+    window: &tauri::Window<R>,
+    size: tauri::Size,
+) -> Result<(), String> {
+    let target = window.clone();
+    super::run_on_main_thread_blocking(window, move || {
+        use gtk::{
+            gdk,
+            prelude::{GtkWindowExt, WidgetExt},
+        };
+
+        let native = target.gtk_window().map_err(|error| error.to_string())?;
+        // Tao's own set_size conversion: GTK sizes are logical at the window's integer scale.
+        let (width, height): (i32, i32) = size
+            .to_logical::<i32>(f64::from(native.scale_factor()))
+            .into();
+        let geometry = gdk::Geometry::new(
+            width,
+            height,
+            width,
+            height,
+            0,
+            0,
+            0,
+            0,
+            0.0,
+            0.0,
+            gdk::Gravity::NorthWest,
+        );
+        native.set_geometry_hints(
+            None::<&gtk::Window>,
+            Some(&geometry),
+            gdk::WindowHints::MIN_SIZE
+                | gdk::WindowHints::MAX_SIZE
+                | gdk::WindowHints::POS
+                | gdk::WindowHints::USER_POS,
+        );
+        Ok(())
+    })?
+}
+
 #[cfg(target_os = "linux")]
 pub(super) fn set_visible<R: Runtime>(
     window: &WebviewWindow<R>,

@@ -198,12 +198,24 @@ it.each(["macos", "windows"] as const)("forwards shortcuts from the live host ca
     await flush();
     expect(invoke).toHaveBeenCalledTimes(2);
     const ring: CommandSpec = { id: "atom.attachRingToHoveredAtom.cyclopropane", title: "Attach ring", icon: "ring", shortcut: "3" };
+    const pressThree = () => {
+      const preventDefault = vi.fn();
+      handler({ target: shell.querySelector("button"), key: "3", isTrusted: true,
+        metaKey: false, ctrlKey: false, altKey: false, preventDefault } as unknown as Event);
+      return preventDefault;
+    };
     commands.notify!([ring]);
-    handler({ target: shell.querySelector("button"), key: "3", isTrusted: true,
-      metaKey: false, ctrlKey: false, altKey: false, preventDefault: vi.fn() } as unknown as Event);
+    expect(pressThree()).not.toHaveBeenCalled();
     await flush();
+    expect(invoke).toHaveBeenCalledTimes(2);
+
+    const bondTool: CommandSpec = { id: "tool.bond", title: "Bond", icon: "bond", shortcut: "3" };
+    commands.notify!([bondTool]);
+    expect(pressThree()).toHaveBeenCalledOnce();
+    await flush();
+    expect(invoke).toHaveBeenCalledTimes(3);
     expect(invoke).toHaveBeenLastCalledWith("plugin_panel_event_forward", {
-      event: "chemdraft://plugin-panel-shortcut", payload: { commandId: ring.id, key: "3", metaKey: false, ctrlKey: false, altKey: false }
+      event: "chemdraft://plugin-panel-shortcut", payload: { commandId: bondTool.id, key: "3", metaKey: false, ctrlKey: false, altKey: false }
     });
   } finally {
     cleanup();

@@ -1920,10 +1920,9 @@ describe("ChemDraft desktop shell", () => {
     expect(registry.resolve({ key: "b" })).toBeUndefined();
     expect(registry.resolve({ key: "t" })).toBe("tool.text");
     expect(registry.resolve({ key: "e" })).toBe("tool.eraser");
-    expect(registry.resolve({ key: "1" })).toBe("atom.addSingleBondToHoveredAtom");
-    expect(registry.resolve({ key: "2" })).toBe("bond.setHoveredBondOrder.double");
-    expect(registry.resolve({ key: "3" })).toBe("bond.setHoveredBondOrder.triple");
-    expect(registry.resolve({ key: "k" })).toBe("atom.addCarbonylToHoveredAtom");
+    for (const key of ["1", "2", "3", "k"]) {
+      expect(registry.resolve({ key }), key).toBeUndefined();
+    }
     expect(registry.resolve({ key: "k", metaKey: true, shiftKey: true })).toBe(structureCleanupCommandId);
     expect(registry.resolve({ key: "+" })).toBe("tool.plus");
     expect(registry.resolve({ key: "-" })).toBe("tool.minus");
@@ -2596,7 +2595,16 @@ describe("ChemDraft desktop shell", () => {
     // Inactive-tab spacing keeps its original direct normalization; insertion tab commits
     // share preparation, and plugin/proposal preflight also normalizes before checking fit.
     // The conditions editor also commits to its original tab while it is inactive.
-    expect(mainWindowSource.match(/normalizeCommittedDocument\(/g)).toHaveLength(14);
+    // A molecule-part drag (commitNativePartDrag) normalizes before naming its charge-aware Undo
+    // label (chargeAssociationUndoLabel), so the label describes the reconciled charge marks the
+    // committed document carries; commitDocumentHistoryFrom then normalizes it again, idempotently.
+    // The funnel now also runs the commit-time chemistry guard (commitChemistryGuard.ts) on every
+    // commit; a part drag moves atoms of a molecule, which is drawing, so it declares itself a
+    // chemistry edit (CHEMISTRY_EDIT) as the funnel's last argument.
+    expect(mainWindowSource.match(/normalizeCommittedDocument\(/g)).toHaveLength(15);
+    expect(mainWindowSource).toContain(
+      "const committed = normalizeCommittedDocument(result.document);\n    commitDocumentHistoryFrom(drag.startDocument, committed, chargeAssociationUndoLabel(drag.startDocument, committed, \"Move\"), undefined, CHEMISTRY_EDIT);"
+    );
     const prepareDocumentCommitSource = mainWindowSource.slice(
       mainWindowSource.indexOf("const prepareDocumentCommit = useCallback("),
       mainWindowSource.indexOf("const pageFitPendingRef =")
@@ -2615,8 +2623,12 @@ describe("ChemDraft desktop shell", () => {
       mainWindowSource.indexOf("const commitDocumentChange ="),
       mainWindowSource.indexOf("const commitDocumentChangeWithPageFit =")
     );
-    expect(commitDocumentChangeSource).toContain("prepareDocumentCommit(nextDocument, undoLabel, assertFinalDocument)");
-    const finalGuardIndex = commitDocumentChangeSource.indexOf("prepareDocumentCommit(next, undoLabel, assertFinalDocument)");
+    // The Undo label may be a function (before, after) => string, so both guarded and unguarded
+    // paths go through one local `prepare` helper that still calls prepareDocumentCommit.
+    expect(commitDocumentChangeSource).toContain("return prepareDocumentCommit(next, undoLabel, assertFinalDocument);");
+    expect(commitDocumentChangeSource).toContain("const present = prepareDocumentCommit(next, undefined, assertFinalDocument);");
+    expect(commitDocumentChangeSource).toContain("const present = reusablePresent ?? prepare(currentHistory.present, nextDocument);");
+    const finalGuardIndex = commitDocumentChangeSource.indexOf("guardedPresent = prepare(current, next);");
     expect(finalGuardIndex).toBeGreaterThan(-1);
     expect(finalGuardIndex).toBeLessThan(commitDocumentChangeSource.indexOf("checkpointTextEditBeforeCommitRef.current()"));
     const assistantHistorySource = mainWindowSource.slice(

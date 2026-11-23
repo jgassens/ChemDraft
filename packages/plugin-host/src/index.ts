@@ -4,6 +4,8 @@ import { sameDocumentValue } from "./documentValue";
 // however, is taken from `@chemdraft/plugin-api` so a consumer using both SDK packages sees ONE canonical
 // document type — not a second, structurally-identical copy inlined here.
 import type { ApplyPatchOptions, DocumentObject, DocumentPatch, DocumentPage, OrphanedRepeatUnit } from "@chemdraft/chem-core";
+import { bareIdTargetPage, duplicateIdRefusalMessage, objectInWriteScope, pinnedObjectMissingMessage, pinSelectionPages, resolveObjectOnPage,
+  scopedObjectRefs, type PageObjectRef, type PluginWriteScopePages } from "./pageObjects";
 import { applyPatch, planOrphanedRepeatUnitCleanup, pruneReactionObjectReferences, removeOrphanedRepeatUnitBrackets, sameBracketIdentity } from "@chemdraft/chem-core";
 import {
   commitRequestPatch, containsBounds, pageContainsBounds, RequestWriteError, type BoundRequestWrite, type RequestDocument, type RequestHistory,
@@ -54,7 +56,8 @@ function authoredObjectValue(object: DocumentObject): DocumentObject {
 
 /** Page fitting must already be replayed on `before`. Only objects and crossings have scoped
  * write semantics; all other page fields (including future additions) are host-owned. */
-function assertPluginPageWriteScope(before: ChemDraftDocument, after: ChemDraftDocument, scope: ReadonlySet<string>): void {
+function assertPluginPageWriteScope(before: ChemDraftDocument, after: ChemDraftDocument, scope: ReadonlySet<string>,
+  scopePages?: PluginWriteScopePages): void {
   for (let index = 0; index < Math.max(before.pages.length, after.pages.length); index++) {
     const original = before.pages[index], next = after.pages[index];
     if (!original || !next) {
@@ -69,16 +72,55 @@ function assertPluginPageWriteScope(before: ChemDraftDocument, after: ChemDraftD
     }
     // Preserve the protected sequence, including duplicate pairs: rendering uses the FIRST
     // matching override. In-scope records may change without shifting this protected sequence.
+    const inScope = (objectId: string) => objectInWriteScope(scope, scopePages, original.id, objectId);
     const protectedCrossings = (values: DocumentPage["crossings"]) =>
-      values.filter(crossing => crossing.bonds.some(ref => !scope.has(ref.objectId)));
+      values.filter(crossing => crossing.bonds.some(ref => !inScope(ref.objectId)));
     const protectedBefore = protectedCrossings(crossings), protectedAfter = protectedCrossings(nextCrossings);
     for (let i = 0; i < Math.max(protectedBefore.length, protectedAfter.length); i++) {
       if (sameDocumentValue(protectedBefore[i], protectedAfter[i])) continue;
       const crossing = (protectedBefore[i] ?? protectedAfter[i])!;
-      const outside = crossing.bonds.find(ref => !scope.has(ref.objectId))!;
+      const outside = crossing.bonds.find(ref => !inScope(ref.objectId))!;
       throw new PluginHostError(`Plugin write refused: crossing on page "${original.id}" involving object "${outside.objectId}" (bond "${outside.bondId}") would change, but that object was not selected when the command started.`);
     }
   }
+}
+
+export { bareIdTargetPage, duplicateIdRefusalMessage, pageNumberLabel, objectInWriteScope, objectLocations, pinnedObjectMissingMessage, pinSelectionPages,
+  resolveObjectOnPage, resolveScopedObject, scopedObjectPage, scopedObjectRefs, type PageObjectLocation, type PageObjectRef,
+  type PluginWriteScopePages } from "./pageObjects";
+
+/** The legacy selection's page binding (Send time). Ids on `pageId` bind to it; see pinSelectionPages. */
+export function legacyWriteScopePages(document: ChemDraftDocument | undefined, objectIds: readonly string[],
+  pageId = document?.selection.pageId ?? document?.pages[0]?.id): Map<string, string> | undefined {
+  if (!document?.pages.some(page => page.id === pageId)) return undefined;
+  return pinSelectionPages(document, objectIds, pageId).pages;
+}
+
+/** A pin resolves only on its Send-time page (pageObjects.ts, scopedObjectPage). An op naming a pinned
+ * id whose object is gone from that page (deleted, or moved to another page) is refused: the id may
+ * now name an unrelated object elsewhere. No patch op moves an object between pages, so a command's
+ * own writes never need a pin carried to another page. */
+function assertLegacyWriteTargetPage(document: ChemDraftDocument, scopePages: PluginWriteScopePages | undefined,
+  op: ReturnType<typeof writePatchOps>[number]): void {
+  if (!scopePages?.size || op.op === "addObject" || op.op === "addAnnotation") return;
+  const ids = op.op === "setObjectOrder" ? op.objectIds : "objectId" in op ? [op.objectId] : [];
+  for (const id of ids) {
+    const pinned = scopePages.get(id);
+    if (pinned === undefined) continue;
+    if (!resolveObjectOnPage(document, pinned, id)) {
+      throw new PluginHostError(`Plugin write refused: the change was not applied. ${pinnedObjectMissingMessage(document, pinned)}`);
+    }
+    const target = op.op === "setObjectOrder" ? op.pageId : bareIdTargetPage(document, id);
+    if (target === undefined || target === pinned) continue;
+    throw new PluginHostError(duplicateIdRefusalMessage(document, id, pinned, [target]));
+  }
+}
+
+/** Refuse a legacy write whose page-bound target id is gone from its Send-time page, or would resolve
+ * to a same-id object on another page. */
+export function assertLegacyWritePages(document: ChemDraftDocument, patch: DocumentPatch,
+  scopePages: PluginWriteScopePages | undefined): void {
+  for (const op of writePatchOps(patch)) assertLegacyWriteTargetPage(document, scopePages, op);
 }
 
 /** Host-only preflight. Embedders must rerun against the document they will actually commit after
@@ -88,10 +130,14 @@ export function assertPluginPatchWriteScope(
   proposed: NormalizedProposedDocumentPatch,
   objectIds: readonly string[],
   preflight = rebasePluginPatch(document, proposed),
-  beforeObjectWrite?: ApplyPatchOptions["beforeObjectWrite"]
+  beforeObjectWrite?: ApplyPatchOptions["beforeObjectWrite"],
+  /** Legacy writes only: bind selected ids to their selection page. */
+  scopePages?: PluginWriteScopePages
 ): ChemDraftDocument {
+  // Pins resolve only on their Send-time page; never a same-id object on another page.
   const scope = new Set(objectIds);
   for (const op of writePatchOps(preflight.patch)) {
+    assertLegacyWriteTargetPage(document, scopePages, op);
     if (op.op === "addObject") scope.add(op.object.id);
     else if (op.op === "addAnnotation") scope.add(op.annotation.id);
     else {
@@ -106,7 +152,7 @@ export function assertPluginPatchWriteScope(
     const removed = new Set(objectIds);
     for (const page of draft.pages) {
       for (const object of page.objects) {
-        if (object.type === "reaction" && !removed.has(object.id) && !scope.has(object.id)
+        if (object.type === "reaction" && !removed.has(object.id) && !objectInWriteScope(scope, scopePages, page.id, object.id)
           && !sameDocumentValue(pruneReactionObjectReferences(object, removed), object)
           && page.objects.some(candidate => removed.has(candidate.id))) {
           const id = objectIds.find(id => page.objects.some(candidate => candidate.id === id) &&
@@ -149,7 +195,8 @@ export function assertPluginPatchWriteScope(
     const index = occurrences.get(object.id) ?? 0;
     occurrences.set(object.id, index + 1);
     const survivor = remainingById.get(object.id)?.[index];
-    if (scope.has(object.id) || (survivor && sameDocumentValue(authoredObjectValue(object), authoredObjectValue(survivor)))) continue;
+    if (objectInWriteScope(scope, scopePages, page.id, object.id) ||
+      (survivor && sameDocumentValue(authoredObjectValue(object), authoredObjectValue(survivor)))) continue;
     if (object.type === "bracket") {
       const removal = writePatchOps(preflight.patch).find(op => op.op === "removeObject" &&
         page.objects.some(candidate => candidate.id === op.objectId) &&
@@ -160,7 +207,7 @@ export function assertPluginPatchWriteScope(
     }
     throw new PluginHostError(`Patch would change object "${object.id}", which is not selected`);
   }
-  assertPluginPageWriteScope(document, validated, scope);
+  assertPluginPageWriteScope(document, validated, scope, scopePages);
   return validated;
 }
 
@@ -215,7 +262,9 @@ export function assertPluginDocumentWriteScope(
   before: ChemDraftDocument,
   after: ChemDraftDocument,
   proposed: NormalizedProposedDocumentPatch,
-  objectIds: readonly string[]
+  objectIds: readonly string[],
+  /** Legacy writes only: a granted id is exempt only on the page its selection named. */
+  scopePages?: PluginWriteScopePages
 ): void {
   const originals = before.pages.flatMap(page => page.objects.map(object => ({ pageId: page.id, object })));
   const survivors = after.pages.flatMap(page => page.objects.map(object => ({ pageId: page.id, object })));
@@ -253,7 +302,7 @@ export function assertPluginDocumentWriteScope(
   for (const original of originals) {
     const survivor = matches.get(original) ?? byId.get(original.object.id)?.shift();
     if (survivor) matched.add(survivor);
-    if (scope.has(original.object.id)) continue;
+    if (objectInWriteScope(scope, scopePages, original.pageId, original.object.id)) continue;
     if (survivor?.pageId === original.pageId && sameDocumentValue(original.object, survivor.object)) continue;
     const detail = !survivor ? "removed" : survivor.pageId !== original.pageId ? "moved to another page"
       : pluginObjectChangeDescription(original.object, survivor.object);
@@ -264,7 +313,7 @@ export function assertPluginDocumentWriteScope(
       throw new PluginHostError(`Plugin write refused: ${entry.object.type} "${entry.object.id}" was added outside this command's insertions.`);
     }
   }
-  assertPluginPageWriteScope(before, after, new Set([...scope, ...inserted]));
+  assertPluginPageWriteScope(before, after, new Set([...scope, ...inserted]), scopePages);
 }
 
 function pluginObjectChangeDescription(before: DocumentObject, after: DocumentObject): string {
@@ -431,8 +480,12 @@ export interface CommandInvocationContext {
   pluginId?: string;
   permissions?: ReadonlySet<PluginPermission>;
   /** Host-supplied selection captured at Send, instead of reading the live selection. */
-  writeSelection?: PluginSelectionSnapshot;
+  writeSelection?: HostWriteSelection;
 }
+
+/** A Send-time selection override. `pageId` is the page the ids were selected on; without it, an id
+ * that names objects on several pages cannot be bound to one and is left out of write scope. */
+export type HostWriteSelection = PluginSelectionSnapshot & { pageId?: string };
 
 export type CommandHandler<Result = unknown> = (
   context: CommandInvocationContext
@@ -569,6 +622,8 @@ export interface PluginPatchApplicationRequest {
   undoLabel: string;
   /** Host-only scope before this patch's insertions. Recheck after any wait with assertPluginPatchWriteScope. */
   writeScopeObjectIds: readonly string[];
+  /** Host-only legacy page binding of selected ids; pass it to both scope checks with the ids. */
+  writeScopePages?: PluginWriteScopePages;
   /** Host-only membership snapshot and accepted removals for post-authorization cleanup. */
   repeatUnitCleanup?: ScopedRepeatUnitCleanup;
   /** Host-only command lifetime. Stable across writes; aborted on end, unregister, or tool cancellation.
@@ -682,6 +737,8 @@ export interface ToolSessionBinding {
   signal: AbortSignal;
   document: RequestDocument;
   selection(): string[];
+  /** The request selection's ids bound to their Send-time pages. */
+  selectionPages?(): Map<string, string>;
   insertions(): string[];
   check(): void;
   hasHandler: boolean;
@@ -766,7 +823,7 @@ export interface PluginHostOptions {
   ) => AppliedPatchReceipt | Promise<AppliedPatchReceipt>;
   /** Builds and places a native table without writing. The result uses the ordinary direct-patch
    * permission, invocation, document identity, scope, receipt, and history checks. */
-  buildTablePatch?: (spec: PluginTableSpec, document: ChemDraftDocument, selection: readonly string[], viewport?: RequestViewport, bound?: boolean) => ProposedDocumentPatch;
+  buildTablePatch?: (spec: PluginTableSpec, document: ChemDraftDocument, selection: readonly PageObjectRef[], viewport?: RequestViewport, bound?: boolean) => ProposedDocumentPatch;
   /**
    * Computes an isotope envelope on a plugin's behalf. Absent hosts expose no chemistry API — which is
    * why the capability is optional on the context rather than assumed. This package stays engine-free;
@@ -994,7 +1051,7 @@ export class PluginHost {
 
   async invokeCommand<Result = unknown>(
     commandId: string,
-    options: { writeSelection?: PluginSelectionSnapshot; input?: PluginCommandInput } = {}
+    options: { writeSelection?: HostWriteSelection; input?: PluginCommandInput } = {}
   ): Promise<Result> {
     const definition = this.commands.get(commandId);
     if (!definition) {
@@ -1123,7 +1180,7 @@ export class PluginHost {
    * Reuse command permissions/scope; report validated direct-write receipts to the owning request. */
   async invokeAssistantTool(pluginId: string, call: PluginAssistantToolCall, signal: AbortSignal,
     writeSelection: readonly string[], onAppliedPatch?: (receipt: AppliedPatchReceipt) => void,
-    repeatUnitCleanup?: ScopedRepeatUnitCleanup): Promise<PluginAssistantToolResult> {
+    repeatUnitCleanup?: ScopedRepeatUnitCleanup, writeScopePages?: PluginWriteScopePages): Promise<PluginAssistantToolResult> {
     for (const permission of AssistantCapabilityPermissions) this.requirePermission(pluginId, permission);
     signal.throwIfAborted();
     const handler = this.toolAndDocumentHandlers.get(pluginId)?.onAssistantToolCall;
@@ -1131,7 +1188,8 @@ export class PluginHost {
     const token = Symbol(call.name);
     this.activeCommandInvocations.set(token, {
       pluginId, commandId: call.name, commandTitle: call.name, documentKey: this.getActiveDocumentKey?.(),
-      writeScope: new Set(writeSelection), recognized: false, recognizedImages: [],
+      writeScope: new Set(writeSelection), writeScopePages: writeScopePages && new Map(writeScopePages),
+      recognized: false, recognizedImages: [],
       writeStop: new AbortController(), onAppliedPatch, repeatUnitCleanup, tool: true
     });
     const cancel = () => this.finishCommandInvocation(token);
@@ -1321,7 +1379,9 @@ export class PluginHost {
       const binding: ToolSessionBinding = {
         plugin: this.requireRegisteredPlugin(pluginId).manifest, owner: token, requestId: state.id,
         signal: state.stop.signal, document: state.document, hasHandler: !!handler,
-        selection: () => state.selection.map(ref => ref.objectId), insertions: () => [...state.inserted.keys()],
+        selection: () => state.selection.map(ref => ref.objectId),
+        selectionPages: () => new Map(state.selection.map(ref => [ref.objectId, ref.pageId])),
+        insertions: () => [...state.inserted.keys()],
         check: () => { this.ownedRequest(pluginId, token, state.id); },
         invoke: (call, signal, readOnly, execution) => this.invokeRequestTool(pluginId, state.id, token, call, signal, readOnly,
           { handler, ...execution })
@@ -1929,7 +1989,10 @@ export class PluginHost {
     const anchors = state ? [...state.selection, ...state.inserted.values()].filter(ref =>
       document.pages.find(page => page.id === ref.pageId)?.objects.some(object => object.id === ref.objectId)
     ) : [];
-    const selection = state ? anchors.map(ref => ref.objectId) : [...invocation.writeScope];
+    // Anchor beside the selected objects by page and id: a selected id never resolves to a same-id
+    // object on another page (legacy scope is bound to the Send-time selection page).
+    const selection = state ? anchors.map(ref => ({ pageId: ref.pageId, objectId: ref.objectId }))
+      : scopedObjectRefs(document, invocation.writeScope, invocation.writeScopePages);
     const tableSpec = state ? boundWritePayload(spec) as PluginTableSpec : spec;
     const patch = this.buildTablePatch(tableSpec, document, selection, binding?.viewport?.(), !!binding);
     if (state) {
@@ -2057,6 +2120,8 @@ export class PluginHost {
       /** Read the same fixed document that `apply` writes, even after a tab switch. */
       getDocument: () => ChemDraftDocument | undefined | Promise<ChemDraftDocument | undefined>;
       apply: NonNullable<PluginHostOptions["applyDocumentPatch"]>;
+      /** Legacy assistant requests: Send-time selection bound to its page. */
+      scopePages?: PluginWriteScopePages;
     },
     /** Trusted host label, never taken from plugin input. */
     undoLabel?: string
@@ -2129,7 +2194,8 @@ export class PluginHost {
       if (!document) {
         throw new PluginHostError(`Plugin patch refused: no ${requestScope ? "request" : "active"} document is available to check ${ops.some(op => op.op === "removeObject") ? "reaction removal scope" : "write scope"}.`);
       }
-      assertPluginPatchWriteScope(document, parsedPatch, requestScope?.objectIds ?? [...invocation.writeScope]);
+      assertPluginPatchWriteScope(document, parsedPatch, requestScope?.objectIds ?? [...invocation.writeScope],
+        undefined, undefined, requestScope ? requestScope.scopePages : invocation.writeScopePages);
     }
     const plugin = this.requireRegisteredPlugin(pluginId).manifest;
     const receipt = await apply({
@@ -2137,6 +2203,8 @@ export class PluginHost {
       command: { id: invocation.commandId, title: invocation.commandTitle },
       patch: parsedPatch,
       writeScopeObjectIds: [...(requestScope?.objectIds ?? invocation.writeScope)],
+      ...(requestScope ? (requestScope.scopePages?.size ? { writeScopePages: new Map(requestScope.scopePages) } : {})
+        : invocation.writeScopePages?.size ? { writeScopePages: new Map(invocation.writeScopePages) } : {}),
       repeatUnitCleanup: requestScope ? undefined : invocation.repeatUnitCleanup,
       undoLabel: undoLabel ?? `${plugin.name}: ${invocation.commandTitle}`,
       signal
@@ -2280,13 +2348,19 @@ export class PluginHost {
             const documentKey = this.getActiveDocumentKey?.();
             const requestDocument = supportsPluginRequestTools(manifest.apiVersion) ? this.captureRequestDocument?.() : undefined;
             const sendDocument = requestDocument?.read();
-            const sendSelection = captureRequestSelection(sendDocument, invocationContext.writeSelection?.objectIds);
+            const override = invocationContext.writeSelection;
+            const sendSelection = captureRequestSelection(sendDocument, override?.objectIds, override?.pageId);
             // Read selection ids and the cleanup baseline from the same snapshot. The plugin-visible
             // selection provider may build molfiles, so only use it when the plugin reads selection.
-            const overrideIds = invocationContext.writeSelection?.objectIds.slice();
+            const overrideIds = override?.objectIds.slice();
             const readDocument = sendDocument ?? this.getActiveDocument?.();
             const document = readDocument && "then" in readDocument ? await readDocument : readDocument;
-            const selectedIds = overrideIds ?? document?.selection.objectIds ?? [];
+            // Bind the ids to the page they were selected on at Send: the override's own page, never
+            // the live selection's page, which may have changed since.
+            // An override that names its page keeps that pin even when the object is gone from it.
+            const pins = pinSelectionPages(document, overrideIds ?? document?.selection.objectIds ?? [],
+              override ? override.pageId : document?.selection.pageId ?? document?.pages[0]?.id, override?.pageId !== undefined);
+            const selectedIds = (overrideIds ?? document?.selection.objectIds ?? []).filter(id => !pins.ambiguous.includes(id));
             const ordinaryStop = new AbortController();
             this.activeCommandInvocations.set(invocationToken, {
               pluginId: manifest.id,
@@ -2297,6 +2371,7 @@ export class PluginHost {
               sendSelection,
               ordinaryStop,
               writeScope: new Set(selectedIds),
+              writeScopePages: pins.pages,
               repeatUnitCleanup: beginScopedRepeatUnitCleanup(document),
               recognized: false,
               writeStop: new AbortController(),
@@ -2809,6 +2884,8 @@ interface ActiveCommandInvocation {
   ordinaryStop?: AbortController;
   onAppliedPatch?: (receipt: AppliedPatchReceipt) => void;
   writeScope: Set<string>;
+  /** Legacy invocations: selected id -> selection page. Insertions stay unpinned (fresh ids). */
+  writeScopePages?: PluginWriteScopePages;
   repeatUnitCleanup?: ScopedRepeatUnitCleanup;
   pluginId: string;
   commandId: string;

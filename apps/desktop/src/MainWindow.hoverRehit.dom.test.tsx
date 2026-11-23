@@ -147,6 +147,29 @@ describe.each(["windows", "macos"] as const)("hover re-hit (%s shortcuts)", plat
     expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom", atomId: atom.id });
   });
 
+  it.each([
+    ["b", false, false, "Br"], ["B", true, false, "B"],
+    ["B", false, true, "Br"], ["b", true, true, "B"]
+  ] as const)("uses physical B (%s, Shift=%s, Caps Lock=%s) as %s", async (key, shiftKey, capsLock, element) => {
+    saveKeybindingSettings({ scheme: "chemdraw" });
+    await mount();
+    await pointer("pointermove", molecule().atoms[0]!);
+    const event = new KeyboardEvent("keydown", { key, code: "KeyB", shiftKey, bubbles: true, cancelable: true });
+    vi.spyOn(event, "getModifierState").mockImplementation(modifier => modifier === "CapsLock" && capsLock);
+    await act(async () => { document.body.dispatchEvent(event); });
+    expect(molecule().atoms[0]?.element).toBe(element);
+  });
+
+  it("uses an overridden hover key and frees its original key", async () => {
+    saveKeybindingSettings({ scheme: "chemdraw", overrides: { chemdraw: { atom: { "atom.setHoveredElement.Br": ["D"] } } } });
+    await mount();
+    await pointer("pointermove", molecule().atoms[0]!);
+    await press("b");
+    expect(molecule().atoms[0]?.element).toBe("C");
+    await press("D", false, true);
+    expect(molecule().atoms[0]?.element).toBe("Br");
+  });
+
   it("keeps default-preset element-key label continuation on the same atom", async () => {
     await mount();
     const atom = molecule().atoms[0]!;

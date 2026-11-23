@@ -28,10 +28,20 @@ describe("dialog capabilities", () => {
     expect(granted[0]!.capability.webviews).toBeUndefined();
     expect(granted[0]!.capability.permissions).toEqual(["allow-preferences-ready"]);
   });
+  it("grants native preferences only to the document and Preferences windows on both platforms", () => {
+    const granted = capabilities.filter(({ capability }) => permissionIdentifiers(capability).includes("allow-desktop-preferences"));
+    expect(granted.map(({ name }) => name)).toEqual(["desktop-preferences.json"]);
+    const { capability } = granted[0]!;
+    expect(capability.windows).toEqual(["main", "preferences"]);
+    expect(capability.webviews).toBeUndefined();
+    expect((capability as { remote?: unknown }).remote).toBeUndefined();
+    expect((capability as { platforms?: unknown }).platforms).toBeUndefined();
+    expect(capability.permissions).toEqual(["allow-desktop-preferences"]);
+  });
   it("gives draft windows only validated channel transport with no generic event permissions", () => {
     const host = capabilities.find(({ name }) => name === "dialog-host.json")!.capability;
     // Each native dialog kind gets only the same validated request/send transport.
-    expect(host.windows).toEqual(["dialog-main-reactionConditions-*", "dialog-main-pageSize-*", "dialog-main-pageEnlargement-*", "dialog-main-pluginTextPrompt-*","dialog-main-arrangementSpacing-*", "dialog-main-insertTable-*", "dialog-main-customColor-*", "dialog-main-export-*", "dialog-main-engineInstall-*", "dialog-main-toolInstall-*", "dialog-main-structureTemplates-*", "dialog-main-atomProblem-*", "dialog-main-vibeCodeGuide-*"]);
+    expect(host.windows).toEqual(["dialog-main-reactionConditions-*", "dialog-main-pageSize-*", "dialog-main-pageEnlargement-*", "dialog-main-pluginTextPrompt-*", "dialog-main-arrangementSpacing-*", "dialog-main-insertTable-*", "dialog-main-customColor-*", "dialog-main-export-*", "dialog-main-engineInstall-*", "dialog-main-toolInstall-*", "dialog-main-structureTemplates-*", "dialog-main-atomProblem-*", "dialog-main-vibeCodeGuide-*", "dialog-main-guidedTour-*", "dialog-main-about-*"]);
     expect(host.permissions.slice().sort()).toEqual([
       "allow-dialog-request", "allow-dialog-send"
     ]);

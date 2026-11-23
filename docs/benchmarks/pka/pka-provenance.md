@@ -21,7 +21,7 @@ substitution and are corrected below.
 |---|---:|---|---|---|
 | pKaCHU | 4,419 | CC BY 4.0 | the dataset itself, Zenodo 20089807 | **clear** |
 | QupKake experimental | 4,022 | **CC BY 4.0** (corrected) | the upstream dataset | **corrected, attribution owed** |
-| Dwar-iBond | 3,031 | **unresolved** (corrected) | nothing established for the data | **OPEN — largest question** |
+| Dwar-iBond | 3,031 | **no published data license** (code: Apache-2.0) | Uni-pKa's code, not the dataset | **redistributed with attribution — owner decision 2026-11-21** |
 | D2A-pKa, aqueous only | 624 | CC BY 4.0 | the dataset, Zenodo 15277342 | clear for the aqueous rows |
 
 ### QupKake experimental, 4,022 rows — CORRECTED
@@ -39,26 +39,16 @@ assignment. That is a predictor annotation embedded in the label and is disclose
 *Question for legal:* is the attribution as currently rendered in `NOTICE` and the acknowledgements view
 sufficient for CC BY 4.0 when what is distributed is model weights rather than the data?
 
-### Dwar-iBond, 3,031 rows — OPEN, AND THE ONE THAT MATTERS
+### Dwar-iBond, 3,031 rows — no published data license; redistributed by owner decision
 
-Was recorded as `Apache-2.0` — **Uni-pKa's software license**, the same category error. No terms have been
-established for the data itself. Now recorded as
-`"unresolved — Apache-2.0 covers Uni-pKa's code, not this dataset"`.
+Dwar-iBond experimental pKa set (3,031 labels) as distributed with Uni-pKa (https://github.com/dptech-corp/Uni-pKa; code Apache-2.0). No separate data license has been published for this set; the Apache-2.0 license covers Uni-pKa's code, not the dataset. The owner reviewed this on 2026-11-21 and decided to redistribute the model trained on it, with attribution to Uni-pKa (Luo et al., JACS Au 2024, doi:10.1021/jacsau.4c00271) and the original DataWarrior and iBonD sources.
 
-`redistributable` has been **left at `true`**, and that is a deliberate, flagged choice rather than a
-finding: it is the status quo under which the model already shipped. Flipping it to `false` would be a
-legal determination, and it is not mine to make.
+Was recorded as `Apache-2.0` — **Uni-pKa's software license**, a category error. It is now recorded as
+`"no published data license — Apache-2.0 covers Uni-pKa's code, not this dataset"`. `redistributable` stays `true`
+as the owner's decision, not as a finding that a data license grants it.
 
-Why this is the largest question: **3,031 rows are 25% of the training corpus.** If these rows turn out to
-be non-redistributable, the remedy is not a notice edit — the corpus has to be re-derived without them and
-the model retrained. Worth knowing early rather than late.
-
-Compounding factor already recorded in the contract: the DataWarrior author has stated the original
-literature references for part of this set were lost, so these rows cannot all be audited back to a
-measurement.
-
-*Question for legal:* can a model trained on this set be distributed commercially, and if not, what is the
-exposure of the artifact already shipped?
+These rows are 25% of the training corpus. The DataWarrior author has stated the original literature
+references for part of this set were lost, so the rows cannot all be audited back to a measurement.
 
 ---
 
@@ -90,8 +80,8 @@ models repeatedly and is development data, not a blind test.
 
 ## Summary for legal
 
-1. **Dwar-iBond, 3,031 rows, 25% of the corpus.** Terms unestablished, references partly lost. Highest
-   exposure; determines whether a retrain is needed.
+1. **Dwar-iBond, 3,031 rows, 25% of the corpus.** No published data license; references partly lost.
+   Owner decided 2026-11-21 to redistribute with attribution; no retrain is planned.
 2. **QupKake, 4,022 rows.** License corrected to CC BY 4.0. Confirm attribution is adequate when the
    distributed thing is weights.
 3. **Anything ChemAxon-labeled.** Written clearance required before distributing derived weights.

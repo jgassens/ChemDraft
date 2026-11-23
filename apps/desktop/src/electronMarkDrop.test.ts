@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyPatch, deserializeDocument, serializeDocument, type ChemDraftDocument } from "@chemdraft/chem-core";
 import { atomDisplayLabel, moleculeLayoutLabelBoxes, transformPointForObject } from "@chemdraft/layout-engine";
-import { documentDrawingDefaults, nativeAtomBondOrderUsage, nativeImplicitHydrogenCount, phase4Timestamp,
+import { documentDrawingDefaults, nativeAtomBondOrderUsage, nativeChargeAssociationRadiusPx, nativeImplicitHydrogenCount, phase4Timestamp,
   stereoPerceptionMolfile, type PagePoint } from "@chemdraft/document-workflow-core";
 import * as workflow from "./documentWorkflow";
 import { dropElectronMark, dropElectronMarksInSelection, electronMarkDropTarget, ELECTRON_MARK_DROP_CAPTURE_BOND_LENGTHS,
@@ -211,6 +211,43 @@ describe.each([false, true])("electron-mark drops with direct editing %s", enabl
     expect(dropMolecule(returned.document)).toEqual(dropMolecule(document));
   });
 
+  it("keeps the requested offset for a charge dropped within its atom's capture radius", () => {
+    const { document, nitrogen } = electronMarkDropFixture();
+    const mark = dropMark(document);
+    const radius = documentDrawingDefaults(document).bondLengthPx * ELECTRON_MARK_DROP_CAPTURE_BOND_LENGTHS;
+    const point = { x: nitrogen.x, y: nitrogen.y - radius + 0.001 };
+    const result = drop(document, point);
+    expect(dropMark(result.document).anchor).toEqual(mark.anchor);
+    expect(workflow.nativeChargeMarkCenter(dropMark(result.document))).toEqual(point);
+    expect(dropMolecule(result.document)).toEqual(dropMolecule(document));
+  });
+
+  it("uses an atom-centered association boundary regardless of starting offset", () => {
+    const { document, nitrogen } = ammoniumElectronMarkDropFixture();
+    const mark = dropMark(document);
+    const centered = applyPatch(document, { op: "updateObject", objectId: mark.id, changes: {
+      x: nitrogen.x - mark.width / 2, y: nitrogen.y - mark.height / 2
+    } }, { now: phase4Timestamp });
+    for (const drawing of [document, centered]) {
+      const inside = { x: nitrogen.x, y: nitrogen.y - nativeChargeAssociationRadiusPx + 0.001 };
+      expect(dropMark(drop(drawing, inside).document).anchor).toEqual(mark.anchor);
+      const outside = { x: nitrogen.x, y: nitrogen.y - nativeChargeAssociationRadiusPx - 0.001 };
+      const detached = drop(drawing, outside).document;
+      expect(dropMark(detached).anchor).toEqual({ kind: "point", point: outside });
+      expect(atomDropState(detached, nitrogen.id).charge).toBe(0);
+    }
+  });
+
+  it("detaches at the same endpoint after short outward drags or one long drag", () => {
+    const { document, nitrogen } = ammoniumElectronMarkDropFixture();
+    const endpoint = (distance: number) => ({ x: nitrogen.x, y: nitrogen.y - distance });
+    let sequential = document;
+    for (const distance of [8, 16, 24, 32, 40]) sequential = drop(sequential, endpoint(distance)).document;
+    const single = drop(document, endpoint(40)).document;
+    expect(dropMark(sequential)).toEqual(dropMark(single));
+    expect(atomDropState(sequential, nitrogen.id).charge).toBe(0);
+  });
+
   it.each(["point", "stale"])("keeps a %s-anchored floating charge outside capture radius durably, without changing legacy files", anchorKind => {
     const fixture = electronMarkDropFixture();
     let document = workflow.normalizeCommittedDocument(workflow.moveDocumentObject(fixture.document,
@@ -357,6 +394,20 @@ describe.each([false, true])("electron-mark drops with direct editing %s", enabl
     expect(result.status).toBe("Charge attached to O (O now OH)");
   });
 
+  it("refuses an unsupported charge assigned during normalization without an intended target", () => {
+    const { document, saturatedCarbon } = electronMarkDropFixture();
+    const floating = drop(document, { x: 600, y: 500 }).document;
+    const normalize = workflow.normalizeCommittedDocument;
+    vi.spyOn(workflow, "normalizeCommittedDocument").mockImplementation(next => normalize(applyPatch(next, {
+      op: "updateObject", objectId: dropMark(next).id, changes: {
+        anchor: { kind: "atom", objectId: dropMolecule(next).id, atomId: saturatedCarbon.id }
+      }
+    }, { now: phase4Timestamp })));
+    const result = drop(floating, { x: 610, y: 500 });
+    expect(result.document).toBe(floating);
+    expect(result.status).toBe("Cannot move Charge to C: C cannot carry formal charge +1 with bond/radical valence 4");
+  });
+
   it.each([1, -1] as const)("retains a distant radical ion's association when neutralising charge %s", async charge => {
     const fixture = electronMarkDropFixture({ kind: "charge", charge, radical: true });
     const distant = distantAttachedElectronMarkFixture({ kind: "charge", charge, radical: true }).document;
@@ -434,7 +485,7 @@ describe.each([false, true])("electron-mark drops with direct editing %s", enabl
     const result = dropElectronMarksInSelection(before, [firstRadical.id, secondRadical.id], delta,
       { grabbedObjectId: firstRadical.id, point });
     expect(result.document).toBe(before);
-    expect(result.status).toBe("Cannot move Radical electron to N: N has unsupported valence after moving this mark");
+    expect(result.status).toBe("Cannot move Radical electron to N: N cannot carry formal charge 0 with bond/radical valence 4");
   });
 
   it("re-associates unknown display marks too", () => {

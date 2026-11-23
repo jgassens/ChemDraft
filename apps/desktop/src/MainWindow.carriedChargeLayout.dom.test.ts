@@ -158,6 +158,8 @@ describe.each(["macos", "windows"] as const)("toolbar charge layout (%s)", platf
       expect(center(movedMark).y - center(movedArrow).y).toBeCloseTo((center(mark).y - center(arrow).y) * 0.9);
     }
     await command("edit.undo");
+    const undoLabel = operation === "arrange" ? "Arrange in a Row" : "Adjust arrangement spacing";
+    expect(container.querySelector("[data-status-message]")?.textContent).toBe(`Undid ${undoLabel} and Remove Charge`);
     expect(snapshot().pages).toEqual(before.pages);
     await command("edit.redo");
     expect(snapshot().pages).toEqual(after.pages);

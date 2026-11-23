@@ -199,7 +199,9 @@ async function writeMoleculeSmiles(
       // A failed engine load or parse falls back per molecule, without dropping its record.
     }
   }
-  if (moleculeHasSmilesStereo(molecule)) {
+  // A verified record can carry RDKit stereo that the fallback's drawing heuristic cannot see,
+  // such as an alkene whose substituent is isotopic hydrogen.
+  if (molecule.chemistry?.stereochemistry.length || moleculeHasSmilesStereo(molecule)) {
     warnings.push({
       code: "export.smiles_stereo_dropped",
       message: `Stereochemistry could not be written to SMILES for molecule ${index + 1}; ${needsNativeRadicals

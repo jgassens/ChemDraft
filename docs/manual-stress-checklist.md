@@ -1120,6 +1120,40 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
   confirm the engine folder is gone and Name from Structure offers the install dialog again.
 - Intel Mac: Name from Structure reports the engine unsupported rather than offering an install.
 
+## About ChemDraft (macOS and Windows)
+
+- On macOS, open the ChemDraft menu and verify About ChemDraft is first. On Windows, open Help
+  and choose About ChemDraft. Check the packaged version and build stamp, and paste the result
+  of Copy Version into a text editor on each platform.
+- Confirm the window centers over the document on first open. Use the canvas and floating tools
+  while About stays open. Move it to another display, invoke the menu again, then close and reopen
+  it. Verify the window raises in place and restores its position. On Windows, check that it has
+  no separate taskbar entry and closes with the document window.
+- Navigate to Contributors and Open-source components and provenance with the keyboard.
+  Follow the website, repository, and a component link in the system browser, and open an
+  included full license inside About. Check that the component list scrolls at the minimum size.
+
+## Guided tour (macOS and Windows)
+
+- With a new profile, launch ChemDraft and verify the tour opens shortly after the document is
+  ready. Repeat by upgrading an earlier profile with existing drawings and shortcuts. Hold a
+  restore prompt or open a drawing from the command line and verify the tour waits until both
+  the prompt and file open are complete. Open Preferences while the tour is pending and verify
+  it waits for Preferences to close.
+- Confirm the tour centers on the document the first time, floats above the drawing, and leaves
+  toolbars usable. Move it to a second display, close it, and reopen from Help > Take the Tour.
+  Verify the window remembers its position. On Windows, check that it has no taskbar entry.
+- Check that Skip tour is visible on all seven steps. In separate fresh profiles, dismiss it
+  with Skip tour, Escape, the title-bar close button, and Finish. Relaunch after each and verify
+  it only opens again through Help.
+- Change the shortcut radio choice and check Preferences and the active drawing keys. On macOS,
+  verify the shortcut examples use Mac glyphs and the last step points to the ChemDraft menu.
+  On Windows, verify Ctrl labels and the File menu.
+- Open an existing drawing and run each Try it button. Verify drawing practice opens a clean
+  Tour tab with a real molecule and one Undo entry. Close it without editing and confirm no
+  save prompt. Verify Name to Structure with the plugin installed and the Molecular Inspector
+  both use the practice tab. Check the original drawing is unchanged.
+
 ## Native Custom Page Size (macOS and Windows)
 
 - Preferences frame regression: open Preferences with no saved position; it must center over the
@@ -1816,6 +1850,24 @@ Run every step on both platforms, in Word and in PowerPoint.
   duplicate picture is left on the slide or page.
 - A picture without a ChemDraft carrier is refused with a reason and is not altered.
 
+## Preferences > Keyboard
+
+- On macOS and Windows, use **Try it** on step 2 of the guided tour. Preferences should open or
+  raise with the Keyboard search field focused. Filter for Save and assign a new shortcut.
+  Check the File menu label and trigger Save from the document window with the new shortcut.
+- Assign Save's shortcut to another action. Cancel first, then repeat and choose Replace.
+  Check that only the replacement action runs. Clear and reset a menu, tool, and hover action,
+  then use **Reset all to scheme defaults**. Switch schemes and relaunch to verify each scheme
+  retains its own changes. Repeat with the Preferences window already open.
+- While the recorder is active try F5, Ctrl+R, and Cmd/Ctrl+Q and W. Verify the reserved-key
+  explanation for keys delivered to the recorder and that the document never reloads or closes.
+  Try Escape to cancel and verify normal menu accelerators work again afterward.
+- In the Classic desktop-compatible scheme record and use B and Shift+B with Caps Lock both
+  off and on. Only Shift changes the hover key. Lowercase b sets Br and uppercase B sets boron.
+- Try the normal Cut, Copy and Paste menu items with focus on a text field and with canvas
+  selection, before and after changing their shortcuts. Check that Windows utility windows
+  stay menu-free and the macOS app menu restores its shortcuts if Preferences loses focus mid-recording.
+
 ## Linux startup and session end
 
 - Disable “Start with a fresh document”, make an unsaved edit, and log out before the autosave
@@ -1840,3 +1892,25 @@ Run every step on both platforms, in Word and in PowerPoint.
 - Start a native Wayland session with XWayland disabled. With `DISPLAY` and `GDK_BACKEND` unset,
   launch both packages and verify that the document window and drawing canvas appear. Repeat
   on Wayland with XWayland enabled and check the default and an explicit Wayland override.
+
+## Linux floating palettes and the Window menu (1.2.2)
+
+Run under KDE Plasma (Wayland session, so the app uses XWayland) and on GNOME.
+
+- Palette sizes: launch with the default toolbars. Each palette fits its content with no empty
+  grey band: Main is about 85 px tall (not 200), and Arrows, Orbitals and Style are about
+  60x93 (not 200x200). `xprop WM_NORMAL_HINTS` on a palette shows min = max = its content size.
+  Change the Main toolbar's contents (Customize Toolbars) and check that it grows and shrinks to
+  fit. Palettes still cannot be resized by dragging an edge. `<select>` dropdowns inside a palette
+  open at their normal size.
+- Window menu: it lists Minimize, Maximize / Restore and Close Window. Minimize iconifies the
+  document window; Maximize / Restore toggles it; Close Window closes it the same way as the
+  title bar button (Save on Quit prompt for unsaved edits, then ChemDraft quits). File ▸ Close
+  Window does the same. Ctrl+W still closes the current document tab.
+- 1280-wide screen: set the display to 1280x800 and relaunch. The Main toolbar is no wider than
+  the screen and starts at its left edge; nothing runs off the right edge of the screen. At
+  1680x1050 the Main toolbar keeps its full width and saved position.
+- Palette positions after Save/Open: place Main and Art somewhere distinctive, then press
+  Shift+Ctrl+S and Esc, and Ctrl+O and Esc, several times. Every palette comes back exactly where
+  it was, and after quitting and relaunching it opens at that same spot (toolbar-state.json is
+  unchanged by the dialogs).

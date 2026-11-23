@@ -4,6 +4,7 @@ import { depictSmiles2D } from "@chemdraft/ocl-adapter";
 import { chemicalIdentityMolfile, chemicalIdentitySource, createSmilesMolecule, moleculeSmiles, nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles, planFigureStyle,
   representativeNativeMoleculeBondLength, setReactionArrowConditions } from "@chemdraft/document-workflow-core";
 import { repeatUnitMolfileGroups, repeatUnits } from "@chemdraft/export-engine";
+import type { ExportWarning } from "@chemdraft/export-engine";
 import { exportDocumentToCdxml, openChemDraftPayload } from "@chemdraft/cdx-compat";
 import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import { applyPatch, BracketObjectSchema, createEmptyDocument, moleculeToMolfileV2000, resolveRepeatUnitAtomMembership,
@@ -19,6 +20,7 @@ import { measure } from "../depiction/measureRegion";
 import { createRequestHistory } from "./requestHistory";
 import { planRequestPageFit } from "../../pageEnlargement";
 import { deferred } from "../../testSupport/deferred";
+import { expectStoredGraph, graphEditChanges, graphEditFixture, pluginGraphEdits } from "../../testSupport/pluginGraphEdits";
 
 const frame = (id: string) => ({ id, style: {}, x: 120, y: 130, width: 30, height: 20, rotation: 0 });
 const note = (id: string, text = id) => ({ ...frame(id), type: "text" as const, text, spans: [] });
@@ -290,6 +292,32 @@ describe("request page fit", () => {
 });
 
 describe("verified request writes", () => {
+  it.each(pluginGraphEdits)("refreshes stored chemistry after a normalized plugin $name edit", async edit => {
+    const molecule = graphEditFixture(createEmptyDocument(), edit);
+    const f = setup([molecule.id], undefined, { objects: [molecule] });
+    try {
+      const before = f.pinned();
+      const requestId = await f.begin();
+      const patch = {
+        op: "updateObject" as const, objectId: molecule.id, changes: graphEditChanges(molecule, edit)
+      };
+      await expect(f.context.documents.applyPatch!({ reason: "Undeclared graph edit", patch })).rejects.toMatchObject({ code: "chemistry" });
+      expect(f.pinned()).toBe(before);
+      const result = await f.context.documents.applyRequestPatch!({ requestId, patch,
+        expectedStructures: [{ kind: "object", pageId: f.pageId, objectId: molecule.id, sourceSmiles: edit.product }] });
+      if (!result.ok) throw new Error(result.error.message);
+      const after = f.pinned();
+      expect(after.selection.objectIds).toEqual([molecule.id]);
+      const stored = after.pages[0]!.objects.at(-1) as MoleculeObject;
+      await expectStoredGraph(stored, edit);
+      if (edit.name === "isotopic E/Z") {
+        const warnings: ExportWarning[] = [];
+        await moleculeSmiles(stored, 0, warnings, undefined);
+        expect(warnings).toContainEqual(expect.objectContaining({ code: "export.smiles_stereo_dropped" }));
+      }
+      expect(f.history).toEqual([{ before, after, label: "Draw requested objects" }]);
+    } finally { await f.finish(); }
+  }, 20_000);
   function wavyHalide(version: "v2000" | "v3000") {
     const base: MoleculeObject = { ...ethane, id: "halide", structure: "CC(F)Cl",
       atoms: [...ethane.atoms, { ...ethane.atoms[1]!, id: "f", element: "F", x: 233, y: 181 },
@@ -321,6 +349,24 @@ describe("verified request writes", () => {
         expect(f.pinned()).toBe(before);
       }
     } finally { await f.finish(); }
+  });
+
+  it("reports a request-bound stored-chemistry refusal as the plain sentence, without the molecule id", async () => {
+    const { molecule } = wavyHalide("v2000");
+    const f = setup([molecule.id], undefined, { objects: [molecule] });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const requestId = await f.begin();
+      const result = await f.context.documents.applyRequestPatch!({ requestId,
+        patch: { op: "updateObject", objectId: molecule.id,
+          changes: { atoms: molecule.atoms.map(atom => atom.id === "a1" ? { ...atom, element: "O" } : atom) } },
+        expectedStructures: [{ kind: "object", pageId: f.pageId, objectId: molecule.id, sourceSmiles: "OC(F)Cl" }] });
+      expect(result).toMatchObject({ ok: false, error: { code: "chemistry" } });
+      const message = (result as { error: { message: string } }).error.message;
+      expect(message).toMatch(/^Plugin write refused: .+\.$/);
+      expect(message).not.toContain(molecule.id);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("Plugin write refused: "));
+    } finally { warn.mockRestore(); await f.finish(); }
   });
 
   it.each(["v2000", "v3000"] as const)("maps retained %s wavy stereo by atom ID through a reordered edit", async version => {
@@ -1260,14 +1306,16 @@ describe("verified request writes", () => {
       expect(await computeStructureIdentifiers(chemicalIdentityMolfile({ ...moved, atoms }))).toMatchObject({ smiles: cis });
       const patch = { op: "updateObject" as const, objectId: alkene.id, changes: { atoms } };
       expect(await apply({ requestId, patch })).toMatchObject({ ok: false, error: { code: "chemistry" } });
-      // Even with the new identity declared, the fallback cannot represent the changed stereo.
+      // RDKit verifies the new isomer in the stored CTAB even when the native fallback omits stereo.
       expect(await apply({ requestId, patch, expectedStructures: [
         { kind: "object", pageId: f.pageId, objectId: alkene.id, sourceSmiles: cis }
-      ] })).toMatchObject({ ok: false, error: { code: "chemistry", message: expect.stringContaining("exported SMILES") } });
+      ] })).toMatchObject({ ok: true });
+      const edited = f.pinned().pages[0]!.objects.at(-1) as MoleculeObject;
+      expect(await computeStructureIdentifiers(edited.structure)).toMatchObject({ smiles: cis });
       expect(await apply({ requestId, patch: { op: "updateObject", objectId: alkene.id,
-        changes: { chemistry: { ...moved.chemistry!, formula: "C4H10" } } } }))
+        changes: { chemistry: { ...edited.chemistry!, formula: "C4H10" } } } }))
         .toMatchObject({ ok: false, error: { code: "chemistry", message: expect.stringContaining("exported SMILES") } });
-      expect(f.pinned().pages[0]!.objects.at(-1)).toBe(moved);
+      expect(f.pinned().pages[0]!.objects.at(-1)).toBe(edited);
       expect(f.history).toHaveLength(1);
     } finally { await f.finish(); }
   });

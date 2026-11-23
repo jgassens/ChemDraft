@@ -76,7 +76,10 @@ describe("PreferencesWindow", () => {
   });
   it("renders the keybinding, refinement, engine, and force-field sections with their options", () => {
     const markup = renderToStaticMarkup(createElement(PreferencesWindow));
-    for (const heading of ["Keyboard shortcuts", "3D refinement", "Embedding engine", "Force field"]) {
+    expect(markup).toContain('<h2 id="preferences-keyboard">Keyboard</h2>');
+    expect(markup).toContain('<h2 id="pref-keybinding-scheme">Shortcut scheme</h2>');
+    expect(markup).toMatch(/<input[^>]*type="search"[^>]*aria-label="Search shortcuts"/);
+    for (const heading of ["3D refinement", "Embedding engine", "Force field"]) {
       expect(markup).toContain(heading);
     }
     for (const title of ["ChemDraft", "Classic desktop-compatible", "Fast", "Balanced", "Quality", "Automatic", "RDKit ETKDG", "OpenChemLib (legacy)", "MMFF94s", "MMFF94", "UFF"]) {

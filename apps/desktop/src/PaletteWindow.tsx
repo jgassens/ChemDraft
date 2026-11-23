@@ -25,7 +25,7 @@ import { disabledControlAtPointer, installPaletteInputFocus, isPaletteInputFocus
 import { editHistoryDirection, forceDocumentHistoryCommandId, isCleanPaletteNumberInput, isTextEditingElement } from "./editHistoryRouting";
 import { applyKeybindingSchemeToCommands } from "./keybindingScheme";
 import { useCompoundLayoutSettings } from "./useCompoundLayoutTools";
-import { loadKeybindingSettings, type KeybindingScheme } from "./keybindingSettings";
+import { loadKeybindingSettings } from "./keybindingSettings";
 import { TOOLBAR_SELECTION_KINDS, type ToolbarSelectionModel } from "./toolbars/toolbarSelectionKind";
 import { filterToolbarCustomizationCommands } from "./toolbars/toolbarCustomizationCommands";
 import { ToolbarCustomizeController } from "./toolbars/CustomizeMainToolbar/ToolbarCustomizeController";
@@ -165,13 +165,15 @@ export function PaletteWindow({
   );
   const commandSpecsRef = useRef(commandSpecs);
   const commandSpecsSignatureRef = useRef(toolsetCommandSpecsSignature(commandSpecs));
-  const [keybindingScheme, setKeybindingScheme] = useState<KeybindingScheme>(() => loadKeybindingSettings().scheme);
+  const [keybindingSettings, setKeybindingSettings] = useState(loadKeybindingSettings);
+  const { scheme: keybindingScheme } = keybindingSettings;
+  const shortcutOverrides = keybindingSettings.overrides?.[keybindingScheme];
   useEffect(() => installPopoverEscapeRouting(), []);
 
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    void listenForKeybindingSettings((next) => setKeybindingScheme(next.scheme)).then((listener) => {
+    void listenForKeybindingSettings(setKeybindingSettings).then((listener) => {
       if (disposed) {
         listener();
         return;
@@ -231,16 +233,16 @@ export function PaletteWindow({
   // Snapshots arrive already remapped for the active keybinding scheme; re-applying here covers the
   // first-paint fallback and live scheme flips (the transform is idempotent by command id).
   const allCommands = useMemo(
-    () => applyKeybindingSchemeToCommands(commandSpecs, keybindingScheme),
-    [commandSpecs, keybindingScheme]
+    () => applyKeybindingSchemeToCommands(commandSpecs, keybindingScheme, shortcutOverrides),
+    [commandSpecs, keybindingScheme, shortcutOverrides]
   );
   const galleryCommands = useMemo(
     () => filterToolbarCustomizationCommands(allCommands, compoundLayoutSettings),
     [allCommands, compoundLayoutSettings]
   );
   const shortcutRegistry = useMemo(
-    () => createDesktopShortcutRegistry(allCommands, { includeDisabled: true, platform }),
-    [allCommands, platform]
+    () => createDesktopShortcutRegistry(allCommands, { includeDisabled: true, platform, overrides: shortcutOverrides }),
+    [allCommands, platform, shortcutOverrides]
   );
   const shortcutRegistryRef = useRef(shortcutRegistry);
   shortcutRegistryRef.current = shortcutRegistry;

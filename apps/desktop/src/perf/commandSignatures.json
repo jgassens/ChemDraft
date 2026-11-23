@@ -724,7 +724,7 @@
     "name": "toggle_preferences_window",
     "async": true,
     "generics": "",
-    "parameters": "app: tauri::AppHandle",
+    "parameters": "app: tauri::AppHandle, keyboard: Option<bool>,",
     "returnType": "Result<(), String>"
   },
   {
@@ -809,10 +809,18 @@
   },
   {
     "file": "lib.rs",
+    "name": "desktop_preferences",
+    "async": true,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, patch: Option<DesktopPreferences>,",
+    "returnType": "Result<DesktopPreferences, String>"
+  },
+  {
+    "file": "lib.rs",
     "name": "set_keybinding_scheme",
     "async": false,
     "generics": "",
-    "parameters": "app: tauri::AppHandle, scheme: String",
+    "parameters": "window: tauri::WebviewWindow, scheme: Option<String>, accelerators: Option<MenuAccelerators>, recording: Option<bool>,",
     "returnType": "Result<(), String>"
   },
   {

@@ -1,10 +1,12 @@
 import type { CommandDefinition } from "@chemdraft/plugin-host";
 import type { PluginAppMenuItem } from "../appMenu";
 
+export const NAME_TO_STRUCTURE_COMMAND_ID = "plugin.opsinNameToStructure.convert";
+
 /** Host-owned aliases for existing official commands; no plugin release is needed. */
 export const OFFICIAL_PLUGIN_MENUS = [
   { commandId: "plugin.orthonymNaming.insertName", title: "Convert Structure to Name" },
-  { commandId: "plugin.opsinNameToStructure.convert", title: "Convert Name to Structure…" }
+  { commandId: NAME_TO_STRUCTURE_COMMAND_ID, title: "Convert Name to Structure…" }
 ] as const;
 
 export function buildOfficialPluginMenuItems(

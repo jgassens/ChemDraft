@@ -1,3 +1,7 @@
+import { aboutCommand } from "../about/aboutCommand";
+import { TOUR_TITLE, type TourAction, type TourPluginCommand } from "../tour/tourCommands";
+import type { TourBondKeys } from "../tour/tourSteps";
+import type { KeybindingScheme } from "../keybindingSettings";
 import { VIBE_CODE_GUIDE } from "./vibeCodeGuideText";
 import type { ConditionsSnapshot } from "./dialogProtocol";
 import type { ReactionConditionsDraft } from "@chemdraft/document-workflow-core";
@@ -87,6 +91,7 @@ export class DialogCoordinator {
     export?(tabId: string, options: ExportOptions, live: () => boolean, progress: (notice: string) => Promise<void>): Promise<ExportDialogResult>;
     previewExport?(tabId: string, options: ExportOptions, live: () => boolean): Promise<ExportPreviewResult>;
     chooseExportDestination?(tabId: string, options: ExportOptions, live: () => boolean): Promise<ExportDialogResult>;
+    guidedTourAction?(action: TourAction): void | Promise<void>;
     vibeCodeGuideAction?(action: "saveStarter" | "openPluginManager"): void | Promise<void>;
     onError(message: string): void;
     onPageEnlargementClosed?(tabId: string): void;
@@ -132,6 +137,17 @@ export class DialogCoordinator {
     return this.subscription ??= this.transport.subscribe(delivery => { void this.receive(delivery).catch(e => this.owner.onError(String(e))); })
       .catch(error => { this.subscription = undefined; throw error; });
   }
+  hasOpenDialog(): boolean { return this.sessions.size > 0; }
+
+  async openAbout(version: string, buildStamp: string): Promise<void> {
+    return this.open("about", "about", { title: aboutCommand.title, version, buildStamp });
+  }
+
+  /** `plugins` is the tour's plugin commands the menus offer now; the tour window has no plugin runtime of its own. */
+  async openGuidedTour(scheme: KeybindingScheme, automatic: boolean, plugins: readonly TourPluginCommand[] = [], bondKeys?: TourBondKeys): Promise<void> {
+    return this.open("guidedTour", "guidedTour", { title: TOUR_TITLE, scheme, automatic, plugins: [...plugins], ...(bondKeys ? { bondKeys: { ...bondKeys } } : {}) });
+  }
+
   async openVibeCodeGuide(): Promise<void> { return this.open("vibeCodeGuide", "vibeCodeGuide", { title: VIBE_CODE_GUIDE.title }); }
   async openPageSize(tabId: string, data: PageSize & { title: string }): Promise<void> {
     return this.open(tabId, "pageSize", data);
@@ -265,7 +281,7 @@ export class DialogCoordinator {
       return;
     }
     if (perfProbe) perfHook(() => perfProbe?.expectCompletion("dialog-open", snapshot.sessionId));
-    const title = kind === "pageEnlargement" ? PAGE_ENLARGEMENT_TITLE : kind === "pluginTextPrompt" ? "Plugin question" : kind === "customColor" ? "Custom Color" : kind === "vibeCodeGuide" ? VIBE_CODE_GUIDE.title : kind === "reactionConditions" ? "Reaction conditions" : kind === "atomProblem" ? "Atom problem" : kind === "insertTable" ? "Insert Table" : kind === "structureTemplates" ? "Templates" : kind === "engineInstall" ? "Engine installation" : kind === "toolInstall" ? "Tool installation" : kind === "export" ? "Export" : kind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size";
+    const title = kind === "pageEnlargement" ? PAGE_ENLARGEMENT_TITLE : kind === "pluginTextPrompt" ? "Plugin question" : kind === "about" ? aboutCommand.title : kind === "guidedTour" ? TOUR_TITLE : kind === "customColor" ? "Custom Color" : kind === "vibeCodeGuide" ? VIBE_CODE_GUIDE.title : kind === "reactionConditions" ? "Reaction conditions" : kind === "atomProblem" ? "Atom problem" : kind === "insertTable" ? "Insert Table" : kind === "structureTemplates" ? "Templates" : kind === "engineInstall" ? "Engine installation" : kind === "toolInstall" ? "Tool installation" : kind === "export" ? "Export" : kind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size";
     if (!parseDialogMessage(snapshot)) throw new Error(`Invalid ${title} snapshot`);
     const session: Session = { snapshot, engineInstall, toolInstall, pageEnlargement, pluginTextPrompt, receipts: new Map(), inFlight: new Map(), settled: false, ready: false,
       frameKey: snapshot.dialogKind === "export" ? JSON.stringify(snapshot.data.frame) : undefined,
@@ -312,7 +328,7 @@ export class DialogCoordinator {
     const message = validateDialogDelivery(parsed, delivery.senderWindowId, session.snapshot, label);
     if (!message) return;
     if (message.type === "closed") {
-      if (message.data.reason === "error") this.owner.onError(`${parsed.dialogKind === "pageEnlargement" ? PAGE_ENLARGEMENT_TITLE : parsed.dialogKind === "pluginTextPrompt" ? "Plugin question" : parsed.dialogKind === "customColor" ? "Custom Color" : parsed.dialogKind === "reactionConditions" ? "Reaction conditions" : parsed.dialogKind === "atomProblem" ? "Atom problem" : parsed.dialogKind === "insertTable" ? "Insert Table" : parsed.dialogKind === "structureTemplates" ? "Templates" : parsed.dialogKind === "engineInstall" ? "Engine installation" : parsed.dialogKind === "toolInstall" ? "Tool installation" : parsed.dialogKind === "export" ? "Export" : parsed.dialogKind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size"} could not show its native window. Open it again to try again.`);
+      if (message.data.reason === "error") this.owner.onError(`${parsed.dialogKind === "pageEnlargement" ? PAGE_ENLARGEMENT_TITLE : parsed.dialogKind === "pluginTextPrompt" ? "Plugin question" : parsed.dialogKind === "about" ? aboutCommand.title : parsed.dialogKind === "guidedTour" ? TOUR_TITLE : parsed.dialogKind === "customColor" ? "Custom Color" : parsed.dialogKind === "reactionConditions" ? "Reaction conditions" : parsed.dialogKind === "atomProblem" ? "Atom problem" : parsed.dialogKind === "insertTable" ? "Insert Table" : parsed.dialogKind === "structureTemplates" ? "Templates" : parsed.dialogKind === "engineInstall" ? "Engine installation" : parsed.dialogKind === "toolInstall" ? "Tool installation" : parsed.dialogKind === "export" ? "Export" : parsed.dialogKind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size"} could not show its native window. Open it again to try again.`);
       await this.settle(session, message.data.reason, false); return;
     }
     if (message.type === "ready") {
@@ -365,8 +381,34 @@ export class DialogCoordinator {
       }
       return;
     }
+    if (session.snapshot.dialogKind === "guidedTour") {
+      const data = message.data as TourAction;
+      // The native host opens the guide link itself and never relays it; should one arrive, it is not
+      // the owner's to act on.
+      if (data.action === "openGuide") return;
+      if (session.receipts.has(message.requestId)) return;
+      const receipt: DialogMessage = { ...dialogEnvelope(message), type: "result", data: { status: "cancelled" } };
+      session.receipts.set(message.requestId, receipt);
+      const endTour = data.action === "cancel" || data.action === "finish";
+      try {
+        await this.transport.publish(session.registration.hostId, { ...dialogEnvelope(message), type: "result", data: { status: "accepted" } });
+        if (session.settled) return;
+        await this.owner.guidedTourAction?.(data);
+        if (endTour) {
+          await this.settle(session, data.action === "finish" ? "apply" : "cancel");
+          return;
+        }
+        if (data.action === "chooseShortcuts") {
+          session.snapshot = { ...session.snapshot, data: { ...session.snapshot.data, scheme: data.scheme } };
+          if (!session.settled) await this.transport.publish(session.registration.hostId, session.snapshot);
+        }
+      } catch (error) { receipt.data = { status: "error", error: String(error).slice(0, 1024) }; }
+      if (!session.settled) await this.transport.publish(session.registration.hostId, receipt);
+      return;
+    }
     // Cancellation invalidates owner work immediately, even while a receipt is pending.
     if (message.data.action === "cancel") { await this.settle(session, "cancel"); return; }
+    if (session.snapshot.dialogKind === "about") return;
     if (session.snapshot.dialogKind === "atomProblem") {
       const data = message.data;
       if (!("targetVersion" in data) || data.targetVersion !== session.snapshot.data.targetVersion || !session.snapshot.data.fixes.some(f => f.action === data.action)) {
@@ -594,7 +636,7 @@ export class DialogCoordinator {
     const toolClosed = session.toolInstall ? new Promise<void>(resolve => { finishToolClose = resolve; }) : undefined;
     if (session.snapshot.dialogKind === "engineInstall") session.engineInstall?.closed();
     else if (session.snapshot.dialogKind === "toolInstall") session.toolInstall?.closed(toolClosed);
-    else if (session.snapshot.dialogKind === "export" || session.snapshot.dialogKind === "atomProblem") this.owner.onSettled?.(session.snapshot.documentTabId, reason, session.snapshot.dialogKind);
+    else if (session.snapshot.dialogKind === "export" || session.snapshot.dialogKind === "atomProblem" || session.snapshot.dialogKind === "guidedTour") this.owner.onSettled?.(session.snapshot.documentTabId, reason, session.snapshot.dialogKind);
     else this.owner.onSettled?.(session.snapshot.documentTabId, reason);
     if (close && session.registration) {
       try { await this.transport.close(session.registration.hostId, reason); }
