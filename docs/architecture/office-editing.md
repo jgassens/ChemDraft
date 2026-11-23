@@ -629,9 +629,13 @@ comes in, with the same checks, warnings and refusals as a picture's carrier. Th
   then the PNG. The Windows native reader (`read_payload`) snapshots the ordinary formats first
   (text, the PNG) before either optional read can block. It then reads the embedded object (up to
   10 seconds, above) and, separately, GVML, on its own single-flight reader bounded at 1 second; a
-  busy, timed-out, unavailable, or refused archive is skipped and the snapshot's PNG is kept. GVML is
-  read even when an OLE drawing was read, so one payload's `officeItems` can carry both. The
-  TypeScript layer (`recoverPasteBackFromClipboard`, then `recoverPasteBackStructures`) checks the
+  busy, timed-out, unavailable, or refused archive is skipped and the snapshot's PNG is kept. A
+  timed-out archive read keeps the clipboard open on its own thread until Office answers (only that
+  thread may close it), so a later paste that cannot open the clipboard while either reader is
+  outstanding says "Windows is still reading the previous clipboard item…" too, and starts no second
+  archive read. GVML is read even when an OLE drawing was read, so one payload's `officeItems` can
+  carry both. The TypeScript layer (`recoverPasteBackFromClipboard`, then
+  `recoverPasteBackStructures`) checks the
   object's class again (`isChemDraftOleClassId`), judges its drawing first, decodes the GVML archive
   only when the OLE drawing is absent or refused, and falls back to the PNG only when neither gave a
   structure. An object whose drawing is unusable (damaged, a newer data version, over

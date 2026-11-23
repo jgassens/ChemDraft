@@ -646,6 +646,9 @@ pub(crate) mod native {
         GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
     };
 
+    /// Why the clipboard would not open, when nothing of ChemDraft's own is known to hold it.
+    const CLIPBOARD_IN_USE: &str = "The clipboard is in use by another application.";
+
     /// An open clipboard, closed on drop. Another process can hold the clipboard for a moment
     /// (clipboard managers, RDP), so opening retries briefly before giving up.
     struct OpenedClipboard;
@@ -659,7 +662,7 @@ pub(crate) mod native {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            Err("The clipboard is in use by another application.".to_string())
+            Err(CLIPBOARD_IN_USE.to_string())
         }
     }
 
@@ -1001,9 +1004,31 @@ pub(crate) mod native {
     static OLE_READER: SingleFlight<(&'static str, NonZeroU32), OleRead> =
         SingleFlight::new("ChemDraft OLE paste", read_ole_object);
 
-    /// Paste's answer when only an earlier, unfinished OLE read stood between it and the data.
+    /// Paste's answer when only an earlier, unfinished OLE or archive read stood between it and
+    /// the data.
     const STILL_READING: &str =
         "Windows is still reading the previous clipboard item. Try pasting again in a moment.";
+
+    /// Paste's answer when the clipboard would not open. An unfinished optional read may be what
+    /// holds it: the OLE reader while Word or PowerPoint hands over an object, and the archive
+    /// reader, which keeps the clipboard open while Office renders GVML, past its paste's
+    /// 1-second wait. Only the thread that opened the clipboard may close it, so paste waits
+    /// for that read to return rather than closing it.
+    fn paste_open_error(error: String, ole_busy: bool, archive_busy: bool) -> String {
+        if ole_busy || archive_busy {
+            STILL_READING.into()
+        } else {
+            error
+        }
+    }
+
+    /// Open the clipboard on this paste's thread, naming an unfinished optional read as the
+    /// reason when one may be what holds it.
+    fn open_for_paste() -> Result<OpenedClipboard, String> {
+        OpenedClipboard::open(std::ptr::null_mut()).map_err(|error| {
+            paste_open_error(error, OLE_READER.is_busy(), ARCHIVE_READER.is_busy())
+        })
+    }
 
     /// The OLE read is still outstanding after this paste's wait, or was already outstanding.
     #[derive(Debug)]
@@ -1020,8 +1045,11 @@ pub(crate) mod native {
             return Ok(None);
         };
         {
-            let Ok(_clipboard) = OpenedClipboard::open(std::ptr::null_mut()) else {
-                return Ok(None);
+            // An earlier paste's unfinished archive read may hold the clipboard.
+            let _clipboard = match open_for_paste() {
+                Ok(clipboard) => clipboard,
+                Err(error) if error == STILL_READING => return Err(StillReading),
+                Err(_) => return Ok(None),
             };
             if clipboard_sequence() != Some(sequence) {
                 return Ok(None);
@@ -1213,14 +1241,8 @@ pub(crate) mod native {
     fn read_ordinary_payload(
         budget: &mut ClipboardReadBudget,
     ) -> Result<(ClipboardReadPayload, Option<NonZeroU32>), String> {
-        // The unfinished OLE read may be what holds the clipboard open.
-        let _clipboard = OpenedClipboard::open(std::ptr::null_mut()).map_err(|error| {
-            if OLE_READER.is_busy() {
-                STILL_READING.into()
-            } else {
-                error
-            }
-        })?;
+        // An unfinished OLE or archive read may be what holds the clipboard open.
+        let _clipboard = open_for_paste()?;
         let mut types = Vec::new();
         let mut text_items = Vec::new();
 
@@ -1514,6 +1536,27 @@ pub(crate) mod native {
                 payload.image_items.push(png_image_item(&png).unwrap());
                 assert!(finish_paste_read(payload, still_reading).is_ok());
             }
+        }
+
+        /// A stuck GVML render keeps the archive reader's thread inside GetClipboardData with the
+        /// clipboard open. The next paste cannot open it either, and must say so as pending,
+        /// whichever optional read is unfinished, not blame another program.
+        #[test]
+        fn a_failed_open_reports_pending_while_either_optional_read_is_unfinished() {
+            assert_eq!(
+                paste_open_error(CLIPBOARD_IN_USE.into(), false, false),
+                CLIPBOARD_IN_USE
+            );
+            for (ole_busy, archive_busy) in [(true, false), (false, true), (true, true)] {
+                assert_eq!(
+                    paste_open_error(CLIPBOARD_IN_USE.into(), ole_busy, archive_busy),
+                    STILL_READING,
+                    "OLE busy: {ole_busy}, archive busy: {archive_busy}"
+                );
+            }
+            let other = "Could not open the clipboard.";
+            assert_eq!(paste_open_error(other.into(), false, false), other);
+            assert_eq!(paste_open_error(other.into(), false, true), STILL_READING);
         }
 
         #[test]
