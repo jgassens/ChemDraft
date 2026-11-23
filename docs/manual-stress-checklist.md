@@ -1637,6 +1637,25 @@ whole-molecule cleanup with the existing behavior, and check save/reopen and exp
   Drawing style: Sketch. Sketch shows uneven strokes and Patrick Hand labels. Undo and Redo, then
   save and reopen: the applied style remains without changing the chemistry.
 
+### Plugin text prompt (Name to Structure) (macOS and Windows)
+
+- With the OPSIN plugin installed, choose Structure ▸ Convert Name to Structure…. The **Structure from
+  Name** question opens as its own native window owned by the document window: no Windows taskbar
+  entry, centered over the document the first time, nothing dimmed or drawn inside the drawing, and
+  the floating toolbars stay usable beside it. It names Name to Structure (OPSIN) as the requester.
+- Type a name and press Return/Enter: the structure is inserted and focus returns to the drawing.
+  Move the window, ask again: it reopens where it was left. Repeat with Cancel, Escape (hold it: the
+  window closes only on release, and nothing in the drawing reacts), Cmd+. on macOS (no effect on
+  Windows), and the title-bar close: nothing is inserted and focus returns to the drawing each time.
+- Type with an IME (Japanese or Chinese input): the Enter that confirms the composition does not submit.
+- Type a name, then switch to another tab: the question stays open with the typed name, **Insert** is
+  disabled, one line reads "Switch back to <tab name> to insert.", and Return/Enter does nothing.
+  Switch back: the line disappears, **Insert** works, and the structure lands only in the tab that
+  asked (the other tab is unchanged; one Undo there removes nothing).
+- With the question open, switch to another tab and close the tab that asked: the question closes
+  and nothing is inserted. Repeat with File ▸ Open into the tab that asked (its document replaced):
+  the question closes too.
+
 ### Page-enlarge question
 
 - Paste a list of SMILES large enough to overflow the page. In the native question choose Enlarge:

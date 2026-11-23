@@ -373,10 +373,11 @@ body, and an owner callback in the coordinator. Extend Rust's kind/label allowli
 capability window matcher; URLs remain host IDs. Keep files, history, settings and plugin operations
 in MainWindow. Add contract, lifecycle, originating-context and both-platform manual tests.
 
-General plugin prompts, report readers, plugin manager and toolbar customization
-are deliberately unimplemented. Modal plugin prompts need an explicit document input lease at the
-coordinator seam, including all command/pointer/menu/clipboard paths and dependent prompt stacking;
-Page Size has no such lease. Other kinds will need their own busy/progress contracts,
+Report readers, plugin manager and toolbar customization are deliberately unimplemented, and so
+are plugin prompts other than the one-line `dialogs.promptText` question (`pluginTextPrompt`, below).
+Modal plugin prompts need an explicit document input lease at the coordinator seam, including all
+command/pointer/menu/clipboard paths and dependent prompt stacking; Page Size has no such lease, and
+neither does `pluginTextPrompt`, which is modeless. Other kinds will need their own busy/progress contracts,
 snapshot revisions and cancellation semantics before they can use the host.
 
 ## Request-bound page enlargement
@@ -393,6 +394,58 @@ focus to the visible document window when the question held focus, and the docum
 focus to the active canvas. If the request aborts or times out, its signal closes even a question
 still opening and settles the dialog as Keep Page Size. An already-aborted request retains the
 plugin host's existing unanswered outcome.
+
+## Plugin text prompt
+
+`dialogs.promptText` (for example Name to Structure's **Structure from Name** question) opens the
+`pluginTextPrompt` kind, labeled `dialog-main-pluginTextPrompt-<slot>`. It is a small, resizable,
+content-fit native window owned by the document window: no Windows taskbar entry, centered over the
+document the first time, reopened where it was left (per-kind position persistence), floating-toolbar
+stacking and utility suspension like the other kinds. Nothing is drawn or dimmed inside the document
+viewport, and the drawing stays usable while the question is open: the plugin's command waits for the
+answer, but no input lease is taken. Its native title is the plugin's own title. The form names the
+requesting plugin and ID (“Requested by …”).
+
+The strict TypeScript and Rust snapshots carry the normalized request only: `title` (1–200),
+`label` (1–200), `placeholder` (0–200), `initialValue` (0–`maxLength`), `submitLabel` (1–200;
+the host supplies “Submit”), `maxLength` (1–2000), `pluginName` (1–128) and `pluginId` (1–256),
+lengths in UTF-16 units as in `PluginPromptTextRequestSchema`, no NUL, no unknown fields
+(`deny_unknown_fields`). Its actions are `submit` with a nonempty `value` and `cancel`; there is no
+result message. Rust also checks a submitted value against the retained snapshot's `maxLength`.
+Snapshot and action share the 3400-byte serialized budget used by `engineInstall`, which keeps the
+complete channel delivery below 4096 bytes. The owner fits every request into that budget: the
+initial value keeps priority, then the display strings share the remaining room (an ordinary request
+passes unchanged). Every byte count here is serialized: UTF-8 after JSON string escaping, so a
+quotation mark or backslash costs 2 bytes and a control character 2 or 6, not its raw UTF-8 size.
+Even with every display string and the status line at their reserved minimums, at least 1,600
+serialized bytes remain for the initial value, so an `initialValue` within `maxLength` whose
+serialized size is at most 1,600 bytes (for example 533 CJK characters) is always delivered whole
+(except that NUL, U+0000, characters are removed; no other character is stripped),
+and a longer one may be cut at a code-point boundary. The form disables Submit, with a message, for
+an answer that would not fit (over about 2,800 serialized bytes: 933 CJK characters fit, 934 do not).
+`PluginDialogsAPI.promptText` and the plugin authoring guide state both limits.
+
+`PluginPromptTextController` keeps its queue and the plugin host keeps its one-prompt-per-plugin rule;
+`presentPluginTextPromptsNatively` shows the queue's head in its own session, one window at a time,
+owned by the tab whose document the asking command was invoked on (`documentKey`; the active tab for a
+prompt bound to no document), even when another tab is active when it is shown. A document-bound
+prompt can be answered only on its own tab: while another tab is active it stays open with Submit off
+and a status line naming its tab; that neither cancels it nor changes its tab, and switching back turns
+Submit on again. A prompt bound to no document keeps Submit on whichever tab is active, because
+`PluginPromptTextController` accepts its answer on any tab; its window stays with the tab that was
+active when it opened. An answer to a document-bound prompt refused because its tab lost focus while
+the window was closing reopens the prompt on its tab with the submitted text as its draft. That draft
+is bounded as if the status line were at its longest, so no later state change clips it; when even
+that cuts it short, the owner keeps the whole answer, a status line on its own tab says so, and
+submitting the shown draft unchanged delivers the whole answer (an edited draft is sent as edited). Submit
+(button or Enter; an Enter that confirms an IME composition does not submit) resolves the request
+with the exact text. Cancel, Escape (on key release, so its auto-repeat stays in the dialog), Cmd+.
+(macOS only), Cmd/Ctrl+W, the title-bar close and closing the owning tab resolve it as cancelled.
+When the request ends first (the command returned, the plugin was disabled), its signal
+closes the window, even one still opening. As with page enlargement, the native host returns focus
+to the document window when the question held focus, and the document restores focus to the
+active canvas. A native creation failure reports status and cancels the request; there is no in-page
+fallback on desktop. The browser build has no owned native windows and renders the same `PluginTextPromptForm` as an in-page modal.
 
 ## Stage 2: modeless Export
 

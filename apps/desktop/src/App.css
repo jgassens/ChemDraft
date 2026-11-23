@@ -8162,3 +8162,10 @@ body.file-warnings-window {
 
 .cd-page-size-web-fallback .cd-dialog-fit { height: auto; max-height: calc(100dvh - 32px); min-height: 0; }
 .plugin-prompt-backdrop > .arrangement-spacing-dialog.cd-dialog-fit { height: auto; }
+
+/* A plugin's one-line text question in its own native dialog window (dialogs.promptText). The
+   browser build's in-page fallback keeps the .plugin-prompt-dialog card above. */
+.plugin-text-prompt-native { box-sizing: border-box; background: var(--cd-bg-panel-raised); color: var(--cd-text-primary); font-size: 12px; }
+.plugin-text-prompt-native > .cd-dialog-fit-body { margin: 0; padding: 0; overflow-wrap: anywhere; }
+.plugin-text-prompt-form .plugin-prompt-body p { margin: 0; color: var(--cd-text-secondary); }
+.plugin-text-prompt-form .plugin-prompt-body p[role="alert"] { color: var(--cd-danger); }

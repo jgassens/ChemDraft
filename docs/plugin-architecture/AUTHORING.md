@@ -457,6 +457,16 @@ first — an invalid request, another of the plugin's prompts still open, or a h
 leaves it, so a corrected retry in the same invocation still works. Submit is disabled for an empty field; cancellation returns `{ status: "cancelled" }`.
 Disabling, unregistering, or terminating the plugin while its prompt is open also cancels it.
 
+`maxLength` (1–2,000, default 500) and `initialValue` count UTF-16 code units, but the desktop app
+carries the question and its answer in native messages of fixed size, so the effective limits can be
+smaller. The desktop byte limits count the text as it is sent: UTF-8 after JSON string escaping, so
+most characters cost their UTF-8 size (1 byte for ASCII, 3 for most CJK), a quotation mark or
+backslash costs 2 bytes, and a control character costs 2 (a tab or newline) or 6. An `initialValue` of at
+most 1,600 such bytes (for example 533 CJK characters) is always shown whole, except that NUL (U+0000) characters are removed (no other character is stripped); a longer one may be cut
+at a character boundary. An answer is limited to `maxLength` and to about 2,800 such bytes (for
+example 933 CJK characters): the window keeps Submit off for a longer one. The browser build has
+neither byte limit.
+
 ## External tools (0.1.8)
 
 `context.tools` lets a plugin use host-managed AI command-line tools (`claude` and `codex`). Declare

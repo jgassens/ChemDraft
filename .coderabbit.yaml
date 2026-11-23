@@ -1,0 +1,73 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+#
+# CodeRabbit review settings for ChemDraft. Rules cite AGENTS.md section numbers.
+# Reviews every pull request, draft or not, whatever branch it targets
+# (main, release/*, feature branches). Draft PRs are reviewed too, since
+# they are often opened only to run CI. Every push gets an incremental review
+# (auto_pause_after_reviewed_commits: 0 disables auto-pause). Summaries: high-level only; no
+# changed-files table or sequence diagrams.
+language: en-US
+
+tone_instructions: >-
+  Concise. Report findings only, each with file, line, and fix. No praise,
+  no summaries of unchanged code, no restating the diff.
+
+chat:
+  auto_reply: false
+  art: false
+
+reviews:
+  profile: assertive
+  high_level_summary: true
+  changed_files_summary: false
+  sequence_diagrams: false
+  poem: false
+  in_progress_fortune: false
+  auto_review:
+    enabled: true
+    drafts: true
+    auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 0
+    base_branches:
+      - ".*"
+  path_filters:
+    - "!pnpm-lock.yaml"
+    - "!**/*.snap"
+  path_instructions:
+    - path: "apps/desktop/src-tauri/**"
+      instructions: |
+        AGENTS.md §1 (both platforms). Every #[cfg(target_os = ...)] needs its
+        other side, and clippy -D warnings runs on both. Linux-only work must
+        not change macOS or Windows behavior. Check menus (Windows: document
+        window only), focus, utility windows (focused(false), owned by the
+        document window), the app origin (tauri://localhost and
+        http://tauri.localhost), and that F5/Ctrl+R never reload the webview.
+    - path: "packages/{chem-core,layout-engine,analysis-core,rdkit-adapter,ocl-adapter,chemistry-adapter,document-workflow-core}/**"
+      instructions: |
+        AGENTS.md §7: chemistry is never silently changed; an operation that
+        cannot preserve chemical meaning must warn or fail. §9: molecule
+        rendering math lives only in packages/layout-engine, with no copies
+        elsewhere. §8: analysis and prediction claims carry method contracts.
+    - path: "packages/plugin-host/**"
+      instructions: &plugin_rules |
+        AGENTS.md §4: plugins declare least-privilege permissions and never
+        receive an undeclared capability. Never bypass the install gates
+        (checksum/CRC, manifest validation, apiVersion handshake, path
+        traversal). The update URL allowlist must list every release URL.
+    - path: "packages/plugin-api/**"
+      instructions: *plugin_rules
+    - path: "apps/desktop/src/plugins/**"
+      instructions: *plugin_rules
+    - path: "apps/desktop/src-tauri/src/installed_plugins.rs"
+      instructions: *plugin_rules
+    - path: "apps/desktop/src-tauri/capabilities/**"
+      instructions: *plugin_rules
+    - path: "README.md"
+      instructions: &public_text |
+        Public text (AGENTS.md): never name or compare to a commercial
+        competitor (file-format names such as CDXML are fine). Use American
+        spelling.
+    - path: "site/**"
+      instructions: *public_text
+    - path: "docs/releasing/**"
+      instructions: *public_text

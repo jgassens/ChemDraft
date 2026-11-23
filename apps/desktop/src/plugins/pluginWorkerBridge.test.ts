@@ -951,7 +951,9 @@ describe("dialogs.promptText survives the worker boundary", () => {
     expect(promptText).toHaveBeenCalledWith(
       { id: dialogManifest.id, name: dialogManifest.name },
       { title: "Chemical name", label: "Name", placeholder: "benzene", maxLength: 500 },
-      expect.any(AbortSignal)
+      expect.any(AbortSignal),
+      // The host has no active-document key provider here, so the prompt is bound to no document.
+      { documentKey: undefined }
     );
     bridge.terminate();
   });

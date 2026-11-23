@@ -296,6 +296,40 @@ describe("PluginHost", () => {
     expect(promptText).toHaveBeenCalledTimes(1);
   });
 
+  it("tells the prompt UI which document the asking command was invoked on", async () => {
+    let activeKey = "document-a";
+    const promptText = vi.fn(async () => ({ status: "cancelled" as const }));
+    const host = new PluginHost({ promptText, getActiveDocumentKey: () => activeKey });
+    host.registerPlugin(
+      {
+        id: "org.test.document-prompt",
+        name: "Document Prompt",
+        version: "0.0.1",
+        apiVersion: "^0.1.3",
+        entry: "dist/plugin.js",
+        permissions: ["ui.panel"],
+        contributes: { commands: [{ id: "plugin.documentPrompt.run", title: "Run" }] }
+      },
+      {
+        commandHandlers: {
+          "plugin.documentPrompt.run": async (context) => {
+            // The command's document, not whichever one is active when it asks.
+            activeKey = "document-b";
+            await context.dialogs!.promptText({ title: "Name", label: "Value" });
+          }
+        }
+      }
+    );
+
+    await host.invokeCommand("plugin.documentPrompt.run");
+    expect(promptText).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "org.test.document-prompt" }),
+      expect.objectContaining({ title: "Name" }),
+      expect.any(AbortSignal),
+      { documentKey: "document-a" }
+    );
+  });
+
   it("rejects a second prompt after the first settled in the same command invocation", async () => {
     const promptText = vi.fn(async () => ({ status: "cancelled" as const }));
     const host = new PluginHost({ promptText });

@@ -1545,6 +1545,13 @@ export type NormalizedPluginPromptTextRequest = z.output<typeof PluginPromptText
 export type PluginPromptTextResult = z.infer<typeof PluginPromptTextResultSchema>;
 
 export interface PluginDialogsAPI {
+  /**
+   * Asks the user for one line of text. `maxLength` and `initialValue` count UTF-16 code units, but the
+   * desktop app sends the question and answer as native messages of fixed size, measured in UTF-8 after
+   * JSON string escaping (a quotation mark or backslash costs 2 bytes, a control character 2 or 6): an
+   * `initialValue` over 1,600 such bytes may be cut at a character boundary, and an answer over about
+   * 2,800 such bytes cannot be submitted. See docs/plugin-architecture/AUTHORING.md.
+   */
   promptText(request: PluginPromptTextRequest): Promise<PluginPromptTextResult>;
 }
 

@@ -20,6 +20,7 @@ const VibeCodeGuideForm = lazy(() => import("./VibeCodeGuideForm").then(module =
 const ExportForm = lazy(() => import("./ExportForm").then(module => ({ default: module.ExportForm })));
 const CustomColorForm = lazy(() => import("./CustomColorForm").then(module => ({ default: module.CustomColorForm })));
 const PageEnlargementForm = lazy(() => import("./PageEnlargementForm").then(module => ({ default: module.PageEnlargementForm })));
+const PluginTextPromptForm = lazy(() => import("./PluginTextPromptForm").then(module => ({ default: module.PluginTextPromptForm })));
 const StructureTemplatePicker = lazy(() => import("./StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 
 export function DialogWindow({ hostId }: { hostId: string }) {
@@ -94,8 +95,10 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
       if (message.type === "snapshot") {
         if (latest && (message.sessionId !== latest.sessionId || message.snapshotRevision < latest.snapshotRevision)) return;
         // Replay must not replace the user's draft at the same revision.
-        if (!latest || message.snapshotRevision > latest.snapshotRevision || message.dialogKind === "engineInstall" || message.dialogKind === "toolInstall" || message.dialogKind === "atomProblem") {
+        if (!latest || message.snapshotRevision > latest.snapshotRevision || message.dialogKind === "engineInstall" || message.dialogKind === "toolInstall" || message.dialogKind === "atomProblem" || message.dialogKind === "pluginTextPrompt") {
           setSnapshot(message);
+          // The owner refuses an answer while Submit is off and drops its reservation; never leave the form busy.
+          if (message.dialogKind === "pluginTextPrompt" && message.data.submitEnabled === false) { actionPending.current = false; setBusy(false); }
           if (message.dialogKind === "toolInstall" && (message.data.state.status === "failed" || message.data.state.status === "broken")) {
             clearTimeout(actionTimer.current);
             actionPending.current = false;
@@ -202,7 +205,8 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
   }, [hostId, snapshot, percent]);
   const sendAction = (data: Extract<DialogMessage, { type: "action" }>["data"]) => {
     if (!snapshot) return;
-    if (snapshot.dialogKind === "pageEnlargement") {
+    if (snapshot.dialogKind === "pageEnlargement" || snapshot.dialogKind === "pluginTextPrompt") {
+      // Request-bound questions: one answer, no receipt. The owner closes the window when it settles.
       if (actionPending.current) return;
       actionPending.current = true;
       setBusy(true);
@@ -243,6 +247,10 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
   if (snapshot.dialogKind === "pageEnlargement") return <Suspense fallback={<p role="status">Opening dialog…</p>}>
     <PageEnlargementForm onReady={reportReady} busy={busy} error={error}
       onKeep={() => sendAction({ action: "cancel" })} onEnlarge={() => sendAction({ action: "enlarge" })} />
+  </Suspense>;
+  if (snapshot.dialogKind === "pluginTextPrompt") return <Suspense fallback={<p role="status">Opening dialog…</p>}>
+    <PluginTextPromptForm key={snapshot.sessionId} data={snapshot.data} onReady={reportReady} busy={busy} error={error}
+      onCancel={() => sendAction({ action: "cancel" })} onSubmit={value => sendAction({ action: "submit", value })} />
   </Suspense>;
   if (snapshot.dialogKind === "atomProblem") return <AtomProblemForm data={snapshot.data} busy={busy} error={error} onReady={reportReady}
     onAction={action => sendAction({ action, targetVersion: snapshot.data.targetVersion })} onClose={() => sendAction({ action: "cancel" })} />;
