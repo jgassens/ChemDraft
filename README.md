@@ -63,6 +63,11 @@ offers a `.deb` (Ubuntu 22.04+, Linux Mint 21+, Debian 12+ and relatives) and an
   [preset values and sources](packages/chem-core/README.md#native-drawing-presets).
 - New to the app? **Help ▸ Take the Tour**.
 
+<p align="center">
+  <img src="site/assets/brevetoxin-nicolaou.webp" width="480" alt="Brevetoxin B drawn by ChemDraft with eleven fused oxygen-containing rings shaded in pastel colours and lettered A to K">
+  <br><sub>Brevetoxin B with shaded rings lettered A–K, and H and Me at the ring fusions.</sub>
+</p>
+
 **Check**
 
 - The Molecular Inspector computes about sixty properties offline with RDKit, including formula,
@@ -71,12 +76,23 @@ offers a `.deb` (Ubuntu 22.04+, Linux Mint 21+, Debian 12+ and relatives) and an
 - Search a selected structure in PubChem or Reaxys through your browser, with consent on first use
   for each site. Turn it off under Preferences ▸ Online structure search.
 
+<p align="center">
+  <img src="site/assets/inspector-isotope-envelope.webp" width="380" alt="Diclofenac beside the Molecular Inspector showing ion m/z values and its theoretical isotope envelope">
+  <img src="site/assets/inspector-ionizable-sites.webp" width="380" alt="A lipopeptide beside the Molecular Inspector showing estimated pKa values at ionizable sites">
+  <br><sub>Diclofenac's isotope envelope and estimated pKa values on a lipopeptide's ionizable sites.</sub>
+</p>
+
 **See it in 3D**
 
 - **Spin 3D** builds a 3D conformer with RDKit, lets you turn it with the mouse, and lays the view
   you choose back onto the page. It warns or refuses when flattening would change stereochemistry.
 - **Interactive 3D Workspace** (Structure menu) is experimental. It is backed by a bundled native
   engine running Avogadro's UFF force field.
+
+<p align="center">
+  <img src="site/assets/spin-3d-helicene.gif" width="420" alt="Spin 3D turning a helicene out of the page in the ChemDraft Mac app">
+  <br><sub>Spin 3D in the Mac app, turning a helicene out of the page.</sub>
+</p>
 
 **Files and sharing**
 
@@ -115,6 +131,11 @@ to touch, and updates only from its own GitHub releases, checked against a SHA-2
   before it is inserted. Installing it downloads a local recognition engine (about 2.5 GB), and
   recognition runs on your computer.
 
+<p align="center">
+  <img src="site/assets/brevetoxin-nmr-1h.webp" width="480" alt="Predicted proton NMR spectrum of brevetoxin B beside its structure, with peaks assigned to drawn atoms">
+  <br><sub>Predicted ¹H NMR from the optional NMR plugin: shift estimates with first-order multiplets, assigned to drawn atoms. Predicted, not measured.</sub>
+</p>
+
 **AI assistant.** ChemDraft 1.2.2 contains the host side of an in-app assistant: a plugin can run a
 local Claude Code or Codex session that reads your document and places results on the page through
 ChemDraft's own tools, with one undo step per request. The assistant plugin itself is developed and
@@ -135,6 +156,11 @@ These three surfaces run from a copy of the source code, not from the downloaded
 Git, Node 24 and pnpm 10.12.1 on macOS or Windows, plus a JDK for name-to-structure. They all call
 the same document code as the desktop app, so a drawing made by an assistant matches the one on the
 canvas. Setup for each is in [skills/chemdraft/references/setup.md](skills/chemdraft/references/setup.md).
+
+<p align="center">
+  <img src="site/assets/fujita-cage.webp" width="360" alt="ChemDraft drawing of a Fujita palladium cage with four differently coloured ligand panels">
+  <br><sub>Real output: Claude Code, with the ChemDraft skill, built and rendered a Fujita cage with shaded ligand panels.</sub>
+</p>
 
 **Headless CLI** ([packages/chemdraft-cli](packages/chemdraft-cli/README.md)). Render, build
 documents, draw grids and reactions, analyze, convert names, check stereochemistry, predict NMR and
