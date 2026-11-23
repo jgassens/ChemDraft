@@ -7,7 +7,7 @@ import type { Spin3dTraceEvent } from "./conformerDebug";
 import { qualityRefineIterationsFor } from "./spin3dRefineCaps";
 
 export interface ConformerWorkRequest {
-  kind: "generate" | "prefetch" | "warmup" | "cancel";
+  kind: "generate" | "refine-workspace-seed" | "prefetch" | "warmup" | "cancel";
   id: number;
   molfile?: string;
   originalAtomCount?: number;
@@ -18,6 +18,8 @@ export interface ConformerWorkRequest {
   options?: RdkitGenerate3DConformerOptions;
   /** Which embed engine to use (Spin 3D Engine setting). Default "auto". */
   enginePreference?: Spin3dEnginePreference;
+  /** A Workspace seed is eligible for refinement only if it matches the cached embed. */
+  workspaceSeed?: Float64Array;
 }
 
 export interface ConformerWorkResponse {

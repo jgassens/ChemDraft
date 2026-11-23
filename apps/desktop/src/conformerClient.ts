@@ -38,6 +38,8 @@ export interface ConformerWorkerClient {
     handlers: ConformerStageHandlers,
     traceContext?: ConformerTraceContext
   ): () => void;
+  /** Use the worker's cached refinement only for the original embedded coordinates. */
+  refineWorkspaceSeed(molfile: string, seed: Float64Array): Promise<Float64Array | undefined>;
   /** Fire-and-forget: compute + cache so a subsequent generate is instant. */
   prefetch(
     molfile: string,
@@ -55,6 +57,9 @@ let client: ConformerWorkerClient | null | undefined;
 type PendingRequest = {
   handlers: ConformerStageHandlers;
   traceContext?: ConformerTraceContext;
+} | {
+  onWorkspaceSeed: (coords?: Float64Array) => void;
+  traceContext?: never;
 };
 
 /** Stop recreating crashed workers after this many restarts — something is
@@ -78,6 +83,15 @@ export function createConformerWorkerClient(
       broadcastSpin3dTraceEvent(trace);
     }
     if (stage === "trace") return;
+    const request = pending.get(id);
+    if (!request) return;
+    if ("onWorkspaceSeed" in request) {
+      if (stage === "complete" || stage === "error" || stage === "refined") {
+        pending.delete(id);
+        request.onWorkspaceSeed(result?.mapping.coords3dByOriginalAtom);
+      }
+      return;
+    }
     if (stage === "complete") {
       // Terminal bookkeeping for requests that will never get a "refined" stage
       // (refinement skipped/failed) or were superseded by a newer duplicate.
@@ -85,8 +99,6 @@ export function createConformerWorkerClient(
       return;
     }
 
-    const request = pending.get(id);
-    if (!request) return;
     const { handlers } = request;
     if (stage === "embedded" && result) {
       if (result.embed.status !== "ok") pending.delete(id);
@@ -130,7 +142,8 @@ export function createConformerWorkerClient(
         path: "worker",
         error: "conformer worker crashed"
       }));
-      request.handlers.onError("conformer worker crashed", { workerCrashed: true });
+      if ("onWorkspaceSeed" in request) request.onWorkspaceSeed();
+      else request.handlers.onError("conformer worker crashed", { workerCrashed: true });
     }
   };
 
@@ -205,6 +218,19 @@ export function createConformerWorkerClient(
         send({ kind: "cancel", id });
       };
     },
+    refineWorkspaceSeed(molfile, workspaceSeed) {
+      return new Promise((resolve) => {
+        const id = nextId++;
+        pending.set(id, { onWorkspaceSeed: resolve });
+        try {
+          if (send({ kind: "refine-workspace-seed", id, molfile, workspaceSeed })) return;
+        } catch {
+          // A worker that can no longer accept requests cannot refine this seed.
+        }
+        pending.delete(id);
+        resolve(undefined);
+      });
+    },
     prefetch(molfile, originalAtomCount, options, enginePreference, traceContext) {
       const id = nextId++;
       send({ kind: "prefetch", id, molfile, originalAtomCount, options, enginePreference, sessionId: traceContext?.sessionId ?? `prefetch:${id}` });
@@ -223,6 +249,11 @@ export function createConformerWorkerClient(
 export function getConformerWorkerClient(): ConformerWorkerClient | null {
   if (client === undefined) client = createConformerWorkerClient();
   return client;
+}
+
+export function refineWorkspaceSeed(molfile: string, coords: Float64Array): Promise<Float64Array | undefined> | undefined {
+  // Only an existing worker can own the embed that seeded this Workspace.
+  return client?.refineWorkspaceSeed(molfile, coords);
 }
 
 // NOTE: the worker is intentionally NOT booted at module load. App.tsx statically imports

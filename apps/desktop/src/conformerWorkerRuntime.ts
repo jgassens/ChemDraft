@@ -300,6 +300,8 @@ async function drain(): Promise<void> {
           }
         } else if (item.request.kind === "warmup") {
           await runWarmup(item.request);
+        } else if (item.request.kind === "refine-workspace-seed") {
+          await runRefineWorkspaceSeed(item.request);
         } else {
           await runGenerate(item.request);
         }
@@ -338,7 +340,7 @@ function submit(request: ConformerWorkRequest): void {
     // the queue slot (its caller token is the only live one); superseded entries
     // finish immediately with a terminal "complete" so the client forgets them.
     for (let i = pendingGenerates.length - 1; i >= 0; i--) {
-      if (pendingGenerates[i].molfile === request.molfile) {
+      if (pendingGenerates[i].kind === "generate" && pendingGenerates[i].molfile === request.molfile) {
         const [superseded] = pendingGenerates.splice(i, 1);
         post({ id: superseded.id, stage: "complete" });
         postTrace(superseded, {
@@ -350,6 +352,8 @@ function submit(request: ConformerWorkRequest): void {
         });
       }
     }
+    pendingGenerates.push(request);
+  } else if (request.kind === "refine-workspace-seed") {
     pendingGenerates.push(request);
   } else if (request.kind === "prefetch") {
     // Already computed UNDER THE ENGINE this prefetch would use? Nothing to do. A cached
@@ -384,6 +388,26 @@ function submit(request: ConformerWorkRequest): void {
     queueDepth: queueDepth()
   });
   void drain();
+}
+
+async function runRefineWorkspaceSeed(request: ConformerWorkRequest): Promise<void> {
+  const entry = cache.get(request.molfile ?? "");
+  const embedded = entry?.embedded.mapping.coords3dByOriginalAtom;
+  const seed = request.workspaceSeed;
+  if (entry && embedded && seed?.length === embedded.length && seed.every((value, index) => value === embedded[index])) {
+    // Opening Workspace always runs native UFF. Seed it from the same quality
+    // refinement as default Spin 3D, including when Spin's preview was set to Fast.
+    const refined = await runRefine(entry, {
+      ...request,
+      options: { optimize: "mmff94s", ignoreInterfragInteractions: entry.ignoreInterfragInteractions }
+    }, { preemptible: false, stage: "worker.refine-workspace-seed" });
+    const status = refined?.forceField?.status;
+    if (status === "converged" || status === "not-converged") {
+      post({ id: request.id, stage: "refined", result: refined });
+      return;
+    }
+  }
+  post({ id: request.id, stage: "complete" });
 }
 
 // Engine selection. RDKit ETKDG is the fast embed; it is used when its WASM module is
