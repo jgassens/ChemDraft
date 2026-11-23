@@ -64,7 +64,7 @@ offers a `.deb` (Ubuntu 22.04+, Linux Mint 21+, Debian 12+ and relatives) and an
 - New to the app? **Help ▸ Take the Tour**.
 
 <p align="center">
-  <img src="site/assets/brevetoxin-nicolaou.webp" width="480" alt="Brevetoxin B drawn by ChemDraft with eleven fused oxygen-containing rings shaded in pastel colours and lettered A to K">
+  <img src="site/assets/brevetoxin-nicolaou.webp" width="480" alt="Brevetoxin B drawn by ChemDraft with eleven fused oxygen-containing rings shaded in pastel colors and lettered A to K">
   <br><sub>Brevetoxin B with shaded rings lettered A–K, and H and Me at the ring fusions.</sub>
 </p>
 
@@ -158,7 +158,7 @@ the same document code as the desktop app, so a drawing made by an assistant mat
 canvas. Setup for each is in [skills/chemdraft/references/setup.md](skills/chemdraft/references/setup.md).
 
 <p align="center">
-  <img src="site/assets/fujita-cage.webp" width="360" alt="ChemDraft drawing of a Fujita palladium cage with four differently coloured ligand panels">
+  <img src="site/assets/fujita-cage.webp" width="360" alt="ChemDraft drawing of a Fujita palladium cage with four differently colored ligand panels">
   <br><sub>Real output: Claude Code, with the ChemDraft skill, built and rendered a Fujita cage with shaded ligand panels.</sub>
 </p>
 
