@@ -831,16 +831,18 @@ export function PaletteWindow({
     if (isDrawingToolCommand(commandId)) dismissPaletteFlyouts();
     void sendPaletteCommand(commandId).catch(() => undefined);
   };
-  const previewCommand = (commandId: string) => {
-    void sendPaletteCommandPreview(commandId).catch(() => undefined);
+  const previewCommand = (commandId: string, gestureId?: string) => {
+    void (gestureId ? sendPaletteCommandPreview(commandId, gestureId)
+      : sendPaletteCommandPreview(commandId)).catch(() => undefined);
   };
-  const commitPreviewCommand = (commandId: string) => {
-    void (settlingBeforeForwardRef.current
+  const commitPreviewCommand = (commandId: string, gestureId?: string) => {
+    void (gestureId ? sendPaletteCommandCommit(commandId, { gestureId }) : settlingBeforeForwardRef.current
       ? sendPaletteCommandCommit(commandId, { settleBeforeForward: true })
       : sendPaletteCommandCommit(commandId)).catch(() => undefined);
   };
-  const cancelPreviewCommand = () => {
-    void sendPaletteCommandCancel("palette.preview.cancel").catch(() => undefined);
+  const cancelPreviewCommand = (gestureId?: string) => {
+    void (gestureId ? sendPaletteCommandCancel("palette.preview.cancel", gestureId)
+      : sendPaletteCommandCancel("palette.preview.cancel")).catch(() => undefined);
   };
   // The two Molecular Inspector actions the detached palette never forwarded, so its Copy button
   // reported success onto an empty clipboard and its interpretation select was inert. That is the
