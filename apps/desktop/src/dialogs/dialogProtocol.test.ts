@@ -197,7 +197,8 @@ it("accepts only the bounded Rust-owned handoff snapshot and typed choices", () 
   const s = { ...snapshot(), dialogKind: "appHandoff", data };
   expect(parseDialogMessage(s)).toEqual(s);
   const result = { mode: "result", title: "Companion build result", appName: "Crystal Builder",
-    combination: "small", rebuildCombination: "large", rebuildLabel: "Rebuild at 2×2×2", twist: 6 };
+    combination: "small", rebuildCombination: "large", rebuildLabel: "Rebuild at 2×2×2",
+    rebuildChanges: { topology: "hex", node: null }, twist: 6 };
   expect(parseDialogMessage({ ...s, data: result })).toBeDefined();
   for (const update of [
     { suggestedCombination: "missing" }, { suggestedCombination: "toString" },
@@ -206,6 +207,7 @@ it("accepts only the bounded Rust-owned handoff snapshot and typed choices", () 
     { combinations: { small: { repeat: "../other" } } }, { combinations: { small: { rebuildAs: "missing" } } }
   ]) expect(parseDialogMessage({ ...s, data: { ...data, ...update } })).toBeUndefined();
   expect(parseDialogMessage({ ...s, data: { ...result, twist: -1 } })).toBeUndefined();
+  expect(parseDialogMessage({ ...s, data: { ...result, rebuildChanges: { topology: "../../app" } } })).toBeUndefined();
   const action = (choice: unknown) => parseDialogMessage({ ...s, type: "action", data: choice });
   for (const choice of [{ action: "confirm", combinationId: "large" }, { action: "cancel" }, { action: "rebuild" }]) {
     expect(action(choice)).toBeDefined();

@@ -79,9 +79,11 @@ it("sends a bare Rebuild action to the Rust-owned result session", async () => {
   await act(async () => root.render(<DialogWindow hostId="native-result" />));
   await act(async () => host.receive!({ ...handoffSnapshot, sessionId: "result", data: {
     mode: "result", title: "Companion build result", appName: "Crystal Builder",
-    combination: "pcu-1x1x1", rebuildCombination: "pcu-2x2x2", rebuildLabel: "Rebuild at 2×2×2", twist: 6
+    combination: "square", rebuildCombination: "hex", rebuildLabel: "Rebuild at 2×2×2",
+    rebuildChanges: { topology: "hex" }, twist: 6
   } }));
   expect(container.textContent).toContain("Joint twist left 6.000");
+  expect(container.textContent).toContain("Rebuild with hex · net hex");
   const rebuild = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Rebuild at 2×2×2")!;
   await act(async () => rebuild.click());
   expect(host.send).toHaveBeenLastCalledWith("native-result", expect.objectContaining({

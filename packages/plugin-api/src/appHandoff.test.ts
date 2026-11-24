@@ -72,6 +72,20 @@ describe("app handoff manifest", () => {
       .toEqual({ macos: "Contents/MacOS/xtal", windows: "bin\\xtal.exe" });
   });
 
+  it("requires the preceding build's output when a combination renders the inspect action", () => {
+    const [preflight, build, inspect] = pipeline.steps;
+    const combinations = Object.fromEntries(Object.entries(pipeline.combinations).map(([id, row]) =>
+      [id, { ...row, action: row.repeat === "1x1x1" ? "inspect" : "check" }]));
+    const step = { ...inspect, args: ["{combination.action}", "{previousOutput}", "--json"] };
+    expect(PluginCompanionPipelineSchema.parse({ ...pipeline, combinations, steps: [preflight, build, step] })).toBeDefined();
+    expect(() => PluginCompanionPipelineSchema.parse({
+      ...pipeline, combinations, steps: [preflight, { ...build, id: "generate" }, step]
+    })).toThrow(/preceding build/);
+    expect(() => PluginCompanionPipelineSchema.parse({
+      ...pipeline, combinations, steps: [preflight, build, { ...step, args: ["{combination.action}", "file.cif", "{previousOutput}"] }]
+    })).toThrow(/preceding build/);
+  });
+
   it.each([
     "{unknown}", "{combination.missing}", "{combination.rebuildAs}", "{outputFile:exe}", "prefix{inputStem}",
     "key={inputStem}.xyz", "key={inputStem}{inputDir}", "key={inputStem", "pre=fix={inputStem}", "{previousOutput}"

@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { AppHandoffConsent, AppHandoffConsents } from "./consents";
 
 function errorMessage(error: unknown): string {
@@ -12,6 +12,8 @@ export function AppHandoffConsentSection({ consents, pluginNames, catalogKey, di
   disabled: boolean;
 }) {
   const titleId = useId();
+  const heading = useRef<HTMLHeadingElement>(null);
+  const listGeneration = useRef(0);
   const [rows, setRows] = useState<readonly AppHandoffConsent[]>();
   const [revision, setRevision] = useState(0);
   const [revoking, setRevoking] = useState<string>();
@@ -19,12 +21,14 @@ export function AppHandoffConsentSection({ consents, pluginNames, catalogKey, di
   const [revokeError, setRevokeError] = useState<string>();
   useEffect(() => {
     let active = true;
+    const generation = listGeneration.current;
+    const current = () => active && generation === listGeneration.current;
     void consents.list().then(rows => {
-      if (!active) return;
+      if (!current()) return;
       setRows(rows);
       setReadError(undefined);
     }, (error: unknown) => {
-      if (active) setReadError(`Could not list app handoff consents: ${errorMessage(error)}`);
+      if (current()) setReadError(`Could not list app handoff consents: ${errorMessage(error)}`);
     });
     return () => { active = false; };
   }, [catalogKey, consents, revision]);
@@ -34,13 +38,16 @@ export function AppHandoffConsentSection({ consents, pluginNames, catalogKey, di
     return () => window.removeEventListener("focus", refresh);
   }, []);
 
-  const revoke = async (row: AppHandoffConsent) => {
+  const revoke = async (row: AppHandoffConsent, button: HTMLButtonElement) => {
     setRevoking(row.consentId);
     setRevokeError(undefined);
     try {
       await consents.revoke(row.pluginId, row.consentId);
+      listGeneration.current += 1;
+      const { activeElement, body } = button.ownerDocument;
+      if (activeElement === button || activeElement === body) heading.current?.focus();
       setRows(current => current?.map(item => item.pluginId === row.pluginId && item.consentId === row.consentId
-        ? { ...item, granted: false } : item));
+        ? { ...item, status: "revoked" } : item));
       setRevision(value => value + 1);
     } catch (error) {
       setRevokeError(`Could not revoke app handoff to ${row.appName}: ${errorMessage(error)}`);
@@ -50,7 +57,7 @@ export function AppHandoffConsentSection({ consents, pluginNames, catalogKey, di
   };
 
   return <section className="plugin-manager-available" aria-labelledby={titleId}>
-    <h3 id={titleId}>App handoff consents</h3>
+    <h3 ref={heading} id={titleId} tabIndex={-1}>App handoff consents</h3>
     {readError && <p role="alert">{readError}</p>}
     {revokeError && <p role="alert">{revokeError}</p>}
     {!rows && !readError && <p role="status">Loading app handoff consents…</p>}
@@ -61,11 +68,13 @@ export function AppHandoffConsentSection({ consents, pluginNames, catalogKey, di
         return <li className="plugin-manager-item" key={`${row.pluginId}/${row.consentId}`}>
           <div className="plugin-manager-details">
             <div className="plugin-manager-name">{row.appName}</div>
-            <p>{pluginName ? `${pluginName} (${row.pluginId})` : row.pluginId} · {row.pipeline ? `Pipeline ${row.pipeline}` : "File handoff"} · {row.granted ? "Allowed" : "Revoked"}</p>
+            <p>{pluginName ? `${pluginName} (${row.pluginId})` : row.pluginId} · {row.pipeline ? `Pipeline ${row.pipeline}` : "File handoff"} · {
+              { allowed: "Allowed", inactive: "Inactive", revoked: "Revoked" }[row.status]
+            }</p>
             <p className="plugin-manager-id">{row.appPath}</p>
           </div>
-          {row.granted && <button type="button" className="plugin-manager-button" disabled={disabled || revoking !== undefined}
-            aria-label={`Revoke app handoff from ${pluginName ?? row.pluginId} to ${row.appName}`} onClick={() => void revoke(row)}>
+          {row.status !== "revoked" && <button type="button" className="plugin-manager-button" disabled={disabled || revoking !== undefined}
+            aria-label={`Revoke app handoff from ${pluginName ?? row.pluginId} to ${row.appName}`} onClick={event => void revoke(row, event.currentTarget)}>
             {revoking === row.consentId ? "Revoking…" : "Revoke"}
           </button>}
         </li>;

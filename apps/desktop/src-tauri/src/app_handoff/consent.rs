@@ -13,6 +13,7 @@ use std::{
 };
 
 const CONSENT_TEXT_VERSION: u32 = 1;
+const MAX_CONSENT_BYTES: usize = 1024 * 1024;
 static LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -59,11 +60,15 @@ impl Row {
 
     pub(super) fn grants(&self, app: &App, digest: &str, install_id: &str) -> bool {
         self.granted
-            && self.handoff_install_id.as_deref() == Some(install_id)
+            && self.belongs_to_install(install_id)
             && self.app_path == app.path
             && self.app_identity.matches(&app.identity)
             && self.consent_text_version == CONSENT_TEXT_VERSION
             && self.template_digest == digest
+    }
+
+    pub(super) fn belongs_to_install(&self, install_id: &str) -> bool {
+        self.handoff_install_id.as_deref() == Some(install_id)
     }
 
     pub(super) fn approve(
@@ -128,10 +133,35 @@ impl Store {
     }
 
     pub(super) fn get(&self, plugin: &str, app: &str) -> io::Result<Option<Row>> {
-        Ok(self
-            .list()?
-            .into_iter()
-            .find(|row| row.plugin_id == plugin && row.app_id == app))
+        self.with_current(plugin, app, |row| row.cloned())
+    }
+
+    /// Order the grant check and launch against revocations and other consent writes.
+    pub(super) fn with_grant<T>(
+        &self,
+        expected: &Row,
+        launch: impl FnOnce(&Row) -> T,
+    ) -> io::Result<Option<T>> {
+        self.with_current(&expected.plugin_id, &expected.app_id, |row| {
+            row.filter(|row| row.granted && row.same_grant(expected))
+                .map(launch)
+        })
+    }
+
+    fn with_current<T>(
+        &self,
+        plugin: &str,
+        app: &str,
+        use_row: impl FnOnce(Option<&Row>) -> T,
+    ) -> io::Result<T> {
+        let _lock = LOCK.lock().unwrap();
+        let document = self.read()?;
+        Ok(use_row(
+            document
+                .rows
+                .iter()
+                .find(|row| row.plugin_id == plugin && row.app_id == app),
+        ))
     }
 
     pub(super) fn insert(&self, row: Row) -> io::Result<()> {
@@ -193,7 +223,7 @@ impl Store {
         temp_files::require_private_owner(&file.metadata()?)?;
         #[cfg(windows)]
         require_owner_only_acl(&file)?;
-        let bytes = temp_files::read_bounded_file(file, 1024 * 1024)?;
+        let bytes = temp_files::read_bounded_file(file, MAX_CONSENT_BYTES)?;
         let document: Document = serde_json::from_slice(&bytes)?;
         if document.schema_version != 1 {
             return Err(io::Error::other(
@@ -207,6 +237,12 @@ impl Store {
         let _lock = LOCK.lock().unwrap();
         let mut document = self.read()?;
         change(&mut document.rows)?;
+        let bytes = serde_json::to_vec(&document)?;
+        if bytes.len() >= MAX_CONSENT_BYTES {
+            return Err(io::Error::other(
+                "App handoff consent exceeds the 1 MiB store limit.",
+            ));
+        }
         let dir = self.0.parent().expect("consent directory");
         temp_files::private_dir(dir, true)?;
         temp_files::safe_dir(dir)?;
@@ -214,7 +250,7 @@ impl Store {
         let temp = dir.join(format!("consents-{}.tmp", temp_files::nonce()?));
         let result = (|| {
             let mut file = create_private(&temp)?;
-            serde_json::to_writer(&mut file, &document)?;
+            file.write_all(&bytes)?;
             file.write_all(b"\n")?;
             file.sync_all()?;
             drop(file);

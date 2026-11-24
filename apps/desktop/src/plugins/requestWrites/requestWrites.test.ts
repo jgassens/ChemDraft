@@ -18,6 +18,7 @@ import { buildPluginTablePatch } from "../buildPluginTablePatch";
 import { createFigurePlanProviders } from "../figurePlans";
 import { measure } from "../depiction/measureRegion";
 import { createRequestHistory } from "./requestHistory";
+import { assertStoredCtabStereo } from "./storedStereo";
 import { planRequestPageFit } from "../../pageEnlargement";
 import { deferred } from "../../testSupport/deferred";
 import { expectStoredGraph, graphEditChanges, graphEditFixture, pluginGraphEdits } from "../../testSupport/pluginGraphEdits";
@@ -383,6 +384,17 @@ describe("verified request writes", () => {
       expect(final.structure).toContain(version === "v2000" ? "  3  2  1  4" : "2 1 3 2 CFG=2");
       expect(f.history).toHaveLength(1);
     } finally { await f.finish(); }
+  });
+
+  it("maps wrapped V3000 atom records at the stored stereo check", () => {
+    const { molecule, markedBonds } = wavyHalide("v3000");
+    const drawn = { ...molecule, bonds: markedBonds };
+    const serialized = chemicalIdentitySource(drawn, [], "v3000");
+    const source = serialized.molfile.replace(/^(M  V30 1 C [^\n]+) 0$/m, "$1 -\nM  V30 0");
+    expect(source).toContain("-\nM  V30 0");
+    assertStoredCtabStereo(source, {}, {
+      molfile: serialized.molfile, atomIds: serialized.molecule.atoms.map(atom => atom.id), stereoTags: {}
+    }, drawn);
   });
 
   it.each(["v2000", "v3000"] as const)("uses bond neighbors to distinguish coincident carbons in %s", async version => {

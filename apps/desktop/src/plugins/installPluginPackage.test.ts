@@ -921,6 +921,20 @@ describe("installed app handoff lifecycle", () => {
     expect(f.runtime.host.getPlugin(id)).toBeUndefined();
   });
 
+  it("updates without consulting handoff consent when neither version declares it", async () => {
+    const f = await fixture();
+    const zip = await createPackage({ manifest: manifestDocument({ id }) });
+    const { result } = await installFixture({ ...f, zip, provenance });
+    f.clearPlugin.mockRejectedValue(new Error("Handoff consent store is unavailable"));
+    const updated = await updateInstalledPluginPackage({
+      ...f, current: installedCatalogEntry(result), inspection: await updateInspection("2.1.0", { id }),
+      provenance, disabled: false, origin: ORIGIN, createWorker: () => createFakeWorker().handle
+    });
+    expect(f.clearPlugin).not.toHaveBeenCalled();
+    expect(updated.record.version).toBe("2.1.0");
+    expect(await loadInstalledPluginRecords(f.fs)).toEqual([updated.record]);
+  });
+
   it.each([false, true])("clears only this plugin's rows when an update drops the permission (disabled=%s)", async disabled => {
     const f = await fixture();
     const { result } = await installFixture({ ...f, provenance });
@@ -948,6 +962,7 @@ describe("installed app handoff lifecycle", () => {
       ...f, current: installedCatalogEntry(result), inspection: await updateInspection("2.1.0", { id }),
       provenance, disabled: false, origin: ORIGIN, createWorker: () => createFakeWorker().handle
     })).rejects.toThrow(/Handoff consent store is unavailable/);
+    expect(f.clearPlugin).toHaveBeenCalledExactlyOnceWith(id);
     expect(f.runtime.host.getPlugin(id)?.manifest.version).toBe("2.0.1");
     expect(await loadInstalledPluginRecords(f.fs)).toEqual([result.record]);
   });

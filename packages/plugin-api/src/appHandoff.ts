@@ -126,7 +126,10 @@ export const PluginCompanionPipelineSchema = z.object({
   pipeline.steps.forEach((step, stepIndex) => {
     if (stepIds.has(step.id)) refuse(["steps", stepIndex, "id"], `Duplicate companion step id "${step.id}".`);
     stepIds.add(step.id);
-    if (step.args[0] === "inspect" && (!previousHasOutput || pipeline.steps[stepIndex - 1]?.id !== "build" ||
+    const actionParameter = /^\{combination\.([^{}]+)\}$/u.exec(step.args[0] ?? "")?.[1];
+    const canInspect = step.args[0] === "inspect" ||
+      (actionParameter !== undefined && combinations.some(([, row]) => row[actionParameter] === "inspect"));
+    if (canInspect && (!previousHasOutput || pipeline.steps[stepIndex - 1]?.id !== "build" ||
         step.args[1] !== "{previousOutput}")) {
       refuse(["steps", stepIndex, "args"], "Inspect requires the declared file from the preceding build step.");
     }

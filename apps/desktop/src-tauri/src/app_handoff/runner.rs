@@ -67,7 +67,7 @@ pub(super) fn run(
     pipeline: &Pipeline,
     build: &ApprovedBuild,
     files: &TempFiles,
-    mut start_step: impl FnMut(&[OsString], &Path, bool) -> Result<ChildProcess, Failure>,
+    mut start_step: impl FnMut(&[OsString], &Path, bool, Instant) -> Result<ChildProcess, Failure>,
     stopped: &AtomicBool,
 ) -> Result<Completed, Failure> {
     let mut previous = None;
@@ -101,16 +101,10 @@ pub(super) fn run(
                 "The declared companion output file already exists.",
             ));
         }
-        let timeout = Duration::from_secs(step.timeout_seconds)
+        check_launch_time(deadline, stopped)?;
+        let mut child = start_step(&rendered.args, &files.root, index == 0, deadline)?;
+        let remaining = Duration::from_secs(step.timeout_seconds)
             .min(deadline.saturating_duration_since(Instant::now()));
-        if timeout.is_zero() || stopped.load(Ordering::Acquire) {
-            return Err(Failure::new(
-                RunCode::Timeout,
-                "The companion pipeline ended before its next step.",
-            ));
-        }
-        let mut child = start_step(&rendered.args, &files.root, index == 0)?;
-        let remaining = timeout.min(deadline.saturating_duration_since(Instant::now()));
         let captured = child.capture(remaining, stopped).map_err(|error| {
             let (code, message) = match error {
                 CaptureError::Timeout => {
@@ -199,6 +193,16 @@ pub(super) fn run(
     })
 }
 
+fn check_launch_time(deadline: Instant, stopped: &AtomicBool) -> Result<(), Failure> {
+    if Instant::now() >= deadline || stopped.load(Ordering::Acquire) {
+        return Err(Failure::new(
+            RunCode::Timeout,
+            "The companion pipeline ended before its next step.",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn verified_output(directory: &Path, path: &Path) -> bool {
     directory
         .canonicalize()
@@ -275,10 +279,58 @@ pub(super) struct Captured {
     pub stderr: Vec<u8>,
 }
 
+struct CaptureLimits<'a> {
+    deadline: Instant,
+    stopped: &'a AtomicBool,
+    exceeded: AtomicBool,
+}
+
+impl CaptureLimits<'_> {
+    fn check(&self) -> Result<(), CaptureError> {
+        if self.exceeded.load(Ordering::Acquire) {
+            Err(CaptureError::Limit)
+        } else if self.stopped.load(Ordering::Acquire) || Instant::now() >= self.deadline {
+            Err(CaptureError::Timeout)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn pause(&self) {
+        thread::sleep(
+            self.deadline
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(10)),
+        );
+    }
+}
+
 impl ChildProcess {
+    pub(super) fn spawn_before(
+        program: &Path,
+        args: &[OsString],
+        cwd: &Path,
+        deadline: Instant,
+        stopped: &AtomicBool,
+    ) -> Result<Self, Failure> {
+        let command = isolated_command(program, args, cwd);
+        check_launch_time(deadline, stopped)?;
+        Self::spawn_command(command).map_err(|_| {
+            Failure::new(
+                RunCode::ToolMissing,
+                "ChemDraft could not start the declared companion executable.",
+            )
+        })
+    }
+
+    #[cfg(test)]
     pub(super) fn spawn(program: &Path, args: &[OsString], cwd: &Path) -> io::Result<Self> {
+        Self::spawn_command(isolated_command(program, args, cwd))
+    }
+
+    fn spawn_command(mut command: Command) -> io::Result<Self> {
         #[allow(unused_mut)]
-        let mut child = isolated_command(program, args, cwd).spawn()?;
+        let mut child = command.spawn()?;
         #[cfg(windows)]
         let job = match super::windows_process::WindowsJob::attach(&child).and_then(|job| {
             super::windows_process::resume_windows_child(&child)?;
@@ -305,21 +357,29 @@ impl ChildProcess {
     ) -> Result<Captured, CaptureError> {
         let stdout = self.child.stdout.take().expect("piped companion stdout");
         let stderr = self.child.stderr.take().expect("piped companion stderr");
-        let exceeded = AtomicBool::new(false);
+        let limits = CaptureLimits {
+            deadline: Instant::now() + timeout,
+            stopped,
+            exceeded: AtomicBool::new(false),
+        };
+        #[cfg(unix)]
+        if nonblocking_pipe(&stdout)
+            .and_then(|()| nonblocking_pipe(&stderr))
+            .is_err()
+        {
+            self.terminate();
+            return Err(CaptureError::Io);
+        }
         thread::scope(|scope| {
-            let stdout = scope.spawn(|| drain(stdout, INPUT_BYTES, &exceeded));
-            let stderr = scope.spawn(|| drain(stderr, STDERR_BYTES, &exceeded));
-            let exit = self.wait(timeout, stopped, &exceeded);
-            let stdout = stdout
-                .join()
-                .map_err(|_| CaptureError::Io)?
-                .map_err(|_| CaptureError::Io)?;
-            let stderr = stderr
-                .join()
-                .map_err(|_| CaptureError::Io)?
-                .map_err(|_| CaptureError::Io)?;
-            let status = exit?;
-            if exceeded.load(Ordering::Acquire) {
+            let stdout = scope.spawn(|| drain(stdout, INPUT_BYTES, &limits));
+            let stderr = scope.spawn(|| drain(stderr, STDERR_BYTES, &limits));
+            let status = self.wait(&limits);
+            let stdout = stdout.join();
+            let stderr = stderr.join();
+            let status = status?;
+            let stdout = stdout.map_err(|_| CaptureError::Io)??;
+            let stderr = stderr.map_err(|_| CaptureError::Io)??;
+            if limits.exceeded.load(Ordering::Acquire) {
                 return Err(CaptureError::Limit);
             }
             Ok(Captured {
@@ -330,29 +390,16 @@ impl ChildProcess {
         })
     }
 
-    fn wait(
-        &mut self,
-        timeout: Duration,
-        stopped: &AtomicBool,
-        exceeded: &AtomicBool,
-    ) -> Result<ExitStatus, CaptureError> {
-        let start = Instant::now();
+    fn wait(&mut self, limits: &CaptureLimits<'_>) -> Result<ExitStatus, CaptureError> {
         loop {
-            let error = if exceeded.load(Ordering::Acquire) {
-                Some(CaptureError::Limit)
-            } else if stopped.load(Ordering::Acquire) || start.elapsed() >= timeout {
-                Some(CaptureError::Timeout)
-            } else {
-                None
-            };
-            if let Some(error) = error {
+            if let Err(error) = limits.check() {
                 self.terminate();
                 return Err(error);
             }
             #[cfg(unix)]
             match platform::sweep_exited_process_group(self.child.id(), false) {
                 Ok(false) => {
-                    thread::sleep(Duration::from_millis(10));
+                    limits.pause();
                     continue;
                 }
                 Ok(true) => {}
@@ -367,7 +414,7 @@ impl ChildProcess {
                     self.job.terminate();
                     return Ok(status);
                 }
-                Ok(None) => thread::sleep(Duration::from_millis(10)),
+                Ok(None) => limits.pause(),
                 Err(_) => {
                     self.terminate();
                     return Err(CaptureError::Io);
@@ -388,20 +435,43 @@ impl ChildProcess {
     }
 }
 
-fn drain(mut reader: impl Read, cap: usize, exceeded: &AtomicBool) -> io::Result<Vec<u8>> {
+#[cfg(unix)]
+fn nonblocking_pipe(pipe: &impl std::os::fd::AsRawFd) -> io::Result<()> {
+    let fd = pipe.as_raw_fd();
+    // Change only the parent's read end. A descendant can outlive the process group and
+    // keep the write end open, so the reader needs to be able to stop without waiting for EOF.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags == -1 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn drain(
+    mut reader: impl Read,
+    cap: usize,
+    limits: &CaptureLimits<'_>,
+) -> Result<Vec<u8>, CaptureError> {
     let mut output = Vec::new();
     let mut buffer = [0; 8192];
     loop {
+        #[cfg(unix)]
+        limits.check()?;
         let read = match reader.read(&mut buffer) {
             Ok(0) => break,
             Ok(n) => n,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(error),
+            #[cfg(unix)]
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                limits.pause();
+                continue;
+            }
+            Err(_) => return Err(CaptureError::Io),
         };
         let available = cap - output.len();
         output.extend_from_slice(&buffer[..read.min(available)]);
         if read > available {
-            exceeded.store(true, Ordering::Release);
+            limits.exceeded.store(true, Ordering::Release);
         }
     }
     Ok(output)

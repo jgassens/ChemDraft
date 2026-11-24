@@ -2,6 +2,7 @@
 
 import { setNativePromptProvider, type NativePromptOptions } from "../nativePrompt";
 import type { PluginManifest } from "@chemdraft/plugin-api";
+import type { AppHandoffConsent } from "../appHandoff/consents";
 import { act, createElement, Fragment, useEffect, useReducer, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
@@ -79,13 +80,17 @@ const descriptors: readonly BundledPluginDescriptor[] = [
 
 it("lists native app handoff consent separately and keeps revoked rows visible", async () => {
   const entry = installedEntry();
-  let granted = true;
+  let status: AppHandoffConsent["status"] = "allowed";
   const appPath = "/Applications/Crystal Builder.app";
-  const list = vi.fn(async () => [{
+  const row = {
     pluginId: entry.record.id, consentId: "consent-1", appName: "Crystal Builder", appPath,
-    pipeline: "mofBuild", granted, at: "2026-11-23T12:00:00Z"
-  }]);
-  const revoke = vi.fn(async () => { granted = false; });
+    pipeline: "mofBuild", at: "2026-11-23T12:00:00Z"
+  };
+  const list = vi.fn(async (): Promise<AppHandoffConsent[]> => [
+    { ...row, status },
+    { ...row, consentId: "consent-2", appName: "Previous App", status: "inactive" }
+  ]);
+  const revoke = vi.fn(async () => { status = "revoked"; });
   const runtime = createPluginRuntime({
     getActiveDocument: () => undefined,
     appHandoffConsents: { list, revoke, clearPlugin: async () => {} }
@@ -100,9 +105,47 @@ it("lists native app handoff consent separately and keeps revoked rows visible",
   expect(section.textContent).toContain(entry.record.name);
   expect(section.textContent).toContain(appPath);
   expect(section.textContent).toContain("Pipeline mofBuild · Allowed");
+  expect(section.textContent).toContain("Pipeline mofBuild · Inactive");
+  button.focus();
+  expect(document.activeElement).toBe(button);
   await act(async () => button.click());
   expect(revoke).toHaveBeenCalledExactlyOnceWith(entry.record.id, "consent-1");
   expect(section.textContent).toContain("Pipeline mofBuild · Revoked");
+  expect(button.isConnected).toBe(false);
+  expect(document.activeElement).toBe(section.querySelector("h3"));
+});
+
+it("ignores a handoff consent read that resolves just after revoke succeeds", async () => {
+  const entry = installedEntry();
+  const row: AppHandoffConsent = {
+    pluginId: entry.record.id, consentId: "consent-1", appName: "Crystal Builder",
+    appPath: "/Applications/Crystal Builder.app", pipeline: null, status: "allowed", at: "2026-11-23T12:00:00Z"
+  };
+  const stale = deferred<AppHandoffConsent[]>();
+  const refresh = deferred<AppHandoffConsent[]>();
+  const revoke = deferred<void>();
+  const list = vi.fn()
+    .mockResolvedValueOnce([row])
+    .mockReturnValueOnce(stale.promise)
+    .mockReturnValue(refresh.promise);
+  const runtime = createPluginRuntime({
+    getActiveDocument: () => undefined,
+    appHandoffConsents: { list, revoke: () => revoke.promise, clearPlugin: async () => {} }
+  });
+  mount(createElement(PluginManagerDialog, {
+    runtime, bundledPlugins: descriptors, installedPlugins: [entry], onClose: () => {}
+  }));
+  await act(async () => {});
+  await act(async () => window.dispatchEvent(new Event("focus")));
+  expect(list).toHaveBeenCalledTimes(2);
+  const button = document.querySelector<HTMLButtonElement>('button[aria-label^="Revoke app handoff from"]')!;
+  const section = button.closest("section")!;
+  await act(async () => {
+    button.click();
+    revoke.resolve(undefined);
+    stale.resolve([row]);
+  });
+  expect(section.textContent).toContain("File handoff · Revoked");
   expect(section.querySelector("button")).toBeNull();
 });
 

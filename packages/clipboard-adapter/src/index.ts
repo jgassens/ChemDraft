@@ -1213,7 +1213,7 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
  * dropped everything past the wrap, so an atom whose CHG= or CFG= fell just past the limit pasted
  * as neutral or unstereo — silently, because the truncated line still parses.
  */
-function joinV3000ContinuationLines(rawLines: readonly string[]): string[] {
+export function joinV3000ContinuationLines(rawLines: readonly string[]): string[] {
   const joined: string[] = [];
   let pending: string | undefined;
   for (const raw of rawLines) {

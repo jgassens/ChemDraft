@@ -37,6 +37,7 @@ pub(super) enum Snapshot<'a> {
         combination: &'a str,
         rebuild_combination: &'a str,
         rebuild_label: String,
+        rebuild_changes: BTreeMap<&'a str, Option<&'a str>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         twist: Option<f64>,
     },
@@ -186,6 +187,35 @@ pub(super) fn rebuild_label(pipeline: &Pipeline, combination: &str) -> String {
         )
 }
 
+pub(super) fn rebuild_changes<'a>(
+    pipeline: &'a Pipeline,
+    from: &str,
+    to: &str,
+) -> BTreeMap<&'a str, Option<&'a str>> {
+    let from = &pipeline.combinations[from];
+    let to = &pipeline.combinations[to];
+    from.keys()
+        .chain(to.keys())
+        .filter(|key| {
+            key.as_str() != "rebuildAs"
+                && (key.as_str() != "repeat" || !to.contains_key(*key))
+                && from.get(*key) != to.get(*key)
+        })
+        .map(|key| (key.as_str(), to.get(key).map(String::as_str)))
+        .collect()
+}
+
+pub(super) fn rebuild_requested(action: Result<Action, String>) -> bool {
+    match action {
+        Ok(Action::Rebuild {}) => true,
+        Ok(_) => false,
+        Err(error) => {
+            eprintln!("Could not offer rebuild after a completed companion build: {error}");
+            false
+        }
+    }
+}
+
 pub(super) async fn native_choice(
     window: &WebviewWindow,
     submission: &Submission,
@@ -244,8 +274,9 @@ fn dismiss(window: &WebviewWindow, _title: &'static str) {
 
 #[cfg(windows)]
 fn dismiss(window: &WebviewWindow, title: &'static str) {
+    use windows_sys::core::BOOL;
     use windows_sys::Win32::{
-        Foundation::{BOOL, HWND, LPARAM},
+        Foundation::{HWND, LPARAM},
         UI::WindowsAndMessaging::{
             EnumWindows, GetWindow, GetWindowTextW, PostMessageW, GW_OWNER, WM_CLOSE,
         },

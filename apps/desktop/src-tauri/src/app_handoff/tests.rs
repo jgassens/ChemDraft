@@ -1,10 +1,12 @@
+#[cfg(any(target_os = "macos", windows))]
+use super::identity::App;
 use super::{
     arming::{ApprovedBuild, ResultSession, State, RACE},
     catalog,
     command_line::{open_command, Pipeline, Platform},
     consent::{Row, Store},
-    dialogs::{self, Action},
-    identity::{self, App},
+    dialogs::{self, Action, Snapshot},
+    identity,
     runner::{self, CaptureError, ChildProcess},
     temp_files::{self, TempFiles},
     wire::{Call, Extension, Input, RunCode, StepResult},
@@ -22,6 +24,7 @@ use std::{
 const PLUGIN: &str = "org.chemdraft.handoff.crystalBuilder";
 const COMMAND: &str = "plugin.crystalBuilder.build";
 const APP_ID: &str = "0123456789abcdef0123456789abcdef";
+#[cfg(any(target_os = "macos", windows))]
 const INSTALL_ID: &str = "first-install";
 const XYZ: &str = "3\n1 2\nC 0 0 0\nX 1 0 0\nX -1 0 0\n0 1 S\n0 2 S\n";
 
@@ -225,6 +228,28 @@ fn invalid_pipelines_refuse_traversal_arguments_and_unbound_inspection() {
         .unwrap()
         .validate()
         .is_err());
+}
+
+#[test]
+fn rendered_inspect_requires_the_immediately_preceding_build_output() {
+    let mut raw = template();
+    for (id, row) in raw["combinations"].as_object_mut().unwrap() {
+        row["action"] = json!(if id == "small" { "inspect" } else { "check" });
+    }
+    raw["steps"][2]["args"][0] = json!("{combination.action}");
+    let validate = |template| {
+        serde_json::from_value::<Pipeline>(template)
+            .unwrap()
+            .validate()
+    };
+    assert!(validate(raw.clone()).is_ok());
+    let mut wrong_previous = raw.clone();
+    wrong_previous["steps"][1]["id"] = json!("generate");
+    assert!(validate(wrong_previous)
+        .unwrap_err()
+        .contains("preceding build"));
+    raw["steps"][2]["args"] = json!(["{combination.action}", "literal.cif", "{previousOutput}"]);
+    assert!(validate(raw).unwrap_err().contains("preceding build"));
 }
 
 #[test]
@@ -543,6 +568,54 @@ fn dialog_choice_is_bound_to_declared_combination_and_rebuild_keeps_original_inp
 }
 
 #[test]
+fn confirmation_size_preflight_uses_the_private_dialog_envelope() {
+    let mut pipeline = pipeline();
+    let snapshot = |pipeline: &Pipeline| {
+        serde_json::to_value(Snapshot::Confirm {
+            title: "Confirm companion build",
+            app_name: "Crystal Builder",
+            pipeline: &pipeline.id,
+            composition: None,
+            suggested_combination: "small",
+            combinations: &pipeline.combinations,
+        })
+        .unwrap()
+    };
+    assert!(crate::dialog_windows::validate_app_handoff_snapshot(&snapshot(&pipeline)).is_ok());
+    for index in 0..100 {
+        pipeline.combinations.insert(
+            format!("case-{index}"),
+            [("repeat".into(), "x".repeat(32))].into(),
+        );
+    }
+    assert!(pipeline.validate().is_ok());
+    assert!(crate::dialog_windows::validate_app_handoff_snapshot(&snapshot(&pipeline)).is_err());
+}
+
+#[test]
+fn only_a_valid_rebuild_click_can_continue_a_completed_build() {
+    assert!(!dialogs::rebuild_requested(Err(
+        "result dialog unavailable".into()
+    )));
+    assert!(!dialogs::rebuild_requested(Ok(Action::Cancel {})));
+    assert!(dialogs::rebuild_requested(Ok(Action::Rebuild {})));
+
+    let mut pipeline = pipeline();
+    pipeline
+        .combinations
+        .get_mut("small")
+        .unwrap()
+        .insert("topology".into(), "square".into());
+    let target = pipeline.combinations.get_mut("large").unwrap();
+    target.insert("topology".into(), "hex".into());
+    target.insert("repeat".into(), "1x1x1".into());
+    assert_eq!(
+        dialogs::rebuild_changes(&pipeline, "small", "large"),
+        [("topology", Some("hex"))].into()
+    );
+}
+
+#[test]
 fn twist_parsing_fails_closed_when_missing_ambiguous_or_non_numeric() {
     for (value, expected) in [
         (json!("6.000"), Some(6.0)),
@@ -675,13 +748,36 @@ fn provenance_follows_the_native_build_identifier() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn catalog_refuses_a_fifo_without_waiting_for_a_writer() {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt, sync::mpsc};
+
+    let dir = TestDir::new();
+    let path = dir.0.join("installed-plugins.json");
+    let path = CString::new(path.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+    let (send, receive) = mpsc::channel();
+    let root = dir.0.clone();
+    std::thread::spawn(move || {
+        let _ = send.send(catalog::load(&root, PLUGIN, false).err());
+    });
+    let error = receive
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .unwrap();
+    assert!(error.contains("could not read the installed app handoff plugin"));
+}
+
 fn rust_stub() -> &'static Path {
-    static STUB: OnceLock<(TestDir, PathBuf)> = OnceLock::new();
-    let (_, executable) = STUB.get_or_init(|| {
-        let dir = TestDir::new();
-        let path = dir
-            .0
-            .join(format!("xtal-stub{}", std::env::consts::EXE_SUFFIX));
+    static STUB: OnceLock<PathBuf> = OnceLock::new();
+    STUB.get_or_init(|| {
+        // Unit tests have OUT_DIR, which belongs to cargo clean. Isolate concurrent test binaries.
+        let path = Path::new(env!("OUT_DIR")).join(format!(
+            "xtal-stub-{}{}",
+            std::process::id(),
+            std::env::consts::EXE_SUFFIX
+        ));
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("src")
             .join("app_handoff")
@@ -698,9 +794,8 @@ fn rust_stub() -> &'static Path {
             "{}",
             String::from_utf8_lossy(&compile.stderr)
         );
-        (dir, path)
-    });
-    executable
+        path
+    })
 }
 
 #[test]
@@ -714,7 +809,9 @@ fn companion_runs_ordered_steps_and_reports_preflight_and_step_failures() {
             &pipeline(),
             &build(name),
             &files,
-            |args, cwd, _| Ok(ChildProcess::spawn(rust_stub(), args, cwd).unwrap()),
+            |args, cwd, _, deadline| {
+                ChildProcess::spawn_before(rust_stub(), args, cwd, deadline, &stopped)
+            },
             &stopped,
         )
     };
@@ -754,6 +851,25 @@ fn companion_runs_ordered_steps_and_reports_preflight_and_step_failures() {
 }
 
 #[test]
+fn companion_does_not_spawn_if_authorization_uses_the_pipeline_deadline() {
+    let dir = TestDir::new();
+    let error = ChildProcess::spawn_before(
+        &dir.0.join("missing"),
+        &[],
+        &dir.0,
+        Instant::now(),
+        &AtomicBool::new(false),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(
+        error.code,
+        RunCode::Timeout,
+        "spawn would return ToolMissing"
+    );
+}
+
+#[test]
 fn companion_concurrently_drains_full_pipes_and_stops_on_either_cap() {
     let dir = TestDir::new();
     let stop = AtomicBool::new(false);
@@ -789,6 +905,18 @@ fn companion_watchdog_kills_descendants() {
     );
     std::thread::sleep(Duration::from_millis(2300));
     assert!(!dir.0.join("child-survived").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn companion_capture_times_out_when_a_detached_descendant_holds_pipes_open() {
+    let dir = TestDir::new();
+    let mut child = ChildProcess::spawn(rust_stub(), &["detached-tree".into()], &dir.0).unwrap();
+    let start = Instant::now();
+    let captured = child.capture(Duration::from_secs(2), &AtomicBool::new(false));
+    assert_eq!(captured.unwrap_err(), CaptureError::Timeout);
+    assert!(dir.0.join("child-ready").exists());
+    assert!(start.elapsed() < Duration::from_secs(3));
 }
 
 #[test]
@@ -930,6 +1058,13 @@ fn failed_consent_cleanup_requires_fresh_approval_after_reinstall() {
 
     let stale = store.get(PLUGIN, APP_ID).unwrap().unwrap();
     assert!(stale.grants(&target, &digest, INSTALL_ID));
+    assert_eq!(
+        json!(super::endpoint::ConsentSummary::new(
+            stale.clone(),
+            Some("second-install")
+        ))["status"],
+        "inactive"
+    );
     assert!(
         !stale.grants(&target, &digest, "second-install"),
         "the consent box is required"
@@ -940,6 +1075,92 @@ fn failed_consent_cleanup_requires_fresh_approval_after_reinstall() {
     let approved = store.get(PLUGIN, APP_ID).unwrap().unwrap();
     assert!(approved.grants(&target, &digest, "second-install"));
     assert!(!approved.grants(&target, &digest, INSTALL_ID));
+}
+
+fn stored_grant() -> Row {
+    serde_json::from_value(json!({
+        "pluginId": PLUGIN, "appId": APP_ID, "appPath": "Test App",
+        "appIdentity": {"main": {"path": "test-app", "sha256": "a".repeat(64)}},
+        "templateDigest": "b".repeat(64), "handoffInstallId": "first-install",
+        "consentTextVersion": 1, "granted": true, "at": "2026-11-23T12:00:00Z"
+    }))
+    .unwrap()
+}
+
+#[test]
+fn acknowledged_revocation_prevents_the_next_step_spawn() {
+    let dir = TestDir::new();
+    let store = Store::new(&dir.0);
+    let grant = stored_grant();
+    let consent_id = grant.consent_id();
+    store.insert(grant.clone()).unwrap();
+    std::thread::scope(|scope| {
+        use std::sync::mpsc;
+
+        let (entered, verified) = mpsc::channel();
+        let (allow_spawn, ready) = mpsc::channel();
+        let (revoking, started) = mpsc::channel();
+        let (revoked, acknowledged) = mpsc::channel();
+        let (store, grant) = (&store, &grant);
+        let launch = scope.spawn(move || {
+            store
+                .with_grant(grant, |_| {
+                    entered.send(()).unwrap();
+                    ready.recv().unwrap();
+                    "spawned"
+                })
+                .unwrap()
+        });
+        verified.recv().unwrap();
+        scope.spawn(move || {
+            revoking.send(()).unwrap();
+            store.revoke(PLUGIN, &consent_id).unwrap();
+            revoked.send(()).unwrap();
+        });
+        started.recv().unwrap();
+        let early_ack = acknowledged.recv_timeout(Duration::from_millis(100));
+        allow_spawn.send(()).unwrap();
+        assert_eq!(early_ack, Err(mpsc::RecvTimeoutError::Timeout));
+        assert_eq!(launch.join().unwrap(), Some("spawned"));
+        acknowledged.recv().unwrap();
+        assert_eq!(
+            store
+                .with_grant(grant, |_| panic!("revoked step spawned"))
+                .unwrap(),
+            None::<()>
+        );
+    });
+}
+
+#[test]
+fn oversized_consent_insert_preserves_the_readable_prior_file() {
+    const MAX: usize = 1024 * 1024;
+    let dir = TestDir::new();
+    let store = Store::new(&dir.0);
+    let grant = stored_grant();
+    store.insert(grant.clone()).unwrap();
+    let path = dir.0.join("app-handoff").join("consents.json");
+    let mut document: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    document["futureField"] = json!("");
+    let len = document.to_string().len();
+    document["futureField"] = json!("x".repeat(MAX - len));
+    let before = document.to_string();
+    assert_eq!(before.len(), MAX);
+    fs::write(&path, &before).unwrap();
+
+    let mut extra = grant.clone();
+    extra.app_id = "f".repeat(32);
+    assert!(store
+        .insert(extra)
+        .unwrap_err()
+        .to_string()
+        .contains("1 MiB"));
+    assert_eq!(fs::read(&path).unwrap(), before.as_bytes());
+    assert!(store
+        .get(PLUGIN, APP_ID)
+        .unwrap()
+        .unwrap()
+        .same_grant(&grant));
 }
 
 #[cfg(unix)]
@@ -1044,7 +1265,11 @@ fn consent_survives_disable_but_changed_template_app_revoke_and_uninstall_refuse
     document["futureTop"] = json!(true);
     document["rows"][0]["futureRow"] = json!("kept");
     fs::write(&path, document.to_string()).unwrap();
-    let summary = json!(super::endpoint::ConsentSummary::from(allowed.clone()));
+    let summary = json!(super::endpoint::ConsentSummary::new(
+        allowed.clone(),
+        Some(INSTALL_ID)
+    ));
+    assert_eq!(summary["status"], "allowed");
     assert_eq!(summary["consentId"], allowed.consent_id());
     assert!(summary.get("appId").is_none());
     assert!(!summary.to_string().contains(APP_ID));
@@ -1053,6 +1278,10 @@ fn consent_survives_disable_but_changed_template_app_revoke_and_uninstall_refuse
     store.revoke(PLUGIN, &allowed.consent_id()).unwrap();
     let revoked = store.get(PLUGIN, APP_ID).unwrap().unwrap();
     assert!(!revoked.grants(&app, &digest, INSTALL_ID));
+    assert_eq!(
+        json!(super::endpoint::ConsentSummary::new(revoked, None))["status"],
+        "revoked"
+    );
     assert!(
         store.replace(&allowed, allowed.clone()).is_err(),
         "revoked consent must not be restored by a stale box"

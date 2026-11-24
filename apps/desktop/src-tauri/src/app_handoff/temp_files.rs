@@ -160,7 +160,7 @@ pub(super) fn create_file(path: &Path) -> io::Result<File> {
 }
 
 pub(super) fn read_bounded(path: &Path, maximum: usize) -> io::Result<Vec<u8>> {
-    read_bounded_file(File::open(path)?, maximum)
+    read_bounded_file(open_plain_file(path)?, maximum)
 }
 
 pub(super) fn read_bounded_file(file: File, maximum: usize) -> io::Result<Vec<u8>> {
