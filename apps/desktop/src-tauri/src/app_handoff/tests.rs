@@ -22,6 +22,7 @@ use std::{
 const PLUGIN: &str = "org.chemdraft.handoff.crystalBuilder";
 const COMMAND: &str = "plugin.crystalBuilder.build";
 const APP_ID: &str = "0123456789abcdef0123456789abcdef";
+const INSTALL_ID: &str = "first-install";
 const XYZ: &str = "3\n1 2\nC 0 0 0\nX 1 0 0\nX -1 0 0\n0 1 S\n0 2 S\n";
 
 struct TestDir(PathBuf);
@@ -65,6 +66,28 @@ fn template() -> Value {
 fn pipeline() -> Pipeline {
     serde_json::from_value(template()).unwrap()
 }
+
+#[test]
+fn shared_companion_pipeline_fixtures_match_sdk_validation() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../../../packages/plugin-api/src/__fixtures__/companion-pipelines.json"
+    ))
+    .unwrap();
+    for case in fixture["cases"].as_array().unwrap() {
+        let mut pipeline = fixture["base"].as_object().unwrap().clone();
+        pipeline.extend(case["overrides"].as_object().unwrap().clone());
+        let validated = serde_json::from_value::<Pipeline>(Value::Object(pipeline))
+            .map_err(|error| error.to_string())
+            .and_then(|pipeline| pipeline.validate());
+        assert_eq!(
+            validated.is_ok(),
+            case["valid"].as_bool().unwrap(),
+            "{}: {validated:?}",
+            case["name"]
+        );
+    }
+}
+
 fn build(combination: &str) -> ApprovedBuild {
     ApprovedBuild {
         app_id: APP_ID.into(),
@@ -328,6 +351,23 @@ fn wire_refuses_fields_outside_the_authenticated_envelope() {
 }
 
 #[test]
+fn wire_refuses_non_xyz_companion_input() {
+    let arm = State::default()
+        .arm(PLUGIN, COMMAND, Instant::now())
+        .unwrap();
+    let request = |extension| {
+        json!({
+            "invocation": arm.invocation(PLUGIN),
+            "method": "runCompanion",
+            "request": { "appId": APP_ID, "pipeline": "mofBuild", "combination": "small",
+                "input": { "extension": extension, "text": XYZ } }
+        })
+    };
+    assert!(Call::parse(request("xyz")).is_ok());
+    assert!(Call::parse(request("cif")).is_err());
+}
+
+#[test]
 fn duplicate_submissions_refuse_both_before_any_launch() {
     let state = State::default();
     let now = Instant::now();
@@ -364,6 +404,27 @@ fn refusal_before_a_box_releases_the_allowance_cancel_after_a_box_consumes_it() 
         rebuild.launch(|| "Rust callback only").unwrap(),
         "Rust callback only"
     );
+}
+
+#[test]
+fn build_dialog_open_failure_preserves_the_allowance() {
+    let state = State::default();
+    let now = Instant::now();
+    let arm = state.arm(PLUGIN, COMMAND, now).unwrap();
+    let submission = arm.submit(now).unwrap();
+    let error = tauri::async_runtime::block_on(submission.open_box(
+        std::future::ready(Err::<(), _>("window creation failed".into())),
+        |()| panic!("there is no window to close"),
+    ));
+    assert_eq!(error.unwrap_err(), "window creation failed");
+    drop(submission);
+    let retry = arm.submit(now).unwrap();
+    tauri::async_runtime::block_on(retry.open_box(std::future::ready(Ok(())), |()| {
+        panic!("the window should stay open")
+    }))
+    .unwrap();
+    drop(retry);
+    assert!(arm.submit(now).is_err());
 }
 
 #[test]
@@ -564,7 +625,7 @@ fn provenance_follows_the_native_build_identifier() {
         "contributes":{"commands":[{"id":COMMAND}],"menus":[{"commandId":COMMAND}]},"companions":[template()]
     });
     fs::write(package.join("manifest.json"), manifest.to_string()).unwrap();
-    let mut record = json!({"id":PLUGIN,"version":"1.0.0","stagedPath":format!("installed-plugins/{PLUGIN}"),"sourceChecksum":"a".repeat(64)});
+    let mut record = json!({"id":PLUGIN,"version":"1.0.0","stagedPath":format!("installed-plugins/{PLUGIN}"),"sourceChecksum":"a".repeat(64),"installedAt":"2026-11-24T00:00:00Z"});
     let save = |record: &Value| {
         fs::write(
             dir.0.join("installed-plugins.json"),
@@ -784,6 +845,154 @@ fn install_stub(dir: &Path) -> (Platform, PathBuf, PathBuf) {
     (platform, app, tool)
 }
 
+#[cfg(any(target_os = "macos", windows))]
+#[test]
+fn app_and_companion_swapped_after_initial_identity_check_never_launch() {
+    let dir = TestDir::new();
+    let (platform, path, tool) = install_stub(&dir.0);
+    let pipeline = pipeline();
+    let target = App::read(platform, &path, Some(&pipeline)).unwrap();
+    let main = App::read(platform, &path, None).unwrap();
+    assert!(target.verify(platform, Some(&pipeline)).is_ok());
+    assert!(main.verify(platform, None).is_ok());
+    assert_eq!(
+        target
+            .with_verified_launch(platform, Some(&pipeline), |current| {
+                current.tool().unwrap().to_owned()
+            })
+            .unwrap(),
+        tool.canonicalize().unwrap()
+    );
+
+    // Simulate a replacement while the user's box was open or the input was being written.
+    fs::write(&tool, b"replacement tool").unwrap();
+    assert_eq!(
+        target.with_verified_launch(platform, Some(&pipeline), |_| panic!(
+            "replacement tool launched"
+        )),
+        Err::<(), _>(identity::Error::Changed)
+    );
+    let executable = match platform {
+        Platform::Mac => path.join("Contents").join("MacOS").join("App"),
+        Platform::Windows => path,
+    };
+    fs::write(executable, b"replacement application").unwrap();
+    assert_eq!(
+        main.with_verified_launch(platform, None, |_| panic!(
+            "replacement application launched"
+        )),
+        Err::<(), _>(identity::Error::Changed)
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn symlink_to_the_exact_same_bundle_is_refused_at_launch() {
+    use std::os::unix::fs::symlink;
+    let dir = TestDir::new();
+    let (platform, path, _) = install_stub(&dir.0);
+    let target = App::read(platform, &path, None).unwrap();
+    let moved = dir.0.join("Moved app.app");
+    fs::rename(&path, &moved).unwrap();
+    symlink(&moved, &path).unwrap();
+    assert_eq!(
+        target.with_verified_launch(platform, None, |_| panic!("symlinked bundle launched")),
+        Err::<(), _>(identity::Error::Changed)
+    );
+}
+
+#[cfg(any(target_os = "macos", windows))]
+#[test]
+fn failed_consent_cleanup_requires_fresh_approval_after_reinstall() {
+    let dir = TestDir::new();
+    let (platform, path, _) = install_stub(&dir.0);
+    let pipeline = pipeline();
+    let target = App::read(platform, &path, Some(&pipeline)).unwrap();
+    let digest = pipeline.digest();
+    let store = Store::new(&dir.0);
+    let mut prior = Row::picked(PLUGIN, APP_ID.into(), target);
+    let target = App::read(platform, &path, Some(&pipeline)).unwrap();
+    prior.approve(
+        &target,
+        Some(pipeline.id.clone()),
+        digest.clone(),
+        INSTALL_ID,
+    );
+    store.insert(prior).unwrap();
+
+    let consents = dir.0.join("app-handoff").join("consents.json");
+    let backup = consents.with_extension("backup");
+    fs::rename(&consents, &backup).unwrap();
+    fs::create_dir(&consents).unwrap();
+    assert!(store.clear(PLUGIN).is_err());
+    fs::remove_dir(&consents).unwrap();
+    fs::rename(&backup, &consents).unwrap();
+
+    let stale = store.get(PLUGIN, APP_ID).unwrap().unwrap();
+    assert!(stale.grants(&target, &digest, INSTALL_ID));
+    assert!(
+        !stale.grants(&target, &digest, "second-install"),
+        "the consent box is required"
+    );
+    let mut approved = stale.clone();
+    approved.approve(&target, Some(pipeline.id), digest.clone(), "second-install");
+    store.replace(&stale, approved).unwrap();
+    let approved = store.get(PLUGIN, APP_ID).unwrap().unwrap();
+    assert!(approved.grants(&target, &digest, "second-install"));
+    assert!(!approved.grants(&target, &digest, INSTALL_ID));
+}
+
+#[cfg(unix)]
+#[test]
+fn consent_store_refuses_existing_group_or_world_accessible_directory_and_file() {
+    use std::{io, os::unix::fs::PermissionsExt};
+
+    let dir = TestDir::new();
+    let root = dir.0.join("app-handoff");
+    let path = root.join("consents.json");
+    let store = Store::new(&dir.0);
+    let set_mode =
+        |path, mode| fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+    store.clear(PLUGIN).unwrap();
+    for (unsafe_path, mode, safe_mode) in [(&root, 0o750, 0o700), (&path, 0o604, 0o600)] {
+        set_mode(unsafe_path, mode);
+        assert_eq!(
+            store.list().unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(
+            store.clear(PLUGIN).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        set_mode(unsafe_path, safe_mode);
+        assert!(store.list().unwrap().is_empty());
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn consent_store_refuses_an_existing_file_with_inherited_acl() {
+    use std::io;
+
+    let dir = TestDir::new();
+    let root = dir.0.join("app-handoff");
+    fs::create_dir(&root).unwrap();
+    fs::write(
+        root.join("consents.json"),
+        br#"{"schemaVersion":1,"rows":[]}"#,
+    )
+    .unwrap();
+    let store = Store::new(&dir.0);
+    assert_eq!(
+        store.list().unwrap_err().kind(),
+        io::ErrorKind::PermissionDenied
+    );
+    assert_eq!(
+        store.clear(PLUGIN).unwrap_err().kind(),
+        io::ErrorKind::PermissionDenied
+    );
+}
+
 #[test]
 #[cfg(any(target_os = "macos", windows))]
 fn consent_survives_disable_but_changed_template_app_revoke_and_uninstall_refuse() {
@@ -801,9 +1010,9 @@ fn consent_survives_disable_but_changed_template_app_revoke_and_uninstall_refuse
     );
     store.insert(row.clone()).unwrap();
     let mut allowed = row.clone();
-    allowed.approve(&app, Some(pipeline.id.clone()), digest.clone());
+    allowed.approve(&app, Some(pipeline.id.clone()), digest.clone(), INSTALL_ID);
     store.replace(&row, allowed.clone()).unwrap();
-    assert!(allowed.grants(&app, &digest));
+    assert!(allowed.grants(&app, &digest, INSTALL_ID));
     // Disabling or re-enabling a plugin touches the native menu, not its persisted consent.
     let state = State::default();
     state.arm(PLUGIN, COMMAND, Instant::now()).unwrap();
@@ -813,14 +1022,15 @@ fn consent_survives_disable_but_changed_template_app_revoke_and_uninstall_refuse
         .get(PLUGIN, APP_ID)
         .unwrap()
         .unwrap()
-        .grants(&app, &digest));
+        .grants(&app, &digest, INSTALL_ID));
     let mut changed = template();
     changed["steps"][1]["timeoutSeconds"] = json!(6);
     assert!(!allowed.grants(
         &app,
         &serde_json::from_value::<Pipeline>(changed)
             .unwrap()
-            .digest()
+            .digest(),
+        INSTALL_ID
     ));
 
     fs::remove_file(tool).unwrap();
@@ -842,7 +1052,7 @@ fn consent_survives_disable_but_changed_template_app_revoke_and_uninstall_refuse
     assert!(store.get(PLUGIN, &allowed.consent_id()).unwrap().is_none());
     store.revoke(PLUGIN, &allowed.consent_id()).unwrap();
     let revoked = store.get(PLUGIN, APP_ID).unwrap().unwrap();
-    assert!(!revoked.grants(&app, &digest));
+    assert!(!revoked.grants(&app, &digest, INSTALL_ID));
     assert!(
         store.replace(&allowed, allowed.clone()).is_err(),
         "revoked consent must not be restored by a stale box"

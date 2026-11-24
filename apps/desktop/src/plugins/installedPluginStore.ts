@@ -38,6 +38,8 @@ export interface InstalledPluginRecord extends PluginAppHandoffProvenance {
   sourceChecksum: string;
   /** ISO-8601 install time. */
   installedAt: string;
+  /** Changes on reinstall and stays stable across updates retaining app handoff. */
+  handoffInstallId?: string;
 }
 
 interface RecordsDocument {
@@ -166,6 +168,7 @@ export function createInstalledPluginRecord(options: {
   stagedPath?: string;
   installedAt?: Date;
   provenance?: PluginAppHandoffProvenance;
+  handoffInstallId?: string;
 }): InstalledPluginRecord {
   return {
     id: options.id,
@@ -174,7 +177,8 @@ export function createInstalledPluginRecord(options: {
     stagedPath: options.stagedPath ?? installedPluginStagingDir(options.id),
     sourceChecksum: options.sourceChecksum,
     installedAt: (options.installedAt ?? new Date()).toISOString(),
-    ...options.provenance
+    ...options.provenance,
+    handoffInstallId: options.handoffInstallId
   };
 }
 
@@ -190,6 +194,7 @@ function isInstalledPluginRecord(candidate: unknown): candidate is InstalledPlug
     isNonEmptyString(record.stagedPath) &&
     isNonEmptyString(record.sourceChecksum) &&
     isNonEmptyString(record.installedAt) &&
+    (record.handoffInstallId === undefined || isNonEmptyString(record.handoffInstallId)) &&
     (record.source === undefined || record.source === "catalog" || record.source === "sideload") &&
     (record.repository === undefined || typeof record.repository === "string") &&
     (record.checksumVerified === undefined || typeof record.checksumVerified === "boolean")

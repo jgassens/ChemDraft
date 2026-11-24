@@ -1,0 +1,72 @@
+{
+  "base": {
+    "id": "example",
+    "tool": { "macos": "Contents/MacOS/tool", "windows": "bin\\TOOL.EXE" },
+    "testedVersions": ["1.2.3-rc.1+build"],
+    "steps": [
+      { "id": "preflight", "args": ["capabilities", "--json"], "timeoutSeconds": 5 },
+      { "id": "build", "args": ["{inputDir}", "{outputFile:cif}"], "input": { "extension": "xyz" }, "timeoutSeconds": 5 },
+      { "id": "inspect", "args": ["inspect", "{previousOutput}"], "timeoutSeconds": 5 }
+    ],
+    "combinations": { "default": {} }
+  },
+  "cases": [
+    { "name": "XYZ input and a Windows .EXE", "valid": true, "overrides": {} },
+    {
+      "name": "no input",
+      "valid": true,
+      "overrides": { "steps": [{ "id": "preflight", "args": ["capabilities", "--json"], "timeoutSeconds": 5 }] }
+    },
+    {
+      "name": "missing preflight",
+      "valid": false,
+      "overrides": { "steps": [{ "id": "build", "args": ["build"], "timeoutSeconds": 5 }] }
+    },
+    {
+      "name": "incorrect preflight arguments",
+      "valid": false,
+      "overrides": { "steps": [{ "id": "preflight", "args": ["capabilities", "--json", "extra"], "timeoutSeconds": 5 }] }
+    },
+    {
+      "name": "preflight with input",
+      "valid": false,
+      "overrides": { "steps": [{ "id": "preflight", "args": ["capabilities", "--json"], "input": { "extension": "xyz" }, "timeoutSeconds": 5 }] }
+    },
+    {
+      "name": "Windows script",
+      "valid": false,
+      "overrides": { "tool": { "macos": "Contents/MacOS/tool", "windows": "bin\\tool.cmd" } }
+    },
+    {
+      "name": "Windows dotfile without an extension",
+      "valid": false,
+      "overrides": { "tool": { "macos": "Contents/MacOS/tool", "windows": "bin\\.exe" } }
+    },
+    {
+      "name": "CIF companion input",
+      "valid": false,
+      "overrides": {
+        "steps": [
+          { "id": "preflight", "args": ["capabilities", "--json"], "timeoutSeconds": 5 },
+          { "id": "build", "args": ["{inputDir}"], "input": { "extension": "cif" }, "timeoutSeconds": 5 }
+        ]
+      }
+    },
+    {
+      "name": "inspect does not read the preceding build",
+      "valid": false,
+      "overrides": {
+        "steps": [
+          { "id": "preflight", "args": ["capabilities", "--json"], "timeoutSeconds": 5 },
+          { "id": "build", "args": ["{outputFile:cif}"], "timeoutSeconds": 5 },
+          { "id": "inspect", "args": ["inspect", "some-file.cif", "{previousOutput}"], "timeoutSeconds": 5 }
+        ]
+      }
+    },
+    {
+      "name": "invalid version string",
+      "valid": false,
+      "overrides": { "testedVersions": ["1.2 or later"] }
+    }
+  ]
+}

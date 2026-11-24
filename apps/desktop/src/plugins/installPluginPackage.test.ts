@@ -244,6 +244,7 @@ async function installFixture(
     zip?: Uint8Array;
     worker?: FakeWorkerOptions;
     replaces?: ReturnType<typeof bundledCopy>;
+    installedAt?: Date;
     provenance?: import("@chemdraft/plugin-host").PluginAppHandoffProvenance;
   } = {}
 ) {
@@ -258,6 +259,7 @@ async function installFixture(
     inspection,
     origin: ORIGIN,
     createWorker: () => worker.handle,
+    installedAt: options.installedAt,
     provenance: options.provenance,
     replaces: options.replaces as never
   });
@@ -892,6 +894,7 @@ describe("installed app handoff lifecycle", () => {
       origin: ORIGIN, createWorker: () => createFakeWorker().handle
     });
     expect(updated.record).toMatchObject({ ...provenance, version: "2.1.0" });
+    expect(updated.record.handoffInstallId).toBe(result.record.handoffInstallId);
     expect(await loadInstalledPluginRecords(f.fs)).toEqual([updated.record]);
     expect(f.clearPlugin).not.toHaveBeenCalled();
     expect(f.rows.has(id)).toBe(true);
@@ -960,6 +963,24 @@ describe("installed app handoff lifecycle", () => {
     await uninstallPlugin({ ...f, pluginId: id, descriptor: result.descriptor });
     expect(f.clearPlugin).toHaveBeenCalledExactlyOnceWith(id);
     expect(f.rows).toEqual(new Set(["org.chemdraft.other"]));
+  });
+
+  it("assigns a new handoff install ID when reinstalling the same package after consent cleanup fails", async () => {
+    const f = await fixture();
+    const options = { ...f, provenance, installedAt: new Date("2026-11-24T00:00:00Z") };
+    const { result: first } = await installFixture(options);
+    f.clearPlugin.mockRejectedValueOnce(new Error("Handoff consent store is unavailable"));
+    await expect(uninstallPlugin({ ...f, pluginId: id, descriptor: first.descriptor }))
+      .rejects.toThrow(/was uninstalled, but its app handoff consents could not be deleted/);
+    expect(f.rows.has(id)).toBe(true);
+    const { result: next } = await installFixture(options);
+    expect(next.record).toMatchObject({
+      sourceChecksum: first.record.sourceChecksum,
+      installedAt: first.record.installedAt,
+      handoffInstallId: expect.any(String)
+    });
+    expect(next.record.handoffInstallId).not.toBe(first.record.handoffInstallId);
+    expect(await loadInstalledPluginRecords(f.fs)).toEqual([next.record]);
   });
 });
 

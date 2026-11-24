@@ -23,6 +23,8 @@ pub(super) struct Row {
     pub app_path: PathBuf,
     pub app_identity: Identity,
     pub template_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    handoff_install_id: Option<String>,
     consent_text_version: u32,
     pub granted: bool,
     pub at: String,
@@ -40,6 +42,7 @@ impl Row {
             app_path: app.path,
             app_identity: app.identity,
             template_digest: String::new(),
+            handoff_install_id: None,
             consent_text_version: CONSENT_TEXT_VERSION,
             granted: false,
             at: timestamp(),
@@ -54,18 +57,26 @@ impl Row {
         format!("consent-{:x}", Sha256::digest(self.app_id.as_bytes()))
     }
 
-    pub(super) fn grants(&self, app: &App, digest: &str) -> bool {
+    pub(super) fn grants(&self, app: &App, digest: &str, install_id: &str) -> bool {
         self.granted
+            && self.handoff_install_id.as_deref() == Some(install_id)
             && self.app_path == app.path
             && self.app_identity.matches(&app.identity)
             && self.consent_text_version == CONSENT_TEXT_VERSION
             && self.template_digest == digest
     }
 
-    pub(super) fn approve(&mut self, app: &App, pipeline: Option<String>, digest: String) {
+    pub(super) fn approve(
+        &mut self,
+        app: &App,
+        pipeline: Option<String>,
+        digest: String,
+        install_id: &str,
+    ) {
         self.app_identity = app.identity.clone();
         self.pipeline = pipeline;
         self.template_digest = digest;
+        self.handoff_install_id = Some(install_id.into());
         self.consent_text_version = CONSENT_TEXT_VERSION;
         self.granted = true;
         self.at = timestamp();
@@ -77,6 +88,7 @@ impl Row {
             && self.app_path == other.app_path
             && self.app_identity.matches(&other.app_identity)
             && self.template_digest == other.template_digest
+            && self.handoff_install_id == other.handoff_install_id
             && self.consent_text_version == other.consent_text_version
             && self.granted == other.granted
             && self.at == other.at
@@ -91,6 +103,16 @@ struct Document {
     rows: Vec<Row>,
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
+}
+
+impl Document {
+    fn empty() -> Self {
+        Self {
+            schema_version: 1,
+            rows: Vec::new(),
+            extra: BTreeMap::new(),
+        }
+    }
 }
 
 pub(super) struct Store(PathBuf);
@@ -152,22 +174,26 @@ impl Store {
     }
 
     fn read(&self) -> io::Result<Document> {
-        if let Ok(metadata) = fs::symlink_metadata(&self.0) {
-            if !metadata.is_file() || temp_files::reparse(&metadata) {
-                return Err(io::ErrorKind::PermissionDenied.into());
-            }
-        }
-        let bytes = match temp_files::read_bounded(&self.0, 1024 * 1024) {
-            Ok(bytes) => bytes,
+        let dir = self.0.parent().expect("consent directory");
+        match temp_files::safe_dir(dir) {
+            Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return Ok(Document {
-                    schema_version: 1,
-                    rows: Vec::new(),
-                    extra: BTreeMap::new(),
-                })
+                return Ok(Document::empty());
+            }
+            Err(error) => return Err(error),
+        }
+        let file = match temp_files::open_plain_file(&self.0) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(Document::empty());
             }
             Err(error) => return Err(error),
         };
+        #[cfg(unix)]
+        temp_files::require_private_owner(&file.metadata()?)?;
+        #[cfg(windows)]
+        require_owner_only_acl(&file)?;
+        let bytes = temp_files::read_bounded_file(file, 1024 * 1024)?;
         let document: Document = serde_json::from_slice(&bytes)?;
         if document.schema_version != 1 {
             return Err(io::Error::other(
@@ -211,6 +237,64 @@ fn create_private(path: &Path) -> io::Result<fs::File> {
 }
 
 #[cfg(windows)]
+const OWNER_ONLY_DACL: &str = "D:P(A;;FA;;;OW)";
+
+#[cfg(windows)]
+fn require_owner_only_acl(file: &fs::File) -> io::Result<()> {
+    use std::{os::windows::io::AsRawHandle, ptr, slice};
+    use windows_sys::Win32::{
+        Foundation::LocalFree,
+        Security::{
+            Authorization::{
+                ConvertSecurityDescriptorToStringSecurityDescriptorW, GetSecurityInfo,
+                SE_FILE_OBJECT,
+            },
+            DACL_SECURITY_INFORMATION,
+        },
+    };
+    let mut descriptor = ptr::null_mut();
+    // Inspect the handle we will read, keeping the policy identical to creation.
+    unsafe {
+        let status = GetSecurityInfo(
+            file.as_raw_handle(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &mut descriptor,
+        );
+        if status != 0 {
+            return Err(io::Error::from_raw_os_error(status as i32));
+        }
+        let mut sddl = ptr::null_mut();
+        let mut len = 0;
+        let converted = ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            descriptor,
+            1,
+            DACL_SECURITY_INFORMATION,
+            &mut sddl,
+            &mut len,
+        );
+        let result = if converted == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            let acl = slice::from_raw_parts(sddl, len as usize);
+            let acl = acl.strip_suffix(&[0]).unwrap_or(acl);
+            if acl.iter().copied().eq(OWNER_ONLY_DACL.encode_utf16()) {
+                Ok(())
+            } else {
+                Err(io::ErrorKind::PermissionDenied.into())
+            }
+        };
+        LocalFree(sddl.cast());
+        LocalFree(descriptor.cast());
+        result
+    }
+}
+
+#[cfg(windows)]
 fn create_private(path: &Path) -> io::Result<fs::File> {
     use std::{
         os::windows::{ffi::OsStrExt, io::FromRawHandle},
@@ -226,7 +310,7 @@ fn create_private(path: &Path) -> io::Result<fs::File> {
     };
     // A protected DACL with a single Owner Rights ACE, applied at creation so no file contents
     // can be observed during an interval with the parent's inherited permissions.
-    let sddl: Vec<u16> = "D:P(A;;FA;;;OW)\0".encode_utf16().collect();
+    let sddl: Vec<u16> = OWNER_ONLY_DACL.encode_utf16().chain(Some(0)).collect();
     let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     let mut descriptor = ptr::null_mut();
     unsafe {

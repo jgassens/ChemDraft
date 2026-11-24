@@ -186,6 +186,13 @@ impl Pipeline {
                 "A companion pipeline must begin with preflight capabilities --json.".into(),
             );
         }
+        if self.steps.iter().any(|step| {
+            step.input
+                .as_ref()
+                .is_some_and(|input| input.extension != Extension::Xyz)
+        }) {
+            return Err("Companion confirmation supports only XYZ input.".into());
+        }
         if self
             .steps
             .iter()

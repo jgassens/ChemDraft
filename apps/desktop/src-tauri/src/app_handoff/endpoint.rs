@@ -377,7 +377,8 @@ impl Context<'_> {
         pipeline: Option<&Pipeline>,
     ) -> Result<Option<Row>, String> {
         let digest = pipeline.map_or_else(send_template_digest, Pipeline::digest);
-        if row.grants(target, &digest) {
+        let install_id = &self.plugin.handoff_install_id;
+        if row.grants(target, &digest, install_id) {
             return Ok(Some(row));
         }
         let operation = match pipeline {
@@ -397,8 +398,11 @@ impl Context<'_> {
         if !dialogs::native_choice(self.window, proof, "Allow app handoff?", text, "Allow").await? {
             return Ok(None);
         }
+        if Plugin::read(self.app(), self.plugin_id)?.handoff_install_id != *install_id {
+            return Err("The app handoff plugin was reinstalled while consent was open.".into());
+        }
         let mut granted = row.clone();
-        granted.approve(target, pipeline.map(|p| p.id.clone()), digest);
+        granted.approve(target, pipeline.map(|p| p.id.clone()), digest, install_id);
         // A concurrent revoke or uninstall takes precedence over an in-flight confirmation.
         self.store
             .replace(&row, granted.clone())
@@ -462,16 +466,19 @@ impl Context<'_> {
                 "ChemDraft could not write the handoff file.",
             ));
         };
-        let current = match target.verify(self.platform, None) {
-            Ok(current) => current,
-            Err(error) => return Ok(send_identity(error)),
-        };
-        if !self.still_authorized(&grant, None, &current)? {
+        if !self.still_authorized(&grant, None, &target)? {
             return Err(
                 "App handoff consent or the native menu command changed before launch.".into(),
             );
         }
-        match proof.launch(|| current.open(self.platform, &file))? {
+        let launched = target.with_verified_launch(self.platform, None, |current| {
+            proof.launch(|| current.open(self.platform, &file))
+        });
+        let launched = match launched {
+            Ok(launched) => launched?,
+            Err(error) => return Ok(send_identity(error)),
+        };
+        match launched {
             Ok(()) => {
                 files.keep_for_open_app();
                 Ok(SendResult::Sent)
@@ -494,7 +501,7 @@ impl Context<'_> {
         Ok(!self.app().state::<State>().stopped.load(Ordering::Acquire)
             && current_command(self.app(), self.command)
             && plugin.owns_menu_command(self.command)
-            && grant.grants(target, &digest)
+            && grant.grants(target, &digest, &plugin.handoff_install_id)
             && self
                 .store
                 .get(self.plugin_id, &grant.app_id)
@@ -547,7 +554,6 @@ impl Context<'_> {
         let Some(grant) = self.consent(&proof, row, &target, Some(&pipeline)).await? else {
             return Ok(RunResult::Declined);
         };
-        proof.show_box()?;
         let snapshot = Snapshot::Confirm {
             title: "Confirm companion build",
             app_name: &target.name,
@@ -557,7 +563,12 @@ impl Context<'_> {
             combinations: &pipeline.combinations,
         };
         let Action::Confirm { combination_id } = self
-            .question(snapshot, proof.invalidated(), Duration::from_secs(600))
+            .question(
+                snapshot,
+                proof.invalidated(),
+                Duration::from_secs(600),
+                Some(&proof),
+            )
             .await?
         else {
             proof.assert_pending()?;
@@ -582,15 +593,27 @@ impl Context<'_> {
         snapshot: Snapshot<'_>,
         mut cancelled: watch::Receiver<bool>,
         limit: Duration,
+        submission: Option<&Submission>,
     ) -> Result<Action, String> {
         if *cancelled.borrow() {
             return Ok(Action::Cancel {});
         }
         let value = wire::encode(snapshot)?;
-        let (host_id, mut choice) =
+        let open = async {
             crate::dialog_windows::open_app_handoff(self.window.clone(), value)
                 .await
-                .map_err(|_| "ChemDraft could not open the native handoff dialog.")?;
+                .map_err(|_| "ChemDraft could not open the native handoff dialog.".to_string())
+        };
+        let (host_id, mut choice) = match submission {
+            Some(proof) => {
+                proof
+                    .open_box(open, |(host_id, _)| {
+                        crate::dialog_windows::close_app_handoff(self.app(), &host_id);
+                    })
+                    .await?
+            }
+            None => open.await?,
+        };
         let answer = tokio::select! {
             biased;
             _ = cancelled.changed() => Action::Cancel {},
@@ -674,7 +697,7 @@ impl Context<'_> {
             rebuild_label: dialogs::rebuild_label(&job.pipeline, rebuild),
             twist,
         };
-        let action = self.question(snapshot, marker.subscribe(), ttl).await;
+        let action = self.question(snapshot, marker.subscribe(), ttl, None).await;
         let session = state.take_result(self.plugin_id, &marker);
         if !matches!(action?, Action::Rebuild {}) {
             return Ok(result);
@@ -765,35 +788,36 @@ impl BuildJob {
             &self.build,
             &files,
             |args, cwd, first| {
-                let current = self.verify(window)?;
-                let tool = current.tool().ok_or_else(|| {
-                    runner::Failure::new(
-                        RunCode::ToolMissing,
-                        "The declared companion executable is missing.",
-                    )
-                })?;
-                let start = || {
-                    runner::ChildProcess::spawn(tool, args, cwd).map_err(|_| {
+                self.with_authorized_launch(window, |current| {
+                    let tool = current.tool().ok_or_else(|| {
                         runner::Failure::new(
                             RunCode::ToolMissing,
-                            "ChemDraft could not start the declared companion executable.",
+                            "The declared companion executable is missing.",
                         )
-                    })
-                };
-                if first {
-                    match proof.launch_build(&self.build, start) {
-                        Ok(result) => result,
-                        Err(error) => {
-                            refused = Some(error);
-                            Err(runner::Failure::new(
-                                RunCode::BadParam,
-                                "The native companion launch was refused.",
-                            ))
+                    })?;
+                    let start = || {
+                        runner::ChildProcess::spawn(tool, args, cwd).map_err(|_| {
+                            runner::Failure::new(
+                                RunCode::ToolMissing,
+                                "ChemDraft could not start the declared companion executable.",
+                            )
+                        })
+                    };
+                    if first {
+                        match proof.launch_build(&self.build, start) {
+                            Ok(result) => result,
+                            Err(error) => {
+                                refused = Some(error);
+                                Err(runner::Failure::new(
+                                    RunCode::BadParam,
+                                    "The native companion launch was refused.",
+                                ))
+                            }
                         }
+                    } else {
+                        start()
                     }
-                } else {
-                    start()
-                }
+                })?
             },
             &state.stopped,
         );
@@ -804,12 +828,14 @@ impl BuildJob {
         let mut opened = false;
         if self.build.open_output {
             if let Some(output) = completed.output {
-                let current = self.verify(window).map_err(JobError::Failed)?;
-                if runner::verified_output(&files.root, &output) {
-                    opened = current.open(self.platform, &output).is_ok();
-                    if opened {
-                        files.keep_for_open_app();
-                    }
+                opened = self
+                    .with_authorized_launch(window, |current| {
+                        runner::verified_output(&files.root, &output)
+                            && current.open(self.platform, &output).is_ok()
+                    })
+                    .map_err(JobError::Failed)?;
+                if opened {
+                    files.keep_for_open_app();
                 }
             }
         }
@@ -819,11 +845,11 @@ impl BuildJob {
         })
     }
 
-    fn verify(&self, window: &WebviewWindow) -> Result<App, runner::Failure> {
-        let current = self
-            .target
-            .verify(self.platform, Some(&self.pipeline))
-            .map_err(|error| runner::Failure::new(run_identity_code(error), error.message()))?;
+    fn with_authorized_launch<T>(
+        &self,
+        window: &WebviewWindow,
+        launch: impl FnOnce(&App) -> T,
+    ) -> Result<T, runner::Failure> {
         let app = window.app_handle();
         let consent_current = || {
             let plugin = Plugin::read(app, &self.grant.plugin_id).ok()?;
@@ -837,11 +863,13 @@ impl BuildJob {
                     && current_command(app, &self.command)
                     && !app.state::<State>().stopped.load(Ordering::Acquire)
                     && row.same_grant(&self.grant)
-                    && row.grants(&current, &pipeline.digest()),
+                    && row.grants(&self.target, &pipeline.digest(), &plugin.handoff_install_id),
             )
         };
         if consent_current() == Some(true) {
-            Ok(current)
+            self.target
+                .with_verified_launch(self.platform, Some(&self.pipeline), launch)
+                .map_err(|error| runner::Failure::new(run_identity_code(error), error.message()))
         } else {
             Err(runner::Failure::new(RunCode::BadParam, REBUILD_EXPIRED))
         }

@@ -7,8 +7,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
-    fs::{self, File},
-    io,
+    fs, io,
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
@@ -38,8 +37,9 @@ pub(super) struct ExecutableIdentity {
 
 impl ExecutableIdentity {
     fn measure(path: PathBuf) -> io::Result<Self> {
+        let mut file = temp_files::open_plain_file(&path)?;
         let mut hash = Sha256::new();
-        io::copy(&mut File::open(&path)?, &mut hash)?;
+        io::copy(&mut file, &mut hash)?;
         let signing_identity = signature(&path)?;
         Ok(Self {
             path,
@@ -203,6 +203,34 @@ impl App {
             .companion
             .as_ref()
             .map(|companion| companion.path.as_path())
+    }
+
+    pub(super) fn with_verified_launch<T>(
+        &self,
+        platform: Platform,
+        pipeline: Option<&Pipeline>,
+        launch: impl FnOnce(&Self) -> T,
+    ) -> Result<T, Error> {
+        let current = self.verify(platform, pipeline)?;
+        // Hashing/signature checks take time. Look for replaced final components again before
+        // handing the exact verified paths to the launcher.
+        let plain = |path: &Path, directory: bool| {
+            fs::symlink_metadata(path).is_ok_and(|meta| {
+                !temp_files::reparse(&meta)
+                    && if directory {
+                        meta.is_dir()
+                    } else {
+                        meta.is_file()
+                    }
+            }) && path.canonicalize().is_ok_and(|canonical| canonical == path)
+        };
+        if !plain(&current.path, platform == Platform::Mac)
+            || (platform == Platform::Mac && !plain(&current.identity.main.path, false))
+            || current.tool().is_some_and(|path| !plain(path, false))
+        {
+            return Err(Error::Changed);
+        }
+        Ok(launch(&current))
     }
 
     pub(super) fn open(&self, platform: Platform, file: &Path) -> io::Result<()> {

@@ -4,6 +4,20 @@ Read-only map by `openai-sol` (agentctl run `run-20261123-193543-b2afa2`, 2026-1
 
 `HEAD` and `origin/main` both resolve to `2cab455c3702431d3c47936e74fb61c7aa5474ba`. The desktop package and Tauri config both report ChemDraft `1.2.2`. This is a source review. No application tests ran and the worktree is clean. `apps/desktop/package.json:3`, `apps/desktop/src-tauri/tauri.conf.json:4`.
 
+## Phase 1 review follow-up
+
+App handoff consent is tied to the plugin's installation ID. Reinstalling requires fresh consent
+even when uninstall could not delete the old rows. Updates that keep the handoff permission keep
+the installation ID, and the pipeline digest still determines whether a changed pipeline needs
+fresh consent.
+
+**Accepted local filesystem race.** ChemDraft rechecks the app and companion identity after
+confirmation and immediately before launch. It rejects symlink and reparse-point final components
+and gives Windows the exact canonical executable path it verified. macOS launches GUI apps through
+`open -a`, which accepts a path. Both platforms still resolve a path when starting the process, so
+a local actor with write access to the chosen app's location can replace it between the final
+check and the operating system's launch.
+
 ## 1. Plugin API version
 
 - `PluginApiVersion` is `0.1.26`. The API header describes the additions, the package publishes the same version, and the SDK test asserts equality. The authoring guide has both a current-version statement and the `0.1.26` table row. `packages/plugin-api/src/index.ts:48–58`, `packages/plugin-api/package.json:3`, `packages/plugin-api/src/index.test.ts:741–744`, `docs/plugin-architecture/AUTHORING.md:143–153, 180`.

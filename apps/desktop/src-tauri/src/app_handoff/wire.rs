@@ -181,6 +181,13 @@ impl Call {
                 if request
                     .input
                     .as_ref()
+                    .is_some_and(|input| input.extension != Extension::Xyz)
+                {
+                    return Err("Companion confirmation supports only XYZ input.".into());
+                }
+                if request
+                    .input
+                    .as_ref()
                     .is_some_and(|input| input.text.len() > INPUT_BYTES)
                 {
                     return Err("The companion input exceeds 1 MiB.".into());

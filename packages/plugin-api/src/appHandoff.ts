@@ -78,24 +78,36 @@ function relativeToolPath(platform: "macos" | "windows") {
     return segments.every(segment => segment && segment !== "." && segment !== ".." &&
       !unsafeFileNameCharacter.test(segment) &&
       (platform === "macos" || (!/[. ]$/u.test(segment) && !windowsDeviceName.test(segment.split(".", 1)[0].trimEnd()))));
-  }, `Expected a relative ${platform === "macos" ? "macOS" : "Windows"} tool path inside the app, with no traversal segments.`);
+  }, `Expected a relative ${platform === "macos" ? "macOS" : "Windows"} tool path inside the app, with no traversal segments.`)
+    .refine(value => {
+      if (platform === "macos") return true;
+      const name = value.split(/[/\\]/u).at(-1)!;
+      return name.length > 4 && name.toLowerCase().endsWith(".exe");
+    }, "A Windows companion tool must be a native .exe.");
 }
+
+const companionInputExtension = z.literal("xyz");
 
 export const PluginCompanionStepSchema = z.object({
   id: companionId,
   args: z.array(z.string()),
-  input: z.object({ extension: PluginHandoffExtensionSchema }).strict().optional(),
+  input: z.object({ extension: companionInputExtension }).strict().optional(),
   timeoutSeconds: z.number().int().positive().max(limits.stepSeconds)
 }).strict();
 
 export const PluginCompanionPipelineSchema = z.object({
   id: companionId,
   tool: z.object({ macos: relativeToolPath("macos"), windows: relativeToolPath("windows") }).strict(),
-  testedVersions: z.array(nonempty).min(1),
+  testedVersions: z.array(nonempty.max(80).regex(/^[A-Za-z0-9.+_-]+$/u)).min(1),
   steps: z.array(PluginCompanionStepSchema).min(1),
   combinations: z.record(companionId, PluginCompanionCombinationSchema)
 }).strict().superRefine((pipeline, ctx) => {
   const refuse = (path: (string | number)[], message: string) => ctx.addIssue({ code: "custom", path, message });
+  const preflight = pipeline.steps[0];
+  if (!preflight || preflight.id !== "preflight" || preflight.input !== undefined ||
+      preflight.args.length !== 2 || preflight.args[0] !== "capabilities" || preflight.args[1] !== "--json") {
+    refuse(["steps", 0], "A companion pipeline must begin with preflight capabilities --json.");
+  }
   const combinations = Object.entries(pipeline.combinations);
   if (!combinations.length) refuse(["combinations"], "Declare at least one companion combination.");
   for (const [id, combination] of combinations) {
@@ -114,6 +126,10 @@ export const PluginCompanionPipelineSchema = z.object({
   pipeline.steps.forEach((step, stepIndex) => {
     if (stepIds.has(step.id)) refuse(["steps", stepIndex, "id"], `Duplicate companion step id "${step.id}".`);
     stepIds.add(step.id);
+    if (step.args[0] === "inspect" && (!previousHasOutput || pipeline.steps[stepIndex - 1]?.id !== "build" ||
+        step.args[1] !== "{previousOutput}")) {
+      refuse(["steps", stepIndex, "args"], "Inspect requires the declared file from the preceding build step.");
+    }
     let outputExtension: PluginHandoffExtension | undefined;
     step.args.forEach((arg, argIndex) => {
       const path = ["steps", stepIndex, "args", argIndex];
@@ -201,7 +217,7 @@ export const PluginHandoffRunCompanionRequestSchema = z.object({
   appId: nonempty,
   pipeline: companionId,
   combination: companionId,
-  input: z.object({ extension: PluginHandoffExtensionSchema, text: utf8Text(limits.inputBytes) }).strict().optional(),
+  input: z.object({ extension: companionInputExtension, text: utf8Text(limits.inputBytes) }).strict().optional(),
   openOutput: z.boolean().optional()
 }).strict();
 

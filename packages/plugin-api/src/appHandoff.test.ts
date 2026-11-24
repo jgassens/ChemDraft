@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import companionPipelines from "./__fixtures__/companion-pipelines.json";
 import {
   PluginAppHandoffLimits as limits,
   PluginAppHandoffSchemas,
@@ -42,6 +43,10 @@ const sendFile = { appId: "opaque-1", fileName: "benzene", extension: "xyz", tex
 const runCompanion = { appId: "opaque-1", pipeline: "mofBuild", combination: "pcu-N16-1x1x1" };
 
 describe("app handoff manifest", () => {
+  it.each(companionPipelines.cases)("matches native pipeline validation for $name", ({ valid, overrides }) => {
+    expect(PluginCompanionPipelineSchema.safeParse({ ...companionPipelines.base, ...overrides }).success).toBe(valid);
+  });
+
   it("marks app handoff dangerous and requires native.execute", () => {
     expect(dangerousPluginPermissions).toContain("apps.handoff");
     expect(PluginManifestSchema.parse({ ...manifest, companions: [pipeline] }).companions).toEqual([pipeline]);
@@ -155,6 +160,9 @@ describe("strict app handoff wire shapes", () => {
     expect(PluginHandoffRunCompanionRequestSchema.safeParse({
       ...runCompanion, input: { text: "6\n", extension: "xyz" }, openOutput: true
     }).success).toBe(true);
+    expect(PluginHandoffRunCompanionRequestSchema.safeParse({
+      ...runCompanion, input: { text: "data_cif", extension: "cif" }
+    }).success).toBe(false);
     expect(PluginHandoffRunCompanionRequestSchema.safeParse({ ...runCompanion, combination: { topology: "pcu" } }).success).toBe(false);
     expect(PluginHandoffRunCompanionRequestSchema.safeParse({
       ...runCompanion, input: { text: "6\n", extension: "xyz", fileName: "untrusted" }

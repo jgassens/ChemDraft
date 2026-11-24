@@ -111,7 +111,41 @@ pub(super) fn safe_dir(path: &Path) -> io::Result<()> {
     if !metadata.is_dir() || reparse(&metadata) {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
+    #[cfg(unix)]
+    require_private_owner(&metadata)?;
     Ok(())
+}
+
+#[cfg(unix)]
+pub(super) fn require_private_owner(metadata: &Metadata) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    // geteuid takes no pointers and has no failure mode.
+    if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o077 != 0 {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
+    Ok(())
+}
+
+pub(super) fn open_plain_file(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || reparse(&metadata) {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
+    Ok(file)
 }
 
 pub(super) fn create_file(path: &Path) -> io::Result<File> {
@@ -126,10 +160,12 @@ pub(super) fn create_file(path: &Path) -> io::Result<File> {
 }
 
 pub(super) fn read_bounded(path: &Path, maximum: usize) -> io::Result<Vec<u8>> {
+    read_bounded_file(File::open(path)?, maximum)
+}
+
+pub(super) fn read_bounded_file(file: File, maximum: usize) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    File::open(path)?
-        .take((maximum + 1) as u64)
-        .read_to_end(&mut bytes)?;
+    file.take((maximum + 1) as u64).read_to_end(&mut bytes)?;
     if bytes.len() > maximum {
         return Err(io::ErrorKind::InvalidData.into());
     }

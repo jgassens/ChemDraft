@@ -26,7 +26,10 @@ const manifest = {
   },
   companions: [{
     id: "mofBuild", tool: { macos: "Contents/MacOS/xtal", windows: "xtal.exe" }, testedVersions: ["1.0.0"],
-    steps: [{ id: "build", args: ["node={combination.node}"], timeoutSeconds: 10 }],
+    steps: [
+      { id: "preflight", args: ["capabilities", "--json"], timeoutSeconds: 5 },
+      { id: "build", args: ["node={combination.node}"], timeoutSeconds: 10 }
+    ],
     combinations: { pcu: { node: "N16" } }
   }]
 };

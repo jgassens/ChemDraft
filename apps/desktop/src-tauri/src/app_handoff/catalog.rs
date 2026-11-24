@@ -25,6 +25,8 @@ struct Installed {
     version: String,
     staged_path: String,
     source_checksum: String,
+    installed_at: String,
+    handoff_install_id: Option<String>,
     source: Option<String>,
     repository: Option<String>,
     #[serde(default)]
@@ -64,6 +66,7 @@ struct Menu {
 
 pub(super) struct Plugin {
     pub manifest: Manifest,
+    pub handoff_install_id: String,
     developer_sideload: bool,
 }
 
@@ -186,6 +189,9 @@ pub(super) fn load(base: &Path, id: &str, developer: bool) -> Result<Plugin, Str
     }
     Ok(Plugin {
         manifest,
+        handoff_install_id: record.handoff_install_id.clone().unwrap_or_else(|| {
+            format!("legacy:{}:{}", record.installed_at, record.source_checksum)
+        }),
         developer_sideload: sideload,
     })
 }

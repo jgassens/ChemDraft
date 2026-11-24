@@ -261,7 +261,8 @@ export async function installPluginPackage(options: InstallPluginPackageOptions)
       name: inspection.manifest.name,
       sourceChecksum: inspection.sourceChecksum,
       installedAt,
-      provenance: options.provenance
+      provenance: options.provenance,
+      handoffInstallId: inspection.manifest.permissions.includes("apps.handoff") ? crypto.randomUUID() : undefined
     });
     descriptor = await loadAndRegisterInstalledPlugin({
       runtime,
@@ -367,7 +368,8 @@ export async function updateInstalledPluginPackage(
     !persisted ||
     persisted.version !== current.record.version ||
     persisted.stagedPath !== current.record.stagedPath ||
-    persisted.sourceChecksum !== current.record.sourceChecksum
+    persisted.sourceChecksum !== current.record.sourceChecksum ||
+    persisted.handoffInstallId !== current.record.handoffInstallId
   ) {
     throw new PluginInstallError(
       PluginInstallErrorCodes.UpdateStateChanged,
@@ -412,6 +414,13 @@ export async function updateInstalledPluginPackage(
   let committed = false;
   try {
     await stagePluginEntries(fs, candidatePath, inspection.entries);
+    let handoffInstallId: string | undefined;
+    if (inspection.manifest.permissions.includes("apps.handoff")) {
+      // Match the native fallback for records written before the install ID was introduced.
+      handoffInstallId = current.manifest.permissions.includes("apps.handoff")
+        ? persisted.handoffInstallId ?? `legacy:${persisted.installedAt}:${persisted.sourceChecksum}`
+        : crypto.randomUUID();
+    }
     const record = createInstalledPluginRecord({
       id: pluginId,
       version: inspection.manifest.version,
@@ -419,7 +428,8 @@ export async function updateInstalledPluginPackage(
       sourceChecksum: inspection.sourceChecksum,
       stagedPath: candidatePath,
       installedAt,
-      provenance: options.provenance
+      provenance: options.provenance,
+      handoffInstallId
     });
     candidate = buildInstalledDescriptor({
       manifest: inspection.manifest,
@@ -853,9 +863,8 @@ export async function uninstallPlugin(options: {
   }
   const remainingInstalls = await removeInstalledPluginRecord(fs, pluginId);
 
-  // Consent storage is auxiliary uninstall cleanup. It must happen only after the host and catalog
-  // no longer expose the plugin, and an unreadable or unwritable consent file must not resurrect a
-  // half-uninstalled plugin.
+  // Clear consent after the host and catalog stop exposing the plugin. A later install has a
+  // different handoff install ID even if deleting its previous rows fails.
   try {
     await runtime.externalTools.consentClearPlugin(pluginId);
   } catch (error) {

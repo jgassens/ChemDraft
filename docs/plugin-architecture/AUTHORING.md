@@ -228,7 +228,9 @@ if (picked.status === "chosen") {
 
 Companion pipelines are declared in the manifest's `companions` array, including an ID, relative
 macOS and Windows tool paths inside the chosen app, tested versions, ordered steps with arguments and
-timeouts, and named `combinations`. The plugin supplies only a declared combination ID. Host
+timeouts, and named `combinations`. The Windows tool must be an `.exe`. Start every pipeline with
+the `preflight` step and arguments `["capabilities", "--json"]`. A companion that takes an input
+file must declare a single XYZ input. The plugin supplies only a declared combination ID. Host
 placeholders provide file paths and declared combination values; they must occupy an argument or
 follow a fixed `key=` prefix. The host validates the declaration, runs all steps in order, checks
 the app and tool, and refuses untested versions. See `PluginCompanionPipeline` in the SDK for the
@@ -236,7 +238,8 @@ schema; each step is capped at 300 seconds and the pipeline at 600 seconds.
 
 The native host asks for consent for the app and, for a companion, its pipeline. Consent is visible
 and revocable in Plugin Manager, and is cleared on uninstall or an update dropping `apps.handoff`.
-App identity and pipeline changes require renewed consent. `sendFile` returns `sent`, `declined`, or
+Reinstalling requires fresh consent even if cleanup failed. App identity and pipeline changes
+also require renewed consent. `sendFile` returns `sent`, `declined`, or
 `failed` with a code and message; `runCompanion` returns `done`, `declined`, or `failed`, with an
 optional bounded diagnostic. Handle cancellation and failure explicitly; failures include missing or
 changed apps, launch or write failures, and companion version, timeout, exit, or output errors.

@@ -219,6 +219,20 @@ impl Submission {
         }
     }
 
+    pub(super) async fn open_box<T>(
+        &self,
+        open: impl std::future::Future<Output = Result<T, String>>,
+        close: impl FnOnce(T),
+    ) -> Result<T, String> {
+        self.assert_pending()?;
+        let opened = open.await?;
+        if let Err(error) = self.show_box() {
+            close(opened);
+            return Err(error);
+        }
+        Ok(opened)
+    }
+
     pub(super) fn bind_build(&self, build: &ApprovedBuild) -> Result<(), String> {
         self.assert_pending()?;
         self.0
