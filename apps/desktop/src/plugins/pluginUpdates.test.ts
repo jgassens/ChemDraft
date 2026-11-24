@@ -127,6 +127,18 @@ function jsonResponse(value: unknown): Response {
 }
 
 describe("host-managed plugin update catalog", () => {
+  it("offers NMR 0.4.0 to an older installation", async () => {
+    const zip = await pluginPackage("0.4.0");
+    const release = await releaseDocument("0.4.0", zip, { body: "ChemDraft-Plugin-API: ^0.1.25" });
+    const results = await checkForPluginUpdates([installedEntry("0.3.0")], {
+      fetch: async () => jsonResponse(release)
+    });
+    expect(results[0]).toMatchObject({
+      status: "available",
+      offer: { version: "0.4.0", releaseUrl: "https://github.com/jgassens/ChemDraft-NMR-Plugin/releases/tag/v0.4.0" }
+    });
+  });
+
   it.each([
     "ChemDraft-Plugin-API: not-semver",
     "ChemDraft-Plugin-API: ^0.01.99",
@@ -739,6 +751,12 @@ describe("host-managed plugin update catalog", () => {
     // `…zip.sha256` and every update died after downloading the package.
     const isAllowed = (url: string) =>
       allowed.some((pattern) => new URLPattern(pattern).test(url));
+
+    const nmr040 = "https://github.com/jgassens/ChemDraft-NMR-Plugin/releases/download/v0.4.0/nmr-predictor-0.4.0.zip";
+    expect(allowed).toContain(nmr040);
+    expect(allowed).toContain(`${nmr040}.sha256`);
+    expect(isAllowed(nmr040)).toBe(true);
+    expect(isAllowed(`${nmr040}.sha256`)).toBe(true);
 
     for (const entry of OFFICIAL_PLUGIN_CATALOG) {
       const apiUrl = `https://api.github.com/repos/${entry.repository}/releases/latest`;
