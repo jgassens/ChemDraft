@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { readFile, realpath, stat } from "node:fs/promises";
 import { userInfo } from "node:os";
-import { isAbsolute, join, sep } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { validateTrustedPluginManifest } from "@chemdraft/plugin-host";
@@ -97,9 +98,8 @@ type PluginManifest = ReturnType<typeof validateTrustedPluginManifest>;
 type PluginPermission = PluginManifest["permissions"][number];
 
 /**
- * Permissions the headless CLI never grants a plugin: the dangerous set of AGENTS.md §7, plus the
- * file, clipboard, and image access §16 forbids without an explicit grant. The CLI has no way for a
- * user to make that grant, so a manifest declaring any of these is refused outright.
+ * Permissions the headless CLI refuses even for trust-listed plugins (AGENTS.md §4.1 and §5).
+ * A trusted plugin that declares model.load receives a reader scoped to its own bundled files.
  *
  * This checks what the plugin DECLARES, not what its code does. A plugin loaded in-process runs
  * with the full privileges of this process whatever its manifest says; the allow-list is what
@@ -112,7 +112,6 @@ export const CLI_REFUSED_PLUGIN_PERMISSIONS = [
   "filesystem.write",
   "network.fetch",
   "native.execute",
-  "model.load",
   "model.download",
   "clipboard.read",
   "clipboard.write",
@@ -147,6 +146,15 @@ export interface TrustedPluginLocation {
   entryPath: string;
   manifestPath: string;
   manifestExport: string;
+}
+
+export type ReadBundledModel = (filePath: string) => Promise<Uint8Array>;
+
+interface LoadedTrustedPlugin {
+  location: TrustedPluginLocation;
+  manifest: PluginManifest;
+  module: Record<string, unknown>;
+  readBundledModel?: ReadBundledModel;
 }
 
 function describe(value: unknown): string {
@@ -222,14 +230,43 @@ function trustInstructions(configPath: string, pluginId: string, dir: string, ex
 
 function realpathOrUndefined(path: string): string | undefined {
   try {
-    return realpathSync(path);
+    return realpathSync.native(path);
   } catch {
     return undefined;
   }
 }
 
 function isInside(parent: string, child: string): boolean {
+  // Native realpaths supply the on-disk spelling on case-insensitive filesystems. Keep this
+  // comparison case-sensitive so it also distinguishes case-only siblings on sensitive volumes.
   return child.startsWith(parent.endsWith(sep) ? parent : parent + sep);
+}
+
+async function readBundledModel(location: TrustedPluginLocation, filePath: string): Promise<Uint8Array> {
+  const rule = `model.load only reads bundled files inside the trusted plugin directory ${location.dir}`;
+  const refusal = `Refusing to load model ${JSON.stringify(filePath)} for plugin "${location.pluginId}": ${rule}`;
+  if (typeof filePath !== "string" || !filePath || filePath.includes("\0") ||
+      (!isAbsolute(filePath) && /^[a-z][a-z\d+.-]*:/i.test(filePath))) {
+    throw new PluginTrustError(`${refusal}. Supply a filesystem path.`);
+  }
+
+  // Preserve the segments for realpath so it can follow a symlink before handling a parent segment.
+  const directoryPrefix = location.dir.endsWith(sep) ? location.dir : location.dir + sep;
+  const requested = isAbsolute(filePath) ? filePath : directoryPrefix + filePath;
+  if (isAbsolute(relative(location.dir, requested))) {
+    throw new PluginTrustError(`${refusal}. The path is on a different filesystem root.`);
+  }
+  const canonical = await realpath(requested).catch((error: Error) => {
+    throw new PluginTrustError(`${refusal}. Could not resolve the file: ${error.message}`);
+  });
+  if (!isInside(location.dir, canonical)) {
+    throw new PluginTrustError(`${refusal}. The path resolves to ${canonical}.`);
+  }
+
+  if (!(await stat(canonical)).isFile()) {
+    throw new PluginTrustError(`${refusal}. The path resolves to ${canonical}, which is not a regular file.`);
+  }
+  return readFile(canonical);
 }
 
 function realpathInside(dir: string, relativeFile: string, role: string): string {
@@ -318,7 +355,7 @@ export async function loadTrustedManifest(location: TrustedPluginLocation): Prom
  */
 export async function loadTrustedPlugin(
   request: TrustedPluginRequest
-): Promise<{ location: TrustedPluginLocation; manifest: PluginManifest; module: Record<string, unknown> }> {
+): Promise<LoadedTrustedPlugin> {
   const location = resolveTrustedPlugin(request);
   return importVerifiedPlugin(location);
 }
@@ -326,9 +363,16 @@ export async function loadTrustedPlugin(
 /** B and the entry import for a location that has already passed {@link resolveTrustedPlugin}. */
 export async function importVerifiedPlugin(
   location: TrustedPluginLocation
-): Promise<{ location: TrustedPluginLocation; manifest: PluginManifest; module: Record<string, unknown> }> {
+): Promise<LoadedTrustedPlugin> {
   const manifest = await loadTrustedManifest(location);
   // The realpath is imported, not the requested path, so the file checked is the file loaded.
   const module = await import(pathToFileURL(location.entryPath).href) as Record<string, unknown>;
-  return { location, manifest, module };
+  return {
+    location,
+    manifest,
+    module,
+    ...(manifest.permissions.includes("model.load") && {
+      readBundledModel: (filePath: string) => readBundledModel(location, filePath)
+    })
+  };
 }

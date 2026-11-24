@@ -2,9 +2,9 @@
 
 NMR (nuclear magnetic resonance) spectra describe nuclei in their chemical
 environments. `nmr` / MCP `predict_nmr` predicts ¹H and ¹³C chemical shifts
-from the separate NMR Shift Predictor plugin. This is the OCL-native
-provider using HOSE-fragment statistics from NMRShiftDB2
-assignments (the database does not mark which are experimental). HOSE codes
+from the separate NMR Shift Predictor plugin. The current plugin pairs its
+bundled graph neural network (GNN) with OCL-native HOSE-fragment lookup over
+NMRShiftDB2 assignments, which are not marked as experimental. HOSE codes
 describe progressively larger atom neighborhoods.
 The shipped provider must not be described as synthetic or fixture-backed.
 
@@ -19,6 +19,9 @@ See [setup](setup.md) for exact locations on both OSes. **Never create or
 edit the trust file as an agent. Show the entry the refusal prints.**
 The plugin must export the required grouping, diastereotopic-disclosure and
 truthful-spectrum-caption capabilities; older checkouts are refused.
+When the trusted plugin declares `model.load`, the loader accepts model
+files whose real paths remain inside that checkout. It refuses symlinks that
+escape the checkout, remote URLs, and `model.download`.
 
 ## Options
 
@@ -48,10 +51,11 @@ pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft nmr --smiles 'C
 
 ## What the numbers are
 
-- Shifts are predictions from HOSE-fragment lookup over NMRShiftDB2-derived
-  statistics, not measurements. `source: "hose-fragment"` is a database
-  match; `source: "rule-estimated"` is a disclosed additive-rule estimate
-  only where the rule applies, flagged `NMR_RULE_ESTIMATED`.
+- Shifts are predictions. `source: "gnn"` identifies a bundled model
+  prediction. Keep its `tier` and the result's `model` provenance.
+  `source: "hose-fragment"` identifies a reference lookup. `source:
+  "rule-estimated"` identifies an applicable additive-rule estimate flagged
+  by `NMR_RULE_ESTIMATED`.
 - ¹H multiplicity and J couplings are first-order estimates from bond
   topology, labeled `estimated: true`; they are not measured values.
   J is a coupling in hertz; shift is in parts per million (`shiftPpm`).

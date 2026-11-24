@@ -11,13 +11,15 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createEmptyDocument, serializeDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import { runRenderDocumentCommand } from "../../chemdraft-cli/src/commands/renderDocument";
+import { NMR_PLUGIN_DIR_ENV, NMR_PLUGIN_ID, runNmrCommand } from "../../chemdraft-cli/src/commands/nmr";
 import { molfileCoordinateScale } from "@chemdraft/layout-engine";
 import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import { metalHydrogenLossCases, preservedRadicalExportCases, radicalExportCases, readAtomStates } from "../../document-workflow-core/test/radicalExportFixtures";
@@ -82,6 +84,32 @@ afterEach(async () => {
 });
 
 describe("ChemDraft MCP server", () => {
+  it("reads a bundled model for predict_nmr only while the plugin directory is trusted", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chemdraft-mcp-nmr-trust-"));
+    temporaryDirectories.push(root);
+    const trustConfigPath = join(root, "trusted-plugins.json");
+    const pluginDir = fileURLToPath(new URL("../../chemdraft-cli/src/commands/__fixtures__/nmr-plugin", import.meta.url));
+    await writeFile(trustConfigPath, JSON.stringify({
+      version: 1, trustedPlugins: [{ id: NMR_PLUGIN_ID, dir: pluginDir }]
+    }));
+
+    vi.stubEnv(NMR_PLUGIN_DIR_ENV, pluginDir);
+    try {
+      const client = await connect({ commands: { nmr: (argv, io) => runNmrCommand(argv, io, { trustConfigPath }) } });
+      const request = { name: "predict_nmr", arguments: { smiles: "CCO", nuclei: ["1H"] } };
+      const accepted = await client.callTool(request);
+      expect(accepted.isError).not.toBe(true);
+      expect(jsonPayload(accepted.content).warnings).toContain("NMR_FIXTURE_MODEL: bundled test model bytes");
+
+      await writeFile(trustConfigPath, JSON.stringify({ version: 1, trustedPlugins: [] }));
+      const refused = await client.callTool(request);
+      expect(refused.isError).toBe(true);
+      expect(textBlocks(refused.content).join("\n")).toContain("that directory is not listed in the plugin trust file");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("native compatibility: keeps named read warnings and minimum in a rendering failure JSON result", async () => {
     const client = await connect({ commands: { renderDocument: async (argv, io) => {
       // Reading succeeds, but a directory at the output destination makes writing fail.

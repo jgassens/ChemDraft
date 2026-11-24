@@ -121,6 +121,30 @@ export class OclHosePredictor {
   }
 }
 
+export class GnnModelRuntime {
+  constructor(private readonly options: { fetchAsset: (url: URL) => Promise<Uint8Array> }) {}
+
+  async loadFixtureModel(): Promise<string> {
+    const bytes = await this.options.fetchAsset(new URL("../model.txt", import.meta.url));
+    return new TextDecoder().decode(bytes).trim();
+  }
+}
+
+export class GnnShiftPredictor extends OclHosePredictor {
+  constructor(private readonly options: { models: GnnModelRuntime }) {
+    super();
+  }
+
+  override async predict(request: FixtureRequest) {
+    const message = await this.options.models.loadFixtureModel();
+    const result = await super.predict(request);
+    return {
+      ...result,
+      warnings: [...result.warnings, { code: "NMR_FIXTURE_MODEL", message, severity: "info" }]
+    };
+  }
+}
+
 /** Identifies this fixture-generated spectrum as synthetic test data. */
 export function renderStickSpectrumSvg(): string {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="120"><text>1H δ (ppm) — synthetic fixture</text></svg>`;

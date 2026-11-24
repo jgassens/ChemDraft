@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -229,15 +229,7 @@ describe("chemdraft nmr without the plugin", () => {
 
     // The initial failure happens before import: Node may cache a module at a stable file URL.
     // Writing the valid fixture afterward proves the rejected cache key is retried at this path.
-    await mkdir(join(retriedPluginDir, "src"), { recursive: true });
-    await writeFile(
-      join(retriedPluginDir, "src", "index.ts"),
-      await readFile(join(fixturePluginDir, "src", "index.ts"), "utf8")
-    );
-    await writeFile(
-      join(retriedPluginDir, "src", "manifest.ts"),
-      await readFile(join(fixturePluginDir, "src", "manifest.ts"), "utf8")
-    );
+    await cp(fixturePluginDir, retriedPluginDir, { recursive: true });
 
     const retried = await withPluginDir(retriedPluginDir, () => run(["--smiles", "CCO", "--nuclei", "1H"], trustPath));
     expect(retried.code).toBe(0);
@@ -276,6 +268,7 @@ describe("chemdraft nmr with the CI fixture plugin", () => {
     })]);
     expect(lines[0]!.warnings).toEqual(expect.arrayContaining([
       expect.stringContaining("NMR_FIXTURE"),
+      "NMR_FIXTURE_MODEL: bundled test model bytes",
       expect.stringContaining("NMR_ATOM_ORDER_MISMATCH")
     ]));
     expect(lines[0]!.spectrum).toEqual([spectrum]);

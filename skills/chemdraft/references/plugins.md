@@ -50,6 +50,10 @@ before the capability check, so the trust-file allow-list bounds which code
 can run. This is in-process code, not a sandbox. See [setup](setup.md); the
 agent must never create or edit the trust file, only show the entry printed
 by the refusal.
+A plugin that declares `model.load` can read regular model files bundled in
+its trusted checkout. Both `nmr` and `predict_nmr` use the same loader, which
+checks the resolved file path after following symlinks. Paths outside the
+checkout, remote URLs, and `model.download` are refused.
 There is no generic headless plugin loader or command to invoke arbitrary
 desktop plugin commands.
 

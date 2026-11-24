@@ -60,7 +60,11 @@ details](../chemdraft-cli/README.md#fixed-scale-document-figures).
 - `analyze_structure` — run the property and prediction suite with status-bearing summary values.
 - `name_to_structure` — check ChemDraft built-in structure templates before OPSIN, optionally rendering it (no Java needed for template names).
 - `check_stereo` — inspect tetrahedral R/S centres and E/Z double bonds with 0-based indices.
-- `predict_nmr` — predict 1H/13C shifts and optional spectra. It loads the separately checked-out NMR predictor plugin, which must be listed in `~/.config/chemdraft/trusted-plugins.json`; `CHEMDRAFT_NMR_PLUGIN_DIR` alone never makes an unlisted directory load (see the CLI README, "Plugin trust file").
+- `predict_nmr` — predict 1H/13C shifts and optional spectra. The NMR predictor checkout must be
+  listed in `~/.config/chemdraft/trusted-plugins.json`. `CHEMDRAFT_NMR_PLUGIN_DIR` only selects a
+  checkout. If its manifest declares `model.load`, the shared CLI loader reads bundled files only
+  when their real paths stay inside that checkout. It refuses remote URLs, symlink escapes, and
+  `model.download`. See the [CLI trust-file rules](../chemdraft-cli/README.md#plugin-trust-file).
 - `export_structure` — write CDXML, PDF, SDF, MOL, or SMILES.
 
 Exported MOL/SDF use a 1.5 Angstrom median bond length per CTAB/record. In the desktop,

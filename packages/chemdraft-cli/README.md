@@ -375,20 +375,28 @@ Loading runs in this order (`src/pluginTrust.ts`), and each step stops the load 
 2. **Manifest and permissions.** Only `src/manifest.ts` is imported, and its `nmrPredictorManifest`
    export is validated by `@chemdraft/plugin-host`. Its id must be `org.chemdraft.nmr.predictor`,
    and it must not declare any permission the CLI refuses (`document.write`, `filesystem.read`,
-   `filesystem.write`, `network.fetch`, `native.execute`, `model.load`, `model.download`,
+   `filesystem.write`, `network.fetch`, `native.execute`, `model.download`,
    `clipboard.read`, `clipboard.write`, `image.read`). This checks what the plugin declares, not what
    its code does; the allow-list is what bounds execution.
 3. **Entry.** Only then is `src/index.ts` imported and its exports checked.
 
+A trust-listed plugin that declares `model.load` can read regular model files bundled in its own
+directory. The reader checks the resolved path after following symlinks. It refuses paths that
+escape the checkout and accepts only filesystem paths. For the NMR runtime, the CLI converts
+module-relative `file:` asset references to paths before checking them. Remote URLs and
+`model.download` are refused. The MCP server uses the same loader.
+
 The checkout must export `NMR_PLUGIN_CAPABILITIES` with `constitutional-equivalence-grouping`,
 `diastereotopic-disclosure`, and `truthful-spectrum-caption`. Older checkouts are refused; update
-the checkout (`git pull`) or set `$CHEMDRAFT_NMR_PLUGIN_DIR` to a current one.
+the checkout (`git pull`) or set `$CHEMDRAFT_NMR_PLUGIN_DIR` to a current one. Compatible checkouts
+with only the HOSE provider continue to use it.
 
 What the numbers are:
-  - Shifts come from HOSE-fragment lookup over statistics derived from NMRShiftDB2
-    assignments (the database does not mark which are experimental). They are predictions, not
-    measurements. source "hose-fragment" is a database match; source "rule-estimated" is a disclosed additive-rule estimate, emitted only where the
-    rule applies and always flagged by an NMR_RULE_ESTIMATED warning.
+  - Shifts are predictions. `source: "gnn"` identifies a bundled model prediction, with its
+    `tier` and the result's `model` provenance. `source: "hose-fragment"` identifies a HOSE lookup
+    used as a cross-check and fallback. Both use NMRShiftDB2 assignments, which are not marked as
+    experimental. `source: "rule-estimated"` identifies an applicable additive-rule estimate
+    flagged by an `NMR_RULE_ESTIMATED` warning.
   - 1H multiplicity and J are first-order estimates from bond topology. They are labelled
     estimated ("estimated": true) and are never measured values.
   - nEquivalent (and stick height in the spectrum) is the predicted number of equivalent nuclei.

@@ -2,13 +2,14 @@ import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, extname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { booleanOption, numericOption, parseOptions, stringOption } from "../args";
 import { depictSmiles, svgToPng } from "../document";
 import {
   DEFAULT_TRUSTED_PLUGINS_PATH,
   importVerifiedPlugin,
+  PluginTrustError,
   resolveDefaultTrustedPluginsPath,
   resolveTrustedPlugin,
   type AccountHomeLookup
@@ -61,6 +62,7 @@ interface PluginResonance {
   atomRefs: readonly PluginAtomReference[];
   equivalentNuclei?: number;
   evidence?: PluginEvidence;
+  tier?: "high" | "medium" | "low";
   multiplet?: { label: string; couplings: readonly { jHz: number }[] } | null;
   flags: readonly string[];
 }
@@ -81,6 +83,13 @@ interface PluginPredictionResult {
     license?: string;
     attribution?: string;
     source?: string;
+    model?: {
+      id: string;
+      version: string;
+      nuclei: readonly NmrNucleus[];
+      trainingData: string;
+      dataLicense: string;
+    };
   };
   resonances: readonly PluginResonance[];
   warnings: readonly PluginWarning[];
@@ -93,12 +102,20 @@ interface PluginPredictionRequest {
   options: { statistic: "median" | "mean"; hoseLevels: readonly number[]; ignoreLabileHydrogens: boolean };
 }
 
+interface NmrPredictor {
+  predict(request: PluginPredictionRequest): Promise<PluginPredictionResult>;
+}
+
 interface NmrPluginModule {
-  OclHosePredictor: new () => {
-    predict(request: PluginPredictionRequest): Promise<PluginPredictionResult>;
-  };
+  OclHosePredictor: new () => NmrPredictor;
+  GnnShiftPredictor?: new (options: { models: object }) => NmrPredictor;
+  GnnModelRuntime?: new (options: { fetchAsset: (url: URL) => Promise<Uint8Array> }) => object;
   renderStickSpectrumSvg(result: PluginPredictionResult, options?: { width?: number; height?: number }): string;
   NMR_PLUGIN_CAPABILITIES: readonly string[];
+}
+
+interface LoadedNmrPlugin extends Pick<NmrPluginModule, "renderStickSpectrumSvg"> {
+  createPredictor(): NmrPredictor;
 }
 
 export const NMR_PLUGIN_DIR_ENV = "CHEMDRAFT_NMR_PLUGIN_DIR";
@@ -179,12 +196,15 @@ ${trustFileLocationText(lookup, trustConfigPath)}
   {"version":1,"trustedPlugins":[{"id":"${NMR_PLUGIN_ID}","dir":"/absolute/path/to/chemdraft-nmr-plugin"}]}
 Setting $${NMR_PLUGIN_DIR_ENV} alone never makes an unlisted directory load. Edit that file by hand;
 the CLI never writes it.
+Plugins declaring model.load can read bundled model files whose real paths stay inside their
+trusted directory. The CLI refuses remote URLs and model.download.
 
 What the numbers are:
-  - Shifts come from HOSE-fragment lookup over statistics derived from NMRShiftDB2
-    assignments (the database does not mark which are experimental). They are predictions, not
-    measurements. source "hose-fragment" is a database match; source "rule-estimated" is a disclosed additive-rule estimate, emitted only where the
-    rule applies and always flagged by an NMR_RULE_ESTIMATED warning.
+  - Shifts are predictions. The current plugin can use a bundled GNN (source "gnn") with
+    HOSE-fragment lookup as a cross-check and fallback (source "hose-fragment"). Both use
+    NMRShiftDB2 assignments, which are not marked as experimental. Source "rule-estimated"
+    is a disclosed additive-rule estimate, emitted only where the rule applies and always
+    flagged by an NMR_RULE_ESTIMATED warning.
   - 1H multiplicity and J are first-order estimates from bond topology. They are labelled
     estimated ("estimated": true) and are never measured values.
   - nEquivalent (and stick height in the spectrum) is the predicted number of equivalent nuclei.
@@ -237,13 +257,13 @@ export function resolveNmrPluginDir(env: NodeJS.ProcessEnv = process.env): strin
   return resolve(expanded);
 }
 
-const pluginCache = new Map<string, Promise<NmrPluginModule>>();
+const pluginCache = new Map<string, Promise<LoadedNmrPlugin>>();
 
 function quotePosixShellArgument(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
-async function loadNmrPlugin(pluginDir: string, trustConfigPath: string): Promise<NmrPluginModule> {
+async function loadNmrPlugin(pluginDir: string, trustConfigPath: string): Promise<LoadedNmrPlugin> {
   const entry = join(pluginDir, "src", "index.ts");
   if (!existsSync(entry)) {
     throw new Error(
@@ -259,14 +279,15 @@ async function loadNmrPlugin(pluginDir: string, trustConfigPath: string): Promis
     manifestExport: "nmrPredictorManifest",
     configPath: trustConfigPath
   });
-  const cacheKey = `${location.configPath}\0${location.entryPath}`;
+  const cacheKey = `${location.configPath}\0${location.dir}\0${location.entryPath}`;
   let loading = pluginCache.get(cacheKey);
   if (!loading) {
     loading = (async () => {
       // A runtime string keeps the plugin outside the workspace type graph; its own openchemlib
       // and zod resolve from its node_modules because Node resolves relative to the imported file.
       // The manifest is validated before the entry is imported.
-      const { module: loaded } = await importVerifiedPlugin(location) as { module: Partial<NmrPluginModule> };
+      const { module, readBundledModel } = await importVerifiedPlugin(location);
+      const loaded = module as Partial<NmrPluginModule>;
       if (typeof loaded.OclHosePredictor !== "function" || typeof loaded.renderStickSpectrumSvg !== "function") {
         throw new Error(
           `The plugin at ${entry} does not export OclHosePredictor and renderStickSpectrumSvg; check ${NMR_PLUGIN_DIR_ENV}.`
@@ -283,7 +304,26 @@ async function loadNmrPlugin(pluginDir: string, trustConfigPath: string): Promis
           "If a ChemDraft MCP server is running, restart it after updating; the CLI picks up the updated checkout on its next run."
         );
       }
-      return loaded as NmrPluginModule;
+      const { GnnShiftPredictor, GnnModelRuntime, OclHosePredictor, renderStickSpectrumSvg } = loaded;
+      if (readBundledModel && typeof GnnShiftPredictor === "function" && typeof GnnModelRuntime === "function") {
+        // The packaged runtime identifies its assets with URLs relative to its module. Headless
+        // reads the resulting local path through the scoped reader and never calls fetch.
+        const models = new GnnModelRuntime({
+          fetchAsset: async (url) => {
+            let filePath: string;
+            try {
+              filePath = fileURLToPath(url);
+            } catch {
+              throw new PluginTrustError(
+                `Refusing to load model ${url.href}: model.load only reads bundled files inside the trusted plugin directory ${location.dir}.`
+              );
+            }
+            return readBundledModel(filePath);
+          }
+        });
+        return { renderStickSpectrumSvg, createPredictor: () => new GnnShiftPredictor({ models }) };
+      }
+      return { renderStickSpectrumSvg, createPredictor: () => new OclHosePredictor() };
     })();
     pluginCache.set(cacheKey, loading);
     // A failed load is not cached, so a later run in the same process can pick up a fixed path.
@@ -417,6 +457,7 @@ function formatResonance(resonance: PluginResonance) {
     estimated: true as const,
     nEquivalent,
     source: evidence?.method ?? "unknown",
+    ...(resonance.tier !== undefined ? { tier: resonance.tier } : {}),
     ...(evidence?.matchedSphere !== undefined ? { hoseSphere: evidence.matchedSphere } : {}),
     ...(evidence?.sampleCount !== undefined ? { referenceCount: evidence.sampleCount } : {}),
     ...(evidence?.estimator
@@ -449,7 +490,7 @@ function spectrumPath(base: string, nucleus: NmrNucleus, withSuffix: boolean, fo
 }
 
 async function writeSpectra(
-  plugin: NmrPluginModule,
+  plugin: LoadedNmrPlugin,
   result: PluginPredictionResult,
   nuclei: readonly NmrNucleus[],
   base: string,
@@ -488,7 +529,7 @@ async function predictJob(
     const depicted = await depictSmiles(smiles);
 
     stage = "prediction";
-    const predictor = new plugin.OclHosePredictor();
+    const predictor = plugin.createPredictor();
     const result = await predictor.predict({
       structure: { format: molfileFormat(depicted.molfile), value: depicted.molfile },
       nuclei: args.nuclei,
@@ -528,6 +569,7 @@ async function predictJob(
       warnings,
       ...(spectrum ? { spectrum } : {}),
       method: result.backend.method,
+      ...(result.backend.model ? { model: result.backend.model } : {}),
       database: {
         name: result.backend.dataVersion ?? null,
         version: result.backend.version,
