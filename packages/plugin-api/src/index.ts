@@ -49,6 +49,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * 0.1.25 adds optional native bracketUsage, repeatCount and scoped crossingBondIds (#338 bracketed groups).
  * 0.1.26 adds optional request-bound document access, tool sessions, chemistry and depiction, and document-change events.
  * 0.1.27 adds native app handoff and manifest-declared companion pipelines, gated by `apps.handoff` and `native.execute`.
+ * 0.1.27 adds drawn X connection points to selection snapshots.
  *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
  * the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` — the NMR
@@ -1102,6 +1103,19 @@ export interface PluginSelectedMolecule {
   pageId?: string;
   structureFormat: PluginStructureFormat;
   structure: string;
+  /**
+   * Drawn `X` markers, in atom order. Desktop snapshots provide an empty list when no markers
+   * can be indexed, including when the stored structure is used as a fallback. Older providers
+   * may omit this field.
+   */
+  connectionPoints?: readonly {
+    /** The marker's 1-based atom index in the V2000 molfile. */
+    atom: number;
+    /** The sole neighbor's 1-based molfile index, or 0 when there is no unique attachment. */
+    anchor: number;
+    /** Drawn covalent order (1, 2, 3, or aromatic 1.5), or 0 if absent, unknown or dative. */
+    bondOrder: number;
+  }[];
   /**
    * Change detector for the source payload — NOT a canonical chemical identity or molecular hash.
    * A redraw or reserialization of an equivalent molecule may change it (safe over-invalidation).

@@ -894,6 +894,22 @@ describe("non-element atom labels", () => {
     expect(mf).not.toContain("*");
   });
 
+  it.each([moleculeToMolfileV2000, moleculeToMolfileV3000])("names an X connection point in placeholder warnings", write => {
+    const marked = molecule(
+      [{ id: "a0", element: "C", x: 0, y: 0 }, { id: "a1", element: "X", x: 1, y: 0 }],
+      [{ id: "b1", from: "a0", to: "a1" }]
+    );
+    const kekuleBondOrders = new Map();
+    expect(write(marked, { kekuleBondOrders }).warnings).toEqual([
+      'Connection point "X" at atom 2 was written as a dummy atom (*). Its label is lost in the molfile.'
+    ]);
+    expect(write(marked, { kekuleBondOrders, abbreviations: "rgroup" }).warnings).toEqual([
+      'Connection point "X" at atom 2 was written as R-group placeholder R1. Its label is lost in the molfile.'
+    ]);
+    expect(write(marked, { kekuleBondOrders, messageFormat: "SMILES" }).warnings[0])
+      .toMatch(/^Atom label "X" is not an element symbol/);
+  });
+
   it("rgroup mode also turns a literal \"*\" label into an R-group — a pasted dummy atom must not read as a carbon", () => {
     const starred = molecule(
       [
