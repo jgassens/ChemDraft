@@ -828,8 +828,8 @@
     "name": "current_window_logical_work_area",
     "async": false,
     "generics": "",
-    "parameters": "window: tauri::WebviewWindow,",
-    "returnType": "Option<LogicalBounds>"
+    "parameters": "window: tauri::WebviewWindow, content_fit: Option<bool>,",
+    "returnType": "Option<WorkArea>"
   },
   {
     "file": "monitor_query.rs",

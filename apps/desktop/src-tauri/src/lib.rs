@@ -19,6 +19,8 @@ mod fonts;
 mod installed_plugins;
 #[cfg(target_os = "linux")]
 mod linux_clipboard;
+#[cfg(any(target_os = "linux", test))]
+mod linux_content_scale;
 mod linux_session_end;
 #[cfg(any(target_os = "linux", test))]
 mod linux_startup;
@@ -7521,45 +7523,56 @@ fn resize_toolset_window(
             ))
         })
         .unwrap_or(origin);
-    let mut placement = toolset_content_placement(source, (width, height), scale, area);
-    // Linux: a palette wider than its work area is capped to it and moved to the area's left edge,
-    // the one place it fits (toolset_content_placement). Keep that move rather than the old origin.
     #[cfg(target_os = "linux")]
-    let keep_fitted_position = width > area.width;
+    let placement = {
+        let settings = linux_content_scale::X11PaletteScale::read(app);
+        monitor_query::palette_monitor(&monitor, settings).fit(
+            source,
+            (width, height),
+            window_scale,
+            || {
+                monitor_query::available_monitors(app)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|monitor| monitor_query::palette_monitor(monitor, settings))
+                    .collect()
+            },
+        )
+    };
     #[cfg(not(target_os = "linux"))]
-    let keep_fitted_position = false;
-    // The monitor under most of the palette can differ from the one under its title.
-    if placement.position != source
-        && !keep_fitted_position
-        && monitor_query::available_monitors(app)
-            .unwrap_or_default()
-            .iter()
-            .any(|monitor| {
-                // AppKit reports the outer position in the window's backing scale.
-                #[cfg(target_os = "macos")]
-                {
-                    monitor_logical_work_area(monitor).contains_title_strip(
-                        f64::from(source.0) / scale,
-                        f64::from(source.1) / scale,
-                        width,
-                        TOOLSET_TITLE_HEIGHT,
-                    )
-                }
-                // Windows uses one virtual desktop in physical pixels. Size the title with
-                // the window's DPI before comparing it to another monitor's physical work area.
-                #[cfg(not(target_os = "macos"))]
-                {
-                    toolset_title_in_physical_work_area(
-                        source,
-                        width,
-                        window_scale,
-                        monitor.work_area(),
-                    )
-                }
-            })
-    {
-        placement.position = source;
-    }
+    let placement = {
+        let mut placement = toolset_content_placement(source, (width, height), scale, area);
+        // The monitor under most of the palette can differ from the one under its title.
+        if placement.position != source
+            && monitor_query::available_monitors(app)
+                .unwrap_or_default()
+                .iter()
+                .any(|monitor| {
+                    // AppKit reports the outer position in the window's backing scale.
+                    #[cfg(target_os = "macos")]
+                    {
+                        monitor_logical_work_area(monitor).contains_title_strip(
+                            f64::from(source.0) / scale,
+                            f64::from(source.1) / scale,
+                            width,
+                            TOOLSET_TITLE_HEIGHT,
+                        )
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        toolset_title_in_physical_work_area(
+                            source,
+                            width,
+                            window_scale,
+                            monitor.work_area(),
+                        )
+                    }
+                })
+        {
+            placement.position = source;
+        }
+        placement
+    };
     // A move made only to fit the work area is not saved as the user's position (B9).
     let plan = toolset_fit::plan_fit(
         placement.position == origin,
@@ -7602,7 +7615,7 @@ fn resize_toolset_window(
     Ok(true)
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(any(not(any(target_os = "macos", target_os = "linux")), test))]
 fn toolset_title_in_physical_work_area(
     position: (i32, i32),
     width: f64,
@@ -7624,11 +7637,22 @@ fn toolset_title_in_physical_work_area(
     )
 }
 
+#[cfg(any(not(target_os = "linux"), test))]
 fn toolset_content_placement(
     position: (i32, i32),
     size: (f64, f64),
     scale: f64,
     area: ScreenRect,
+) -> panel_window_frame::Placement {
+    content_placement_with_width_cap(position, size, scale, area, cfg!(target_os = "linux"))
+}
+
+fn content_placement_with_width_cap(
+    position: (i32, i32),
+    size: (f64, f64),
+    scale: f64,
+    area: ScreenRect,
+    cap_width: bool,
 ) -> panel_window_frame::Placement {
     let position =
         logical_toolset_position_from_physical(f64::from(position.0), f64::from(position.1), scale);
@@ -7636,8 +7660,7 @@ fn toolset_content_placement(
     // Linux: also cap the width (a 1311-px Main toolbar ran off a 1280-px screen), and start a
     // capped palette at the work area's left edge, the only place a frame that wide fits. A palette
     // that already fits keeps its width and position. macOS and Windows keep the measured width.
-    #[cfg(target_os = "linux")]
-    let (width, position) = if size.0 > area.width {
+    let (width, position) = if cap_width && size.0 > area.width {
         (
             area.width,
             ToolsetWindowPosition {
@@ -7648,8 +7671,6 @@ fn toolset_content_placement(
     } else {
         (size.0, position)
     };
-    #[cfg(not(target_os = "linux"))]
-    let width = size.0;
     let position = toolset_position_in_work_area(position, width, height, area);
     let position = tauri::LogicalPosition::new(position.x, position.y).to_physical::<i32>(scale);
     let size = tauri::LogicalSize::new(width, height).to_physical::<u32>(scale);
@@ -11571,6 +11592,16 @@ fn ensure_toolset_window<R: Runtime>(
     let (width, height) = saved
         .and_then(|state| state.window_size(resizable))
         .unwrap_or((width, height));
+    // On X11, convert the toolbar's manifest CSS dimensions to GDK logical pixels at
+    // creation, using the same scale as a live fit. Inspector sizes are already logical.
+    #[cfg(target_os = "linux")]
+    let settings = linux_content_scale::X11PaletteScale::read(app);
+    #[cfg(target_os = "linux")]
+    let (width, height) = if resizable {
+        (width, height)
+    } else {
+        settings.content_size((width, height))
+    };
     // A persisted position wins (the user moved it before); otherwise the JS-supplied default.
     // Either way it's clamped onto an attached monitor — a position saved on a display that's since
     // been unplugged would otherwise open the palette offscreen with no way to get it back.
@@ -11603,8 +11634,15 @@ fn ensure_toolset_window<R: Runtime>(
     };
     #[cfg(not(windows))]
     let (position, width, height) = {
-        let (position, width, height, adjusted) =
-            clamp_toolset_frame(app, &label, position, (width, height), resizable);
+        let (position, width, height, adjusted) = clamp_toolset_frame(
+            app,
+            &label,
+            position,
+            (width, height),
+            resizable,
+            #[cfg(target_os = "linux")]
+            settings,
+        );
         if adjusted && saved_position.is_some() {
             let scale = scale_at_logical_point(app, position.x, position.y);
             let to = tauri::LogicalPosition::new(position.x, position.y).to_physical::<i32>(scale);
@@ -12295,6 +12333,7 @@ fn clamp_toolset_frame<R: Runtime>(
     position: ToolsetWindowPosition,
     size: (f64, f64),
     resizable: bool,
+    #[cfg(target_os = "linux")] settings: linux_content_scale::X11PaletteScale,
 ) -> (ToolsetWindowPosition, f64, f64, bool) {
     let (width, height) = size;
     let monitors = match monitor_query::available_monitors(app) {
@@ -12304,19 +12343,24 @@ fn clamp_toolset_frame<R: Runtime>(
         _ => return (position, width, height, false),
     };
 
+    #[cfg(target_os = "linux")]
+    let opening_area =
+        |monitor: &tauri::Monitor| monitor_query::palette_monitor(monitor, settings).area;
+    #[cfg(not(target_os = "linux"))]
+    let opening_area = monitor_logical_work_area;
     let areas = monitors
         .iter()
         .map(|monitor| {
             let (left, top, right, bottom) = monitor_logical_bounds(monitor);
             (
                 ScreenRect::new(left, top, right - left, bottom - top),
-                monitor_logical_work_area(monitor),
+                opening_area(monitor),
             )
         })
         .collect::<Vec<_>>();
     let area = toolset_work_area_for_origin(position, width, &areas).unwrap_or_else(|| {
         let primary = monitor_query::primary_monitor(app).ok().flatten();
-        monitor_logical_work_area(primary.as_ref().unwrap_or(&monitors[0]))
+        opening_area(primary.as_ref().unwrap_or(&monitors[0]))
     });
     let (clamped, width, height) = toolset_frame_in_work_area(position, size, resizable, area);
     if !toolset_frame_differs(position, size, clamped, (width, height)) {
@@ -12655,8 +12699,15 @@ fn recover_offscreen_toolset_window<R: Runtime>(
             Some((position, state.window_size(resizable).unwrap_or(live_size)))
         })
         .unwrap_or((position, live_size));
-    let (clamped, width, height, adjusted) =
-        clamp_toolset_frame(app, label, source, source_size, resizable);
+    let (clamped, width, height, adjusted) = clamp_toolset_frame(
+        app,
+        label,
+        source,
+        source_size,
+        resizable,
+        #[cfg(target_os = "linux")]
+        linux_content_scale::X11PaletteScale::read(app),
+    );
     let resize = (width - size.width).abs() >= 0.5 || (height - size.height).abs() >= 0.5;
     let reposition = (clamped.x - position.x).abs() >= 0.5 || (clamped.y - position.y).abs() >= 0.5;
     let plan = toolset_fit::plan_fit(!resize && !reposition, adjusted, fitted);

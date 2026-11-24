@@ -6,8 +6,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
-import { currentWindowLogicalWorkArea, fitCurrentPaletteWindow, monitorLogicalBoundsAt } from "./index";
+import { clearMocks, mockIPC, mockWindows } from "@tauri-apps/api/mocks";
+import { currentWindowLogicalWorkArea, fitCurrentPaletteWindow, monitorLogicalBoundsAt, type PaletteWorkArea } from "./index";
 import { PaletteWindow } from "../PaletteWindow";
 
 const native = vi.hoisted(() => ({
@@ -112,6 +112,72 @@ describe("palette work-area sizing", () => {
     expect(native.workAreaEvents.has("tauri://move")).toBe(false);
   });
 
+  it.each([
+    { scale: 1.1, width: 62, height: 71, stale: false },
+    { scale: 1.5, width: 404, height: 169, stale: true }
+  ])("settles the mounted X11 palette at scale $scale after native resizes", async ({ scale, width, height, stale }) => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    mockWindows("toolset-core-main");
+    const box = new DOMRect(0, 0, width, height);
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue(box);
+    const area: PaletteWorkArea = { left: 0, top: 0, right: 1120, bottom: 656, x11ContentScale: scale };
+    let physical = { width, height };
+    const viewport = () => {
+      vi.stubGlobal("innerWidth", Math.floor(physical.width / (area.x11ContentScale ?? 1)));
+      vi.stubGlobal("innerHeight", Math.floor(physical.height / (area.x11ContentScale ?? 1)));
+    };
+    viewport();
+    native.invoke.mockImplementation(async (command, payload) => {
+      if (command === "current_window_logical_work_area") return area;
+      if (command === "plugin:window|inner_size") return physical;
+      if (command === "plugin:window|scale_factor") return 1;
+      if (command === "resize_toolset_window") {
+        physical = {
+          width: Math.ceil(payload.width * (area.x11ContentScale ?? 1)),
+          height: Math.ceil(payload.height * (area.x11ContentScale ?? 1))
+        };
+        if (!stale) viewport();
+        window.dispatchEvent(new Event("resize"));
+        return true;
+      }
+    });
+
+    const root = createRoot(document.createElement("div"));
+    vi.useFakeTimers();
+    try {
+      await act(async () => root.render(createElement(PaletteWindow, { toolsetId: "core.main", platform: "linux" })));
+      const requests = () => native.invoke.mock.calls.filter(([command]) => command === "resize_toolset_window");
+      await act(async () => vi.advanceTimersByTimeAsync(100));
+      expect(requests()).toEqual([["resize_toolset_window", { width, height }]]);
+      expect(native.invoke).toHaveBeenCalledWith("current_window_logical_work_area", { contentFit: true });
+      // WebKit may keep the old viewport across many frames. Replaying resize events,
+      // then delivering the final viewport, must never change the size or infer a scale.
+      for (let frame = 0; frame < 6; frame++) {
+        window.dispatchEvent(new Event("resize"));
+        await act(async () => vi.advanceTimersByTimeAsync(32));
+      }
+      viewport();
+      window.dispatchEvent(new Event("resize"));
+      await act(async () => vi.advanceTimersByTimeAsync(1500));
+      expect(requests()).toHaveLength(1);
+      expect(native.invoke.mock.calls.map(([command]) => command)).not.toContain("plugin:window|inner_size");
+      // A real DPI change can leave CSS bounds identical. The poll must still refit once.
+      area.x11ContentScale = 1.25;
+      await act(async () => vi.advanceTimersByTimeAsync(2200));
+      expect(requests()).toHaveLength(2);
+      // The source of the fit also matters if DPR still reports the old numeric scale and
+      // the viewport already matches the requested size while GTK returns to 96 DPI.
+      vi.stubGlobal("devicePixelRatio", 1.25);
+      delete area.x11ContentScale;
+      vi.stubGlobal("innerWidth", width);
+      await act(async () => vi.advanceTimersByTimeAsync(2200));
+      expect(requests()).toHaveLength(3);
+    } finally {
+      await act(async () => root.unmount());
+      vi.useRealTimers();
+    }
+  });
+
   it("grants the native inspector clamp command only to inspector windows", () => {
     const tauriDir = join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri");
     const command = "clamp_current_inspector_frame";
@@ -135,9 +201,11 @@ describe("palette work-area sizing", () => {
   it("uses the calling palette's live position and native work area for title-strip recovery", () => {
     const nativeSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/lib.rs"), "utf8");
     const resize = nativeSource.split("fn resize_toolset_window(")[1]!.split("/// Pre-build")[0]!;
+    expect(resize).toMatch(/let position = window\.outer_position\(\)[^\n]*\n\s*let origin = \(position\.x, position\.y\);/);
     expect(resize).toMatch(
-      /let area = monitor_logical_work_area\(&monitor\);[\s\S]*let position = window\.outer_position\(\)[^\n]*\n\s*let origin = \(position\.x, position\.y\);[\s\S]*?\.unwrap_or\(origin\);\s*let mut placement = toolset_content_placement\(source, \(width, height\), scale, area\);/,
+      /monitor_query::palette_monitor\(&monitor, settings\)\.fit\(\s*source,\s*\(width, height\),\s*window_scale,/,
     );
+    expect(resize).toContain("let mut placement = toolset_content_placement(source, (width, height), scale, area)");
     // A palette ChemDraft fitted to a smaller work area starts from its saved position (B9).
     expect(resize).toMatch(/let source = fitted\s*\.then\(\|\| saved_toolset_state\(app, label\)\)/);
     expect(resize.match(/let area = /g)).toHaveLength(1);
@@ -251,12 +319,17 @@ describe("palette work-area sizing", () => {
     // Mount Main at the given platform and window width, then stand in for the native resize that
     // follows the first fit (Rust capped the width, so the webview viewport keeps `windowWidth`).
     // `scrollbar` is the horizontal scrollbar's thickness (0 for an overlay scrollbar).
-    const mountMain = async (platform: "linux" | "macos" | "windows", windowWidth: number, scrollbar = SCROLLBAR) => {
+    const mountMain = async (
+      platform: "linux" | "macos" | "windows",
+      windowWidth: number,
+      scrollbar = SCROLLBAR,
+      area: PaletteWorkArea = { left: 0, top: 0, right: windowWidth, bottom: 768 }
+    ) => {
       vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
       vi.stubGlobal("innerWidth", windowWidth);
       vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => window.setTimeout(() => callback(0), 0));
       vi.stubGlobal("cancelAnimationFrame", (handle: number) => window.clearTimeout(handle));
-      native.workArea.mockResolvedValue({ left: 0, top: 0, right: windowWidth, bottom: 768 });
+      native.workArea.mockResolvedValue(area);
       installLayoutModel(scrollbar);
       const container = document.createElement("div");
       document.body.append(container);
@@ -299,6 +372,26 @@ describe("palette work-area sizing", () => {
       expect(scroller.style.maxWidth).toBe("");
       expect(scroller.dataset.paletteHorizontalOverflow).toBeUndefined();
     };
+
+    it("scrolls a scaled X11 palette to its CSS work-area width before the native resize", async () => {
+      const area = { left: 0, top: 0, right: 1120, bottom: 700, x11ContentScale: 1.5 };
+      const { scroller, nativeResizeTo, unmount } = await mountMain("linux", 1680, SCROLLBAR, area);
+      try {
+        expect(scroller.dataset.paletteHorizontalOverflow).toBe("true");
+        expect(scroller.style.overflowX).toBe("auto");
+        expect(scroller.style.maxWidth).toBe("1120px");
+        expect(scroller.scrollWidth - scroller.clientWidth).toBe(NATURAL_WIDTH - 1120);
+        expect(distinctSizes()).toEqual([
+          { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT + SCROLLBAR }
+        ]);
+        const settled = resizeRequests().length;
+        await nativeResizeTo(1120);
+        expect(resizeRequests()).toHaveLength(settled);
+        expect(scroller.style.maxWidth).toBe("1120px");
+      } finally {
+        await unmount();
+      }
+    });
 
     it("scrolls the Main toolbar sideways in a 1024 px Linux window and reports the scrollbar's height", async () => {
       const { shell, scroller, nativeResize, unmount } = await mountMain("linux", 1024);

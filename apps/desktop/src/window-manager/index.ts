@@ -1154,12 +1154,13 @@ export async function setCurrentWindowLogicalSize(size: ToolsetWindowSize): Prom
 
 /** Use the destination monitor's work area and scale, including taskbar/Dock exclusions.
  * Never use this webview's height: content-fit windows would shrink their own cap on every resize. */
-export async function currentWindowLogicalWorkArea(): Promise<MonitorLogicalBounds> {
+export async function currentWindowLogicalWorkArea(contentFit = false): Promise<PaletteWorkArea> {
   if (isDesktopRuntime()) {
     // Native command, not `currentMonitor()`: the plugin builds monitors off the main thread, which
     // crashes GTK/X11 builds (see monitor_query.rs).
     const { invoke } = await import("@tauri-apps/api/core");
-    const area = await invoke<MonitorLogicalBounds | null>("current_window_logical_work_area").catch(() => null);
+    const area = await invoke<PaletteWorkArea | null>("current_window_logical_work_area",
+      contentFit ? { contentFit: true } : {}).catch(() => null);
     if (area) {
       return area;
     }
@@ -1686,6 +1687,12 @@ export interface MonitorLogicalBounds {
   top: number;
   right: number;
   bottom: number;
+}
+
+/** Content-fit X11 palettes receive CSS bounds and the effective X pixels per CSS pixel
+ * when Xft DPI changes their fit. All other work-area queries return logical bounds. */
+export interface PaletteWorkArea extends MonitorLogicalBounds {
+  x11ContentScale?: number;
 }
 
 /** The logical bounds of the attached monitor containing the given global-logical

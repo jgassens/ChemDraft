@@ -22,7 +22,7 @@ import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { NATIVE_MENU_COMMAND_IDS, paletteMenuShortcut } from "./paletteMenuShortcuts";
 import { installNativeFlyoutKeyboard } from "./nativeFlyoutKeyboard";
 import { createPaletteTooltipDismissal, dispatchPaletteTooltipDismiss } from "./paletteTooltipDismissal";
-import { pollWorkAreaChanges } from "./window-manager/workAreaPoll";
+import { pollWorkAreaChanges, workAreaKey } from "./window-manager/workAreaPoll";
 import { disabledControlAtPointer, installPaletteInputFocus, isPaletteInputFocusPending, paletteInputFocusControl, PALETTE_INPUT_FOCUS_COMMIT_EVENT } from "./plugins/pluginPanelInputFocus";
 import { editHistoryDirection, forceDocumentHistoryCommandId, isCleanPaletteNumberInput, isTextEditingElement } from "./editHistoryRouting";
 import { applyKeybindingSchemeToCommands } from "./keybindingScheme";
@@ -151,16 +151,16 @@ const LINUX_PALETTE_OVERFLOW_TOLERANCE_PX = 1;
  *   request and cannot change the window width that decides the mode;
  * - height gains the horizontal scrollbar's measured thickness (offsetHeight - clientHeight of the
  *   scroller; 0 for an overlay scrollbar), so the X11 min = max pin (B1) shows the row and the bar.
- * `fittedWidth` is the width Rust last accepted. The scroller turns on only after Rust has been given
- * this natural width (so a window that has not been fitted yet never flashes a scrollbar) and stays
- * on while the natural width still exceeds the viewport.
+ * A scaled X11 fit uses its monitor cap immediately. Other Linux fits wait for Rust to
+ * accept the natural width before deciding whether the viewport needs a scrollbar.
  */
 function fitLinuxPaletteHorizontalOverflow(
   shell: HTMLElement,
   body: HTMLElement,
   measured: DOMRect,
   fittedWidth: number | undefined,
-  viewportWidth: number
+  availableWidth: number,
+  knownCap: boolean
 ): { width: number; height: number } {
   const wasOverflowing = body.dataset.paletteHorizontalOverflow === "true";
   let width = Math.ceil(wasOverflowing ? measured.width + body.scrollWidth - body.clientWidth : measured.width);
@@ -170,9 +170,9 @@ function fitLinuxPaletteHorizontalOverflow(
     && Math.abs(width - fittedWidth) <= LINUX_PALETTE_OVERFLOW_TOLERANCE_PX) {
     width = fittedWidth;
   }
-  const overflow = (wasOverflowing || width === fittedWidth)
-    && width - viewportWidth > LINUX_PALETTE_OVERFLOW_TOLERANCE_PX;
-  const maxWidth = overflow ? `${Math.max(0, Math.floor(viewportWidth))}px` : "";
+  const overflow = (knownCap || wasOverflowing || width === fittedWidth)
+    && width - availableWidth > LINUX_PALETTE_OVERFLOW_TOLERANCE_PX;
+  const maxWidth = overflow ? `${Math.max(0, Math.floor(availableWidth))}px` : "";
   let rect = measured;
   if (overflow !== wasOverflowing || body.style.maxWidth !== maxWidth) {
     if (overflow) body.dataset.paletteHorizontalOverflow = "true";
@@ -547,9 +547,11 @@ export function PaletteWindow({
     let sizing = false;
     let pending = false;
     let lastSize = "";
-    // Linux: the work area + scale and the window's inner width at the last accepted fit (below).
+    // Linux: track the work area and scale, along with the width used to decide overflow.
+    // Scaled X11 gets that width from the CSS work area. Other Linux fits use the viewport.
     let fittedPlacementKey: string | undefined;
-    let fittedViewportWidth: number | undefined;
+    let fittedAvailableWidth: number | undefined;
+    const readArea = () => currentWindowLogicalWorkArea(platform === "linux");
     const applySize = async () => {
       if (disposed) return;
       if (sizing) {
@@ -558,7 +560,7 @@ export function PaletteWindow({
       }
       sizing = true;
       try {
-        const area = await currentWindowLogicalWorkArea();
+        const area = await readArea();
         if (disposed) return;
         // Cap the shared body, not individual inspector sections. Keep the title outside the scroll
         // area and measure only after applying the monitor-based cap (never a vh feedback loop).
@@ -571,13 +573,14 @@ export function PaletteWindow({
         const rect = shell?.getBoundingClientRect();
         let contentWidth = rect ? Math.ceil(rect.width) : 0;
         let contentHeight = rect ? Math.ceil(rect.height) : 0;
-        // The window's live inner width: the overflow decision and the re-send check below both use it.
-        const viewportWidth = window.innerWidth;
+        // A DPI-scaled X11 palette knows its final cap in CSS pixels before the native resize.
+        // Its viewport may still describe the previous frame.
+        const availableWidth = area.x11ContentScale === undefined ? window.innerWidth : area.right - area.left;
         // Linux: when the capped window is narrower than the content, scroll sideways (width stays
         // natural; height gains the scrollbar). macOS and Windows never take this branch.
         if (platform === "linux" && shell && bodyRef.current && rect && contentWidth > 0) {
           ({ width: contentWidth, height: contentHeight } = fitLinuxPaletteHorizontalOverflow(
-            shell, bodyRef.current, rect, fittedPaletteWidthRef.current, viewportWidth));
+            shell, bodyRef.current, rect, fittedPaletteWidthRef.current, availableWidth, area.x11ContentScale !== undefined));
         }
         const width = contentWidth || fallbackWidth;
         const height = Math.min(availableHeight,
@@ -593,26 +596,18 @@ export function PaletteWindow({
           }
         }
         const sizeKey = `${width}x${height}`;
-        // Linux: Rust caps a palette's width at its monitor's work area (toolset_content_placement),
-        // so one natural size needs a different window on another monitor. Re-send an unchanged size
-        // when what Rust caps against changed since the last accepted fit: the work area or scale (a
-        // move to another monitor, a resolution or panel change), or the window's inner width when it
-        // is not simply the width we asked for. Rust then widens a capped palette on a wide monitor
-        // or caps it on a narrow one, and the resize that follows re-runs the overflow decision
-        // against the new width. Both values are recorded on every accepted fit, so a re-run with
-        // nothing changed (including the resize after our own height change, which leaves the inner
-        // width alone) never re-sends; an identical request on an unchanged monitor gives the same
-        // frame, so a forced re-send settles after at most one more fit. macOS and Windows keep the
-        // plain size dedupe.
-        const placementKey = `${area.left}:${area.top}:${area.right}:${area.bottom}@${window.devicePixelRatio || 1}`;
+        // Linux re-fits unchanged content when its destination changes. For scaled X11
+        // palettes the native work area already includes the effective scale in its key.
+        const placementKey = area.x11ContentScale === undefined
+          ? `${workAreaKey(area)}@${window.devicePixelRatio || 1}` : workAreaKey(area);
         const placementChanged = platform === "linux" && fittedPlacementKey !== undefined && (
           placementKey !== fittedPlacementKey
-          || (viewportWidth !== fittedViewportWidth && viewportWidth !== fittedPaletteWidthRef.current));
+          || (availableWidth !== fittedAvailableWidth && availableWidth !== fittedPaletteWidthRef.current));
         if ((sizeKey !== lastSize || placementChanged) && await fitCurrentPaletteWindow({ width, height }, area)) {
           lastSize = sizeKey;
           fittedPaletteWidthRef.current = width;
           fittedPlacementKey = placementKey;
-          fittedViewportWidth = viewportWidth;
+          fittedAvailableWidth = availableWidth;
         }
       } finally {
         sizing = false;
@@ -647,7 +642,7 @@ export function PaletteWindow({
     // area differs from the last accepted fit's (placementChanged), so this cannot loop. macOS and
     // Windows keep the plain size dedupe and do not poll.
     const stopAreaPoll = platform === "linux"
-      ? pollWorkAreaChanges(scheduleSize, currentWindowLogicalWorkArea)
+      ? pollWorkAreaChanges(scheduleSize, readArea)
       : undefined;
 
     return () => {

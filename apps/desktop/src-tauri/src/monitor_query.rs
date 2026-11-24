@@ -163,6 +163,29 @@ impl MonitorGeometry {
     fn logical_bounds(&self) -> LogicalBounds {
         self.logical(self.position, self.size)
     }
+
+    #[cfg(any(target_os = "linux", test))]
+    fn palette_monitor(
+        &self,
+        settings: crate::linux_content_scale::X11PaletteScale,
+    ) -> crate::linux_content_scale::PaletteMonitor {
+        let rect = |b: LogicalBounds| {
+            crate::ScreenRect::new(b.left, b.top, b.right - b.left, b.bottom - b.top)
+        };
+        settings.monitor(
+            self.scale(),
+            rect(self.logical_bounds()),
+            rect(self.logical_work_area()),
+        )
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn palette_monitor(
+    monitor: &Monitor,
+    settings: crate::linux_content_scale::X11PaletteScale,
+) -> crate::linux_content_scale::PaletteMonitor {
+    MonitorGeometry::of(monitor).palette_monitor(settings)
 }
 
 /// The logical bounds of the first monitor that contains the logical point (x, y).
@@ -177,13 +200,50 @@ fn logical_bounds_containing(
         .find(|b| x >= b.left && x < b.right && y >= b.top && y < b.bottom)
 }
 
-/// The calling window's monitor work area, in logical coordinates. `None` when there is no monitor.
+#[derive(Serialize)]
+pub(crate) struct WorkArea {
+    #[serde(flatten)]
+    bounds: LogicalBounds,
+    #[serde(rename = "x11ContentScale", skip_serializing_if = "Option::is_none")]
+    x11_content_scale: Option<f64>,
+}
+
+#[cfg(any(target_os = "linux", test))]
+impl WorkArea {
+    fn for_palette(monitor: crate::linux_content_scale::PaletteMonitor) -> Self {
+        let (area, x11_content_scale) = monitor.css_work_area();
+        Self {
+            bounds: LogicalBounds {
+                left: area.x,
+                top: area.y,
+                right: area.x + area.width,
+                bottom: area.y + area.height,
+            },
+            x11_content_scale,
+        }
+    }
+}
+
+/// The calling monitor's usable bounds. A content-fit palette on X11 lays out its body in
+/// CSS pixels, including its scrollbars, before sending the measured CSS size back to Rust.
 #[tauri::command]
 pub(crate) fn current_window_logical_work_area(
     window: tauri::WebviewWindow,
-) -> Option<LogicalBounds> {
+    content_fit: Option<bool>,
+) -> Option<WorkArea> {
     let monitor = current_monitor(&window).ok().flatten()?;
-    Some(MonitorGeometry::of(&monitor).logical_work_area())
+    let geometry = MonitorGeometry::of(&monitor);
+    #[cfg(target_os = "linux")]
+    if content_fit == Some(true) {
+        let settings = crate::linux_content_scale::X11PaletteScale::read(window.app_handle());
+        return Some(WorkArea::for_palette(geometry.palette_monitor(settings)));
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = content_fit;
+    Some(WorkArea {
+        bounds: geometry.logical_work_area(),
+        x11_content_scale: None,
+    })
 }
 
 /// The logical bounds of the monitor under the logical point (x, y), if any.
@@ -201,6 +261,7 @@ pub(crate) fn monitor_logical_bounds_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::linux_content_scale::{X11DisplayMetrics, X11PaletteScale};
 
     fn monitor(scale: f64, x: f64, y: f64, width: f64, height: f64) -> MonitorGeometry {
         MonitorGeometry {
@@ -224,6 +285,291 @@ mod tests {
                     right: 0.0,
                     bottom: 1040.0
                 }
+            );
+        }
+    }
+
+    // Raw settings and physical Tauri monitor fields enter the same fit, title recovery, and
+    // page work-area paths as the commands. No viewport or precomputed scale enters these tests.
+    fn desktop(
+        server: &str,
+        dpi: i32,
+        session: &str,
+        desktop: &str,
+        kwinrc: &str,
+        root_size: (i32, i32),
+    ) -> X11PaletteScale {
+        if server == "Wayland" {
+            return X11PaletteScale::IDENTITY;
+        }
+        X11PaletteScale::from_settings(
+            X11DisplayMetrics {
+                gdk_scale: 1,
+                xft_dpi: dpi,
+                unscaled_dpi: None,
+                root_size,
+            },
+            |key| match key {
+                "XDG_SESSION_TYPE" => Some(session.into()),
+                "XDG_CURRENT_DESKTOP" => Some(desktop.into()),
+                "WAYLAND_DISPLAY" => Some("wayland-0".into()),
+                _ => None,
+            },
+            || server == "Xwayland",
+            || Some(kwinrc.into()),
+        )
+    }
+
+    #[test]
+    fn x11_palette_fit_uses_gtk_xft_dpi_and_gdk_scale_once_each() {
+        for (gdk, dpi, unscaled_dpi, gdk_size, reported_scale) in [
+            (1, 96, None, (607, 253), None),
+            (1, 120, None, (759, 317), Some(1.25)),
+            (1, 144, None, (911, 380), Some(1.5)),
+            (1, 192, None, (1214, 506), Some(2.0)),
+            (2, 96, Some(96), (607, 253), None),
+            (2, 192, Some(96), (607, 253), None),
+            (2, 192, None, (1214, 506), Some(4.0)),
+            (2, 144, Some(144), (911, 380), Some(3.0)),
+            (2, 288, Some(144), (911, 380), Some(3.0)),
+        ] {
+            let scale = f64::from(gdk);
+            let settings = X11PaletteScale::from_settings(
+                X11DisplayMetrics {
+                    gdk_scale: gdk,
+                    xft_dpi: dpi * 1024,
+                    unscaled_dpi: unscaled_dpi.map(|dpi| dpi * 1024),
+                    root_size: (1920, 1200),
+                },
+                |_| None,
+                || false,
+                || None,
+            );
+            if reported_scale.is_none() {
+                assert_eq!(settings.content_size((607.25, 253.25)), (607.25, 253.25));
+            }
+            let monitor = MonitorGeometry {
+                scale,
+                position: (0.0, 0.0),
+                size: (1920.0 * scale, 1200.0 * scale),
+                work_position: (0.0, 0.0),
+                work_size: (1920.0 * scale, 1080.0 * scale),
+            }
+            .palette_monitor(settings);
+            let fit = |size| monitor.fit((20, 50), size, scale, || vec![monitor]);
+            let gdk = gdk as u32;
+            assert_eq!(
+                fit((607.0, 253.0)).size,
+                (gdk_size.0 * gdk, gdk_size.1 * gdk)
+            );
+            let main = fit((2400.0, 1400.0));
+            assert_eq!(main.size, (1920 * gdk, 1080 * gdk));
+            assert_eq!(main.position.0, 0);
+            let page = serde_json::to_value(WorkArea::for_palette(monitor)).unwrap();
+            let css_to_x = reported_scale.unwrap_or(scale);
+            assert_eq!(page["right"].as_f64().unwrap() * css_to_x, 1920.0 * scale);
+            assert_eq!(page["bottom"].as_f64().unwrap() * css_to_x, 1080.0 * scale);
+            assert_eq!(
+                page.get("x11ContentScale")
+                    .and_then(serde_json::Value::as_f64),
+                reported_scale
+            );
+        }
+    }
+
+    #[test]
+    fn fractional_fit_keeps_title_recovery_in_the_converted_work_area() {
+        let settings = desktop(
+            "Xwayland",
+            147456,
+            "wayland",
+            "KDE",
+            "[Xwayland]\nScale=1.5",
+            (1680, 1050),
+        );
+        let monitor = MonitorGeometry {
+            scale: 1.0,
+            position: (0.0, 0.0),
+            size: (1680.0, 1050.0),
+            work_position: (0.0, 90.0),
+            work_size: (1120.0, 610.0),
+        }
+        .palette_monitor(settings);
+        let fit = monitor.fit((100, 95), (607.0, 253.0), 1.0, || vec![monitor]);
+        assert_eq!(fit.position, (100, 135));
+        assert_eq!(fit.size, (911, 380));
+        let main = monitor.fit((100, 135), (1311.0, 85.0), 1.0, || vec![monitor]);
+        assert_eq!(main.position, (0, 135));
+        assert_eq!(main.size, (1680, 128));
+        assert_eq!(
+            monitor.css_work_area().0,
+            crate::ScreenRect::new(0.0, 90.0, 1120.0, 610.0)
+        );
+    }
+
+    #[test]
+    fn fractional_fit_recovers_a_reachable_title_on_a_two_monitor_root() {
+        let settings = desktop(
+            "Xwayland",
+            144 * 1024,
+            "wayland",
+            "KDE",
+            "[Xwayland]\nScale=1.5",
+            (3360, 1050),
+        );
+        let left = MonitorGeometry {
+            scale: 1.0,
+            position: (0.0, 0.0),
+            size: (1680.0, 1050.0),
+            work_position: (0.0, 90.0),
+            work_size: (1120.0, 610.0),
+        }
+        .palette_monitor(settings);
+        assert_eq!(left.area, crate::ScreenRect::new(0.0, 90.0, 1120.0, 610.0));
+        let right = MonitorGeometry {
+            scale: 1.0,
+            position: (1680.0, 0.0),
+            size: (1680.0, 1050.0),
+            work_position: (1680.0, 0.0),
+            work_size: (1680.0, 984.0),
+        }
+        .palette_monitor(settings);
+        let fit = left.fit((1700, 95), (607.0, 253.0), 1.0, || vec![left, right]);
+        assert_eq!(fit.position, (1700, 95));
+    }
+
+    #[test]
+    fn plasma_150_percent_work_area_expands_with_a_bottom_or_right_panel() {
+        let settings = desktop(
+            "Xwayland",
+            144 * 1024,
+            "wayland",
+            "KDE",
+            "[Xwayland]\nScale=1.5",
+            (1680, 1050),
+        );
+        for (work_size, expected) in [
+            ((1120.0, 656.0), (1680.0, 984.0)), // bottom panel
+            ((1076.0, 700.0), (1614.0, 1050.0)), // right panel
+            ((1121.0, 656.0), (1680.0, 984.0)), // right edge rounds 1.5 px beyond root
+            ((1122.0, 656.0), (1122.0, 656.0)), // right edge is beyond tolerance
+            ((1118.0, 656.0), (1118.0, 656.0)), // neither edge is within tolerance
+            ((1120.0, 702.0), (1120.0, 702.0)), // bottom edge overshoots despite matching right edge
+        ] {
+            let monitor = MonitorGeometry {
+                scale: 1.0,
+                position: (0.0, 0.0),
+                size: (1680.0, 1050.0),
+                work_position: (0.0, 0.0),
+                work_size,
+            }
+            .palette_monitor(settings);
+            assert_eq!((monitor.area.width, monitor.area.height), expected);
+        }
+    }
+
+    #[test]
+    fn ambiguous_105_percent_work_area_preserves_right_and_bottom_panels() {
+        // The same 1600x1000 rectangle could be the whole logical screen, or an X screen
+        // minus an 80px right panel and a 50px bottom panel. Geometry alone is ambiguous.
+        let geometry = MonitorGeometry {
+            scale: 1.0,
+            position: (0.0, 0.0),
+            size: (1680.0, 1050.0),
+            work_position: (0.0, 0.0),
+            work_size: (1600.0, 1000.0),
+        };
+        let dpi = 103219; // round(96 * 1.05 * 1024)
+        let settings = desktop(
+            "Xwayland",
+            dpi,
+            "wayland",
+            "KDE",
+            "[Xwayland]\nScale=1.05",
+            (1680, 1050),
+        );
+        let monitor = geometry.palette_monitor(settings);
+        assert_eq!(
+            monitor.area,
+            crate::ScreenRect::new(0.0, 0.0, 1600.0, 1000.0)
+        );
+        let fit = monitor.fit((0, 0), (2000.0, 1500.0), 1.0, || vec![monitor]);
+        assert_eq!(fit.size, (1600, 1000));
+    }
+
+    #[test]
+    fn logical_work_area_expands_only_on_matching_kwin_xwayland() {
+        let geometry = MonitorGeometry {
+            scale: 1.0,
+            position: (0.0, 0.0),
+            size: (1680.0, 1050.0),
+            work_position: (0.0, 0.0),
+            work_size: (1120.0, 700.0),
+        };
+        let kwinrc = "[Xwayland]\nScale=1.5";
+        for (server, session, de, config, expected) in [
+            ("Xwayland", "x11", "KDE", kwinrc, (1120, 700)), // WAYLAND_DISPLAY is also set
+            ("Xorg", "wayland", "KDE", kwinrc, (1120, 700)), // nested or remote Xorg
+            ("Wayland", "wayland", "KDE", kwinrc, (1120, 700)),
+            ("Xwayland", "wayland", "GNOME", kwinrc, (1120, 700)),
+            (
+                "Xwayland",
+                "wayland",
+                "KDE",
+                "[Wayland]\nScale=1.5",
+                (1120, 700),
+            ),
+            (
+                "Xwayland",
+                "wayland",
+                "KDE",
+                "[Xwayland]\nScale=1.25",
+                (1120, 700),
+            ),
+            ("Xwayland", "wayland", "KDE", kwinrc, (1680, 1050)),
+        ] {
+            let settings = desktop(server, 144 * 1024, session, de, config, (1680, 1050));
+            let monitor = geometry.palette_monitor(settings);
+            assert_eq!(
+                monitor
+                    .fit((0, 0), (2000.0, 1500.0), 1.0, || vec![monitor])
+                    .size,
+                expected
+            );
+            let small = monitor.fit((0, 0), (60.0, 60.0), 1.0, || vec![monitor]);
+            assert_eq!(
+                small.size,
+                if server != "Wayland" {
+                    (90, 90)
+                } else {
+                    (60, 60)
+                }
+            );
+        }
+        let settings = desktop("Xwayland", 144 * 1024, "wayland", "KDE", kwinrc, (1680, 1050));
+        let geometry = MonitorGeometry {
+            work_size: (1600.0, 1000.0),
+            ..geometry
+        };
+        let area = geometry.palette_monitor(settings).area;
+        assert_eq!((area.width, area.height), geometry.work_size);
+    }
+
+    #[test]
+    fn unset_and_base_dpi_preserve_fractional_opening_dimensions() {
+        let size = (607.25, 253.25);
+        for (dpi, expected) in [(144 * 1024, (911.0, 380.0)), (-1, size), (96 * 1024, size)] {
+            assert_eq!(
+                desktop(
+                    "Xwayland",
+                    dpi,
+                    "wayland",
+                    "KDE",
+                    "[Xwayland]\nScale=1.5",
+                    (1680, 1050),
+                )
+                .content_size(size),
+                expected
             );
         }
     }

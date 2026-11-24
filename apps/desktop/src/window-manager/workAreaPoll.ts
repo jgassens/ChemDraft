@@ -1,11 +1,12 @@
-import type { MonitorLogicalBounds } from "./index";
+import type { PaletteWorkArea } from "./index";
 
 /** How often a window re-reads its monitor's work area. */
 export const WORK_AREA_POLL_MS = 1000;
 
 /** A work area as a comparable key. */
-export function workAreaKey(area: MonitorLogicalBounds): string {
-  return `${area.left}:${area.top}:${area.right}:${area.bottom}`;
+export function workAreaKey(area: PaletteWorkArea): string {
+  const bounds = `${area.left}:${area.top}:${area.right}:${area.bottom}`;
+  return area.x11ContentScale === undefined ? bounds : `${bounds}@x11:${area.x11ContentScale}`;
 }
 
 /**
@@ -19,7 +20,7 @@ export function workAreaKey(area: MonitorLogicalBounds): string {
  */
 export function pollWorkAreaChanges(
   onChange: () => void,
-  readArea: () => Promise<MonitorLogicalBounds>,
+  readArea: () => Promise<PaletteWorkArea>,
   options: { intervalMs?: number; isHidden?: () => boolean } = {}
 ): () => void {
   const isHidden = options.isHidden ?? (() => document.hidden);
