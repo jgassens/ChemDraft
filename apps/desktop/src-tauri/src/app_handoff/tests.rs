@@ -2,13 +2,15 @@ use super::{
     arming::{ApprovedBuild, ResultSession, State, RACE},
     catalog,
     command_line::{open_command, Pipeline, Platform},
-    consent::{Row, Store},
+    consent::Store,
     dialogs::{self, Action},
-    identity::{self, App},
+    identity,
     runner::{self, CaptureError, ChildProcess},
     temp_files::{self, TempFiles},
     wire::{Call, Extension, Input, RunCode, StepResult},
 };
+#[cfg(any(target_os = "macos", windows))]
+use super::{consent::Row, identity::App};
 use serde_json::{json, Value};
 use std::{
     ffi::{OsStr, OsString},
@@ -22,6 +24,7 @@ use std::{
 const PLUGIN: &str = "org.chemdraft.handoff.crystalBuilder";
 const COMMAND: &str = "plugin.crystalBuilder.build";
 const APP_ID: &str = "0123456789abcdef0123456789abcdef";
+#[cfg(any(target_os = "macos", windows))]
 const INSTALL_ID: &str = "first-install";
 const XYZ: &str = "3\n1 2\nC 0 0 0\nX 1 0 0\nX -1 0 0\n0 1 S\n0 2 S\n";
 
