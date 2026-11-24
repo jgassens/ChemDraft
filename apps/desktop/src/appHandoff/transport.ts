@@ -3,7 +3,7 @@ import { PluginHandoffRunCompanionResultSchema, PluginHandoffSendFileResultSchem
 import type { PluginAppHandoffTransport } from "@chemdraft/plugin-host";
 
 export function createTauriAppHandoffTransport(
-  call: typeof invoke = invoke,
+  call: typeof invoke<unknown> = invoke,
   onStatus?: (message: string) => void
 ): PluginAppHandoffTransport {
   return async (pluginId, method, request) => {

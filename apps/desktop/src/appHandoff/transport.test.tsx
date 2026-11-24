@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { invoke } from "@tauri-apps/api/core";
+import type { invoke } from "@tauri-apps/api/core";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
@@ -22,11 +22,11 @@ const eventName = "chemdraft:native-handoff-command";
 function setup() {
   let armed = false;
   const launch = vi.fn();
-  const native = vi.fn<typeof invoke>().mockImplementation(async <Result,>() => {
+  const native = vi.fn<typeof invoke<unknown>>().mockImplementation(async () => {
     if (!armed) throw "Start app handoff from the plugin's native menu.";
     armed = false;
     launch();
-    return { status: "sent" } as Result;
+    return { status: "sent" };
   });
   const installed = () => ({
     source: "catalog" as const, repository: "jgassens/ChemDraft-CrystalBuilder-Plugin", checksumVerified: true
@@ -52,7 +52,7 @@ function setup() {
 
 describe("native app handoff relay", () => {
   it("reports authoritative launch results without displaying native diagnostics", async () => {
-    const native = vi.fn<typeof invoke>();
+    const native = vi.fn<typeof invoke<unknown>>();
     const status = vi.fn();
     const relay = createTauriAppHandoffTransport(native, status);
     native.mockResolvedValueOnce({ status: "sent" });

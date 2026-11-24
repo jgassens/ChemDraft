@@ -1,13 +1,9 @@
 /** Stereo intent uses the signed input's atom order, with RDKit-added Hs last.
  * Compare local parity: unspecified neighbours can change CIP labels without changing parity. */
 import type { Plugin3DModel } from "@chemdraft/plugin-api";
-import type { RdkitJsMol, RdkitMinimalModule, RdkitJson } from "@chemdraft/rdkit-adapter";
+import type { RdkitJsMol, RdkitMinimalModule, RdkitMoleculeJson } from "@chemdraft/rdkit-adapter";
 import { aromaticBondIndices, modelMolblock, readGraph } from "./model";
 import { readSignedComponent } from "./graph";
-
-type StereoGraph = Omit<RdkitJson["molecules"][number], "bonds"> & {
-  bonds: { atoms: [number, number]; bo?: number; stereo?: string; stereoAtoms?: number[] }[];
-};
 
 export function inputWithHydrogens(rdkit: RdkitMinimalModule, smiles: string): RdkitJsMol {
   const input = rdkit.get_mol(smiles, JSON.stringify({ removeHs: false }));
@@ -24,11 +20,11 @@ function addInputHydrogens(rdkit: RdkitMinimalModule, input: RdkitJsMol): RdkitJ
   return explicit;
 }
 
-export function stereoGraph(mol: RdkitJsMol): StereoGraph {
-  return readGraph(mol).molecules[0] as StereoGraph;
+export function stereoGraph(mol: RdkitJsMol): RdkitMoleculeJson {
+  return readGraph(mol).molecules[0];
 }
 
-export function specifiedCenters(graph: StereoGraph): Set<number> {
+export function specifiedCenters(graph: RdkitMoleculeJson): Set<number> {
   return new Set(graph.atoms.flatMap((atom, i) => atom.stereo === "cw" || atom.stereo === "ccw" ? [i] : []));
 }
 
@@ -74,11 +70,11 @@ export function unspecifiedDoubleBondIndices(rdkit: RdkitMinimalModule, mol: Rdk
 }
 
 /** Normalize parity against sorted neighbours, independent of bond traversal order. */
-export function stereoNeighbors(graph: StereoGraph, center: number): number[] {
+export function stereoNeighbors(graph: RdkitMoleculeJson, center: number): number[] {
   return graph.bonds.flatMap(b => b.atoms[0] === center ? [b.atoms[1]] : b.atoms[1] === center ? [b.atoms[0]] : []);
 }
 
-export function parity(graph: StereoGraph, center: number, neighbors = stereoNeighbors(graph, center)): number {
+export function parity(graph: RdkitMoleculeJson, center: number, neighbors = stereoNeighbors(graph, center)): number {
   let sign = graph.atoms[center]?.stereo === "cw" ? 1 : graph.atoms[center]?.stereo === "ccw" ? -1 : 0;
   for (let i = 0; i < neighbors.length; i++) for (let j = i + 1; j < neighbors.length; j++) if (neighbors[i] > neighbors[j]) sign = -sign;
   return sign;

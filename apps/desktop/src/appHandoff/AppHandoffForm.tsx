@@ -70,7 +70,7 @@ export function AppHandoffForm({
         <div className="cd-page-size-fields">
           <label htmlFor={combinationId} style={{ minWidth: 0, maxWidth: "100%" }}>
             Build combination
-            <select id={combinationId} autoFocus disabled={busy} value={combination}
+            <select className="native-dialog-panel-select" id={combinationId} autoFocus disabled={busy} value={combination}
               onChange={event => setCombination(event.currentTarget.value)}>
               {Object.entries(snapshot.combinations).map(([id, values]) => {
                 const parameters = Object.entries(values).filter(([name]) => name !== "rebuildAs")
