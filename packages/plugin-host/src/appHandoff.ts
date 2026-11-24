@@ -29,11 +29,15 @@ export type PluginAppHandoffTransport = (
 /** Return a path-free refusal suitable for the plugin as well as the install manager. */
 export function appHandoffProvenanceError(
   pluginId: string,
-  record: PluginAppHandoffProvenance | undefined
+  record: PluginAppHandoffProvenance | undefined,
+  allowSideload: boolean
 ): string | undefined {
   const repository = OFFICIAL_COMPANION_PLUGINS.get(pluginId);
   if (!repository) return `Plugin "${pluginId}" is outside the official app handoff catalog.`;
   if (record?.source === "catalog" && record.repository === repository && record.checksumVerified === true) {
+    return undefined;
+  }
+  if (allowSideload && record && (record.source === undefined || record.source === "sideload")) {
     return undefined;
   }
   return `Plugin "${pluginId}" needs a checksum-verified install from its official catalog repository to use app handoff.`;

@@ -10,6 +10,7 @@ const version = "1.0.0";
 const official: PluginAppHandoffProvenance = {
   source: "catalog", repository: "jgassens/ChemDraft-CrystalBuilder-Plugin", checksumVerified: true
 };
+const sideload: PluginAppHandoffProvenance = { ...official, source: "sideload" };
 const manifest = {
   id: pluginId, name: "Crystal Builder", version, apiVersion: PluginApiVersion, entry: "worker.js",
   permissions: ["apps.handoff", "native.execute", "ui.panel", "ui.canvas"],
@@ -61,7 +62,7 @@ describe("PluginHost app handoff", () => {
   it.each([
     ["no record", undefined],
     ["legacy record", {}],
-    ["sideload with a valid checksum", { ...official, source: "sideload" }],
+    ["sideload with a valid checksum", sideload],
     ["wrong repository", { ...official, repository: "other/repo" }],
     ["unverified checksum", { ...official, checksumVerified: false }]
   ] as const)("denies %s at registration", (_label, record) => {
@@ -71,10 +72,36 @@ describe("PluginHost app handoff", () => {
     expect(host.commands.has(commandId)).toBe(false);
   });
 
-  it("denies an unlisted plugin even when the provider returns verified catalog provenance", () => {
-    const { host } = setup();
-    expect(() => host.registerPlugin({ ...manifest, id: "org.test.impostor" }, { execution: "worker" }))
-      .toThrow("outside the official app handoff catalog");
+  it.each([false, true])("denies unlisted plugins with dev sideloads %s", appHandoffAllowSideload => {
+    const { host, setInstalled } = setup({ appHandoffAllowSideload });
+    for (const record of [official, sideload]) {
+      setInstalled(record);
+      expect(() => host.registerPlugin({ ...manifest, id: "org.test.impostor" }, { execution: "worker" }))
+        .toThrow("outside the official app handoff catalog");
+    }
+  });
+
+  it.each([false, true])("accepts verified catalog installs with dev sideloads %s", async appHandoffAllowSideload => {
+    const { host, register, transport } = setup({ appHandoffAllowSideload });
+    register(({ apps }) => apps!.status(status));
+    await expect(host.invokeAppHandoffMenuCommand(commandId)).resolves.toEqual({ available: true });
+    expect(transport).toHaveBeenCalledExactlyOnceWith(pluginId, "status", status);
+  });
+
+  it("accepts explicit sideload and legacy records on dev while still requiring verified catalog records", async () => {
+    const { host, register, setInstalled, transport } = setup({ appHandoffAllowSideload: true });
+    setInstalled(sideload);
+    register(async ({ apps }) => {
+      await expect(apps!.status(status)).resolves.toEqual({ available: true });
+      setInstalled({});
+      await expect(apps!.status(status)).resolves.toEqual({ available: true });
+      setInstalled({ ...official, repository: "other/repo" });
+      await expect(apps!.status(status)).rejects.toThrow("checksum-verified install");
+      setInstalled(undefined);
+      await expect(apps!.status(status)).rejects.toThrow("checksum-verified install");
+    });
+    await host.invokeAppHandoffMenuCommand(commandId);
+    expect(transport).toHaveBeenCalledTimes(2);
   });
 
   it("requires both permissions and provides no capability outside an active command", async () => {
@@ -153,6 +180,8 @@ describe("PluginHost app handoff", () => {
       ]) {
         await expect(call()).rejects.toThrow("checksum-verified install");
       }
+      setInstalled(sideload);
+      await expect(apps!.status(status)).rejects.toThrow("checksum-verified install");
     });
     await host.invokeAppHandoffMenuCommand(commandId);
     expect(transport).toHaveBeenCalledExactlyOnceWith(pluginId, "status", status);

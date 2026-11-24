@@ -195,12 +195,13 @@ it declares.
 ## App handoff
 
 Declare `apiVersion: "^0.1.27"` and both `apps.handoff` and `native.execute`.
-This release restricts handoff to allowlisted official plugins installed from their matching catalog
-repository with a verified checksum. Sideloads and old install records without verified provenance
-are refused. Handoff plugins must run in a Worker. The capability is available only during their own
-user-started native menu command; toolbar, panel, overlay, agent, and assistant tool invocations do
-not authorize it. The host keeps proof of user action in native code. A command can send one file or
-run one pipeline; a shown host box consumes the allowance even when cancelled.
+Stable builds require an allowlisted plugin installed from its matching catalog repository with a
+verified checksum. ChemDraft (dev) also accepts hand-installed packages and legacy install records
+for allowlisted IDs. The native consent box explains when a hand-installed package is accepted only
+because this is a development build. Handoff plugins must run in a Worker. The capability is available
+only during their own user-started native menu command; toolbar, panel, overlay, agent, and assistant
+tool invocations do not authorize it. The host keeps proof of user action in native code. A command
+can send one file or run one pipeline; a shown host box consumes the allowance even when cancelled.
 
 - `context.apps.chooseApp({ purpose })` opens the native picker and returns `chosen` with an opaque
   `appId` and display name, or `cancelled`. No app path is exposed. `purpose` is at most 200 characters.

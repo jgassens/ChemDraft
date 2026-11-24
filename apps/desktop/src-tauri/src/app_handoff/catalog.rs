@@ -8,6 +8,10 @@ pub(super) const OFFICIAL_COMPANION_PLUGINS: &[(&str, &str)] = &[(
     "jgassens/ChemDraft-CrystalBuilder-Plugin",
 )];
 
+pub(super) fn is_development_build(identifier: &str) -> bool {
+    identifier == "org.chemdraft.desktop.dev"
+}
+
 #[derive(Deserialize)]
 struct Catalog {
     version: u32,
@@ -60,7 +64,7 @@ struct Menu {
 
 pub(super) struct Plugin {
     pub manifest: Manifest,
-    pub developer_sideload: bool,
+    developer_sideload: bool,
 }
 
 impl Plugin {
@@ -69,11 +73,15 @@ impl Plugin {
             .path()
             .app_data_dir()
             .map_err(|_| "ChemDraft's installed plugin catalog is unavailable.")?;
-        load(
-            &base,
-            id,
-            app.config().identifier == "org.chemdraft.desktop.dev",
-        )
+        load(&base, id, is_development_build(&app.config().identifier))
+    }
+
+    pub(super) fn consent_note(&self) -> &'static str {
+        if self.developer_sideload {
+            "\n\nThis hand-installed package is accepted only because this is a ChemDraft development build."
+        } else {
+            ""
+        }
     }
 
     pub(super) fn owns_menu_command(&self, id: &str) -> bool {

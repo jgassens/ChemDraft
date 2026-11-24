@@ -149,12 +149,13 @@ afterEach(() => {
 });
 
 describe("usePluginRuntime installed catalog readiness", () => {
-  it("dispatches the native menu event and rereads exact committed handoff provenance on every call", async () => {
+  it.each(["catalog", "sideload"] as const)("dispatches native menu events and rechecks %s provenance", async source => {
     const id = "org.chemdraft.handoff.crystalBuilder";
     const commandId = "plugin.crystalBuilder.sendMolecule";
     const entry = catalogEntry("1.0.0", "a".repeat(64));
-    const record = { ...entry.record, id, source: "catalog" as const, checksumVerified: true,
+    const record = { ...entry.record, id, source, checksumVerified: true,
       repository: "jgassens/ChemDraft-CrystalBuilder-Plugin" };
+    vi.stubGlobal("__CHEMDRAFT_HANDOFF_SIDELOAD_ALLOWED__", source === "sideload");
     const handoffManifest = { ...entry.manifest, id, permissions: ["apps.handoff", "native.execute"] as const,
       contributes: { ...entry.manifest.contributes, commands: [{ id: commandId, title: "Send" }],
         menus: [{ id: "menu.crystalBuilder.sendMolecule", commandId, title: "Send" }] } };

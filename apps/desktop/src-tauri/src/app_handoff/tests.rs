@@ -477,8 +477,13 @@ fn temporary_files_use_portable_stems_and_only_remove_old_host_directories() {
 }
 
 #[test]
-fn stable_catalog_refuses_sideloads_and_disabled_commands_never_arm() {
+fn provenance_follows_the_native_build_identifier() {
     let dir = TestDir::new();
+    let stable = catalog::is_development_build("org.chemdraft.desktop");
+    let dev = catalog::is_development_build("org.chemdraft.desktop.dev");
+    assert!(!stable);
+    assert!(dev);
+    assert!(!catalog::is_development_build("org.other.dev"));
     let package = dir.0.join("installed-plugins").join(PLUGIN);
     fs::create_dir_all(&package).unwrap();
     let manifest = json!({
@@ -494,26 +499,46 @@ fn stable_catalog_refuses_sideloads_and_disabled_commands_never_arm() {
         )
         .unwrap()
     };
-    save(&record);
-    assert!(catalog::load(&dir.0, PLUGIN, false).is_err());
-    let plugin = catalog::load(&dir.0, PLUGIN, true).unwrap();
-    assert!(plugin.developer_sideload && plugin.owns_menu_command(COMMAND));
-    assert!(!plugin.owns_menu_command("plugin.crystalBuilder.other"));
-    assert!(catalog::load(&dir.0, "org.other", true).is_err());
+    for source in [None, Some("sideload")] {
+        if let Some(source) = source {
+            record["source"] = json!(source);
+        }
+        save(&record);
+        let refusal = catalog::load(&dir.0, PLUGIN, stable).err().unwrap();
+        assert!(refusal.contains("checksum-verified install"));
+        let plugin = catalog::load(&dir.0, PLUGIN, dev).unwrap();
+        assert!(plugin.owns_menu_command(COMMAND));
+        assert!(!plugin.owns_menu_command("plugin.crystalBuilder.other"));
+        assert_eq!(
+            plugin.consent_note().trim(),
+            "This hand-installed package is accepted only because this is a ChemDraft development build."
+        );
+    }
     record["source"] = json!("catalog");
     record["repository"] = json!("jgassens/ChemDraft-CrystalBuilder-Plugin");
+    save(&record);
+    assert!(catalog::load(&dir.0, PLUGIN, dev).is_err());
     record["checksumVerified"] = json!(true);
     save(&record);
-    assert!(
-        !catalog::load(&dir.0, PLUGIN, false)
-            .unwrap()
-            .developer_sideload
-    );
+    for build in [stable, dev] {
+        assert_eq!(
+            catalog::load(&dir.0, PLUGIN, build).unwrap().consent_note(),
+            ""
+        );
+    }
     let mut updated = manifest;
     updated["permissions"] = json!(["native.execute"]);
     fs::write(package.join("manifest.json"), updated.to_string()).unwrap();
-    assert!(catalog::load(&dir.0, PLUGIN, false).is_err());
+    assert!(catalog::load(&dir.0, PLUGIN, stable).is_err());
     assert!(State::default().live(PLUGIN, Instant::now()).is_err());
+
+    record["id"] = json!("org.other");
+    record["source"] = json!("sideload");
+    save(&record);
+    for build in [stable, dev] {
+        let refusal = catalog::load(&dir.0, "org.other", build).err().unwrap();
+        assert!(refusal.contains("outside the official app handoff catalog"));
+    }
 }
 
 fn rust_stub() -> &'static Path {

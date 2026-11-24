@@ -1434,6 +1434,9 @@ pub fn run() {
         builder
     };
     let builder = builder
+        .plugin(app_handoff::registration_policy(
+            &context.config().identifier,
+        ))
         .manage(perf_log)
         .manage(PendingOpenDocument::default())
         .manage(canvas_context_menu::PopupState::default())

@@ -324,11 +324,7 @@ impl Context<'_> {
                 pipeline.id, pipeline.describe(self.platform)?),
             None => "Give this app a temporary file and open it each time you run the command. A 3D handoff omits page layout, drawing labels, colors, and annotations. It can make implicit hydrogens explicit and place an isolated model in a vacuum box.".into(),
         };
-        let developer_note = if self.plugin.developer_sideload {
-            "\n\nThis development build is using a hand-installed plugin."
-        } else {
-            ""
-        };
+        let developer_note = self.plugin.consent_note();
         let text = format!(
             "{} ({}) requests permission to hand off data to {}.\n\n{}\n\n{}{developer_note}",
             self.plugin.manifest.name,

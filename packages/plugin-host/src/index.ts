@@ -816,6 +816,8 @@ export interface PluginHostOptions {
   /** Host-managed AI command-line tools. Plugins never supply argv or environment variables. */
   externalTools?: PluginHostExternalTools;
   appHandoffProvenance?: PluginAppHandoffProvenanceProvider;
+  /** Mirrors the native build policy for the renderer's provenance precheck. */
+  appHandoffAllowSideload?: boolean;
   appHandoffTransport?: PluginAppHandoffTransport;
   /** Acquires an image through host-owned UI. The signal aborts when the command ends/unregisters. */
   requestImage?: (
@@ -925,6 +927,7 @@ export class PluginHost {
   private readonly promptText?: PluginHostOptions["promptText"];
   private readonly externalTools?: PluginHostOptions["externalTools"];
   private readonly appHandoffProvenance?: PluginAppHandoffProvenanceProvider;
+  private readonly appHandoffAllowSideload: boolean;
   private readonly appHandoffTransport?: PluginAppHandoffTransport;
   /** Selects the menu dispatcher within this host. Native IPC still decides whether it is armed. */
   private readonly handoffMenuDispatches = new WeakSet<CommandInvocationContext>();
@@ -988,6 +991,7 @@ export class PluginHost {
     this.promptText = options.promptText;
     this.externalTools = options.externalTools;
     this.appHandoffProvenance = options.appHandoffProvenance;
+    this.appHandoffAllowSideload = options.appHandoffAllowSideload === true;
     this.appHandoffTransport = options.appHandoffTransport;
     this.assistant = options.assistant;
     this.overlays = options.overlays;
@@ -1021,7 +1025,9 @@ export class PluginHost {
         throw new PluginHostError(`Plugin "${manifest.id}" must run in a Worker to use apps.handoff.`);
       }
       const provider = this.appHandoffProvenance;
-      const refusal = appHandoffProvenanceError(manifest.id, provider?.forRegistration(manifest.id, manifest.version));
+      const refusal = appHandoffProvenanceError(
+        manifest.id, provider?.forRegistration(manifest.id, manifest.version), this.appHandoffAllowSideload
+      );
       if (refusal) throw new PluginPermissionError(refusal);
     }
 
@@ -2664,7 +2670,7 @@ export class PluginHost {
       throw new PluginHostError("ChemDraft could not check the installed app handoff plugin's provenance.");
     }
     assertActive();
-    const refusal = appHandoffProvenanceError(pluginId, record);
+    const refusal = appHandoffProvenanceError(pluginId, record, this.appHandoffAllowSideload);
     if (refusal) throw new PluginPermissionError(refusal);
     const writing = method === "sendFile" || method === "runCompanion";
     if (writing && invocation.handoffSpent) {

@@ -20,6 +20,17 @@ mod wire_tests;
 pub(crate) use dialogs::{Action as DialogAction, KIND as DIALOG_KIND};
 pub(crate) use endpoint::{arm_native_menu, cleanup, State};
 
+pub(crate) fn registration_policy(identifier: &str) -> tauri::plugin::TauriPlugin<tauri::Wry> {
+    let allow_sideload = catalog::is_development_build(identifier);
+    // The synchronous renderer registration gate mirrors native policy. Native calls still read
+    // build identity and installed provenance directly.
+    tauri::plugin::Builder::new("app-handoff-registration")
+        .js_init_script(format!(
+            "Object.defineProperty(window, '__CHEMDRAFT_HANDOFF_SIDELOAD_ALLOWED__', {{ value: {allow_sideload} }});"
+        ))
+        .build()
+}
+
 fn plugin_id_valid(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128

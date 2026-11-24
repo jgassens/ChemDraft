@@ -533,6 +533,9 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     handoffGraph: handoffGraphForPlugin,
     suggestConnectionPoints: suggestConnectionPointsForPlugin,
     commandRegistry: options.commandRegistry,
+    appHandoffAllowSideload: isTauriHost() &&
+      (window as Window & { readonly __CHEMDRAFT_HANDOFF_SIDELOAD_ALLOWED__?: boolean })
+        .__CHEMDRAFT_HANDOFF_SIDELOAD_ALLOWED__ === true,
     appHandoffProvenance: options.appHandoffProvenance ?? {
       forRegistration: (id, version) => registeringRecord?.id === id && registeringRecord.version === version
         ? registeringRecord : undefined,
