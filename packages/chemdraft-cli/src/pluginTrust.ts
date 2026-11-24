@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { readFile, realpath, stat } from "node:fs/promises";
+import { constants, existsSync, readFileSync, realpathSync } from "node:fs";
+import { lstat, open, realpath } from "node:fs/promises";
 import { userInfo } from "node:os";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -93,6 +93,9 @@ function resolveDefaultTrustedPluginsPathAtImport(): string {
 export const DEFAULT_TRUSTED_PLUGINS_PATH: string = resolveDefaultTrustedPluginsPathAtImport();
 
 const TRUST_FILE_VERSION = 1;
+// Leave headroom for bundled model weights in the tens of MiB while bounding each read.
+const MAX_BUNDLED_MODEL_MIB = 256;
+const MAX_BUNDLED_MODEL_BYTES = MAX_BUNDLED_MODEL_MIB * 1024 * 1024;
 
 type PluginManifest = ReturnType<typeof validateTrustedPluginManifest>;
 type PluginPermission = PluginManifest["permissions"][number];
@@ -263,10 +266,52 @@ async function readBundledModel(location: TrustedPluginLocation, filePath: strin
     throw new PluginTrustError(`${refusal}. The path resolves to ${canonical}.`);
   }
 
-  if (!(await stat(canonical)).isFile()) {
-    throw new PluginTrustError(`${refusal}. The path resolves to ${canonical}, which is not a regular file.`);
+  const verificationError = (error: Error): never => {
+    throw new PluginTrustError(`${refusal}. Could not verify the model file: ${error.message}`);
+  };
+  const checked = await lstat(canonical, { bigint: true }).catch(verificationError);
+  if (!checked.isFile()) {
+    throw new PluginTrustError(`${refusal}. The resolved path ${canonical} is not a regular file.`);
   }
-  return readFile(canonical);
+
+  // Where available, reject a swapped-in leaf symlink and avoid blocking on a swapped-in FIFO.
+  const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
+  const handle = await open(canonical, flags).catch(verificationError);
+  try {
+    const opened = await handle.stat({ bigint: true }).catch(verificationError);
+    const recheckedPath = await realpath(canonical).catch(verificationError);
+    if (recheckedPath !== canonical) {
+      throw new PluginTrustError(`${refusal}. The model path changed during verification and now resolves to ${recheckedPath}.`);
+    }
+    const rechecked = await lstat(recheckedPath, { bigint: true }).catch(verificationError);
+    // Node supplies file identities through dev/ino. Some filesystems provide weak or absent IDs,
+    // particularly on Windows. Reject a missing inode and compare IDs without rounding to Number.
+    const { dev, ino, size } = opened;
+    if (!opened.isFile() || !rechecked.isFile() || ino === 0n ||
+        dev !== checked.dev || ino !== checked.ino || dev !== rechecked.dev || ino !== rechecked.ino) {
+      throw new PluginTrustError(`${refusal}. The opened file's identity could not be verified against the checked path.`);
+    }
+
+    const tooLarge = `${refusal}. The file exceeds the limit of ${MAX_BUNDLED_MODEL_BYTES} bytes (${MAX_BUNDLED_MODEL_MIB} MiB).`;
+    if (size > BigInt(MAX_BUNDLED_MODEL_BYTES)) {
+      throw new PluginTrustError(tooLarge);
+    }
+
+    // The inclusive end permits one probe byte, so a file that grows past the cap is refused.
+    const stream = handle.createReadStream({ start: 0, end: MAX_BUNDLED_MODEL_BYTES, autoClose: false });
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for await (const chunk of stream) {
+      total += chunk.length;
+      if (total > MAX_BUNDLED_MODEL_BYTES) {
+        throw new PluginTrustError(tooLarge);
+      }
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks, total);
+  } finally {
+    await handle.close();
+  }
 }
 
 function realpathInside(dir: string, relativeFile: string, role: string): string {

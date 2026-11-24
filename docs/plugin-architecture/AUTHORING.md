@@ -515,10 +515,15 @@ scoped asset reader into the NMR runtime's existing `fetchAsset` option. In the 
 package, the runtime reads those assets through the same-origin package mechanism.
 
 The headless adapter converts the runtime's module-relative `file:` asset references to filesystem
-paths. The reader follows symlinks and returns bytes only for regular files whose real paths are
-inside the trusted checkout. An absolute or relative path that resolves outside it, a symlink escape,
-and a remote URL are refused. The headless CLI and MCP server refuse `model.download` at manifest
-validation. Headless plugins execute as trusted Node code. The scope applies to the host reader.
+paths and refuses remote URLs. The host reader follows symlinks when resolving the path and checks
+that the result is inside the trusted checkout. It opens the resolved file once, checks that the
+path still resolves to the same location, and reads through the handle only if it is a regular file
+with matching bigint device and inode IDs from path stats before and after opening. It refuses a
+zero inode ID and files that exceed 256 MiB at open or during reading. These checks use separate
+filesystem calls and rely on Node's file IDs, which some Windows filesystems may report without
+guaranteeing uniqueness. Repeated concurrent path changes or nonunique IDs can defeat verification.
+The CLI and MCP server refuse `model.download` at manifest validation. Headless plugins execute as
+trusted Node code. The scope applies to the host reader.
 
 ## Host-owned structure recognition
 

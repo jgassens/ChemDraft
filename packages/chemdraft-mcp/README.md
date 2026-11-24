@@ -62,9 +62,9 @@ details](../chemdraft-cli/README.md#fixed-scale-document-figures).
 - `check_stereo` — inspect tetrahedral R/S centres and E/Z double bonds with 0-based indices.
 - `predict_nmr` — predict 1H/13C shifts and optional spectra. The NMR predictor checkout must be
   listed in `~/.config/chemdraft/trusted-plugins.json`. `CHEMDRAFT_NMR_PLUGIN_DIR` only selects a
-  checkout. If its manifest declares `model.load`, the shared CLI loader reads bundled files only
-  when their real paths stay inside that checkout. It refuses remote URLs, symlink escapes, and
-  `model.download`. See the [CLI trust-file rules](../chemdraft-cli/README.md#plugin-trust-file).
+  checkout. If its manifest declares `model.load`, bundled files go through the shared CLI loader's
+  path, file identity, and 256 MiB size checks. It refuses remote URLs and `model.download`.
+  See the [CLI trust-file rules](../chemdraft-cli/README.md#plugin-trust-file).
 - `export_structure` — write CDXML, PDF, SDF, MOL, or SMILES.
 
 Exported MOL/SDF use a 1.5 Angstrom median bond length per CTAB/record. In the desktop,

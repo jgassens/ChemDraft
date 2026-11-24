@@ -380,11 +380,15 @@ Loading runs in this order (`src/pluginTrust.ts`), and each step stops the load 
    its code does; the allow-list is what bounds execution.
 3. **Entry.** Only then is `src/index.ts` imported and its exports checked.
 
-A trust-listed plugin that declares `model.load` can read regular model files bundled in its own
-directory. The reader checks the resolved path after following symlinks. It refuses paths that
-escape the checkout and accepts only filesystem paths. For the NMR runtime, the CLI converts
-module-relative `file:` asset references to paths before checking them. Remote URLs and
-`model.download` are refused. The MCP server uses the same loader.
+A trust-listed plugin that declares `model.load` can read bundled regular files through the shared
+CLI and MCP loader. The loader resolves the path within the trusted checkout, then opens the file
+once. Before reading through that handle, it resolves the path again and requires the handle's
+bigint device and inode IDs to match path stats taken before and after opening. It refuses missing
+inode IDs and enforces a 256 MiB per-file limit, including growth during the read. Path and identity
+checks use separate filesystem calls. Repeated concurrent path changes or nonunique file IDs,
+which some Windows filesystems may report, can defeat verification. For the NMR runtime, the CLI
+converts module-relative `file:` asset references to paths. Remote URLs and `model.download` are
+refused.
 
 The checkout must export `NMR_PLUGIN_CAPABILITIES` with `constitutional-equivalence-grouping`,
 `diastereotopic-disclosure`, and `truthful-spectrum-caption`. Older checkouts are refused; update
