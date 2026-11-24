@@ -12050,14 +12050,14 @@ function moveNativeMoleculePartsWithPositions(
   }
 
   const positions: number[] = [];
-  const moved = normalizeNativeMoleculeGeometry({
+  const moved = refreshNativeCyclicDoubleBondSides(molecule, normalizeNativeMoleculeGeometry({
     ...molecule,
     atoms: molecule.atoms.map((atom, index) => {
       if (!targetAtomIds.has(atom.id)) return atom;
       positions.push(index);
       return { ...atom, x: atom.x + dx, y: atom.y + dy };
     })
-  });
+  }));
   return { positions, document: applyPatch(
     document,
     {
@@ -12068,7 +12068,8 @@ function moveNativeMoleculePartsWithPositions(
         y: moved.y,
         width: moved.width,
         height: moved.height,
-        atoms: moved.atoms
+        atoms: moved.atoms,
+        ...(moved.bonds === molecule.bonds ? {} : { bonds: moved.bonds })
       }
     },
     { now: phase4Timestamp }
@@ -16596,7 +16597,7 @@ function buildNativeMoleculeEngineRelayout(
     { ...molecule, atoms, bonds: baseBonds, ...geometry }, defaultNativeMoleculeTransform
   );
   const rings = smallestRingAtomIdsByBondId(sideMolecule);
-  const sidedBonds = reconcileRingDoubleBondSides(molecule, sideMolecule, rings).map((bond) => {
+  const sidedBonds = reconcileRingDoubleBondSides(molecule, sideMolecule, rings, { repairStationaryOffsets: true }).map((bond) => {
     if (bond.order !== "double" || rings.has(bond.id) || isDefaultCenteredDoubleBond(sideMolecule, bond)) return bond;
     const doubleBondSide = defaultDoubleBondSide(sideMolecule, bond);
     const { doubleBondSide: _side, doubleBondSideSource: _source, ...restDisplay } = bond.display ?? {};
@@ -19540,7 +19541,7 @@ function cleanUpNativeMoleculeGeometry2d(molecule: MoleculeObject): MoleculeObje
     }),
     defaultNativeMoleculeTransform
   );
-  return { ...cleaned, bonds: reconcileRingDoubleBondSides(molecule, cleaned) };
+  return { ...cleaned, bonds: reconcileRingDoubleBondSides(molecule, cleaned, undefined, { repairStationaryOffsets: true }) };
 }
 
 function cleanUpNativeMoleculeComponent2d(input: {
@@ -21784,15 +21785,9 @@ export function doubleBondSideForPoint(
     return undefined;
   }
 
-  const midpoint = {
-    x: (geometry.fromAtom.x + geometry.toAtom.x) / 2,
-    y: (geometry.fromAtom.y + geometry.toAtom.y) / 2
-  };
-  const score = (point.x - midpoint.x) * geometry.normal.x + (point.y - midpoint.y) * geometry.normal.y;
   const gap = nativeMultipleBondGapPx(nativeMoleculeBondDrawingStyle(molecule, bond.id));
   const centerRadius = Math.max(gap / 2, hitTolerance.bondHitRadius ?? 0);
-  if (Math.abs(score) <= centerRadius) return "center";
-  return score >= 0 ? "left" : "right";
+  return offsetDoubleBondSideTowardPoint(geometry.fromAtom, geometry.toAtom, point, centerRadius) ?? "center";
 }
 
 function canSetNativeBondOrder(

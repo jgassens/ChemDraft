@@ -1,14 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { exportDocumentToCdx, importCdx, openChemDraftPayload } from "@chemdraft/cdx-compat";
-import { deserializeDocument, serializeDocument, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { applyPatch, deserializeDocument, serializeDocument, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { cleanUpMoleculeSelections2d } from "@chemdraft/document-workflow-core";
+import * as layoutEngine from "@chemdraft/layout-engine";
 import { planPageSvgRender, type PageSvgElementFragment } from "@chemdraft/layout-engine";
 import { assertConstrainedLayoutIdentity, relayoutMolfile2D } from "@chemdraft/ocl-adapter";
 import {
   applyMoleculeDoubleBondPosition,
   applyNativeMoleculeEngineRelayout,
   cleanUpNativeMolecules2d,
-  flattenSpunMolecule
+  doubleBondSideForPoint,
+  flattenSpunMolecule,
+  moveNativeMoleculeParts
 } from "./documentWorkflow";
 import { quatFromAxisAngle, quatToViewMatrix } from "./interaction/rotation3d";
 import { projectSpin, spinJoinedBondFragments } from "./interaction/spinOverlay";
@@ -38,6 +41,16 @@ function importedBenzene(position: "Center" | "Right", format: "CDX" | "CDXML" =
   const binary = importCdx(exportDocumentToCdx(opened.document!, { embedNativePayload: false }).bytes);
   expect(binary.source).toBe("external-cdxml");
   return binary.document!;
+}
+
+function importedCyclopropene() {
+  const opened = openChemDraftPayload(`<CDXML><page id="1"><fragment id="2">
+    <n id="11" p="100 100"/><n id="12" p="120 100"/><n id="13" p="110 120"/>
+    <b id="21" B="11" E="12" Order="2" DoublePosition="Left"/>
+    <b id="22" B="12" E="13"/><b id="23" B="13" E="11"/>
+  </fragment></page></CDXML>`);
+  expect(opened.source).toBe("external-cdxml");
+  return opened.document!;
 }
 
 function molecule(document: ChemDraftDocument): MoleculeObject {
@@ -147,6 +160,56 @@ describe("imported ring double-bond strokes", () => {
     const original = importedBenzene("Right", format);
     expectSecondaryStrokeTowardCenter(molecule(original), canvasFragments(original));
     expectInwardUnchangedChemistry(original, cleanUp(original));
+  });
+
+  it.each([undefined, "imported", "user"] as const)("checks a saved outward offset without moving atoms (source %s)", source => {
+    const tidy = cleanUp(importedCyclopropene());
+    const object = molecule(tidy);
+    const bond = object.bonds[0]!;
+    const inside = bond.display?.doubleBondSide;
+    expect(inside).toMatch(/^(left|right)$/);
+    const outside = inside === "left" ? "right" : "left";
+    const saved = applyPatch(tidy, {
+      op: "updateObject", objectId: object.id, changes: {
+        bonds: [{ ...bond, display: { doubleBondSide: outside, doubleBondSideSource: source } }, ...object.bonds.slice(1)]
+      }
+    });
+    const reopened = deserializeDocument(serializeDocument(saved));
+    const repaired = molecule(cleanUp(reopened));
+    expect(repaired.atoms).toEqual(molecule(reopened).atoms);
+    expect(chemistry(repaired)).toEqual(chemistry(object));
+    expect(repaired.bonds[0]!.display?.doubleBondSide).toBe(source === "user" ? outside : inside);
+  });
+
+  it("turns the stored offset inward when dragging the third ring atom across the double bond", () => {
+    const document = importedCyclopropene();
+    const object = molecule(document);
+    const [from, to, movedAtom] = object.atoms;
+    expect(object.bonds[0]!.display?.doubleBondSide).toBe("left");
+    const result = molecule(moveNativeMoleculeParts(document, {
+      objectId: object.id, kind: "atom", atomId: movedAtom!.id
+    }, { x: 0, y: 2 * (from!.y - movedAtom!.y) }));
+    expect(result.atoms.slice(0, 2)).toEqual([from, to]);
+    expect(result.atoms[2]!.y).toBeLessThan(from!.y);
+    expect(result.bonds[0]!.display?.doubleBondSide).toBe("right");
+    expect(chemistry(result)).toEqual(chemistry(object));
+  });
+
+  it("delegates offset hit geometry to layout-engine with the desktop Center radius", () => {
+    const object = molecule(importedCyclopropene());
+    const bond = object.bonds[0]!;
+    const [from, to] = object.atoms;
+    const x = (from!.x + to!.x) / 2;
+    const bondHitRadius = 10;
+    const point = { x, y: from!.y - bondHitRadius - 1 };
+    const sideTowardPoint = vi.spyOn(layoutEngine, "offsetDoubleBondSideTowardPoint");
+    try {
+      expect(doubleBondSideForPoint(object, bond, point, { bondHitRadius })).toBe("right");
+      expect(sideTowardPoint).toHaveBeenCalledWith(from, to, point, bondHitRadius);
+      expect(doubleBondSideForPoint(object, bond, { x, y: from!.y - bondHitRadius }, { bondHitRadius })).toBe("center");
+    } finally {
+      sideTowardPoint.mockRestore();
+    }
   });
 
   it("revalidates imported Center in the engine Clean Up path", () => {

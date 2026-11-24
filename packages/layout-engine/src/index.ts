@@ -2643,7 +2643,8 @@ function ringInteriorBondSides(
 export function reconcileRingDoubleBondSides(
   before: MoleculeObject,
   after: MoleculeObject,
-  rings = smallestRingAtomIdsByBondId(after)
+  rings = smallestRingAtomIdsByBondId(after),
+  options: { repairStationaryOffsets?: boolean } = {}
 ): MoleculeObject["bonds"] {
   if (!rings.size) return after.bonds;
 
@@ -2655,7 +2656,7 @@ export function reconcileRingDoubleBondSides(
     if (!previous || distance(previous, atom) > 0.001) return true;
     return distance(transformPointForObject(before, previous), transformPointForObject(after, atom)) > 0.001;
   }).map(atom => atom.id));
-  if (!movedAtoms.size) return after.bonds;
+  if (!movedAtoms.size && !options.repairStationaryOffsets) return after.bonds;
 
   let bonds = after.bonds;
   after.bonds.forEach((bond, index) => {
@@ -2666,7 +2667,10 @@ export function reconcileRingDoubleBondSides(
     if (side === "center" && source !== "imported") return;
     const ring = rings.get(bond.id);
     const from = nextAtoms.get(bond.fromAtomId), to = nextAtoms.get(bond.toAtomId);
-    if (!ring?.some(id => movedAtoms.has(id)) || !from || !to) return;
+    if (!ring || !from || !to) return;
+    // Full Clean Up can also repair old outward offsets on rings whose geometry is already tidy.
+    const repairOffset = options.repairStationaryOffsets && source !== "user" && side !== "center";
+    if (!repairOffset && !ring.some(id => movedAtoms.has(id))) return;
     const inside = doubleBondSideTowardRingInterior(from, to, ring, nextAtoms);
     if (!inside) return;
 
@@ -2713,7 +2717,8 @@ function doubleBondSideTowardRingInterior(
   return offsetDoubleBondSideTowardPoint(fromAtom, toAtom, { x: sumX / count, y: sumY / count }, 1e-9);
 }
 
-/** The side whose secondary stroke faces the given point. "left" offsets toward the bond normal. */
+/** The side whose secondary stroke faces the given point. "left" offsets toward the bond normal.
+ * A positive axis tolerance includes its boundary. */
 export function offsetDoubleBondSideTowardPoint(
   from: LayoutPoint, to: LayoutPoint, point: LayoutPoint, axisTolerance = 0
 ): "left" | "right" | undefined {
@@ -2721,7 +2726,7 @@ export function offsetDoubleBondSideTowardPoint(
   if (!geometry) return undefined;
   const { normal } = geometry;
   const dot = (point.x - (from.x + to.x) / 2) * normal.x + (point.y - (from.y + to.y) / 2) * normal.y;
-  if (Math.abs(dot) < axisTolerance) return undefined;
+  if (axisTolerance > 0 && Math.abs(dot) <= axisTolerance) return undefined;
   return dot >= 0 ? "left" : "right";
 }
 
