@@ -304,6 +304,53 @@ describe("engine3d sidecar client", () => {
 });
 
 describe("3D Workspace seeding", () => {
+  it.each(["worker error", "timeout"])("opens with the original seed and a warning after %s", async (failure) => {
+    vi.useFakeTimers();
+    const workerPort = new EventTarget();
+    const postMessage = vi.fn<(request: ConformerWorkRequest) => void>();
+    const worker = conformerClient.createConformerWorkerClient(() =>
+      Object.assign(workerPort, { postMessage }) as unknown as Worker
+    )!;
+    const refineSeed = vi.spyOn(conformerClient, "refineWorkspaceSeed").mockImplementation(worker.refineWorkspaceSeed);
+    const received = mockWorkspaceSeedEcho();
+    try {
+      const input = createEngine3dSessionInputFromMolecule({
+        ...molecule,
+        atoms: [{ ...molecule.atoms[0], isotope: 13 }, { ...molecule.atoms[1], formalCharge: -1 }]
+      }, {
+        selectedAtomIds: ["a2"],
+        coords3dByAtomId: { a1: { x: 0, y: 0, z: 0.2 }, a2: { x: 1.4, y: 0, z: -0.1 } }
+      });
+      const warnings = ["Existing warning"];
+      const opening = openEngine3dWorkspaceSession({ input, warnings });
+      const [request] = postMessage.mock.calls[0];
+      expect(request.kind).toBe("refine-workspace-seed");
+      if (failure === "timeout") {
+        await vi.advanceTimersByTimeAsync(2_999);
+        expect(invoke).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(postMessage).toHaveBeenLastCalledWith({ kind: "cancel", id: request.id });
+      } else {
+        workerPort.dispatchEvent(new MessageEvent<ConformerWorkResponse>("message", {
+          data: { id: request.id, stage: "error" }
+        }));
+      }
+
+      const session = await opening;
+      expect(received).toEqual([input]);
+      expect(session.coords3dByAtomId).toEqual(input.coords3dByAtomId);
+      expect(session.warnings).toEqual([
+        "Existing warning", "Could not refine the 3D starting shape. The structure may look bent."
+      ]);
+      expect(warnings).toEqual(["Existing warning"]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      refineSeed.mockRestore();
+      vi.mocked(invoke).mockReset();
+      vi.useRealTimers();
+    }
+  });
+
   it("opens porphine with a planar 24-atom macrocycle and preserves an edited seed", async () => {
     installNodeRdkitModuleLoader();
     const scope = new EventTarget();
@@ -338,30 +385,7 @@ describe("3D Workspace seeding", () => {
         });
       });
 
-      // Echo the startup request through the sidecar protocol so the test exercises the
-      // actual Workspace handoff and does not depend on a platform-specific binary.
-      const received: Engine3DSessionInput[] = [];
-      vi.mocked(invoke).mockImplementation(async (command, args) => {
-        expect(command).toBe("engine3d_sidecar_start_session");
-        const request = JSON.parse((args as { lines: string[] }).lines[0]) as Engine3DCreateSessionRequest;
-        const { input } = request;
-        received.push(input);
-        const frame: Engine3DEvent = {
-          protocolVersion: Engine3DProtocolVersion,
-          requestId: request.requestId,
-          sessionId: "porphine",
-          type: "event",
-          eventType: "coordinatesChanged",
-          reason: "initial-relax",
-          coords3dByAtomId: input.coords3dByAtomId
-        };
-        return {
-          processSessionId: "porphine",
-          stdoutLines: [formatEngine3DMessage(frame)],
-          stderr: "",
-          exited: false
-        };
-      });
+      const received = mockWorkspaceSeedEcho();
       const open = (coords: Float64Array) => openEngine3dWorkspaceSession({
         input: createEngine3dSessionInputFromMolecule(molecule, {
           coords3dByAtomId: Object.fromEntries(ids.map((id, i) => [id, {
@@ -372,6 +396,7 @@ describe("3D Workspace seeding", () => {
       });
 
       const session = await open(seed);
+      expect(session.warnings).toEqual([]);
       expect(received[0].molfile).toBe(molfile);
       expect(received[0].atomIdByMolfileIndex).toEqual(ids);
       const result = engine3dCoordsInAtomOrder(ids, session.coords3dByAtomId!);
@@ -380,6 +405,7 @@ describe("3D Workspace seeding", () => {
       const edited = seed.slice();
       edited[2] += 0.5;
       const editedSession = await open(edited);
+      expect(editedSession.warnings).toEqual([]);
       expect(engine3dCoordsInAtomOrder(ids, editedSession.coords3dByAtomId!)).toEqual(edited);
     } finally {
       vi.unstubAllGlobals();
@@ -389,6 +415,27 @@ describe("3D Workspace seeding", () => {
     }
   }, 20_000);
 });
+
+/** Echo the startup request through the protocol without a platform-specific binary. */
+function mockWorkspaceSeedEcho(): Engine3DSessionInput[] {
+  const received: Engine3DSessionInput[] = [];
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    expect(command).toBe("engine3d_sidecar_start_session");
+    const request = JSON.parse((args as { lines: string[] }).lines[0]) as Engine3DCreateSessionRequest;
+    received.push(request.input);
+    const frame: Engine3DEvent = {
+      protocolVersion: Engine3DProtocolVersion,
+      requestId: request.requestId,
+      sessionId: "session_1",
+      type: "event",
+      eventType: "coordinatesChanged",
+      reason: "initial-relax",
+      coords3dByAtomId: request.input.coords3dByAtomId
+    };
+    return output([formatEngine3DMessage(frame)]);
+  });
+  return received;
+}
 
 const PORPHINE = "C1=CC2=NC1=CC3=CC=C(N3)C=C4C=CC(=N4)C=C5C=CC(=C2)N5";
 

@@ -151,3 +151,32 @@ describe("conformer worker warmup", () => {
     expect(engines.oclGenerate).toHaveBeenCalledTimes(3);
   });
 });
+
+describe("conformer worker Workspace seed refinement", () => {
+  it.each(["throws", "setup-failed"])("reports failure when minimization %s", async (failure) => {
+    const molfile = "cached embed";
+    const workspaceSeed = new Float64Array([0, 0, 0, 1, 0, 0]);
+    const embedded = {
+      originalAtomCount: 2,
+      embed: { status: "ok" },
+      mapping: { coords3dByOriginalAtom: workspaceSeed },
+      warnings: []
+    };
+    const refineFromEmbedded = vi.fn(() => {
+      if (failure === "throws") throw new Error("minimization failed");
+      return { ...embedded, forceField: { status: "setup-failed" } };
+    });
+    engines.rdkitGenerate.mockResolvedValue({ embedded, refineFromEmbedded });
+    receive({ data: {
+      kind: "generate", id: 1, molfile, originalAtomCount: 2,
+      enginePreference: "rdkit", options: { optimize: "none" }
+    } } as MessageEvent<ConformerWorkRequest>);
+    await vi.runAllTimersAsync();
+
+    receive({ data: { kind: "refine-workspace-seed", id: 2, molfile, workspaceSeed } } as MessageEvent<ConformerWorkRequest>);
+    await vi.runAllTimersAsync();
+
+    expect(refineFromEmbedded).toHaveBeenCalledWith(expect.any(Number), { forceField: "mmff94s" });
+    expect(postMessage).toHaveBeenCalledWith({ id: 2, stage: "error" });
+  });
+});

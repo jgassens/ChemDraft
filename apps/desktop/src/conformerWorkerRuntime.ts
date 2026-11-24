@@ -394,20 +394,23 @@ async function runRefineWorkspaceSeed(request: ConformerWorkRequest): Promise<vo
   const entry = cache.get(request.molfile ?? "");
   const embedded = entry?.embedded.mapping.coords3dByOriginalAtom;
   const seed = request.workspaceSeed;
-  if (entry && embedded && seed?.length === embedded.length && seed.every((value, index) => value === embedded[index])) {
-    // Opening Workspace always runs native UFF. Seed it from the same quality
-    // refinement as default Spin 3D, including when Spin's preview was set to Fast.
-    const refined = await runRefine(entry, {
-      ...request,
-      options: { optimize: "mmff94s", ignoreInterfragInteractions: entry.ignoreInterfragInteractions }
-    }, { preemptible: false, stage: "worker.refine-workspace-seed" });
-    const status = refined?.forceField?.status;
-    if (status === "converged" || status === "not-converged") {
-      post({ id: request.id, stage: "refined", result: refined });
-      return;
-    }
+  if (!entry || !embedded || seed?.length !== embedded.length || !seed.every((value, index) => value === embedded[index])) {
+    post({ id: request.id, stage: "complete" });
+    return;
   }
-  post({ id: request.id, stage: "complete" });
+
+  // Opening Workspace always runs native UFF. Seed it from the same quality
+  // refinement as default Spin 3D, including when Spin's preview was set to Fast.
+  const refined = await runRefine(entry, {
+    ...request,
+    options: { optimize: "mmff94s", ignoreInterfragInteractions: entry.ignoreInterfragInteractions }
+  }, { preemptible: false, stage: "worker.refine-workspace-seed" });
+  const status = refined?.forceField?.status;
+  if (status === "converged" || status === "not-converged") {
+    post({ id: request.id, stage: "refined", result: refined });
+  } else {
+    post({ id: request.id, stage: "error" });
+  }
 }
 
 // Engine selection. RDKit ETKDG is the fast embed; it is used when its WASM module is

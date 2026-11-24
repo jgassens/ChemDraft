@@ -87,6 +87,7 @@ export interface Engine3dMoleculeSessionOptions {
 const Engine3dWorkspaceReadyTimeoutMs = 12_000;
 const Engine3dWorkspaceReadyPollMs = 80;
 const Engine3dWorkspaceSettleTimeoutMs = 2_000;
+const WorkspaceSeedRefinementWarning = "Could not refine the 3D starting shape. The structure may look bent.";
 
 export async function readEngine3dSidecarStatus(): Promise<Engine3dSidecarStatus | undefined> {
   try {
@@ -157,7 +158,8 @@ export function createEngine3dSessionInputFromMolecule(
 export async function openEngine3dWorkspaceSession(
   options: Engine3dWorkspaceStartOptions
 ): Promise<Engine3dWorkspaceSessionState> {
-  const input = await prepareEngine3dWorkspaceInput(options);
+  const warnings = [...(options.warnings ?? [])];
+  const input = await prepareEngine3dWorkspaceInput(options, warnings);
   const createRequest: Engine3DCreateSessionRequest = {
     protocolVersion: Engine3DProtocolVersion,
     type: "createSession",
@@ -167,7 +169,7 @@ export async function openEngine3dWorkspaceSession(
   const started = await startEngine3dSidecarSession([engine3dProtocolLine(createRequest)]);
   let state = reduceEngine3dSidecarOutput({
     ...createInitialEngine3dWorkspaceSessionState(started.processSessionId),
-    warnings: [...(options.warnings ?? [])],
+    warnings,
     stereo: options.checkStereo ? {
       input, check: options.checkStereo, rejected: 0, needsReseed: false,
       failedSeeds: []
@@ -195,7 +197,8 @@ export async function openEngine3dWorkspaceSession(
 }
 
 async function prepareEngine3dWorkspaceInput(
-  { input, checkStereo }: Engine3dWorkspaceStartOptions
+  { input, checkStereo }: Engine3dWorkspaceStartOptions,
+  warnings: string[]
 ): Promise<Engine3DSessionInput> {
   const { atomIdByMolfileIndex, coords3dByAtomId, molfile } = input;
   const seed = coords3dByAtomId && engine3dCoordsInAtomOrder(atomIdByMolfileIndex, coords3dByAtomId);
@@ -203,13 +206,18 @@ async function prepareEngine3dWorkspaceInput(
 
   // The sidecar's short UFF startup pass cannot repair some warped ETKDG
   // macrocycles. Reuse the worker's refinement of this exact embed before UFF.
-  const refined = await refineWorkspaceSeed(molfile, seed);
-  if (!refined || refined.length !== seed.length || !refined.every(Number.isFinite)) return input;
+  const outcome = await refineWorkspaceSeed(molfile, seed);
+  if (!outcome || outcome.status === "skipped") return input;
 
-  const positions = Object.fromEntries(atomIdByMolfileIndex.map((id, i) => [id, {
-    x: refined[3 * i], y: refined[3 * i + 1], z: refined[3 * i + 2]
-  }]));
-  return checkStereo?.(positions) ? input : { ...input, coords3dByAtomId: positions };
+  if (outcome.status === "refined" && outcome.coords.length === seed.length && outcome.coords.every(Number.isFinite)) {
+    const refined = outcome.coords;
+    const positions = Object.fromEntries(atomIdByMolfileIndex.map((id, i) => [id, {
+      x: refined[3 * i], y: refined[3 * i + 1], z: refined[3 * i + 2]
+    }]));
+    if (!checkStereo?.(positions)) return { ...input, coords3dByAtomId: positions };
+  }
+  warnings.push(WorkspaceSeedRefinementWarning);
+  return input;
 }
 
 export async function pollEngine3dWorkspaceSessionState(

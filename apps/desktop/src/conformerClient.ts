@@ -27,6 +27,10 @@ export interface ConformerTraceContext {
   sessionId: string;
 }
 
+type WorkspaceSeedRefinement =
+  | { status: "refined"; coords: Float64Array }
+  | { status: "skipped" | "failed" };
+
 export interface ConformerWorkerClient {
   /** Stream a generation; returns a cancel that detaches the handlers (the worker
    *  still finishes and caches, so a cancelled request warms future ones). */
@@ -39,7 +43,7 @@ export interface ConformerWorkerClient {
     traceContext?: ConformerTraceContext
   ): () => void;
   /** Use the worker's cached refinement only for the original embedded coordinates. */
-  refineWorkspaceSeed(molfile: string, seed: Float64Array): Promise<Float64Array | undefined>;
+  refineWorkspaceSeed(molfile: string, seed: Float64Array): Promise<WorkspaceSeedRefinement>;
   /** Fire-and-forget: compute + cache so a subsequent generate is instant. */
   prefetch(
     molfile: string,
@@ -58,13 +62,16 @@ type PendingRequest = {
   handlers: ConformerStageHandlers;
   traceContext?: ConformerTraceContext;
 } | {
-  onWorkspaceSeed: (coords?: Float64Array) => void;
+  onWorkspaceSeed: (outcome: WorkspaceSeedRefinement) => void;
   traceContext?: never;
 };
 
 /** Stop recreating crashed workers after this many restarts — something is
  *  systematically wrong and an in-page fallback / error status takes over. */
 const MAX_WORKER_RESTARTS = 3;
+// A cached embed needs only minimization. Give it a short budget for queueing and
+// refinement so the optional step adds at most 3 s before sidecar startup.
+const WORKSPACE_SEED_TIMEOUT_MS = 3_000;
 
 export function createConformerWorkerClient(
   workerFactory?: () => Worker
@@ -86,9 +93,12 @@ export function createConformerWorkerClient(
     const request = pending.get(id);
     if (!request) return;
     if ("onWorkspaceSeed" in request) {
-      if (stage === "complete" || stage === "error" || stage === "refined") {
-        pending.delete(id);
-        request.onWorkspaceSeed(result?.mapping.coords3dByOriginalAtom);
+      if (stage === "refined" && result) {
+        request.onWorkspaceSeed({ status: "refined", coords: result.mapping.coords3dByOriginalAtom });
+      } else if (stage === "complete") {
+        request.onWorkspaceSeed({ status: "skipped" });
+      } else if (stage === "error" || stage === "refined") {
+        request.onWorkspaceSeed({ status: "failed" });
       }
       return;
     }
@@ -142,7 +152,7 @@ export function createConformerWorkerClient(
         path: "worker",
         error: "conformer worker crashed"
       }));
-      if ("onWorkspaceSeed" in request) request.onWorkspaceSeed();
+      if ("onWorkspaceSeed" in request) request.onWorkspaceSeed({ status: "failed" });
       else request.handlers.onError("conformer worker crashed", { workerCrashed: true });
     }
   };
@@ -221,14 +231,28 @@ export function createConformerWorkerClient(
     refineWorkspaceSeed(molfile, workspaceSeed) {
       return new Promise((resolve) => {
         const id = nextId++;
-        pending.set(id, { onWorkspaceSeed: resolve });
+        const finish = (outcome: WorkspaceSeedRefinement) => {
+          clearTimeout(timeout);
+          pending.delete(id);
+          resolve(outcome);
+        };
+        const timeout = setTimeout(() => {
+          finish({ status: "failed" });
+          // A running minimization can finish and cache its result. Drop the job
+          // if it is still queued and ignore any reply that arrives after timeout.
+          try {
+            send({ kind: "cancel", id });
+          } catch {
+            // The worker is no longer accepting messages.
+          }
+        }, WORKSPACE_SEED_TIMEOUT_MS);
+        pending.set(id, { onWorkspaceSeed: finish });
         try {
           if (send({ kind: "refine-workspace-seed", id, molfile, workspaceSeed })) return;
         } catch {
           // A worker that can no longer accept requests cannot refine this seed.
         }
-        pending.delete(id);
-        resolve(undefined);
+        finish({ status: "failed" });
       });
     },
     prefetch(molfile, originalAtomCount, options, enginePreference, traceContext) {
@@ -251,7 +275,7 @@ export function getConformerWorkerClient(): ConformerWorkerClient | null {
   return client;
 }
 
-export function refineWorkspaceSeed(molfile: string, coords: Float64Array): Promise<Float64Array | undefined> | undefined {
+export function refineWorkspaceSeed(molfile: string, coords: Float64Array): Promise<WorkspaceSeedRefinement> | undefined {
   // Only an existing worker can own the embed that seeded this Workspace.
   return client?.refineWorkspaceSeed(molfile, coords);
 }
