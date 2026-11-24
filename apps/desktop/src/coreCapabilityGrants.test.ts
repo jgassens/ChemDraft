@@ -76,8 +76,9 @@ describe("core capability grants", () => {
       }
     }
     expect(grants.find(grant => grant.identifier === "office-object")!.permissions).toEqual([
-      "core:window:allow-set-title", "core:window:allow-get-all-windows", "core:window:allow-is-visible",
-      "dialog:allow-message", "allow-office-object-connect", "allow-office-toolset-emit",
+      "core:window:allow-get-all-windows", "core:window:allow-is-visible",
+      "dialog:allow-message", "allow-office-object-connect", "allow-office-object-set-title",
+      "allow-office-toolset-emit",
       "allow-office-object-update", "allow-office-object-close", "allow-window-first-paint",
       "allow-read-clipboard-payload", "allow-write-clipboard-items", "allow-rasterize-svg", "allow-list-system-fonts",
       "allow-popup-canvas-context-menu", "allow-document-canvas-occlusion",
