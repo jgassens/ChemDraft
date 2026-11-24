@@ -1,5 +1,5 @@
 import { applyPatches, nativeDrawingStyleFromObjectStyle, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
-import { atomPairOverlaps, distance, evaluateLayoutContacts, ringInteriorDoubleBondSides, transformPointForObject } from "@chemdraft/layout-engine";
+import { atomPairOverlaps, distance, evaluateLayoutContacts, reconcileRingDoubleBondSides, transformPointForObject } from "@chemdraft/layout-engine";
 import { moleculeGeometryFromAtoms, stereoPerceptionMolfile, type PastedStructureDepiction } from "./molecule";
 import { phase4Timestamp } from "./shared";
 
@@ -187,28 +187,10 @@ export function cleanUpMoleculeSelection2d(
   // Rotation uses the stored frame's centre as its SVG pivot. Keep that frame for a rotated
   // partial edit so unchanged native coordinates also keep their exact rendered positions.
   const result = { ...molecule, atoms, ...(molecule.rotation === 0 ? moleculeGeometryFromAtoms(atoms) : {}) };
-  result.bonds = preserveRingDoubleBondSides(molecule, result);
+  result.bonds = reconcileRingDoubleBondSides(molecule, result);
   // The native records, not the engine's rebuilt graph, are the chemistry source of truth.
   engines.assertIdentity(source, stereoPerceptionMolfile(result));
   return result;
-}
-
-function preserveRingDoubleBondSides(before: MoleculeObject, after: MoleculeObject): MoleculeObject["bonds"] {
-  if (!before.bonds.some(bond => bond.order === "double" &&
-    (bond.display?.doubleBondSide === "left" || bond.display?.doubleBondSide === "right"))) return before.bonds;
-  const previousInteriors = ringInteriorDoubleBondSides(before);
-  if (!previousInteriors.size) return before.bonds;
-  const nextInteriors = ringInteriorDoubleBondSides(after);
-  let bonds = before.bonds;
-  before.bonds.forEach((bond, i) => {
-    const side = bond.display?.doubleBondSide;
-    if (side !== "left" && side !== "right") return;
-    const previous = previousInteriors.get(bond.id), next = nextInteriors.get(bond.id);
-    if (!previous || !next || previous === next) return;
-    if (bonds === before.bonds) bonds = [...bonds];
-    bonds[i] = { ...bond, display: { ...bond.display, doubleBondSide: side === "left" ? "right" : "left" } };
-  });
-  return bonds;
 }
 
 /** Prepare every partial target before applying any patch; callers commit once with one label. */

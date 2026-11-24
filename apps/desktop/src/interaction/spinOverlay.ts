@@ -39,7 +39,7 @@ export function spinJoinedBondFragments(
     atoms: molecule.atoms.map((atom, index) => ({ ...atom, x: projection.atoms[index].sx, y: projection.atoms[index].sy })),
     bonds: molecule.bonds.map((bond, index) => ({ ...bond, display: { ...bond.display, bondStyle: undefined, depthWeight: weights[index] } }))
   };
-  projected.bonds = projectedDoubleBondSides(projected);
+  projected.bonds = projectedDoubleBondSides(projected, molecule);
   const page = { ...createEmptyDocument().pages[0], objects: [projected] };
   const layers: PageSvgElementFragment[] = [];
   const visit = (fragment: PageSvgElementFragment) => {

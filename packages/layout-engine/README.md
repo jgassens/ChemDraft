@@ -9,6 +9,14 @@ continues to measure the stored frame; neither helper changes text or document g
 
 It also owns pure molecule-growth geometry helpers used by drawing tools, such as planning the next bonded atom position from an existing native molecule graph. The desktop app may consume these plans, but document mutation remains in `chem-core` patches and app workflow code.
 
+Canvas and export derive an automatic ring double bond's secondary stroke from the ring interior.
+Spin preview, Spin release, native rotations and flips, and both full and partial Clean Up
+revalidate stored offsets against their final coordinates. A moved ring replaces an imported
+position that would straddle the bond axis or draw outward. A position explicitly chosen in
+ChemDraft retains its relation to the ring if the ring's winding changes. Older documents have
+no position provenance. Their Center positions are preserved, and their Left and Right positions
+are revalidated when the ring moves.
+
 `src/labelGrammar.ts` is the one atom-label grammar: what a label's text means (an element, one heavy
 atom spelled with its hydrogens, a template-library abbreviation or an element carrying them, a
 placeholder, a bare formula, or unrecognized text), which atom of a group its bonds reach, and the

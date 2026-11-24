@@ -44,7 +44,8 @@ import {
   type TableObject,
   type UnknownCompatibilityObject
 } from "@chemdraft/chem-core";
-import { measureTextRun, planTableLayout, textObjectSpansForRendering, transformPointForObject } from "@chemdraft/layout-engine";
+import { importedRingDoubleBondPlacements, measureTextRun, offsetDoubleBondSideTowardPoint, planTableLayout,
+  textObjectSpansForRendering, transformPointForObject } from "@chemdraft/layout-engine";
 import { bondedElementLabelMeaning, isGenericAtomLabel } from "@chemdraft/template-library";
 import { planMoleculeAtomLabels } from "@chemdraft/layout-engine";
 import { sha256Hex, utf8Bytes, utf8String } from "./sha256";
@@ -4112,6 +4113,7 @@ function importFragment(
   const cdxmlIdByBondId = new Map<string, string>();
   const cdxmlUnknownBondOrdersByBondId: Record<string, string> = {};
   const dashedSingleBondIds: string[] = [];
+  const explicitPositionIds = new Set<string>();
   const bonds: MoleculeBond[] = bondElements.map((bondElement, bondIndex) => {
     const bondId = `bond_${String(bondIndex + 1).padStart(3, "0")}`;
     const color = colorForCdxmlIndex(bondElement.attributes.color ?? fragment.attributes.color, context.colorTable);
@@ -4141,8 +4143,9 @@ function importFragment(
     if (crossingPartnerIds.length > 0) {
       context.crossingHints.push({ sourceBondId: cdxmlBondId, partnerBondIds: crossingPartnerIds });
     }
-    const doubleBondSide =
-      doubleBondSideFromCdxmlDoublePosition(bondElement.attributes.DoublePosition)
+    const explicitSide = doubleBondSideFromCdxmlDoublePosition(bondElement.attributes.DoublePosition);
+    if (order === "double" && explicitSide) explicitPositionIds.add(bondId);
+    const doubleBondSide = explicitSide
       ?? (order === "double" ? doubleBondSideFromCircularOrdering(bondElement, bondElements, atomByCdxmlId) : undefined);
     if (doubleBondSide) {
       bond.display = { ...(bond.display ?? {}), doubleBondSide };
@@ -4251,7 +4254,7 @@ function importFragment(
       sourceObjectId: objectId
     });
   }
-  const normalizedBonds = refreshImportedCyclicDoubleBondSides(atoms, joinedBonds);
+  const normalizedBonds = refreshImportedCyclicDoubleBondSides(atoms, joinedBonds, explicitPositionIds);
   // Order=1.5 bonds cannot say whether a ring N is pyridine-type or an N–H; the file's NumHydrogens
   // can, so it is kept for the Kekulé resolution to honour. Literal labels also retain an explicit
   // count: their text supplies no implicit hydrogens and cannot replace the source constraint.
@@ -4373,160 +4376,23 @@ function importFragment(
   };
 }
 
-interface ImportedRingCycle {
-  atomIds: string[];
-  bondIds: string[];
-  center: Point;
-}
-
 function refreshImportedCyclicDoubleBondSides(
-  atoms: readonly MoleculeAtom[],
-  bonds: readonly MoleculeBond[]
+  atoms: MoleculeAtom[],
+  bonds: MoleculeBond[],
+  explicitPositionIds: ReadonlySet<string>
 ): MoleculeBond[] {
-  const cycles = findImportedRingCycles(atoms, bonds, new Set([5, 6]));
-  if (cycles.length === 0) {
-    return [...bonds];
-  }
-
-  const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
-  const cyclesByBondId = new Map<string, ImportedRingCycle[]>();
-  cycles.forEach((cycle) => {
-    cycle.bondIds.forEach((bondId) => {
-      cyclesByBondId.set(bondId, [...(cyclesByBondId.get(bondId) ?? []), cycle]);
-    });
-  });
-
-  return bonds.map((bond) => {
-    if (bond.order !== "double") {
-      return bond;
-    }
-
-    const owningCycles = cyclesByBondId.get(bond.id) ?? [];
-    const fromAtom = atomById.get(bond.fromAtomId);
-    const toAtom = atomById.get(bond.toAtomId);
-    if (owningCycles.length === 0 || !fromAtom || !toAtom) {
-      return bond;
-    }
-
-    const currentSide = bond.display?.doubleBondSide;
-    // An explicit centered position is a display choice, not a ring-interior hint.
-    if (currentSide === "center") {
-      return bond;
-    }
-    // Prefer the ring whose centroid already matches the current side; otherwise place the
-    // secondary line in the smallest owning ring (the conventional choice for fused systems),
-    // with a stable secondary key so the result is deterministic regardless of traversal order.
-    const cycle =
-      owningCycles.find((candidate) => sideForPointRelativeToBond(fromAtom, toAtom, candidate.center) === currentSide)
-      ?? [...owningCycles].sort(
-        (left, right) =>
-          left.atomIds.length - right.atomIds.length ||
-          canonicalImportedRingCycleKey(left.bondIds).localeCompare(canonicalImportedRingCycleKey(right.bondIds))
-      )[0];
-    const side = cycle ? sideForPointRelativeToBond(fromAtom, toAtom, cycle.center) : undefined;
-    if (!side || currentSide === side) {
-      return bond;
-    }
-
-    return {
-      ...bond,
-      display: { ...(bond.display ?? {}), doubleBondSide: side }
-    };
+  const { ringBondIds, interiorSides } = importedRingDoubleBondPlacements({ atoms, bonds });
+  if (!ringBondIds.size) return bonds;
+  return bonds.map(bond => {
+    if (!ringBondIds.has(bond.id)) return bond;
+    const inside = interiorSides.get(bond.id);
+    const display = { ...bond.display };
+    if (display.doubleBondSide !== "center" && inside) display.doubleBondSide = inside;
+    if (explicitPositionIds.has(bond.id)) display.doubleBondSideSource = "imported";
+    return Object.keys(display).length ? { ...bond, display } : bond;
   });
 }
 
-const IMPORTED_RING_CYCLE_VISIT_LIMIT = 250_000;
-
-function findImportedRingCycles(
-  atoms: readonly MoleculeAtom[],
-  bonds: readonly MoleculeBond[],
-  ringSizes: ReadonlySet<number>
-): ImportedRingCycle[] {
-  const targetSizes = [...ringSizes].filter((size) => Number.isInteger(size) && size >= 3).sort((a, b) => a - b);
-  const maxRingSize = targetSizes[targetSizes.length - 1];
-  if (maxRingSize === undefined) {
-    return [];
-  }
-
-  const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
-  const adjacency = new Map<string, { atomId: string; bondId: string }[]>();
-  bonds.forEach((bond) => {
-    if (!atomById.has(bond.fromAtomId) || !atomById.has(bond.toAtomId)) {
-      return;
-    }
-
-    adjacency.set(bond.fromAtomId, [
-      ...(adjacency.get(bond.fromAtomId) ?? []),
-      { atomId: bond.toAtomId, bondId: bond.id }
-    ]);
-    adjacency.set(bond.toAtomId, [
-      ...(adjacency.get(bond.toAtomId) ?? []),
-      { atomId: bond.fromAtomId, bondId: bond.id }
-    ]);
-  });
-
-  const cycles = new Map<string, ImportedRingCycle>();
-  // Bound the path enumeration: dense polycyclic graphs (e.g. metal-organic cages) can make
-  // the DFS combinatorial. Normal organic structures never approach this budget; pathological
-  // inputs degrade gracefully (some cyclic double-bond sides left un-normalized) instead of hanging.
-  let visitBudget = IMPORTED_RING_CYCLE_VISIT_LIMIT;
-  const visit = (startAtomId: string, atomId: string, atomIds: string[], bondIds: string[]) => {
-    if (visitBudget <= 0) {
-      return;
-    }
-    visitBudget -= 1;
-    if (ringSizes.has(atomIds.length)) {
-      const closingBond = (adjacency.get(atomId) ?? []).find((edge) => edge.atomId === startAtomId);
-      if (closingBond) {
-        const cycleBondIds = [...bondIds, closingBond.bondId];
-        const key = canonicalImportedRingCycleKey(cycleBondIds);
-        if (!cycles.has(key)) {
-          const cycleAtomIds = [...atomIds];
-          cycles.set(key, {
-            atomIds: cycleAtomIds,
-            bondIds: cycleBondIds,
-            center: centroidOfImportedAtoms(cycleAtomIds.map((id) => atomById.get(id)).filter((atom): atom is MoleculeAtom => Boolean(atom)))
-          });
-        }
-      }
-    }
-
-    if (atomIds.length >= maxRingSize) {
-      return;
-    }
-
-    (adjacency.get(atomId) ?? []).forEach((edge) => {
-      if (edge.atomId === startAtomId || atomIds.includes(edge.atomId)) {
-        return;
-      }
-
-      visit(startAtomId, edge.atomId, [...atomIds, edge.atomId], [...bondIds, edge.bondId]);
-    });
-  };
-
-  atoms.forEach((atom) => {
-    visit(atom.id, atom.id, [atom.id], []);
-  });
-
-  return [...cycles.values()];
-}
-
-function canonicalImportedRingCycleKey(bondIds: readonly string[]): string {
-  return [...bondIds].sort().join("|");
-}
-
-function centroidOfImportedAtoms(atoms: readonly MoleculeAtom[]): Point {
-  if (atoms.length === 0) {
-    return { x: 0, y: 0 };
-  }
-
-  return atoms.reduce<Point>(
-    (sum, atom) => ({ x: sum.x + atom.x / atoms.length, y: sum.y + atom.y / atoms.length }),
-    { x: 0, y: 0 }
-  );
-}
-
-/** Keep source runs and the baseline-to-bounds relationship, while following the live label anchor. */
 function positionRetainedAtomLabel(source: CdxElement, atom: MoleculeAtom): void {
   const text = source.kids.find(child => child.name === "t");
   if (!text) return;
@@ -4640,7 +4506,7 @@ function sideForAttachedCdxmlBond(
       ? attachedBeginId
       : undefined;
   const otherAtom = otherAtomId ? atomByCdxmlId.get(otherAtomId) : undefined;
-  return otherAtom ? sideForPointRelativeToBond(fromAtom, toAtom, otherAtom) : undefined;
+  return otherAtom ? offsetDoubleBondSideTowardPoint(fromAtom, toAtom, otherAtom) : undefined;
 }
 
 function cdxmlBondIsInCycle(bondElement: XmlElementView, bondElements: readonly XmlElementView[]): boolean {
@@ -4685,19 +4551,6 @@ function appendAdjacency(map: Map<string, Set<string>>, fromId: string, toId: st
   const neighbors = map.get(fromId) ?? new Set<string>();
   neighbors.add(toId);
   map.set(fromId, neighbors);
-}
-
-function sideForPointRelativeToBond(fromAtom: MoleculeAtom, toAtom: MoleculeAtom, point: Point): DoubleBondSide | undefined {
-  const dx = toAtom.x - fromAtom.x;
-  const dy = toAtom.y - fromAtom.y;
-  const length = Math.hypot(dx, dy);
-  if (length === 0) {
-    return undefined;
-  }
-  const normal = { x: -dy / length, y: dx / length };
-  const midpoint = { x: (fromAtom.x + toAtom.x) / 2, y: (fromAtom.y + toAtom.y) / 2 };
-  const score = (point.x - midpoint.x) * normal.x + (point.y - midpoint.y) * normal.y;
-  return score >= 0 ? "left" : "right";
 }
 
 function cdxmlDoublePositionName(side: DoubleBondSide): "Left" | "Right" | "Center" {

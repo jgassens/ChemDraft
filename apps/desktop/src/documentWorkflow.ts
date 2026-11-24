@@ -212,6 +212,9 @@ import {
   nativeMoleculeBondDrawingStyle,
   NativeAtomLabelStyleMapKeys,
   isDefaultCenteredDoubleBond,
+  offsetDoubleBondSideTowardPoint,
+  reconcileRingDoubleBondSides,
+  smallestRingAtomIdsByBondId,
   defaultMechanismArrowControls,
   mechanismArrowGeometry,
   nativeBondOrderResolution,
@@ -3515,17 +3518,7 @@ function nativeRingBonds(
 }
 
 function doubleBondSideTowardPoint(fromAtom: MoleculeAtom, toAtom: MoleculeAtom, point: PagePoint): NativeDoubleBondSide {
-  const dx = toAtom.x - fromAtom.x;
-  const dy = toAtom.y - fromAtom.y;
-  const length = Math.hypot(dx, dy);
-  if (length === 0) {
-    return "left";
-  }
-
-  const normal = { x: -dy / length, y: dx / length };
-  const midpoint = { x: (fromAtom.x + toAtom.x) / 2, y: (fromAtom.y + toAtom.y) / 2 };
-  const score = (point.x - midpoint.x) * normal.x + (point.y - midpoint.y) * normal.y;
-  return score >= 0 ? "left" : "right";
+  return offsetDoubleBondSideTowardPoint(fromAtom, toAtom, point) ?? "left";
 }
 
 function fuseNativeTemplateRingToBond(
@@ -4221,52 +4214,9 @@ function normalizeNativeAromaticTemplateBonds(molecule: MoleculeObject): Molecul
   return refreshNativeSingleBondGraph(molecule, molecule.atoms, nextBonds);
 }
 
-function refreshNativeCyclicDoubleBondSides(molecule: MoleculeObject): MoleculeObject {
-  const cycles = findNativeCarbonRingCycles(molecule, new Set([5, 6]));
-  if (cycles.length === 0) {
-    return molecule;
-  }
-
-  const atomById = new Map(molecule.atoms.map((atom) => [atom.id, atom]));
-  const cyclesByBondId = new Map<string, NativeAromaticRingCycle[]>();
-  cycles.forEach((cycle) => {
-    cycle.bondIds.forEach((bondId) => {
-      cyclesByBondId.set(bondId, [...(cyclesByBondId.get(bondId) ?? []), cycle]);
-    });
-  });
-
-  let changed = false;
-  const bonds = molecule.bonds.map((bond) => {
-    if (bond.order !== "double") {
-      return bond;
-    }
-
-    const owningCycles = cyclesByBondId.get(bond.id) ?? [];
-    const fromAtom = atomById.get(bond.fromAtomId);
-    const toAtom = atomById.get(bond.toAtomId);
-    if (owningCycles.length === 0 || !fromAtom || !toAtom) {
-      return bond;
-    }
-
-    const currentSide = bond.display?.doubleBondSide;
-    if (currentSide === "center") return bond;
-    const cycle =
-      owningCycles.find((candidate) => doubleBondSideTowardPoint(fromAtom, toAtom, candidate.center) === currentSide)
-      ?? owningCycles[0];
-    if (!cycle) {
-      return bond;
-    }
-
-    const side = doubleBondSideTowardPoint(fromAtom, toAtom, cycle.center);
-    if (currentSide === side) {
-      return bond;
-    }
-
-    changed = true;
-    return nativeBondWithOrderAndDoubleSide(bond, "double", side);
-  });
-
-  return changed ? { ...molecule, bonds } : molecule;
+function refreshNativeCyclicDoubleBondSides(before: MoleculeObject, after: MoleculeObject): MoleculeObject {
+  const bonds = reconcileRingDoubleBondSides(before, after);
+  return bonds === after.bonds ? after : { ...after, bonds };
 }
 
 function findNativeSixMemberCarbonRingCycles(molecule: MoleculeObject): NativeAromaticRingCycle[] {
@@ -4435,6 +4385,9 @@ function nativeBondWithOrderAndDoubleSide(
   doubleBondSide?: NativeDoubleBondSide
 ): MoleculeBond {
   const display = { ...(bond.display ?? {}) };
+  if (order !== "double" || doubleBondSide !== display.doubleBondSide) {
+    delete display.doubleBondSideSource;
+  }
   if (doubleBondSide) {
     display.doubleBondSide = doubleBondSide;
   } else {
@@ -9377,11 +9330,9 @@ export function applyMoleculeDoubleBondPosition(
     const bond = molecule?.bonds.find((candidate) => candidate.id === target.bondId);
     if (!molecule || !bond || bond.order !== "double") return current;
     const side = position === "automatic" ? undefined : position;
-    if (bond.display?.doubleBondSide === side) return current;
-    const display = { ...bond.display };
-    if (side === undefined) delete display.doubleBondSide;
-    else display.doubleBondSide = side;
-    const bonds = molecule.bonds.map((candidate) => candidate.id === bond.id ? { ...candidate, display } : candidate);
+    const updated = withUserDoubleBondSide(molecule, bond, side);
+    if (updated === bond) return current;
+    const bonds = molecule.bonds.map((candidate) => candidate.id === bond.id ? updated : candidate);
     return applyPatch(current, { op: "updateObject", objectId: molecule.id, changes: { bonds } }, { now: phase4Timestamp });
   }, document);
 }
@@ -9406,21 +9357,30 @@ export function applyNativeDoubleBondSideTarget(
   }
 
   const doubleBondSide = doubleBondSideForPoint(molecule, bond, point, hitTolerance);
-  if (!doubleBondSide || bond.display?.doubleBondSide === doubleBondSide) {
-    return document;
-  }
-
-  const bonds = molecule.bonds.map((candidate) =>
-    candidate.id === bond.id
-      ? { ...candidate, display: { ...(candidate.display ?? {}), doubleBondSide } }
-      : candidate
-  );
+  if (!doubleBondSide) return document;
+  const updated = withUserDoubleBondSide(molecule, bond, doubleBondSide);
+  if (updated === bond) return document;
+  const bonds = molecule.bonds.map((candidate) => candidate.id === bond.id ? updated : candidate);
 
   return applyPatch(
     document,
     { op: "updateObject", objectId: molecule.id, changes: { bonds } },
     { now: phase4Timestamp }
   );
+}
+
+function withUserDoubleBondSide(
+  molecule: MoleculeObject, bond: MoleculeBond, side: NativeDoubleBondSide
+): MoleculeBond {
+  const authoredRingOffset = (side === "left" || side === "right") && smallestRingAtomIdsByBondId(molecule).has(bond.id);
+  const source = authoredRingOffset ? "user" : undefined;
+  if (bond.display?.doubleBondSide === side && bond.display?.doubleBondSideSource === source) return bond;
+  const display = { ...bond.display };
+  if (side === undefined) delete display.doubleBondSide;
+  else display.doubleBondSide = side;
+  if (source === undefined) delete display.doubleBondSideSource;
+  else display.doubleBondSideSource = source;
+  return { ...bond, display };
 }
 
 /** Whether the atom carries an explicit label a chemist would see as deletable: a heteroatom or
@@ -12722,7 +12682,7 @@ export function rotateNativeMoleculeParts(
 
   const center = nativeMoleculePartRotationPivot(molecule, target) ?? objectCenter(bounds);
   const angleRadians = angleDegrees * Math.PI / 180;
-  const rotated = refreshNativeCyclicDoubleBondSides(normalizeNativeMoleculeGeometry({
+  const rotated = refreshNativeCyclicDoubleBondSides(molecule, normalizeNativeMoleculeGeometry({
     ...molecule,
     atoms: molecule.atoms.map((atom) => targetAtomIds.has(atom.id)
       ? { ...atom, ...rotatePointAround(atom, center, angleRadians) }
@@ -12826,7 +12786,7 @@ function rotateNativeMoleculeGeometryAroundPointPatches(
   }
 
   const angleRadians = (molecule.rotation + angleDegrees) * Math.PI / 180;
-  let nextMolecule = refreshNativeCyclicDoubleBondSides(normalizeNativeMoleculeGeometry({
+  let nextMolecule = refreshNativeCyclicDoubleBondSides(molecule, normalizeNativeMoleculeGeometry({
     ...molecule,
     rotation: 0,
     atoms: molecule.atoms.map((atom) => ({
@@ -13123,7 +13083,7 @@ export function tiltNativeMoleculeProjectedPlane(
   }
 
   const projectedPlaneCenter = projectedPlaneCenterWithDepth(center, meanAtomDepth(molecule.atoms));
-  const tiltedGeometry = refreshNativeCyclicDoubleBondSides(normalizeNativeMoleculeGeometry({
+  const tiltedGeometry = refreshNativeCyclicDoubleBondSides(molecule, normalizeNativeMoleculeGeometry({
     ...molecule,
     atoms: molecule.atoms.map((atom) => {
       const point = params.retargetAtom(atom, projectedPlaneCenter);
@@ -13178,7 +13138,7 @@ export function tiltNativeMoleculePartsProjectedPlane(
 
   const targetAtoms = molecule.atoms.filter((atom) => targetAtomIds.has(atom.id));
   const projectedPlaneCenter = projectedPlaneCenterWithDepth(center, meanAtomDepth(targetAtoms));
-  const tilted = refreshNativeCyclicDoubleBondSides(normalizeNativeMoleculeGeometry({
+  const tilted = refreshNativeCyclicDoubleBondSides(molecule, normalizeNativeMoleculeGeometry({
     ...molecule,
     atoms: molecule.atoms.map((atom) => {
       if (!targetAtomIds.has(atom.id)) {
@@ -13236,7 +13196,7 @@ export function tiltNativeMoleculeObjectsProjectedPlane(
       // tilt would seed a later single-object re-tilt with a baseline that swings the molecule
       // about the stale group pivot (the molecule appears to "remember" the group center).
       // Leaving tilt unpersisted lets a reselected member tilt cleanly about its own center.
-      const tilted = refreshNativeCyclicDoubleBondSides(normalizeNativeMoleculeGeometry({
+      const tilted = refreshNativeCyclicDoubleBondSides(object, normalizeNativeMoleculeGeometry({
         ...object,
         atoms: object.atoms.map((atom) => {
           const point = params.retargetAtom(atom, projectedPlaneCenter);
@@ -15755,7 +15715,7 @@ function flipNativeMoleculeObjectAroundPointPatches(
     return [];
   }
 
-  const flipped = refreshNativeCyclicDoubleBondSides(normalizeNativeMoleculeGeometry({
+  const flipped = refreshNativeCyclicDoubleBondSides(molecule, normalizeNativeMoleculeGeometry({
     ...molecule,
     atoms: molecule.atoms.map((atom) => ({
       ...atom,
@@ -15932,10 +15892,8 @@ export function cleanUpNativeMolecules2d(
     }
 
     const cleaned = cleanUpNativeMoleculeGeometry2d(molecule);
-    // Stripped perspective depth weights are a real change even when the geometry
-    // was already ideal (the changed-check below only compares atoms/transform).
-    const strippedDepthWeights = molecule.bonds.some((bond) => bond.display?.depthWeight !== undefined);
-    return nativeMoleculeGeometryOrTransformChanged(molecule, cleaned) || strippedDepthWeights ||
+    const bondDisplayChanged = cleaned.bonds.some((bond, index) => bond !== molecule.bonds[index]);
+    return nativeMoleculeGeometryOrTransformChanged(molecule, cleaned) || bondDisplayChanged ||
       molecule.style.projection !== cleaned.style.projection
       ? [{ op: "updateObject" as const, objectId: molecule.id, changes: cleaned }]
       : [];
@@ -16612,7 +16570,6 @@ function buildNativeMoleculeEngineRelayout(
     const {
       bondStyle: previousStyle,
       depthWeight: _depthWeight,
-      doubleBondSide: _side,
       ...restDisplay
     } = bond.display ?? {};
     const keptStyle = previousStyle === "wedge" || previousStyle === "hashed" ? undefined : previousStyle;
@@ -16633,17 +16590,17 @@ function buildNativeMoleculeEngineRelayout(
       : { ...directedBond, display: undefined };
   });
 
-  // Recompute each double bond's drawn side from the new geometry (ring doubles draw inward).
+  // Revalidate ring offsets in the final geometry. Keep the legacy non-ring placement policy.
   const geometry = moleculeGeometryFromAtoms(atoms);
-  const sideMolecule: MoleculeObject = { ...molecule, atoms, bonds: baseBonds, ...geometry };
-  const originalSides = new Map(molecule.bonds.map((bond) => [bond.id, bond.display?.doubleBondSide]));
-  const sidedBonds: MoleculeBond[] = baseBonds.map((bond) => {
-    if (bond.order !== "double") return bond;
-    // Center defaults remain automatic unless the user chose a position. Ring/alkene
-    // defaults continue to be recomputed from the new geometry as before.
-    const doubleBondSide = isDefaultCenteredDoubleBond(sideMolecule, bond)
-      ? originalSides.get(bond.id) : defaultDoubleBondSide(sideMolecule, bond);
-    const display = { ...bond.display, ...(doubleBondSide !== undefined ? { doubleBondSide } : {}) };
+  const sideMolecule = withNativeMoleculeTransform(
+    { ...molecule, atoms, bonds: baseBonds, ...geometry }, defaultNativeMoleculeTransform
+  );
+  const rings = smallestRingAtomIdsByBondId(sideMolecule);
+  const sidedBonds = reconcileRingDoubleBondSides(molecule, sideMolecule, rings).map((bond) => {
+    if (bond.order !== "double" || rings.has(bond.id) || isDefaultCenteredDoubleBond(sideMolecule, bond)) return bond;
+    const doubleBondSide = defaultDoubleBondSide(sideMolecule, bond);
+    const { doubleBondSide: _side, doubleBondSideSource: _source, ...restDisplay } = bond.display ?? {};
+    const display = { ...restDisplay, ...(doubleBondSide !== undefined ? { doubleBondSide } : {}) };
     return { ...bond, display: Object.keys(display).length ? display : undefined };
   });
 
@@ -19345,13 +19302,10 @@ export function flattenNativeMolecule3d(
     if (depth === undefined) return undefined;
     return Math.round(((depth - minDepth) / depthSpan) * 100) / 100;
   };
-  // The projection produced fresh 2D coordinates, so every double bond's "side" (which
-  // way its inner line is drawn) must be recomputed from the new geometry — otherwise
-  // ring double bonds default to the wrong side and render OUTSIDE the ring. Reuse the
-  // app's own neighbor-mass heuristic so flattened depictions match drawn ones.
+  // Use the final projected coordinates and the same placement policy as the live overlay.
   const sideMolecule: MoleculeObject = { ...molecule, atoms: nextAtoms, bonds: projectedBonds, ...geometry };
   mark("flatten.placement+depth");
-  const nextBonds = projectedDoubleBondSides(sideMolecule).map((bond, bondIndex) => {
+  const nextBonds = projectedDoubleBondSides(sideMolecule, molecule).map((bond, bondIndex) => {
     const display: NonNullable<MoleculeBond["display"]> = { ...(bond.display ?? {}) };
     const depthWeight = depthWeightFor(bondIndex);
     if (depthWeight !== undefined) display.depthWeight = depthWeight;
@@ -19576,7 +19530,7 @@ function cleanUpNativeMoleculeGeometry2d(molecule: MoleculeObject): MoleculeObje
     return { ...bond, display: Object.keys(display).length > 0 ? display : undefined };
   });
 
-  return withNativeMoleculeTransform(
+  const cleaned = withNativeMoleculeTransform(
     normalizeNativeMoleculeGeometry({
       ...molecule,
       atoms,
@@ -19586,6 +19540,7 @@ function cleanUpNativeMoleculeGeometry2d(molecule: MoleculeObject): MoleculeObje
     }),
     defaultNativeMoleculeTransform
   );
+  return { ...cleaned, bonds: reconcileRingDoubleBondSides(molecule, cleaned) };
 }
 
 function cleanUpNativeMoleculeComponent2d(input: {

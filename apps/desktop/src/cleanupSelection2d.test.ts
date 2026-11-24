@@ -128,7 +128,8 @@ describe("constrained 2D cleanup", () => {
       if (!inside) return bond;
       const doubleBondSide = bond.id === centerId ? "center" : bond.id === automaticId ? "automatic" :
         bond.id === outsideId ? (inside === "left" ? "right" : "left") : inside;
-      return { ...bond, display: { ...bond.display, doubleBondSide } };
+      return { ...bond, display: { ...bond.display, doubleBondSide,
+        ...(bond.id === outsideId ? { doubleBondSideSource: "user" } : {}) } };
     });
     const before = structuredClone(molecule);
     const depiction = depictSmiles2D(smiles);

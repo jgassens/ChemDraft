@@ -2347,7 +2347,9 @@ interface MoleculeFillAdjacencyEdge {
 
 const maxMoleculeFillCycles = 256;
 
-function moleculeFillRingCycles(object: MoleculeObject): MoleculeFillRingCycle[] {
+type MoleculeRingGraph = Pick<MoleculeObject, "atoms" | "bonds">;
+
+function moleculeFillRingCycles(object: MoleculeRingGraph): MoleculeFillRingCycle[] {
   if (object.atoms.length < 3 || object.bonds.length < 3) {
     return [];
   }
@@ -2546,7 +2548,7 @@ function pointInPolygon(point: LayoutPoint, polygon: readonly LayoutPoint[]): bo
  * ring whose interior a double bond's inner line should point into. Built from the same
  * chordless ring perception the aromatic fill uses, so it is consistent across the app.
  */
-export function smallestRingAtomIdsByBondId(object: MoleculeObject): Map<string, readonly string[]> {
+export function smallestRingAtomIdsByBondId(object: MoleculeRingGraph): Map<string, readonly string[]> {
   const result = new Map<string, readonly string[]>();
   for (const cycle of moleculeFillRingCycles(object)) {
     for (const bondId of cycle.bondIds) {
@@ -2571,14 +2573,49 @@ export function smallestRingAtomIdsByBondId(object: MoleculeObject): Map<string,
  * interior whenever exocyclic substituents outweighed the ring neighbours (e.g. an aromatic
  * ring carrying amide/carbonyl groups).
  */
-export function ringInteriorDoubleBondSides(object: MoleculeObject): Map<string, DoubleBondSide> {
+export function ringInteriorDoubleBondSides(
+  object: MoleculeRingGraph,
+  rings = smallestRingAtomIdsByBondId(object)
+): Map<string, DoubleBondSide> {
   const doubles = new Set(object.bonds.filter(bond => bond.order === "double").map(bond => bond.id));
-  return new Map([...ringInteriorBondSides(object)].filter(([id]) => doubles.has(id)));
+  return new Map([...ringInteriorBondSides(object, rings)].filter(([id]) => doubles.has(id)));
+}
+
+/** Import normalizes offsets in five- and six-membered rings. In fused systems an offset that
+ * already points into an owning ring retains that placement. Ring membership is also returned
+ * for recording the source of explicit positions on any ring. */
+export function importedRingDoubleBondPlacements(object: MoleculeRingGraph): {
+  ringBondIds: ReadonlySet<string>;
+  interiorSides: ReadonlyMap<string, DoubleBondSide>;
+} {
+  const ringBondIds = new Set<string>();
+  const interiorSides = new Map<string, DoubleBondSide>();
+  const doubles = new Map(object.bonds.filter(bond => bond.order === "double").map(bond => [bond.id, bond]));
+  if (!doubles.size) return { ringBondIds, interiorSides };
+  const atoms = new Map(object.atoms.map(atom => [atom.id, atom]));
+  const cycles = moleculeFillRingCycles(object).sort((a, b) => a.atomIds.length - b.atomIds.length);
+  for (const { atomIds, bondIds } of cycles) {
+    for (const id of bondIds) {
+      const bond = doubles.get(id);
+      if (!bond) continue;
+      ringBondIds.add(id);
+      if (atomIds.length !== 5 && atomIds.length !== 6) continue;
+      const from = atoms.get(bond.fromAtomId), to = atoms.get(bond.toAtomId);
+      if (!from || !to) continue;
+      const inside = doubleBondSideTowardRingInterior(from, to, atomIds, atoms);
+      if (inside && (!interiorSides.has(id) || inside === bond.display?.doubleBondSide)) {
+        interiorSides.set(id, inside);
+      }
+    }
+  }
+  return { ringBondIds, interiorSides };
 }
 
 /** Ring singles need the same interior direction for their asymmetric bold band. */
-function ringInteriorBondSides(object: MoleculeObject): Map<string, DoubleBondSide> {
-  const rings = smallestRingAtomIdsByBondId(object);
+function ringInteriorBondSides(
+  object: MoleculeRingGraph,
+  rings = smallestRingAtomIdsByBondId(object)
+): Map<string, DoubleBondSide> {
   const result = new Map<string, DoubleBondSide>();
   if (rings.size === 0) {
     return result;
@@ -2602,23 +2639,63 @@ function ringInteriorBondSides(object: MoleculeObject): Map<string, DoubleBondSi
   return result;
 }
 
+/** Validate stored ring-double positions against the final coordinates of a redraw. */
+export function reconcileRingDoubleBondSides(
+  before: MoleculeObject,
+  after: MoleculeObject,
+  rings = smallestRingAtomIdsByBondId(after)
+): MoleculeObject["bonds"] {
+  if (!rings.size) return after.bonds;
+
+  const previousAtoms = new Map(before.atoms.map(atom => [atom.id, atom]));
+  const nextAtoms = new Map(after.atoms.map(atom => [atom.id, atom]));
+  const previousBonds = new Map(before.bonds.map(bond => [bond.id, bond]));
+  const movedAtoms = new Set(after.atoms.filter(atom => {
+    const previous = previousAtoms.get(atom.id);
+    if (!previous || distance(previous, atom) > 0.001) return true;
+    return distance(transformPointForObject(before, previous), transformPointForObject(after, atom)) > 0.001;
+  }).map(atom => atom.id));
+  if (!movedAtoms.size) return after.bonds;
+
+  let bonds = after.bonds;
+  after.bonds.forEach((bond, index) => {
+    const side = bond.display?.doubleBondSide;
+    if (bond.order !== "double" || side === undefined || side === "automatic") return;
+    const source = bond.display?.doubleBondSideSource;
+    // Legacy Center can be an authored choice. External Center is tied to the source depiction.
+    if (side === "center" && source !== "imported") return;
+    const ring = rings.get(bond.id);
+    const from = nextAtoms.get(bond.fromAtomId), to = nextAtoms.get(bond.toAtomId);
+    if (!ring?.some(id => movedAtoms.has(id)) || !from || !to) return;
+    const inside = doubleBondSideTowardRingInterior(from, to, ring, nextAtoms);
+    if (!inside) return;
+
+    let nextSide = inside;
+    if (source === "user") {
+      const previousBond = previousBonds.get(bond.id);
+      const previousFrom = previousBond && previousAtoms.get(previousBond.fromAtomId);
+      const previousTo = previousBond && previousAtoms.get(previousBond.toAtomId);
+      const previousInside = previousFrom && previousTo &&
+        doubleBondSideTowardRingInterior(previousFrom, previousTo, ring, previousAtoms);
+      if (!previousInside) return;
+      // Carry an authored offset relative to the ring even when its winding changes.
+      nextSide = previousInside === inside ? side : side === "left" ? "right" : "left";
+    }
+    if (nextSide === side) return;
+    const display = { ...bond.display, doubleBondSide: nextSide };
+    if (source === "imported") delete display.doubleBondSideSource;
+    if (bonds === after.bonds) bonds = [...after.bonds];
+    bonds[index] = { ...bond, display };
+  });
+  return bonds;
+}
+
 function doubleBondSideTowardRingInterior(
   fromAtom: MoleculeAtom,
   toAtom: MoleculeAtom,
   ringAtomIds: readonly string[],
   atomById: ReadonlyMap<string, MoleculeAtom>
 ): DoubleBondSide | undefined {
-  const dx = toAtom.x - fromAtom.x;
-  const dy = toAtom.y - fromAtom.y;
-  const length = Math.hypot(dx, dy);
-  if (length === 0) {
-    return undefined;
-  }
-  // Bond normal, identical to bondLineSegments: normal = { x: -unit.y, y: unit.x }.
-  const nx = -dy / length;
-  const ny = dx / length;
-  const midX = (fromAtom.x + toAtom.x) / 2;
-  const midY = (fromAtom.y + toAtom.y) / 2;
   let sumX = 0;
   let sumY = 0;
   let count = 0;
@@ -2633,12 +2710,18 @@ function doubleBondSideTowardRingInterior(
   if (count === 0) {
     return undefined;
   }
-  // Side of the bond normal the ring centroid falls on. "left" offsets the inner line toward
-  // +normal (see bondLineSegments), so the inner line lands inside the ring.
-  const dot = (sumX / count - midX) * nx + (sumY / count - midY) * ny;
-  if (Math.abs(dot) < 1e-9) {
-    return undefined; // centroid on the bond axis — interior ambiguous, keep caller default
-  }
+  return offsetDoubleBondSideTowardPoint(fromAtom, toAtom, { x: sumX / count, y: sumY / count }, 1e-9);
+}
+
+/** The side whose secondary stroke faces the given point. "left" offsets toward the bond normal. */
+export function offsetDoubleBondSideTowardPoint(
+  from: LayoutPoint, to: LayoutPoint, point: LayoutPoint, axisTolerance = 0
+): "left" | "right" | undefined {
+  const geometry = nativeSegmentVectorGeometry({ x1: from.x, y1: from.y, x2: to.x, y2: to.y });
+  if (!geometry) return undefined;
+  const { normal } = geometry;
+  const dot = (point.x - (from.x + to.x) / 2) * normal.x + (point.y - (from.y + to.y) / 2) * normal.y;
+  if (Math.abs(dot) < axisTolerance) return undefined;
   return dot >= 0 ? "left" : "right";
 }
 

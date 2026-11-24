@@ -5,7 +5,7 @@ import { compareNativeVersions, isNativeRecord, nativeExtensionTarget, ownNative
 
 export const NativeDocumentBaselineAppVersion = "1.1.1";
 export const NativeDocumentFormatVersion = "1.2.0";
-export const NativeDocumentReaderVersion = "1.2.1";
+export const NativeDocumentReaderVersion = "1.2.3";
 
 export interface NativeDocumentFeatureVersion {
   introducedIn: string;
@@ -108,6 +108,9 @@ export const NativeDocumentFeatureVersions: Readonly<Record<string, NativeDocume
   // bracket metadata, 1.1.1's strict atom/bond schemas cannot retain these fields.
   "field:pages.*.objects.*[type=molecule].atoms.*.cdxmlSourceId": { introducedIn: "1.2.0", kind: "feature", ignorable: false },
   "field:pages.*.objects.*[type=molecule].bonds.*.cdxmlSourceId": { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+  "field:pages.*.objects.*[type=molecule].bonds.*.display.doubleBondSideSource": { introducedIn: "1.2.3", kind: "feature", ignorable: true },
+  'value:pages.*.objects.*[type=molecule].bonds.*.display.doubleBondSideSource="imported"': { introducedIn: "1.2.3", kind: "feature", ignorable: true },
+  'value:pages.*.objects.*[type=molecule].bonds.*.display.doubleBondSideSource="user"': { introducedIn: "1.2.3", kind: "feature", ignorable: true },
 
   // #322 typed preset metadata that 1.1.1 already preserves in its open style records.
   // Only graphics had a strict style schema: their new preset field really requires 1.2.

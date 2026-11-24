@@ -435,6 +435,8 @@ export const MoleculeAtomSchema = z
 export const MoleculeBondDisplaySchema = z
   .object({
     doubleBondSide: z.enum(["left", "right", "center", "automatic"]).optional(),
+    /** Provenance of an explicit ring-double-bond position, used when the ring is redrawn. */
+    doubleBondSideSource: z.enum(["imported", "user"]).optional(),
     /** Wavy explicitly leaves the stereocentre at fromAtomId unknown; single bonds only. */
     bondStyle: z.enum(["bold", "wedge", "hashed", "dashed", "wavy"]).optional(),
     /** Perspective depth cue baked by the 3D flatten: 0 = farthest bond, 1 = nearest.

@@ -1853,7 +1853,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.23.20.25-opus";
+const CURRENT_BUILD_STAMP = "11.23.21.20-codex";
 
 /**
  * The commit funnel's chemistry check (AGENTS.md section 7, `commitChemistryGuard.ts`). `before`
