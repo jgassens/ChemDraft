@@ -8,9 +8,15 @@ export function readGraph(mol: RdkitJsMol): RdkitJson {
   return JSON.parse(jsonMol.get_json()) as RdkitJson;
 }
 
+export function rdkitRepresentation(graph: RdkitMoleculeJson) {
+  const extensions = graph.extensions as {
+    name: string; aromaticAtoms?: number[]; aromaticBonds?: number[]; atomRings?: number[][];
+  }[] | undefined;
+  return extensions?.find(extension => extension.name === "rdkitRepresentation");
+}
+
 export function aromaticBondIndices(graph: RdkitMoleculeJson): ReadonlySet<number> {
-  const extensions = graph.extensions as { name: string; aromaticBonds?: number[] }[] | undefined;
-  return new Set(extensions?.find(extension => extension.name === "rdkitRepresentation")?.aromaticBonds);
+  return new Set(rdkitRepresentation(graph)?.aromaticBonds);
 }
 
 export function appendComponent(model: Plugin3DModel, mol: RdkitJsMol, smiles: string, coords: number[], added: number[],

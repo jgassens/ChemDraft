@@ -20,8 +20,9 @@ export function createTauriAppHandoffTransport(
 }
 
 export type AppHandoffTransportStatus =
-  | { kind: "success"; message?: string }
-  | { kind: "refused" | "cancelled" | "open-failed"; message: string };
+  | { kind: "success"; message?: never }
+  | { kind: "confirmed"; message: string }
+  | { kind: "refused" | "cancelled"; message: string };
 
 export function appHandoffResultStatus(
   method: Parameters<PluginAppHandoffTransport>[1],
@@ -34,7 +35,7 @@ export function appHandoffResultStatus(
     const result = PluginHandoffSendFileResultSchema.safeParse(reply);
     if (!result.success) return invalid();
     switch (result.data.status) {
-      case "sent": return { kind: "success", message: "Opened the handoff file in the chosen app." };
+      case "sent": return { kind: "confirmed", message: "Opened the handoff file in the chosen app." };
       case "declined": return { kind: "cancelled", message: "App handoff cancelled." };
       case "failed": return problem(`App handoff failed: ${boundedHandoffText(result.data.message)}`);
     }
@@ -44,11 +45,11 @@ export function appHandoffResultStatus(
     if (!result.success) return invalid();
     switch (result.data.status) {
       case "done":
-        if (result.data.opened) return { kind: "success", message: "Build completed and opened in the chosen app." };
+        if (result.data.opened) return { kind: "confirmed", message: "Build completed and opened in the chosen app." };
         if ("openOutput" in request && request.openOutput) {
-          return { kind: "open-failed", message: "Build completed, but the chosen app could not open it." };
+          return { kind: "confirmed", message: "Build completed, but the chosen app could not open it." };
         }
-        return { kind: "success", message: "Build completed." };
+        return { kind: "confirmed", message: "Build completed." };
       case "declined": return { kind: "cancelled", message: "Companion build cancelled." };
       case "failed": return problem(`Companion build failed: ${boundedHandoffText(result.data.message)}`);
     }

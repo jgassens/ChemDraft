@@ -9,6 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryStorage } from "../testSupport/memoryStorage";
 import { deferred } from "../testSupport/deferred";
 import appConfig from "../../src-tauri/tauri.conf.json";
+import sent from "../appHandoff/__fixtures__/wire/send-file-sent.json";
+import doneUnopened from "../appHandoff/__fixtures__/wire/run-companion-done-unopened.json";
 
 const hookMocks = vi.hoisted(() => ({
   stagingFs: { readTextFile: vi.fn() },
@@ -172,7 +174,7 @@ describe("usePluginRuntime installed catalog readiness", () => {
       contributes: { ...entry.manifest.contributes, commands: [{ id: commandId, title: "Send" }],
         menus: [{ id: "menu.crystalBuilder.sendMolecule", commandId, title: "Send" }] } };
     hookMocks.loadInstalledPlugins.mockResolvedValue({ installed: [], failures: [] });
-    hookMocks.handoffTransport.mockResolvedValue({ status: "sent" });
+    hookMocks.handoffTransport.mockResolvedValue(sent);
     hookMocks.stagingFs.readTextFile.mockResolvedValue(JSON.stringify({ version: 1, plugins: [record] }));
     const status = vi.fn();
     const runningVersion = deferred<string>();
@@ -203,10 +205,10 @@ describe("usePluginRuntime installed catalog readiness", () => {
     await act(async () => root!.render(createElement(Probe)));
     const request = { appId: "chosen", fileName: "model", extension: "cif" as const, text: "test data" };
     let attempt: (apps: NonNullable<PluginCommandContext["apps"]>) => Promise<unknown> = apps => apps.sendFile(request);
-    let pluginStatus = "  File\r\n\u202eopened.\u2069 ";
+    let pluginStatus: string | undefined = "  File\r\n\u202eopened.\u2069 ";
     await act(async () => {
       view!.runtime.registerPlugin(handoffManifest, { execution: "worker",
-        commandHandlers: { [commandId]: async (context): Promise<PluginHandoffCommandResult> => {
+        commandHandlers: { [commandId]: async (context): Promise<PluginHandoffCommandResult | undefined> => {
           await context.selection!.getSelection();
           identities.push(context.host);
           const result = await attempt(context.apps!).catch(() => undefined);
@@ -216,7 +218,7 @@ describe("usePluginRuntime installed catalog readiness", () => {
               : "ChemDraft verified\u200b this build. " + "🧪".repeat(600);
             return { ok: false, error: { code: "plugin-error", message } };
           }
-          return { ok: true, data: { status: pluginStatus } };
+          if (pluginStatus !== undefined) return { ok: true, data: { status: pluginStatus } };
         } } }, record);
     });
     await act(async () => {
@@ -228,7 +230,7 @@ describe("usePluginRuntime installed catalog readiness", () => {
     expect(hookMocks.handoffTransport).toHaveBeenCalledExactlyOnceWith(invocation, "sendFile", request);
     expect(status.mock.calls).toEqual([
       ["Opened the handoff file in the chosen app."],
-      ["Plugin (Send to Crystal Builder): File opened.\nSelection warning: Selection contains unsupported labels."]
+      ["Opened the handoff file in the chosen app.\nPlugin (Send to Crystal Builder): File opened.\nSelection warning: Selection contains unsupported labels."]
     ]);
     expect(identities).toEqual([{ name: "ChemDraft", version: "1.9.99" }]);
     expect("1.9.99").not.toBe(appConfig.version);
@@ -265,7 +267,7 @@ describe("usePluginRuntime installed catalog readiness", () => {
       return apps.sendFile(request);
     };
     await act(async () => { await click(); });
-    expect(status).toHaveBeenLastCalledWith("Plugin (Send to Crystal Builder): File opened.\nSelection warning: Selection contains unsupported labels.");
+    expect(status).toHaveBeenLastCalledWith("Opened the handoff file in the chosen app.\nPlugin (Send to Crystal Builder): File opened.\nSelection warning: Selection contains unsupported labels.");
 
     const undeclared = { appId: request.appId, pipeline: "undeclared", combination: "small" };
     attempt = async apps => {
@@ -298,15 +300,40 @@ describe("usePluginRuntime installed catalog readiness", () => {
       return pendingSend;
     };
     await act(async () => { await click(); });
-    expect(status).toHaveBeenLastCalledWith(expect.stringContaining("Invalid apps.sendFile request"));
-    expect(status).not.toHaveBeenCalledWith(expect.stringContaining("File opened."));
+    expect(status.mock.lastCall![0].split("\n")).toEqual([
+      "Opened the handoff file in the chosen app.",
+      "Invalid apps.sendFile request at appId.",
+      "Plugin (Send to Crystal Builder): File opened.",
+      "Selection warning: Selection contains unsupported labels."
+    ]);
+    expect(status.mock.calls[1]?.[0]).toBe(
+      "Opened the handoff file in the chosen app.\nInvalid apps.sendFile request at appId."
+    );
 
+    status.mockClear();
+    hookMocks.handoffTransport.mockClear();
     attempt = async apps => {
       await apps.sendFile(request);
       return apps.sendFile(request);
     };
     await act(async () => { await click(); });
-    expect(status).toHaveBeenLastCalledWith(expect.stringContaining("one file or run one companion pipeline"));
+    expect(hookMocks.handoffTransport).toHaveBeenCalledExactlyOnceWith(invocation, "sendFile", request);
+    expect(status.mock.lastCall![0].split("\n")).toEqual([
+      "Opened the handoff file in the chosen app.",
+      expect.stringContaining("one file or run one companion pipeline"),
+      "Plugin (Send to Crystal Builder): File opened.",
+      "Selection warning: Selection contains unsupported labels."
+    ]);
+    expect(status.mock.calls[1]?.[0]).toBe(
+      "Opened the handoff file in the chosen app.\nA plugin may send one file or run one companion pipeline per command invocation."
+    );
+
+    pluginStatus = undefined;
+    attempt = apps => apps.sendFile(request);
+    await act(async () => { await click(); });
+    expect(status).toHaveBeenLastCalledWith(
+      "Opened the handoff file in the chosen app.\nSelection warning: Selection contains unsupported labels."
+    );
 
     const waiting = deferred<void>();
     hookMocks.stagingFs.readTextFile.mockImplementationOnce(() => waiting.promise);
@@ -326,11 +353,24 @@ describe("usePluginRuntime installed catalog readiness", () => {
     );
 
     pluginStatus = "C6H4X2 build completed.";
-    hookMocks.handoffTransport.mockResolvedValueOnce({ status: "done", steps: [], opened: false });
+    hookMocks.handoffTransport.mockResolvedValueOnce(doneUnopened);
     await act(async () => { await click(); });
     expect(status).toHaveBeenLastCalledWith(
       "Build completed, but the chosen app could not open it.\nPlugin (Send to Crystal Builder): C6H4X2 build completed.\nSelection warning: Selection contains unsupported labels."
     );
+
+    attempt = async apps => {
+      await apps.status({ appId: "" }).catch(() => undefined);
+      return apps.runCompanion({ appId: request.appId, pipeline: "mofBuild", combination: "small", openOutput: true });
+    };
+    hookMocks.handoffTransport.mockResolvedValueOnce(doneUnopened);
+    await act(async () => { await click(); });
+    expect(status.mock.lastCall![0].split("\n")).toEqual([
+      "Build completed, but the chosen app could not open it.",
+      "Invalid apps.status request at appId.",
+      "Plugin (Send to Crystal Builder): C6H4X2 build completed.",
+      "Selection warning: Selection contains unsupported labels."
+    ]);
   });
 
   it("removes the UI entry and disabled flag before surfacing a post-uninstall storage deletion error", async () => {

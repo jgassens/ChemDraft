@@ -216,10 +216,16 @@ fn app_handoff_wire_fixtures_are_current() {
     values.insert(
         "run-companion-done-unopened".into(),
         encode(RunResult::Done {
-            steps: vec![StepResult {
-                id: "build".into(),
-                json: json!({"ok": true}),
-            }],
+            steps: vec![
+                StepResult {
+                    id: "build".into(),
+                    json: json!({"ok": true}),
+                },
+                StepResult {
+                    id: "inspect".into(),
+                    json: json!({"formula": "C6H4X2", "n_atoms": 12}),
+                },
+            ],
             opened: false,
         })
         .unwrap(),

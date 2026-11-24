@@ -55,6 +55,14 @@ const source = MoleculeObjectSchema.parse({
   bonds: [{ id: "ab", fromAtomId: "a", toAtomId: "b", order: "single" },
     { id: "bc", fromAtomId: "b", toAtomId: "c", order: "single" }]
 });
+const aromaticSource = MoleculeObjectSchema.parse({
+  ...source, structure: "c1ccccc1",
+  atoms: [[100, 100], [120, 112], [140, 100], [140, 76], [120, 64], [100, 76]].map(([x, y], i) =>
+    ({ id: "abcdef"[i], element: "C", x, y })),
+  bonds: [..."abcdef"].map((id, i) => ({
+    id: `ring-${id}`, fromAtomId: id, toAtomId: "bcdefa"[i], order: i % 2 === 0 ? "double" : "single"
+  }))
+});
 
 const present = () => getAssistantHistoryPort().read("initial")!;
 const drawn = () => present().pages[0]!.objects.find(object => object.id === source.id) as typeof source;
@@ -138,8 +146,7 @@ it("captures selected atom IDs at command start and restores the single marking 
   const runningVersion = "1.9.99";
   expect(runningVersion).not.toBe(appConfig.version);
   host.getVersion.mockResolvedValue(runningVersion);
-  const { atoms, ...rest } = source;
-  await render({ ...rest, atoms: atoms.filter(atom => atom.element !== "He") });
+  await render(aromaticSource);
   await selectAtom("a");
   const started = deferred<void>();
   const proceed = deferred<void>();
@@ -168,10 +175,10 @@ it("captures selected atom IDs at command start and restores the single marking 
   const markerIds = drawn().atoms.filter(atom => atom.element === "X").map(atom => atom.id);
   expect(markerIds).toHaveLength(2);
   expect(nativeSelection()).toEqual(markerIds);
-  expect(drawn().bonds.slice(2)).toMatchObject([{ fromAtomId: "a", toAtomId: markerIds[0], order: "single" },
+  expect(drawn().bonds.slice(aromaticSource.bonds.length)).toMatchObject([{ fromAtomId: "a", toAtomId: markerIds[0], order: "single" },
     { fromAtomId: "c", toAtomId: markerIds[1], order: "single" }]);
   const marked = (await ensureRdkit()).get_mol(drawn().structure);
-  try { expect(marked?.get_smiles?.()).toBe("*CCC*"); } finally { marked?.delete(); }
+  try { expect(marked?.get_smiles?.()).toBe("*c1cccc(*)c1"); } finally { marked?.delete(); }
   await click(container.querySelector(".page")!, { x: 400, y: 400 });
   expect(present().selection.objectIds).toEqual([]);
   await menu("edit.undo");
@@ -193,13 +200,18 @@ it.each(["web", "native timeout"] as const)("omits host identity for %s", async 
   try {
     await render(source);
     const handler = vi.fn((context: PluginCommandContext) => context.host);
-    const invocation = register(handler).invokeCommand(commandId);
+    const runtime = register(handler);
+    const invocation = runtime.invokeCommand(commandId);
     if (host.native) expect(handler).not.toHaveBeenCalled();
     await vi.runOnlyPendingTimersAsync();
     await expect(invocation).resolves.toBeUndefined();
     expect(handler).toHaveBeenCalledOnce();
     expect(host.getVersion).toHaveBeenCalledTimes(Number(host.native));
     lateVersion.resolve("1.9.99");
+    await vi.runOnlyPendingTimersAsync();
+    await expect(runtime.invokeCommand(commandId)).resolves.toEqual(host.native
+      ? { name: "ChemDraft", version: "1.9.99" } : undefined);
+    expect(host.getVersion).toHaveBeenCalledTimes(Number(host.native));
   } finally {
     vi.useRealTimers();
   }
@@ -233,16 +245,17 @@ it.each([
   expect(host.transport).toHaveBeenCalledOnce();
   const lines = [...container.querySelectorAll("[data-status-message] .status-message-line")].map(el => el.textContent);
   expect(lines).toEqual([
+    "Opened the handoff file in the chosen app.",
     "Plugin (Crystal Builder Plugin): File opened.",
     expect.stringMatching(/^Selection warning: Atom label "/)
   ]);
-  expect(lines[1]).toContain(expected);
-  expect(lines[1]).not.toMatch(/[\p{Cc}\p{Cf}\u2028\u2029]/u);
-  expect([...lines[1]!.slice("Selection warning: ".length)].length).toBeLessThanOrEqual(501);
+  expect(lines[2]).toContain(expected);
+  expect(lines[2]).not.toMatch(/[\p{Cc}\p{Cf}\u2028\u2029]/u);
+  expect([...lines[2]!.slice("Selection warning: ".length)].length).toBeLessThanOrEqual(501);
 });
 
 it("refuses an RDKit valence failure in a batch without changing the drawing or selection", async () => {
-  await render({ ...source, structure: "CCC.[He]" });
+  await render({ ...aromaticSource, structure: "c1ccccc1.[He]", atoms: [...aromaticSource.atoms, source.atoms[3]!] });
   await selectAtom("a");
   const before = present();
   await act(async () => {
@@ -256,7 +269,7 @@ it("refuses an RDKit valence failure in a batch without changing the drawing or 
 });
 
 it("reads live marked content under fixed IDs and undoes and redoes two separate marks", async () => {
-  await render({ ...source, atoms: source.atoms.filter(atom => atom.element !== "He") });
+  await render(aromaticSource);
   await marqueeAtom("a");
   const before = present();
   const beforeSelection = nativeSelection();

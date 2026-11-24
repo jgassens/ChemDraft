@@ -102,7 +102,13 @@ export type DesktopStructureFromSmilesProvider = (
 export interface AppHandoffMenuFeedback {
   pending: number;
   confirmed?: string;
-  problems: Map<Parameters<PluginAppHandoffTransport>[1], Exclude<AppHandoffTransportStatus, { kind: "success" }>>;
+  problems: Map<Parameters<PluginAppHandoffTransport>[1], Exclude<AppHandoffTransportStatus, { kind: "success" | "confirmed" }>>;
+}
+
+export function appHandoffFeedbackMessages(feedback: AppHandoffMenuFeedback): string[] {
+  const messages = Array.from(feedback.problems.values(), ({ message }) => message);
+  if (feedback.confirmed) messages.unshift(feedback.confirmed);
+  return messages;
 }
 
 function freezeOverlayContent(sections: CanvasOverlayContentSection[]): readonly CanvasOverlayContentSection[] {
@@ -413,12 +419,17 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     key: options.getActiveDocumentKey?.() ?? documentIdentityKey(options.getActiveDocument())
   });
   let nativeIdentity: PluginCommandContext["host"];
-  let nativeIdentityReady = isTauriHost() ? new Promise<string | undefined>(resolve => {
-    const timer = setTimeout(() => resolve(undefined), 250);
+  let nativeIdentityReady = isTauriHost() ? new Promise<void>(resolve => {
+    const timer = setTimeout(resolve, 250);
     void import("@tauri-apps/api/app").then(({ getVersion }) => getVersion())
-      .then(resolve, () => resolve(undefined)).finally(() => clearTimeout(timer));
-  }).then(version => {
-    if (version) nativeIdentity = Object.freeze({ name: "ChemDraft", version });
+      .then(version => {
+        if (version) nativeIdentity = Object.freeze({ name: "ChemDraft", version });
+      }, () => undefined)
+      .finally(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+  }).then(() => {
     nativeIdentityReady = undefined;
   }) : undefined;
   class DesktopPluginHost extends PluginHost {
@@ -536,27 +547,24 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       request: Parameters<PluginAppHandoffTransport>[2], result: Promise<unknown>
     ): void {
       const feedback = handoffFeedback.get(invocation);
-      const previousProblems = new Map(feedback?.problems);
-      const previousProblem = previousProblems.get(method);
+      const previousProblem = feedback?.problems.get(method);
       if (feedback) feedback.pending++;
       const report = (status?: AppHandoffTransportStatus) => {
         if (feedback) feedback.pending--;
         if (handoffFeedback.get(invocation) !== feedback) return;
         if (!status) return;
-        if (status.kind === "success") {
+        if (status.kind === "success" || status.kind === "confirmed") {
+          if (feedback && status.kind === "confirmed") feedback.confirmed = status.message;
           // A retry must have started after the refusal it clears.
           if (previousProblem?.kind === "refused" && feedback?.problems.get(method) === previousProblem) {
             feedback.problems.delete(method);
           }
-          if (feedback && (feedback.problems.has(method) ||
-              [...feedback.problems].some(([key, problem]) => previousProblems.get(key) !== problem))) return;
-          if (feedback && status.message) feedback.confirmed = status.message;
-          if (feedback?.pending) return;
         } else {
           feedback?.problems.set(method, status);
-          if (feedback && (method === "sendFile" || method === "runCompanion")) feedback.confirmed = undefined;
         }
-        if (status.message) options.onAppHandoffStatus?.(status.message);
+        if (status.message) {
+          options.onAppHandoffStatus?.(feedback ? appHandoffFeedbackMessages(feedback).join("\n") : status.message);
+        }
       };
       void result.then(value => report(appHandoffResultStatus(method, request, value)),
         (error: unknown) => report(appHandoffRefusal(error)))

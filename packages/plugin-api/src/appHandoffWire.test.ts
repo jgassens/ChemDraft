@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { PluginAppHandoffSchemas } from "./index";
+import { PluginAppHandoffSchemas, PluginHandoffRunCompanionResultSchema } from "./index";
 
 const fixtureDir = fileURLToPath(new URL("../../../apps/desktop/src/appHandoff/__fixtures__/wire/", import.meta.url));
 const fixtureSchemas = [
@@ -14,8 +14,12 @@ const fixtureSchemas = [
 describe("app handoff serde/Zod wire parity", () => {
   // Private dialog snapshots use the desktop dialog schema, tested in dialogProtocol.test.ts.
   const fixtures = readdirSync(fixtureDir).filter(name => name.endsWith(".json") && !name.startsWith("dialog-")).sort();
-  it("includes the native result for a completed build that could not open", () => {
-    expect(fixtures).toContain("run-companion-done-unopened.json");
+  it("retains inspection results when a completed build could not open", () => {
+    const value: unknown = JSON.parse(readFileSync(join(fixtureDir, "run-companion-done-unopened.json"), "utf8"));
+    expect(PluginHandoffRunCompanionResultSchema.parse(value)).toMatchObject({
+      status: "done", opened: false,
+      steps: expect.arrayContaining([{ id: "inspect", json: { formula: "C6H4X2", n_atoms: 12 } }])
+    });
   });
   for (const name of fixtures) {
     it(`parses Rust's ${name} without stripping any fields`, () => {

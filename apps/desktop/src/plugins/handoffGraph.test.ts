@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import { createEmptyDocument, nativeDrawingStyleFromObjectStyle, type ChemDraftDocument, type MoleculeObject, type ReactionObject } from "@chemdraft/chem-core";
 import { chemicalIdentityMolfile, createSmilesMolecule, pastedStructureDepictionFromMolfile } from "@chemdraft/document-workflow-core";
 import { planBondExtension } from "@chemdraft/layout-engine";
@@ -130,19 +131,80 @@ describe("connection point chemistry", () => {
     await expect(mark(await drawSmiles(smiles), [anchor])).rejects.toThrow(drawByHand);
   });
 
-  it.each(["c1ccccc1", "c1ccc(-c2ccccc2)cc1", "c1ccc2ccccc2c1", "c1ccncc1", "CC"])(
-    "marks two carbon anchors on flat linker %s", async smiles => {
+  it.each([
+    ["C1CCCCC1", ["a0", "a3"], "non-aromatic ring"],
+    ["CC1CCC(C)CC1", ["a0"], "non-aromatic ring"],
+    ["c1ccc2c(c1)CCCC2", ["a0"], "non-aromatic ring"],
+    ["CC=C=CC", ["a0"], "cumulated double bonds"],
+    ["O=C=Cc1ccccc1", ["a4"], "cumulated double bonds"],
+    ["CN=C=Nc1ccccc1", ["a5"], "cumulated double bonds"],
+    ["Cc1ccccc1", ["a2", "a0"], "not an RDKit-aromatic carbon"]
+  ] as const)("refuses the whole batch in %s", async (smiles, anchors, reason) => {
+    const mol = await drawSmiles(smiles);
+    const original = structuredClone(mol);
+    await expect(mark(mol, [...anchors])).rejects.toThrow(new RegExp(`${reason}.*Draw X by hand\\.`));
+    expect(mol).toEqual(original);
+  });
+
+  it("refuses a stale stored stereo assignment on ethane", async () => {
+    const mol = await drawSmiles("CC");
+    mol.chemistry = { stereochemistry: ["a0:R"], isotopeLabels: [], warnings: [] };
+    const original = structuredClone(mol);
+    await expect(mark(mol)).rejects.toThrow(/stored stereochemistry.*Draw X by hand\./);
+    expect(mol).toEqual(original);
+  });
+
+  it.each([false, true])("refuses a CDXML allene with AS=R (source record only: %s)", async sourceOnly => {
+    const { document } = openChemDraftPayload(`<CDXML><page id="1"><fragment id="2">
+      <n id="3" p="60 60"/><n id="4" p="80 80"/><n id="5" p="110 80" AS="R"/>
+      <n id="6" p="140 80"/><n id="7" p="160 100"/>
+      <b id="8" B="3" E="4"/><b id="9" B="4" E="5" Order="2"/>
+      <b id="10" B="5" E="6" Order="2"/><b id="11" B="6" E="7"/>
+      </fragment></page></CDXML>`);
+    const mol = { ...document!.pages[0]!.objects.find(object => object.type === "molecule")!, id: request.objectId };
+    expect(mol.chemistry?.stereochemistry).toEqual([`${mol.atoms[2]!.id}:R`]);
+    if (sourceOnly) delete mol.chemistry;
+    const original = structuredClone(mol);
+    const reason = sourceOnly ? /retained source stereochemistry attributes/ : /stored stereochemistry/;
+    await expect(mark(mol, [mol.atoms[0]!.id])).rejects.toThrow(new RegExp(`${reason.source}.*Draw X by hand\\.`));
+    expect(mol).toEqual(original);
+  });
+
+  it("refuses an AS attribute retained only in a CDXML abbreviation source node", async () => {
+    const mol = await drawSmiles("c1ccccc1");
+    const { document } = openChemDraftPayload(`<CDXML><page id="1"><fragment id="2">
+      <n id="3" p="60 60" NodeType="Nickname" AS="U"><t><s>C</s></t></n>
+      </fragment></page></CDXML>`);
+    const imported = document!.pages[0]!.objects.find(object => object.type === "molecule")!;
+    expect(imported.chemistry?.stereochemistry).toBeUndefined();
+    expect(imported.compatibility?.unknown.cdxmlAbbreviations).toEqual([
+      expect.objectContaining({ source: expect.objectContaining({ attrs: expect.objectContaining({ AS: "U" }) }) })
+    ]);
+    mol.compatibility = imported.compatibility;
+    const original = structuredClone(mol);
+    await expect(mark(mol)).rejects.toThrow(/retained source stereochemistry attributes.*Draw X by hand\./);
+    expect(mol).toEqual(original);
+  });
+
+  it.each([
+    ["c1ccccc1", ["a0", "a3"]],
+    ["c1ccc(-c2ccccc2)cc1", ["a0", "a7"]],
+    ["c1ccc2ccccc2c1", ["a0", "a5"]],
+    ["c1ccncc1", ["a0", "a4"]],
+    ["c1(-c2ccccc2)cc(-c2ccccc2)cc(-c2ccccc2)c1", ["a3", "a11", "a19"]],
+    ["c1ccccc1Cc1ccccc1", ["a0", "a10"]],
+    ["Cc1ccccc1", ["a2", "a5"]]
+  ] as const)(
+    "marks aromatic carbons on linker %s", async (smiles, anchors) => {
       const mol = await drawSmiles(smiles);
-      const { graph } = await audit(selected(mol));
-      const anchors = graph.atoms.filter(atom => atom.element === "C" && atom.hydrogenCount > 0)
-        .slice(0, 2).map(atom => atom.atomId!);
-      const marked = (await mark(mol, anchors)).pages[0]!.objects[0] as MoleculeObject;
-      expect(marked.atoms.filter(atom => atom.element === "X")).toHaveLength(2);
+      const marked = (await mark(mol, [...anchors])).pages[0]!.objects[0] as MoleculeObject;
+      expect(marked.atoms.filter(atom => atom.element === "X")).toHaveLength(anchors.length);
+      expect(marked.bonds.slice(mol.bonds.length).map(bond => bond.fromAtomId)).toEqual(anchors);
     });
 
   it("preserves warnings and a stated H count away from the anchor", async () => {
-    const mol = molecule(["C", "C"], [[0, 1]]);
-    mol.atoms[1] = { ...mol.atoms[1]!, hydrogenCount: 3, warningSuppressed: true };
+    const mol = await drawSmiles("c1ccccc1C");
+    mol.atoms[6] = { ...mol.atoms[6]!, hydrogenCount: 3, warningSuppressed: true };
     mol.chemistry = { stereochemistry: [], warnings: [{ code: "test.annotation", message: "Retained annotation" }], isotopeLabels: [] };
     const marked = (await mark(mol)).pages[0]!.objects[0] as MoleculeObject;
     expect(marked.atoms.slice(0, mol.atoms.length)).toEqual(mol.atoms);

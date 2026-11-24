@@ -346,10 +346,14 @@ and minimization (`chemistry3d.ts`), so the mapping is exact. The `X` sits at a 
 
 **A "Mark Connection Points" command** (task 2G; approved for Phase 2, owner question 6). The user
 selects anchor atoms and the plugin adds `X` atoms as one labelled undo entry with the new atoms
-selected (§4.4). It needs `document.write`. Where each `X` goes (bond length and open direction) is
-layout math, which AGENTS.md §9 keeps in `layout-engine`, so the host supplies it (task 1G,
-`suggestConnectionPoints`); the plugin only builds the patch. Drawing `X` by hand stays the
-documented way.
+selected (§4.4). It submits the batch through `documents.addConnectionPoints` with `document.write`.
+The host uses `layout-engine` to place each new bond (§9). Each anchor must be an RDKit-aromatic
+carbon with room for a new single bond. The host refuses the whole batch if the molecule has any
+non-aromatic ring, any cumulated double bonds (including allenes, ketenes and carbodiimides), or any
+stored or imported stereochemistry record (non-empty `chemistry.stereochemistry` or retained source
+stereo attributes). The host also refuses assigned or potential tetrahedral or double-bond
+stereochemistry in the original or marked molecule, and wedged, hashed, wavy or E/Z-unspecified bonds
+in the drawing. Any refusal leaves the drawing unchanged. Draw X by hand in these cases.
 
 ### Test results: Crystal Builder 1.1.1, macOS Intel (2026-11-18)
 
@@ -444,13 +448,15 @@ interface PluginAppsAPI {
 For task 2G, optional `host.version` identifies the running app; older hosts may omit `host`.
 Selected molecules optionally carry `selectedAtomIds`, drawn atom IDs matching `handoffGraph` (empty
 for whole-object selection). An ordinary command with `document.write` may use optional
-`documents.addConnectionPoints({ objectId, anchors })` on a molecule selected at command start:
-1–999 anchor IDs add one single-bonded X each in one patch; a refused anchor changes nothing.
-Successful handoff commands may return `data.status` as plain text; the host attributes it to the
+`documents.addConnectionPoints({ objectId, anchors })` on a molecule selected at command start.
+A batch of 1–999 anchor IDs adds one single-bonded X per anchor in one patch when it meets the
+marking rules in Decision 1b.
+Successful handoff commands may return `data.status` as plain text. The host attributes it to the
 plugin and reads up to 500 Unicode code points. A host refusal remains visible until a
 later successful retry of the same capability. Host failure or cancellation keeps its own line
-and the host includes any attributed plugin failure detail. If a completed build cannot open,
-the host includes the plugin's success summary when provided.
+and the host includes any attributed plugin failure detail. A native-confirmed send or build
+stays visible alongside any remaining refusal. If a completed build cannot open, the host
+includes the plugin's success summary when provided.
 
 The manifest declares each pipeline in full, so consent can show it and review can read it. Only the
 host's placeholders (`{inputDir}`, `{inputStem}`, `{outputFile:cif}`, `{previousOutput}`) carry paths

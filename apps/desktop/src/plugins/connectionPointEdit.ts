@@ -2,7 +2,7 @@ import { adoptDerivedDocument, type ChemDraftDocument, type DocumentPage, type M
 import {
   isEditableNativeMoleculeGraph, nativeAtomChargeSupportsValence, nativeSingleBondGraphMetadata, normalizeNativeMoleculeGeometry
 } from "@chemdraft/document-workflow-core";
-import { nativeBondOrderResolution, nativeElementFromAtomLabel } from "@chemdraft/layout-engine";
+import { nativeBondOrderResolution, nativeElementFromAtomLabel, nativeEnhancedStereoAtomIndicators } from "@chemdraft/layout-engine";
 import type { PluginHandoffStructureGraph } from "@chemdraft/plugin-api";
 import {
   clearStoredCtabReference, requireUnchangedConnectionPointSource, resolveObjectOnPage, storedCtabReference,
@@ -20,7 +20,35 @@ function refusal(anchors: readonly string[], reason: string): Error {
   return new Error(`Cannot mark ${anchors.length === 1 ? "anchor" : "anchors"} ${anchors.map(id => `"${id}"`).join(", ")}: ${reason}`);
 }
 
-function assertNoDrawnStereo(molecule: MoleculeObject, anchors: readonly string[]): void {
+function hasRetainedCdxmlStereo(nodes: unknown): boolean {
+  if (!Array.isArray(nodes)) return false;
+  // Abbreviation records may hold a codec tree or the older ordered XML tree.
+  const stereoAttributes = ["AS", "BS", "EnhancedStereoType", "EnhancedStereoGroupNum"];
+  const pending: unknown[] = [...nodes];
+  while (pending.length) {
+    const record = pending.pop();
+    if (!record || typeof record !== "object") continue;
+    for (const [key, value] of Object.entries(record)) {
+      if (stereoAttributes.includes(key)) return true;
+      if ((key === "Display" || key === "Display2") && typeof value === "string" &&
+          /^(?:Wavy|Hash|Wedge(?:dHash)?(?:Begin|End))$/.test(value)) return true;
+      if (value && typeof value === "object") pending.push(value);
+    }
+  }
+  return false;
+}
+
+function assertNoStereoRecords(molecule: MoleculeObject, anchors: readonly string[]): void {
+  if (molecule.chemistry?.stereochemistry.length) {
+    throw refusal(anchors, "the molecule contains stored stereochemistry. Draw X by hand.");
+  }
+  const attributes = molecule.compatibility?.unknown;
+  if (["cdxmlAtomStereochemistryByAtomId", "atomStereochemistryByAtomId", "stereochemistryByAtomId"].some(key => {
+    const record = attributes?.[key];
+    return record && typeof record === "object" && Object.keys(record).length > 0;
+  }) || nativeEnhancedStereoAtomIndicators(molecule).length || hasRetainedCdxmlStereo(attributes?.cdxmlAbbreviations)) {
+    throw refusal(anchors, "the molecule contains retained source stereochemistry attributes. Draw X by hand.");
+  }
   if (molecule.bonds.some(bond => {
     const style = bond.display?.bondStyle;
     return style === "wedge" || style === "hashed" || style === "wavy" || bond.stereo === "either";
@@ -30,7 +58,7 @@ function assertNoDrawnStereo(molecule: MoleculeObject, anchors: readonly string[
 }
 
 function assertEditable(page: DocumentPage, molecule: MoleculeObject, anchors: readonly string[]): void {
-  assertNoDrawnStereo(molecule, anchors);
+  assertNoStereoRecords(molecule, anchors);
   if (reactionMembership(page, molecule.id).length) throw refusal(anchors, "the molecule belongs to a reaction.");
   if (molecule.superatoms.length) throw refusal(anchors, "the molecule contains a superatom.");
   if (molecule.rGroups.length || !isEditableNativeMoleculeGraph(molecule) ||
@@ -172,14 +200,14 @@ export async function verifyConnectionPointEdit(before: ChemDraftDocument, draft
   { source, pageId, anchors, atomIds }: ConnectionPointEdit, signal = new AbortController().signal): Promise<ChemDraftDocument> {
   const target = resolveObjectOnPage(draft, pageId, source.id);
   if (target?.object.type !== "molecule") throw refusal(anchors, "the edited molecule could not be verified.");
-  assertNoDrawnStereo(target.object, anchors);
+  assertNoStereoRecords(target.object, anchors);
   try {
     const molecule = preserveAtomAndBondRecords(source, target.object, atomIds);
     const original = verificationWork(before, pageId, source);
     if (original.sourceAtomMaps.length) throw new Error("The molecule contains retained atom mapping.");
     const existingPoints = original.atoms.flatMap((atom, i) => atom.isConnectionPoint ? [i] : []);
     const context = desktopWriteInspectionContext(signal, existingPoints);
-    const unmarked = await runHandoffGraphInConformerWorker({ ...original, connectionPointEdit: "original" }, signal);
+    const unmarked = await runHandoffGraphInConformerWorker({ ...original, connectionPointEdit: { stage: "original" } }, signal);
     if (source.structure || source.compatibility?.unknown.smiles !== undefined) {
       const graph = await context.chemistry.inspectStructure("molfile", original.molfile);
       if (!graph.valid) throw new Error(graph.reason);
@@ -198,7 +226,7 @@ export async function verifyConnectionPointEdit(before: ChemDraftDocument, draft
       }
     }
     const markedWork = verificationWork(draft, pageId, molecule);
-    const marked = await runHandoffGraphInConformerWorker({ ...markedWork, connectionPointEdit: "marked" }, signal);
+    const marked = await runHandoffGraphInConformerWorker({ ...markedWork, connectionPointEdit: { stage: "marked", anchors } }, signal);
     verifyXAsHydrogen(unmarked.graph, marked.graph, anchors, atomIds);
     signal.throwIfAborted();
     const compatibility = clearStoredCtabReference(molecule.compatibility);

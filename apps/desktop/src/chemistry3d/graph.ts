@@ -1,6 +1,6 @@
 import { atomicNumberForElementSymbol, elementSymbolForAtomicNumber } from "@chemdraft/chem-core";
 import { PluginHandoffStructureGraphSchema, type Plugin3DModel, type PluginHandoffStructureGraph } from "@chemdraft/plugin-api";
-import type { RdkitJsMol, RdkitMinimalModule } from "@chemdraft/rdkit-adapter";
+import type { RdkitJsMol, RdkitJson, RdkitMinimalModule } from "@chemdraft/rdkit-adapter";
 import { aromaticBondIndices, readGraph } from "./model";
 
 export function canonicalGraphSmiles(mol: RdkitJsMol): string {
@@ -9,8 +9,7 @@ export function canonicalGraphSmiles(mol: RdkitJsMol): string {
   return smiles;
 }
 
-export function readHandoffStructure(mol: RdkitJsMol): PluginHandoffStructureGraph {
-  const json = readGraph(mol);
+export function readHandoffStructure(json: RdkitJson): PluginHandoffStructureGraph {
   const source = json.molecules[0];
   if (!source || json.molecules.length !== 1) throw new Error("RDKit returned no single structure graph.");
   const aromatic = aromaticBondIndices(source);
@@ -59,7 +58,7 @@ export function moleculeFromHandoffStructure(rdkit: RdkitMinimalModule, graph: P
   const mol = rdkit.get_mol(JSON.stringify(input), JSON.stringify({ removeHs: false, assignStereo: false }));
   if (!mol) throw new Error(`${context}: RDKit could not sanitize the graph. Check bond orders, charges and hydrogen counts.`);
   try {
-    const actual = readHandoffStructure(mol);
+    const actual = readHandoffStructure(readGraph(mol));
     if (actual.atoms.length !== graph.atoms.length || actual.bonds.length !== graph.bonds.length) {
       throw new Error(`${context}: RDKit changed the graph's atom or bond count.`);
     }

@@ -21,7 +21,7 @@ import {
   createPluginUpdateChecker, hasOfficialInstalledPlugin, installedPluginCatalogKey,
   schedulePluginUpdateAutoCheck, type CachedPluginUpdateResults, type TimedPluginUpdateCheckResult
 } from "./pluginUpdateAutoCheck";
-import { createPluginRuntime, type AppHandoffMenuFeedback, type DesktopPluginRuntime, type DesktopPluginRuntimeOptions, type ProposalDocumentTab } from "./createPluginRuntime";
+import { appHandoffFeedbackMessages, createPluginRuntime, type AppHandoffMenuFeedback, type DesktopPluginRuntime, type DesktopPluginRuntimeOptions, type ProposalDocumentTab } from "./createPluginRuntime";
 import {
   type PluginInstallError,
   isCommittedUninstallError,
@@ -254,13 +254,11 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
       const name = runtime.host.getPlugin(invocation.pluginId)?.manifest.name ?? invocation.pluginId;
       const report = (result: unknown, failure?: unknown) => {
         if (!active) return;
-        const problems = Array.from(feedback.problems.values());
-        const messages = problems.map(({ message }) => message);
-        if (!feedback.pending && feedback.confirmed && problems.length) messages.unshift(feedback.confirmed);
+        const messages = appHandoffFeedbackMessages(feedback);
         if (feedback.pending) messages.push("The plugin command ended before app handoff completed.");
         const detail = failure !== undefined
           ? attributedHandoffText(failure, name) ?? attributedHandoffText("Command failed.", name)
-          : !feedback.pending && (feedback.confirmed || problems.every(({ kind }) => kind === "open-failed"))
+          : feedback.confirmed || (!feedback.pending && !feedback.problems.size)
             ? appHandoffCommandStatus(result, name) : undefined;
         if (detail) messages.push(detail);
         const selection = boundedHandoffText(Array.from(new Set(warnings)).join(" "));

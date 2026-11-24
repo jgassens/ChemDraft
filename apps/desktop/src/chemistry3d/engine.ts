@@ -84,7 +84,7 @@ export async function embed3dInWorker(input: PluginEmbed3DRequest, progress: () 
       if (json.molecules.length !== 1 || seen.size !== graph.atoms.length) throw new Error(`${context}: each ${graphInput ? "graph" : "SMILES"} must describe one connected component.`);
       const hydrogenSource = mol as RdkitJsMol & { add_hs?(): string };
       if (!hydrogenSource.add_hs) throw new Error("RDKit explicit-hydrogen generation is unavailable.");
-      const sourceGraph = graphInput ? readHandoffStructure(mol) : undefined;
+      const sourceGraph = graphInput ? readHandoffStructure(readGraph(mol)) : undefined;
       const smiles = graphInput ? canonicalGraphSmiles(mol) : input.smiles;
       if (graphInput && smiles.length > 5000) throw new Error(`${context}: the graph's canonical SMILES exceeds 5000 characters.`);
       const atomCount = graph.atoms.length;

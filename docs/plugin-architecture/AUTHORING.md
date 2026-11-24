@@ -251,9 +251,13 @@ With `document.write`, `documents.addConnectionPoints` accepts one batch of 1–
 molecule selected when the command started. The host applies a successful batch as one patch and
 refuses a second call for that molecule in the same command because the molecule has changed.
 Pass all of its anchors in the same call or start a new command to mark additional points.
-Any refusal leaves the drawing unchanged. If either the original or marked molecule has assigned or
-potential tetrahedral or double-bond stereochemistry, or the drawing uses a wedge, hashed, or wavy
-bond, draw X by hand. Check for the method on older hosts:
+Each anchor must be an RDKit-aromatic carbon with room for a new single bond. The host refuses the
+whole batch if the molecule has any non-aromatic ring, any cumulated double bonds (including
+allenes, ketenes and carbodiimides), or any stored or imported stereochemistry record (non-empty
+`chemistry.stereochemistry` or retained source stereo attributes). It also refuses assigned or
+potential tetrahedral or double-bond stereochemistry in the original or marked molecule, and wedged,
+hashed, wavy or E/Z-unspecified bonds in the drawing. Any refusal leaves the drawing unchanged.
+Draw X by hand in these cases. Check for the method on older hosts.
 
 ```ts
 const anchors = molecule.selectedAtomIds ?? [];
@@ -267,10 +271,11 @@ failure detail are plain text with the plugin name displayed in a host-rendered 
 reads at most 500 Unicode code points of each message, adds an ellipsis when truncated, and limits
 the display name to 80 code points. Control and invisible format characters are removed, and line
 breaks become spaces. If a handoff is refused, the status area shows the host's reason and any
-plugin failure detail on separate lines. A later confirmed submission shows its outcome together
-with any earlier refusal of a different capability. Selection warnings appear under the host's
-`Selection warning` label and use the same text bounds. If a build completed and its output could
-not open, the host shows the open error alongside any plugin success summary.
+plugin failure detail on separate lines. Once native code confirms a send or build, the status area
+keeps that outcome alongside any remaining refusal and the plugin's attributed success summary.
+Selection warnings appear under the host's `Selection warning` label and use the same text bounds.
+If a build completed and its output could not open, the host shows the open error alongside any
+plugin success summary.
 
 Companion pipelines are declared in the manifest's `companions` array, including an ID, relative
 macOS and Windows tool paths inside the chosen app, tested versions, ordered steps with arguments and
