@@ -389,7 +389,7 @@ impl Context<'_> {
         let developer_note = self.plugin.consent_note();
         let text = format!(
             "{} ({}) requests permission to hand off data to {}.\n\n{}\n\n{}{developer_note}",
-            self.plugin.manifest.name,
+            dialogs::plugin_display_name(&self.plugin.manifest.name),
             self.plugin_id,
             target.name,
             target.path.display(),
@@ -437,12 +437,8 @@ impl Context<'_> {
             return Ok(SendResult::Declined);
         };
         if let Some(warnings) = request.warnings.filter(|warnings| !warnings.is_empty()) {
-            let warnings = dialogs::display_warnings(warnings);
-            let warning = format!(
-                "Send the file to {}?\n\n{}",
-                target.name,
-                warnings.join("\n")
-            );
+            let warning =
+                dialogs::send_warning_message(&target.name, &self.plugin.manifest.name, &warnings);
             if !dialogs::native_choice(
                 self.window,
                 &proof,
@@ -558,10 +554,12 @@ impl Context<'_> {
         };
         let state = self.app().state::<State>();
         state.clear_result(self.plugin_id);
-        let warnings = dialogs::display_warnings(request.warnings.unwrap_or_default());
+        let warnings = dialogs::display_warnings(request.warnings.as_deref().unwrap_or_default());
+        let plugin_name = dialogs::plugin_display_name(&self.plugin.manifest.name);
         let Ok(snapshot) = dialogs::confirmation_snapshot(
             &pipeline,
             &target.name,
+            &plugin_name,
             &request.combination,
             composition.as_ref(),
             &warnings,
@@ -701,9 +699,11 @@ impl Context<'_> {
         if !state.retain_result(self.plugin_id, &marker, session) {
             return Ok(result);
         }
+        let plugin_name = dialogs::plugin_display_name(&self.plugin.manifest.name);
         let snapshot = dialogs::result_snapshot(
             &job.pipeline,
             &app_name,
+            &plugin_name,
             &job.build.combination,
             rebuild,
             twist,

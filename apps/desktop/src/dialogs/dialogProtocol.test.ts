@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { structureTemplates } from "@chemdraft/template-library";
 import { engineInstallFixture } from "./engineInstallTestFixtures";
 import { toolInstallFixture } from "./toolInstallTestFixtures";
 import { DIALOG_PREVIEW_MAX_BYTES, DIALOG_MAX_BYTES, parseDialogMessage, validateDialogDelivery, type DialogMessage } from "./dialogProtocol";
+import { AppHandoffDialogSnapshotSchema } from "../appHandoff/dialogTypes";
 
 export const snapshot = (): Extract<DialogMessage, { type: "snapshot" }> => ({ protocolVersion: 1, ownerWindowId: "main", documentTabId: "tab-1", dialogKind: "pageSize", sessionId: "session-1", requestId: "request-1", snapshotRevision: 1, type: "snapshot", data: { title: "Drawing", width: 8.5, height: 11, unit: "inch" } });
 describe("dialog contract", () => {
@@ -204,8 +206,11 @@ it("accepts only the bounded Rust-owned handoff snapshot and typed choices", () 
     const warnings = ["🧪".repeat(300), "<b>Bond order changed.</b>"];
     const withWarnings = { ...s, data: { ...snapshotData, warnings } };
     expect(parseDialogMessage(withWarnings)).toEqual(withWarnings);
-    for (const invalid of [Array(21).fill("warning"), Array(20).fill(warnings[0]), [warnings[0] + "!"], ["bad\u202e"], ["bad\n"], [123], null]) {
+    for (const invalid of [Array(21).fill("warning"), Array(20).fill(warnings[0]), [warnings[0] + "!"], ["bad\u202e"], ["bad\u200b"], ["bad\n"], [123], null]) {
       expect(parseDialogMessage({ ...s, data: { ...snapshotData, warnings: invalid } })).toBeUndefined();
+    }
+    for (const pluginName of ["\u200dChemDraft", "ChemDraft\u007f", "🧪".repeat(81)]) {
+      expect(parseDialogMessage({ ...s, data: { ...snapshotData, warnings, pluginName } })).toBeUndefined();
     }
   }
   for (const update of [
@@ -225,4 +230,14 @@ it("accepts only the bounded Rust-owned handoff snapshot and typed choices", () 
     expect(action(choice)).toBeUndefined();
   }
   expect(parseDialogMessage({ ...s, type: "result", data: { status: "accepted" } })).toBeUndefined();
+});
+
+it.each(["dialog-confirm.json", "dialog-rebuild.json"])("validates Rust's %s with the production schema", fixture => {
+  const data: unknown = JSON.parse(readFileSync(new URL(`../appHandoff/__fixtures__/wire/${fixture}`, import.meta.url), "utf8"));
+  const parsed = AppHandoffDialogSnapshotSchema.parse(data);
+  expect(parsed).toEqual(data);
+  expect(parsed.pluginName).toBe("Send to Crystal Builder");
+  expect(parsed.warnings).toEqual(["ChemDraft verified this build."]);
+  const message = { ...snapshot(), dialogKind: "appHandoff", data };
+  expect(parseDialogMessage(message)).toEqual(message);
 });

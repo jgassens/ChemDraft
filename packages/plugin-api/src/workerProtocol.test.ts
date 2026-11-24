@@ -26,6 +26,7 @@ describe("forward-compatible host identity", () => {
     expect(asHostToWorkerMessage({ ...base, host: { name: "ChemDraft", version: "1", future: true } })).toEqual({ ...base, host: { name: "ChemDraft", version: "1" } });
     expect(asHostToWorkerMessage({ ...base, host: { name: "Other", version: "1" } })).toEqual(base);
     expect(asHostToWorkerMessage({ ...base, host: 42 })).toEqual(base);
+    expect(asHostToWorkerMessage({ ...base, host: Object.assign([], { name: "ChemDraft", version: "1" }) })).toEqual(base);
   });
 });
 
@@ -279,11 +280,17 @@ describe("runPluginWorker", () => {
     }, endpoint);
     endpoint.deliver({ kind: "invokeCommand", commandRequestId: 1, commandId });
     await flush();
-    const calls = endpoint.sent.filter(message => message.kind === "capabilityRequest");
-    expect(calls).toEqual([{
-      kind: "capabilityRequest", requestId: 1, commandRequestId: 1, namespace: "apps", method: "chooseApp", args: [requests]
+    expect(endpoint.sent.filter(message => message.kind === "capabilityRequest")).toEqual([{
+      kind: "capabilityRequest", requestId: 1, commandRequestId: 1, namespace: "apps", method: "chooseApp", args: [null]
     }]);
-    endpoint.deliver({ kind: "capabilityResult", requestId: 1, ok: true, value: {
+    endpoint.deliver({ kind: "capabilityResult", requestId: 1, ok: false, error: {
+      code: "PluginHostError", message: "Invalid apps.chooseApp request."
+    } });
+    await flush();
+    expect(endpoint.sent.at(-1)).toEqual({
+      kind: "capabilityRequest", requestId: 2, commandRequestId: 1, namespace: "apps", method: "chooseApp", args: [requests]
+    });
+    endpoint.deliver({ kind: "capabilityResult", requestId: 2, ok: true, value: {
       status: "chosen", app: { appId: "opaque", displayName: "Crystal Builder", path: "/host/app" }
     } });
     await flush();

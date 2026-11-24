@@ -209,17 +209,23 @@ can send one file or run one pipeline; a shown host box consumes the allowance e
 - `status({ appId })` checks whether the chosen app remains available and unchanged.
 - `sendFile({ appId, fileName, extension, text, warnings? })` writes a temporary UTF-8 file and
   opens it with the app. The host sanitizes the file name; extensions are `xyz`, `cif`, `mol`, `sdf`,
-  `pdb`, `smi`, `csv`, `json`, or `txt`. Text is limited to 5 MiB and warnings to 20 lines of 300
-  characters each. Warnings are shown before sending.
+  `pdb`, `smi`, `csv`, `json`, or `txt`. Text is limited to 5 MiB. Warnings appear under the
+  plugin's name in the native send confirmation. The limit is 20 lines of 300 Unicode code points
+  each, up to 24,019 UTF-8 bytes including line separators and excluding the host's heading.
 - `runCompanion({ appId, pipeline, combination, input?, openOutput?, warnings? })` runs the complete declared
   pipeline. Input is one UTF-8 file of at most 1 MiB. Optional plain-text warnings are shown before
-  the build, limited to 20 lines of 300 Unicode code points each. The host presents a build confirmation with
-  the declared combination choices and may offer a host-run rebuild when `rebuildAs` is declared.
-  Those individual limits do not guarantee that all warnings fit: the entire serialized dialog
-  message, including its envelope, choices, composition and warnings, must fit in 3,400 UTF-8 bytes.
-  JSON escaping also uses bytes. The host checks both confirmation and possible rebuild messages and
-  refuses an oversized request before consent or execution; a shorter request may be retried before
-  a host box has been shown. Once a box is shown, cancellation still consumes the send allowance.
+  the build and on a possible rebuild, under the plugin's name. Warnings accept up to 20 lines of
+  300 Unicode code points each at the API boundary. The combined budget is 3,400 UTF-8 bytes for each
+  serialized snapshot, including the envelope, plugin name, choices, composition, and JSON escaping.
+  For Crystal Builder's two pcu/N16 choices and a C₆H₄X₂ input, the confirmation leaves 2,770 bytes
+  for the JSON warning array and the rebuild preflight leaves 2,900 bytes. The confirmation limit
+  fits 2,739 unescaped ASCII bytes in ten lines. Larger choices, names, or compositions can leave
+  less room. The host checks both snapshots before consent or execution.
+
+The command can correct a refused request and retry before a submission box has been shown.
+The host keeps the refusal visible until a later call to the same capability succeeds. A
+concurrent attempt cannot clear a refusal it started before. Cancelling a consent, send, or build
+box consumes the allowance. Await every capability call before returning a command result.
 
 For example, inside an eligible command handler:
 
@@ -247,9 +253,13 @@ if (anchors.length && context.documents.addConnectionPoints) {
 }
 ```
 
-An eligible handoff command may return `{ ok: true, data: { status: "Sent" } }`. The host attributes
-the plain-text status to the plugin and shows one line of up to 500 Unicode code points, followed by
-an ellipsis if truncated. Native failure or cancellation takes precedence.
+An eligible handoff command may return `{ ok: true, data: { status: "Sent" } }`. Plugin status and
+failure detail are plain text with the plugin name displayed in a host-rendered label. The host
+reads at most 500 Unicode code points of each message, adds an ellipsis when truncated, and limits
+the display name to 80 code points. Control and invisible format characters are removed, and line
+breaks become spaces. If a handoff is refused, the status area shows the host's reason and any
+plugin failure detail on separate lines. If a build completed and its output could not open, the
+host shows the open error alongside any plugin success summary.
 
 Companion pipelines are declared in the manifest's `companions` array, including an ID, relative
 macOS and Windows tool paths inside the chosen app, tested versions, ordered steps with arguments and

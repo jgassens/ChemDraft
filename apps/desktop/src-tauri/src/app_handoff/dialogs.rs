@@ -25,6 +25,7 @@ pub(super) enum Snapshot<'a> {
     Confirm {
         title: &'static str,
         app_name: &'a str,
+        plugin_name: &'a str,
         pipeline: &'a str,
         #[serde(skip_serializing_if = "Option::is_none")]
         composition: Option<&'a Composition>,
@@ -36,6 +37,7 @@ pub(super) enum Snapshot<'a> {
     Result {
         title: &'static str,
         app_name: &'a str,
+        plugin_name: &'a str,
         combination: &'a str,
         rebuild_combination: &'a str,
         rebuild_label: String,
@@ -47,33 +49,79 @@ pub(super) enum Snapshot<'a> {
     },
 }
 
-pub(super) fn display_warnings(warnings: Vec<String>) -> Vec<String> {
+fn display_text(value: &str, limit: usize) -> String {
+    let mut text = String::new();
+    for ch in value.chars().take(limit) {
+        match ch {
+            '\t' | '\n' | '\r' | '\u{b}' | '\u{c}' | '\u{85}' | '\u{2028}' | '\u{2029}' => {
+                if !text.ends_with(' ') {
+                    text.push(' ');
+                }
+            }
+            // Unicode General_Category=Cf (17.0). char::is_control covers Cc.
+            '\u{ad}'
+            | '\u{600}'..='\u{605}'
+            | '\u{61c}'
+            | '\u{6dd}'
+            | '\u{70f}'
+            | '\u{890}'..='\u{891}'
+            | '\u{8e2}'
+            | '\u{180e}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206f}'
+            | '\u{feff}'
+            | '\u{fff9}'..='\u{fffb}'
+            | '\u{110bd}'
+            | '\u{110cd}'
+            | '\u{13430}'..='\u{1343f}'
+            | '\u{1bca0}'..='\u{1bca3}'
+            | '\u{1d173}'..='\u{1d17a}'
+            | '\u{e0001}'
+            | '\u{e0020}'..='\u{e007f}' => {}
+            ch if ch.is_control() => {}
+            ch => text.push(ch),
+        }
+    }
+    text.trim().to_owned()
+}
+
+pub(super) fn plugin_display_name(name: &str) -> String {
+    let name = display_text(name, 80);
+    if name.is_empty() {
+        "Unknown".into()
+    } else {
+        name
+    }
+}
+
+pub(super) fn display_warnings(warnings: &[String]) -> Vec<String> {
     warnings
-        .into_iter()
-        .filter_map(|line| {
-            let text: String =
-                line.chars()
-                    .filter_map(|ch| match ch {
-                        '\t' | '\n' | '\r' | '\u{b}' | '\u{c}' | '\u{85}' | '\u{2028}'
-                        | '\u{2029}' => Some(' '),
-                        '\u{61c}'
-                        | '\u{200e}'
-                        | '\u{200f}'
-                        | '\u{202a}'..='\u{202e}'
-                        | '\u{2066}'..='\u{2069}' => None,
-                        ch if ch.is_control() => None,
-                        ch => Some(ch),
-                    })
-                    .collect();
-            let text = text.trim();
-            (!text.is_empty()).then(|| text.to_owned())
-        })
+        .iter()
+        .map(|line| display_text(line, wire::WARNING_CHARS))
+        .filter(|line| !line.is_empty())
         .collect()
+}
+
+pub(super) fn send_warning_message(
+    app_name: &str,
+    plugin_name: &str,
+    warnings: &[String],
+) -> String {
+    let warnings = display_warnings(warnings).join("\n");
+    let mut message = format!("Send the file to {app_name}?");
+    if !warnings.is_empty() {
+        let plugin_name = plugin_display_name(plugin_name);
+        message.push_str(&format!("\n\nPlugin ({plugin_name}) warnings\n{warnings}"));
+    }
+    message
 }
 
 pub(super) fn confirmation_snapshot(
     pipeline: &Pipeline,
     app_name: &str,
+    plugin_name: &str,
     combination: &str,
     composition: Option<&Composition>,
     warnings: &[String],
@@ -81,6 +129,7 @@ pub(super) fn confirmation_snapshot(
     let snapshot = wire::encode(Snapshot::Confirm {
         title: "Confirm companion build",
         app_name,
+        plugin_name,
         pipeline: &pipeline.id,
         composition,
         suggested_combination: combination,
@@ -95,7 +144,13 @@ pub(super) fn confirmation_snapshot(
             .filter_map(|(id, row)| row.get("rebuildAs").map(|rebuild| (id, rebuild)))
         {
             let mut result = wire::encode(result_snapshot(
-                pipeline, app_name, from, to, None, warnings,
+                pipeline,
+                app_name,
+                plugin_name,
+                from,
+                to,
+                None,
+                warnings,
             ))?;
             // Reserve room for the serialized value of any finite f64 measurement.
             result["twist"] = Value::String("0".repeat(24));
@@ -108,6 +163,7 @@ pub(super) fn confirmation_snapshot(
 pub(super) fn result_snapshot<'a>(
     pipeline: &'a Pipeline,
     app_name: &'a str,
+    plugin_name: &'a str,
     combination: &'a str,
     rebuild: &'a str,
     twist: Option<f64>,
@@ -116,6 +172,7 @@ pub(super) fn result_snapshot<'a>(
     Snapshot::Result {
         title: "Companion build result",
         app_name,
+        plugin_name,
         combination,
         rebuild_combination: rebuild,
         rebuild_label: rebuild_label(pipeline, rebuild),

@@ -1,5 +1,4 @@
 import { buildPluginSelectionSnapshot } from "./selectionSnapshot";
-import { version as appVersion } from "../../src-tauri/tauri.conf.json";
 import { computePropertiesForPlugin } from "./pluginProperties";
 import { PluginRequestLimits, PluginStructureToNameRequestSchema } from "@chemdraft/plugin-api";
 import { inspectStructureOffThread } from "../depiction2d/identityClient";
@@ -49,6 +48,7 @@ import {
   type CommandRegistry,
   type PluginPatchApplicationRequest,
   type AppHandoffMenuInvocation,
+  type PluginAppHandoffTransport,
   type PluginHostOptions,
   type RegisterPluginOptions
 } from "@chemdraft/plugin-host";
@@ -69,7 +69,7 @@ import {
 } from "./structureRecognitionEngine";
 import { preparePluginStructureRecognition, type RecognitionStructureValidator } from "./pluginStructureRecognition";
 import { isTauriHost } from "./pluginStagingFs";
-import { createTauriAppHandoffTransport, reportAppHandoffTransportResult, type AppHandoffTransportStatus } from "../appHandoff/transport";
+import { appHandoffRefusal, appHandoffResultStatus, createTauriAppHandoffTransport, type AppHandoffTransportStatus } from "../appHandoff/transport";
 import { nativeAppHandoffConsents, type AppHandoffConsents } from "../appHandoff/consents";
 import type { InstalledPluginRecord } from "./installedPluginStore";
 import { ExternalToolsController } from "../externalTools/ExternalToolsController";
@@ -101,7 +101,7 @@ export type DesktopStructureFromSmilesProvider = (
 
 export interface AppHandoffMenuFeedback {
   pending: number;
-  problem?: AppHandoffTransportStatus;
+  problems: Map<Parameters<PluginAppHandoffTransport>[1], Exclude<AppHandoffTransportStatus, { kind: "success" }>>;
 }
 
 function freezeOverlayContent(sections: CanvasOverlayContentSection[]): readonly CanvasOverlayContentSection[] {
@@ -408,6 +408,12 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     }
   };
   let proposingTabId: string | undefined;
+  let nativeIdentity: PluginCommandContext["host"];
+  if (isTauriHost()) {
+    void import("@tauri-apps/api/app").then(({ getVersion }) => getVersion()).then(version => {
+      if (version) nativeIdentity = Object.freeze({ name: "ChemDraft", version });
+    }).catch(() => { /* The optional identity remains unavailable if native IPC fails. */ });
+  }
   class DesktopPluginHost extends PluginHost {
     override async invokeCommand<Result = unknown>(commandId: string, invokeOptions?: Parameters<PluginHost["invokeCommand"]>[1]): Promise<Result> {
       return this.withInvocationFrame(() => super.invokeCommand<Result>(commandId, invokeOptions));
@@ -458,6 +464,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
 
     override createCommandContext(pluginId: string, invocationToken?: symbol, input?: PluginCommandInput): PluginCommandContext {
       const context = super.createCommandContext(pluginId, invocationToken, input);
+      if (nativeIdentity) context.host = nativeIdentity;
       if (invocationToken && commandFrame) {
         commandFrame.push(invocationToken);
         commandInvocations.set(invocationToken, { pluginId, stop: new AbortController() });
@@ -522,6 +529,33 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
         }
       };
     }
+
+    protected override observeAppHandoffCall(
+      invocation: AppHandoffMenuInvocation, method: Parameters<PluginAppHandoffTransport>[1],
+      request: Parameters<PluginAppHandoffTransport>[2], result: Promise<unknown>
+    ): void {
+      const feedback = handoffFeedback.get(invocation);
+      const previousProblem = feedback?.problems.get(method);
+      if (feedback) feedback.pending++;
+      const report = (status?: AppHandoffTransportStatus) => {
+        if (feedback) feedback.pending--;
+        if (handoffFeedback.get(invocation) !== feedback) return;
+        if (!status) return;
+        if (status.kind === "success") {
+          // A retry must have started after the refusal it clears.
+          if (previousProblem?.kind === "refused" && feedback?.problems.get(method) === previousProblem) {
+            feedback.problems.delete(method);
+          }
+          if (feedback && (feedback.pending || feedback.problems.size)) return;
+        } else {
+          feedback?.problems.set(method, status);
+        }
+        if (status.message) options.onAppHandoffStatus?.(status.message);
+      };
+      void result.then(value => report(appHandoffResultStatus(method, request, value)),
+        (error: unknown) => report(appHandoffRefusal(error)))
+        .catch(() => { /* Feedback must not affect the capability's settlement. */ });
+    }
   }
   const canvasOverlayStatuses = new Map<string, string>();
   const canvasOverlayTranscripts = new Map<string, readonly PluginOverlayTranscriptEntry[]>();
@@ -555,24 +589,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
         ? registeringRecord : undefined,
       forCall: (id, version) => options.readAppHandoffRecord?.(id, version)
     },
-    appHandoffTransport: handoffTransport && (async (invocation, method, request) => {
-      const feedback = handoffFeedback.get(invocation);
-      const previousProblem = feedback?.problem;
-      if (feedback) feedback.pending++;
-      try {
-        return await reportAppHandoffTransportResult(handoffTransport(invocation, method, request), method, request, status => {
-          if (feedback) {
-            // A successful retry can follow a refusal before the first box. A concurrent attempt
-            // must preserve any refusal reported while this request was pending.
-            if (!status.unsuccessful && feedback.problem && feedback.problem !== previousProblem) return;
-            feedback.problem = status.unsuccessful ? status : undefined;
-          }
-          options.onAppHandoffStatus?.(status.message);
-        });
-      } finally {
-        if (feedback) feedback.pending--;
-      }
-    }),
+    appHandoffTransport: handoffTransport,
     overlays: {
       setContent: (pluginId, overlayId, sections, prompt) => {
         const declared = host.getPlugin(pluginId)!.manifest.contributes.canvasOverlays!.find(overlay => overlay.id === overlayId)!.prompt;
@@ -625,7 +642,6 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     captureRequestDocument: options.captureRequestDocument,
     openRequestHistory: options.openRequestHistory,
     requestPageSpace: options.requestPageSpace,
-    identity: { name: "ChemDraft", version: appVersion },
     getRequestSelection: (document, budget) => buildPluginSelectionSnapshot(document, readingSelectionWarnings, budget),
     getSelection: readSelection ? () => readSelection(readingSelectionWarnings) : undefined,
     captureSelection: options.captureSelection && (() => {

@@ -2970,6 +2970,9 @@ export function MainWindow({
     height: 0
   }));
   const [status, setStatus] = useState("Blank native document");
+  const lastAppHandoffStatus = useRef<string>(undefined);
+  const handoffStatusLines = lastAppHandoffStatus.current === status && status.includes("\n")
+    ? status.split("\n") : undefined;
   const tableDraftStatusRef = useRef<{ announced: string; original: string } | undefined>(undefined);
   // Keep import findings and the latest save findings independent for this tab.
   // Replacing the document drops both (resetDocumentHistory).
@@ -13350,7 +13353,10 @@ export function MainWindow({
   const pluginRuntime = usePluginRuntime({
     listenForAppHandoff,
     onPluginUpdateStatus: setStatus,
-    onAppHandoffStatus: setStatus,
+    onAppHandoffStatus: message => {
+      lastAppHandoffStatus.current = message;
+      setStatus(message);
+    },
     onNameResolutionStatus: text => {
       nameResolutionStatusRef.current = text;
       if (text) setStatus(text);
@@ -24189,7 +24195,8 @@ export function MainWindow({
         <div ref={statusRowRef} className="status-row" data-status-row>
           <div className="status-row-main">
             <span data-status-message role="status" aria-live="polite" className="status-message"
-              title={spin3dErrorMessage ?? fileWarningsTooltip(warningReports)}>
+              title={spin3dErrorMessage ?? (!interactive3dWorkspace && !hoveredNativeWarning && handoffStatusLines
+                ? status : fileWarningsTooltip(warningReports))}>
               {spin3dErrorMessage ?? (interactive3dWorkspace
                 ? [
                     interactive3dWorkspace.status,
@@ -24197,7 +24204,8 @@ export function MainWindow({
                     ...new Set(interactive3dWorkspace.session?.warnings ?? []),
                     "Esc to close"
                   ].filter(Boolean).join(" · ")
-                : hoveredNativeWarning ?? status)}
+                : hoveredNativeWarning ?? (handoffStatusLines ? handoffStatusLines.map((line, index) =>
+                  <span key={index} className="status-message-line">{line}</span>) : status))}
             </span>
             {openWarnings ? (
               <button

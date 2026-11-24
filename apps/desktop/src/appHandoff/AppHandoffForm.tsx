@@ -17,6 +17,7 @@ export function AppHandoffForm({
   const root = useDialogContentReady<HTMLElement>(onReady);
   const titleId = useId();
   const combinationId = useId();
+  const warningsId = useId();
   const [combination, setCombination] = useState(snapshot.mode === "confirm" ? snapshot.suggestedCombination : "");
   const escapePressed = useRef(false);
   const actionRef = useRef(onAction);
@@ -88,9 +89,12 @@ export function AppHandoffForm({
             ` · ${name === "topology" ? "net" : name} ${value ?? "removed"}`)
         }</p>
       </>}
-      {snapshot.warnings && snapshot.warnings.length > 0 && <ul aria-label="Build warnings" tabIndex={0} style={{ overflowWrap: "anywhere" }}>
-        {snapshot.warnings.map((warning, index) => <li key={index}>{warning}</li>)}
-      </ul>}
+      {snapshot.warnings && snapshot.warnings.length > 0 && <>
+        <p id={warningsId} style={{ overflowWrap: "anywhere" }}>Plugin ({snapshot.pluginName ?? "Unknown"}) warnings</p>
+        <ul aria-labelledby={warningsId} tabIndex={0} style={{ overflowWrap: "anywhere" }}>
+          {snapshot.warnings.map((warning, index) => <li key={index}>{warning}</li>)}
+        </ul>
+      </>}
       {error && <p role="alert">{error}</p>}
     </div>
     <footer className="cd-page-size-buttons cd-dialog-fit-footer">

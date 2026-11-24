@@ -620,14 +620,6 @@ export class PluginWorkerBridge {
       });
       return;
     }
-    if (message.namespace === "apps" && message.args.length !== 1) {
-      this.sendCapabilityError(message.requestId, {
-        code: PluginWorkerErrorCodes.MalformedMessage,
-        message: `apps.${message.method} requires exactly one request object.`
-      });
-      return;
-    }
-
     const method = (capability as CapabilityMethods)[message.method];
     if (typeof method !== "function") {
       // The namespace is granted but this method is not: the host builds a method onto the context only
@@ -637,6 +629,15 @@ export class PluginWorkerBridge {
       this.sendCapabilityError(message.requestId, {
         code: PluginWorkerErrorCodes.CapabilityNotGranted,
         message: `Plugin "${this.pluginId}" is not granted the "${message.namespace}.${message.method}" capability.`
+      });
+      return;
+    }
+    if (message.namespace === "apps" && message.args.length !== 1) {
+      // Record the refusal through the capability without forwarding any of the malformed args.
+      void Promise.resolve().then(() => method.call(capability, null)).catch(() => {});
+      this.sendCapabilityError(message.requestId, {
+        code: PluginWorkerErrorCodes.MalformedMessage,
+        message: `apps.${message.method} requires exactly one request object.`
       });
       return;
     }

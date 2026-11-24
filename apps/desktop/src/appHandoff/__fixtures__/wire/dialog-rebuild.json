@@ -1,0 +1,14 @@
+{
+  "appName": "Crystal Builder",
+  "combination": "pcu-N16-1x1x1",
+  "mode": "result",
+  "pluginName": "Send to Crystal Builder",
+  "rebuildChanges": {},
+  "rebuildCombination": "pcu-N16-2x2x2",
+  "rebuildLabel": "Rebuild at 2×2×2",
+  "title": "Companion build result",
+  "twist": 6.0,
+  "warnings": [
+    "ChemDraft verified this build."
+  ]
+}

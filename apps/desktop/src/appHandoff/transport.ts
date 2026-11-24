@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
-  PluginHandoffChooseAppResultSchema, PluginHandoffRunCompanionResultSchema, PluginHandoffSendFileResultSchema, PluginHandoffStatusResultSchema
+  boundedHandoffText, PluginHandoffChooseAppResultSchema, PluginHandoffRunCompanionResultSchema, PluginHandoffSendFileResultSchema, PluginHandoffStatusResultSchema
 } from "@chemdraft/plugin-api";
 import type { PluginAppHandoffTransport } from "@chemdraft/plugin-host";
 
@@ -19,25 +19,24 @@ export function createTauriAppHandoffTransport(
   };
 }
 
-export interface AppHandoffTransportStatus {
-  message: string;
-  unsuccessful: boolean;
-}
+export type AppHandoffTransportStatus =
+  | { kind: "success"; message?: string }
+  | { kind: "refused" | "cancelled" | "open-failed"; message: string };
 
-function transportStatus(
+export function appHandoffResultStatus(
   method: Parameters<PluginAppHandoffTransport>[1],
   request: Parameters<PluginAppHandoffTransport>[2],
   reply: unknown
 ): AppHandoffTransportStatus | undefined {
-  const problem = (message: string): AppHandoffTransportStatus => ({ message, unsuccessful: true });
+  const problem = (message: string): AppHandoffTransportStatus => ({ kind: "refused", message });
   const invalid = () => problem("ChemDraft received an invalid app handoff reply.");
   if (method === "sendFile") {
     const result = PluginHandoffSendFileResultSchema.safeParse(reply);
     if (!result.success) return invalid();
     switch (result.data.status) {
-      case "sent": return { message: "Opened the handoff file in the chosen app.", unsuccessful: false };
-      case "declined": return problem("App handoff cancelled.");
-      case "failed": return problem(`App handoff failed: ${result.data.message}`);
+      case "sent": return { kind: "success", message: "Opened the handoff file in the chosen app." };
+      case "declined": return { kind: "cancelled", message: "App handoff cancelled." };
+      case "failed": return problem(`App handoff failed: ${boundedHandoffText(result.data.message)}`);
     }
   }
   if (method === "runCompanion") {
@@ -45,57 +44,42 @@ function transportStatus(
     if (!result.success) return invalid();
     switch (result.data.status) {
       case "done":
-        if (result.data.opened) return { message: "Build completed and opened in the chosen app.", unsuccessful: false };
-        if ("openOutput" in request && request.openOutput) return problem("Build completed, but the chosen app could not open it.");
-        return { message: "Build completed.", unsuccessful: false };
-      case "declined": return problem("Companion build cancelled.");
-      case "failed": return problem(`Companion build failed: ${result.data.message}`);
+        if (result.data.opened) return { kind: "success", message: "Build completed and opened in the chosen app." };
+        if ("openOutput" in request && request.openOutput) {
+          return { kind: "open-failed", message: "Build completed, but the chosen app could not open it." };
+        }
+        return { kind: "success", message: "Build completed." };
+      case "declined": return { kind: "cancelled", message: "Companion build cancelled." };
+      case "failed": return problem(`Companion build failed: ${boundedHandoffText(result.data.message)}`);
     }
   }
   if (method === "chooseApp") {
     const result = PluginHandoffChooseAppResultSchema.safeParse(reply);
     if (!result.success) return invalid();
+    // The picker does not spend the submission, so a later successful pick can clear this.
     if (result.data.status === "cancelled") return problem("App selection cancelled.");
+    return { kind: "success" };
   }
   // An unavailable app from a status probe can be replaced by the picker.
-  if (method === "status" && !PluginHandoffStatusResultSchema.safeParse(reply).success) return invalid();
+  const result = PluginHandoffStatusResultSchema.safeParse(reply);
+  if (!result.success) return invalid();
+  if (result.data.available) return { kind: "success" };
 }
 
-export async function reportAppHandoffTransportResult(
-  reply: Promise<unknown>,
-  method: Parameters<PluginAppHandoffTransport>[1],
-  request: Parameters<PluginAppHandoffTransport>[2],
-  report: (status: AppHandoffTransportStatus) => void
-): Promise<unknown> {
-  const value = await reply.catch((error: unknown) => {
-    report({ message: error instanceof Error && error.message ? error.message : endpointUnavailable, unsuccessful: true });
-    throw error;
-  });
-  const status = transportStatus(method, request, value);
-  if (status) report(status);
-  return value;
+export function appHandoffRefusal(error: unknown): AppHandoffTransportStatus {
+  return { kind: "refused", message: (error instanceof Error && boundedHandoffText(error.message)) || endpointUnavailable };
 }
 
-export function boundedPluginText(value: string, limit: number): string {
-  let text = "";
-  let count = 0;
-  for (const character of value) {
-    if (count++ === limit) return text.trim() ? `${text.trim()}…` : "";
-    if (/[\t\n\r\v\f\u0085\u2028\u2029]/u.test(character)) {
-      if (!text.endsWith(" ")) text += " ";
-    }
-    else if (!/[\p{Cc}\p{Cf}]/u.test(character)) text += character;
-  }
-  return text.trim();
+export function attributedHandoffText(value: unknown, pluginName: string): string | undefined {
+  if (typeof value !== "string") return;
+  const line = boundedHandoffText(value);
+  if (!line) return;
+  const name = boundedHandoffText(pluginName, 80, false);
+  return `Plugin (${name || "Unknown"}): ${line}`;
 }
 
 export function appHandoffCommandStatus(result: unknown, pluginName: string): string | undefined {
   if (!result || typeof result !== "object" || !("ok" in result) || result.ok !== true ||
       !("data" in result) || !result.data || typeof result.data !== "object" || !("status" in result.data)) return;
-  const { status } = result.data;
-  if (typeof status !== "string") return;
-  const line = boundedPluginText(status, 500);
-  if (!line) return;
-  const attribution = boundedPluginText(pluginName, 80);
-  return `Plugin (${attribution || "unknown"}): ${line}`;
+  return attributedHandoffText(result.data.status, pluginName);
 }

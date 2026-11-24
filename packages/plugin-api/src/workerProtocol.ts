@@ -211,8 +211,10 @@ export function asHostToWorkerMessage(data: unknown): HostToWorkerMessage | unde
   const isCorrelationId = (value: unknown) => isIndex(value) && Number.isSafeInteger(value) && value > 0;
   const withHost = () => {
     const { host, ...rest } = message;
-    const parsed = PluginHostIdentitySchema.passthrough().safeParse(host);
-    return { ...rest, ...(parsed.success ? { host: { name: parsed.data.name, version: parsed.data.version } } : {}) } as unknown as HostToWorkerMessage;
+    const candidate = host && typeof host === "object" && !Array.isArray(host)
+      ? host as Record<string, unknown> : undefined;
+    const parsed = PluginHostIdentitySchema.safeParse({ name: candidate?.name, version: candidate?.version });
+    return { ...rest, ...(parsed.success ? { host: parsed.data } : {}) } as unknown as HostToWorkerMessage;
   };
   switch (message.kind) {
     case "invokeTool":

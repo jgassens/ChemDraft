@@ -2735,7 +2735,25 @@ export class PluginHost {
     await this.externalTools!.clearConversation(plugin, PluginExternalToolClearConversationRequestSchema.parse(request));
   }
 
-  private async callAppHandoff<Method extends PluginAppHandoffMethod>(
+  protected observeAppHandoffCall(
+    _invocation: AppHandoffMenuInvocation,
+    _method: PluginAppHandoffMethod,
+    _request: Parameters<PluginAppHandoffTransport>[2],
+    _result: Promise<unknown>
+  ): void {}
+
+  private callAppHandoff<Method extends PluginAppHandoffMethod>(
+    pluginId: string,
+    invocation: ActiveCommandInvocation,
+    method: Method,
+    request: Parameters<PluginAppsAPI[Method]>[0]
+  ): Promise<Awaited<ReturnType<PluginAppsAPI[Method]>>> {
+    const result = this.performAppHandoff(pluginId, invocation, method, request);
+    if (invocation.menuInvocation) this.observeAppHandoffCall(invocation.menuInvocation, method, request, result);
+    return result;
+  }
+
+  private async performAppHandoff<Method extends PluginAppHandoffMethod>(
     pluginId: string,
     invocation: ActiveCommandInvocation,
     method: Method,

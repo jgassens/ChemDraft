@@ -1,72 +1,75 @@
-use super::wire::*;
-use serde::{Deserialize, Serialize};
+use super::{command_line::Pipeline, dialogs, wire::*};
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, fs, path::Path};
 
+const APP_NAME: &str = "Crystal Builder";
+const PLUGIN_NAME: &str = "Send to Crystal Builder";
+const BUILD: &str = "pcu-N16-1x1x1";
+const REBUILD: &str = "pcu-N16-2x2x2";
+
+fn crystal_builder_choices() -> (Pipeline, dialogs::Composition) {
+    let pipeline: Pipeline = serde_json::from_value(json!({
+        "id": "mofBuild", "tool": {"macos": "Contents/MacOS/xtal", "windows": "xtal.exe"},
+        "testedVersions": ["1.1.1"],
+        "steps": [{"id": "preflight", "args": ["capabilities", "--json"], "timeoutSeconds": 30}],
+        "combinations": {
+            (BUILD): {"topology": "pcu", "node": "N16", "repeat": "1x1x1", "rebuildAs": REBUILD},
+            (REBUILD): {"topology": "pcu", "node": "N16", "repeat": "2x2x2"}
+        }
+    }))
+    .unwrap();
+    let composition = dialogs::Composition {
+        formula: "C6H4X2".into(),
+        atom_count: 12,
+        graph_digest: String::new(),
+    };
+    (pipeline, composition)
+}
+
+#[test]
+fn crystal_builder_warning_bytes_match_the_documented_dialog_budget() {
+    let (pipeline, composition) = crystal_builder_choices();
+    let confirm = |warnings: &[String]| {
+        dialogs::confirmation_snapshot(
+            &pipeline,
+            APP_NAME,
+            PLUGIN_NAME,
+            BUILD,
+            Some(&composition),
+            warnings,
+        )
+    };
+    // Ten ASCII lines use 31 bytes of JSON array punctuation plus 2,739 bytes of text.
+    let mut warnings = vec!["a".repeat(300); 9];
+    warnings.push("a".repeat(39));
+    assert!(confirm(&warnings).is_ok());
+    warnings.last_mut().unwrap().push('a');
+    assert!(confirm(&warnings).is_err());
+
+    let rebuild = |warnings: &[String]| {
+        let mut result = encode(dialogs::result_snapshot(
+            &pipeline,
+            APP_NAME,
+            PLUGIN_NAME,
+            BUILD,
+            REBUILD,
+            None,
+            warnings,
+        ))
+        .unwrap();
+        result["twist"] = Value::String("0".repeat(24));
+        crate::dialog_windows::validate_app_handoff_snapshot(&result)
+    };
+    *warnings.last_mut().unwrap() = "a".repeat(169);
+    assert!(rebuild(&warnings).is_ok());
+    warnings.last_mut().unwrap().push('a');
+    assert!(rebuild(&warnings).is_err());
+}
+
 #[test]
 fn app_handoff_wire_fixtures_are_current() {
-    // The marking request travels over the plugin Worker port, not the native launch endpoint.
-    #[derive(Serialize, Deserialize)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    struct MarkRequest {
-        object_id: String,
-        anchors: Vec<String>,
-    }
-    #[derive(Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct HostIdentity {
-        name: String,
-        version: String,
-    }
-    #[derive(Serialize, Deserialize)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    struct SelectedAtoms {
-        object_id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        selected_atom_ids: Option<Vec<String>>,
-    }
     let id = "0123456789abcdef0123456789abcdef";
     let mut values: BTreeMap<String, Value> = BTreeMap::from([
-        (
-            "mark-connection-points-request".into(),
-            serde_json::to_value(MarkRequest {
-                object_id: "linker".into(),
-                anchors: vec!["anchor-1".into(), "anchor-2".into()],
-            })
-            .unwrap(),
-        ),
-        (
-            "command-host-identity".into(),
-            serde_json::to_value(HostIdentity {
-                name: "ChemDraft".into(),
-                version: "1.2.3".into(),
-            })
-            .unwrap(),
-        ),
-        (
-            "selection-atoms".into(),
-            serde_json::to_value(SelectedAtoms {
-                object_id: "linker".into(),
-                selected_atom_ids: Some(vec!["anchor-1".into()]),
-            })
-            .unwrap(),
-        ),
-        (
-            "selection-atoms-empty".into(),
-            serde_json::to_value(SelectedAtoms {
-                object_id: "linker".into(),
-                selected_atom_ids: Some(vec![]),
-            })
-            .unwrap(),
-        ),
-        (
-            "selection-atoms-legacy".into(),
-            serde_json::to_value(SelectedAtoms {
-                object_id: "linker".into(),
-                selected_atom_ids: None,
-            })
-            .unwrap(),
-        ),
         (
             "choose-app-request".into(),
             encode(ChooseRequest {
@@ -182,6 +185,44 @@ fn app_handoff_wire_fixtures_are_current() {
             encode(RunResult::Declined).unwrap(),
         ),
     ]);
+    values.insert(
+        "run-companion-done-unopened".into(),
+        encode(RunResult::Done {
+            steps: vec![StepResult {
+                id: "build".into(),
+                json: json!({"ok": true}),
+            }],
+            opened: false,
+        })
+        .unwrap(),
+    );
+    let (pipeline, composition) = crystal_builder_choices();
+    let warnings = dialogs::display_warnings(&["ChemDraft verified\u{200b} this build.".into()]);
+    values.insert(
+        "dialog-confirm".into(),
+        dialogs::confirmation_snapshot(
+            &pipeline,
+            APP_NAME,
+            PLUGIN_NAME,
+            BUILD,
+            Some(&composition),
+            &warnings,
+        )
+        .unwrap(),
+    );
+    values.insert(
+        "dialog-rebuild".into(),
+        encode(dialogs::result_snapshot(
+            &pipeline,
+            APP_NAME,
+            PLUGIN_NAME,
+            BUILD,
+            REBUILD,
+            Some(6.0),
+            &warnings,
+        ))
+        .unwrap(),
+    );
     for (name, code) in [
         ("app-missing", SendCode::AppMissing),
         ("app-changed", SendCode::AppChanged),
@@ -248,39 +289,26 @@ fn app_handoff_wire_fixtures_are_current() {
         )
         .unwrap();
         assert_eq!(&current, value, "{name}.json");
-        match name.as_str() {
-            "mark-connection-points-request" => assert_eq!(
-                serde_json::to_value(
-                    serde_json::from_value::<MarkRequest>(current.clone()).unwrap()
-                )
-                .unwrap(),
-                current
-            ),
-            "command-host-identity" => assert_eq!(
-                serde_json::to_value(
-                    serde_json::from_value::<HostIdentity>(current.clone()).unwrap()
-                )
-                .unwrap(),
-                current
-            ),
-            "selection-atoms" | "selection-atoms-empty" | "selection-atoms-legacy" => assert_eq!(
-                serde_json::to_value(
-                    serde_json::from_value::<SelectedAtoms>(current.clone()).unwrap()
-                )
-                .unwrap(),
-                current
-            ),
-            _ => {}
-        }
-        if name.starts_with("run-companion-request") {
+        if let Some((method, _)) = name.split_once("-request") {
+            let method = match method {
+                "choose-app" => "chooseApp",
+                "status" => "status",
+                "send-file" => "sendFile",
+                "run-companion" => "runCompanion",
+                _ => panic!("Unknown wire request {name}"),
+            };
             let call = json!({
                 "invocation": {"pluginId": "plugin", "commandId": "plugin.build.run", "nonce": "0".repeat(32)},
-                "method": "runCompanion", "request": current
+                "method": method, "request": current
             });
-            let (_, Request::Run(request)) = Call::parse(call).unwrap() else {
-                panic!("Expected a companion request.");
+            let (_, request) = Call::parse(call).unwrap();
+            let decoded = match request {
+                Request::Choose(request) => encode(request),
+                Request::Status(request) => encode(request),
+                Request::Send(request) => encode(request),
+                Request::Run(request) => encode(request),
             };
-            assert_eq!(encode(request).unwrap(), current);
+            assert_eq!(decoded.unwrap(), current);
         }
     }
     let mut actual: Vec<_> = fs::read_dir(&directory)

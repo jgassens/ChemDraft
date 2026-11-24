@@ -16,12 +16,12 @@ import type { DialogTransport } from "./dialogTransport";
 import { exportFixture } from "./exportTestFixtures";
 import { toolInstallFixture } from "./toolInstallTestFixtures";
 const snapshot: Extract<DialogMessage, { type: "snapshot" }> = { protocolVersion: 1, ownerWindowId: "main", documentTabId: "tab", dialogKind: "pageSize", sessionId: "session", requestId: "request", snapshotRevision: 1, type: "snapshot", data: { title: "Drawing A", width: 8.5, height: 11, unit: "inch" } };
-const buildWarnings = ["<b>Review the build input.</b>", ...Array<string>(19).fill("Warning".repeat(15))];
+const buildWarnings = ["ChemDraft verified this build.", "<b>Review the build input.</b>", ...Array<string>(18).fill("Warning".repeat(15))];
 const handoffSnapshot: Extract<DialogMessage, { type: "snapshot"; dialogKind: "appHandoff" }> = {
   ...snapshot, dialogKind: "appHandoff", documentTabId: "app-handoff", sessionId: "native-handoff", data: {
     mode: "confirm", title: "Confirm companion build", appName: "Crystal Builder", pipeline: "mofBuild",
     composition: { formula: "C8H4O4X2", atomCount: 18 }, suggestedCombination: "pcu-2x2x2",
-    warnings: buildWarnings,
+    pluginName: "ChemDraft", warnings: buildWarnings,
     combinations: {
       "pcu-1x1x1": { topology: "pcu", node: "N16", repeat: "1x1x1", rebuildAs: "pcu-2x2x2" },
       "pcu-2x2x2": { topology: "pcu", node: "N16", repeat: "2x2x2" }
@@ -47,7 +47,8 @@ it.each(["macos", "windows"] as const)("answers the Rust-owned build confirmatio
   await act(async () => root.render(<DialogWindow hostId="native-confirm" />));
   await act(async () => host.receive!(handoffSnapshot));
   const select = container.querySelector("select")!;
-  const list = container.querySelector("ul[aria-label='Build warnings']")!;
+  expect(container.textContent).toContain("Plugin (ChemDraft) warnings");
+  const list = container.querySelector("ul[aria-labelledby]")!;
   expect(Array.from(list.children, item => item.textContent)).toEqual(buildWarnings);
   expect(list.querySelector("b")).toBeNull();
   expect(list.closest(".cd-dialog-fit-body")).not.toBeNull();
@@ -88,11 +89,12 @@ it("sends a bare Rebuild action to the Rust-owned result session", async () => {
   await act(async () => host.receive!({ ...handoffSnapshot, sessionId: "result", data: {
     mode: "result", title: "Companion build result", appName: "Crystal Builder",
     combination: "square", rebuildCombination: "hex", rebuildLabel: "Rebuild at 2×2×2",
-    rebuildChanges: { topology: "hex" }, twist: 6, warnings: buildWarnings
+    rebuildChanges: { topology: "hex" }, twist: 6, pluginName: "ChemDraft", warnings: buildWarnings
   } }));
   expect(container.textContent).toContain("Joint twist left 6.000");
   expect(container.textContent).toContain("Rebuild with hex · net hex");
-  const list = container.querySelector("ul[aria-label='Build warnings']")!;
+  expect(container.textContent).toContain("Plugin (ChemDraft) warnings");
+  const list = container.querySelector("ul[aria-labelledby]")!;
   expect(Array.from(list.children, item => item.textContent)).toEqual(buildWarnings);
   expect(list.querySelector("b")).toBeNull();
   const rebuild = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Rebuild at 2×2×2")!;

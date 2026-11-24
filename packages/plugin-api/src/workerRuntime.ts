@@ -35,7 +35,7 @@ import type {
   PluginSelectionAPI,
   PluginStorage
 } from "./index";
-import { PluginAppHandoffPermissions, PluginAppHandoffSchemas, type PluginAppsAPI } from "./appHandoff";
+import { boundedHandoffText, PluginAppHandoffPermissions, PluginAppHandoffSchemas, type PluginAppsAPI } from "./appHandoff";
 import {
   bindPluginRequestCapabilities, getPluginRequestCapability, pluginRequestPermissions,
   type PluginActiveDocumentChangedHandler, type PluginToolCallResult, type PluginToolHandler
@@ -107,6 +107,21 @@ function toErrorPayload(error: unknown): PluginWorkerErrorPayload {
     return { code: typeof code === "string" ? code : error.name, message: error.message };
   }
   return { code: "PLUGIN_WORKER_ERROR", message: String(error) };
+}
+
+function boundHandoffCommandResult(value: unknown): unknown {
+  if (!value || typeof value !== "object" || !("ok" in value)) return value;
+  if (value.ok === true && "data" in value && value.data && typeof value.data === "object" &&
+      "status" in value.data && typeof value.data.status === "string") {
+    const status = boundedHandoffText(value.data.status);
+    if (status !== value.data.status) return { ...value, data: { ...value.data, status } };
+  }
+  if (value.ok === false && "error" in value && value.error && typeof value.error === "object" &&
+      "message" in value.error && typeof value.error.message === "string") {
+    const message = boundedHandoffText(value.error.message);
+    if (message !== value.error.message) return { ...value, error: { ...value.error, message } };
+  }
+  return value;
 }
 
 /** The worker's global scope, viewed as an endpoint. Cast mirrors the existing conformer/NMR worker
@@ -374,10 +389,19 @@ export function runPluginWorker(
         });
       }
       const schema = PluginAppHandoffSchemas[method];
-      const parsed = schema.request.safeParse(request);
-      if (!parsed.success) {
+      let parsed;
+      try {
+        parsed = schema.request.safeParse(request);
+      } catch {
+        // Accessors on a plugin-owned object may throw before Zod can return an issue.
+      }
+      if (!parsed?.success) {
+        // The host must see the refusal even if the command catches it. Null is invalid for
+        // every handoff method and avoids copying a potentially oversized or uncloneable input.
+        await call("apps", method, [null]).catch(() => {});
         throw new PluginWorkerCapabilityError({
-          code: PluginWorkerErrorCodes.MalformedMessage, message: `Invalid apps.${method} request: ${parsed.error.issues[0].message}`
+          code: PluginWorkerErrorCodes.MalformedMessage,
+          message: `Invalid apps.${method} request: ${parsed?.error.issues[0]?.message ?? "Could not read the request fields."}`
         });
       }
       const result = schema.result.safeParse(await call("apps", method, [parsed.data]));
@@ -504,6 +528,7 @@ export function runPluginWorker(
       ? { sessionId: message.sessionId, name: message.name, input: message.input }
       : undefined;
     const commandId = message.kind === "invokeCommand" ? message.commandId : message.name;
+    const handoff = !tool && PluginAppHandoffPermissions.every(permission => permissions.has(permission));
     const controller = new AbortController();
     let active = true;
     if (tool) toolAborts.set(commandRequestId, controller);
@@ -545,7 +570,7 @@ export function runPluginWorker(
             return;
           }
           try {
-            post({ kind: "commandSettled", commandRequestId, ok: true, value });
+            post({ kind: "commandSettled", commandRequestId, ok: true, value: handoff ? boundHandoffCommandResult(value) : value });
           } catch (error) {
             // `postMessage` synchronously throws DataCloneError for functions, symbols, and other
             // non-cloneable results. Report a clone-safe failure so the host invocation rejects
@@ -572,7 +597,9 @@ export function runPluginWorker(
             abortedCommands.delete(commandRequestId);
             if (!tool) return;
           }
-          post({ kind: "commandSettled", commandRequestId, ok: false, error: toErrorPayload(error) });
+          const payload = toErrorPayload(error);
+          if (handoff) payload.message = boundedHandoffText(payload.message) || "Command failed.";
+          post({ kind: "commandSettled", commandRequestId, ok: false, error: payload });
         }
       );
   };

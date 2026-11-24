@@ -6146,6 +6146,12 @@ textarea:focus-visible,
   pointer-events: auto;
 }
 
+.status-message-line {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Shrinks far ahead of the status (its shrink factor dwarfs the left part's), down to its floor; the
    full stamp is in its title tooltip, the one reason it takes the pointer. */
 .build-stamp {

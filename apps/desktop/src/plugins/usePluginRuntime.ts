@@ -62,7 +62,7 @@ import { mountStructureNamingHost } from "./StructureNamingInstallDialog";
 import { presentExternalToolInstall } from "../externalTools/presentExternalToolInstall";
 import type { DialogCoordinator } from "../dialogs/DialogCoordinator";
 import type { ListenForAppHandoff } from "../appHandoff/nativeMenu";
-import { appHandoffCommandStatus } from "../appHandoff/transport";
+import { appHandoffCommandStatus, attributedHandoffText } from "../appHandoff/transport";
 
 /**
  * Extract a user-facing message from a resolved plugin-command value that is a `{ ok: false }`
@@ -249,18 +249,27 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     let active = true;
     const unlisten = listenForAppHandoff(invocation => {
       const warnings: string[] = [];
-      const feedback: AppHandoffMenuFeedback = { pending: 0 };
-      const name = runtime.host.getPlugin(invocation.pluginId)?.manifest.name;
-      const report = (message?: string) => {
-        if (!active || (feedback.problem && !warnings.length)) return;
-        const line = [feedback.problem?.message ?? message, ...new Set(warnings)].filter(Boolean).join(" ");
-        if (line) providersRef.current.onAppHandoffStatus?.(line);
+      const feedback: AppHandoffMenuFeedback = { pending: 0, problems: new Map() };
+      const name = runtime.host.getPlugin(invocation.pluginId)?.manifest.name ?? invocation.pluginId;
+      const report = (result: unknown, failure?: unknown) => {
+        if (!active) return;
+        const problems = Array.from(feedback.problems.values());
+        const messages = problems.map(({ message }) => message);
+        if (feedback.pending) messages.push("The plugin command ended before app handoff completed.");
+        const detail = failure !== undefined
+          ? attributedHandoffText(failure, name) ?? attributedHandoffText("Command failed.", name)
+          : !feedback.pending && problems.every(({ kind }) => kind === "open-failed")
+            ? appHandoffCommandStatus(result, name) : undefined;
+        if (detail) messages.push(detail);
+        const selection = Array.from(new Set(warnings)).join(" ");
+        const text = [...messages, selection].filter(Boolean).join("\n");
+        if (text) providersRef.current.onAppHandoffStatus?.(text);
       };
-      return runtime.invokeAppHandoffMenuCommand(invocation, warnings, feedback).then(result => {
-        const failure = pluginCommandFailure(result);
-        if (failure) report(`Plugin command failed: ${failure}`);
-        else report(name && !feedback.pending ? appHandoffCommandStatus(result, name) : undefined);
-      }, (error: unknown) => report(`Plugin command failed: ${error instanceof Error ? error.message : String(error)}`));
+      return runtime.invokeAppHandoffMenuCommand(invocation, warnings, feedback).then(
+        result => report(result, pluginCommandFailure(result)),
+        (error: unknown) => report(undefined, error instanceof Error ? error.message :
+          typeof error === "string" ? error : "Command failed.")
+      );
     });
     return () => {
       active = false;

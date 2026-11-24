@@ -1,0 +1,12 @@
+{
+  "opened": false,
+  "status": "done",
+  "steps": [
+    {
+      "id": "build",
+      "json": {
+        "ok": true
+      }
+    }
+  ]
+}

@@ -234,9 +234,40 @@ const invocation = { commandId: handoffCommand, pluginId: handoffManifest.id, no
 const handoffSend = { appId: "opaque", fileName: "model", extension: "cif" as const, text: "test data" };
 
 describe("Worker app handoff", () => {
+  it.each(["status", "failure", "throw"])("bounds a handoff command's %s before crossing the Worker port", async kind => {
+    const host = new PluginHost({ appHandoffProvenance: { forRegistration: handoffProvenance, forCall: handoffProvenance } });
+    const text = "🧪".repeat(600);
+    const bounded = "🧪".repeat(500) + "…";
+    const bridge = startWorkerRoutedPlugin({
+      manifest: handoffManifest,
+      commandHandlers: { [handoffCommand]: () => {
+        if (kind === "throw") throw new Error(text);
+        if (kind === "failure") return { ok: false, error: { code: "build", message: text } };
+        return { ok: true, data: { status: text } };
+      } }
+    });
+    try {
+      await bridge.whenReady();
+      host.registerPlugin(handoffManifest, createWorkerRoutedOptions(handoffManifest, bridge));
+      const call = host.invokeAppHandoffMenuCommand(invocation);
+      if (kind === "throw") await expect(call).rejects.toMatchObject({ message: bounded });
+      else await expect(call).resolves.toEqual(kind === "failure"
+        ? { ok: false, error: { code: "build", message: bounded } }
+        : { ok: true, data: { status: bounded } });
+    } finally {
+      bridge.terminate();
+    }
+  });
+
   it("relays a command's handoff, rejects its extra fields and offers no self-invocation dispatcher", async () => {
     const transport = vi.fn(async () => ({ status: "sent" }));
-    const host = new PluginHost({
+    const observed = vi.fn();
+    class ObservedHost extends PluginHost {
+      protected override observeAppHandoffCall(...args: Parameters<PluginHost["observeAppHandoffCall"]>) {
+        observed(...args);
+      }
+    }
+    const host = new ObservedHost({
       appHandoffProvenance: { forRegistration: handoffProvenance, forCall: handoffProvenance },
       appHandoffTransport: transport
     });
@@ -247,6 +278,8 @@ describe("Worker app handoff", () => {
         expect(ctx).not.toHaveProperty("invokeCommand");
         const forged = { ...handoffSend, commandId: handoffCommand };
         await expect(ctx.apps!.sendFile(forged)).rejects.toThrow("Invalid apps.sendFile request");
+        const unreadable = { ...handoffSend, get text(): string { throw new Error("Do not copy this input."); } };
+        await expect(ctx.apps!.sendFile(unreadable)).rejects.toThrow("Could not read the request fields.");
         expect(transport).not.toHaveBeenCalled();
         if (ctx.input) throw new Error("Unexpected command input");
         return ctx.apps!.sendFile(handoffSend);
@@ -256,6 +289,9 @@ describe("Worker app handoff", () => {
       await bridge.whenReady();
       host.registerPlugin(handoffManifest, createWorkerRoutedOptions(handoffManifest, bridge));
       await expect(host.invokeAppHandoffMenuCommand(invocation)).resolves.toEqual({ status: "sent" });
+      expect(observed.mock.calls.map(([, method, request]) => [method, request])).toEqual([
+        ["sendFile", null], ["sendFile", null], ["sendFile", handoffSend]
+      ]);
       expect(transport).toHaveBeenCalledExactlyOnceWith(invocation, "sendFile", handoffSend);
     } finally {
       bridge.terminate();

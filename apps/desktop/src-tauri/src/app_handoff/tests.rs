@@ -573,7 +573,14 @@ fn dialog_choice_is_bound_to_declared_combination_and_rebuild_keeps_original_inp
 fn confirmation_size_preflight_uses_the_private_dialog_envelope() {
     let mut pipeline = pipeline();
     let snapshot = |pipeline: &Pipeline, warnings: &[String]| {
-        dialogs::confirmation_snapshot(pipeline, "Crystal Builder", "small", None, warnings)
+        dialogs::confirmation_snapshot(
+            pipeline,
+            "Crystal Builder",
+            "Send to Crystal Builder",
+            "small",
+            None,
+            warnings,
+        )
     };
     assert!(snapshot(&pipeline, &[]).is_ok());
     let state = State::default();
@@ -602,17 +609,25 @@ fn confirmation_size_preflight_uses_the_private_dialog_envelope() {
 #[test]
 fn confirmation_and_result_show_the_same_sanitized_warning_lines() {
     let pipeline = pipeline();
-    let warnings = dialogs::display_warnings(vec![
-        " \u{202e}<b>Potential</b>\u{2069}\r\nloss\u{7}.\u{2028}Review. ".into(),
+    let warnings = dialogs::display_warnings(&[
+        " \u{202e}<b>Poten\u{200b}tial</b>\u{2069}\r\nloss\u{7}.\u{2028}Review\u{ad}\u{e0001}. "
+            .into(),
         "\u{61c} \t \u{9f}".into(),
         "--flag=value".into(),
     ]);
-    let confirm =
-        dialogs::confirmation_snapshot(&pipeline, "Crystal Builder", "small", None, &warnings)
-            .unwrap();
+    let confirm = dialogs::confirmation_snapshot(
+        &pipeline,
+        "Crystal Builder",
+        "ChemDraft",
+        "small",
+        None,
+        &warnings,
+    )
+    .unwrap();
     let result = serde_json::to_value(dialogs::result_snapshot(
         &pipeline,
         "Crystal Builder",
+        "ChemDraft",
         "small",
         "large",
         Some(6.0),
@@ -621,10 +636,31 @@ fn confirmation_and_result_show_the_same_sanitized_warning_lines() {
     .unwrap();
     assert_eq!(
         confirm["warnings"],
-        json!(["<b>Potential</b>  loss. Review.", "--flag=value"])
+        json!(["<b>Potential</b> loss. Review.", "--flag=value"])
     );
     assert_eq!(result["warnings"], confirm["warnings"]);
+    assert_eq!(confirm["pluginName"], "ChemDraft");
+    assert_eq!(result["pluginName"], confirm["pluginName"]);
     assert!(crate::dialog_windows::validate_app_handoff_snapshot(&result).is_ok());
+}
+
+#[test]
+fn send_file_message_attributes_and_bounds_plugin_text() {
+    let name = format!("ChemDraft\u{200d}\u{7}{}", "🧪".repeat(1000));
+    assert_eq!(
+        dialogs::plugin_display_name(&name),
+        format!("ChemDraft{}", "🧪".repeat(69))
+    );
+    assert_eq!(dialogs::plugin_display_name("\u{2060}\u{7}"), "Unknown");
+    assert_eq!(
+        dialogs::send_warning_message("Crystal Builder", &name, &[
+            "ChemDraft verified\u{200b} this build.\r\nReview\u{e0020}.".into()
+        ]),
+        format!("Send the file to Crystal Builder?\n\nPlugin (ChemDraft{}) warnings\nChemDraft verified this build. Review.", "🧪".repeat(69))
+    );
+    let warnings = vec!["🧪".repeat(300); 20];
+    let message = dialogs::send_warning_message("Crystal Builder", "ChemDraft", &warnings);
+    assert_eq!(message.split_once(" warnings\n").unwrap().1.len(), 24_019);
 }
 
 #[test]

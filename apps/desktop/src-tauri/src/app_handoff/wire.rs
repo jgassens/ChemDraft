@@ -197,12 +197,14 @@ impl Call {
     }
 }
 
+pub(super) const WARNING_CHARS: usize = 300;
+
 fn check_warnings(warnings: Option<&[String]>) -> Result<(), String> {
     if warnings.is_some_and(|lines| {
         lines.len() > 20
-            || lines
-                .iter()
-                .any(|line| line.chars().count() > 300 || line.contains('\0'))
+            || lines.iter().any(|line| {
+                line.chars().take(WARNING_CHARS + 1).count() > WARNING_CHARS || line.contains('\0')
+            })
     }) {
         return Err("Handoff warnings allow 20 lines of up to 300 characters each.".into());
     }

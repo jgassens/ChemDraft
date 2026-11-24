@@ -1,6 +1,23 @@
 import { z } from "zod";
 import { boundedRequestJson, type PluginRequestJson } from "./requestPayload";
 
+/** @internal Bounds handoff display text before copying it between the Worker and desktop. */
+export function boundedHandoffText(value: string, limit = 500, ellipsis = true): string {
+  let text = "";
+  let count = 0;
+  for (const character of value) {
+    if (count++ === limit) {
+      text = text.trim();
+      return text && ellipsis ? `${text}…` : text;
+    }
+    if (/[\t\n\r\v\f\u0085\u2028\u2029]/u.test(character)) {
+      if (!text.endsWith(" ")) text += " ";
+    } else if (!/[\p{Cc}\p{Cf}]/u.test(character)) {
+      text += character;
+    }
+  }
+  return text.trim();
+}
 export const PluginAppHandoffPermissions = ["apps.handoff", "native.execute"] as const;
 
 export const PluginAppHandoffLimits = {

@@ -12,7 +12,7 @@ import {
   createChemDraftAgentBridge, dispatchAgentPointerEvent, type AgentResolvedPoint, type AgentSnapshot
 } from "../agentBridge";
 import { ToolbarTextButton } from "../toolbars/toolbarCells";
-import { appHandoffCommandStatus, createTauriAppHandoffTransport, reportAppHandoffTransportResult } from "./transport";
+import { appHandoffCommandStatus, appHandoffRefusal, appHandoffResultStatus, createTauriAppHandoffTransport } from "./transport";
 import { installNativeAppHandoffReceiver } from "./nativeMenu";
 import type { AppHandoffMenuInvocation } from "@chemdraft/plugin-host";
 
@@ -53,8 +53,10 @@ describe("native app handoff relay", () => {
     const status = vi.fn();
     const transport = createTauriAppHandoffTransport(native);
     const relay = (method: Parameters<typeof transport>[1], payload: Parameters<typeof transport>[2]) =>
-      reportAppHandoffTransportResult(transport(invocation, method, payload), method, payload,
-        result => status(result.message));
+      transport(invocation, method, payload).then(
+        value => status(appHandoffResultStatus(method, payload, value)?.message),
+        (error: unknown) => { status(appHandoffRefusal(error).message); throw error; }
+      );
     native.mockResolvedValueOnce({ status: "sent" });
     await relay("sendFile", request);
     expect(status).toHaveBeenLastCalledWith("Opened the handoff file in the chosen app.");

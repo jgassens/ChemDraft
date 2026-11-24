@@ -447,8 +447,10 @@ for whole-object selection). An ordinary command with `document.write` may use o
 `documents.addConnectionPoints({ objectId, anchors })` on a molecule selected at command start:
 1–999 anchor IDs add one single-bonded X each in one patch; a refused anchor changes nothing.
 Successful handoff commands may return `data.status` as plain text; the host attributes it to the
-plugin and displays one line, truncated after 500 Unicode code points. Native failure and
-cancellation take precedence.
+plugin and reads up to 500 Unicode code points. A host refusal remains visible until a
+later successful retry of the same capability. Host failure or cancellation keeps its own line
+and the host includes any attributed plugin failure detail. If a completed build cannot open,
+the host includes the plugin's success summary when provided.
 
 The manifest declares each pipeline in full, so consent can show it and review can read it. Only the
 host's placeholders (`{inputDir}`, `{inputStem}`, `{outputFile:cif}`, `{previousOutput}`) carry paths
