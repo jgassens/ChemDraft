@@ -141,7 +141,7 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 ```
 
 `apiVersion` in your manifest declares the SDK contract you target (`PluginApiVersion`, currently
-`0.1.26`). API 0.1.21 adds plugin chemistry properties and plugin assistant tools (#310).
+`0.1.27`). API 0.1.21 adds plugin chemistry properties and plugin assistant tools (#310).
 API 0.1.22 adds optional name-to-structure `source`, `matchedName` and `matchedCas` provenance for the offline name dictionary (#318).
 API 0.1.23 adds native wavy single bonds (#327).
 Set `MoleculeBond.display.bondStyle: "wavy"` only with `order: "single"`; the schema rejects other orders.
@@ -150,6 +150,7 @@ assign R/S there. The SDK exports `MoleculeBond` and `MoleculeBondDisplay`; plug
 should declare `^0.1.23`.
 API 0.1.24 adds reaction `arrowObjectIds`/`plusObjectIds` for shared scheme arrows and plus signs (#335),
 and binary CDX import/export (#316). API 0.1.25 adds optional bracketUsage, repeatCount and scoped crossingBondIds (#338 bracketed groups).
+API 0.1.27 adds [app handoff](#app-handoff), selection connection points, and handoff chemistry graphs.
 API 0.1.26 adds [request-bound plugin tools](#request-bound-plugin-tools), depiction, and document-change notifications.
 API 0.1.20 adds optional `tableStyle.autoColumnMinEm`, the minimum auto column width in em. API 0.1.19 bounds panel reports: strings, collection sizes, aggregate work and UTF-8 JSON
 size are validated before a report is forwarded to the renderer (see [Panel report limits](#panel-report-limits)).
@@ -177,6 +178,7 @@ it declares.
 
 | API version | Additive capability | Permission |
 | --- | --- | --- |
+| 0.1.27 | App handoff and companion pipelines; selection `connectionPoints`, `chemistry.handoffGraph` and `suggestConnectionPoints`, and graph input to `embed3d` | `apps.handoff` and `native.execute` for handoff; `selection.read` and `chemistry.compute` for handoff chemistry |
 | 0.1.26 | Request lifecycle, pinned document reads and patches, session-local tools, chemistry and depiction, and document-change notifications | Existing permissions, listed below |
 | 0.1.25 | Optional bracketUsage, repeatCount and crossingBondIds (scoped objectId/bondId references); legacy repeatUnit remains supported | No new permission |
 | 0.1.24 | Binary CDX import/export (#316) and optional reaction `arrowObjectIds`/`plusObjectIds` (#335); shared scheme arrows and plus signs are referenced by id, never copied | No new permission |
@@ -189,6 +191,56 @@ it declares.
 | 0.1.17 | Optional bond `stereo: "either"` for E/Z-unspecified double bonds | No new permission |
 | 0.1.16 | Optional atom `isotope` fields | No new permission |
 | 0.1.15 | `chemistry.embed3d`, `minimize3d`, `flatten3d` | `chemistry.compute`, during the plugin's own command |
+
+## App handoff
+
+Declare `apiVersion: "^0.1.27"` and both `apps.handoff` and `native.execute`.
+This release restricts handoff to allowlisted official plugins installed from their matching catalog
+repository with a verified checksum. Sideloads and old install records without verified provenance
+are refused. Handoff plugins must run in a Worker. The capability is available only during their own
+user-started native menu command; toolbar, panel, overlay, agent, and assistant tool invocations do
+not authorize it. The host keeps proof of user action in native code. A command can send one file or
+run one pipeline; a shown host box consumes the allowance even when cancelled.
+
+- `context.apps.chooseApp({ purpose })` opens the native picker and returns `chosen` with an opaque
+  `appId` and display name, or `cancelled`. No app path is exposed. `purpose` is at most 200 characters.
+- `status({ appId })` checks whether the chosen app remains available and unchanged.
+- `sendFile({ appId, fileName, extension, text, warnings? })` writes a temporary UTF-8 file and
+  opens it with the app. The host sanitizes the file name; extensions are `xyz`, `cif`, `mol`, `sdf`,
+  `pdb`, `smi`, `csv`, `json`, or `txt`. Text is limited to 5 MiB and warnings to 20 lines of 300
+  characters each. Warnings are shown before sending.
+- `runCompanion({ appId, pipeline, combination, input?, openOutput? })` runs the complete declared
+  pipeline. Input is one UTF-8 file of at most 1 MiB. The host presents a build confirmation with
+  the declared combination choices and may offer a host-run rebuild when `rebuildAs` is declared.
+
+For example, inside an eligible command handler:
+
+```ts
+const picked = await context.apps!.chooseApp({ purpose: "Open a text file" });
+if (picked.status === "chosen") {
+  const result = await context.apps!.sendFile({
+    appId: picked.app.appId, fileName: "notes", extension: "txt", text: "Hello from ChemDraft\n"
+  });
+  if (result.status === "failed") throw new Error(result.message);
+}
+```
+
+Companion pipelines are declared in the manifest's `companions` array, including an ID, relative
+macOS and Windows tool paths inside the chosen app, tested versions, ordered steps with arguments and
+timeouts, and named `combinations`. The plugin supplies only a declared combination ID. Host
+placeholders provide file paths and declared combination values; they must occupy an argument or
+follow a fixed `key=` prefix. The host validates the declaration, runs all steps in order, checks
+the app and tool, and refuses untested versions. See `PluginCompanionPipeline` in the SDK for the
+schema; each step is capped at 300 seconds and the pipeline at 600 seconds.
+
+The native host asks for consent for the app and, for a companion, its pipeline. Consent is visible
+and revocable in Plugin Manager, and is cleared on uninstall or an update dropping `apps.handoff`.
+App identity and pipeline changes require renewed consent. `sendFile` returns `sent`, `declined`, or
+`failed` with a code and message; `runCompanion` returns `done`, `declined`, or `failed`, with an
+optional bounded diagnostic. Handle cancellation and failure explicitly; failures include missing or
+changed apps, launch or write failures, and companion version, timeout, exit, or output errors.
+Invalid requests and unauthorized calls can also reject. Do not treat a declined or failed operation
+as success.
 
 ## Request-bound plugin tools
 

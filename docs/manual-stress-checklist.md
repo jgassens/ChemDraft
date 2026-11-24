@@ -1738,6 +1738,19 @@ whole-molecule cleanup with the existing behavior, and check save/reopen and exp
   selection, before and after changing their shortcuts. Check that Windows utility windows
   stay menu-free and the macOS app menu restores its shortcuts if Preferences loses focus mid-recording.
 
+## App handoff (macOS and Windows)
+
+Run on the owner's MacBook for macOS UI and on a Windows CI-built installer; use the Intel iMac
+for processor-specific behavior. Use an eligible official catalog plugin and its native menu command.
+
+- Pick an app, decline consent, then accept and send a file. Revoke consent in Plugin Manager and
+  send again; verify consent is requested again.
+- Move the chosen app and retry; check for an `app-changed` or `app-missing` failure.
+- Send file names with spaces, non-ASCII characters, and a reserved Windows name; check the opened
+  file and sanitized name.
+- Check palette focus behavior and, on Windows, that no console flashes. Quit ChemDraft and verify
+  the receiving app remains running.
+
 ## Linux startup and session end
 
 - Disable “Start with a fresh document”, make an unsaved edit, and log out before the autosave
