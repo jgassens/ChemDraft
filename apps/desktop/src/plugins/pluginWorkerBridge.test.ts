@@ -176,13 +176,23 @@ it("passes optional application identity and connection-point capability over th
     contributes: { commands: [{ id: commandId, title: "Mark" }] }
   });
   const request = { objectId: "m1", anchors: ["anchor-1"] };
-  const selection = { ...BENZENE, molecules: [{ ...BENZENE.molecules[0]!, selectedAtomIds: ["anchor-1"] }] };
+  const selection = { ...BENZENE, molecules: [{ ...BENZENE.molecules[0]!, selectedAtomIds: ["anchor-1"],
+    connectionPoints: [{ atom: 7, anchor: 1, bondOrder: 1 }] }] };
   const bridge = startWorkerRoutedPlugin({
-    manifest, commandHandlers: { [commandId]: async context => ({
-      host: context.host,
-      selection: await context.selection!.getSelection(),
-      receipt: await context.documents.addConnectionPoints?.(request)
-    }) }
+    manifest, commandHandlers: { [commandId]: async context => {
+      const snapshot = await context.selection!.getSelection();
+      expect(Object.isFrozen(snapshot)).toBe(true);
+      expect(Object.isFrozen(snapshot.objectIds)).toBe(true);
+      expect(Object.isFrozen(snapshot.molecules)).toBe(true);
+      expect(Object.isFrozen(snapshot.molecules[0])).toBe(true);
+      const ids = snapshot.molecules[0]?.selectedAtomIds;
+      if (ids) {
+        expect(Object.isFrozen(ids)).toBe(true);
+        expect(() => (ids as string[]).push("injected")).toThrow(TypeError);
+        expect(Object.isFrozen(snapshot.molecules[0]!.connectionPoints![0])).toBe(true);
+      }
+      return { host: context.host, selection: snapshot, receipt: await context.documents.addConnectionPoints?.(request) };
+    } }
   });
   try {
     const oldHost = new PluginHost({ getSelection: () => BENZENE });
@@ -497,6 +507,8 @@ describe("PluginWorkerBridge — M34 isolation boundary", () => {
       entry: "worker.js", permissions: ["chemistry.compute", ...(declared ? ["selection.read"] : [])],
       contributes: { commands: [{ id: commandId, title: "Graph" }] } });
     const doc = createEmptyDocument({ id: "test-doc", pageId: "p1" });
+    doc.pages[0]!.objects.push(MoleculeObjectSchema.parse({ id: "m1", type: "molecule", x: 20, y: 20, width: 20, height: 20,
+      structureFormat: "smiles", structure: "C", atoms: [{ id: "a1", element: "C", x: 30, y: 30 }] }));
     doc.selection = { objectIds: ["m1"], pageId: "p1" };
     const graph = { objectId: "m1", pageId: "p1", canonicalSmiles: "C", graph: { atoms: [
       { element: "C", charge: 0, radicalElectrons: 0, hydrogenCount: 4 }], bonds: [] },

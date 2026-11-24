@@ -85,6 +85,19 @@ async function selectAtom(id: string) {
   expect(nativeSelection()).toEqual([id]);
 }
 
+async function marqueeAtom(id: string) {
+  const { x, y } = drawn().atoms.find(atom => atom.id === id)!;
+  const page = container.querySelector(".page")!;
+  await act(async () => {
+    for (const [type, offset] of [["pointerdown", -8], ["pointermove", 8], ["pointerup", 8]] as const) {
+      page.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 42, button: 0, isPrimary: true,
+        clientX: x + offset, clientY: y + offset, pointerType: "mouse", buttons: type === "pointerup" ? 0 : 1 }));
+    }
+  });
+  expect(present().selection.objectIds).toEqual([]);
+  expect(nativeSelection()).toContain(id);
+}
+
 async function click(target: Element, point: { x: number; y: number }) {
   await act(async () => {
     for (const type of ["pointerdown", "pointerup"]) {
@@ -94,9 +107,9 @@ async function click(target: Element, point: { x: number; y: number }) {
   });
 }
 
-function register(handler: (context: PluginCommandContext) => unknown) {
+function register(handler: (context: PluginCommandContext) => unknown, apiVersion: string = PluginApiVersion) {
   const runtime = captured.runtime!;
-  runtime.registerPlugin({ id: "org.test.mark", name: "Marker", version: "1", apiVersion: PluginApiVersion, entry: "test.js",
+  runtime.registerPlugin({ id: "org.test.mark", name: "Marker", version: "1", apiVersion, entry: "test.js",
     permissions: ["document.write", "selection.read", "chemistry.compute"],
     contributes: { commands: [{ id: commandId, title: "Mark" }] } },
   { commandHandlers: { [commandId]: handler } });
@@ -166,5 +179,98 @@ it("refuses an RDKit valence failure in a batch without changing the drawing or 
   expect(present()).toBe(before);
   expect(nativeSelection()).toEqual(["a"]);
   await menu("edit.undo");
+  expect(present()).toBe(before);
+});
+
+it("reads live marked content under fixed IDs and undoes and redoes two separate marks", async () => {
+  await render({ ...source, atoms: source.atoms.filter(atom => atom.element !== "He") });
+  await marqueeAtom("a");
+  const before = present();
+  const beforeSelection = nativeSelection();
+  let markCount = 0;
+  const handler = async (context: PluginCommandContext) => {
+    const selection = await context.selection!.getSelection();
+    const [selected] = selection.molecules;
+    const anchor = selected!.selectedAtomIds![0]!;
+    expect(selected!.selectedAtomIds).toEqual([markCount === 0 ? "a" : "c"]);
+    const request = { objectId: selected!.objectId };
+    const graph = () => context.chemistry!.handoffGraph!(request);
+    expect((await graph()).graph.atoms.filter(atom => atom.isConnectionPoint)).toHaveLength(markCount);
+    expect(await context.documents.addConnectionPoints!({ ...request, anchors: [anchor] })).toEqual({ applied: true, objectIds: [source.id] });
+    markCount++;
+    expect((await graph()).graph.atoms.filter(atom => atom.isConnectionPoint)).toHaveLength(markCount);
+    const updated = await context.selection!.getSelection();
+    expect(updated.objectIds).toEqual(selection.objectIds);
+    expect(updated.molecules[0]!.selectedAtomIds).toEqual([anchor]);
+    expect(updated.molecules[0]!.connectionPoints).toHaveLength(markCount);
+  };
+  let runtime!: ReturnType<typeof register>;
+  await act(async () => {
+    runtime = register(handler);
+    await runtime.invokeCommand(commandId);
+  });
+  const first = present();
+  await selectAtom("c");
+  const beforeSecond = present();
+  await act(async () => { await runtime.invokeCommand(commandId); });
+  const second = present();
+  const ids = drawn().atoms.filter(atom => atom.element === "X").map(atom => atom.id);
+  expect(ids).toHaveLength(2);
+  expect(nativeSelection()).toEqual([ids[1]]);
+  await menu("edit.undo");
+  expect(present()).toEqual(beforeSecond);
+  expect(nativeSelection()).toEqual(["c"]);
+  await menu("edit.undo");
+  expect(present()).toEqual(before);
+  expect(nativeSelection()).toEqual(beforeSelection);
+  await menu("edit.redo");
+  expect(present()).toEqual(first);
+  expect(nativeSelection()).toEqual([ids[0]]);
+  await menu("edit.redo");
+  expect(present()).toEqual(second);
+  expect(nativeSelection()).toEqual([ids[1]]);
+});
+
+it("preserves live whole-object selection for a pre-0.1.28 plugin", async () => {
+  await render({ ...source, atoms: source.atoms.filter(atom => atom.element !== "He") });
+  const inspect = deferred<void>();
+  const firstRead = deferred<void>();
+  let initial: unknown;
+  let final: Awaited<ReturnType<NonNullable<PluginCommandContext["selection"]>["getSelection"]>> | undefined;
+  let invocation!: Promise<unknown>;
+  await marqueeAtom("a");
+  await act(async () => {
+    const runtime = register(async context => {
+      initial = await context.selection!.getSelection();
+      firstRead.resolve();
+      await inspect.promise;
+      final = await context.selection!.getSelection();
+    }, "^0.1.27");
+    invocation = runtime.invokeCommand(commandId);
+    await firstRead.promise;
+  });
+  await click(container.querySelector(`[data-object-id="${source.id}"]`)!, { x: 110, y: 106 });
+  expect(present().selection.objectIds).toEqual([source.id]);
+  await act(async () => { inspect.resolve(); await invocation; });
+  expect(initial).toEqual({ objectIds: [], molecules: [] });
+  expect(final?.objectIds).toEqual([source.id]);
+  expect(final?.molecules[0]).toMatchObject({ objectId: source.id });
+  expect(final?.molecules[0]).not.toHaveProperty("selectedAtomIds");
+});
+
+it.each([["A", 1], ["L", 1], ["*", 3]] as const)("refuses a retained CTAB symbol %s at the wrong identity or anchor %i", async (symbol, anchorIndex) => {
+  const atoms = source.atoms.filter(atom => atom.element !== "He");
+  await render({ ...source, atoms: [...atoms, { element: "X", id: "x0", x: 85, y: 115, formalCharge: 0 }],
+    bonds: [...source.bonds, { id: "xa", fromAtomId: "a", toAtomId: "x0", order: "single" }],
+    structureFormat: "molfile-v2000", structure: ["", "   ChemDraft", "", "  4  3  0  0  0  0  0  0  0  0999 V2000",
+      ...[...atoms, { element: symbol, x: 85, y: 115 }].map(atom =>
+        `${atom.x.toFixed(4).padStart(10)}${(-atom.y).toFixed(4).padStart(10)}    0.0000 ${atom.element.padEnd(3)} 0  0  0  0  0  0  0  0  0  0  0  0`),
+      "  1  2  1  0  0  0  0", "  2  3  1  0  0  0  0", `  ${anchorIndex}  4  1  0  0  0  0`, "M  END", ""].join("\n") });
+  await selectAtom("c");
+  const before = present();
+  await act(async () => {
+    const runtime = register(context => context.documents.addConnectionPoints!({ objectId: source.id, anchors: ["c"] }));
+    await expect(runtime.invokeCommand(commandId)).rejects.toThrow(/stored molfile-v2000.*cannot verify/);
+  });
   expect(present()).toBe(before);
 });

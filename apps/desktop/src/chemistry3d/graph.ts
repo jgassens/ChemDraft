@@ -9,6 +9,12 @@ export function canonicalGraphSmiles(mol: RdkitJsMol): string {
   return smiles;
 }
 
+/** Identify assigned E/Z bonds by their drawn endpoints, independent of RDKit's atom order. */
+export function definedDoubleBonds(graph: PluginHandoffStructureGraph): string[] {
+  return graph.bonds.flatMap(bond => bond.order === 2 && (bond.stereo === "cis" || bond.stereo === "trans")
+    ? [JSON.stringify([graph.atoms[bond.a]!.atomId, graph.atoms[bond.b]!.atomId].sort())] : []);
+}
+
 export function readHandoffStructure(mol: RdkitJsMol): PluginHandoffStructureGraph {
   const json = readGraph(mol);
   const source = json.molecules[0];

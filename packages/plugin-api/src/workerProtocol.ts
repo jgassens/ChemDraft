@@ -291,6 +291,12 @@ export function supportsPluginRequestTools(declaredRange: string): boolean {
   return minimum !== undefined && compareSemver(minimum, { major: 0, minor: 1, patch: 26 }) >= 0;
 }
 
+/** Whether the plugin opted into the command's drawn atom selection. */
+export function supportsPluginHandoffSelection(declaredRange: string): boolean {
+  const minimum = parseSemver(declaredRange.trim().replace(/^[~^]/, ""));
+  return minimum !== undefined && compareSemver(minimum, { major: 0, minor: 1, patch: 28 }) >= 0;
+}
+
 /**
  * Pragmatic compatibility check for the worker startup handshake: does the host's concrete
  * {@link PluginApiVersion} satisfy the range a plugin declares in its manifest `apiVersion`? Supports

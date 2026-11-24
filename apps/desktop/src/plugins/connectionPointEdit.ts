@@ -4,9 +4,11 @@ import {
 } from "@chemdraft/document-workflow-core";
 import { nativeBondOrderResolution, nativeElementFromAtomLabel } from "@chemdraft/layout-engine";
 import {
-  clearStoredCtabReference, resolveObjectOnPage, storedCtabReference, type PluginHostOptions, type PluginPatchApplicationRequest
+  clearStoredCtabReference, requireUnchangedConnectionPointSource, resolveObjectOnPage, storedCtabReference,
+  type PluginHostOptions, type PluginPatchApplicationRequest
 } from "@chemdraft/plugin-host";
 import { runHandoffGraphInConformerWorker } from "../chemistry3d/client";
+import { definedDoubleBonds } from "../chemistry3d/graph";
 import { planConnectionPoints, prepareHandoffGraph, reactionMembership } from "./handoffGraph";
 import { stableRecord, verifyStoredSources } from "./requestWrites/storedChemistry";
 import { desktopWriteInspectionContext } from "./requestWrites/structureIdentity";
@@ -71,9 +73,8 @@ export const buildConnectionPointsPatch: NonNullable<PluginHostOptions["buildCon
   };
 
 export function assertConnectionPointSource(document: ChemDraftDocument, { source, pageId, anchors }: ConnectionPointEdit): void {
-  const target = resolveObjectOnPage(document, pageId, source.id);
-  if (!target || target.object !== source) throw refusal(anchors, "the molecule changed before the edit could commit.");
-  assertEditable(target.page, source, anchors);
+  const target = requireUnchangedConnectionPointSource(document, pageId, source);
+  assertEditable(target.page, target.object, anchors);
 }
 
 /** Serialize the same drawn graph the handoff Worker verifies. The temporary selection is local
@@ -86,23 +87,47 @@ function verificationWork(document: ChemDraftDocument, pageId: string, molecule:
   });
 }
 
+function preserveAtomAndBondRecords(source: MoleculeObject, draft: MoleculeObject, atomIds: readonly string[]): MoleculeObject {
+  const originals = new Map(source.atoms.map(atom => [atom.id, atom]));
+  // Generic graph edits discard stale H hints. Existing records in this additive edit
+  // keep their stated counts, which the RDKit audit checks again on the product.
+  const atoms = draft.atoms.map(atom => {
+    const stated = originals.get(atom.id)?.hydrogenCount;
+    return stated !== undefined && atom.hydrogenCount === undefined ? { ...atom, hydrogenCount: stated } : atom;
+  });
+  const assertKept = (original: readonly { id: string }[], updated: readonly { id: string }[], kind: "atom" | "bond") => {
+    const byId = new Map(updated.map(record => [record.id, record]));
+    if (byId.size !== updated.length || updated.length !== original.length + atomIds.length) {
+      throw new Error(`The edit changed the expected ${kind} count.`);
+    }
+    for (const record of original) {
+      if (stableRecord(record) !== stableRecord(byId.get(record.id))) {
+        throw new Error(`The edit would change the existing ${kind} record "${record.id}".`);
+      }
+    }
+  };
+  assertKept(source.atoms, atoms, "atom");
+  assertKept(source.bonds, draft.bonds, "bond");
+  return { ...draft, atoms };
+}
+
 export async function verifyConnectionPointEdit(before: ChemDraftDocument, draft: ChemDraftDocument,
   { source, pageId, anchors, atomIds }: ConnectionPointEdit, signal = new AbortController().signal): Promise<ChemDraftDocument> {
   const target = resolveObjectOnPage(draft, pageId, source.id);
   if (target?.object.type !== "molecule") throw refusal(anchors, "the edited molecule could not be verified.");
-  const molecule = target.object;
   const added = new Set(atomIds);
-  const stripped = { ...molecule, atoms: molecule.atoms.filter(atom => !added.has(atom.id)),
-    bonds: molecule.bonds.filter(bond => !added.has(bond.fromAtomId) && !added.has(bond.toAtomId)) };
   try {
+    const molecule = preserveAtomAndBondRecords(source, target.object, atomIds);
     const original = verificationWork(before, pageId, source);
     if (original.sourceAtomMaps.length) throw new Error("The molecule contains retained atom mapping.");
-    const context = desktopWriteInspectionContext(signal);
+    const existingPoints = original.atoms.flatMap((atom, i) => atom.isConnectionPoint ? [i] : []);
+    const context = desktopWriteInspectionContext(signal, existingPoints);
     const unmarked = await runHandoffGraphInConformerWorker(original, signal);
     if (source.structure || source.compatibility?.unknown.smiles !== undefined) {
       const graph = await context.chemistry.inspectStructure("molfile", original.molfile);
       if (!graph.valid) throw new Error(graph.reason);
       await verifyStoredSources(context, source, { reference: storedCtabReference(source),
+        requireOrderedCtabIdentity: existingPoints.length > 0,
         graph: { ...graph, molfile: original.molfile, atomIds: original.atoms.map(atom => atom.atomId) } });
     } else {
       await verifyStoredSources(context, source, { replacementIdentity: unmarked.canonicalSmiles });
@@ -116,11 +141,9 @@ export async function verifyConnectionPointEdit(before: ChemDraftDocument, draft
       }
     }
     const markedWork = verificationWork(draft, pageId, molecule);
-    const marked = await runHandoffGraphInConformerWorker(markedWork, signal);
-    const restored = await runHandoffGraphInConformerWorker(verificationWork(draft, pageId, stripped), signal);
-    if (restored.canonicalSmiles !== unmarked.canonicalSmiles) {
-      throw new Error("Removing the new X atoms did not restore the original canonical SMILES.");
-    }
+    const marked = await runHandoffGraphInConformerWorker({ ...markedWork,
+      connectionPointStereo: { atomIds, originalSmiles: unmarked.canonicalSmiles,
+        specifiedDoubleBonds: definedDoubleBonds(unmarked.graph) } }, signal);
     const anchorIds = new Set(anchors);
     for (const atom of marked.graph.atoms) {
       const old = originalById.get(atom.atomId);
@@ -136,12 +159,16 @@ export async function verifyConnectionPointEdit(before: ChemDraftDocument, draft
     }
     signal.throwIfAborted();
     const compatibility = clearStoredCtabReference(molecule.compatibility);
+    const metadata = nativeSingleBondGraphMetadata(molecule.atoms, molecule.bonds);
+    const warnings = new Map([...metadata.warnings, ...(source.chemistry?.warnings ?? [])]
+      .map(warning => [stableRecord(warning), warning]));
     const verified = { ...molecule, structure: markedWork.molfile, structureFormat: "molfile-v2000" as const,
-      chemistry: nativeSingleBondGraphMetadata(molecule.atoms, molecule.bonds),
+      chemistry: { ...metadata, isotopeLabels: source.chemistry?.isotopeLabels ?? metadata.isotopeLabels,
+        stereochemistry: source.chemistry?.stereochemistry ?? [], warnings: [...warnings.values()] },
       ...(compatibility && { compatibility: "smiles" in compatibility.unknown
         ? { ...compatibility, unknown: { ...compatibility.unknown, smiles: marked.canonicalSmiles } } : compatibility }) };
     return adoptDerivedDocument(draft, { ...draft, pages: draft.pages.map(page => page.id !== pageId ? page :
-      { ...page, objects: page.objects.map(object => object === molecule ? verified : object) }) });
+      { ...page, objects: page.objects.map(object => object === target.object ? verified : object) }) });
   } catch (error) {
     signal.throwIfAborted();
     throw refusal(anchors, error instanceof Error ? error.message : String(error));
@@ -154,8 +181,9 @@ export function assertVerifiedConnectionPointEdit(before: ChemDraftDocument, aft
   { source, pageId, anchors }: ConnectionPointEdit): void {
   const graph = (document: ChemDraftDocument) => {
     const object = resolveObjectOnPage(document, pageId, source.id)?.object;
-    return object?.type === "molecule" && [object.structure, object.structureFormat, object.bonds,
-      object.atoms.map(({ x: _x, y: _y, ...atom }) => atom)];
+    if (object?.type !== "molecule") return undefined;
+    const { x: _x, y: _y, atoms, ...record } = object;
+    return { ...record, atoms: atoms.map(({ x: _atomX, y: _atomY, ...atom }) => atom) };
   };
   if (stableRecord(graph(before)) !== stableRecord(graph(after))) throw refusal(anchors, "commit normalization changed the verified graph.");
 }

@@ -1,15 +1,21 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createEmptyDocument, nativeDrawingStyleFromObjectStyle, type ChemDraftDocument, type MoleculeObject, type ReactionObject } from "@chemdraft/chem-core";
 import { chemicalIdentityMolfile } from "@chemdraft/document-workflow-core";
 import { planBondExtension } from "@chemdraft/layout-engine";
 import { ensureRdkit, resetRdkitForTesting } from "@chemdraft/rdkit-adapter";
 import { installRealRdkitModuleLoader } from "@chemdraft/rdkit-adapter/testing";
-import { PluginApiVersion, PluginHandoffGraphResultSchema, type PluginCommandContext } from "@chemdraft/plugin-api";
+import { PluginApiVersion, PluginHandoffGraphResultSchema, ProposedDocumentPatchSchema, type PluginCommandContext } from "@chemdraft/plugin-api";
 import { PluginHost } from "@chemdraft/plugin-host";
 import { createChemistry3dProviders } from "../chemistry3d/client";
 import { runChemistry3dJob } from "../chemistry3d/protocol";
+import { applyPluginDocumentPatch } from "./applyPluginDocumentPatch";
 import { prepareHandoffGraph, suggestConnectionPointsForPlugin } from "./handoffGraph";
-import { buildConnectionPointsPatch } from "./connectionPointEdit";
+import { buildConnectionPointsPatch, verifyConnectionPointEdit } from "./connectionPointEdit";
+
+vi.mock("../chemistry3d/client", async original => ({
+  ...await original<typeof import("../chemistry3d/client")>(),
+  runHandoffGraphInConformerWorker: (await import("../chemistry3d/handoffAudit")).auditHandoffGraph
+}));
 
 beforeAll(() => installRealRdkitModuleLoader());
 afterAll(() => resetRdkitForTesting());
@@ -38,7 +44,108 @@ async function audit(doc: ChemDraftDocument) {
   return PluginHandoffGraphResultSchema.parse(result);
 }
 
+function drawAt(mol: MoleculeObject, coordinates: readonly (readonly [number, number])[]): MoleculeObject {
+  return { ...mol, structure: "", atoms: mol.atoms.map((atom, i) => ({ ...atom, x: coordinates[i]![0], y: coordinates[i]![1] })) };
+}
+
+async function mark(mol: MoleculeObject, anchors = ["a0"]) {
+  const doc = selected(mol);
+  const { patch, atomIds } = buildConnectionPointsPatch({ ...request, anchors }, mol, doc.pages[0]!);
+  const { document } = applyPluginDocumentPatch(doc, ProposedDocumentPatchSchema.parse(patch));
+  return verifyConnectionPointEdit(doc, document, { source: mol, pageId: "p1", atomIds, anchors });
+}
+
+function tetrahedron(coords: readonly (readonly [number, number])[], style: "wedge" | "hashed") {
+  const mol = drawAt(molecule(["C", "F", "Cl", "Br"], [[0, 1], [0, 2], [0, 3]]), coords);
+  mol.bonds[0]!.display = { bondStyle: style };
+  return mol;
+}
+
+describe("connection point chemistry", () => {
+  it.each(["wedge", "hashed"] as const)("refuses an even-layout %s that would invert when X replaces H", async style => {
+    const mol = tetrahedron([[100, 100], [100, 70], [126, 115], [74, 115]], style);
+    expect((await audit(selected(mol))).canonicalSmiles).toMatch(/@/);
+    await expect(mark(mol)).rejects.toThrow(/change.*stereochemistry/);
+  });
+
+  it.each([
+    ["fanned", [[120, 120], [155, 120], [153, 130], [145, 145]]],
+    ["T", [[120, 120], [120, 85], [155, 120], [85, 120]]]
+  ] as const)("marks a %s tetrahedral layout that preserves its configuration", async (_name, coords) => {
+    const mol = tetrahedron(coords, "wedge");
+    expect((await audit(selected(mol))).canonicalSmiles).toMatch(/@/);
+    expect((await audit(await mark(mol))).canonicalSmiles).toMatch(/\*.*@/);
+  });
+
+  it("refuses to define a new double-bond configuration at a terminal alkene", async () => {
+    const mol = drawAt(molecule(["C", "C", "C"], [[0, 1, "double"], [1, 2]]), [[100, 100], [125, 100], [140, 125]]);
+    await expect(mark(mol)).rejects.toThrow(/new double-bond stereochemistry/);
+  });
+
+  it.each([[75, "cis"], [125, "trans"]] as const)("keeps existing E/Z when marking an alkene anchor at y=%i", async (y, stereo) => {
+    const mol = drawAt(molecule(["C", "C", "C", "C"], [[0, 1, "double"], [0, 2], [1, 3]]),
+      [[100, 100], [130, 100], [85, 75], [145, y]]);
+    expect((await audit(selected(mol))).graph.bonds[0]!.stereo).toBe(stereo);
+    expect((await audit(await mark(mol))).graph.bonds[0]!.stereo).toBe(stereo);
+  });
+
+  it("preserves existing annotations and a stated H count away from the anchor", async () => {
+    const mol = tetrahedron([[100, 100], [100, 70], [126, 115], [74, 115]], "wedge");
+    mol.atoms.push({ id: "a4", element: "C", x: 170, y: 170, formalCharge: 0 },
+      { id: "a5", element: "C", x: 200, y: 155, formalCharge: 0, hydrogenCount: 3, warningSuppressed: true });
+    mol.bonds.push({ id: "b3", fromAtomId: "a4", toAtomId: "a5", order: "single" });
+    mol.chemistry = { stereochemistry: ["a0:R"], warnings: [{ code: "test.annotation", message: "Retained annotation" }], isotopeLabels: [] };
+    const marked = (await mark(mol, ["a4"])).pages[0]!.objects[0] as MoleculeObject;
+    expect(marked.atoms.slice(0, mol.atoms.length)).toEqual(mol.atoms);
+    expect(marked.bonds.slice(0, mol.bonds.length)).toEqual(mol.bonds);
+    expect(marked.chemistry).toMatchObject({ stereochemistry: mol.chemistry.stereochemistry, warnings: mol.chemistry.warnings });
+  });
+});
+
 describe("connection point patch preparation", () => {
+  it.each(["replacement", "in-place change", "empty override", "wrong page override", "late replacement"])("refuses %s before applying the patch", async condition => {
+    const mol = molecule(["C", "C"], [[0, 1]]);
+    const doc = selected(mol);
+    const build = vi.fn((...args: Parameters<typeof buildConnectionPointsPatch>) => {
+      const patch = buildConnectionPointsPatch(...args);
+      if (condition === "late replacement") doc.pages[0]!.objects[0] = molecule(["N", "C"], [[0, 1]]);
+      return patch;
+    });
+    const apply = vi.fn(() => ({ applied: true as const, objectIds: [mol.id] }));
+    const host = new PluginHost({ getActiveDocument: () => doc, buildConnectionPointsPatch: build, applyDocumentPatch: apply });
+    const commandId = "plugin.mark.scope";
+    host.registerPlugin({ id: "org.test.mark", name: "Mark", version: "1", entry: "main.js", apiVersion: PluginApiVersion,
+      permissions: ["document.write"], contributes: { commands: [{ id: commandId, title: "Mark" }] } }, {
+      commandHandlers: { [commandId]: context => {
+        if (condition === "replacement") doc.pages[0]!.objects[0] = molecule(["N", "C"], [[0, 1]]);
+        if (condition === "in-place change") mol.atoms[0]!.element = "N";
+        return context.documents.addConnectionPoints!({ ...request, anchors: ["a0"] });
+      } }
+    });
+    const writeSelection = condition.endsWith("override") ? { pageId: condition === "wrong page override" ? "p2" : "p1",
+      objectIds: condition === "empty override" ? [] : [mol.id], molecules: [] } : undefined;
+    await expect(host.invokeCommand(commandId, { writeSelection })).rejects.toThrow(/changed|write scope/);
+    expect(build).toHaveBeenCalledTimes(condition === "late replacement" ? 1 : 0);
+    expect(apply).not.toHaveBeenCalled();
+  });
+
+  it("accepts a content-equivalent molecule and a matching explicit page scope", async () => {
+    const mol = molecule(["C", "C"], [[0, 1]]);
+    const doc = selected(mol);
+    const receipt = { applied: true as const, objectIds: [mol.id] };
+    const apply = vi.fn(() => receipt);
+    const host = new PluginHost({ getActiveDocument: () => doc, buildConnectionPointsPatch, applyDocumentPatch: apply });
+    const commandId = "plugin.mark.scope";
+    host.registerPlugin({ id: "org.test.mark", name: "Mark", version: "1", entry: "main.js", apiVersion: PluginApiVersion,
+      permissions: ["document.write"], contributes: { commands: [{ id: commandId, title: "Mark" }] } }, {
+      commandHandlers: { [commandId]: context => {
+        doc.pages[0]!.objects[0] = structuredClone(mol);
+        return context.documents.addConnectionPoints!({ ...request, anchors: ["a0"] });
+      } }
+    });
+    await expect(host.invokeCommand(commandId, { writeSelection: { pageId: "p1", objectIds: [mol.id], molecules: [] } })).resolves.toEqual(receipt);
+    expect(apply).toHaveBeenCalledOnce();
+  });
   it("uses the suggestion coordinates for every new X and preserves the existing graph", () => {
     const doc = selected(molecule(["C", "C"], [[0, 1]]));
     const mol = doc.pages[0]!.objects[0] as MoleculeObject;

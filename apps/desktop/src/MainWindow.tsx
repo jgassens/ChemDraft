@@ -3047,6 +3047,7 @@ export function MainWindow({
   const documentHistoryRef = useRef<DocumentHistory>(documentHistory);
   const documentUndoLabelsRef = useRef(new WeakMap<ChemDraftDocument, string>());
   const nativePartHistorySelectionsRef = useRef(new WeakMap<ChemDraftDocument, NativeMoleculeSelectionPart[]>());
+  const connectionPointUndoSelectionsRef = useRef(new WeakMap<ChemDraftDocument, NativeMoleculeSelectionPart[]>());
   const fileStateRef = useRef<NativeFileState>(fileState);
   // Successful explicit saves, per tab, including a save completed while its label editor is open.
   const documentSaveRevisionsRef = useRef(new Map<string, number>());
@@ -10085,12 +10086,14 @@ export function MainWindow({
     finishActiveNativeTextEdit();
     let nextHistory: DocumentHistory | undefined;
     let undoLabel: string | undefined;
+    let connectionPointUndoSelection: NativeMoleculeSelectionPart[] | undefined;
     installDocumentHistory((history) => {
       const recordedAfter = recordedHistoryAfterRef.current.get(history.present);
       const currentHistory = { ...history,
         present: direction === "undo" && recordedAfter ? recordedAfter : atomLabelHistorySnapshot(history.present) };
       const restored = direction === "undo" ? undoDocumentHistory(currentHistory) : redoDocumentHistory(currentHistory);
       if (restored === currentHistory) return history;
+      if (direction === "undo") connectionPointUndoSelection = connectionPointUndoSelectionsRef.current.get(currentHistory.present);
       undoLabel = direction === "undo"
         ? documentUndoLabelsRef.current.get(currentHistory.present)
         : documentUndoLabelsRef.current.get(restored.present);
@@ -10102,7 +10105,7 @@ export function MainWindow({
       return;
     }
 
-    const nativePartSelection = nativePartHistorySelectionsRef.current.get(nextHistory.present);
+    const nativePartSelection = connectionPointUndoSelection ?? nativePartHistorySelectionsRef.current.get(nextHistory.present);
     if (nativePartSelection) setSelectedNativeMoleculeParts(nativePartSelection);
 
     historyNavigationCountRef.current += 1;
@@ -13400,11 +13403,12 @@ export function MainWindow({
     getDocumentTabTitle: (tabId) => documentTabsRef.current.find((tab) => tab.id === tabId)?.title,
     // `warnings` is the collector of the command invocation that is reading (see the plugin command
     // dispatch below); a read outside one gets none and stays silent.
-    getSelection: (warnings) => buildPluginSelectionSnapshot(documentRef.current, warnings, undefined, selectedNativeMoleculePartsRef.current),
+    getSelection: (warnings) => buildPluginSelectionSnapshot(documentRef.current, warnings),
     captureSelection: document => {
       const parts = selectedNativeMoleculePartsRef.current;
-      return { objectIds: pluginSelectionObjectIds(document, parts),
-        read: warnings => buildPluginSelectionSnapshot(document, warnings, undefined, parts) };
+      const selection = document.selection;
+      return { objectIds: pluginSelectionObjectIds(document, parts), read: (live, pages, warnings) =>
+        buildPluginSelectionSnapshot({ ...live, selection }, warnings, undefined, parts, pages) };
     },
     commandRegistry: registry,
     createStorage: createPersistentPluginStorage,
@@ -13479,11 +13483,12 @@ export function MainWindow({
           let cleanup: ReturnType<typeof finishScopedRepeatUnitCleanup>;
           const assertFinalDocument = (document: ChemDraftDocument) => {
             assertPluginDocumentWriteScope(baseline, document, patch, writeScopeObjectIds, writeScopePages);
-            if (connectionPointEdit) assertVerifiedConnectionPointEdit(prepared, document, connectionPointEdit);
+            if (connectionPointEdit) assertConnectionPointSource(documentRef.current, connectionPointEdit);
             signal?.throwIfAborted();
             pluginRuntimeRef.current!.host.requirePermission(plugin.id, "document.write");
             cleanup = finishScopedRepeatUnitCleanup(repeatUnitCleanup, before, document, authored.patch);
             committed = cleanup?.document ?? document;
+            if (connectionPointEdit) assertVerifiedConnectionPointEdit(prepared, committed, connectionPointEdit);
             return committed;
           };
           // Both history paths normalize again; check their actual final state, after page fit too.
@@ -13493,11 +13498,10 @@ export function MainWindow({
             const changed = commitDocumentChange(document, undoLabel, false, assertFinalDocument, PLUGIN_WRITE);
             if (markedAtoms) {
               if (!changed) throw new Error("The verified connection points could not be committed.");
-              const history = documentHistoryRef.current;
-              const previous = history.past.at(-1);
-              if (previous) nativePartHistorySelectionsRef.current.set(previous, nativeParts);
-              nativePartHistorySelectionsRef.current.set(history.present, markedAtoms);
-              recordedHistoryAfterRef.current.set(history.present, history.present);
+              const present = documentHistoryRef.current.present;
+              connectionPointUndoSelectionsRef.current.set(present, nativeParts);
+              nativePartHistorySelectionsRef.current.set(present, markedAtoms);
+              recordedHistoryAfterRef.current.set(present, present);
             }
           }
           cleanup?.record();

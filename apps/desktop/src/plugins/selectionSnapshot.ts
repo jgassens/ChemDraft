@@ -238,13 +238,14 @@ export function buildPluginSelectionSnapshot(
   document: ChemDraftDocument,
   warnings: string[] = [],
   budget?: RequestSnapshotBudget,
-  parts: readonly NativeMoleculePartSelection[] = []
+  parts?: readonly NativeMoleculePartSelection[],
+  selectionPages?: ReadonlyMap<string, string>
 ): PluginSelectionSnapshot {
   const molecules: PluginSelectedMolecule[] = [];
-  const objectIds = pluginSelectionObjectIds(document, parts);
+  const objectIds = pluginSelectionObjectIds(document, parts ?? []);
   const snapshot = { objectIds, molecules };
   const selectedAtoms = new Map<string, Set<string>>();
-  for (const item of toSelectionItemsMulti([], parts)) {
+  for (const item of toSelectionItemsMulti([], parts ?? [])) {
     if (item.kind !== "atom") continue;
     const ids = selectedAtoms.get(item.objectId) ?? new Set<string>();
     ids.add(item.atomId);
@@ -254,7 +255,8 @@ export function buildPluginSelectionSnapshot(
   const located = new Map<string, { pageId: string; molecule: MoleculeObject }>();
   for (const page of document.pages) {
     for (const object of page.objects) {
-      if (object.type === "molecule" && (!located.has(object.id) || page.id === document.selection.pageId)) {
+      if (object.type === "molecule" && (selectionPages ? selectionPages.get(object.id) === page.id :
+          !located.has(object.id) || page.id === document.selection.pageId)) {
         located.set(object.id, { pageId: page.id, molecule: object });
       }
     }
@@ -270,7 +272,8 @@ export function buildPluginSelectionSnapshot(
       objectId,
       documentId: document.id,
       pageId: hit.pageId,
-      selectedAtomIds: [...(selectedAtoms.get(objectId) ?? [])].filter(id => hit.molecule.atoms.some(atom => atom.id === id)),
+      ...(parts && { selectedAtomIds: [...(selectedAtoms.get(objectId) ?? [])]
+        .filter(id => hit.molecule.atoms.some(atom => atom.id === id)) }),
       ...facing,
       // Retain stereo geometry while keeping pure translations and rotations out of the key.
       sourceFingerprint: moleculeSourceFingerprint(document, hit.pageId, hit.molecule)

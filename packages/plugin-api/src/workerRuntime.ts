@@ -92,6 +92,15 @@ export class PluginWorkerCapabilityError extends Error {
  *  abort/settle race always finds its id, small enough that a leak stays bounded. */
 const MAX_REMEMBERED_ABORTED_COMMANDS = 1024;
 
+// postMessage copies the snapshot's data but drops its frozen property descriptors.
+function freezeSelection<T>(value: T): T {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value)) freezeSelection(child);
+  }
+  return value;
+}
+
 function toErrorPayload(error: unknown): PluginWorkerErrorPayload {
   if (error instanceof Error) {
     const code = (error as { code?: unknown }).code;
@@ -273,7 +282,8 @@ export function runPluginWorker(
       : undefined;
 
     const selection: PluginSelectionAPI | undefined = has("selection.read")
-      ? { getSelection: () => call("selection", "getSelection", []) as ReturnType<PluginSelectionAPI["getSelection"]> }
+      ? { getSelection: async () => freezeSelection(await call("selection", "getSelection", []) as
+        Awaited<ReturnType<PluginSelectionAPI["getSelection"]>>) }
       : undefined;
 
     const overlays: PluginOverlaysAPI | undefined = has("ui.canvas")

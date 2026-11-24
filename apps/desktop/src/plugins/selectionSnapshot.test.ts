@@ -109,7 +109,6 @@ describe("buildPluginSelectionSnapshot", () => {
       pageId: "p1",
       structureFormat: "molfile-v2000",
       structure: "mol block",
-      selectedAtomIds: [],
       connectionPoints: []
     });
     expect(first.sourceFingerprint).toMatch(/^[0-9a-f]{16}$/);

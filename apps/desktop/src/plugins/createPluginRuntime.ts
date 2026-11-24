@@ -150,7 +150,7 @@ export interface DesktopPluginRuntimeOptions {
   getSelection?: (warnings?: string[]) => PluginSelectionSnapshot | undefined;
   captureSelection?: (document: ChemDraftDocument) => {
     objectIds: readonly string[];
-    read: (warnings?: string[]) => PluginSelectionSnapshot;
+    read: (live: ChemDraftDocument, pages: ReadonlyMap<string, string>, warnings?: string[]) => PluginSelectionSnapshot;
   };
   /**
    * The app's stable CommandRegistry (see commands/coreCommandRegistrar). When supplied, plugin
@@ -632,7 +632,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       const document = options.getActiveDocument();
       if (!document) return { objectIds: [], read: () => ({ objectIds: [], molecules: [] }) };
       const selection = options.captureSelection!(document);
-      return { objectIds: selection.objectIds, read: () => selection.read(readingSelectionWarnings) };
+      return { objectIds: selection.objectIds, read: (live, pages) => selection.read(live, pages, readingSelectionWarnings) };
     }),
     createStorage: options.createStorage,
     onProposedPatchesChanged: () => {

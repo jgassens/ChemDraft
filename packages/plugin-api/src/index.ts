@@ -1105,7 +1105,7 @@ export type PluginStructureFormat = z.infer<typeof PluginStructureFormatSchema>;
 
 export interface PluginSelectedMolecule {
   objectId: string;
-  /** Drawn atom IDs as returned by handoffGraph. Empty for a whole-object selection. */
+  /** Drawn atom IDs as returned by handoffGraph. Empty for whole-object, bond-only, and ring selections. */
   selectedAtomIds?: readonly string[];
   /** ChemDraft document/page identity, when the provider has page context. */
   documentId?: string;
@@ -2054,6 +2054,7 @@ export {
   isPluginApiVersionCompatible,
   supportsPluginTableInsertion,
   supportsPluginRequestTools,
+  supportsPluginHandoffSelection,
   isPinnedRequestToolCapability,
   checkWorkerHandshake,
   type PluginWorkerCapabilityNamespace,

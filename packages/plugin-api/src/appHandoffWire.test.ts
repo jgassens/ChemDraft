@@ -20,6 +20,7 @@ const workerFixtures: Record<string, z.ZodTypeAny> = {
   "mark-connection-points-request.json": PluginAddConnectionPointsRequestSchema,
   "command-host-identity.json": PluginHostIdentitySchema,
   "selection-atoms.json": selectedAtomsSchema,
+  "selection-atoms-empty.json": selectedAtomsSchema,
   "selection-atoms-legacy.json": selectedAtomsSchema
 };
 

@@ -52,6 +52,14 @@ fn app_handoff_wire_fixtures_are_current() {
             .unwrap(),
         ),
         (
+            "selection-atoms-empty".into(),
+            serde_json::to_value(SelectedAtoms {
+                object_id: "linker".into(),
+                selected_atom_ids: Some(vec![]),
+            })
+            .unwrap(),
+        ),
+        (
             "selection-atoms-legacy".into(),
             serde_json::to_value(SelectedAtoms {
                 object_id: "linker".into(),
@@ -255,7 +263,7 @@ fn app_handoff_wire_fixtures_are_current() {
                 .unwrap(),
                 current
             ),
-            "selection-atoms" | "selection-atoms-legacy" => assert_eq!(
+            "selection-atoms" | "selection-atoms-empty" | "selection-atoms-legacy" => assert_eq!(
                 serde_json::to_value(
                     serde_json::from_value::<SelectedAtoms>(current.clone()).unwrap()
                 )
