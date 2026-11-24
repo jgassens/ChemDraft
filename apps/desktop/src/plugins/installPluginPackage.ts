@@ -440,7 +440,8 @@ export async function updateInstalledPluginPackage(
     });
     await candidate.bridge.whenReady();
 
-    if (!candidate.manifest.permissions.includes("apps.handoff")) {
+    if (current.manifest.permissions.includes("apps.handoff") &&
+        !candidate.manifest.permissions.includes("apps.handoff")) {
       await runtime.appHandoffConsents?.clearPlugin(pluginId);
     }
     if (!disabled) {
