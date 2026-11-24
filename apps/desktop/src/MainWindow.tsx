@@ -1,5 +1,5 @@
 import { basename } from "@tauri-apps/api/path";
-import { INTERACTIVE_3D_WORKSPACE_HINT, Interactive3dWorkspaceStatus } from "./Interactive3dWorkspaceStatus";
+import { interactive3dWorkspaceStatusText, Interactive3dWorkspaceStatus } from "./Interactive3dWorkspaceStatus";
 import { CanvasContextMenu, NATIVE_CANVAS_MENU_CLOSED_EVENT } from "./CanvasContextMenu";
 import { PLUGIN_CHANGE_REFUSED, RECOGNITION_REFUSED, chemistryRefusalOf, refusalSentence } from "./plugins/requestWrites/chemistryRefusal";
 import { buildObjectCanvasMenu, pageCanvasMenu, SET_DEFAULT_ARROW_STYLE_COMMAND_ID } from "./canvasContextMenuModel";
@@ -1853,7 +1853,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.23.16.01-codex";
+const CURRENT_BUILD_STAMP = "11.23.16.02-codex";
 
 /**
  * The commit funnel's chemistry check (AGENTS.md section 7, `commitChemistryGuard.ts`). `before`
@@ -24203,7 +24203,10 @@ export function MainWindow({
         <div ref={statusRowRef} className="status-row" data-status-row>
           <div className="status-row-main">
             <span data-status-message role="status" aria-live="polite" className="status-message"
-              title={spin3dErrorMessage ?? (interactive3dWorkspace ? INTERACTIVE_3D_WORKSPACE_HINT : fileWarningsTooltip(warningReports))}>
+              title={spin3dErrorMessage ?? (interactive3dWorkspace ? interactive3dWorkspaceStatusText({
+                status: interactive3dWorkspace.status, energyLabel: interactive3dWorkspace.energyLabel,
+                warnings: interactive3dWorkspace.session?.warnings ?? []
+              }) : fileWarningsTooltip(warningReports))}>
               {spin3dErrorMessage ?? (interactive3dWorkspace
                 ? <Interactive3dWorkspaceStatus status={interactive3dWorkspace.status}
                     energyLabel={interactive3dWorkspace.energyLabel} warnings={interactive3dWorkspace.session?.warnings ?? []} />
