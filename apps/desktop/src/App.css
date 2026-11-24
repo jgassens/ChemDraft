@@ -2669,6 +2669,31 @@ textarea:focus-visible,
   background: var(--cd-stoplight-fill-hover);
 }
 
+.palette-title[data-platform="windows"] {
+  padding-inline: 4px 20px;
+}
+
+.palette-title[data-platform="windows"] .palette-close-button {
+  inset: 0 0 0 auto;
+  width: 20px;
+  height: auto;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--cd-text-primary);
+  box-shadow: none;
+  font: 16px/1 system-ui, sans-serif;
+  transform: none;
+}
+
+.palette-title[data-platform="windows"] .palette-close-button:hover {
+  background: var(--cd-bg-hover);
+}
+
+.palette-title[data-platform="windows"] .palette-close-button:focus-visible {
+  outline-offset: -2px;
+}
+
 .tool-group {
   display: grid;
   gap: var(--cd-space-2);

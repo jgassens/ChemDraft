@@ -665,6 +665,14 @@ describe("ChemDraft desktop shell", () => {
     )).toEqual({ x: 220, y: 220 });
   });
 
+  it.each(["windows", "macos", "linux"] as const)("renders the floating toolbar close button on %s", (platform) => {
+    const markup = renderToStaticMarkup(createElement(PaletteWindow, { platform }));
+    const closeButton = markup.match(/<button\b[^>]*class="palette-close-button"[^>]*>(.*?)<\/button>/)?.[1];
+
+    expect(markup).toContain(`class="palette-title" data-platform="${platform}"`);
+    expect(closeButton).toBe(platform === "windows" ? '<span aria-hidden="true">×</span>' : "");
+  });
+
   it("renders the native palette route as an independent palette-only surface", () => {
     const markup = renderToStaticMarkup(createElement(PaletteWindow));
 
