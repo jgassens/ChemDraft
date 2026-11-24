@@ -1526,7 +1526,14 @@ impl Message {
             "ready" if self.dialog_kind == "about" => {
                 self.data.as_object().is_some_and(|d| d.is_empty())
             }
-            "result" if self.dialog_kind == "about" => false,
+            "result"
+                if matches!(
+                    self.dialog_kind.as_str(),
+                    "about" | super::app_handoff::DIALOG_KIND
+                ) =>
+            {
+                false
+            }
             "request" => self.data.as_object().is_some_and(|d| d.is_empty()),
             "ready" => {
                 self.data.as_object().is_some_and(|d| d.is_empty())
@@ -1931,13 +1938,12 @@ fn register(
         return Err("Too many dialog windows are open".into());
     }
     // Independent questions must never share consent, even for the same drawing.
-    if !matches!(
-        message.dialog_kind.as_str(),
-        "pageEnlargement" | "pluginTextPrompt"
-    ) && registry.sessions.values().any(|s| {
-        s.snapshot.document_tab_id == message.document_tab_id
-            && s.snapshot.dialog_kind == message.dialog_kind
-    }) {
+    if !is_question_kind(&message.dialog_kind)
+        && registry.sessions.values().any(|s| {
+            s.snapshot.document_tab_id == message.document_tab_id
+                && s.snapshot.dialog_kind == message.dialog_kind
+        })
+    {
         return Err("A dialog for this drawing is already open".into());
     }
     registry.next_slot += 1;
@@ -10375,6 +10381,33 @@ mod tests {
             message.data = data;
             assert!(message.validate().is_err());
         }
+        message.message_type = "result".into();
+        message.data = json!({"status": "accepted"});
+        assert!(message.validate().is_err());
+    }
+
+    #[test]
+    fn app_handoff_registers_independent_rust_owned_questions() {
+        let mut message = snapshot();
+        message.dialog_kind = super::super::app_handoff::DIALOG_KIND.into();
+        message.document_tab_id = "app-handoff".into();
+        message.data = json!({
+            "mode": "confirm", "title": "Confirm companion build",
+            "appName": "Crystal Builder", "pipeline": "mofBuild",
+            "suggestedCombination": "small", "combinations": {"small": {"repeat": "1x1x1"}}
+        });
+        let mut registry = Registry::default();
+        let (first, _) = register(&mut registry, message.clone(), false).unwrap();
+        message.session_id = "next-handoff".into();
+        let (second, _) = register(&mut registry, message.clone(), false).unwrap();
+        assert!(is_dialog_label(&first.window_label));
+        assert_ne!(first.window_label, second.window_label);
+
+        message.message_type = "action".into();
+        message.data = json!({"action": "confirm", "combinationId": "small"});
+        assert!(message.validate().is_ok());
+        message.data["path"] = json!("private");
+        assert!(message.validate().is_err());
         message.message_type = "result".into();
         message.data = json!({"status": "accepted"});
         assert!(message.validate().is_err());

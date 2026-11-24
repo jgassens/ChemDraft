@@ -13342,6 +13342,7 @@ export function MainWindow({
   const nameResolutionStatusRef = useRef<string | undefined>(undefined);
   const pluginRuntime = usePluginRuntime({
     onPluginUpdateStatus: setStatus,
+    onAppHandoffStatus: setStatus,
     onNameResolutionStatus: text => {
       nameResolutionStatusRef.current = text;
       if (text) setStatus(text);

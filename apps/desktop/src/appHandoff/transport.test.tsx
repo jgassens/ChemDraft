@@ -51,6 +51,30 @@ function setup() {
 }
 
 describe("native app handoff relay", () => {
+  it("reports authoritative launch results without displaying native diagnostics", async () => {
+    const native = vi.fn<typeof invoke>();
+    const status = vi.fn();
+    const relay = createTauriAppHandoffTransport(native, status);
+    native.mockResolvedValueOnce({ status: "sent" });
+    await relay(pluginId, "sendFile", request);
+    expect(status).toHaveBeenLastCalledWith("Opened the handoff file in the chosen app.");
+    const build = { appId: "opaque", pipeline: "mofBuild", combination: "pcu-N16-2x2x2" };
+    native.mockResolvedValueOnce({ status: "done", opened: false, steps: [] });
+    await relay(pluginId, "runCompanion", build);
+    expect(status).toHaveBeenLastCalledWith("Build completed.");
+    native.mockResolvedValueOnce({ status: "failed", code: "timeout", message: "Companion step build timed out.",
+      diagnostic: { step: "build", stderrTail: "private diagnostic" } });
+    await relay(pluginId, "runCompanion", build);
+    expect(status).toHaveBeenLastCalledWith("Companion build failed: Companion step build timed out.");
+    native.mockResolvedValueOnce({ status: "declined" });
+    await relay(pluginId, "runCompanion", build);
+    expect(status).toHaveBeenCalledTimes(3);
+    const refusal = "App handoff refused because two requests claimed one menu click.";
+    native.mockRejectedValueOnce(refusal);
+    await expect(relay(pluginId, "runCompanion", build)).rejects.toThrow(refusal);
+    expect(status).toHaveBeenLastCalledWith(refusal);
+  });
+
   it("relays a native menu command with exactly the fields Rust accepts", async () => {
     const { host, launch, native, nativeMenuClick } = setup();
     let pending: Promise<unknown> | undefined;

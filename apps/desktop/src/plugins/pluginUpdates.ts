@@ -9,6 +9,7 @@
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { isPluginApiVersionCompatible, PluginApiVersion } from "@chemdraft/plugin-api";
+import type { PluginAppHandoffProvenance } from "@chemdraft/plugin-host";
 
 import {
   inspectPluginPackage,
@@ -81,6 +82,15 @@ export const OFFICIAL_PLUGIN_CATALOG: readonly OfficialPluginCatalogEntry[] = [
 const OFFICIAL_PLUGIN_SOURCES = new Map(
   OFFICIAL_PLUGIN_CATALOG.map((entry) => [entry.pluginId, entry] as const)
 );
+
+// The same inspected package goes through review and installation. Trust metadata is assigned
+// only by the verified download path, independently of the ZIP manifest or a sideload checksum.
+const verifiedCatalogPackages = new WeakMap<PluginPackageInspection, string>();
+
+export function installedPackageProvenance(inspection: PluginPackageInspection): PluginAppHandoffProvenance {
+  const repository = verifiedCatalogPackages.get(inspection);
+  return repository ? { source: "catalog", repository, checksumVerified: true } : { source: "sideload" };
+}
 
 /** One sentence shown wherever an `experimental` catalog entry, its install, or its recognition
  *  output is surfaced to the user. Kept here so every surface quotes the same wording. */
@@ -639,6 +649,7 @@ async function prepareTrustedReleasePackage(
         `"${offer.version}". Refusing the package.`
     );
   }
+  verifiedCatalogPackages.set(inspection, source.repository);
   return inspection;
 }
 

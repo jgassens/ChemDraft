@@ -15,6 +15,7 @@ import { EngineInstallForm } from "./EngineInstallForm";
 import { ToolInstallForm } from "./ToolInstallForm";
 import { InsertTableForm } from "./InsertTableForm";
 import { AtomProblemForm } from "./AtomProblemForm";
+import { AppHandoffForm } from "../appHandoff/AppHandoffForm";
 import { measureDialogContentWhenFontsReady, observeDialogContent, type DialogContentFit } from "./dialogContentFit";
 const AboutWindow = lazy(() => import("../about/AboutWindow").then(module => ({ default: module.AboutWindow })));
 const TourForm = lazy(() => import("../tour/TourForm").then(module => ({ default: module.TourForm })));
@@ -208,7 +209,7 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
   }, [hostId, snapshot, percent]);
   const sendAction = (data: Extract<DialogMessage, { type: "action" }>["data"]) => {
     if (!snapshot) return;
-    if (snapshot.dialogKind === "pageEnlargement" || snapshot.dialogKind === "pluginTextPrompt") {
+    if (snapshot.dialogKind === "pageEnlargement" || snapshot.dialogKind === "pluginTextPrompt" || snapshot.dialogKind === "appHandoff") {
       // Request-bound questions: one answer, no receipt. The owner closes the window when it settles.
       if (actionPending.current) return;
       actionPending.current = true;
@@ -265,6 +266,8 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
     });
   };
   if (!snapshot) return <p role="status">{error ?? "Opening dialog…"}</p>;
+  if (snapshot.dialogKind === "appHandoff") return <AppHandoffForm key={snapshot.sessionId} snapshot={snapshot.data}
+    onReady={reportReady} onAction={sendAction} busy={busy} error={error} />;
   if (snapshot.dialogKind === "pageEnlargement") return <Suspense fallback={<p role="status">Opening dialog…</p>}>
     <PageEnlargementForm onReady={reportReady} busy={busy} error={error}
       onKeep={() => sendAction({ action: "cancel" })} onEnlarge={() => sendAction({ action: "enlarge" })} />

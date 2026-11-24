@@ -12,6 +12,7 @@ import {
   GITHUB_RELEASE_ASSET_HOST,
   GITHUB_RELEASE_ASSET_PATH_PREFIX,
   isNetworkDownloadFailure,
+  installedPackageProvenance,
   isOfficialPluginExperimental,
   OFFICIAL_PLUGIN_CATALOG,
   parsePluginReleaseRequirements,
@@ -588,6 +589,9 @@ describe("host-managed plugin update catalog", () => {
     expect(prepared.inspection.manifest).toMatchObject({ id: PLUGIN_ID, version: "0.1.0" });
     expect(prepared.inspection.sourceChecksum).toBe(offer!.sourceChecksum);
     expect(prepared.checksumVerified).toBe(true);
+    expect(installedPackageProvenance(prepared.inspection)).toEqual({
+      source: "catalog", repository: "jgassens/ChemDraft-NMR-Plugin", checksumVerified: true
+    });
     // Package request, its validated redirect, then the published sidecar.
     expect(fetch).toHaveBeenCalledTimes(3);
     expect(fetch.mock.calls.map((call) => call[0])).toContain(sidecarUrl);
@@ -613,6 +617,10 @@ describe("host-managed plugin update catalog", () => {
       checksumVerified: true,
       inspection: { manifest: { id: PLUGIN_ID, version: "0.1.0" } }
     });
+    expect(installedPackageProvenance(prepared.inspection)).toEqual({
+      source: "catalog", repository: "jgassens/ChemDraft-NMR-Plugin", checksumVerified: true
+    });
+    expect(installedPackageProvenance({ ...prepared.inspection })).toEqual({ source: "sideload" });
     expect(fetch).toHaveBeenCalledTimes(3);
   });
 

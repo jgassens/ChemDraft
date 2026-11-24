@@ -22,8 +22,8 @@ import {
 } from "./pluginUpdateAutoCheck";
 import { createPluginRuntime, type DesktopPluginRuntime, type DesktopPluginRuntimeOptions, type ProposalDocumentTab } from "./createPluginRuntime";
 import {
-  PluginInstallError,
-  PluginInstallErrorCodes,
+  type PluginInstallError,
+  isCommittedUninstallError,
   installPluginPackage,
   loadInstalledPlugins,
   uninstallPlugin,
@@ -38,6 +38,7 @@ import { loadDisabledPluginIds, saveDisabledPluginIds } from "./pluginPreference
 import { createTauriPluginStagingFs, isTauriHost, type PluginStagingFs } from "./pluginStagingFs";
 import {
   checkForPluginUpdates,
+  installedPackageProvenance,
   prepareOfficialPluginInstall,
   preparePluginUpdate,
   type PreparedOfficialPluginInstall,
@@ -45,6 +46,7 @@ import {
   type PluginUpdateOffer,
   type PreparedPluginUpdate
 } from "./pluginUpdates";
+import { readInstalledPluginCatalog } from "./installedPluginStore";
 import { registerBundledPlugins, type BundledPluginDescriptor } from "./registerBundledPlugins";
 import type { OpenPluginPanel, PluginDiagnostic } from "./types";
 import type { OpenPluginTextPrompt } from "./PluginPromptTextController";
@@ -99,8 +101,9 @@ export interface PluginRuntimeProviders {
   createStorage?: (pluginId: string) => PluginStorage;
   /** Names the source of a successful name conversion in the document status line. */
   onNameResolutionStatus?: (text: string | undefined) => void;
-  /** Plugin update and app handoff messages use the document window status line. */
   onPluginUpdateStatus?: (text: string) => void;
+  /** Native relay results and menu refusals use the document window status line. */
+  onAppHandoffStatus?: (text: string) => void;
   /** Fired whenever the proposed-patch queue changes (new, accepted, rejected). */
   onProposedPatchesChanged?: () => void;
   /** Commits a command-scoped `document.write` patch through the desktop document/history path. */
@@ -172,6 +175,10 @@ export interface PluginRuntimeView {
 export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRuntimeView {
   const providersRef = useRef(providers);
   providersRef.current = providers;
+  const stagingFs = useMemo<PluginStagingFs | undefined>(
+    () => (isTauriHost() ? createTauriPluginStagingFs() : undefined),
+    []
+  );
 
   const ownerRef = useRef<{
     runtime: DesktopPluginRuntime;
@@ -217,7 +224,14 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
       },
       defaultPanelSurface: isTauriHost() ? "window" : "inApp",
       assistantMcpEngine: providers.assistantMcpEngine,
-      appHandoffProvenance: providers.appHandoffProvenance
+      appHandoffProvenance: providers.appHandoffProvenance,
+      readAppHandoffRecord: stagingFs ? async (pluginId, version) => {
+        const catalog = await readInstalledPluginCatalog(stagingFs);
+        if (catalog.status !== "loaded") return undefined;
+        const matches = catalog.records.filter(record => record.id === pluginId);
+        return matches.length === 1 && matches[0].version === version ? matches[0] : undefined;
+      } : undefined,
+      onAppHandoffStatus: message => providersRef.current.onAppHandoffStatus?.(message)
     });
     const bundledPlugins = registerBundledPlugins(runtime);
     ownerRef.current = { runtime, bundledPlugins };
@@ -231,7 +245,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     const unlisten = listenForNativeAppHandoffCommands(window, commandId => {
       const warnings: string[] = [];
       const report = (message: string) => {
-        if (active) providersRef.current.onPluginUpdateStatus?.(message);
+        if (active) providersRef.current.onAppHandoffStatus?.(message);
       };
       void runtime.invokeAppHandoffMenuCommand(commandId, warnings).then(result => {
         const failure = pluginCommandFailure(result);
@@ -292,10 +306,6 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
   // Installed plugins (M36). Staging is only reachable inside the Tauri webview, so a non-Tauri host
   // (the browser build, tests) simply has no staging filesystem and no install actions — which is what
   // leaves the manager's package control honestly disabled rather than failing when pressed.
-  const stagingFs = useMemo<PluginStagingFs | undefined>(
-    () => (isTauriHost() ? createTauriPluginStagingFs() : undefined),
-    []
-  );
   const [installedPlugins, setInstalledPlugins] = useState<readonly InstalledPluginCatalogEntry[]>([]);
   const [installedPluginCatalogReady, setInstalledPluginCatalogReady] = useState(stagingFs === undefined);
   /** Which effect invocation currently owns the installed-plugin registrations in the shared host.
@@ -380,6 +390,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
         runtime,
         fs: stagingFs,
         inspection,
+        provenance: installedPackageProvenance(inspection),
         replaces: bundledPlugins.find((candidate) => candidate.manifest.id === inspection.manifest.id)
       });
       // A fresh install (from the catalog or a package) is the user asking for this plugin, so it must
@@ -418,7 +429,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
           disabledIds: loadDisabledPluginIds()
         });
       } catch (error) {
-        if (!(error instanceof PluginInstallError) || error.code !== PluginInstallErrorCodes.UninstallStorageDeleteFailed) {
+        if (!isCommittedUninstallError(error)) {
           throw error;
         }
         // The runtime and disk catalog are already uninstalled; finish the UI cleanup as well.
@@ -519,6 +530,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
         fs: stagingFs,
         current,
         inspection: prepared.inspection,
+        provenance: installedPackageProvenance(prepared.inspection),
         disabled: loadDisabledPluginIds().has(current.record.id),
         replaces: bundledPlugins.find((candidate) => candidate.manifest.id === current.record.id)
       });
