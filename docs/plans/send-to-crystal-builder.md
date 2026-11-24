@@ -349,11 +349,14 @@ selects anchor atoms and the plugin adds `X` atoms as one labelled undo entry wi
 selected (§4.4). It submits the batch through `documents.addConnectionPoints` with `document.write`.
 The host uses `layout-engine` to place each new bond (§9). Each anchor must be an RDKit-aromatic
 carbon with room for a new single bond. The host refuses the whole batch if the molecule has any
-non-aromatic ring, any cumulated double bonds (including allenes, ketenes and carbodiimides), or any
-stored or imported stereochemistry record (non-empty `chemistry.stereochemistry` or retained source
-stereo attributes). The host also refuses assigned or potential tetrahedral or double-bond
-stereochemistry in the original or marked molecule, and wedged, hashed, wavy or E/Z-unspecified bonds
-in the drawing. Any refusal leaves the drawing unchanged. Draw X by hand in these cases.
+non-aromatic ring, any cumulated double bonds (including allenes, ketenes and carbodiimides), any
+retained nested CDXML fragment, or any stored or imported stereochemistry record (non-empty
+`chemistry.stereochemistry` or retained source stereo attributes). The host also refuses assigned or
+potential tetrahedral or double-bond stereochemistry in the original or marked molecule, and
+wedged, hashed, wavy or E/Z-unspecified bonds in the drawing. The marking rule covers stereochemistry
+ChemDraft perceives or stores. ChemDraft does not perceive a biaryl axis that is neither drawn nor
+stored, and marking leaves that axis unchanged. Any refusal leaves the drawing unchanged. Draw X by
+hand in these cases.
 
 ### Test results: Crystal Builder 1.1.1, macOS Intel (2026-11-18)
 

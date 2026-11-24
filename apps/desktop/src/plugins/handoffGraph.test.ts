@@ -49,6 +49,15 @@ function drawAt(mol: MoleculeObject, coordinates: readonly (readonly [number, nu
   return { ...mol, structure: "", atoms: mol.atoms.map((atom, i) => ({ ...atom, x: coordinates[i]![0], y: coordinates[i]![1] })) };
 }
 
+const benzeneCoordinates = [[100, 70], [126, 85], [126, 115], [100, 130], [74, 115], [74, 85]] as const;
+
+function importBenzene(firstAtomContent = ""): MoleculeObject {
+  const atoms = benzeneCoordinates.map(([x, y], i) => `<n id="${i + 3}" p="${x} ${y}">${i === 0 ? firstAtomContent : ""}</n>`);
+  const bonds = benzeneCoordinates.map((_, i) => `<b id="${i + 9}" B="${i + 3}" E="${(i + 1) % 6 + 3}" Order="${i % 2 ? 1 : 2}"/>`);
+  const { document } = openChemDraftPayload(`<CDXML><page id="1"><fragment id="2">${atoms.join("")}${bonds.join("")}</fragment></page></CDXML>`);
+  return { ...document!.pages[0]!.objects.find(object => object.type === "molecule")!, id: request.objectId };
+}
+
 async function mark(mol: MoleculeObject, anchors = ["a0"]) {
   const doc = selected(mol);
   const { patch, atomIds } = buildConnectionPointsPatch({ ...request, anchors }, mol, doc.pages[0]!);
@@ -184,6 +193,42 @@ describe("connection point chemistry", () => {
     const original = structuredClone(mol);
     await expect(mark(mol)).rejects.toThrow(/retained source stereochemistry attributes.*Draw X by hand\./);
     expect(mol).toEqual(original);
+  });
+
+  it.each(['Display="HollowWedgeBegin"', 'Display="WavyWedgeEnd"', 'RxnStereo="Retention"', ""])(
+    "refuses benzene with a retained nested CDXML fragment (bond attributes: %s)", async attributes => {
+      const mol = importBenzene(`<fragment id="15"><n id="16" p="100 70"/><n id="17" p="130 70"/>
+        <b id="18" B="16" E="17" ${attributes}/></fragment>`);
+      expect(mol.atoms).toHaveLength(6);
+      expect(mol.compatibility?.unknown.cdxmlAbbreviations).toEqual([
+        expect.objectContaining({ expanded: false, source: expect.objectContaining({
+          kids: [expect.objectContaining({ name: "fragment" })]
+        }) })
+      ]);
+      const original = structuredClone(mol);
+      await expect(mark(mol, [mol.atoms[0]!.id])).rejects.toThrow(/retained nested CDXML fragment\. Draw X by hand\.$/);
+      expect(mol).toEqual(original);
+    });
+
+  it("refuses a nested fragment in a legacy ordered CDXML source node", async () => {
+    const mol = importBenzene();
+    mol.compatibility!.unknown.cdxmlAbbreviations = [{
+      expanded: false, sourceNode: { name: "n", attributes: {}, children: [{ fragment: [] }] }
+    }];
+    await expect(mark(mol, [mol.atoms[0]!.id])).rejects.toThrow(/retained nested CDXML fragment\. Draw X by hand\.$/);
+  });
+
+  it.each([
+    ["drawn", () => drawAt(molecule(["C", "C", "C", "C", "C", "C"],
+      [[0, 1, "double"], [1, 2], [2, 3, "double"], [3, 4], [4, 5, "double"], [5, 0]]), benzeneCoordinates)],
+    ["imported from plain CDXML", () => importBenzene()]
+  ] as const)("marks an anchor on benzene %s", async (_source, benzene) => {
+    const mol = benzene();
+    const anchor = mol.atoms[0]!.id;
+    const marked = (await mark(mol, [anchor])).pages[0]!.objects[0] as MoleculeObject;
+    const point = marked.atoms.find(atom => atom.element === "X");
+    expect(point).toBeDefined();
+    expect(marked.bonds.at(-1)).toMatchObject({ fromAtomId: anchor, toAtomId: point!.id, order: "single" });
   });
 
   it.each([

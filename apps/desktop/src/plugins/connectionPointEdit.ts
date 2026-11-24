@@ -20,33 +20,38 @@ function refusal(anchors: readonly string[], reason: string): Error {
   return new Error(`Cannot mark ${anchors.length === 1 ? "anchor" : "anchors"} ${anchors.map(id => `"${id}"`).join(", ")}: ${reason}`);
 }
 
-function hasRetainedCdxmlStereo(nodes: unknown): boolean {
-  if (!Array.isArray(nodes)) return false;
+function retainedCdxmlMarkingIssue(nodes: unknown): string | undefined {
+  if (!Array.isArray(nodes)) return undefined;
   // Abbreviation records may hold a codec tree or the older ordered XML tree.
   const stereoAttributes = ["AS", "BS", "EnhancedStereoType", "EnhancedStereoGroupNum"];
+  let hasStereoAttributes = false;
   const pending: unknown[] = [...nodes];
   while (pending.length) {
     const record = pending.pop();
     if (!record || typeof record !== "object") continue;
+    if (("name" in record && record.name === "fragment" && "kids" in record && Array.isArray(record.kids)) ||
+        ("fragment" in record && Array.isArray(record.fragment))) {
+      return "the molecule contains a retained nested CDXML fragment.";
+    }
     for (const [key, value] of Object.entries(record)) {
-      if (stereoAttributes.includes(key)) return true;
-      if ((key === "Display" || key === "Display2") && typeof value === "string" &&
-          /^(?:Wavy|Hash|Wedge(?:dHash)?(?:Begin|End))$/.test(value)) return true;
+      if (stereoAttributes.includes(key)) hasStereoAttributes = true;
       if (value && typeof value === "object") pending.push(value);
     }
   }
-  return false;
+  return hasStereoAttributes ? "the molecule contains retained source stereochemistry attributes." : undefined;
 }
 
 function assertNoStereoRecords(molecule: MoleculeObject, anchors: readonly string[]): void {
+  const attributes = molecule.compatibility?.unknown;
+  const retainedIssue = retainedCdxmlMarkingIssue(attributes?.cdxmlAbbreviations);
+  if (retainedIssue) throw refusal(anchors, `${retainedIssue} Draw X by hand.`);
   if (molecule.chemistry?.stereochemistry.length) {
     throw refusal(anchors, "the molecule contains stored stereochemistry. Draw X by hand.");
   }
-  const attributes = molecule.compatibility?.unknown;
   if (["cdxmlAtomStereochemistryByAtomId", "atomStereochemistryByAtomId", "stereochemistryByAtomId"].some(key => {
     const record = attributes?.[key];
     return record && typeof record === "object" && Object.keys(record).length > 0;
-  }) || nativeEnhancedStereoAtomIndicators(molecule).length || hasRetainedCdxmlStereo(attributes?.cdxmlAbbreviations)) {
+  }) || nativeEnhancedStereoAtomIndicators(molecule).length) {
     throw refusal(anchors, "the molecule contains retained source stereochemistry attributes. Draw X by hand.");
   }
   if (molecule.bonds.some(bond => {

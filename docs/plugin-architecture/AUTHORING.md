@@ -253,10 +253,13 @@ refuses a second call for that molecule in the same command because the molecule
 Pass all of its anchors in the same call or start a new command to mark additional points.
 Each anchor must be an RDKit-aromatic carbon with room for a new single bond. The host refuses the
 whole batch if the molecule has any non-aromatic ring, any cumulated double bonds (including
-allenes, ketenes and carbodiimides), or any stored or imported stereochemistry record (non-empty
-`chemistry.stereochemistry` or retained source stereo attributes). It also refuses assigned or
-potential tetrahedral or double-bond stereochemistry in the original or marked molecule, and wedged,
-hashed, wavy or E/Z-unspecified bonds in the drawing. Any refusal leaves the drawing unchanged.
+allenes, ketenes and carbodiimides), any retained nested CDXML fragment, or any stored or imported
+stereochemistry record (non-empty `chemistry.stereochemistry` or retained source stereo attributes).
+It also refuses assigned or potential tetrahedral or double-bond stereochemistry in the original
+or marked molecule, and wedged, hashed, wavy or E/Z-unspecified bonds in the drawing.
+The marking rule covers stereochemistry ChemDraft perceives or stores. ChemDraft does not perceive
+a biaryl axis that is neither drawn nor stored, and marking leaves that axis unchanged. Any refusal
+leaves the drawing unchanged.
 Draw X by hand in these cases. Check for the method on older hosts.
 
 ```ts
