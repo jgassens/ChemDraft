@@ -141,7 +141,7 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 ```
 
 `apiVersion` in your manifest declares the SDK contract you target (`PluginApiVersion`, currently
-`0.1.27`). API 0.1.21 adds plugin chemistry properties and plugin assistant tools (#310).
+`0.1.28`). API 0.1.21 adds plugin chemistry properties and plugin assistant tools (#310).
 API 0.1.22 adds optional name-to-structure `source`, `matchedName` and `matchedCas` provenance for the offline name dictionary (#318).
 API 0.1.23 adds native wavy single bonds (#327).
 Set `MoleculeBond.display.bondStyle: "wavy"` only with `order: "single"`; the schema rejects other orders.
@@ -150,7 +150,7 @@ assign R/S there. The SDK exports `MoleculeBond` and `MoleculeBondDisplay`; plug
 should declare `^0.1.23`.
 API 0.1.24 adds reaction `arrowObjectIds`/`plusObjectIds` for shared scheme arrows and plus signs (#335),
 and binary CDX import/export (#316). API 0.1.25 adds optional bracketUsage, repeatCount and scoped crossingBondIds (#338 bracketed groups).
-API 0.1.27 adds [app handoff](#app-handoff), selection connection points, and handoff chemistry graphs.
+API 0.1.28 adds [app handoff](#app-handoff), selection connection points, and handoff chemistry graphs.
 API 0.1.26 adds [request-bound plugin tools](#request-bound-plugin-tools), depiction, and document-change notifications.
 API 0.1.20 adds optional `tableStyle.autoColumnMinEm`, the minimum auto column width in em. API 0.1.19 bounds panel reports: strings, collection sizes, aggregate work and UTF-8 JSON
 size are validated before a report is forwarded to the renderer (see [Panel report limits](#panel-report-limits)).
@@ -178,7 +178,8 @@ it declares.
 
 | API version | Additive capability | Permission |
 | --- | --- | --- |
-| 0.1.27 | App handoff and companion pipelines; selection `connectionPoints`, `chemistry.handoffGraph` and `suggestConnectionPoints`, and graph input to `embed3d` | `apps.handoff` and `native.execute` for handoff; `selection.read` and `chemistry.compute` for handoff chemistry |
+| 0.1.28 | App handoff and companion pipelines, warnings and success status; host identity; selection connection points and atom IDs; handoff chemistry graphs, graph input to `embed3d`, and connection point writes | `apps.handoff` and `native.execute` for handoff; `selection.read` and `chemistry.compute` for handoff chemistry; `document.write` for connection point writes |
+| 0.1.27 | Reserved for stated hydrogen counts (PR #468) | No new permission |
 | 0.1.26 | Request lifecycle, pinned document reads and patches, session-local tools, chemistry and depiction, and document-change notifications | Existing permissions, listed below |
 | 0.1.25 | Optional bracketUsage, repeatCount and crossingBondIds (scoped objectId/bondId references); legacy repeatUnit remains supported | No new permission |
 | 0.1.24 | Binary CDX import/export (#316) and optional reaction `arrowObjectIds`/`plusObjectIds` (#335); shared scheme arrows and plus signs are referenced by id, never copied | No new permission |
@@ -194,7 +195,7 @@ it declares.
 
 ## App handoff
 
-Declare `apiVersion: "^0.1.27"` and both `apps.handoff` and `native.execute`.
+Declare `apiVersion: "^0.1.28"` and both `apps.handoff` and `native.execute`.
 Stable builds require an allowlisted plugin installed from its matching catalog repository with a
 verified checksum. ChemDraft (dev) also accepts hand-installed packages and legacy install records
 for allowlisted IDs. The native consent box explains when a hand-installed package is accepted only
@@ -208,11 +209,23 @@ can send one file or run one pipeline; a shown host box consumes the allowance e
 - `status({ appId })` checks whether the chosen app remains available and unchanged.
 - `sendFile({ appId, fileName, extension, text, warnings? })` writes a temporary UTF-8 file and
   opens it with the app. The host sanitizes the file name; extensions are `xyz`, `cif`, `mol`, `sdf`,
-  `pdb`, `smi`, `csv`, `json`, or `txt`. Text is limited to 5 MiB and warnings to 20 lines of 300
-  characters each. Warnings are shown before sending.
-- `runCompanion({ appId, pipeline, combination, input?, openOutput? })` runs the complete declared
-  pipeline. Input is one UTF-8 file of at most 1 MiB. The host presents a build confirmation with
-  the declared combination choices and may offer a host-run rebuild when `rebuildAs` is declared.
+  `pdb`, `smi`, `csv`, `json`, or `txt`. Text is limited to 5 MiB. Warnings appear under the
+  plugin's name in the native send confirmation. The limit is 20 lines of 300 Unicode code points
+  each, up to 24,019 UTF-8 bytes including line separators and excluding the host's heading.
+- `runCompanion({ appId, pipeline, combination, input?, openOutput?, warnings? })` runs the complete declared
+  pipeline. Input is one UTF-8 file of at most 1 MiB. Optional plain-text warnings are shown before
+  the build and on a possible rebuild, under the plugin's name. Warnings accept up to 20 lines of
+  300 Unicode code points each at the API boundary. The combined budget is 3,400 UTF-8 bytes for each
+  serialized snapshot, including the envelope, plugin name, choices, composition, and JSON escaping.
+  For Crystal Builder's two pcu/N16 choices and a C₆H₄X₂ input, the confirmation leaves 2,770 bytes
+  for the JSON warning array and the rebuild preflight leaves 2,900 bytes. The confirmation limit
+  fits 2,739 unescaped ASCII bytes in ten lines. Larger choices, names, or compositions can leave
+  less room. The host checks both snapshots before consent or execution.
+
+The command can correct a refused request and retry before a submission box has been shown.
+The host keeps the refusal visible until a later call to the same capability succeeds. A
+concurrent attempt cannot clear a refusal it started before. Cancelling a consent, send, or build
+box consumes the allowance. Await every capability call before returning a command result.
 
 For example, inside an eligible command handler:
 
@@ -225,6 +238,47 @@ if (picked.status === "chosen") {
   if (result.status === "failed") throw new Error(result.message);
 }
 ```
+
+The optional `context.host?.version` identifies the running ChemDraft version. Web hosts and hosts
+without a native version may omit `host`. In ordinary commands targeting `^0.1.28` or later,
+`selection.getSelection()` keeps the starting object and atom IDs and reads current molecule
+content from those objects. A second read can see X atoms added by the command. For earlier API
+versions, each read uses the current whole-object selection, which may change while a command runs.
+The optional `selectedAtomIds` contains drawn atom IDs matching `handoffGraph` and is empty for
+whole-object selection.
+
+With `document.write`, `documents.addConnectionPoints` accepts one batch of 1–999 anchors in one
+molecule selected when the command started. The host applies a successful batch as one patch and
+refuses a second call for that molecule in the same command because the molecule has changed.
+Pass all of its anchors in the same call or start a new command to mark additional points.
+Each anchor must be an RDKit-aromatic carbon with room for a new single bond. The host refuses the
+whole batch if the molecule has any non-aromatic ring, any cumulated double bonds (including
+allenes, ketenes and carbodiimides), any retained nested CDXML fragment, or any stored or imported
+stereochemistry record (non-empty `chemistry.stereochemistry` or retained source stereo attributes).
+It also refuses assigned or potential tetrahedral or double-bond stereochemistry in the original
+or marked molecule, and wedged, hashed, wavy or E/Z-unspecified bonds in the drawing.
+The marking rule covers stereochemistry ChemDraft perceives or stores. ChemDraft does not perceive
+a biaryl axis that is neither drawn nor stored, and marking leaves that axis unchanged. Any refusal
+leaves the drawing unchanged.
+Draw X by hand in these cases. Check for the method on older hosts.
+
+```ts
+const anchors = molecule.selectedAtomIds ?? [];
+if (anchors.length && context.documents.addConnectionPoints) {
+  await context.documents.addConnectionPoints({ objectId: molecule.objectId, anchors: [...anchors] });
+}
+```
+
+An eligible handoff command may return `{ ok: true, data: { status: "Sent" } }`. Plugin status and
+failure detail are plain text with the plugin name displayed in a host-rendered label. The host
+reads at most 500 Unicode code points of each message, adds an ellipsis when truncated, and limits
+the display name to 80 code points. Control and invisible format characters are removed, and line
+breaks become spaces. If a handoff is refused, the status area shows the host's reason and any
+plugin failure detail on separate lines. Once native code confirms a send or build, the status area
+keeps that outcome alongside any remaining refusal and the plugin's attributed success summary.
+Selection warnings appear under the host's `Selection warning` label and use the same text bounds.
+If a build completed and its output could not open, the host shows the open error alongside any
+plugin success summary.
 
 Companion pipelines are declared in the manifest's `companions` array, including an ID, relative
 macOS and Windows tool paths inside the chosen app, tested versions, ordered steps with arguments and

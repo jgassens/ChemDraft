@@ -3,7 +3,7 @@ use super::{
     catalog::{self, Plugin},
     command_line::{Pipeline, Platform},
     consent::{Row, Store},
-    dialogs::{self, Action, Snapshot},
+    dialogs::{self, Action},
     identity::{App, Error as IdentityError},
     picker, runner,
     temp_files::{self, TempFiles},
@@ -389,7 +389,7 @@ impl Context<'_> {
         let developer_note = self.plugin.consent_note();
         let text = format!(
             "{} ({}) requests permission to hand off data to {}.\n\n{}\n\n{}{developer_note}",
-            self.plugin.manifest.name,
+            dialogs::plugin_display_name(&self.plugin.manifest.name),
             self.plugin_id,
             target.name,
             target.path.display(),
@@ -437,11 +437,8 @@ impl Context<'_> {
             return Ok(SendResult::Declined);
         };
         if let Some(warnings) = request.warnings.filter(|warnings| !warnings.is_empty()) {
-            let warning = format!(
-                "Send the file to {}?\n\n{}",
-                target.name,
-                warnings.join("\n")
-            );
+            let warning =
+                dialogs::send_warning_message(&target.name, &self.plugin.manifest.name, &warnings);
             if !dialogs::native_choice(
                 self.window,
                 &proof,
@@ -557,20 +554,21 @@ impl Context<'_> {
         };
         let state = self.app().state::<State>();
         state.clear_result(self.plugin_id);
-        let snapshot = wire::encode(Snapshot::Confirm {
-            title: "Confirm companion build",
-            app_name: &target.name,
-            pipeline: &pipeline.id,
-            composition: composition.as_ref(),
-            suggested_combination: &request.combination,
-            combinations: &pipeline.combinations,
-        })?;
-        if crate::dialog_windows::validate_app_handoff_snapshot(&snapshot).is_err() {
+        let warnings = dialogs::display_warnings(request.warnings.as_deref().unwrap_or_default());
+        let plugin_name = dialogs::plugin_display_name(&self.plugin.manifest.name);
+        let Ok(snapshot) = dialogs::confirmation_snapshot(
+            &pipeline,
+            &target.name,
+            &plugin_name,
+            &request.combination,
+            composition.as_ref(),
+            &warnings,
+        ) else {
             return Ok(run_failed(
                 RunCode::BadParam,
-                "The companion build choices exceed the native confirmation limit.",
+                "The companion build choices and warnings exceed the native dialog limit.",
             ));
-        }
+        };
         let Some(grant) = self.consent(&proof, row, &target, Some(&pipeline)).await? else {
             return Ok(RunResult::Declined);
         };
@@ -593,6 +591,7 @@ impl Context<'_> {
             combination: combination_id,
             input: request.input,
             open_output: request.open_output.unwrap_or(false),
+            warnings,
         };
         proof.bind_build(&build)?;
         let graph = composition.map(|composition| composition.graph_digest);
@@ -700,19 +699,16 @@ impl Context<'_> {
         if !state.retain_result(self.plugin_id, &marker, session) {
             return Ok(result);
         }
-        let snapshot = Snapshot::Result {
-            title: "Companion build result",
-            app_name: &app_name,
-            combination: &job.build.combination,
-            rebuild_combination: rebuild,
-            rebuild_label: dialogs::rebuild_label(&job.pipeline, rebuild),
-            rebuild_changes: dialogs::rebuild_changes(
-                &job.pipeline,
-                &job.build.combination,
-                rebuild,
-            ),
+        let plugin_name = dialogs::plugin_display_name(&self.plugin.manifest.name);
+        let snapshot = dialogs::result_snapshot(
+            &job.pipeline,
+            &app_name,
+            &plugin_name,
+            &job.build.combination,
+            rebuild,
             twist,
-        };
+            &job.build.warnings,
+        );
         let action = match wire::encode(snapshot) {
             Ok(snapshot) => self.question(snapshot, marker.subscribe(), ttl, None).await,
             Err(error) => Err(error),

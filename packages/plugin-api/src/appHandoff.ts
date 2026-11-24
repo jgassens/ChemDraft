@@ -1,6 +1,23 @@
 import { z } from "zod";
 import { boundedRequestJson, type PluginRequestJson } from "./requestPayload";
 
+/** @internal Bounds handoff display text before copying it between the Worker and desktop. */
+export function boundedHandoffText(value: string, limit = 500, ellipsis = true): string {
+  let text = "";
+  let count = 0;
+  for (const character of value) {
+    if (count++ === limit) {
+      text = text.trim();
+      return text && ellipsis ? `${text}…` : text;
+    }
+    if (/[\t\n\r\v\f\u0085\u2028\u2029]/u.test(character)) {
+      if (!text.endsWith(" ")) text += " ";
+    } else if (!/[\p{Cc}\p{Cf}]/u.test(character)) {
+      text += character;
+    }
+  }
+  return text.trim();
+}
 export const PluginAppHandoffPermissions = ["apps.handoff", "native.execute"] as const;
 
 export const PluginAppHandoffLimits = {
@@ -196,12 +213,16 @@ export const PluginHandoffStatusResultSchema = z.object({
   reason: z.string().optional()
 }).strict();
 
+const handoffWarnings = z.array(characterLimitedText(limits.warningCharacters)
+  .refine(text => !text.includes("\0"), { message: "Warning text must not contain NUL." }))
+  .max(limits.warningCount).optional();
+
 export const PluginHandoffSendFileRequestSchema = z.object({
   appId: nonempty,
   fileName: z.string(),
   extension: PluginHandoffExtensionSchema,
   text: utf8Text(limits.sendBytes),
-  warnings: z.array(characterLimitedText(limits.warningCharacters)).max(limits.warningCount).optional()
+  warnings: handoffWarnings
 }).strict();
 
 export const PluginHandoffSendFileFailureCodeSchema = z.enum([
@@ -221,7 +242,9 @@ export const PluginHandoffRunCompanionRequestSchema = z.object({
   pipeline: companionId,
   combination: companionId,
   input: z.object({ extension: companionInputExtension, text: utf8Text(limits.inputBytes) }).strict().optional(),
-  openOutput: z.boolean().optional()
+  openOutput: z.boolean().optional(),
+  /** Plain text shown for review before the build, up to 20 lines of 300 code points. */
+  warnings: handoffWarnings
 }).strict();
 
 export const PluginHandoffRunCompanionFailureCodeSchema = z.enum([

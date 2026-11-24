@@ -1,0 +1,28 @@
+{
+  "appName": "Crystal Builder",
+  "combinations": {
+    "pcu-N16-1x1x1": {
+      "node": "N16",
+      "rebuildAs": "pcu-N16-2x2x2",
+      "repeat": "1x1x1",
+      "topology": "pcu"
+    },
+    "pcu-N16-2x2x2": {
+      "node": "N16",
+      "repeat": "2x2x2",
+      "topology": "pcu"
+    }
+  },
+  "composition": {
+    "atomCount": 12,
+    "formula": "C6H4X2"
+  },
+  "mode": "confirm",
+  "pipeline": "mofBuild",
+  "pluginName": "Send to Crystal Builder",
+  "suggestedCombination": "pcu-N16-1x1x1",
+  "title": "Confirm companion build",
+  "warnings": [
+    "ChemDraft verified this build."
+  ]
+}

@@ -13,7 +13,7 @@ export type { DialogContentFit } from "./dialogContentFit";
 import { isKeybindingScheme, type KeybindingScheme } from "../keybindingSettings";
 import { TOUR_INSPECTOR_COMMAND, TOUR_NAME_COMMAND, TOUR_PLUGIN_COMMANDS, TOUR_SAMPLE_COMMAND, type TourAction, type TourPluginCommand } from "../tour/tourCommands";
 import type { TourBondKeys } from "../tour/tourSteps";
-import type { AppHandoffDialogAction, AppHandoffDialogSnapshot } from "../appHandoff/dialogTypes";
+import { AppHandoffDialogSnapshotSchema, CompanionDialogIdSchema, type AppHandoffDialogAction, type AppHandoffDialogSnapshot } from "../appHandoff/dialogTypes";
 
 export const DIALOG_PROTOCOL_VERSION = 1;
 export const DIALOG_MAX_BYTES = 16 * 1024;
@@ -209,43 +209,6 @@ export function validConditionsDraft(v: unknown): v is ReactionConditionsDraft {
       typeof span.text === "string" && ["normal", "subscript", "superscript"].includes(String(span.script))) &&
     v.spans.map(span => span.text).join("").length <= 2000 && new TextEncoder().encode(JSON.stringify(v)).length <= 2500;
 }
-
-const companionId = (value: unknown): value is string =>
-  typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(value);
-
-const companionParameter = (name: string, value: unknown, allowRemoval = false) =>
-  name !== "__proto__" && /^[A-Za-z_][A-Za-z0-9_-]*$/u.test(name) &&
-  ((allowRemoval && value === null) || (typeof value === "string" &&
-    /^[A-Za-z0-9_][A-Za-z0-9_.+-]{0,31}$/u.test(value) && !value.includes("..")));
-
-function validAppHandoffSnapshot(data: Record<string, unknown>): boolean {
-  const displayText = (value: unknown): value is string =>
-    typeof value === "string" && value.length > 0 && !value.includes("\0");
-  if (!displayText(data.title) || data.title.length > 256 || !displayText(data.appName)) return false;
-  if (data.mode === "result") {
-    return keys(data, ["mode", "title", "appName", "combination", "rebuildCombination", "rebuildLabel", "rebuildChanges"], ["twist"]) &&
-      companionId(data.combination) && companionId(data.rebuildCombination) &&
-      data.combination !== data.rebuildCombination && displayText(data.rebuildLabel) &&
-      record(data.rebuildChanges) && Object.entries(data.rebuildChanges).every(([name, value]) =>
-        name !== "rebuildAs" && companionParameter(name, value, true)) &&
-      (!Object.hasOwn(data, "twist") ||
-        (typeof data.twist === "number" && Number.isFinite(data.twist) && data.twist >= 0));
-  }
-  if (data.mode !== "confirm" ||
-      !keys(data, ["mode", "title", "appName", "pipeline", "suggestedCombination", "combinations"], ["composition"]) ||
-      !companionId(data.pipeline) || !companionId(data.suggestedCombination) ||
-      !record(data.combinations) || !Object.hasOwn(data.combinations, data.suggestedCombination)) return false;
-  const combinations = data.combinations;
-  if (!Object.entries(combinations).every(([id, row]) => companionId(id) && record(row) &&
-      Object.entries(row).every(([name, value]) => name === "rebuildAs"
-        ? companionId(value) && value !== id && Object.hasOwn(combinations, value)
-        : companionParameter(name, value)))) return false;
-  return !Object.hasOwn(data, "composition") || (record(data.composition) &&
-    keys(data.composition, ["formula", "atomCount"]) && typeof data.composition.formula === "string" &&
-    /^(?:[A-Z][a-z]?[0-9]*)+$/u.test(data.composition.formula) &&
-    Number.isSafeInteger(data.composition.atomCount) && Number(data.composition.atomCount) > 0);
-}
-
 export function parseDialogMessage(value: unknown): DialogMessage | undefined {
   try {
     if (new TextEncoder().encode(JSON.stringify(value)).length > (record(value) && value.dialogKind === "export" && value.type === "result" && record(value.data) && value.data.status === "preview" ? DIALOG_PREVIEW_MAX_BYTES : DIALOG_MAX_BYTES)) return undefined;
@@ -275,9 +238,9 @@ export function parseDialogMessage(value: unknown): DialogMessage | undefined {
     let valid = false;
     if (value.dialogKind === "appHandoff") {
       switch (value.type) {
-        case "snapshot": valid = serializedBytes(value) <= SMALL_DIALOG_MAX_BYTES && validAppHandoffSnapshot(d); break;
+        case "snapshot": valid = serializedBytes(value) <= SMALL_DIALOG_MAX_BYTES && AppHandoffDialogSnapshotSchema.safeParse(d).success; break;
         case "action": valid = d.action === "confirm"
-          ? keys(d, ["action", "combinationId"]) && companionId(d.combinationId)
+          ? keys(d, ["action", "combinationId"]) && CompanionDialogIdSchema.safeParse(d.combinationId).success
           : keys(d, ["action"]) && (d.action === "cancel" || d.action === "rebuild"); break;
         case "request": valid = keys(d, []); break;
         case "ready": valid = keys(d, []) || validDialogContentFit(d); break;

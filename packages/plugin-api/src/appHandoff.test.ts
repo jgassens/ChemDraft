@@ -37,7 +37,7 @@ const pipeline = {
 };
 const manifest = {
   id: "org.test.handoff", name: "Handoff", version: "1.0.0",
-  apiVersion: "^0.1.27", entry: "index.js", permissions: ["apps.handoff", "native.execute"]
+  apiVersion: "^0.1.28", entry: "index.js", permissions: ["apps.handoff", "native.execute"]
 };
 const sendFile = { appId: "opaque-1", fileName: "benzene", extension: "xyz", text: "6\n" };
 const runCompanion = { appId: "opaque-1", pipeline: "mofBuild", combination: "pcu-N16-1x1x1" };
@@ -199,9 +199,13 @@ describe("strict app handoff wire shapes", () => {
     }).success).toBe(false);
     const warning = "🧪".repeat(limits.warningCharacters);
     const warnings = Array<string>(limits.warningCount).fill(warning);
-    expect(PluginHandoffSendFileRequestSchema.safeParse({ ...sendFile, warnings }).success).toBe(true);
-    expect(PluginHandoffSendFileRequestSchema.safeParse({ ...sendFile, warnings: [...warnings, "extra"] }).success).toBe(false);
-    expect(PluginHandoffSendFileRequestSchema.safeParse({ ...sendFile, warnings: [warning + "!"] }).success).toBe(false);
+    for (const [schema, request] of [[PluginHandoffSendFileRequestSchema, sendFile],
+      [PluginHandoffRunCompanionRequestSchema, runCompanion]] as const) {
+      expect(schema.safeParse({ ...request, warnings }).success).toBe(true);
+      for (const invalid of [[...warnings, "extra"], [warning + "!"], [0], ["\0"], null]) {
+        expect(schema.safeParse({ ...request, warnings: invalid }).success).toBe(false);
+      }
+    }
     const purpose = "🧪".repeat(limits.purposeCharacters);
     expect(PluginHandoffChooseAppRequestSchema.safeParse({ purpose }).success).toBe(true);
     expect(PluginHandoffChooseAppRequestSchema.safeParse({ purpose: purpose + "!" }).success).toBe(false);

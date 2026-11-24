@@ -65,7 +65,7 @@ export async function inspectWriteSmiles(context: StructureInspectionContext, va
  * records. Replacing it additionally requires the graph to account for all of its chemistry. */
 export async function verifyStoredSources(context: StructureInspectionContext, molecule: MoleculeObject,
   options: { replacementIdentity?: string; graph?: Awaited<ReturnType<typeof inspectMolecule>>; alreadyVerified?: MoleculeObject;
-    reference?: MoleculeObject } = {}) {
+    reference?: MoleculeObject; requireOrderedCtabIdentity?: boolean } = {}) {
   const { graph, alreadyVerified, reference } = options;
   const replacementIdentity = graph?.identitySmiles ?? options.replacementIdentity;
   const { structure, structureFormat } = molecule;
@@ -79,7 +79,8 @@ export async function verifyStoredSources(context: StructureInspectionContext, m
     }
     const result = await context.chemistry.inspectStructure(format === "smiles" ? "smiles" : "molfile", value);
     if (!result.valid || !result.orderedIdentity ||
-        replacementIdentity !== undefined && (result.hasStoredGroups !== false || result.identitySmiles !== replacementIdentity)) {
+        replacementIdentity !== undefined && (result.hasStoredGroups !== false || result.identitySmiles !== replacementIdentity) ||
+        format !== "smiles" && options.requireOrderedCtabIdentity && result.orderedIdentity !== graph?.orderedIdentity) {
       throw new ChemistryRefusal("the stored structure doesn't match the drawn atoms", `The stored ${format} of "${molecule.id}" has chemistry the editable graph cannot verify.`);
     }
     if (format !== "smiles" && graph) {

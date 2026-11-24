@@ -23,7 +23,7 @@ function selectedMolecule(document: ChemDraftDocument, objectId: string): { mole
   return { molecule: location.object, page: location.page };
 }
 
-function reactionMembership(page: DocumentPage, objectId: string): PluginHandoffGraphResult["reactionMembership"] {
+export function reactionMembership(page: DocumentPage, objectId: string): PluginHandoffGraphResult["reactionMembership"] {
   const attributes = ["ReactionStepAtomMap", "ReactionStepAtomMapManual", "ReactionStepAtomMapAuto"] as const;
   return page.objects.flatMap(object => {
     if (object.type !== "reaction") return [];
@@ -117,10 +117,15 @@ export function handoffGraphForPlugin(request: PluginHandoffGraphRequest, docume
 export function suggestConnectionPointsForPlugin(request: PluginSuggestConnectionPointsRequest,
   document: ChemDraftDocument): PluginSuggestConnectionPointsResult {
   const { molecule, page } = selectedMolecule(document, request.objectId);
+  return { points: planConnectionPoints(molecule, page, request.anchors) };
+}
+
+export function planConnectionPoints(molecule: MoleculeObject, page: DocumentPage,
+  anchors: readonly string[]): PluginSuggestConnectionPointsResult["points"] {
   const pageBounds = { x: 0, y: 0, width: page.width, height: page.height };
   // Reserve each suggested endpoint while planning the next one in this same patch.
   const atoms = [...molecule.atoms];
-  return { points: request.anchors.map((anchorAtomId, index) => {
+  return anchors.map((anchorAtomId, index) => {
     const anchor = molecule.atoms.find(atom => atom.id === anchorAtomId);
     if (!anchor) throw new Error(`Molecule "${molecule.id}" has no drawn anchor atom "${anchorAtomId}".`);
     const plan = planNativeNewBondForAtom({ ...molecule, atoms }, anchorAtomId, pageBounds);
@@ -129,7 +134,7 @@ export function suggestConnectionPointsForPlugin(request: PluginSuggestConnectio
     const reservedId = uniqueReservedId(atoms, index);
     atoms.push({ id: reservedId, element: "X", formalCharge: 0, x, y });
     return { anchorAtomId, x, y };
-  }) };
+  });
 }
 
 function uniqueReservedId(atoms: MoleculeObject["atoms"], index: number): string {

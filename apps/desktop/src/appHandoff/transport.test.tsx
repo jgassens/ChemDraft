@@ -12,7 +12,7 @@ import {
   createChemDraftAgentBridge, dispatchAgentPointerEvent, type AgentResolvedPoint, type AgentSnapshot
 } from "../agentBridge";
 import { ToolbarTextButton } from "../toolbars/toolbarCells";
-import { createTauriAppHandoffTransport } from "./transport";
+import { appHandoffCommandStatus, appHandoffRefusal, appHandoffResultStatus, createTauriAppHandoffTransport } from "./transport";
 import { installNativeAppHandoffReceiver } from "./nativeMenu";
 import type { AppHandoffMenuInvocation } from "@chemdraft/plugin-host";
 
@@ -51,25 +51,48 @@ describe("native app handoff relay", () => {
   it("reports authoritative launch results without displaying native diagnostics", async () => {
     const native = vi.fn<typeof invoke<unknown>>();
     const status = vi.fn();
-    const relay = createTauriAppHandoffTransport(native, status);
+    const transport = createTauriAppHandoffTransport(native);
+    const relay = (method: Parameters<typeof transport>[1], payload: Parameters<typeof transport>[2]) =>
+      transport(invocation, method, payload).then(
+        value => status(appHandoffResultStatus(method, payload, value)?.message),
+        (error: unknown) => { status(appHandoffRefusal(error).message); throw error; }
+      );
     native.mockResolvedValueOnce({ status: "sent" });
-    await relay(invocation, "sendFile", request);
+    await relay("sendFile", request);
     expect(status).toHaveBeenLastCalledWith("Opened the handoff file in the chosen app.");
     const build = { appId: "opaque", pipeline: "mofBuild", combination: "pcu-N16-2x2x2" };
     native.mockResolvedValueOnce({ status: "done", opened: false, steps: [] });
-    await relay(invocation, "runCompanion", build);
+    await relay("runCompanion", build);
     expect(status).toHaveBeenLastCalledWith("Build completed.");
+    native.mockResolvedValueOnce({ status: "done", opened: false, steps: [] });
+    await relay("runCompanion", { ...build, openOutput: true });
+    expect(status).toHaveBeenLastCalledWith("Build completed, but the chosen app could not open it.");
     native.mockResolvedValueOnce({ status: "failed", code: "timeout", message: "Companion step build timed out.",
       diagnostic: { step: "build", stderrTail: "private diagnostic" } });
-    await relay(invocation, "runCompanion", build);
+    await relay("runCompanion", build);
     expect(status).toHaveBeenLastCalledWith("Companion build failed: Companion step build timed out.");
     native.mockResolvedValueOnce({ status: "declined" });
-    await relay(invocation, "runCompanion", build);
-    expect(status).toHaveBeenCalledTimes(3);
+    await relay("runCompanion", build);
+    expect(status).toHaveBeenLastCalledWith("Companion build cancelled.");
+    native.mockResolvedValueOnce({ status: "cancelled" });
+    await relay("chooseApp", { purpose: "Choose an app" });
+    expect(status).toHaveBeenLastCalledWith("App selection cancelled.");
     const refusal = "App handoff refused because two requests claimed one menu click.";
     native.mockRejectedValueOnce(refusal);
-    await expect(relay(invocation, "runCompanion", build)).rejects.toThrow(refusal);
+    await expect(relay("runCompanion", build)).rejects.toThrow(refusal);
     expect(status).toHaveBeenLastCalledWith(refusal);
+  });
+
+  it("uses only a string status on a successful command, sanitizing and bounding by code point", () => {
+    const name = "Send to Crystal Builder";
+    const status = (value: unknown) => appHandoffCommandStatus({ ok: true, data: { status: value } }, name);
+    expect(status(" \u202eMOF\u2069\u0000-5\r\nmatched\u0085here\u2028today\u0007 ")).toBe(`Plugin (${name}): MOF-5 matched here today`);
+    const text = "🧪".repeat(500);
+    expect(status(text)).toBe(`Plugin (${name}): ${text}`);
+    expect(status(text + "🧪")).toBe(`Plugin (${name}): ${text}…`);
+    for (const value of [null, 15, ["done"], { text: "done" }, " \u202c\n "]) expect(status(value)).toBeUndefined();
+    expect(appHandoffCommandStatus({ ok: false, data: { status: "done" } }, name)).toBeUndefined();
+    expect(appHandoffCommandStatus({ ok: true }, name)).toBeUndefined();
   });
 
   it("authenticates the direct receiver before dispatch and finishes after the Worker relay returns", async () => {

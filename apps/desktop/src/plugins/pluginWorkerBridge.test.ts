@@ -43,6 +43,7 @@ import { applyPatch, createEmptyDocument, MoleculeObjectSchema } from "@chemdraf
 import { ToolSessionController } from "./toolSessions/ToolSessionController";
 import type { McpBridgeRequest, McpBridgeResponse } from "./toolSessions/transport";
 import { buildPluginTablePatch } from "./buildPluginTablePatch";
+import { buildConnectionPointsPatch } from "./connectionPointEdit";
 import { AssistantTransactions } from "../assistant/assistantTransaction";
 
 type MessageListener = (event: { data: unknown }) => void;
@@ -166,6 +167,57 @@ function startWorkerRoutedPlugin(registration: PluginWorkerRegistration): Plugin
 }
 
 const handoffCommand = "plugin.crystalBuilder.buildMof";
+
+it("passes optional application identity and connection-point capability over the Worker boundary", async () => {
+  const commandId = "plugin.connection-points.mark";
+  const manifest = parsePluginManifest({
+    id: "org.test.connection-points", name: "Connection points", version: "1", apiVersion: PluginApiVersion,
+    entry: "worker.js", permissions: ["document.write", "selection.read"],
+    contributes: { commands: [{ id: commandId, title: "Mark" }] }
+  });
+  const request = { objectId: "m1", anchors: ["anchor-1"] };
+  const selection = { ...BENZENE, molecules: [{ ...BENZENE.molecules[0]!, selectedAtomIds: ["anchor-1"],
+    connectionPoints: [{ atom: 7, anchor: 1, bondOrder: 1 }] }] };
+  const bridge = startWorkerRoutedPlugin({
+    manifest, commandHandlers: { [commandId]: async context => {
+      const snapshot = await context.selection!.getSelection();
+      expect(Object.isFrozen(snapshot)).toBe(true);
+      expect(Object.isFrozen(snapshot.objectIds)).toBe(true);
+      expect(Object.isFrozen(snapshot.molecules)).toBe(true);
+      expect(Object.isFrozen(snapshot.molecules[0])).toBe(true);
+      const ids = snapshot.molecules[0]?.selectedAtomIds;
+      if (ids) {
+        expect(Object.isFrozen(ids)).toBe(true);
+        expect(() => (ids as string[]).push("injected")).toThrow(TypeError);
+        expect(Object.isFrozen(snapshot.molecules[0]!.connectionPoints![0])).toBe(true);
+      }
+      return { host: context.host, selection: snapshot, receipt: await context.documents.addConnectionPoints?.(request) };
+    } }
+  });
+  try {
+    const oldHost = new PluginHost({ getSelection: () => BENZENE });
+    oldHost.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+    expect(await oldHost.invokeCommand(commandId)).toEqual({ host: undefined, selection: BENZENE, receipt: undefined });
+    const document = createEmptyDocument({ pageId: "p1" });
+    document.pages[0]!.objects = [MoleculeObjectSchema.parse({
+      id: "m1", type: "molecule", x: 150, y: 150, width: 30, height: 30,
+      structure: "C", structureFormat: "smiles", atoms: [{ id: "anchor-1", element: "C", x: 160, y: 160 }]
+    })];
+    document.selection = { pageId: "p1", objectIds: ["m1"] };
+    const mark = vi.fn().mockResolvedValue({ applied: true, objectIds: [request.objectId] });
+    const host = new PluginHost({ identity: { name: "ChemDraft", version: "1.2.3" }, getSelection: () => selection,
+      getActiveDocument: () => document, buildConnectionPointsPatch, applyDocumentPatch: mark });
+    host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+    expect(await host.invokeCommand(commandId)).toEqual({
+      host: { name: "ChemDraft", version: "1.2.3" }, selection, receipt: { applied: true, objectIds: [request.objectId] }
+    });
+    expect(mark).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      undoLabel: "Mark connection points", writeScopeObjectIds: [request.objectId],
+      connectionPointEdit: expect.objectContaining({ anchors: request.anchors })
+    }));
+  } finally { bridge.terminate(); }
+});
+
 const handoffManifest = parsePluginManifest({
   id: "org.chemdraft.handoff.crystalBuilder", name: "Crystal Builder", version: "1.0.0",
   apiVersion: PluginApiVersion, entry: "worker.js",
@@ -182,9 +234,40 @@ const invocation = { commandId: handoffCommand, pluginId: handoffManifest.id, no
 const handoffSend = { appId: "opaque", fileName: "model", extension: "cif" as const, text: "test data" };
 
 describe("Worker app handoff", () => {
+  it.each(["status", "failure", "throw"])("bounds a handoff command's %s before crossing the Worker port", async kind => {
+    const host = new PluginHost({ appHandoffProvenance: { forRegistration: handoffProvenance, forCall: handoffProvenance } });
+    const text = "🧪".repeat(600);
+    const bounded = "🧪".repeat(500) + "…";
+    const bridge = startWorkerRoutedPlugin({
+      manifest: handoffManifest,
+      commandHandlers: { [handoffCommand]: () => {
+        if (kind === "throw") throw new Error(text);
+        if (kind === "failure") return { ok: false, error: { code: "build", message: text } };
+        return { ok: true, data: { status: text } };
+      } }
+    });
+    try {
+      await bridge.whenReady();
+      host.registerPlugin(handoffManifest, createWorkerRoutedOptions(handoffManifest, bridge));
+      const call = host.invokeAppHandoffMenuCommand(invocation);
+      if (kind === "throw") await expect(call).rejects.toMatchObject({ message: bounded });
+      else await expect(call).resolves.toEqual(kind === "failure"
+        ? { ok: false, error: { code: "build", message: bounded } }
+        : { ok: true, data: { status: bounded } });
+    } finally {
+      bridge.terminate();
+    }
+  });
+
   it("relays a command's handoff, rejects its extra fields and offers no self-invocation dispatcher", async () => {
     const transport = vi.fn(async () => ({ status: "sent" }));
-    const host = new PluginHost({
+    const observed = vi.fn();
+    class ObservedHost extends PluginHost {
+      protected override observeAppHandoffCall(...args: Parameters<PluginHost["observeAppHandoffCall"]>) {
+        observed(...args);
+      }
+    }
+    const host = new ObservedHost({
       appHandoffProvenance: { forRegistration: handoffProvenance, forCall: handoffProvenance },
       appHandoffTransport: transport
     });
@@ -195,6 +278,8 @@ describe("Worker app handoff", () => {
         expect(ctx).not.toHaveProperty("invokeCommand");
         const forged = { ...handoffSend, commandId: handoffCommand };
         await expect(ctx.apps!.sendFile(forged)).rejects.toThrow("Invalid apps.sendFile request");
+        const unreadable = { ...handoffSend, get text(): string { throw new Error("Do not copy this input."); } };
+        await expect(ctx.apps!.sendFile(unreadable)).rejects.toThrow("Could not read the request fields.");
         expect(transport).not.toHaveBeenCalled();
         if (ctx.input) throw new Error("Unexpected command input");
         return ctx.apps!.sendFile(handoffSend);
@@ -204,6 +289,9 @@ describe("Worker app handoff", () => {
       await bridge.whenReady();
       host.registerPlugin(handoffManifest, createWorkerRoutedOptions(handoffManifest, bridge));
       await expect(host.invokeAppHandoffMenuCommand(invocation)).resolves.toEqual({ status: "sent" });
+      expect(observed.mock.calls.map(([, method, request]) => [method, request])).toEqual([
+        ["sendFile", null], ["sendFile", null], ["sendFile", handoffSend]
+      ]);
       expect(transport).toHaveBeenCalledExactlyOnceWith(invocation, "sendFile", handoffSend);
     } finally {
       bridge.terminate();
@@ -451,10 +539,12 @@ describe("PluginWorkerBridge — M34 isolation boundary", () => {
   });
   it.each([false, true])("requires selection.read for selected handoff chemistry (declared = %s)", async declared => {
     const commandId = "plugin.graph.run";
-    const manifest = parsePluginManifest({ id: "org.test.handoff-graph", name: "Graph", version: "0", apiVersion: "^0.1.27",
+    const manifest = parsePluginManifest({ id: "org.test.handoff-graph", name: "Graph", version: "0", apiVersion: "^0.1.28",
       entry: "worker.js", permissions: ["chemistry.compute", ...(declared ? ["selection.read"] : [])],
       contributes: { commands: [{ id: commandId, title: "Graph" }] } });
     const doc = createEmptyDocument({ id: "test-doc", pageId: "p1" });
+    doc.pages[0]!.objects.push(MoleculeObjectSchema.parse({ id: "m1", type: "molecule", x: 20, y: 20, width: 20, height: 20,
+      structureFormat: "smiles", structure: "C", atoms: [{ id: "a1", element: "C", x: 30, y: 30 }] }));
     doc.selection = { objectIds: ["m1"], pageId: "p1" };
     const graph = { objectId: "m1", pageId: "p1", canonicalSmiles: "C", graph: { atoms: [
       { element: "C", charge: 0, radicalElectrons: 0, hydrogenCount: 4 }], bonds: [] },

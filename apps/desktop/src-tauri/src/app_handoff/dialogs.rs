@@ -1,7 +1,7 @@
 use super::{
     arming::Submission,
     command_line::Pipeline,
-    wire::{Extension, Input, StepResult},
+    wire::{self, Extension, Input, StepResult},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -25,22 +25,159 @@ pub(super) enum Snapshot<'a> {
     Confirm {
         title: &'static str,
         app_name: &'a str,
+        plugin_name: &'a str,
         pipeline: &'a str,
         #[serde(skip_serializing_if = "Option::is_none")]
         composition: Option<&'a Composition>,
         suggested_combination: &'a str,
         combinations: &'a BTreeMap<String, BTreeMap<String, String>>,
+        #[serde(skip_serializing_if = "<[String]>::is_empty")]
+        warnings: &'a [String],
     },
     Result {
         title: &'static str,
         app_name: &'a str,
+        plugin_name: &'a str,
         combination: &'a str,
         rebuild_combination: &'a str,
         rebuild_label: String,
         rebuild_changes: BTreeMap<&'a str, Option<&'a str>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         twist: Option<f64>,
+        #[serde(skip_serializing_if = "<[String]>::is_empty")]
+        warnings: &'a [String],
     },
+}
+
+fn display_text(value: &str, limit: usize) -> String {
+    let mut text = String::new();
+    for ch in value.chars().take(limit) {
+        match ch {
+            '\t' | '\n' | '\r' | '\u{b}' | '\u{c}' | '\u{85}' | '\u{2028}' | '\u{2029}' => {
+                if !text.ends_with(' ') {
+                    text.push(' ');
+                }
+            }
+            // Unicode General_Category=Cf (17.0). char::is_control covers Cc.
+            '\u{ad}'
+            | '\u{600}'..='\u{605}'
+            | '\u{61c}'
+            | '\u{6dd}'
+            | '\u{70f}'
+            | '\u{890}'..='\u{891}'
+            | '\u{8e2}'
+            | '\u{180e}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206f}'
+            | '\u{feff}'
+            | '\u{fff9}'..='\u{fffb}'
+            | '\u{110bd}'
+            | '\u{110cd}'
+            | '\u{13430}'..='\u{1343f}'
+            | '\u{1bca0}'..='\u{1bca3}'
+            | '\u{1d173}'..='\u{1d17a}'
+            | '\u{e0001}'
+            | '\u{e0020}'..='\u{e007f}' => {}
+            ch if ch.is_control() => {}
+            ch => text.push(ch),
+        }
+    }
+    text.trim().to_owned()
+}
+
+pub(super) fn plugin_display_name(name: &str) -> String {
+    let name = display_text(name, 80);
+    if name.is_empty() {
+        "Unknown".into()
+    } else {
+        name
+    }
+}
+
+pub(super) fn display_warnings(warnings: &[String]) -> Vec<String> {
+    warnings
+        .iter()
+        .map(|line| display_text(line, wire::WARNING_CHARS))
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
+pub(super) fn send_warning_message(
+    app_name: &str,
+    plugin_name: &str,
+    warnings: &[String],
+) -> String {
+    let warnings = display_warnings(warnings).join("\n");
+    let mut message = format!("Send the file to {app_name}?");
+    if !warnings.is_empty() {
+        let plugin_name = plugin_display_name(plugin_name);
+        message.push_str(&format!("\n\nPlugin ({plugin_name}) warnings\n{warnings}"));
+    }
+    message
+}
+
+pub(super) fn confirmation_snapshot(
+    pipeline: &Pipeline,
+    app_name: &str,
+    plugin_name: &str,
+    combination: &str,
+    composition: Option<&Composition>,
+    warnings: &[String],
+) -> Result<Value, String> {
+    let snapshot = wire::encode(Snapshot::Confirm {
+        title: "Confirm companion build",
+        app_name,
+        plugin_name,
+        pipeline: &pipeline.id,
+        composition,
+        suggested_combination: combination,
+        combinations: &pipeline.combinations,
+        warnings,
+    })?;
+    crate::dialog_windows::validate_app_handoff_snapshot(&snapshot)?;
+    for (from, to) in pipeline
+        .combinations
+        .iter()
+        .filter_map(|(id, row)| row.get("rebuildAs").map(|rebuild| (id, rebuild)))
+    {
+        let mut result = wire::encode(result_snapshot(
+            pipeline,
+            app_name,
+            plugin_name,
+            from,
+            to,
+            None,
+            warnings,
+        ))?;
+        // Reserve room for the serialized value of any finite f64 measurement.
+        result["twist"] = Value::String("0".repeat(24));
+        crate::dialog_windows::validate_app_handoff_snapshot(&result)?;
+    }
+    Ok(snapshot)
+}
+
+pub(super) fn result_snapshot<'a>(
+    pipeline: &'a Pipeline,
+    app_name: &'a str,
+    plugin_name: &'a str,
+    combination: &'a str,
+    rebuild: &'a str,
+    twist: Option<f64>,
+    warnings: &'a [String],
+) -> Snapshot<'a> {
+    Snapshot::Result {
+        title: "Companion build result",
+        app_name,
+        plugin_name,
+        combination,
+        rebuild_combination: rebuild,
+        rebuild_label: rebuild_label(pipeline, rebuild),
+        rebuild_changes: rebuild_changes(pipeline, combination, rebuild),
+        twist,
+        warnings,
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]

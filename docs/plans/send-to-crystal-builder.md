@@ -1,5 +1,7 @@
 # Send to Crystal Builder: plugin plan
 
+API 0.1.28 in this branch must not ship before the change taking API 0.1.27 lands.
+
 Status: plan approved by the owner 2026-11-10; revised 2026-11-20 for the one-command build and the
 return trip (owner direction below), and again the same afternoon after the hand-built "MOF-5" turned
 out to be the wrong structure because it was built on one cell (see "MOF-5 correctness" under Test
@@ -14,7 +16,7 @@ Approved in principle, with these conditions:
 
 1. **No code until 1.2.2 ships** (master session, 2026-11-20). This is 1.2.3 work (owner, 2026-11-23; was 1.3). Main is already at
    plugin API 0.1.26 (request-bound tools, PR #418), so this capability takes the **next patch
-   version, 0.1.27 as of main 8125b66a**; the worker re-reads `PluginApiVersion` when Phase 1 starts.
+   version, 0.1.28 for this slice**; PR #468 reserves the preceding patch for stated hydrogen counts.
 2. ~~**Build phase runs from a MacBook session.**~~ **Changed (owner, 2026-11-20): workers run on the
    Intel iMac** through agentctl, installed there 2026-11-20 (smoke test: run `imac-smoke-0-3`).
 3. **Before any code:** one Kimi high review of this plan, after the 1.2 big review, focused on the
@@ -71,7 +73,7 @@ selection carries only a molfile while `embed3d` takes only SMILES; the only plu
 | Consent row had no template digest | Important | Rule 5 `templateDigest`, checked every call |
 | Errors promised no paths but quoted one | Important | Rule 8 |
 | App-change check spoofable; no Windows identity | Important | Rule 6 (hashes, signing identity, re-check before launch) |
-| Code claims not verified on the target commit | Important | Task 0.5; 0.1.27 marked provisional |
+| Code claims not verified on the target commit | Important | Task 0.5; version confirmed for this slice |
 | Repeat retry and question 11 unresolved, not fail closed | Important | Decision 1b rule (fail closed, Rebuild button); task 1H; question 11 |
 | Automatic cut active for any node | Important | Decision 1b, task 2C3: cut only for N16, N17 |
 | Loss audit impossible from the molfile alone | Important | Task 1G audit; Decision 1 table |
@@ -239,7 +241,7 @@ building blocks (confirmed by test, below).
 `M  RGP` line and a "not an element symbol" warning, exactly like a real R-group
 (`chem-core/src/molfile.ts`, via `apps/desktop/src/plugins/selectionSnapshot.ts`). A plugin therefore
 cannot tell a connection point from an R-group, and must not guess. The fix is in the host, as an
-additive API change in the same 0.1.27 bump: `PluginSelectedMolecule` gains
+additive API change in the same 0.1.28 bump: `PluginSelectedMolecule` gains
 `connectionPoints: { atom: number; anchor: number; bondOrder: number }[]` (1-based molfile atom
 indices), listing exactly the atoms whose drawn label is `X`, with their one neighbor and bond order (`anchor: 0` when the `X` has no neighbor or more than one, so the plugin refuses it by name).
 The molfile itself is unchanged for existing plugins; the warning for a listed atom names it as a
@@ -344,10 +346,17 @@ and minimization (`chemistry3d.ts`), so the mapping is exact. The `X` sits at a 
 
 **A "Mark Connection Points" command** (task 2G; approved for Phase 2, owner question 6). The user
 selects anchor atoms and the plugin adds `X` atoms as one labelled undo entry with the new atoms
-selected (§4.4). It needs `document.write`. Where each `X` goes (bond length and open direction) is
-layout math, which AGENTS.md §9 keeps in `layout-engine`, so the host supplies it (task 1G,
-`suggestConnectionPoints`); the plugin only builds the patch. Drawing `X` by hand stays the
-documented way.
+selected (§4.4). It submits the batch through `documents.addConnectionPoints` with `document.write`.
+The host uses `layout-engine` to place each new bond (§9). Each anchor must be an RDKit-aromatic
+carbon with room for a new single bond. The host refuses the whole batch if the molecule has any
+non-aromatic ring, any cumulated double bonds (including allenes, ketenes and carbodiimides), any
+retained nested CDXML fragment, or any stored or imported stereochemistry record (non-empty
+`chemistry.stereochemistry` or retained source stereo attributes). The host also refuses assigned or
+potential tetrahedral or double-bond stereochemistry in the original or marked molecule, and
+wedged, hashed, wavy or E/Z-unspecified bonds in the drawing. The marking rule covers stereochemistry
+ChemDraft perceives or stores. ChemDraft does not perceive a biaryl axis that is neither drawn nor
+stored, and marking leaves that axis unchanged. Any refusal leaves the drawing unchanged. Draw X by
+hand in these cases.
 
 ### Test results: Crystal Builder 1.1.1, macOS Intel (2026-11-18)
 
@@ -401,7 +410,7 @@ Platform parity for (a):
 
 ## Decision 3: the host gap (smallest general capability)
 
-New API, `PluginApiVersion` 0.1.26 → **0.1.27** (additive, patch bump per §4.1; the next free patch when Phase 1 starts). Sketch for workers;
+New API, `PluginApiVersion` 0.1.26 → **0.1.28** (additive; PR #468 reserves the preceding patch for stated hydrogen counts). Sketch for workers;
 exact names are settled in review.
 
 ```ts
@@ -429,6 +438,7 @@ interface PluginAppsAPI {
     combination: string;              // id of a declared combination (rule 11)
     input?: { extension: PluginHandoffExtension; text: string }; // exactly one file, ≤ 1 MB UTF-8
     openOutput?: boolean;             // open the declared output file with the app afterwards
+    warnings?: string[];              // ≤ 20 lines of ≤ 300 Unicode code points, shown before build
   }): Promise<{ status: "done"; steps: { id: string; json: unknown /* parsed, ≤ 1 MB */ }[]; opened: boolean } |
               { status: "declined" } |
               { status: "failed"; code: "app-missing" | "app-changed" | "tool-missing" | "bad-param" |
@@ -437,6 +447,19 @@ interface PluginAppsAPI {
                 diagnostic?: { step: string; exitCode?: number; json?: unknown; stderrTail?: string /* ≤ 4 KB */ } }>;
 }
 ```
+
+For task 2G, optional `host.version` identifies the running app; older hosts may omit `host`.
+Selected molecules optionally carry `selectedAtomIds`, drawn atom IDs matching `handoffGraph` (empty
+for whole-object selection). An ordinary command with `document.write` may use optional
+`documents.addConnectionPoints({ objectId, anchors })` on a molecule selected at command start.
+A batch of 1–999 anchor IDs adds one single-bonded X per anchor in one patch when it meets the
+marking rules in Decision 1b.
+Successful handoff commands may return `data.status` as plain text. The host attributes it to the
+plugin and reads up to 500 Unicode code points. A host refusal remains visible until a
+later successful retry of the same capability. Host failure or cancellation keeps its own line
+and the host includes any attributed plugin failure detail. A native-confirmed send or build
+stays visible alongside any remaining refusal. If a completed build cannot open, the host
+includes the plugin's success summary when provided.
 
 The manifest declares each pipeline in full, so consent can show it and review can read it. Only the
 host's placeholders (`{inputDir}`, `{inputStem}`, `{outputFile:cif}`, `{previousOutput}`) carry paths
@@ -618,9 +641,9 @@ from one host (§1, §14).
   `menu.crystalBuilder.markConnectionPoints` (task 2G), location `plugins`.
 - **Permissions**: `selection.read`, `chemistry.compute`, `apps.handoff`, `native.execute`,
   `plugin.storage`, `ui.menu`, and `document.write` (task 2G, Mark Connection Points; owner
-  2026-11-20). `apiVersion: "^0.1.27"`. Nothing else: no network, no clipboard, no filesystem.
+  2026-11-20). `apiVersion: "^0.1.28"`. Nothing else: no network, no clipboard, no filesystem.
 - **Release assets**: `crystal-builder-handoff-X.Y.Z.zip` and `.zip.sha256`, with the two release-body
-  markers (`ChemDraft-Plugin-API: ^0.1.27`, `ChemDraft-Min-App:` the first app version with 0.1.27).
+  markers (`ChemDraft-Plugin-API: ^0.1.28`, `ChemDraft-Min-App:` the first app version with 0.1.28).
 - **Host catalog**: one entry in `OFFICIAL_PLUGIN_CATALOG` (`apps/desktop/src/plugins/pluginUpdates.ts`)
   and four exact URLs in `apps/desktop/src-tauri/capabilities/plugin-updates.json` (latest,
   `?per_page=20`, `.zip`, `.zip.sha256`); `pluginUpdates.test.ts` guards them.
@@ -649,7 +672,7 @@ Windows installer comes only from the GitHub workflow; the Windows session tests
 
 | Task | Owned paths | Acceptance and tests | Review |
 |---|---|---|---|
-| 1A API contract | `packages/plugin-api/src/index.ts` (+ new `appHandoff.ts`, `appHandoff.test.ts`), header comment, `packages/plugin-api/package.json` (version must match, `index.test.ts` checks it), `packages/plugin-api/src/workerProtocol.ts` (whitelist `apps`) | Schemas for the four methods and the manifest `companions` pipelines; permission added and marked dangerous; manifest refuses `apps.handoff` without `native.execute`, refuses a step whose placeholder is undeclared or sits inside a larger argument other than after a fixed `key=` prefix, refuses any plugin-chosen value but a declared `combination` id (each combination's values validated per rule 11), and refuses timeouts over the rule 15 caps; version 0.1.27 (provisional: the next free patch when Phase 1 starts, re-read by task 0.5). Tests: name sanitizing, extension allowlist, size and warning limits, permission pairing, combination values that look like options or paths refused, failure `diagnostic` shape | Kimi |
+| 1A API contract | `packages/plugin-api/src/index.ts` (+ new `appHandoff.ts`, `appHandoff.test.ts`), header comment, `packages/plugin-api/package.json` (version must match, `index.test.ts` checks it), `packages/plugin-api/src/workerProtocol.ts` (whitelist `apps`) | Schemas for the four methods and the manifest `companions` pipelines; permission added and marked dangerous; manifest refuses `apps.handoff` without `native.execute`, refuses a step whose placeholder is undeclared or sits inside a larger argument other than after a fixed `key=` prefix, refuses any plugin-chosen value but a declared `combination` id (each combination's values validated per rule 11), and refuses timeouts over the rule 15 caps; version 0.1.28. Tests: name sanitizing, extension allowlist, size and warning limits, permission pairing, combination values that look like options or paths refused, failure `diagnostic` shape | Kimi |
 | 1B Host gate | `packages/plugin-host/src/**` (capability wiring + tests); the trusted entry points in `apps/desktop/src/` (the native menu handler and the Rust-shown boxes) that call `invokeCommandFromUser`; the agent bridge untouched except tests | User intent per rule 2: handoff commands start only from Rust's run-command message (native menu, Rust-shown boxes), which carries no secret; the host relays the Worker's calls to `app_handoff_call` and never holds a token; Worker-only execution for `apps.handoff` plugins, in-process registration refused; arming required by `status` and `chooseApp` but consumed only by the send; spoofing tests for `bridge.command`, `bridge.click`, synthetic key events, MCP, both tool paths, self-invocation, and `source` in input; official-only allowlist per rule 13 at registration and on every call, with the sideload tests; absent without both permissions; one pipeline or send per invocation, refused calls not counted; worker and in-process paths behave the same | Kimi |
 | 1C Native side | `apps/desktop/src-tauri/src/app_handoff/**`, `lib.rs` registration, `apps/desktop/src-tauri/build.rs` (register the new commands so their permissions are generated), `capabilities/app-handoff.json` (window `main` only) | Pure command-line builder tested for macOS and Windows from one host; Rust-held arming, authenticated invocation begin/finish, and the nonce-bound `app_handoff_call` endpoint per rule 2, with the binding tests listed there; Rust-held result session and Rebuild run in Rust per rule 16; companion pipeline runner per rules 11, 14, and 15 (tool resolved inside the app folder, symlink, junction, and `..` escapes refused, preflight version check, `inspect` only on the file `build` wrote, timeout kills the tree, output caps with concurrent draining, null stdin, cleared environment, no console window on Windows), tested with a stub tool on both platforms; app identity per rule 6 (hashes, signing identity, re-check before every launch); picker accepts only `.app` / `.exe` and refuses `.lnk`; temp path and cleanup tests (backslashes, 8.3 paths, reserved names); new `app_handoff` consent store per rule 5 (separate file, `schemaVersion`, `templateDigest` re-checked on every call, owner-only file on both platforms, unknown fields kept), with tests for disable, a changed pipeline, app changed, and revoke; the external-tools store untouched; app-changed detection; serde/Zod wire fixtures like `externalToolsWire.test.ts`; clippy clean on both `cfg` sides | Kimi |
 | 1D Desktop wiring | `apps/desktop/src/appHandoff/**`, plugin runtime hookup, Plugin Manager consent rows (own section, not the AI-tool rows), `apps/desktop/src/plugins/installPluginPackage.ts` and the update path (uninstall deletes rows; permission dropped on update deletes rows; install provenance recorded for rule 13) with their tests | Native message boxes for consent and warnings (no in-viewport dialog, §12); the host-owned **build confirmation dialog** (task 1H); status-line success; specific errors with paths only in host UI; consent visible and revocable; lifecycle tests for uninstall, update, and permission dropped | Kimi |
@@ -681,7 +704,7 @@ require the verified Phase 3 catalog install.
 | 2H Build MOF command | `src/buildMof.ts`, `src/nodeSuggest.ts`, `src/targetCheck.ts` + tests (chained after 2A, 2B2, 2C, 2C2, 2C3) | Suggestion per the Decision 1b table (MOF-5 row only for terephthalate exactly; other ditopic carboxylates unnamed; the HKUST-1 row disabled); one `runCompanion` call on the `mofBuild` pipeline with the 2B2 block as the single input and the suggested values (the host's confirmation dialog, task 1H, lets the user change them); `targetCheck.ts` reads the `build` and `inspect` step JSON per the Decision 1b target record ("Joint twist left" parsed fail closed, no overlap rows, joints bonded, detected space group, cell within 2%, Z, formula, atom count, one fragment, linker graph equal) and names the material only on a full match, as "matches the MOF-5 target checks". Mocked-context tests: success; user cancels; tool missing; untested Crystal Builder version; timeout; exit 1 and exit 2 with Crystal Builder's JSON message passed through; non-JSON output; JSON failure without `tables`; missing, malformed, and non-numeric twist rows; nonzero twist offers Rebuild; failed rebuild names nothing; **the 2026-11-20 twisted P222 build (fixture) is not called MOF-5, and the Fm-3m cell is** | Kimi |
 | 2D Command flow | `src/send.ts` + test with a mocked context | Both send commands: empty selection, cancelled picker, declined consent, embed failure, minimize failure, linker refusals, and success each produce the specified message; one send per command | Kimi |
 | 2E Package and release | package zip, checksum, release body markers | Installs by hand through Add plugin from package in ChemDraft (dev) on both platforms | Kimi |
-| 2G Mark Connection Points (in Phase 2, owner 2026-11-20) | `src/markConnectionPoints.ts` + test (chained after 2A, which already declares `document.write`) | Selected anchors get `X` atoms at the positions the host's `suggestConnectionPoints` returns (task 1G; no layout math in the plugin, §9), through `documents.applyPatch`, one labelled undo entry, new atoms selected (§4.4); anchors with no free valence refused by name; chemistry of the anchor molecule otherwise unchanged (§7 test: canonical SMILES with X removed equals the original) | Kimi |
+| 2G Mark Connection Points (in Phase 2, owner 2026-11-20) | `src/markConnectionPoints.ts` + test (chained after 2A, which already declares `document.write`) | Read selected anchors from `selectedAtomIds`; call optional `documents.addConnectionPoints` to add `X` atoms using host layout (no layout math in the plugin, §9), one labelled undo entry, new atoms selected (§4.4); anchors with no free valence refused by name; chemistry of the anchor molecule otherwise unchanged (§7 test: canonical SMILES with X removed equals the original); handle older hosts lacking the optional fields | Kimi |
 
 Hands-on, both platforms, with Crystal Builder installed by the owner (agents do not install it):
 **the one-command demo first**: draw terephthalic acid and four Zn²⁺, select both, Build MOF in
@@ -739,7 +762,7 @@ The picture-only fallback was considered and dropped (owner, 2026-11-20).
 
 For the owner:
 
-1. ~~**Release target.**~~ **Answered (owner, 2026-11-20): 1.3; changed (owner, 2026-11-23): ship the host capability in 1.2.3** (API 0.1.27, the next free patch when Phase 1 starts; main took 0.1.26 for request-bound tools).
+1. ~~**Release target.**~~ **Answered (owner, 2026-11-20): 1.3; changed (owner, 2026-11-23): ship the host capability in 1.2.3** (API 0.1.28; PR #468 reserves the preceding patch for stated hydrogen counts).
 2. ~~**How often to ask.**~~ **Answered (owner, 2026-11-20): consent once per plugin and app, then a
    message box only when something specific would be lost.** Consent once per plugin and app, then a message box only when something
    specific would be lost (recommended), or a confirmation on every send?

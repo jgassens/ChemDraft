@@ -1,6 +1,7 @@
 import type { PluginHostOptions } from "@chemdraft/plugin-host";
 import { nameToStructureForPlugin } from "./pluginChemistry";
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
+import { boundedHandoffText } from "@chemdraft/plugin-api";
 import type {
   AppliedPatchReceipt,
   PluginCommandInput,
@@ -20,7 +21,7 @@ import {
   createPluginUpdateChecker, hasOfficialInstalledPlugin, installedPluginCatalogKey,
   schedulePluginUpdateAutoCheck, type CachedPluginUpdateResults, type TimedPluginUpdateCheckResult
 } from "./pluginUpdateAutoCheck";
-import { createPluginRuntime, type DesktopPluginRuntime, type DesktopPluginRuntimeOptions, type ProposalDocumentTab } from "./createPluginRuntime";
+import { appHandoffFeedbackMessages, createPluginRuntime, type AppHandoffMenuFeedback, type DesktopPluginRuntime, type DesktopPluginRuntimeOptions, type ProposalDocumentTab } from "./createPluginRuntime";
 import {
   type PluginInstallError,
   isCommittedUninstallError,
@@ -62,6 +63,7 @@ import { mountStructureNamingHost } from "./StructureNamingInstallDialog";
 import { presentExternalToolInstall } from "../externalTools/presentExternalToolInstall";
 import type { DialogCoordinator } from "../dialogs/DialogCoordinator";
 import type { ListenForAppHandoff } from "../appHandoff/nativeMenu";
+import { appHandoffCommandStatus, attributedHandoffText } from "../appHandoff/transport";
 
 /**
  * Extract a user-facing message from a resolved plugin-command value that is a `{ ok: false }`
@@ -94,6 +96,7 @@ export interface PluginRuntimeProviders {
   getDocumentTabTitle?: (tabId: string) => string | undefined;
   /** `warnings`: the asking invocation's collector, or undefined for a read that should stay silent. */
   getSelection: (warnings?: string[]) => PluginSelectionSnapshot;
+  captureSelection?: DesktopPluginRuntimeOptions["captureSelection"];
   /** The app's stable CommandRegistry: plugin commands register into the SAME registry core commands
    *  use (commands/coreCommandRegistrar), so one dispatch serves both. Must be referentially stable
    *  for the component's lifetime — the runtime is created exactly once from the first render. */
@@ -211,6 +214,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
       getDocumentTabTitle: (tabId) => providersRef.current.getDocumentTabTitle?.(tabId),
       getDocumentForTab: (tabId) => providersRef.current.getDocumentForTab?.(tabId),
       getSelection: (warnings) => providersRef.current.getSelection(warnings),
+      captureSelection: providers.captureSelection && (document => providersRef.current.captureSelection!(document)),
       // Read once at creation: the registry (and the other integration options) must be stable —
       // MainWindow creates the registry in a one-time memo, matching the runtime's lifetime.
       commandRegistry: providers.commandRegistry,
@@ -246,14 +250,27 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     let active = true;
     const unlisten = listenForAppHandoff(invocation => {
       const warnings: string[] = [];
-      const report = (message: string) => {
-        if (active) providersRef.current.onAppHandoffStatus?.(message);
+      const feedback: AppHandoffMenuFeedback = { pending: 0, problems: new Map() };
+      const name = runtime.host.getPlugin(invocation.pluginId)?.manifest.name ?? invocation.pluginId;
+      const report = (result: unknown, failure?: unknown) => {
+        if (!active) return;
+        const messages = appHandoffFeedbackMessages(feedback);
+        if (feedback.pending) messages.push("The plugin command ended before app handoff completed.");
+        const detail = failure !== undefined
+          ? attributedHandoffText(failure, name) ?? attributedHandoffText("Command failed.", name)
+          : feedback.confirmed || (!feedback.pending && !feedback.problems.size)
+            ? appHandoffCommandStatus(result, name) : undefined;
+        if (detail) messages.push(detail);
+        const selection = boundedHandoffText(Array.from(new Set(warnings)).join(" "));
+        if (selection) messages.push(`Selection warning: ${selection}`);
+        const text = messages.join("\n");
+        if (text) providersRef.current.onAppHandoffStatus?.(text);
       };
-      return runtime.invokeAppHandoffMenuCommand(invocation, warnings).then(result => {
-        const failure = pluginCommandFailure(result);
-        if (failure) report(`Plugin command failed: ${failure}`);
-        else if (warnings.length) report(warnings.join(" "));
-      }, (error: unknown) => report(`Plugin command failed: ${error instanceof Error ? error.message : String(error)}`));
+      return runtime.invokeAppHandoffMenuCommand(invocation, warnings, feedback).then(
+        result => report(result, pluginCommandFailure(result)),
+        (error: unknown) => report(undefined, error instanceof Error ? error.message :
+          typeof error === "string" ? error : "Command failed.")
+      );
     });
     return () => {
       active = false;

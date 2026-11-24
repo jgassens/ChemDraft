@@ -17,6 +17,7 @@ export function AppHandoffForm({
   const root = useDialogContentReady<HTMLElement>(onReady);
   const titleId = useId();
   const combinationId = useId();
+  const warningsId = useId();
   const [combination, setCombination] = useState(snapshot.mode === "confirm" ? snapshot.suggestedCombination : "");
   const escapePressed = useRef(false);
   const actionRef = useRef(onAction);
@@ -87,6 +88,12 @@ export function AppHandoffForm({
           Object.entries(snapshot.rebuildChanges).map(([name, value]) =>
             ` · ${name === "topology" ? "net" : name} ${value ?? "removed"}`)
         }</p>
+      </>}
+      {snapshot.warnings && snapshot.warnings.length > 0 && <>
+        <p id={warningsId} style={{ overflowWrap: "anywhere" }}>Plugin ({snapshot.pluginName ?? "Unknown"}) warnings</p>
+        <ul aria-labelledby={warningsId} tabIndex={0} style={{ overflowWrap: "anywhere" }}>
+          {snapshot.warnings.map((warning, index) => <li key={index}>{warning}</li>)}
+        </ul>
       </>}
       {error && <p role="alert">{error}</p>}
     </div>

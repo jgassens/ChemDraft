@@ -105,6 +105,12 @@ pub(super) struct RunRequest {
         deserialize_with = "optional"
     )]
     pub open_output: Option<bool>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional"
+    )]
+    pub warnings: Option<Vec<String>>,
 }
 
 pub(super) fn optional<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
@@ -158,16 +164,7 @@ impl Call {
                 if request.text.len() > SEND_BYTES {
                     return Err("The handoff file exceeds 5 MiB.".into());
                 }
-                if request.warnings.as_ref().is_some_and(|warnings| {
-                    warnings.len() > 20
-                        || warnings
-                            .iter()
-                            .any(|line| line.chars().count() > 300 || line.contains('\0'))
-                }) {
-                    return Err(
-                        "Handoff warnings allow 20 lines of up to 300 characters each.".into(),
-                    );
-                }
+                check_warnings(request.warnings.as_deref())?;
                 Request::Send(request)
             }
             Method::RunCompanion => {
@@ -192,11 +189,26 @@ impl Call {
                 {
                     return Err("The companion input exceeds 1 MiB.".into());
                 }
+                check_warnings(request.warnings.as_deref())?;
                 Request::Run(request)
             }
         };
         Ok((invocation, request))
     }
+}
+
+pub(super) const WARNING_CHARS: usize = 300;
+
+fn check_warnings(warnings: Option<&[String]>) -> Result<(), String> {
+    if warnings.is_some_and(|lines| {
+        lines.len() > 20
+            || lines.iter().any(|line| {
+                line.chars().take(WARNING_CHARS + 1).count() > WARNING_CHARS || line.contains('\0')
+            })
+    }) {
+        return Err("Handoff warnings allow 20 lines of up to 300 characters each.".into());
+    }
+    Ok(())
 }
 
 fn check_app_id(value: &str) -> Result<(), String> {

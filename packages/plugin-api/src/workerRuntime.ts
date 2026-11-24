@@ -35,7 +35,7 @@ import type {
   PluginSelectionAPI,
   PluginStorage
 } from "./index";
-import { PluginAppHandoffPermissions, PluginAppHandoffSchemas, type PluginAppsAPI } from "./appHandoff";
+import { boundedHandoffText, PluginAppHandoffPermissions, PluginAppHandoffSchemas, type PluginAppsAPI } from "./appHandoff";
 import {
   bindPluginRequestCapabilities, getPluginRequestCapability, pluginRequestPermissions,
   type PluginActiveDocumentChangedHandler, type PluginToolCallResult, type PluginToolHandler
@@ -92,12 +92,36 @@ export class PluginWorkerCapabilityError extends Error {
  *  abort/settle race always finds its id, small enough that a leak stays bounded. */
 const MAX_REMEMBERED_ABORTED_COMMANDS = 1024;
 
+// postMessage copies the snapshot's data but drops its frozen property descriptors.
+function freezeSelection<T>(value: T): T {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value)) freezeSelection(child);
+  }
+  return value;
+}
+
 function toErrorPayload(error: unknown): PluginWorkerErrorPayload {
   if (error instanceof Error) {
     const code = (error as { code?: unknown }).code;
     return { code: typeof code === "string" ? code : error.name, message: error.message };
   }
   return { code: "PLUGIN_WORKER_ERROR", message: String(error) };
+}
+
+function boundHandoffCommandResult(value: unknown): unknown {
+  if (!value || typeof value !== "object" || !("ok" in value)) return value;
+  if (value.ok === true && "data" in value && value.data && typeof value.data === "object" &&
+      "status" in value.data && typeof value.data.status === "string") {
+    const status = boundedHandoffText(value.data.status);
+    if (status !== value.data.status) return { ...value, data: { ...value.data, status } };
+  }
+  if (value.ok === false && "error" in value && value.error && typeof value.error === "object" &&
+      "message" in value.error && typeof value.error.message === "string") {
+    const message = boundedHandoffText(value.error.message);
+    if (message !== value.error.message) return { ...value, error: { ...value.error, message } };
+  }
+  return value;
 }
 
 /** The worker's global scope, viewed as an endpoint. Cast mirrors the existing conformer/NMR worker
@@ -184,7 +208,8 @@ export function runPluginWorker(
     }
   };
 
-  const buildContext = (commandRequestId: number, isActive: () => boolean, input?: PluginCommandInput, readOnly = false): PluginCommandContext => {
+  const buildContext = (commandRequestId: number, isActive: () => boolean, input?: PluginCommandInput, readOnly = false,
+    host?: PluginCommandContext["host"], addConnectionPoints?: true): PluginCommandContext => {
     const has = (permission: PluginPermission) => permissions.has(permission) &&
       !(readOnly && (permission === "document.write" || permission === "document.proposePatch"));
     const requirePermission = (permission: PluginPermission): void => {
@@ -249,6 +274,10 @@ export function runPluginWorker(
             ...(supportsPluginTableInsertion(registration.manifest.apiVersion) ? {
               insertTable: (spec: Parameters<NonNullable<PluginDocumentAPI["insertTable"]>>[0]) =>
                 call("documents", "insertTable", [spec]) as ReturnType<NonNullable<PluginDocumentAPI["insertTable"]>>
+            } : {}),
+            ...(addConnectionPoints === true ? {
+              addConnectionPoints: (request: Parameters<NonNullable<PluginDocumentAPI["addConnectionPoints"]>>[0]) =>
+                call("documents", "addConnectionPoints", [request]) as ReturnType<NonNullable<PluginDocumentAPI["addConnectionPoints"]>>
             } : {})
           }
         : {})
@@ -268,7 +297,8 @@ export function runPluginWorker(
       : undefined;
 
     const selection: PluginSelectionAPI | undefined = has("selection.read")
-      ? { getSelection: () => call("selection", "getSelection", []) as ReturnType<PluginSelectionAPI["getSelection"]> }
+      ? { getSelection: async () => freezeSelection(await call("selection", "getSelection", []) as
+        Awaited<ReturnType<PluginSelectionAPI["getSelection"]>>) }
       : undefined;
 
     const overlays: PluginOverlaysAPI | undefined = has("ui.canvas")
@@ -359,10 +389,19 @@ export function runPluginWorker(
         });
       }
       const schema = PluginAppHandoffSchemas[method];
-      const parsed = schema.request.safeParse(request);
-      if (!parsed.success) {
+      let parsed;
+      try {
+        parsed = schema.request.safeParse(request);
+      } catch {
+        // Accessors on a plugin-owned object may throw before Zod can return an issue.
+      }
+      if (!parsed?.success) {
+        // The host must see the refusal even if the command catches it. Null is invalid for
+        // every handoff method and avoids copying a potentially oversized or uncloneable input.
+        await call("apps", method, [null]).catch(() => {});
         throw new PluginWorkerCapabilityError({
-          code: PluginWorkerErrorCodes.MalformedMessage, message: `Invalid apps.${method} request: ${parsed.error.issues[0].message}`
+          code: PluginWorkerErrorCodes.MalformedMessage,
+          message: `Invalid apps.${method} request: ${parsed?.error.issues[0]?.message ?? "Could not read the request fields."}`
         });
       }
       const result = schema.result.safeParse(await call("apps", method, [parsed.data]));
@@ -477,13 +516,19 @@ export function runPluginWorker(
           toolSessions: bindPluginRequestCapabilities("toolSessions", has, (method, value) => requestCall("toolSessions", method, value)) as PluginCommandContext["toolSessions"]
         } : {})
       } : {}),
+      ...(host && { host: Object.freeze(host) }),
       hasPermission: has,
       requirePermission
     };
   };
 
   const toolAborts = new Map<number, AbortController>();
-  const invoke = (commandRequestId: number, commandId: string, input?: PluginCommandInput, tool?: PluginAssistantToolCall): void => {
+  const invoke = ({ commandRequestId, host, ...message }: Extract<HostToWorkerMessage, { kind: "invokeCommand" | "invokeAssistantTool" }>): void => {
+    const tool: PluginAssistantToolCall | undefined = message.kind === "invokeAssistantTool"
+      ? { sessionId: message.sessionId, name: message.name, input: message.input }
+      : undefined;
+    const commandId = message.kind === "invokeCommand" ? message.commandId : message.name;
+    const handoff = !tool && PluginAppHandoffPermissions.every(permission => permissions.has(permission));
     const controller = new AbortController();
     let active = true;
     if (tool) toolAborts.set(commandRequestId, controller);
@@ -507,7 +552,9 @@ export function runPluginWorker(
     }
     // Defer to a microtask so a synchronous throw is captured as a rejection, mirroring the host.
     Promise.resolve()
-      .then(() => handler(buildContext(commandRequestId, () => active && !controller.signal.aborted, input)))
+      .then(() => handler(buildContext(commandRequestId, () => active && !controller.signal.aborted,
+        message.kind === "invokeCommand" ? message.input : undefined, false, host,
+        message.kind === "invokeCommand" ? message.addConnectionPoints : undefined)))
       .then(
         (value) => {
           active = false;
@@ -523,7 +570,7 @@ export function runPluginWorker(
             return;
           }
           try {
-            post({ kind: "commandSettled", commandRequestId, ok: true, value });
+            post({ kind: "commandSettled", commandRequestId, ok: true, value: handoff ? boundHandoffCommandResult(value) : value });
           } catch (error) {
             // `postMessage` synchronously throws DataCloneError for functions, symbols, and other
             // non-cloneable results. Report a clone-safe failure so the host invocation rejects
@@ -550,12 +597,14 @@ export function runPluginWorker(
             abortedCommands.delete(commandRequestId);
             if (!tool) return;
           }
-          post({ kind: "commandSettled", commandRequestId, ok: false, error: toErrorPayload(error) });
+          const payload = toErrorPayload(error);
+          if (handoff) payload.message = boundedHandoffText(payload.message) || "Command failed.";
+          post({ kind: "commandSettled", commandRequestId, ok: false, error: payload });
         }
       );
   };
 
-  const invokeTool = async ({ commandRequestId, call, readOnly }: Extract<HostToWorkerMessage, { kind: "invokeTool" }>) => {
+  const invokeTool = async ({ commandRequestId, call, readOnly, host }: Extract<HostToWorkerMessage, { kind: "invokeTool" }>) => {
     const settle = (result: PluginToolCallResult) =>
       post({ kind: "toolCallSettled", commandRequestId, result });
     const handler = registration.onToolCall;
@@ -577,7 +626,7 @@ export function runPluginWorker(
     let active = true;
     requestToolAborts.set(commandRequestId, controller);
     try {
-      const value = await handler(buildContext(commandRequestId, () => active && !controller.signal.aborted, undefined, readOnly), parsed.data, controller.signal);
+      const value = await handler(buildContext(commandRequestId, () => active && !controller.signal.aborted, undefined, readOnly, host), parsed.data, controller.signal);
       if (controller.signal.aborted) {
         settle(pluginRequestFailure("cancelled", "The tool call was cancelled."));
       } else {
@@ -629,11 +678,8 @@ export function runPluginWorker(
         void notifyDocumentChanged(message);
         return;
       case "invokeAssistantTool":
-        invoke(message.commandRequestId, message.name, undefined,
-          { sessionId: message.sessionId, name: message.name, input: message.input });
-        return;
       case "invokeCommand":
-        invoke(message.commandRequestId, message.commandId, message.input);
+        invoke(message);
         return;
       case "capabilityResult": {
         const pending = pendingCapabilities.get(message.requestId);

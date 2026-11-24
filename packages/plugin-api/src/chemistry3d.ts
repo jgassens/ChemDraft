@@ -84,10 +84,15 @@ export const PluginHandoffGraphResultSchema = z.object({
 }).strict();
 export type PluginHandoffGraphResult = z.infer<typeof PluginHandoffGraphResultSchema>;
 
-export const PluginSuggestConnectionPointsRequestSchema = z.object({
+export const PluginAddConnectionPointsRequestSchema = z.object({
   objectId: graphId,
-  anchors: z.array(graphId).min(1).max(999).refine(ids => new Set(ids).size === ids.length, "Anchor atom IDs must be distinct.")
+  anchors: z.array(graphId).min(1).max(999)
 }).strict();
+export type PluginAddConnectionPointsRequest = z.infer<typeof PluginAddConnectionPointsRequestSchema>;
+export const PluginSuggestConnectionPointsRequestSchema = PluginAddConnectionPointsRequestSchema.extend({
+  anchors: PluginAddConnectionPointsRequestSchema.shape.anchors.refine(ids =>
+    new Set(ids).size === ids.length, "Anchor atom IDs must be distinct.")
+});
 export type PluginSuggestConnectionPointsRequest = z.infer<typeof PluginSuggestConnectionPointsRequestSchema>;
 /** Positions use the same coordinate frame as the molecule's editable atoms. */
 export const PluginSuggestConnectionPointsResultSchema = z.object({

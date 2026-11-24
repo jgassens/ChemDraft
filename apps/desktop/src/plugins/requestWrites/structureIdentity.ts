@@ -18,9 +18,10 @@ export interface StructureInspectionContext {
   };
 }
 
-export function desktopWriteInspectionContext(signal?: AbortSignal): StructureInspectionContext {
+export function desktopWriteInspectionContext(signal?: AbortSignal, connectionPointAtomIndices?: readonly number[]): StructureInspectionContext {
   return { chemistry: { inspectStructure: (format, value, stereo) =>
-    inspectStructureOffThread(format, value, stereo, signal, "writeIdentity") } };
+    inspectStructureOffThread(format, value, stereo, signal,
+      format === "molfile" && connectionPointAtomIndices?.length ? { connectionPointAtomIndices } : "writeIdentity") } };
 }
 
 export async function inspectSmiles(context: StructureInspectionContext, smiles: string) {
