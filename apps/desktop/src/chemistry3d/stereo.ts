@@ -1,12 +1,9 @@
 /** Stereo intent uses the signed input's atom order, with RDKit-added Hs last.
  * Compare local parity: unspecified neighbours can change CIP labels without changing parity. */
 import type { Plugin3DModel } from "@chemdraft/plugin-api";
-import type { RdkitJsMol, RdkitMinimalModule, RdkitJson } from "@chemdraft/rdkit-adapter";
-import { modelMolblock, readGraph } from "./model";
-
-type StereoGraph = Omit<RdkitJson["molecules"][number], "bonds"> & {
-  bonds: { atoms: [number, number]; bo?: number; stereo?: string; stereoAtoms?: number[] }[];
-};
+import type { RdkitJsMol, RdkitMinimalModule, RdkitMoleculeJson } from "@chemdraft/rdkit-adapter";
+import { aromaticBondIndices, modelMolblock, readGraph } from "./model";
+import { readSignedComponent } from "./graph";
 
 export function inputWithHydrogens(rdkit: RdkitMinimalModule, smiles: string): RdkitJsMol {
   const input = rdkit.get_mol(smiles, JSON.stringify({ removeHs: false }));
@@ -23,11 +20,11 @@ function addInputHydrogens(rdkit: RdkitMinimalModule, input: RdkitJsMol): RdkitJ
   return explicit;
 }
 
-export function stereoGraph(mol: RdkitJsMol): StereoGraph {
-  return readGraph(mol).molecules[0] as StereoGraph;
+export function stereoGraph(mol: RdkitJsMol): RdkitMoleculeJson {
+  return readGraph(mol).molecules[0];
 }
 
-export function specifiedCenters(graph: StereoGraph): Set<number> {
+export function specifiedCenters(graph: RdkitMoleculeJson): Set<number> {
   return new Set(graph.atoms.flatMap((atom, i) => atom.stereo === "cw" || atom.stereo === "ccw" ? [i] : []));
 }
 
@@ -39,48 +36,45 @@ export function specifiedCenters(graph: StereoGraph): Set<number> {
 export function unspecifiedStereoDoubleBonds(rdkit: RdkitMinimalModule, smiles: string): number[] {
   const input = rdkit.get_mol(smiles, JSON.stringify({ removeHs: false }));
   if (!input) throw new Error("RDKit could not read the signed component SMILES.");
-  try {
-    const graph = stereoGraph(input);
-    const aromatic = new Set((graph.extensions as { aromaticBonds?: number[] }[] | undefined)
-      ?.flatMap(extension => extension.aromaticBonds ?? []) ?? []);
-    const candidates = graph.bonds.flatMap((bond, i) => bond.bo === 2 && !aromatic.has(i) &&
-      bond.stereo !== "cis" && bond.stereo !== "trans" ? [i] : []);
-    if (!candidates.length) return [];
-    const mol = input as RdkitJsMol & { get_smiles(details: string): string; get_prop(name: string): string };
-    const traversal = mol.get_smiles(JSON.stringify({ canonical: false }));
-    const atomOrder = JSON.parse(mol.get_prop("_smilesAtomOutputOrder")) as number[];
-    const bondOrder = JSON.parse(mol.get_prop("_smilesBondOutputOrder")) as number[];
-    const heavyOrder = atomOrder.filter(atom => graph.atoms[atom].z !== 1);
-    return candidates.filter(index => {
-      // RDKit's CX cis/trans cleanup requires removeHs:true. Match endpoints by heavy-atom
-      // traversal order, so explicit input Hs cannot shift the reported input bond index.
-      const probe = rdkit.get_mol(`${traversal} |c:${bondOrder.indexOf(index)}|`, JSON.stringify({ removeHs: true }));
-      if (!probe) throw new Error("RDKit could not perceive potential double-bond stereochemistry.");
-      try {
-        const perceived = stereoGraph(probe);
-        const heavyAtoms = perceived.atoms.flatMap((atom, i) => atom.z !== 1 ? [i] : []);
-        const [a, b] = graph.bonds[index].atoms.map(atom => heavyAtoms[heavyOrder.indexOf(atom)]);
-        return perceived.bonds.some(bond => bond.bo === 2 && bond.atoms.includes(a) &&
-          bond.atoms.includes(b) && (bond.stereo === "cis" || bond.stereo === "trans"));
-      } finally { probe.delete(); }
-    }).map(index => index + 1);
-  } finally { input.delete(); }
+  try { return unspecifiedDoubleBondIndices(rdkit, input).map(index => index + 1); }
+  finally { input.delete(); }
 }
 
-/** Endpoint identity survives molblock bond reordering (ring closures and explicit Hs).
- * Keep this mapping beside potential-stereo perception rather than matching bond ordinals
- * from two different serializations in the flatten builder. */
-export function unspecifiedStereoDoubleBondPairs(rdkit: RdkitMinimalModule, smiles: string,
-  graph: StereoGraph): readonly (readonly [number, number])[] {
-  return unspecifiedStereoDoubleBonds(rdkit, smiles).map(index => graph.bonds[index - 1].atoms);
+/** Zero-based indices in this handle's atom and bond order, including for molfile inputs. */
+export function unspecifiedDoubleBondIndices(rdkit: RdkitMinimalModule, mol: RdkitJsMol): number[] {
+  const graph = stereoGraph(mol);
+  const aromatic = aromaticBondIndices(graph);
+  const candidates = graph.bonds.flatMap((bond, i) => bond.bo === 2 && !aromatic.has(i) &&
+    bond.stereo !== "cis" && bond.stereo !== "trans" ? [i] : []);
+  if (!candidates.length) return [];
+  if (!mol.get_smiles || !mol.get_prop) throw new Error("RDKit cannot inspect unspecified double-bond stereo.");
+  const traversal = mol.get_smiles(JSON.stringify({ canonical: false }));
+  const atomOrder = JSON.parse(mol.get_prop("_smilesAtomOutputOrder")) as number[];
+  const bondOrder = JSON.parse(mol.get_prop("_smilesBondOutputOrder")) as number[];
+  const heavyOrder = atomOrder.filter(atom => graph.atoms[atom].z !== 1);
+  return candidates.filter(index => {
+    // RDKit's CX cis/trans cleanup requires removeHs:true. Match endpoints by heavy-atom
+    // traversal order, so explicit input Hs cannot shift the reported input bond index.
+    const traversalIndex = bondOrder.indexOf(index);
+    if (traversalIndex < 0) throw new Error(`RDKit omitted bond ${index + 1} from its SMILES traversal.`);
+    const probe = rdkit.get_mol(`${traversal} |c:${traversalIndex}|`, JSON.stringify({ removeHs: true }));
+    if (!probe) throw new Error("RDKit could not perceive potential double-bond stereochemistry.");
+    try {
+      const perceived = stereoGraph(probe);
+      const heavyAtoms = perceived.atoms.flatMap((atom, i) => atom.z !== 1 ? [i] : []);
+      const [a, b] = graph.bonds[index].atoms.map(atom => heavyAtoms[heavyOrder.indexOf(atom)]);
+      return perceived.bonds.some(bond => bond.bo === 2 && bond.atoms.includes(a) &&
+        bond.atoms.includes(b) && (bond.stereo === "cis" || bond.stereo === "trans"));
+    } finally { probe.delete(); }
+  });
 }
 
 /** Normalize parity against sorted neighbours, independent of bond traversal order. */
-export function stereoNeighbors(graph: StereoGraph, center: number): number[] {
+export function stereoNeighbors(graph: RdkitMoleculeJson, center: number): number[] {
   return graph.bonds.flatMap(b => b.atoms[0] === center ? [b.atoms[1]] : b.atoms[1] === center ? [b.atoms[0]] : []);
 }
 
-export function parity(graph: StereoGraph, center: number, neighbors = stereoNeighbors(graph, center)): number {
+export function parity(graph: RdkitMoleculeJson, center: number, neighbors = stereoNeighbors(graph, center)): number {
   let sign = graph.atoms[center]?.stereo === "cw" ? 1 : graph.atoms[center]?.stereo === "ccw" ? -1 : 0;
   for (let i = 0; i < neighbors.length; i++) for (let j = i + 1; j < neighbors.length; j++) if (neighbors[i] > neighbors[j]) sign = -sign;
   return sign;
@@ -88,8 +82,7 @@ export function parity(graph: StereoGraph, center: number, neighbors = stereoNei
 
 export function assertComponentStereo(rdkit: RdkitMinimalModule, model: Plugin3DModel, index: number, phase: string): void {
   const component = model.components[index];
-  const signed = rdkit.get_mol(component.smiles, JSON.stringify({ removeHs: false }));
-  if (!signed) throw new Error("RDKit could not read the signed component SMILES.");
+  const signed = readSignedComponent(rdkit, component);
   let input: RdkitJsMol | null = null;
   let geometry: RdkitJsMol | null = null;
   try {
@@ -103,6 +96,15 @@ export function assertComponentStereo(rdkit: RdkitMinimalModule, model: Plugin3D
     if (!geometry) throw new Error(`Component ${index + 1}: RDKit could not read back ${phase} stereochemistry.`);
     const expected = stereoGraph(input);
     const actual = stereoGraph(geometry);
+    if (component.graph) {
+      const centers = specifiedCenters(expected);
+      if ([...specifiedCenters(intent)].some(center => !centers.has(center)) || intent.bonds.some(bond =>
+        (bond.stereo === "cis" || bond.stereo === "trans") && !expected.bonds.some(candidate =>
+          candidate.atoms.includes(bond.atoms[0]) && candidate.atoms.includes(bond.atoms[1]) &&
+          (candidate.stereo === "cis" || candidate.stereo === "trans")))) {
+        throw new Error(`Component ${index + 1}: RDKit could not preserve the graph's specified stereo when adding hydrogens.`);
+      }
+    }
     for (const center of specifiedCenters(expected)) {
       if (parity(expected, center) !== parity(actual, center)) {
         throw new Error(`Component ${index + 1}: ${phase} would change specified tetrahedral stereo at center ${center + 1}; restore the input geometry.`);

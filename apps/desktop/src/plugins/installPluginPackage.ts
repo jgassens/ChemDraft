@@ -34,6 +34,7 @@ import {
   type PackagedPluginProvenance,
   type PluginManifest
 } from "@chemdraft/plugin-api";
+import type { PluginAppHandoffProvenance } from "@chemdraft/plugin-host";
 
 import {
   getUnavailableDesktopPluginPermissions,
@@ -81,6 +82,7 @@ export const PluginInstallErrorCodes = {
   UpdateVersionNotNewer: "PLUGIN_UPDATE_VERSION_NOT_NEWER",
   UpdateStateChanged: "PLUGIN_UPDATE_STATE_CHANGED",
   UpdateFailed: "PLUGIN_UPDATE_FAILED",
+  UninstallHandoffConsentClearFailed: "PLUGIN_UNINSTALL_HANDOFF_CONSENT_CLEAR_FAILED",
   UninstallStorageDeleteFailed: "PLUGIN_UNINSTALL_STORAGE_DELETE_FAILED",
   Unsupported: "PLUGIN_INSTALL_UNSUPPORTED"
 } as const;
@@ -95,6 +97,13 @@ export class PluginInstallError extends Error {
     this.name = "PluginInstallError";
     this.code = code;
   }
+}
+
+export function isCommittedUninstallError(error: unknown): error is PluginInstallError {
+  return error instanceof PluginInstallError && (
+    error.code === PluginInstallErrorCodes.UninstallStorageDeleteFailed ||
+    error.code === PluginInstallErrorCodes.UninstallHandoffConsentClearFailed
+  );
 }
 
 /**
@@ -190,6 +199,7 @@ export interface InstallPluginPackageOptions {
   runtime: DesktopPluginRuntime;
   fs: PluginStagingFs;
   inspection: PluginPackageInspection;
+  provenance?: PluginAppHandoffProvenance;
   /** Origin the staged package is served from — the app's own. Defaults to the document's origin. */
   origin?: string;
   hostApiVersion?: string;
@@ -210,6 +220,7 @@ export interface UpdateInstalledPluginPackageOptions {
   fs: PluginStagingFs;
   current: InstalledPluginCatalogEntry;
   inspection: PluginPackageInspection;
+  provenance?: PluginAppHandoffProvenance;
   /** The disabled preference is independent of the install record and must survive unchanged. */
   disabled: boolean;
   origin?: string;
@@ -244,10 +255,19 @@ export async function installPluginPackage(options: InstallPluginPackageOptions)
   try {
     await stagePluginEntries(fs, stagingDir, inspection.entries);
 
+    const record = createInstalledPluginRecord({
+      id: pluginId,
+      version: inspection.manifest.version,
+      name: inspection.manifest.name,
+      sourceChecksum: inspection.sourceChecksum,
+      installedAt,
+      provenance: options.provenance,
+      handoffInstallId: inspection.manifest.permissions.includes("apps.handoff") ? crypto.randomUUID() : undefined
+    });
     descriptor = await loadAndRegisterInstalledPlugin({
       runtime,
       manifest: inspection.manifest,
-      stagedPath: stagingDir,
+      record,
       origin: options.origin,
       hostApiVersion,
       createWorker,
@@ -255,13 +275,6 @@ export async function installPluginPackage(options: InstallPluginPackageOptions)
     });
     replacementRegistered = true;
 
-    const record = createInstalledPluginRecord({
-      id: pluginId,
-      version: inspection.manifest.version,
-      name: inspection.manifest.name,
-      sourceChecksum: inspection.sourceChecksum,
-      installedAt
-    });
     await upsertInstalledPluginRecord(fs, record);
     return { record, descriptor };
   } catch (cause: unknown) {
@@ -355,7 +368,8 @@ export async function updateInstalledPluginPackage(
     !persisted ||
     persisted.version !== current.record.version ||
     persisted.stagedPath !== current.record.stagedPath ||
-    persisted.sourceChecksum !== current.record.sourceChecksum
+    persisted.sourceChecksum !== current.record.sourceChecksum ||
+    persisted.handoffInstallId !== current.record.handoffInstallId
   ) {
     throw new PluginInstallError(
       PluginInstallErrorCodes.UpdateStateChanged,
@@ -400,29 +414,41 @@ export async function updateInstalledPluginPackage(
   let committed = false;
   try {
     await stagePluginEntries(fs, candidatePath, inspection.entries);
-    candidate = buildInstalledDescriptor({
-      manifest: inspection.manifest,
-      stagedPath: candidatePath,
-      origin: options.origin,
-      hostApiVersion,
-      createWorker
-    });
-    await candidate.bridge.whenReady();
-
-    if (!disabled) {
-      closePluginPanels(runtime, pluginId);
-      runtime.replacePlugin(pluginId, candidate.manifest, candidate.options);
-      candidateRegistered = true;
+    let handoffInstallId: string | undefined;
+    if (inspection.manifest.permissions.includes("apps.handoff")) {
+      // Match the native fallback for records written before the install ID was introduced.
+      handoffInstallId = current.manifest.permissions.includes("apps.handoff")
+        ? persisted.handoffInstallId ?? `legacy:${persisted.installedAt}:${persisted.sourceChecksum}`
+        : crypto.randomUUID();
     }
-
     const record = createInstalledPluginRecord({
       id: pluginId,
       version: inspection.manifest.version,
       name: inspection.manifest.name,
       sourceChecksum: inspection.sourceChecksum,
       stagedPath: candidatePath,
-      installedAt
+      installedAt,
+      provenance: options.provenance,
+      handoffInstallId
     });
+    candidate = buildInstalledDescriptor({
+      manifest: inspection.manifest,
+      record,
+      origin: options.origin,
+      hostApiVersion,
+      createWorker
+    });
+    await candidate.bridge.whenReady();
+
+    if (!candidate.manifest.permissions.includes("apps.handoff")) {
+      await runtime.appHandoffConsents?.clearPlugin(pluginId);
+    }
+    if (!disabled) {
+      closePluginPanels(runtime, pluginId);
+      runtime.replacePlugin(pluginId, candidate.manifest, candidate.options, record);
+      candidateRegistered = true;
+    }
+
     await upsertInstalledPluginRecord(fs, record);
     committed = true;
 
@@ -481,7 +507,7 @@ export async function updateInstalledPluginPackage(
           if (oldDescriptorTornDown) {
             current.descriptor.activate?.();
           }
-          runtime.replacePlugin(pluginId, current.manifest, current.descriptor.options);
+          runtime.replacePlugin(pluginId, current.manifest, current.descriptor.options, persisted);
         } else if (options.replaces) {
           if (oldDescriptorTornDown) {
             options.replaces.activate?.();
@@ -527,7 +553,7 @@ export async function updateInstalledPluginPackage(
  */
 function buildInstalledDescriptor(options: {
   manifest: PluginManifest;
-  stagedPath: string;
+  record: InstalledPluginRecord;
   origin?: string;
   hostApiVersion: string;
   createWorker?: (entryUrl: URL) => import("@chemdraft/plugin-api").PluginWorkerHandle;
@@ -541,15 +567,17 @@ function buildInstalledDescriptor(options: {
     );
   }
 
-  return loadPackagedPlugin(
+  const descriptor = loadPackagedPlugin(
     {
-      baseUrl: installedPluginStagedBaseUrl(options.stagedPath, origin),
+      baseUrl: installedPluginStagedBaseUrl(options.record.stagedPath, origin),
       // Re-serialized rather than passed through: `loadPackagedPlugin` re-parses, so the manifest that
       // governs the load is the package's own document, not a value this module could have edited.
       manifest: JSON.parse(JSON.stringify(toPackagedDocument(manifest, options)))
     },
     { hostApiVersion, createWorker }
   );
+  descriptor.installedRecord = options.record;
+  return descriptor;
 }
 
 /**
@@ -562,7 +590,7 @@ function buildInstalledDescriptor(options: {
 async function loadAndRegisterInstalledPlugin(options: {
   runtime: DesktopPluginRuntime;
   manifest: PluginManifest;
-  stagedPath: string;
+  record: InstalledPluginRecord;
   origin?: string;
   hostApiVersion: string;
   createWorker?: (entryUrl: URL) => import("@chemdraft/plugin-api").PluginWorkerHandle;
@@ -597,7 +625,7 @@ function registerReplacing(
 ): void {
   // Through the runtime (not the bare host), so an installed plugin's toolset contributions are
   // staged — ui.toolbar gate, duplicate rejection, whole-plugin rollback — like any other plugin's.
-  runtime.replacePlugin(descriptor.manifest.id, descriptor.manifest, descriptor.options);
+  runtime.replacePlugin(descriptor.manifest.id, descriptor.manifest, descriptor.options, descriptor.installedRecord);
   // Only tear the old worker down after the new registration has committed. `replacePlugin` restores
   // the previous registration if staging the replacement throws, so this ordering is the transaction.
   replaces?.deactivate?.();
@@ -647,7 +675,7 @@ export async function loadInstalledPlugins(options: {
       // real command handlers rather than an empty set.
       descriptor = buildInstalledDescriptor({
         manifest,
-        stagedPath: record.stagedPath,
+        record,
         origin: options.origin,
         hostApiVersion,
         createWorker
@@ -835,13 +863,21 @@ export async function uninstallPlugin(options: {
   }
   const remainingInstalls = await removeInstalledPluginRecord(fs, pluginId);
 
-  // Consent storage is auxiliary uninstall cleanup. It must happen only after the host and catalog
-  // no longer expose the plugin, and an unreadable or unwritable consent file must not resurrect a
-  // half-uninstalled plugin.
+  // Clear consent after the host and catalog stop exposing the plugin. A later install has a
+  // different handoff install ID even if deleting its previous rows fails.
   try {
     await runtime.externalTools.consentClearPlugin(pluginId);
   } catch (error) {
     console.warn(`Uninstalling "${pluginId}": could not clear external-tool consent.`, error);
+  }
+  let handoffCleanupError: PluginInstallError | undefined;
+  try {
+    await runtime.appHandoffConsents?.clearPlugin(pluginId);
+  } catch (error) {
+    handoffCleanupError = new PluginInstallError(
+      PluginInstallErrorCodes.UninstallHandoffConsentClearFailed,
+      `Plugin "${pluginId}" was uninstalled, but its app handoff consents could not be deleted: ${error instanceof Error ? error.message : String(error)}`
+    );
   }
 
   // Hand the id back to the bundled copy the install had taken it from, so uninstalling a package
@@ -866,6 +902,7 @@ export async function uninstallPlugin(options: {
         `Uninstalling "${pluginId}": stored settings are left in place because plugin "${otherId}" ` +
           "has the same case-insensitive storage path."
       );
+      if (handoffCleanupError) throw handoffCleanupError;
       return;
     }
     try {
@@ -873,10 +910,12 @@ export async function uninstallPlugin(options: {
     } catch (error) {
       throw new PluginInstallError(
         PluginInstallErrorCodes.UninstallStorageDeleteFailed,
-        `Plugin "${pluginId}" was uninstalled, but its stored settings could not be deleted: ${error instanceof Error ? error.message : String(error)}`
+        `Plugin "${pluginId}" was uninstalled, but its stored settings could not be deleted: ${error instanceof Error ? error.message : String(error)}` +
+          (handoffCleanupError ? ` ${handoffCleanupError.message}` : "")
       );
     }
   }
+  if (handoffCleanupError) throw handoffCleanupError;
 }
 
 /**

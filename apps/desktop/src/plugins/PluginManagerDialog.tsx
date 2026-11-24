@@ -13,9 +13,10 @@ import {
   type DesktopPluginRuntime
 } from "./createPluginRuntime";
 import type { ExternalToolConsent } from "../externalTools/externalToolsEngine";
+import { AppHandoffConsentSection } from "../appHandoff/AppHandoffConsentSection";
 import {
-  PluginInstallError,
-  PluginInstallErrorCodes,
+  type PluginInstallError,
+  isCommittedUninstallError,
   type InstalledPluginCatalogEntry,
   type PluginPackageInspection
 } from "./installPluginPackage";
@@ -422,7 +423,7 @@ export function PluginManagerDialog({
         try {
           await onUninstallPlugin!(pluginId);
         } catch (error) {
-          if (!(error instanceof PluginInstallError) || error.code !== PluginInstallErrorCodes.UninstallStorageDeleteFailed) {
+          if (!isCommittedUninstallError(error)) {
             throw error;
           }
           // Uninstall already committed; finish the same follow-ups as a successful removal.
@@ -720,6 +721,10 @@ export function PluginManagerDialog({
               );
             })}
           </ul>
+
+          {runtime.appHandoffConsents && <AppHandoffConsentSection consents={runtime.appHandoffConsents}
+            pluginNames={new Map(installedPlugins.map(({ record }) => [record.id, record.name]))}
+            catalogKey={installedCatalogKey} disabled={busy} />}
 
           <section className="plugin-manager-available" aria-labelledby={`${titleId}-available`}>
             <h3 id={`${titleId}-available`}>Available</h3>

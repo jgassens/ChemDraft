@@ -13,12 +13,13 @@ export type { DialogContentFit } from "./dialogContentFit";
 import { isKeybindingScheme, type KeybindingScheme } from "../keybindingSettings";
 import { TOUR_INSPECTOR_COMMAND, TOUR_NAME_COMMAND, TOUR_PLUGIN_COMMANDS, TOUR_SAMPLE_COMMAND, type TourAction, type TourPluginCommand } from "../tour/tourCommands";
 import type { TourBondKeys } from "../tour/tourSteps";
+import type { AppHandoffDialogAction, AppHandoffDialogSnapshot } from "../appHandoff/dialogTypes";
 
 export const DIALOG_PROTOCOL_VERSION = 1;
 export const DIALOG_MAX_BYTES = 16 * 1024;
 export const DIALOG_PREVIEW_MAX_BYTES = 5 * 1024 * 1024;
 
-export type DialogKind = "pageSize" | "pageEnlargement" | "pluginTextPrompt" | "arrangementSpacing" | "reactionConditions" | "export" | "engineInstall" | "toolInstall" | "customColor" | "insertTable" | "structureTemplates" | "atomProblem" | "vibeCodeGuide" | "guidedTour" | "about";
+export type DialogKind = "pageSize" | "pageEnlargement" | "pluginTextPrompt" | "arrangementSpacing" | "reactionConditions" | "export" | "engineInstall" | "toolInstall" | "customColor" | "insertTable" | "structureTemplates" | "atomProblem" | "vibeCodeGuide" | "guidedTour" | "about" | "appHandoff";
 export type { AtomProblemAction } from "@chemdraft/document-workflow-core";
 import type { AtomProblemAction } from "@chemdraft/document-workflow-core";
 export interface AtomProblemSnapshot {
@@ -163,6 +164,7 @@ export interface ExportDialogResult {
   error?: string;
 }
 export type DialogSnapshot = DialogEnvelope & (
+  | { dialogKind: "appHandoff"; type: "snapshot"; data: AppHandoffDialogSnapshot }
   | { dialogKind: "atomProblem"; type: "snapshot"; data: AtomProblemSnapshot }
   | { dialogKind: "customColor"; type: "snapshot"; data: CustomColorSnapshot }
   | { dialogKind: "insertTable"; type: "snapshot"; data: InsertTableOptions & { title: string } }
@@ -183,7 +185,7 @@ export interface AboutSnapshot { title: string; version: string; buildStamp: str
 export type DialogMessage = DialogSnapshot | (DialogEnvelope & (
   | { type: "request"; data: Record<string, never> }
   | { type: "ready"; data: Record<string, never> | DialogContentFit }
-  | { type: "action"; data: ({ action: "apply" } & (PageSize | InsertTableOptions)) | { action: "apply"; hex: string } | { action: "clear" } | { action: "apply"; draft: ReactionConditionsDraft } | { action: AtomProblemAction; targetVersion: number } | { action: "apply" | "preview"; percent: number } | { action: "insert"; templateId: string } | { action: "submit"; value: string } | { action: "enlarge" | "cancel" | "saveStarter" | "openPluginManager" | "copyVersion" } | { action: EngineInstallAction | ToolInstallAction } | { action: "export" | "chooseDestination" | "preview"; options: ExportOptions } | TourAction }
+  | { type: "action"; data: ({ action: "apply" } & (PageSize | InsertTableOptions)) | { action: "apply"; hex: string } | { action: "clear" } | { action: "apply"; draft: ReactionConditionsDraft } | { action: AtomProblemAction; targetVersion: number } | { action: "apply" | "preview"; percent: number } | { action: "insert"; templateId: string } | { action: "submit"; value: string } | { action: "enlarge" | "cancel" | "saveStarter" | "openPluginManager" | "copyVersion" } | { action: EngineInstallAction | ToolInstallAction } | { action: "export" | "chooseDestination" | "preview"; options: ExportOptions } | TourAction | AppHandoffDialogAction }
   | { type: "preview"; data: SpacingPreview }
   | { type: "result"; data: { status: "accepted" | "applied" | "inserted" | "progress" | ExportDialogResult["status"] | "preview" | "frame"; preview?: ExportPreviewResult; frame?: ExportFrame; error?: string; destinationPath?: string; filename?: string; notice?: string } }
   | { type: "closed"; data: { reason: DialogCloseReason } }
@@ -207,11 +209,42 @@ export function validConditionsDraft(v: unknown): v is ReactionConditionsDraft {
       typeof span.text === "string" && ["normal", "subscript", "superscript"].includes(String(span.script))) &&
     v.spans.map(span => span.text).join("").length <= 2000 && new TextEncoder().encode(JSON.stringify(v)).length <= 2500;
 }
+
+const companionId = (value: unknown): value is string =>
+  typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(value);
+
+function validAppHandoffSnapshot(data: Record<string, unknown>): boolean {
+  const displayText = (value: unknown): value is string =>
+    typeof value === "string" && value.length > 0 && !value.includes("\0");
+  if (!displayText(data.title) || data.title.length > 256 || !displayText(data.appName)) return false;
+  if (data.mode === "result") {
+    return keys(data, ["mode", "title", "appName", "combination", "rebuildCombination", "rebuildLabel"], ["twist"]) &&
+      companionId(data.combination) && companionId(data.rebuildCombination) &&
+      data.combination !== data.rebuildCombination && displayText(data.rebuildLabel) &&
+      (!Object.hasOwn(data, "twist") ||
+        (typeof data.twist === "number" && Number.isFinite(data.twist) && data.twist >= 0));
+  }
+  if (data.mode !== "confirm" ||
+      !keys(data, ["mode", "title", "appName", "pipeline", "suggestedCombination", "combinations"], ["composition"]) ||
+      !companionId(data.pipeline) || !companionId(data.suggestedCombination) ||
+      !record(data.combinations) || !Object.hasOwn(data.combinations, data.suggestedCombination)) return false;
+  const combinations = data.combinations;
+  if (!Object.entries(combinations).every(([id, row]) => companionId(id) && record(row) &&
+      Object.entries(row).every(([name, value]) => name === "rebuildAs"
+        ? companionId(value) && value !== id && Object.hasOwn(combinations, value)
+        : name !== "__proto__" && /^[A-Za-z_][A-Za-z0-9_-]*$/u.test(name) && typeof value === "string" &&
+          /^[A-Za-z0-9_][A-Za-z0-9_.+-]{0,31}$/u.test(value) && !value.includes("..")))) return false;
+  return !Object.hasOwn(data, "composition") || (record(data.composition) &&
+    keys(data.composition, ["formula", "atomCount"]) && typeof data.composition.formula === "string" &&
+    /^(?:[A-Z][a-z]?[0-9]*)+$/u.test(data.composition.formula) &&
+    Number.isSafeInteger(data.composition.atomCount) && Number(data.composition.atomCount) > 0);
+}
+
 export function parseDialogMessage(value: unknown): DialogMessage | undefined {
   try {
     if (new TextEncoder().encode(JSON.stringify(value)).length > (record(value) && value.dialogKind === "export" && value.type === "result" && record(value.data) && value.data.status === "preview" ? DIALOG_PREVIEW_MAX_BYTES : DIALOG_MAX_BYTES)) return undefined;
     if (!record(value) || !keys(value, ["protocolVersion", "ownerWindowId", "documentTabId", "dialogKind", "sessionId", "requestId", "snapshotRevision", "type", "data"])) return undefined;
-    if (value.protocolVersion !== 1 || value.ownerWindowId !== "main" || typeof value.dialogKind !== "string" || !["pageSize", "pageEnlargement", "pluginTextPrompt", "arrangementSpacing", "reactionConditions", "export", "engineInstall", "toolInstall", "insertTable", "customColor", "structureTemplates", "atomProblem", "vibeCodeGuide", "guidedTour", "about"].includes(value.dialogKind) ||
+    if (value.protocolVersion !== 1 || value.ownerWindowId !== "main" || typeof value.dialogKind !== "string" || !["pageSize", "pageEnlargement", "pluginTextPrompt", "arrangementSpacing", "reactionConditions", "export", "engineInstall", "toolInstall", "insertTable", "customColor", "structureTemplates", "atomProblem", "vibeCodeGuide", "guidedTour", "about", "appHandoff"].includes(value.dialogKind) ||
         !token(value.documentTabId) || !token(value.sessionId) || !token(value.requestId) ||
         !Number.isSafeInteger(value.snapshotRevision) || Number(value.snapshotRevision) < 1 || !record(value.data)) return undefined;
     const d = value.data;
@@ -234,6 +267,18 @@ export function parseDialogMessage(value: unknown): DialogMessage | undefined {
     // Room for the Rust-written delivery wrapper, including the longest native label.
     if ((value.dialogKind === "engineInstall" || value.dialogKind === "toolInstall" || value.dialogKind === "atomProblem") && serializedBytes(value) > SMALL_DIALOG_MAX_BYTES) return undefined;
     let valid = false;
+    if (value.dialogKind === "appHandoff") {
+      switch (value.type) {
+        case "snapshot": valid = serializedBytes(value) <= SMALL_DIALOG_MAX_BYTES && validAppHandoffSnapshot(d); break;
+        case "action": valid = d.action === "confirm"
+          ? keys(d, ["action", "combinationId"]) && companionId(d.combinationId)
+          : keys(d, ["action"]) && (d.action === "cancel" || d.action === "rebuild"); break;
+        case "request": valid = keys(d, []); break;
+        case "ready": valid = keys(d, []) || validDialogContentFit(d); break;
+        case "closed": valid = keys(d, ["reason"]) && reasons.has(d.reason as DialogCloseReason); break;
+      }
+      return valid ? value as unknown as DialogMessage : undefined;
+    }
     if (value.dialogKind === "atomProblem") {
       const text = (v: unknown, max: number) => typeof v === "string" && v.length > 0 && v.length <= max && !v.includes("\0");
       switch (value.type) {

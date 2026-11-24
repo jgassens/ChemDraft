@@ -1,3 +1,4 @@
+import type { ListenForAppHandoff } from "./appHandoff/nativeMenu";
 import { lazy, Suspense, useEffect, type ReactElement } from "react";
 import {
   PREFERENCES_WINDOW_KIND,
@@ -21,7 +22,7 @@ const BrowserAboutWindow = lazy(() => import("./about/AboutWindow").then(m => ({
 const DialogWindow = lazy(() => import("./dialogs/DialogWindow").then(m => ({ default: m.DialogWindow })));
 const FileWarningsWindow = lazy(() => import("./FileWarningsWindow").then(m => ({ default: m.FileWarningsWindow })));
 
-export function App() {
+export function App({ listenForAppHandoff }: { listenForAppHandoff?: ListenForAppHandoff } = {}) {
   useEffect(() => {
     if (!isDesktopRuntime()) return;
     const kind = new URLSearchParams(window.location.search).get("window");
@@ -55,7 +56,7 @@ export function App() {
     );
   }
 
-  return <Suspense fallback={null}><MainWindow /></Suspense>;
+  return <Suspense fallback={null}><MainWindow listenForAppHandoff={listenForAppHandoff} /></Suspense>;
 }
 
 /**

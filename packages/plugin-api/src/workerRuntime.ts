@@ -9,8 +9,8 @@
  * exactly as in-process. Only the *execution location* moves.
  *
  * The runtime mirrors the host's `createCommandContext` optionality (a capability object is present
- * only when the manifest declares its permission), so a plugin observes the identical context shape it
- * would in-process; the main-thread bridge additionally enforces declared-only access on every request.
+ * only when the manifest declares its permission). App handoff is exclusive to Worker commands.
+ * The main-thread bridge additionally enforces declared-only access on every request.
  *
  * This file is framework-neutral and touches worker globals only through the injected endpoint, so it
  * unit-tests without a real Worker (a linked in-memory endpoint pair stands in).
@@ -35,6 +35,7 @@ import type {
   PluginSelectionAPI,
   PluginStorage
 } from "./index";
+import { PluginAppHandoffPermissions, PluginAppHandoffSchemas, type PluginAppsAPI } from "./appHandoff";
 import {
   bindPluginRequestCapabilities, getPluginRequestCapability, pluginRequestPermissions,
   type PluginActiveDocumentChangedHandler, type PluginToolCallResult, type PluginToolHandler
@@ -347,6 +348,41 @@ export function runPluginWorker(
         }
       : undefined;
 
+    const callApp = async <Method extends CapabilityMethodOf<"apps">>(
+      method: Method,
+      request: Parameters<PluginAppsAPI[Method]>[0]
+    ): Promise<Awaited<ReturnType<PluginAppsAPI[Method]>>> => {
+      for (const permission of PluginAppHandoffPermissions) requirePermission(permission);
+      if (!isActive()) {
+        throw new PluginWorkerCapabilityError({
+          code: PluginWorkerErrorCodes.NoActiveCommand, message: "App handoff requires an active plugin command."
+        });
+      }
+      const schema = PluginAppHandoffSchemas[method];
+      const parsed = schema.request.safeParse(request);
+      if (!parsed.success) {
+        throw new PluginWorkerCapabilityError({
+          code: PluginWorkerErrorCodes.MalformedMessage, message: `Invalid apps.${method} request: ${parsed.error.issues[0].message}`
+        });
+      }
+      const result = schema.result.safeParse(await call("apps", method, [parsed.data]));
+      if (!result.success) {
+        throw new PluginWorkerCapabilityError({
+          code: PluginWorkerErrorCodes.MalformedMessage, message: `Invalid apps.${method} result.`
+        });
+      }
+      return result.data as Awaited<ReturnType<PluginAppsAPI[Method]>>;
+    };
+    const apps: PluginAppsAPI | undefined = PluginAppHandoffPermissions.every(has) &&
+      !toolAborts.has(commandRequestId) && !requestToolAborts.has(commandRequestId)
+      ? {
+          chooseApp: request => callApp("chooseApp", request),
+          status: request => callApp("status", request),
+          sendFile: request => callApp("sendFile", request),
+          runCompanion: request => callApp("runCompanion", request)
+        }
+      : undefined;
+
     // Gated on the permission alone, exactly like the others. The host still decides whether it can
     // actually serve the call: a host with no chemistry engine resolves the stub's request with
     // `available: false` rather than the plugin having to guess from the capability's presence.
@@ -357,6 +393,12 @@ export function runPluginWorker(
           embed3d: request => call("chemistry", "embed3d", [request]) as ReturnType<NonNullable<PluginChemistryAPI["embed3d"]>>,
           minimize3d: request => call("chemistry", "minimize3d", [request]) as ReturnType<NonNullable<PluginChemistryAPI["minimize3d"]>>,
           flatten3d: request => call("chemistry", "flatten3d", [request]) as ReturnType<NonNullable<PluginChemistryAPI["flatten3d"]>>,
+          ...(has("selection.read") ? {
+            handoffGraph: (request: Parameters<NonNullable<PluginChemistryAPI["handoffGraph"]>>[0]) =>
+              call("chemistry", "handoffGraph", [request]) as ReturnType<NonNullable<PluginChemistryAPI["handoffGraph"]>>,
+            suggestConnectionPoints: (request: Parameters<NonNullable<PluginChemistryAPI["suggestConnectionPoints"]>>[0]) =>
+              call("chemistry", "suggestConnectionPoints", [request]) as ReturnType<NonNullable<PluginChemistryAPI["suggestConnectionPoints"]>>
+          } : {}),
           isotopeEnvelope: (request) =>
             call("chemistry", "isotopeEnvelope", [request]) as ReturnType<PluginChemistryAPI["isotopeEnvelope"]>,
           // Present in the stub for the same reason: a worker-routed plugin must see the same shape
@@ -417,6 +459,7 @@ export function runPluginWorker(
       },
       documents,
       tools,
+      ...(apps ? { apps } : {}),
       assistant,
       storage,
       selection,

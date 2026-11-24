@@ -175,7 +175,7 @@ describe("ready from a content-fit window", () => {
   // Every kind whose window reports its measured size (fit_content in dialog_windows.rs, a form that
   // hands DialogWindow its root). About and Structure Templates send an empty ready and are not here.
   const measuring = ["pageSize", "pageEnlargement", "arrangementSpacing", "reactionConditions", "export", "engineInstall", "toolInstall",
-    "customColor", "insertTable", "atomProblem", "vibeCodeGuide", "guidedTour"] as const;
+    "customColor", "insertTable", "atomProblem", "vibeCodeGuide", "guidedTour", "appHandoff"] as const;
   const ready = (dialogKind: string, data: unknown) => ({ ...snapshot(), dialogKind, type: "ready", data });
   it.each(measuring)("%s accepts an empty ready or a valid measurement, and nothing else", dialogKind => {
     expect(parseDialogMessage(ready(dialogKind, {}))).toBeDefined();
@@ -187,4 +187,32 @@ describe("ready from a content-fit window", () => {
       expect(parseDialogMessage(ready(dialogKind, data)), JSON.stringify(data)).toBeUndefined();
     }
   });
+});
+
+it("accepts only the bounded Rust-owned handoff snapshot and typed choices", () => {
+  const data = { mode: "confirm", title: "Confirm companion build", appName: "Crystal Builder", pipeline: "mofBuild",
+    composition: { formula: "C8H4O4X2", atomCount: 18 }, suggestedCombination: "small",
+    combinations: { small: { node: "N16", repeat: "1x1x1", rebuildAs: "large" }, large: { node: "N16", repeat: "2x2x2" } }
+  };
+  const s = { ...snapshot(), dialogKind: "appHandoff", data };
+  expect(parseDialogMessage(s)).toEqual(s);
+  const result = { mode: "result", title: "Companion build result", appName: "Crystal Builder",
+    combination: "small", rebuildCombination: "large", rebuildLabel: "Rebuild at 2×2×2", twist: 6 };
+  expect(parseDialogMessage({ ...s, data: result })).toBeDefined();
+  for (const update of [
+    { suggestedCombination: "missing" }, { suggestedCombination: "toString" },
+    { composition: { ...data.composition, input: "file contents" } }, { composition: { ...data.composition, atomCount: 0 } },
+    { appPath: "/private" }, { appName: "x".repeat(3400) },
+    { combinations: { small: { repeat: "../other" } } }, { combinations: { small: { rebuildAs: "missing" } } }
+  ]) expect(parseDialogMessage({ ...s, data: { ...data, ...update } })).toBeUndefined();
+  expect(parseDialogMessage({ ...s, data: { ...result, twist: -1 } })).toBeUndefined();
+  const action = (choice: unknown) => parseDialogMessage({ ...s, type: "action", data: choice });
+  for (const choice of [{ action: "confirm", combinationId: "large" }, { action: "cancel" }, { action: "rebuild" }]) {
+    expect(action(choice)).toBeDefined();
+  }
+  for (const choice of [{ action: "confirm", combinationId: "../private" }, { action: "confirm", combinationId: "large", appId: "app" },
+    { action: "rebuild", combinationId: "large" }, { action: "cancel", token: "opaque" }, { action: "build" }]) {
+    expect(action(choice)).toBeUndefined();
+  }
+  expect(parseDialogMessage({ ...s, type: "result", data: { status: "accepted" } })).toBeUndefined();
 });

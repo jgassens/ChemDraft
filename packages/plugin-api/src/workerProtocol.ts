@@ -14,6 +14,7 @@
  */
 
 import { PluginApiVersion, PluginCommandInputSchema, type PluginCommandInput } from "./index";
+import type { PluginAppsAPI } from "./appHandoff";
 import { pluginRequestMethods, type PluginActiveDocumentChanged, type PluginToolCall, type PluginToolCallResult } from "./requestCapabilities";
 import type { PluginRequestResult } from "./requestSchemas";
 
@@ -48,6 +49,7 @@ export type PluginWorkerCapabilityNamespace =
   | "images"
   | "recognition"
   | "tools"
+  | "apps"
   | "requests"
   | "toolSessions"
   | "depiction"
@@ -80,11 +82,13 @@ export const PLUGIN_WORKER_CAPABILITY_METHODS = {
   panels: ["showReport"],
   overlays: ["setStatus", "setTranscript", "setContent", "open"],
   chemistry: ["properties", "isotopeEnvelope", "nameToStructure", "structureFromSmiles", "structureToName", "embed3d", "minimize3d", "flatten3d",
+    "handoffGraph", "suggestConnectionPoints",
     ...pluginRequestMethods("chemistry")],
   dialogs: ["promptText"],
   images: ["requestImage"],
   recognition: ["recognizeStructure"],
   tools: ["status", "install", "signIn", "run", "poll", "cancel", "clearConversation"],
+  apps: ["chooseApp", "status", "sendFile", "runCompanion"] satisfies readonly (keyof PluginAppsAPI)[],
   requests: pluginRequestMethods("requests"),
   toolSessions: pluginRequestMethods("toolSessions"),
   depiction: pluginRequestMethods("depiction"),

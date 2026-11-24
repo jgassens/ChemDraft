@@ -1,0 +1,14 @@
+{
+  "code": "exit-nonzero",
+  "diagnostic": {
+    "exitCode": 2,
+    "json": {
+      "ok": false,
+      "summary": "The build failed."
+    },
+    "stderrTail": "Build failed.",
+    "step": "build"
+  },
+  "message": "The app handoff companion could not complete.",
+  "status": "failed"
+}

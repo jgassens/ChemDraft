@@ -35,7 +35,7 @@ function writerIds(graph: ParsedMolfileGraph, atomIds: readonly string[]) {
   return ids;
 }
 
-function atomMapNumbers(molfile: string, graph: ParsedMolfileGraph) {
+export function atomMapNumbers(molfile: string, graph: ParsedMolfileGraph) {
   const lines = molfile.split(/\r?\n/);
   if (graph.format === "molfile-v2000") {
     return lines.slice(4, 4 + graph.atoms.length).map(line => Number(line.slice(60, 63)));

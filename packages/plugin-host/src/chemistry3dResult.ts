@@ -1,5 +1,5 @@
 import { DocumentObjectSchema } from "@chemdraft/chem-core";
-import { PluginMinimize3DResultSchema } from "@chemdraft/plugin-api";
+import { PluginHandoffGraphResultSchema, PluginMinimize3DResultSchema } from "@chemdraft/plugin-api";
 import { z } from "zod";
 
 // Internal host checks reuse the existing public model/method/minimization contracts.
@@ -7,6 +7,7 @@ import { z } from "zod";
 const schemas = {
   embed3d: PluginMinimize3DResultSchema.pick({ model: true, method: true, warnings: true }),
   minimize3d: PluginMinimize3DResultSchema,
+  handoffGraph: PluginHandoffGraphResultSchema,
   flatten3d: z.object({
     objects: z.array(DocumentObjectSchema),
     depthByAtom: z.array(z.array(z.number().finite())),

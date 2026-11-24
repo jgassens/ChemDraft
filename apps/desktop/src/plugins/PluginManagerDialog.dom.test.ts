@@ -77,6 +77,35 @@ const descriptors: readonly BundledPluginDescriptor[] = [
   }
 ];
 
+it("lists native app handoff consent separately and keeps revoked rows visible", async () => {
+  const entry = installedEntry();
+  let granted = true;
+  const appPath = "/Applications/Crystal Builder.app";
+  const list = vi.fn(async () => [{
+    pluginId: entry.record.id, consentId: "consent-1", appName: "Crystal Builder", appPath,
+    pipeline: "mofBuild", granted, at: "2026-11-23T12:00:00Z"
+  }]);
+  const revoke = vi.fn(async () => { granted = false; });
+  const runtime = createPluginRuntime({
+    getActiveDocument: () => undefined,
+    appHandoffConsents: { list, revoke, clearPlugin: async () => {} }
+  });
+  mount(createElement(PluginManagerDialog, {
+    runtime, bundledPlugins: descriptors, installedPlugins: [entry], onClose: () => {}
+  }));
+  await act(async () => {});
+  const button = document.querySelector<HTMLButtonElement>('button[aria-label^="Revoke app handoff from"]')!;
+  const section = button.closest("section")!;
+  expect(section.querySelector("h3")?.textContent).toBe("App handoff consents");
+  expect(section.textContent).toContain(entry.record.name);
+  expect(section.textContent).toContain(appPath);
+  expect(section.textContent).toContain("Pipeline mofBuild · Allowed");
+  await act(async () => button.click());
+  expect(revoke).toHaveBeenCalledExactlyOnceWith(entry.record.id, "consent-1");
+  expect(section.textContent).toContain("Pipeline mofBuild · Revoked");
+  expect(section.querySelector("button")).toBeNull();
+});
+
 describe("naming engine catalog ownership", () => {
   it("shows the fallback release selection reason before a catalog install is confirmed", async () => {
     const runtime = createPluginRuntime({ getActiveDocument: () => undefined });

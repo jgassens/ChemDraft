@@ -8,6 +8,15 @@ in progress rather than a changelog.
 
 # In flight
 
+# App handoff host capability
+
+Phase 1 of [Send to Crystal Builder](send-to-crystal-builder.md) adds API 0.1.27 app handoff,
+native consent and companion pipelines, selection connection points, and handoff chemistry.
+Official catalog provenance and a user-started native menu command gate each handoff. The companion
+plugin is a separate Phase 2. Verify the hands-on checklist on macOS and Windows before closeout.
+
+---
+
 # ChemDraft Assistant plugin (active, branches claude/assistant-*)
 
 ## Objective

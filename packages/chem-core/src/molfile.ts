@@ -457,10 +457,8 @@ function molfileAtomSymbols(
         return spelled.element;
       }
     }
-    const reason = unspellable ? `; it cannot be written as ${spelled!.element} because ${unspellable}` : "";
-    const what = placeholderReason === undefined
-      ? `Atom label "${atom.element}" is not an element symbol${reason}`
-      : `Atom label "${atom.element}" stands for a group here (${placeholderReason})`;
+    let symbol = "*";
+    let placeholder = "a dummy atom (*)";
     if (options.abbreviations === "rgroup") {
       let rgroup = drawnRgroup ?? rgroupByLabel.get(atom.element);
       if (rgroup === undefined) {
@@ -470,15 +468,23 @@ function molfileAtomSymbols(
         rgroupByLabel.set(atom.element, rgroup);
       }
       rgroups.push({ atomNumber: index + 1, rgroup });
-      options.warnings?.push(
-        `${what}; written as R-group placeholder R${rgroup} — the label's group is not represented in ${options.messageFormat ?? "the molfile"}.`
-      );
-      return "R#";
+      symbol = "R#";
+      placeholder = `R-group placeholder R${rgroup}`;
     }
-    options.warnings?.push(
-      `${what}; written as a dummy atom (*) — the label's group is not represented in ${options.messageFormat ?? "the molfile"}.`
-    );
-    return "*";
+    const target = options.messageFormat ?? "the molfile";
+    // SMILES conversion classifies and deduplicates its label warnings by their existing prefix.
+    if (atom.element === "X" && options.messageFormat !== "SMILES") {
+      options.warnings?.push(
+        `Connection point "X" at atom ${index + 1} was written as ${placeholder}. Its label is lost in ${target}.`
+      );
+    } else {
+      const reason = unspellable ? `; it cannot be written as ${spelled!.element} because ${unspellable}` : "";
+      const what = placeholderReason === undefined
+        ? `Atom label "${atom.element}" is not an element symbol${reason}`
+        : `Atom label "${atom.element}" stands for a group here (${placeholderReason})`;
+      options.warnings?.push(`${what}; written as ${placeholder} — the label's group is not represented in ${target}.`);
+    }
+    return symbol;
   });
   return { symbols, rgroups, spelledHydrogens };
 }

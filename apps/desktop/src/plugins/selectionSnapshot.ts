@@ -1,13 +1,44 @@
-import { isEngineDocument, moleculeToMolfileV2000, type ChemDraftDocument, type MoleculeAtom, type MoleculeObject } from "@chemdraft/chem-core";
+import {
+  isDativeBond, isEngineDocument, moleculeToMolfileV2000,
+  type ChemDraftDocument, type MoleculeAtom, type MoleculeBond, type MoleculeObject
+} from "@chemdraft/chem-core";
 import { expandNativeMoleculeLabelGroups, nativeSingleHeavyElementLabelValence } from "@chemdraft/document-workflow-core";
-import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
+import { nativeBondOrderResolution, nativeBondOrderValue } from "@chemdraft/layout-engine";
 import {
   createStructureSourceFingerprint,
   type PluginSelectedMolecule,
-  type PluginSelectionSnapshot,
-  type PluginStructureFormat
+  type PluginSelectionSnapshot
 } from "@chemdraft/plugin-api";
 import type { RequestSnapshotBudget } from "@chemdraft/plugin-host";
+
+type PluginFacingStructure = Required<Pick<PluginSelectedMolecule, "structureFormat" | "structure" | "connectionPoints">>;
+
+function connectionPointsFor(molecule: MoleculeObject): PluginFacingStructure["connectionPoints"] {
+  const drawnPoints = molecule.atoms.filter(atom => atom.element === "X");
+  if (drawnPoints.length === 0) return [];
+
+  // Label expansion keeps drawn atom ids and indices, and the molfile writer uses that order.
+  const atomIndices = new Map(molecule.atoms.map((atom, index) => [atom.id, index + 1]));
+  const bondsByPoint = new Map(drawnPoints.map(atom => [atom.id, [] as MoleculeBond[]]));
+  for (const bond of molecule.bonds) {
+    if (!atomIndices.has(bond.fromAtomId) || !atomIndices.has(bond.toAtomId)) continue;
+    bondsByPoint.get(bond.fromAtomId)?.push(bond);
+    bondsByPoint.get(bond.toAtomId)?.push(bond);
+  }
+
+  return drawnPoints.map(({ id }) => {
+    const atom = atomIndices.get(id)!;
+    const incident = bondsByPoint.get(id)!;
+    if (incident.length !== 1) return { atom, anchor: 0, bondOrder: 0 };
+
+    const bond = incident[0]!;
+    const anchor = atomIndices.get(bond.fromAtomId === id ? bond.toAtomId : bond.fromAtomId)!;
+    // Preserve the drawn order here even when V2000 encodes an approximation.
+    const bondOrder = bond.order === "unknown" || isDativeBond(bond) ? 0
+      : bond.order === "aromatic" ? 1.5 : nativeBondOrderValue[bond.order];
+    return { atom, anchor, bondOrder };
+  });
+}
 
 /**
  * The structure a plugin should analyze for `molecule`.
@@ -20,13 +51,13 @@ import type { RequestSnapshotBudget } from "@chemdraft/plugin-host";
  *
  * So whenever a live graph exists we serialize it to a lossless V2000 molfile — a plain connection
  * table (no OCL, no aromaticity/ring perception on our side; the plugin's OCL does that) — and let the
- * plugin parse it. Only when there is no graph (e.g. a molecule imported as SMILES that was never
- * parsed) do we fall back to the object's existing structure string.
+ * plugin parse it. When there is no graph or it cannot be represented in V2000, fall back to the
+ * object's existing structure string without assigning molfile indices.
  */
 export function pluginFacingStructure(
   molecule: MoleculeObject,
   warnings: string[] = []
-): { structureFormat: PluginStructureFormat; structure: string } {
+): PluginFacingStructure {
   if (molecule.atoms && molecule.atoms.length > 0) {
     try {
       // A valid group label ("OMe", "Ph") is handed over as the atoms it stands for, appended after
@@ -49,7 +80,8 @@ export function pluginFacingStructure(
           kekuleBondOrders: nativeBondOrderResolution(expanded.atoms, expanded.bonds).kekuleOrders,
           spellLabel: nativeSingleHeavyElementLabelValence,
           placeholderAtoms
-        }).contents
+        }).contents,
+        connectionPoints: connectionPointsFor(molecule)
       };
     } catch (error) {
       warnings.push(`Molecule ${molecule.id} could not be written from its graph: ${String(error)}; using its stored structure.`);
@@ -57,7 +89,7 @@ export function pluginFacingStructure(
       // rather than dropping the molecule from the selection.
     }
   }
-  return { structureFormat: molecule.structureFormat, structure: molecule.structure };
+  return { structureFormat: molecule.structureFormat, structure: molecule.structure, connectionPoints: [] };
 }
 
 /** Signed orientation, with a relative tolerance for roundoff at collinear points after rotation. */
@@ -189,7 +221,7 @@ function moleculeSourceFingerprint(
 
 /**
  * Build a selection snapshot from the active document: for each selected molecule, its object /
- * page / document identity, structure, and a source fingerprint for staleness detection. Molecules
+ * page / document identity, structure, drawn connection points, and a source fingerprint. Molecules
  * follow the document's selection order. Pure and testable — no React, no refs. The host deep-copies
  * and freezes whatever this returns before handing it to a plugin.
  *
@@ -223,8 +255,7 @@ export function buildPluginSelectionSnapshot(
       objectId,
       documentId: document.id,
       pageId: hit.pageId,
-      structureFormat: facing.structureFormat,
-      structure: facing.structure,
+      ...facing,
       // Retain stereo geometry while keeping pure translations and rotations out of the key.
       sourceFingerprint: moleculeSourceFingerprint(document, hit.pageId, hit.molecule)
     };

@@ -1,11 +1,26 @@
 import { describe, expect, it } from "vitest";
 import { Plugin3DModelSchema, Plugin3DRotationSchema, PluginEmbed3DRequestSchema, PluginMinimize3DRequestSchema,
-  PluginFlatten3DRequestSchema, PluginMinimize3DResultSchema, type Plugin3DModel } from "./index";
+  PluginFlatten3DRequestSchema, PluginMinimize3DResultSchema, PluginSuggestConnectionPointsRequestSchema,
+  type Plugin3DModel } from "./index";
 
 const model: Plugin3DModel = { atoms: [{ element: "C", charge: 0, component: 0, addedHydrogen: false }],
   bonds: [], coords: [0, 0, 0], components: [{ smiles: "C", atomStart: 0, atomCount: 1 }], modelToken: "test" };
 
 describe("3D chemistry public schemas", () => {
+  it("accepts a graph component with stable indices and rejects malformed edges or competing inputs", () => {
+    const atom = { element: "C", charge: 0, radicalElectrons: 0, hydrogenCount: 3 };
+    const graph = { atoms: [atom, atom], bonds: [{ a: 0, b: 1, order: 1 }] };
+    expect(PluginEmbed3DRequestSchema.parse({ components: [{ graph }, { smiles: "O" }] }).components[0]).toEqual({ graph });
+    expect(PluginEmbed3DRequestSchema.safeParse({ components: [{ graph, smiles: "CC" }] }).success).toBe(false);
+    for (const bonds of [
+      [{ a: 0, b: 0, order: 1 }], [{ a: 0, b: 2, order: 1 }],
+      [{ a: 0, b: 1, order: 1 }, { a: 1, b: 0, order: 1 }],
+      [{ a: 0, b: 1, order: "aromatic" }], [{ a: 0, b: 1, order: 2, stereo: "cis" }]
+    ]) {
+      expect(PluginEmbed3DRequestSchema.safeParse({ components: [{ graph: { ...graph, bonds } }] }).success).toBe(false);
+    }
+    expect(PluginSuggestConnectionPointsRequestSchema.safeParse({ objectId: "m1", anchors: ["a", "a"] }).success).toBe(false);
+  });
   it("requires a boolean clash result and a finite nonnegative contact distance when present", () => {
     const result = { model, clash: false, forceField: { name: "mmff94s", status: "converged", energy: 0, iterationsBudget: 1000 },
       method: { engine: "RDKit MinimalLib Release_2026_03_3 + patches 0001-0008", embedding: "ETKDGv3", seed: 42,

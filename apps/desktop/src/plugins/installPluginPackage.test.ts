@@ -45,6 +45,7 @@ import {
 import { PluginPackageError, PluginPackageErrorCodes } from "./pluginPackageArchive";
 import type { PluginStagingFs } from "./pluginStagingFs";
 import { createPersistentPluginStorage, deletePersistentPluginStorage } from "./pluginStorage";
+import { applyEnabledPlugins } from "./registerBundledPlugins";
 
 const PLUGIN_ID = "org.chemdraft.test.installable";
 const COMMAND_ID = "plugin.installable.run";
@@ -243,6 +244,8 @@ async function installFixture(
     zip?: Uint8Array;
     worker?: FakeWorkerOptions;
     replaces?: ReturnType<typeof bundledCopy>;
+    installedAt?: Date;
+    provenance?: import("@chemdraft/plugin-host").PluginAppHandoffProvenance;
   } = {}
 ) {
   const fs = options.fs ?? new MemoryStagingFs();
@@ -256,6 +259,8 @@ async function installFixture(
     inspection,
     origin: ORIGIN,
     createWorker: () => worker.handle,
+    installedAt: options.installedAt,
+    provenance: options.provenance,
     replaces: options.replaces as never
   });
   return { fs, runtime, result, worker };
@@ -853,6 +858,129 @@ describe("updateInstalledPluginPackage", () => {
 
     expect(runtime.host.getPlugin(PLUGIN_ID)?.manifest.version).toBe(installed.record.version);
     expect(fs.pathsUnder(`installed-plugins/packages/${inspection.sourceChecksum}/`)).toEqual([]);
+  });
+});
+
+describe("installed app handoff lifecycle", () => {
+  const id = "org.chemdraft.handoff.crystalBuilder";
+  const permissions = ["apps.handoff", "native.execute", "ui.menu"] as const;
+  const provenance = {
+    source: "catalog" as const,
+    repository: "jgassens/ChemDraft-CrystalBuilder-Plugin",
+    checksumVerified: true
+  };
+
+  async function fixture() {
+    const fs = new MemoryStagingFs();
+    const rows = new Set([id, "org.chemdraft.other"]);
+    const clearPlugin = vi.fn(async (pluginId: string) => { rows.delete(pluginId); });
+    const runtime = createPluginRuntime({
+      getActiveDocument: () => undefined,
+      appHandoffConsents: { clearPlugin, list: async () => [], revoke: async () => {} }
+    });
+    const zip = await createPackage({
+      manifest: manifestDocument({ id, permissions: [...permissions] })
+    });
+    return { fs, rows, clearPlugin, runtime, zip };
+  }
+
+  it("registers and reloads verified provenance, preserving consent on a retaining update and disable", async () => {
+    const f = await fixture();
+    const { result } = await installFixture({ ...f, provenance });
+    expect(await loadInstalledPluginRecords(f.fs)).toEqual([expect.objectContaining(provenance)]);
+    const inspection = await updateInspection("2.1.0", { id, permissions: [...permissions] });
+    const updated = await updateInstalledPluginPackage({
+      ...f, current: installedCatalogEntry(result), inspection, provenance, disabled: false,
+      origin: ORIGIN, createWorker: () => createFakeWorker().handle
+    });
+    expect(updated.record).toMatchObject({ ...provenance, version: "2.1.0" });
+    expect(updated.record.handoffInstallId).toBe(result.record.handoffInstallId);
+    expect(await loadInstalledPluginRecords(f.fs)).toEqual([updated.record]);
+    expect(f.clearPlugin).not.toHaveBeenCalled();
+    expect(f.rows.has(id)).toBe(true);
+
+    const reopened = createRuntime();
+    const { installed, failures } = await loadInstalledPlugins({
+      runtime: reopened, fs: f.fs, origin: ORIGIN, disabledIds: new Set([id]),
+      createWorker: () => createFakeWorker().handle
+    });
+    expect(failures).toEqual([]);
+    expect(reopened.host.getPlugin(id)).toBeUndefined();
+    applyEnabledPlugins(reopened, new Set(), [installed[0].descriptor!]);
+    expect(reopened.host.getPlugin(id)?.manifest.version).toBe("2.1.0");
+    applyEnabledPlugins(reopened, new Set([id]), [installed[0].descriptor!]);
+    expect(f.rows.has(id)).toBe(true);
+  });
+
+  it("rejects a checksum-verified sideload and a record with no provenance", async () => {
+    const f = await fixture();
+    await expect(installFixture({ ...f, provenance: { source: "sideload", checksumVerified: true } }))
+      .rejects.toThrow(/official catalog repository/);
+    await expect(installFixture(f)).rejects.toThrow(/official catalog repository/);
+    expect(await loadInstalledPluginRecords(f.fs)).toEqual([]);
+    expect(f.runtime.host.getPlugin(id)).toBeUndefined();
+  });
+
+  it.each([false, true])("clears only this plugin's rows when an update drops the permission (disabled=%s)", async disabled => {
+    const f = await fixture();
+    const { result } = await installFixture({ ...f, provenance });
+    if (disabled) applyEnabledPlugins(f.runtime, new Set([id]), [result.descriptor]);
+    const versionsAtCleanup: (string | undefined)[] = [];
+    f.clearPlugin.mockImplementation(async pluginId => {
+      versionsAtCleanup.push(f.runtime.host.getPlugin(pluginId)?.manifest.version);
+      f.rows.delete(pluginId);
+    });
+    await updateInstalledPluginPackage({
+      ...f, current: installedCatalogEntry(result), inspection: await updateInspection("2.1.0", { id }),
+      provenance, disabled, origin: ORIGIN, createWorker: () => createFakeWorker().handle
+    });
+    expect(f.clearPlugin).toHaveBeenCalledExactlyOnceWith(id);
+    expect(versionsAtCleanup).toEqual([disabled ? undefined : "2.0.1"]);
+    expect(f.rows).toEqual(new Set(["org.chemdraft.other"]));
+    expect(f.runtime.host.getPlugin(id)?.manifest.version).toBe(disabled ? undefined : "2.1.0");
+  });
+
+  it("keeps the installed version if clearing dropped consent fails", async () => {
+    const f = await fixture();
+    const { result } = await installFixture({ ...f, provenance });
+    f.clearPlugin.mockRejectedValueOnce(new Error("Handoff consent store is unavailable"));
+    await expect(updateInstalledPluginPackage({
+      ...f, current: installedCatalogEntry(result), inspection: await updateInspection("2.1.0", { id }),
+      provenance, disabled: false, origin: ORIGIN, createWorker: () => createFakeWorker().handle
+    })).rejects.toThrow(/Handoff consent store is unavailable/);
+    expect(f.runtime.host.getPlugin(id)?.manifest.version).toBe("2.0.1");
+    expect(await loadInstalledPluginRecords(f.fs)).toEqual([result.record]);
+  });
+
+  it("deletes all of the plugin's rows on uninstall after removing its registration and record", async () => {
+    const f = await fixture();
+    const { result } = await installFixture({ ...f, provenance });
+    f.clearPlugin.mockImplementation(async pluginId => {
+      expect(f.runtime.host.getPlugin(pluginId)).toBeUndefined();
+      expect(await loadInstalledPluginRecords(f.fs)).toEqual([]);
+      f.rows.delete(pluginId);
+    });
+    await uninstallPlugin({ ...f, pluginId: id, descriptor: result.descriptor });
+    expect(f.clearPlugin).toHaveBeenCalledExactlyOnceWith(id);
+    expect(f.rows).toEqual(new Set(["org.chemdraft.other"]));
+  });
+
+  it("assigns a new handoff install ID when reinstalling the same package after consent cleanup fails", async () => {
+    const f = await fixture();
+    const options = { ...f, provenance, installedAt: new Date("2026-11-24T00:00:00Z") };
+    const { result: first } = await installFixture(options);
+    f.clearPlugin.mockRejectedValueOnce(new Error("Handoff consent store is unavailable"));
+    await expect(uninstallPlugin({ ...f, pluginId: id, descriptor: first.descriptor }))
+      .rejects.toThrow(/was uninstalled, but its app handoff consents could not be deleted/);
+    expect(f.rows.has(id)).toBe(true);
+    const { result: next } = await installFixture(options);
+    expect(next.record).toMatchObject({
+      sourceChecksum: first.record.sourceChecksum,
+      installedAt: first.record.installedAt,
+      handoffInstallId: expect.any(String)
+    });
+    expect(next.record.handoffInstallId).not.toBe(first.record.handoffInstallId);
+    expect(await loadInstalledPluginRecords(f.fs)).toEqual([next.record]);
   });
 });
 

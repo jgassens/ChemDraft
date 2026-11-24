@@ -1,4 +1,7 @@
-import { adoptDerivedDocument, applyPatch, createEmptyDocument, type ChemDraftDocument, type MoleculeAtom, type MoleculeObject } from "@chemdraft/chem-core";
+import {
+  adoptDerivedDocument, applyPatch, createEmptyDocument, deserializeDocument, serializeDocument,
+  type ChemDraftDocument, type MoleculeAtom, type MoleculeObject
+} from "@chemdraft/chem-core";
 import * as OCL from "openchemlib";
 import { describe, expect, it, vi } from "vitest";
 import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
@@ -105,7 +108,8 @@ describe("buildPluginSelectionSnapshot", () => {
       documentId: "doc1",
       pageId: "p1",
       structureFormat: "molfile-v2000",
-      structure: "mol block"
+      structure: "mol block",
+      connectionPoints: []
     });
     expect(first.sourceFingerprint).toMatch(/^[0-9a-f]{16}$/);
   });
@@ -123,6 +127,101 @@ describe("buildPluginSelectionSnapshot", () => {
     const edited = documentWith(["m1"]);
     (edited.pages[0].objects[0] as { structure: string }).structure = "CCO";
     expect(buildPluginSelectionSnapshot(edited).molecules[0].sourceFingerprint).not.toBe(before);
+  });
+});
+
+describe("selection connection points", () => {
+  function markedMolecule(label: string): MoleculeObject {
+    const molecule = moleculeWithHydrogen();
+    molecule.atoms[1] = { ...molecule.atoms[1]!, element: label, labelLiteral: true };
+    return molecule;
+  }
+
+  it.each([
+    { label: "X", connectionPoints: [{ atom: 2, anchor: 1, bondOrder: 1 }] },
+    { label: "R1", connectionPoints: [] },
+    { label: "Xyl", connectionPoints: [] },
+    { label: "x", connectionPoints: [] }
+  ])("reads the exact drawn label $label", ({ label, connectionPoints }) => {
+    const warnings: string[] = [];
+    const { molecules: [selected] } = buildPluginSelectionSnapshot(engineDocumentWith(markedMolecule(label)), warnings);
+    expect(selected!.connectionPoints).toEqual(connectionPoints);
+    expect(selected!.structure).toContain("M  RGP  1   2   1\n");
+    expect(warnings.some(warning => warning.includes('Connection point "X" at atom 2'))).toBe(label === "X");
+  });
+
+  it("distinguishes X from R1 and keeps the legacy molfile bytes after native save and reopen", () => {
+    const molecule = markedMolecule("X");
+    molecule.atoms.push({ id: "a3", element: "R1", x: -14, y: 0, formalCharge: 0 });
+    molecule.bonds.push({ id: "b2", fromAtomId: "a1", toAtomId: "a3", order: "single" });
+    const document = engineDocumentWith(molecule);
+    const reopened = deserializeDocument(serializeDocument(document));
+    expect((reopened.pages[0]!.objects[0] as MoleculeObject).atoms.map(atom => atom.element)).toEqual(["C", "X", "R1"]);
+
+    const before = buildPluginSelectionSnapshot(document);
+    expect(buildPluginSelectionSnapshot(reopened)).toEqual(before);
+    expect(before.molecules[0]!.connectionPoints).toEqual([{ atom: 2, anchor: 1, bondOrder: 1 }]);
+    expect(before.molecules[0]!.structure).toBe([
+      "", "  ChemDraft", "",
+      "  3  2  0  0  0  0  0  0  0  0999 V2000",
+      "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+      "   14.0000    0.0000    0.0000 R#  0  0  0  0  0  0  0  0  0  0  0  0",
+      "  -14.0000    0.0000    0.0000 R#  0  0  0  0  0  0  0  0  0  1  0  0",
+      "  1  2  1  0  0  0  0",
+      "  1  3  1  0  0  0  0",
+      "M  RGP  2   2   2   3   1",
+      "M  END", ""
+    ].join("\n"));
+  });
+
+  it.each([0, 2])("keeps an X with %i neighbors but gives it no anchor", neighborCount => {
+    const molecule = markedMolecule("X");
+    if (neighborCount === 0) {
+      molecule.bonds = [];
+    } else {
+      molecule.atoms.push({ id: "a3", element: "C", x: 28, y: 0, formalCharge: 0 });
+      molecule.bonds.push({ id: "b2", fromAtomId: "a2", toAtomId: "a3", order: "single" });
+    }
+    expect(buildPluginSelectionSnapshot(engineDocumentWith(molecule)).molecules[0]!.connectionPoints)
+      .toEqual([{ atom: 2, anchor: 0, bondOrder: 0 }]);
+  });
+
+  it.each([
+    { order: "double", bondOrder: 2 },
+    { order: "triple", bondOrder: 3 },
+    { order: "aromatic", bondOrder: 1.5 },
+    { order: "unknown", bondOrder: 0 }
+  ] as const)("reports the drawn $order bond on X", ({ order, bondOrder }) => {
+    const molecule = markedMolecule("X");
+    molecule.bonds[0] = { id: "b1", fromAtomId: "a2", toAtomId: "a1", order };
+    expect(buildPluginSelectionSnapshot(engineDocumentWith(molecule)).molecules[0]!.connectionPoints)
+      .toEqual([{ atom: 2, anchor: 1, bondOrder }]);
+  });
+
+  it("reports a dative attachment without assigning it a covalent bond order", () => {
+    const molecule = markedMolecule("X");
+    molecule.bonds[0]!.display = { bondStyle: "dashed" };
+    expect(buildPluginSelectionSnapshot(engineDocumentWith(molecule)).molecules[0]!.connectionPoints)
+      .toEqual([{ atom: 2, anchor: 1, bondOrder: 0 }]);
+  });
+
+  it("anchors X to the attachment atom of an expanded abbreviation", () => {
+    const molecule = markedMolecule("X");
+    molecule.atoms[0] = { ...molecule.atoms[0]!, element: "OMe" };
+    const selected = buildPluginSelectionSnapshot(engineDocumentWith(molecule)).molecules[0]!;
+    expect(selected.structure.split("\n").slice(4, 7).map(line => line.slice(31, 34).trim())).toEqual(["O", "R#", "C"]);
+    expect(selected.connectionPoints).toEqual([{ atom: 2, anchor: 1, bondOrder: 1 }]);
+  });
+
+  it("leaves the connection points empty when V2000 cannot be written", () => {
+    const molecule = markedMolecule("X");
+    molecule.atoms.push(...Array.from({ length: 998 }, (_, i) => ({
+      id: `extra${i}`, element: "C", x: i, y: 0, formalCharge: 0
+    })));
+    const warnings: string[] = [];
+    const selected = buildPluginSelectionSnapshot(engineDocumentWith(molecule), warnings).molecules[0]!;
+    expect(selected).toMatchObject({ structureFormat: molecule.structureFormat, structure: molecule.structure, connectionPoints: [] });
+    expect(warnings).toEqual([expect.stringContaining("V2000 supports at most 999 atoms and 999 bonds")]);
   });
 });
 
@@ -267,7 +366,8 @@ describe("pluginFacingStructure", () => {
   it("passes through the existing structure when there is no atom graph (e.g. a SMILES import)", () => {
     expect(pluginFacingStructure({ structureFormat: "smiles", structure: "c1ccccc1", atoms: [] } as never)).toEqual({
       structureFormat: "smiles",
-      structure: "c1ccccc1"
+      structure: "c1ccccc1",
+      connectionPoints: []
     });
   });
 

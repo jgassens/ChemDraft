@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import type { ListenForAppHandoff } from "../appHandoff/nativeMenu";
 import type { PluginManifest } from "@chemdraft/plugin-api";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -8,11 +9,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryStorage } from "../testSupport/memoryStorage";
 
 const hookMocks = vi.hoisted(() => ({
-  stagingFs: {},
+  stagingFs: { readTextFile: vi.fn() },
+  handoffTransport: vi.fn(),
   loadInstalledPlugins: vi.fn(),
   installPluginPackage: vi.fn(),
   uninstallPlugin: vi.fn(),
   updateInstalledPluginPackage: vi.fn()
+}));
+
+vi.mock("../appHandoff/transport", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../appHandoff/transport")>(),
+  createTauriAppHandoffTransport: () => hookMocks.handoffTransport
 }));
 
 vi.mock("./pluginStagingFs", async (importOriginal) => {
@@ -123,6 +130,8 @@ let container: HTMLElement | undefined;
 let root: Root | undefined;
 
 beforeEach(() => {
+  hookMocks.stagingFs.readTextFile.mockReset();
+  hookMocks.handoffTransport.mockReset();
   hookMocks.loadInstalledPlugins.mockReset();
   hookMocks.installPluginPackage.mockReset();
   hookMocks.uninstallPlugin.mockReset();
@@ -141,6 +150,54 @@ afterEach(() => {
 });
 
 describe("usePluginRuntime installed catalog readiness", () => {
+  it.each(["catalog", "sideload"] as const)("dispatches native menu events and rechecks %s provenance", async source => {
+    const id = "org.chemdraft.handoff.crystalBuilder";
+    const commandId = "plugin.crystalBuilder.sendMolecule";
+    const entry = catalogEntry("1.0.0", "a".repeat(64));
+    const record = { ...entry.record, id, source, checksumVerified: true,
+      repository: "jgassens/ChemDraft-CrystalBuilder-Plugin" };
+    vi.stubGlobal("__CHEMDRAFT_HANDOFF_SIDELOAD_ALLOWED__", source === "sideload");
+    const handoffManifest = { ...entry.manifest, id, permissions: ["apps.handoff", "native.execute"] as const,
+      contributes: { ...entry.manifest.contributes, commands: [{ id: commandId, title: "Send" }],
+        menus: [{ id: "menu.crystalBuilder.sendMolecule", commandId, title: "Send" }] } };
+    hookMocks.loadInstalledPlugins.mockResolvedValue({ installed: [], failures: [] });
+    hookMocks.handoffTransport.mockResolvedValue({ status: "sent" });
+    hookMocks.stagingFs.readTextFile.mockResolvedValue(JSON.stringify({ version: 1, plugins: [record] }));
+    const status = vi.fn();
+    let view: PluginRuntimeView | undefined;
+    const invocation = { pluginId: id, commandId, nonce: "2".repeat(32) };
+    let click: () => Promise<void>;
+    const listenForAppHandoff: ListenForAppHandoff = dispatch => {
+      click = () => dispatch(invocation);
+      return () => {};
+    };
+    function Probe() {
+      view = usePluginRuntime({
+        listenForAppHandoff,
+        getActiveDocument: () => undefined,
+        getSelection: () => ({ objectIds: [], molecules: [] }),
+        onAppHandoffStatus: status
+      });
+      return null;
+    }
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => root!.render(createElement(Probe)));
+    const request = { appId: "chosen", fileName: "model", extension: "cif" as const, text: "test data" };
+    await act(async () => {
+      view!.runtime.registerPlugin(handoffManifest, { execution: "worker",
+        commandHandlers: { [commandId]: context => context.apps!.sendFile(request) } }, record);
+    });
+    await act(async () => { await click(); });
+    expect(hookMocks.handoffTransport).toHaveBeenCalledExactlyOnceWith(invocation, "sendFile", request);
+    hookMocks.stagingFs.readTextFile.mockResolvedValue(JSON.stringify({ version: 1, plugins: [{ ...record, version: "2.0.0" }] }));
+    await act(async () => { await click(); });
+    expect(status).toHaveBeenLastCalledWith(expect.stringContaining("checksum-verified install"));
+    expect(hookMocks.handoffTransport).toHaveBeenCalledOnce();
+    expect(hookMocks.stagingFs.readTextFile).toHaveBeenCalledTimes(2);
+  });
+
   it("removes the UI entry and disabled flag before surfacing a post-uninstall storage deletion error", async () => {
     const initial = catalogEntry("1.0.0", "a".repeat(64));
     hookMocks.loadInstalledPlugins.mockResolvedValue({ installed: [initial], failures: [] });

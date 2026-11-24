@@ -1,6 +1,6 @@
 import {
   PluginEmbed3DRequestSchema, PluginMinimize3DRequestSchema, PluginFlatten3DRequestSchema,
-  type PluginEmbed3DResult, type PluginMinimize3DResult, type PluginFlatten3DResult
+  type PluginEmbed3DResult, type PluginMinimize3DResult, type PluginFlatten3DResult, type PluginHandoffGraphResult
 } from "@chemdraft/plugin-api";
 import type { PluginHostOptions } from "@chemdraft/plugin-host";
 import { chemistry3dTimeoutMs, CHEMISTRY3D_STARTUP_TIMEOUT_MS, pauseChemistry3dDeadlineForStartup } from "@chemdraft/plugin-host";
@@ -12,6 +12,7 @@ import { ModelTokenAuthority, sessionModelTokens } from "./token";
 import type { Chemistry3dJob, Chemistry3dResult, Chemistry3dWorkResponse } from "./protocol";
 import type { Chemistry3dTimingSink } from "./timing";
 import { timeHost3d, timeHost3dAsync } from "./hostTiming";
+import type { HandoffGraphWork } from "./handoffAudit";
 
 export type Chemistry3dTransport = (job: Chemistry3dJob, signal: AbortSignal) => Promise<Chemistry3dResult>;
 export type Chemistry3dProviders = Required<Pick<PluginHostOptions, "embed3d" | "minimize3d" | "flatten3d">>;
@@ -236,6 +237,12 @@ export const runInConformerWorker: Chemistry3dTransport = createConformerWorkerP
     } : undefined;
   })()
 ).run;
+
+export async function runHandoffGraphInConformerWorker(request: HandoffGraphWork, signal: AbortSignal): Promise<PluginHandoffGraphResult> {
+  const result = await runInConformerWorker({ method: "handoffGraph", request }, signal);
+  signal.throwIfAborted();
+  return result as PluginHandoffGraphResult;
+}
 
 export function createChemistry3dProviders(run: Chemistry3dTransport = runInConformerWorker,
   tokens: ModelTokenAuthority = sessionModelTokens, onTiming?: Chemistry3dTimingSink): Chemistry3dProviders {
