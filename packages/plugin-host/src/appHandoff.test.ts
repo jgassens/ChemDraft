@@ -233,8 +233,12 @@ describe("PluginHost app handoff", () => {
     const { host, register, transport } = setup();
     register(async ({ apps }) => {
       for (const key of ["token", "nonce", "invocation", "arming", "commandId", "source", "pluginId"]) {
-        await expect(apps!.sendFile({ ...send, [key]: "spoofed" })).rejects.toThrow("Invalid apps.sendFile request");
+        await expect(apps!.sendFile({ ...send, [key]: "spoofed" })).rejects.toThrow(/^Invalid apps\.sendFile request\.$/);
       }
+      await expect(apps!.sendFile({ ...send, extension: "Injected text" as never }))
+        .rejects.toThrow(/^Invalid apps\.sendFile request at extension\.$/);
+      await expect(apps!.runCompanion({ ...run, input: { extension: "Injected text", text: "input" } as never }))
+        .rejects.toThrow(/^Invalid apps\.runCompanion request at input\.extension\.$/);
       await expect(apps!.runCompanion({ ...run, combination: "unknown" })).rejects.toThrow("declared by the plugin");
       expect(transport).not.toHaveBeenCalled();
       transport.mockResolvedValueOnce({ available: true, appPath: "/host/path" });

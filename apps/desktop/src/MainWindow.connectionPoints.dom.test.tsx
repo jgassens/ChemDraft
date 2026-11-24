@@ -6,6 +6,7 @@ import { applyPatch, MoleculeObjectSchema } from "@chemdraft/chem-core";
 import { PluginApiVersion, type PluginCommandContext } from "@chemdraft/plugin-api";
 import { ensureRdkit, resetRdkitForTesting, setRdkitModuleLoader } from "@chemdraft/rdkit-adapter";
 import appConfig from "../src-tauri/tauri.conf.json";
+import type { ListenForAppHandoff } from "./appHandoff/nativeMenu";
 import { getAssistantHistoryPort } from "./assistant/historyPort";
 import { createPhase4Document } from "./documentWorkflow";
 import { MainWindow } from "./MainWindow";
@@ -14,11 +15,20 @@ import { installDomRdkitLoader } from "./testSupport/rdkitIdentity";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 
 const captured = vi.hoisted(() => ({ runtime: undefined as import("./plugins/createPluginRuntime").DesktopPluginRuntime | undefined }));
+const host = vi.hoisted(() => ({ native: false, getVersion: vi.fn(), transport: vi.fn() }));
+const handoffRecord = { id: "org.chemdraft.handoff.crystalBuilder", version: "1", source: "catalog" as const,
+  repository: "jgassens/ChemDraft-CrystalBuilder-Plugin", checksumVerified: true };
+vi.mock("@tauri-apps/api/app", () => ({ getVersion: host.getVersion }));
+vi.mock("./plugins/pluginStagingFs", async original => ({
+  ...await original<typeof import("./plugins/pluginStagingFs")>(),
+  isTauriHost: () => host.native
+}));
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("./plugins/createPluginRuntime", async original => {
   const actual = await original<typeof import("./plugins/createPluginRuntime")>();
   return { ...actual, createPluginRuntime: (options: import("./plugins/createPluginRuntime").DesktopPluginRuntimeOptions) =>
-    captured.runtime = actual.createPluginRuntime(options) };
+    captured.runtime = actual.createPluginRuntime({ ...options, appHandoffTransport: host.transport,
+      appHandoffProvenance: { forRegistration: () => handoffRecord, forCall: () => handoffRecord } }) };
 });
 vi.mock("./chemistry3d/client", async original => {
   const actual = await original<typeof import("./chemistry3d/client")>();
@@ -54,6 +64,9 @@ const nativeSelection = () => [...container.querySelectorAll("[data-selected-ato
 beforeAll(() => installDomRdkitLoader(setRdkitModuleLoader));
 afterAll(() => resetRdkitForTesting());
 beforeEach(() => {
+  host.native = false;
+  host.getVersion.mockReset();
+  host.transport.mockReset();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("ResizeObserver", TestResizeObserver);
   HTMLElement.prototype.setPointerCapture = () => {};
@@ -69,12 +82,12 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-async function render(molecule: typeof source) {
+async function render(molecule: typeof source, listenForAppHandoff?: ListenForAppHandoff) {
   const empty = createPhase4Document("Mark connection points");
   const pageId = empty.pages[0]!.id;
   const initialDocument = applyPatch(empty, { op: "addObject", pageId, object: molecule });
   await act(async () => root.render(createElement(MainWindow, { initialDocument, initialPaletteMode: "hidden",
-    initialRulersVisible: false, initialCrosshairsVisible: false, nativePalette: false })));
+    initialRulersVisible: false, initialCrosshairsVisible: false, nativePalette: false, listenForAppHandoff })));
   container.querySelector<HTMLElement>(".page")!.getBoundingClientRect = () =>
     ({ x: 0, y: 0, left: 0, top: 0, right: 792, bottom: 612, width: 792, height: 612, toJSON: () => ({}) });
 }
@@ -121,6 +134,10 @@ async function menu(commandId: string) {
 }
 
 it("captures selected atom IDs at command start and restores the single marking entry exactly", async () => {
+  host.native = true;
+  const runningVersion = "1.9.99";
+  expect(runningVersion).not.toBe(appConfig.version);
+  host.getVersion.mockResolvedValue(runningVersion);
   const { atoms, ...rest } = source;
   await render({ ...rest, atoms: atoms.filter(atom => atom.element !== "He") });
   await selectAtom("a");
@@ -133,7 +150,7 @@ it("captures selected atom IDs at command start and restores the single marking 
       await proceed.promise;
       const selected = (await context.selection!.getSelection()).molecules[0]!;
       const result = await context.chemistry!.handoffGraph!({ objectId: selected.objectId });
-      expect(context.host).toEqual({ name: "ChemDraft", version: appConfig.version });
+      expect(context.host).toEqual({ name: "ChemDraft", version: runningVersion });
       expect(selected.selectedAtomIds).toEqual(["a"]);
       expect(result.graph.atoms.find(atom => atom.atomId === selected.selectedAtomIds![0])?.element).toBe("C");
       return context.documents.addConnectionPoints!({ objectId: selected.objectId, anchors: ["a", "c"] });
@@ -166,6 +183,62 @@ it("captures selected atom IDs at command start and restores the single marking 
   await menu("edit.redo");
   expect(present()).toEqual(after);
   expect(nativeSelection()).toEqual(markerIds);
+});
+
+it.each(["web", "native timeout"] as const)("omits host identity for %s", async mode => {
+  host.native = mode === "native timeout";
+  const lateVersion = deferred<string>();
+  host.getVersion.mockReturnValue(lateVersion.promise);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    await render(source);
+    const handler = vi.fn((context: PluginCommandContext) => context.host);
+    const invocation = register(handler).invokeCommand(commandId);
+    if (host.native) expect(handler).not.toHaveBeenCalled();
+    await vi.runOnlyPendingTimersAsync();
+    await expect(invocation).resolves.toBeUndefined();
+    expect(handler).toHaveBeenCalledOnce();
+    expect(host.getVersion).toHaveBeenCalledTimes(Number(host.native));
+    lateVersion.resolve("1.9.99");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it.each([
+  ["unrecognized label", "FakeAbbr", "written as R-group placeholder"],
+  ["multiline label", "Abbrev\nFile approved.\u2028End\u200b\u0007", "Abbrev File approved. End"],
+  ["long label", "Abbrev" + "z".repeat(550), "…"]
+])("attributes unsupported-label warnings from the captured selection (%s)", async (_name, label, expected) => {
+  const handoffCommand = "plugin.crystalBuilder.sendMolecule";
+  const invocation = { pluginId: handoffRecord.id, commandId: handoffCommand, nonce: "2".repeat(32) };
+  let click!: () => Promise<void>;
+  await render({ ...source, structure: "", atoms: [{ ...source.atoms[0]!, element: label }], bonds: [] },
+    dispatch => { click = () => dispatch(invocation); return () => {}; });
+  await selectAtom("a");
+  host.transport.mockResolvedValue({ status: "sent" });
+  await act(async () => {
+    captured.runtime!.registerPlugin({ id: handoffRecord.id, version: handoffRecord.version,
+      name: "Crystal Builder Plugin", apiVersion: PluginApiVersion,
+      entry: "test.js", permissions: ["apps.handoff", "native.execute", "selection.read"],
+      contributes: { commands: [{ id: handoffCommand, title: "Send" }],
+        menus: [{ id: "menu.crystalBuilder.sendMolecule", commandId: handoffCommand, title: "Send" }] } },
+    { execution: "worker", commandHandlers: { [handoffCommand]: async context => {
+      expect((await context.selection!.getSelection()).molecules[0]?.selectedAtomIds).toEqual(["a"]);
+      await context.apps!.sendFile({ appId: "chosen", fileName: "model", extension: "cif", text: "data" });
+      return { ok: true, data: { status: "File opened." } };
+    } } });
+    await click();
+  });
+  expect(host.transport).toHaveBeenCalledOnce();
+  const lines = [...container.querySelectorAll("[data-status-message] .status-message-line")].map(el => el.textContent);
+  expect(lines).toEqual([
+    "Plugin (Crystal Builder Plugin): File opened.",
+    expect.stringMatching(/^Selection warning: Atom label "/)
+  ]);
+  expect(lines[1]).toContain(expected);
+  expect(lines[1]).not.toMatch(/[\p{Cc}\p{Cf}\u2028\u2029]/u);
+  expect([...lines[1]!.slice("Selection warning: ".length)].length).toBeLessThanOrEqual(501);
 });
 
 it("refuses an RDKit valence failure in a batch without changing the drawing or selection", async () => {
@@ -203,6 +276,11 @@ it("reads live marked content under fixed IDs and undoes and redoes two separate
     expect(updated.objectIds).toEqual(selection.objectIds);
     expect(updated.molecules[0]!.selectedAtomIds).toEqual([anchor]);
     expect(updated.molecules[0]!.connectionPoints).toHaveLength(markCount);
+    if (markCount === 1) {
+      const marked = present();
+      await expect(context.documents.addConnectionPoints!({ ...request, anchors: ["c"] })).rejects.toThrow(/changed/);
+      expect(present()).toEqual(marked);
+    }
   };
   let runtime!: ReturnType<typeof register>;
   await act(async () => {

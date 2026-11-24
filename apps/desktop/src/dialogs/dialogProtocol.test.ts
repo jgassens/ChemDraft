@@ -232,12 +232,29 @@ it("accepts only the bounded Rust-owned handoff snapshot and typed choices", () 
   expect(parseDialogMessage({ ...s, type: "result", data: { status: "accepted" } })).toBeUndefined();
 });
 
-it.each(["dialog-confirm.json", "dialog-rebuild.json"])("validates Rust's %s with the production schema", fixture => {
-  const data: unknown = JSON.parse(readFileSync(new URL(`../appHandoff/__fixtures__/wire/${fixture}`, import.meta.url), "utf8"));
+it.each(["dialog-confirm", "dialog-rebuild", "dialog-confirm-unwarned", "dialog-rebuild-unwarned"])(
+  "validates Rust's %s with the production schema", fixture => {
+  const data: unknown = JSON.parse(readFileSync(new URL(`../appHandoff/__fixtures__/wire/${fixture}.json`, import.meta.url), "utf8"));
   const parsed = AppHandoffDialogSnapshotSchema.parse(data);
   expect(parsed).toEqual(data);
   expect(parsed.pluginName).toBe("Send to Crystal Builder");
-  expect(parsed.warnings).toEqual(["ChemDraft verified this build."]);
+  expect(parsed.warnings).toEqual(fixture.endsWith("-unwarned") ? undefined : ["ChemDraft verified this build."]);
   const message = { ...snapshot(), dialogKind: "appHandoff", data };
   expect(parseDialogMessage(message)).toEqual(message);
+});
+
+it("rejects the oversized result envelope of a valid warning-free confirmation", () => {
+  const wire = (name: string) => JSON.parse(readFileSync(new URL(`../appHandoff/__fixtures__/wire/${name}.json`, import.meta.url), "utf8"));
+  const { composition: _composition, ...confirmation } = wire("dialog-confirm-unwarned");
+  const parameters = Array.from({ length: 257 }, (_, i) => `p${i}`);
+  const frame = { ...snapshot(), documentTabId: "app-handoff", dialogKind: "appHandoff",
+    sessionId: "0".repeat(32), requestId: "open" };
+  const confirm = { ...confirmation, suggestedCombination: "b",
+    combinations: { a: { ...Object.fromEntries(parameters.map(key => [key, "x"])), rebuildAs: "b" }, b: {} } };
+  expect(parseDialogMessage({ ...frame, data: confirm })).toBeDefined();
+  const result = { ...wire("dialog-rebuild-unwarned"), combination: "a", rebuildCombination: "b",
+    rebuildLabel: "Rebuild", rebuildChanges: Object.fromEntries(parameters.map(key => [key, null])),
+    twist: Number.MAX_VALUE };
+  expect(AppHandoffDialogSnapshotSchema.safeParse(result).success).toBe(true);
+  expect(parseDialogMessage({ ...frame, data: result })).toBeUndefined();
 });

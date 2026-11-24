@@ -1,6 +1,6 @@
 import type { PluginHandoffGraphResult } from "@chemdraft/plugin-api";
-import { ensureRdkit, type RdkitJsMol, type RdkitMinimalModule } from "@chemdraft/rdkit-adapter";
-import { canonicalGraphSmiles, definedDoubleBonds, moleculeFromHandoffStructure, readHandoffStructure } from "./graph";
+import { ensureRdkit, type RdkitJsMol } from "@chemdraft/rdkit-adapter";
+import { canonicalGraphSmiles, moleculeFromHandoffStructure, readHandoffStructure } from "./graph";
 import { unspecifiedDoubleBondIndices } from "./stereo";
 
 export interface HandoffGraphWork extends Omit<PluginHandoffGraphResult,
@@ -10,35 +10,12 @@ export interface HandoffGraphWork extends Omit<PluginHandoffGraphResult,
     isotope?: number; radical?: number; statedHydrogens?: number }[];
   bonds: { id: string; a: number; b: number; order: "single" | "double" | "triple" | "aromatic" | "unknown";
     either: boolean; style?: "wedge" | "hashed" | "wavy" }[];
-  /** Host-only check of the marked product before committing a drawing edit. */
-  connectionPointStereo?: { atomIds: readonly string[]; originalSmiles: string; specifiedDoubleBonds: readonly string[] };
-}
-
-function verifyConnectionPointStereo(rdkit: RdkitMinimalModule, graph: PluginHandoffGraphResult["graph"],
-  { atomIds, originalSmiles, specifiedDoubleBonds }: NonNullable<HandoffGraphWork["connectionPointStereo"]>, context: string): void {
-  const existingDoubleBonds = new Set(specifiedDoubleBonds);
-  if (definedDoubleBonds(graph).some(bond => !existingDoubleBonds.has(bond))) {
-    throw new Error(`${context}: adding X would create new double-bond stereochemistry.`);
-  }
-  const added = new Set(atomIds);
-  const atoms = graph.atoms.map(atom => atom.atomId && added.has(atom.atomId) ? { ...atom, element: "H" } : atom);
-  // Preserve the parity and alkene reference atoms RDKit assigned to the marked product.
-  // Reading a fresh drawing with H or deleting X would let the coordinates assign stereo anew.
-  const explicit = moleculeFromHandoffStructure(rdkit, { ...graph, atoms }, context);
-  const canonicalWithoutExplicitHs = (smiles: string) => {
-    const molecule = rdkit.get_mol(smiles, JSON.stringify({ removeHs: true }));
-    if (!molecule) throw new Error(`${context}: RDKit could not normalize explicit hydrogens.`);
-    try { return canonicalGraphSmiles(molecule); } finally { molecule.delete(); }
-  };
-  try {
-    if (canonicalWithoutExplicitHs(canonicalGraphSmiles(explicit)) !== canonicalWithoutExplicitHs(originalSmiles)) {
-      throw new Error(`${context}: adding X would change the original stereochemistry or chemical identity.`);
-    }
-  } finally { explicit.delete(); }
+  /** Host-only stereo gate for the original and product of a connection-point edit. */
+  connectionPointEdit?: "original" | "marked";
 }
 
 export async function auditHandoffGraph(work: HandoffGraphWork): Promise<PluginHandoffGraphResult> {
-  const { molfile, atoms, bonds, connectionPointStereo, ...metadata } = work;
+  const { molfile, atoms, bonds, connectionPointEdit, ...metadata } = work;
   const rdkit = await ensureRdkit();
   const context = `Handoff graph for molecule "${work.objectId}"`;
   const input = rdkit.get_mol(molfile, JSON.stringify({ removeHs: false }));
@@ -79,6 +56,19 @@ export async function auditHandoffGraph(work: HandoffGraphWork): Promise<PluginH
       atom.isConnectionPoint = drawn.isConnectionPoint;
       atom.explicitHydrogenCount = explicitNeighbors[i]! + (drawn.statedHydrogens ?? 0);
     });
+    const stereoMol = input as RdkitJsMol & { get_stereo_tags?: () => string };
+    if (!stereoMol.get_stereo_tags) throw new Error("RDKit stereocenter perception is unavailable.");
+    const tags = JSON.parse(stereoMol.get_stereo_tags()) as { CIP_atoms: [number, string][] };
+    const stage = connectionPointEdit === "original" ? "The original molecule" : "The marked molecule";
+    if (connectionPointEdit && (tags.CIP_atoms.length || graph.atoms.some(atom => atom.stereo))) {
+      throw new Error(`${stage} has assigned or potential tetrahedral stereochemistry. Draw X by hand.`);
+    }
+    const unspecifiedStereocenters = tags.CIP_atoms.flatMap(([i, tag]) => tag === "(?)" ? [i] : []);
+    const openDoubleBonds = new Set(unspecifiedDoubleBondIndices(rdkit, input));
+    graph.bonds.forEach((bond, i) => { if (bond.stereo === "either") openDoubleBonds.add(i); });
+    if (connectionPointEdit && (openDoubleBonds.size || graph.bonds.some(bond => bond.order === 2 && bond.stereo))) {
+      throw new Error(`${stage} has assigned or potential double-bond stereochemistry. Draw X by hand.`);
+    }
     const canonicalSmiles = canonicalGraphSmiles(input);
     const rebuilt = moleculeFromHandoffStructure(rdkit, graph, context);
     try {
@@ -86,13 +76,6 @@ export async function auditHandoffGraph(work: HandoffGraphWork): Promise<PluginH
         throw new Error(`${context}: the graph round trip would change the drawn canonical SMILES.`);
       }
     } finally { rebuilt.delete(); }
-    if (connectionPointStereo) verifyConnectionPointStereo(rdkit, graph, connectionPointStereo, context);
-    const stereoMol = input as RdkitJsMol & { get_stereo_tags?: () => string };
-    if (!stereoMol.get_stereo_tags) throw new Error("RDKit stereocenter perception is unavailable.");
-    const tags = JSON.parse(stereoMol.get_stereo_tags()) as { CIP_atoms: [number, string][] };
-    const unspecifiedStereocenters = tags.CIP_atoms.flatMap(([i, tag]) => tag === "(?)" ? [i] : []);
-    const openDoubleBonds = new Set(unspecifiedDoubleBondIndices(rdkit, input));
-    graph.bonds.forEach((bond, i) => { if (bond.stereo === "either") openDoubleBonds.add(i); });
     return { ...metadata, graph, canonicalSmiles, unspecifiedStereocenters, unspecifiedDoubleBonds: [...openDoubleBonds].sort((a, b) => a - b) };
   } finally { input.delete(); }
 }

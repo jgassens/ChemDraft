@@ -1,6 +1,7 @@
 import type { PluginHostOptions } from "@chemdraft/plugin-host";
 import { nameToStructureForPlugin } from "./pluginChemistry";
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
+import { boundedHandoffText } from "@chemdraft/plugin-api";
 import type {
   AppliedPatchReceipt,
   PluginCommandInput,
@@ -255,14 +256,16 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
         if (!active) return;
         const problems = Array.from(feedback.problems.values());
         const messages = problems.map(({ message }) => message);
+        if (!feedback.pending && feedback.confirmed && problems.length) messages.unshift(feedback.confirmed);
         if (feedback.pending) messages.push("The plugin command ended before app handoff completed.");
         const detail = failure !== undefined
           ? attributedHandoffText(failure, name) ?? attributedHandoffText("Command failed.", name)
-          : !feedback.pending && problems.every(({ kind }) => kind === "open-failed")
+          : !feedback.pending && (feedback.confirmed || problems.every(({ kind }) => kind === "open-failed"))
             ? appHandoffCommandStatus(result, name) : undefined;
         if (detail) messages.push(detail);
-        const selection = Array.from(new Set(warnings)).join(" ");
-        const text = [...messages, selection].filter(Boolean).join("\n");
+        const selection = boundedHandoffText(Array.from(new Set(warnings)).join(" "));
+        if (selection) messages.push(`Selection warning: ${selection}`);
+        const text = messages.join("\n");
         if (text) providersRef.current.onAppHandoffStatus?.(text);
       };
       return runtime.invokeAppHandoffMenuCommand(invocation, warnings, feedback).then(

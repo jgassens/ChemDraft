@@ -239,12 +239,21 @@ if (picked.status === "chosen") {
 }
 ```
 
-The optional `context.host?.version` identifies the running ChemDraft version; older hosts may omit
-`host`. A selected molecule's optional `selectedAtomIds` contains drawn atom IDs matching
-`handoffGraph`, and is empty for whole-object selection. During an ordinary active command with
-`document.write`, optional `documents.addConnectionPoints` adds a single-bonded X to each of 1–999
-anchors on a molecule selected at command start. It creates one patch; a refused anchor leaves the
-drawing unchanged. Check for the method on older hosts:
+The optional `context.host?.version` identifies the running ChemDraft version. Web hosts and hosts
+without a native version may omit `host`. In ordinary commands targeting `^0.1.28` or later,
+`selection.getSelection()` keeps the starting object and atom IDs and reads current molecule
+content from those objects. A second read can see X atoms added by the command. For earlier API
+versions, each read uses the current whole-object selection, which may change while a command runs.
+The optional `selectedAtomIds` contains drawn atom IDs matching `handoffGraph` and is empty for
+whole-object selection.
+
+With `document.write`, `documents.addConnectionPoints` accepts one batch of 1–999 anchors in one
+molecule selected when the command started. The host applies a successful batch as one patch and
+refuses a second call for that molecule in the same command because the molecule has changed.
+Pass all of its anchors in the same call or start a new command to mark additional points.
+Any refusal leaves the drawing unchanged. If either the original or marked molecule has assigned or
+potential tetrahedral or double-bond stereochemistry, or the drawing uses a wedge, hashed, or wavy
+bond, draw X by hand. Check for the method on older hosts:
 
 ```ts
 const anchors = molecule.selectedAtomIds ?? [];
@@ -258,8 +267,10 @@ failure detail are plain text with the plugin name displayed in a host-rendered 
 reads at most 500 Unicode code points of each message, adds an ellipsis when truncated, and limits
 the display name to 80 code points. Control and invisible format characters are removed, and line
 breaks become spaces. If a handoff is refused, the status area shows the host's reason and any
-plugin failure detail on separate lines. If a build completed and its output could not open, the
-host shows the open error alongside any plugin success summary.
+plugin failure detail on separate lines. A later confirmed submission shows its outcome together
+with any earlier refusal of a different capability. Selection warnings appear under the host's
+`Selection warning` label and use the same text bounds. If a build completed and its output could
+not open, the host shows the open error alongside any plugin success summary.
 
 Companion pipelines are declared in the manifest's `companions` array, including an ID, relative
 macOS and Windows tool paths inside the chosen app, tested versions, ordered steps with arguments and

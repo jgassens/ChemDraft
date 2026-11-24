@@ -101,6 +101,7 @@ export type DesktopStructureFromSmilesProvider = (
 
 export interface AppHandoffMenuFeedback {
   pending: number;
+  confirmed?: string;
   problems: Map<Parameters<PluginAppHandoffTransport>[1], Exclude<AppHandoffTransportStatus, { kind: "success" }>>;
 }
 
@@ -397,7 +398,6 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   const commandInvocations = new Map<symbol, { pluginId: string; stop: AbortController }>();
   let commandFrame: symbol[] | undefined;
   let armedSelectionWarnings: string[] | undefined;
-  let readingSelectionWarnings: string[] | undefined;
   const proposalTabs = new Map<string, string>();
   const closedTabTitles = new Map<string, string>();
   const runningTabCommands = new Map<string, number>();
@@ -408,12 +408,19 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     }
   };
   let proposingTabId: string | undefined;
+  const commandDocument = () => ({
+    tabId: options.getActiveDocumentTab?.().id,
+    key: options.getActiveDocumentKey?.() ?? documentIdentityKey(options.getActiveDocument())
+  });
   let nativeIdentity: PluginCommandContext["host"];
-  if (isTauriHost()) {
-    void import("@tauri-apps/api/app").then(({ getVersion }) => getVersion()).then(version => {
-      if (version) nativeIdentity = Object.freeze({ name: "ChemDraft", version });
-    }).catch(() => { /* The optional identity remains unavailable if native IPC fails. */ });
-  }
+  let nativeIdentityReady = isTauriHost() ? new Promise<string | undefined>(resolve => {
+    const timer = setTimeout(() => resolve(undefined), 250);
+    void import("@tauri-apps/api/app").then(({ getVersion }) => getVersion())
+      .then(resolve, () => resolve(undefined)).finally(() => clearTimeout(timer));
+  }).then(version => {
+    if (version) nativeIdentity = Object.freeze({ name: "ChemDraft", version });
+    nativeIdentityReady = undefined;
+  }) : undefined;
   class DesktopPluginHost extends PluginHost {
     override async invokeCommand<Result = unknown>(commandId: string, invokeOptions?: Parameters<PluginHost["invokeCommand"]>[1]): Promise<Result> {
       return this.withInvocationFrame(() => super.invokeCommand<Result>(commandId, invokeOptions));
@@ -462,13 +469,25 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       super.unregisterPlugin(pluginId);
     }
 
-    override createCommandContext(pluginId: string, invocationToken?: symbol, input?: PluginCommandInput): PluginCommandContext {
-      const context = super.createCommandContext(pluginId, invocationToken, input);
+    protected override captureCommandContext() {
+      const collector = armedSelectionWarnings;
+      armedSelectionWarnings = undefined;
+      const frame = commandFrame;
+      const document = commandDocument();
+      return (pluginId: string, token: symbol, input?: PluginCommandInput) => {
+        if (frame) {
+          frame.push(token);
+          commandInvocations.set(token, { pluginId, stop: new AbortController() });
+        }
+        const build = () => this.createCommandContext(pluginId, token, input, collector, document);
+        return nativeIdentityReady ? nativeIdentityReady.then(build) : build();
+      };
+    }
+
+    override createCommandContext(pluginId: string, invocationToken?: symbol, input?: PluginCommandInput,
+      selectionWarnings?: string[], document = commandDocument()): PluginCommandContext {
+      const context = super.createCommandContext(pluginId, invocationToken, input, selectionWarnings);
       if (nativeIdentity) context.host = nativeIdentity;
-      if (invocationToken && commandFrame) {
-        commandFrame.push(invocationToken);
-        commandInvocations.set(invocationToken, { pluginId, stop: new AbortController() });
-      }
       const commandSignal = invocationToken ? commandInvocations.get(invocationToken)?.stop.signal : undefined;
       // The host validates permissions and parses synchronously before calling the provider.
       // Arm only that synchronous span, so concurrent commands retain independent signals.
@@ -483,14 +502,13 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       }
       const permissions = ["chemistry.compute", "native.execute", "selection.read"] as const;
       if (context.chemistry && (isTauriHost() || options.structureNamingEngine) && permissions.every(permission => this.hasPermission(pluginId, permission))) {
-        const documentKey = options.getActiveDocumentKey?.() ?? documentIdentityKey(options.getActiveDocument());
         context.chemistry.structureToName = async request => {
           for (const permission of permissions) this.requirePermission(pluginId, permission);
           const invocation = invocationToken ? commandInvocations.get(invocationToken) : undefined;
           if (!invocation || invocation.pluginId !== pluginId || invocation.stop.signal.aborted) throw new Error("Structure naming is available only during this plugin command invocation.");
           const parsed = PluginStructureToNameRequestSchema.parse(request);
           const bound = this.commandRequestDocument(pluginId, invocationToken);
-          if (!bound && documentKey !== (options.getActiveDocumentKey?.() ?? documentIdentityKey(options.getActiveDocument()))) throw new Error("The active document changed during the naming command.");
+          if (!bound && document.key !== commandDocument().key) throw new Error("The active document changed during the naming command.");
           const pinned = bound?.read();
           const molecule = scopedNamingMolecule(bound ? pinned : options.getActiveDocument(),
             bound ? pinned && buildPluginSelectionSnapshot(pinned) : options.getSelection?.(), parsed.objectId);
@@ -498,36 +516,19 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
           return naming.name(manifest, molecule, invocation.stop.signal);
         };
       }
-      const tabId = options.getActiveDocumentTab?.().id;
       const proposePatch = context.documents.proposePatch;
       context.documents.proposePatch = (proposal) => {
         // The host enqueues synchronously before returning its promise. Scope the queue notification
         // to this context, so concurrent commands and late results retain their own source tab.
         const previous = proposingTabId;
-        proposingTabId = tabId;
+        proposingTabId = document.tabId;
         try {
           return proposePatch(proposal);
         } finally {
           proposingTabId = previous;
         }
       };
-      const collector = armedSelectionWarnings;
-      armedSelectionWarnings = undefined;
-      const selection = context.selection;
-      if (!selection || !collector) return context;
-      return {
-        ...context,
-        selection: {
-          getSelection: () => {
-            readingSelectionWarnings = collector;
-            try {
-              return selection.getSelection();
-            } finally {
-              readingSelectionWarnings = undefined;
-            }
-          }
-        }
-      };
+      return context;
     }
 
     protected override observeAppHandoffCall(
@@ -535,7 +536,8 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       request: Parameters<PluginAppHandoffTransport>[2], result: Promise<unknown>
     ): void {
       const feedback = handoffFeedback.get(invocation);
-      const previousProblem = feedback?.problems.get(method);
+      const previousProblems = new Map(feedback?.problems);
+      const previousProblem = previousProblems.get(method);
       if (feedback) feedback.pending++;
       const report = (status?: AppHandoffTransportStatus) => {
         if (feedback) feedback.pending--;
@@ -546,9 +548,13 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
           if (previousProblem?.kind === "refused" && feedback?.problems.get(method) === previousProblem) {
             feedback.problems.delete(method);
           }
-          if (feedback && (feedback.pending || feedback.problems.size)) return;
+          if (feedback && (feedback.problems.has(method) ||
+              [...feedback.problems].some(([key, problem]) => previousProblems.get(key) !== problem))) return;
+          if (feedback && status.message) feedback.confirmed = status.message;
+          if (feedback?.pending) return;
         } else {
           feedback?.problems.set(method, status);
+          if (feedback && (method === "sendFile" || method === "runCompanion")) feedback.confirmed = undefined;
         }
         if (status.message) options.onAppHandoffStatus?.(status.message);
       };
@@ -642,13 +648,12 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     captureRequestDocument: options.captureRequestDocument,
     openRequestHistory: options.openRequestHistory,
     requestPageSpace: options.requestPageSpace,
-    getRequestSelection: (document, budget) => buildPluginSelectionSnapshot(document, readingSelectionWarnings, budget),
-    getSelection: readSelection ? () => readSelection(readingSelectionWarnings) : undefined,
+    getRequestSelection: (document, budget, warnings) => buildPluginSelectionSnapshot(document, warnings, budget),
+    getSelection: readSelection,
     captureSelection: options.captureSelection && (() => {
       const document = options.getActiveDocument();
       if (!document) return { objectIds: [], read: () => ({ objectIds: [], molecules: [] }) };
-      const selection = options.captureSelection!(document);
-      return { objectIds: selection.objectIds, read: (live, pages) => selection.read(live, pages, readingSelectionWarnings) };
+      return options.captureSelection!(document);
     }),
     createStorage: options.createStorage,
     onProposedPatchesChanged: () => {

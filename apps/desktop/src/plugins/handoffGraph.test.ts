@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createEmptyDocument, nativeDrawingStyleFromObjectStyle, type ChemDraftDocument, type MoleculeObject, type ReactionObject } from "@chemdraft/chem-core";
-import { chemicalIdentityMolfile } from "@chemdraft/document-workflow-core";
+import { chemicalIdentityMolfile, createSmilesMolecule, pastedStructureDepictionFromMolfile } from "@chemdraft/document-workflow-core";
 import { planBondExtension } from "@chemdraft/layout-engine";
 import { ensureRdkit, resetRdkitForTesting } from "@chemdraft/rdkit-adapter";
 import { installRealRdkitModuleLoader } from "@chemdraft/rdkit-adapter/testing";
@@ -61,44 +61,93 @@ function tetrahedron(coords: readonly (readonly [number, number])[], style: "wed
   return mol;
 }
 
+async function drawSmiles(smiles: string) {
+  const mol = (await ensureRdkit()).get_mol(smiles)!;
+  try {
+    return { ...createSmilesMolecule(createEmptyDocument(), { x: 200, y: 180 },
+      pastedStructureDepictionFromMolfile(mol.get_molblock!()), smiles), id: request.objectId };
+  } finally { mol.delete(); }
+}
+
 describe("connection point chemistry", () => {
+  const drawByHand = /stereochemistry.*Draw X by hand\./;
   it.each(["wedge", "hashed"] as const)("refuses an even-layout %s that would invert when X replaces H", async style => {
     const mol = tetrahedron([[100, 100], [100, 70], [126, 115], [74, 115]], style);
     expect((await audit(selected(mol))).canonicalSmiles).toMatch(/@/);
-    await expect(mark(mol)).rejects.toThrow(/change.*stereochemistry/);
+    await expect(mark(mol)).rejects.toThrow(drawByHand);
   });
 
   it.each([
     ["fanned", [[120, 120], [155, 120], [153, 130], [145, 145]]],
     ["T", [[120, 120], [120, 85], [155, 120], [85, 120]]]
-  ] as const)("marks a %s tetrahedral layout that preserves its configuration", async (_name, coords) => {
+  ] as const)("refuses a %s tetrahedral layout even when its configuration would be preserved", async (_name, coords) => {
     const mol = tetrahedron(coords, "wedge");
     expect((await audit(selected(mol))).canonicalSmiles).toMatch(/@/);
-    expect((await audit(await mark(mol))).canonicalSmiles).toMatch(/\*.*@/);
+    await expect(mark(mol)).rejects.toThrow(drawByHand);
   });
 
-  it("refuses to define a new double-bond configuration at a terminal alkene", async () => {
+  it("refuses a terminal alkene when marking would create double-bond stereo", async () => {
     const mol = drawAt(molecule(["C", "C", "C"], [[0, 1, "double"], [1, 2]]), [[100, 100], [125, 100], [140, 125]]);
-    await expect(mark(mol)).rejects.toThrow(/new double-bond stereochemistry/);
+    await expect(mark(mol)).rejects.toThrow(/marked molecule.*double-bond stereochemistry.*Draw X by hand\./);
   });
 
-  it.each([[75, "cis"], [125, "trans"]] as const)("keeps existing E/Z when marking an alkene anchor at y=%i", async (y, stereo) => {
+  it.each([[75, "cis"], [125, "trans"]] as const)("refuses existing E/Z when marking an alkene anchor at y=%i", async (y, stereo) => {
     const mol = drawAt(molecule(["C", "C", "C", "C"], [[0, 1, "double"], [0, 2], [1, 3]]),
       [[100, 100], [130, 100], [85, 75], [145, y]]);
     expect((await audit(selected(mol))).graph.bonds[0]!.stereo).toBe(stereo);
-    expect((await audit(await mark(mol))).graph.bonds[0]!.stereo).toBe(stereo);
+    await expect(mark(mol)).rejects.toThrow(drawByHand);
   });
 
-  it("preserves existing annotations and a stated H count away from the anchor", async () => {
-    const mol = tetrahedron([[100, 100], [100, 70], [126, 115], [74, 115]], "wedge");
-    mol.atoms.push({ id: "a4", element: "C", x: 170, y: 170, formalCharge: 0 },
-      { id: "a5", element: "C", x: 200, y: 155, formalCharge: 0, hydrogenCount: 3, warningSuppressed: true });
-    mol.bonds.push({ id: "b3", fromAtomId: "a4", toAtomId: "a5", order: "single" });
-    mol.chemistry = { stereochemistry: ["a0:R"], warnings: [{ code: "test.annotation", message: "Retained annotation" }], isotopeLabels: [] };
-    const marked = (await mark(mol, ["a4"])).pages[0]!.objects[0] as MoleculeObject;
+  it("refuses an unassigned stereogenic double bond in a flat drawing", async () => {
+    const mol = drawAt(molecule(["C", "C", "C", "C"], [[0, 1, "double"], [0, 2], [1, 3]]),
+      [[100, 100], [130, 100], [70, 100], [160, 100]]);
+    const { graph, unspecifiedDoubleBonds } = await audit(selected(mol));
+    expect(graph.bonds[0]!.stereo).toBe("either");
+    expect(unspecifiedDoubleBonds).toEqual([0]);
+    await expect(mark(mol, ["a2"])).rejects.toThrow(/original molecule.*double-bond stereochemistry.*Draw X by hand\./);
+  });
+
+  it("refuses the entire meso dihalide batch when both centers would invert", async () => {
+    const mol = drawAt(molecule(["C", "F", "Cl", "C", "F", "Cl"], [[0, 1], [0, 2], [0, 3], [3, 4], [3, 5]]),
+      [[100, 100], [100, 70], [126, 115], [74, 115], [74, 145], [48, 100]]);
+    mol.bonds[0]!.display = { bondStyle: "wedge" };
+    mol.bonds[3]!.display = { bondStyle: "hashed" };
+    const original = structuredClone(mol);
+    await expect(mark(mol, ["a0", "a3"])).rejects.toThrow(drawByHand);
+    expect(mol).toEqual(original);
+  });
+
+  it.each(["wedge", "hashed", "wavy", undefined] as const)("refuses marking one methyl of CC(C)F with %s stereo display", async style => {
+    const mol = drawAt(molecule(["C", "F", "C", "C"], [[0, 1], [0, 2], [0, 3]]),
+      [[100, 100], [100, 70], [70, 115], [130, 115]]);
+    if (style) mol.bonds[0]!.display = { bondStyle: style };
+    await expect(mark(mol, ["a2"])).rejects.toThrow(drawByHand);
+  });
+
+  it.each([
+    ["CCC[C@H](F)CC", "a2"], ["CC(C)(CCCl)[C@H](O)C(C)(C)CCBr", "a9"], ["CCCC(F)CC", "a0"]
+  ])("refuses assigned or potential stereo in %s", async (smiles, anchor) => {
+    await expect(mark(await drawSmiles(smiles), [anchor])).rejects.toThrow(drawByHand);
+  });
+
+  it.each(["c1ccccc1", "c1ccc(-c2ccccc2)cc1", "c1ccc2ccccc2c1", "c1ccncc1", "CC"])(
+    "marks two carbon anchors on flat linker %s", async smiles => {
+      const mol = await drawSmiles(smiles);
+      const { graph } = await audit(selected(mol));
+      const anchors = graph.atoms.filter(atom => atom.element === "C" && atom.hydrogenCount > 0)
+        .slice(0, 2).map(atom => atom.atomId!);
+      const marked = (await mark(mol, anchors)).pages[0]!.objects[0] as MoleculeObject;
+      expect(marked.atoms.filter(atom => atom.element === "X")).toHaveLength(2);
+    });
+
+  it("preserves warnings and a stated H count away from the anchor", async () => {
+    const mol = molecule(["C", "C"], [[0, 1]]);
+    mol.atoms[1] = { ...mol.atoms[1]!, hydrogenCount: 3, warningSuppressed: true };
+    mol.chemistry = { stereochemistry: [], warnings: [{ code: "test.annotation", message: "Retained annotation" }], isotopeLabels: [] };
+    const marked = (await mark(mol)).pages[0]!.objects[0] as MoleculeObject;
     expect(marked.atoms.slice(0, mol.atoms.length)).toEqual(mol.atoms);
     expect(marked.bonds.slice(0, mol.bonds.length)).toEqual(mol.bonds);
-    expect(marked.chemistry).toMatchObject({ stereochemistry: mol.chemistry.stereochemistry, warnings: mol.chemistry.warnings });
+    expect(marked.chemistry?.warnings).toEqual(mol.chemistry.warnings);
   });
 });
 

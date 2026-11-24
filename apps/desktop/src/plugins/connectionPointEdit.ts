@@ -3,12 +3,12 @@ import {
   isEditableNativeMoleculeGraph, nativeAtomChargeSupportsValence, nativeSingleBondGraphMetadata, normalizeNativeMoleculeGeometry
 } from "@chemdraft/document-workflow-core";
 import { nativeBondOrderResolution, nativeElementFromAtomLabel } from "@chemdraft/layout-engine";
+import type { PluginHandoffStructureGraph } from "@chemdraft/plugin-api";
 import {
   clearStoredCtabReference, requireUnchangedConnectionPointSource, resolveObjectOnPage, storedCtabReference,
   type PluginHostOptions, type PluginPatchApplicationRequest
 } from "@chemdraft/plugin-host";
 import { runHandoffGraphInConformerWorker } from "../chemistry3d/client";
-import { definedDoubleBonds } from "../chemistry3d/graph";
 import { planConnectionPoints, prepareHandoffGraph, reactionMembership } from "./handoffGraph";
 import { stableRecord, verifyStoredSources } from "./requestWrites/storedChemistry";
 import { desktopWriteInspectionContext } from "./requestWrites/structureIdentity";
@@ -20,7 +20,17 @@ function refusal(anchors: readonly string[], reason: string): Error {
   return new Error(`Cannot mark ${anchors.length === 1 ? "anchor" : "anchors"} ${anchors.map(id => `"${id}"`).join(", ")}: ${reason}`);
 }
 
+function assertNoDrawnStereo(molecule: MoleculeObject, anchors: readonly string[]): void {
+  if (molecule.bonds.some(bond => {
+    const style = bond.display?.bondStyle;
+    return style === "wedge" || style === "hashed" || style === "wavy" || bond.stereo === "either";
+  })) {
+    throw refusal(anchors, "the drawing indicates stereochemistry with a wedged, hashed, wavy or stereo double bond. Draw X by hand.");
+  }
+}
+
 function assertEditable(page: DocumentPage, molecule: MoleculeObject, anchors: readonly string[]): void {
+  assertNoDrawnStereo(molecule, anchors);
   if (reactionMembership(page, molecule.id).length) throw refusal(anchors, "the molecule belongs to a reaction.");
   if (molecule.superatoms.length) throw refusal(anchors, "the molecule contains a superatom.");
   if (molecule.rGroups.length || !isEditableNativeMoleculeGraph(molecule) ||
@@ -111,18 +121,65 @@ function preserveAtomAndBondRecords(source: MoleculeObject, draft: MoleculeObjec
   return { ...draft, atoms };
 }
 
+function verifyXAsHydrogen(original: PluginHandoffStructureGraph, marked: PluginHandoffStructureGraph,
+  anchors: readonly string[], atomIds: readonly string[]): void {
+  const added = new Map(atomIds.map((id, i) => [id, anchors[i]!]));
+  const originalById = new Map(original.atoms.map(atom => [atom.atomId, atom]));
+  const endpoints = (graph: PluginHandoffStructureGraph, bond: PluginHandoffStructureGraph["bonds"][number]) =>
+    [graph.atoms[bond.a]!.atomId!, graph.atoms[bond.b]!.atomId!] as const;
+  const key = (ends: readonly [string, string]) => JSON.stringify([...ends].sort());
+  const originalOrders = new Map(original.bonds.map(bond => [key(endpoints(original, bond)), bond.order]));
+  const replaced = new Set<string>();
+  for (const bond of marked.bonds) {
+    const [a, b] = endpoints(marked, bond);
+    if (added.has(a) || added.has(b)) {
+      const [point, anchor] = added.has(a) ? [a, b] : [b, a];
+      if (bond.order !== 1 || added.get(point) !== anchor || replaced.has(anchor)) {
+        throw new Error(`The new X "${point}" no longer has one single bond to its anchor.`);
+      }
+      replaced.add(anchor);
+    } else {
+      const pair = key([a, b]);
+      if (originalOrders.get(pair) !== bond.order) {
+        throw new Error(`Adding X would change the bond between "${a}" and "${b}".`);
+      }
+      originalOrders.delete(pair);
+    }
+  }
+  if (originalOrders.size || replaced.size !== added.size) throw new Error("Adding X would change the bond graph.");
+
+  // Interpret each new neutral X as one ordinary H bound to its drawn anchor. The
+  // old explicit atoms stay explicit, including existing X atoms and isotope labels.
+  for (const atom of marked.atoms) {
+    const old = originalById.get(atom.atomId);
+    if (!old) {
+      if (!added.has(atom.atomId!) || !atom.isConnectionPoint || atom.element !== "*" || atom.charge ||
+          atom.isotope || atom.radicalElectrons || atom.hydrogenCount) {
+        throw new Error(`The new atom "${atom.atomId}" is no longer a neutral X connection point.`);
+      }
+    } else if (atom.element !== old.element || atom.charge !== old.charge || atom.isotope !== old.isotope ||
+        atom.hydrogenCount + Number(replaced.has(atom.atomId!)) !== old.hydrogenCount ||
+        atom.radicalElectrons !== old.radicalElectrons) {
+      throw new Error(`Adding X would change the chemical state at atom "${atom.atomId}".`);
+    } else {
+      originalById.delete(atom.atomId);
+    }
+  }
+  if (originalById.size) throw new Error("Adding X would remove an existing atom.");
+}
+
 export async function verifyConnectionPointEdit(before: ChemDraftDocument, draft: ChemDraftDocument,
   { source, pageId, anchors, atomIds }: ConnectionPointEdit, signal = new AbortController().signal): Promise<ChemDraftDocument> {
   const target = resolveObjectOnPage(draft, pageId, source.id);
   if (target?.object.type !== "molecule") throw refusal(anchors, "the edited molecule could not be verified.");
-  const added = new Set(atomIds);
+  assertNoDrawnStereo(target.object, anchors);
   try {
     const molecule = preserveAtomAndBondRecords(source, target.object, atomIds);
     const original = verificationWork(before, pageId, source);
     if (original.sourceAtomMaps.length) throw new Error("The molecule contains retained atom mapping.");
     const existingPoints = original.atoms.flatMap((atom, i) => atom.isConnectionPoint ? [i] : []);
     const context = desktopWriteInspectionContext(signal, existingPoints);
-    const unmarked = await runHandoffGraphInConformerWorker(original, signal);
+    const unmarked = await runHandoffGraphInConformerWorker({ ...original, connectionPointEdit: "original" }, signal);
     if (source.structure || source.compatibility?.unknown.smiles !== undefined) {
       const graph = await context.chemistry.inspectStructure("molfile", original.molfile);
       if (!graph.valid) throw new Error(graph.reason);
@@ -141,22 +198,8 @@ export async function verifyConnectionPointEdit(before: ChemDraftDocument, draft
       }
     }
     const markedWork = verificationWork(draft, pageId, molecule);
-    const marked = await runHandoffGraphInConformerWorker({ ...markedWork,
-      connectionPointStereo: { atomIds, originalSmiles: unmarked.canonicalSmiles,
-        specifiedDoubleBonds: definedDoubleBonds(unmarked.graph) } }, signal);
-    const anchorIds = new Set(anchors);
-    for (const atom of marked.graph.atoms) {
-      const old = originalById.get(atom.atomId);
-      if (!old) {
-        if (!atom.atomId || !added.has(atom.atomId) || !atom.isConnectionPoint || atom.charge || atom.isotope || atom.radicalElectrons) {
-          throw new Error(`The new atom "${atom.atomId}" is no longer a neutral X connection point.`);
-        }
-      } else if (atom.element !== old.element || atom.charge !== old.charge || atom.isotope !== old.isotope ||
-          atom.hydrogenCount !== old.hydrogenCount - Number(atom.atomId !== undefined && anchorIds.has(atom.atomId)) ||
-          atom.radicalElectrons !== old.radicalElectrons) {
-        throw new Error(`Adding X would change the chemical state at atom "${atom.atomId}".`);
-      }
-    }
+    const marked = await runHandoffGraphInConformerWorker({ ...markedWork, connectionPointEdit: "marked" }, signal);
+    verifyXAsHydrogen(unmarked.graph, marked.graph, anchors, atomIds);
     signal.throwIfAborted();
     const compatibility = clearStoredCtabReference(molecule.compatibility);
     const metadata = nativeSingleBondGraphMetadata(molecule.atoms, molecule.bonds);
@@ -164,7 +207,7 @@ export async function verifyConnectionPointEdit(before: ChemDraftDocument, draft
       .map(warning => [stableRecord(warning), warning]));
     const verified = { ...molecule, structure: markedWork.molfile, structureFormat: "molfile-v2000" as const,
       chemistry: { ...metadata, isotopeLabels: source.chemistry?.isotopeLabels ?? metadata.isotopeLabels,
-        stereochemistry: source.chemistry?.stereochemistry ?? [], warnings: [...warnings.values()] },
+        warnings: [...warnings.values()] },
       ...(compatibility && { compatibility: "smiles" in compatibility.unknown
         ? { ...compatibility, unknown: { ...compatibility.unknown, smiles: marked.canonicalSmiles } } : compatibility }) };
     return adoptDerivedDocument(draft, { ...draft, pages: draft.pages.map(page => page.id !== pageId ? page :

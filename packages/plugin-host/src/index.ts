@@ -787,7 +787,7 @@ export interface PluginHostOptions {
   openRequestHistory?: (document: RequestDocument, label: string) => RequestHistory;
   requestPageSpace?: RequestPageSpaceProvider;
   /** Request tools supply a budget so the provider can stop producing entries at the snapshot cap. */
-  getRequestSelection?: (document: ChemDraftDocument, budget?: RequestSnapshotBudget) => PluginSelectionSnapshot;
+  getRequestSelection?: (document: ChemDraftDocument, budget?: RequestSnapshotBudget, warnings?: string[]) => PluginSelectionSnapshot;
 
   /** In-process worker chemistry: no native.execute or document permissions. The signal aborts
    * when this command ends or the plugin unregisters; retained capability references are refused. */
@@ -815,9 +815,10 @@ export interface PluginHostOptions {
    * cannot tell documents apart and performs no such check.
    */
   getActiveDocumentKey?: () => string | undefined;
-  getSelection?: () => PluginSelectionSnapshot | undefined | Promise<PluginSelectionSnapshot | undefined>;
+  getSelection?: (warnings?: string[]) => PluginSelectionSnapshot | undefined | Promise<PluginSelectionSnapshot | undefined>;
   /** Capture selection IDs, and serialize those objects from the live document on each read. */
-  captureSelection?: () => { objectIds: readonly string[]; read: (document: ChemDraftDocument, pages: PluginWriteScopePages) => PluginSelectionSnapshot };
+  captureSelection?: () => { objectIds: readonly string[];
+    read: (document: ChemDraftDocument, pages: PluginWriteScopePages, warnings?: string[]) => PluginSelectionSnapshot };
   /** Storage backend factory (defaults to per-plugin in-memory maps). The desktop app
    *  supplies a disk-backed implementation; the host stays platform-free. */
   createStorage?: (pluginId: string) => PluginStorage;
@@ -1273,7 +1274,10 @@ export class PluginHost {
     const cancel = () => this.finishCommandInvocation(token);
     signal.addEventListener("abort", cancel, { once: true });
     try {
-      return await handler(this.createCommandContext(pluginId, token), call, signal);
+      const pending = this.captureCommandContext()(pluginId, token);
+      const context = "then" in pending ? await pending : pending;
+      if (!this.#activeCommandInvocations.has(token)) throw new PluginHostError("The plugin invocation ended before it could start.");
+      return await handler(context, call, signal);
     } finally {
       signal.removeEventListener("abort", cancel);
       this.finishCommandInvocation(token);
@@ -1302,7 +1306,9 @@ export class PluginHost {
     signal.addEventListener("abort", stop, { once: true });
     request.stop.signal.addEventListener("abort", stop, { once: true });
     try {
-      context = this.createCommandContext(pluginId, token);
+      const pending = this.captureCommandContext()(pluginId, token);
+      context = "then" in pending ? await pending : pending;
+      if (!this.#activeCommandInvocations.has(token)) throw new RequestWriteError("cancelled", "The request tool invocation ended before it could start.");
       toolRequests.set(context, requestId);
       return await handler(context, call, invocation.writeStop.signal);
     } finally {
@@ -1561,7 +1567,14 @@ export class PluginHost {
     }
   }
 
-  createCommandContext(pluginId: string, invocationToken?: symbol, input?: PluginCommandInput): PluginCommandContext {
+  /** Capture host invocation data synchronously, even when preparing a context takes time. */
+  protected captureCommandContext(): (pluginId: string, token: symbol, input?: PluginCommandInput) =>
+    PluginCommandContext | Promise<PluginCommandContext> {
+    return (pluginId, token, input) => this.createCommandContext(pluginId, token, input);
+  }
+
+  createCommandContext(pluginId: string, invocationToken?: symbol, input?: PluginCommandInput,
+    selectionWarnings?: string[]): PluginCommandContext {
     const plugin = this.requireRegisteredPlugin(pluginId);
     const requestTools = supportsPluginRequestTools(plugin.manifest.apiVersion);
     const contextInvocation = invocationToken && this.#activeCommandInvocations.get(invocationToken);
@@ -1632,10 +1645,10 @@ export class PluginHost {
             const binding = boundDocument();
             const pinned = binding?.read();
             const snapshot = (binding ? pinned && (this.getRequestSelection?.(pinned,
-              requestTool ? createRequestSnapshotBudget() : undefined) ??
+              requestTool ? createRequestSnapshotBudget() : undefined, selectionWarnings) ??
               { objectIds: pinned.selection.objectIds, molecules: [] }) :
-              contextInvocation && contextInvocation.selectionAtStart ? await this.readCapturedSelection(contextInvocation) :
-                await this.getSelectionSnapshot?.()) ??
+              contextInvocation && contextInvocation.selectionAtStart ? await this.readCapturedSelection(contextInvocation, selectionWarnings) :
+                await this.getSelectionSnapshot?.(selectionWarnings)) ??
               { objectIds: [], molecules: [] };
             if (requestTool) assertRequestSnapshotSize(snapshot);
             // Hand plugins an independent, immutable copy — never a live document reference, and
@@ -2175,12 +2188,12 @@ export class PluginHost {
       { pageId, source, atomIds, anchors });
   }
 
-  private async readCapturedSelection(invocation: ActiveCommandInvocation): Promise<PluginSelectionSnapshot | undefined> {
+  private async readCapturedSelection(invocation: ActiveCommandInvocation, warnings?: string[]): Promise<PluginSelectionSnapshot | undefined> {
     const document = await this.getActiveDocument?.();
     if (this.getActiveDocumentKey?.() !== invocation.documentKey) {
       throw new PluginHostError("The active document changed while reading the command's selection.");
     }
-    return document && invocation.startingSelectionPages && invocation.selectionAtStart?.(document, invocation.startingSelectionPages);
+    return document && invocation.startingSelectionPages && invocation.selectionAtStart?.(document, invocation.startingSelectionPages, warnings);
   }
 
   private async applyBoundPatch(pluginId: string, token: symbol | undefined, patch: ProposedDocumentPatch,
@@ -2535,6 +2548,7 @@ export class PluginHost {
             }
 
             const input = this.parseCommandInput(manifest.id, invocationContext.input);
+            const createContext = this.captureCommandContext();
             const invocationToken = Symbol(command.id);
             const documentKey = this.getActiveDocumentKey?.();
             const selection = supportsPluginHandoffSelection(manifest.apiVersion) ? this.captureSelection?.() : undefined;
@@ -2590,7 +2604,12 @@ export class PluginHost {
               recognizedImages: []
             });
             try {
-              return await handler(this.createCommandContext(manifest.id, invocationToken, input));
+              const pending = createContext(manifest.id, invocationToken, input);
+              const context = "then" in pending ? await pending : pending;
+              if (!this.#activeCommandInvocations.has(invocationToken)) {
+                throw new PluginHostError("The plugin invocation ended before it could start.");
+              }
+              return await handler(context);
             } finally {
               this.finishCommandInvocation(invocationToken);
             }
@@ -2771,7 +2790,7 @@ export class PluginHost {
     const parsed = schema.request.safeParse(request);
     if (!parsed.success) {
       const issue = parsed.error.issues[0];
-      throw new PluginHostError(`Invalid ${label} request${issue.path.length ? ` at ${issue.path.join(".")}` : ""}. ${issue.message}`);
+      throw new PluginHostError(`Invalid ${label} request${issue.path.length ? ` at ${issue.path.join(".")}` : ""}.`);
     }
     const transport = this.appHandoffTransport;
     if (!transport) throw new PluginHostError("App handoff requires the desktop app.");

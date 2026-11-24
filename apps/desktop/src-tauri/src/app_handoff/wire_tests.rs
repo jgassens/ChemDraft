@@ -67,6 +67,34 @@ fn crystal_builder_warning_bytes_match_the_documented_dialog_budget() {
 }
 
 #[test]
+fn preflight_rejects_an_oversized_rebuild_even_without_warnings() {
+    let (mut pipeline, _) = crystal_builder_choices();
+    let mut parameters: BTreeMap<String, String> =
+        (0..257).map(|i| (format!("p{i}"), "x".into())).collect();
+    parameters.insert("rebuildAs".into(), "b".into());
+    pipeline.combinations = [("a".into(), parameters), ("b".into(), BTreeMap::new())].into();
+    assert!(pipeline.validate().is_ok());
+    let confirm =
+        |id| dialogs::confirmation_snapshot(&pipeline, APP_NAME, PLUGIN_NAME, id, None, &[]);
+    let snapshot = encode(dialogs::Snapshot::Confirm {
+        title: "Confirm companion build",
+        app_name: APP_NAME,
+        plugin_name: PLUGIN_NAME,
+        pipeline: &pipeline.id,
+        composition: None,
+        suggested_combination: "b",
+        combinations: &pipeline.combinations,
+        warnings: &[],
+    })
+    .unwrap();
+    assert!(crate::dialog_windows::validate_app_handoff_snapshot(&snapshot).is_ok());
+    assert!(
+        confirm("b").is_err(),
+        "any declared choice could need a rebuild"
+    );
+}
+
+#[test]
 fn app_handoff_wire_fixtures_are_current() {
     let id = "0123456789abcdef0123456789abcdef";
     let mut values: BTreeMap<String, Value> = BTreeMap::from([
@@ -220,6 +248,31 @@ fn app_handoff_wire_fixtures_are_current() {
             REBUILD,
             Some(6.0),
             &warnings,
+        ))
+        .unwrap(),
+    );
+    values.insert(
+        "dialog-confirm-unwarned".into(),
+        dialogs::confirmation_snapshot(
+            &pipeline,
+            APP_NAME,
+            PLUGIN_NAME,
+            BUILD,
+            Some(&composition),
+            &[],
+        )
+        .unwrap(),
+    );
+    values.insert(
+        "dialog-rebuild-unwarned".into(),
+        encode(dialogs::result_snapshot(
+            &pipeline,
+            APP_NAME,
+            PLUGIN_NAME,
+            BUILD,
+            REBUILD,
+            None,
+            &[],
         ))
         .unwrap(),
     );

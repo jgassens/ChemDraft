@@ -137,25 +137,23 @@ pub(super) fn confirmation_snapshot(
         warnings,
     })?;
     crate::dialog_windows::validate_app_handoff_snapshot(&snapshot)?;
-    if !warnings.is_empty() {
-        for (from, to) in pipeline
-            .combinations
-            .iter()
-            .filter_map(|(id, row)| row.get("rebuildAs").map(|rebuild| (id, rebuild)))
-        {
-            let mut result = wire::encode(result_snapshot(
-                pipeline,
-                app_name,
-                plugin_name,
-                from,
-                to,
-                None,
-                warnings,
-            ))?;
-            // Reserve room for the serialized value of any finite f64 measurement.
-            result["twist"] = Value::String("0".repeat(24));
-            crate::dialog_windows::validate_app_handoff_snapshot(&result)?;
-        }
+    for (from, to) in pipeline
+        .combinations
+        .iter()
+        .filter_map(|(id, row)| row.get("rebuildAs").map(|rebuild| (id, rebuild)))
+    {
+        let mut result = wire::encode(result_snapshot(
+            pipeline,
+            app_name,
+            plugin_name,
+            from,
+            to,
+            None,
+            warnings,
+        ))?;
+        // Reserve room for the serialized value of any finite f64 measurement.
+        result["twist"] = Value::String("0".repeat(24));
+        crate::dialog_windows::validate_app_handoff_snapshot(&result)?;
     }
     Ok(snapshot)
 }
