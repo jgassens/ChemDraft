@@ -1,7 +1,9 @@
 import type { ChemDraftDocument, DocumentPatch } from "@chemdraft/chem-core";
 import { z } from "zod";
 import { panelReportLimitIssue, PluginPanelReportLimits, snapshotPanelReport } from "./reportLimits";
+import { PluginCompanionPipelineSchema, type PluginAppsAPI } from "./appHandoff";
 export { PluginPanelReportLimits, snapshotPanelReport } from "./reportLimits";
+export * from "./appHandoff";
 export * from "./chemistry3d";
 export * from "./requestSchemas";
 export * from "./requestCapabilities";
@@ -46,6 +48,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * 0.1.24 adds binary CDX import/export (#316) and optional reaction arrowObjectIds/plusObjectIds (#335); shared scheme arrows and plus signs are referenced by id, never copied.
  * 0.1.25 adds optional native bracketUsage, repeatCount and scoped crossingBondIds (#338 bracketed groups).
  * 0.1.26 adds optional request-bound document access, tool sessions, chemistry and depiction, and document-change events.
+ * 0.1.27 adds native app handoff and manifest-declared companion pipelines, gated by `apps.handoff` and `native.execute`.
  *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
  * the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` — the NMR
@@ -55,7 +58,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * local structure recognition, `^0.1.7` for structure naming, `^0.1.8` for external tools), which this host satisfies and an
  * older one correctly does not.
  */
-export const PluginApiVersion = "0.1.26" as const;
+export const PluginApiVersion = "0.1.27" as const;
 
 export const pluginPermissions = [
   "document.read",
@@ -80,6 +83,7 @@ export const pluginPermissions = [
   "network.fetch",
   "native.execute",
   "assistant.run",
+  "apps.handoff",
   "plugin.storage"
 ] as const;
 
@@ -92,7 +96,8 @@ export const dangerousPluginPermissions = [
   "clipboard.read",
   "document.write",
   "image.read",
-  "assistant.run"
+  "assistant.run",
+  "apps.handoff"
 ] as const satisfies readonly PluginPermission[];
 
 export const PluginPermissionSchema = z.enum(pluginPermissions);
@@ -371,6 +376,7 @@ export const PluginManifestSchema = z
     description: z.string().optional(),
     author: z.string().optional(),
     license: z.string().optional(),
+    companions: z.array(PluginCompanionPipelineSchema).optional(),
     contributes: PluginContributionsSchema
   })
   .strict()
@@ -387,6 +393,19 @@ export const PluginManifestSchema = z
         path: ["permissions"],
         message: `Plugin "${manifest.id}" declares "assistant.run" without "native.execute". External tools spawn processes; declare both permissions.`
       });
+    }
+    if (declaredPermissions.has("apps.handoff") && !declaredPermissions.has("native.execute")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["permissions"],
+        message: `Plugin "${manifest.id}" declares "apps.handoff" without "native.execute". App handoff can start processes. Declare both permissions.`
+      });
+    }
+    if (manifest.companions?.length) {
+      if (!declaredPermissions.has("apps.handoff")) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["companions"], message: "Companion pipelines require apps.handoff." });
+      }
+      addDuplicateIssue(manifest.companions.map(pipeline => pipeline.id), ["companions"], "companion pipeline id", ctx);
     }
     for (const { path, permissions } of collectContributionPermissions(manifest.contributes)) {
       for (const permission of permissions) {
@@ -1834,6 +1853,8 @@ export interface PluginCommandContext {
   recognition?: PluginRecognitionAPI;
   /** Present only when the plugin declares both "assistant.run" and "native.execute". */
   tools?: PluginToolsAPI;
+  /** Present only for Worker commands when the plugin declares both "apps.handoff" and "native.execute". */
+  apps?: PluginAppsAPI;
   assistant?: PluginAssistantAPI;
   /** Request lifecycle and page-space decisions (API 0.1.26). */
   requests?: PluginRequestsAPI;
