@@ -25,9 +25,15 @@ export { rebasePluginPatch } from "./rebasePluginPatch";
 import { Chemistry3dQueue } from "./chemistry3dQueue";
 import { chemistry3dTimeoutMs } from "./chemistry3dDeadline";
 import { chemistry3dResultError } from "./chemistry3dResult";
+import {
+  appHandoffProvenanceError, type PluginAppHandoffMethod, type PluginAppHandoffProvenanceProvider,
+  type PluginAppHandoffTransport
+} from "./appHandoff";
+export type { PluginAppHandoffProvenance, PluginAppHandoffProvenanceProvider, PluginAppHandoffTransport } from "./appHandoff";
 export { chemistry3dTimeoutMs, CHEMISTRY3D_STARTUP_TIMEOUT_MS, pauseChemistry3dDeadlineForStartup } from "./chemistry3dDeadline";
 import {
   PluginChemistryPropertiesRequestSchema, PluginChemistryPropertiesResultSchema,
+  PluginAppHandoffPermissions, PluginAppHandoffSchemas, type PluginAppsAPI, type PluginHandoffRunCompanionRequest,
   AssistantCapabilityPermissions, supportsPluginTableInsertion, type PluginAssistantAPI,
   bindPluginRequestCapabilities, getPluginRequestCapability, pluginRequestFailure, pluginRequestPermissions,
   requestValidationCode, supportsPluginRequestTools, type PluginActiveDocumentChangedHandler,
@@ -577,6 +583,8 @@ export class CommandRegistry {
 
 export interface RegisterPluginOptions {
   commandHandlers?: Record<string, PluginCommandHandler>;
+  /** Set by the host's Worker adapter, never read from the package manifest. */
+  execution?: "worker";
   /** Called when the desktop closes one of the plugin's contributed panels, so the plugin can cancel
    *  in-flight work tied to it (ADR-0012). The panel is not reopened by a late report. */
   onPanelClosed?: (panelId: string) => void;
@@ -802,6 +810,8 @@ export interface PluginHostOptions {
   ) => PluginPromptTextResult | Promise<PluginPromptTextResult>;
   /** Host-managed AI command-line tools. Plugins never supply argv or environment variables. */
   externalTools?: PluginHostExternalTools;
+  appHandoffProvenance?: PluginAppHandoffProvenanceProvider;
+  appHandoffTransport?: PluginAppHandoffTransport;
   /** Acquires an image through host-owned UI. The signal aborts when the command ends/unregisters. */
   requestImage?: (
     plugin: { id: string; name: string },
@@ -909,6 +919,10 @@ export class PluginHost {
   private readonly showPanelReport?: PluginHostOptions["showPanelReport"];
   private readonly promptText?: PluginHostOptions["promptText"];
   private readonly externalTools?: PluginHostOptions["externalTools"];
+  private readonly appHandoffProvenance?: PluginAppHandoffProvenanceProvider;
+  private readonly appHandoffTransport?: PluginAppHandoffTransport;
+  /** Selects the menu dispatcher within this host. Native IPC still decides whether it is armed. */
+  private readonly handoffMenuDispatches = new WeakSet<CommandInvocationContext>();
   private readonly assistant?: PluginHostAssistant;
   private readonly overlays?: PluginHostOptions["overlays"];
   private readonly requestImage?: PluginHostOptions["requestImage"];
@@ -967,6 +981,8 @@ export class PluginHost {
     this.showPanelReport = options.showPanelReport;
     this.promptText = options.promptText;
     this.externalTools = options.externalTools;
+    this.appHandoffProvenance = options.appHandoffProvenance;
+    this.appHandoffTransport = options.appHandoffTransport;
     this.assistant = options.assistant;
     this.overlays = options.overlays;
     this.requestImage = options.requestImage;
@@ -992,6 +1008,14 @@ export class PluginHost {
     const manifest = validateTrustedPluginManifest(candidate);
     if (this.plugins.has(manifest.id)) {
       throw new PluginHostError(`Plugin "${manifest.id}" is already registered.`);
+    }
+    if (manifest.permissions.includes("apps.handoff")) {
+      if (options.execution !== "worker") {
+        throw new PluginHostError(`Plugin "${manifest.id}" must run in a Worker to use apps.handoff.`);
+      }
+      const provider = this.appHandoffProvenance;
+      const refusal = appHandoffProvenanceError(manifest.id, provider?.forRegistration(manifest.id, manifest.version));
+      if (refusal) throw new PluginPermissionError(refusal);
     }
 
     this.assertContributionPermissions(manifest);
@@ -1070,6 +1094,19 @@ export class PluginHost {
       input,
       writeSelection: options.writeSelection
     });
+  }
+
+  /** Route the native handoff menu event. The event supplies only a command ID. */
+  async invokeAppHandoffMenuCommand<Result = unknown>(commandId: string): Promise<Result> {
+    const pluginId = this.commands.get(commandId)?.pluginId;
+    const plugin = pluginId ? this.plugins.get(pluginId) : undefined;
+    if (!plugin || !plugin.permissions.has("apps.handoff") || !commandId.startsWith("plugin.") ||
+        !plugin.manifest.contributes.menus.some(menu => menu.commandId === commandId)) {
+      throw new PluginHostError(`Command "${commandId}" is not an app handoff menu command.`);
+    }
+    const context: CommandInvocationContext = { pluginId, permissions: plugin.permissions };
+    this.handoffMenuDispatches.add(context);
+    return await this.commands.invoke<Result>(commandId, context);
   }
 
   listPlugins(): PluginManifest[] {
@@ -1689,6 +1726,15 @@ export class PluginHost {
           clearConversation: (request) => this.externalToolClearConversationForPlugin(pluginId, request)
         }
       : undefined;
+    const apps: PluginAppsAPI | undefined = contextInvocation && contextInvocation.pluginId === pluginId &&
+        !contextInvocation.tool && PluginAppHandoffPermissions.every(has)
+      ? {
+          chooseApp: request => this.callAppHandoff(pluginId, contextInvocation, "chooseApp", request),
+          status: request => this.callAppHandoff(pluginId, contextInvocation, "status", request),
+          sendFile: request => this.callAppHandoff(pluginId, contextInvocation, "sendFile", request),
+          runCompanion: request => this.callAppHandoff(pluginId, contextInvocation, "runCompanion", request)
+        }
+      : undefined;
     const analysis: PluginAnalysisAPI | undefined = this.hasPermission(pluginId, "analysis.write")
       ? {
           write: async (input) => {
@@ -1856,6 +1902,7 @@ export class PluginHost {
       images,
       recognition,
       tools,
+      ...(apps ? { apps } : {}),
       assistant,
       analysis,
       ...(requestTools && has("document.read") ? {
@@ -2316,6 +2363,7 @@ export class PluginHost {
     handlers: Record<string, PluginCommandHandler>
   ): void {
     const registeredCommandIds: string[] = [];
+    const handoff = manifest.permissions.includes("apps.handoff");
     try {
       for (const command of manifest.contributes.commands) {
         const handler = handlers[command.id];
@@ -2338,6 +2386,10 @@ export class PluginHost {
             if (!handler) {
               throw new CommandRegistryError(`Command "${command.id}" has no registered handler.`);
             }
+            if (handoff && !this.handoffMenuDispatches.delete(invocationContext)) {
+              throw new PluginPermissionError("Start app handoff from the plugin's native menu.");
+            }
+            const registration = handoff ? this.requireRegisteredPlugin(manifest.id) : undefined;
 
             for (const permission of command.requiredPermissions) {
               this.requirePermission(manifest.id, permission);
@@ -2355,6 +2407,9 @@ export class PluginHost {
             const overrideIds = override?.objectIds.slice();
             const readDocument = sendDocument ?? this.getActiveDocument?.();
             const document = readDocument && "then" in readDocument ? await readDocument : readDocument;
+            if (registration && this.plugins.get(manifest.id) !== registration) {
+              throw new PluginHostError("The app handoff plugin changed before its command could start.");
+            }
             // Bind the ids to the page they were selected on at Send: the override's own page, never
             // the live selection's page, which may have changed since.
             // An override that names its page keeps that pin even when the object is gone from it.
@@ -2521,6 +2576,65 @@ export class PluginHost {
   ): Promise<void> {
     const plugin = this.externalToolsFor(pluginId);
     await this.externalTools!.clearConversation(plugin, PluginExternalToolClearConversationRequestSchema.parse(request));
+  }
+
+  private async callAppHandoff<Method extends PluginAppHandoffMethod>(
+    pluginId: string,
+    invocation: ActiveCommandInvocation,
+    method: Method,
+    request: Parameters<PluginAppsAPI[Method]>[0]
+  ): Promise<Awaited<ReturnType<PluginAppsAPI[Method]>>> {
+    const label = `apps.${method}`;
+    const assertActive = () => {
+      if (invocation.writeStop.signal.aborted) {
+        throw new PluginHostError(`Plugin "${pluginId}" may call ${label} only while its command is executing.`);
+      }
+      for (const permission of PluginAppHandoffPermissions) this.requirePermission(pluginId, permission);
+    };
+    assertActive();
+    const schema = PluginAppHandoffSchemas[method];
+    const parsed = schema.request.safeParse(request);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      throw new PluginHostError(`Invalid ${label} request${issue.path.length ? ` at ${issue.path.join(".")}` : ""}. ${issue.message}`);
+    }
+    const transport = this.appHandoffTransport;
+    if (!transport) throw new PluginHostError("App handoff requires the desktop app.");
+    const manifest = this.requireRegisteredPlugin(pluginId).manifest;
+    if (method === "runCompanion") {
+      const { pipeline, combination, input } = parsed.data as PluginHandoffRunCompanionRequest;
+      const declared = manifest.companions?.find(row => row.id === pipeline);
+      if (!declared || !Object.hasOwn(declared.combinations, combination)) {
+        throw new PluginHostError("App handoff requires a pipeline and combination declared by the plugin.");
+      }
+      if (declared.steps.find(step => step.input)?.input?.extension !== input?.extension) {
+        throw new PluginHostError("App handoff requires the input extension declared by the companion pipeline.");
+      }
+    }
+    const provider = this.appHandoffProvenance;
+    let record;
+    try {
+      record = await provider?.forCall(pluginId, manifest.version);
+    } catch {
+      throw new PluginHostError("ChemDraft could not check the installed app handoff plugin's provenance.");
+    }
+    assertActive();
+    const refusal = appHandoffProvenanceError(pluginId, record);
+    if (refusal) throw new PluginPermissionError(refusal);
+    const writing = method === "sendFile" || method === "runCompanion";
+    if (writing && invocation.handoffSpent) {
+      throw new PluginHostError("A plugin may send one file or run one companion pipeline per command invocation.");
+    }
+    // Rust adjudicates concurrent submissions and tracks whether failures occurred before a box
+    // or launch. Both contenders must reach it for an in-flight race to cancel without launching.
+    const reply = await transport(pluginId, method, parsed.data);
+    const result = schema.result.safeParse(reply);
+    if (!result.success) throw new PluginHostError(`The desktop returned an invalid ${label} result.`);
+    if (writing && "status" in result.data && result.data.status !== "failed") {
+      invocation.handoffSpent = true;
+    }
+    assertActive();
+    return result.data as Awaited<ReturnType<PluginAppsAPI[Method]>>;
   }
 
   private async promptTextForPlugin(
@@ -2876,6 +2990,7 @@ export class PluginHost {
 interface ActiveCommandInvocation {
   execution?: RequestToolExecution;
   writeStop: AbortController;
+  handoffSpent?: boolean;
   tool?: boolean;
   readOnly?: boolean;
   requestId?: string;

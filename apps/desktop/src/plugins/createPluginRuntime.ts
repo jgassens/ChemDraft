@@ -66,6 +66,7 @@ import {
 } from "./structureRecognitionEngine";
 import { preparePluginStructureRecognition, type RecognitionStructureValidator } from "./pluginStructureRecognition";
 import { isTauriHost } from "./pluginStagingFs";
+import { createTauriAppHandoffTransport } from "../appHandoff/transport";
 import { ExternalToolsController } from "../externalTools/ExternalToolsController";
 import { TauriExternalToolsEngine, UnsupportedExternalToolsEngine, type ExternalToolsEngine } from "../externalTools/externalToolsEngine";
 import {
@@ -104,6 +105,8 @@ function freezeOverlayContent(sections: CanvasOverlayContentSection[]): readonly
 }
 
 export interface DesktopPluginRuntimeOptions {
+  appHandoffProvenance?: PluginHostOptions["appHandoffProvenance"];
+  appHandoffTransport?: PluginHostOptions["appHandoffTransport"];
   /** Optional injection seam; default providers use the existing in-process conformer worker. */
   chemistry3d?: import("../chemistry3d/client").Chemistry3dProviders;
   /** Reads the current active document. Called on demand; must reflect the latest state. */
@@ -247,6 +250,7 @@ export interface DesktopPluginRuntime {
    * neither add to it nor take from it.
    */
   invokeCommand(commandId: string, options?: { selectionWarnings?: string[]; input?: PluginCommandInput }): Promise<unknown>;
+  invokeAppHandoffMenuCommand(commandId: string, selectionWarnings?: string[]): Promise<unknown>;
   listCanvasOverlays(): RegisteredCanvasOverlay[];
   getCanvasOverlayStatuses(): ReadonlyMap<string, string>;
   /** Subscribe to status-only overlay updates without invalidating plugin contributions/toolsets. */
@@ -390,6 +394,10 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       return this.withInvocationFrame(() => super.invokeCommand<Result>(commandId, invokeOptions));
     }
 
+    override async invokeAppHandoffMenuCommand<Result = unknown>(commandId: string): Promise<Result> {
+      return this.withInvocationFrame(() => super.invokeAppHandoffMenuCommand<Result>(commandId));
+    }
+
     override async invokeAssistantTool(...args: Parameters<PluginHost["invokeAssistantTool"]>) {
       return this.withInvocationFrame(() => super.invokeAssistantTool(...args), args[2]);
     }
@@ -515,6 +523,8 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   const host = new DesktopPluginHost({
     ...chemistry3d,
     commandRegistry: options.commandRegistry,
+    appHandoffProvenance: options.appHandoffProvenance,
+    appHandoffTransport: options.appHandoffTransport ?? (isTauriHost() ? createTauriAppHandoffTransport() : undefined),
     overlays: {
       setContent: (pluginId, overlayId, sections, prompt) => {
         const declared = host.getPlugin(pluginId)!.manifest.contributes.canvasOverlays!.find(overlay => overlay.id === overlayId)!.prompt;
@@ -790,6 +800,14 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
           : host.invokeCommand(commandId, { input: invokeOptions.input });
       } finally {
         // Unclaimed when the command is not a plugin's or failed before its context was built.
+        armedSelectionWarnings = undefined;
+      }
+    },
+    invokeAppHandoffMenuCommand(commandId, selectionWarnings) {
+      armedSelectionWarnings = selectionWarnings;
+      try {
+        return host.invokeAppHandoffMenuCommand(commandId);
+      } finally {
         armedSelectionWarnings = undefined;
       }
     },

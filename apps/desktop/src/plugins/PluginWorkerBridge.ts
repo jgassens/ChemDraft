@@ -617,6 +617,13 @@ export class PluginWorkerBridge {
       });
       return;
     }
+    if (message.namespace === "apps" && message.args.length !== 1) {
+      this.sendCapabilityError(message.requestId, {
+        code: PluginWorkerErrorCodes.MalformedMessage,
+        message: `apps.${message.method} requires exactly one request object.`
+      });
+      return;
+    }
 
     const method = (capability as CapabilityMethods)[message.method];
     if (typeof method !== "function") {
@@ -773,6 +780,8 @@ export class PluginWorkerBridge {
         return context.recognition;
       case "tools":
         return context.tools;
+      case "apps":
+        return context.apps;
       case "assistant":
         return context.assistant;
       case "requests":

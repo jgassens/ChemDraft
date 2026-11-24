@@ -31,7 +31,7 @@ import {
   type PluginToolCall
 } from "@chemdraft/plugin-api";
 import { createMassRegistration, massAnalyzeCommandId, massFragmentManifest } from "@chemdraft/plugin-mass-fragment";
-import { PluginHost, type RegisterPluginOptions } from "@chemdraft/plugin-host";
+import { PluginHost, type PluginAppHandoffProvenanceProvider, type RegisterPluginOptions } from "@chemdraft/plugin-host";
 import { describe, expect, it, vi } from "vitest";
 import { AssistantCapabilityPermissions } from "@chemdraft/plugin-api";
 
@@ -43,6 +43,7 @@ import { applyPatch, createEmptyDocument, MoleculeObjectSchema } from "@chemdraf
 import { ToolSessionController } from "./toolSessions/ToolSessionController";
 import type { McpBridgeRequest, McpBridgeResponse } from "./toolSessions/transport";
 import { buildPluginTablePatch } from "./buildPluginTablePatch";
+import { AssistantTransactions } from "../assistant/assistantTransaction";
 
 type MessageListener = (event: { data: unknown }) => void;
 
@@ -163,6 +164,190 @@ function startWorkerRoutedPlugin(registration: PluginWorkerRegistration): Plugin
     hostApiVersion: PluginApiVersion
   });
 }
+
+const handoffCommand = "plugin.crystalBuilder.buildMof";
+const handoffManifest = parsePluginManifest({
+  id: "org.chemdraft.handoff.crystalBuilder", name: "Crystal Builder", version: "1.0.0",
+  apiVersion: PluginApiVersion, entry: "worker.js",
+  permissions: [...new Set([...AssistantCapabilityPermissions, "apps.handoff", "native.execute"])],
+  contributes: {
+    commands: [{ id: handoffCommand, title: "Build" }],
+    menus: [{ id: "menu.crystalBuilder.buildMof", title: "Build", commandId: handoffCommand }]
+  }
+});
+const handoffProvenance = (): ReturnType<PluginAppHandoffProvenanceProvider["forRegistration"]> => ({
+  source: "catalog", repository: "jgassens/ChemDraft-CrystalBuilder-Plugin", checksumVerified: true
+});
+const handoffSend = { appId: "opaque", fileName: "model", extension: "cif" as const, text: "test data" };
+
+describe("Worker app handoff", () => {
+  it("relays a command's handoff, rejects its extra fields and offers no self-invocation dispatcher", async () => {
+    const transport = vi.fn(async () => ({ status: "sent" }));
+    const host = new PluginHost({
+      appHandoffProvenance: { forRegistration: handoffProvenance, forCall: handoffProvenance },
+      appHandoffTransport: transport
+    });
+    const bridge = startWorkerRoutedPlugin({
+      manifest: handoffManifest,
+      commandHandlers: { [handoffCommand]: async ctx => {
+        expect(ctx).not.toHaveProperty("commands");
+        expect(ctx).not.toHaveProperty("invokeCommand");
+        const forged = { ...handoffSend, commandId: handoffCommand };
+        await expect(ctx.apps!.sendFile(forged)).rejects.toThrow("Invalid apps.sendFile request");
+        expect(transport).not.toHaveBeenCalled();
+        if (ctx.input) throw new Error("Unexpected command input");
+        return ctx.apps!.sendFile(handoffSend);
+      } }
+    });
+    try {
+      await bridge.whenReady();
+      host.registerPlugin(handoffManifest, createWorkerRoutedOptions(handoffManifest, bridge));
+      await expect(host.invokeAppHandoffMenuCommand(handoffCommand)).resolves.toEqual({ status: "sent" });
+      expect(transport).toHaveBeenCalledExactlyOnceWith(handoffManifest.id, "sendFile", handoffSend);
+    } finally {
+      bridge.terminate();
+    }
+  });
+
+  it("refuses raw self-invocation and malformed calls from a Worker during a live command", async () => {
+    const { mainSide, workerSide } = linkedEndpoints();
+    const transport = vi.fn();
+    const replies: unknown[] = [];
+    const host = new PluginHost({
+      appHandoffProvenance: { forRegistration: handoffProvenance, forCall: handoffProvenance },
+      appHandoffTransport: transport
+    });
+    runPluginWorker({
+      manifest: handoffManifest,
+      commandHandlers: { [handoffCommand]: async () => { await vi.waitFor(() => expect(replies).toHaveLength(3)); } }
+    }, asEndpoint(workerSide));
+    workerSide.addEventListener("message", ({ data }: { data: HostToWorkerMessage }) => {
+      if (data.kind === "invokeCommand") {
+        const base = { kind: "capabilityRequest", commandRequestId: data.commandRequestId, args: [handoffSend] };
+        workerSide.postMessage({ ...base, requestId: 101, namespace: "commands", method: "invoke", args: [handoffCommand] });
+        workerSide.postMessage({ ...base, requestId: 102, namespace: "apps", method: "sendFile",
+          args: [handoffSend, { commandId: handoffCommand }] });
+        workerSide.postMessage({ ...base, requestId: 103, namespace: "apps", method: "sendFile",
+          args: [{ ...handoffSend, token: "copied" }] });
+      } else if (data.kind === "capabilityResult") replies.push(data);
+    });
+    const bridge = new PluginWorkerBridge({ pluginId: handoffManifest.id, createWorker: () => asHandle(mainSide) });
+    try {
+      await bridge.whenReady();
+      host.registerPlugin(handoffManifest, createWorkerRoutedOptions(handoffManifest, bridge));
+      await host.invokeAppHandoffMenuCommand(handoffCommand);
+      expect(replies).toEqual(expect.arrayContaining([
+        expect.objectContaining({ requestId: 101, ok: false }),
+        expect.objectContaining({ requestId: 102, ok: false,
+          error: expect.objectContaining({ code: PluginWorkerErrorCodes.MalformedMessage }) }),
+        expect.objectContaining({ requestId: 103, ok: false, error: expect.objectContaining({ message: expect.stringContaining("Invalid apps.sendFile request") }) })
+      ]));
+      expect(transport).not.toHaveBeenCalled();
+    } finally {
+      bridge.terminate();
+    }
+  });
+
+  it("omits apps in legacy assistant and request-bound tools dispatched through MCP", async () => {
+    let listener: ((call: McpBridgeRequest) => void) | undefined;
+    const responded = vi.fn(async (_session: string, _callId: string, _response: McpBridgeResponse) => {});
+    const transport = vi.fn();
+    const document = createEmptyDocument();
+    const transactions = new AssistantTransactions({
+      read: () => document, onUserEdit: () => () => {}, push: () => {}, amend: () => {}, select: () => {}, undo: () => false
+    });
+    const runtime = createPluginRuntime({
+      getActiveDocument: () => document,
+      getActiveDocumentTab: () => ({ id: "tab" }),
+      captureRequestDocument: () => ({ key: "tab", read: () => document }),
+      getAssistantDocument: () => document,
+      assistantTransactions: () => transactions,
+      appHandoffProvenance: { forRegistration: handoffProvenance, forCall: handoffProvenance },
+      appHandoffTransport: transport,
+      assistantMcpEngine: {
+        open: async (_plugin, onMessage) => {
+          listener = onMessage;
+          return { sessionId: "handoff-tools", serverName: "chemdraft" };
+        },
+        respond: responded,
+        close: async () => {},
+        status: async () => ({ listening: true, sessionCount: 1 })
+      }
+    });
+    const legacy = { name: "legacy", description: "Legacy tool", inputSchema: { type: "object" as const } };
+    const request = { name: "request", description: "Request tool", readOnly: true, inputSchema: { type: "object" as const } };
+    const nextSession = deferred<void>();
+    const finish = deferred<void>();
+    const { mainSide, workerSide } = linkedEndpoints();
+    const denied: unknown[] = [];
+    runPluginWorker({
+      manifest: handoffManifest,
+      commandHandlers: { [handoffCommand]: async ctx => {
+        const { requestId } = await ctx.assistant!.beginRequest({ prompt: "Read" });
+        await ctx.assistant!.createToolSession({ requestId, extraTools: [legacy] });
+        await nextSession.promise;
+        await ctx.assistant!.endRequest({ requestId });
+        const bound = await ctx.requests!.begin({ label: "Read" });
+        if (!bound.ok) throw new Error(bound.error.message);
+        const session = await ctx.toolSessions!.open({ requestId: bound.value.requestId, definitions: [request] });
+        if (!session.ok) throw new Error(session.error.message);
+        await finish.promise;
+      } },
+      onAssistantToolCall: async ctx => {
+        await vi.waitFor(() => expect(denied).toHaveLength(1));
+        return { content: [{ type: "text", text: typeof ctx.apps }] };
+      },
+      onToolCall: async ctx => {
+        await vi.waitFor(() => expect(denied).toHaveLength(2));
+        return { ok: true, value: typeof ctx.apps };
+      }
+    }, asEndpoint(workerSide));
+    workerSide.addEventListener("message", ({ data }: { data: HostToWorkerMessage }) => {
+      if (data.kind === "invokeAssistantTool" || data.kind === "invokeTool") {
+        workerSide.postMessage({ kind: "capabilityRequest", commandRequestId: data.commandRequestId,
+          requestId: data.kind === "invokeAssistantTool" ? 101 : 102, namespace: "apps", method: "sendFile", args: [handoffSend] });
+      } else if (data.kind === "capabilityResult" && (data.requestId === 101 || data.requestId === 102)) {
+        denied.push(data);
+      }
+    });
+    const bridge = new PluginWorkerBridge({ pluginId: handoffManifest.id, createWorker: () => asHandle(mainSide) });
+    const call = (name: string) => {
+      const current = listener!;
+      listener = undefined;
+      current({ sessionId: "handoff-tools", requestId: name, method: "tools/call",
+        params: { name, arguments: { source: "native", commandId: handoffCommand } } });
+    };
+    try {
+      await bridge.whenReady();
+      runtime.registerPlugin(handoffManifest, createWorkerRoutedOptions(handoffManifest, bridge));
+      const running = runtime.invokeAppHandoffMenuCommand(handoffCommand);
+      const startup = running.then(() => { throw new Error("The handoff command ended before opening its tool sessions."); });
+      const waitForSession = () => Promise.race([vi.waitFor(() => expect(listener).toBeTypeOf("function")), startup]);
+      await waitForSession();
+      call("legacy");
+      await vi.waitFor(() => expect(responded).toHaveBeenCalledWith("handoff-tools", "legacy", {
+        result: { content: [{ type: "text", text: "undefined" }] }
+      }));
+      nextSession.resolve();
+      await waitForSession();
+      call("request");
+      await vi.waitFor(() => expect(responded).toHaveBeenCalledWith("handoff-tools", "request", {
+        result: { content: [{ type: "text", text: "undefined" }] }
+      }));
+      finish.resolve();
+      await running;
+      expect(denied).toEqual([101, 102].map(requestId => expect.objectContaining({
+        requestId, ok: false, error: expect.objectContaining({ code: PluginWorkerErrorCodes.CapabilityNotGranted })
+      })));
+      expect(transport).not.toHaveBeenCalled();
+    } finally {
+      nextSession.resolve();
+      finish.resolve();
+      bridge.terminate();
+      transactions.dispose();
+    }
+  });
+});
 
 describe("PluginWorkerBridge — M34 isolation boundary", () => {
   it("delivers successful and error capability replies when the logger throws", async () => {

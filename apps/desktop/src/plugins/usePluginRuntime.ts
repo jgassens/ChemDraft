@@ -59,6 +59,7 @@ import { recognitionInstallProgressStore } from "./structureRecognitionInstallPr
 import { mountStructureNamingHost } from "./StructureNamingInstallDialog";
 import { presentExternalToolInstall } from "../externalTools/presentExternalToolInstall";
 import type { DialogCoordinator } from "../dialogs/DialogCoordinator";
+import { listenForNativeAppHandoffCommands } from "../appHandoff/transport";
 
 /**
  * Extract a user-facing message from a resolved plugin-command value that is a `{ ok: false }`
@@ -74,6 +75,7 @@ export function pluginCommandFailure(result: unknown): string | undefined {
 
 export interface PluginRuntimeProviders {
   assistantMcpEngine?: import("../assistant/assistantMcpEngine").AssistantMcpEngine;
+  appHandoffProvenance?: PluginHostOptions["appHandoffProvenance"];
   getActiveDocument: () => ChemDraftDocument | undefined;
   /** Identifies the working document for a plugin's `documents.applyPatch` (see
    *  `DesktopPluginRuntimeOptions.getActiveDocumentKey`). Without one, two documents created by
@@ -97,7 +99,7 @@ export interface PluginRuntimeProviders {
   createStorage?: (pluginId: string) => PluginStorage;
   /** Names the source of a successful name conversion in the document status line. */
   onNameResolutionStatus?: (text: string | undefined) => void;
-  /** Quiet update notices use the document window status line. */
+  /** Plugin update and app handoff messages use the document window status line. */
   onPluginUpdateStatus?: (text: string) => void;
   /** Fired whenever the proposed-patch queue changes (new, accepted, rejected). */
   onProposedPatchesChanged?: () => void;
@@ -214,7 +216,8 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
         return apply(request);
       },
       defaultPanelSurface: isTauriHost() ? "window" : "inApp",
-      assistantMcpEngine: providers.assistantMcpEngine
+      assistantMcpEngine: providers.assistantMcpEngine,
+      appHandoffProvenance: providers.appHandoffProvenance
     });
     const bundledPlugins = registerBundledPlugins(runtime);
     ownerRef.current = { runtime, bundledPlugins };
@@ -222,6 +225,25 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
   const { runtime, bundledPlugins } = ownerRef.current;
 
   const [version, bumpVersion] = useReducer((value: number) => value + 1, 0);
+  useEffect(() => {
+    if (!isTauriHost()) return;
+    let active = true;
+    const unlisten = listenForNativeAppHandoffCommands(window, commandId => {
+      const warnings: string[] = [];
+      const report = (message: string) => {
+        if (active) providersRef.current.onPluginUpdateStatus?.(message);
+      };
+      void runtime.invokeAppHandoffMenuCommand(commandId, warnings).then(result => {
+        const failure = pluginCommandFailure(result);
+        if (failure) report(`Plugin command failed: ${failure}`);
+        else if (warnings.length) report(warnings.join(" "));
+      }, (error: unknown) => report(`Plugin command failed: ${error instanceof Error ? error.message : String(error)}`));
+    });
+    return () => {
+      active = false;
+      unlisten();
+    };
+  }, [runtime]);
   useEffect(() => mountStructureNamingHost(runtime.naming, {
     coordinator: () => providersRef.current.getDialogCoordinator?.(),
     documentTabId: () => providersRef.current.getActiveDocumentTab?.().id

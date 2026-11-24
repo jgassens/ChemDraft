@@ -100,6 +100,7 @@ export function createWorkerRoutedOptions(manifest: PluginManifest, bridge: Plug
     commandHandlers[command.id] = (context) => bridge.invokeCommand(command.id, context);
   }
   return {
+    execution: "worker",
     commandHandlers,
     onPanelClosed: (panelId) => bridge.notifyPanelClosed(panelId),
     get onAssistantToolCall(): PluginAssistantToolHandler | undefined {
