@@ -14,8 +14,17 @@ import { readClipboardPayload } from "./clipboard";
 import { officePasteBackDecision } from "./officePasteBack";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 import { MemoryStorage } from "./testSupport/memoryStorage";
+import type { ChemDraftDocument } from "@chemdraft/chem-core";
+import type { OfficeImportDeps } from "./officeStructureImport";
 
 const runtime = vi.hoisted(() => ({ desktop: false }));
+/** When set, wraps the deps MainWindow hands the real Office import handler. */
+const officeImport = vi.hoisted(() => ({ wrap: undefined as undefined | ((deps: OfficeImportDeps) => OfficeImportDeps) }));
+vi.mock("./officeStructureImport", async original => {
+  const actual = await original<typeof import("./officeStructureImport")>();
+  return { ...actual, runOfficeStructureImport: (deps: OfficeImportDeps) =>
+    actual.runOfficeStructureImport(officeImport.wrap ? officeImport.wrap(deps) : deps) };
+});
 vi.mock("./window-manager", async original => ({
   ...await original<typeof import("./window-manager")>(), isDesktopRuntime: () => runtime.desktop
 }));
@@ -293,5 +302,88 @@ describe("Paste of a ChemDraft embedded object copied in Word or PowerPoint on W
       () => createPhase4Document());
     expect(decision).toEqual({ kind: "refused", details: [expect.any(String)],
       message: "The copied structure was made by a newer or unknown ChemDraft (data version 2). Nothing was pasted." });
+  });
+});
+
+describe("Import Structures into a drawing that is no longer the active tab", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  beforeEach(() => {
+    runtime.desktop = false;
+    window.history.replaceState(null, "", "/?agentBridge=1");
+    vi.stubGlobal("localStorage", new MemoryStorage());
+    vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  });
+  afterEach(async () => {
+    officeImport.wrap = undefined;
+    await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals();
+    window.history.replaceState(null, "", "/"); delete window.__CHEMDRAFT_AGENT__;
+  });
+  const command = (commandId: string) => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } }));
+  const status = () => container.querySelector('[role="status"]')?.textContent ?? "";
+  const moleculesOf = (document: ChemDraftDocument | undefined) =>
+    (document?.pages[0]!.objects ?? []).filter((object): object is MoleculeObject => object.type === "molecule");
+
+  /**
+   * The seam: the file read and the carrier scan are replaced by one ChemDraft structure, the user
+   * opens a new tab while the file picker is up, and (when `chargeExisting`) the document handed to
+   * MainWindow's commit charges an atom of the molecule already in the origin tab. Main now keeps
+   * a loose pasted charge mark loose, so normalization no longer produces that change on its own;
+   * the charge stands in for any placement or normalization change to existing chemistry.
+   */
+  async function importIntoInactiveTab(chargeExisting: boolean) {
+    const origin = molecule();
+    const existing = origin.pages[0]!.objects[0] as MoleculeObject;
+    const json = moleculeJson();
+    const seen: { before?: ChemDraftDocument; after?: ChemDraftDocument; committed?: boolean | void; reported: string[] } = { reported: [] };
+    officeImport.wrap = deps => ({
+      ...deps,
+      pickFile: async () => {
+        await act(async () => command("document.new"));
+        return { name: "Slides.pptx", read: async () => new Uint8Array([1]) };
+      },
+      importStructures: async () => ({ kind: "powerpoint", warnings: [], notes: [], picturesChecked: 1, structures: [{
+        picture: 1, source: { kind: "slide", slide: 1 }, location: "slide 1", mediaPart: "ppt/media/image1.png",
+        json, document: JSON.parse(json) as Record<string, unknown>,
+      }] }),
+      commit: (key, next, label) => {
+        seen.before = deps.getDocument(key);
+        const proposed = !chargeExisting ? next : { ...next, pages: next.pages.map((page, index) => index !== 0 ? page : { ...page,
+          objects: page.objects.map(object => object.id !== existing.id || object.type !== "molecule" ? object : { ...object,
+            atoms: object.atoms.map((atom, atomIndex) => atomIndex === 0 ? { ...atom, formalCharge: 1 } : atom) }) }) };
+        seen.committed = deps.commit(key, proposed, label);
+        seen.after = deps.getDocument(key);
+        return seen.committed;
+      },
+      report: (message, details) => { seen.reported.push(message); deps.report(message, details); },
+    });
+    await act(async () => root.render(<MainWindow initialDocument={origin} shortcutPlatform="macos"
+      initialActiveToolCommandId="tool.select" initialCrosshairsVisible={false}
+      initialPaletteMode="hidden" initialRulersVisible={false} nativePalette />));
+    await act(async () => command("document.importOfficeStructures"));
+    await vi.waitFor(() => expect(seen.committed).not.toBeUndefined());
+    // The new tab is active and untouched; the import went to the origin tab.
+    expect(window.__CHEMDRAFT_AGENT__!.snapshot().document.pages[0]!.objects).toHaveLength(0);
+    expect(moleculesOf(seen.before).map(object => object.id)).toEqual([existing.id]);
+    return { seen, existing };
+  }
+
+  it("commits the imported structure into the origin tab when existing chemistry is preserved", async () => {
+    const { seen, existing } = await importIntoInactiveTab(false);
+    expect(seen.committed).toBe(true);
+    expect(moleculesOf(seen.after)).toHaveLength(2);
+    expect(moleculesOf(seen.after)[0]!.atoms.map(atom => atom.formalCharge)).toEqual(existing.atoms.map(atom => atom.formalCharge));
+    expect(seen.reported).toEqual(["Imported 1 structure from Slides.pptx."]);
+  });
+
+  it("refuses an import whose final document would change an existing atom, leaving that tab unchanged", async () => {
+    const { seen } = await importIntoInactiveTab(true);
+    expect(seen.committed).toBe(false);
+    expect(seen.after).toBe(seen.before);
+    expect(moleculesOf(seen.after)[0]!.atoms[0]!.formalCharge).toBe(0);
+    expect(seen.reported).toEqual([]);
+    await vi.waitFor(() => expect(status()).toMatch(/^Cannot apply "Import Structures from Word or PowerPoint" without changing the chemistry of molecule "[^"]+": its atom "[^"]+" would have charge 1 and 0 radical marks instead of 0 and 0\./));
+    expect(status()).not.toContain("Imported");
   });
 });

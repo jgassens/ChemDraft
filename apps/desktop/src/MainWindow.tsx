@@ -1857,7 +1857,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.23.17.15-opus";
+const CURRENT_BUILD_STAMP = "11.23.19.10-opus";
 
 /**
  * The commit funnel's chemistry check (AGENTS.md section 7, `commitChemistryGuard.ts`). `before`
@@ -12553,6 +12553,12 @@ export function MainWindow({
           if (tab.id === activeDocumentTabIdRef.current) return commitDocumentChange(next, undoLabel);
           const snapshot = documentTabSnapshotsRef.current.get(tab.id)!;
           const present = prepareDocumentCommit(next, undoLabel);
+          // The same commit-time chemistry guard as the active tab's funnel: a refusal installs nothing.
+          const refusal = commitChemistryRefusal(snapshot.history.present, next, present, PRESERVE_CHEMISTRY, undoLabel);
+          if (refusal) {
+            reportChemistryRefusal(refusal);
+            return false;
+          }
           for (const listener of assistantUserEditListenersRef.current) listener(tab.id);
           documentTabSnapshotsRef.current.set(tab.id, { ...snapshot,
             history: { past: boundedHistoryPast([...snapshot.history.past, snapshot.history.present], present), present, future: [] },

@@ -264,6 +264,17 @@ describe("the Import Structures command", () => {
     expect(molecules(current()).map(canonical)).toEqual([alanine.smiles, labelled.smiles, pyridinium.smiles]);
   });
 
+  it("reports no success when the commit is refused, leaving the committer's refusal as the last word", async () => {
+    const { deps, commit, report, current } = harness({ name: "Slides.pptx", bytes: deck([alanine.json]) });
+    const before = current();
+    commit.mockImplementation(() => false);
+    const outcome = await runOfficeStructureImport(deps);
+    expect(commit).toHaveBeenCalledOnce();
+    expect(outcome).toBeUndefined();
+    expect(report).not.toHaveBeenCalled();
+    expect(current()).toBe(before);
+  });
+
   it.each([false, true])("keeps a pending import bound to its originating tab (closed: %s)", async (closed) => {
     let activeKey = "origin";
     const otherDocument = createPhase4Document("Other tab");

@@ -293,7 +293,10 @@ export interface OfficeImportDeps {
   pickFile(): Promise<OfficeImportFile | undefined>;
   getDocumentKey(): string;
   getDocument(key: string): ChemDraftDocument | undefined;
-  /** Commit one undo entry with this label. */
+  /**
+   * Commit one undo entry with this label. Returns false when the commit was refused (for example by
+   * the chemistry guard); the committer has already shown why, so the import reports no success.
+   */
   commit(key: string, document: ChemDraftDocument, undoLabel: string): boolean | void;
   report(message: string, details: readonly string[]): void;
   importStructures?: typeof importOfficeStructures;
@@ -317,7 +320,10 @@ export async function runOfficeStructureImport(deps: OfficeImportDeps): Promise<
       return undefined;
     }
     outcome = planOfficeStructureImport(document, file.name, result);
-    if (outcome.document) deps.commit(documentKey, outcome.document, IMPORT_OFFICE_STRUCTURES_UNDO_LABEL);
+    // A refused commit is an import failure: keep the committer's refusal on the status line.
+    if (outcome.document && deps.commit(documentKey, outcome.document, IMPORT_OFFICE_STRUCTURES_UNDO_LABEL) === false) {
+      return undefined;
+    }
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     const detail = error instanceof OfficeImportError && error.detail ? [error.detail] : [];
