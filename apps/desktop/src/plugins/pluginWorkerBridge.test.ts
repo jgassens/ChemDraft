@@ -493,7 +493,7 @@ describe("PluginWorkerBridge — M34 isolation boundary", () => {
   });
   it.each([false, true])("requires selection.read for selected handoff chemistry (declared = %s)", async declared => {
     const commandId = "plugin.graph.run";
-    const manifest = parsePluginManifest({ id: "org.test.handoff-graph", name: "Graph", version: "0", apiVersion: "^0.1.27",
+    const manifest = parsePluginManifest({ id: "org.test.handoff-graph", name: "Graph", version: "0", apiVersion: "^0.1.28",
       entry: "worker.js", permissions: ["chemistry.compute", ...(declared ? ["selection.read"] : [])],
       contributes: { commands: [{ id: commandId, title: "Graph" }] } });
     const doc = createEmptyDocument({ id: "test-doc", pageId: "p1" });

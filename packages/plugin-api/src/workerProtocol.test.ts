@@ -136,7 +136,7 @@ describe("isPluginApiVersionCompatible", () => {
     expect(isPluginApiVersionCompatible("^0.1.14", "0.1.13")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.15", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.15", "0.1.14")).toBe(false);
-    expect(PluginApiVersion).toBe("0.1.27");
+    expect(PluginApiVersion).toBe("0.1.28");
     expect(isPluginApiVersionCompatible("^0.1.23", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.24", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.24", "0.1.23")).toBe(false);
@@ -144,8 +144,8 @@ describe("isPluginApiVersionCompatible", () => {
     expect(isPluginApiVersionCompatible("^0.1.25", "0.1.24")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.26", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.26", "0.1.25")).toBe(false);
-    expect(isPluginApiVersionCompatible("^0.1.27", PluginApiVersion)).toBe(true);
-    expect(isPluginApiVersionCompatible("^0.1.27", "0.1.26")).toBe(false);
+    expect(isPluginApiVersionCompatible("^0.1.28", PluginApiVersion)).toBe(true);
+    expect(isPluginApiVersionCompatible("^0.1.28", "0.1.27")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.23", "0.1.22")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.16", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.16", "0.1.15")).toBe(false);
@@ -168,7 +168,7 @@ describe("chemistry worker capability allowlist", () => {
   it("includes command-scoped table insertion", () => {
     expect(PLUGIN_WORKER_CAPABILITY_METHODS.documents).toContain("insertTable");
   });
-  it("includes all chemistry methods through API 0.1.27", () => {
+  it("includes all chemistry methods through API 0.1.28", () => {
     expect(PLUGIN_WORKER_CAPABILITY_METHODS.chemistry).toEqual([
       "properties", "isotopeEnvelope", "nameToStructure", "structureFromSmiles", "structureToName", "embed3d", "minimize3d", "flatten3d",
       "handoffGraph", "suggestConnectionPoints", "inspectStructure", "rings"
@@ -229,7 +229,7 @@ describe("runPluginWorker", () => {
     const endpoint = new ControlledEndpoint();
     const seen: boolean[] = [];
     runPluginWorker({
-      manifest: { ...manifest(["apps.handoff", "native.execute"]), apiVersion: "^0.1.27" },
+      manifest: { ...manifest(["apps.handoff", "native.execute"]), apiVersion: "^0.1.28" },
       commandHandlers: {},
       onAssistantToolCall: context => {
         seen.push("apps" in context);
@@ -250,7 +250,7 @@ describe("runPluginWorker", () => {
     const endpoint = new ControlledEndpoint();
     const requests = { purpose: "Send the structure" };
     runPluginWorker({
-      manifest: { ...manifest(["apps.handoff", "native.execute"]), apiVersion: "^0.1.27" },
+      manifest: { ...manifest(["apps.handoff", "native.execute"]), apiVersion: "^0.1.28" },
       commandHandlers: { [commandId]: async context => {
         const spoofed = { ...requests, token: "proof" };
         await expect(context.apps!.chooseApp(spoofed)).rejects.toMatchObject({ code: PluginWorkerErrorCodes.MalformedMessage });

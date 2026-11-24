@@ -49,9 +49,11 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * 0.1.24 adds binary CDX import/export (#316) and optional reaction arrowObjectIds/plusObjectIds (#335); shared scheme arrows and plus signs are referenced by id, never copied.
  * 0.1.25 adds optional native bracketUsage, repeatCount and scoped crossingBondIds (#338 bracketed groups).
  * 0.1.26 adds optional request-bound document access, tool sessions, chemistry and depiction, and document-change events.
- * 0.1.27 adds native app handoff and manifest-declared companion pipelines, gated by `apps.handoff` and `native.execute`.
- * 0.1.27 adds drawn X connection points to selection snapshots.
- * 0.1.27 adds the selected-molecule handoff graph and bond growth suggestions, and graph input to embed3d.
+ * 0.1.27 is reserved for stated hydrogen counts (PR #468).
+ * 0.1.28 adds native app handoff and manifest-declared companion pipelines, gated by `apps.handoff` and `native.execute`.
+ * 0.1.28 adds drawn X connection points to selection snapshots.
+ * 0.1.28 adds the selected-molecule handoff graph and bond growth suggestions, and graph input to embed3d.
+ * 0.1.28 adds companion warnings, host identity, selected atom IDs, connection point writes, and handoff success status.
  *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
  * the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` — the NMR
@@ -61,7 +63,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * local structure recognition, `^0.1.7` for structure naming, `^0.1.8` for external tools), which this host satisfies and an
  * older one correctly does not.
  */
-export const PluginApiVersion = "0.1.27" as const;
+export const PluginApiVersion = "0.1.28" as const;
 
 export const pluginPermissions = [
   "document.read",

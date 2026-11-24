@@ -37,7 +37,7 @@ const pipeline = {
 };
 const manifest = {
   id: "org.test.handoff", name: "Handoff", version: "1.0.0",
-  apiVersion: "^0.1.27", entry: "index.js", permissions: ["apps.handoff", "native.execute"]
+  apiVersion: "^0.1.28", entry: "index.js", permissions: ["apps.handoff", "native.execute"]
 };
 const sendFile = { appId: "opaque-1", fileName: "benzene", extension: "xyz", text: "6\n" };
 const runCompanion = { appId: "opaque-1", pipeline: "mofBuild", combination: "pcu-N16-1x1x1" };

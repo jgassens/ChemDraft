@@ -1749,6 +1749,12 @@ for processor-specific behavior. Use an eligible official catalog plugin and its
   the app to its previous location or pick it again before continuing.
 - Send file names with spaces, non-ASCII characters, and a reserved Windows name; check the opened
   file and sanitized name.
+- Run a companion build with warnings and verify the confirmation shows them before launch. Cancel
+  and verify no build starts; repeat and accept. Check the success status is attributed to the
+  plugin, and native failure or cancellation takes precedence over success text.
+- Check the plugin sees the running host version. Select individual atoms and mark connection
+  points; verify each anchor gains one single-bonded X in one undo entry, and undo/redo restores it.
+  Check that a whole-object selection and an invalid anchor do not silently mark atoms.
 - Check palette focus behavior and, on Windows, that no console flashes. Quit ChemDraft and verify
   the receiving app remains running.
 
