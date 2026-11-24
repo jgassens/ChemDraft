@@ -78,6 +78,7 @@ import {
   structureFromSmilesForPlugin
 } from "./pluginChemistry";
 import { chemistry3dReplyLogRequestedFromWindow } from "../chemistry3d/client";
+import { handoffGraphForPlugin, suggestConnectionPointsForPlugin } from "./handoffGraph";
 import { configureChemistry3dReplyLogger } from "./PluginWorkerBridge";
 
 /** Serves an isotope envelope to a plugin holding `chemistry.compute`. */
@@ -529,6 +530,8 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   let registeringRecord: InstalledPluginRecord | undefined;
   const host = new DesktopPluginHost({
     ...chemistry3d,
+    handoffGraph: handoffGraphForPlugin,
+    suggestConnectionPoints: suggestConnectionPointsForPlugin,
     commandRegistry: options.commandRegistry,
     appHandoffProvenance: options.appHandoffProvenance ?? {
       forRegistration: (id, version) => registeringRecord?.id === id && registeringRecord.version === version

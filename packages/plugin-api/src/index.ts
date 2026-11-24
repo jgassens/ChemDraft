@@ -12,7 +12,8 @@ export { PluginToolDefinitionSchema, type PluginToolDefinition, type PluginToolI
 import type { PluginDepictionAPI, PluginRequestChemistryAPI, PluginRequestDocumentAPI, PluginRequestsAPI,
   PluginToolSessionsAPI } from "./requestCapabilities";
 import type { PluginEmbed3DRequest, PluginEmbed3DResult, PluginMinimize3DRequest, PluginMinimize3DResult,
-  PluginFlatten3DRequest, PluginFlatten3DResult } from "./chemistry3d";
+  PluginFlatten3DRequest, PluginFlatten3DResult, PluginHandoffGraphRequest, PluginHandoffGraphResult,
+  PluginSuggestConnectionPointsRequest, PluginSuggestConnectionPointsResult } from "./chemistry3d";
 
 // Re-export the chem-core types the SDK's own signatures reference (e.g. `getActiveDocument()` returns
 // a `ChemDraftDocument`, document patch methods take a `DocumentPatch`). Surfacing them here keeps the plugin
@@ -50,6 +51,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * 0.1.26 adds optional request-bound document access, tool sessions, chemistry and depiction, and document-change events.
  * 0.1.27 adds native app handoff and manifest-declared companion pipelines, gated by `apps.handoff` and `native.execute`.
  * 0.1.27 adds drawn X connection points to selection snapshots.
+ * 0.1.27 adds the selected-molecule handoff graph and bond growth suggestions, and graph input to embed3d.
  *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
  * the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` — the NMR
@@ -1516,6 +1518,10 @@ export interface PluginChemistryAPI extends PluginRequestChemistryAPI {
   /** API 0.1.15: chemistry.compute only, during this plugin's own command. Explicit Hs;
    * independently embedded components start side by side. Only model.coords may be edited. */
   embed3d?(request: PluginEmbed3DRequest): Promise<PluginEmbed3DResult>;
+  /** Audit one selected molecule in the plugin's command. Requires chemistry.compute and selection.read. */
+  handoffGraph?(request: PluginHandoffGraphRequest): Promise<PluginHandoffGraphResult>;
+  /** Suggest new X positions in anchor order. Requires chemistry.compute and selection.read. */
+  suggestConnectionPoints?(request: PluginSuggestConnectionPointsRequest): Promise<PluginSuggestConnectionPointsResult>;
   minimize3d?(request: PluginMinimize3DRequest): Promise<PluginMinimize3DResult>;
   /** Returns native objects only; insert through documents.applyPatch. Never changes the document. */
   flatten3d?(request: PluginFlatten3DRequest): Promise<PluginFlatten3DResult>;

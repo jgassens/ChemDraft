@@ -168,10 +168,10 @@ describe("chemistry worker capability allowlist", () => {
   it("includes command-scoped table insertion", () => {
     expect(PLUGIN_WORKER_CAPABILITY_METHODS.documents).toContain("insertTable");
   });
-  it("includes all chemistry methods through API 0.1.26", () => {
+  it("includes all chemistry methods through API 0.1.27", () => {
     expect(PLUGIN_WORKER_CAPABILITY_METHODS.chemistry).toEqual([
       "properties", "isotopeEnvelope", "nameToStructure", "structureFromSmiles", "structureToName", "embed3d", "minimize3d", "flatten3d",
-      "inspectStructure", "rings"
+      "handoffGraph", "suggestConnectionPoints", "inspectStructure", "rings"
     ]);
   });
   it("includes structureToName", () => {

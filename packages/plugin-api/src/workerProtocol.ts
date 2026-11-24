@@ -82,6 +82,7 @@ export const PLUGIN_WORKER_CAPABILITY_METHODS = {
   panels: ["showReport"],
   overlays: ["setStatus", "setTranscript", "setContent", "open"],
   chemistry: ["properties", "isotopeEnvelope", "nameToStructure", "structureFromSmiles", "structureToName", "embed3d", "minimize3d", "flatten3d",
+    "handoffGraph", "suggestConnectionPoints",
     ...pluginRequestMethods("chemistry")],
   dialogs: ["promptText"],
   images: ["requestImage"],

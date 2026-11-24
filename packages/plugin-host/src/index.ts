@@ -34,6 +34,9 @@ export { chemistry3dTimeoutMs, CHEMISTRY3D_STARTUP_TIMEOUT_MS, pauseChemistry3dD
 import {
   PluginChemistryPropertiesRequestSchema, PluginChemistryPropertiesResultSchema,
   PluginAppHandoffPermissions, PluginAppHandoffSchemas, type PluginAppsAPI, type PluginHandoffRunCompanionRequest,
+  PluginHandoffGraphRequestSchema, PluginSuggestConnectionPointsRequestSchema, PluginSuggestConnectionPointsResultSchema,
+  type PluginHandoffGraphRequest, type PluginHandoffGraphResult,
+  type PluginSuggestConnectionPointsRequest, type PluginSuggestConnectionPointsResult,
   AssistantCapabilityPermissions, supportsPluginTableInsertion, type PluginAssistantAPI,
   bindPluginRequestCapabilities, getPluginRequestCapability, pluginRequestFailure, pluginRequestPermissions,
   requestValidationCode, supportsPluginRequestTools, type PluginActiveDocumentChangedHandler,
@@ -773,6 +776,8 @@ export interface PluginHostOptions {
   embed3d?: (request: PluginEmbed3DRequest, signal: AbortSignal) => Promise<PluginEmbed3DResult>;
   minimize3d?: (request: PluginMinimize3DRequest, signal: AbortSignal) => Promise<PluginMinimize3DResult>;
   flatten3d?: (request: PluginFlatten3DRequest, signal: AbortSignal) => Promise<PluginFlatten3DResult>;
+  handoffGraph?: (request: PluginHandoffGraphRequest, document: ChemDraftDocument, signal: AbortSignal) => Promise<PluginHandoffGraphResult>;
+  suggestConnectionPoints?: (request: PluginSuggestConnectionPointsRequest, document: ChemDraftDocument) => PluginSuggestConnectionPointsResult;
   overlays?: {
     setStatus(pluginId: string, overlayId: string, text: string): void | Promise<void>;
     setTranscript?(pluginId: string, overlayId: string, entries: PluginOverlayTranscriptEntry[]): void | Promise<void>;
@@ -936,6 +941,7 @@ export class PluginHost {
   private readonly convertNameToStructure?: PluginHostOptions["convertNameToStructure"];
   private readonly buildStructureFromSmiles?: PluginHostOptions["buildStructureFromSmiles"];
   private readonly chemistry3d: Pick<PluginHostOptions, "embed3d" | "minimize3d" | "flatten3d">;
+  private readonly handoffChemistry: Pick<PluginHostOptions, "handoffGraph" | "suggestConnectionPoints">;
   private readonly openChemistry3dRequests = new Map<symbol, Set<AbortController>>();
   private readonly chemistry3dQueue = new Chemistry3dQueue();
   private readonly onProposedPatchesChanged?: PluginHostOptions["onProposedPatchesChanged"];
@@ -994,6 +1000,7 @@ export class PluginHost {
     this.convertNameToStructure = options.convertNameToStructure;
     this.buildStructureFromSmiles = options.buildStructureFromSmiles;
     this.chemistry3d = { embed3d: options.embed3d, minimize3d: options.minimize3d, flatten3d: options.flatten3d };
+    this.handoffChemistry = { handoffGraph: options.handoffGraph, suggestConnectionPoints: options.suggestConnectionPoints };
     this.onProposedPatchesChanged = options.onProposedPatchesChanged;
     this.now = options.now ?? (() => new Date());
     this.createId = options.createId ?? (() => globalThis.crypto.randomUUID());
@@ -1748,6 +1755,26 @@ export class PluginHost {
         }
       : undefined;
 
+    const selectedHandoffDocument = async (objectId: string, method: string) => {
+      this.requirePermission(pluginId, "chemistry.compute");
+      this.requirePermission(pluginId, "selection.read");
+      const checkInvocation = () => {
+        if (!invocationToken || this.activeCommandInvocations.get(invocationToken)?.pluginId !== pluginId) {
+          throw new PluginHostError(`Plugin "${pluginId}" may call chemistry.${method} only while one of its own commands is executing.`);
+        }
+      };
+      checkInvocation();
+      const binding = boundDocument();
+      const document = binding ? binding.read() : await this.getActiveDocument?.();
+      checkInvocation();
+      if (!binding && this.getActiveDocumentKey?.() !== (contextInvocation || undefined)?.documentKey) {
+        throw new PluginHostError(`chemistry.${method} refused because the active document changed during the command.`);
+      }
+      if (!document?.selection.objectIds.includes(objectId)) {
+        throw new PluginHostError(`chemistry.${method} requires a selected molecule; "${objectId}" is not selected.`);
+      }
+      return document;
+    };
     // Presence tracks the PERMISSION alone; whether the host can actually serve the call is carried in
     // the answer. That split is deliberate: across the worker bridge the plugin's stub is built from
     // its manifest permissions, with no way to know what the host wired up, so gating presence on the
@@ -1785,6 +1812,24 @@ export class PluginHost {
             if (!this.chemistry3d.flatten3d) throw new PluginHostError("This host provides no 3D flattening engine.");
             return { timeoutMs: chemistry3dTimeoutMs("flatten3d"), run: signal => this.chemistry3d.flatten3d!(parsed, signal) };
           }),
+          ...(has("selection.read") ? {
+            handoffGraph: async (request: PluginHandoffGraphRequest) => {
+              const parsed = PluginHandoffGraphRequestSchema.parse(request);
+              const document = await selectedHandoffDocument(parsed.objectId, "handoffGraph");
+              const provider = this.handoffChemistry.handoffGraph;
+              if (!provider) throw new PluginHostError("This host provides no selected-molecule handoff graph engine.");
+              return this.runChemistry3d(pluginId, invocationToken, "handoffGraph", () => ({
+                timeoutMs: chemistry3dTimeoutMs("handoffGraph"), run: signal => provider(parsed, document, signal)
+              }));
+            },
+            suggestConnectionPoints: (request: PluginSuggestConnectionPointsRequest) => withCapabilitySlot(async () => {
+              const parsed = PluginSuggestConnectionPointsRequestSchema.parse(request);
+              const document = await selectedHandoffDocument(parsed.objectId, "suggestConnectionPoints");
+              const provider = this.handoffChemistry.suggestConnectionPoints;
+              if (!provider) throw new PluginHostError("This host provides no connection-point placement planner.");
+              return PluginSuggestConnectionPointsResultSchema.parse(provider(parsed, document));
+            })
+          } : {}),
           isotopeEnvelope: async (request) => {
             this.requirePermission(pluginId, "chemistry.compute");
             const parsed = PluginIsotopeEnvelopeRequestSchema.parse(request);
@@ -2879,7 +2924,7 @@ export class PluginHost {
   }
 
   private async runChemistry3d<T>(
-    pluginId: string, invocationToken: symbol | undefined, method: "embed3d" | "minimize3d" | "flatten3d",
+    pluginId: string, invocationToken: symbol | undefined, method: "embed3d" | "minimize3d" | "flatten3d" | "handoffGraph",
     prepare: () => { timeoutMs: number; run: (signal: AbortSignal) => Promise<T> }
   ): Promise<T> {
     this.requirePermission(pluginId, "chemistry.compute");

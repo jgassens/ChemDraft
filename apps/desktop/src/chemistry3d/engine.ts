@@ -12,6 +12,7 @@ import { SPIN3D_EMBED_CANDIDATES } from "./settings";
 import { assertComponentStereo } from "./stereo";
 import type { Chemistry3dTimingSink } from "./timing";
 import { timeHost3d, timeHost3dAsync } from "./hostTiming";
+import { canonicalGraphSmiles, moleculeFromHandoffStructure, readHandoffStructure } from "./graph";
 
 interface OptimizePayload { embedOk: boolean; coords3dByEngineAtom: number[];
   forceField: { status: "converged" | "not-converged" | "setup-failed"; energy?: number } }
@@ -37,14 +38,7 @@ function assertModelStereo(rdkit: RdkitMinimalModule, model: Plugin3DModel, phas
  * ranking. Make Hs explicit BEFORE calling it so its original-atom mapping returns ALL coordinates,
  * rather than discarding the generated Hs that a plugin needs for subsequent minimization.
  * RDKit appends Hs after original atoms; no new valence or hydrogen model is implemented here. */
-async function embedComponent(rdkit: RdkitMinimalModule, smiles: string, seed: number, atomCount: number) {
-  const source = requireMol(rdkit, smiles, "3D embedding");
-  let molblock: string;
-  try {
-    const hydrogenSource = source as RdkitJsMol & { add_hs?(): string };
-    if (!hydrogenSource.add_hs) throw new Error("RDKit explicit-hydrogen generation is unavailable.");
-    molblock = hydrogenSource.add_hs();
-  } finally { source.delete(); }
+async function embedComponent(molblock: string, seed: number, atomCount: number) {
   const started = Date.now();
   const { embedded } = await generate3DConformerProgressive(
     // The adapter derives its full mapping count from atom properties. This input count controls
@@ -59,15 +53,25 @@ async function embedComponent(rdkit: RdkitMinimalModule, smiles: string, seed: n
   );
   const coords = Array.from(embedded.mapping.coords3dByOriginalAtom);
   const added = Array.from({ length: coords.length / 3 - atomCount }, (_, i) => atomCount + i);
-  return { molblock, coords, added, warnings: embedded.warnings.map(warning => warning.message) };
+  return { coords, added, warnings: embedded.warnings.map(warning => warning.message) };
 }
 
 export async function embed3dInWorker(input: PluginEmbed3DRequest, progress: () => void = () => undefined, timing?: Chemistry3dTimingSink): Promise<PluginEmbed3DResult> {
   const request = timeHost3d(timing, "worker.embed3d.request-schema", () => PluginEmbed3DRequestSchema.parse(input));
   const rdkit = await ensureRdkit();
   const seed = request.seed ?? 42;
-  const counts = request.components.map(({ smiles }, index) => {
-    const mol = requireMol(rdkit, smiles, `Component ${index + 1}`);
+  let heavyAtoms = 0;
+  let atomsWithHydrogens = 0;
+  const components = request.components.map((input, index) => {
+    const context = `Component ${index + 1}`;
+    const graphInput = "graph" in input;
+    if (graphInput) {
+      input.graph.atoms.forEach((atom, i) => {
+        if (atom.element === "*") throw new Error(`${context}: replace connection point or dummy atom ${i + 1} with a real atom before embedding.`);
+        if (atom.radicalElectrons > 2) throw new Error(`${context}: 3D chemistry cannot preserve ${atom.radicalElectrons} radical electrons at atom ${i + 1}.`);
+      });
+    }
+    const mol = graphInput ? moleculeFromHandoffStructure(rdkit, input.graph, context) : requireMol(rdkit, input.smiles, context);
     try {
       const json = readGraph(mol);
       const graph = json.molecules[0];
@@ -77,21 +81,30 @@ export async function embed3dInWorker(input: PluginEmbed3DRequest, progress: () 
       graph.bonds.forEach(({ atoms: [a, b] }) => { adjacency[a].push(b); adjacency[b].push(a); });
       const queue = [0];
       while (queue.length) for (const b of adjacency[queue.pop()!]) if (!seen.has(b)) { seen.add(b); queue.push(b); }
-      if (json.molecules.length !== 1 || seen.size !== graph.atoms.length) throw new Error(`Component ${index + 1}: each SMILES must describe one connected component.`);
-      return { atoms: graph.atoms.length, heavy: graph.atoms.filter(atom => (atom.z ?? json.defaults?.atom?.z ?? 6) !== 1).length };
+      if (json.molecules.length !== 1 || seen.size !== graph.atoms.length) throw new Error(`${context}: each ${graphInput ? "graph" : "SMILES"} must describe one connected component.`);
+      const hydrogenSource = mol as RdkitJsMol & { add_hs?(): string };
+      if (!hydrogenSource.add_hs) throw new Error("RDKit explicit-hydrogen generation is unavailable.");
+      const sourceGraph = graphInput ? readHandoffStructure(mol) : undefined;
+      const smiles = graphInput ? canonicalGraphSmiles(mol) : input.smiles;
+      if (graphInput && smiles.length > 5000) throw new Error(`${context}: the graph's canonical SMILES exceeds 5000 characters.`);
+      const atomCount = graph.atoms.length;
+      heavyAtoms += graph.atoms.filter(atom => (atom.z ?? json.defaults?.atom?.z ?? 6) !== 1).length;
+      atomsWithHydrogens += atomCount + graph.atoms.reduce((count, atom) => count + (atom.impHs ?? json.defaults?.atom?.impHs ?? 0), 0);
+      if (heavyAtoms > 500) throw new Error("3D chemistry accepts at most 500 heavy atoms total.");
+      if (atomsWithHydrogens > 4096) throw new Error("3D chemistry accepts at most 4096 atoms including added hydrogens.");
+      return { atomCount, smiles, sourceGraph, molblock: hydrogenSource.add_hs() };
     } finally { mol.delete(); }
   });
-  if (counts.reduce((sum, count) => sum + count.heavy, 0) > 500) throw new Error("3D chemistry accepts at most 500 heavy atoms total.");
   const model: Plugin3DModel = { atoms: [], bonds: [], coords: [], components: [], modelToken: "unsigned-worker-model" };
   let right = 0;
   const warnings: string[] = [];
-  for (const [index, { smiles }] of request.components.entries()) {
+  for (const [index, { smiles, atomCount, sourceGraph, molblock }] of components.entries()) {
     progress();
     const started = timing ? performance.now() : 0;
-    const payload = await embedComponent(rdkit, smiles, seed, counts[index].atoms);
-    timing?.({ stage: "embed.component", ms: performance.now() - started, details: { component: index + 1, inputAtoms: counts[index].atoms } });
+    const payload = await embedComponent(molblock, seed, atomCount);
+    timing?.({ stage: "embed.component", ms: performance.now() - started, details: { component: index + 1, inputAtoms: atomCount } });
     warnings.push(...payload.warnings.map(message => `Component ${index + 1}: ${message}`));
-    const mol = requireMol(rdkit, payload.molblock, `Component ${index + 1}`);
+    const mol = requireMol(rdkit, molblock, `Component ${index + 1}`);
     try {
       const coords = [...payload.coords];
       let minX = Infinity;
@@ -100,7 +113,8 @@ export async function embed3dInWorker(input: PluginEmbed3DRequest, progress: () 
       const shift = right - minX;
       for (let i = 0; i < coords.length; i += 3) coords[i] += shift;
       right += maxX - minX + 4; // all atoms, including Hs, have >=4 A x-separation
-      appendComponent(model, mol, smiles, coords, payload.added);
+      appendComponent(model, mol, smiles, coords, payload.added, sourceGraph);
+      if (sourceGraph) assertComponentStereo(rdkit, model, index, "embed3d result");
     } finally { mol.delete(); }
   }
   return { model, method: chemistry3dMethod(seed), warnings };

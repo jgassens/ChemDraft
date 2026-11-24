@@ -447,6 +447,34 @@ describe("PluginWorkerBridge — M34 isolation boundary", () => {
       expect(flatten3d).toHaveBeenCalledWith({ model: minimized.model, view: "auto" }, expect.any(AbortSignal));
     } finally { bridge.terminate(); }
   });
+  it.each([false, true])("requires selection.read for selected handoff chemistry (declared = %s)", async declared => {
+    const commandId = "plugin.graph.run";
+    const manifest = parsePluginManifest({ id: "org.test.handoff-graph", name: "Graph", version: "0", apiVersion: "^0.1.27",
+      entry: "worker.js", permissions: ["chemistry.compute", ...(declared ? ["selection.read"] : [])],
+      contributes: { commands: [{ id: commandId, title: "Graph" }] } });
+    const doc = createEmptyDocument({ id: "test-doc", pageId: "p1" });
+    doc.selection = { objectIds: ["m1"], pageId: "p1" };
+    const graph = { objectId: "m1", pageId: "p1", canonicalSmiles: "C", graph: { atoms: [
+      { element: "C", charge: 0, radicalElectrons: 0, hydrogenCount: 4 }], bonds: [] },
+      unspecifiedStereocenters: [], unspecifiedDoubleBonds: [], reactionMembership: [], sourceAtomMaps: [],
+      expandedLabels: [], serializerWarnings: [] };
+    const positions = { points: [{ anchorAtomId: "a1", x: 30, y: 45 }] };
+    const handoffGraph = vi.fn(async () => graph);
+    const suggestConnectionPoints = vi.fn(() => positions);
+    const host = new PluginHost({ handoffGraph, suggestConnectionPoints, getActiveDocument: () => doc });
+    const bridge = startWorkerRoutedPlugin({ manifest, commandHandlers: { [commandId]: async ({ chemistry }) => {
+      if (!declared) return [chemistry?.handoffGraph, chemistry?.suggestConnectionPoints];
+      await expect(chemistry!.handoffGraph!({ objectId: "unselected" })).rejects.toThrow("is not selected");
+      return [await chemistry!.handoffGraph!({ objectId: "m1" }),
+        await chemistry!.suggestConnectionPoints!({ objectId: "m1", anchors: ["a1"] })];
+    } } });
+    host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+    try {
+      await expect(host.invokeCommand(commandId)).resolves.toEqual(declared ? [graph, positions] : [undefined, undefined]);
+      expect(handoffGraph).toHaveBeenCalledTimes(declared ? 1 : 0);
+      expect(suggestConnectionPoints).toHaveBeenCalledTimes(declared ? 1 : 0);
+    } finally { bridge.terminate(); }
+  });
   it("round-trips overlay input and status through the real worker capability boundary", async () => {
     const commandId = "plugin.chat.submit";
     const overlayId = "overlay.chat.main";

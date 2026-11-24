@@ -393,6 +393,12 @@ export function runPluginWorker(
           embed3d: request => call("chemistry", "embed3d", [request]) as ReturnType<NonNullable<PluginChemistryAPI["embed3d"]>>,
           minimize3d: request => call("chemistry", "minimize3d", [request]) as ReturnType<NonNullable<PluginChemistryAPI["minimize3d"]>>,
           flatten3d: request => call("chemistry", "flatten3d", [request]) as ReturnType<NonNullable<PluginChemistryAPI["flatten3d"]>>,
+          ...(has("selection.read") ? {
+            handoffGraph: (request: Parameters<NonNullable<PluginChemistryAPI["handoffGraph"]>>[0]) =>
+              call("chemistry", "handoffGraph", [request]) as ReturnType<NonNullable<PluginChemistryAPI["handoffGraph"]>>,
+            suggestConnectionPoints: (request: Parameters<NonNullable<PluginChemistryAPI["suggestConnectionPoints"]>>[0]) =>
+              call("chemistry", "suggestConnectionPoints", [request]) as ReturnType<NonNullable<PluginChemistryAPI["suggestConnectionPoints"]>>
+          } : {}),
           isotopeEnvelope: (request) =>
             call("chemistry", "isotopeEnvelope", [request]) as ReturnType<PluginChemistryAPI["isotopeEnvelope"]>,
           // Present in the stub for the same reason: a worker-routed plugin must see the same shape
