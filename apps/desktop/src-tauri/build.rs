@@ -30,6 +30,7 @@ fn main() {
             "open_structure_search",
             "set_structure_search_enabled",
             "plugin_starter_computer",
+            "app_handoff_menu_invocation",
             "app_handoff_call",
             "app_handoff_consent_list",
             "app_handoff_consent_revoke",

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import type { ListenForAppHandoff } from "../appHandoff/nativeMenu";
 import type { PluginManifest } from "@chemdraft/plugin-api";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -164,8 +165,15 @@ describe("usePluginRuntime installed catalog readiness", () => {
     hookMocks.stagingFs.readTextFile.mockResolvedValue(JSON.stringify({ version: 1, plugins: [record] }));
     const status = vi.fn();
     let view: PluginRuntimeView | undefined;
+    const invocation = { pluginId: id, commandId, nonce: "2".repeat(32) };
+    let click: () => Promise<void>;
+    const listenForAppHandoff: ListenForAppHandoff = dispatch => {
+      click = () => dispatch(invocation);
+      return () => {};
+    };
     function Probe() {
       view = usePluginRuntime({
+        listenForAppHandoff,
         getActiveDocument: () => undefined,
         getSelection: () => ({ objectIds: [], molecules: [] }),
         onAppHandoffStatus: status
@@ -181,11 +189,10 @@ describe("usePluginRuntime installed catalog readiness", () => {
       view!.runtime.registerPlugin(handoffManifest, { execution: "worker",
         commandHandlers: { [commandId]: context => context.apps!.sendFile(request) } }, record);
     });
-    const click = () => window.dispatchEvent(new CustomEvent("chemdraft:native-handoff-command", { detail: { commandId } }));
-    await act(async () => { click(); });
-    expect(hookMocks.handoffTransport).toHaveBeenCalledExactlyOnceWith(id, "sendFile", request);
+    await act(async () => { await click(); });
+    expect(hookMocks.handoffTransport).toHaveBeenCalledExactlyOnceWith(invocation, "sendFile", request);
     hookMocks.stagingFs.readTextFile.mockResolvedValue(JSON.stringify({ version: 1, plugins: [{ ...record, version: "2.0.0" }] }));
-    await act(async () => { click(); });
+    await act(async () => { await click(); });
     expect(status).toHaveBeenLastCalledWith(expect.stringContaining("checksum-verified install"));
     expect(hookMocks.handoffTransport).toHaveBeenCalledOnce();
     expect(hookMocks.stagingFs.readTextFile).toHaveBeenCalledTimes(2);

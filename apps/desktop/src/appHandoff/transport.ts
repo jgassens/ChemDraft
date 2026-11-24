@@ -6,10 +6,10 @@ export function createTauriAppHandoffTransport(
   call: typeof invoke<unknown> = invoke,
   onStatus?: (message: string) => void
 ): PluginAppHandoffTransport {
-  return async (pluginId, method, request) => {
+  return async (invocation, method, request) => {
     let reply: unknown;
     try {
-      reply = await call("app_handoff_call", { pluginId, method, request });
+      reply = await call("app_handoff_call", { invocation, method, request });
     } catch (error) {
       // Rust returns path-free refusals as strings. Keep Tauri infrastructure errors out of the SDK.
       const message = typeof error === "string" && error.length
@@ -30,18 +30,4 @@ export function createTauriAppHandoffTransport(
     }
     return reply;
   };
-}
-
-export function listenForNativeAppHandoffCommands(target: Window, dispatch: (commandId: string) => void): () => void {
-  const eventName = "chemdraft:native-handoff-command";
-  const listener = (event: Event) => {
-    const payload: unknown = (event as CustomEvent<unknown>).detail;
-    if (payload && typeof payload === "object" && Object.hasOwn(payload, "commandId") &&
-        Object.keys(payload).length === 1 && "commandId" in payload && typeof payload.commandId === "string") {
-      dispatch(payload.commandId);
-    }
-  };
-  // Rust alone decides whether this menu event has a live arming.
-  target.addEventListener(eventName, listener);
-  return () => target.removeEventListener(eventName, listener);
 }

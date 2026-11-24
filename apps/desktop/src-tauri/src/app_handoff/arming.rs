@@ -1,4 +1,5 @@
-use super::wire::Input;
+use super::{temp_files, wire::Input};
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, OnceLock},
@@ -14,8 +15,18 @@ pub(crate) struct State {
     arms: Mutex<HashMap<String, Arc<Arm>>>,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct MenuInvocation {
+    pub plugin_id: String,
+    pub command_id: String,
+    pub nonce: String,
+}
+
 pub(super) struct Arm {
     pub command: String,
+    nonce: String,
+    claimed: OnceLock<()>,
     expires: Instant,
     stage: Mutex<Stage>,
     build: OnceLock<BuildChoice>,
@@ -36,13 +47,43 @@ enum Stage {
 pub(super) struct Submission(Arc<Arm>);
 
 impl State {
-    pub(super) fn arm(&self, plugin: &str, command: &str, now: Instant) -> Arc<Arm> {
-        let arm = Arc::new(Arm::new(command, now));
+    pub(super) fn arm(
+        &self,
+        plugin: &str,
+        command: &str,
+        now: Instant,
+    ) -> Result<Arc<Arm>, String> {
+        let nonce =
+            temp_files::nonce().map_err(|_| "Could not secure the app handoff menu click.")?;
+        let arm = Arc::new(Arm::new(command, nonce, now));
         let mut arms = self.arms.lock().unwrap();
         if let Some(previous) = arms.insert(plugin.into(), arm.clone()) {
             previous.invalidate();
         }
-        arm
+        Ok(arm)
+    }
+
+    fn matches(arm: &Arm, invocation: &MenuInvocation) -> bool {
+        arm.command == invocation.command_id && arm.nonce == invocation.nonce
+    }
+
+    pub(super) fn begin(&self, invocation: &MenuInvocation, now: Instant) -> Result<(), String> {
+        let arms = self.arms.lock().unwrap();
+        let arm = arms
+            .get(&invocation.plugin_id)
+            .filter(|arm| Self::matches(arm, invocation) && now < arm.expires)
+            .ok_or(NO_ARMING)?;
+        arm.claimed.set(()).map_err(|_| NO_ARMING.into())
+    }
+
+    pub(super) fn finish(&self, invocation: &MenuInvocation) {
+        let mut arms = self.arms.lock().unwrap();
+        if arms
+            .get(&invocation.plugin_id)
+            .is_some_and(|arm| Self::matches(arm, invocation))
+        {
+            arms.remove(&invocation.plugin_id).unwrap().invalidate();
+        }
     }
 
     /// Only the Rust result handler can start this invocation. It is never visible to IPC.
@@ -53,12 +94,12 @@ impl State {
         now: Instant,
     ) -> Result<Submission, String> {
         self.disarm(plugin);
-        Arc::new(Arm::new(command, now)).submit(now)
+        Arc::new(Arm::new(command, String::new(), now)).submit(now)
     }
 
     pub(super) fn for_call(
         &self,
-        plugin: &str,
+        invocation: &MenuInvocation,
         now: Instant,
         writing: bool,
     ) -> Result<Arc<Arm>, String> {
@@ -66,7 +107,8 @@ impl State {
             .arms
             .lock()
             .unwrap()
-            .get(plugin)
+            .get(&invocation.plugin_id)
+            .filter(|arm| Self::matches(arm, invocation) && arm.claimed.get().is_some())
             .cloned()
             .ok_or(NO_ARMING)?;
         if !writing {
@@ -83,7 +125,14 @@ impl State {
 
     #[cfg(test)]
     pub(super) fn live(&self, plugin: &str, now: Instant) -> Result<Arc<Arm>, String> {
-        self.for_call(plugin, now, false)
+        let arm = self
+            .arms
+            .lock()
+            .unwrap()
+            .get(plugin)
+            .cloned()
+            .ok_or(NO_ARMING)?;
+        self.for_call(&arm.invocation(plugin), now, false)
     }
 
     pub(super) fn disarm(&self, plugin: &str) {
@@ -100,9 +149,19 @@ impl State {
 }
 
 impl Arm {
-    fn new(command: &str, now: Instant) -> Self {
+    pub(super) fn invocation(&self, plugin: &str) -> MenuInvocation {
+        MenuInvocation {
+            plugin_id: plugin.into(),
+            command_id: self.command.clone(),
+            nonce: self.nonce.clone(),
+        }
+    }
+
+    fn new(command: &str, nonce: String, now: Instant) -> Self {
         Self {
             command: command.into(),
+            nonce,
+            claimed: OnceLock::new(),
             expires: now + Duration::from_secs(60),
             stage: Mutex::default(),
             build: OnceLock::new(),

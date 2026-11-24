@@ -48,6 +48,12 @@ impl Row {
         }
     }
 
+    pub(super) fn consent_id(&self) -> String {
+        use sha2::{Digest, Sha256};
+        // The random picker ID stays private. The manager gets a one-way, revocation-only reference.
+        format!("consent-{:x}", Sha256::digest(self.app_id.as_bytes()))
+    }
+
     pub(super) fn grants(&self, app: &App, digest: &str) -> bool {
         self.granted
             && self.app_path == app.path
@@ -126,11 +132,11 @@ impl Store {
         })
     }
 
-    pub(super) fn revoke(&self, plugin: &str, app: &str) -> io::Result<()> {
+    pub(super) fn revoke(&self, plugin: &str, consent_id: &str) -> io::Result<()> {
         self.update(|rows| {
             let row = rows
                 .iter_mut()
-                .find(|row| row.plugin_id == plugin && row.app_id == app)
+                .find(|row| row.plugin_id == plugin && row.consent_id() == consent_id)
                 .ok_or(io::ErrorKind::NotFound)?;
             row.granted = false;
             row.at = timestamp();

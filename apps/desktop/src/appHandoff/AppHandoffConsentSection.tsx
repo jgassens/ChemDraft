@@ -35,11 +35,11 @@ export function AppHandoffConsentSection({ consents, pluginNames, catalogKey, di
   }, []);
 
   const revoke = async (row: AppHandoffConsent) => {
-    setRevoking(row.appId);
+    setRevoking(row.consentId);
     setRevokeError(undefined);
     try {
-      await consents.revoke(row.pluginId, row.appId);
-      setRows(current => current?.map(item => item.pluginId === row.pluginId && item.appId === row.appId
+      await consents.revoke(row.pluginId, row.consentId);
+      setRows(current => current?.map(item => item.pluginId === row.pluginId && item.consentId === row.consentId
         ? { ...item, granted: false } : item));
       setRevision(value => value + 1);
     } catch (error) {
@@ -58,7 +58,7 @@ export function AppHandoffConsentSection({ consents, pluginNames, catalogKey, di
     {rows && rows.length > 0 && <ul className="plugin-manager-list">
       {rows.map(row => {
         const pluginName = pluginNames.get(row.pluginId);
-        return <li className="plugin-manager-item" key={`${row.pluginId}/${row.appId}`}>
+        return <li className="plugin-manager-item" key={`${row.pluginId}/${row.consentId}`}>
           <div className="plugin-manager-details">
             <div className="plugin-manager-name">{row.appName}</div>
             <p>{pluginName ? `${pluginName} (${row.pluginId})` : row.pluginId} · {row.pipeline ? `Pipeline ${row.pipeline}` : "File handoff"} · {row.granted ? "Allowed" : "Revoked"}</p>
@@ -66,7 +66,7 @@ export function AppHandoffConsentSection({ consents, pluginNames, catalogKey, di
           </div>
           {row.granted && <button type="button" className="plugin-manager-button" disabled={disabled || revoking !== undefined}
             aria-label={`Revoke app handoff from ${pluginName ?? row.pluginId} to ${row.appName}`} onClick={() => void revoke(row)}>
-            {revoking === row.appId ? "Revoking…" : "Revoke"}
+            {revoking === row.consentId ? "Revoking…" : "Revoke"}
           </button>}
         </li>;
       })}

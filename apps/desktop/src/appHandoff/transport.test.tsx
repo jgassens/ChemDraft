@@ -12,19 +12,19 @@ import {
   createChemDraftAgentBridge, dispatchAgentPointerEvent, type AgentResolvedPoint, type AgentSnapshot
 } from "../agentBridge";
 import { ToolbarTextButton } from "../toolbars/toolbarCells";
-import { createTauriAppHandoffTransport, listenForNativeAppHandoffCommands } from "./transport";
+import { createTauriAppHandoffTransport } from "./transport";
+import { installNativeAppHandoffReceiver } from "./nativeMenu";
+import type { AppHandoffMenuInvocation } from "@chemdraft/plugin-host";
 
 const commandId = "plugin.crystalBuilder.sendMolecule";
 const pluginId = "org.chemdraft.handoff.crystalBuilder";
 const request = { appId: "opaque", fileName: "model", extension: "cif" as const, text: "test data" };
+const invocation = { pluginId, commandId, nonce: "3".repeat(32) };
 const eventName = "chemdraft:native-handoff-command";
 
 function setup() {
-  let armed = false;
   const launch = vi.fn();
   const native = vi.fn<typeof invoke<unknown>>().mockImplementation(async () => {
-    if (!armed) throw "Start app handoff from the plugin's native menu.";
-    armed = false;
     launch();
     return { status: "sent" };
   });
@@ -44,10 +44,7 @@ function setup() {
       menus: [{ id: "menu.crystalBuilder.sendMolecule", title: "Send", commandId }]
     }
   }, { execution: "worker", commandHandlers: { [commandId]: handler } });
-  return { host, handler, launch, native, nativeMenuClick: () => {
-    armed = true;
-    window.dispatchEvent(new CustomEvent(eventName, { detail: { commandId } }));
-  } };
+  return { host, handler, launch, native };
 }
 
 describe("native app handoff relay", () => {
@@ -56,59 +53,55 @@ describe("native app handoff relay", () => {
     const status = vi.fn();
     const relay = createTauriAppHandoffTransport(native, status);
     native.mockResolvedValueOnce({ status: "sent" });
-    await relay(pluginId, "sendFile", request);
+    await relay(invocation, "sendFile", request);
     expect(status).toHaveBeenLastCalledWith("Opened the handoff file in the chosen app.");
     const build = { appId: "opaque", pipeline: "mofBuild", combination: "pcu-N16-2x2x2" };
     native.mockResolvedValueOnce({ status: "done", opened: false, steps: [] });
-    await relay(pluginId, "runCompanion", build);
+    await relay(invocation, "runCompanion", build);
     expect(status).toHaveBeenLastCalledWith("Build completed.");
     native.mockResolvedValueOnce({ status: "failed", code: "timeout", message: "Companion step build timed out.",
       diagnostic: { step: "build", stderrTail: "private diagnostic" } });
-    await relay(pluginId, "runCompanion", build);
+    await relay(invocation, "runCompanion", build);
     expect(status).toHaveBeenLastCalledWith("Companion build failed: Companion step build timed out.");
     native.mockResolvedValueOnce({ status: "declined" });
-    await relay(pluginId, "runCompanion", build);
+    await relay(invocation, "runCompanion", build);
     expect(status).toHaveBeenCalledTimes(3);
     const refusal = "App handoff refused because two requests claimed one menu click.";
     native.mockRejectedValueOnce(refusal);
-    await expect(relay(pluginId, "runCompanion", build)).rejects.toThrow(refusal);
+    await expect(relay(invocation, "runCompanion", build)).rejects.toThrow(refusal);
     expect(status).toHaveBeenLastCalledWith(refusal);
   });
 
-  it("relays a native menu command with exactly the fields Rust accepts", async () => {
-    const { host, launch, native, nativeMenuClick } = setup();
-    let pending: Promise<unknown> | undefined;
-    const remove = listenForNativeAppHandoffCommands(window, id => { pending = host.invokeAppHandoffMenuCommand(id); });
+  it("authenticates the direct receiver before dispatch and finishes after the Worker relay returns", async () => {
+    const { host, launch, native, handler } = setup();
+    const target = new EventTarget() as Window & { __CHEMDRAFT_NATIVE_HANDOFF__: (payload: unknown) => Promise<void> };
+    let begun = false;
+    const lifecycle = vi.fn(async (_: string, args: { invocation: AppHandoffMenuInvocation; phase: string }) => {
+      if (args.invocation.nonce !== invocation.nonce || (args.phase === "begin" && begun)) throw "Refused";
+      begun = true;
+    });
+    const listen = installNativeAppHandoffReceiver(target, lifecycle);
+    const remove = listen(async proof => { await host.invokeAppHandoffMenuCommand(proof); });
     try {
-      nativeMenuClick();
-      await expect(pending).resolves.toEqual({ status: "sent" });
-      expect(native).toHaveBeenCalledExactlyOnceWith("app_handoff_call", { pluginId, method: "sendFile", request });
-      expect(launch).toHaveBeenCalledOnce();
-      window.dispatchEvent(new CustomEvent(eventName, { detail: { commandId } }));
-      await expect(pending).rejects.toThrow("native menu");
-      expect(launch).toHaveBeenCalledOnce();
-    } finally {
-      remove();
-    }
-  });
-
-  it("discards extra event fields and lets Rust refuse a synthetic event without an arming", async () => {
-    const { host, launch, native } = setup();
-    let pending: Promise<unknown> | undefined;
-    const remove = listenForNativeAppHandoffCommands(window, id => { pending = host.invokeAppHandoffMenuCommand(id); });
-    try {
-      for (const field of ["token", "arming", "pluginId", "source", "input"]) {
-        window.dispatchEvent(new CustomEvent(eventName, { detail: { commandId, [field]: "copied" } }));
-      }
-      expect(pending).toBeUndefined();
+      expect(() => listen(vi.fn())).toThrow("already has");
+      expect(Object.getOwnPropertyDescriptor(target, "__CHEMDRAFT_NATIVE_HANDOFF__")).toMatchObject({
+        writable: false, configurable: false, enumerable: false
+      });
+      target.dispatchEvent(new CustomEvent(eventName, { detail: invocation }));
+      await target.__CHEMDRAFT_NATIVE_HANDOFF__({ commandId, pluginId });
+      await target.__CHEMDRAFT_NATIVE_HANDOFF__({ ...invocation, nonce: "0".repeat(32) });
+      expect(handler).not.toHaveBeenCalled();
       expect(native).not.toHaveBeenCalled();
-      window.dispatchEvent(new CustomEvent(eventName, { detail: { commandId } }));
-      await expect(pending).rejects.toThrow("native menu");
-      expect(native).toHaveBeenCalledOnce();
-      expect(launch).not.toHaveBeenCalled();
-    } finally {
-      remove();
-    }
+      await target.__CHEMDRAFT_NATIVE_HANDOFF__(invocation);
+      expect(native).toHaveBeenCalledExactlyOnceWith("app_handoff_call", { invocation, method: "sendFile", request });
+      expect(lifecycle.mock.calls.slice(-2)).toEqual([
+        ["app_handoff_menu_invocation", { invocation, phase: "begin" }],
+        ["app_handoff_menu_invocation", { invocation, phase: "finish" }]
+      ]);
+      await target.__CHEMDRAFT_NATIVE_HANDOFF__(invocation);
+      expect(handler).toHaveBeenCalledOnce();
+      expect(launch).toHaveBeenCalledOnce();
+    } finally { remove(); }
   });
 
   it.each(["macos", "windows"] as const)("blocks bridge.command, bridge.click and synthetic shortcuts on %s", async platform => {

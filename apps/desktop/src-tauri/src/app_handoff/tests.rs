@@ -205,10 +205,95 @@ fn invalid_pipelines_refuse_traversal_arguments_and_unbound_inspection() {
 }
 
 #[test]
-fn wire_refuses_all_renderer_credentials_and_replay_without_an_arm() {
+fn live_menu_invocation_authenticates_each_method_before_any_side_effect() {
     let state = State::default();
     let now = Instant::now();
-    let payload = json!({"pluginId": PLUGIN,"method":"sendFile","request":{"appId":APP_ID,"extension":"cif","fileName":"test","text":"x"}});
+    let stale = state.arm(PLUGIN, COMMAND, now).unwrap().invocation(PLUGIN);
+    state.begin(&stale, now).unwrap();
+    let current = state.arm(PLUGIN, COMMAND, now).unwrap().invocation(PLUGIN);
+    assert_ne!(current.nonce, stale.nonce);
+    assert!(
+        state.for_call(&current, now, true).is_err(),
+        "must start the invocation first"
+    );
+    assert!(state.begin(&stale, now).is_err());
+    state.finish(&stale);
+    state.begin(&current, now).unwrap();
+    assert!(state.begin(&current, now).is_err(), "cannot dispatch twice");
+    let mut effects = Vec::new();
+    let send = json!({"appId":APP_ID,"extension":"cif","fileName":"test","text":"x"});
+    let mut relay = |invocation: Value, method: &str, request: Value| -> Result<(), String> {
+        let call = super::endpoint::authorize_call(
+            &state,
+            json!({"invocation":invocation,"method":method,"request":request}),
+            now,
+        )?;
+        if let Some(submission) = call.submission {
+            submission.show_box()?;
+            effects.push("box");
+            effects.push("write");
+            submission.launch(|| effects.push("launch"))?;
+        } else if matches!(call.request, super::wire::Request::Choose(_)) {
+            effects.push("picker");
+        }
+        Ok(())
+    };
+    for invalid in [
+        json!({"pluginId": PLUGIN, "commandId": COMMAND}),
+        json!({"pluginId": PLUGIN, "commandId": COMMAND, "nonce": ""}),
+        json!(stale),
+        json!({"pluginId": "other", "commandId": COMMAND, "nonce": current.nonce}),
+        json!({"pluginId": PLUGIN, "commandId": "other", "nonce": current.nonce}),
+    ] {
+        for (method, request) in [
+            ("chooseApp", json!({"purpose":"Open"})),
+            ("status", json!({"appId": APP_ID})),
+            ("sendFile", send.clone()),
+            (
+                "runCompanion",
+                json!({"appId":APP_ID,"pipeline":"mofBuild","combination":"large"}),
+            ),
+        ] {
+            assert!(relay(invalid.clone(), method, request).is_err());
+        }
+    }
+    relay(json!(current), "status", json!({"appId":APP_ID})).unwrap();
+    relay(json!(current), "chooseApp", json!({"purpose":"Open"})).unwrap();
+    relay(json!(current), "sendFile", send.clone()).unwrap();
+    assert!(relay(json!(current), "sendFile", send).is_err());
+    assert_eq!(effects, ["picker", "box", "write", "launch"]);
+    state.finish(&current);
+    assert!(state.for_call(&current, now, true).is_err());
+}
+
+#[test]
+fn refuses_stale_calls_during_pending_submission_and_after_expiry_or_unused_finish() {
+    let state = State::default();
+    let now = Instant::now();
+    let stale = state.arm(PLUGIN, COMMAND, now).unwrap().invocation(PLUGIN);
+    assert!(state.begin(&stale, now + Duration::from_secs(60)).is_err());
+    let active = state.arm(PLUGIN, COMMAND, now).unwrap().invocation(PLUGIN);
+    state.begin(&active, now).unwrap();
+    let pending = state
+        .for_call(&active, now, true)
+        .unwrap()
+        .submit(now)
+        .unwrap();
+    assert!(state.for_call(&stale, now, true).is_err());
+    state.finish(&stale);
+    pending.assert_pending().unwrap();
+    drop(pending);
+    assert!(state
+        .for_call(&active, now + Duration::from_secs(60), false)
+        .is_err());
+    state.finish(&active);
+    assert!(state.for_call(&active, now, true).is_err());
+}
+
+#[test]
+fn wire_refuses_fields_outside_the_authenticated_envelope() {
+    let invocation = json!({"pluginId": PLUGIN,"commandId": COMMAND,"nonce": APP_ID});
+    let payload = json!({"invocation":invocation,"method":"sendFile","request":{"appId":APP_ID,"extension":"cif","fileName":"test","text":"x"}});
     assert!(Call::parse(payload.clone()).is_ok());
     for key in [
         "token",
@@ -218,6 +303,7 @@ fn wire_refuses_all_renderer_credentials_and_replay_without_an_arm() {
         "commandId",
         "combination",
         "nativeEvent",
+        "nonce",
     ] {
         let mut extra = payload.clone();
         extra[key] = json!(COMMAND);
@@ -234,42 +320,18 @@ fn wire_refuses_all_renderer_credentials_and_replay_without_an_arm() {
             json!({"appId":APP_ID,"pipeline":"mofBuild","combination":"large"}),
         ),
     ] {
-        let mut payload = json!({"pluginId":PLUGIN,"method":method,"request":request});
+        let mut payload = json!({"invocation":invocation,"method":method,"request":request});
         assert!(Call::parse(payload.clone()).is_ok());
         payload["request"]["commandId"] = json!(COMMAND);
         assert!(Call::parse(payload).is_err());
     }
-
-    assert!(state.live(PLUGIN, now).is_err());
-    state.arm(PLUGIN, COMMAND, now);
-    for method in ["status", "chooseApp"] {
-        let request = if method == "status" {
-            json!({"appId":APP_ID})
-        } else {
-            json!({"purpose":"Open"})
-        };
-        assert!(Call::parse(json!({"pluginId":PLUGIN,"method":method,"request":request})).is_ok());
-        assert_eq!(state.live(PLUGIN, now).unwrap().command, COMMAND);
-    }
-    assert!(state.live("org.other", now).is_err());
-    let active = state.live(PLUGIN, now).unwrap();
-    let send = active.submit(now).unwrap();
-    assert_eq!(send.launch(|| "launched").unwrap(), "launched");
-    assert!(
-        active.submit(now).is_err(),
-        "same renderer values cannot be replayed"
-    );
-    assert!(state.live(PLUGIN, now + Duration::from_secs(60)).is_err());
-    state.disarm(PLUGIN);
-    assert!(Call::parse(payload).is_ok());
-    assert!(state.live(PLUGIN, now).is_err());
 }
 
 #[test]
 fn duplicate_submissions_refuse_both_before_any_launch() {
     let state = State::default();
     let now = Instant::now();
-    let arm = state.arm(PLUGIN, COMMAND, now);
+    let arm = state.arm(PLUGIN, COMMAND, now).unwrap();
     let first = arm.submit(now).unwrap();
     first.show_box().unwrap();
     let cancel = first.invalidated();
@@ -290,7 +352,7 @@ fn duplicate_submissions_refuse_both_before_any_launch() {
 fn refusal_before_a_box_releases_the_allowance_cancel_after_a_box_consumes_it() {
     let state = State::default();
     let now = Instant::now();
-    let arm = state.arm(PLUGIN, COMMAND, now);
+    let arm = state.arm(PLUGIN, COMMAND, now).unwrap();
     drop(arm.submit(now).unwrap());
     let shown = arm.submit(now).unwrap();
     shown.show_box().unwrap();
@@ -323,6 +385,7 @@ fn native_handoff_commands_expose_no_arming_endpoint() {
     assert_eq!(
         names,
         [
+            "app_handoff_menu_invocation",
             "app_handoff_call",
             "app_handoff_consent_list",
             "app_handoff_consent_revoke",
@@ -343,6 +406,16 @@ fn native_handoff_commands_expose_no_arming_endpoint() {
         native_menu.find("arm_native_menu").unwrap()
             < native_menu.find("emit_menu_command").unwrap()
     );
+    let delivery = include_str!("../lib.rs")
+        .split_once("if let Some(invocation) = handoff {")
+        .unwrap()
+        .1
+        .split_once("if target_label == MAIN_WINDOW_LABEL")
+        .unwrap()
+        .0;
+    assert!(delivery.contains("__CHEMDRAFT_NATIVE_HANDOFF__"));
+    assert!(!delivery.contains("dispatch_dom") && !delivery.contains(".emit("));
+    assert!(!include_str!("../lib.rs").contains("chemdraft:native-handoff-command"));
     assert_eq!(
         include_str!("../lib.rs")
             .matches("app_handoff::arm_native_menu")
@@ -379,7 +452,7 @@ fn dialog_choice_is_bound_to_declared_combination_and_rebuild_keeps_original_inp
         expires: now + Duration::from_secs(600),
     };
     let arming = State::default();
-    let arm = arming.arm(PLUGIN, COMMAND, now);
+    let arm = arming.arm(PLUGIN, COMMAND, now).unwrap();
     let submission = arm.submit(now).unwrap();
     submission.bind_build(&input).unwrap();
     assert!(submission.bind_build(&build("large")).is_err());
@@ -733,7 +806,7 @@ fn consent_survives_disable_but_changed_template_app_revoke_and_uninstall_refuse
     assert!(allowed.grants(&app, &digest));
     // Disabling or re-enabling a plugin touches the native menu, not its persisted consent.
     let state = State::default();
-    state.arm(PLUGIN, COMMAND, Instant::now());
+    state.arm(PLUGIN, COMMAND, Instant::now()).unwrap();
     state.disarm(PLUGIN);
     assert!(state.live(PLUGIN, Instant::now()).is_err());
     assert!(store
@@ -761,7 +834,13 @@ fn consent_survives_disable_but_changed_template_app_revoke_and_uninstall_refuse
     document["futureTop"] = json!(true);
     document["rows"][0]["futureRow"] = json!("kept");
     fs::write(&path, document.to_string()).unwrap();
-    store.revoke(PLUGIN, APP_ID).unwrap();
+    let summary = json!(super::endpoint::ConsentSummary::from(allowed.clone()));
+    assert_eq!(summary["consentId"], allowed.consent_id());
+    assert!(summary.get("appId").is_none());
+    assert!(!summary.to_string().contains(APP_ID));
+    assert!(store.revoke(PLUGIN, APP_ID).is_err());
+    assert!(store.get(PLUGIN, &allowed.consent_id()).unwrap().is_none());
+    store.revoke(PLUGIN, &allowed.consent_id()).unwrap();
     let revoked = store.get(PLUGIN, APP_ID).unwrap().unwrap();
     assert!(!revoked.grants(&app, &digest));
     assert!(

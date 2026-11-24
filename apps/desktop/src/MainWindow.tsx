@@ -1,3 +1,4 @@
+import type { ListenForAppHandoff } from "./appHandoff/nativeMenu";
 import { basename } from "@tauri-apps/api/path";
 import { CanvasContextMenu, NATIVE_CANVAS_MENU_CLOSED_EVENT } from "./CanvasContextMenu";
 import { PLUGIN_CHANGE_REFUSED, RECOGNITION_REFUSED, chemistryRefusalOf, refusalSentence } from "./plugins/requestWrites/chemistryRefusal";
@@ -2122,6 +2123,7 @@ interface ChemDraftAgentArtDebugSnapshot {
 }
 
 export interface MainWindowProps {
+  listenForAppHandoff?: ListenForAppHandoff;
   initialPaletteMode?: PaletteMode;
   initialRulersVisible?: boolean;
   initialCrosshairsVisible?: boolean;
@@ -2189,6 +2191,7 @@ function molecularInspectorSubject(molecule: MoleculeObject, document: ChemDraft
 }
 
 export function MainWindow({
+  listenForAppHandoff,
   initialPaletteMode = "floating",
   initialRulersVisible = true,
   initialCrosshairsVisible = true,
@@ -13341,6 +13344,7 @@ export function MainWindow({
   // reach the host through refs, so it is never rebuilt when they change (see usePluginRuntime).
   const nameResolutionStatusRef = useRef<string | undefined>(undefined);
   const pluginRuntime = usePluginRuntime({
+    listenForAppHandoff,
     onPluginUpdateStatus: setStatus,
     onAppHandoffStatus: setStatus,
     onNameResolutionStatus: text => {

@@ -4,6 +4,7 @@
   "description": "Document-owned app handoff calls and Plugin Manager consent controls.",
   "windows": ["main"],
   "permissions": [
+    "allow-app-handoff-menu-invocation",
     "allow-app-handoff-call",
     "allow-app-handoff-consent-list",
     "allow-app-handoff-consent-revoke",

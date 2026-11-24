@@ -6,6 +6,7 @@ import { PluginHost, type PluginAppHandoffProvenance, type PluginHostOptions } f
 
 const pluginId = "org.chemdraft.handoff.crystalBuilder";
 const commandId = "plugin.crystalBuilder.buildMof";
+const invocation = { commandId, pluginId, nonce: "1".repeat(32) };
 const version = "1.0.0";
 const official: PluginAppHandoffProvenance = {
   source: "catalog", repository: "jgassens/ChemDraft-CrystalBuilder-Plugin", checksumVerified: true
@@ -36,7 +37,7 @@ const send = { ...status, fileName: "model", extension: "cif" as const, text: "t
 function setup(options: PluginHostOptions = {}) {
   let installed: PluginAppHandoffProvenance | undefined = official;
   const forCall = vi.fn(() => installed);
-  const transport = vi.fn(async (_pluginId: string, method: string, _request: unknown): Promise<unknown> => {
+  const transport = vi.fn(async (_invocation: typeof invocation, method: string, _request: unknown): Promise<unknown> => {
     if (method === "status") return { available: true };
     if (method === "chooseApp") return { status: "chosen", app: { appId: "opaque", displayName: "Crystal Builder" } };
     if (method === "runCompanion") return { status: "done", steps: [], opened: false };
@@ -84,8 +85,8 @@ describe("PluginHost app handoff", () => {
   it.each([false, true])("accepts verified catalog installs with dev sideloads %s", async appHandoffAllowSideload => {
     const { host, register, transport } = setup({ appHandoffAllowSideload });
     register(({ apps }) => apps!.status(status));
-    await expect(host.invokeAppHandoffMenuCommand(commandId)).resolves.toEqual({ available: true });
-    expect(transport).toHaveBeenCalledExactlyOnceWith(pluginId, "status", status);
+    await expect(host.invokeAppHandoffMenuCommand(invocation)).resolves.toEqual({ available: true });
+    expect(transport).toHaveBeenCalledExactlyOnceWith(invocation, "status", status);
   });
 
   it("accepts explicit sideload and legacy records on dev while still requiring verified catalog records", async () => {
@@ -100,7 +101,7 @@ describe("PluginHost app handoff", () => {
       setInstalled(undefined);
       await expect(apps!.status(status)).rejects.toThrow("checksum-verified install");
     });
-    await host.invokeAppHandoffMenuCommand(commandId);
+    await host.invokeAppHandoffMenuCommand(invocation);
     expect(transport).toHaveBeenCalledTimes(2);
   });
 
@@ -118,7 +119,7 @@ describe("PluginHost app handoff", () => {
     let retained: PluginAppsAPI;
     register(context => { retained = context.apps!; });
     expect(Object.hasOwn(host.createCommandContext(pluginId), "apps")).toBe(false);
-    await host.invokeAppHandoffMenuCommand(commandId);
+    await host.invokeAppHandoffMenuCommand(invocation);
     await expect(retained!.sendFile(send)).rejects.toThrow("only while its command is executing");
   });
 
@@ -132,12 +133,33 @@ describe("PluginHost app handoff", () => {
       await expect(apps!.runCompanion({ ...run, appId: choice.app.appId })).resolves.toMatchObject({ status: "done" });
       await expect(apps!.sendFile(send)).rejects.toThrow("one file or run one companion pipeline");
     });
-    await host.invokeAppHandoffMenuCommand(commandId);
+    await host.invokeAppHandoffMenuCommand(invocation);
     expect(transport.mock.calls).toEqual([
-      [pluginId, "status", status], [pluginId, "chooseApp", { purpose: "Choose Crystal Builder" }],
-      [pluginId, "runCompanion", run]
+      [invocation, "status", status], [invocation, "chooseApp", { purpose: "Choose Crystal Builder" }],
+      [invocation, "runCompanion", run]
     ]);
     expect(forCall).toHaveBeenCalledWith(pluginId, version);
+  });
+
+  it("keeps overlapping clicks for the same menu command bound to their own relay", async () => {
+    const { host, register, transport } = setup();
+    let finishFirst!: () => void;
+    const firstWait = new Promise<void>(resolve => { finishFirst = resolve; });
+    let first = true;
+    register(async ({ apps }) => {
+      if (first) {
+        first = false;
+        await firstWait;
+      }
+      return apps!.status(status);
+    });
+    const next = { ...invocation, nonce: "2".repeat(32) };
+    const previous = host.invokeAppHandoffMenuCommand(invocation);
+    try {
+      await host.invokeAppHandoffMenuCommand(next);
+    } finally { finishFirst(); }
+    await previous;
+    expect(transport.mock.calls).toEqual([[next, "status", status], [invocation, "status", status]]);
   });
 
   it("permits another submission after a refusal before presentation and counts a declined send", async () => {
@@ -151,7 +173,7 @@ describe("PluginHost app handoff", () => {
       await expect(apps!.sendFile(send)).resolves.toEqual({ status: "declined" });
       await expect(apps!.runCompanion(run)).rejects.toThrow("one file or run one companion pipeline");
     });
-    await host.invokeAppHandoffMenuCommand(commandId);
+    await host.invokeAppHandoffMenuCommand(invocation);
     expect(transport).toHaveBeenCalledTimes(3);
   });
 
@@ -165,7 +187,7 @@ describe("PluginHost app handoff", () => {
       const results = await Promise.allSettled([apps!.sendFile(send), apps!.runCompanion(run)]);
       expect(results).toEqual([{ status: "rejected", reason: race }, { status: "rejected", reason: race }]);
     });
-    await host.invokeAppHandoffMenuCommand(commandId);
+    await host.invokeAppHandoffMenuCommand(invocation);
     expect(transport).toHaveBeenCalledTimes(2);
   });
 
@@ -183,8 +205,8 @@ describe("PluginHost app handoff", () => {
       setInstalled(sideload);
       await expect(apps!.status(status)).rejects.toThrow("checksum-verified install");
     });
-    await host.invokeAppHandoffMenuCommand(commandId);
-    expect(transport).toHaveBeenCalledExactlyOnceWith(pluginId, "status", status);
+    await host.invokeAppHandoffMenuCommand(invocation);
+    expect(transport).toHaveBeenCalledExactlyOnceWith(invocation, "status", status);
   });
 
   it("refuses non-menu dispatch from declared panel and overlay controls before running the handler", async () => {
@@ -207,7 +229,7 @@ describe("PluginHost app handoff", () => {
   it("validates handoff requests and replies before crossing the plugin boundary", async () => {
     const { host, register, transport } = setup();
     register(async ({ apps }) => {
-      for (const key of ["token", "arming", "commandId", "source", "pluginId"]) {
+      for (const key of ["token", "nonce", "invocation", "arming", "commandId", "source", "pluginId"]) {
         await expect(apps!.sendFile({ ...send, [key]: "spoofed" })).rejects.toThrow("Invalid apps.sendFile request");
       }
       await expect(apps!.runCompanion({ ...run, combination: "unknown" })).rejects.toThrow("declared by the plugin");
@@ -215,12 +237,12 @@ describe("PluginHost app handoff", () => {
       transport.mockResolvedValueOnce({ available: true, appPath: "/host/path" });
       await expect(apps!.status(status)).rejects.toThrow("invalid apps.status result");
     });
-    await host.invokeAppHandoffMenuCommand(commandId);
+    await host.invokeAppHandoffMenuCommand(invocation);
   });
 
   it("returns an explicit error on hosts that lack a native handoff transport", async () => {
     const { host, register } = setup({ appHandoffTransport: undefined });
     register(({ apps }) => apps!.sendFile(send));
-    await expect(host.invokeAppHandoffMenuCommand(commandId)).rejects.toThrow("requires the desktop app");
+    await expect(host.invokeAppHandoffMenuCommand(invocation)).rejects.toThrow("requires the desktop app");
   });
 });

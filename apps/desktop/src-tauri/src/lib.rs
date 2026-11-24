@@ -1532,6 +1532,9 @@ pub fn run() {
                     }
                 }
             }
+            if webview.label() == MAIN_WINDOW_LABEL && matches!(payload.event(), PageLoadEvent::Started) {
+                webview.state::<app_handoff::State>().discard_menu_invocations();
+            }
             if is_input_focus_window_label(webview.label())
                 && matches!(payload.event(), PageLoadEvent::Started)
             {
@@ -1580,7 +1583,7 @@ pub fn run() {
                 || is_core_routed_dynamic_menu_command(command_id, &current_plugin_menu_items(app))
             {
                 let handoff = app_handoff::arm_native_menu(app, command_id);
-                if let Err(error) = emit_menu_command(app, command_id, handoff) {
+                if let Err(error) = handoff.and_then(|invocation| emit_menu_command(app, command_id, invocation)) {
                     eprintln!("Could not route ChemDraft menu command {command_id}: {error}");
                 }
             }
@@ -1828,6 +1831,7 @@ pub fn run() {
             assistant_mcp::assistant_mcp_session_close,
             assistant_mcp::assistant_mcp_respond,
             assistant_mcp::assistant_mcp_status,
+            app_handoff::endpoint::app_handoff_menu_invocation,
             app_handoff::endpoint::app_handoff_call,
             app_handoff::endpoint::app_handoff_consent_list,
             app_handoff::endpoint::app_handoff_consent_revoke,
@@ -9277,7 +9281,7 @@ fn menu_command_target_label<'a>(command_id: &str, focused_label: Option<&'a str
 fn emit_menu_command<R: Runtime>(
     app: &tauri::AppHandle<R>,
     command_id: &str,
-    handoff: bool,
+    handoff: Option<app_handoff::MenuInvocation>,
 ) -> Result<(), String> {
     let focused_label = app
         .webview_windows()
@@ -9309,18 +9313,29 @@ fn emit_menu_command<R: Runtime>(
         unsafe { application.sendAction_to_from(action, None, None) };
         return Ok(());
     }
-    if handoff {
+    if let Some(invocation) = handoff {
         let target = app
             .get_webview_window(MAIN_WINDOW_LABEL)
             .ok_or("Main document window is not available.")?;
-        // This event selects the handoff dispatcher in the host. It carries no arming data.
-        return dispatch_dom_toolset_event(
-            &target,
-            &ToolsetCommandPayload {
-                command_id: command_id.into(),
-            },
-            "chemdraft:native-handoff-command",
-        );
+        let payload = serde_json::to_string(&invocation).map_err(|error| error.to_string())?;
+        // Only the first-party document bootstrap installs this non-replaceable receiver.
+        // Check inside the evaluated script so navigation between the menu event and delivery
+        // cannot pass the nonce to a different page (including same-origin installed assets).
+        let origin = if tauri::is_dev() {
+            app.config()
+                .build
+                .dev_url
+                .as_ref()
+                .map(|url| url.origin().ascii_serialization())
+        } else {
+            None
+        }
+        .unwrap_or_else(|| installed_plugins::APP_ORIGIN.into());
+        let origin = serde_json::to_string(&origin).map_err(|e| e.to_string())?;
+        return target.eval(format!(
+            "if (location.protocol + '//' + location.host === {origin} && (location.pathname === '/' || location.pathname === '/index.html')) void window.__CHEMDRAFT_NATIVE_HANDOFF__?.({payload})"
+        ))
+            .map_err(|error| error.to_string());
     }
     if target_label == MAIN_WINDOW_LABEL {
         return emit_command_to_main(app, command_id);

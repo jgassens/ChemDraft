@@ -178,6 +178,7 @@ const handoffManifest = parsePluginManifest({
 const handoffProvenance = (): ReturnType<PluginAppHandoffProvenanceProvider["forRegistration"]> => ({
   source: "catalog", repository: "jgassens/ChemDraft-CrystalBuilder-Plugin", checksumVerified: true
 });
+const invocation = { commandId: handoffCommand, pluginId: handoffManifest.id, nonce: "9".repeat(32) };
 const handoffSend = { appId: "opaque", fileName: "model", extension: "cif" as const, text: "test data" };
 
 describe("Worker app handoff", () => {
@@ -202,8 +203,8 @@ describe("Worker app handoff", () => {
     try {
       await bridge.whenReady();
       host.registerPlugin(handoffManifest, createWorkerRoutedOptions(handoffManifest, bridge));
-      await expect(host.invokeAppHandoffMenuCommand(handoffCommand)).resolves.toEqual({ status: "sent" });
-      expect(transport).toHaveBeenCalledExactlyOnceWith(handoffManifest.id, "sendFile", handoffSend);
+      await expect(host.invokeAppHandoffMenuCommand(invocation)).resolves.toEqual({ status: "sent" });
+      expect(transport).toHaveBeenCalledExactlyOnceWith(invocation, "sendFile", handoffSend);
     } finally {
       bridge.terminate();
     }
@@ -222,6 +223,7 @@ describe("Worker app handoff", () => {
       commandHandlers: { [handoffCommand]: async () => { await vi.waitFor(() => expect(replies).toHaveLength(3)); } }
     }, asEndpoint(workerSide));
     workerSide.addEventListener("message", ({ data }: { data: HostToWorkerMessage }) => {
+      expect(JSON.stringify(data)).not.toContain(invocation.nonce);
       if (data.kind === "invokeCommand") {
         const base = { kind: "capabilityRequest", commandRequestId: data.commandRequestId, args: [handoffSend] };
         workerSide.postMessage({ ...base, requestId: 101, namespace: "commands", method: "invoke", args: [handoffCommand] });
@@ -235,7 +237,7 @@ describe("Worker app handoff", () => {
     try {
       await bridge.whenReady();
       host.registerPlugin(handoffManifest, createWorkerRoutedOptions(handoffManifest, bridge));
-      await host.invokeAppHandoffMenuCommand(handoffCommand);
+      await host.invokeAppHandoffMenuCommand(invocation);
       expect(replies).toEqual(expect.arrayContaining([
         expect.objectContaining({ requestId: 101, ok: false }),
         expect.objectContaining({ requestId: 102, ok: false,
@@ -320,7 +322,7 @@ describe("Worker app handoff", () => {
     try {
       await bridge.whenReady();
       runtime.registerPlugin(handoffManifest, createWorkerRoutedOptions(handoffManifest, bridge));
-      const running = runtime.invokeAppHandoffMenuCommand(handoffCommand);
+      const running = runtime.invokeAppHandoffMenuCommand(invocation);
       const startup = running.then(() => { throw new Error("The handoff command ended before opening its tool sessions."); });
       const waitForSession = () => Promise.race([vi.waitFor(() => expect(listener).toBeTypeOf("function")), startup]);
       await waitForSession();

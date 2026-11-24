@@ -20,8 +20,14 @@ export interface PluginAppHandoffProvenanceProvider {
 }
 
 export type PluginAppHandoffMethod = keyof PluginAppsAPI;
+/** Private to the native menu dispatcher and its host-side Worker relay. Never part of the SDK context. */
+export interface AppHandoffMenuInvocation {
+  readonly pluginId: string;
+  readonly commandId: string;
+  readonly nonce: string;
+}
 export type PluginAppHandoffTransport = (
-  pluginId: string,
+  invocation: AppHandoffMenuInvocation,
   method: PluginAppHandoffMethod,
   request: Parameters<PluginAppsAPI[PluginAppHandoffMethod]>[0]
 ) => Promise<unknown>;

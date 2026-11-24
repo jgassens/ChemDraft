@@ -39,7 +39,7 @@ impl Extension {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct Call {
-    plugin_id: String,
+    invocation: super::arming::MenuInvocation,
     method: Method,
     request: Value,
 }
@@ -133,9 +133,9 @@ pub(super) fn id(value: &str) -> bool {
 }
 
 impl Call {
-    pub(super) fn parse(value: Value) -> Result<(String, Request), String> {
+    pub(super) fn parse(value: Value) -> Result<(super::arming::MenuInvocation, Request), String> {
         let Self {
-            plugin_id,
+            invocation,
             method,
             request,
         } = decode(value)?;
@@ -188,7 +188,7 @@ impl Call {
                 Request::Run(request)
             }
         };
-        Ok((plugin_id, request))
+        Ok((invocation, request))
     }
 }
 

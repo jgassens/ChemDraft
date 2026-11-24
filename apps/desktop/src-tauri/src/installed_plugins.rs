@@ -50,9 +50,9 @@ use tauri::{AppHandle, Manager, Runtime, UriSchemeContext};
 /// `useHttpsScheme` is off, the default). Only used for `Access-Control-Allow-Origin`, mirroring the
 /// `window_origin` Tauri's built-in handler sends.
 #[cfg(not(windows))]
-const APP_ORIGIN: &str = "tauri://localhost";
+pub(crate) const APP_ORIGIN: &str = "tauri://localhost";
 #[cfg(windows)]
-const APP_ORIGIN: &str = "http://tauri.localhost";
+pub(crate) const APP_ORIGIN: &str = "http://tauri.localhost";
 
 /// Reserved path prefix on the app's own origin under which staged packages are served. Must match
 /// `INSTALLED_PLUGINS_URL_PREFIX` in `apps/desktop/src/plugins/installedPluginPaths.ts`.

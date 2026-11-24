@@ -61,7 +61,7 @@ import { recognitionInstallProgressStore } from "./structureRecognitionInstallPr
 import { mountStructureNamingHost } from "./StructureNamingInstallDialog";
 import { presentExternalToolInstall } from "../externalTools/presentExternalToolInstall";
 import type { DialogCoordinator } from "../dialogs/DialogCoordinator";
-import { listenForNativeAppHandoffCommands } from "../appHandoff/transport";
+import type { ListenForAppHandoff } from "../appHandoff/nativeMenu";
 
 /**
  * Extract a user-facing message from a resolved plugin-command value that is a `{ ok: false }`
@@ -76,6 +76,7 @@ export function pluginCommandFailure(result: unknown): string | undefined {
 }
 
 export interface PluginRuntimeProviders {
+  listenForAppHandoff?: ListenForAppHandoff;
   assistantMcpEngine?: import("../assistant/assistantMcpEngine").AssistantMcpEngine;
   appHandoffProvenance?: PluginHostOptions["appHandoffProvenance"];
   getActiveDocument: () => ChemDraftDocument | undefined;
@@ -239,15 +240,16 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
   const { runtime, bundledPlugins } = ownerRef.current;
 
   const [version, bumpVersion] = useReducer((value: number) => value + 1, 0);
+  const { listenForAppHandoff } = providers;
   useEffect(() => {
-    if (!isTauriHost()) return;
+    if (!listenForAppHandoff) return;
     let active = true;
-    const unlisten = listenForNativeAppHandoffCommands(window, commandId => {
+    const unlisten = listenForAppHandoff(invocation => {
       const warnings: string[] = [];
       const report = (message: string) => {
         if (active) providersRef.current.onAppHandoffStatus?.(message);
       };
-      void runtime.invokeAppHandoffMenuCommand(commandId, warnings).then(result => {
+      return runtime.invokeAppHandoffMenuCommand(invocation, warnings).then(result => {
         const failure = pluginCommandFailure(result);
         if (failure) report(`Plugin command failed: ${failure}`);
         else if (warnings.length) report(warnings.join(" "));
@@ -257,7 +259,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
       active = false;
       unlisten();
     };
-  }, [runtime]);
+  }, [runtime, listenForAppHandoff]);
   useEffect(() => mountStructureNamingHost(runtime.naming, {
     coordinator: () => providersRef.current.getDialogCoordinator?.(),
     documentTabId: () => providersRef.current.getActiveDocumentTab?.().id

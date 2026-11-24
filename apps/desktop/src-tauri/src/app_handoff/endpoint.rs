@@ -1,5 +1,5 @@
 use super::{
-    arming::{self, ApprovedBuild, ResultSession, Submission},
+    arming::{self, ApprovedBuild, MenuInvocation, ResultSession, Submission},
     catalog::{self, Plugin},
     command_line::{Pipeline, Platform},
     consent::{Row, Store},
@@ -52,6 +52,10 @@ struct PendingResult {
 }
 
 impl State {
+    pub(crate) fn discard_menu_invocations(&self) {
+        self.arms.shutdown();
+    }
+
     pub(crate) fn shutdown(&self) {
         self.stopped.store(true, Ordering::Release);
         self.arms.shutdown();
@@ -128,25 +132,28 @@ fn current_command(app: &AppHandle, command: &str) -> bool {
         .any(|item| item.id == command && item.enabled)
 }
 
-pub(crate) fn arm_native_menu(app: &AppHandle, command: &str) -> bool {
+pub(crate) fn arm_native_menu(
+    app: &AppHandle,
+    command: &str,
+) -> Result<Option<MenuInvocation>, String> {
     if !command.starts_with("plugin.")
         || !current_command(app, command)
         || crate::panel_window::palette_blocks_menu(true, command)
         || app.get_webview_window(crate::MAIN_WINDOW_LABEL).is_none()
     {
-        return false;
+        return Ok(None);
     }
     let state = app.state::<State>();
     if state.stopped.load(Ordering::Acquire) {
-        return false;
+        return Ok(None);
     }
     for (id, _) in catalog::OFFICIAL_COMPANION_PLUGINS {
         if Plugin::read(app, id).is_ok_and(|plugin| plugin.owns_menu_command(command)) {
-            state.arms.arm(id, command, Instant::now());
-            return true;
+            let arm = state.arms.arm(id, command, Instant::now())?;
+            return Ok(Some(arm.invocation(id)));
         }
     }
-    false
+    Ok(None)
 }
 
 fn store(app: &AppHandle) -> Result<Store, String> {
@@ -166,6 +173,59 @@ fn io_error(_: std::io::Error) -> String {
     "ChemDraft could not read or save the app handoff consent store.".into()
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum InvocationPhase {
+    Begin,
+    Finish,
+}
+
+#[tauri::command]
+pub(crate) fn app_handoff_menu_invocation(
+    window: WebviewWindow,
+    invocation: MenuInvocation,
+    phase: InvocationPhase,
+) -> Result<(), String> {
+    main_only(&window)?;
+    let state = window.state::<State>();
+    match phase {
+        InvocationPhase::Begin => state.arms.begin(&invocation, Instant::now()),
+        InvocationPhase::Finish => {
+            state.arms.finish(&invocation);
+            Ok(())
+        }
+    }
+}
+
+pub(super) struct AuthorizedCall {
+    plugin_id: String,
+    arm: Arc<arming::Arm>,
+    pub(super) request: Request,
+    pub(super) submission: Option<Submission>,
+}
+
+// This is the IPC gate for all four methods, including the non-consuming picker and status calls.
+pub(super) fn authorize_call(
+    arms: &arming::State,
+    payload: Value,
+    now: Instant,
+) -> Result<AuthorizedCall, String> {
+    let (invocation, request) = wire::Call::parse(payload)?;
+    let writing = matches!(request, Request::Send(_) | Request::Run(_));
+    let arm = arms.for_call(&invocation, now, writing)?;
+    let submission = if writing {
+        Some(arm.submit(now)?)
+    } else {
+        None
+    };
+    Ok(AuthorizedCall {
+        plugin_id: invocation.plugin_id,
+        arm,
+        request,
+        submission,
+    })
+}
+
 #[tauri::command]
 pub(crate) async fn app_handoff_call(
     window: WebviewWindow,
@@ -175,17 +235,15 @@ pub(crate) async fn app_handoff_call(
     let InvokeBody::Json(payload) = ipc.body() else {
         return Err("App handoff requires a JSON request.".into());
     };
-    let (plugin_id, request) = wire::Call::parse(payload.clone())?;
     let platform = Platform::current()?;
     let app = window.app_handle();
     let state = app.state::<State>();
-    let writing = matches!(request, Request::Send(_) | Request::Run(_));
-    let armed = state.arms.for_call(&plugin_id, Instant::now(), writing)?;
-    let submission = if writing {
-        Some(armed.submit(Instant::now())?)
-    } else {
-        None
-    };
+    let AuthorizedCall {
+        plugin_id,
+        arm: armed,
+        request,
+        submission,
+    } = authorize_call(&state.arms, payload.clone(), Instant::now())?;
     let plugin = Plugin::read(app, &plugin_id)?;
     if !plugin.owns_menu_command(&armed.command) || !current_command(app, &armed.command) {
         return Err("The armed app handoff menu command is no longer available.".into());
@@ -236,7 +294,10 @@ impl Context<'_> {
         };
         // The picker doesn't consume a gesture. A late picker response must not survive its gesture.
         let state = self.app().state::<State>();
-        let armed = state.arms.for_call(self.plugin_id, Instant::now(), false)?;
+        let armed =
+            state
+                .arms
+                .for_call(&self.arm.invocation(self.plugin_id), Instant::now(), false)?;
         if !Arc::ptr_eq(self.arm, &armed) {
             return Err("The app picker no longer belongs to the active menu click.".into());
         }
@@ -860,12 +921,31 @@ fn failure_result(failure: runner::Failure) -> RunResult {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ConsentSummary {
     plugin_id: String,
-    app_id: String,
+    consent_id: String,
     app_name: String,
     app_path: PathBuf,
     pipeline: Option<String>,
     granted: bool,
     at: String,
+}
+
+impl From<Row> for ConsentSummary {
+    fn from(row: Row) -> Self {
+        Self {
+            consent_id: row.consent_id(),
+            plugin_id: row.plugin_id,
+            app_name: row
+                .app_path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            app_path: row.app_path,
+            pipeline: row.pipeline,
+            granted: row.granted,
+            at: row.at,
+        }
+    }
 }
 
 fn main_only(window: &WebviewWindow) -> Result<(), String> {
@@ -886,20 +966,7 @@ pub(crate) fn app_handoff_consent_list(
         .map_err(io_error)?
         .into_iter()
         .filter(|row| !row.template_digest.is_empty())
-        .map(|row| ConsentSummary {
-            plugin_id: row.plugin_id,
-            app_id: row.app_id,
-            app_name: row
-                .app_path
-                .file_stem()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned(),
-            app_path: row.app_path,
-            pipeline: row.pipeline,
-            granted: row.granted,
-            at: row.at,
-        })
+        .map(ConsentSummary::from)
         .collect())
 }
 
@@ -907,11 +974,13 @@ pub(crate) fn app_handoff_consent_list(
 pub(crate) fn app_handoff_consent_revoke(
     window: WebviewWindow,
     plugin_id: String,
-    app_id: String,
+    consent_id: String,
 ) -> Result<(), String> {
     main_only(&window)?;
     let app = window.app_handle();
-    store(app)?.revoke(&plugin_id, &app_id).map_err(io_error)?;
+    store(app)?
+        .revoke(&plugin_id, &consent_id)
+        .map_err(io_error)?;
     let state = app.state::<State>();
     state.arms.disarm(&plugin_id);
     state.clear_result(&plugin_id);

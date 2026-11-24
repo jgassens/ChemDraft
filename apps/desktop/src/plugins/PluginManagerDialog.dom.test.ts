@@ -82,7 +82,7 @@ it("lists native app handoff consent separately and keeps revoked rows visible",
   let granted = true;
   const appPath = "/Applications/Crystal Builder.app";
   const list = vi.fn(async () => [{
-    pluginId: entry.record.id, appId: "app-1", appName: "Crystal Builder", appPath,
+    pluginId: entry.record.id, consentId: "consent-1", appName: "Crystal Builder", appPath,
     pipeline: "mofBuild", granted, at: "2026-11-23T12:00:00Z"
   }]);
   const revoke = vi.fn(async () => { granted = false; });
@@ -101,7 +101,7 @@ it("lists native app handoff consent separately and keeps revoked rows visible",
   expect(section.textContent).toContain(appPath);
   expect(section.textContent).toContain("Pipeline mofBuild · Allowed");
   await act(async () => button.click());
-  expect(revoke).toHaveBeenCalledExactlyOnceWith(entry.record.id, "app-1");
+  expect(revoke).toHaveBeenCalledExactlyOnceWith(entry.record.id, "consent-1");
   expect(section.textContent).toContain("Pipeline mofBuild · Revoked");
   expect(section.querySelector("button")).toBeNull();
 });

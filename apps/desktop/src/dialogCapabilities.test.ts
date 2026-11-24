@@ -67,7 +67,7 @@ describe("dialog capabilities", () => {
     expect((capability as { platforms?: unknown }).platforms).toBeUndefined();
     expect(permissionIdentifiers(capability).sort()).toEqual([
       "allow-app-handoff-call", "allow-app-handoff-consent-clear-plugin",
-      "allow-app-handoff-consent-list", "allow-app-handoff-consent-revoke"
+      "allow-app-handoff-consent-list", "allow-app-handoff-consent-revoke", "allow-app-handoff-menu-invocation"
     ]);
   });
   it("grant dialog permissions, aliases included, to the document window alone", () => {

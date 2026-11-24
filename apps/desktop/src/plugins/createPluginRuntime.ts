@@ -46,6 +46,7 @@ import {
   type CommandDefinition,
   type CommandRegistry,
   type PluginPatchApplicationRequest,
+  type AppHandoffMenuInvocation,
   type PluginHostOptions,
   type RegisterPluginOptions
 } from "@chemdraft/plugin-host";
@@ -257,7 +258,7 @@ export interface DesktopPluginRuntime {
    * neither add to it nor take from it.
    */
   invokeCommand(commandId: string, options?: { selectionWarnings?: string[]; input?: PluginCommandInput }): Promise<unknown>;
-  invokeAppHandoffMenuCommand(commandId: string, selectionWarnings?: string[]): Promise<unknown>;
+  invokeAppHandoffMenuCommand(invocation: AppHandoffMenuInvocation, selectionWarnings?: string[]): Promise<unknown>;
   listCanvasOverlays(): RegisteredCanvasOverlay[];
   getCanvasOverlayStatuses(): ReadonlyMap<string, string>;
   /** Subscribe to status-only overlay updates without invalidating plugin contributions/toolsets. */
@@ -401,8 +402,8 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       return this.withInvocationFrame(() => super.invokeCommand<Result>(commandId, invokeOptions));
     }
 
-    override async invokeAppHandoffMenuCommand<Result = unknown>(commandId: string): Promise<Result> {
-      return this.withInvocationFrame(() => super.invokeAppHandoffMenuCommand<Result>(commandId));
+    override async invokeAppHandoffMenuCommand<Result = unknown>(invocation: AppHandoffMenuInvocation): Promise<Result> {
+      return this.withInvocationFrame(() => super.invokeAppHandoffMenuCommand<Result>(invocation));
     }
 
     override async invokeAssistantTool(...args: Parameters<PluginHost["invokeAssistantTool"]>) {
@@ -830,10 +831,10 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
         armedSelectionWarnings = undefined;
       }
     },
-    invokeAppHandoffMenuCommand(commandId, selectionWarnings) {
+    invokeAppHandoffMenuCommand(invocation, selectionWarnings) {
       armedSelectionWarnings = selectionWarnings;
       try {
-        return host.invokeAppHandoffMenuCommand(commandId);
+        return host.invokeAppHandoffMenuCommand(invocation);
       } finally {
         armedSelectionWarnings = undefined;
       }

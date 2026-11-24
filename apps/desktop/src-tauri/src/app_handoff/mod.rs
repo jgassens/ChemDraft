@@ -17,6 +17,7 @@ mod windows_process;
 #[cfg(test)]
 mod wire_tests;
 
+pub(crate) use arming::MenuInvocation;
 pub(crate) use dialogs::{Action as DialogAction, KIND as DIALOG_KIND};
 pub(crate) use endpoint::{arm_native_menu, cleanup, State};
 

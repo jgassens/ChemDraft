@@ -26,10 +26,10 @@ import { Chemistry3dQueue } from "./chemistry3dQueue";
 import { chemistry3dTimeoutMs } from "./chemistry3dDeadline";
 import { chemistry3dResultError } from "./chemistry3dResult";
 import {
-  appHandoffProvenanceError, type PluginAppHandoffMethod, type PluginAppHandoffProvenanceProvider,
+  appHandoffProvenanceError, type AppHandoffMenuInvocation, type PluginAppHandoffMethod, type PluginAppHandoffProvenanceProvider,
   type PluginAppHandoffTransport
 } from "./appHandoff";
-export type { PluginAppHandoffProvenance, PluginAppHandoffProvenanceProvider, PluginAppHandoffTransport } from "./appHandoff";
+export type { AppHandoffMenuInvocation, PluginAppHandoffProvenance, PluginAppHandoffProvenanceProvider, PluginAppHandoffTransport } from "./appHandoff";
 export { chemistry3dTimeoutMs, CHEMISTRY3D_STARTUP_TIMEOUT_MS, pauseChemistry3dDeadlineForStartup } from "./chemistry3dDeadline";
 import {
   PluginChemistryPropertiesRequestSchema, PluginChemistryPropertiesResultSchema,
@@ -930,7 +930,7 @@ export class PluginHost {
   private readonly appHandoffAllowSideload: boolean;
   private readonly appHandoffTransport?: PluginAppHandoffTransport;
   /** Selects the menu dispatcher within this host. Native IPC still decides whether it is armed. */
-  private readonly handoffMenuDispatches = new WeakSet<CommandInvocationContext>();
+  readonly #handoffMenuDispatches = new WeakMap<CommandInvocationContext, AppHandoffMenuInvocation>();
   private readonly assistant?: PluginHostAssistant;
   private readonly overlays?: PluginHostOptions["overlays"];
   private readonly requestImage?: PluginHostOptions["requestImage"];
@@ -953,7 +953,7 @@ export class PluginHost {
   private readonly analysisStore: AnalysisStore;
   private nextProposalId = 1;
   private readonly subscribers = new Set<() => void>();
-  private readonly activeCommandInvocations = new Map<symbol, ActiveCommandInvocation>();
+  readonly #activeCommandInvocations = new Map<symbol, ActiveCommandInvocation>();
   private readonly textPromptInvocations = new Set<symbol>();
   private readonly openTextPrompts = new Map<
     string,
@@ -1074,7 +1074,7 @@ export class PluginHost {
     this.cancelOpenImageRequests(pluginId);
     this.externalTools?.cancelAllForPlugin(pluginId);
     this.assistant?.closeAllForPlugin(pluginId);
-    for (const [token, invocation] of this.activeCommandInvocations) {
+    for (const [token, invocation] of this.#activeCommandInvocations) {
       if (invocation.pluginId === pluginId) this.finishCommandInvocation(token);
     }
     for (const command of plugin.manifest.contributes.commands) {
@@ -1109,16 +1109,16 @@ export class PluginHost {
     });
   }
 
-  /** Route the native handoff menu event. The event supplies only a command ID. */
-  async invokeAppHandoffMenuCommand<Result = unknown>(commandId: string): Promise<Result> {
-    const pluginId = this.commands.get(commandId)?.pluginId;
+  /** The native receiver has authenticated this invocation before dispatch. */
+  async invokeAppHandoffMenuCommand<Result = unknown>(invocation: AppHandoffMenuInvocation): Promise<Result> {
+    const { commandId, pluginId } = invocation;
     const plugin = pluginId ? this.plugins.get(pluginId) : undefined;
-    if (!plugin || !plugin.permissions.has("apps.handoff") || !commandId.startsWith("plugin.") ||
+    if (!plugin || this.commands.get(commandId)?.pluginId !== pluginId || !plugin.permissions.has("apps.handoff") || !commandId.startsWith("plugin.") ||
         !plugin.manifest.contributes.menus.some(menu => menu.commandId === commandId)) {
       throw new PluginHostError(`Command "${commandId}" is not an app handoff menu command.`);
     }
     const context: CommandInvocationContext = { pluginId, permissions: plugin.permissions };
-    this.handoffMenuDispatches.add(context);
+    this.#handoffMenuDispatches.set(context, invocation);
     return await this.commands.invoke<Result>(commandId, context);
   }
 
@@ -1236,7 +1236,7 @@ export class PluginHost {
     const handler = this.toolAndDocumentHandlers.get(pluginId)?.onAssistantToolCall;
     if (!handler) throw new PluginHostError("This plugin registered no assistant tool handler.");
     const token = Symbol(call.name);
-    this.activeCommandInvocations.set(token, {
+    this.#activeCommandInvocations.set(token, {
       pluginId, commandId: call.name, commandTitle: call.name, documentKey: this.getActiveDocumentKey?.(),
       writeScope: new Set(writeSelection), writeScopePages: writeScopePages && new Map(writeScopePages),
       recognized: false, recognizedImages: [],
@@ -1268,7 +1268,7 @@ export class PluginHost {
       documentKey: request.document.key, writeScope: new Set(), recognized: false, recognizedImages: [],
       writeStop: new AbortController()
     };
-    this.activeCommandInvocations.set(token, invocation);
+    this.#activeCommandInvocations.set(token, invocation);
     let context: PluginCommandContext | undefined;
     const stop = () => this.finishCommandInvocation(token);
     signal.addEventListener("abort", stop, { once: true });
@@ -1298,9 +1298,9 @@ export class PluginHost {
 
   private ownedRequest(pluginId: string, token: symbol | undefined, requestId: string): RequestState {
     const state = this.requests.get(requestId);
-    const invocation = token && this.activeCommandInvocations.get(token);
+    const invocation = token && this.#activeCommandInvocations.get(token);
     if (!state || !invocation || state.pluginId !== pluginId || invocation.pluginId !== pluginId ||
-        invocation.requestId !== requestId || !this.activeCommandInvocations.has(state.owner) ||
+        invocation.requestId !== requestId || !this.#activeCommandInvocations.has(state.owner) ||
         state.stop.signal.aborted || invocation.writeStop.signal.aborted) {
       throw new RequestWriteError("cancelled", "The request is not bound to this live invocation.");
     }
@@ -1317,7 +1317,7 @@ export class PluginHost {
 
   protected commandRequestDocument(pluginId: string, token: symbol | undefined,
     contextInvocation?: ActiveCommandInvocation): RequestDocument | undefined {
-    const invocation = token && this.activeCommandInvocations.get(token);
+    const invocation = token && this.#activeCommandInvocations.get(token);
     if (!invocation || invocation.pluginId !== pluginId) {
       if (contextInvocation?.requestId) {
         throw new RequestWriteError("cancelled", "The request invocation ended.");
@@ -1344,7 +1344,7 @@ export class PluginHost {
   }
 
   private async dispatchRequest(pluginId: string, token: symbol | undefined, label: string, value: unknown) {
-    const invocation = token && this.activeCommandInvocations.get(token);
+    const invocation = token && this.#activeCommandInvocations.get(token);
     if (isRequestDepictionMethod(label)) {
       const providers = this.requestDepiction;
       if (!providers) throw new RequestWriteError("unsupported", `This host does not implement ${label}.`);
@@ -1536,7 +1536,7 @@ export class PluginHost {
   createCommandContext(pluginId: string, invocationToken?: symbol, input?: PluginCommandInput): PluginCommandContext {
     const plugin = this.requireRegisteredPlugin(pluginId);
     const requestTools = supportsPluginRequestTools(plugin.manifest.apiVersion);
-    const contextInvocation = invocationToken && this.activeCommandInvocations.get(invocationToken);
+    const contextInvocation = invocationToken && this.#activeCommandInvocations.get(invocationToken);
     const boundDocument = () => this.commandRequestDocument(pluginId, invocationToken, contextInvocation || undefined);
     const requestTool = contextInvocation && contextInvocation.tool && contextInvocation.requestId;
     const withCapabilitySlot = <T>(run: () => Promise<T>): Promise<T> =>
@@ -1679,7 +1679,7 @@ export class PluginHost {
             this.requirePermission(pluginId, "ui.canvas");
             const parsed = PluginOverlayOpenRequestSchema.parse(request);
             requireOwnOverlay(parsed.overlayId);
-            if (!invocationToken || this.activeCommandInvocations.get(invocationToken)?.pluginId !== pluginId) {
+            if (!invocationToken || this.#activeCommandInvocations.get(invocationToken)?.pluginId !== pluginId) {
               throw new PluginHostError("Opening an overlay requires the plugin's own command to be running.");
             }
             if (!this.overlays?.open) throw new PluginHostError("This host cannot open canvas overlays.");
@@ -1765,7 +1765,7 @@ export class PluginHost {
       this.requirePermission(pluginId, "chemistry.compute");
       this.requirePermission(pluginId, "selection.read");
       const checkInvocation = () => {
-        if (!invocationToken || this.activeCommandInvocations.get(invocationToken)?.pluginId !== pluginId) {
+        if (!invocationToken || this.#activeCommandInvocations.get(invocationToken)?.pluginId !== pluginId) {
           throw new PluginHostError(`Plugin "${pluginId}" may call chemistry.${method} only while one of its own commands is executing.`);
         }
       };
@@ -1995,7 +1995,7 @@ export class PluginHost {
     let parsedProposal = pluginProposal;
     const hostHeld = isHostHeldRecognitionPatch(parsedProposal.patch);
     const heldRef = hostHeld ? (parsedProposal.patch as unknown as { ref?: unknown }).ref : undefined;
-    const activeInvocation = invocationToken ? this.activeCommandInvocations.get(invocationToken) : undefined;
+    const activeInvocation = invocationToken ? this.#activeCommandInvocations.get(invocationToken) : undefined;
     const invocation = activeInvocation?.pluginId === pluginId ? activeInvocation : undefined;
     let hostRecognition: HostRecognitionRecord | undefined;
     if (hostHeld) {
@@ -2072,7 +2072,7 @@ export class PluginHost {
   /** Host-only entry point; plugins receive a closure bound to their own invocation. */
   async insertTableForPlugin(pluginId: string, invocationToken: symbol | undefined, spec: PluginTableSpec): Promise<AppliedPatchReceipt> {
     this.requirePermission(pluginId, "document.write");
-    const invocation = invocationToken ? this.activeCommandInvocations.get(invocationToken) : undefined;
+    const invocation = invocationToken ? this.#activeCommandInvocations.get(invocationToken) : undefined;
     if (!invocation || invocation.pluginId !== pluginId) {
       throw new PluginHostError(
         `Plugin "${pluginId}" may call documents.insertTable only while one of its own commands is executing.`
@@ -2109,7 +2109,7 @@ export class PluginHost {
     input?: PluginRequestArguments<"documents", "applyRequestPatch">,
     getPreconditions?: (patch: PluginRequestPatch) => readonly PluginRequestPrecondition[]): Promise<RequestWriteCommit> {
     this.requirePermission(pluginId, "document.write");
-    const invocation = token && this.activeCommandInvocations.get(token);
+    const invocation = token && this.#activeCommandInvocations.get(token);
     const state = invocation && invocation.requestId ? this.ownedRequest(pluginId, token, invocation.requestId) : undefined;
     if (!state || !invocation) throw new RequestWriteError("cancelled", "No bound request is running.");
     if (invocation.pluginId !== pluginId || invocation.readOnly || invocation.writeStop.signal.aborted) {
@@ -2225,8 +2225,8 @@ export class PluginHost {
     undoLabel?: string
   ): Promise<AppliedPatchReceipt> {
     this.requirePermission(pluginId, "document.write");
-    const invocation = invocationToken ? this.activeCommandInvocations.get(invocationToken) :
-      requestScope ? [...this.activeCommandInvocations.values()].find(candidate => candidate.pluginId === pluginId && !candidate.requestId) : undefined;
+    const invocation = invocationToken ? this.#activeCommandInvocations.get(invocationToken) :
+      requestScope ? [...this.#activeCommandInvocations.values()].find(candidate => candidate.pluginId === pluginId && !candidate.requestId) : undefined;
     if (invocation?.requestId && !requestScope) {
       const commit = await this.applyBoundPatch(pluginId, invocationToken, patch);
       return { applied: true, objectIds: commit.touched.map(ref => ref.objectId) };
@@ -2437,7 +2437,9 @@ export class PluginHost {
             if (!handler) {
               throw new CommandRegistryError(`Command "${command.id}" has no registered handler.`);
             }
-            if (handoff && !this.handoffMenuDispatches.delete(invocationContext)) {
+            const menuInvocation = this.#handoffMenuDispatches.get(invocationContext);
+            this.#handoffMenuDispatches.delete(invocationContext);
+            if (handoff && !menuInvocation) {
               throw new PluginPermissionError("Start app handoff from the plugin's native menu.");
             }
             const registration = handoff ? this.requireRegisteredPlugin(manifest.id) : undefined;
@@ -2468,10 +2470,11 @@ export class PluginHost {
               override ? override.pageId : document?.selection.pageId ?? document?.pages[0]?.id, override?.pageId !== undefined);
             const selectedIds = (overrideIds ?? document?.selection.objectIds ?? []).filter(id => !pins.ambiguous.includes(id));
             const ordinaryStop = new AbortController();
-            this.activeCommandInvocations.set(invocationToken, {
+            this.#activeCommandInvocations.set(invocationToken, {
               pluginId: manifest.id,
               commandId: command.id,
               commandTitle: command.title,
+              menuInvocation,
               documentKey,
               requestDocument,
               sendSelection,
@@ -2581,7 +2584,7 @@ export class PluginHost {
   ): Promise<PluginExternalToolStatus> {
     const plugin = this.externalToolsFor(pluginId);
     const parsed = PluginExternalToolInstallRequestSchema.parse(request);
-    if (!invocationToken || this.activeCommandInvocations.get(invocationToken)?.pluginId !== pluginId) {
+    if (!invocationToken || this.#activeCommandInvocations.get(invocationToken)?.pluginId !== pluginId) {
       throw new PluginHostError(
         `Plugin "${pluginId}" may call tools.install only while one of its own commands is executing.`
       );
@@ -2678,7 +2681,8 @@ export class PluginHost {
     }
     // Rust adjudicates concurrent submissions and tracks whether failures occurred before a box
     // or launch. Both contenders must reach it for an in-flight race to cancel without launching.
-    const reply = await transport(pluginId, method, parsed.data);
+    if (!invocation.menuInvocation) throw new PluginHostError("Start app handoff from the plugin's native menu.");
+    const reply = await transport(invocation.menuInvocation, method, parsed.data);
     const result = schema.result.safeParse(reply);
     if (!result.success) throw new PluginHostError(`The desktop returned an invalid ${label} result.`);
     if (writing && "status" in result.data && result.data.status !== "failed") {
@@ -2694,7 +2698,7 @@ export class PluginHost {
     request: PluginPromptTextRequest
   ): Promise<PluginPromptTextResult> {
     this.requirePermission(pluginId, "ui.panel");
-    if (!invocationToken || this.activeCommandInvocations.get(invocationToken)?.pluginId !== pluginId) {
+    if (!invocationToken || this.#activeCommandInvocations.get(invocationToken)?.pluginId !== pluginId) {
       throw new PluginHostError(
         `Plugin "${pluginId}" may call dialogs.promptText only while one of its own commands is executing.`
       );
@@ -2734,7 +2738,7 @@ export class PluginHost {
             { id: plugin.manifest.id, name: plugin.manifest.name },
             parsedRequest,
             abortController.signal,
-            { documentKey: this.activeCommandInvocations.get(invocationToken)?.documentKey }
+            { documentKey: this.#activeCommandInvocations.get(invocationToken)?.documentKey }
           )
         ),
         cancelledOnAbort
@@ -2759,7 +2763,7 @@ export class PluginHost {
     request: PluginImageRequest
   ): Promise<PluginImageRequestResult> {
     this.requirePermission(pluginId, "image.read");
-    if (!invocationToken || this.activeCommandInvocations.get(invocationToken)?.pluginId !== pluginId) {
+    if (!invocationToken || this.#activeCommandInvocations.get(invocationToken)?.pluginId !== pluginId) {
       throw new PluginHostError(
         `Plugin "${pluginId}" may call images.requestImage only while one of its own commands is executing.`
       );
@@ -2821,7 +2825,7 @@ export class PluginHost {
     for (const permission of ["image.read", "ml.inference", "model.load", "native.execute"] as const) {
       this.requirePermission(pluginId, permission);
     }
-    if (!invocationToken || this.activeCommandInvocations.get(invocationToken)?.pluginId !== pluginId) {
+    if (!invocationToken || this.#activeCommandInvocations.get(invocationToken)?.pluginId !== pluginId) {
       throw new PluginHostError(
         `Plugin "${pluginId}" may call recognition.recognizeStructure only while one of its own commands is executing.`
       );
@@ -2871,7 +2875,7 @@ export class PluginHost {
       const { hostReview, ...pluginResult } = result as HostRecognitionOutcome;
       const parsed = PluginRecognitionResultSchema.parse(pluginResult);
       if (parsed.status !== "recognized") return parsed;
-      const invocation = this.activeCommandInvocations.get(invocationToken);
+      const invocation = this.#activeCommandInvocations.get(invocationToken);
       if (invocation) invocation.recognized = true;
       const record = hostRecognitionRecord(parsed.result, heldImage, hostReview);
       const proposedPatch = parsed.result.proposedPatch;
@@ -2914,7 +2918,7 @@ export class PluginHost {
     heldRef: unknown
   ): PluginProvidedImage | undefined {
     const recognized = invocationToken
-      ? this.activeCommandInvocations.get(invocationToken)?.recognizedImages
+      ? this.#activeCommandInvocations.get(invocationToken)?.recognizedImages
       : undefined;
     if (!recognized?.length) return undefined;
     let match: PluginProvidedImage | undefined;
@@ -2934,7 +2938,7 @@ export class PluginHost {
     prepare: () => { timeoutMs: number; run: (signal: AbortSignal) => Promise<T> }
   ): Promise<T> {
     this.requirePermission(pluginId, "chemistry.compute");
-    if (!invocationToken || this.activeCommandInvocations.get(invocationToken)?.pluginId !== pluginId) {
+    if (!invocationToken || this.#activeCommandInvocations.get(invocationToken)?.pluginId !== pluginId) {
       throw new PluginHostError(`Plugin "${pluginId}" may call chemistry.${method} only while one of its own commands is executing.`);
     }
     // Validate/snapshot now, before waiting: plugin mutation must not alter queued input.
@@ -2955,13 +2959,13 @@ export class PluginHost {
   }
 
   private finishCommandInvocation(invocationToken: symbol): void {
-    this.activeCommandInvocations.get(invocationToken)?.ordinaryStop?.abort();
-    this.activeCommandInvocations.get(invocationToken)?.writeStop.abort();
-    const pluginId = this.activeCommandInvocations.get(invocationToken)?.pluginId;
+    this.#activeCommandInvocations.get(invocationToken)?.ordinaryStop?.abort();
+    this.#activeCommandInvocations.get(invocationToken)?.writeStop.abort();
+    const pluginId = this.#activeCommandInvocations.get(invocationToken)?.pluginId;
     if (pluginId) this.chemistry3dQueue.cancelQueued(pluginId);
     for (const controller of this.openChemistry3dRequests.get(invocationToken) ?? []) controller.abort();
     this.openChemistry3dRequests.delete(invocationToken);
-    this.activeCommandInvocations.delete(invocationToken);
+    this.#activeCommandInvocations.delete(invocationToken);
     this.textPromptInvocations.delete(invocationToken);
     for (const controller of this.openImageRequests.get(invocationToken) ?? []) {
       controller.abort();
@@ -2988,7 +2992,7 @@ export class PluginHost {
 
   private cancelOpenImageRequests(pluginId: string): void {
     this.chemistry3dQueue.cancelQueued(pluginId);
-    for (const [invocationToken, invocation] of this.activeCommandInvocations) {
+    for (const [invocationToken, invocation] of this.#activeCommandInvocations) {
       if (invocation.pluginId !== pluginId) continue;
       invocation.writeStop.abort();
       for (const controller of this.openChemistry3dRequests.get(invocationToken) ?? []) controller.abort();
@@ -3041,6 +3045,7 @@ export class PluginHost {
 interface ActiveCommandInvocation {
   execution?: RequestToolExecution;
   writeStop: AbortController;
+  menuInvocation?: AppHandoffMenuInvocation;
   handoffSpent?: boolean;
   tool?: boolean;
   readOnly?: boolean;

@@ -200,7 +200,7 @@ verified checksum. ChemDraft (dev) also accepts hand-installed packages and lega
 for allowlisted IDs. The native consent box explains when a hand-installed package is accepted only
 because this is a development build. Handoff plugins must run in a Worker. The capability is available
 only during their own user-started native menu command; toolbar, panel, overlay, agent, and assistant
-tool invocations do not authorize it. The host keeps proof of user action in native code. A command
+tool invocations do not authorize it. The native host authenticates the Worker relay for that invocation. A command
 can send one file or run one pipeline; a shown host box consumes the allowance even when cancelled.
 
 - `context.apps.chooseApp({ purpose })` opens the native picker and returns `chosen` with an opaque
