@@ -914,6 +914,11 @@ textarea:focus-visible,
   max-width: calc(100vw - var(--palette-x) - 8px);
 }
 
+.web-floating-palette:has(> .ring-inspector-palette) {
+  /* Rings hides the command grid, so the widget determines the browser frame width. */
+  width: max-content;
+}
+
 .document-viewport {
   position: relative;
   display: grid;

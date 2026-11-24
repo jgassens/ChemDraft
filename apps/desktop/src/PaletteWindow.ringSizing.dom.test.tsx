@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
-import { act } from "react";
+import { act, type CSSProperties } from "react";
 import { createRoot } from "react-dom/client";
+import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
 import { PaletteWindow } from "./PaletteWindow";
-import { toolsetUsesResizableWindow } from "./toolsets";
+import { ToolPalette } from "./ToolPalette";
+import { desktopToolsetRegistry, getToolsetItemGroups, initialToolsetWindowSize, toolsetUsesResizableWindow } from "./toolsets";
 
 vi.mock("./window-manager/tauriEvents", async (original) => ({
   ...await original<typeof import("./window-manager/tauriEvents")>(),
@@ -25,6 +27,37 @@ afterEach(() => {
   clearMocks();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+it("lets the rendered Rings widget set the width of the browser floating palette", () => {
+  const toolset = desktopToolsetRegistry.require("core.ringInspector");
+  const itemGroups = getToolsetItemGroups(toolset.id);
+  const { width } = initialToolsetWindowSize(toolset, itemGroups);
+  const container = document.createElement("div");
+  container.innerHTML = renderToStaticMarkup(
+    <section
+      className="web-floating-palette"
+      data-toolset-id={toolset.id}
+      style={{ "--palette-width": `${width}px` } as CSSProperties}
+    >
+      <ToolPalette
+        itemGroups={itemGroups}
+        gridLayout={toolset.gridLayout}
+        mode="floating"
+        orientation={toolset.gridLayout?.orientation}
+        onInvoke={() => {}}
+      />
+    </section>
+  );
+  document.body.append(container);
+  try {
+    const palette = container.querySelector<HTMLElement>(".web-floating-palette")!;
+    expect(palette.querySelector('[aria-label="Ring fill color"] button')).not.toBeNull();
+    // JSDOM exposes the sizing rule but does not resolve intrinsic widths into pixels.
+    expect(getComputedStyle(palette).width).toBe("max-content");
+  } finally {
+    container.remove();
+  }
 });
 
 it.each(["macos", "windows"] as const)(
