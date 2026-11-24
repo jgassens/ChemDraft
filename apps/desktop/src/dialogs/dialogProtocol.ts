@@ -1,5 +1,6 @@
 import { KEYBOARD_PREFERENCES_COMMAND_ID } from "../commands";
 import type { ReactionConditionsDraft } from "@chemdraft/document-workflow-core";
+import { PluginAppHandoffLimits } from "@chemdraft/plugin-api";
 export type ConditionsSnapshot = { title: string; arrowId: string; draft: ReactionConditionsDraft };
 /** Internal host contract. Advance independently of the public plugin API. No document/path URLs. */
 import type { ExportOptions, ExportFrame, ExportPreviewResult } from "./exportOptions";
@@ -222,8 +223,12 @@ function validAppHandoffSnapshot(data: Record<string, unknown>): boolean {
   const displayText = (value: unknown): value is string =>
     typeof value === "string" && value.length > 0 && !value.includes("\0");
   if (!displayText(data.title) || data.title.length > 256 || !displayText(data.appName)) return false;
+  if (Object.hasOwn(data, "warnings") && (!Array.isArray(data.warnings) ||
+      data.warnings.length > PluginAppHandoffLimits.warningCount || !data.warnings.every(line =>
+        typeof line === "string" && line.length > 0 &&
+        [...line].length <= PluginAppHandoffLimits.warningCharacters && !/[\p{Cc}\p{Bidi_Control}\u2028\u2029]/u.test(line)))) return false;
   if (data.mode === "result") {
-    return keys(data, ["mode", "title", "appName", "combination", "rebuildCombination", "rebuildLabel", "rebuildChanges"], ["twist"]) &&
+    return keys(data, ["mode", "title", "appName", "combination", "rebuildCombination", "rebuildLabel", "rebuildChanges"], ["twist", "warnings"]) &&
       companionId(data.combination) && companionId(data.rebuildCombination) &&
       data.combination !== data.rebuildCombination && displayText(data.rebuildLabel) &&
       record(data.rebuildChanges) && Object.entries(data.rebuildChanges).every(([name, value]) =>
@@ -232,7 +237,7 @@ function validAppHandoffSnapshot(data: Record<string, unknown>): boolean {
         (typeof data.twist === "number" && Number.isFinite(data.twist) && data.twist >= 0));
   }
   if (data.mode !== "confirm" ||
-      !keys(data, ["mode", "title", "appName", "pipeline", "suggestedCombination", "combinations"], ["composition"]) ||
+      !keys(data, ["mode", "title", "appName", "pipeline", "suggestedCombination", "combinations"], ["composition", "warnings"]) ||
       !companionId(data.pipeline) || !companionId(data.suggestedCombination) ||
       !record(data.combinations) || !Object.hasOwn(data.combinations, data.suggestedCombination)) return false;
   const combinations = data.combinations;

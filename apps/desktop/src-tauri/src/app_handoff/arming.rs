@@ -290,6 +290,7 @@ pub(super) struct ApprovedBuild {
     pub combination: String,
     pub input: Option<Input>,
     pub open_output: bool,
+    pub warnings: Vec<String>,
 }
 
 #[derive(PartialEq, Eq)]

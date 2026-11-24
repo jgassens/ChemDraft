@@ -1904,6 +1904,12 @@ export type PluginCommandResult<Result = unknown> =
       warnings?: RecognitionWarning[];
     };
 
+/** A native handoff menu command can return plain-text status in its successful result data.
+ * ChemDraft attributes it to the plugin and shows up to 500 Unicode code points on one line,
+ * followed by an ellipsis if truncated. Native failures and cancellations take precedence.
+ */
+export type PluginHandoffCommandResult = PluginCommandResult<{ status: string }>;
+
 export interface PluginManifestValidationResult {
   ok: boolean;
   manifest?: PluginManifest;

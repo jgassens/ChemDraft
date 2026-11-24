@@ -20,7 +20,7 @@ import {
   createPluginUpdateChecker, hasOfficialInstalledPlugin, installedPluginCatalogKey,
   schedulePluginUpdateAutoCheck, type CachedPluginUpdateResults, type TimedPluginUpdateCheckResult
 } from "./pluginUpdateAutoCheck";
-import { createPluginRuntime, type DesktopPluginRuntime, type DesktopPluginRuntimeOptions, type ProposalDocumentTab } from "./createPluginRuntime";
+import { createPluginRuntime, type AppHandoffMenuFeedback, type DesktopPluginRuntime, type DesktopPluginRuntimeOptions, type ProposalDocumentTab } from "./createPluginRuntime";
 import {
   type PluginInstallError,
   isCommittedUninstallError,
@@ -62,6 +62,7 @@ import { mountStructureNamingHost } from "./StructureNamingInstallDialog";
 import { presentExternalToolInstall } from "../externalTools/presentExternalToolInstall";
 import type { DialogCoordinator } from "../dialogs/DialogCoordinator";
 import type { ListenForAppHandoff } from "../appHandoff/nativeMenu";
+import { appHandoffCommandStatus } from "../appHandoff/transport";
 
 /**
  * Extract a user-facing message from a resolved plugin-command value that is a `{ ok: false }`
@@ -246,13 +247,17 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     let active = true;
     const unlisten = listenForAppHandoff(invocation => {
       const warnings: string[] = [];
-      const report = (message: string) => {
-        if (active) providersRef.current.onAppHandoffStatus?.(message);
+      const feedback: AppHandoffMenuFeedback = { pending: 0 };
+      const name = runtime.host.getPlugin(invocation.pluginId)?.manifest.name;
+      const report = (message?: string) => {
+        if (!active || (feedback.problem && !warnings.length)) return;
+        const line = [feedback.problem?.message ?? message, ...new Set(warnings)].filter(Boolean).join(" ");
+        if (line) providersRef.current.onAppHandoffStatus?.(line);
       };
-      return runtime.invokeAppHandoffMenuCommand(invocation, warnings).then(result => {
+      return runtime.invokeAppHandoffMenuCommand(invocation, warnings, feedback).then(result => {
         const failure = pluginCommandFailure(result);
         if (failure) report(`Plugin command failed: ${failure}`);
-        else if (warnings.length) report(warnings.join(" "));
+        else report(name && !feedback.pending ? appHandoffCommandStatus(result, name) : undefined);
       }, (error: unknown) => report(`Plugin command failed: ${error instanceof Error ? error.message : String(error)}`));
     });
     return () => {

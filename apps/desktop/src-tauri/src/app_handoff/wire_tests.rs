@@ -76,6 +76,22 @@ fn app_handoff_wire_fixtures_are_current() {
                     text: "2\n1\nC 0 0 0\nX 1 0 0\n0 1 S\n".into(),
                 }),
                 open_output: Some(true),
+                warnings: None,
+            })
+            .unwrap(),
+        ),
+        (
+            "run-companion-request-warnings".into(),
+            encode(RunRequest {
+                app_id: id.into(),
+                pipeline: "mofBuild".into(),
+                combination: "pcu-N16-2x2x2".into(),
+                input: None,
+                open_output: None,
+                warnings: Some(vec![
+                    "2 carboxylic acids cut to connection points (X).".into(),
+                    "The chosen node supplies carboxylates 🧪.".into(),
+                ]),
             })
             .unwrap(),
         ),
@@ -171,6 +187,16 @@ fn app_handoff_wire_fixtures_are_current() {
         )
         .unwrap();
         assert_eq!(&current, value, "{name}.json");
+        if name.starts_with("run-companion-request") {
+            let call = json!({
+                "invocation": {"pluginId": "plugin", "commandId": "plugin.build.run", "nonce": "0".repeat(32)},
+                "method": "runCompanion", "request": current
+            });
+            let (_, Request::Run(request)) = Call::parse(call).unwrap() else {
+                panic!("Expected a companion request.");
+            };
+            assert_eq!(encode(request).unwrap(), current);
+        }
     }
     let mut actual: Vec<_> = fs::read_dir(&directory)
         .unwrap()
@@ -178,6 +204,47 @@ fn app_handoff_wire_fixtures_are_current() {
         .filter(|name| name.ends_with(".json"))
         .collect();
     actual.sort();
-    let expected: Vec<_> = values.keys().map(|name| format!("{name}.json")).collect();
+    let mut expected: Vec<_> = values.keys().map(|name| format!("{name}.json")).collect();
+    expected.sort();
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn handoff_warnings_share_the_same_unicode_bounds() {
+    for (method, mut request) in [
+        (
+            "sendFile",
+            json!({"appId": "0".repeat(32), "fileName": "block", "extension": "cif", "text": "data_block"}),
+        ),
+        (
+            "runCompanion",
+            json!({"appId": "0".repeat(32), "pipeline": "mofBuild", "combination": "small"}),
+        ),
+    ] {
+        let parse = |request| {
+            Call::parse(json!({
+                "invocation": {"pluginId": "plugin", "commandId": "plugin.build.run", "nonce": "0".repeat(32)},
+                "method": method, "request": request
+            }))
+        };
+        let warning = "🧪".repeat(300);
+        let mut warnings = vec![warning.clone(); 20];
+        request["warnings"] = json!(warnings);
+        assert!(parse(request.clone()).is_ok());
+        warnings.push("extra".into());
+        for invalid in [
+            json!(warnings),
+            json!([warning + "!"]),
+            json!([0]),
+            json!(["\0"]),
+            Value::Null,
+        ] {
+            request["warnings"] = invalid;
+            assert!(
+                parse(request.clone()).is_err(),
+                "{method}: {}",
+                request["warnings"]
+            );
+        }
+    }
 }

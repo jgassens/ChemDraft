@@ -196,12 +196,16 @@ export const PluginHandoffStatusResultSchema = z.object({
   reason: z.string().optional()
 }).strict();
 
+const handoffWarnings = z.array(characterLimitedText(limits.warningCharacters)
+  .refine(text => !text.includes("\0"), { message: "Warning text must not contain NUL." }))
+  .max(limits.warningCount).optional();
+
 export const PluginHandoffSendFileRequestSchema = z.object({
   appId: nonempty,
   fileName: z.string(),
   extension: PluginHandoffExtensionSchema,
   text: utf8Text(limits.sendBytes),
-  warnings: z.array(characterLimitedText(limits.warningCharacters)).max(limits.warningCount).optional()
+  warnings: handoffWarnings
 }).strict();
 
 export const PluginHandoffSendFileFailureCodeSchema = z.enum([
@@ -221,7 +225,9 @@ export const PluginHandoffRunCompanionRequestSchema = z.object({
   pipeline: companionId,
   combination: companionId,
   input: z.object({ extension: companionInputExtension, text: utf8Text(limits.inputBytes) }).strict().optional(),
-  openOutput: z.boolean().optional()
+  openOutput: z.boolean().optional(),
+  /** Plain text shown for review before the build, up to 20 lines of 300 code points. */
+  warnings: handoffWarnings
 }).strict();
 
 export const PluginHandoffRunCompanionFailureCodeSchema = z.enum([

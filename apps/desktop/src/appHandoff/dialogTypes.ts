@@ -1,6 +1,7 @@
 interface AppHandoffDialogHeader {
   title: string;
   appName: string;
+  warnings?: string[];
 }
 
 export type AppHandoffDialogSnapshot = AppHandoffDialogHeader & (

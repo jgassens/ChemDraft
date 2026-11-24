@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import type { ListenForAppHandoff } from "../appHandoff/nativeMenu";
-import type { PluginManifest } from "@chemdraft/plugin-api";
+import type { PluginHandoffCommandResult, PluginManifest } from "@chemdraft/plugin-api";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -157,7 +157,8 @@ describe("usePluginRuntime installed catalog readiness", () => {
     const record = { ...entry.record, id, source, checksumVerified: true,
       repository: "jgassens/ChemDraft-CrystalBuilder-Plugin" };
     vi.stubGlobal("__CHEMDRAFT_HANDOFF_SIDELOAD_ALLOWED__", source === "sideload");
-    const handoffManifest = { ...entry.manifest, id, permissions: ["apps.handoff", "native.execute"] as const,
+    const handoffManifest = { ...entry.manifest, id, name: "Send to Crystal Builder",
+      permissions: ["apps.handoff", "native.execute", "selection.read"] as const,
       contributes: { ...entry.manifest.contributes, commands: [{ id: commandId, title: "Send" }],
         menus: [{ id: "menu.crystalBuilder.sendMolecule", commandId, title: "Send" }] } };
     hookMocks.loadInstalledPlugins.mockResolvedValue({ installed: [], failures: [] });
@@ -175,7 +176,10 @@ describe("usePluginRuntime installed catalog readiness", () => {
       view = usePluginRuntime({
         listenForAppHandoff,
         getActiveDocument: () => undefined,
-        getSelection: () => ({ objectIds: [], molecules: [] }),
+        getSelection: warnings => {
+          warnings?.push("Selection contains unsupported labels.");
+          return { objectIds: [], molecules: [] };
+        },
         onAppHandoffStatus: status
       });
       return null;
@@ -187,15 +191,42 @@ describe("usePluginRuntime installed catalog readiness", () => {
     const request = { appId: "chosen", fileName: "model", extension: "cif" as const, text: "test data" };
     await act(async () => {
       view!.runtime.registerPlugin(handoffManifest, { execution: "worker",
-        commandHandlers: { [commandId]: context => context.apps!.sendFile(request) } }, record);
+        commandHandlers: { [commandId]: async (context): Promise<PluginHandoffCommandResult> => {
+          await context.selection!.getSelection();
+          const result = await context.apps!.sendFile(request).catch((error: unknown) => {
+            if (!(error instanceof Error) || error.message !== "The native endpoint refused the handoff.") throw error;
+          });
+          if (result?.status === "failed") {
+            return { ok: false, error: { code: "plugin-error", message: "Plugin-specific failure" } };
+          }
+          return { ok: true, data: { status: "  File\r\n\u202eopened.\u2069 " } };
+        } } }, record);
     });
     await act(async () => { await click(); });
     expect(hookMocks.handoffTransport).toHaveBeenCalledExactlyOnceWith(invocation, "sendFile", request);
+    expect(status.mock.calls).toEqual([
+      ["Opened the handoff file in the chosen app."],
+      ["Send to Crystal Builder: File opened. Selection contains unsupported labels."]
+    ]);
+    hookMocks.handoffTransport.mockResolvedValueOnce({ status: "declined" });
+    await act(async () => { await click(); });
+    expect(status.mock.calls.slice(-2)).toEqual([
+      ["App handoff cancelled."], ["App handoff cancelled. Selection contains unsupported labels."]
+    ]);
+    hookMocks.handoffTransport.mockResolvedValueOnce({ status: "failed", code: "launch-failed", message: "The app refused to open the file." });
+    await act(async () => { await click(); });
+    expect(status.mock.calls.slice(-2)).toEqual([
+      ["App handoff failed: The app refused to open the file."],
+      ["App handoff failed: The app refused to open the file. Selection contains unsupported labels."]
+    ]);
+    hookMocks.handoffTransport.mockRejectedValueOnce(new Error("The native endpoint refused the handoff."));
+    await act(async () => { await click(); });
+    expect(status).toHaveBeenLastCalledWith("The native endpoint refused the handoff. Selection contains unsupported labels.");
     hookMocks.stagingFs.readTextFile.mockResolvedValue(JSON.stringify({ version: 1, plugins: [{ ...record, version: "2.0.0" }] }));
     await act(async () => { await click(); });
     expect(status).toHaveBeenLastCalledWith(expect.stringContaining("checksum-verified install"));
-    expect(hookMocks.handoffTransport).toHaveBeenCalledOnce();
-    expect(hookMocks.stagingFs.readTextFile).toHaveBeenCalledTimes(2);
+    expect(hookMocks.handoffTransport).toHaveBeenCalledTimes(4);
+    expect(hookMocks.stagingFs.readTextFile).toHaveBeenCalledTimes(5);
   });
 
   it("removes the UI entry and disabled flag before surfacing a post-uninstall storage deletion error", async () => {

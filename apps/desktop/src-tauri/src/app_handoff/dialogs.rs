@@ -1,7 +1,7 @@
 use super::{
     arming::Submission,
     command_line::Pipeline,
-    wire::{Extension, Input, StepResult},
+    wire::{self, Extension, Input, StepResult},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -30,6 +30,8 @@ pub(super) enum Snapshot<'a> {
         composition: Option<&'a Composition>,
         suggested_combination: &'a str,
         combinations: &'a BTreeMap<String, BTreeMap<String, String>>,
+        #[serde(skip_serializing_if = "<[String]>::is_empty")]
+        warnings: &'a [String],
     },
     Result {
         title: &'static str,
@@ -40,7 +42,87 @@ pub(super) enum Snapshot<'a> {
         rebuild_changes: BTreeMap<&'a str, Option<&'a str>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         twist: Option<f64>,
+        #[serde(skip_serializing_if = "<[String]>::is_empty")]
+        warnings: &'a [String],
     },
+}
+
+pub(super) fn display_warnings(warnings: Vec<String>) -> Vec<String> {
+    warnings
+        .into_iter()
+        .filter_map(|line| {
+            let text: String =
+                line.chars()
+                    .filter_map(|ch| match ch {
+                        '\t' | '\n' | '\r' | '\u{b}' | '\u{c}' | '\u{85}' | '\u{2028}'
+                        | '\u{2029}' => Some(' '),
+                        '\u{61c}'
+                        | '\u{200e}'
+                        | '\u{200f}'
+                        | '\u{202a}'..='\u{202e}'
+                        | '\u{2066}'..='\u{2069}' => None,
+                        ch if ch.is_control() => None,
+                        ch => Some(ch),
+                    })
+                    .collect();
+            let text = text.trim();
+            (!text.is_empty()).then(|| text.to_owned())
+        })
+        .collect()
+}
+
+pub(super) fn confirmation_snapshot(
+    pipeline: &Pipeline,
+    app_name: &str,
+    combination: &str,
+    composition: Option<&Composition>,
+    warnings: &[String],
+) -> Result<Value, String> {
+    let snapshot = wire::encode(Snapshot::Confirm {
+        title: "Confirm companion build",
+        app_name,
+        pipeline: &pipeline.id,
+        composition,
+        suggested_combination: combination,
+        combinations: &pipeline.combinations,
+        warnings,
+    })?;
+    crate::dialog_windows::validate_app_handoff_snapshot(&snapshot)?;
+    if !warnings.is_empty() {
+        for (from, to) in pipeline
+            .combinations
+            .iter()
+            .filter_map(|(id, row)| row.get("rebuildAs").map(|rebuild| (id, rebuild)))
+        {
+            let mut result = wire::encode(result_snapshot(
+                pipeline, app_name, from, to, None, warnings,
+            ))?;
+            // Reserve room for the serialized value of any finite f64 measurement.
+            result["twist"] = Value::String("0".repeat(24));
+            crate::dialog_windows::validate_app_handoff_snapshot(&result)?;
+        }
+    }
+    Ok(snapshot)
+}
+
+pub(super) fn result_snapshot<'a>(
+    pipeline: &'a Pipeline,
+    app_name: &'a str,
+    combination: &'a str,
+    rebuild: &'a str,
+    twist: Option<f64>,
+    warnings: &'a [String],
+) -> Snapshot<'a> {
+    Snapshot::Result {
+        title: "Companion build result",
+        app_name,
+        combination,
+        rebuild_combination: rebuild,
+        rebuild_label: rebuild_label(pipeline, rebuild),
+        rebuild_changes: rebuild_changes(pipeline, combination, rebuild),
+        twist,
+        warnings,
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]

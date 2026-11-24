@@ -67,7 +67,7 @@ import {
 } from "./structureRecognitionEngine";
 import { preparePluginStructureRecognition, type RecognitionStructureValidator } from "./pluginStructureRecognition";
 import { isTauriHost } from "./pluginStagingFs";
-import { createTauriAppHandoffTransport } from "../appHandoff/transport";
+import { createTauriAppHandoffTransport, reportAppHandoffTransportResult, type AppHandoffTransportStatus } from "../appHandoff/transport";
 import { nativeAppHandoffConsents, type AppHandoffConsents } from "../appHandoff/consents";
 import type { InstalledPluginRecord } from "./installedPluginStore";
 import { ExternalToolsController } from "../externalTools/ExternalToolsController";
@@ -96,6 +96,11 @@ export type DesktopNameToStructureProvider = (
 export type DesktopStructureFromSmilesProvider = (
   request: PluginStructureFromSmilesRequest
 ) => Promise<PluginStructureFromSmilesResult>;
+
+export interface AppHandoffMenuFeedback {
+  pending: number;
+  problem?: AppHandoffTransportStatus;
+}
 
 function freezeOverlayContent(sections: CanvasOverlayContentSection[]): readonly CanvasOverlayContentSection[] {
   const snapshot = structuredClone(sections);
@@ -258,7 +263,7 @@ export interface DesktopPluginRuntime {
    * neither add to it nor take from it.
    */
   invokeCommand(commandId: string, options?: { selectionWarnings?: string[]; input?: PluginCommandInput }): Promise<unknown>;
-  invokeAppHandoffMenuCommand(invocation: AppHandoffMenuInvocation, selectionWarnings?: string[]): Promise<unknown>;
+  invokeAppHandoffMenuCommand(invocation: AppHandoffMenuInvocation, selectionWarnings?: string[], feedback?: AppHandoffMenuFeedback): Promise<unknown>;
   listCanvasOverlays(): RegisteredCanvasOverlay[];
   getCanvasOverlayStatuses(): ReadonlyMap<string, string>;
   /** Subscribe to status-only overlay updates without invalidating plugin contributions/toolsets. */
@@ -529,6 +534,8 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   const notifyCanvasOverlayStatus = () => canvasOverlayStatusListeners.forEach((listener) => listener());
   const readSelection = options.getSelection;
   let registeringRecord: InstalledPluginRecord | undefined;
+  const handoffTransport = options.appHandoffTransport ?? (isTauriHost() ? createTauriAppHandoffTransport() : undefined);
+  const handoffFeedback = new WeakMap<AppHandoffMenuInvocation, AppHandoffMenuFeedback>();
   const host = new DesktopPluginHost({
     ...chemistry3d,
     handoffGraph: handoffGraphForPlugin,
@@ -542,8 +549,24 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
         ? registeringRecord : undefined,
       forCall: (id, version) => options.readAppHandoffRecord?.(id, version)
     },
-    appHandoffTransport: options.appHandoffTransport ?? (isTauriHost()
-      ? createTauriAppHandoffTransport(undefined, options.onAppHandoffStatus) : undefined),
+    appHandoffTransport: handoffTransport && (async (invocation, method, request) => {
+      const feedback = handoffFeedback.get(invocation);
+      const previousProblem = feedback?.problem;
+      if (feedback) feedback.pending++;
+      try {
+        return await reportAppHandoffTransportResult(handoffTransport(invocation, method, request), method, request, status => {
+          if (feedback) {
+            // A successful retry can follow a refusal before the first box. A concurrent attempt
+            // must preserve any refusal reported while this request was pending.
+            if (!status.unsuccessful && feedback.problem && feedback.problem !== previousProblem) return;
+            feedback.problem = status.unsuccessful ? status : undefined;
+          }
+          options.onAppHandoffStatus?.(status.message);
+        });
+      } finally {
+        if (feedback) feedback.pending--;
+      }
+    }),
     overlays: {
       setContent: (pluginId, overlayId, sections, prompt) => {
         const declared = host.getPlugin(pluginId)!.manifest.contributes.canvasOverlays!.find(overlay => overlay.id === overlayId)!.prompt;
@@ -831,10 +854,11 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
         armedSelectionWarnings = undefined;
       }
     },
-    invokeAppHandoffMenuCommand(invocation, selectionWarnings) {
+    invokeAppHandoffMenuCommand(invocation, selectionWarnings, feedback) {
+      if (feedback) handoffFeedback.set(invocation, feedback);
       armedSelectionWarnings = selectionWarnings;
       try {
-        return host.invokeAppHandoffMenuCommand(invocation);
+        return host.invokeAppHandoffMenuCommand(invocation).finally(() => handoffFeedback.delete(invocation));
       } finally {
         armedSelectionWarnings = undefined;
       }

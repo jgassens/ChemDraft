@@ -88,6 +88,9 @@ export function AppHandoffForm({
             ` · ${name === "topology" ? "net" : name} ${value ?? "removed"}`)
         }</p>
       </>}
+      {snapshot.warnings && snapshot.warnings.length > 0 && <ul aria-label="Build warnings" tabIndex={0} style={{ overflowWrap: "anywhere" }}>
+        {snapshot.warnings.map((warning, index) => <li key={index}>{warning}</li>)}
+      </ul>}
       {error && <p role="alert">{error}</p>}
     </div>
     <footer className="cd-page-size-buttons cd-dialog-fit-footer">

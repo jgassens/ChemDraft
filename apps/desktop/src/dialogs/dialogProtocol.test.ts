@@ -200,6 +200,14 @@ it("accepts only the bounded Rust-owned handoff snapshot and typed choices", () 
     combination: "small", rebuildCombination: "large", rebuildLabel: "Rebuild at 2×2×2",
     rebuildChanges: { topology: "hex", node: null }, twist: 6 };
   expect(parseDialogMessage({ ...s, data: result })).toBeDefined();
+  for (const snapshotData of [data, result]) {
+    const warnings = ["🧪".repeat(300), "<b>Bond order changed.</b>"];
+    const withWarnings = { ...s, data: { ...snapshotData, warnings } };
+    expect(parseDialogMessage(withWarnings)).toEqual(withWarnings);
+    for (const invalid of [Array(21).fill("warning"), Array(20).fill(warnings[0]), [warnings[0] + "!"], ["bad\u202e"], ["bad\n"], [123], null]) {
+      expect(parseDialogMessage({ ...s, data: { ...snapshotData, warnings: invalid } })).toBeUndefined();
+    }
+  }
   for (const update of [
     { suggestedCombination: "missing" }, { suggestedCombination: "toString" },
     { composition: { ...data.composition, input: "file contents" } }, { composition: { ...data.composition, atomCount: 0 } },

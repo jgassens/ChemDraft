@@ -5,7 +5,7 @@ use super::{
     catalog,
     command_line::{open_command, Pipeline, Platform},
     consent::{Row, Store},
-    dialogs::{self, Action, Snapshot},
+    dialogs::{self, Action},
     identity,
     runner::{self, CaptureError, ChildProcess},
     temp_files::{self, TempFiles},
@@ -101,6 +101,7 @@ fn build(combination: &str) -> ApprovedBuild {
             text: XYZ.into(),
         }),
         open_output: true,
+        warnings: vec!["The node supplies these carboxylates.".into()],
     }
 }
 
@@ -560,6 +561,7 @@ fn dialog_choice_is_bound_to_declared_combination_and_rebuild_keeps_original_inp
     };
     let rebuilt = session().take_rebuild(now).unwrap();
     assert_eq!(rebuilt.combination, "large");
+    assert_eq!(rebuilt.warnings, input.warnings);
     assert_eq!(rebuilt.input.unwrap().text, XYZ);
     assert_ne!(later_selection.text, XYZ);
     assert!(session()
@@ -570,18 +572,23 @@ fn dialog_choice_is_bound_to_declared_combination_and_rebuild_keeps_original_inp
 #[test]
 fn confirmation_size_preflight_uses_the_private_dialog_envelope() {
     let mut pipeline = pipeline();
-    let snapshot = |pipeline: &Pipeline| {
-        serde_json::to_value(Snapshot::Confirm {
-            title: "Confirm companion build",
-            app_name: "Crystal Builder",
-            pipeline: &pipeline.id,
-            composition: None,
-            suggested_combination: "small",
-            combinations: &pipeline.combinations,
-        })
-        .unwrap()
+    let snapshot = |pipeline: &Pipeline, warnings: &[String]| {
+        dialogs::confirmation_snapshot(pipeline, "Crystal Builder", "small", None, warnings)
     };
-    assert!(crate::dialog_windows::validate_app_handoff_snapshot(&snapshot(&pipeline)).is_ok());
+    assert!(snapshot(&pipeline, &[]).is_ok());
+    let state = State::default();
+    let now = Instant::now();
+    let arm = state.arm(PLUGIN, COMMAND, now).unwrap();
+    let oversized = vec!["🧪".repeat(300); 20]; // Valid request fields, too many bytes for a dialog.
+    let first = arm.submit(now).unwrap();
+    assert!(snapshot(&pipeline, &oversized).is_err());
+    drop(first);
+    let corrected = arm.submit(now).unwrap();
+    assert!(snapshot(&pipeline, &["Small warning.".into()]).is_ok());
+    corrected.show_box().unwrap();
+    drop(corrected); // Cancel closes the presented confirmation without launching.
+    assert!(arm.submit(now).is_err());
+
     for index in 0..100 {
         pipeline.combinations.insert(
             format!("case-{index}"),
@@ -589,7 +596,35 @@ fn confirmation_size_preflight_uses_the_private_dialog_envelope() {
         );
     }
     assert!(pipeline.validate().is_ok());
-    assert!(crate::dialog_windows::validate_app_handoff_snapshot(&snapshot(&pipeline)).is_err());
+    assert!(snapshot(&pipeline, &[]).is_err());
+}
+
+#[test]
+fn confirmation_and_result_show_the_same_sanitized_warning_lines() {
+    let pipeline = pipeline();
+    let warnings = dialogs::display_warnings(vec![
+        " \u{202e}<b>Potential</b>\u{2069}\r\nloss\u{7}.\u{2028}Review. ".into(),
+        "\u{61c} \t \u{9f}".into(),
+        "--flag=value".into(),
+    ]);
+    let confirm =
+        dialogs::confirmation_snapshot(&pipeline, "Crystal Builder", "small", None, &warnings)
+            .unwrap();
+    let result = serde_json::to_value(dialogs::result_snapshot(
+        &pipeline,
+        "Crystal Builder",
+        "small",
+        "large",
+        Some(6.0),
+        &warnings,
+    ))
+    .unwrap();
+    assert_eq!(
+        confirm["warnings"],
+        json!(["<b>Potential</b>  loss. Review.", "--flag=value"])
+    );
+    assert_eq!(result["warnings"], confirm["warnings"]);
+    assert!(crate::dialog_windows::validate_app_handoff_snapshot(&result).is_ok());
 }
 
 #[test]
