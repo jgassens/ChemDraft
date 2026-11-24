@@ -206,7 +206,7 @@ describe("usePluginRuntime installed catalog readiness", () => {
     expect(hookMocks.handoffTransport).toHaveBeenCalledExactlyOnceWith(invocation, "sendFile", request);
     expect(status.mock.calls).toEqual([
       ["Opened the handoff file in the chosen app."],
-      ["Send to Crystal Builder: File opened. Selection contains unsupported labels."]
+      ["Plugin (Send to Crystal Builder): File opened. Selection contains unsupported labels."]
     ]);
     hookMocks.handoffTransport.mockResolvedValueOnce({ status: "declined" });
     await act(async () => { await click(); });

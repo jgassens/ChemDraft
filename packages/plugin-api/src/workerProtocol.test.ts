@@ -10,6 +10,7 @@ import {
   PLUGIN_WORKER_CAPABILITY_METHODS,
   PLUGIN_WORKER_PROTOCOL_VERSION,
   PluginWorkerErrorCodes,
+  asHostToWorkerMessage,
   checkWorkerHandshake,
   isPluginApiVersionCompatible,
   supportsPluginTableInsertion,
@@ -18,6 +19,15 @@ import {
   type WorkerToHostMessage
 } from "./workerProtocol";
 import { runPluginWorker } from "./workerRuntime";
+
+describe("forward-compatible host identity", () => {
+  it("keeps invocations and removes invalid host identities", () => {
+    const base = { kind: "invokeCommand", commandRequestId: 1, commandId: "plugin.runtime.run" };
+    expect(asHostToWorkerMessage({ ...base, host: { name: "ChemDraft", version: "1", future: true } })).toEqual({ ...base, host: { name: "ChemDraft", version: "1" } });
+    expect(asHostToWorkerMessage({ ...base, host: { name: "Other", version: "1" } })).toEqual(base);
+    expect(asHostToWorkerMessage({ ...base, host: 42 })).toEqual(base);
+  });
+});
 
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 const commandId = "plugin.runtime.run";
@@ -204,6 +214,16 @@ describe("checkWorkerHandshake", () => {
 });
 
 describe("runPluginWorker", () => {
+  it("runs a command when host identity is unknown or extended", async () => {
+    const endpoint = new ControlledEndpoint();
+    runPluginWorker({ manifest: manifest([]), commandHandlers: { [commandId]: context => context.host ?? null } }, endpoint);
+    endpoint.deliverRaw({ kind: "invokeCommand", commandRequestId: 1, commandId, host: { name: "Other", version: "1" } });
+    await flush();
+    expect(endpoint.sent.at(-1)).toMatchObject({ kind: "commandSettled", ok: true, value: null });
+    endpoint.deliverRaw({ kind: "invokeCommand", commandRequestId: 2, commandId, host: { name: "ChemDraft", version: "1", future: true } });
+    await flush();
+    expect(endpoint.sent.at(-1)).toMatchObject({ kind: "commandSettled", ok: true, value: { name: "ChemDraft", version: "1" } });
+  });
   it.each([
     { permissions: [], allowed: false },
     { permissions: ["apps.handoff"], allowed: false },

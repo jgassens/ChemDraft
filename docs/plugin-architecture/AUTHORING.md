@@ -215,6 +215,11 @@ can send one file or run one pipeline; a shown host box consumes the allowance e
   pipeline. Input is one UTF-8 file of at most 1 MiB. Optional plain-text warnings are shown before
   the build, limited to 20 lines of 300 Unicode code points each. The host presents a build confirmation with
   the declared combination choices and may offer a host-run rebuild when `rebuildAs` is declared.
+  Those individual limits do not guarantee that all warnings fit: the entire serialized dialog
+  message, including its envelope, choices, composition and warnings, must fit in 3,400 UTF-8 bytes.
+  JSON escaping also uses bytes. The host checks both confirmation and possible rebuild messages and
+  refuses an oversized request before consent or execution; a shorter request may be retried before
+  a host box has been shown. Once a box is shown, cancellation still consumes the send allowance.
 
 For example, inside an eligible command handler:
 

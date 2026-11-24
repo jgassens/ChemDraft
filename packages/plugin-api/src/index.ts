@@ -23,6 +23,8 @@ export type { ChemDraftDocument, DocumentObject, DocumentPatch, MoleculeBond, Mo
 import type { DocumentObject } from "@chemdraft/chem-core";
 
 /**
+ * API 0.1.28 must not ship before the change reserving API 0.1.27 lands.
+ *
  * 0.1.1 adds `PluginChemistryAPI.nameToStructure`; 0.1.2 adds `structureFromSmiles`; 0.1.3 adds
  * `PluginDialogsAPI.promptText`; 0.1.4 adds command-scoped `PluginDocumentAPI.applyPatch`; 0.1.5
  * adds command-scoped, host-owned `PluginImagesAPI.requestImage`; 0.1.6 adds host-owned local

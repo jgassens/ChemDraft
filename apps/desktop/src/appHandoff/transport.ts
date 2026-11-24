@@ -76,17 +76,26 @@ export async function reportAppHandoffTransportResult(
   return value;
 }
 
+export function boundedPluginText(value: string, limit: number): string {
+  let text = "";
+  let count = 0;
+  for (const character of value) {
+    if (count++ === limit) return text.trim() ? `${text.trim()}…` : "";
+    if (/[\t\n\r\v\f\u0085\u2028\u2029]/u.test(character)) {
+      if (!text.endsWith(" ")) text += " ";
+    }
+    else if (!/[\p{Cc}\p{Cf}]/u.test(character)) text += character;
+  }
+  return text.trim();
+}
+
 export function appHandoffCommandStatus(result: unknown, pluginName: string): string | undefined {
   if (!result || typeof result !== "object" || !("ok" in result) || result.ok !== true ||
       !("data" in result) || !result.data || typeof result.data !== "object" || !("status" in result.data)) return;
   const { status } = result.data;
   if (typeof status !== "string") return;
-  const singleLine = (value: string) => value
-    .replace(/[\t\n\r\v\f\u0085\u2028\u2029]+/gu, " ")
-    .replace(/[\p{Cc}\p{Bidi_Control}]/gu, "").trim();
-  const characters = [...singleLine(status)];
-  if (!characters.length) return;
-  const line = characters.length > 500 ? `${characters.slice(0, 500).join("")}…` : characters.join("");
-  const attribution = singleLine(pluginName);
-  return attribution ? `${attribution}: ${line}` : undefined;
+  const line = boundedPluginText(status, 500);
+  if (!line) return;
+  const attribution = boundedPluginText(pluginName, 80);
+  return `Plugin (${attribution || "unknown"}): ${line}`;
 }

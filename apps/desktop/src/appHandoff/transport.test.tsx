@@ -84,10 +84,10 @@ describe("native app handoff relay", () => {
   it("uses only a string status on a successful command, sanitizing and bounding by code point", () => {
     const name = "Send to Crystal Builder";
     const status = (value: unknown) => appHandoffCommandStatus({ ok: true, data: { status: value } }, name);
-    expect(status(" \u202eMOF\u2069\u0000-5\r\nmatched\u0085here\u2028today\u0007 ")).toBe(`${name}: MOF-5 matched here today`);
+    expect(status(" \u202eMOF\u2069\u0000-5\r\nmatched\u0085here\u2028today\u0007 ")).toBe(`Plugin (${name}): MOF-5 matched here today`);
     const text = "🧪".repeat(500);
-    expect(status(text)).toBe(`${name}: ${text}`);
-    expect(status(text + "🧪")).toBe(`${name}: ${text}…`);
+    expect(status(text)).toBe(`Plugin (${name}): ${text}`);
+    expect(status(text + "🧪")).toBe(`Plugin (${name}): ${text}…`);
     for (const value of [null, 15, ["done"], { text: "done" }, " \u202c\n "]) expect(status(value)).toBeUndefined();
     expect(appHandoffCommandStatus({ ok: false, data: { status: "done" } }, name)).toBeUndefined();
     expect(appHandoffCommandStatus({ ok: true }, name)).toBeUndefined();

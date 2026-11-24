@@ -1,5 +1,7 @@
 # Send to Crystal Builder: plugin plan
 
+API 0.1.28 in this branch must not ship before the change taking API 0.1.27 lands.
+
 Status: plan approved by the owner 2026-11-10; revised 2026-11-20 for the one-command build and the
 return trip (owner direction below), and again the same afternoon after the hand-built "MOF-5" turned
 out to be the wrong structure because it was built on one cell (see "MOF-5 correctness" under Test

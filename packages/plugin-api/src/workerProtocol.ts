@@ -209,20 +209,24 @@ export function asHostToWorkerMessage(data: unknown): HostToWorkerMessage | unde
   const message = data as { kind?: unknown; [key: string]: unknown };
   const isIndex = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value);
   const isCorrelationId = (value: unknown) => isIndex(value) && Number.isSafeInteger(value) && value > 0;
-  const validHost = () => message.host === undefined || PluginHostIdentitySchema.safeParse(message.host).success;
+  const withHost = () => {
+    const { host, ...rest } = message;
+    const parsed = PluginHostIdentitySchema.passthrough().safeParse(host);
+    return { ...rest, ...(parsed.success ? { host: { name: parsed.data.name, version: parsed.data.version } } : {}) } as unknown as HostToWorkerMessage;
+  };
   switch (message.kind) {
     case "invokeTool":
-      return isCorrelationId(message.commandRequestId) && validHost() ? message as unknown as HostToWorkerMessage : undefined;
+      return isCorrelationId(message.commandRequestId) ? withHost() : undefined;
     case "activeDocumentChanged":
       return isCorrelationId(message.notificationId) ? message as unknown as HostToWorkerMessage : undefined;
     case "invokeAssistantTool":
-      return isIndex(message.commandRequestId) && typeof message.sessionId === "string" && typeof message.name === "string" && validHost()
-        ? message as unknown as HostToWorkerMessage : undefined;
+      return isIndex(message.commandRequestId) && typeof message.sessionId === "string" && typeof message.name === "string"
+        ? withHost() : undefined;
     case "invokeCommand":
-      return isIndex(message.commandRequestId) && typeof message.commandId === "string" && validHost()
+      return isIndex(message.commandRequestId) && typeof message.commandId === "string"
         && (message.input === undefined || PluginCommandInputSchema.safeParse(message.input).success)
         && (message.addConnectionPoints === undefined || message.addConnectionPoints === true)
-        ? (message as unknown as HostToWorkerMessage)
+        ? withHost()
         : undefined;
     case "capabilityResult": {
       if (!isIndex(message.requestId) || typeof message.ok !== "boolean") {
