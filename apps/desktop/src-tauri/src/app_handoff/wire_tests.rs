@@ -1,11 +1,64 @@
 use super::wire::*;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, fs, path::Path};
 
 #[test]
 fn app_handoff_wire_fixtures_are_current() {
+    // The marking request travels over the plugin Worker port, not the native launch endpoint.
+    #[derive(Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct MarkRequest {
+        object_id: String,
+        anchors: Vec<String>,
+    }
+    #[derive(Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct HostIdentity {
+        name: String,
+        version: String,
+    }
+    #[derive(Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct SelectedAtoms {
+        object_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        selected_atom_ids: Option<Vec<String>>,
+    }
     let id = "0123456789abcdef0123456789abcdef";
     let mut values: BTreeMap<String, Value> = BTreeMap::from([
+        (
+            "mark-connection-points-request".into(),
+            serde_json::to_value(MarkRequest {
+                object_id: "linker".into(),
+                anchors: vec!["anchor-1".into(), "anchor-2".into()],
+            })
+            .unwrap(),
+        ),
+        (
+            "command-host-identity".into(),
+            serde_json::to_value(HostIdentity {
+                name: "ChemDraft".into(),
+                version: "1.2.3".into(),
+            })
+            .unwrap(),
+        ),
+        (
+            "selection-atoms".into(),
+            serde_json::to_value(SelectedAtoms {
+                object_id: "linker".into(),
+                selected_atom_ids: Some(vec!["anchor-1".into()]),
+            })
+            .unwrap(),
+        ),
+        (
+            "selection-atoms-legacy".into(),
+            serde_json::to_value(SelectedAtoms {
+                object_id: "linker".into(),
+                selected_atom_ids: None,
+            })
+            .unwrap(),
+        ),
         (
             "choose-app-request".into(),
             encode(ChooseRequest {
@@ -187,6 +240,30 @@ fn app_handoff_wire_fixtures_are_current() {
         )
         .unwrap();
         assert_eq!(&current, value, "{name}.json");
+        match name.as_str() {
+            "mark-connection-points-request" => assert_eq!(
+                serde_json::to_value(
+                    serde_json::from_value::<MarkRequest>(current.clone()).unwrap()
+                )
+                .unwrap(),
+                current
+            ),
+            "command-host-identity" => assert_eq!(
+                serde_json::to_value(
+                    serde_json::from_value::<HostIdentity>(current.clone()).unwrap()
+                )
+                .unwrap(),
+                current
+            ),
+            "selection-atoms" | "selection-atoms-legacy" => assert_eq!(
+                serde_json::to_value(
+                    serde_json::from_value::<SelectedAtoms>(current.clone()).unwrap()
+                )
+                .unwrap(),
+                current
+            ),
+            _ => {}
+        }
         if name.starts_with("run-companion-request") {
             let call = json!({
                 "invocation": {"pluginId": "plugin", "commandId": "plugin.build.run", "nonce": "0".repeat(32)},

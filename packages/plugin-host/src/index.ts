@@ -3,7 +3,7 @@ import { sameDocumentValue } from "./documentValue";
 // into this package's dist so no `@chemdraft/chem-core` dependency ships (ADR-0031). `ChemDraftDocument`,
 // however, is taken from `@chemdraft/plugin-api` so a consumer using both SDK packages sees ONE canonical
 // document type — not a second, structurally-identical copy inlined here.
-import type { ApplyPatchOptions, DocumentObject, DocumentPatch, DocumentPage, OrphanedRepeatUnit } from "@chemdraft/chem-core";
+import type { ApplyPatchOptions, DocumentObject, DocumentPatch, DocumentPage, MoleculeObject, OrphanedRepeatUnit } from "@chemdraft/chem-core";
 import { bareIdTargetPage, duplicateIdRefusalMessage, objectInWriteScope, pinnedObjectMissingMessage, pinSelectionPages, resolveObjectOnPage,
   scopedObjectRefs, type PageObjectRef, type PluginWriteScopePages } from "./pageObjects";
 import { applyPatch, planOrphanedRepeatUnitCleanup, pruneReactionObjectReferences, removeOrphanedRepeatUnitBrackets, sameBracketIdentity } from "@chemdraft/chem-core";
@@ -34,9 +34,9 @@ export { chemistry3dTimeoutMs, CHEMISTRY3D_STARTUP_TIMEOUT_MS, pauseChemistry3dD
 import {
   PluginChemistryPropertiesRequestSchema, PluginChemistryPropertiesResultSchema,
   PluginAppHandoffPermissions, PluginAppHandoffSchemas, type PluginAppsAPI, type PluginHandoffRunCompanionRequest,
-  PluginHandoffGraphRequestSchema, PluginSuggestConnectionPointsRequestSchema, PluginSuggestConnectionPointsResultSchema,
+  PluginAddConnectionPointsRequestSchema, PluginHandoffGraphRequestSchema, PluginSuggestConnectionPointsRequestSchema, PluginSuggestConnectionPointsResultSchema,
   type PluginHandoffGraphRequest, type PluginHandoffGraphResult,
-  type PluginSuggestConnectionPointsRequest, type PluginSuggestConnectionPointsResult,
+  type PluginAddConnectionPointsRequest, type PluginSuggestConnectionPointsRequest, type PluginSuggestConnectionPointsResult,
   AssistantCapabilityPermissions, supportsPluginTableInsertion, type PluginAssistantAPI,
   bindPluginRequestCapabilities, getPluginRequestCapability, pluginRequestFailure, pluginRequestPermissions,
   requestValidationCode, supportsPluginRequestTools, type PluginActiveDocumentChangedHandler,
@@ -640,6 +640,13 @@ export interface PluginPatchApplicationRequest {
   /** Host-only command lifetime. Stable across writes; aborted on end, unregister, or tool cancellation.
    * The embedding host must recheck before committing a deferred write. */
   signal?: AbortSignal;
+  /** Host-built connection-point edit. The desktop verifies the resulting graph and selects the new atoms. */
+  connectionPointEdit?: {
+    pageId: string;
+    source: MoleculeObject;
+    atomIds: readonly string[];
+    anchors: readonly string[];
+  };
 }
 
 /**
@@ -763,6 +770,7 @@ export interface PluginHostToolSessions {
 }
 
 export interface PluginHostOptions {
+  identity?: PluginCommandContext["host"];
   toolSessions?: PluginHostToolSessions;
   requestDepiction?: RequestDepictionProviders;
   captureRequestDocument?: () => RequestDocument | undefined;
@@ -798,6 +806,8 @@ export interface PluginHostOptions {
    */
   getActiveDocumentKey?: () => string | undefined;
   getSelection?: () => PluginSelectionSnapshot | undefined | Promise<PluginSelectionSnapshot | undefined>;
+  /** Capture the current selection without serializing its molecules until a command actually reads it. */
+  captureSelection?: () => { objectIds: readonly string[]; read: () => PluginSelectionSnapshot };
   /** Storage backend factory (defaults to per-plugin in-memory maps). The desktop app
    *  supplies a disk-backed implementation; the host stays platform-free. */
   createStorage?: (pluginId: string) => PluginStorage;
@@ -841,6 +851,8 @@ export interface PluginHostOptions {
   /** Builds and places a native table without writing. The result uses the ordinary direct-patch
    * permission, invocation, document identity, scope, receipt, and history checks. */
   buildTablePatch?: (spec: PluginTableSpec, document: ChemDraftDocument, selection: readonly PageObjectRef[], viewport?: RequestViewport, bound?: boolean) => ProposedDocumentPatch;
+  buildConnectionPointsPatch?: (request: PluginAddConnectionPointsRequest, source: MoleculeObject, page: DocumentPage) =>
+    { patch: ProposedDocumentPatch; atomIds: readonly string[] };
   /**
    * Computes an isotope envelope on a plugin's behalf. Absent hosts expose no chemistry API — which is
    * why the capability is optional on the context rather than assumed. This package stays engine-free;
@@ -922,6 +934,8 @@ export class PluginHost {
   private readonly getProposalDocument?: PluginHostOptions["getProposalDocument"];
   private readonly getActiveDocumentKey?: PluginHostOptions["getActiveDocumentKey"];
   private readonly getSelectionSnapshot?: PluginHostOptions["getSelection"];
+  private readonly captureSelection?: PluginHostOptions["captureSelection"];
+  private readonly identity?: PluginCommandContext["host"];
   private readonly createStorage?: PluginHostOptions["createStorage"];
   private readonly showPanelReport?: PluginHostOptions["showPanelReport"];
   private readonly promptText?: PluginHostOptions["promptText"];
@@ -937,6 +951,7 @@ export class PluginHost {
   private readonly recognizeStructure?: PluginHostOptions["recognizeStructure"];
   private readonly applyDocumentPatch?: PluginHostOptions["applyDocumentPatch"];
   private readonly buildTablePatch?: PluginHostOptions["buildTablePatch"];
+  private readonly buildConnectionPointsPatch?: PluginHostOptions["buildConnectionPointsPatch"];
   private readonly computeProperties?: PluginHostOptions["computeProperties"];
   private readonly toolAndDocumentHandlers = new Map<string, Pick<RegisterPluginOptions,
     "onAssistantToolCall" | "onToolCall" | "onActiveDocumentChanged">>();
@@ -980,6 +995,8 @@ export class PluginHost {
     this.getProposalDocument = options.getProposalDocument;
     this.getActiveDocumentKey = options.getActiveDocumentKey;
     this.getSelectionSnapshot = options.getSelection;
+    this.captureSelection = options.captureSelection;
+    this.identity = options.identity && Object.freeze({ ...options.identity });
     this.toolSessions = options.toolSessions;
     this.requestDepiction = options.requestDepiction;
     this.captureRequestDocument = options.captureRequestDocument;
@@ -999,6 +1016,7 @@ export class PluginHost {
     this.recognizeStructure = options.recognizeStructure;
     this.applyDocumentPatch = options.applyDocumentPatch;
     this.buildTablePatch = options.buildTablePatch;
+    this.buildConnectionPointsPatch = options.buildConnectionPointsPatch;
     this.computeProperties = options.computeProperties;
     this.computeIsotopeEnvelope = options.computeIsotopeEnvelope;
     this.convertNameToStructure = options.convertNameToStructure;
@@ -1603,9 +1621,11 @@ export class PluginHost {
             this.requirePermission(pluginId, "selection.read");
             const binding = boundDocument();
             const pinned = binding?.read();
+            const readCaptured = (contextInvocation || undefined)?.selectionAtStart;
             const snapshot = (binding ? pinned && (this.getRequestSelection?.(pinned,
               requestTool ? createRequestSnapshotBudget() : undefined) ??
-              { objectIds: pinned.selection.objectIds, molecules: [] }) : await this.getSelectionSnapshot?.()) ??
+              { objectIds: pinned.selection.objectIds, molecules: [] }) :
+              await (readCaptured ? readCaptured() : this.getSelectionSnapshot?.())) ??
               { objectIds: [], molecules: [] };
             if (requestTool) assertRequestSnapshotSize(snapshot);
             // Hand plugins an independent, immutable copy — never a live document reference, and
@@ -1771,7 +1791,8 @@ export class PluginHost {
       };
       checkInvocation();
       const binding = boundDocument();
-      const document = binding ? binding.read() : await this.getActiveDocument?.();
+      const document = binding ? binding.read() :
+        ((contextInvocation || undefined)?.handoffSelectionDocument ?? await this.getActiveDocument?.());
       checkInvocation();
       if (!binding && this.getActiveDocumentKey?.() !== (contextInvocation || undefined)?.documentKey) {
         throw new PluginHostError(`chemistry.${method} refused because the active document changed during the command.`);
@@ -1906,6 +1927,7 @@ export class PluginHost {
 
     return {
       ...(input === undefined ? {} : { input }),
+      ...(this.identity && { host: this.identity }),
       plugin: {
         id: plugin.manifest.id,
         name: plugin.manifest.name,
@@ -1941,6 +1963,11 @@ export class PluginHost {
                 withCapabilitySlot(() => this.applyPatchForPlugin(pluginId, invocationToken, patch)),
               ...(supportsPluginTableInsertion(plugin.manifest.apiVersion)
                 ? { insertTable: async (spec: PluginTableSpec) => withCapabilitySlot(() => this.insertTableForPlugin(pluginId, invocationToken, spec)) }
+                : {}),
+              ...(this.buildConnectionPointsPatch && this.applyDocumentPatch &&
+                  contextInvocation && !contextInvocation.tool && !contextInvocation.requestId
+                ? { addConnectionPoints: (request: PluginAddConnectionPointsRequest) =>
+                    this.addConnectionPointsForPlugin(pluginId, invocationToken, request) }
                 : {})
             }
           : {})
@@ -2105,6 +2132,36 @@ export class PluginHost {
     return this.applyPatchForPlugin(pluginId, invocationToken, patch, undefined, "Insert table");
   }
 
+  private async addConnectionPointsForPlugin(pluginId: string, token: symbol | undefined,
+    request: PluginAddConnectionPointsRequest): Promise<AppliedPatchReceipt> {
+    this.requirePermission(pluginId, "document.write");
+    const invocation = token && this.#activeCommandInvocations.get(token);
+    const checkInvocation = () => {
+      if (!token || !invocation || invocation.pluginId !== pluginId || invocation.tool || invocation.requestId ||
+          invocation.readOnly || invocation.ordinaryStop?.signal.aborted || this.#activeCommandInvocations.get(token) !== invocation) {
+        throw new PluginHostError("documents.addConnectionPoints requires an active command owned by the plugin.");
+      }
+      if (this.getActiveDocumentKey?.() !== invocation.documentKey) {
+        throw new PluginHostError("The active document changed while marking connection points.");
+      }
+      return invocation;
+    };
+    const active = checkInvocation();
+    const parsed = PluginAddConnectionPointsRequestSchema.parse(request);
+    const { objectId, anchors } = parsed;
+    const pageId = active.startingSelectionPages?.get(objectId);
+    if (!pageId) throw new PluginHostError(`Molecule "${objectId}" was not selected when the command started.`);
+    const document = await this.getActiveDocument?.();
+    checkInvocation();
+    const target = document && resolveObjectOnPage(document, pageId, objectId);
+    if (!target || target.object.type !== "molecule") {
+      throw new PluginHostError(`Cannot mark anchor "${anchors[0]}": molecule "${objectId}" is no longer editable on its selected page.`);
+    }
+    const { patch, atomIds } = this.buildConnectionPointsPatch!(parsed, target.object, target.page);
+    return this.applyPatchForPlugin(pluginId, token, patch, undefined, "Mark connection points",
+      { pageId, source: target.object, atomIds, anchors });
+  }
+
   private async applyBoundPatch(pluginId: string, token: symbol | undefined, patch: ProposedDocumentPatch,
     input?: PluginRequestArguments<"documents", "applyRequestPatch">,
     getPreconditions?: (patch: PluginRequestPatch) => readonly PluginRequestPrecondition[]): Promise<RequestWriteCommit> {
@@ -2222,22 +2279,27 @@ export class PluginHost {
       scopePages?: PluginWriteScopePages;
     },
     /** Trusted host label, never taken from plugin input. */
-    undoLabel?: string
+    undoLabel?: string,
+    connectionPointEdit?: PluginPatchApplicationRequest["connectionPointEdit"]
   ): Promise<AppliedPatchReceipt> {
     this.requirePermission(pluginId, "document.write");
     const invocation = invocationToken ? this.#activeCommandInvocations.get(invocationToken) :
       requestScope ? [...this.#activeCommandInvocations.values()].find(candidate => candidate.pluginId === pluginId && !candidate.requestId) : undefined;
-    if (invocation?.requestId && !requestScope) {
+    if (invocation?.requestId && !requestScope && !connectionPointEdit) {
       const commit = await this.applyBoundPatch(pluginId, invocationToken, patch);
       return { applied: true, objectIds: commit.touched.map(ref => ref.objectId) };
     }
-    if (!invocation || invocation.pluginId !== pluginId || invocation.readOnly) {
+    if (!invocation || invocation.pluginId !== pluginId || invocation.readOnly ||
+        (connectionPointEdit && (invocation.tool || invocation.requestId))) {
       throw new PluginHostError(
         `Plugin "${pluginId}" may call documents.applyPatch only while one of its own commands is executing.`
       );
     }
     const parsedPatch = ProposedDocumentPatchSchema.parse(patch);
-    const scope = new Set(requestScope?.objectIds ?? invocation.writeScope);
+    const scopeIds = requestScope?.objectIds ?? (connectionPointEdit ? [connectionPointEdit.source.id] : [...invocation.writeScope]);
+    const scopePages = requestScope ? requestScope.scopePages : connectionPointEdit
+      ? new Map([[connectionPointEdit.source.id, connectionPointEdit.pageId]]) : invocation.writeScopePages;
+    const scope = new Set(scopeIds);
     const ops = writePatchOps(parsedPatch.patch);
     for (const op of ops) {
       if (!(DirectWritePatchOps as readonly string[]).includes(op.op)) {
@@ -2292,27 +2354,27 @@ export class PluginHost {
       if (!document) {
         throw new PluginHostError(`Plugin patch refused: no ${requestScope ? "request" : "active"} document is available to check ${ops.some(op => op.op === "removeObject") ? "reaction removal scope" : "write scope"}.`);
       }
-      assertPluginPatchWriteScope(document, parsedPatch, requestScope?.objectIds ?? [...invocation.writeScope],
-        undefined, undefined, requestScope ? requestScope.scopePages : invocation.writeScopePages);
+      if (connectionPointEdit && invocation.requestId) throw new PluginHostError("The command began a request while marking connection points.");
+      assertPluginPatchWriteScope(document, parsedPatch, scopeIds, undefined, undefined, scopePages);
     }
     const plugin = this.requireRegisteredPlugin(pluginId).manifest;
     const receipt = await apply({
       plugin: { id: plugin.id, name: plugin.name, version: plugin.version },
       command: { id: invocation.commandId, title: invocation.commandTitle },
       patch: parsedPatch,
-      writeScopeObjectIds: [...(requestScope?.objectIds ?? invocation.writeScope)],
-      ...(requestScope ? (requestScope.scopePages?.size ? { writeScopePages: new Map(requestScope.scopePages) } : {})
-        : invocation.writeScopePages?.size ? { writeScopePages: new Map(invocation.writeScopePages) } : {}),
+      writeScopeObjectIds: [...scopeIds],
+      ...(scopePages?.size ? { writeScopePages: new Map(scopePages) } : {}),
       repeatUnitCleanup: requestScope ? undefined : invocation.repeatUnitCleanup,
       undoLabel: undoLabel ?? `${plugin.name}: ${invocation.commandTitle}`,
-      signal
+      signal,
+      ...(connectionPointEdit && { connectionPointEdit })
     });
     const parsedReceipt = AppliedPatchReceiptSchema.parse(receipt);
     // Only a successful write grows the scope; use actual ids returned by the host after rebasing.
     // Assistant requests own their scope separately. Their Send-time selection must not widen the
     // surrounding command's ordinary document-write grant or the next request's grant.
     if (!requestScope) {
-      for (const id of parsedReceipt.objectIds) invocation.writeScope.add(id);
+      if (!connectionPointEdit) for (const id of parsedReceipt.objectIds) invocation.writeScope.add(id);
       invocation.onAppliedPatch?.(parsedReceipt);
     }
     return parsedReceipt;
@@ -2451,6 +2513,7 @@ export class PluginHost {
             const input = this.parseCommandInput(manifest.id, invocationContext.input);
             const invocationToken = Symbol(command.id);
             const documentKey = this.getActiveDocumentKey?.();
+            const selection = this.captureSelection?.();
             const requestDocument = supportsPluginRequestTools(manifest.apiVersion) ? this.captureRequestDocument?.() : undefined;
             const sendDocument = requestDocument?.read();
             const override = invocationContext.writeSelection;
@@ -2469,6 +2532,11 @@ export class PluginHost {
             const pins = pinSelectionPages(document, overrideIds ?? document?.selection.objectIds ?? [],
               override ? override.pageId : document?.selection.pageId ?? document?.pages[0]?.id, override?.pageId !== undefined);
             const selectedIds = (overrideIds ?? document?.selection.objectIds ?? []).filter(id => !pins.ambiguous.includes(id));
+            const actualIds = selection?.objectIds ?? document?.selection.objectIds ?? [];
+            const handoffSelectionDocument = document &&
+              { ...document, selection: { ...document.selection, objectIds: [...actualIds] } };
+            const startingSelectionPages = pinSelectionPages(document, actualIds,
+              document?.selection.pageId ?? document?.pages[0]?.id).pages;
             const ordinaryStop = new AbortController();
             this.#activeCommandInvocations.set(invocationToken, {
               pluginId: manifest.id,
@@ -2478,6 +2546,9 @@ export class PluginHost {
               documentKey,
               requestDocument,
               sendSelection,
+              startingSelectionPages,
+              handoffSelectionDocument,
+              selectionAtStart: selection?.read,
               ordinaryStop,
               writeScope: new Set(selectedIds),
               writeScopePages: pins.pages,
@@ -3052,6 +3123,9 @@ interface ActiveCommandInvocation {
   requestId?: string;
   requestDocument?: RequestDocument;
   sendSelection?: RequestObjectRef[];
+  startingSelectionPages?: Map<string, string>;
+  handoffSelectionDocument?: ChemDraftDocument;
+  selectionAtStart?: () => PluginSelectionSnapshot | undefined;
   ordinaryStop?: AbortController;
   onAppliedPatch?: (receipt: AppliedPatchReceipt) => void;
   writeScope: Set<string>;

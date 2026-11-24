@@ -43,6 +43,7 @@ import { applyPatch, createEmptyDocument, MoleculeObjectSchema } from "@chemdraf
 import { ToolSessionController } from "./toolSessions/ToolSessionController";
 import type { McpBridgeRequest, McpBridgeResponse } from "./toolSessions/transport";
 import { buildPluginTablePatch } from "./buildPluginTablePatch";
+import { buildConnectionPointsPatch } from "./connectionPointEdit";
 import { AssistantTransactions } from "../assistant/assistantTransaction";
 
 type MessageListener = (event: { data: unknown }) => void;
@@ -166,6 +167,47 @@ function startWorkerRoutedPlugin(registration: PluginWorkerRegistration): Plugin
 }
 
 const handoffCommand = "plugin.crystalBuilder.buildMof";
+
+it("passes optional application identity and connection-point capability over the Worker boundary", async () => {
+  const commandId = "plugin.connection-points.mark";
+  const manifest = parsePluginManifest({
+    id: "org.test.connection-points", name: "Connection points", version: "1", apiVersion: PluginApiVersion,
+    entry: "worker.js", permissions: ["document.write", "selection.read"],
+    contributes: { commands: [{ id: commandId, title: "Mark" }] }
+  });
+  const request = { objectId: "m1", anchors: ["anchor-1"] };
+  const selection = { ...BENZENE, molecules: [{ ...BENZENE.molecules[0]!, selectedAtomIds: ["anchor-1"] }] };
+  const bridge = startWorkerRoutedPlugin({
+    manifest, commandHandlers: { [commandId]: async context => ({
+      host: context.host,
+      selection: await context.selection!.getSelection(),
+      receipt: await context.documents.addConnectionPoints?.(request)
+    }) }
+  });
+  try {
+    const oldHost = new PluginHost({ getSelection: () => BENZENE });
+    oldHost.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+    expect(await oldHost.invokeCommand(commandId)).toEqual({ host: undefined, selection: BENZENE, receipt: undefined });
+    const document = createEmptyDocument({ pageId: "p1" });
+    document.pages[0]!.objects = [MoleculeObjectSchema.parse({
+      id: "m1", type: "molecule", x: 150, y: 150, width: 30, height: 30,
+      structure: "C", structureFormat: "smiles", atoms: [{ id: "anchor-1", element: "C", x: 160, y: 160 }]
+    })];
+    document.selection = { pageId: "p1", objectIds: ["m1"] };
+    const mark = vi.fn().mockResolvedValue({ applied: true, objectIds: [request.objectId] });
+    const host = new PluginHost({ identity: { name: "ChemDraft", version: "1.2.3" }, getSelection: () => selection,
+      getActiveDocument: () => document, buildConnectionPointsPatch, applyDocumentPatch: mark });
+    host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+    expect(await host.invokeCommand(commandId)).toEqual({
+      host: { name: "ChemDraft", version: "1.2.3" }, selection, receipt: { applied: true, objectIds: [request.objectId] }
+    });
+    expect(mark).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      undoLabel: "Mark connection points", writeScopeObjectIds: [request.objectId],
+      connectionPointEdit: expect.objectContaining({ anchors: request.anchors })
+    }));
+  } finally { bridge.terminate(); }
+});
+
 const handoffManifest = parsePluginManifest({
   id: "org.chemdraft.handoff.crystalBuilder", name: "Crystal Builder", version: "1.0.0",
   apiVersion: PluginApiVersion, entry: "worker.js",

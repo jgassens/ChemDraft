@@ -1090,6 +1090,9 @@ export interface PluginDocumentAPI extends PluginRequestDocumentAPI {
    * One "Insert table" undo entry; the table stays selected and is editable by this invocation.
    * Invalid input rejects with validation errors identifying the offending row/cell. */
   insertTable?(spec: PluginTableSpec): Promise<AppliedPatchReceipt>;
+  /** Adds one single-bonded X to each named anchor in a molecule selected at command start.
+   * Requires document.write and an active command. A refused anchor leaves the drawing unchanged. */
+  addConnectionPoints?(request: import("./chemistry3d").PluginAddConnectionPointsRequest): Promise<AppliedPatchReceipt>;
 }
 
 export const PluginStructureFormatSchema = z.enum(["smiles", "molfile-v2000", "molfile-v3000", "unknown"]);
@@ -1100,6 +1103,8 @@ export type PluginStructureFormat = z.infer<typeof PluginStructureFormatSchema>;
 
 export interface PluginSelectedMolecule {
   objectId: string;
+  /** Drawn atom IDs as returned by handoffGraph. Empty for a whole-object selection. */
+  selectedAtomIds?: readonly string[];
   /** ChemDraft document/page identity, when the provider has page context. */
   documentId?: string;
   pageId?: string;
@@ -1848,7 +1853,12 @@ export interface PluginRuntimeIdentity {
   permissions: readonly PluginPermission[];
 }
 
+export const PluginHostIdentitySchema = z.object({ name: z.literal("ChemDraft"), version: z.string().min(1) }).strict();
+export type PluginHostIdentity = Readonly<z.infer<typeof PluginHostIdentitySchema>>;
+
 export interface PluginCommandContext {
+  /** The running application. Older hosts may omit this field. */
+  host?: PluginHostIdentity;
   /** Validated input from a host-rendered panel or canvas control. */
   input?: PluginCommandInput;
   plugin: PluginRuntimeIdentity;

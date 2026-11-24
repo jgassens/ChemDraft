@@ -1,0 +1,170 @@
+// @vitest-environment jsdom
+import { act, createElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { applyPatch, MoleculeObjectSchema } from "@chemdraft/chem-core";
+import { PluginApiVersion, type PluginCommandContext } from "@chemdraft/plugin-api";
+import { ensureRdkit, resetRdkitForTesting, setRdkitModuleLoader } from "@chemdraft/rdkit-adapter";
+import appConfig from "../src-tauri/tauri.conf.json";
+import { getAssistantHistoryPort } from "./assistant/historyPort";
+import { createPhase4Document } from "./documentWorkflow";
+import { MainWindow } from "./MainWindow";
+import { deferred } from "./testSupport/deferred";
+import { installDomRdkitLoader } from "./testSupport/rdkitIdentity";
+import { DOM_COMMAND_EVENT } from "./window-manager";
+
+const captured = vi.hoisted(() => ({ runtime: undefined as import("./plugins/createPluginRuntime").DesktopPluginRuntime | undefined }));
+vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
+vi.mock("./plugins/createPluginRuntime", async original => {
+  const actual = await original<typeof import("./plugins/createPluginRuntime")>();
+  return { ...actual, createPluginRuntime: (options: import("./plugins/createPluginRuntime").DesktopPluginRuntimeOptions) =>
+    captured.runtime = actual.createPluginRuntime(options) };
+});
+vi.mock("./chemistry3d/client", async original => {
+  const actual = await original<typeof import("./chemistry3d/client")>();
+  const { auditHandoffGraph } = await import("./chemistry3d/handoffAudit");
+  return { ...actual, runHandoffGraphInConformerWorker: auditHandoffGraph };
+});
+vi.mock("./depiction2d/identityClient", async () => {
+  const { inspectStructureInWorker } = await import("./depiction2d/identityInspect");
+  return { inspectStructureOffThread: async (...[, value, stereoReference, signal, details]: Parameters<
+    typeof import("./depiction2d/identityClient").inspectStructureOffThread>) => {
+    signal?.throwIfAborted();
+    return inspectStructureInWorker(await ensureRdkit(), value, stereoReference, details);
+  } };
+});
+
+class TestResizeObserver { observe() {} unobserve() {} disconnect() {} }
+let container: HTMLDivElement;
+let root: Root;
+const commandId = "plugin.test.mark";
+const source = MoleculeObjectSchema.parse({
+  type: "molecule", id: "linker", x: 90, y: 80, width: 80, height: 50, structure: "CCC", structureFormat: "smiles",
+  atoms: [{ id: "a", element: "C", x: 100, y: 100 }, { id: "b", element: "C", x: 120, y: 112 },
+    { id: "c", element: "C", x: 140, y: 100 }, { id: "no-valence", element: "He", x: 210, y: 170 }],
+  bonds: [{ id: "ab", fromAtomId: "a", toAtomId: "b", order: "single" },
+    { id: "bc", fromAtomId: "b", toAtomId: "c", order: "single" }]
+});
+
+const present = () => getAssistantHistoryPort().read("initial")!;
+const drawn = () => present().pages[0]!.objects.find(object => object.id === source.id) as typeof source;
+const nativeSelection = () => [...container.querySelectorAll("[data-selected-atom-id]")]
+  .map(element => element.getAttribute("data-selected-atom-id"));
+
+beforeAll(() => installDomRdkitLoader(setRdkitModuleLoader));
+afterAll(() => resetRdkitForTesting());
+beforeEach(() => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.stubGlobal("ResizeObserver", TestResizeObserver);
+  HTMLElement.prototype.setPointerCapture = () => {};
+  HTMLElement.prototype.releasePointerCapture = () => {};
+  HTMLElement.prototype.hasPointerCapture = () => false;
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+});
+afterEach(async () => {
+  await act(async () => root.unmount());
+  container.remove();
+  vi.unstubAllGlobals();
+});
+
+async function render(molecule: typeof source) {
+  const empty = createPhase4Document("Mark connection points");
+  const pageId = empty.pages[0]!.id;
+  const initialDocument = applyPatch(empty, { op: "addObject", pageId, object: molecule });
+  await act(async () => root.render(createElement(MainWindow, { initialDocument, initialPaletteMode: "hidden",
+    initialRulersVisible: false, initialCrosshairsVisible: false, nativePalette: false })));
+  container.querySelector<HTMLElement>(".page")!.getBoundingClientRect = () =>
+    ({ x: 0, y: 0, left: 0, top: 0, right: 792, bottom: 612, width: 792, height: 612, toJSON: () => ({}) });
+}
+
+async function selectAtom(id: string) {
+  const atom = drawn().atoms.find(atom => atom.id === id)!;
+  await click(container.querySelector(`[data-object-id="${source.id}"]`)!, atom);
+  expect(nativeSelection()).toEqual([id]);
+}
+
+async function click(target: Element, point: { x: number; y: number }) {
+  await act(async () => {
+    for (const type of ["pointerdown", "pointerup"]) {
+      target.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 42, button: 0, isPrimary: true,
+        clientX: point.x, clientY: point.y, pointerType: "mouse", buttons: type === "pointerdown" ? 1 : 0 }));
+    }
+  });
+}
+
+function register(handler: (context: PluginCommandContext) => unknown) {
+  const runtime = captured.runtime!;
+  runtime.registerPlugin({ id: "org.test.mark", name: "Marker", version: "1", apiVersion: PluginApiVersion, entry: "test.js",
+    permissions: ["document.write", "selection.read", "chemistry.compute"],
+    contributes: { commands: [{ id: commandId, title: "Mark" }] } },
+  { commandHandlers: { [commandId]: handler } });
+  return runtime;
+}
+
+async function menu(commandId: string) {
+  await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } })));
+}
+
+it("captures selected atom IDs at command start and restores the single marking entry exactly", async () => {
+  const { atoms, ...rest } = source;
+  await render({ ...rest, atoms: atoms.filter(atom => atom.element !== "He") });
+  await selectAtom("a");
+  const started = deferred<void>();
+  const proceed = deferred<void>();
+  let invocation!: Promise<unknown>;
+  await act(async () => {
+    const runtime = register(async context => {
+      started.resolve();
+      await proceed.promise;
+      const selected = (await context.selection!.getSelection()).molecules[0]!;
+      const result = await context.chemistry!.handoffGraph!({ objectId: selected.objectId });
+      expect(context.host).toEqual({ name: "ChemDraft", version: appConfig.version });
+      expect(selected.selectedAtomIds).toEqual(["a"]);
+      expect(result.graph.atoms.find(atom => atom.atomId === selected.selectedAtomIds![0])?.element).toBe("C");
+      return context.documents.addConnectionPoints!({ objectId: selected.objectId, anchors: ["a", "c"] });
+    });
+    invocation = runtime.invokeCommand(commandId);
+    await started.promise;
+  });
+  await selectAtom("c");
+  const before = structuredClone(present());
+  await act(async () => {
+    proceed.resolve();
+    await expect(invocation).resolves.toEqual({ applied: true, objectIds: [source.id] });
+  });
+  const after = structuredClone(present());
+  const markerIds = drawn().atoms.filter(atom => atom.element === "X").map(atom => atom.id);
+  expect(markerIds).toHaveLength(2);
+  expect(nativeSelection()).toEqual(markerIds);
+  expect(drawn().bonds.slice(2)).toMatchObject([{ fromAtomId: "a", toAtomId: markerIds[0], order: "single" },
+    { fromAtomId: "c", toAtomId: markerIds[1], order: "single" }]);
+  const marked = (await ensureRdkit()).get_mol(drawn().structure);
+  try { expect(marked?.get_smiles?.()).toBe("*CCC*"); } finally { marked?.delete(); }
+  await click(container.querySelector(".page")!, { x: 400, y: 400 });
+  expect(present().selection.objectIds).toEqual([]);
+  await menu("edit.undo");
+  expect(present()).toEqual(before);
+  expect(nativeSelection()).toEqual(["c"]);
+  expect(container.querySelector('[role="status"]')?.textContent).toBe("Undid Mark connection points");
+  await menu("edit.undo");
+  expect(present()).toEqual(before);
+  await menu("edit.redo");
+  expect(present()).toEqual(after);
+  expect(nativeSelection()).toEqual(markerIds);
+});
+
+it("refuses an RDKit valence failure in a batch without changing the drawing or selection", async () => {
+  await render({ ...source, structure: "CCC.[He]" });
+  await selectAtom("a");
+  const before = present();
+  await act(async () => {
+    const runtime = register(context => context.documents.addConnectionPoints!({ objectId: source.id, anchors: ["a", "no-valence"] }));
+    await expect(runtime.invokeCommand(commandId)).rejects.toThrow(/Atom "no-valence" has no free valence/);
+  });
+  expect(present()).toBe(before);
+  expect(nativeSelection()).toEqual(["a"]);
+  await menu("edit.undo");
+  expect(present()).toBe(before);
+});

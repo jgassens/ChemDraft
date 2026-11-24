@@ -13,7 +13,7 @@
  * runtime ({@link runPluginWorker}) and the desktop-side bridge both speak this protocol.
  */
 
-import { PluginApiVersion, PluginCommandInputSchema, type PluginCommandInput } from "./index";
+import { PluginApiVersion, PluginCommandInputSchema, PluginHostIdentitySchema, type PluginCommandInput, type PluginHostIdentity } from "./index";
 import type { PluginAppsAPI } from "./appHandoff";
 import { pluginRequestMethods, type PluginActiveDocumentChanged, type PluginToolCall, type PluginToolCallResult } from "./requestCapabilities";
 import type { PluginRequestResult } from "./requestSchemas";
@@ -78,7 +78,7 @@ export const PLUGIN_WORKER_CAPABILITY_METHODS = {
   selection: ["getSelection"],
   analysis: ["write", "list", "getLatest"],
   storage: ["get", "set", "delete", "listKeys"],
-  documents: ["getActiveDocument", "proposePatch", "applyPatch", "insertTable", ...pluginRequestMethods("documents")],
+  documents: ["getActiveDocument", "proposePatch", "applyPatch", "insertTable", "addConnectionPoints", ...pluginRequestMethods("documents")],
   panels: ["showReport"],
   overlays: ["setStatus", "setTranscript", "setContent", "open"],
   chemistry: ["properties", "isotopeEnvelope", "nameToStructure", "structureFromSmiles", "structureToName", "embed3d", "minimize3d", "flatten3d",
@@ -137,10 +137,10 @@ export type WorkerToHostMessage =
 
 /** host → worker messages. */
 export type HostToWorkerMessage =
-  | { kind: "invokeAssistantTool"; commandRequestId: number; sessionId: string; name: string; input: unknown }
-  | { kind: "invokeTool"; commandRequestId: number; call: PluginToolCall; readOnly?: true }
+  | { kind: "invokeAssistantTool"; commandRequestId: number; sessionId: string; name: string; input: unknown; host?: PluginHostIdentity }
+  | { kind: "invokeTool"; commandRequestId: number; call: PluginToolCall; readOnly?: true; host?: PluginHostIdentity }
   | { kind: "activeDocumentChanged"; notificationId: number; event: PluginActiveDocumentChanged }
-  | { kind: "invokeCommand"; commandRequestId: number; commandId: string; input?: PluginCommandInput }
+  | { kind: "invokeCommand"; commandRequestId: number; commandId: string; input?: PluginCommandInput; host?: PluginHostIdentity; addConnectionPoints?: true }
   | { kind: "capabilityResult"; requestId: number; ok: true; value: unknown }
   | { kind: "capabilityResult"; requestId: number; ok: false; error: PluginWorkerErrorPayload }
   /** Reverse signal: a contributed panel closed (ADR-0012) so the plugin can cancel in-flight work. */
@@ -209,17 +209,19 @@ export function asHostToWorkerMessage(data: unknown): HostToWorkerMessage | unde
   const message = data as { kind?: unknown; [key: string]: unknown };
   const isIndex = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value);
   const isCorrelationId = (value: unknown) => isIndex(value) && Number.isSafeInteger(value) && value > 0;
+  const validHost = () => message.host === undefined || PluginHostIdentitySchema.safeParse(message.host).success;
   switch (message.kind) {
     case "invokeTool":
-      return isCorrelationId(message.commandRequestId) ? message as unknown as HostToWorkerMessage : undefined;
+      return isCorrelationId(message.commandRequestId) && validHost() ? message as unknown as HostToWorkerMessage : undefined;
     case "activeDocumentChanged":
       return isCorrelationId(message.notificationId) ? message as unknown as HostToWorkerMessage : undefined;
     case "invokeAssistantTool":
-      return isIndex(message.commandRequestId) && typeof message.sessionId === "string" && typeof message.name === "string"
+      return isIndex(message.commandRequestId) && typeof message.sessionId === "string" && typeof message.name === "string" && validHost()
         ? message as unknown as HostToWorkerMessage : undefined;
     case "invokeCommand":
-      return isIndex(message.commandRequestId) && typeof message.commandId === "string"
+      return isIndex(message.commandRequestId) && typeof message.commandId === "string" && validHost()
         && (message.input === undefined || PluginCommandInputSchema.safeParse(message.input).success)
+        && (message.addConnectionPoints === undefined || message.addConnectionPoints === true)
         ? (message as unknown as HostToWorkerMessage)
         : undefined;
     case "capabilityResult": {

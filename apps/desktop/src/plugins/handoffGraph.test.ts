@@ -4,10 +4,12 @@ import { chemicalIdentityMolfile } from "@chemdraft/document-workflow-core";
 import { planBondExtension } from "@chemdraft/layout-engine";
 import { ensureRdkit, resetRdkitForTesting } from "@chemdraft/rdkit-adapter";
 import { installRealRdkitModuleLoader } from "@chemdraft/rdkit-adapter/testing";
-import { PluginHandoffGraphResultSchema } from "@chemdraft/plugin-api";
+import { PluginApiVersion, PluginHandoffGraphResultSchema, type PluginCommandContext } from "@chemdraft/plugin-api";
+import { PluginHost } from "@chemdraft/plugin-host";
 import { createChemistry3dProviders } from "../chemistry3d/client";
 import { runChemistry3dJob } from "../chemistry3d/protocol";
 import { prepareHandoffGraph, suggestConnectionPointsForPlugin } from "./handoffGraph";
+import { buildConnectionPointsPatch } from "./connectionPointEdit";
 
 beforeAll(() => installRealRdkitModuleLoader());
 afterAll(() => resetRdkitForTesting());
@@ -35,6 +37,72 @@ async function audit(doc: ChemDraftDocument) {
   const result = await runChemistry3dJob({ method: "handoffGraph", request: prepareHandoffGraph(request, doc) });
   return PluginHandoffGraphResultSchema.parse(result);
 }
+
+describe("connection point patch preparation", () => {
+  it("uses the suggestion coordinates for every new X and preserves the existing graph", () => {
+    const doc = selected(molecule(["C", "C"], [[0, 1]]));
+    const mol = doc.pages[0]!.objects[0] as MoleculeObject;
+    const input = { ...request, anchors: ["a0", "a1"] };
+    const suggestions = suggestConnectionPointsForPlugin(input, doc);
+    const { patch, atomIds } = buildConnectionPointsPatch(input, mol, doc.pages[0]!);
+    expect(patch).toMatchObject({ reason: "Mark connection points", patch: { op: "updateObject", objectId: mol.id,
+      changes: { atoms: [...mol.atoms, ...suggestions.points.map(({ x, y }, i) => ({ id: atomIds[i], element: "X", x, y, formalCharge: 0 }))],
+        bonds: [...mol.bonds, ...input.anchors.map((fromAtomId, i) =>
+          ({ fromAtomId, toAtomId: atomIds[i], order: "single" }))] } } });
+  });
+
+  it.each([
+    [molecule(["C", "C"], [[0, 1]]), ["a0", "missing"], /"missing".*no drawn atom/],
+    [molecule(["C", "C"], [[0, 1]]), ["a0", "a0"], /"a0".*repeated/],
+    [molecule(["C", "X"], [[0, 1]]), ["a1"], /"a1".*already an X/],
+    [molecule(["C", "X"], [[0, 1]]), ["a0"], /"a0".*already bears an X/],
+    [molecule(["C", "C", "C", "C", "C"], [[0, 1], [0, 2], [0, 3], [0, 4]]), ["a0"], /"a0".*no free valence/],
+    [molecule([]), ["a0"], /"a0".*no editable/]
+  ] as const)("refuses missing, duplicate, marked, saturated, and uneditable anchors", (mol, anchors, error) => {
+    const doc = selected(mol);
+    const before = structuredClone(doc);
+    expect(() => buildConnectionPointsPatch({ ...request, anchors: [...anchors] }, mol, doc.pages[0]!)).toThrow(error);
+    expect(doc).toEqual(before);
+  });
+
+  it("names the anchor when its molecule is a reaction member or contains a superatom", () => {
+    const mol = molecule(["C", "C"], [[0, 1]]);
+    const reaction: ReactionObject = { ...frame, id: "reaction", type: "reaction", mappingState: "absent",
+      components: [{ objectId: mol.id, role: "reactant" }], conditionsTextObjectIds: [] };
+    const input = { ...request, anchors: ["a0"] };
+    const reactionDocument = selected(mol, reaction);
+    expect(() => buildConnectionPointsPatch(input, mol, reactionDocument.pages[0]!)).toThrow(/"a0".*belongs to a reaction/);
+    const superatom = { ...mol, superatoms: [{ label: "Et", atomIds: ["a0", "a1"], attachmentPoints: [], warnings: [] }] };
+    expect(() => buildConnectionPointsPatch(input, superatom, selected(mol).pages[0]!)).toThrow(/"a0".*superatom/);
+  });
+
+  it("requires document.write and refuses a retained method or a molecule selected after the command started", async () => {
+    const mol = molecule(["C", "C"], [[0, 1]]);
+    let doc = { ...selected(mol), selection: { pageId: "p1", objectIds: [] as string[] } };
+    const host = new PluginHost({ getActiveDocument: () => doc, buildConnectionPointsPatch,
+      applyDocumentPatch: () => { throw new Error("A refused command must not apply a patch."); } });
+    const input = { ...request, anchors: ["a0"] };
+    const commandId = "plugin.mark.write";
+    const manifest = { id: "org.test.mark", name: "Mark", version: "1", entry: "main.js", apiVersion: PluginApiVersion,
+      contributes: { commands: [{ id: commandId, title: "Mark" }] } };
+    host.registerPlugin({ ...manifest, permissions: [] },
+      { commandHandlers: { [commandId]: context => expect(context.documents.addConnectionPoints).toBeUndefined() } });
+    await host.invokeCommand(commandId);
+    host.unregisterPlugin(manifest.id);
+
+    let retained!: NonNullable<PluginCommandContext["documents"]["addConnectionPoints"]>;
+    host.registerPlugin({ ...manifest, permissions: ["document.write"] }, { commandHandlers: {
+      [commandId]: context => {
+        retained = context.documents.addConnectionPoints!;
+        doc = { ...doc, selection: { pageId: "p1", objectIds: [mol.id] } };
+        return retained(input);
+      }
+    } });
+    await expect(host.invokeCommand(commandId, { writeSelection: { pageId: "p1", objectIds: [mol.id], molecules: [] } }))
+      .rejects.toThrow(/"m1" was not selected when the command started/);
+    await expect(retained(input)).rejects.toThrow(/active command owned by the plugin/);
+  });
+});
 
 describe("selected handoff graph from the live drawing", () => {
   it("reports RDKit's unspecified centers and either double bonds in graph order", async () => {

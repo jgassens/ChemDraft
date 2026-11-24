@@ -109,6 +109,7 @@ describe("buildPluginSelectionSnapshot", () => {
       pageId: "p1",
       structureFormat: "molfile-v2000",
       structure: "mol block",
+      selectedAtomIds: [],
       connectionPoints: []
     });
     expect(first.sourceFingerprint).toMatch(/^[0-9a-f]{16}$/);
@@ -117,6 +118,25 @@ describe("buildPluginSelectionSnapshot", () => {
   it("excludes unselected objects and non-molecules", () => {
     const snapshot = buildPluginSelectionSnapshot(documentWith(["m1", "t1"]));
     expect(snapshot.molecules.map((molecule) => molecule.objectId)).toEqual(["m1"]);
+  });
+
+  it("includes atom-only selections without treating a selected bond as selected atoms", () => {
+    const molecule = moleculeWithHydrogen();
+    const document = engineDocumentWith(molecule);
+    const [anchor, point] = molecule.atoms;
+    const selection = { ...document, selection: { ...document.selection, objectIds: [] } };
+    expect(buildPluginSelectionSnapshot(selection, [], undefined, [
+      { kind: "parts", objectId: molecule.id, atomIds: [anchor!.id, "obsolete"], bondIds: [molecule.bonds[0]!.id] }
+    ]).molecules[0]).toMatchObject({ objectId: molecule.id, selectedAtomIds: [anchor!.id] });
+    expect(buildPluginSelectionSnapshot(document, [], undefined, [
+      { kind: "bond", objectId: molecule.id, bondId: molecule.bonds[0]!.id }
+    ]).molecules[0]?.selectedAtomIds).toEqual([]);
+    expect(buildPluginSelectionSnapshot(selection, [], undefined, [
+      { kind: "bond", objectId: molecule.id, bondId: molecule.bonds[0]!.id }
+    ]).objectIds).toEqual([]);
+    expect(buildPluginSelectionSnapshot(document, [], undefined, [
+      { kind: "atom", objectId: molecule.id, atomId: point!.id }
+    ]).molecules[0]?.selectedAtomIds).toEqual([point!.id]);
   });
 
   it("produces a stable fingerprint for unchanged input and a different one after an edit", () => {

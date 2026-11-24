@@ -10,6 +10,12 @@ import {
   type PluginSelectionSnapshot
 } from "@chemdraft/plugin-api";
 import type { RequestSnapshotBudget } from "@chemdraft/plugin-host";
+import { toSelectionItemsMulti, type NativeMoleculePartSelection } from "../selection/selectionPolicy";
+
+export function pluginSelectionObjectIds(document: ChemDraftDocument, parts: readonly NativeMoleculePartSelection[]): string[] {
+  const atomHosts = parts.filter(part => part.kind === "atom" || (part.kind === "parts" && part.atomIds.length > 0));
+  return [...new Set([...document.selection.objectIds, ...atomHosts.map(part => part.objectId)])];
+}
 
 type PluginFacingStructure = Required<Pick<PluginSelectedMolecule, "structureFormat" | "structure" | "connectionPoints">>;
 
@@ -231,21 +237,30 @@ function moleculeSourceFingerprint(
 export function buildPluginSelectionSnapshot(
   document: ChemDraftDocument,
   warnings: string[] = [],
-  budget?: RequestSnapshotBudget
+  budget?: RequestSnapshotBudget,
+  parts: readonly NativeMoleculePartSelection[] = []
 ): PluginSelectionSnapshot {
   const molecules: PluginSelectedMolecule[] = [];
-  const snapshot = { objectIds: document.selection.objectIds, molecules };
+  const objectIds = pluginSelectionObjectIds(document, parts);
+  const snapshot = { objectIds, molecules };
+  const selectedAtoms = new Map<string, Set<string>>();
+  for (const item of toSelectionItemsMulti([], parts)) {
+    if (item.kind !== "atom") continue;
+    const ids = selectedAtoms.get(item.objectId) ?? new Set<string>();
+    ids.add(item.atomId);
+    selectedAtoms.set(item.objectId, ids);
+  }
   budget?.(snapshot);
   const located = new Map<string, { pageId: string; molecule: MoleculeObject }>();
   for (const page of document.pages) {
     for (const object of page.objects) {
-      if (object.type === "molecule") {
+      if (object.type === "molecule" && (!located.has(object.id) || page.id === document.selection.pageId)) {
         located.set(object.id, { pageId: page.id, molecule: object });
       }
     }
   }
 
-  for (const objectId of document.selection.objectIds) {
+  for (const objectId of objectIds) {
     const hit = located.get(objectId);
     if (!hit) {
       continue;
@@ -255,6 +270,7 @@ export function buildPluginSelectionSnapshot(
       objectId,
       documentId: document.id,
       pageId: hit.pageId,
+      selectedAtomIds: [...(selectedAtoms.get(objectId) ?? [])].filter(id => hit.molecule.atoms.some(atom => atom.id === id)),
       ...facing,
       // Retain stereo geometry while keeping pure translations and rotations out of the key.
       sourceFingerprint: moleculeSourceFingerprint(document, hit.pageId, hit.molecule)

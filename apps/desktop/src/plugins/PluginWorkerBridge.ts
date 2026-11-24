@@ -286,10 +286,13 @@ export class PluginWorkerBridge {
       this.pending.set(commandRequestId, { context, resolve, reject, tool: toolType,
         boundRequest: tool?.kind === "invokeTool" ? tool.call.requestId : undefined, aborted: false });
       try {
-        if (tool?.kind === "invokeTool") this.postToWorker({ kind: "invokeTool", commandRequestId, call: tool.call,
+        const host = context.host ? { host: context.host } : {};
+        if (tool?.kind === "invokeTool") this.postToWorker({ kind: "invokeTool", commandRequestId, call: tool.call, ...host,
           ...(!context.hasPermission("document.write") && { readOnly: true as const }) });
-        else if (tool) this.postToWorker({ kind: "invokeAssistantTool", commandRequestId, ...tool.call });
-        else this.postToWorker({ kind: "invokeCommand", commandRequestId, commandId, ...(context.input === undefined ? {} : { input: context.input }) });
+        else if (tool) this.postToWorker({ kind: "invokeAssistantTool", commandRequestId, ...tool.call, ...host });
+        else this.postToWorker({ kind: "invokeCommand", commandRequestId, commandId, ...host,
+          ...(context.input === undefined ? {} : { input: context.input }),
+          ...(context.documents?.addConnectionPoints && { addConnectionPoints: true }) });
       } catch (error) {
         this.pending.delete(commandRequestId);
         reject(this.wrapCrash(error));

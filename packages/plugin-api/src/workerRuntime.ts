@@ -184,7 +184,8 @@ export function runPluginWorker(
     }
   };
 
-  const buildContext = (commandRequestId: number, isActive: () => boolean, input?: PluginCommandInput, readOnly = false): PluginCommandContext => {
+  const buildContext = (commandRequestId: number, isActive: () => boolean, input?: PluginCommandInput, readOnly = false,
+    host?: PluginCommandContext["host"], addConnectionPoints?: true): PluginCommandContext => {
     const has = (permission: PluginPermission) => permissions.has(permission) &&
       !(readOnly && (permission === "document.write" || permission === "document.proposePatch"));
     const requirePermission = (permission: PluginPermission): void => {
@@ -249,6 +250,10 @@ export function runPluginWorker(
             ...(supportsPluginTableInsertion(registration.manifest.apiVersion) ? {
               insertTable: (spec: Parameters<NonNullable<PluginDocumentAPI["insertTable"]>>[0]) =>
                 call("documents", "insertTable", [spec]) as ReturnType<NonNullable<PluginDocumentAPI["insertTable"]>>
+            } : {}),
+            ...(addConnectionPoints === true ? {
+              addConnectionPoints: (request: Parameters<NonNullable<PluginDocumentAPI["addConnectionPoints"]>>[0]) =>
+                call("documents", "addConnectionPoints", [request]) as ReturnType<NonNullable<PluginDocumentAPI["addConnectionPoints"]>>
             } : {})
           }
         : {})
@@ -477,13 +482,18 @@ export function runPluginWorker(
           toolSessions: bindPluginRequestCapabilities("toolSessions", has, (method, value) => requestCall("toolSessions", method, value)) as PluginCommandContext["toolSessions"]
         } : {})
       } : {}),
+      ...(host && { host: Object.freeze(host) }),
       hasPermission: has,
       requirePermission
     };
   };
 
   const toolAborts = new Map<number, AbortController>();
-  const invoke = (commandRequestId: number, commandId: string, input?: PluginCommandInput, tool?: PluginAssistantToolCall): void => {
+  const invoke = ({ commandRequestId, host, ...message }: Extract<HostToWorkerMessage, { kind: "invokeCommand" | "invokeAssistantTool" }>): void => {
+    const tool: PluginAssistantToolCall | undefined = message.kind === "invokeAssistantTool"
+      ? { sessionId: message.sessionId, name: message.name, input: message.input }
+      : undefined;
+    const commandId = message.kind === "invokeCommand" ? message.commandId : message.name;
     const controller = new AbortController();
     let active = true;
     if (tool) toolAborts.set(commandRequestId, controller);
@@ -507,7 +517,9 @@ export function runPluginWorker(
     }
     // Defer to a microtask so a synchronous throw is captured as a rejection, mirroring the host.
     Promise.resolve()
-      .then(() => handler(buildContext(commandRequestId, () => active && !controller.signal.aborted, input)))
+      .then(() => handler(buildContext(commandRequestId, () => active && !controller.signal.aborted,
+        message.kind === "invokeCommand" ? message.input : undefined, false, host,
+        message.kind === "invokeCommand" ? message.addConnectionPoints : undefined)))
       .then(
         (value) => {
           active = false;
@@ -555,7 +567,7 @@ export function runPluginWorker(
       );
   };
 
-  const invokeTool = async ({ commandRequestId, call, readOnly }: Extract<HostToWorkerMessage, { kind: "invokeTool" }>) => {
+  const invokeTool = async ({ commandRequestId, call, readOnly, host }: Extract<HostToWorkerMessage, { kind: "invokeTool" }>) => {
     const settle = (result: PluginToolCallResult) =>
       post({ kind: "toolCallSettled", commandRequestId, result });
     const handler = registration.onToolCall;
@@ -577,7 +589,7 @@ export function runPluginWorker(
     let active = true;
     requestToolAborts.set(commandRequestId, controller);
     try {
-      const value = await handler(buildContext(commandRequestId, () => active && !controller.signal.aborted, undefined, readOnly), parsed.data, controller.signal);
+      const value = await handler(buildContext(commandRequestId, () => active && !controller.signal.aborted, undefined, readOnly, host), parsed.data, controller.signal);
       if (controller.signal.aborted) {
         settle(pluginRequestFailure("cancelled", "The tool call was cancelled."));
       } else {
@@ -629,11 +641,8 @@ export function runPluginWorker(
         void notifyDocumentChanged(message);
         return;
       case "invokeAssistantTool":
-        invoke(message.commandRequestId, message.name, undefined,
-          { sessionId: message.sessionId, name: message.name, input: message.input });
-        return;
       case "invokeCommand":
-        invoke(message.commandRequestId, message.commandId, message.input);
+        invoke(message);
         return;
       case "capabilityResult": {
         const pending = pendingCapabilities.get(message.requestId);

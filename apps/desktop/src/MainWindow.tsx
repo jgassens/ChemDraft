@@ -914,7 +914,8 @@ import { usePluginRuntime, pluginCommandFailure } from "./plugins/usePluginRunti
 import { isTauriHost } from "./plugins/pluginStagingFs";
 import { PluginPanelSurface } from "./plugins/PluginPanelSurface";
 import { PLUGIN_DIAGNOSTICS_COMMAND_ID } from "./plugins/pluginMenuModel";
-import { buildPluginSelectionSnapshot, computeObjectFingerprint } from "./plugins/selectionSnapshot";
+import { buildPluginSelectionSnapshot, computeObjectFingerprint, pluginSelectionObjectIds } from "./plugins/selectionSnapshot";
+import { assertConnectionPointSource, assertVerifiedConnectionPointEdit, verifyConnectionPointEdit } from "./plugins/connectionPointEdit";
 import { buildMainWindowNativeMenuItems, syncPluginNativeMenuItems } from "./plugins/nativePluginMenu";
 import {
   arrowNudgeOffset,
@@ -3045,7 +3046,7 @@ export function MainWindow({
   const historyNavigationCountRef = useRef(0);
   const documentHistoryRef = useRef<DocumentHistory>(documentHistory);
   const documentUndoLabelsRef = useRef(new WeakMap<ChemDraftDocument, string>());
-  const repeatUnitHistorySelectionsRef = useRef(new WeakMap<ChemDraftDocument, NativeMoleculeSelectionPart[]>());
+  const nativePartHistorySelectionsRef = useRef(new WeakMap<ChemDraftDocument, NativeMoleculeSelectionPart[]>());
   const fileStateRef = useRef<NativeFileState>(fileState);
   // Successful explicit saves, per tab, including a save completed while its label editor is open.
   const documentSaveRevisionsRef = useRef(new Map<string, number>());
@@ -3739,7 +3740,7 @@ export function MainWindow({
 
   const assistantHistoryWritingRef = useRef(false);
   const assistantHistoryMountedRef = useRef(true);
-  const assistantRecordedAfterRef = useRef(new WeakMap<ChemDraftDocument, ChemDraftDocument>());
+  const recordedHistoryAfterRef = useRef(new WeakMap<ChemDraftDocument, ChemDraftDocument>());
   const assistantUserEditListenersRef = useRef(new Set<(tabId: string) => void>());
   const installDocumentHistory = useCallback((
     update: DocumentHistory | ((current: DocumentHistory) => DocumentHistory),
@@ -3762,13 +3763,13 @@ export function MainWindow({
     }
     if (!switchingTabs && !assistantHistoryWritingRef.current) {
       const navigated = history.past !== previous.past || history.future !== previous.future;
-      const recorded = assistantRecordedAfterRef.current.get(previous.present);
+      const recorded = recordedHistoryAfterRef.current.get(previous.present);
       if (navigated || ((recorded || assistantUserEditListenersRef.current.size > 0) &&
         !assistantDocumentContentUnchanged(previous.present, history.present))) {
         for (const listener of assistantUserEditListenersRef.current) listener(activeDocumentTabIdRef.current);
       } else if (recorded) {
-        // Selection changes after completion must not rewrite the run's recorded redo selection.
-        assistantRecordedAfterRef.current.set(history.present, recorded);
+        // Selection changes after commit must not rewrite the recorded redo selection.
+        recordedHistoryAfterRef.current.set(history.present, recorded);
       }
     }
     // Retained moves never install preview documents. Any install while one is active
@@ -4098,7 +4099,7 @@ export function MainWindow({
     };
     const labelled = (document: ChemDraftDocument, label: string, assertFinalDocument?: (document: ChemDraftDocument) => ChemDraftDocument | void) => {
       const present = prepareDocumentCommit(document, label, assertFinalDocument);
-      assistantRecordedAfterRef.current.set(present, present);
+      recordedHistoryAfterRef.current.set(present, present);
       return present;
     };
     return {
@@ -4136,8 +4137,8 @@ export function MainWindow({
         install(tabId, (history) => {
           const beforeLabel = documentUndoLabelsRef.current.get(history.present);
           if (beforeLabel) documentUndoLabelsRef.current.set(before, beforeLabel);
-          const recorded = assistantRecordedAfterRef.current.get(history.present);
-          if (recorded) assistantRecordedAfterRef.current.set(before, recorded);
+          const recorded = recordedHistoryAfterRef.current.get(history.present);
+          if (recorded) recordedHistoryAfterRef.current.set(before, recorded);
           return { past: boundedHistoryPast([...history.past, before], present), present, future: [] };
         });
       },
@@ -4168,7 +4169,7 @@ export function MainWindow({
         if (!readHistory(tabId)) return false;
         let undone = false;
         install(tabId, (history) => {
-          if ((history.present !== expected && assistantRecordedAfterRef.current.get(history.present) !== expected) ||
+          if ((history.present !== expected && recordedHistoryAfterRef.current.get(history.present) !== expected) ||
             history.past.length === 0) return history;
           for (const listener of assistantUserEditListenersRef.current) listener(tabId);
           undone = true;
@@ -10085,7 +10086,7 @@ export function MainWindow({
     let nextHistory: DocumentHistory | undefined;
     let undoLabel: string | undefined;
     installDocumentHistory((history) => {
-      const recordedAfter = assistantRecordedAfterRef.current.get(history.present);
+      const recordedAfter = recordedHistoryAfterRef.current.get(history.present);
       const currentHistory = { ...history,
         present: direction === "undo" && recordedAfter ? recordedAfter : atomLabelHistorySnapshot(history.present) };
       const restored = direction === "undo" ? undoDocumentHistory(currentHistory) : redoDocumentHistory(currentHistory);
@@ -10101,8 +10102,8 @@ export function MainWindow({
       return;
     }
 
-    const repeatUnitSelection = repeatUnitHistorySelectionsRef.current.get(nextHistory.present);
-    if (repeatUnitSelection) setSelectedNativeMoleculeParts(repeatUnitSelection);
+    const nativePartSelection = nativePartHistorySelectionsRef.current.get(nextHistory.present);
+    if (nativePartSelection) setSelectedNativeMoleculeParts(nativePartSelection);
 
     historyNavigationCountRef.current += 1;
     // Redoing the supplied practice structure returns to the clean starting drawing.
@@ -12352,8 +12353,8 @@ export function MainWindow({
           if (parts.length) {
             const { past, present } = documentHistoryRef.current;
             const before = past.at(-1);
-            if (before) repeatUnitHistorySelectionsRef.current.set(before, parts);
-            repeatUnitHistorySelectionsRef.current.set(present, []);
+            if (before) nativePartHistorySelectionsRef.current.set(before, parts);
+            nativePartHistorySelectionsRef.current.set(present, []);
           }
           setSelectedNativeMoleculeParts([]);
           setStatus(bracketRepeatUnitStatus(committed));
@@ -13386,7 +13387,7 @@ export function MainWindow({
         run: apply => assistantHistoryPort.runWrite!(apply),
         revision: () => {
           const present = document.read();
-          return present && (assistantRecordedAfterRef.current.get(present) ?? present);
+          return present && (recordedHistoryAfterRef.current.get(present) ?? present);
         },
         onEdit: listener => assistantHistoryPort.onUserEdit(id => { if (id === tabId) listener(); }),
         commit: (after, label, amend, guard) => assistantHistoryPort.commitRequest!(tabId, after, label, amend, guard)
@@ -13399,11 +13400,16 @@ export function MainWindow({
     getDocumentTabTitle: (tabId) => documentTabsRef.current.find((tab) => tab.id === tabId)?.title,
     // `warnings` is the collector of the command invocation that is reading (see the plugin command
     // dispatch below); a read outside one gets none and stays silent.
-    getSelection: (warnings) => buildPluginSelectionSnapshot(documentRef.current, warnings),
+    getSelection: (warnings) => buildPluginSelectionSnapshot(documentRef.current, warnings, undefined, selectedNativeMoleculePartsRef.current),
+    captureSelection: document => {
+      const parts = selectedNativeMoleculePartsRef.current;
+      return { objectIds: pluginSelectionObjectIds(document, parts),
+        read: warnings => buildPluginSelectionSnapshot(document, warnings, undefined, parts) };
+    },
     commandRegistry: registry,
     createStorage: createPersistentPluginStorage,
     onProposedPatchesChanged: () => setPatchQueueVersion((version) => version + 1),
-    applyDocumentPatch: async ({ plugin, command, patch, undoLabel, signal, writeScopeObjectIds, writeScopePages, repeatUnitCleanup }) => {
+    applyDocumentPatch: async ({ plugin, command, patch, undoLabel, signal, writeScopeObjectIds, writeScopePages, repeatUnitCleanup, connectionPointEdit }) => {
       if (quitInteractionRef.current) throw new Error("Quit is waiting for a choice; nothing was inserted.");
       const gate = pluginWriteGateRef.current;
       if (!gate) throw new Error("The document window is closing; nothing was inserted.");
@@ -13420,6 +13426,7 @@ export function MainWindow({
           throw new Error("The document changed while the plugin was running; nothing was inserted.");
         }
         const before = documentRef.current;
+        if (connectionPointEdit) assertConnectionPointSource(before, connectionPointEdit);
         assertPluginPatchWriteScope(before, patch, writeScopeObjectIds, undefined, undefined, writeScopePages);
         const previousIds = new Set(before.pages.flatMap(page => page.objects.map(object => object.id)));
         const applied = applyPluginDocumentPatch(before, patch, {
@@ -13428,6 +13435,7 @@ export function MainWindow({
             bounds: assistantHistoryPort.getViewportRect?.(activeDocumentTabIdRef.current) }
         });
         const assistantTxId = assistantTransactions.activeTransactionForPlugin(plugin.id, activeDocumentTabIdRef.current);
+        if (connectionPointEdit && assistantTxId) throw new Error("Finish the active assistant request before marking connection points.");
         if (!assistantTxId && assistantTransactions.activeTransactionForPlugin(plugin.id)) {
           throw new Error("The assistant request belongs to another document tab; write refused.");
         }
@@ -13448,7 +13456,8 @@ export function MainWindow({
         }
         const authored = rebasePluginPatch(before, patch);
         const normalized = normalizeCommittedDocument(placed);
-        const refreshed = refreshPluginPatchChemistry(before, normalized, authored, writeScopeObjectIds, signal, writeScopePages);
+        const refreshed = connectionPointEdit ? verifyConnectionPointEdit(before, normalized, connectionPointEdit, signal)
+          : refreshPluginPatchChemistry(before, normalized, authored, writeScopeObjectIds, signal, writeScopePages);
         const isCurrent = () => mountedRef.current && !quitInteractionRef.current && documentIdentityRef.current === documentIdentity &&
           assistantDocumentContentUnchanged(before, documentRef.current, { checkBracketIdentity: true });
         let prepared = normalized;
@@ -13461,12 +13470,16 @@ export function MainWindow({
           }
         }
         let committed = prepared;
+        const markedAtoms = connectionPointEdit && fromSelectionItems(connectionPointEdit.atomIds.map(atomId => ({
+          kind: "atom", objectId: connectionPointEdit.source.id, atomId
+        }))).nativeMoleculeParts;
         const pending = commitWithPageFit(before, prepared, (document, fitBaseline) => {
           // Compare the fitted commit against the original pages plus their consented deltas.
           const baseline = fitBaseline(before);
           let cleanup: ReturnType<typeof finishScopedRepeatUnitCleanup>;
           const assertFinalDocument = (document: ChemDraftDocument) => {
             assertPluginDocumentWriteScope(baseline, document, patch, writeScopeObjectIds, writeScopePages);
+            if (connectionPointEdit) assertVerifiedConnectionPointEdit(prepared, document, connectionPointEdit);
             signal?.throwIfAborted();
             pluginRuntimeRef.current!.host.requirePermission(plugin.id, "document.write");
             cleanup = finishScopedRepeatUnitCleanup(repeatUnitCleanup, before, document, authored.patch);
@@ -13475,7 +13488,18 @@ export function MainWindow({
           };
           // Both history paths normalize again; check their actual final state, after page fit too.
           if (assistantTxId) assistantTransactions.writeAssistantTransaction(assistantTxId, document, applied.receipt.objectIds, prepared, assertFinalDocument);
-          else commitDocumentChange(document, undoLabel, false, assertFinalDocument, PLUGIN_WRITE);
+          else {
+            const nativeParts = selectedNativeMoleculePartsRef.current;
+            const changed = commitDocumentChange(document, undoLabel, false, assertFinalDocument, PLUGIN_WRITE);
+            if (markedAtoms) {
+              if (!changed) throw new Error("The verified connection points could not be committed.");
+              const history = documentHistoryRef.current;
+              const previous = history.past.at(-1);
+              if (previous) nativePartHistorySelectionsRef.current.set(previous, nativeParts);
+              nativePartHistorySelectionsRef.current.set(history.present, markedAtoms);
+              recordedHistoryAfterRef.current.set(history.present, history.present);
+            }
+          }
           cleanup?.record();
         }, { // Allocate request consent only if page fitting actually needs a question.
           get consent() { return assistantTxId ? assistantTransactions.pageEnlargementConsent(assistantTxId, shortcutPlatform) : consent; }, signal,
@@ -13484,7 +13508,8 @@ export function MainWindow({
           pageFitPendingRef.current += 1;
           try { await pending; } finally { pageFitPendingRef.current -= 1; }
         }
-        setSelectedNativeMoleculePart(undefined);
+        if (markedAtoms) setSelectedNativeMoleculeParts(markedAtoms);
+        else setSelectedNativeMoleculePart(undefined);
         const insertedObject = patch.patch.op === "addObject" ? patch.patch.object : undefined;
         const insertedDescription = insertedObject?.type === "molecule"
           ? "structure"

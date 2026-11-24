@@ -95,6 +95,7 @@ export interface PluginRuntimeProviders {
   getDocumentTabTitle?: (tabId: string) => string | undefined;
   /** `warnings`: the asking invocation's collector, or undefined for a read that should stay silent. */
   getSelection: (warnings?: string[]) => PluginSelectionSnapshot;
+  captureSelection?: DesktopPluginRuntimeOptions["captureSelection"];
   /** The app's stable CommandRegistry: plugin commands register into the SAME registry core commands
    *  use (commands/coreCommandRegistrar), so one dispatch serves both. Must be referentially stable
    *  for the component's lifetime — the runtime is created exactly once from the first render. */
@@ -212,6 +213,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
       getDocumentTabTitle: (tabId) => providersRef.current.getDocumentTabTitle?.(tabId),
       getDocumentForTab: (tabId) => providersRef.current.getDocumentForTab?.(tabId),
       getSelection: (warnings) => providersRef.current.getSelection(warnings),
+      captureSelection: providers.captureSelection && (document => providersRef.current.captureSelection!(document)),
       // Read once at creation: the registry (and the other integration options) must be stable —
       // MainWindow creates the registry in a one-time memo, matching the runtime's lifetime.
       commandRegistry: providers.commandRegistry,

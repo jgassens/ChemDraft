@@ -1,4 +1,5 @@
 import { buildPluginSelectionSnapshot } from "./selectionSnapshot";
+import { version as appVersion } from "../../src-tauri/tauri.conf.json";
 import { computePropertiesForPlugin } from "./pluginProperties";
 import { PluginRequestLimits, PluginStructureToNameRequestSchema } from "@chemdraft/plugin-api";
 import { inspectStructureOffThread } from "../depiction2d/identityClient";
@@ -14,6 +15,7 @@ import { AssistantToolsController, type AssistantToolsControllerOptions } from "
 import { TauriAssistantMcpEngine, UnsupportedAssistantMcpEngine, type AssistantMcpEngine } from "../assistant/assistantMcpEngine";
 import { getAssistantHistoryPort } from "../assistant/historyPort";
 import { buildPluginTablePatch } from "./buildPluginTablePatch";
+import { buildConnectionPointsPatch } from "./connectionPointEdit";
 import { rasterizeSvgNative } from "../nativeRasterExport";
 import { nameStructureForPlugin } from "./pluginStructureNaming";
 import { StructureNamingController } from "./StructureNamingController";
@@ -146,6 +148,10 @@ export interface DesktopPluginRuntimeOptions {
    * undefined for a read made outside one, which should stay silent.
    */
   getSelection?: (warnings?: string[]) => PluginSelectionSnapshot | undefined;
+  captureSelection?: (document: ChemDraftDocument) => {
+    objectIds: readonly string[];
+    read: (warnings?: string[]) => PluginSelectionSnapshot;
+  };
   /**
    * The app's stable CommandRegistry (see commands/coreCommandRegistrar). When supplied, plugin
    * commands register into the SAME registry core commands live in, so one `host.invokeCommand`
@@ -619,8 +625,15 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     captureRequestDocument: options.captureRequestDocument,
     openRequestHistory: options.openRequestHistory,
     requestPageSpace: options.requestPageSpace,
+    identity: { name: "ChemDraft", version: appVersion },
     getRequestSelection: (document, budget) => buildPluginSelectionSnapshot(document, readingSelectionWarnings, budget),
     getSelection: readSelection ? () => readSelection(readingSelectionWarnings) : undefined,
+    captureSelection: options.captureSelection && (() => {
+      const document = options.getActiveDocument();
+      if (!document) return { objectIds: [], read: () => ({ objectIds: [], molecules: [] }) };
+      const selection = options.captureSelection!(document);
+      return { objectIds: selection.objectIds, read: () => selection.read(readingSelectionWarnings) };
+    }),
     createStorage: options.createStorage,
     onProposedPatchesChanged: () => {
       const pending = host.listProposedPatches("pending");
@@ -638,6 +651,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       options.onProposedPatchesChanged?.();
     },
     applyDocumentPatch: options.applyDocumentPatch,
+    buildConnectionPointsPatch,
     buildTablePatch: (spec, document, selection, pinnedViewport, bound) => {
       if (bound) return buildPluginTablePatch(spec, document, selection, pinnedViewport);
       const tabId = options.getActiveDocumentTab?.().id;

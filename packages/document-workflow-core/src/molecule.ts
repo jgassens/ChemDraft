@@ -362,12 +362,7 @@ export function moleculeTargetBondLengthChanges(
   if (options.preserveFrameCenter && representative) {
     // The minimum storage frame can be asymmetric around short bonds. Keep its old pivot
     // while enclosing the resized graph, so rotating about that pivot cannot shift the drawing.
-    const center = objectRotationCenter(object);
-    const halfWidth = Math.max(center.x - scaled.x, scaled.x + scaled.width - center.x);
-    const halfHeight = Math.max(center.y - scaled.y, scaled.y + scaled.height - center.y);
-    return moleculeObjectChanges(object, {
-      ...scaled, x: center.x - halfWidth, y: center.y - halfHeight, width: 2 * halfWidth, height: 2 * halfHeight
-    });
+    return moleculeObjectChanges(object, encloseMoleculeAround(scaled, objectRotationCenter(object)));
   }
   return moleculeObjectChanges(object, scaled);
 }
@@ -658,7 +653,7 @@ export function bondGeometry(
   };
 }
 
-export function normalizeNativeMoleculeGeometry(molecule: MoleculeObject): MoleculeObject {
+export function normalizeNativeMoleculeGeometry(molecule: MoleculeObject, preserveFrameCenter = false): MoleculeObject {
   if (molecule.atoms.length === 0) {
     return {
       ...molecule,
@@ -668,13 +663,21 @@ export function normalizeNativeMoleculeGeometry(molecule: MoleculeObject): Molec
   }
 
   const geometry = moleculeGeometryFromAtoms(molecule.atoms);
-  return {
+  const normalized = {
     ...molecule,
     x: geometry.x,
     y: geometry.y,
     width: geometry.width,
     height: geometry.height
   };
+  return preserveFrameCenter ? encloseMoleculeAround(normalized, objectRotationCenter(molecule)) : normalized;
+}
+
+function encloseMoleculeAround(molecule: MoleculeObject, center: { x: number; y: number }): MoleculeObject {
+  const { x, y, width, height } = molecule;
+  const halfWidth = Math.max(center.x - x, x + width - center.x);
+  const halfHeight = Math.max(center.y - y, y + height - center.y);
+  return { ...molecule, x: center.x - halfWidth, y: center.y - halfHeight, width: 2 * halfWidth, height: 2 * halfHeight };
 }
 
 export function moleculeGeometryFromAtoms(atoms: readonly MoleculeAtom[]): Pick<MoleculeObject, "x" | "y" | "width" | "height"> {
