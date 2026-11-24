@@ -16,6 +16,7 @@ export type AppHandoffDialogSnapshot = AppHandoffDialogHeader & (
     combination: string;
     rebuildCombination: string;
     rebuildLabel: string;
+    rebuildChanges: Record<string, string | null>;
     twist?: number;
   }
 );

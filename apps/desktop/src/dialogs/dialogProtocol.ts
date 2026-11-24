@@ -213,14 +213,21 @@ export function validConditionsDraft(v: unknown): v is ReactionConditionsDraft {
 const companionId = (value: unknown): value is string =>
   typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(value);
 
+const companionParameter = (name: string, value: unknown, allowRemoval = false) =>
+  name !== "__proto__" && /^[A-Za-z_][A-Za-z0-9_-]*$/u.test(name) &&
+  ((allowRemoval && value === null) || (typeof value === "string" &&
+    /^[A-Za-z0-9_][A-Za-z0-9_.+-]{0,31}$/u.test(value) && !value.includes("..")));
+
 function validAppHandoffSnapshot(data: Record<string, unknown>): boolean {
   const displayText = (value: unknown): value is string =>
     typeof value === "string" && value.length > 0 && !value.includes("\0");
   if (!displayText(data.title) || data.title.length > 256 || !displayText(data.appName)) return false;
   if (data.mode === "result") {
-    return keys(data, ["mode", "title", "appName", "combination", "rebuildCombination", "rebuildLabel"], ["twist"]) &&
+    return keys(data, ["mode", "title", "appName", "combination", "rebuildCombination", "rebuildLabel", "rebuildChanges"], ["twist"]) &&
       companionId(data.combination) && companionId(data.rebuildCombination) &&
       data.combination !== data.rebuildCombination && displayText(data.rebuildLabel) &&
+      record(data.rebuildChanges) && Object.entries(data.rebuildChanges).every(([name, value]) =>
+        name !== "rebuildAs" && companionParameter(name, value, true)) &&
       (!Object.hasOwn(data, "twist") ||
         (typeof data.twist === "number" && Number.isFinite(data.twist) && data.twist >= 0));
   }
@@ -232,8 +239,7 @@ function validAppHandoffSnapshot(data: Record<string, unknown>): boolean {
   if (!Object.entries(combinations).every(([id, row]) => companionId(id) && record(row) &&
       Object.entries(row).every(([name, value]) => name === "rebuildAs"
         ? companionId(value) && value !== id && Object.hasOwn(combinations, value)
-        : name !== "__proto__" && /^[A-Za-z_][A-Za-z0-9_-]*$/u.test(name) && typeof value === "string" &&
-          /^[A-Za-z0-9_][A-Za-z0-9_.+-]{0,31}$/u.test(value) && !value.includes("..")))) return false;
+        : companionParameter(name, value)))) return false;
   return !Object.hasOwn(data, "composition") || (record(data.composition) &&
     keys(data.composition, ["formula", "atomCount"]) && typeof data.composition.formula === "string" &&
     /^(?:[A-Z][a-z]?[0-9]*)+$/u.test(data.composition.formula) &&

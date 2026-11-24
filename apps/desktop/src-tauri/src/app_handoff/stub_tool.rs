@@ -89,6 +89,32 @@ fn main() {
             thread::sleep(Duration::from_secs(4));
             fs::write("child-survived", "").unwrap();
         }
+        #[cfg(unix)]
+        "detached-tree" => {
+            use std::os::unix::process::CommandExt;
+            let mut command = Command::new(env::current_exe().unwrap());
+            command.arg("detached-descendant");
+            unsafe {
+                command.pre_exec(|| {
+                    extern "C" {
+                        fn setsid() -> std::ffi::c_int;
+                    }
+                    if setsid() == -1 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let _child = command.spawn().unwrap();
+            while !fs::exists("child-ready").unwrap() {
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+        #[cfg(unix)]
+        "detached-descendant" => {
+            fs::write("child-ready", "").unwrap();
+            thread::sleep(Duration::from_secs(4));
+        }
         _ => panic!("unexpected arguments {args:?}"),
     }
 }

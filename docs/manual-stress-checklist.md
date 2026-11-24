@@ -1745,7 +1745,8 @@ for processor-specific behavior. Use an eligible official catalog plugin and its
 
 - Pick an app, decline consent, then accept and send a file. Revoke consent in Plugin Manager and
   send again; verify consent is requested again.
-- Move the chosen app and retry; check for an `app-changed` or `app-missing` failure.
+- Move the chosen app and retry. Check for an `app-changed` or `app-missing` failure, then restore
+  the app to its previous location or pick it again before continuing.
 - Send file names with spaces, non-ASCII characters, and a reserved Windows name; check the opened
   file and sanitized name.
 - Check palette focus behavior and, on Windows, that no console flashes. Quit ChemDraft and verify

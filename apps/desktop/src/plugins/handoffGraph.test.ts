@@ -75,6 +75,20 @@ describe("selected handoff graph from the live drawing", () => {
     expect(result.canonicalSmiles).toBe("CO");
   });
 
+  it("retains atom map indices after wrapped V3000 atom records", () => {
+    const mol = molecule(["C", "O"], [[0, 1]]);
+    mol.structureFormat = "molfile-v3000";
+    mol.structure = [
+      "Test", "", "", "  0  0  0     0  0            999 V3000",
+      "M  V30 BEGIN CTAB", "M  V30 COUNTS 2 1 0 0 0", "M  V30 BEGIN ATOM",
+      "M  V30 1 C 0 0 0 4-", "M  V30 2 -", "M  V30 CFG=0",
+      "M  V30 2 O 1 0 0 20", "M  V30 END ATOM", "M  V30 BEGIN BOND",
+      "M  V30 1 1 1 2", "M  V30 END BOND", "M  V30 END CTAB", "M  END"
+    ].join("\r\n");
+    expect(prepareHandoffGraph(request, selected(mol)).sourceAtomMaps)
+      .toEqual([{ atom: 1, map: 42 }, { atom: 2, map: 20 }]);
+  });
+
   it("refuses radical, unknown-bond and writer losses with specific reasons", () => {
     const radical = molecule(["C"]);
     radical.atoms[0]!.markRadicals = 3;

@@ -7,7 +7,7 @@ export interface AppHandoffConsent {
   appName: string;
   appPath: string;
   pipeline: string | null;
-  granted: boolean;
+  status: "allowed" | "inactive" | "revoked";
   at: string;
 }
 

@@ -2029,7 +2029,24 @@ pub(crate) async fn open_app_handoff(
     getrandom::fill(&mut random).map_err(|_| "Could not allocate an app handoff dialog.")?;
     let session_id: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
     let (answer, receive) = tokio::sync::oneshot::channel();
-    let message = Message {
+    let registration = open_dialog(
+        owner.app_handle().clone(),
+        owner,
+        app_handoff_snapshot(session_id, data),
+        None,
+        Some(answer),
+    )
+    .await?;
+    Ok((registration.host_id, receive))
+}
+
+pub(crate) fn validate_app_handoff_snapshot(data: &Value) -> Result<(), String> {
+    // A real session ID is always 32 hexadecimal characters, so the envelope has the same size.
+    app_handoff_snapshot("0".repeat(32), data.clone()).validate()
+}
+
+fn app_handoff_snapshot(session_id: String, data: Value) -> Message {
+    Message {
         protocol_version: 1,
         owner_window_id: super::MAIN_WINDOW_LABEL.into(),
         document_tab_id: "app-handoff".into(),
@@ -2039,16 +2056,7 @@ pub(crate) async fn open_app_handoff(
         snapshot_revision: 1,
         message_type: "snapshot".into(),
         data,
-    };
-    let registration = open_dialog(
-        owner.app_handle().clone(),
-        owner,
-        message,
-        None,
-        Some(answer),
-    )
-    .await?;
-    Ok((registration.host_id, receive))
+    }
 }
 
 pub(crate) fn close_app_handoff(app: &tauri::AppHandle, host_id: &str) {

@@ -471,9 +471,15 @@ impl Context<'_> {
                 "App handoff consent or the native menu command changed before launch.".into(),
             );
         }
-        let launched = target.with_verified_launch(self.platform, None, |current| {
-            proof.launch(|| current.open(self.platform, &file))
-        });
+        let launched = self
+            .store
+            .with_grant(&grant, |_| {
+                target.with_verified_launch(self.platform, None, |current| {
+                    proof.launch(|| current.open(self.platform, &file))
+                })
+            })
+            .map_err(io_error)?
+            .ok_or("App handoff consent changed before launch.")?;
         let launched = match launched {
             Ok(launched) => launched?,
             Err(error) => return Ok(send_identity(error)),
@@ -551,16 +557,22 @@ impl Context<'_> {
         };
         let state = self.app().state::<State>();
         state.clear_result(self.plugin_id);
-        let Some(grant) = self.consent(&proof, row, &target, Some(&pipeline)).await? else {
-            return Ok(RunResult::Declined);
-        };
-        let snapshot = Snapshot::Confirm {
+        let snapshot = wire::encode(Snapshot::Confirm {
             title: "Confirm companion build",
             app_name: &target.name,
             pipeline: &pipeline.id,
             composition: composition.as_ref(),
             suggested_combination: &request.combination,
             combinations: &pipeline.combinations,
+        })?;
+        if crate::dialog_windows::validate_app_handoff_snapshot(&snapshot).is_err() {
+            return Ok(run_failed(
+                RunCode::BadParam,
+                "The companion build choices exceed the native confirmation limit.",
+            ));
+        }
+        let Some(grant) = self.consent(&proof, row, &target, Some(&pipeline)).await? else {
+            return Ok(RunResult::Declined);
         };
         let Action::Confirm { combination_id } = self
             .question(
@@ -590,7 +602,7 @@ impl Context<'_> {
 
     async fn question(
         &self,
-        snapshot: Snapshot<'_>,
+        snapshot: Value,
         mut cancelled: watch::Receiver<bool>,
         limit: Duration,
         submission: Option<&Submission>,
@@ -598,9 +610,8 @@ impl Context<'_> {
         if *cancelled.borrow() {
             return Ok(Action::Cancel {});
         }
-        let value = wire::encode(snapshot)?;
         let open = async {
-            crate::dialog_windows::open_app_handoff(self.window.clone(), value)
+            crate::dialog_windows::open_app_handoff(self.window.clone(), snapshot)
                 .await
                 .map_err(|_| "ChemDraft could not open the native handoff dialog.".to_string())
         };
@@ -695,11 +706,19 @@ impl Context<'_> {
             combination: &job.build.combination,
             rebuild_combination: rebuild,
             rebuild_label: dialogs::rebuild_label(&job.pipeline, rebuild),
+            rebuild_changes: dialogs::rebuild_changes(
+                &job.pipeline,
+                &job.build.combination,
+                rebuild,
+            ),
             twist,
         };
-        let action = self.question(snapshot, marker.subscribe(), ttl, None).await;
+        let action = match wire::encode(snapshot) {
+            Ok(snapshot) => self.question(snapshot, marker.subscribe(), ttl, None).await,
+            Err(error) => Err(error),
+        };
         let session = state.take_result(self.plugin_id, &marker);
-        if !matches!(action?, Action::Rebuild {}) {
+        if !dialogs::rebuild_requested(action) {
             return Ok(result);
         }
         let session = session.ok_or(REBUILD_EXPIRED)?;
@@ -787,7 +806,7 @@ impl BuildJob {
             &self.pipeline,
             &self.build,
             &files,
-            |args, cwd, first| {
+            |args, cwd, first, deadline| {
                 self.with_authorized_launch(window, |current| {
                     let tool = current.tool().ok_or_else(|| {
                         runner::Failure::new(
@@ -796,12 +815,13 @@ impl BuildJob {
                         )
                     })?;
                     let start = || {
-                        runner::ChildProcess::spawn(tool, args, cwd).map_err(|_| {
-                            runner::Failure::new(
-                                RunCode::ToolMissing,
-                                "ChemDraft could not start the declared companion executable.",
-                            )
-                        })
+                        runner::ChildProcess::spawn_before(
+                            tool,
+                            args,
+                            cwd,
+                            deadline,
+                            &state.stopped,
+                        )
                     };
                     if first {
                         match proof.launch_build(&self.build, start) {
@@ -851,28 +871,29 @@ impl BuildJob {
         launch: impl FnOnce(&App) -> T,
     ) -> Result<T, runner::Failure> {
         let app = window.app_handle();
-        let consent_current = || {
-            let plugin = Plugin::read(app, &self.grant.plugin_id).ok()?;
-            let pipeline = plugin.pipeline(&self.build.pipeline).ok()?;
-            let row = store(app)
-                .ok()?
-                .get(&self.grant.plugin_id, &self.build.app_id)
-                .ok()??;
-            Some(
-                plugin.owns_menu_command(&self.command)
-                    && current_command(app, &self.command)
-                    && !app.state::<State>().stopped.load(Ordering::Acquire)
-                    && row.same_grant(&self.grant)
-                    && row.grants(&self.target, &pipeline.digest(), &plugin.handoff_install_id),
-            )
-        };
-        if consent_current() == Some(true) {
-            self.target
-                .with_verified_launch(self.platform, Some(&self.pipeline), launch)
-                .map_err(|error| runner::Failure::new(run_identity_code(error), error.message()))
-        } else {
-            Err(runner::Failure::new(RunCode::BadParam, REBUILD_EXPIRED))
-        }
+        let refused = || runner::Failure::new(RunCode::BadParam, REBUILD_EXPIRED);
+        store(app)
+            .map_err(|_| refused())?
+            .with_grant(&self.grant, |row| {
+                let plugin = Plugin::read(app, &self.grant.plugin_id).map_err(|_| refused())?;
+                let pipeline = plugin
+                    .pipeline(&self.build.pipeline)
+                    .map_err(|_| refused())?;
+                if !plugin.owns_menu_command(&self.command)
+                    || !current_command(app, &self.command)
+                    || app.state::<State>().stopped.load(Ordering::Acquire)
+                    || !row.grants(&self.target, &pipeline.digest(), &plugin.handoff_install_id)
+                {
+                    return Err(refused());
+                }
+                self.target
+                    .with_verified_launch(self.platform, Some(&self.pipeline), launch)
+                    .map_err(|error| {
+                        runner::Failure::new(run_identity_code(error), error.message())
+                    })
+            })
+            .map_err(|_| refused())?
+            .ok_or_else(refused)?
     }
 }
 
@@ -953,12 +974,27 @@ pub(crate) struct ConsentSummary {
     app_name: String,
     app_path: PathBuf,
     pipeline: Option<String>,
-    granted: bool,
+    status: ConsentStatus,
     at: String,
 }
 
-impl From<Row> for ConsentSummary {
-    fn from(row: Row) -> Self {
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+enum ConsentStatus {
+    Allowed,
+    Inactive,
+    Revoked,
+}
+
+impl ConsentSummary {
+    pub(super) fn new(row: Row, install_id: Option<&str>) -> Self {
+        let status = if !row.granted {
+            ConsentStatus::Revoked
+        } else if install_id.is_some_and(|id| row.belongs_to_install(id)) {
+            ConsentStatus::Allowed
+        } else {
+            ConsentStatus::Inactive
+        };
         Self {
             consent_id: row.consent_id(),
             plugin_id: row.plugin_id,
@@ -970,7 +1006,7 @@ impl From<Row> for ConsentSummary {
                 .into_owned(),
             app_path: row.app_path,
             pipeline: row.pipeline,
-            granted: row.granted,
+            status,
             at: row.at,
         }
     }
@@ -989,12 +1025,21 @@ pub(crate) fn app_handoff_consent_list(
     window: WebviewWindow,
 ) -> Result<Vec<ConsentSummary>, String> {
     main_only(&window)?;
-    Ok(store(window.app_handle())?
+    let app = window.app_handle();
+    let mut installs = HashMap::new();
+    Ok(store(app)?
         .list()
         .map_err(io_error)?
         .into_iter()
         .filter(|row| !row.template_digest.is_empty())
-        .map(ConsentSummary::from)
+        .map(|row| {
+            let install = installs.entry(row.plugin_id.clone()).or_insert_with(|| {
+                Plugin::read(app, &row.plugin_id)
+                    .ok()
+                    .map(|plugin| plugin.handoff_install_id)
+            });
+            ConsentSummary::new(row, install.as_deref())
+        })
         .collect())
 }
 

@@ -246,7 +246,7 @@ impl Pipeline {
                     "cdx_input",
                     previous.as_deref(),
                 )?;
-                if step.args.first().is_some_and(|arg| arg == "inspect")
+                if rendered.args.first().is_some_and(|arg| arg == "inspect")
                     && (!rendered.reads_previous
                         || previous_id != "build"
                         || step.args.get(1).is_none_or(|arg| arg != "{previousOutput}"))

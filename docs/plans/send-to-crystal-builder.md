@@ -108,7 +108,7 @@ above closed. Fixed in this revision:
 
 | Finding | Severity | Handled in |
 |---|---|---|
-| Rule 2 admitted renderer code could observe and race a live token | Major | Rule 2: no credential reaches the renderer; Rust-held arming; one `app_handoff_call` endpoint with no token field; races refused; credential tests. Rule 16: Rebuild runs in Rust. Tasks 1B, 1C, 1H |
+| Rule 2 admitted renderer code could observe and race a live token | Major | The November 22 design was superseded by Phase 1 conductor ruling 10. Rule 2 now binds a nonce to the trusted host relay and refuses duplicate submissions. Rule 16: Rebuild runs in Rust. Tasks 1B, 1C, 1H |
 
 ## Context
 
@@ -477,67 +477,39 @@ Rules the host enforces (each one gets a test):
 1. **Two permissions.** New `apps.handoff`, added to `dangerousPluginPermissions` (and to the list in
    AGENTS.md §4.1); manifest validation refuses it without `native.execute` (same pattern as
    `assistant.run`). The capability is absent without both, and every method re-checks both.
-2. **Explicit user action only, with proof (revised 2026-11-21 and 2026-11-22; Kimi).** Methods work
-   only while one of the plugin's own commands is running **and** Rust holds a live **arming** for
-   it, made from a native event Rust saw. On main, the agent bridge's `command()` calls the same `host.command`
-   dispatcher as the app's own UI, and the bridge's `click()` synthesizes pointer events
-   (`apps/desktop/src/agentBridge.ts`), so a flag on the shared dispatcher would be forgeable.
-   Therefore:
-   - The flag never goes on the shared dispatcher. Handoff commands (any command of a plugin with
-     `apps.handoff`) can be **started only by events Rust itself sees** (revised 2026-11-21 after the
-     Kimi re-review: an `isTrusted` check in the renderer followed by an IPC mint request would let
-     any code that can reach the IPC mint a token, because Rust never sees the real event):
-     (a) the **native menu**, including its keyboard accelerators, whose events arrive in Rust; and
-     (b) buttons in **host-owned native boxes shown from Rust** (the consent box, the build
-     confirmation, the result box with Rebuild, task 1H). Toolbar buttons, palettes, overlays, and
-     webview-only shortcuts cannot start a handoff command in 1.2.3; they show the menu path instead.
-     There is **no renderer IPC command that creates an arming.**
-   - **No credential ever reaches the renderer** (revised 2026-11-22 after the Kimi re-check: a
-     bearer token handed to the renderer could be observed and raced by other main-renderer code,
-     such as an enabled agent bridge). On such an event Rust records an **arming** in its own state:
-     (pluginId, commandId), one-shot, 60 s. A choice the user makes later in a Rust-shown box, such
-     as the combination in the build box, is written into the arming by Rust at that click, and a
-     request can never override it. Rust then tells the host to run that plugin command;
-     the message carries no secret, and nothing the renderer holds or sends is ever checked as proof.
-     The bridge's `command()` and synthetic `click()`, MCP, `invokeAssistantTool`,
-     `invokeRequestTool`, panels' programmatic calls, and a plugin invoking its own command keep using
-     `host.command` and never create an arming.
-   - **One narrow Rust endpoint.** Handoff calls reach Rust through a single command,
-     `app_handoff_call(pluginId, method, request)`, whose wire type has no token, arming id, or
-     command id field and rejects unknown fields. Rust accepts a call only while it holds a live
-     arming for that pluginId, and takes the command id and every bound parameter from the arming,
-     never from the request. No IPC command creates, returns, or accepts an arming.
-   - **Arming lifetime across calls:** `status` and `chooseApp` need a live arming but **do not
-     consume it**; only the side-effecting call (`sendFile`, or `runCompanion` as one whole pipeline,
-     rule 14) consumes it, so `status` → `chooseApp` → `runCompanion` in one invocation works and a
-     second send does not.
-   - **Races are refused, not decided.** An arming accepts one side-effecting submission. A second
-     submission for the same arming while the first is pending (before its launch, or before its
-     Rust-shown box is answered) cancels both and closes the box; the status line says the handoff
-     was refused because two requests claimed one menu click, and nothing launches.
-   - **What is bound when, stated honestly.** The plugin computes the input text (the 3D model) after
-     the click, in the renderer, so the text cannot be bound when the arming is made. Binding it there
-     would not add protection: code that can race in the main renderer can already change the
-     selection the plugin reads. What Rust enforces is the user-intent property: every launch matches
-     exactly one native user action, used once, by one submission, with the app, pipeline, and
-     combination fixed in Rust. For `runCompanion`, the Rust-shown build box (task 1H) also shows the
-     formula and atom count Rust computes from the text it holds, so the user sees what goes before
-     anything runs, and the launch uses that held copy.
-   - **`apps.handoff` plugins run Worker-only.** Their commands execute in the plugin's module Worker,
-     which has no handle on the Tauri IPC; registering an `apps.handoff` plugin in-process is
-     refused. The host relays the Worker's handoff calls to `app_handoff_call`.
-   - Tests cover `bridge.command`, `bridge.click`, synthetic `KeyboardEvent`s, MCP, both tool paths,
-     a plugin calling its own command, `source` in plugin input, in-process registration refused,
-     and `status` → `chooseApp` → `runCompanion` succeeding on one arming while a second send is
-     refused. **Credential tests (Kimi re-check):** the `app_handoff_call` wire type has no token,
-     arming, or command field, and a request carrying one is rejected; a call with no live arming is
-     refused even when it repeats every value the renderer saw during a real armed invocation (event
-     payloads, invocation ids, earlier requests); an expired arming refuses; a call cannot change the
-     arming's command id or combination; two submissions on one arming launch nothing; and a static
-     check that no Tauri command registered by `app_handoff` returns an arming or token.
+2. **Explicit user action only, authenticated per invocation** (Phase 1 conductor ruling 10).
+   - Only an eligible native plugin menu event in Rust starts a plugin handoff command. Contributed
+     menus have no accelerator in 1.2.3. Toolbar buttons, palettes, panels, overlays, synthetic input,
+     the agent bridge, MCP, and tool invocations cannot arm a handoff. Webview controls show the
+     native menu path. Host-owned native boxes provide consent and build choices to Rust. Rust
+     creates a separate native arming for Rebuild (rule 16).
+   - For each menu click, Rust generates a fresh 128-bit OS-random nonce and binds it to the installed
+     plugin ID and exact command ID. Rust delivers the binding directly to the immutable document
+     receiver. The trusted host relay begins the invocation once and attaches the binding to each call
+     through `app_handoff_call`. Rust checks all three fields before the picker, consent lookup,
+     submission, file write, or launch. There is no IPC command that mints or returns a binding. The
+     nonce stays out of DOM events, plugin input, Worker messages, and the agent bridge. Handoff
+     plugins register only in Workers. Assistant and request tool invocations receive no `apps` capability.
+   - A binding is one-shot and expires after 60 seconds while unused. `status` and `chooseApp` require
+     it without spending it. A side-effecting submission claims it, and a second authenticated
+     submission while the first is pending cancels both and closes the box. A mismatched caller
+     cannot spend or cancel the binding. A refusal before any host box releases the allowance. Cancel
+     after presentation consumes it. Completion retires that exact binding. Replacement, navigation,
+     and shutdown invalidate outstanding menu bindings.
+   - Rust holds the submitted file text and binds the app, pipeline, and user-confirmed combination.
+     The confirmation shows the formula and atom count Rust computes from that copy. The authorized
+     Worker controls the submitted file contents. Same-realm script injection, a compromised renderer
+     dependency, or a debugger can instrument the trusted relay or change the selection.
+   - Tests cover the bridge's command and click paths, synthetic keyboard events, MCP, both tool
+     paths, programmatic plugin routes, and refusal of in-process registration. Native invocation
+     tests cover missing, mismatched, stale, or expired bindings, exact plugin and command matching,
+     one begin, retirement even when unused, strict request fields, and no IPC mint or return
+     endpoint. Verify `status` → `chooseApp` → `runCompanion` on one binding, refusal of a second send,
+     cancellation on two authenticated pending submissions, and rejection of mismatched callers
+     without canceling the pending submission. The confirmed combination stays bound in Rust.
 3. **One pipeline or one send per command invocation** (`sendFile` or `runCompanion`, not both). A
-   refused or declined call does not use up the allowance (same rule as `dialogs.promptText`). A
-   rebuild (question 11) is a new native click with a new arming, run by Rust (rule 16).
+   call refused before a host box is shown leaves the allowance available. Cancel after presentation
+   consumes it. A rebuild (question 11) is a new native click with a new arming, run by Rust (rule 16).
 4. **The plugin never supplies a path, free argv, environment, or verb at run time.** It supplies
    text, an allowlisted extension, a pipeline id fixed in its manifest, and typed parameter values
    (rule 11). The host renders the command line.
@@ -595,14 +567,14 @@ Rules the host enforces (each one gets a test):
     fails the digest (rule 5) and asks again.
 13. **Official plugins only in 1.2.3** (owner question 8; added 2026-11-21, Kimi blocker). A host-owned
     allowlist in Phase 1, `OFFICIAL_COMPANION_PLUGINS` (plugin id plus its release repository), is
-    checked when the plugin registers and on every `runCompanion` call. A plugin passes only if its
-    installed package came through the host's catalog or update path from that repository with a
-    verified SHA-256 (the install record keeps the provenance). Phase 2 testing, before the catalog
-    entry exists (Phase 3), installs the plugin from a GitHub pre-release of its repository through the
-    same verified path, which the allowlist already names. Development builds (`ChemDraft (dev)`) may
-    also accept a hand-installed package for an allowlisted id, and say so in the consent box; stable
-    builds never do. Tests: a sideloaded package with an allowlisted id and both permissions is refused
-    on a stable build; an unlisted plugin is refused everywhere; a dev build accepts the hand install.
+    checked when the plugin registers and on every `runCompanion` call. Stable builds require the
+    Phase 3 catalog entry and a package obtained from that repository through the host's catalog
+    or update path with a verified SHA-256. The install record keeps the provenance. Before Phase 3,
+    Phase 2 tests an allowlisted package installed by hand in `ChemDraft (dev)`, identified by the
+    native bundle ID `org.chemdraft.desktop.dev`. The consent box discloses that development exception.
+    Test that stable builds refuse a sideloaded package even with an allowlisted ID and both
+    permissions, that every build refuses an unlisted plugin, and that a dev build accepts the
+    allowlisted hand install.
 14. **A pipeline runs whole, in order** (added 2026-11-21). `preflight` (`xtal capabilities --json`)
     must report a version in `testedVersions`, or the call fails with `version-untested` naming the
     tested versions (question 10). `build` runs only after it; `inspect` runs only on the regular file
@@ -624,7 +596,7 @@ Rules the host enforces (each one gets a test):
     Rebuild (only if the combination declares `rebuildAs`), the click is a native button Rust sees,
     and Rust runs the `rebuildAs` combination itself from the session, with no call into the renderer
     or the plugin; the plugin only receives the result, through the same path as the first build. A
-    changed selection therefore cannot change what is rebuilt, and no credential exists to steal. An
+    changed selection therefore cannot change what is rebuilt. An
     expired session, a changed app, consent, or template digest refuses the rebuild with a message to
     start again.
 
@@ -679,7 +651,7 @@ Windows installer comes only from the GitHub workflow; the Windows session tests
 |---|---|---|---|
 | 1A API contract | `packages/plugin-api/src/index.ts` (+ new `appHandoff.ts`, `appHandoff.test.ts`), header comment, `packages/plugin-api/package.json` (version must match, `index.test.ts` checks it), `packages/plugin-api/src/workerProtocol.ts` (whitelist `apps`) | Schemas for the four methods and the manifest `companions` pipelines; permission added and marked dangerous; manifest refuses `apps.handoff` without `native.execute`, refuses a step whose placeholder is undeclared or sits inside a larger argument other than after a fixed `key=` prefix, refuses any plugin-chosen value but a declared `combination` id (each combination's values validated per rule 11), and refuses timeouts over the rule 15 caps; version 0.1.27 (provisional: the next free patch when Phase 1 starts, re-read by task 0.5). Tests: name sanitizing, extension allowlist, size and warning limits, permission pairing, combination values that look like options or paths refused, failure `diagnostic` shape | Kimi |
 | 1B Host gate | `packages/plugin-host/src/**` (capability wiring + tests); the trusted entry points in `apps/desktop/src/` (the native menu handler and the Rust-shown boxes) that call `invokeCommandFromUser`; the agent bridge untouched except tests | User intent per rule 2: handoff commands start only from Rust's run-command message (native menu, Rust-shown boxes), which carries no secret; the host relays the Worker's calls to `app_handoff_call` and never holds a token; Worker-only execution for `apps.handoff` plugins, in-process registration refused; arming required by `status` and `chooseApp` but consumed only by the send; spoofing tests for `bridge.command`, `bridge.click`, synthetic key events, MCP, both tool paths, self-invocation, and `source` in input; official-only allowlist per rule 13 at registration and on every call, with the sideload tests; absent without both permissions; one pipeline or send per invocation, refused calls not counted; worker and in-process paths behave the same | Kimi |
-| 1C Native side | `apps/desktop/src-tauri/src/app_handoff/**`, `lib.rs` registration, `apps/desktop/src-tauri/build.rs` (register the new commands so their permissions are generated), `capabilities/app-handoff.json` (window `main` only) | Pure command-line builder tested for macOS and Windows from one host; arming kept in Rust state and the single `app_handoff_call` endpoint per rule 2, with the credential tests listed there (no token field, replay of renderer-observed values refused, expired arming, bound command and combination unchangeable, two submissions launch nothing, no command returns an arming); Rust-held result session and Rebuild run in Rust per rule 16; companion pipeline runner per rules 11, 14, and 15 (tool resolved inside the app folder, symlink, junction, and `..` escapes refused, preflight version check, `inspect` only on the file `build` wrote, timeout kills the tree, output caps with concurrent draining, null stdin, cleared environment, no console window on Windows), tested with a stub tool on both platforms; app identity per rule 6 (hashes, signing identity, re-check before every launch); picker accepts only `.app` / `.exe` and refuses `.lnk`; temp path and cleanup tests (backslashes, 8.3 paths, reserved names); new `app_handoff` consent store per rule 5 (separate file, `schemaVersion`, `templateDigest` re-checked on every call, owner-only file on both platforms, unknown fields kept), with tests for disable, a changed pipeline, app changed, and revoke; the external-tools store untouched; app-changed detection; serde/Zod wire fixtures like `externalToolsWire.test.ts`; clippy clean on both `cfg` sides | Kimi |
+| 1C Native side | `apps/desktop/src-tauri/src/app_handoff/**`, `lib.rs` registration, `apps/desktop/src-tauri/build.rs` (register the new commands so their permissions are generated), `capabilities/app-handoff.json` (window `main` only) | Pure command-line builder tested for macOS and Windows from one host; Rust-held arming, authenticated invocation begin/finish, and the nonce-bound `app_handoff_call` endpoint per rule 2, with the binding tests listed there; Rust-held result session and Rebuild run in Rust per rule 16; companion pipeline runner per rules 11, 14, and 15 (tool resolved inside the app folder, symlink, junction, and `..` escapes refused, preflight version check, `inspect` only on the file `build` wrote, timeout kills the tree, output caps with concurrent draining, null stdin, cleared environment, no console window on Windows), tested with a stub tool on both platforms; app identity per rule 6 (hashes, signing identity, re-check before every launch); picker accepts only `.app` / `.exe` and refuses `.lnk`; temp path and cleanup tests (backslashes, 8.3 paths, reserved names); new `app_handoff` consent store per rule 5 (separate file, `schemaVersion`, `templateDigest` re-checked on every call, owner-only file on both platforms, unknown fields kept), with tests for disable, a changed pipeline, app changed, and revoke; the external-tools store untouched; app-changed detection; serde/Zod wire fixtures like `externalToolsWire.test.ts`; clippy clean on both `cfg` sides | Kimi |
 | 1D Desktop wiring | `apps/desktop/src/appHandoff/**`, plugin runtime hookup, Plugin Manager consent rows (own section, not the AI-tool rows), `apps/desktop/src/plugins/installPluginPackage.ts` and the update path (uninstall deletes rows; permission dropped on update deletes rows; install provenance recorded for rule 13) with their tests | Native message boxes for consent and warnings (no in-viewport dialog, §12); the host-owned **build confirmation dialog** (task 1H); status-line success; specific errors with paths only in host UI; consent visible and revocable; lifecycle tests for uninstall, update, and permission dropped | Kimi |
 | 1F Connection points in the selection | `apps/desktop/src/plugins/selectionSnapshot.ts`, `packages/plugin-api/src/index.ts` (field), `chem-core` molfile warning text | `connectionPoints` per Decision 1b: lists exactly the atoms labelled `X` with anchor and bond order; molfile bytes unchanged for existing plugins; tests: X only, R1 only, X and R1 together, X with two neighbors (listed with `anchor: 0` so the plugin refuses it by name), `X` inside an abbreviation, a document saved and reopened | Kimi |
 | 1G Handoff graph and audit (added 2026-11-21, Kimi blockers) | `packages/plugin-api/src/index.ts` and `chemistry3d.ts` (types), `apps/desktop/src/plugins/` (host implementation using RDKit through the existing chemistry engine), `packages/layout-engine` (export the bond tool's new-bond direction for an atom, no copy) | `chemistry.handoffGraph({ objectId })` returns, for one selected molecule: atoms (element, charge, isotope, radical electrons, explicit H count, drawn label, `isConnectionPoint`), bonds (order 1/2/3/aromatic, stereo flags), RDKit canonical SMILES, unspecified stereocenters and double bonds (RDKit perception), reaction membership with roles and atom maps, abbreviations expanded or refused by name, and every serializer loss (a lossy fallback refuses). `embed3d` gains a `{ graph }` component (RDKit sanitizes; failure refuses). `suggestConnectionPoints({ objectId, anchors })` returns the bond-tool position for each new `X` (for task 2G). Tests: unspecified centers, a reaction member with atom maps, a radical with more than two electrons, an unknown bond, an abbreviation, writer fallback refused, graph round trip equals the drawn canonical SMILES | Kimi |
@@ -694,6 +666,10 @@ quitting ChemDraft leaves the other app running.
 
 ### Phase 2: the plugin (new repository)
 
+Before the Phase 3 catalog entry ships, use **Plugins ▸ Add or Remove Plugins… ▸ Add plugin from
+package…** in `ChemDraft (dev)` to install the allowlisted package on each platform. Stable builds
+require the verified Phase 3 catalog install.
+
 | Task | Owned paths | Acceptance and tests | Review |
 |---|---|---|---|
 | 2A Scaffold | manifest (final: every command, menu, permission, and the `mofBuild` pipeline; later tasks chain off 2A and do not edit it), `src/index.ts`, `src/workerEntry.ts`, LICENSE, README | Manifest parses; boundary rule holds (only `@chemdraft/plugin-api`) | Kimi |
@@ -704,7 +680,7 @@ quitting ChemDraft leaves the other app running.
 | 2C3 Automatic cut | `src/carboxylateCut.ts` + test | Pure function on the host graph: each COOH / COO⁻ on carbon → one `X` at the ring C–carboxyl C midpoint, per Decision 1b; skipped when the selection already has `X`; runs only for a node that supplies carboxylates (N16, N17), refused with "mark X by hand" for any other node; other connecting groups refused by name. Fixtures: terephthalic acid → C₆H₄X₂ matching the 2026-11-20 block; disodium terephthalate; trimesic acid → 3 X; nicotinic acid (pyridyl refused) | Kimi |
 | 2H Build MOF command | `src/buildMof.ts`, `src/nodeSuggest.ts`, `src/targetCheck.ts` + tests (chained after 2A, 2B2, 2C, 2C2, 2C3) | Suggestion per the Decision 1b table (MOF-5 row only for terephthalate exactly; other ditopic carboxylates unnamed; the HKUST-1 row disabled); one `runCompanion` call on the `mofBuild` pipeline with the 2B2 block as the single input and the suggested values (the host's confirmation dialog, task 1H, lets the user change them); `targetCheck.ts` reads the `build` and `inspect` step JSON per the Decision 1b target record ("Joint twist left" parsed fail closed, no overlap rows, joints bonded, detected space group, cell within 2%, Z, formula, atom count, one fragment, linker graph equal) and names the material only on a full match, as "matches the MOF-5 target checks". Mocked-context tests: success; user cancels; tool missing; untested Crystal Builder version; timeout; exit 1 and exit 2 with Crystal Builder's JSON message passed through; non-JSON output; JSON failure without `tables`; missing, malformed, and non-numeric twist rows; nonzero twist offers Rebuild; failed rebuild names nothing; **the 2026-11-20 twisted P222 build (fixture) is not called MOF-5, and the Fm-3m cell is** | Kimi |
 | 2D Command flow | `src/send.ts` + test with a mocked context | Both send commands: empty selection, cancelled picker, declined consent, embed failure, minimize failure, linker refusals, and success each produce the specified message; one send per command | Kimi |
-| 2E Package and release | package zip, checksum, release body markers | Installs by hand through Add plugin from package on both platforms | Kimi |
+| 2E Package and release | package zip, checksum, release body markers | Installs by hand through Add plugin from package in ChemDraft (dev) on both platforms | Kimi |
 | 2G Mark Connection Points (in Phase 2, owner 2026-11-20) | `src/markConnectionPoints.ts` + test (chained after 2A, which already declares `document.write`) | Selected anchors get `X` atoms at the positions the host's `suggestConnectionPoints` returns (task 1G; no layout math in the plugin, §9), through `documents.applyPatch`, one labelled undo entry, new atoms selected (§4.4); anchors with no free valence refused by name; chemistry of the anchor molecule otherwise unchanged (§7 test: canonical SMILES with X removed equals the original) | Kimi |
 
 Hands-on, both platforms, with Crystal Builder installed by the owner (agents do not install it):

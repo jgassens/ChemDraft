@@ -83,6 +83,10 @@ export function AppHandoffForm({
       </> : <>
         <p>{snapshot.appName} completed the {snapshot.combination} build.</p>
         <p>Joint twist left {snapshot.twist?.toFixed(3) ?? "unavailable"}</p>
+        <p>Rebuild with {snapshot.rebuildCombination}{
+          Object.entries(snapshot.rebuildChanges).map(([name, value]) =>
+            ` · ${name === "topology" ? "net" : name} ${value ?? "removed"}`)
+        }</p>
       </>}
       {error && <p role="alert">{error}</p>}
     </div>
