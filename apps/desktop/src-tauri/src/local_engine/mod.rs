@@ -148,3 +148,11 @@ mod tests;
 
 #[cfg(test)]
 pub(crate) mod archive_tests;
+
+#[cfg(all(test, windows))]
+pub(crate) fn handoff_test_junction(
+    target: &std::path::Path,
+    link: &std::path::Path,
+) -> std::io::Result<()> {
+    install::create_link(target, link, true)
+}

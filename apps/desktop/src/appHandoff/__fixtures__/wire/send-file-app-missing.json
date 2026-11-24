@@ -1,0 +1,5 @@
+{
+  "code": "app-missing",
+  "message": "The app handoff could not send the file.",
+  "status": "failed"
+}

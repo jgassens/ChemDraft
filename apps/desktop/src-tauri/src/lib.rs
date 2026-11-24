@@ -1,3 +1,4 @@
+mod app_handoff;
 #[cfg(target_os = "linux")]
 mod appimage_dialogs;
 #[cfg(target_os = "linux")]
@@ -1441,6 +1442,7 @@ pub fn run() {
         .manage(Engine3dSidecarSessions::default())
         .manage(ocsr_engine::OcsrEngineState::default())
         .manage(external_tools::ExternalToolsState::default())
+        .manage(app_handoff::State::default())
         .manage(naming_engine::NamingEngineState::default())
         .manage(ToolsetWindowDirectory::default())
         .manage(PluginNativeMenuItems::default())
@@ -1574,7 +1576,8 @@ pub fn run() {
                     && custom_menu_shortcut(app, command_id).is_some()))
                 || is_core_routed_dynamic_menu_command(command_id, &current_plugin_menu_items(app))
             {
-                if let Err(error) = emit_menu_command(app, command_id) {
+                let handoff = app_handoff::arm_native_menu(app, command_id);
+                if let Err(error) = emit_menu_command(app, command_id, handoff) {
                     eprintln!("Could not route ChemDraft menu command {command_id}: {error}");
                 }
             }
@@ -1629,6 +1632,7 @@ pub fn run() {
                         dialog_windows::dismiss_owned(window.app_handle(), "quit");
                         window.state::<ocsr_engine::OcsrEngineState>().shutdown();
                         external_tools::shutdown(window.app_handle());
+                        window.state::<app_handoff::State>().shutdown();
                         assistant_mcp::shutdown();
                         window
                             .state::<naming_engine::NamingEngineState>()
@@ -1821,6 +1825,10 @@ pub fn run() {
             assistant_mcp::assistant_mcp_session_close,
             assistant_mcp::assistant_mcp_respond,
             assistant_mcp::assistant_mcp_status,
+            app_handoff::endpoint::app_handoff_call,
+            app_handoff::endpoint::app_handoff_consent_list,
+            app_handoff::endpoint::app_handoff_consent_revoke,
+            app_handoff::endpoint::app_handoff_consent_clear_plugin,
             external_tools::external_tool_status,
             external_tools::external_tool_install,
             external_tools::external_tool_cancel_install,
@@ -1979,6 +1987,7 @@ pub fn run() {
                     panel_full_size::restore_all(app);
                     app.state::<ocsr_engine::OcsrEngineState>().shutdown();
                     external_tools::shutdown(app);
+                    app.state::<app_handoff::State>().shutdown();
                     assistant_mcp::shutdown();
                     app.state::<naming_engine::NamingEngineState>().shutdown();
                 }
@@ -1991,6 +2000,7 @@ pub fn run() {
                 panel_full_size::restore_all(app);
                 app.state::<ocsr_engine::OcsrEngineState>().shutdown();
                 external_tools::shutdown(app);
+                app.state::<app_handoff::State>().shutdown();
                 assistant_mcp::shutdown();
                 app.state::<naming_engine::NamingEngineState>().shutdown();
             }
@@ -2056,6 +2066,7 @@ fn setup_primary_app(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::E
     ocsr.start_idle_reaper();
     ocsr.remove_stale_staging(app);
     external_tools::setup(app);
+    app_handoff::cleanup(app);
     let naming = app.state::<naming_engine::NamingEngineState>();
     naming.start_idle_reaper();
     naming.remove_stale_staging(app);
@@ -9263,6 +9274,7 @@ fn menu_command_target_label<'a>(command_id: &str, focused_label: Option<&'a str
 fn emit_menu_command<R: Runtime>(
     app: &tauri::AppHandle<R>,
     command_id: &str,
+    handoff: bool,
 ) -> Result<(), String> {
     let focused_label = app
         .webview_windows()
@@ -9293,6 +9305,19 @@ fn emit_menu_command<R: Runtime>(
         // Match the normal AppKit edit menus and dispatch to the key window's first responder.
         unsafe { application.sendAction_to_from(action, None, None) };
         return Ok(());
+    }
+    if handoff {
+        let target = app
+            .get_webview_window(MAIN_WINDOW_LABEL)
+            .ok_or("Main document window is not available.")?;
+        // This event selects the handoff dispatcher in the host. It carries no arming data.
+        return dispatch_dom_toolset_event(
+            &target,
+            &ToolsetCommandPayload {
+                command_id: command_id.into(),
+            },
+            "chemdraft:native-handoff-command",
+        );
     }
     if target_label == MAIN_WINDOW_LABEL {
         return emit_command_to_main(app, command_id);

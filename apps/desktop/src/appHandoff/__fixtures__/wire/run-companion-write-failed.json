@@ -1,0 +1,5 @@
+{
+  "code": "write-failed",
+  "message": "The app handoff companion could not complete.",
+  "status": "failed"
+}

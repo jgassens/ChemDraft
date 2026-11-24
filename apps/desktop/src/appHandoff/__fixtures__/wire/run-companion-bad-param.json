@@ -1,0 +1,5 @@
+{
+  "code": "bad-param",
+  "message": "The app handoff companion could not complete.",
+  "status": "failed"
+}
