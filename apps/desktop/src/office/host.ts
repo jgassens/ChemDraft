@@ -135,6 +135,10 @@ const pasteAsPng = "If it came from ChemDraft, copy it again and paste with Past
 export const noCarrier = "This picture has no ChemDraft data. " + pasteAsPng;
 export const pdfWithoutCarrier = "This picture was pasted as a PDF and has no ChemDraft data. " + pasteAsPng;
 
+/**
+ * Reads the ChemDraft drawing from a stored picture. A found carrier also gives the PNG's natural
+ * size (see `pngNaturalSize`), which an Update needs to keep the drawing's scale on the page.
+ */
 export async function readCarrier(bytes: Uint8Array | undefined) {
   if (!bytes) return refuse("Office did not return the selected picture’s stored image.");
   if (bytes[0] !== 137 || bytes[1] !== 80 || bytes[2] !== 78 || bytes[3] !== 71) {
@@ -142,8 +146,56 @@ export async function readCarrier(bytes: Uint8Array | undefined) {
     return refuse(pdf ? pdfWithoutCarrier : noCarrier);
   }
   const result = await readChemDraftSelectionFromPng(bytes);
-  if (result.kind === "found") return result;
+  if (result.kind === "found") return { ...result, natural: pngNaturalSize(bytes) };
   return refuse(result.kind === "absent" ? noCarrier : result.reason);
+}
+
+/** DrawingML English Metric Units per point. */
+export const EMU_PER_POINT = 12700;
+
+/**
+ * The size in points a PNG is meant to show at: its pixels over the density in its pHYs chunk.
+ * ChemDraft stamps that density on every PNG it renders (Copy, and the Office pane's Update),
+ * after any clamping of the raster, so this is the drawing's own size on the page whatever the
+ * raster's resolution. Undefined when the PNG carries no density.
+ */
+export function pngNaturalSize(png: Uint8Array): PictureSize | undefined {
+  const info = readPngInfo(png);
+  const density = info?.pixelsPerMeter;
+  if (!info || !density) return undefined;
+  const points = (pixels: number, perMeter: number) => pixels / perMeter / 0.0254 * 72;
+  const size = { width: points(info.pixelWidth, density.x), height: points(info.pixelHeight, density.y) };
+  return size.width > 0 && size.height > 0 && Number.isFinite(size.width) && Number.isFinite(size.height) ? size : undefined;
+}
+
+/**
+ * Below this relative difference, a frame is taken to be its content's natural size. Office keeps
+ * sizes in whole EMUs (Word) or hundredths of a point (PowerPoint), and pHYs in whole pixels per
+ * meter; both are far inside 0.5%, and a deliberate resize is far outside it.
+ */
+const naturalTolerance = 0.005;
+
+/**
+ * The frame, in points, for a replacement picture. The drawing keeps its scale on the page, so
+ * bonds stay the length they were and the frame grows or shrinks with the drawing.
+ *
+ * The old picture's scale is its frame width over the natural width of its own stored PNG. A frame
+ * at its natural size (within `naturalTolerance`) has scale 1, which is snapped exactly so repeated
+ * Updates cannot drift. Any other scale means the user resized the picture, and the replacement
+ * keeps that scale. The width's scale is used for both sides, so a picture the user stretched out
+ * of proportion comes back in proportion, as it always has.
+ *
+ * Without a density on both PNGs the scale is unknown; the old width is kept, as before.
+ */
+export function replacementFrame(
+  frame: PictureSize, original: PictureSize | undefined, replacement: { aspect: number; natural?: PictureSize },
+): PictureSize {
+  const natural = replacement.natural;
+  if (!original || !natural) return { width: frame.width, height: frame.width * replacement.aspect };
+  let scale = frame.width / original.width;
+  if (Math.abs(scale - 1) <= naturalTolerance) scale = 1;
+  const width = natural.width * scale;
+  return { width, height: width * replacement.aspect };
 }
 
 export function pngBase64(bytes: Uint8Array): string {
@@ -161,5 +213,5 @@ export async function replacementImage(png: Uint8Array, json: string, size: Pict
       dimensions?.pixelWidth !== size.width || dimensions.pixelHeight !== size.height) {
     throw new Error("The replacement PNG does not match the drawing or its dimensions.");
   }
-  return { base64: pngBase64(png), aspect: size.height / size.width };
+  return { base64: pngBase64(png), aspect: size.height / size.width, natural: pngNaturalSize(png) };
 }

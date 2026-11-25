@@ -3,6 +3,7 @@ import { Resvg } from "@resvg/resvg-js";
 import { flatOpcBinaryParts, pngWithChemDraftSelection } from "@chemdraft/clipboard-adapter";
 import { strToU8, zipSync } from "fflate";
 import { describe, expect, it, vi } from "vitest";
+import { pngWithPhysicalDensity } from "../clipboard";
 import { noStructure, pdfWithoutCarrier, readOfficeDocument, type OfficeContext, type OfficeDocument } from "./host";
 import { A, OPC, P, PIC, PKG_REL, R, WORD, WP, WP14, xmlDocument } from "./ooxml";
 import { powerpointAdapter, type PowerPointApi } from "./powerpoint";
@@ -19,6 +20,15 @@ const rels = (relId: string, type: string, target: string) =>
   '<Relationships xmlns="' + PKG_REL + '"><Relationship Id="' + relId + '" Type="' + R + '/' + type +
   '" Target="' + target + '"/></Relationships>';
 const pngRel = rels("rId7", "image", "media/chemistry.png");
+/** A ChemDraft PNG as Copy and Update write it: 4× pixels with a 384 dpi pHYs density. */
+const drawingPng = (width: number, height: number, json: string) => pngWithChemDraftSelection(pngWithPhysicalDensity(
+  new Resvg('<svg xmlns="http://www.w3.org/2000/svg" width="' + width + '" height="' + height + '"><rect width="' + width +
+    '" height="' + height + '"/></svg>').render().asPng(), 384), json);
+// One ring shows at 22.5 × 15 pt; adding a second ring doubles the drawing's width to 45 × 15 pt.
+const oneRing = drawingPng(120, 80, sourceJson);
+const twoRings = drawingPng(240, 80, updateJson);
+const twoRingsSize = { width: 240, height: 80 };
+const EMU = 12700;
 
 function office({ sets = [], archive }: { sets?: string[]; archive?: Uint8Array } = {}) {
   const close = vi.fn<OfficeDocument["getFileAsync"]>();
@@ -36,17 +46,19 @@ function office({ sets = [], archive }: { sets?: string[]; archive?: Uint8Array 
   } satisfies OfficeContext;
 }
 
-function wordDocument({ floating = false, crop = false, group = false, text = "", id = 17, anchorId = "2200ACD1" } = {}) {
+function wordDocument({ floating = false, crop = false, group = false, text = "", id = 17, anchorId = "2200ACD1",
+  extent = [3810000, 1905000] } = {}) {
   const placement = floating ? "anchor" : "inline";
   const props = '<wp:docPr id="' + id + '" name="Figure 1" descr="Figure description"/>';
   const picture = '<pic:pic><pic:blipFill><a:blip r:embed="rId7"/><a:srcRect' + (crop ? ' l="3500"' : '') +
-    '/></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="3810000" cy="1905000"/></a:xfrm></pic:spPr></pic:pic>';
+    '/></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="' + extent[0] + '" cy="' + extent[1] +
+    '"/></a:xfrm></pic:spPr></pic:pic>';
   const anchor = floating ? '<wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="column"><wp:posOffset>317500</wp:posOffset></wp:positionH>' +
     '<wp:positionV relativeFrom="paragraph"><wp:posOffset>127000</wp:posOffset></wp:positionV>' : "";
   return '<w:document xmlns:w="' + WORD + '" xmlns:wp="' + WP + '" xmlns:a="' + A + '" xmlns:r="' + R +
     '" xmlns:pic="' + PIC + '" xmlns:wp14="' + WP14 + '"><w:body><w:p><w:r>' + text + '<w:drawing><wp:' + placement +
     ' wp14:anchorId="' + anchorId + '"' + (floating ? ' distL="114300" relativeHeight="251658240"' : '') + '>' + anchor +
-    '<wp:extent cx="3810000" cy="1905000"/>' + (floating ? '<wp:wrapSquare wrapText="bothSides"/>' : "") + props +
+    '<wp:extent cx="' + extent[0] + '" cy="' + extent[1] + '"/>' + (floating ? '<wp:wrapSquare wrapText="bothSides"/>' : "") + props +
     '<a:graphic><a:graphicData uri="' + PIC + '">' +
     (group ? '<wpg:wgp xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup">' + picture + '</wpg:wgp>' : picture) +
     '</a:graphicData></a:graphic></wp:' + placement + '></w:drawing></w:r></w:p></w:body></w:document>';
@@ -97,6 +109,42 @@ describe("Word Office adapter", () => {
       expect(placement.getElementsByTagNameNS(WP, "positionV")[0]?.textContent).toBe("127000");
     }
     expect([...flatOpcBinaryParts(xml)[0]!.bytes]).toEqual([...updated]);
+  });
+
+  it.each([
+    ["at its natural size", 1],
+    ["the user resized to 160%", 1.6],
+  ] as const)("keeps the drawing scale and position and grows the frame when a ring is added to a picture %s", async (_label, scale) => {
+    const extent = [Math.round(22.5 * scale * EMU), Math.round(15 * scale * EMU)];
+    for (const floating of [false, true]) {
+      const { word, insertOoxml } = wordHost(flatOpc(wordDocument({ floating, extent }), oneRing));
+      const adapter = wordAdapter(office({ sets: ["WordApi 1.1"] }), word);
+      expect(await adapter.readSelectedStructure()).toMatchObject({ kind: "structure", json: sourceJson });
+      expect(await adapter.replaceSelectedStructure(twoRings, updateJson, twoRingsSize)).toMatchObject({ kind: "replaced" });
+      const placement = xmlDocument(insertOoxml.mock.calls[0]![0]).getElementsByTagNameNS(WP, floating ? "anchor" : "inline")[0]!;
+      for (const node of [placement.getElementsByTagNameNS(WP, "extent")[0]!, placement.getElementsByTagNameNS(A, "ext")[0]!]) {
+        // Twice as wide, as tall as before: each ring keeps its size on the page.
+        expect(Math.abs(Number(node.getAttribute("cx")) - 2 * extent[0]!)).toBeLessThanOrEqual(20);
+        expect(Math.abs(Number(node.getAttribute("cy")) - extent[1]!)).toBeLessThanOrEqual(20);
+      }
+      if (floating) {
+        expect(placement.getElementsByTagNameNS(WP, "positionH")[0]?.textContent).toBe("317500");
+        expect(placement.getElementsByTagNameNS(WP, "positionV")[0]?.textContent).toBe("127000");
+      }
+    }
+  });
+
+  it("keeps a picture at its natural size exactly natural across repeated updates", async () => {
+    const { word, insertOoxml } = wordHost(flatOpc(wordDocument({ extent: [285750, 190500] }), oneRing));
+    const adapter = wordAdapter(office({ sets: ["WordApi 1.1"] }), word);
+    await adapter.readSelectedStructure();
+    const unchanged = drawingPng(120, 80, updateJson);
+    await adapter.replaceSelectedStructure(unchanged, updateJson, { width: 120, height: 80 });
+    const extent = xmlDocument(insertOoxml.mock.calls[0]![0]).getElementsByTagNameNS(WP, "extent")[0]!;
+    expect([extent.getAttribute("cx"), extent.getAttribute("cy")]).toEqual([
+      String(Math.round(120 / Math.round(384 / 0.0254) / 0.0254 * 72 * EMU)),
+      String(Math.round(80 / Math.round(384 / 0.0254) / 0.0254 * 72 * EMU)),
+    ]);
   });
 
   it("finds only the selected drawing's related media in a full DOCX fallback", async () => {
@@ -334,11 +382,16 @@ interface HostOptions extends PptxOptions {
   ignoresAltTextWrites?: boolean;
   /** The slide ID Office.js reports. */
   slideId?: string;
+  /** The old picture's frame in points, instead of 300 × 150. */
+  frame?: { width: number; height: number };
+  /** PowerPoint drops the tags written to the inserted picture. */
+  dropsInsertedTags?: boolean;
 }
 
 function powerpointHost({ version = 10, writableRotation = true, unwritableName = false, failSyncAfterInsert, extraInsert = false,
   insertOnOtherSlide = false, undeletable = false, oldUndeletable = false, decorativeClearsAltText = false,
-  ignoresAltTextWrites = false, slideId = "307", ...pptxOptions }: HostOptions = {}) {
+  ignoresAltTextWrites = false, slideId = "307", frame = { width: 300, height: 150 }, dropsInsertedTags = false,
+  ...pptxOptions }: HostOptions = {}) {
   const rotation = pptxOptions.rotation ?? 0;
   const archive = pptx(pptxOptions);
   const sets = ["CompressedFile 1.1", "ImageCoercion 1.1"];
@@ -348,17 +401,50 @@ function powerpointHost({ version = 10, writableRotation = true, unwritableName 
   const stack: Shape[] = [];
   const mutations: string[] = [];
   let syncsAfterInsert: number | undefined;
-  function shape(id: string, name: string, initialRotation = 0) {
-    const tags = collection<{ key: string; value: string }>([]);
+  // Tags behave as PowerPoint's: keys are stored upper-case, and writes are committed when the batch
+  // syncs, after the batch's reads, so a tag load queued alongside the writes sees the tags as they were.
+  type Tag = { key: string; value: string };
+  const tagReads: (() => void)[] = [];
+  const tagWrites: (() => void)[] = [];
+  function tagCollection(dropsWrites = false) {
+    const stored: Tag[] = [];
+    const tags = {
+      /** The tags PowerPoint holds; `items` is only what the last synced load read. */
+      stored,
+      items: [] as Tag[],
+      load() {
+        tagReads.push(() => { tags.items = stored.map(tag => ({ ...tag })); });
+        return tags;
+      },
+      add(key: string, value: string) {
+        tagWrites.push(() => {
+          if (dropsWrites) return;
+          const existing = stored.find(tag => tag.key === key.toUpperCase());
+          if (existing) existing.value = value;
+          else stored.push({ key: key.toUpperCase(), value });
+        });
+      },
+    };
+    return tags;
+  }
+  function commitTags(apply: boolean) {
+    const reads = tagReads.splice(0);
+    const writes = tagWrites.splice(0);
+    if (!apply) return;
+    for (const read of reads) read();
+    for (const write of writes) write();
+  }
+  function shape(id: string, name: string, initialRotation = 0, dropsTagWrites = false) {
+    const tags = tagCollection(dropsTagWrites);
     // PowerPointApi 1.10 alt-text properties; an inserted picture may arrive with generated alt text.
     const altText: { altTextTitle?: string; altTextDescription?: string; isDecorative?: boolean } =
       version >= 10 ? { altTextTitle: "", altTextDescription: "Generated description", isDecorative: false } : {};
     return {
-      id, name, type: "Image", left: 27, top: 16, width: 300, height: 150, rotation: initialRotation, ...altText,
+      id, name, type: "Image", left: 27, top: 16, ...frame, rotation: initialRotation, ...altText,
       setHyperlink: vi.fn(),
       get zOrderPosition(): number { return stack.indexOf(this); },
       load: vi.fn(),
-      tags: { ...tags, add: (key: string, value: string) => tags.items.push({ key, value }) },
+      tags,
       setZOrder: vi.fn((direction: "BringForward" | "SendBackward"): void => {
         const index = stack.indexOf(stack.find(item => item.id === id)!);
         const [item] = stack.splice(index, 1);
@@ -379,7 +465,7 @@ function powerpointHost({ version = 10, writableRotation = true, unwritableName 
   }
   const old = shape("22", "Original figure", rotation);
   if (!writableRotation) Object.defineProperty(old, "rotation", { writable: false });
-  old.tags.add("ORIGINAL", "keep");
+  old.tags.stored.push({ key: "ORIGINAL", value: "keep" });
   stack.push(shape("21", "Behind"), old, shape("23", "Front"));
   const slide = { id: slideId, shapes: collection(stack), exportAsBase64: vi.fn(() => ({ value: b64(archive) })) };
   const otherSlide = { ...slide, id: "308", shapes: collection<Shape>([]) };
@@ -390,13 +476,14 @@ function powerpointHost({ version = 10, writableRotation = true, unwritableName 
       getSelectedShapes: () => collection([old]), getSelectedSlides,
       slides: { getItem: id => id === otherSlide.id ? otherSlide : slide },
     }, sync: async () => {
-      if (syncsAfterInsert === undefined) return;
-      if (++syncsAfterInsert === failSyncAfterInsert) throw new Error("PowerPoint sync failed.");
+      const fails = syncsAfterInsert !== undefined && ++syncsAfterInsert === failSyncAfterInsert;
+      commitTags(!fails);
+      if (fails) throw new Error("PowerPoint sync failed.");
     },
-  }) } satisfies PowerPointApi;
+  }).finally(() => commitTags(false)) } satisfies PowerPointApi;
   host.document.setSelectedDataAsync.mockImplementation(
     (_base64: string, options: Parameters<OfficeDocument["setSelectedDataAsync"]>[1], done: Parameters<OfficeDocument["setSelectedDataAsync"]>[2]) => {
-      const inserted = { ...shape("24", "Inserted"), ...{ left: options.imageLeft, top: options.imageTop, width: options.imageWidth, height: options.imageHeight },
+      const inserted = { ...shape("24", "Inserted", 0, dropsInsertedTags), ...{ left: options.imageLeft, top: options.imageTop, width: options.imageWidth, height: options.imageHeight },
         get zOrderPosition(): number { return stack.indexOf(this); },
       };
       if (unwritableName) Object.defineProperty(inserted, "name", { writable: false });
@@ -445,8 +532,47 @@ describe("PowerPoint Office adapter", () => {
     expect(stack.map(item => item.id)).toEqual(["21", "24", "23"]);
     expect(stack[1]).toMatchObject({
       name: "Original figure", rotation: 35,
-      tags: { items: [{ key: "ORIGINAL", value: "keep" }, { key: "CHEMDRAFT", value: "1" }] },
+      tags: { stored: [{ key: "ORIGINAL", value: "keep" }, { key: "CHEMDRAFT", value: "1" }] },
     });
+  });
+
+  it("updates when PowerPoint upper-cases tag keys and commits tag writes only when the batch syncs", async () => {
+    const { host, powerpoint, old, stack, mutations } = powerpointHost();
+    old.tags.add("Source", "ChemDraft desktop");
+    const adapter = powerpointAdapter(host, powerpoint);
+    expect(await adapter.readSelectedStructure()).toMatchObject({ kind: "structure", json: sourceJson });
+    expect(old.tags.stored).toEqual([{ key: "ORIGINAL", value: "keep" }, { key: "SOURCE", value: "ChemDraft desktop" }]);
+    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toEqual({ kind: "replaced", key: replacementShapeKey });
+    expect(mutations).toEqual(["insert", "stack", "delete:22"]);
+    expect(stack.find(item => item.id === "24")!.tags.stored).toEqual([
+      { key: "ORIGINAL", value: "keep" }, { key: "SOURCE", value: "ChemDraft desktop" }, { key: "CHEMDRAFT", value: "1" },
+    ]);
+  });
+
+  it("keeps the old picture when the new one does not keep its ChemDraft tag", async () => {
+    const { host, powerpoint, stack, mutations } = powerpointHost({ dropsInsertedTags: true });
+    const adapter = powerpointAdapter(host, powerpoint);
+    await adapter.readSelectedStructure();
+    expect(await adapter.replaceSelectedStructure(updated, updateJson, size)).toMatchObject({
+      kind: "refusal", reason: expect.stringContaining("could not preserve the picture’s tags"),
+    });
+    expect(mutations).toEqual(["insert", "stack", "delete:24"]);
+    expect(stack.map(item => item.id)).toEqual(["21", "22", "23"]);
+  });
+
+  it.each([
+    ["at its natural size", 1],
+    ["the user resized to 160%", 1.6],
+  ] as const)("keeps the drawing scale and position and grows the frame when a ring is added to a picture %s", async (_label, scale) => {
+    const { host, powerpoint, stack } = powerpointHost({ media: oneRing, frame: { width: 22.5 * scale, height: 15 * scale } });
+    const adapter = powerpointAdapter(host, powerpoint);
+    expect(await adapter.readSelectedStructure()).toMatchObject({ kind: "structure", json: sourceJson });
+    expect(await adapter.replaceSelectedStructure(twoRings, updateJson, twoRingsSize)).toEqual({ kind: "replaced", key: replacementShapeKey });
+    const options = host.document.setSelectedDataAsync.mock.calls[0]![1];
+    expect(options).toMatchObject({ imageLeft: 27, imageTop: 16 });
+    expect(options.imageWidth).toBeCloseTo(45 * scale, 2);
+    expect(options.imageHeight).toBeCloseTo(15 * scale, 2);
+    expect(stack.find(item => item.id === "24")).toMatchObject({ left: 27, top: 16 });
   });
 
   it("reads older PowerPoint via the compressed file and refuses its updates", async () => {
@@ -467,6 +593,23 @@ describe("PowerPoint Office adapter", () => {
     const { host, powerpoint, slide } = powerpointHost();
     slide.exportAsBase64.mockImplementation(() => { throw new Error("Cannot export slide."); });
     expect(await powerpointAdapter(host, powerpoint).readSelectedStructure()).toMatchObject({ kind: "structure", json: sourceJson });
+    expect(host.document.getFileAsync).toHaveBeenCalledOnce();
+  });
+
+  it("reports a whole-presentation read failure after a slide export that lacks the selected picture", async () => {
+    // The export reads as "no structure" (shape 22 is not on the exported slide); the whole
+    // presentation is then the only real read, and it cannot find slide 999.
+    const { host, powerpoint, slide } = powerpointHost({ slideId: "999#1" });
+    const emptySlide = '<p:sld xmlns:p="' + P + '"><p:cSld><p:spTree/></p:cSld></p:sld>';
+    slide.exportAsBase64.mockReturnValue({ value: b64(zipSync({
+      "ppt/slides/slide1.xml": strToU8(emptySlide),
+      "ppt/slides/_rels/slide1.xml.rels": strToU8('<Relationships xmlns="' + PKG_REL + '"/>'),
+    })) });
+    expect(await powerpointAdapter(host, powerpoint).readSelectedStructure()).toEqual({
+      kind: "refusal",
+      reason: "Could not read the selected PowerPoint picture. Could not identify the selected PowerPoint slide in the file.",
+    });
+    expect(slide.exportAsBase64).toHaveBeenCalledOnce();
     expect(host.document.getFileAsync).toHaveBeenCalledOnce();
   });
 

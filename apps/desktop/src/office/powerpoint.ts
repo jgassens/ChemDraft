@@ -1,7 +1,8 @@
 import { pptxChoiceIsUnderstood, pptxSlidePictureMedia, readZipFromBase64, type OfficeZipEntry } from "@chemdraft/clipboard-adapter";
 import {
   errorMessage, noCarrier, noStructure, officeAsync, pdfWithoutCarrier, readCarrier, readOfficeDocument, refuse,
-  replacementImage, selectionChanged, type NoStructure, type OfficeContext, type OfficeHostAdapter, type Refusal, type SelectedStructure,
+  replacementFrame, replacementImage, selectionChanged, type NoStructure, type OfficeContext, type OfficeHostAdapter, type PictureSize,
+  type Refusal, type SelectedStructure,
 } from "./host";
 import { A, P, PKG_REL, R, child, children, decodeXml, hasCrop, relationshipPart, xmlDocument } from "./ooxml";
 
@@ -212,10 +213,11 @@ async function readPicture(entries: OfficeZipEntry[], shapeId: string, slideId?:
   const carrier = await readCarrier(stored[0]?.data);
   if (carrier.kind !== "found") return carrier;
   const state = pictureState(doc, shape, properties[0]!, xmlDocument(relsXml).documentElement, shapeId);
-  return { kind: "picture" as const, json: carrier.json, rotation, state };
+  return { kind: "picture" as const, json: carrier.json, natural: carrier.natural, rotation, state };
 }
 
-type Selection = NoStructure | Refusal | (SelectedStructure & { state: PictureState });
+/** `natural` is the stored PNG's own size in points (see `pngNaturalSize`), when it records one. */
+type Selection = NoStructure | Refusal | (SelectedStructure & { state: PictureState; natural?: PictureSize });
 const altText = ["altTextTitle", "altTextDescription", "isDecorative"] as const;
 
 /** Shown when the rollback cannot tell which shape ChemDraft inserted. Nothing is deleted by position. */
@@ -284,9 +286,14 @@ export function powerpointAdapter(office: OfficeContext, powerpoint: PowerPointA
           const fallback = await readPicture(await readOfficeDocument(office), shapeId, slideId);
           if (fallback.kind !== "no-structure" || !picture) picture = fallback;
         } catch (error) {
-          // The exported slide was already read. Keep what it showed, for example that the picture
-          // has no ChemDraft data, rather than report that the second read could not find the slide.
-          if (!picture) throw error;
+          // The exported slide showed the picture has no ChemDraft data; the whole presentation was
+          // read only because an export may re-encode the stored image. Keep that answer rather than
+          // report that the second read could not find the slide. Any other export result (no
+          // export, or a slide without the selected shape) leaves the fallback as the only real
+          // read, so its failure is the error to report, never an ordinary "no structure".
+          const exportedNoCarrier = picture?.kind === "refusal" &&
+            (picture.reason === noCarrier || picture.reason === pdfWithoutCarrier);
+          if (!exportedNoCarrier) throw error;
         }
       }
     }
@@ -295,7 +302,10 @@ export function powerpointAdapter(office: OfficeContext, powerpoint: PowerPointA
     const updateRefusal = !supports("1.8") ? needsNewer :
       picture.rotation && !supports("1.10") ? needsRotation :
       !office.requirements.isSetSupported("ImageCoercion", "1.1") ? "This PowerPoint cannot insert image data." : undefined;
-    return { kind: "structure", key: JSON.stringify([slideId, shapeId]), json: picture.json, updateRefusal, state: picture.state };
+    return {
+      kind: "structure", key: JSON.stringify([slideId, shapeId]), json: picture.json, updateRefusal, state: picture.state,
+      natural: picture.natural,
+    };
   }
 
   return {
@@ -335,17 +345,19 @@ export function powerpointAdapter(office: OfficeContext, powerpoint: PowerPointA
           if (canRotate && (!Number.isFinite(shape.rotation) ||
               (shape.rotation && !writableProperty(shape, "rotation")))) throw new Error(needsRotation);
           return {
-            slideId: slide.id, id: shape.id, ids, left: shape.left, top: shape.top, width: shape.width,
+            slideId: slide.id, id: shape.id, ids, left: shape.left, top: shape.top, width: shape.width, height: shape.height,
             name: shape.name, rotation: canRotate ? shape.rotation : undefined,
             zOrder: shape.zOrderPosition, tags: shape.tags.items.map(({ key, value }) => ({ key, value })),
           };
         });
         if (selected !== expected) return refuse(selectionChanged);
-        const height = original.width * image.aspect;
-        if (![original.left, original.top, original.width, height].every(Number.isFinite) || original.width <= 0 || height <= 0) {
+        // The new picture keeps the old one's top-left corner and its drawing scale; its frame follows the new drawing.
+        const { width, height } = replacementFrame({ width: original.width, height: original.height }, current.natural, image);
+        if (![original.left, original.top, original.width, width, height].every(Number.isFinite) ||
+            original.width <= 0 || width <= 0 || height <= 0) {
           throw new Error("The replacement PowerPoint picture has invalid dimensions.");
         }
-        const placement = { left: original.left, top: original.top, width: original.width, height };
+        const placement = { left: original.left, top: original.top, width, height };
         const { state } = current;
         const lost = [...state.lost];
         // Office.js exposes no PowerPoint undo group that spans Common API image insertion and
@@ -391,11 +403,16 @@ export function powerpointAdapter(office: OfficeContext, powerpoint: PowerPointA
             if ((state.altTextTitle || state.altTextDescription) &&
                 !(altWritable.includes("altTextTitle") && altWritable.includes("altTextDescription"))) lost.push("its alt text");
             if (state.isDecorative && !altWritable.includes("isDecorative")) lost.push("its decorative setting");
-            for (const { key, value } of original.tags) {
-              if (key.toUpperCase() !== marker) inserted.tags.add(key, value);
-            }
+            // PowerPoint stores tag keys upper-case, whatever case they were added in, so every key
+            // comparison below is upper-case.
+            const carried = original.tags.filter(({ key }) => key.toUpperCase() !== marker);
+            for (const { key, value } of carried) inserted.tags.add(key, value);
             inserted.tags.add(marker, "1");
             for (let step = 0; step < Math.abs(delta); step++) inserted.setZOrder(direction);
+            // Commit every write before reading any of it back. On PowerPoint 16 for Mac a tag read-back
+            // queued in the same batch as the tag writes came back without them (hands-on, 2026-11-25),
+            // so a correct update failed with "could not preserve the picture's tags".
+            await context.sync();
             inserted.load(["zOrderPosition,left,top,width,height", ...(canRename ? ["name"] : []),
               ...(canRotate ? ["rotation"] : []), ...altWritable].join(","));
             inserted.tags.load("items/key,items/value");
@@ -409,8 +426,10 @@ export function powerpointAdapter(office: OfficeContext, powerpoint: PowerPointA
               throw new Error("PowerPoint could not preserve the picture’s placement or size.");
             }
             const tags = new Map(inserted.tags.items.map(({ key, value }) => [key.toUpperCase(), value]));
-            if (tags.get(marker) !== "1" || original.tags.some(({ key, value }) => key.toUpperCase() !== marker &&
-                tags.get(key.toUpperCase()) !== value)) throw new Error("PowerPoint could not preserve the picture’s tags.");
+            // The marker identifies the new picture as ChemDraft's; it and every carried tag must be read back.
+            if (tags.get(marker) !== "1" || carried.some(({ key, value }) => tags.get(key.toUpperCase()) !== value)) {
+              throw new Error("PowerPoint could not preserve the picture’s tags.");
+            }
             if (canRename && inserted.name !== original.name) throw new Error("PowerPoint could not preserve the picture’s name.");
             if (canRotate && (!Number.isFinite(inserted.rotation) || Math.abs(inserted.rotation! - original.rotation!) > 0.01)) {
               throw new Error("PowerPoint could not preserve the picture’s rotation.");

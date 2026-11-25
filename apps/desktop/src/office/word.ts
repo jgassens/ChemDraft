@@ -1,7 +1,7 @@
 import { flatOpcBinaryParts } from "@chemdraft/clipboard-adapter";
 import {
-  errorMessage, noStructure, readCarrier, readOfficeDocument, refuse, replacementImage, selectionChanged,
-  type OfficeContext, type OfficeHostAdapter,
+  EMU_PER_POINT, errorMessage, noStructure, readCarrier, readOfficeDocument, refuse, replacementFrame, replacementImage,
+  selectionChanged, type OfficeContext, type OfficeHostAdapter, type PictureSize,
 } from "./host";
 import { A, PIC, OPC, PKG_REL, R, WORD, WP, WP14, child, decodeXml, hasCrop, partXml, relationshipPart, xmlDocument } from "./ooxml";
 
@@ -119,15 +119,28 @@ async function wordCarrier(office: OfficeContext, picture: WordPicture & { media
   return primary;
 }
 
-function replacementOoxml(picture: WordPicture, pngBase64: string, aspect: number) {
-  const { drawing, blip, extent, transformExtent, properties, width } = picture;
-  const height = Math.round(width * aspect);
-  if (!Number.isSafeInteger(height) || height < 1) throw new Error("The replacement Word picture is too tall or too short.");
+/**
+ * The Word drawing XML for the replacement. Only the extents change: the anchor's position (its
+ * top-left offset), wrapping and properties are kept, and the extents follow the new drawing at
+ * the old picture's scale (see `replacementFrame`).
+ */
+function replacementOoxml(
+  picture: WordPicture, image: { base64: string; aspect: number; natural?: PictureSize }, original: PictureSize | undefined,
+) {
+  const { drawing, blip, extent, transformExtent, properties } = picture;
+  const frame = replacementFrame(
+    { width: picture.width / EMU_PER_POINT, height: Number(extent.getAttribute("cy")) / EMU_PER_POINT }, original, image);
+  const width = Math.round(frame.width * EMU_PER_POINT);
+  const height = Math.round(frame.height * EMU_PER_POINT);
+  if (!Number.isSafeInteger(width) || width < 1 || !Number.isSafeInteger(height) || height < 1) {
+    throw new Error("The replacement Word picture is too tall or too short.");
+  }
   for (const element of [drawing, ...drawing.getElementsByTagName("*")]) {
     if ([...element.attributes].some(attr => attr.namespaceURI === R && !(element === blip && attr.localName === "embed"))) {
       throw new Error("The selected Word picture has additional linked parts that cannot be preserved.");
     }
   }
+  extent.setAttribute("cx", String(width));
   extent.setAttribute("cy", String(height));
   // A picture has a layout extent and a DrawingML extent. Both must describe the new image.
   transformExtent?.setAttribute("cx", String(width));
@@ -150,7 +163,7 @@ function replacementOoxml(picture: WordPicture, pngBase64: string, aspect: numbe
     '<Relationship Id="rIdImage" Type="' + R + '/image" Target="media/replacement.png"/>' +
     '</Relationships></pkg:xmlData></pkg:part>' +
     '<pkg:part pkg:name="/word/media/replacement.png" pkg:contentType="image/png"><pkg:binaryData>' +
-    pngBase64 + '</pkg:binaryData></pkg:part></pkg:package>';
+    image.base64 + '</pkg:binaryData></pkg:part></pkg:package>';
 }
 
 /** Whether the Word selection is a bare insertion point. Undefined when Word cannot say. */
@@ -215,7 +228,7 @@ export function wordAdapter(office: OfficeContext, word: WordApi | undefined): O
           // Compare the bytes as well, since a document edit can replace the media without changing the drawing XML.
           const stored = await wordCarrier(office, picture, source.value);
           if (stored.kind !== "found" || stored.json !== expected.json || selected !== expected) return refuse(selectionChanged);
-          const replacement = range.insertOoxml(replacementOoxml(picture, image.base64, image.aspect), "Replace");
+          const replacement = range.insertOoxml(replacementOoxml(picture, image, stored.natural), "Replace");
           await context.sync();
           // Word may renumber picture IDs during insertion. Read the returned range, since the
           // user may already have selected another picture.
