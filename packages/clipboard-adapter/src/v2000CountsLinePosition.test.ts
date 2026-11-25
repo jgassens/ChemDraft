@@ -1,0 +1,148 @@
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { ensureRdkit, resetRdkitForTesting } from "../../rdkit-adapter/src/conformer";
+import { installRealRdkitModuleLoader } from "../../rdkit-adapter/src/testing";
+import { detectMolfileFormat, extractRxnMolfileBlocks, parseMolfileGraph, type ParsedMolfileGraph } from "./index";
+
+// Failing tests for the clipboard MOL/RXN counts-line reader (findV2000CountsLineIndex takes the
+// FIRST counts-shaped line anywhere in the text; parseV2000CountsLine reads columns 1-6 first).
+// The V2000 counts line is always line 4: lines 1-3 are the header (title, program, comment)
+// and are never structure. Its atom and bond counts are fixed columns aaa (1-3) and bbb (4-6).
+// Every fixture is hand-written; nothing here uses the production writer.
+
+const atomLine = (x: number, y: number, symbol: string) =>
+  `${x.toFixed(4).padStart(10)}${y.toFixed(4).padStart(10)}    0.0000 ${symbol.padEnd(3)} 0  0  0  0  0  0  0  0  0  0  0  0`;
+const bondLine = (from: number, to: number, order = 1) =>
+  `${String(from).padStart(3)}${String(to).padStart(3)}${String(order).padStart(3)}  0  0  0  0`;
+
+/** A ring of `size` carbons: `size` atom lines and `size` bond lines. */
+function carbonRing(size: number): { atoms: string[]; bonds: string[] } {
+  const atoms = Array.from({ length: size }, (_, index) =>
+    atomLine(Math.cos((2 * Math.PI * index) / size) * size * 0.25, Math.sin((2 * Math.PI * index) / size) * size * 0.25, "C"));
+  const bonds = Array.from({ length: size }, (_, index) => bondLine(index + 1, index === size - 1 ? 1 : index + 2));
+  return { atoms, bonds };
+}
+
+const methanol = { atoms: [atomLine(0, 0, "C"), atomLine(1.5, 0, "O")], bonds: [bondLine(1, 2)] };
+
+function expectGraph(graph: ParsedMolfileGraph, elements: readonly string[], bondCount: number): void {
+  expect(graph.atoms.map((atom) => atom.element)).toEqual(elements);
+  expect(graph.bonds).toHaveLength(bondCount);
+  const ids = new Set(graph.atoms.map((atom) => atom.id));
+  for (const bond of graph.bonds) {
+    expect(ids.has(bond.fromAtomId)).toBe(true);
+    expect(ids.has(bond.toAtomId)).toBe(true);
+  }
+  expect(graph.warnings).toEqual([]);
+}
+
+/**
+ * The structure is read right, or refused with an error that names the counts line. Anything else
+ * (a different atom/bond count, an empty structure, or an error blaming an atom or bond line the
+ * reader reached only because it picked the wrong counts) fails.
+ */
+function expectReadRightOrRefused(text: string, elements: readonly string[], bondCount: number): void {
+  let graph: ParsedMolfileGraph;
+  try {
+    graph = parseMolfileGraph(text);
+  } catch (error) {
+    expect((error as Error).message).toMatch(/counts line/i);
+    return;
+  }
+  expectGraph(graph, elements, bondCount);
+}
+
+// Comment lines shaped like a zero-count counts line: one with the V2000 tag, one with six fields.
+const zeroCountComments = [
+  "  0  0  0  0  0  0  0  0  0  0999 V2000",
+  "  0  0  0  0  0  0"
+] as const;
+
+describe("(a) a counts-shaped header comment is never the counts line", () => {
+  it.each(zeroCountComments)("MOL paste reads past comment line %j", (comment) => {
+    const molfile = ["methanol", "  Other", comment, "  2  1  0  0  0  0  0  0  0  0999 V2000",
+      ...methanol.atoms, ...methanol.bonds, "M  END"].join("\n");
+    expect(detectMolfileFormat(molfile)).toBe("molfile-v2000");
+    // Before the fix: 0 atoms / 0 bonds with only a "no atoms" warning; the structure is lost.
+    expectGraph(parseMolfileGraph(molfile), ["C", "O"], 1);
+  });
+
+  it.each(zeroCountComments)("RXN paste reads past comment line %j in a $MOL block", (comment) => {
+    const rxnfile = ["$RXN", "methanol to methanol", "  Other", "", "  1  1",
+      "$MOL", "methanol", "  Other", comment, "  2  1  0  0  0  0  0  0  0  0999 V2000", ...methanol.atoms, ...methanol.bonds, "M  END",
+      "$MOL", "methanol", "  Other", "", "  2  1  0  0  0  0  0  0  0  0999 V2000", ...methanol.atoms, ...methanol.bonds, "M  END"
+    ].join("\n");
+    const blocks = extractRxnMolfileBlocks(rxnfile);
+    expect(blocks.map((block) => block.format)).toEqual(["molfile-v2000", "molfile-v2000"]);
+    for (const block of blocks) expectGraph(parseMolfileGraph(block.text), ["C", "O"], 1);
+  });
+});
+
+describe("(b) counts of 100 atoms and 100 bonds", () => {
+  const ring = carbonRing(100);
+  const ringElements = Array.from({ length: 100 }, () => "C");
+  const withCounts = (counts: string) => ["macrocycle", "  Other", "", counts, ...ring.atoms, ...ring.bonds, "M  END"].join("\n");
+
+  it("reads the standard fixed-column counts '100100' as 100 atoms and 100 bonds (control)", () => {
+    expectGraph(parseMolfileGraph(withCounts("100100  0  0  0  0  0  0  0  0999 V2000")), ringElements, 100);
+  });
+
+  // By columns, "100 100" is aaa="100", bbb=" 10": 100 atoms and 10 bonds, which the 90 further
+  // bond lines contradict. RDKit (MinimalLib) refuses each of these files. ChemDraft must read
+  // the 100 bonds that are there, or refuse; never keep 10 bonds and drop the other 90.
+  it.each([
+    "100 100  0  0  0  0",
+    "100 100  0  0  0  0  0  0  0  0999 V2000",
+    "100 100 V2000",
+    "100 100"
+  ])("never silently reads unpadded counts %j as anything but 100/100", (counts) => {
+    expectReadRightOrRefused(withCounts(counts), ringElements, 100);
+  });
+});
+
+describe("(c) an RXN $MOL block with a blank program line never takes a bond record for its counts", () => {
+  // Short counts lines (no V2000 tag, fewer than six fields) that RDKit reads by columns.
+  const shortCounts = ["  6  6", "  6  6  0  0"] as const;
+
+  it.each(shortCounts)("reads a cyclohexane block with counts %j", (counts) => {
+    const ring = carbonRing(6);
+    const rxnfile = ["$RXN", "", "", "", "  1  1",
+      "$MOL", "cyclohexane", "", "", counts, ...ring.atoms, ...ring.bonds, "M  END",
+      "$MOL", "methanol", "", "", "  2  1  0  0  0  0  0  0  0  0999 V2000", ...methanol.atoms, ...methanol.bonds, "M  END"
+    ].join("\n");
+    const blocks = extractRxnMolfileBlocks(rxnfile);
+    expect(blocks).toHaveLength(2);
+    // Before the fix the first bond record "  1  2  1  0  0  0  0" is read as 1 atom / 2 bonds,
+    // and the next bond record becomes an atom with element "0".
+    expectReadRightOrRefused(blocks[0]!.text, ["C", "C", "C", "C", "C", "C"], 6);
+    expectGraph(parseMolfileGraph(blocks[1]!.text), ["C", "O"], 1);
+  });
+});
+
+describe("RDKit reference for the fixtures above", () => {
+  beforeAll(installRealRdkitModuleLoader);
+  afterAll(resetRdkitForTesting);
+
+  it("reads line 4 as the counts line, by columns, and refuses unpadded 100 100", async () => {
+    const rdkit = await ensureRdkit();
+    const atomCount = (molfile: string): number | undefined => {
+      const molecule = rdkit.get_mol(molfile);
+      if (!molecule) return undefined;
+      try {
+        return (JSON.parse(molecule.get_json!()) as { molecules: { atoms: unknown[] }[] }).molecules[0]!.atoms.length;
+      } finally {
+        molecule.delete();
+      }
+    };
+    for (const comment of zeroCountComments) {
+      expect(atomCount(["methanol", "  Other", comment, "  2  1  0  0  0  0  0  0  0  0999 V2000",
+        ...methanol.atoms, ...methanol.bonds, "M  END"].join("\n"))).toBe(2);
+    }
+    const ring100 = carbonRing(100);
+    expect(atomCount(["", "  Other", "", "100100  0  0  0  0  0  0  0  0999 V2000", ...ring100.atoms, ...ring100.bonds, "M  END"].join("\n"))).toBe(100);
+    expect(atomCount(["", "  Other", "", "100 100  0  0  0  0", ...ring100.atoms, ...ring100.bonds, "M  END"].join("\n"))).toBeUndefined();
+    const ring6 = carbonRing(6);
+    for (const counts of ["  6  6", "  6  6  0  0"]) {
+      expect(atomCount(["cyclohexane", "", "", counts, ...ring6.atoms, ...ring6.bonds, "M  END"].join("\n"))).toBe(6);
+    }
+  }, 30_000);
+});
