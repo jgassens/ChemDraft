@@ -1877,20 +1877,23 @@ Run under KDE Plasma (Wayland session, so the app uses XWayland) and on GNOME.
   Minimize and Zoom/Maximize items with their usual shortcuts (Cmd+M on macOS), and no
   "Maximize / Restore" item or disabled copy of the Linux items appears in any menu, toolbar or
   the Customize gallery.
-- 1280-wide screen: set the display to 1280x800 and relaunch. The Main toolbar is no wider than
-  the screen and starts at its left edge; nothing runs off the right edge of the screen. At
-  1680x1050 the Main toolbar keeps its full width and saved position.
-- 1024-wide screen: set the display to 1024x768 and relaunch. The Main toolbar is as wide as the
-  screen and scrolls sideways: drag its horizontal scrollbar (or Shift+wheel over it) to the right
-  end and every tool, up to the last one, is reachable and clickable. The scrollbar is fully
-  visible below the tool row, not cut off by the palette's bottom edge, and the row above it is
-  not clipped either. Palettes that fit the screen (Arrows, Orbitals, Style) show no scrollbar.
-  Relaunched at 1680x1050, the Main toolbar shows no scrollbar.
+- 1280-wide screen: set the display to 1280x800 and relaunch. The Main toolbar keeps its natural
+  width (two rows of tools, about 1400 px with the zoom widget), stays where it was saved and runs
+  off the right edge of the screen. It is not shrunk, does not wrap and shows no scrollbar. Drag it
+  left by its title until the last tool is on screen: it stays where it was dropped, and is still
+  there after Shift+Ctrl+S then Esc and after quitting and relaunching. At 1680x1050 the Main
+  toolbar also keeps its full width and saved position.
+- 1024-wide screen and 150% scale: set the display to 1024x768, relaunch, and repeat at
+  1920x1080 with 150% scaling (and on a 1366x768 laptop at 100%). Each time the Main toolbar
+  shows both rows at full width with no horizontal or vertical scrollbar and runs off the right
+  edge; dragging it left reaches every tool, up to the last one, and each is clickable. Palettes
+  that fit the screen (Arrows, Orbitals, Style) are unchanged. (Native Wayland only, with
+  `CHEMDRAFT_NATIVE_WAYLAND=1`: the compositor places palettes, so there Main is still capped to
+  the screen and scrolls sideways.)
 - Moving between screens without relaunching (a 1024x768 and a 1680x1050 monitor side by side):
-  drag the scrolling Main toolbar onto the wide monitor. It widens to its full width, the
-  horizontal scrollbar disappears and the palette loses the scrollbar's height. Drag it back to
-  the narrow monitor: it is capped at that screen's width again and scrolls sideways with the bar
-  fully visible. Neither move leaves the palette flickering or resizing on its own.
+  drag the Main toolbar from the wide monitor onto the narrow one and back. It keeps its natural
+  width on both, never gains a scrollbar, and is not resized on its own. Neither move
+  leaves the palette flickering.
 - Palette positions after Save/Open: place Main and Art somewhere distinctive, then press
   Shift+Ctrl+S and Esc, and Ctrl+O and Esc, several times. Every palette comes back exactly where
   it was, and after quitting and relaunching it opens at that same spot (toolbar-state.json is
@@ -1963,11 +1966,11 @@ Run under KDE Plasma (Wayland session, so the app uses XWayland) and on GNOME.
   text box, and `xprop WM_NORMAL_HINTS` shows min = max = that size. Then hover short, long,
   short again: the window shrinks as well as grows.
 - Work-area change with no window event: with the 1024x768 display from the 1.2.2 section (Main
-  capped and scrolling), remove or auto-hide the bottom panel without touching the palette. Within
-  about a second Main is re-fitted to the new work area; put the panel back and it is capped
-  again. On a wide display, add a vertical panel on the left or right that narrows the work area
-  below Main's width: Main is capped and scrolls without being moved. No palette flickers or keeps
-  resizing afterwards (watch for a few seconds).
+  running off the right edge at its natural width), remove or auto-hide the bottom panel without
+  touching the palette, then put it back. Main keeps its width and position both times. On a wide
+  display, add a vertical panel on the left or right that narrows the work area below Main's
+  width: Main keeps its natural width, shows no scrollbar and is not moved. No palette flickers or
+  keeps resizing afterwards (watch for a few seconds).
 - GTK Save dialog file types: open a `.cdxml` file and press Shift+Ctrl+S. The file-type dropdown
   at the bottom of the dialog is not blank: it reads CDXML, the existing file is selected in the
   list, and the dropdown also offers ChemDraft and CDX. Repeat with a `.chemdraft` and a `.cdx`

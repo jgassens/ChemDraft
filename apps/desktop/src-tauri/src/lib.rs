@@ -7755,15 +7755,8 @@ fn resize_toolset_window(
         })
         .unwrap_or(origin);
     let mut placement = toolset_content_placement(source, (width, height), scale, area);
-    // Linux: a palette wider than its work area is capped to it and moved to the area's left edge,
-    // the one place it fits (toolset_content_placement). Keep that move rather than the old origin.
-    #[cfg(target_os = "linux")]
-    let keep_fitted_position = width > area.width;
-    #[cfg(not(target_os = "linux"))]
-    let keep_fitted_position = false;
     // The monitor under most of the palette can differ from the one under its title.
     if placement.position != source
-        && !keep_fitted_position
         && monitor_query::available_monitors(app)
             .unwrap_or_default()
             .iter()
@@ -7894,30 +7887,74 @@ fn toolset_content_placement(
     let position =
         logical_toolset_position_from_physical(f64::from(position.0), f64::from(position.1), scale);
     let height = size.1.min(area.height);
-    // Linux: also cap the width (a 1311-px Main toolbar ran off a 1280-px screen), and start a
-    // capped palette at the work area's left edge, the only place a frame that wide fits. A palette
-    // that already fits keeps its width and position. macOS and Windows keep the measured width.
-    #[cfg(target_os = "linux")]
-    let (width, position) = if size.0 > area.width {
-        (
-            area.width,
-            ToolsetWindowPosition {
-                x: area.x,
-                ..position
-            },
-        )
-    } else {
-        (size.0, position)
-    };
-    #[cfg(not(target_os = "linux"))]
+    // A fixed palette keeps its measured width on every platform, even one wider than the work
+    // area (owner decision, 1.2.3): on Linux the Main toolbar is not narrowed to the screen or
+    // given a sideways scrollbar. It may run off the screen's edge, and the user drags it.
     let width = size.0;
     let position = toolset_position_in_work_area(position, width, height, area);
     let position = tauri::LogicalPosition::new(position.x, position.y).to_physical::<i32>(scale);
-    let size = tauri::LogicalSize::new(width, height).to_physical::<u32>(scale);
+    // Linux: round the physical size up, never to nearest. At a fractional scale rounding could
+    // leave the window a fraction of a CSS pixel smaller than the content it was asked to fit, and
+    // WebKitGTK then shows a scrollbar (GitHub #304, 150%). macOS and Windows are unchanged.
+    #[cfg(target_os = "linux")]
+    let size = (
+        physical_extent_covering(width, scale),
+        physical_extent_covering(height, scale),
+    );
+    #[cfg(not(target_os = "linux"))]
+    let size = {
+        let size = tauri::LogicalSize::new(width, height).to_physical::<u32>(scale);
+        (size.width, size.height)
+    };
     panel_window_frame::Placement {
         position: (position.x, position.y),
-        size: (size.width, size.height),
+        size,
         scale,
+    }
+}
+
+/// Rounding slack for a product that should be a whole number of pixels: binary floating point can
+/// land a hair above it, which must not round up a whole extra pixel.
+const PIXEL_ROUNDING_EPSILON: f64 = 1e-6;
+
+/// The smallest whole number of physical pixels that covers `logical` CSS pixels at `scale`.
+/// Linux content fit uses it so a palette window is never a fraction of a pixel short of its
+/// content (GitHub #304).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn physical_extent_covering(logical: f64, scale: f64) -> u32 {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    if !logical.is_finite() || logical <= 0.0 {
+        return 0;
+    }
+    let physical = (logical * scale - PIXEL_ROUNDING_EPSILON).ceil().max(1.0);
+    if physical >= f64::from(u32::MAX) {
+        u32::MAX
+    } else {
+        physical as u32
+    }
+}
+
+/// The smallest whole number of GTK (logical) units that covers `physical` pixels at GTK's window
+/// `scale`. GTK3 scales are whole numbers, so this only differs from rounding at scale 3 and up
+/// (1966 / 3 = 655.33 rounds to 655, 1965 pixels: one short).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn logical_extent_covering(physical: u32, scale: f64) -> i32 {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let logical = (f64::from(physical) / scale - PIXEL_ROUNDING_EPSILON)
+        .ceil()
+        .max(1.0);
+    if logical >= f64::from(i32::MAX) {
+        i32::MAX
+    } else {
+        logical as i32
     }
 }
 
@@ -17060,26 +17097,56 @@ mod tests {
     }
 
     #[test]
-    fn palette_wider_than_the_work_area_is_capped_only_on_linux() {
-        // Linux VM report B3: a 1311-px Main toolbar on a 1280-px screen ran off the right edge.
+    fn palette_wider_than_the_work_area_keeps_its_natural_width_on_every_platform() {
+        // Owner decision for 1.2.3: a fixed toolbar is never shrunk, wrapped or given a scrollbar.
+        // A 1311-px Main toolbar on a 1280-px work area keeps its width and position, runs off the
+        // right edge, and the user drags it to reach the rest (Linux VM report B3).
         let area = ScreenRect::new(0.0, 32.0, 1280.0, 768.0);
-        for scale in [1.0, 2.0] {
+        for scale in [1.0, 1.5, 2.0] {
             let physical = |(x, y): (f64, f64)| ((x * scale) as i32, (y * scale) as i32);
             let origin = physical((88.0, 154.0));
             let fit = toolset_content_placement(origin, (1311.0, 85.0), scale, area);
-            let size = ((1311.0 * scale) as u32, (85.0 * scale) as u32);
-            if cfg!(target_os = "linux") {
-                assert_eq!(fit.size, ((1280.0 * scale) as u32, size.1));
-                assert_eq!(fit.position, physical((0.0, 154.0)));
-            } else {
-                assert_eq!(fit.size, size);
-                assert_eq!(fit.position, origin);
-            }
+            let size = ((1311.0 * scale).ceil() as u32, (85.0 * scale).ceil() as u32);
+            assert_eq!(fit.size, size);
+            assert_eq!(fit.position, origin);
+            // About 1400 px, the Main toolbar with the zoom widget: still its natural width.
+            let fit = toolset_content_placement(origin, (1400.0, 85.0), scale, area);
+            assert_eq!(fit.size, ((1400.0 * scale) as u32, size.1));
+            assert_eq!(fit.position, origin);
             // A palette that fits keeps its frame on every platform.
             let fit = toolset_content_placement(origin, (1180.0, 85.0), scale, area);
             assert_eq!(fit.size, ((1180.0 * scale) as u32, size.1));
             assert_eq!(fit.position, origin);
         }
+    }
+
+    #[test]
+    fn content_fit_extents_round_up_to_cover_the_content() {
+        for scale in [1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 3.0] {
+            for logical in 1..=2000 {
+                let logical = f64::from(logical);
+                let physical = physical_extent_covering(logical, scale);
+                // Never short of the content, and never a whole pixel over it.
+                assert!(
+                    f64::from(physical) / scale + 1e-9 >= logical,
+                    "{logical} at {scale}"
+                );
+                assert!(
+                    f64::from(physical) < logical * scale + 1.0,
+                    "{logical} at {scale}"
+                );
+            }
+        }
+        // 81 CSS px at 1.25 is 101.25 px: nearest gives 101 (80.8 CSS px), covering gives 102.
+        assert_eq!(physical_extent_covering(81.0, 1.25), 102);
+        // A product a hair under a whole number is not pushed up a pixel.
+        assert_eq!(physical_extent_covering(1243.0 + 1.0 / 3.0, 1.5), 1865);
+        assert_eq!(physical_extent_covering(0.0, 1.5), 0);
+        assert_eq!(physical_extent_covering(f64::NAN, 1.5), 0);
+        // GTK units: 1966 px at GTK scale 3 needs 656 units (655 would cover only 1965 px).
+        assert_eq!(logical_extent_covering(1966, 3.0), 656);
+        assert_eq!(logical_extent_covering(1966, 2.0), 983);
+        assert_eq!(logical_extent_covering(1967, 1.0), 1967);
     }
 
     #[test]
