@@ -504,6 +504,7 @@ dependencies = [
  "base64 0.22.1",
  "block2",
  "bytes",
+ "cfb",
  "chrono",
  "dirs",
  "flate2",
@@ -538,7 +539,10 @@ dependencies = [
  "tiff",
  "tokio",
  "webkit2gtk",
+ "windows",
+ "windows-core 0.61.2",
  "windows-sys 0.61.2",
+ "winreg",
  "zbus",
 ]
 

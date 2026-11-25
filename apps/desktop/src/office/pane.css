@@ -1,0 +1,98 @@
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.office-message {
+  margin: 14px;
+}
+
+.office-controls {
+  padding: 8px 10px;
+  background: var(--cd-bg-panel-raised);
+  border-bottom: 1px solid var(--cd-border);
+  font-size: 13px;
+}
+
+.office-controls p {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.office-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.office-controls p + .office-actions {
+  margin-top: 6px;
+}
+
+.office-actions button {
+  padding: 4px 10px;
+  border: 1px solid var(--cd-border-control);
+  border-radius: var(--cd-radius-control);
+  background: var(--cd-bg-control);
+  color: var(--cd-text-primary);
+}
+
+.office-actions button.office-update:enabled {
+  background: var(--cd-accent-strong);
+  border-color: var(--cd-accent-strong);
+  color: white;
+}
+
+.office-actions button:disabled {
+  opacity: 0.55;
+}
+
+#root > .app-shell {
+  height: 100%;
+  min-height: 0;
+  /* Keep some drawing area even if the controls above it ever grow taller than the pane. */
+  grid-template-rows: auto minmax(160px, 1fr);
+}
+
+#root > .app-shell > header {
+  position: relative;
+  z-index: var(--cd-z-menu);
+  min-width: 0;
+}
+
+#root > .app-shell .command-bar .tool-palette {
+  flex-wrap: wrap;
+  max-height: none;
+}
+
+#root > .app-shell .command-bar .tool-group {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+/* The toolbar sits in the header here and cannot be dragged. */
+#root > .app-shell .command-bar .palette-content-drag-grip {
+  display: none;
+}
+
+/* App.css sizes each tool slot to fill a grid cell (width and height 100%). In the wrapping flex
+   row above that makes every tool as wide as the pane, so the tools stacked into one column taller
+   than the pane and the canvas row was left with no height. Give the slots their button size. */
+#root > .app-shell .command-bar .tool-group > .toolbar-item-grid-slot {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+}
+
+#root > .app-shell .command-bar .toolbar-command-flyout-menu {
+  top: calc(100% + 5px);
+  bottom: auto;
+}
+
+#root > .app-shell .page-stage {
+  justify-items: start;
+  min-width: max(100%, calc(var(--page-layout-width) * var(--page-scale) + 24px));
+  min-height: max(100%, calc(var(--page-layout-height) * var(--page-scale) + 24px));
+  padding: 12px;
+}

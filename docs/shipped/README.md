@@ -1,5 +1,14 @@
 # Shipped slices
 
+## Office editing (Word and PowerPoint, macOS add-in and Windows OLE object) (2026-11-22)
+
+The macOS add-in edits a selected structure picture in place in Word and PowerPoint. On Windows,
+a ChemDraft object embedded in Word or PowerPoint opens for editing by double-click. Pasting back
+from Word or PowerPoint (pictures and embedded objects) and File > Import Structures from .docx and
+.pptx files bring structures into ChemDraft. In Word on Windows, insert structures with Insert >
+Object > ChemDraft to keep them editable. Pictures pasted or inserted into Word lose their ChemDraft
+data when Word saves the document. See [office-editing](../architecture/office-editing.md).
+
 ## Custom colors and bond tools (2026-11-10)
 
 PR #340 adds persistent custom color swatches to the Main toolbar's customization gallery and

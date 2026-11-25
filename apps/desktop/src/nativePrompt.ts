@@ -28,7 +28,7 @@ export interface NativePromptOptions {
   kind: "info" | "warning" | "error";
   choices: readonly NativePromptChoice[];
   /** Tauri parents message boxes to the invoking window on both desktop platforms. */
-  owner?: "document";
+  owner?: "document" | "office-object";
   /** Prompts in the same queue wait for the actual box to close, even if its caller aborts. */
   serializationKey?: string;
 }
@@ -130,15 +130,26 @@ async function showNativePrompt(prompt: NativePromptOptions, fallback: NativePro
     await Promise.resolve();
     // React StrictMode replays mount effects. Its first request must not open a second OS box.
     if (signal?.aborted) return cancel.id;
-    if (prompt.owner === "document" && getCurrentWindow().label !== "main") {
-      throw new Error(`A document-owned prompt must be invoked from the main window on ${platform}.`);
+    const windowLabel = getCurrentWindow().label;
+    const officeWindow = /^office-object-\d{1,20}$/.test(windowLabel);
+    if (prompt.owner === "document" && windowLabel !== "main" && !officeWindow) {
+      throw new Error(`A document-owned prompt must be invoked from a document window on ${platform}.`);
     }
-    result = await withNativeUtilitySuspension(async () => {
+    if (prompt.owner === "office-object" && !officeWindow) {
+      throw new Error("An Office prompt must be invoked from its embedded drawing window.");
+    }
+    const showMessage = async () => {
       if (signal?.aborted) return cancel.label;
       const response = message(prompt.message, { title: prompt.title, kind: prompt.kind, buttons });
       await onShowing?.();
       return response;
-    });
+    };
+    if (officeWindow) {
+      // The native box is modal to the calling object window.
+      result = await showMessage();
+    } else {
+      result = await withNativeUtilitySuspension(showMessage);
+    }
   } catch (error) {
     if (signal?.aborted) return cancel.id;
     console.error("Native prompt failed", error);

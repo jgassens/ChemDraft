@@ -56,9 +56,10 @@ fn image_read_formats(png_id: u32, mime_png_id: u32, svg_id: u32) -> [(&'static 
 /// and `FileName` (an 8.3 path), which the text fallback used to turn into a junk text object — and
 /// the formats Office renders on demand: fetching those makes Excel/Word/PowerPoint serialize the
 /// whole selection again (WM_RENDERFORMAT) while ChemDraft's thread waits, for nothing it can use.
-const NON_TEXT_FORMATS: [&str; 40] = [
+const NON_TEXT_FORMATS: [&str; 41] = [
     PNG_FORMAT,
     CDX_FORMAT,
+    "Embedded Object",
     "Embed Source",
     "Link Source",
     "Object Descriptor",
@@ -430,28 +431,223 @@ pub(crate) fn png_to_dibv5(png: &[u8]) -> Result<Vec<u8>, String> {
     Ok(dib)
 }
 
+/// One optional clipboard read at a time per worker, on a long-lived thread made on first use.
+/// OLE and delayed Win32 rendering can block inside another program. A read that outlives its
+/// paste's wait stays outstanding, and later pastes skip that worker ([`Flight::Busy`]) until the
+/// read returns. Host-neutral, so it is tested on every platform.
+#[cfg(any(windows, test))]
+mod single_flight {
+    use std::{
+        panic::{catch_unwind, AssertUnwindSafe},
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            mpsc, Mutex, PoisonError,
+        },
+        time::Duration,
+    };
+
+    type Job<J, R> = (J, mpsc::Sender<R>);
+
+    pub(super) struct SingleFlight<J, R> {
+        name: &'static str,
+        work: fn(J) -> R,
+        /// A read is outstanding. Set by the paste that starts it; cleared by the reader thread
+        /// once the read returns, whether or not that paste still waits for it.
+        busy: AtomicBool,
+        /// The reader thread's queue, once it started.
+        queue: Mutex<Option<mpsc::Sender<Job<J, R>>>>,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    pub(super) enum Flight<R> {
+        Done(R),
+        /// A read an earlier paste started has not returned, so none was started.
+        Busy,
+        /// No answer within the wait. The read stays outstanding, and `Busy`, until it returns.
+        TimedOut,
+        /// The reader thread could not start, or stopped during the read.
+        Failed(String),
+    }
+
+    impl<J: Send + 'static, R: Send + 'static> SingleFlight<J, R> {
+        pub(super) const fn new(name: &'static str, work: fn(J) -> R) -> Self {
+            Self {
+                name,
+                work,
+                busy: AtomicBool::new(false),
+                queue: Mutex::new(None),
+            }
+        }
+
+        pub(super) fn is_busy(&self) -> bool {
+            self.busy.load(Ordering::Acquire)
+        }
+
+        /// Waits at most `wait`, and never for a read an earlier paste started.
+        pub(super) fn read(&'static self, job: J, wait: Duration) -> Flight<R> {
+            if self.busy.swap(true, Ordering::AcqRel) {
+                return Flight::Busy;
+            }
+            let (reply, answer) = mpsc::channel();
+            if let Err(error) = self.send((job, reply)) {
+                self.busy.store(false, Ordering::Release);
+                return Flight::Failed(error);
+            }
+            match answer.recv_timeout(wait) {
+                Ok(result) => Flight::Done(result),
+                Err(mpsc::RecvTimeoutError::Timeout) => Flight::TimedOut,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    Flight::Failed(format!("{} stopped during the read", self.name))
+                }
+            }
+        }
+
+        /// Hand the job to the reader thread, starting it on first use or after it stopped.
+        fn send(&'static self, job: Job<J, R>) -> Result<(), String> {
+            let mut queue = self.queue.lock().unwrap_or_else(PoisonError::into_inner);
+            if queue.is_none() {
+                let (sender, jobs) = mpsc::channel();
+                std::thread::Builder::new()
+                    .name(self.name.into())
+                    .spawn(move || self.serve(jobs))
+                    .map_err(|error| format!("Could not start {}: {error}", self.name))?;
+                *queue = Some(sender);
+            }
+            if queue
+                .as_ref()
+                .is_some_and(|sender| sender.send(job).is_ok())
+            {
+                return Ok(());
+            }
+            *queue = None;
+            Err(format!("{} has stopped", self.name))
+        }
+
+        fn serve(&'static self, jobs: mpsc::Receiver<Job<J, R>>) {
+            for (job, reply) in jobs {
+                let result = catch_unwind(AssertUnwindSafe(|| (self.work)(job)));
+                // Free before answering, so the paste that gets this answer can read again.
+                self.busy.store(false, Ordering::Release);
+                if let Ok(result) = result {
+                    // The paste may have stopped waiting.
+                    let _ = reply.send(result);
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::{
+            thread::{self, ThreadId},
+            time::Instant,
+        };
+
+        type Gate = Option<mpsc::Receiver<()>>;
+        type TestReader = SingleFlight<(u32, Gate), (u32, ThreadId)>;
+
+        /// Waits for its gate, if any; panics on 0.
+        fn doubled((value, gate): (u32, Gate)) -> (u32, ThreadId) {
+            if let Some(gate) = gate {
+                let _ = gate.recv();
+            }
+            assert_ne!(value, 0, "a deliberate panic: this OLE read failed");
+            (value * 2, thread::current().id())
+        }
+
+        fn reader() -> &'static TestReader {
+            Box::leak(Box::new(SingleFlight::new(
+                "ChemDraft OLE paste (test)",
+                doubled,
+            )))
+        }
+
+        fn wait_until_free(reader: &TestReader) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while reader.is_busy() {
+                assert!(Instant::now() < deadline, "the read never returned");
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+
+        const WAIT: Duration = Duration::from_secs(10);
+
+        /// A read that outlives its paste's wait keeps later pastes off OLE, without making
+        /// them wait, until it returns. Every read runs on one thread, made on first use.
+        #[test]
+        fn one_ole_read_at_a_time_on_one_thread_and_later_pastes_skip_a_late_read() {
+            let reader = reader();
+            assert!(
+                reader.queue.lock().unwrap().is_none(),
+                "no thread before a paste"
+            );
+            let Flight::Done((4, ole_thread)) = reader.read((2, None), WAIT) else {
+                panic!("the first read answers");
+            };
+            assert_ne!(ole_thread, thread::current().id());
+
+            let (release, gate) = mpsc::channel();
+            let short = Duration::from_millis(20);
+            assert_eq!(reader.read((3, Some(gate)), short), Flight::TimedOut);
+            let started = Instant::now();
+            assert_eq!(reader.read((4, None), WAIT), Flight::Busy);
+            assert_eq!(reader.read((5, None), WAIT), Flight::Busy);
+            assert!(
+                started.elapsed() < Duration::from_secs(1),
+                "Busy never waits"
+            );
+
+            release.send(()).unwrap();
+            wait_until_free(reader);
+            assert_eq!(reader.read((6, None), WAIT), Flight::Done((12, ole_thread)));
+        }
+
+        #[test]
+        fn a_failed_ole_read_frees_the_reader_for_the_next_paste() {
+            let reader = reader();
+            let Flight::Failed(reason) = reader.read((0, None), WAIT) else {
+                panic!("a read that panics fails");
+            };
+            assert_eq!(reason, "ChemDraft OLE paste (test) stopped during the read");
+            wait_until_free(reader);
+            assert!(matches!(
+                reader.read((7, None), WAIT),
+                Flight::Done((14, _))
+            ));
+        }
+    }
+}
+
 #[cfg(windows)]
 pub(crate) mod native {
+    use super::single_flight::{Flight, SingleFlight};
     use super::*;
     use crate::clipboard_formats::{
         build_cf_html, clipboard_utf8, parse_cf_html, ClipboardWriteData, ClipboardWriteResult,
         ValidatedClipboardItem,
     };
     use crate::clipboard_images::{
-        dib_image_item, png_image_item, svg_image_item, ClipboardImageItem,
-        SkippedClipboardImageItem,
+        dib_image_item, office_archive_item, office_embedded_object_item,
+        office_embedded_object_type, office_picture_archive_type, png_image_item, svg_image_item,
+        ClipboardImageItem, ClipboardOfficeItem, SkippedClipboardImageItem,
+        MAX_OFFICE_ARCHIVE_BYTES,
     };
-    use crate::clipboard_limits::{ClipboardReadBudget, ClipboardReadStep};
+    use crate::clipboard_limits::{ClipboardReadBudget, ClipboardReadStep, SkippedClipboardItem};
     use crate::{is_opaque_clipboard_type, ClipboardReadPayload, ClipboardTextItem};
+    use std::{num::NonZeroU32, time::Duration};
     use windows_sys::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
     use windows_sys::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData,
-        GetClipboardFormatNameW, IsClipboardFormatAvailable, OpenClipboard,
-        RegisterClipboardFormatW, SetClipboardData,
+        GetClipboardFormatNameW, GetClipboardSequenceNumber, IsClipboardFormatAvailable,
+        OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
     };
     use windows_sys::Win32::System::Memory::{
         GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
     };
+
+    /// Why the clipboard would not open, when nothing of ChemDraft's own is known to hold it.
+    const CLIPBOARD_IN_USE: &str = "The clipboard is in use by another application.";
 
     /// An open clipboard, closed on drop. Another process can hold the clipboard for a moment
     /// (clipboard managers, RDP), so opening retries briefly before giving up.
@@ -466,7 +662,7 @@ pub(crate) mod native {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            Err("The clipboard is in use by another application.".to_string())
+            Err(CLIPBOARD_IN_USE.to_string())
         }
     }
 
@@ -708,11 +904,347 @@ pub(crate) mod native {
         }
     }
 
-    pub(crate) fn read_payload() -> Result<ClipboardReadPayload, String> {
+    // GetClipboardData can wait for Office to render GVML even when the PNG is already readable.
+    const OFFICE_ARCHIVE_TIMEOUT: Duration = Duration::from_secs(1);
+
+    struct ArchiveRequest {
+        source: &'static str,
+        sequence: NonZeroU32,
+        budget: ClipboardReadBudget,
+    }
+
+    struct ArchiveRead {
+        item: Result<Option<ClipboardOfficeItem>, String>,
+        skipped_items: Vec<SkippedClipboardItem>,
+    }
+
+    static ARCHIVE_READER: SingleFlight<ArchiveRequest, ArchiveRead> =
+        SingleFlight::new("ChemDraft Office archive paste", read_archive_request);
+
+    fn clipboard_sequence() -> Option<NonZeroU32> {
+        // SAFETY: plain Win32 call; zero means the sequence could not be determined.
+        NonZeroU32::new(unsafe { GetClipboardSequenceNumber() })
+    }
+
+    fn read_archive_request(mut request: ArchiveRequest) -> ArchiveRead {
+        let item = read_office_archive(request.source, request.sequence, &mut request.budget);
+        ArchiveRead {
+            item,
+            skipped_items: request.budget.skipped_items,
+        }
+    }
+
+    /// The archive keeps the carrier the PNG rendition may have dropped. Checking the sequence
+    /// under the Win32 lock ties it to the snapshot. The lock prevents replacement during the
+    /// read, even if rendering this advertised format advances the sequence.
+    fn read_office_archive(
+        source: &str,
+        sequence: NonZeroU32,
+        budget: &mut ClipboardReadBudget,
+    ) -> Result<Option<ClipboardOfficeItem>, String> {
         let _clipboard = OpenedClipboard::open(std::ptr::null_mut())?;
+        if clipboard_sequence() != Some(sequence) {
+            return Ok(None);
+        }
+        let id = registered(source);
+        // SAFETY: this thread holds the clipboard open and the ID came from
+        // RegisterClipboardFormatW. The pointer is read only while locked, within GlobalSize.
+        unsafe {
+            if id == 0 || IsClipboardFormatAvailable(id) == 0 {
+                return Ok(None);
+            }
+            let handle = GetClipboardData(id);
+            if handle.is_null() {
+                return Err(format!("Could not read {source} clipboard data"));
+            }
+            let size = GlobalSize(handle as HGLOBAL);
+            if size > MAX_OFFICE_ARCHIVE_BYTES {
+                return Err(format!("{source} is over the 32 MB limit"));
+            }
+            budget.reserve(source, size)?;
+            let pointer = GlobalLock(handle as HGLOBAL) as *const u8;
+            if pointer.is_null() {
+                return Err(format!("Could not lock {source} clipboard data"));
+            }
+            // GlobalSize may include padding after the archive; the TypeScript reader trims it.
+            let item = office_archive_item(source, std::slice::from_raw_parts(pointer, size));
+            GlobalUnlock(handle as HGLOBAL);
+            item.map(Some)
+        }
+    }
+
+    fn finish_archive_read(payload: &mut ClipboardReadPayload, outcome: Flight<ArchiveRead>) {
+        let reason = match outcome {
+            Flight::Done(read) => {
+                payload.skipped_items.extend(read.skipped_items);
+                match read.item {
+                    Ok(item) => {
+                        payload.office_items.extend(item);
+                        return;
+                    }
+                    Err(reason) => reason,
+                }
+            }
+            Flight::Busy => "an earlier archive read is unfinished".into(),
+            Flight::TimedOut => "the archive was not ready within 1 second".into(),
+            Flight::Failed(reason) => reason,
+        };
+        eprintln!("Paste-back skipped the Office picture archive: {reason}");
+    }
+
+    /// How long paste waits for Word or PowerPoint to hand over a copied object.
+    const EMBEDDED_OBJECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// The class and drawing of a copied ChemDraft object, or why it could not be read.
+    type OleDrawing = (&'static str, String);
+    type OleRead = Result<Option<OleDrawing>, String>;
+
+    /// OLE needs a single-threaded apartment, which this command's worker thread may not be. One
+    /// shared reader thread does every OLE read, one at a time.
+    static OLE_READER: SingleFlight<(&'static str, NonZeroU32), OleRead> =
+        SingleFlight::new("ChemDraft OLE paste", read_ole_object);
+
+    /// Paste's answer when only an earlier, unfinished OLE or archive read stood between it and
+    /// the data.
+    const STILL_READING: &str =
+        "Windows is still reading the previous clipboard item. Try pasting again in a moment.";
+
+    /// Paste's answer when the clipboard would not open. An unfinished optional read may be what
+    /// holds it: the OLE reader while Word or PowerPoint hands over an object, and the archive
+    /// reader, which keeps the clipboard open while Office renders GVML, past its paste's
+    /// 1-second wait. Only the thread that opened the clipboard may close it, so paste waits
+    /// for that read to return rather than closing it.
+    fn paste_open_error(error: String, ole_busy: bool, archive_busy: bool) -> String {
+        if ole_busy || archive_busy {
+            STILL_READING.into()
+        } else {
+            error
+        }
+    }
+
+    /// Open the clipboard on this paste's thread, naming an unfinished optional read as the
+    /// reason when one may be what holds it.
+    fn open_for_paste() -> Result<OpenedClipboard, String> {
+        OpenedClipboard::open(std::ptr::null_mut()).map_err(|error| {
+            paste_open_error(error, OLE_READER.is_busy(), ARCHIVE_READER.is_busy())
+        })
+    }
+
+    /// The OLE read is still outstanding after this paste's wait, or was already outstanding.
+    #[derive(Debug)]
+    struct StillReading;
+
+    /// OLE opens the clipboard itself, so the ordinary snapshot's lock must have been released.
+    /// Reopen it to confirm that the result still belongs to that snapshot before using it.
+    fn read_embedded_object(
+        source: &'static str,
+        sequence: NonZeroU32,
+    ) -> Result<Option<ClipboardOfficeItem>, StillReading> {
+        let outcome = OLE_READER.read((source, sequence), EMBEDDED_OBJECT_TIMEOUT);
+        let Some((clsid, json)) = finish_ole_read(source, outcome)? else {
+            return Ok(None);
+        };
+        {
+            // An earlier paste's unfinished archive read may hold the clipboard.
+            let _clipboard = match open_for_paste() {
+                Ok(clipboard) => clipboard,
+                Err(error) if error == STILL_READING => return Err(StillReading),
+                Err(_) => return Ok(None),
+            };
+            if clipboard_sequence() != Some(sequence) {
+                return Ok(None);
+            }
+        }
+        Ok(Some(office_embedded_object_item(source, clsid, &json)))
+    }
+
+    fn finish_ole_read(
+        source: &str,
+        outcome: Flight<OleRead>,
+    ) -> Result<Option<OleDrawing>, StillReading> {
+        let outcome = match outcome {
+            Flight::Done(outcome) => outcome,
+            Flight::Busy => {
+                eprintln!(
+                    "Paste-back skipped the copied object: an earlier OLE read is unfinished"
+                );
+                return Err(StillReading);
+            }
+            Flight::TimedOut => {
+                eprintln!("Paste-back skipped the copied object: {source} was not ready within 10 seconds");
+                return Err(StillReading);
+            }
+            Flight::Failed(reason) => Err(format!("{source}: {reason}")),
+        };
+        Ok(match outcome {
+            Ok(drawing) => drawing,
+            Err(reason) => {
+                eprintln!("Paste-back skipped the copied Office object: {reason}");
+                None
+            }
+        })
+    }
+
+    /// The class and drawing of the copied object, on the OLE reader thread.
+    fn read_ole_object((source, sequence): (&'static str, NonZeroU32)) -> OleRead {
+        use windows::Win32::System::Ole::{OleInitialize, OleUninitialize};
+        // SAFETY: balanced by OleUninitialize below, on this thread.
+        unsafe { OleInitialize(None) }.map_err(|error| format!("Could not start OLE: {error}"))?;
+        let result = read_ole_at_sequence(sequence, clipboard_sequence, || {
+            read_ole_clipboard_object(source)
+        });
+        // SAFETY: read_ole_clipboard_object released every interface and medium it obtained.
+        unsafe { OleUninitialize() };
+        result
+    }
+
+    fn read_ole_at_sequence(
+        sequence: NonZeroU32,
+        current_sequence: impl Fn() -> Option<NonZeroU32>,
+        read: impl FnOnce() -> OleRead,
+    ) -> OleRead {
+        if current_sequence() != Some(sequence) {
+            return Ok(None);
+        }
+        let result = read();
+        // OLE does not hold our Win32 lock. A sequence change can mean a new copy or delayed
+        // rendering. Either way, the association with the ordinary snapshot is ambiguous.
+        if current_sequence() != Some(sequence) {
+            return Ok(None);
+        }
+        result
+    }
+
+    fn read_ole_clipboard_object(source: &'static str) -> OleRead {
+        use windows::Win32::System::Com::{
+            DVASPECT_CONTENT, FORMATETC, TYMED_HGLOBAL, TYMED_ISTORAGE,
+        };
+        use windows::Win32::System::Ole::{OleGetClipboard, ReleaseStgMedium};
+        let format = u16::try_from(registered(source))
+            .map_err(|_| format!("{source} has no clipboard format ID"))?;
+        // SAFETY: OLE is initialized on this thread (read_ole_object).
+        let data = unsafe { OleGetClipboard() }
+            .map_err(|error| format!("Could not open the OLE clipboard: {error}"))?;
+        let request = FORMATETC {
+            cfFormat: format,
+            ptd: std::ptr::null_mut(),
+            dwAspect: DVASPECT_CONTENT.0,
+            lindex: -1,
+            tymed: (TYMED_ISTORAGE.0 | TYMED_HGLOBAL.0) as u32,
+        };
+        // SAFETY: `request` outlives the call; the medium is released below.
+        let mut medium = unsafe { data.GetData(&request) }
+            .map_err(|error| format!("Could not read {source}: {error}"))?;
+        let result = read_object_medium(source, &medium);
+        // SAFETY: the medium came from GetData, and nothing taken from it is still alive.
+        unsafe { ReleaseStgMedium(&mut medium) };
+        result
+    }
+
+    /// The object's storage, as OLE hands it over (TYMED_ISTORAGE), or opened over the flattened
+    /// compound file a flushed clipboard holds (TYMED_HGLOBAL), within the 50 MiB storage limit.
+    fn read_object_medium(
+        source: &str,
+        medium: &windows::Win32::System::Com::STGMEDIUM,
+    ) -> OleRead {
+        use crate::office_ole::storage::MAX_STORAGE_BYTES;
+        use windows::Win32::System::Com::StructuredStorage::{
+            CreateILockBytesOnHGlobal, IStorage, StgOpenStorageOnILockBytes,
+        };
+        use windows::Win32::System::Com::{
+            STGM_READ, STGM_SHARE_EXCLUSIVE, TYMED_HGLOBAL, TYMED_ISTORAGE,
+        };
+        let storage = if medium.tymed == TYMED_ISTORAGE.0 as u32 {
+            // SAFETY: tymed says the union holds a storage; the clone holds its own reference.
+            unsafe { (*medium.u.pstg).clone() }.ok_or_else(|| format!("{source} has no storage"))?
+        } else if medium.tymed == TYMED_HGLOBAL.0 as u32 {
+            // SAFETY: tymed says the union holds a global memory handle, owned by the medium.
+            let memory = unsafe { medium.u.hGlobal };
+            // SAFETY: a valid handle from GetData.
+            if unsafe { windows::Win32::System::Memory::GlobalSize(memory) } > MAX_STORAGE_BYTES {
+                return Err(format!("{source} is over the 50 MiB limit"));
+            }
+            // SAFETY: the lock bytes and the storage are dropped before the medium is released,
+            // and they never free the memory (fDeleteOnRelease is false).
+            let bytes = unsafe { CreateILockBytesOnHGlobal(Some(memory), false) }
+                .map_err(|error| format!("Could not read {source}: {error}"))?;
+            unsafe {
+                StgOpenStorageOnILockBytes(
+                    &bytes,
+                    None::<&IStorage>,
+                    STGM_READ | STGM_SHARE_EXCLUSIVE,
+                    None,
+                    None,
+                )
+            }
+            .map_err(|error| format!("{source} is not an OLE storage: {error}"))?
+        } else {
+            return Err(format!(
+                "{source} came in an unexpected medium ({})",
+                medium.tymed
+            ));
+        };
+        crate::office_ole::server::pasted_drawing(&storage).map_err(|error| error.message())
+    }
+
+    pub(crate) fn read_payload() -> Result<ClipboardReadPayload, String> {
+        let mut budget = ClipboardReadBudget::default();
+        let (mut payload, sequence) = read_ordinary_payload(&mut budget)?;
+        let mut still_reading = false;
+        if let Some((sequence, source)) = sequence.zip(office_embedded_object_type(&payload.types))
+        {
+            match read_embedded_object(source, sequence) {
+                Ok(Some(item)) => match budget.reserve(&item.r#type, item.bytes_base64.len()) {
+                    Ok(()) => payload.office_items.push(item),
+                    Err(reason) => {
+                        eprintln!("Paste-back skipped the copied Office object: {reason}")
+                    }
+                },
+                Ok(None) => {}
+                Err(StillReading) => still_reading = true,
+            }
+        }
+        payload.skipped_items = std::mem::take(&mut budget.skipped_items);
+        // Keep the archive available even beside an OLE drawing. The adapter validates that
+        // drawing before deciding whether it needs to decode the archive.
+        if let Some((sequence, source)) = sequence.zip(office_picture_archive_type(&payload.types))
+        {
+            let request = ArchiveRequest {
+                source,
+                sequence,
+                budget,
+            };
+            finish_archive_read(
+                &mut payload,
+                ARCHIVE_READER.read(request, OFFICE_ARCHIVE_TIMEOUT),
+            );
+        }
+        finish_paste_read(payload, still_reading)
+    }
+
+    fn finish_paste_read(
+        payload: ClipboardReadPayload,
+        still_reading: bool,
+    ) -> Result<ClipboardReadPayload, String> {
+        if still_reading
+            && payload.text_items.is_empty()
+            && payload.image_items.is_empty()
+            && payload.office_items.is_empty()
+        {
+            return Err(STILL_READING.into());
+        }
+        Ok(payload)
+    }
+
+    /// Snapshot ordinary formats before either optional read can block. Return the sequence after
+    /// any delayed ordinary formats were rendered, while the clipboard is still locked.
+    fn read_ordinary_payload(
+        budget: &mut ClipboardReadBudget,
+    ) -> Result<(ClipboardReadPayload, Option<NonZeroU32>), String> {
+        // An unfinished OLE or archive read may be what holds the clipboard open.
+        let _clipboard = open_for_paste()?;
         let mut types = Vec::new();
         let mut text_items = Vec::new();
-        let mut budget = ClipboardReadBudget::default();
 
         let mut formats = Vec::new();
         let mut id = 0;
@@ -745,7 +1277,7 @@ pub(crate) mod native {
         for step in crate::clipboard_limits::clipboard_read_steps(&priorities) {
             let index = match step {
                 ClipboardReadStep::Pictures => {
-                    (image_items, skipped_image_items) = read_images(&mut budget);
+                    (image_items, skipped_image_items) = read_images(budget);
                     continue;
                 }
                 ClipboardReadStep::Text(index) => index,
@@ -757,13 +1289,13 @@ pub(crate) mod native {
             }
             let text = match name.as_deref() {
                 None if id == CF_UNICODETEXT => {
-                    decode_format(id, payload_type, &mut budget, unicode_text)
+                    decode_format(id, payload_type, budget, unicode_text)
                 }
                 None => None,
-                Some(MDLCT_FORMAT) => decode_format(id, payload_type, &mut budget, decode_mdlct),
-                Some("HTML Format") => decode_format(id, payload_type, &mut budget, |bytes| {
-                    parse_cf_html(bytes).ok()
-                }),
+                Some(MDLCT_FORMAT) => decode_format(id, payload_type, budget, decode_mdlct),
+                Some("HTML Format") => {
+                    decode_format(id, payload_type, budget, |bytes| parse_cf_html(bytes).ok())
+                }
                 // Images are handled only by read_images, after the allocation guard.
                 Some(name)
                     if crate::clipboard_images::is_image_clipboard_type(name)
@@ -772,7 +1304,7 @@ pub(crate) mod native {
                 {
                     None
                 }
-                Some(_) => decode_format(id, payload_type, &mut budget, decode_registered_text),
+                Some(_) => decode_format(id, payload_type, budget, decode_registered_text),
             };
             if let Some(text) = text {
                 // A provider may use an encoding whose bounded prefix was inconclusive.
@@ -793,13 +1325,17 @@ pub(crate) mod native {
             }
         }
         text_items.sort_by_key(|item| types.iter().position(|kind| kind == &item.r#type));
-        Ok(ClipboardReadPayload {
-            types,
-            text_items,
-            image_items,
-            skipped_image_items,
-            skipped_items: budget.skipped_items,
-        })
+        Ok((
+            ClipboardReadPayload {
+                types,
+                text_items,
+                image_items,
+                skipped_image_items,
+                skipped_items: Vec::new(),
+                office_items: Vec::new(),
+            },
+            clipboard_sequence(),
+        ))
     }
 
     /// Hand `bytes` to the clipboard under `format`. On success the clipboard owns the memory; on
@@ -960,6 +1496,122 @@ pub(crate) mod native {
     mod tests {
         use super::*;
         use crate::clipboard_formats::{native_test_data as fixture, validate_clipboard_items};
+
+        fn office_snapshot() -> ClipboardReadPayload {
+            ClipboardReadPayload {
+                types: vec!["Embedded Object".into(), "Art::GVML ClipFormat".into()],
+                text_items: Vec::new(),
+                image_items: Vec::new(),
+                skipped_image_items: Vec::new(),
+                skipped_items: Vec::new(),
+                office_items: Vec::new(),
+            }
+        }
+
+        #[test]
+        fn gvml_timeout_or_busy_keeps_the_saved_png() {
+            let mut payload = office_snapshot();
+            let (_, png) = fixture::items();
+            payload.image_items.push(png_image_item(&png).unwrap());
+            let saved_bytes = payload.image_items[0].bytes_base64.clone();
+            for outcome in [Flight::TimedOut, Flight::Busy] {
+                finish_archive_read(&mut payload, outcome);
+                assert!(payload.office_items.is_empty());
+                assert_eq!(payload.image_items[0].bytes_base64, saved_bytes);
+            }
+        }
+
+        #[test]
+        fn ole_timeout_and_busy_report_pending_without_a_fallback() {
+            for outcome in [Flight::TimedOut, Flight::Busy] {
+                let still_reading = finish_ole_read("Embedded Object", outcome).is_err();
+                assert_eq!(
+                    finish_paste_read(office_snapshot(), still_reading)
+                        .err()
+                        .as_deref(),
+                    Some(STILL_READING)
+                );
+                let mut payload = office_snapshot();
+                let (_, png) = fixture::items();
+                payload.image_items.push(png_image_item(&png).unwrap());
+                assert!(finish_paste_read(payload, still_reading).is_ok());
+            }
+        }
+
+        /// A stuck GVML render keeps the archive reader's thread inside GetClipboardData with the
+        /// clipboard open. The next paste cannot open it either, and must say so as pending,
+        /// whichever optional read is unfinished, not blame another program.
+        #[test]
+        fn a_failed_open_reports_pending_while_either_optional_read_is_unfinished() {
+            assert_eq!(
+                paste_open_error(CLIPBOARD_IN_USE.into(), false, false),
+                CLIPBOARD_IN_USE
+            );
+            for (ole_busy, archive_busy) in [(true, false), (false, true), (true, true)] {
+                assert_eq!(
+                    paste_open_error(CLIPBOARD_IN_USE.into(), ole_busy, archive_busy),
+                    STILL_READING,
+                    "OLE busy: {ole_busy}, archive busy: {archive_busy}"
+                );
+            }
+            let other = "Could not open the clipboard.";
+            assert_eq!(paste_open_error(other.into(), false, false), other);
+            assert_eq!(paste_open_error(other.into(), false, true), STILL_READING);
+        }
+
+        #[test]
+        fn ole_read_discards_changed_or_unavailable_clipboard_sequences() {
+            let saved = NonZeroU32::new(7).unwrap();
+            let changed = NonZeroU32::new(8).unwrap();
+            assert_eq!(
+                read_ole_at_sequence(saved, || Some(saved), || Ok(Some(("class", "{}".into())))),
+                Ok(Some(("class", "{}".into())))
+            );
+            for now in [Some(changed), None] {
+                assert_eq!(
+                    read_ole_at_sequence(
+                        saved,
+                        || now,
+                        || panic!("clipboard changed before OLE read")
+                    ),
+                    Ok(None)
+                );
+                let current = std::cell::Cell::new(Some(saved));
+                assert_eq!(
+                    read_ole_at_sequence(
+                        saved,
+                        || current.get(),
+                        || {
+                            current.set(now);
+                            Ok(Some(("class", "{}".into())))
+                        }
+                    ),
+                    Ok(None)
+                );
+            }
+        }
+
+        #[test]
+        fn gvml_stays_in_the_payload_beside_an_ole_drawing() {
+            let mut payload = office_snapshot();
+            let ole = office_embedded_object_item("Embedded Object", "class", "{}");
+            payload.office_items.push(ole);
+            finish_archive_read(
+                &mut payload,
+                Flight::Done(ArchiveRead {
+                    item: office_archive_item("Art::GVML ClipFormat", b"PK\x03\x04rest").map(Some),
+                    skipped_items: Vec::new(),
+                }),
+            );
+            assert_eq!(
+                payload
+                    .office_items
+                    .iter()
+                    .map(|item| item.r#type.as_str())
+                    .collect::<Vec<_>>(),
+                ["Embedded Object", "Art::GVML ClipFormat"]
+            );
+        }
 
         #[test]
         fn windows_utf16_and_utf8_text_share_the_decoded_cap() {

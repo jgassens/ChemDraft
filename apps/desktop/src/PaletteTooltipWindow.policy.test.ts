@@ -32,17 +32,27 @@ describe("native palette tooltip suppression", () => {
     expect(show).toContain("app.webview_windows()");
     expect(show).toContain("window.is_visible().unwrap_or(false)");
     // Querying every window's visibility on each tooltip show slowed toolbar clicks;
-    // filter first so only popover windows are queried.
-    const labelFilter = show.indexOf('.filter(|(label, _)| label.starts_with("toolset-popover-"))');
+    // filter first so only popover windows (of the caller's document) are queried.
+    const compactShow = show.replace(/\s+/g, "");
+    const labelFilter = compactShow.indexOf(
+      '.filter(|((document,utility),_)|{*document==owner&&utility.starts_with("toolset-popover-")})',
+    );
     expect(labelFilter).toBeGreaterThan(-1);
-    expect(labelFilter).toBeLessThan(show.indexOf("is_visible("));
+    expect(labelFilter).toBeLessThan(compactShow.indexOf("is_visible("));
   });
 
   it("hides the existing tooltip before either platform reveals a popover", () => {
     const show = nativeFunction("show_toolset_popover_window");
-    const hide = show.indexOf("hide_toolset_tooltip_window(");
+    // Each document (the main window or an Office-embedded one) owns its own tooltip.
+    expect(show).toContain("let (owner, utility) = toolset_window_parts(window.label());");
+    const hide = show.indexOf("hide_toolset_tooltip_for(");
     expect(hide).toBeGreaterThan(-1);
-    expect(show).toContain("let _ = hide_toolset_tooltip_window(window.app_handle().clone());");
+    expect(show).toContain("let _ = hide_toolset_tooltip_for(window.app_handle(), owner);");
+    const hideForStart = native.indexOf("fn hide_toolset_tooltip_for<R: Runtime>(");
+    expect(hideForStart).toBeGreaterThan(-1);
+    const hideFor = native.slice(hideForStart, native.indexOf("\n}\n", hideForStart) + 2);
+    expect(hideFor).toContain("owned_toolset_label(owner, TOOLSET_TOOLTIP_WINDOW_LABEL)");
+    expect(hideFor).toContain("window.hide()");
     expect(hide).toBeLessThan(show.indexOf('#[cfg(target_os = "macos")]'));
     expect(show.slice(0, hide)).not.toContain("window.show()");
   });

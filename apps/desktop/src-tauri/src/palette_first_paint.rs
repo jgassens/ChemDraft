@@ -19,10 +19,11 @@
 //! waits for the window-creation lock), so a close at any point after that (while the open waits,
 //! while the window builds, between the build and [`arm_toolbar`], or while it waits for its page)
 //! wins: the reveal never shows a palette the user closed. An explicit later open shows it again.
-//! While the document window or the palette is minimized, or the floating windows are suspended (a
-//! prompt, a quit), the reveal is held instead, and the held palette is shown when the document
-//! window is restored or focused again, or when a deferred restoration of the floating windows
-//! finishes ([`release_held`]). Reopening a held palette shows it at once.
+//! While the palette's document window (the main window, or the Office editor that owns an Office
+//! palette) or the palette is minimized, or the floating windows are suspended (a prompt, a quit),
+//! the reveal is held instead, and the held palette is shown when a document window is restored or
+//! focused again, or when a deferred restoration of the floating windows finishes
+//! ([`release_held`]). Reopening a held palette shows it at once.
 //!
 //! Each reveal writes one debug line to the `chemdraft::windows_activation` log (on with the agent
 //! bridge diagnostics): `palette reveal label=<label> ms=<since the window was built>
@@ -288,13 +289,34 @@ fn pending() -> MutexGuard<'static, PendingReveals> {
 /// Read on the main thread. A query that fails reads as "not minimized", so a failed query can
 /// only show a palette, never strand it hidden.
 fn conditions<R: Runtime>(window: &WebviewWindow<R>) -> RevealConditions {
+    let app = window.app_handle();
     RevealConditions {
-        suspended: crate::utility_windows_suspended(),
-        document_minimized: window
-            .app_handle()
-            .get_webview_window(crate::MAIN_WINDOW_LABEL)
-            .is_some_and(|main| main.is_minimized().unwrap_or(false)),
         palette_minimized: window.is_minimized().unwrap_or(false),
+        ..conditions_for(
+            window.label(),
+            crate::utility_windows_suspended(),
+            |document| {
+                app.get_webview_window(document)
+                    .is_some_and(|document| document.is_minimized().unwrap_or(false))
+            },
+        )
+    }
+}
+
+/// The conditions for the palette `label`, with the document window's minimized state read by
+/// `minimized` from the palette's own document window: its Office editor for an Office palette
+/// (`office-utility-office-object-<id>--toolset-*`), the main window for every other palette. So a
+/// minimized main window never holds an Office palette, and a minimized Office editor holds its
+/// own palettes only. The palette's own minimized state is left to the caller.
+fn conditions_for(
+    label: &str,
+    suspended: bool,
+    minimized: impl Fn(&str) -> bool,
+) -> RevealConditions {
+    RevealConditions {
+        suspended,
+        document_minimized: minimized(crate::toolset_window_parts(label).0),
+        palette_minimized: false,
     }
 }
 
@@ -389,7 +411,9 @@ pub(crate) fn reopened(label: &str) -> bool {
 }
 
 /// Shows palettes whose first-paint reveal was held, now that nothing holds them any more. Main
-/// thread; called when the document window is restored, moved, resized or focused, when a
+/// thread; called when the main window is restored, moved, resized or focused, when an Office
+/// editor window is restored, resized or focused (each palette is checked against its own document
+/// window, so either retries them all), when a
 /// suspension ends, and when a deferred restoration of the floating windows has run (it is what
 /// clears a suspension that ended while the document was minimized). `show()` only: a palette is
 /// built unfocused, so this never activates it.
@@ -836,6 +860,155 @@ mod tests {
         assert!(restore < release);
     }
 
+    const OFFICE_EDITOR: &str = "office-object-17";
+    const OFFICE_PALETTE: &str = "office-utility-office-object-17--toolset-core-main";
+
+    /// Only Windows has Office editors: elsewhere an Office-looking label is a main palette.
+    fn office_reveal(windows: Reveal, elsewhere: Reveal) -> Reveal {
+        if cfg!(windows) {
+            windows
+        } else {
+            elsewhere
+        }
+    }
+
+    #[test]
+    fn an_office_palette_opening_while_the_main_window_is_minimized_is_revealed() {
+        let main_minimized = |document: &str| document == crate::MAIN_WINDOW_LABEL;
+        let conditions = conditions_for(OFFICE_PALETTE, false, main_minimized);
+        assert_eq!(conditions.document_minimized, !cfg!(windows));
+        let mut reveals = PendingReveals::default();
+        reveals.requested(OFFICE_PALETTE);
+        reveals.armed(OFFICE_PALETTE);
+        // The page acknowledges (or the fallback fires) while main is minimized: the Office editor
+        // is up, so its palette is shown rather than held until main comes back.
+        assert_eq!(
+            reveals.first_paint(OFFICE_PALETTE, conditions),
+            office_reveal(Reveal::Show, Reveal::Hold)
+        );
+        assert_eq!(reveals.held().is_empty(), cfg!(windows));
+        // A prompt still holds it, whichever window owns it.
+        reveals.armed(OFFICE_PALETTE);
+        assert_eq!(
+            reveals.first_paint(
+                OFFICE_PALETTE,
+                conditions_for(OFFICE_PALETTE, true, |_| false)
+            ),
+            Reveal::Hold
+        );
+    }
+
+    #[test]
+    fn an_office_palette_held_while_its_editor_was_minimized_shows_when_the_editor_returns() {
+        let reveals = Mutex::new(PendingReveals::default());
+        let office = FakePalette {
+            label: OFFICE_PALETTE,
+            shows: std::cell::Cell::new(0),
+        };
+        let main = FakePalette {
+            label: "toolset-core-main",
+            shows: std::cell::Cell::new(0),
+        };
+        let minimized = std::cell::RefCell::new(vec![OFFICE_EDITOR, crate::MAIN_WINDOW_LABEL]);
+        let conditions = |palette: &str| {
+            conditions_for(palette, false, |document| {
+                minimized.borrow().contains(&document)
+            })
+        };
+        // What lib.rs runs on the Office editor's Resized or Focused(true), and on main's events.
+        let retry = || {
+            release_held_in(
+                &reveals,
+                |label| {
+                    [&office, &main]
+                        .into_iter()
+                        .find(|palette| palette.label == label)
+                },
+                |palette| conditions(palette.label),
+                |palette, _| palette.shows.set(palette.shows.get() + 1),
+            )
+        };
+        for palette in [&office, &main] {
+            reveals.lock().unwrap().requested(palette.label);
+            reveals.lock().unwrap().armed(palette.label);
+            assert_eq!(
+                reveals
+                    .lock()
+                    .unwrap()
+                    .first_paint(palette.label, conditions(palette.label)),
+                Reveal::Hold,
+                "{}",
+                palette.label
+            );
+        }
+        // Still minimized: a retry keeps both held.
+        retry();
+        assert_eq!(office.shows.get() + main.shows.get(), 0);
+        // The Office editor is restored, main stays minimized: only the Office palette shows.
+        minimized
+            .borrow_mut()
+            .retain(|window| *window != OFFICE_EDITOR);
+        retry();
+        if cfg!(windows) {
+            assert_eq!((office.shows.get(), main.shows.get()), (1, 0));
+            assert_eq!(reveals.lock().unwrap().held(), [main.label]);
+        } else {
+            // No Office editors here: both palettes belong to main and wait for it.
+            assert_eq!((office.shows.get(), main.shows.get()), (0, 0));
+        }
+        // Main is restored too: everything held is shown, once.
+        minimized.borrow_mut().clear();
+        retry();
+        retry();
+        assert_eq!((office.shows.get(), main.shows.get()), (1, 1));
+        assert!(reveals.lock().unwrap().held().is_empty());
+
+        // lib.rs retries on the Office editor's restore (Resized) and focus, with main's function.
+        let lib = include_str!("lib.rs");
+        let start = lib
+            .find("if is_office_document_window(window.label()) {\n                match event {")
+            .expect("the Office editor's window events");
+        let office_events = &lib[start..];
+        let office_events = &office_events[..office_events.find("_ => {}").unwrap()];
+        let retried = &office_events[office_events
+            .find("WindowEvent::Resized(_) | WindowEvent::Focused(true) => {")
+            .expect("restore and focus are handled")..];
+        assert!(retried[..retried.find('}').unwrap()]
+            .contains("palette_first_paint::release_held(window.app_handle());"));
+    }
+
+    #[test]
+    fn main_palettes_still_follow_the_main_window_only() {
+        for label in [
+            "toolset-core-main",
+            "toolset-plugin-art",
+            // Not an Office utility label: its owner is not an Office editor.
+            "office-utility-office-object-word--toolset-core-main",
+        ] {
+            let main_minimized = conditions_for(label, false, |document| {
+                document == crate::MAIN_WINDOW_LABEL
+            });
+            assert_eq!(
+                main_minimized,
+                RevealConditions {
+                    document_minimized: true,
+                    ..shown()
+                },
+                "{label}"
+            );
+            // An Office editor's minimize never holds a main palette.
+            let office_minimized =
+                conditions_for(label, false, |document| document == OFFICE_EDITOR);
+            assert_eq!(office_minimized, shown(), "{label}");
+            let mut reveals = PendingReveals::default();
+            reveals.armed(label);
+            assert_eq!(reveals.first_paint(label, main_minimized), Reveal::Hold);
+            assert_eq!(reveals.release(label, office_minimized), Reveal::Show);
+        }
+        // The suspension is passed through unchanged.
+        assert!(conditions_for("toolset-core-main", true, |_| false).suspended);
+    }
+
     #[test]
     fn windows_builders_use_the_helper_and_show_palettes_only_after_first_paint() {
         let lib = include_str!("lib.rs");
@@ -861,22 +1034,28 @@ mod tests {
         // The open is recorded before it waits for the creation lock, and a close is recorded
         // whether or not the window exists yet.
         let open = body("async fn open_toolset_window(");
-        let requested = open
-            .find("palette_first_paint::requested(&toolset_window_label(&toolset_id));")
-            .unwrap();
+        let requested = open.find("palette_first_paint::requested(").unwrap();
         assert!(requested < open.find("lock_window_creation()").unwrap());
         let close = body("fn close_toolset_window(");
         let closed = close
             .find("palette_first_paint::closed(&toolset_window_label(&toolset_id));")
             .unwrap();
-        assert!(closed < close.find("app.get_webview_window(").unwrap());
-        assert!(body("fn toolset_state<").contains("palette_first_paint::opening(window.label())"));
+        assert!(
+            closed
+                < close
+                    .find("app.get_webview_window(&toolset_window_label(&toolset_id))")
+                    .unwrap()
+        );
+        assert!(
+            body("fn toolset_state_for<").contains("palette_first_paint::opening(window.label())")
+        );
         // Held reveals are retried when the document returns, when a suspension ends, and when a
         // deferred restoration has run.
         assert_eq!(
             lib.matches("palette_first_paint::release_held(").count(),
-            4,
-            "main window geometry, main window focus, suspension release, deferred restoration"
+            5,
+            "main window geometry, main window focus, Office editor restore or focus, suspension \
+             release, deferred restoration"
         );
 
         let popover = body("fn build_toolset_popover_window(");

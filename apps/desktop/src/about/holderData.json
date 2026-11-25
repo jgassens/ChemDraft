@@ -24,6 +24,13 @@
       "from": "license file",
       "platforms": "all"
     },
+    "cargo:cfb@0.7.3": {
+      "holders": [
+        "Copyright (c) 2017 Matthew D. Steele"
+      ],
+      "from": "license file",
+      "platforms": "all"
+    },
     "cargo:chrono@0.4.44": {
       "holders": [
         "Copyright (c) 2014, Kang Seonghoon"
@@ -336,9 +343,36 @@
       "from": "none",
       "platforms": "all"
     },
+    "cargo:windows-core@0.61.2": {
+      "holders": [
+        "Copyright (c) Microsoft Corporation"
+      ],
+      "from": "license file",
+      "platforms": [
+        "windows"
+      ]
+    },
     "cargo:windows-sys@0.61.2": {
       "holders": [
         "Copyright (c) Microsoft Corporation"
+      ],
+      "from": "license file",
+      "platforms": [
+        "windows"
+      ]
+    },
+    "cargo:windows@0.61.3": {
+      "holders": [
+        "Copyright (c) Microsoft Corporation"
+      ],
+      "from": "license file",
+      "platforms": [
+        "windows"
+      ]
+    },
+    "cargo:winreg@0.55.0": {
+      "holders": [
+        "Copyright (c) 2015 Igor Shaula"
       ],
       "from": "license file",
       "platforms": [

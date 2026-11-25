@@ -16,6 +16,8 @@ mod external_tools;
 mod file_warnings_window;
 mod first_paint;
 mod fonts;
+#[cfg(test)]
+mod handler_list;
 mod installed_plugins;
 #[cfg(target_os = "linux")]
 mod linux_clipboard;
@@ -34,6 +36,9 @@ mod network_error;
 #[cfg(test)]
 mod network_test_http;
 mod ocsr_engine;
+#[cfg(target_os = "macos")]
+mod office_addin;
+mod office_ole;
 mod opsin;
 mod palette_first_paint;
 mod panel_full_size;
@@ -108,22 +113,89 @@ use tauri_plugin_sparkle_updater::SparkleUpdaterExt;
 
 const MAIN_WINDOW_LABEL: &str = "main";
 
-/// The single place that decides whether a window label is a document window. Today only the
-/// main window is one; the multi-window work must replace this body with a document-window
-/// registry lookup.
 pub(crate) fn is_document_window(label: &str) -> bool {
-    label == MAIN_WINDOW_LABEL
+    label == MAIN_WINDOW_LABEL || is_office_document_window(label)
+}
+
+fn is_office_document_window(label: &str) -> bool {
+    cfg!(windows)
+        && label.strip_prefix("office-object-").is_some_and(|id| {
+            !id.is_empty() && id.len() <= 20 && id.bytes().all(|ch| ch.is_ascii_digit())
+        })
+}
+
+// Embedded utilities must never match the main editor's toolset capabilities.
+fn toolset_window_parts(label: &str) -> (&str, &str) {
+    if let Some((owner, utility)) = label
+        .strip_prefix("office-utility-")
+        .and_then(|label| label.split_once("--"))
+    {
+        if is_office_document_window(owner) && utility.starts_with("toolset-") {
+            return (owner, utility);
+        }
+    }
+    (MAIN_WINDOW_LABEL, label)
+}
+
+fn toolset_document_label(label: &str) -> &str {
+    if is_office_document_window(label) {
+        label
+    } else {
+        toolset_window_parts(label).0
+    }
+}
+
+fn owned_toolset_label(owner: &str, utility: &str) -> String {
+    if owner == MAIN_WINDOW_LABEL {
+        utility.to_owned()
+    } else {
+        format!("office-utility-{owner}--{utility}")
+    }
+}
+
+fn toolset_owner_query(label: &str) -> String {
+    let (owner, _) = toolset_window_parts(label);
+    if owner == MAIN_WINDOW_LABEL {
+        String::new()
+    } else {
+        format!("&officeOwner={owner}")
+    }
 }
 
 #[cfg(test)]
 mod document_window_tests {
-    use super::is_document_window;
+    use super::{dialog_windows, is_document_window, is_suspended_utility_label};
 
     #[test]
     fn recognizes_only_document_window_labels() {
         assert!(is_document_window("main"));
-        for label in ["palette-main", "dialog-x", ""] {
+        assert_eq!(is_document_window("office-object-17"), cfg!(windows));
+        for label in [
+            "palette-main",
+            "dialog-x",
+            "office-object-",
+            "office-object-word",
+            "office-utility-office-object-17--toolset-core-main",
+            "dialog-office-object-17-pageSize-1",
+            "",
+        ] {
             assert!(!is_document_window(label));
+        }
+    }
+
+    #[test]
+    fn main_picker_suspends_only_main_document_utilities() {
+        let office_dialog = "dialog-office-object-17-pageSize-1";
+        assert_eq!(
+            dialog_windows::is_dialog_label(office_dialog),
+            cfg!(windows)
+        );
+        assert!(!is_suspended_utility_label(office_dialog));
+        assert!(!is_suspended_utility_label(
+            "office-utility-office-object-17--toolset-core-main"
+        ));
+        for label in ["toolset-core-main", "dialog-main-pageSize-1", "preferences"] {
+            assert!(is_suspended_utility_label(label), "{label}");
         }
     }
 }
@@ -612,6 +684,32 @@ fn request_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
     if windows_session_end::in_progress() || linux_session_end::in_progress() {
         return;
     }
+    #[cfg(windows)]
+    if let Some(server) = app.try_state::<office_ole::server::Server>() {
+        if server.begin_quit() {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let server = app.state::<office_ole::server::Server>();
+                match server.prepare_quit().await {
+                    Ok(()) => request_document_quit(&app),
+                    Err(error) => {
+                        server.cancel_quit();
+                        eprintln!("ChemDraft quit cancelled while closing Office editors: {error}");
+                    }
+                }
+            });
+        } else if quit_in_progress() || prompt_waits_for_user(&QUIT) {
+            request_document_quit(app);
+        }
+        return;
+    }
+    request_document_quit(app);
+}
+
+fn request_document_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
+    if windows_session_end::in_progress() {
+        return;
+    }
     if ASK_TO_SAVE_ON_QUIT.load(Ordering::SeqCst) {
         // A repeated menu/Dock quit also reveals a prompt that was subsequently minimized.
         if prompt_waits_for_user(&QUIT) {
@@ -878,16 +976,26 @@ enum QuitCancelOutcome {
     Committed,
 }
 
+#[cfg(test)]
 fn cancel_quit_with(flow: &QuitFlow, request_id: u64) -> QuitCancelOutcome {
+    cancel_quit_prompt(flow, request_id).0
+}
+
+/// The cancellation's outcome, and whether this call ended a prompt that was still waiting for the
+/// user. A retried cancellation reports `Cancelled` again but ends nothing, so only the first one
+/// releases the Office quit reservation: a retry arriving while a later quit prepares its Office
+/// editors (its own prompt not yet requested) must not release that quit's reservation.
+fn cancel_quit_prompt(flow: &QuitFlow, request_id: u64) -> (QuitCancelOutcome, bool) {
     let mut prompt = flow.prompt.lock().unwrap();
     if prompt.1 == QuitPromptPhase::Flushing || flow.in_progress() {
-        return QuitCancelOutcome::Committed;
+        return (QuitCancelOutcome::Committed, false);
     }
     if request_id == 0 || prompt.0 != request_id {
-        return QuitCancelOutcome::Superseded;
+        return (QuitCancelOutcome::Superseded, false);
     }
+    let ended = prompt.1 != QuitPromptPhase::Idle;
     prompt.1 = QuitPromptPhase::Idle;
-    QuitCancelOutcome::Cancelled
+    (QuitCancelOutcome::Cancelled, ended)
 }
 
 #[tauri::command]
@@ -944,7 +1052,16 @@ async fn cancel_quit(
     request_id: u64,
 ) -> Result<QuitCancelOutcome, String> {
     authorize_quit_window(window.label())?;
-    Ok(cancel_quit_with(&QUIT, request_id))
+    let (outcome, ended_prompt) = cancel_quit_prompt(&QUIT, request_id);
+    #[cfg(windows)]
+    if ended_prompt {
+        if let Some(server) = window.try_state::<office_ole::server::Server>() {
+            server.cancel_quit();
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = ended_prompt;
+    Ok(outcome)
 }
 
 #[tauri::command]
@@ -997,6 +1114,7 @@ const MENU_COMMAND_IDS: &[&str] = &[
     "clipboard.copyAs.png",
     "document.new",
     "document.open",
+    "document.importOfficeStructures",
     "document.save",
     "document.saveAs",
     "export.open",
@@ -1074,8 +1192,39 @@ fn plugin_menu_items_in<'a>(
 
 /// The plugin menu items last synced from the webview. Read by every menu rebuild so the items
 /// survive toolset-driven rebuilds, not only plugin syncs.
-#[derive(Default)]
 struct PluginNativeMenuItems(std::sync::Mutex<Vec<PluginMenuItemInput>>);
+
+impl Default for PluginNativeMenuItems {
+    fn default() -> Self {
+        Self(std::sync::Mutex::new(initial_plugin_menu_items()))
+    }
+}
+
+/// The synced rows the first native menu is built with, before the webview's first sync. On macOS
+/// these are the Office add-in Help rows, enabled: nothing checks the add-in's status at launch
+/// (reading Word's and PowerPoint's containers can raise macOS's "access data from other apps"
+/// prompt), so they are the same rows the webview syncs. Without them Help showed only Report a
+/// Bug… until the webview loaded. The Windows menu never carries them.
+fn initial_plugin_menu_items() -> Vec<PluginMenuItemInput> {
+    #[cfg(target_os = "macos")]
+    {
+        office_addin::HELP_MENU_ROWS
+            .iter()
+            .map(|(id, label)| PluginMenuItemInput {
+                id: (*id).to_owned(),
+                core_routed: true,
+                separator_before: false,
+                label: (*label).to_owned(),
+                location: "help".to_owned(),
+                enabled: true,
+            })
+            .collect()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Vec::new()
+    }
+}
 
 /// The Toolbars-menu rows and View-toggle state last pushed by JS (`set_toolbars_menu`). Stored so a
 /// plugin-menu sync (`sync_plugin_menu_items`) can rebuild the whole native menu from the same model
@@ -1249,6 +1398,12 @@ struct ClipboardReadPayload {
     skipped_image_items: Vec<SkippedClipboardImageItem>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     skipped_items: Vec<clipboard_limits::SkippedClipboardItem>,
+    /// Paste-back data: a copied ChemDraft OLE object's drawing (Windows only), Office's picture
+    /// archive (GVML), or both: Windows reads GVML beside an OLE drawing, and the TypeScript
+    /// adapter decodes it only when the drawing is absent or refused. Empty unless an Office
+    /// picture or object was copied.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    office_items: Vec<clipboard_images::ClipboardOfficeItem>,
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -1373,17 +1528,18 @@ pub fn run() {
     // First, before GTK opens the display: see monitor_query.rs.
     #[cfg(target_os = "linux")]
     monitor_query::init_xlib_threads();
+    let mut context = tauri::generate_context!();
+    let office_launch = office_ole::launch::Launch::configure(&mut context);
     let perf_enabled = agent_bridge_status().enabled;
     windows_activation_log::init(perf_enabled);
     let perf_log = perf_log::PerfLog::new(perf_enabled);
-    let builder = tauri::Builder::default();
+    let builder = tauri::Builder::default().manage(office_launch);
     #[cfg(target_os = "linux")]
     let is_appimage = startup.appimage.is_some();
     #[cfg(target_os = "linux")]
     let builder = builder.manage(startup);
 
     // Both guards run before any webview or app setup can touch session/settings files.
-    let context = tauri::generate_context!();
     #[cfg(target_os = "macos")]
     let (context, primary_lock, secondary) = {
         let mut context = context;
@@ -1569,9 +1725,13 @@ pub fn run() {
                 run_linux_window_menu_action(app, action);
                 return;
             }
-            if (is_routed_menu_command(command_id)
+            if is_routed_menu_command(command_id)
                 || (is_clipboard_edit_menu_command(command_id)
-                    && custom_menu_shortcut(app, command_id).is_some()))
+                    && custom_menu_shortcut(app, command_id).is_some())
+                || matches!(
+                    command_id,
+                    "office.updateEmbeddedObject" | "office.closeEmbeddedObject"
+                )
                 || is_core_routed_dynamic_menu_command(command_id, &current_plugin_menu_items(app))
             {
                 if let Err(error) = emit_menu_command(app, command_id) {
@@ -1645,10 +1805,45 @@ pub fn run() {
                 return;
             }
 
-            if window.label().starts_with("toolset-popover-")
-                && matches!(event, WindowEvent::Destroyed)
-            {
-                toolset_popover_command_sources().remove(window.label());
+            if is_office_document_window(window.label()) {
+                match event {
+                    // An Office editor restored (Windows sends Resized) or focused again: its
+                    // palettes held while it was minimized are shown, as main's are above.
+                    WindowEvent::Resized(_) | WindowEvent::Focused(true) => {
+                        palette_first_paint::release_held(window.app_handle());
+                    }
+                    WindowEvent::Destroyed => {
+                        dialog_windows::dismiss_office_dialogs(window.app_handle(), window.label());
+                        for utility in window.app_handle().webview_windows().into_values() {
+                            if toolset_window_parts(utility.label()).0 == window.label() {
+                                let _ = utility.destroy();
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            let (_owner, utility) = toolset_window_parts(window.label());
+            if utility.starts_with("toolset-popover-") {
+                if matches!(event, WindowEvent::Destroyed) {
+                    toolset_popover_command_sources().remove(window.label());
+                }
+                #[cfg(windows)]
+                if is_office_document_window(_owner)
+                    && matches!(
+                        event,
+                        WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed
+                    )
+                {
+                    if let Some(owner) = window.app_handle().get_webview_window(_owner) {
+                        office_ole::toolset_events::deliver(
+                            &owner,
+                            office_ole::toolset_events::NATIVE_POPOVER_CLOSE,
+                            &serde_json::to_string(window.label()).unwrap(),
+                        );
+                    }
+                }
             }
 
             // Owned windows may finish unminimizing after their owner's Resized event.
@@ -1745,6 +1940,26 @@ pub fn run() {
                 return;
             };
 
+            let owner = toolset_window_parts(window.label()).0;
+            if owner != MAIN_WINDOW_LABEL {
+                if matches!(event, WindowEvent::Destroyed) {
+                    panel_full_size::forget(window);
+                    if let Ok(mut labels) = app.state::<ToolsetWindowDirectory>().labels.lock() {
+                        labels.remove(window.label());
+                    }
+                    let _ = emit_toolset_window_state(
+                        app,
+                        owner,
+                        &ToolsetWindowState {
+                            toolset_id,
+                            open: false,
+                            focused: false,
+                            position: None,
+                        },
+                    );
+                }
+                return;
+            }
             if utility_windows_suspended() {
                 return;
             }
@@ -1805,10 +2020,31 @@ pub fn run() {
                     return Ok(());
                 }
             }
+            let headless_office = app
+                .state::<office_ole::launch::Launch>()
+                .setup(app.handle())?;
+            #[cfg(windows)]
+            if let Err(error) = windows_session_end::install(app.handle()) {
+                eprintln!("Could not install ChemDraft session-end handler: {error}");
+            }
+            if headless_office {
+                return Ok(());
+            }
             setup_primary_app(app.handle())
         })
         .invoke_handler(tauri::generate_handler![
+            #[cfg(target_os = "macos")]
+            office_addin::office_addin_install,
+            #[cfg(target_os = "macos")]
+            office_addin::office_addin_remove,
+            office_ole::bridge::office_object_connect,
+            office_ole::bridge::office_object_set_title,
+            office_ole::toolset_events::office_toolset_emit,
+            office_ole::bridge::office_object_update,
+            office_ole::bridge::office_object_close,
+            office_ole::bridge::prepare_office_editors_for_update,
             first_paint::window_first_paint,
+            panel_window::key_guard::palette_key_guard_clear,
             canvas_context_menu::popup_canvas_context_menu,
             file_warnings_window::file_warnings_open,
             file_warnings_window::file_warnings_request,
@@ -1962,6 +2198,12 @@ pub fn run() {
         match event {
             RunEvent::MainEventsCleared => canvas_context_menu::events_cleared(app),
             RunEvent::ExitRequested { code, api, .. } => {
+                if app.state::<office_ole::launch::Launch>().keep_running(code) {
+                    // The last editor can close while Office still owns an object or factory lock.
+                    // The STA posts an explicit exit(0) on the final COM process release.
+                    api.prevent_exit();
+                    return;
+                }
                 if windows_session_end::in_progress() || linux_session_end::blocks_exit() {
                     // A queued app quit must give the committed OS flush time to finish.
                     api.prevent_exit();
@@ -1969,7 +2211,14 @@ pub fn run() {
                     cfg!(target_os = "macos"),
                     code,
                     APP_QUITTING.load(Ordering::SeqCst),
-                ) {
+                ) || (cfg!(windows)
+                    && code != Some(tauri::RESTART_EXIT_CODE)
+                    && !APP_QUITTING.load(Ordering::SeqCst)
+                    && app
+                        .webview_windows()
+                        .keys()
+                        .any(|label| is_office_document_window(label)))
+                {
                     // AppHandle::exit and last-window destruction are preventable. The exit
                     // posted by quit_now is allowed through because APP_QUITTING is then true.
                     api.prevent_exit();
@@ -1984,6 +2233,7 @@ pub fn run() {
                 }
             }
             RunEvent::Exit => {
+                office_ole::launch::shutdown(app);
                 // AppKit quit decisions are handled before this final cleanup.
                 APP_QUITTING.store(true, Ordering::SeqCst);
                 #[cfg(target_os = "macos")]
@@ -2034,14 +2284,10 @@ fn start_macos_primary(
 }
 
 fn setup_primary_app(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
-    if let Err(error) = windows_session_end::install(app) {
-        eprintln!("Could not install ChemDraft session-end handler: {error}");
-    }
     #[cfg(target_os = "linux")]
     if let Err(error) = linux_session_end::install(app) {
         eprintln!("Could not install ChemDraft Linux termination handlers: {error}");
     }
-    panel_window::observe_document_pointer_release(app);
     file_warnings_window::observe_document(app)?;
     // Programmatic panel removal hides a reusable window, so it produces neither
     // CloseRequested nor Destroyed. Cancel its native restore work via the same bridge
@@ -2761,10 +3007,11 @@ fn utility_windows_suspended() -> bool {
 }
 
 fn is_suspended_utility_label(label: &str) -> bool {
-    // Plugin panels float above their owner too: Windows owned windows and macOS child windows.
+    // Only the main document owns this suspension. Its plugin panels float above it too.
     label.starts_with("toolset-")
         || is_plugin_panel_window_label(label)
-        || dialog_windows::is_dialog_label(label)
+        || (dialog_windows::is_dialog_label(label)
+            && dialog_windows::dialog_owner_label(label) == MAIN_WINDOW_LABEL)
 }
 
 fn utility_restore_priority(label: &str) -> u8 {
@@ -3117,7 +3364,10 @@ fn restore_utility_labels<R: Runtime>(
         if !foreground_belongs_to_app() {
             break;
         }
-        let Some(window) = app.get_webview_window(&label) else {
+        let Some(window) = app
+            .get_webview_window(&label)
+            .filter(|_| is_suspended_utility_label(&label))
+        else {
             let mut suspension = UTILITY_SUSPENSION
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -3359,7 +3609,13 @@ fn second_launch_action(quitting: bool, setup_completed: bool) -> SecondLaunchAc
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
-fn handle_second_launch<R: Runtime>(app: &tauri::AppHandle<R>, argv: Vec<String>, cwd: String) {
+fn handle_second_launch(app: &tauri::AppHandle, argv: Vec<String>, cwd: String) {
+    if app
+        .state::<office_ole::launch::Launch>()
+        .consume_second_launch(app, &argv)
+    {
+        return;
+    }
     let result = handle_second_launch_with(app, || {
         handle_opened_document_args(app, argv.into_iter().skip(1), Path::new(&cwd))
     });
@@ -3536,35 +3792,57 @@ fn lock_window_creation_with(
 #[tauri::command]
 async fn open_toolset_window(
     app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
     toolset_id: String,
     window: Option<ToolsetWindowGeometry>,
 ) -> Result<ToolsetWindowState, String> {
+    let owner = toolset_document_label(caller.label());
     // Windows: recorded before waiting for the creation lock, so a close that arrives while this
     // open waits, builds or arms wins over it (palette_first_paint.rs). No-op elsewhere.
-    palette_first_paint::requested(&toolset_window_label(&toolset_id));
+    palette_first_paint::requested(&owned_toolset_label(
+        owner,
+        &toolset_window_label(&toolset_id),
+    ));
     let _creation = lock_window_creation()?;
     if utility_windows_suspended() {
-        return toolset_state(&app, &toolset_id);
+        return toolset_state_for(&app, owner, &toolset_id);
     }
-    ensure_toolset_window(&app, &toolset_id, window.as_ref())?;
+    ensure_toolset_window(&app, owner, &toolset_id, window.as_ref())?;
 
-    let state = toolset_state(&app, &toolset_id)?;
-    // Windows: a palette closed while this open was in flight stays closed, menu item included.
-    // macOS and Linux check it as before.
-    set_toolset_menu_checked(
-        &app,
-        &toolset_id,
-        state.open || !palette_first_paint::tracks_palettes(),
-    )?;
-    let _ = emit_toolset_window_state_to_main(&app, &state);
+    let state = toolset_state_for(&app, owner, &toolset_id)?;
+    if owner == MAIN_WINDOW_LABEL {
+        // Windows: a palette closed while this open was in flight stays closed, menu item included.
+        // macOS and Linux check it as before.
+        set_toolset_menu_checked(
+            &app,
+            &toolset_id,
+            state.open || !palette_first_paint::tracks_palettes(),
+        )?;
+    }
+    let _ = emit_toolset_window_state(&app, owner, &state);
     Ok(state)
 }
 
 #[tauri::command]
 fn close_toolset_window(
     app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
     toolset_id: String,
 ) -> Result<ToolsetWindowState, String> {
+    let owner = toolset_document_label(caller.label());
+    if owner != MAIN_WINDOW_LABEL {
+        let label = owned_toolset_label(owner, &toolset_window_label(&toolset_id));
+        // Windows: as for the document window's palettes below, so an open still waiting for its
+        // first paint does not show the palette afterwards.
+        palette_first_paint::closed(&label);
+        if let Some(window) = app.get_webview_window(&label) {
+            panel_window::end_for_hide(window.app_handle(), window.label());
+            window.hide().map_err(|error| error.to_string())?;
+        }
+        let state = toolset_state_for(&app, owner, &toolset_id)?;
+        let _ = emit_toolset_window_state(&app, owner, &state);
+        return Ok(state);
+    }
     if utility_windows_suspended() {
         return toolset_state(&app, &toolset_id);
     }
@@ -3613,6 +3891,7 @@ enum ToolsetWindowQueryResult {
 #[tauri::command]
 fn list_toolset_window_states(
     app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
     foreground_only: Option<bool>,
 ) -> Result<ToolsetWindowQueryResult, String> {
     if foreground_only == Some(true) {
@@ -3621,16 +3900,21 @@ fn list_toolset_window_states(
             .map(ToolsetWindowQueryResult::Foreground);
     }
 
+    let owner = toolset_document_label(caller.label());
     // Report the state of every palette window we've opened this session (from the directory),
     // rather than scanning the manifest. The JS reconciler only cares about which are open.
     let toolset_ids: Vec<String> = {
         let directory = app.state::<ToolsetWindowDirectory>();
         let labels = directory.labels.lock().map_err(|error| error.to_string())?;
-        labels.values().cloned().collect()
+        labels
+            .iter()
+            .filter(|(label, _)| toolset_window_parts(label).0 == owner)
+            .map(|(_, id)| id.clone())
+            .collect()
     };
     toolset_ids
         .iter()
-        .map(|toolset_id| toolset_state(&app, toolset_id))
+        .map(|toolset_id| toolset_state_for(&app, owner, toolset_id))
         .collect::<Result<_, _>>()
         .map(ToolsetWindowQueryResult::States)
 }
@@ -3655,7 +3939,7 @@ fn foreground_app_window_label(app: &tauri::AppHandle) -> Option<String> {
 }
 
 #[cfg(windows)]
-fn foreground_app_window_label(app: &tauri::AppHandle) -> Option<String> {
+fn foreground_app_window_label<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<String> {
     use windows_sys::Win32::UI::WindowsAndMessaging::{GetAncestor, GetForegroundWindow, GA_ROOT};
 
     // Foreground is sampled once. The parent chain maps a WebView2 child back to its host
@@ -3704,6 +3988,10 @@ fn write_file_atomic(path: &Path, contents: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
+    write_file_atomic_in_existing_dir(path, contents)
+}
+
+fn write_file_atomic_in_existing_dir(path: &Path, contents: &str) -> Result<(), String> {
     static WRITE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let sequence = WRITE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut tmp = path.as_os_str().to_owned();
@@ -3712,7 +4000,10 @@ fn write_file_atomic(path: &Path, contents: &str) -> Result<(), String> {
     // Clean up on BOTH failure paths. The rename arm already did; the write arm did not, so a
     // write that failed partway (a full disk, a quota) left its temp sibling behind next to the
     // real file — and the name carries a pid and a counter, so each attempt orphaned a new one.
-    fs::write(&tmp, contents).map_err(|error| {
+    let mut file = fs::File::create_new(&tmp).map_err(|error| error.to_string())?;
+    let written = file.write_all(contents.as_bytes());
+    drop(file);
+    written.map_err(|error| {
         let _ = fs::remove_file(&tmp);
         error.to_string()
     })?;
@@ -4382,6 +4673,8 @@ async fn save_document_session(
 #[tauri::command]
 fn set_toolbars_menu(
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    office_update_title: Option<String>,
     entries: Vec<ToolbarMenuEntry>,
     rulers_visible: bool,
     crosshairs_visible: bool,
@@ -4394,6 +4687,16 @@ fn set_toolbars_menu(
         crosshairs_visible,
         has_multiple_document_tabs: has_multiple_document_tabs.unwrap_or(false),
     };
+    #[cfg(windows)]
+    if is_office_document_window(window.label()) {
+        let title = office_update_title.map(|title| title.replace('&', "&&"));
+        return run_on_main_thread_blocking(&app, move || {
+            install_office_document_menu(&window, &entries, view_state, title.as_deref())
+        })?
+        .map_err(|error| error.to_string());
+    }
+    #[cfg(not(windows))]
+    let _ = (window, office_update_title);
     run_on_main_thread_blocking(&app.clone(), move || {
         let previous = current_toolbars_menu_model(&app);
         apply_menu_update(
@@ -4924,10 +5227,16 @@ fn validate_plugin_panel_focus_caller(label: &str) -> Result<(), String> {
 
 fn is_input_focus_window_label(label: &str) -> bool {
     is_plugin_panel_window_label(label)
-        || label.strip_prefix("toolset-").is_some_and(|suffix| {
-            // Popovers share a window between command flyouts and editable colour fields.
-            !suffix.is_empty() && suffix != "tooltip" && suffix != "popover" && suffix != "popover-"
-        })
+        || toolset_window_parts(label)
+            .1
+            .strip_prefix("toolset-")
+            .is_some_and(|suffix| {
+                // Popovers share a window between command flyouts and editable colour fields.
+                !suffix.is_empty()
+                    && suffix != "tooltip"
+                    && suffix != "popover"
+                    && suffix != "popover-"
+            })
 }
 
 #[tauri::command]
@@ -6608,14 +6917,21 @@ enum ToolsetPopoverFocusMode {
 #[tauri::command]
 async fn open_toolset_popover(
     app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
     toolset_id: String,
     kind: String,
     x: f64,
     y: f64,
     focus_mode: Option<ToolsetPopoverFocusMode>,
 ) -> Result<(), String> {
-    let label = toolset_popover_window_label(&toolset_id);
-    let focus_mode = effective_toolset_popover_focus_mode(&label, focus_mode.unwrap_or_default());
+    let label = owned_toolset_label(
+        toolset_document_label(caller.label()),
+        &toolset_popover_window_label(&toolset_id),
+    );
+    let focus_mode = effective_toolset_popover_focus_mode(
+        toolset_window_parts(&label).1,
+        focus_mode.unwrap_or_default(),
+    );
     let _creation = lock_window_creation()?;
     if utility_windows_suspended() {
         return Ok(());
@@ -6650,8 +6966,15 @@ async fn open_toolset_popover(
 /// user-visible open then takes the warm path (reposition + content push + self-reveal, a frame or
 /// two). The `prewarm=1` route param tells the webview to stay hidden until real content arrives.
 #[tauri::command]
-async fn prewarm_toolset_popover(app: tauri::AppHandle, toolset_id: String) -> Result<(), String> {
-    let label = toolset_popover_window_label(&toolset_id);
+async fn prewarm_toolset_popover(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    toolset_id: String,
+) -> Result<(), String> {
+    let label = owned_toolset_label(
+        toolset_document_label(caller.label()),
+        &toolset_popover_window_label(&toolset_id),
+    );
     let _creation = lock_window_creation()?;
     if app.get_webview_window(&label).is_some() {
         return Ok(());
@@ -6664,7 +6987,10 @@ async fn prewarm_toolset_popover(app: tauri::AppHandle, toolset_id: String) -> R
         "artColor",
         true,
         (0.0, 0.0),
-        effective_toolset_popover_focus_mode(&label, ToolsetPopoverFocusMode::Focus),
+        effective_toolset_popover_focus_mode(
+            toolset_window_parts(&label).1,
+            ToolsetPopoverFocusMode::Focus,
+        ),
     )
 }
 
@@ -6674,13 +7000,16 @@ async fn prewarm_toolset_popover(app: tauri::AppHandle, toolset_id: String) -> R
 /// toolbars appeared that much later. Nothing needs the tooltip before the first hover, and
 /// show/hide already no-op while it doesn't exist. Every palette asks; the first ask builds it.
 #[tauri::command]
-async fn prewarm_toolset_tooltip(app: tauri::AppHandle) -> Result<(), String> {
+async fn prewarm_toolset_tooltip(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+) -> Result<(), String> {
     let _creation = lock_window_creation()?;
-    build_toolset_tooltip_window(&app)
+    build_toolset_tooltip_window(&app, toolset_document_label(caller.label()))
 }
 
 fn toolset_popover_title(label: &str, kind: &str) -> &'static str {
-    if label == toolset_popover_window_label("core.bondStereo") {
+    if toolset_window_parts(label).1 == toolset_popover_window_label("core.bondStereo") {
         "E/Z not specified"
     } else if matches!(kind, "artColor" | "textColor") {
         "ChemDraft color picker"
@@ -6704,12 +7033,15 @@ fn toolset_popover_window_config(
     tauri::utils::config::WindowConfig {
         label: label.into(),
         url: WebviewUrl::App(
-            format!("/?window=toolsetPopover&toolsetId={toolset_id}&kind={kind}{prewarm_param}")
-                .into(),
+            format!(
+                "/?window=toolsetPopover&toolsetId={toolset_id}&kind={kind}{prewarm_param}{}",
+                toolset_owner_query(label)
+            )
+            .into(),
         ),
         title: toolset_popover_title(&toolset_popover_window_label(toolset_id), kind).into(),
         #[cfg(any(windows, target_os = "linux"))]
-        parent: Some(MAIN_WINDOW_LABEL.into()),
+        parent: Some(toolset_window_parts(label).0.into()),
         #[cfg(not(any(windows, target_os = "linux")))]
         parent: None,
         width: 320.0,
@@ -6755,6 +7087,8 @@ fn build_toolset_popover_window(
     };
     let window = builder.build().map_err(|error| error.to_string())?;
 
+    #[cfg(windows)]
+    office_ole::toolset_events::attach_utility(&window);
     disable_default_context_menus(&window);
     utility_window::prepare(&window, utility_window::Kind::Popover, native_wayland)?;
     configure_toolset_popover_window(&window, focus_mode)?;
@@ -6815,8 +7149,16 @@ fn toolset_popover_extended_style(style: isize) -> isize {
 }
 
 #[tauri::command]
-fn close_toolset_popover(app: tauri::AppHandle, toolset_id: String) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window(&toolset_popover_window_label(&toolset_id)) {
+fn close_toolset_popover(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    toolset_id: String,
+) -> Result<(), String> {
+    let label = owned_toolset_label(
+        toolset_document_label(caller.label()),
+        &toolset_popover_window_label(&toolset_id),
+    );
+    if let Some(window) = app.get_webview_window(&label) {
         panel_window::end_for_hide(window.app_handle(), window.label());
         #[cfg(target_os = "linux")]
         utility_window::set_visible(&window, false)?;
@@ -6907,6 +7249,7 @@ fn toolset_tooltip_suppressed<'a>(windows: impl IntoIterator<Item = (&'a str, bo
 #[tauri::command]
 fn show_toolset_tooltip_window(
     app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
     x: Option<f64>,
     y: Option<f64>,
 ) -> Result<(), String> {
@@ -6916,17 +7259,25 @@ fn show_toolset_tooltip_window(
     // Both reveal commands are synchronous on the main thread. A delayed hover request must
     // recheck here, immediately before showing, even if its measurement began before the popover.
     // Hidden/prewarmed popovers do not block the next hover after the last popover closes.
+    let owner = toolset_document_label(caller.label());
     let windows = app.webview_windows();
     // A window being torn down may have unreadable visibility; it must not suppress tooltips.
+    // Querying every window's visibility on each tooltip show slowed toolbar clicks, so filter
+    // to this document's popovers by label before any visibility query.
     if toolset_tooltip_suppressed(
         windows
             .iter()
-            .filter(|(label, _)| label.starts_with("toolset-popover-"))
-            .map(|(label, window)| (label.as_str(), window.is_visible().unwrap_or(false))),
+            .map(|(label, window)| (toolset_window_parts(label), window))
+            .filter(|((document, utility), _)| {
+                *document == owner && utility.starts_with("toolset-popover-")
+            })
+            .map(|((_, utility), window)| (utility, window.is_visible().unwrap_or(false))),
     ) {
         return Ok(());
     }
-    let Some(window) = app.get_webview_window(TOOLSET_TOOLTIP_WINDOW_LABEL) else {
+    let Some(window) =
+        app.get_webview_window(&owned_toolset_label(owner, TOOLSET_TOOLTIP_WINDOW_LABEL))
+    else {
         return Ok(());
     };
     // Placing and showing in one command halves the tooltip's IPC round trips (it used to be
@@ -7023,7 +7374,8 @@ fn show_toolset_popover_window(
     kind: Option<String>,
     flyout_opening: Option<ToolsetFlyoutOpening>,
 ) -> Result<bool, String> {
-    if !window.label().starts_with("toolset-popover-") {
+    let (owner, utility) = toolset_window_parts(window.label());
+    if !utility.starts_with("toolset-popover-") {
         return Err("Only toolset popovers may reveal popover content".into());
     }
     if utility_windows_suspended() {
@@ -7034,7 +7386,7 @@ fn show_toolset_popover_window(
     }
     let source = match (kind.as_deref(), flyout_opening) {
         (Some("flyout"), Some(opening))
-            if window.label() == toolset_popover_window_label(&opening.toolset_id) =>
+            if utility == toolset_popover_window_label(&opening.toolset_id) =>
         {
             Some(ToolsetPopoverCommandSource::Flyout(opening))
         }
@@ -7056,13 +7408,12 @@ fn show_toolset_popover_window(
             .set_title(toolset_popover_title(window.label(), &kind))
             .map_err(|error| error.to_string())?;
     }
-    let focus_mode =
-        effective_toolset_popover_focus_mode(window.label(), focus_mode.unwrap_or_default());
+    let focus_mode = effective_toolset_popover_focus_mode(utility, focus_mode.unwrap_or_default());
     configure_toolset_popover_window(&window, focus_mode)?;
     // Remove a tooltip already on screen before revealing this popover on either platform.
     // Subsequent tooltip-show commands are blocked by its native visibility until it hides.
     // Best-effort: a tooltip-hide failure must not prevent opening the requested popover.
-    let _ = hide_toolset_tooltip_window(window.app_handle().clone());
+    let _ = hide_toolset_tooltip_for(window.app_handle(), owner);
     #[cfg(target_os = "macos")]
     if focus_mode == ToolsetPopoverFocusMode::Preserve {
         // TaoWindow subclasses NSWindow; focusable(false) guards canBecomeKeyWindow.
@@ -7098,8 +7449,20 @@ fn show_toolset_popover_window(
 /// API instead took a different IPC path, so a hide sent right after a show could land first and
 /// strand the tooltip visible over the palette.
 #[tauri::command]
-fn hide_toolset_tooltip_window(app: tauri::AppHandle) -> Result<(), String> {
-    let Some(window) = app.get_webview_window(TOOLSET_TOOLTIP_WINDOW_LABEL) else {
+fn hide_toolset_tooltip_window(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+) -> Result<(), String> {
+    hide_toolset_tooltip_for(&app, toolset_document_label(caller.label()))
+}
+
+fn hide_toolset_tooltip_for<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    owner: &str,
+) -> Result<(), String> {
+    let Some(window) =
+        app.get_webview_window(&owned_toolset_label(owner, TOOLSET_TOOLTIP_WINDOW_LABEL))
+    else {
         return Ok(());
     };
     window.hide().map_err(|error| error.to_string())
@@ -7188,7 +7551,11 @@ fn set_window_global_logical_position<R: Runtime>(
     let (physical_x, physical_y) = global_logical_to_physical(&monitors, x, y, current_scale);
     let position =
         tauri::PhysicalPosition::new(physical_x.round() as i32, physical_y.round() as i32);
-    if is_plugin_panel_window_label(window.label()) || window.label().starts_with("toolset-") {
+    if is_plugin_panel_window_label(window.label())
+        || toolset_window_parts(window.label())
+            .1
+            .starts_with("toolset-")
+    {
         windows_activation_log::frame_set(
             window.label(),
             "global position request",
@@ -7397,11 +7764,9 @@ fn toolset_content_placement(
 /// doesn't pay the cold-webview load. The `toolset-` label prefix gives it the palette capability
 /// set; it is NOT in the ToolsetWindowDirectory, so the pointer feed never treats it as a hoverable
 /// palette.
-fn build_toolset_tooltip_window(app: &tauri::AppHandle) -> Result<(), String> {
-    if app
-        .get_webview_window(TOOLSET_TOOLTIP_WINDOW_LABEL)
-        .is_some()
-    {
+fn build_toolset_tooltip_window(app: &tauri::AppHandle, owner: &str) -> Result<(), String> {
+    let label = owned_toolset_label(owner, TOOLSET_TOOLTIP_WINDOW_LABEL);
+    if app.get_webview_window(&label).is_some() {
         return Ok(());
     }
 
@@ -7409,10 +7774,13 @@ fn build_toolset_tooltip_window(app: &tauri::AppHandle) -> Result<(), String> {
     let builder = utility_window_builder(
         WebviewWindowBuilder::new(
             app,
-            TOOLSET_TOOLTIP_WINDOW_LABEL,
-            WebviewUrl::App("/?window=toolsetTooltip".into()),
+            &label,
+            WebviewUrl::App(
+                format!("/?window=toolsetTooltip{}", toolset_owner_query(&label)).into(),
+            ),
         ),
         app,
+        owner,
     )?
     .title("ChemDraft tooltip")
     // The JS side sizes this to the rendered text before every show.
@@ -7430,6 +7798,8 @@ fn build_toolset_tooltip_window(app: &tauri::AppHandle) -> Result<(), String> {
             .build()
             .map_err(|error| error.to_string())?;
 
+    #[cfg(windows)]
+    office_ole::toolset_events::attach_utility(&window);
     disable_default_context_menus(&window);
     utility_window::prepare(&window, utility_window::Kind::Tooltip, native_wayland)?;
     configure_toolset_utility_window(&window, false)?;
@@ -7485,7 +7855,7 @@ fn set_palette_command_hit_boxes(
         "toolset-popover-",
     ]
     .iter()
-    .any(|prefix| window.label().starts_with(prefix))
+    .any(|prefix| toolset_window_parts(window.label()).1.starts_with(prefix))
     {
         return Err("Expected a tool palette.".into());
     }
@@ -7521,7 +7891,11 @@ fn route_toolset_command(
         return Err("Toolset command id cannot be empty.".to_string());
     }
 
-    if window.label().starts_with("toolset-popover-") {
+    let document = toolset_document_label(window.label());
+    if toolset_window_parts(window.label())
+        .1
+        .starts_with("toolset-popover-")
+    {
         if commit.unwrap_or(false) {
             return Ok(());
         }
@@ -7543,19 +7917,27 @@ fn route_toolset_command(
 
     if let Some(session_id) = flyout_opening.and_then(|opening| opening.bond_stereo_session_id) {
         if matches!(command_id, "geometry" | "flipped" | "keep") {
-            app.emit_to(
-                MAIN_WINDOW_LABEL,
-                "chemdraft://bond-stereo-popover-action",
-                serde_json::json!({ "sessionId": session_id, "action": command_id }),
-            )
-            .map_err(|error| error.to_string())?;
+            let payload = serde_json::json!({ "sessionId": session_id, "action": command_id });
+            #[cfg(windows)]
+            if document != MAIN_WINDOW_LABEL {
+                if let Some(owner) = app.get_webview_window(document) {
+                    office_ole::toolset_events::deliver(
+                        &owner,
+                        "chemdraft://bond-stereo-popover-action",
+                        &payload.to_string(),
+                    );
+                }
+                return Ok(());
+            }
+            app.emit_to(document, "chemdraft://bond-stereo-popover-action", payload)
+                .map_err(|error| error.to_string())?;
         }
         return Ok(());
     }
 
-    if commit.unwrap_or(false) {
+    if document != MAIN_WINDOW_LABEL || commit.unwrap_or(false) {
         let main = app
-            .get_webview_window(MAIN_WINDOW_LABEL)
+            .get_webview_window(document)
             .ok_or_else(|| "Main document window is not available.".to_string())?;
         // Shortcut-settle commits retain the event-bus commit's no-focus behavior and
         // delivery while utility windows are suspended (for example by a native prompt).
@@ -7564,7 +7946,11 @@ fn route_toolset_command(
             &ToolsetCommandPayload {
                 command_id: command_id.to_string(),
             },
-            "chemdraft://palette-command-commit",
+            if commit.unwrap_or(false) {
+                "chemdraft://palette-command-commit"
+            } else {
+                DOM_COMMAND_EVENT
+            },
         );
     }
     emit_command_to_main(&app, command_id)?;
@@ -7604,10 +7990,17 @@ fn read_clipboard_payload() -> Result<ClipboardReadPayload, String> {
 #[cfg(windows)]
 #[tauri::command]
 async fn write_clipboard_items(
-    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     items: Vec<ClipboardWriteItem>,
 ) -> Result<ClipboardWriteResult, String> {
-    write_clipboard_items_checked(&app, items)
+    if !is_office_document_window(window.label()) {
+        return write_clipboard_items_checked(window.app_handle(), items);
+    }
+    let owner = window.hwnd().map_err(|error| error.to_string())?;
+    let (items, warnings) = clipboard_formats::validate_clipboard_items_with_warnings(items)?;
+    let mut result = windows_clipboard::native::write_items(owner.0 as _, &items)?;
+    result.warnings.extend(warnings);
+    Ok(result)
 }
 
 #[cfg(not(windows))]
@@ -7780,6 +8173,7 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
         }
     }
     text_items.sort_by_key(|item| types.iter().position(|kind| kind == &item.r#type));
+    let office_items = clipboard_office_items(&pasteboard, &types, &mut budget);
 
     Ok(ClipboardReadPayload {
         types,
@@ -7787,7 +8181,43 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
         image_items,
         skipped_image_items,
         skipped_items: budget.skipped_items,
+        office_items,
     })
+}
+
+/// Office's picture archive for paste-back (the Windows side is `windows_clipboard::native`).
+/// The macOS pasteboard has no OLE "Embedded Object", so there is no embedded object to read.
+#[cfg(target_os = "macos")]
+fn clipboard_office_items(
+    pasteboard: &NSPasteboard,
+    types: &[String],
+    budget: &mut clipboard_limits::ClipboardReadBudget,
+) -> Vec<clipboard_images::ClipboardOfficeItem> {
+    let Some(source) = clipboard_images::office_picture_archive_type(types) else {
+        return Vec::new();
+    };
+    let Some(data) = pasteboard.dataForType(&NSString::from_str(source)) else {
+        return Vec::new();
+    };
+    let byte_length = data.length();
+    let refused = |reason: String| {
+        eprintln!("Paste-back skipped the Office picture archive: {reason}");
+        Vec::new()
+    };
+    if byte_length > clipboard_images::MAX_OFFICE_ARCHIVE_BYTES {
+        return refused(format!("{source} is over the 32 MB limit"));
+    }
+    if let Err(reason) = budget.reserve(source, byte_length) {
+        return refused(reason);
+    }
+    // SAFETY: NSData is retained and immutable; it is encoded without a byte copy.
+    match clipboard_images::office_archive_item(source, unsafe { data.as_bytes_unchecked() }) {
+        Ok(item) => vec![item],
+        Err(reason) => {
+            budget.release(byte_length);
+            refused(reason)
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -8258,6 +8688,7 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
         image_items: Vec::new(),
         skipped_image_items: Vec::new(),
         skipped_items: Vec::new(),
+        office_items: Vec::new(),
     })
 }
 
@@ -9248,15 +9679,20 @@ fn is_clipboard_edit_menu_command(id: &str) -> bool {
 /// history commands to the main window itself
 /// when it has no text field focused (`installSecondaryWindowEditHistory` in the webview).
 fn menu_command_target_label<'a>(command_id: &str, focused_label: Option<&'a str>) -> &'a str {
+    let follows_focus = is_edit_history_command(command_id)
+        || command_id == "edit.selectAll"
+        || native_clipboard_edit_command(command_id).is_some();
     match focused_label {
-        Some(label)
-            if is_edit_history_command(command_id)
-                || command_id == "edit.selectAll"
-                || native_clipboard_edit_command(command_id).is_some() =>
-        {
-            label
+        Some(label) if follows_focus => label,
+        Some(label) => {
+            let owner = toolset_document_label(label);
+            if owner == MAIN_WINDOW_LABEL {
+                dialog_windows::dialog_owner_label(label)
+            } else {
+                owner
+            }
         }
-        _ => MAIN_WINDOW_LABEL,
+        None => MAIN_WINDOW_LABEL,
     }
 }
 
@@ -9264,13 +9700,18 @@ fn emit_menu_command<R: Runtime>(
     app: &tauri::AppHandle<R>,
     command_id: &str,
 ) -> Result<(), String> {
+    #[cfg(windows)]
+    let focused_label = foreground_app_window_label(app);
+    #[cfg(not(windows))]
     let focused_label = app
         .webview_windows()
         .into_iter()
         .find(|(_, window)| window.is_focused().unwrap_or(false))
         .map(|(label, _)| label);
     let target_label = menu_command_target_label(command_id, focused_label.as_deref());
-    if target_label == MAIN_WINDOW_LABEL && panel_window::palette_blocks_menu(true, command_id) {
+    if is_document_window(target_label)
+        && panel_window::palette_blocks_menu(target_label, command_id)
+    {
         return Ok(());
     }
     #[cfg(target_os = "linux")]
@@ -9637,11 +10078,28 @@ fn emit_toolset_window_state_to_main<R: Runtime>(
     app: &tauri::AppHandle<R>,
     state: &ToolsetWindowState,
 ) -> Result<(), String> {
-    if app.get_webview_window(MAIN_WINDOW_LABEL).is_none() {
+    emit_toolset_window_state(app, MAIN_WINDOW_LABEL, state)
+}
+
+fn emit_toolset_window_state<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    owner: &str,
+    state: &ToolsetWindowState,
+) -> Result<(), String> {
+    let Some(_window) = app.get_webview_window(owner) else {
+        return Ok(());
+    };
+    #[cfg(windows)]
+    if owner != MAIN_WINDOW_LABEL {
+        office_ole::toolset_events::deliver(
+            &_window,
+            TOOLSET_WINDOW_STATE_EVENT,
+            &serde_json::to_string(state).map_err(|error| error.to_string())?,
+        );
         return Ok(());
     }
 
-    app.emit_to(MAIN_WINDOW_LABEL, TOOLSET_WINDOW_STATE_EVENT, state.clone())
+    app.emit_to(owner, TOOLSET_WINDOW_STATE_EVENT, state.clone())
         .map_err(|error| error.to_string())
 }
 
@@ -9728,6 +10186,12 @@ fn apply_menu_update(
     result
 }
 
+/// Sections whose rows come from the webview's synced items and so need in-place refreshes.
+/// Help carries the Office add-in rows, which are built only on macOS; the Windows menu never
+/// gains them, so off macOS Help stays out of the list and its updates stay a no-op.
+#[cfg(target_os = "macos")]
+const DYNAMIC_MENU_SECTIONS: [&str; 5] = ["structure", "tools", "analyze", "plugins", "help"];
+#[cfg(not(target_os = "macos"))]
 const DYNAMIC_MENU_SECTIONS: [&str; 4] = ["structure", "tools", "analyze", "plugins"];
 
 fn classify_plugin_menu_update(
@@ -10096,10 +10560,40 @@ fn install_app_menu<R: Runtime>(app: &tauri::AppHandle<R>, menu: Menu<R>) -> tau
         let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
             return Ok(());
         };
-        window.set_menu(menu)?;
+        install_document_window_menu(&window, menu)?;
     }
     windows_activation_log::menu(None);
     Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn install_document_window_menu<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    menu: Menu<R>,
+) -> tauri::Result<()> {
+    if is_document_window(window.label()) {
+        window.set_menu(menu)?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn install_office_document_menu<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    entries: &[ToolbarMenuEntry],
+    view: ViewMenuState,
+    update_title: Option<&str>,
+) -> tauri::Result<()> {
+    let app = window.app_handle();
+    let menu = create_document_menu(
+        app,
+        entries,
+        view,
+        &[],
+        current_keybinding_scheme(app),
+        Some(update_title),
+    )?;
+    install_document_window_menu(window, menu)
 }
 
 fn reinstall_app_menu<R: Runtime>(
@@ -10197,7 +10691,8 @@ fn create_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<
     )
 }
 
-/// The plugin menu items last synced from the webview (empty until the first sync). Read on every menu
+/// The plugin menu items last synced from the webview (`initial_plugin_menu_items` until the first
+/// sync). Read on every menu
 /// build so toolset-driven rebuilds keep the plugin items too (ADR-0016).
 fn current_plugin_menu_items<R: Runtime>(app: &tauri::AppHandle<R>) -> Vec<PluginMenuItemInput> {
     app.try_state::<PluginNativeMenuItems>()
@@ -10221,11 +10716,28 @@ fn create_app_menu_for_toolsets<R: Runtime>(
     plugin_items: &[PluginMenuItemInput],
     scheme: KeybindingScheme,
 ) -> tauri::Result<Menu<R>> {
+    create_document_menu(app, entries, view_state, plugin_items, scheme, None)
+}
+
+fn create_document_menu<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    entries: &[ToolbarMenuEntry],
+    view_state: ViewMenuState,
+    plugin_items: &[PluginMenuItemInput],
+    scheme: KeybindingScheme,
+    office_update_title: Option<Option<&str>>,
+) -> tauri::Result<Menu<R>> {
     #[cfg(target_os = "macos")]
     let native_app_menu = create_native_app_menu(app)?;
     let page_setup_menu = create_page_setup_menu(app)?;
     let insert_menu = build_insert_submenu(app)?;
-    let view_menu = create_view_menu(app, entries, view_state, scheme)?;
+    let view_menu = create_view_menu(
+        app,
+        entries,
+        view_state,
+        scheme,
+        office_update_title.is_some(),
+    )?;
     #[cfg(target_os = "macos")]
     let fullscreen = {
         // The initial app menu is built before the document window exists.
@@ -10255,6 +10767,10 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                 true,
                 None::<&str>,
             )?,
+        ],
+    )?;
+    if office_update_title.is_none() {
+        structure_menu.append_items(&[
             &PredefinedMenuItem::separator(app)?,
             &MenuItem::with_id(
                 app,
@@ -10263,8 +10779,8 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                 true,
                 None::<&str>,
             )?,
-        ],
-    )?;
+        ])?;
+    }
     let structure_plugin_items = plugin_menu_items_in(plugin_items, "structure");
     if !structure_plugin_items.is_empty() {
         structure_menu.append(&PredefinedMenuItem::separator(app)?)?;
@@ -10329,255 +10845,295 @@ fn create_app_menu_for_toolsets<R: Runtime>(
         }
     }
 
+    let file_menu = if let Some(title) = office_update_title {
+        page_setup_menu.set_enabled(title.is_some())?;
+        Submenu::with_items(
+            app,
+            "File",
+            true,
+            &[
+                &MenuItem::with_id(
+                    app,
+                    "office.updateEmbeddedObject",
+                    title.unwrap_or("Update Office Structure"),
+                    title.is_some(),
+                    Some("CmdOrCtrl+S"),
+                )?,
+                &page_setup_menu,
+                &PredefinedMenuItem::separator(app)?,
+                &MenuItem::with_id(
+                    app,
+                    "office.closeEmbeddedObject",
+                    "Close",
+                    true,
+                    Some("CmdOrCtrl+W"),
+                )?,
+            ],
+        )?
+    } else {
+        Submenu::with_items(
+            app,
+            "File",
+            true,
+            &[
+                &MenuItem::with_id(
+                    app,
+                    "document.new",
+                    "New",
+                    true,
+                    native_menu_shortcut(app, "document.new", "CmdOrCtrl+N"),
+                )?,
+                &MenuItem::with_id(
+                    app,
+                    "document.open",
+                    "Open...",
+                    true,
+                    native_menu_shortcut(app, "document.open", "CmdOrCtrl+O"),
+                )?,
+                &MenuItem::with_id(
+                    app,
+                    "document.importOfficeStructures",
+                    "Import Structures from Word or PowerPoint…",
+                    true,
+                    None::<&str>,
+                )?,
+                &MenuItem::with_id(
+                    app,
+                    "document.save",
+                    "Save",
+                    true,
+                    native_menu_shortcut(app, "document.save", "CmdOrCtrl+S"),
+                )?,
+                &MenuItem::with_id(
+                    app,
+                    "document.saveAs",
+                    "Save As...",
+                    true,
+                    native_menu_shortcut(app, "document.saveAs", "CmdOrCtrl+Shift+S"),
+                )?,
+                &PredefinedMenuItem::separator(app)?,
+                &page_setup_menu,
+                &PredefinedMenuItem::separator(app)?,
+                &MenuItem::with_id(
+                    app,
+                    "export.open",
+                    "Export...",
+                    true,
+                    native_menu_shortcut(app, "export.open", scheme.export()),
+                )?,
+                &PredefinedMenuItem::separator(app)?,
+                #[cfg(not(target_os = "macos"))]
+                &preferences_menu_item(app)?,
+                #[cfg(not(target_os = "macos"))]
+                &PredefinedMenuItem::separator(app)?,
+                // macOS: Sparkle's check. Windows: the Tauri updater flow in the webview
+                // (appUpdates.ts). Linux has no update channel yet, so no item there.
+                #[cfg(any(target_os = "macos", windows))]
+                &MenuItem::with_id(
+                    app,
+                    CHECK_FOR_UPDATES_COMMAND_ID,
+                    "Check for Updates…",
+                    true,
+                    None::<&str>,
+                )?,
+                #[cfg(any(target_os = "macos", windows))]
+                &PredefinedMenuItem::separator(app)?,
+                #[cfg(target_os = "macos")]
+                &close_window_menu_item(
+                    app,
+                    CLOSE_WINDOW_FILE_MENU_ID,
+                    view_state.has_multiple_document_tabs,
+                )?,
+                #[cfg(windows)]
+                &PredefinedMenuItem::close_window(app, None)?,
+                #[cfg(target_os = "linux")]
+                &linux_window_menu_item(app, LINUX_CLOSE_WINDOW_FILE_MENU_ID)?,
+                // A routed item, not PredefinedMenuItem::quit: on Windows muda's predefined Quit
+                // is a bare PostQuitMessage, which ends the event loop before the document
+                // window can flush its pending session autosave (see request_quit).
+                #[cfg(not(target_os = "macos"))]
+                &quit_menu_item(app)?,
+            ],
+        )?
+    };
+
+    if matches!(office_update_title, Some(None)) {
+        return Menu::with_items(app, &[&file_menu]);
+    }
+
     // On Windows, the document webview handles the shortcuts. Attaching accelerated rows after
     // their submenu joins the root would allocate a table stock muda leaves behind on drop.
-    let menu = Menu::with_items(
+    let edit_menu = Submenu::with_items(
         app,
+        "Edit",
+        true,
         &[
-            #[cfg(target_os = "macos")]
-            &native_app_menu,
+            // Routed, not predefined: AppKit's undo:/redo: selectors reach only the
+            // webview's text undo manager, never the drawing's history. The webview sends
+            // a focused text field's undo back to the field (editHistoryRouting.ts).
+            &edit_history_menu_item(app, &EDIT_HISTORY_MENU_ITEMS[0])?,
+            &edit_history_menu_item(app, &EDIT_HISTORY_MENU_ITEMS[1])?,
+            &PredefinedMenuItem::separator(app)?,
+            &*clipboard_edit_menu_item(app, "clipboard.cut")?,
+            &*clipboard_edit_menu_item(app, "clipboard.copy")?,
             &Submenu::with_items(
                 app,
-                "File",
+                "Copy As",
                 true,
                 &[
                     &MenuItem::with_id(
                         app,
-                        "document.new",
-                        "New",
+                        "clipboard.copyAs.smiles",
+                        "SMILES",
                         true,
-                        native_menu_shortcut(app, "document.new", "CmdOrCtrl+N"),
+                        native_menu_shortcut(app, "clipboard.copyAs.smiles", "CmdOrCtrl+Alt+C"),
                     )?,
+                    &MenuItem::with_id(app, "clipboard.copyAs.inchi", "InChI", true, None::<&str>)?,
                     &MenuItem::with_id(
                         app,
-                        "document.open",
-                        "Open...",
-                        true,
-                        native_menu_shortcut(app, "document.open", "CmdOrCtrl+O"),
-                    )?,
-                    &MenuItem::with_id(
-                        app,
-                        "document.save",
-                        "Save",
-                        true,
-                        native_menu_shortcut(app, "document.save", "CmdOrCtrl+S"),
-                    )?,
-                    &MenuItem::with_id(
-                        app,
-                        "document.saveAs",
-                        "Save As...",
-                        true,
-                        native_menu_shortcut(app, "document.saveAs", "CmdOrCtrl+Shift+S"),
-                    )?,
-                    &PredefinedMenuItem::separator(app)?,
-                    &page_setup_menu,
-                    &PredefinedMenuItem::separator(app)?,
-                    &MenuItem::with_id(
-                        app,
-                        "export.open",
-                        "Export...",
-                        true,
-                        native_menu_shortcut(app, "export.open", scheme.export()),
-                    )?,
-                    &PredefinedMenuItem::separator(app)?,
-                    #[cfg(not(target_os = "macos"))]
-                    &preferences_menu_item(app)?,
-                    #[cfg(not(target_os = "macos"))]
-                    &PredefinedMenuItem::separator(app)?,
-                    // macOS: Sparkle's check. Windows: the Tauri updater flow in the webview
-                    // (appUpdates.ts). Linux has no update channel yet, so no item there.
-                    #[cfg(any(target_os = "macos", windows))]
-                    &MenuItem::with_id(
-                        app,
-                        CHECK_FOR_UPDATES_COMMAND_ID,
-                        "Check for Updates…",
+                        "clipboard.copyAs.inchiKey",
+                        "InChI Key",
                         true,
                         None::<&str>,
                     )?,
-                    #[cfg(any(target_os = "macos", windows))]
-                    &PredefinedMenuItem::separator(app)?,
-                    #[cfg(target_os = "macos")]
-                    &close_window_menu_item(
-                        app,
-                        CLOSE_WINDOW_FILE_MENU_ID,
-                        view_state.has_multiple_document_tabs,
-                    )?,
-                    #[cfg(windows)]
-                    &PredefinedMenuItem::close_window(app, None)?,
-                    #[cfg(target_os = "linux")]
-                    &linux_window_menu_item(app, LINUX_CLOSE_WINDOW_FILE_MENU_ID)?,
-                    // A routed item, not PredefinedMenuItem::quit: on Windows muda's predefined Quit
-                    // is a bare PostQuitMessage, which ends the event loop before the document
-                    // window can flush its pending session autosave (see request_quit).
-                    #[cfg(not(target_os = "macos"))]
-                    &quit_menu_item(app)?,
-                ],
-            )?,
-            &Submenu::with_items(
-                app,
-                "Edit",
-                true,
-                &[
-                    // Routed, not predefined: AppKit's undo:/redo: selectors reach only the
-                    // webview's text undo manager, never the drawing's history. The webview sends
-                    // a focused text field's undo back to the field (editHistoryRouting.ts).
-                    &edit_history_menu_item(app, &EDIT_HISTORY_MENU_ITEMS[0])?,
-                    &edit_history_menu_item(app, &EDIT_HISTORY_MENU_ITEMS[1])?,
-                    &PredefinedMenuItem::separator(app)?,
-                    &*clipboard_edit_menu_item(app, "clipboard.cut")?,
-                    &*clipboard_edit_menu_item(app, "clipboard.copy")?,
-                    &Submenu::with_items(
-                        app,
-                        "Copy As",
-                        true,
-                        &[
-                            &MenuItem::with_id(
-                                app,
-                                "clipboard.copyAs.smiles",
-                                "SMILES",
-                                true,
-                                native_menu_shortcut(
-                                    app,
-                                    "clipboard.copyAs.smiles",
-                                    "CmdOrCtrl+Alt+C",
-                                ),
-                            )?,
-                            &MenuItem::with_id(
-                                app,
-                                "clipboard.copyAs.inchi",
-                                "InChI",
-                                true,
-                                None::<&str>,
-                            )?,
-                            &MenuItem::with_id(
-                                app,
-                                "clipboard.copyAs.inchiKey",
-                                "InChI Key",
-                                true,
-                                None::<&str>,
-                            )?,
-                            &MenuItem::with_id(
-                                app,
-                                "clipboard.copyAs.cdxml",
-                                "CDXML Text",
-                                true,
-                                native_menu_shortcut(app, "clipboard.copyAs.cdxml", "CmdOrCtrl+D"),
-                            )?,
-                            &MenuItem::with_id(
-                                app,
-                                "clipboard.copyAs.mol",
-                                "MOL Text",
-                                true,
-                                native_menu_shortcut(
-                                    app,
-                                    "clipboard.copyAs.mol",
-                                    "CmdOrCtrl+Alt+O",
-                                ),
-                            )?,
-                            &MenuItem::with_id(
-                                app,
-                                "clipboard.copyAs.molV2000",
-                                "MOL V2000 Text",
-                                true,
-                                native_menu_shortcut(
-                                    app,
-                                    "clipboard.copyAs.molV2000",
-                                    "CmdOrCtrl+Alt+Shift+O",
-                                ),
-                            )?,
-                            &MenuItem::with_id(
-                                app,
-                                "clipboard.copyAs.svg",
-                                "SVG",
-                                true,
-                                None::<&str>,
-                            )?,
-                            &MenuItem::with_id(
-                                app,
-                                "clipboard.copyAs.png",
-                                "PNG",
-                                true,
-                                None::<&str>,
-                            )?,
-                        ],
-                    )?,
-                    &*clipboard_edit_menu_item(app, "clipboard.paste")?,
                     &MenuItem::with_id(
                         app,
-                        "edit.selectAll",
-                        "Select All",
+                        "clipboard.copyAs.cdxml",
+                        "CDXML Text",
                         true,
-                        native_menu_shortcut(app, "edit.selectAll", "CmdOrCtrl+A"),
-                    )?,
-                    &PredefinedMenuItem::separator(app)?,
-                    &MenuItem::with_id(
-                        app,
-                        "layout.group",
-                        "Group",
-                        true,
-                        native_menu_shortcut(app, "layout.group", "CmdOrCtrl+G"),
+                        native_menu_shortcut(app, "clipboard.copyAs.cdxml", "CmdOrCtrl+D"),
                     )?,
                     &MenuItem::with_id(
                         app,
-                        "layout.ungroup",
-                        "Ungroup",
+                        "clipboard.copyAs.mol",
+                        "MOL Text",
                         true,
-                        native_menu_shortcut(app, "layout.ungroup", "CmdOrCtrl+Shift+G"),
+                        native_menu_shortcut(app, "clipboard.copyAs.mol", "CmdOrCtrl+Alt+O"),
                     )?,
-                ],
-            )?,
-            &insert_menu,
-            &view_menu,
-            &structure_menu,
-            &tools_menu,
-            &analyze_menu,
-            &plugins_menu,
-            // Tauri registers this reserved ID with NSApp whenever it installs the app menu.
-            &Submenu::with_id_and_items(
-                app,
-                tauri::menu::WINDOW_SUBMENU_ID,
-                "Window",
-                true,
-                &[
-                    // muda leaves these predefined items out of GTK menus, which left Linux with
-                    // an empty Window menu. Linux uses ordinary items (linux_window_menu_item).
-                    #[cfg(not(target_os = "linux"))]
-                    &PredefinedMenuItem::minimize(app, None)?,
-                    #[cfg(not(target_os = "linux"))]
-                    &PredefinedMenuItem::maximize(app, None)?,
-                    #[cfg(target_os = "linux")]
-                    &linux_window_menu_item(app, LINUX_MINIMIZE_MENU_ID)?,
-                    #[cfg(target_os = "linux")]
-                    &linux_window_menu_item(app, LINUX_TOGGLE_MAXIMIZE_MENU_ID)?,
-                    &PredefinedMenuItem::separator(app)?,
-                    #[cfg(target_os = "macos")]
-                    &close_window_menu_item(
+                    &MenuItem::with_id(
                         app,
-                        CLOSE_WINDOW_WINDOW_MENU_ID,
-                        view_state.has_multiple_document_tabs,
+                        "clipboard.copyAs.molV2000",
+                        "MOL V2000 Text",
+                        true,
+                        native_menu_shortcut(
+                            app,
+                            "clipboard.copyAs.molV2000",
+                            "CmdOrCtrl+Alt+Shift+O",
+                        ),
                     )?,
-                    #[cfg(windows)]
-                    &PredefinedMenuItem::close_window(app, None)?,
-                    #[cfg(target_os = "linux")]
-                    &linux_window_menu_item(app, LINUX_CLOSE_WINDOW_WINDOW_MENU_ID)?,
+                    &MenuItem::with_id(app, "clipboard.copyAs.svg", "SVG", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "clipboard.copyAs.png", "PNG", true, None::<&str>)?,
                 ],
             )?,
-            // macOS keeps About in the application menu; elsewhere Help is its home.
-            &Submenu::with_items(
+            &*clipboard_edit_menu_item(app, "clipboard.paste")?,
+            &MenuItem::with_id(
                 app,
-                "Help",
+                "edit.selectAll",
+                "Select All",
                 true,
-                &[
-                    &MenuItem::with_id(app, "help.showTour", "Take the Tour", true, None::<&str>)?,
-                    &MenuItem::with_id(app, "help.reportBug", "Report a Bug…", true, None::<&str>)?,
-                    #[cfg(not(target_os = "macos"))]
-                    &PredefinedMenuItem::separator(app)?,
-                    #[cfg(not(target_os = "macos"))]
-                    &about_menu_item(app)?,
-                ],
+                native_menu_shortcut(app, "edit.selectAll", "CmdOrCtrl+A"),
+            )?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(
+                app,
+                "layout.group",
+                "Group",
+                true,
+                native_menu_shortcut(app, "layout.group", "CmdOrCtrl+G"),
+            )?,
+            &MenuItem::with_id(
+                app,
+                "layout.ungroup",
+                "Ungroup",
+                true,
+                native_menu_shortcut(app, "layout.ungroup", "CmdOrCtrl+Shift+G"),
             )?,
         ],
     )?;
+    let window_menu = Submenu::with_id_and_items(
+        app,
+        tauri::menu::WINDOW_SUBMENU_ID,
+        "Window",
+        true,
+        &[
+            // muda leaves these predefined items out of GTK menus, which left Linux with
+            // an empty Window menu. Linux uses ordinary items (linux_window_menu_item).
+            #[cfg(not(target_os = "linux"))]
+            &PredefinedMenuItem::minimize(app, None)?,
+            #[cfg(not(target_os = "linux"))]
+            &PredefinedMenuItem::maximize(app, None)?,
+            #[cfg(target_os = "linux")]
+            &linux_window_menu_item(app, LINUX_MINIMIZE_MENU_ID)?,
+            #[cfg(target_os = "linux")]
+            &linux_window_menu_item(app, LINUX_TOGGLE_MAXIMIZE_MENU_ID)?,
+            &PredefinedMenuItem::separator(app)?,
+            #[cfg(target_os = "macos")]
+            &close_window_menu_item(
+                app,
+                CLOSE_WINDOW_WINDOW_MENU_ID,
+                view_state.has_multiple_document_tabs,
+            )?,
+            #[cfg(windows)]
+            &PredefinedMenuItem::close_window(app, None)?,
+            #[cfg(target_os = "linux")]
+            &linux_window_menu_item(app, LINUX_CLOSE_WINDOW_WINDOW_MENU_ID)?,
+        ],
+    )?;
+    // macOS keeps About in the application menu; elsewhere Help is its home.
+    let help_menu = Submenu::with_id_and_items(
+        app,
+        "help",
+        "Help",
+        true,
+        &[
+            &MenuItem::with_id(app, "help.showTour", "Take the Tour", true, None::<&str>)?,
+            &MenuItem::with_id(app, "help.reportBug", "Report a Bug…", true, None::<&str>)?,
+            #[cfg(not(target_os = "macos"))]
+            &PredefinedMenuItem::separator(app)?,
+            #[cfg(not(target_os = "macos"))]
+            &about_menu_item(app)?,
+        ],
+    )?;
+    #[cfg(target_os = "macos")]
+    if office_update_title.is_none() {
+        let office_items = plugin_menu_items_in(plugin_items, "help");
+        if !office_items.is_empty() {
+            help_menu.append(&PredefinedMenuItem::separator(app)?)?;
+            for item in office_items {
+                help_menu.append(&MenuItem::with_id(
+                    app,
+                    item.id.as_str(),
+                    item.label.as_str(),
+                    item.enabled,
+                    None::<&str>,
+                )?)?;
+            }
+        }
+    }
+    let mut items: Vec<&dyn tauri::menu::IsMenuItem<R>> = vec![
+        #[cfg(target_os = "macos")]
+        &native_app_menu,
+        &file_menu,
+        &edit_menu,
+        &insert_menu,
+        &view_menu,
+        &structure_menu,
+    ];
+    if office_update_title.is_none() {
+        items.extend(
+            [
+                &tools_menu,
+                &analyze_menu,
+                &plugins_menu,
+                &window_menu,
+                &help_menu,
+            ]
+            .map(|item| item as &dyn tauri::menu::IsMenuItem<R>),
+        );
+    } else {
+        items.push(&window_menu);
+    }
+    let menu = Menu::with_items(app, &items)?;
 
     #[cfg(target_os = "macos")]
     {
@@ -10873,6 +11429,7 @@ fn create_view_menu<R: Runtime>(
     entries: &[ToolbarMenuEntry],
     view_state: ViewMenuState,
     scheme: KeybindingScheme,
+    office: bool,
 ) -> tauri::Result<Submenu<R>> {
     // Real checked state (from JS), not a hardcoded true — otherwise a full-menu rebuild would
     // re-check these while the feature is off, desyncing the menu from the document.
@@ -10893,6 +11450,19 @@ fn create_view_menu<R: Runtime>(
         native_menu_shortcut(app, "view.toggleCrosshairs", scheme.crosshairs()),
     )?;
     let separator = PredefinedMenuItem::separator(app)?;
+    if office {
+        return Submenu::with_items(
+            app,
+            "View",
+            true,
+            &[
+                &show_rulers,
+                &show_crosshairs,
+                &separator,
+                &create_toolbars_menu(app, entries)?,
+            ],
+        );
+    }
     let debugger_separator = PredefinedMenuItem::separator(app)?;
     let debugger = MenuItem::with_id(
         app,
@@ -11039,10 +11609,11 @@ fn toolset_is_resizable(toolset_id: &str) -> bool {
 
 fn ensure_toolset_window<R: Runtime>(
     app: &tauri::AppHandle<R>,
+    owner: &str,
     toolset_id: &str,
     geometry: Option<&ToolsetWindowGeometry>,
 ) -> Result<(), String> {
-    let label = toolset_window_label(toolset_id);
+    let label = owned_toolset_label(owner, &toolset_window_label(toolset_id));
     let resizable = toolset_is_resizable(toolset_id);
 
     if let Some(window) = app.get_webview_window(&label) {
@@ -11079,8 +11650,10 @@ fn ensure_toolset_window<R: Runtime>(
             ToolsetWindowPosition { x: 88.0, y: 154.0 },
         ),
     };
-    let layout = load_toolset_layout_state(app);
-    let saved = layout.toolsets.get(toolset_id);
+    let layout = (owner == MAIN_WINDOW_LABEL).then(|| load_toolset_layout_state(app));
+    let saved = layout
+        .as_ref()
+        .and_then(|layout| layout.toolsets.get(toolset_id));
     let (width, height) = saved
         .and_then(|state| state.window_size(resizable))
         .unwrap_or((width, height));
@@ -11120,10 +11693,15 @@ fn ensure_toolset_window<R: Runtime>(
             app,
             label.clone(),
             WebviewUrl::App(
-                format!("/?window=toolset&toolsetId={toolset_id}&resizable={resizable}").into(),
+                format!(
+                    "/?window=toolset&toolsetId={toolset_id}&resizable={resizable}{}",
+                    toolset_owner_query(&label)
+                )
+                .into(),
             ),
         ),
         app,
+        owner,
     )?
     .title(title)
     .inner_size(width, height)
@@ -11177,6 +11755,8 @@ fn ensure_toolset_window<R: Runtime>(
         }
     };
 
+    #[cfg(windows)]
+    office_ole::toolset_events::attach_utility(&window);
     disable_default_context_menus(&window);
     // Before the first map: the size hints replace GTK's 200x200 floor, and the position hint
     // keeps the window manager from re-placing the palette whenever it is shown again.
@@ -11502,12 +12082,13 @@ fn configure_toolset_utility_window<R: Runtime>(
 fn utility_window_builder<'a, R: Runtime, M: Manager<R>>(
     builder: WebviewWindowBuilder<'a, R, M>,
     app: &tauri::AppHandle<R>,
+    owner_label: &str,
 ) -> Result<WebviewWindowBuilder<'a, R, M>, String> {
     #[cfg(windows)]
     {
         let builder = builder.focused(false);
         let owner = app
-            .get_webview_window(MAIN_WINDOW_LABEL)
+            .get_webview_window(owner_label)
             .and_then(|main| main.hwnd().ok());
         Ok(match owner {
             Some(owner) => builder.owner_raw(owner),
@@ -11517,7 +12098,7 @@ fn utility_window_builder<'a, R: Runtime, M: Manager<R>>(
     #[cfg(target_os = "linux")]
     {
         let main = app
-            .get_webview_window(MAIN_WINDOW_LABEL)
+            .get_webview_window(owner_label)
             .ok_or("The document window is unavailable for this utility window.")?;
         builder
             .focused(false)
@@ -11527,7 +12108,7 @@ fn utility_window_builder<'a, R: Runtime, M: Manager<R>>(
     }
     #[cfg(not(any(windows, target_os = "linux")))]
     {
-        let _ = app;
+        let _ = (app, owner_label);
         Ok(builder)
     }
 }
@@ -11536,7 +12117,23 @@ fn toolset_state<R: Runtime>(
     app: &tauri::AppHandle<R>,
     toolset_id: &str,
 ) -> Result<ToolsetWindowState, String> {
-    match app.get_webview_window(&toolset_window_label(toolset_id)) {
+    toolset_state_for(app, MAIN_WINDOW_LABEL, toolset_id)
+}
+
+fn toolset_state_for<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    owner: &str,
+    toolset_id: &str,
+) -> Result<ToolsetWindowState, String> {
+    let saved_position = || {
+        (owner == MAIN_WINDOW_LABEL)
+            .then(|| persisted_toolset_position(app, toolset_id))
+            .flatten()
+    };
+    match app.get_webview_window(&owned_toolset_label(
+        owner,
+        &toolset_window_label(toolset_id),
+    )) {
         Some(window) => {
             // A palette still hidden until its first paint (Windows) is open, not closed.
             let actual_visible = window.is_visible().unwrap_or(false)
@@ -11549,15 +12146,14 @@ fn toolset_state<R: Runtime>(
                 toolset_id: toolset_id.to_string(),
                 open: visible,
                 focused: visible && window.is_focused().unwrap_or(false),
-                position: current_toolset_window_position(&window)
-                    .or_else(|| persisted_toolset_position(app, toolset_id)),
+                position: current_toolset_window_position(&window).or_else(saved_position),
             })
         }
         None => Ok(ToolsetWindowState {
             toolset_id: toolset_id.to_string(),
             open: false,
             focused: false,
-            position: persisted_toolset_position(app, toolset_id),
+            position: saved_position(),
         }),
     }
 }
@@ -11971,7 +12567,7 @@ fn toolset_frame_is_transient<R: Runtime>(
 ) -> bool {
     let palette_minimized = window.is_minimized().unwrap_or(true);
     let document_minimized = app
-        .get_webview_window(MAIN_WINDOW_LABEL)
+        .get_webview_window(toolset_window_parts(window.label()).0)
         .is_some_and(|main| main.is_minimized().unwrap_or(true));
     toolset_frame_state_is_transient(palette_minimized, document_minimized)
 }
@@ -13695,6 +14291,103 @@ mod tests {
     }
 
     #[test]
+    fn office_addin_help_rows_exist_enabled_from_the_first_menu_build_on_macos_only() {
+        let seeded = PluginNativeMenuItems::default().0.into_inner().unwrap();
+        let help = plugin_menu_items_in(&seeded, "help");
+        #[cfg(target_os = "macos")]
+        {
+            let rows = help
+                .iter()
+                .map(|item| (item.id.as_str(), item.label.as_str(), item.enabled))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                rows,
+                [
+                    ("office.installAddin", "Install Office Add-in…", true),
+                    ("office.removeAddin", "Remove Office Add-in…", true),
+                ]
+            );
+            assert!(help.iter().all(|item| item.core_routed));
+            assert_eq!(seeded.len(), help.len());
+            // The webview's first sync sends the same rows, so it changes nothing.
+            assert_eq!(
+                classify_plugin_menu_update(&seeded, &seeded.clone()),
+                MenuUpdate::Unchanged
+            );
+            // While an action runs the webview disables both; that only updates them in place.
+            let busy = seeded
+                .iter()
+                .map(|item| PluginMenuItemInput {
+                    enabled: false,
+                    ..item.clone()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                classify_plugin_menu_update(&seeded, &busy),
+                MenuUpdate::Properties
+            );
+        }
+        #[cfg(not(target_os = "macos"))]
+        assert!(seeded.is_empty() && help.is_empty());
+    }
+
+    #[test]
+    fn office_addin_help_rows_refresh_in_place_only_on_macos() {
+        let row = |id: &str, enabled| PluginMenuItemInput {
+            id: id.into(),
+            location: "help".into(),
+            label: id.into(),
+            core_routed: true,
+            enabled,
+            separator_before: false,
+        };
+        let old = [
+            row("office.installAddin", false),
+            row("office.removeAddin", false),
+        ];
+        let new = [
+            row("office.installAddin", true),
+            row("office.removeAddin", false),
+        ];
+        assert_eq!(
+            classify_plugin_menu_update(&old, &new),
+            MenuUpdate::Properties
+        );
+        let mut calls = Vec::new();
+        update_plugin_menu_properties(
+            &old,
+            &new,
+            |section| {
+                assert_eq!(section, "help");
+                // The native Help submenu: Report a Bug…, then the synced Office rows.
+                Ok([
+                    "help.reportBug",
+                    "office.installAddin",
+                    "office.removeAddin",
+                ]
+                .into_iter()
+                .enumerate()
+                .map(|(i, id)| (id.to_owned(), i))
+                .collect())
+            },
+            |position, enabled| {
+                calls.push((*position, enabled));
+                Ok(())
+            },
+            |_, _| panic!("Enabled changes do not rename items"),
+        )
+        .unwrap();
+        #[cfg(target_os = "macos")]
+        assert_eq!(calls, [(1, true)]);
+        #[cfg(not(target_os = "macos"))]
+        assert!(calls.is_empty());
+        assert_eq!(
+            DYNAMIC_MENU_SECTIONS.contains(&"help"),
+            cfg!(target_os = "macos")
+        );
+    }
+
+    #[test]
     fn partial_plugin_menu_failure_rebuilds_with_the_requested_items_on_a_toolbar_update() {
         let row = |id: &str, enabled| PluginMenuItemInput {
             id: id.into(),
@@ -14368,6 +15061,34 @@ mod tests {
         assert!(lock_window_creation_with(flow).is_ok());
     }
 
+    /// Only the cancellation that ends a waiting prompt releases the Office quit reservation. A
+    /// retried cancellation of an earlier prompt, arriving while a later quit is still preparing
+    /// its Office editors, still answers `Cancelled` but releases nothing.
+    #[test]
+    fn a_retried_cancel_never_releases_a_later_quits_office_reservation() {
+        let flow = test_quit_flow(Duration::from_millis(400), Duration::from_millis(20));
+        let host = StuckAppHost::new(true);
+        let first = request_prompted_quit_with(flow, &host).unwrap();
+        assert_eq!(
+            cancel_quit_prompt(flow, first),
+            (QuitCancelOutcome::Cancelled, true)
+        );
+        assert_eq!(
+            cancel_quit_prompt(flow, first),
+            (QuitCancelOutcome::Cancelled, false)
+        );
+        let next = request_prompted_quit_with(flow, &host).unwrap();
+        assert!(acknowledge_quit_prompt(flow, next, true));
+        assert_eq!(
+            cancel_quit_prompt(flow, first),
+            (QuitCancelOutcome::Superseded, false)
+        );
+        assert_eq!(
+            cancel_quit_prompt(flow, next),
+            (QuitCancelOutcome::Cancelled, true)
+        );
+    }
+
     #[test]
     fn cancel_then_new_quit_ignores_old_cancel_ack_and_timer() {
         let flow = test_quit_flow(Duration::from_millis(400), Duration::from_millis(20));
@@ -14494,7 +15215,9 @@ mod tests {
     fn session_end_watchdog_forces_exit_only_if_the_flush_stalls() {
         let host = StuckAppHost::new(true);
         let (disarm, watchdog) = mpsc::channel();
-        windows_session_end::watch_flush(watchdog, Duration::ZERO, &host);
+        windows_session_end::watch_flush(watchdog, Duration::ZERO, || {
+            host.force_exit(Duration::ZERO, QuitReason::GraceExpired)
+        });
         assert_eq!(host.calls(), ["force exit"]);
         assert_eq!(host.forced_reason(), Some(QuitReason::GraceExpired));
         drop(disarm);
@@ -14502,7 +15225,9 @@ mod tests {
         let host = StuckAppHost::new(true);
         let (disarm, watchdog) = mpsc::channel();
         drop(disarm);
-        windows_session_end::watch_flush(watchdog, Duration::ZERO, &host);
+        windows_session_end::watch_flush(watchdog, Duration::ZERO, || {
+            host.force_exit(Duration::ZERO, QuitReason::GraceExpired)
+        });
         assert!(host.calls().is_empty());
     }
 
@@ -15254,27 +15979,12 @@ mod tests {
             include_str!("../capabilities/plugin-starter.json")
         );
 
-        let handler_start = lib_source
-            .find("generate_handler![")
-            .expect("generate_handler! invocation");
-        let handler_body = &lib_source[handler_start..];
-        let handler_end = handler_body.find(']').expect("generate_handler! close");
-        let registered: Vec<String> = handler_body[.."generate_handler![".len() + handler_end]
-            .lines()
-            .skip(1)
-            .filter_map(|line| {
-                let name = line.trim().trim_end_matches(',').trim();
-                // Module-qualified commands (export::, fonts::) carry their own permissions.
-                if name.is_empty()
-                    || name.contains("::")
-                    || name.contains('[')
-                    || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                {
-                    None
-                } else {
-                    Some(name.to_string())
-                }
-            })
+        // Attributes such as `#[cfg(target_os = "macos")]` are matched, not taken as the list's end.
+        let registered: Vec<String> = crate::handler_list::registered_commands(lib_source)
+            .into_iter()
+            // Module-qualified commands (export::, fonts::) carry their own permissions.
+            .filter(|name| !name.contains("::"))
+            .map(str::to_string)
             .collect();
         assert!(
             registered.len() > 10,
@@ -15433,9 +16143,9 @@ mod tests {
             .next()
             .unwrap();
         for item in [
-            "#[cfg(not(target_os = \"linux\"))]\n                    &PredefinedMenuItem::minimize",
-            "#[cfg(not(target_os = \"linux\"))]\n                    &PredefinedMenuItem::maximize",
-            "#[cfg(windows)]\n                    &PredefinedMenuItem::close_window",
+            "#[cfg(not(target_os = \"linux\"))]\n            &PredefinedMenuItem::minimize",
+            "#[cfg(not(target_os = \"linux\"))]\n            &PredefinedMenuItem::maximize",
+            "#[cfg(windows)]\n            &PredefinedMenuItem::close_window",
             "&linux_window_menu_item(app, LINUX_MINIMIZE_MENU_ID)?",
             "&linux_window_menu_item(app, LINUX_TOGGLE_MAXIMIZE_MENU_ID)?",
             "&linux_window_menu_item(app, LINUX_CLOSE_WINDOW_WINDOW_MENU_ID)?",
@@ -15617,6 +16327,31 @@ mod tests {
                 .into_iter()
                 .chain(std::iter::once_with(|| panic!("scan must short-circuit"))),
         ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn office_ole_popover_uses_its_embedded_document_as_native_owner() {
+        let owner = "office-object-17";
+        let label = owned_toolset_label(owner, "toolset-popover-core-main");
+        let config = toolset_popover_window_config(
+            &label,
+            "core.main",
+            "flyout",
+            false,
+            ToolsetPopoverFocusMode::Preserve,
+        );
+        assert_eq!(config.parent.as_deref(), Some(owner));
+        assert!(!config.focus);
+        assert!(config.skip_taskbar);
+        assert_eq!(
+            menu_command_target_label("office.updateEmbeddedObject", Some(owner)),
+            owner
+        );
+        assert_eq!(
+            menu_command_target_label("page.setSize.legal", Some(&label)),
+            owner
+        );
     }
 
     fn assert_bond_stereo_mouse_creation() {

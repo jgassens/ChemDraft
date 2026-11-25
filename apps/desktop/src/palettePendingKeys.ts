@@ -1,7 +1,8 @@
 import { listenCurrentWindowEvent } from "./window-manager/tauriEvents";
 
 export const PALETTE_CLICK_PENDING_EVENT = "chemdraft://palette-click-pending";
-export const PALETTE_CLICK_OUTSIDE_EVENT = "chemdraft://palette-click-outside";
+/** Native command (palette_key_guard.rs) granted to the document and Office editor windows only. */
+export const PALETTE_KEY_GUARD_CLEAR_COMMAND = "palette_key_guard_clear";
 export const PALETTE_CLICK_TIMEOUT_MS = 1_000;
 
 export interface PaletteClickPendingEvent {
@@ -33,10 +34,15 @@ export function listenPaletteClickPending(listener: (event: PaletteClickPendingE
   return listenCurrentWindowEvent<PaletteClickPendingEvent>(PALETTE_CLICK_PENDING_EVENT, ({ payload }) => listener(payload));
 }
 
-async function clearNativeClick(sequence: number, pointerBefore: number): Promise<void> {
+/**
+ * Releases the native guard for a click pending in this window's own palettes. A narrow command,
+ * not an app-wide event: Office editor windows have no event-emit grant, so an emit was denied and
+ * the native guard lived until its timeout, suppressing Delete, Paste, Undo and Redo there.
+ */
+export async function clearNativeClick(sequence: number, pointerBefore: number): Promise<void> {
   if (!("__TAURI_INTERNALS__" in window)) return;
-  const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-  await getCurrentWebviewWindow().emit(PALETTE_CLICK_OUTSIDE_EVENT, { sequence, pointerBefore });
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke(PALETTE_KEY_GUARD_CLEAR_COMMAND, { sequence, pointerBefore });
 }
 
 /** Installed by MainWindow before document keyboard handlers. No keyup is consumed. */

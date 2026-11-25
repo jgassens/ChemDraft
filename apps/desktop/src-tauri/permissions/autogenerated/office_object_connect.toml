@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-office-object-connect"
+description = "Enables the office_object_connect command without any pre-configured scope."
+commands.allow = ["office_object_connect"]
+
+[[permission]]
+identifier = "deny-office-object-connect"
+description = "Denies the office_object_connect command without any pre-configured scope."
+commands.deny = ["office_object_connect"]

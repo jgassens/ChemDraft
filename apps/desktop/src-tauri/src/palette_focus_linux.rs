@@ -107,7 +107,7 @@ pub(crate) fn install<R: Runtime>(window: &WebviewWindow<R>) -> Result<(), Strin
                     .unwrap_or_default(),
             };
             state::blocks_document_key(
-                super::blocks_document(),
+                super::blocks_document(MAIN_WINDOW_LABEL),
                 leased,
                 &key,
                 modifiers.intersects(gdk::ModifierType::META_MASK | gdk::ModifierType::SUPER_MASK),
@@ -719,7 +719,7 @@ pub(crate) async fn acquire(
                 native.has_toplevel_focus(),
                 native.accepts_focus(),
                 x11_focus_report(&native),
-                super::blocks_document(),
+                super::blocks_document(MAIN_WINDOW_LABEL),
             ),
         );
         result.map(|_| held)

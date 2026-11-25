@@ -61,6 +61,7 @@ afterEach(() => {
   native.invoke.mockReset();
   tauriEventBus.emit.mockClear();
   tauriEventBus.listen.mockClear();
+  window.history.replaceState(null, "", "/");
 });
 
 describe("window-manager palette preview transport", () => {
@@ -144,6 +145,27 @@ describe("window-manager palette preview transport", () => {
       ["chemdraft://palette-command-cancel", { commandId: "palette.preview.cancel" }]
     ]);
     expect(native.invoke).not.toHaveBeenCalled();
+  });
+
+  it("routes an Office palette preview through owner-bound IPC and listens only for native local delivery", async () => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    window.history.replaceState(null, "", "/?window=toolset&officeOwner=office-object-17");
+    const commandId = "molecule.structure.bondLength:31";
+    await sendPaletteCommandPreview(commandId);
+    expect(native.invoke).toHaveBeenCalledExactlyOnceWith("office_toolset_emit", {
+      event: "chemdraft://palette-command-preview", payload: { commandId }
+    });
+    expect(tauriEventBus.emit).not.toHaveBeenCalled();
+
+    window.history.replaceState(null, "", "/?officeObject=17");
+    const preview = vi.fn();
+    const stop = await listenForPaletteCommandPreviews(preview);
+    await tauriEventBus.emit("chemdraft://palette-command-preview", { commandId: "standalone" });
+    expect(preview).not.toHaveBeenCalled();
+    window.dispatchEvent(new CustomEvent("chemdraft:office-toolset:chemdraft://palette-command-preview", { detail: { commandId } }));
+    expect(preview).toHaveBeenCalledExactlyOnceWith(commandId);
+    expect(tauriEventBus.listen).not.toHaveBeenCalled();
+    stop();
   });
 
   it.each(["preview", "commit"] as const)("flushes an earlier slider %s before a typed settle commit and shortcut", async (event) => {

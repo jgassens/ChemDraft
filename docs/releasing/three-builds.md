@@ -104,6 +104,19 @@ explicit assertion and **never overrides** the tag. If both are present they mus
 record can substitute for an expected commit. Complete the production signature checks in
 [macos-updates.md](macos-updates.md) and [windows-signing.md](windows-signing.md) too.
 
+## Before publishing: release-candidate-only checks
+
+These two checks need the installer built by `.github/workflows/windows-release.yml`. Branch builds
+never replace the stable app, so they cannot run earlier. Both are required; full steps are in
+[windows-office-object.md](windows-office-object.md#release-candidate-checks).
+
+- [ ] **Office editor cold start.** With every ChemDraft process quit, Insert Object in Word and in
+  PowerPoint shows the light loading screen from the first frame (never a dark frame). Record the
+  times from window to loading text to editor ready, twice per app.
+- [ ] **Installer registration.** A per-user install registers the stable class, reinstalling leaves
+  exactly one `LocalServer32` at the installed path, and uninstalling removes the keys while saved
+  documents still show their pictures.
+
 ## Last step before un-drafting
 
 1. Upload the final artifacts, their records, updater signatures and generated feeds to the

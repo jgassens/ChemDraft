@@ -604,7 +604,7 @@ mod tests {
     }
 
     #[test]
-    fn first_paint_command_is_registered_permitted_and_granted_only_to_palette_windows() {
+    fn first_paint_command_is_registered_permitted_and_granted_only_to_palettes_and_office() {
         let lib = include_str!("lib.rs");
         let handler = &lib[lib.find("generate_handler![").unwrap()..];
         let handler = &handler[..handler.find("\n        ])").unwrap()];
@@ -633,18 +633,32 @@ mod tests {
                 }
             }
         }
+        holders.sort_by(|a, b| a.0.cmp(&b.0));
         assert_eq!(
             holders,
-            [(
-                "toolset-first-paint".to_owned(),
-                serde_json::json!([
-                    "toolset-core-*",
-                    "toolset-plugin-*",
-                    "toolset-user-*",
-                    "toolset-popover-*",
-                    "toolset-tooltip"
-                ])
-            )]
+            [
+                (
+                    "office-object".to_owned(),
+                    serde_json::json!(["office-object-*"])
+                ),
+                (
+                    "office-toolset".to_owned(),
+                    serde_json::json!([
+                        "office-utility-office-object-*--toolset-core-*",
+                        "office-utility-office-object-*--toolset-popover-*"
+                    ])
+                ),
+                (
+                    "toolset-first-paint".to_owned(),
+                    serde_json::json!([
+                        "toolset-core-*",
+                        "toolset-plugin-*",
+                        "toolset-user-*",
+                        "toolset-popover-*",
+                        "toolset-tooltip"
+                    ])
+                )
+            ]
         );
     }
 }

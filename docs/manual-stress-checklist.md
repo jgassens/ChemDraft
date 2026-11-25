@@ -1720,6 +1720,136 @@ whole-molecule cleanup with the existing behavior, and check save/reopen and exp
   warnings against the source. Open a truncated CDX: it reports an import failure. On Windows use
   the file chooser or Open With; the installer does not register `.cdx` as an association.
 
+## Office editing (Windows OLE object and macOS add-in)
+
+Design: `docs/architecture/office-editing.md`. The Windows route is ChemDraft's own embedded object
+(`ChemDraft.Structure`); the Mac route is the Word and PowerPoint add-in. Run the Windows items on
+Windows with Word and PowerPoint, and the Mac items on a Mac with both apps. Say which you did not run.
+
+### Windows embedded object (Word and PowerPoint)
+
+- Insert > Object > ChemDraft Structure (labeled "ChemDraft Structure", never "ChemDraft (dev)
+  Structure" on a stable build). An empty structure opens in ChemDraft. Draw ethanol, then close or
+  save: the object appears in the document with a sharp preview.
+- Double-click the object in Word and in PowerPoint normal view. ChemDraft opens the same structure.
+  Edit it and save: the preview in the document updates and the canonical SMILES matches the edit.
+- On closing the editor with changes, the prompt offers Update, Don't update and Cancel.
+  - Update writes the edit back and closes.
+  - Don't update closes and leaves the document object unchanged.
+  - Cancel keeps the editor open with the edit intact.
+- Already-running start: with ChemDraft open on another document, double-click the object. The editor
+  opens as its own window and the existing document is untouched.
+- Cold start: quit ChemDraft, then double-click the object. A loading screen shows at once, then the
+  structure. No dark or blank frame appears at any point, including on a dark-themed system.
+- Save the Office file, close it and reopen it. The preview is still sharp, double-click still opens
+  the structure, and the structure is unchanged. Repeat after moving the file to another folder.
+- Resize and rotate the object in Word and PowerPoint, then edit it: size and rotation are kept.
+- PowerPoint Slide Show: double-click on the object does not activate it. This is expected PowerPoint
+  behavior and is not a ChemDraft failure. The preview still draws and the slide prints.
+- Quit ChemDraft while an editor is open with unsaved edits, and again during an app update: the
+  edits are saved or the user is asked first, and the Office object never loses them silently.
+- Log off or shut down Windows with an editor open with unsaved edits: the logoff is blocked and a
+  reason is shown. After saving or discarding, logoff proceeds.
+- A document opened in Protected View, or with OLE blocked by policy, shows the preview only and
+  gives no ChemDraft error.
+- Copy a structure in ChemDraft and Paste Special in Word and PowerPoint: the list offers the
+  embedded object and a picture. The pasted object opens with double-click.
+
+### Import structures from Word or PowerPoint (macOS and Windows)
+
+- File > Import Structures from Word or PowerPoint…: the dialog shows only `.docx` and `.pptx`
+  files. Pick a deck with three ChemDraft structures on two slides and one ordinary photo. The status
+  says "Imported 3 structures from <name>.pptx."; the three appear left to right, not overlapping
+  each other or existing content, and are selected. One Undo removes all three; Redo brings them back.
+- Copy SMILES from each imported structure and from the original drawings: they match, including
+  charges, isotopes and wedges.
+- A Word document with structures in several paragraphs: they come in, in document order.
+- A file with no ChemDraft pictures says "No ChemDraft structures were found in <name>. Only pictures
+  placed from ChemDraft can be imported." and changes nothing. A renamed `.txt` or a damaged file
+  says it is not a Word or PowerPoint file, and changes nothing. Cancel in the dialog changes nothing.
+- On Windows, pick a file from a path with spaces and non-ASCII letters, and from a network or
+  OneDrive folder; on macOS, from iCloud Drive.
+
+### Paste back from Word or PowerPoint (macOS and Windows)
+
+Run every step on both platforms, in Word and in PowerPoint.
+
+- Copy a structure in ChemDraft and paste it into the document as a picture (on Windows, Paste
+  Special > Picture (PNG), so it is not the embedded object). Save, close and reopen the document.
+  Select the picture, copy it, quit and restart ChemDraft (so its own copy is gone), and paste
+  into an empty drawing: the editable structure appears, selected, and the status says "Pasted the
+  ChemDraft structure from the copied picture." Copy SMILES from it and from the original: they
+  match, including charges, isotopes and wedges. One Undo removes it.
+- Repeat with a picture that was resized and cropped in Office: the full structure still comes back.
+- Copy two ChemDraft pictures together (PowerPoint: select both; Word: both in one selection):
+  both come back as one paste, left to right, and one Undo removes both.
+- Copy an ordinary photo or a screenshot from the document and paste: it pastes as a picture,
+  exactly as before.
+- Copy a structure in ChemDraft and paste it back into ChemDraft while Word or PowerPoint is open:
+  ChemDraft's own copy is pasted ("Pasted ChemDraft selection"), not a picture.
+- A carrier from a newer ChemDraft (data version above 1, from a test file) pastes nothing and the
+  status names the data version. The log (`[paste-back]`) gives the details.
+
+### Windows installer registration
+
+- Fresh install: Insert > Object lists ChemDraft Structure, and a double-click on an existing object
+  works. ChemDraft's class is registered; no other program's class, ProgID or file type changes,
+  and `.cdxml` is not taken over.
+- Upgrade over an installed version: the object still opens, and there is no duplicate entry in
+  Insert > Object.
+- Uninstall: ChemDraft Structure disappears from Insert > Object, and the keys the installer wrote
+  are gone. Existing objects still show their preview, and double-click says the program is
+  unavailable.
+- A dev build installed beside stable has its own entry ("ChemDraft (dev) Structure") and never
+  changes the stable registration.
+
+### macOS Office add-in (Word and PowerPoint)
+
+- Help menu at launch: Install Office Add-in… and Remove Office Add-in… are in Help, both
+  enabled, from the first moment the menu bar appears, not only Report a Bug…. Launching, and
+  switching back to ChemDraft, never shows macOS's "access data from other apps" prompt: run
+  `tccutil reset SystemPolicyAppData org.chemdraft.desktop.dev`, relaunch a fresh dev build and
+  switch apps a few times; no prompt appears until you choose Install or Remove and confirm.
+- Help menu: choose Install, read the confirmation (testing route; loads from chemdraft.ai), and
+  click Install. Cancel in the confirmation changes nothing and shows no macOS prompt. After
+  installing, both items stay enabled; Install again reports it is already installed.
+- Remove with nothing installed: after confirming, the report says plainly that the add-in is not
+  installed in Word or PowerPoint, so nothing was removed. Cancel at the Remove confirmation
+  changes nothing.
+- macOS "“ChemDraft” would like to access data from other apps" prompt (use a fresh dev build, or
+  run `tccutil reset SystemPolicyAppData org.chemdraft.desktop.dev` first, so it appears). The
+  Install confirmation says beforehand that macOS will ask. While the prompt is up, ChemDraft's
+  window and menus still respond. **Don't Allow**: the message says Office was not changed, because
+  macOS did not allow ChemDraft to access Word's and PowerPoint's data; to choose Install Office
+  Add-in again and click Allow; and, if macOS does not ask again, the exact
+  `tccutil reset SystemPolicyAppData org.chemdraft.desktop.dev` command to run in Terminal (the
+  stable app names `org.chemdraft.desktop`). It does not mention Full Disk Access. No
+  `chemdraft-office-addin*.xml` or `.tmp` file appears in either `wef` folder; Install stays enabled.
+  **Allow** (choose Install again): both apps are installed. Repeat with Remove: Don't Allow leaves
+  both manifests in place, Allow removes both. After a Don't Allow, if macOS does not ask again, the
+  given `tccutil` command makes it ask on the next Install.
+- Choose Help > Install Office Add-in… and confirm. Restart Word and PowerPoint: the Edit Structure
+  button is in the ribbon. Choose Help > Remove Office Add-in…, confirm, and check that the button
+  is gone after a restart. Reinstall the add-in and restart both apps for the following checks.
+- Word: select a ChemDraft picture with the pane open. It loads without a click. Edit and Update: the
+  picture is replaced in place, size, wrapping and position are kept, and Undo restores it. Selecting
+  anything else shows "Select a ChemDraft structure".
+- PowerPoint: do the same on a slide picture. Position, rotation and alt text are kept after Update.
+- PowerPoint on a picture that has an animation: Update is not refused and asks nothing first. It
+  replaces the picture, and only then the pane shows "Structure updated." followed by "Not carried
+  over from the old picture: animations." The Animation Pane no longer lists the picture; nothing
+  else on the slide changed. A picture with none of the listed state shows no such warning.
+- PowerPoint on a picture with a plain link to a web address: after Update the link still opens
+  (PowerPointApi 1.10). On a PowerPoint without it, the post-Update warning names "its link" instead.
+- PowerPoint on a picture in a layout placeholder (a slide whose layout has a Picture placeholder,
+  with the ChemDraft picture inserted into it): Update replaces the picture at the same position and
+  size, and only then the pane shows "Not carried over from the old picture: its place in the slide
+  layout (placeholder)." The new picture is an ordinary picture: Home > Reset no longer returns it to
+  the placeholder.
+- A refused update (for example a grouped or cropped picture): the original picture stays and no
+  duplicate picture is left on the slide or page.
+- A picture without a ChemDraft carrier is refused with a reason and is not altered.
+
 ## Preferences > Keyboard
 
 - On macOS and Windows, use **Try it** on step 2 of the guided tour. Preferences should open or

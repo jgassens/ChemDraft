@@ -9,6 +9,7 @@ import { ackFirstPaint, WINDOW_FIRST_PAINT_COMMAND } from "./firstPaint";
 const rust = readFileSync(new URL("../src-tauri/src/first_paint.rs", import.meta.url), "utf8");
 const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
 const build = readFileSync(new URL("../src-tauri/build.rs", import.meta.url), "utf8");
+const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 
 /** A page with a manual frame queue and a visibility state the test controls. */
 function page(visibilityState: DocumentVisibilityState = "visible") {
@@ -88,11 +89,11 @@ describe("ackFirstPaint", () => {
     expect(vi.mocked(invoke).mock.calls.every((call: unknown[]) => call.length === 1)).toBe(true);
   });
 
-  // main has no index.html inline loader (it belongs to the Office editor), so that check is left out here.
-  it("matches the Rust command and its registration", () => {
+  it("matches the Rust command, its registration, and index.html's inline loader", () => {
     expect(rust).toContain(`#[tauri::command]\npub fn ${WINDOW_FIRST_PAINT_COMMAND}(window: WebviewWindow) -> Result<(), String> {`);
     expect(lib).toContain(`            first_paint::${WINDOW_FIRST_PAINT_COMMAND},\n`);
     expect(build).toContain(`"${WINDOW_FIRST_PAINT_COMMAND}",`);
+    expect(html).toContain(`tauri.invoke("${WINDOW_FIRST_PAINT_COMMAND}", {})`);
     // The Rust side never focuses: callers that want focus take it after the show.
     const code = rust.slice(0, rust.indexOf("#[cfg(test)]\nmod tests")).split("\n")
       .filter(line => !line.trimStart().startsWith("//")).join("\n");

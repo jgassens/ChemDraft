@@ -1,5 +1,26 @@
 import { MAX_IMAGE_OBJECT_BYTES, normalizeAtomIsotope, isSvgImageSource, readSvgInfo, validatePngImage, validateSvgImage, imagePixelLimitError } from "@chemdraft/chem-core";
-export { CHEMDRAFT_PNG_SELECTION_KEYWORD, pngWithChemDraftSelection } from "./pngSelection";
+export { CHEMDRAFT_PNG_SELECTION_KEYWORD, pngWithChemDraftSelection, readChemDraftSelectionFromPng } from "./pngSelection";
+export type { CarrierReadResult } from "./pngSelection";
+export { decodeBase64Bounded, UnsupportedDecompressionError } from "./carrierBytes";
+export { flatOpcBinaryParts, pptxChoiceIsUnderstood, pptxSlidePictureMedia, readZip, readZipFromBase64 } from "./officePackage";
+export type { FlatOpcBinaryPart, OfficeZipCaps, OfficeZipEntry } from "./officePackage";
+export { importOfficeStructures, OFFICE_IMPORT_LIMITS, OfficeImportError, readCarrierEnvelope, SUPPORTED_CARRIER_VERSIONS } from "./officeImport";
+export {
+  OFFICE_EMBEDDED_OBJECT_TYPES, OFFICE_PICTURE_ARCHIVE_TYPES, PASTE_BACK_LIMITS, recoverPasteBackFromClipboard, recoverPasteBackStructures,
+  trimZipPadding,
+} from "./pasteBack";
+export {
+  CHEMDRAFT_DOCUMENT_STREAM, CHEMDRAFT_DRAWING_STORAGE, CHEMDRAFT_OLE_CLASSES, CHEMDRAFT_PENDING_DRAWING_STORAGE,
+  CHEMDRAFT_PREVIOUS_DRAWING_STORAGE, isChemDraftOleClassId, isChemDraftOleProgId, MAX_COMPOUND_FILE_BYTES, readChemDraftOleObject,
+} from "./oleObject";
+export type { ChemDraftOleClass, ChemDraftOleRead } from "./oleObject";
+export type {
+  PasteBackClipboardItem, PasteBackLimits, PasteBackNoneReason, PasteBackRefusal, PasteBackResult, PasteBackSource, PasteBackStructure,
+} from "./pasteBack";
+export type {
+  OfficeCarrierWarning, OfficeCarrierWarningReason, OfficeFileKind, OfficeImportErrorCode, OfficeImportLimits, OfficeImportResult,
+  OfficeStructure, OfficeStructureSource, CarrierEnvelope, CarrierText,
+} from "./officeImport";
 
 export type ClipboardPayloadKind = "svg" | "png" | "text/plain" | "smiles" | "mol" | "rxn" | "cdxml" | "cdx";
 
@@ -19,6 +40,17 @@ export interface ClipboardImageItem {
   pixelsPerMeter?: { x: number; y: number };
   pixelWidth?: number;
   pixelHeight?: number;
+}
+
+/**
+ * A binary flavor read only for paste-back, by native name: Office's picture archive (GVML), or a
+ * copied ChemDraft OLE object's drawing (Windows).
+ */
+export interface ClipboardOfficeItem {
+  type: string;
+  bytesBase64: string;
+  /** For a copied OLE object (Windows): the class it was stored under; its bytes are the drawing's text. */
+  clsid?: string;
 }
 
 export interface ClipboardSkippedImageItem {
@@ -50,6 +82,13 @@ export interface ClipboardReadPayload {
   imageItems?: ClipboardImageItem[];
   skippedImageItems?: ClipboardSkippedImageItem[];
   skippedItems?: ClipboardSkippedItem[];
+  /**
+   * Paste-back only, never inspected as text or as a picture: a copied ChemDraft OLE object's
+   * drawing (Windows), Office's picture archive (GVML), or both. Windows reads GVML beside an OLE
+   * drawing; `recoverPasteBackFromClipboard` decodes the archive only when the drawing is absent or
+   * refused.
+   */
+  officeItems?: ClipboardOfficeItem[];
 }
 
 export type ClipboardMolfileFormat = "molfile-v2000" | "molfile-v3000";

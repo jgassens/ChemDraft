@@ -10,7 +10,7 @@ mod focus_return;
 #[path = "panel_window_installation.rs"]
 mod installation;
 #[path = "palette_key_guard.rs"]
-mod key_guard;
+pub(crate) mod key_guard;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -141,9 +141,7 @@ pub(crate) use installation::finish_installation;
 pub(crate) use key_guard::linux::{self, set_keyboard_popover};
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn set_keyboard_popover(_label: &str, _keyboard: bool) {}
-pub(crate) use key_guard::{
-    keeps_palette_focus, observe_document_pointer_release, End as PointerGuardEnd,
-};
+pub(crate) use key_guard::{keeps_palette_focus, End as PointerGuardEnd};
 
 pub(crate) fn palette_blocks_forwarded_shortcut(
     label: &str,
@@ -158,11 +156,17 @@ pub(crate) fn palette_blocks_forwarded_shortcut(
     }
     #[cfg(not(target_os = "linux"))]
     let _ = label;
-    key_guard::blocks_forwarded_shortcut(key_guard::blocks_document(), key, meta, ctrl, alt)
+    key_guard::blocks_forwarded_shortcut(
+        key_guard::blocks_document(super::MAIN_WINDOW_LABEL),
+        key,
+        meta,
+        ctrl,
+        alt,
+    )
 }
 
-pub(crate) fn palette_blocks_menu(document_target: bool, command: &str) -> bool {
-    key_guard::blocks_menu(key_guard::blocks_document(), document_target, command)
+pub(crate) fn palette_blocks_menu(document: &str, command: &str) -> bool {
+    key_guard::blocks_menu(key_guard::blocks_document(document), true, command)
 }
 
 /// Pointer observation alone does not alter window styles or input leases.
@@ -305,7 +309,7 @@ pub(crate) fn return_focus_after_interaction<R: tauri::Runtime>(
     {
         if let Some(document) = window
             .app_handle()
-            .get_webview_window(super::MAIN_WINDOW_LABEL)
+            .get_webview_window(super::toolset_document_label(window.label()))
         {
             if focus_return::should_return(
                 requested,
@@ -548,6 +552,15 @@ fn activation_with_reason<R: tauri::Runtime>(
             generation,
             reason,
         };
+        #[cfg(windows)]
+        if super::toolset_window_parts(window.label()).0 != super::MAIN_WINDOW_LABEL {
+            super::office_ole::toolset_events::deliver(
+                window,
+                "chemdraft://plugin-panel-focus",
+                &serde_json::to_string(&event).unwrap(),
+            );
+            return;
+        }
         if let Err(error) = window.emit_to(window.label(), "chemdraft://plugin-panel-focus", event)
         {
             eprintln!("Could not notify panel focus: {error}");
@@ -795,13 +808,24 @@ pub(crate) fn install_input_focus<R: tauri::Runtime>(
         drag_finished: std::rc::Rc::new(move || {
             // The palette's title/background press ended its lease without returning focus.
             // Hand back only after Tao's drag loop; guard any newer lease or foreground owner.
-            if drag_target.label().starts_with("toolset-") {
+            if super::toolset_window_parts(drag_target.label())
+                .1
+                .starts_with("toolset-")
+            {
                 if let Err(error) = return_focus_after_interaction(&drag_target, true) {
                     eprintln!("Could not return palette keyboard focus after drag: {error}");
                 }
             }
         }),
         refresh_hit_boxes: std::rc::Rc::new(move || {
+            if super::toolset_window_parts(refresh_window.label()).0 != super::MAIN_WINDOW_LABEL {
+                super::office_ole::toolset_events::deliver(
+                    &refresh_window,
+                    "chemdraft://palette-command-hit-boxes-refresh",
+                    "null",
+                );
+                return;
+            }
             let _ = refresh_window.emit_to(
                 refresh_window.label(),
                 "chemdraft://palette-command-hit-boxes-refresh",

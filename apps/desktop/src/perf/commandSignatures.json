@@ -380,7 +380,7 @@
     "name": "open_toolset_window",
     "async": true,
     "generics": "",
-    "parameters": "app: tauri::AppHandle, toolset_id: String, window: Option<ToolsetWindowGeometry>,",
+    "parameters": "app: tauri::AppHandle, caller: tauri::WebviewWindow, toolset_id: String, window: Option<ToolsetWindowGeometry>,",
     "returnType": "Result<ToolsetWindowState, String>"
   },
   {
@@ -388,7 +388,7 @@
     "name": "close_toolset_window",
     "async": false,
     "generics": "",
-    "parameters": "app: tauri::AppHandle, toolset_id: String,",
+    "parameters": "app: tauri::AppHandle, caller: tauri::WebviewWindow, toolset_id: String,",
     "returnType": "Result<ToolsetWindowState, String>"
   },
   {
@@ -396,7 +396,7 @@
     "name": "list_toolset_window_states",
     "async": false,
     "generics": "",
-    "parameters": "app: tauri::AppHandle, foreground_only: Option<bool>,",
+    "parameters": "app: tauri::AppHandle, caller: tauri::WebviewWindow, foreground_only: Option<bool>,",
     "returnType": "Result<ToolsetWindowQueryResult, String>"
   },
   {
@@ -436,7 +436,7 @@
     "name": "set_toolbars_menu",
     "async": false,
     "generics": "",
-    "parameters": "app: tauri::AppHandle, entries: Vec<ToolbarMenuEntry>, rulers_visible: bool, crosshairs_visible: bool, has_multiple_document_tabs: Option<bool>,",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, office_update_title: Option<String>, entries: Vec<ToolbarMenuEntry>, rulers_visible: bool, crosshairs_visible: bool, has_multiple_document_tabs: Option<bool>,",
     "returnType": "Result<(), String>"
   },
   {
@@ -540,7 +540,7 @@
     "name": "open_toolset_popover",
     "async": true,
     "generics": "",
-    "parameters": "app: tauri::AppHandle, toolset_id: String, kind: String, x: f64, y: f64, focus_mode: Option<ToolsetPopoverFocusMode>,",
+    "parameters": "app: tauri::AppHandle, caller: tauri::WebviewWindow, toolset_id: String, kind: String, x: f64, y: f64, focus_mode: Option<ToolsetPopoverFocusMode>,",
     "returnType": "Result<(), String>"
   },
   {
@@ -548,7 +548,7 @@
     "name": "prewarm_toolset_popover",
     "async": true,
     "generics": "",
-    "parameters": "app: tauri::AppHandle, toolset_id: String",
+    "parameters": "app: tauri::AppHandle, caller: tauri::WebviewWindow, toolset_id: String,",
     "returnType": "Result<(), String>"
   },
   {
@@ -556,7 +556,7 @@
     "name": "prewarm_toolset_tooltip",
     "async": true,
     "generics": "",
-    "parameters": "app: tauri::AppHandle",
+    "parameters": "app: tauri::AppHandle, caller: tauri::WebviewWindow,",
     "returnType": "Result<(), String>"
   },
   {
@@ -564,7 +564,7 @@
     "name": "close_toolset_popover",
     "async": false,
     "generics": "",
-    "parameters": "app: tauri::AppHandle, toolset_id: String",
+    "parameters": "app: tauri::AppHandle, caller: tauri::WebviewWindow, toolset_id: String,",
     "returnType": "Result<(), String>"
   },
   {
@@ -588,7 +588,7 @@
     "name": "show_toolset_tooltip_window",
     "async": false,
     "generics": "",
-    "parameters": "app: tauri::AppHandle, x: Option<f64>, y: Option<f64>,",
+    "parameters": "app: tauri::AppHandle, caller: tauri::WebviewWindow, x: Option<f64>, y: Option<f64>,",
     "returnType": "Result<(), String>"
   },
   {
@@ -604,7 +604,7 @@
     "name": "hide_toolset_tooltip_window",
     "async": false,
     "generics": "",
-    "parameters": "app: tauri::AppHandle",
+    "parameters": "app: tauri::AppHandle, caller: tauri::WebviewWindow,",
     "returnType": "Result<(), String>"
   },
   {
@@ -668,7 +668,7 @@
     "name": "write_clipboard_items",
     "async": true,
     "generics": "",
-    "parameters": "app: tauri::AppHandle, items: Vec<ClipboardWriteItem>,",
+    "parameters": "window: tauri::WebviewWindow, items: Vec<ClipboardWriteItem>,",
     "returnType": "Result<ClipboardWriteResult, String>"
   },
   {
@@ -936,6 +936,70 @@
     "returnType": "()"
   },
   {
+    "file": "office_addin.rs",
+    "name": "office_addin_install",
+    "async": true,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow,",
+    "returnType": "Result<[OfficeAddinResult; 2], String>"
+  },
+  {
+    "file": "office_addin.rs",
+    "name": "office_addin_remove",
+    "async": true,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow,",
+    "returnType": "Result<[OfficeAddinResult; 2], String>"
+  },
+  {
+    "file": "office_ole/bridge.rs",
+    "name": "prepare_office_editors_for_update",
+    "async": true,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, release: bool,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "office_ole/bridge.rs",
+    "name": "office_object_connect",
+    "async": true,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, channel: Channel<CloseRequest>,",
+    "returnType": "Result<Open, String>"
+  },
+  {
+    "file": "office_ole/bridge.rs",
+    "name": "office_object_set_title",
+    "async": false,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, title: String,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "office_ole/bridge.rs",
+    "name": "office_object_update",
+    "async": true,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, request: Request<'_>,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "office_ole/bridge.rs",
+    "name": "office_object_close",
+    "async": true,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, object_id: String, save_changes: Option<bool>, request_id: Option<u32>,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "office_ole/toolset_events.rs",
+    "name": "office_toolset_emit",
+    "async": false,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, event: String, payload: Option<serde_json::Value>,",
+    "returnType": "Result<(), String>"
+  },
+  {
     "file": "opsin.rs",
     "name": "opsin_status",
     "async": false,
@@ -950,6 +1014,14 @@
     "generics": "<R: Runtime>",
     "parameters": "app: tauri::AppHandle<R>, name: String,",
     "returnType": "Result<OpsinConversion, OpsinError>"
+  },
+  {
+    "file": "palette_key_guard.rs",
+    "name": "palette_key_guard_clear",
+    "async": false,
+    "generics": "<R: tauri::Runtime>",
+    "parameters": "window: tauri::WebviewWindow<R>, sequence: u64, pointer_before: u64,",
+    "returnType": "()"
   },
   {
     "file": "panel_window_controls.rs",

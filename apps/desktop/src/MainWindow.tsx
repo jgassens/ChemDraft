@@ -58,6 +58,7 @@ import { acquireNativeUtilitySuspension } from "./nativeUtilitySuspension";
 import { loadAskToSaveBeforeQuit } from "./quitSettings";
 import { loadStartWithFreshDocument } from "./startupSettings";
 import { nativePrompt, useNativePrompt } from "./nativePrompt";
+import { officeAddinSupported, useOfficeAddinCommands } from "./commands/officeAddin";
 import { notifyNativeDocumentCompatibility } from "./nativeDocumentNotice";
 import { formatDocumentOpenBatchStatus, formatDocumentOpenFailure, listenAndDrainNativeOpenQueue, type DocumentOpenResult } from "./nativeOpenQueue";
 import { useInAppModalUtilitySuspension } from "./useInAppModalUtilitySuspension";
@@ -891,7 +892,8 @@ import {
   type ToolbarPaletteGroupModel
 } from "./toolsets";
 import { MenuBar } from "./MenuBar";
-import { buildAppMenuModel, structureSearchMenuItems, PLUGIN_MANAGER_COMMAND_ID, PLUGIN_UPDATES_COMMAND_ID } from "./appMenu";
+import { buildAppMenuModel, officeObjectFileMenu, structureSearchMenuItems, PLUGIN_MANAGER_COMMAND_ID, PLUGIN_UPDATES_COMMAND_ID } from "./appMenu";
+import { OFFICE_CLOSE_COMMAND_ID, OFFICE_UPDATE_COMMAND_ID, officeCommandAvailability, officeObjectIdFromSearch, useOfficeObject } from "./officeObject";
 import { registerVibeCodeStarter, VIBE_CODE_SAVE_COMMAND_ID } from "./commands/vibeCodeStarter";
 import {
   editHistoryDirection,
@@ -927,6 +929,8 @@ import {
 } from "./keyboardShortcuts";
 import { installBrowserReloadGuard, wasBrowserReloadPrevented } from "./browserReloadGuard";
 import { assertDocumentSize, decodeNativeDocumentContents, documentContentsKey, readBrowserDocumentFile, readNativeDocumentFile, type DocumentContents } from "./documentText";
+import { assertOfficePastePreservesExistingChemistry, importOfficeStructuresCommand, pickOfficeImportFile, runOfficeStructureImport } from "./officeStructureImport";
+import { OFFICE_PASTE_BACK_UNDO_LABEL, officePasteBackDecision, type OfficePasteBackDecision } from "./officePasteBack";
 import { createDocumentFileSave, exportDocumentCdx } from "./documentFileFormats";
 import { getDesktopExportFormatDescriptor as getExportFormatDescriptor } from "./desktopExportFormats";
 import { exportDefaultPath, stripExportFileExtension } from "./exportFilename";
@@ -963,6 +967,7 @@ import {
   currentUpdateBuildInfo,
   readLastAutoCheck,
   runUpdateFlow,
+  prepareOfficeEditorsForUpdate,
   safeLocalStorage,
   tauriUpdateFlowDeps,
   writeLastAutoCheck
@@ -1852,7 +1857,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.23.11.15-opus";
+const CURRENT_BUILD_STAMP = "11.25.07.30-opus";
 
 /**
  * The commit funnel's chemistry check (AGENTS.md section 7, `commitChemistryGuard.ts`). `before`
@@ -2196,8 +2201,12 @@ export function MainWindow({
   initialActiveToolCommandId,
   shortcutPlatform,
   tourMode,
-  nativePalette = shouldDefaultToNativePalettes()
+  nativePalette: requestedNativePalette
 }: MainWindowProps) {
+  const [officeObjectId] = useState(() => typeof window === "undefined" ? undefined : officeObjectIdFromSearch(window.location.search));
+  // Desktop palettes float beside their document. Keep an inline fallback for an Office window
+  // if its native palettes fail to open.
+  const nativePalette = requestedNativePalette ?? shouldDefaultToNativePalettes();
   useEffect(() => installBrowserReloadGuard(shortcutPlatform), [shortcutPlatform]);
   useEffect(() => installNativeFlyoutKeyboard(shortcutPlatform), [shortcutPlatform]);
   useEffect(() => installMainWindowPalettePendingKeys(), []);
@@ -2965,7 +2974,11 @@ export function MainWindow({
     width: 0,
     height: 0
   }));
-  const [status, setStatus] = useState("Blank native document");
+  const [status, setStatus] = useState(officeObjectId ? "Opening Office structure…" : "Blank native document");
+  const officeAddin = useOfficeAddinCommands(
+    !officeObjectId && officeAddinSupported(isDesktopRuntime(), shortcutPlatform),
+    setStatus
+  );
   const tableDraftStatusRef = useRef<{ announced: string; original: string } | undefined>(undefined);
   // Keep import findings and the latest save findings independent for this tab.
   // Replacing the document drops both (resetDocumentHistory).
@@ -3510,8 +3523,16 @@ export function MainWindow({
       canRedo,
       hasMultipleTabs: documentTabs.length > 1,
       hasMoleculeFragmentSelection: selectedNativeMoleculeParts.length > 0
-    })),
-    [canRedo, canUndo, document, documentTabs.length, selectedMolecule, selectedNativeMoleculeParts]
+    })).map(action => {
+      if (!officeObjectId) return action;
+      if (action.id === "document.save") return { ...action, title: "Save Office Structure", shortcut: "CmdOrCtrl+S" };
+      if (action.id === "document.closeTab") return { ...action, title: "Close", enabled: true, disabledReason: undefined };
+      if (["document.new", "document.open", "document.saveAs"].includes(action.id)) {
+        return { ...action, enabled: false, disabledReason: "This window edits one embedded Office structure." };
+      }
+      return action;
+    }),
+    [canRedo, canUndo, document, documentTabs.length, officeObjectId, selectedMolecule, selectedNativeMoleculeParts]
   );
   const compoundLayoutsEnabledRef = useRef(compoundLayoutsEnabled);
   compoundLayoutsEnabledRef.current = compoundLayoutsEnabled;
@@ -3595,8 +3616,9 @@ export function MainWindow({
   keybindingSchemeRef.current = keybindingScheme;
   useEffect(() => {
     // The native menu carries its own accelerators. Keep them in step with the canvas.
-    void pushKeybindingSchemeToNativeMenu(keybindingScheme, nativeMenuShortcutOverrides(shortcutOverrides, shortcutPlatform));
-  }, [keybindingScheme, shortcutOverrides, shortcutPlatform]);
+    // An Office object window has its own File menu and leaves the document menu alone.
+    if (!officeObjectId) void pushKeybindingSchemeToNativeMenu(keybindingScheme, nativeMenuShortcutOverrides(shortcutOverrides, shortcutPlatform));
+  }, [keybindingScheme, officeObjectId, shortcutOverrides, shortcutPlatform]);
   const toolCommandSpecs = useMemo(
     () => applyKeybindingSchemeToCommands(
       withStandaloneDrawingToolCommands(getToolsetCommandSpecs(toolsetRegistry)),
@@ -3626,10 +3648,13 @@ export function MainWindow({
         compoundLayoutsEnabled, compoundLayoutSettings,
         structureSearchEnabled,
         hasSearchableStructure
-      }).map(command => customSwatchActions.find(action => action.id === command.id) ?? command).filter(command => command.id !== "arrow.conditions" || isDesktopRuntime()),
+      }).map(command => {
+        const spec = customSwatchActions.find(action => action.id === command.id) ?? command;
+        return officeObjectId ? officeCommandAvailability(spec, createToolsetToggleCommandId(molecularInspectorToolsetId)) : spec;
+      }).filter(command => command.id !== "arrow.conditions" || isDesktopRuntime()),
       keybindingScheme, shortcutOverrides, shortcutPlatform
     ),
-    [shortcutOverrides, shortcutPlatform, baseToolbarCommands, customSwatches, customSwatchActions, activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId, canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, selectedNativeMoleculeParts, toolsetRegistry, compoundLayoutsEnabled, compoundLayoutSettings, structureSearchEnabled, hasSearchableStructure]
+    [shortcutOverrides, shortcutPlatform, baseToolbarCommands, customSwatches, customSwatchActions, activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId, canRedo, canUndo, document, documentTabs.length, keybindingScheme, officeObjectId, openWarnings, selectedMolecule, selectedNativeMoleculeParts, toolsetRegistry, compoundLayoutsEnabled, compoundLayoutSettings, structureSearchEnabled, hasSearchableStructure]
   );
   const shellCommandsById = useMemo(
     () => createShellCommandMap(shellCommandSpecs),
@@ -4365,7 +4390,7 @@ export function MainWindow({
         // Record which toolsets we've resolved visibility for. A startup save may merge onto a
         // validated layout or create a file when there was none.
         resolvedToolsetIdsRef.current = new Set(toolbarCatalog.registry().listToolsets().map((toolset) => toolset.id));
-        layoutSaveEnabledRef.current = true;
+        layoutSaveEnabledRef.current = !officeObjectId;
         layoutHydratedRef.current = true;
         setNativeToolsetLayoutReady(true);
       })
@@ -4386,7 +4411,7 @@ export function MainWindow({
     return () => {
       active = false;
     };
-  }, [nativePalette, toolbarCatalog]);
+  }, [nativePalette, officeObjectId, toolbarCatalog]);
 
   // Persist palette visibility whenever it changes so the set of open palettes is restored next
   // launch. Gated on layoutHydratedRef so the first render's default set can't overwrite the saved
@@ -4809,17 +4834,18 @@ export function MainWindow({
   // current visible set onto every toggle item after each change (no-op in the browser).
   // This is what keeps View > Toolbars accurate now that Rust no longer toggles windows.
   useEffect(() => {
+    if (officeObjectId) return;
     for (const toolset of toolsetRegistry.listToolsets()) {
       void setMenuChecked(createToolsetToggleCommandId(toolset.id), visibleToolsetIds.has(toolset.id));
     }
-  }, [toolsetRegistry, visibleToolsetIds]);
+  }, [officeObjectId, toolsetRegistry, visibleToolsetIds]);
 
   // Push the Toolbars menu STRUCTURE (which toolsets + their titles) to the native menu whenever the
   // toolset set changes, so the menu comes from the TS registry rather than Rust's manifest copy —
   // this is what lets Rust stop parsing the manifest. Rebuilding resets checkmarks, so include the
   // current visibility; between rebuilds the checkmark effect above keeps them in sync in place.
   useEffect(() => {
-    if (!nativePalette && !isDesktopRuntime()) {
+    if (officeObjectId || (!nativePalette && !isDesktopRuntime())) {
       return;
     }
     const entries = toolsetRegistry.listToolsets().map((toolset) => ({
@@ -4831,7 +4857,7 @@ export function MainWindow({
     // Cmd+N then immediate Cmd+W can hide the window before it arrives, with two tabs still live;
     // autosave keeps both tabs, so nothing is lost.
     void setToolbarsMenu(entries, rulersVisible, crosshairsVisible, documentTabs.length > 1).catch(() => undefined);
-  }, [crosshairsVisible, documentTabs.length, nativePalette, rulersVisible, toolsetRegistry, visibleToolsetIds]);
+  }, [crosshairsVisible, documentTabs.length, nativePalette, officeObjectId, rulersVisible, toolsetRegistry, visibleToolsetIds]);
 
   const deleteHoveredNativeTarget = useCallback(() => {
     const currentDocument = documentRef.current;
@@ -7740,7 +7766,7 @@ export function MainWindow({
   // Record the committed snapshot only after insertion; async SMILES preparation must not
   // clear the preceding paste's placement while loading/verifying its depiction.
   const commitClipboardPaste = useCallback((nextDocument: ChemDraftDocument, anchor: ReturnType<typeof captureClipboardPasteAnchor>, label?: string,
-    nativePayload?: ChemDraftSelectionClipboardPayload): boolean => {
+    nativePayload?: ChemDraftSelectionClipboardPayload, assertFinalDocument?: (document: ChemDraftDocument) => void): boolean => {
     const before = documentRef.current;
     if (nextDocument === before) return false;
     const payload = nativePayload ?? createSelectionClipboardPayload(nextDocument);
@@ -7749,7 +7775,7 @@ export function MainWindow({
     if (payload.bounds.width > page.width || payload.bounds.height > page.height) {
       // Oversized content retains its prepared placement and the existing explicit page-size
       // choice. Repeat offsets and clamping apply only when the payload fits the current page.
-      return commitDocumentChangeWithPageFit(nextDocument, label, undefined, undefined, preserveChemistry("paste"));
+      return commitDocumentChangeWithPageFit(nextDocument, label, undefined, assertFinalDocument, preserveChemistry("paste"));
     }
     const placement = nextSelectionClipboardPastePlacement(payload, selectionClipboardPasteStateRef.current,
       page, anchor.pointer, nativePayload ? 1 : 0);
@@ -7759,7 +7785,7 @@ export function MainWindow({
       placement.point.x - payload.bounds.centerX, placement.point.y - payload.bounds.centerY);
     // The funnel checks the placed, normalized document: only here is it known which molecule a
     // pasted object lands beside (a loose "+" there may otherwise be re-attributed to it).
-    if (!commitDocumentChange(placed, label, false, undefined, preserveChemistry("paste"))) return false;
+    if (!commitDocumentChange(placed, label, false, assertFinalDocument, preserveChemistry("paste"))) return false;
     selectionClipboardPasteStateRef.current = { ...placement.state, document: documentRef.current };
     return true;
   }, [commitDocumentChange, commitDocumentChangeWithPageFit]);
@@ -8078,7 +8104,8 @@ export function MainWindow({
     applySyncClipboardPayload(detectedPayload, anchor);
   }, [applySyncClipboardPayload, applyTableClipboardResult, renderPastedSmiles, renderPastedSmilesList]);
 
-  const applySelectionClipboardPayload = useCallback((payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>, anchor: ReturnType<typeof captureClipboardPasteAnchor>) => {
+  const applySelectionClipboardPayload = useCallback((payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>, anchor: ReturnType<typeof captureClipboardPasteAnchor>,
+    statusMessage = "Pasted ChemDraft selection", assertFinalDocument?: (document: ChemDraftDocument) => void) => {
     smilesListPasteAbortRef.current?.abort();
     if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
     const warnings: string[] = [];
@@ -8093,7 +8120,7 @@ export function MainWindow({
       return;
     }
 
-    if (!commitClipboardPaste(nextDocument, anchor, undefined, payload)) return;
+    if (!commitClipboardPaste(nextDocument, anchor, undefined, payload, assertFinalDocument)) return;
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
@@ -8101,8 +8128,32 @@ export function MainWindow({
     setSelectedNativeMoleculePart(undefined);
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
-    setStatus(["Pasted ChemDraft selection", ...warnings].join("; "));
+    setStatus([statusMessage, ...warnings].join("; "));
   }, [assignHoveredNativeDeleteTarget, commitClipboardPaste]);
+
+  /** Paste-back from a copied Office picture; false lets the ordinary paste go ahead. */
+  const applyOfficePasteBack = useCallback((decision: OfficePasteBackDecision, anchor: ReturnType<typeof captureClipboardPasteAnchor>): boolean => {
+    if (decision.details.length) console.warn(`[paste-back]\n${decision.details.join("\n")}`);
+    // The decision was awaited: a quit that began meanwhile cancels the ordinary paste too.
+    if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return true; }
+    if (decision.kind === "none") return false;
+    if (decision.kind === "refused") {
+      setStatus(decision.message);
+      return true;
+    }
+    const before = documentRef.current;
+    const assertFinalDocument = (after: ChemDraftDocument) => assertOfficePastePreservesExistingChemistry(before, after);
+    try {
+      if (decision.kind === "selection") {
+        applySelectionClipboardPayload(decision.payload, anchor, decision.message, assertFinalDocument);
+      } else if (commitDocumentChange(decision.document, OFFICE_PASTE_BACK_UNDO_LABEL, false, assertFinalDocument, preserveChemistry("paste"))) {
+        setStatus(decision.message);
+      }
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+    return true;
+  }, [applySelectionClipboardPayload, commitDocumentChange]);
 
   const deleteSelectionAfterClipboardCut = useCallback((
     payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>,
@@ -8386,6 +8437,8 @@ export function MainWindow({
         applySelectionClipboardPayload(decision.payload, anchor);
         return;
       }
+      // ChemDraft's own selection won above; next, the structure in a copied Office picture.
+      if (applyOfficePasteBack(await officePasteBackDecision(payload, () => documentRef.current), anchor)) return;
       if (decision.kind === "table") {
         applyTableClipboardResult(decision.result, anchor);
         return;
@@ -8407,7 +8460,7 @@ export function MainWindow({
     setStatus(readFailure !== undefined
       ? `Couldn't read the clipboard: ${readFailure}`
       : "Couldn't paste: the clipboard contains no supported drawing or text content.");
-  }, [applyDetectedClipboardPayload, applySelectionClipboardPayload, applyTableClipboardResult, captureClipboardPasteAnchor]);
+  }, [applyDetectedClipboardPayload, applyOfficePasteBack, applySelectionClipboardPayload, applyTableClipboardResult, captureClipboardPasteAnchor]);
 
   const updateTextObjectContent = useCallback((objectId: string, text: string) => {
     const edit = textEditHistorySnapshotRef.current;
@@ -10479,6 +10532,7 @@ export function MainWindow({
     options?: OpenDocumentContentsOptions,
     reportOutcome?: (outcome: "queued" | "resumed" | "already-open" | "installed") => void
   ) => {
+    if (officeObjectId) throw new Error("Open files in the main ChemDraft window while editing an Office structure.");
     assertDocumentSize(contents.length);
     const waitUntilReady = async () => {
       while (closeTabPromptRef.current || quitInteractionRef.current || keptDrawingsPromptRef.current || (isDesktopRuntime() && !documentSessionHydratedRef.current)) {
@@ -10547,7 +10601,7 @@ export function MainWindow({
     perfHook(() => reportOutcome?.("installed"));
     await pageFitSettled;
     await notifyInstalledDocumentCompatibility(opened, resolvedOpen.document);
-  }, [activateDocumentTab, addDocumentTab, clearDocumentInteractionState, notifyInstalledDocumentCompatibility, resetDocumentHistory, snapshotDocumentTab]);
+  }, [activateDocumentTab, addDocumentTab, clearDocumentInteractionState, notifyInstalledDocumentCompatibility, officeObjectId, resetDocumentHistory, snapshotDocumentTab]);
   const openDocumentContentsNowRef = useRef(openDocumentContentsNow);
   openDocumentContentsNowRef.current = openDocumentContentsNow;
   const documentOpenQueueRef = useRef<Promise<unknown>>(Promise.resolve());
@@ -10945,10 +10999,10 @@ export function MainWindow({
         if (kind === "export") exportGrantsRef.current.delete(tabId);
         if (kind === "atomProblem" && atomProblemTargetRef.current?.tabId === tabId) atomProblemTargetRef.current = undefined;
       }
-    });
+    }, { ownerWindowId: officeObjectId ? "office-object-" + officeObjectId : undefined });
     dialogCoordinatorRef.current = coordinator;
     return () => { dialogCoordinatorRef.current = undefined; void coordinator.dispose(); };
-  }, []);
+  }, [officeObjectId]);
 
   const openDroppedDocumentPaths = useCallback(async (paths: readonly string[]) => {
     await openDocumentBatch(paths.map(path => ({
@@ -11009,7 +11063,7 @@ export function MainWindow({
   }, [openDocumentContents]);
 
   useEffect(() => {
-    if (!isDesktopRuntime()) {
+    if (officeObjectId || !isDesktopRuntime()) {
       return undefined;
     }
 
@@ -11039,12 +11093,13 @@ export function MainWindow({
       onDrainActivity: busy => { nativeOpenDrainBusyRef.current = busy; },
       onError: error => setStatus(`Could not check pending open files: ${error instanceof Error ? error.message : String(error)}`)
     });
-  }, [openDocumentBatch]);
+  }, [officeObjectId, openDocumentBatch]);
 
   // Restore every tab before processing startup file opens (see documentSession.ts). If a user
   // already started editing while the read was pending, keep that work active and append the restored
   // tabs. Unreadable tabs stay in the envelope; an unreadable envelope keeps autosave closed.
   useEffect(() => {
+    if (officeObjectId) return undefined;
     if (documentSessionHydratedRef.current) {
       return undefined;
     }
@@ -11188,7 +11243,7 @@ export function MainWindow({
     return () => {
       active = false;
     };
-  }, [installDocumentTab, invalidateRequestDocument, notifyInstalledDocumentCompatibility, snapshotDocumentTab, startWithFreshDocument]);
+  }, [installDocumentTab, invalidateRequestDocument, notifyInstalledDocumentCompatibility, officeObjectId, snapshotDocumentTab, startWithFreshDocument]);
 
   // Write the working document + file association to the session file now. Reads refs only, so it
   // is stable and safe to call from the debounce below and from the quit flush. Gated on hydration
@@ -11272,14 +11327,14 @@ export function MainWindow({
   // Autosave (debounced) so a relaunch — or a crash — resumes the last edited state with no
   // explicit save.
   useEffect(() => {
-    if (!isDesktopRuntime()) {
+    if (officeObjectId || !isDesktopRuntime()) {
       return undefined;
     }
     const handle = window.setTimeout(() => {
       if (!quitCommittedRef.current) void writeDocumentSessionNow();
     }, DOCUMENT_SESSION_SAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
-  }, [document, fileState, documentTabs, activeDocumentTabId, viewport, openWarningsReport, saveWarningsReport, sessionStartupCompleted, writeDocumentSessionNow]);
+  }, [document, fileState, documentTabs, activeDocumentTabId, viewport, officeObjectId, openWarningsReport, saveWarningsReport, sessionStartupCompleted, writeDocumentSessionNow]);
 
 
   const lockCommittedQuit = useCallback(() => {
@@ -11324,7 +11379,7 @@ export function MainWindow({
   // Menu Quit / Cmd+Q on macOS, or closing the document window / File ▸ Exit elsewhere: Rust asks
   // for the pending autosave first so an edit inside the debounce window survives relaunch.
   useEffect(() => {
-    if (!isDesktopRuntime()) {
+    if (officeObjectId || !isDesktopRuntime()) {
       return undefined;
     }
     let unlisten: (() => void) | undefined;
@@ -11349,7 +11404,7 @@ export function MainWindow({
       disposed = true;
       unlisten?.();
     };
-  }, [lockCommittedQuit, writeQuitSession]);
+  }, [lockCommittedQuit, officeObjectId, writeQuitSession]);
 
   const cancelQuitRequest = useCallback(async (requestId: number) => {
     const reply = await cancelQuit(requestId);
@@ -11365,7 +11420,7 @@ export function MainWindow({
   }, [lockCommittedQuit]);
 
   useEffect(() => {
-    if (!isDesktopRuntime()) return;
+    if (officeObjectId || !isDesktopRuntime()) return;
     let disposed = false;
     const listeners: (() => void)[] = [];
     const keep = (listener: () => void) => { if (disposed) listener(); else listeners.push(listener); };
@@ -11420,7 +11475,7 @@ export function MainWindow({
       if (!disposed) await setQuitPromptEnabled(loadAskToSaveBeforeQuit());
     })().catch((error: unknown) => { setStatus("Quit preference unavailable: " + String(error)); });
     return () => { disposed = true; listeners.forEach((listener) => listener()); };
-  }, [snapshotDocumentTab, writeQuitSession, cancelQuitRequest, lockCommittedQuit]);
+  }, [snapshotDocumentTab, writeQuitSession, cancelQuitRequest, lockCommittedQuit, officeObjectId]);
 
   useEffect(() => {
     if (closeTabPrompt || !pendingQuitAfterCloseRef.current) return;
@@ -11453,7 +11508,10 @@ export function MainWindow({
       }
       const outcome = await runUpdateFlow(
         mode,
-        tauriUpdateFlowDeps({ setStatus, flushSession: () => writeDocumentSessionNow({ strict: true }) })
+        tauriUpdateFlowDeps({
+          setStatus, prepareEmbeddedEditors: prepareOfficeEditorsForUpdate,
+          flushSession: () => writeDocumentSessionNow({ strict: true })
+        })
       );
       if (outcome !== "check-failed") {
         writeLastAutoCheck(safeLocalStorage(), Date.now());
@@ -11467,7 +11525,7 @@ export function MainWindow({
 
   // The launch check: at most once a day, after startup has settled (same cadence as Sparkle's).
   useEffect(() => {
-    if (!appUpdatesSupported({ isDesktop: isDesktopRuntime(), platform: detectDesktopShortcutPlatform() })) {
+    if (officeObjectId || !appUpdatesSupported({ isDesktop: isDesktopRuntime(), platform: detectDesktopShortcutPlatform() })) {
       return undefined;
     }
     const handle = window.setTimeout(() => {
@@ -11476,7 +11534,7 @@ export function MainWindow({
       }
     }, AUTO_CHECK_DELAY_MS);
     return () => window.clearTimeout(handle);
-  }, []);
+  }, [officeObjectId]);
 
   // Bug and crash reports (problemReports.ts): an email draft the user reviews and sends themselves.
   const sendProblemReport = useCallback(async (kind: ProblemReportKind, brief: string, details?: string) => {
@@ -11500,6 +11558,7 @@ export function MainWindow({
 
   // Crash reports: an error caught this session, or a crash note the native side left last time.
   useEffect(() => {
+    if (officeObjectId) return;
     const desktop = isDesktopRuntime();
     const offerCrashReport = async (brief: string, details: string, earlierRun: boolean) => {
       if (await askToSendCrashReport(desktop, brief, earlierRun)) {
@@ -11530,7 +11589,7 @@ export function MainWindow({
         );
       }
     });
-  }, []);
+  }, [officeObjectId]);
 
   const updateUnrestoredTabNotices = useCallback((previousCount: number) => {
     const previousNotice = unrestoredTabsNotice(previousCount);
@@ -11746,6 +11805,41 @@ export function MainWindow({
 
   const saveCurrentDocument = useCallback((forceSaveAs: boolean) =>
     saveDocumentTabById(activeDocumentTabIdRef.current, forceSaveAs), [saveDocumentTabById]);
+
+  const officeFreezeCount = useRef(0);
+  const officeObject = useOfficeObject(officeObjectId, {
+    installDocument: (opened) => {
+      resetDocumentHistory(opened);
+      clearDocumentInteractionState({ clearSpin3dModelCache: true });
+      return documentRef.current;
+    },
+    readDocument: documentForFlush,
+    setStatus,
+    invokeClose: async () => { await registry.invoke(OFFICE_CLOSE_COMMAND_ID); },
+    freezeForClose: () => {
+      if (++officeFreezeCount.current === 1) {
+        quitInteractionRef.current = true;
+        quitMutationFrozenRef.current = true;
+        flushSync(() => setQuitCommitted(true));
+      }
+      return () => {
+        if (--officeFreezeCount.current === 0) {
+          quitMutationFrozenRef.current = false;
+          quitInteractionRef.current = false;
+          setQuitCommitted(false);
+        }
+      };
+    }
+  });
+
+  const officeUpdateTitle = officeObject.update.enabled ? officeObject.update.title : undefined;
+  useEffect(() => {
+    if (!officeObjectId || !officeUpdateTitle || !isDesktopRuntime()) return;
+    const entries = toolsetRegistry.listToolsets()
+      .filter(toolset => toolset.id !== molecularInspectorToolsetId)
+      .map(toolset => ({ toolsetId: toolset.id, title: toolset.title, visible: visibleToolsetIds.has(toolset.id) }));
+    void setToolbarsMenu(entries, rulersVisible, crosshairsVisible, false, officeUpdateTitle).catch(() => undefined);
+  }, [crosshairsVisible, officeObjectId, officeUpdateTitle, rulersVisible, toolsetRegistry, visibleToolsetIds]);
 
   // Own a native suspension through the modal and its nested Save As panels.
   useEffect(() => {
@@ -12181,7 +12275,7 @@ export function MainWindow({
     const bindings = new Map<string, { spec: CommandSpec; run: () => Promise<void> }>();
     const register = (definition: CommandSpec, handler?: () => void | Promise<void>) => {
       bindings.set(definition.id, {
-        spec: definition,
+        spec: officeObjectId ? officeCommandAvailability(definition, createToolsetToggleCommandId(molecularInspectorToolsetId)) : definition,
         run: async () => {
           if (!isSelectionNudgeCommand(definition.id)) arrowNudgeBurstRef.current = undefined;
           await handler?.();
@@ -12441,6 +12535,45 @@ export function MainWindow({
       () => sendProblemReportRef.current("bug", "describe the problem in a few words")
     );
 
+    officeAddin.bindings.forEach(({ action, spec }) => register(spec, () => officeAddin.run(action)));
+
+    // File ▸ Import Structures from Word or PowerPoint… : every valid structure in one undo step.
+    register(importOfficeStructuresCommand, async () => {
+      await runOfficeStructureImport({
+        getDocumentKey: () => requestDocumentKey(activeDocumentTabIdRef.current),
+        pickFile: () => pickOfficeImportFile(nativePathBasename),
+        getDocument: (key) => {
+          const tab = documentTabForKey(key);
+          return tab ? assistantHistoryPort.read(tab.id) : undefined;
+        },
+        commit: (key, next, undoLabel) => {
+          if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending import was not applied.");
+          const tab = documentTabForKey(key);
+          if (!tab) throw new Error("The originating drawing was closed or replaced.");
+          if (tab.id === activeDocumentTabIdRef.current) return commitDocumentChange(next, undoLabel);
+          const snapshot = documentTabSnapshotsRef.current.get(tab.id)!;
+          const present = prepareDocumentCommit(next, undoLabel);
+          // The same commit-time chemistry guard as the active tab's funnel: a refusal installs nothing.
+          const refusal = commitChemistryRefusal(snapshot.history.present, next, present, PRESERVE_CHEMISTRY, undoLabel);
+          if (refusal) {
+            reportChemistryRefusal(refusal);
+            return false;
+          }
+          for (const listener of assistantUserEditListenersRef.current) listener(tab.id);
+          documentTabSnapshotsRef.current.set(tab.id, { ...snapshot,
+            history: { past: boundedHistoryPast([...snapshot.history.past, snapshot.history.present], present), present, future: [] },
+            parts: [], file: { ...snapshot.file, dirty: true } });
+          nonPristineTabsRef.current.add(tab.id);
+          setDocumentTabs([...documentTabsRef.current]);
+          return true;
+        },
+        report: (message, details) => {
+          setStatus(message);
+          if (details.length) console.warn(`[office-import] ${message}\n${details.join("\n")}`);
+        }
+      });
+    });
+
     // File ▸ Check for Updates… on Windows. macOS answers the same menu id natively (Sparkle), and
     // other builds have no update channel, so the command exists only where it can work.
     if (appUpdatesSupported({ isDesktop: isDesktopRuntime(), platform: detectDesktopShortcutPlatform() })) {
@@ -12461,10 +12594,18 @@ export function MainWindow({
       register({ id: activateDocumentTabCommandId(tab.id), title: `Activate ${tab.title}`, icon: "open", source: "core" },
         () => activateDocumentTab(tab.id));
       register({ id: closeDocumentTabCommandId(tab.id), title: `Close ${tab.title}`, icon: "close", source: "core" },
-        () => requestCloseDocumentTab(tab.id));
+        async () => {
+          if (officeObjectId) await registry.invoke(OFFICE_CLOSE_COMMAND_ID);
+          else requestCloseDocumentTab(tab.id);
+        });
     });
+    register(officeObject.update, () => officeObject.run("update"));
+    register(officeObject.close, () => officeObject.run("close"));
     quickActions.forEach((action) => {
-      register(action, async () => {
+      const spec = officeObjectId && action.id === "document.save"
+        ? { ...action, title: officeObject.update.title, enabled: officeObject.update.enabled, disabledReason: officeObject.update.disabledReason }
+        : action;
+      register(spec, async () => {
         if (action.id === convertTextToAtomLabelCommandId) {
           const result = selectedTextToAtomLabelResult(documentRef.current);
           if (result.disabledReason) {
@@ -12486,7 +12627,10 @@ export function MainWindow({
           if (result.message) setStatus(result.message);
           return;
         }
-        if (action.id === "document.closeTab") requestCloseDocumentTab();
+        if (action.id === "document.closeTab") {
+          if (officeObjectId) await registry.invoke(OFFICE_CLOSE_COMMAND_ID);
+          else requestCloseDocumentTab();
+        }
         if (action.id === "document.nextTab") cycleDocumentTab(1);
         if (action.id === "document.previousTab") cycleDocumentTab(-1);
         if (action.id === "document.new") {
@@ -12511,7 +12655,8 @@ export function MainWindow({
           await openDocumentFromNativePicker();
         }
         if (action.id === "document.save") {
-          await saveCurrentDocument(false);
+          if (officeObjectId) await registry.invoke(OFFICE_UPDATE_COMMAND_ID);
+          else await saveCurrentDocument(false);
         }
         if (action.id === "document.saveAs") {
           await saveCurrentDocument(true);
@@ -13175,7 +13320,9 @@ export function MainWindow({
 
     return bindings;
   }, [
-    isSnapshotSessionActive, replacePresentDocument, selectedNativeMoleculeParts,
+    isSnapshotSessionActive, replacePresentDocument, prepareDocumentCommit, selectedNativeMoleculeParts,
+    assistantHistoryPort, documentTabForKey, requestDocumentKey,
+    officeObject, officeObjectId, officeAddin,
     customSwatchActions, tableActions, activeTableCell, bracketActions, clearScheduledTextEditorFocus,
     activateDocumentTab,
     newDocumentTab,
@@ -13341,6 +13488,7 @@ export function MainWindow({
   // reach the host through refs, so it is never rebuilt when they change (see usePluginRuntime).
   const nameResolutionStatusRef = useRef<string | undefined>(undefined);
   const pluginRuntime = usePluginRuntime({
+    disabled: !!officeObjectId,
     onPluginUpdateStatus: setStatus,
     onNameResolutionStatus: text => {
       nameResolutionStatusRef.current = text;
@@ -13560,12 +13708,13 @@ export function MainWindow({
   const nativePluginMenuItems = useMemo(() => buildMainWindowNativeMenuItems([
     ...structureSearchMenuItems(structureSearchEnabled, hasSearchableStructure),
     ...bracketMenuItems,
+    ...officeAddin.menuItems,
     ...pluginRuntime.pluginMenuItems
-  ], availablePluginUpdateCount), [availablePluginUpdateCount, bracketMenuItems, pluginRuntime.pluginMenuItems, structureSearchEnabled, hasSearchableStructure]);
+  ], availablePluginUpdateCount), [availablePluginUpdateCount, bracketMenuItems, officeAddin.menuItems, pluginRuntime.pluginMenuItems, structureSearchEnabled, hasSearchableStructure]);
   useEffect(() => {
-    if (!isTauriHost()) return;
+    if (officeObjectId || !isTauriHost()) return;
     void syncPluginNativeMenuItems(nativePluginMenuItems);
-  }, [nativePluginMenuItems]);
+  }, [nativePluginMenuItems, officeObjectId]);
 
   // Staleness (D-09): an open panel's report carries the source fingerprint it was computed against;
   // if the live molecule no longer matches (edited or removed), flag the panel as out of date.
@@ -13898,14 +14047,14 @@ export function MainWindow({
   // Core analysis snapshots use the same request/replay bridge and native window host as plugin
   // reports. Browser builds retain the in-app/toolset surfaces below.
   useEffect(() => {
-    if (!isDesktopRuntime()) return;
+    if (officeObjectId || !isDesktopRuntime()) return;
     publishAnalysisWindow(MOLECULAR_INSPECTOR_WINDOW_ID, "Molecular Inspector", {
       kind: "molecularInspector",
       report: analysisReport,
       busy: analysisBusy,
       stale: analysisReportIsStale
     });
-  }, [analysisBusy, analysisReport, analysisReportIsStale, publishAnalysisWindow]);
+  }, [analysisBusy, analysisReport, analysisReportIsStale, officeObjectId, publishAnalysisWindow]);
 
   useEffect(() => {
     if (!isDesktopRuntime() || !pluginDiagnosticsOpen) return;
@@ -14631,7 +14780,7 @@ export function MainWindow({
   // the corner of the screen. Written on load, after every hot update, and whenever the window comes
   // back to the front — the three moments at which the answer can have changed.
   useEffect(() => {
-    if (!isDesktopRuntime()) {
+    if (officeObjectId || !isDesktopRuntime()) {
       return;
     }
     const loadedAt = new Date();
@@ -14661,7 +14810,7 @@ export function MainWindow({
       window.removeEventListener("focus", onFocus);
       hot?.off?.("vite:afterUpdate", onHotUpdate);
     };
-  }, []);
+  }, [officeObjectId]);
 
   useEffect(() => {
     const targetsCanvasClipboard = (event: Event, key: string) =>
@@ -14778,7 +14927,7 @@ export function MainWindow({
         void pasteClipboard(domPayload, anchor);
         return;
       }
-      void domPayload.then((unguardedPayload) => {
+      void domPayload.then(async (unguardedPayload) => {
         if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
         const guarded = guardedClipboardPasteDecision(unguardedPayload);
         if (guarded.kind === "refused") { setStatus(guarded.message); return; }
@@ -14787,6 +14936,7 @@ export function MainWindow({
           applySelectionClipboardPayload(decision.payload, anchor);
           return;
         }
+        if (applyOfficePasteBack(await officePasteBackDecision(payload, () => documentRef.current), anchor)) return;
         if (decision.kind === "table") {
           applyTableClipboardResult(decision.result, anchor);
           return;
@@ -14812,7 +14962,7 @@ export function MainWindow({
       window.removeEventListener("cut", handleCut);
       window.removeEventListener("paste", handlePaste);
     };
-  }, [applyDetectedClipboardPayload, applySelectionClipboardPayload, applyTableClipboardResult, captureClipboardPasteAnchor, copySelectionToClipboard, deleteSelectionAfterClipboardCut, pasteClipboard, shortcutPlatform]);
+  }, [applyDetectedClipboardPayload, applyOfficePasteBack, applySelectionClipboardPayload, applyTableClipboardResult, captureClipboardPasteAnchor, copySelectionToClipboard, deleteSelectionAfterClipboardCut, pasteClipboard, shortcutPlatform]);
 
   const clearFreehandArtPreview = useCallback(() => {
     if (freehandArtPreviewFrameRef.current !== undefined) {
@@ -15294,7 +15444,9 @@ export function MainWindow({
         altKey: event.altKey, shiftKey: event.shiftKey
       });
       // A Save or Save As the user assigned to a formatting chord (Preferences > Keyboard) wins.
-      if (commandId === "document.save" || commandId === "document.saveAs") {
+      // In an Office object window Close (Cmd/Ctrl+W) goes to the object, not to a document tab.
+      if (commandId === "document.save" || commandId === "document.saveAs" ||
+          (officeObjectId && commandId === "document.closeTab")) {
         // Cancel the browser/native accelerator fallback as well, so macOS cannot save twice.
         // Cmd+Q remains the native app.quit accelerator, which requests the shared draft flush;
         // Windows registers no Quit accelerator. Neither needs a second JS command binding.
@@ -15316,7 +15468,7 @@ export function MainWindow({
     };
     window.addEventListener("keydown", commandFromInlineEditor, true);
     return () => window.removeEventListener("keydown", commandFromInlineEditor, true);
-  }, [shortcutRegistry, shortcutPlatform]);
+  }, [officeObjectId, shortcutRegistry, shortcutPlatform]);
 
   useEffect(() => {
     const invokeCanvasKeyCommand = (commandId: string, rehitAfterEdit: boolean) => {
@@ -15913,7 +16065,7 @@ export function MainWindow({
   // window state. If none can be opened, fall back to in-window web palettes so the app is
   // never left with no toolbars.
   useEffect(() => {
-    if (!effectiveNativePalette) {
+    if (!effectiveNativePalette || (officeObjectId && !officeUpdateTitle)) {
       return;
     }
     // Native palette windows exist only in the desktop runtime, which is also the only place native
@@ -15976,7 +16128,7 @@ export function MainWindow({
     return () => {
       cancelled = true;
     };
-  }, [effectiveNativePalette, nativeToolsetLayoutReady, nativeToolsetsSuspendedForLaunchPrompt, nativeDocumentNoticeOpen, toolsetRegistry, toolsetWindowGeometry]);
+  }, [effectiveNativePalette, nativeToolsetLayoutReady, nativeToolsetsSuspendedForLaunchPrompt, nativeDocumentNoticeOpen, officeObjectId, officeUpdateTitle, toolsetRegistry, toolsetWindowGeometry]);
 
   // A pointer-down anywhere in the document window dismisses any open palette popover (the colour
   // picker floats in its own window; "click elsewhere closes it"). Native palettes only — in the
@@ -16137,7 +16289,7 @@ export function MainWindow({
       unlistenCancel?.();
       unlistenInspector?.();
     };
-  }, []);
+  }, [officeObjectId]);
 
   // A freshly created palette window asks for the current layout state (its disk copy can be stale
   // while the save chain is flushing); answer with the live state so it never renders an old layout.
@@ -16326,6 +16478,7 @@ export function MainWindow({
   const activeDocumentName = documentTabs.find((tab) => tab.id === activeDocumentTabId)?.title ?? document.title;
   const nativeTitleWriteRef = useRef(Promise.resolve());
   useEffect(() => {
+    if (officeObjectId) return;
     const title = `${activeDocumentName}${fileState.dirty ? " •" : ""} — ChemDraft${__WORKTREE_LABEL__ ? ` — ${__WORKTREE_LABEL__}` : ""}`;
     window.document.title = title;
     if (!isDesktopRuntime()) return;
@@ -16336,7 +16489,7 @@ export function MainWindow({
       if (current) await invoke("plugin:window|set_title", { value: title });
     }).catch((error: unknown) => console.warn("Could not update the document window title", error));
     return () => { current = false; };
-  }, [activeDocumentName, fileState.dirty]);
+  }, [activeDocumentName, fileState.dirty, officeObjectId]);
 
   const handleOpenFile = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -22931,6 +23084,7 @@ export function MainWindow({
   }, [createAgentSnapshot]);
 
   useEffect(() => {
+    if (officeObjectId) return;
     let disposed = false;
     let installedBridge: Window[typeof AGENT_BRIDGE_GLOBAL_NAME] | undefined;
 
@@ -22963,6 +23117,7 @@ export function MainWindow({
       }
     };
   }, [
+    officeObjectId,
     createAgentSnapshot,
     debugAgentArtObject,
     dispatchAgentPointer,
@@ -23234,7 +23389,7 @@ export function MainWindow({
       data-can-undo={canUndo ? "true" : "false"}
       data-can-redo={canRedo ? "true" : "false"}
     >
-      <input
+      {!officeObjectId ? <><input
         ref={fileInputRef}
         type="file"
         accept=".chemdraft,.cdx,.cdxml,.xml,.json,chemical/x-cdx,chemical/x-cdxml,application/xml,text/xml,application/json,application/vnd.chemdraft+json"
@@ -23249,9 +23404,23 @@ export function MainWindow({
         className="native-file-input"
         aria-label="Import Molecule Inspector template"
         onChange={handleMoleculeTemplateFile}
-      />
+      /></> : null}
 
-      {showAppMenuBar ? <MenuBar sections={appMenuSections} onInvoke={invoke} /> : null}
+      {officeObjectId && (showAppMenuBar || !effectiveNativePalette) ? (
+        <header>
+          {showAppMenuBar ? <MenuBar sections={[officeObjectFileMenu(officeObject.update, officeObject.close,
+            shortcutPlatform ?? detectDesktopShortcutPlatform())]} onInvoke={invoke} /> : null}
+          {officeObject.update.enabled && visibleToolsetIds.has(DEFAULT_TOOLSET_ID) ? (
+            <div className="command-bar">
+              <ToolPalette title="Drawing tools" mode="floating" orientation="horizontal" activeTool={activeTool}
+                itemGroups={getToolsetPaletteGroups(DEFAULT_TOOLSET_ID, toolsetRegistry, shellCommandsById,
+                  compoundLayoutsEnabled, compoundLayoutSettings).map(group => group.items.filter(item =>
+                    item.primary.type === "command" && isDrawingToolCommand(item.primary.command.id)))}
+                onInvoke={invoke} />
+            </div>
+          ) : null}
+        </header>
+      ) : !officeObjectId && showAppMenuBar ? <MenuBar sections={appMenuSections} onInvoke={invoke} /> : null}
 
       {pluginManagerOpen ? (
         <PluginManagerDialog
@@ -23333,7 +23502,7 @@ export function MainWindow({
 
 
 
-      {!effectiveNativePalette
+      {!effectiveNativePalette && !officeObjectId
         ? visibleFloatingToolsets.map((toolset) => {
             const position = webPalettePositions[toolset.id] ?? defaultToolsetPosition(toolset.id, toolsetRegistry);
             const customizingThis = customizeMainToolbarActive && toolset.id === DEFAULT_TOOLSET_ID;
@@ -23490,8 +23659,8 @@ export function MainWindow({
           </section>
         </div>
       ) : null}
-      <section className="workspace workspace-with-tabs">
-        <div className="document-tab-strip">
+      <section className={officeObjectId ? "workspace" : "workspace workspace-with-tabs"}>
+        {!officeObjectId ? <div className="document-tab-strip">
           <DocumentTabList ref={documentTabListRef} activeId={activeDocumentTabId} order={documentTabOrder}
             activeTitle={activeDocumentTabTitle}>
             {documentTabs.map((tab) => {
@@ -23512,11 +23681,12 @@ export function MainWindow({
           </DocumentTabList>
           <button type="button" className="document-tab-new" aria-label="New tab" title="New tab"
             onClick={() => void invoke("document.new")}><span aria-hidden="true">+</span></button>
-        </div>
+        </div> : null}
         <div className="document-viewport">
         <section
           ref={canvasRegionRef}
           tabIndex={-1}
+          inert={!!officeObjectId && (!officeObject.update.enabled || quitCommitted)}
           className={["canvas-region", rulersVisible ? "rulers-visible" : ""].filter(Boolean).join(" ")}
           aria-label="Document workspace"
           onPointerLeave={() => { pointerInsideCanvasRef.current = false; }}

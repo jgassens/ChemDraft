@@ -44,7 +44,16 @@ describe("native menu document ownership guards", () => {
     expect(install).toContain('#[cfg(not(target_os = "macos"))]');
     expect(install).toContain("app.get_webview_window(MAIN_WINDOW_LABEL)");
     expect(install).toContain("window.set_menu(menu)?;");
-    expect(install).not.toMatch(/toolset|palette|popover|webview_windows\(/);
+    expect(install).toContain("is_document_window(window.label())");
+    expect(install).not.toMatch(/palette|popover|webview_windows\(/);
+    const officeBridge = readFileSync(resolve(nativeRoot, "office_ole/bridge.rs"), "utf8");
+    expect(officeBridge).toContain("install_office_document_menu(");
+    expect(install).toContain("install_document_window_menu(window, menu)");
+    expect(lib).toContain("parent: Some(toolset_window_parts(label).0.into())");
+    expect(lib).toMatch(/let builder = builder\.focused\(false\);\s*let owner = app\s*\.get_webview_window\(owner_label\)/);
+    const dialog = readFileSync(resolve(nativeRoot, "dialog_windows.rs"), "utf8");
+    expect(dialog).toContain("builder.parent(&window)");
+    expect(dialog).toContain("window.label() != message.owner_window_id");
   });
   it("does not introduce application-menu attachments on palettes or popovers", () => {
     const sites: string[] = [];

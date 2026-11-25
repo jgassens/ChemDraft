@@ -16,6 +16,11 @@ export async function readBrowserDocumentFile(file: Pick<Blob, "size" | "arrayBu
 }
 
 export async function readNativeDocumentFile(path: string): Promise<DocumentContents> {
+  return decodeDocumentBytes(await readNativeFileBytes(path));
+}
+
+/** The bounded, chunked read behind File ▸ Open, returning raw bytes (also used by Office import). */
+export async function readNativeFileBytes(path: string): Promise<Uint8Array> {
   const { stat, open } = await import("@tauri-apps/plugin-fs");
   assertDocumentSize((await stat(path)).size);
   const file = await open(path, { read: true });
@@ -39,7 +44,7 @@ export async function readNativeDocumentFile(path: string): Promise<DocumentCont
     bytes.set(chunk, offset);
     offset += chunk.length;
   }
-  return decodeDocumentBytes(bytes);
+  return bytes;
 }
 
 /** Shell transport must be checked before copying its JSON byte array or hashing it. */

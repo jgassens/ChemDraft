@@ -16,6 +16,7 @@ tauri-build = { version = "2", features = [] }
 # Already locked through Tauri; permanent, opt-in native activation diagnostics.
 log = "=0.4.30"
 base64 = "0.22"
+cfb = "=0.7.3"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 flate2 = "1"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "gif", "tiff"] }
@@ -53,6 +54,14 @@ tauri-plugin-single-instance = "2"
 # Already in the graph through tauri/tao; used directly for window z-order checks, the clipboard, and
 # the OCSR engine seam (free-disk query, CREATE_NO_WINDOW and junction relocation).
 [target.'cfg(windows)'.dependencies]
+# The COM implementation macro references windows_core directly. These match Tauri's lock.
+windows-core = "=0.61.2"
+windows = { version = "=0.61.3", features = [
+  "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_Com_StructuredStorage",
+  "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole",
+  "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging",
+] }
+winreg = { version = "=0.55.0", features = ["transactions"] }
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Graphics_Gdi",
@@ -62,6 +71,7 @@ windows-sys = { version = "0.61", features = [
   "Win32_Security_Cryptography_Catalog",
   "Win32_Security_Cryptography_Sip",
   "Win32_Storage_FileSystem",
+  "Win32_System_Console",
   "Win32_System_DataExchange",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_Memory",

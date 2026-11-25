@@ -7,9 +7,9 @@ use std::{
     sync::{Mutex, OnceLock},
     time::Instant,
 };
+use tauri::Emitter;
 #[cfg(any(target_os = "macos", windows))]
 use tauri::Manager;
-use tauri::{Emitter, Listener};
 
 #[path = "palette_key_guard_state.rs"]
 mod state;
@@ -33,11 +33,49 @@ fn publish<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: Option<(String, 
         // The page echoes the click sequence with its classification/release. Main
         // drops only editing keydowns until this sequence is cleared or expires.
         // A clear carries the pending owner's label, even when main/app loss ended it.
-        let _ = app.emit_to(super::super::MAIN_WINDOW_LABEL, EVENT, event);
-        if !label.is_empty() && label != super::super::MAIN_WINDOW_LABEL {
-            let _ = app.emit_to(label.as_str(), EVENT, event);
+        let owner = crate::toolset_document_label(&label);
+        send(app, owner, event);
+        if !label.is_empty() && label != owner {
+            send(app, &label, event);
         }
     }
+}
+
+/// Office editors and their toolsets subscribe through the Office DOM bridge
+/// (`listenCurrentWindowEvent` in `tauriEvents.ts`), which Tauri events never reach. Every other
+/// window subscribes through Tauri.
+fn uses_office_bridge(label: &str) -> bool {
+    crate::is_office_document_window(crate::toolset_document_label(label))
+}
+
+fn send<R: tauri::Runtime>(app: &tauri::AppHandle<R>, label: &str, event: state::Event) {
+    if uses_office_bridge(label) {
+        deliver_to_office(app, label, event);
+    } else {
+        let _ = app.emit_to(label, EVENT, event);
+    }
+}
+
+#[cfg(windows)]
+fn deliver_to_office<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    label: &str,
+    event: state::Event,
+) {
+    if let (Some(window), Ok(payload)) =
+        (app.get_webview_window(label), serde_json::to_string(&event))
+    {
+        crate::office_ole::toolset_events::deliver(&window, EVENT, &payload);
+    }
+}
+
+/// Office editors exist only on Windows (`is_office_document_window`), so nothing is delivered.
+#[cfg(not(windows))]
+fn deliver_to_office<R: tauri::Runtime>(
+    _app: &tauri::AppHandle<R>,
+    _label: &str,
+    _event: state::Event,
+) {
 }
 
 pub(super) fn end<R: tauri::Runtime>(
@@ -51,31 +89,30 @@ pub(super) fn end<R: tauri::Runtime>(
     publish(app, event);
 }
 
-/// The active document's WebView2 child may receive clicks without sending
-/// WM_MOUSEACTIVATE to our thread. Its capture listener acknowledges the click.
-pub(crate) fn observe_document_pointer_release<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
-    #[derive(serde::Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Release {
-        sequence: u64,
-        pointer_before: u64,
-    }
-    let target = app.clone();
-    app.listen("chemdraft://palette-click-outside", move |event| {
-        if let Ok(release) = serde_json::from_str::<Release>(event.payload()) {
-            end(
-                &target,
-                "",
-                End::Released,
-                (release.sequence != 0).then_some(release.sequence),
-                release.pointer_before,
-            );
-        }
-    });
+/// The active document's WebView2 child may receive clicks without sending WM_MOUSEACTIVATE to
+/// our thread, so its capture listener acknowledges the click (`palettePendingKeys.ts`). A
+/// command, not an app-wide event: Office editors have no event-emit grant, and the caller can
+/// release only a click pending in its own palettes. Granted to `main` and `office-object-*` only.
+#[tauri::command]
+pub(crate) fn palette_key_guard_clear<R: tauri::Runtime>(
+    window: tauri::WebviewWindow<R>,
+    sequence: u64,
+    pointer_before: u64,
+) {
+    let document = window.label();
+    let event = GUARD.lock().unwrap().release_for(
+        |label| crate::toolset_document_label(label) == document,
+        (sequence != 0).then_some(sequence),
+        pointer_before,
+    );
+    publish(tauri::Manager::app_handle(&window), event);
 }
 
-pub(super) fn blocks_document() -> bool {
-    GUARD.lock().unwrap().blocks(now())
+pub(super) fn blocks_document(owner: &str) -> bool {
+    GUARD
+        .lock()
+        .unwrap()
+        .blocks_for(now(), |label| crate::toolset_document_label(label) == owner)
 }
 
 #[cfg(any(target_os = "macos", windows))]
@@ -118,7 +155,8 @@ fn publish_click<R: tauri::Runtime>(app: &tauri::AppHandle<R>, label: &str, even
 
 #[cfg(any(target_os = "macos", windows))]
 fn is_palette(label: &str) -> bool {
-    label.starts_with("toolset-") && super::super::is_input_focus_window_label(label)
+    crate::toolset_window_parts(label).1.starts_with("toolset-")
+        && super::super::is_input_focus_window_label(label)
 }
 
 #[cfg(target_os = "macos")]
@@ -162,7 +200,7 @@ pub(super) fn install<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> Re
                     .map(|s| s.to_string())
                     .unwrap_or_default();
                 if label.as_deref() == Some(super::super::MAIN_WINDOW_LABEL)
-                    && blocks_document()
+                    && blocks_document(super::super::MAIN_WINDOW_LABEL)
                     && state::editing_key(
                         &key,
                         modifiers.contains(NSEventModifierFlags::Command),
@@ -322,4 +360,98 @@ pub(super) use linux::install;
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub(super) fn install<R: tauri::Runtime>(_window: &tauri::WebviewWindow<R>) -> Result<(), String> {
     Ok(())
+}
+
+#[cfg(test)]
+mod office_route_tests {
+    use super::uses_office_bridge;
+
+    /// The Office editor and its palettes listen through the Office DOM bridge, so a pending click
+    /// must reach them there, or Delete reaches the drawing before the palette arms its guard.
+    #[test]
+    fn office_editors_and_their_toolsets_get_pending_clicks_through_the_office_bridge() {
+        for label in [
+            "office-object-17",
+            "office-utility-office-object-17--toolset-core-main",
+        ] {
+            assert_eq!(uses_office_bridge(label), cfg!(windows), "{label}");
+        }
+        for label in [
+            "main",
+            "toolset-core-main",
+            "",
+            "office-object-",
+            "office-utility-main--toolset-core-main",
+        ] {
+            assert!(!uses_office_bridge(label), "{label}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod clear_command_tests {
+    /// The page's click-outside release is a narrow command. Office editors get it without any
+    /// `core:event` grant, and no capability that grants it also grants app-wide event emission.
+    #[test]
+    fn palette_key_guard_clear_is_registered_permitted_and_granted_only_to_document_pages() {
+        let lib = include_str!("lib.rs");
+        let handler = &lib[lib.find("generate_handler![").unwrap()..];
+        let handler = &handler[..handler.find("\n        ])").unwrap()];
+        assert!(
+            handler.contains("\n            panel_window::key_guard::palette_key_guard_clear,\n")
+        );
+        assert!(include_str!("../build.rs").contains("\"palette_key_guard_clear\","));
+        let permission = include_str!("../permissions/autogenerated/palette_key_guard_clear.toml");
+        assert!(permission.contains("identifier = \"allow-palette-key-guard-clear\""));
+        assert!(permission.contains("commands.allow = [\"palette_key_guard_clear\"]"));
+        // The app-wide event this command replaces has no listener left to forge.
+        assert!(
+            !include_str!("palette_key_guard.rs").contains(concat!("palette-click-", "outside"))
+        );
+
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities");
+        let mut holders = Vec::new();
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|e| e != "json") {
+                continue;
+            }
+            let json: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let permissions: Vec<&str> = json["permissions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|p| p.as_str().or_else(|| p["identifier"].as_str()))
+                .collect();
+            if permissions.contains(&"allow-palette-key-guard-clear") {
+                holders.push((
+                    json["identifier"].as_str().unwrap().to_owned(),
+                    json["windows"].clone(),
+                ));
+            }
+            if json["identifier"] == "office-object" {
+                assert!(
+                    !permissions
+                        .iter()
+                        .any(|p| *p == "core:default" || p.starts_with("core:event:")),
+                    "Office editors must not get app-wide event emission: {permissions:?}"
+                );
+            }
+        }
+        holders.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            holders,
+            [
+                (
+                    "office-object".to_owned(),
+                    serde_json::json!(["office-object-*"])
+                ),
+                (
+                    "palette-key-guard-clear".to_owned(),
+                    serde_json::json!(["main"])
+                ),
+            ]
+        );
+    }
 }

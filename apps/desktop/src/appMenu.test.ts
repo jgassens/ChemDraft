@@ -9,6 +9,7 @@ import {
   flattenAppMenuCommands,
   formatMenuShortcut,
   nativeRoutedCommandIds,
+  officeObjectFileMenu,
   PLUGIN_MANAGER_COMMAND_ID,
   PLUGIN_UPDATES_COMMAND_ID,
   pluginUpdatesAvailableMenuItem,
@@ -18,6 +19,7 @@ import {
 import { pluginItemsForNativeMenu } from "./plugins/nativePluginMenu";
 import { VIBE_CODE_STARTER_COMMAND_ID } from "./commands/vibeCodeStarter";
 import { nativeStylePresetCommandId } from "./commands";
+import { officeAddinCommands, officeAddinMenuItems, officeAddinSupported } from "./commands/officeAddin";
 
 const EMPTY_CONTEXT: AppMenuContext = {
   rulersVisible: true,
@@ -61,6 +63,16 @@ function parseNativeMenuCommandIds(): string[] {
 }
 
 describe("app menu model", () => {
+  it("labels the embedded document's Save action with its container and routes Close to the object", () => {
+    const update = { id: "office.updateEmbeddedObject", title: "Update Report.docx", source: "core", icon: "save", enabled: true } as const;
+    const close = { id: "office.closeEmbeddedObject", title: "Close", source: "core", icon: "close", enabled: true } as const;
+    expect(flattenAppMenuCommands([officeObjectFileMenu(update, close, "windows")])).toEqual([
+      expect.objectContaining({ commandId: update.id, label: "Update Report.docx", shortcut: "Ctrl+S", enabled: true }),
+      expect.objectContaining({ commandId: close.id, label: "Close", shortcut: "Ctrl+W", enabled: true })
+    ]);
+    expect(officeObjectFileMenu({ ...update, enabled: false }, close, "windows").items[0]).toMatchObject({ enabled: false });
+  });
+
   it.each([["macos", "app"], ["windows", "help"]] as const)("places About ChemDraft in the %s menu", (platform, sectionId) => {
     const sections = buildAppMenuModel({ ...EMPTY_CONTEXT, platform });
     const about = expect.objectContaining({ kind: "command", commandId: "help.about", label: "About ChemDraft", enabled: true });
@@ -74,7 +86,7 @@ describe("app menu model", () => {
     const native = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
     const macMenu = native.split("fn create_native_app_menu<R: Runtime>")[1]!.split("fn create_page_setup_menu")[0]!;
     expect(macMenu).toMatch(/&\[\s*&about_menu_item\(app\)\?/);
-    const helpMenu = native.split('"Help",\n                true,')[1]!.split("],")[0]!;
+    const helpMenu = native.split(/"Help",\s*true,/)[1]!.split("],")[0]!;
     expect(helpMenu).toMatch(/#\[cfg\(not\(target_os = "macos"\)\)\]\s*&about_menu_item\(app\)\?/);
     expect(parseNativeMenuCommandIds()).toContain("help.about");
   });
@@ -426,7 +438,7 @@ describe("native Window and full-screen menus", () => {
   it("builds one native full-screen item in View with the current document state on macOS", () => {
     expect(source.match(/PredefinedMenuItem::fullscreen\(/g)).toHaveLength(1);
     const builder = source.split("fn create_app_menu_for_toolsets<R: Runtime>")[1]!.split("/// Close Window")[0]!;
-    expect(builder).toContain("let view_menu = create_view_menu(app, entries, view_state, scheme)?;");
+    expect(builder).toMatch(/let view_menu = create_view_menu\([\s\S]*?office_update_title\.is_some\(\),\s*\)\?;/);
     expect(builder).toMatch(/#\[cfg\(target_os = "macos"\)\]\s*let fullscreen = \{/);
     expect(builder).toMatch(/let is_fullscreen = main_ns_window\(app\)\s*\.is_some_and\(\|window\| window\.styleMask\(\)\.contains\(NSWindowStyleMask::FullScreen\)\)/);
     expect(builder).toContain("PredefinedMenuItem::fullscreen(app, Some(fullscreen_menu_title(is_fullscreen)))");
@@ -472,8 +484,8 @@ describe("Preferences placement", () => {
   it("keeps native Preferences in the macOS application menu and Windows File menu", () => {
     const source = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
     const builder = source.split("fn create_app_menu_for_toolsets<R: Runtime>")[1]!.split("/// Close Window")[0]!;
-    const fileMenu = builder.split('"File",')[1]!.split('"Edit",')[0]!;
-    expect(fileMenu).toContain('#[cfg(not(target_os = "macos"))]\n                    &preferences_menu_item(app)?');
+    const fileMenu = builder.split("let file_menu =")[1]!.split("let edit_menu =")[0]!;
+    expect(fileMenu).toMatch(/#\[cfg\(not\(target_os = "macos"\)\)\]\s*&preferences_menu_item\(app\)\?/);
     expect(fileMenu.indexOf('"export.open"')).toBeLessThan(fileMenu.indexOf("&preferences_menu_item(app)?"));
     expect(source).toContain('#[cfg(target_os = "macos")]\nfn create_native_app_menu<R: Runtime>');
     const appMenu = source.split("fn create_native_app_menu<R: Runtime>")[1]!.split("fn create_page_setup_menu")[0]!;
@@ -495,5 +507,45 @@ describe("Preferences placement", () => {
     expect(preferences).toHaveLength(1);
     expect(preferences[0]).toMatchObject({ accelerator: "Cmd+,", shortcut: platform === "macos" ? "⌘," : "Ctrl+," });
     expect(flattenAppMenuCommands(sections.filter(section => section.id === "view")).some(item => item.commandId === "view.togglePreferences")).toBe(false);
+  });
+});
+
+describe("Office add-in Help rows", () => {
+  it("refreshes the macOS Help rows in place and keeps them off the Windows menu", () => {
+    const source = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+    // The in-place property loop only visits DYNAMIC_MENU_SECTIONS; without "help" there,
+    // Install and Remove left the Office rows' enabled state stale after they ran.
+    expect(source).toContain('#[cfg(target_os = "macos")]\nconst DYNAMIC_MENU_SECTIONS: [&str; 5] = ["structure", "tools", "analyze", "plugins", "help"];');
+    expect(source).toContain('#[cfg(not(target_os = "macos"))]\nconst DYNAMIC_MENU_SECTIONS: [&str; 4] = ["structure", "tools", "analyze", "plugins"];');
+    const update = source.split("fn update_plugin_menu_properties<Row>")[1]!.split("fn classify_toolbars_menu_update")[0]!;
+    expect(update).toContain("for section in DYNAMIC_MENU_SECTIONS");
+    const classify = source.split("fn classify_plugin_menu_update(")[1]!.split("fn update_installed_plugin_menu")[0]!;
+    expect(classify).toContain("for section in DYNAMIC_MENU_SECTIONS");
+    // The rows themselves are built only on macOS, so Windows gains nothing.
+    const builder = source.split("fn create_document_menu<R: Runtime>")[1]!.split("/// Close Window")[0]!;
+    expect(builder).toMatch(/#\[cfg\(target_os = "macos"\)\]\s*if office_update_title\.is_none\(\) \{\s*let office_items = plugin_menu_items_in\(plugin_items, "help"\);/);
+  });
+
+  it("builds the macOS rows into the first native menu, enabled, with the webview's ids and labels", () => {
+    const source = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+    const office = readFileSync(new URL("../src-tauri/src/office_addin.rs", import.meta.url), "utf8");
+    // The first menu reads the managed state, whose default is the seeded rows rather than empty.
+    expect(source).toContain(".manage(PluginNativeMenuItems::default())");
+    expect(source).toMatch(/impl Default for PluginNativeMenuItems \{\s*fn default\(\) -> Self \{\s*Self\(std::sync::Mutex::new\(initial_plugin_menu_items\(\)\)\)/);
+    const seed = source.split("fn initial_plugin_menu_items()")[1]!.split("\n}\n")[0]!;
+    expect(seed).toMatch(/#\[cfg\(target_os = "macos"\)\]\s*\{\s*office_addin::HELP_MENU_ROWS/);
+    expect(seed).toContain('location: "help".to_owned()');
+    expect(seed).toContain("enabled: true");
+    expect(seed).toContain("core_routed: true");
+    expect(seed).toMatch(/#\[cfg\(not\(target_os = "macos"\)\)\]\s*\{\s*Vec::new\(\)\s*\}/);
+    const rows = office.split("pub(crate) const HELP_MENU_ROWS")[1]!.split("];")[0]!;
+    const seeded = [...rows.matchAll(/\("([^"]+)", "([^"]+)"\)/g)].map(([, id, label]) => ({ id, label }));
+    // The same rows, in order and enabled, as the webview's first sync, so that sync changes nothing.
+    // Nothing checks the add-in's status at launch: only Install and Remove read Office's folders.
+    const bindings = officeAddinCommands(officeAddinSupported(true, "macos"), {});
+    expect(seeded).toEqual(officeAddinMenuItems(true, bindings).map(item => ({ id: item.command.commandId, label: item.command.label })));
+    expect(seeded.map(row => row.label)).toEqual(["Install Office Add-in…", "Remove Office Add-in…"]);
+    expect(bindings.every(({ spec }) => spec.enabled === true && spec.disabledReason === undefined)).toBe(true);
+    expect(source).not.toContain("office_addin_status");
   });
 });

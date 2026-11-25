@@ -58,9 +58,10 @@ describe("palette pages paint their panel background from the first frame", () =
   });
 
   it("uses the window kinds the native builders load", () => {
-    expect(lib).toContain('format!("/?window=toolset&toolsetId={toolset_id}&resizable={resizable}")');
-    expect(lib).toContain('format!("/?window=toolsetPopover&toolsetId={toolset_id}&kind={kind}{prewarm_param}")');
-    expect(lib).toContain('WebviewUrl::App("/?window=toolsetTooltip".into())');
+    // Office-owned palettes append their owner, so each format string is followed by the owner query.
+    expect(lib).toMatch(/"\/\?window=toolset&toolsetId=\{toolset_id\}&resizable=\{resizable\}\{\}",\s*toolset_owner_query\(&label\)/);
+    expect(lib).toMatch(/"\/\?window=toolsetPopover&toolsetId=\{toolset_id\}&kind=\{kind\}\{prewarm_param\}\{\}",\s*toolset_owner_query\(label\)/);
+    expect(lib).toContain('format!("/?window=toolsetTooltip{}", toolset_owner_query(&label))');
   });
 
   it("colors the first frame with the same tokens the mounted pages use, never a literal", () => {

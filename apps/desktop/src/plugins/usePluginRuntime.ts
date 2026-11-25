@@ -73,6 +73,7 @@ export function pluginCommandFailure(result: unknown): string | undefined {
 }
 
 export interface PluginRuntimeProviders {
+  disabled?: boolean;
   assistantMcpEngine?: import("../assistant/assistantMcpEngine").AssistantMcpEngine;
   getActiveDocument: () => ChemDraftDocument | undefined;
   /** Identifies the working document for a plugin's `documents.applyPatch` (see
@@ -216,7 +217,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
       defaultPanelSurface: isTauriHost() ? "window" : "inApp",
       assistantMcpEngine: providers.assistantMcpEngine
     });
-    const bundledPlugins = registerBundledPlugins(runtime);
+    const bundledPlugins = providers.disabled ? [] : registerBundledPlugins(runtime);
     ownerRef.current = { runtime, bundledPlugins };
   }
   const { runtime, bundledPlugins } = ownerRef.current;
@@ -271,8 +272,8 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
   // (the browser build, tests) simply has no staging filesystem and no install actions — which is what
   // leaves the manager's package control honestly disabled rather than failing when pressed.
   const stagingFs = useMemo<PluginStagingFs | undefined>(
-    () => (isTauriHost() ? createTauriPluginStagingFs() : undefined),
-    []
+    () => (!providers.disabled && isTauriHost() ? createTauriPluginStagingFs() : undefined),
+    [providers.disabled]
   );
   const [installedPlugins, setInstalledPlugins] = useState<readonly InstalledPluginCatalogEntry[]>([]);
   const [installedPluginCatalogReady, setInstalledPluginCatalogReady] = useState(stagingFs === undefined);

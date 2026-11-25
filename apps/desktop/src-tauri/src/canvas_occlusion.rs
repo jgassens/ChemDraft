@@ -62,6 +62,9 @@ pub(crate) fn document_canvas_occlusion(
     let size = window.outer_size().map_err(read_error)?;
     let mut covering_rects = Vec::new();
     for candidate in app.webview_windows().into_values() {
+        if super::dialog_windows::dialog_owner_label(candidate.label()) != window.label() {
+            continue;
+        }
         if !covers_canvas(
             candidate.label(),
             candidate.is_visible().unwrap_or(false),

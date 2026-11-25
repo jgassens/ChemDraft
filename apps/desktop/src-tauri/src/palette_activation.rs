@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 const COMMAND_PRESS_TIMEOUT: Duration = Duration::from_millis(500);
 
 pub(super) fn is_command_surface(label: &str) -> bool {
+    let label = crate::toolset_window_parts(label).1;
     [
         "toolset-core-",
         "toolset-plugin-",

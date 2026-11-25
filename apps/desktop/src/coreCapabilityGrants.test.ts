@@ -30,7 +30,7 @@ describe("core capability grants", () => {
     }));
     const owners = grants.filter(({ capability }) => capability.permissions.some(permission =>
       (typeof permission === "string" ? permission : permission.identifier) === "allow-popup-canvas-context-menu"));
-    expect(owners.map(({ name }) => name)).toEqual(["canvas-context-menu.json"]);
+    expect(owners.map(({ name }) => name)).toEqual(["canvas-context-menu.json", "office-object.json"]);
     const owner = owners[0]!.capability;
     expect(owner.windows).toEqual(["main"]);
     expect(owner.webviews).toBeUndefined();
@@ -48,6 +48,105 @@ describe("core capability grants", () => {
     expect(permission).toContain('commands.allow = ["popup_canvas_context_menu"]');
     expect(permission).toContain('identifier = "deny-popup-canvas-context-menu"');
     expect(permission).toContain('commands.deny = ["popup_canvas_context_menu"]');
+  });
+
+  it("isolates embedded document and utility windows from the standalone editor grants", () => {
+    const directory = new URL("../src-tauri/capabilities/", import.meta.url);
+    const grants = readdirSync(directory).filter(name => name.endsWith(".json")).map(name =>
+      JSON.parse(readFileSync(new URL(name, directory), "utf8")) as {
+        identifier: string; windows: string[]; platforms?: string[]; remote?: unknown;
+        permissions: (string | { identifier: string })[];
+      });
+    const embedded = [
+      ["office-object-17", "office-object"],
+      ["office-utility-office-object-17--toolset-core-main", "office-toolset"],
+      ["office-utility-office-object-17--toolset-popover-core-main", "office-toolset"],
+      ["office-utility-office-object-17--toolset-tooltip", "office-tooltip"],
+      ["dialog-office-object-17-pageSize-1", "office-dialog-host"]
+    ];
+    for (const [label, identifier] of embedded) {
+      const matching = grants.filter(grant => grant.windows.some(pattern =>
+        new RegExp("^" + pattern.replaceAll("*", ".*") + "$").test(label)));
+      expect(matching.map(grant => grant.identifier), label).toEqual([identifier]);
+      expect(matching[0]!.platforms).toEqual(["windows"]);
+      expect(matching[0]!.remote).toBeUndefined();
+      for (const permission of matching[0]!.permissions) {
+        expect(permission).toBeTypeOf("string");
+        expect(permission).not.toMatch(/^(?:fs:|http:|updater:|shell:|core:default$)|dialog:allow-(?:open|save)|install|external-tool|structure-search|document-session|save-toolset/);
+      }
+    }
+    expect(grants.find(grant => grant.identifier === "office-object")!.permissions).toEqual([
+      "core:window:allow-get-all-windows", "core:window:allow-is-visible",
+      "dialog:allow-message", "allow-office-object-connect", "allow-office-object-set-title",
+      "allow-office-toolset-emit",
+      "allow-office-object-update", "allow-office-object-close", "allow-window-first-paint",
+      "allow-read-clipboard-payload", "allow-write-clipboard-items", "allow-rasterize-svg", "allow-list-system-fonts",
+      "allow-popup-canvas-context-menu", "allow-document-canvas-occlusion",
+      "allow-dialog-open", "allow-dialog-publish", "allow-dialog-close", "allow-set-toolbars-menu",
+      "allow-open-toolset-window", "allow-close-toolset-window", "allow-list-toolset-window-states",
+      "allow-open-toolset-popover", "allow-close-toolset-popover", "allow-window-logical-position",
+      "allow-palette-key-guard-clear"
+    ]);
+  });
+
+  it("grants the palette click-outside release only to document pages, without app-wide event emission", () => {
+    const directory = new URL("../src-tauri/capabilities/", import.meta.url);
+    const grants = readdirSync(directory).filter(name => name.endsWith(".json")).map(name =>
+      JSON.parse(readFileSync(new URL(name, directory), "utf8")) as {
+        identifier: string; windows?: string[]; webviews?: string[]; platforms?: string[]; remote?: unknown;
+        permissions: (string | { identifier: string })[];
+      });
+    const names = (grant: (typeof grants)[number]) => grant.permissions.map(permission =>
+      typeof permission === "string" ? permission : permission.identifier);
+    expect(grants.filter(grant => names(grant).includes("allow-palette-key-guard-clear"))
+      .map(({ identifier, windows, webviews, platforms, remote }) => ({ identifier, windows, webviews, platforms, remote }))
+      .sort((a, b) => a.identifier.localeCompare(b.identifier))).toEqual([
+      { identifier: "office-object", windows: ["office-object-*"], webviews: undefined, platforms: ["windows"], remote: undefined },
+      { identifier: "palette-key-guard-clear", windows: ["main"], webviews: undefined, platforms: undefined, remote: undefined }
+    ]);
+    expect(names(grants.find(grant => grant.identifier === "palette-key-guard-clear")!))
+      .toEqual(["allow-palette-key-guard-clear"]);
+    // The Office editor page releases through the command because it cannot emit events.
+    expect(names(grants.find(grant => grant.identifier === "office-object")!)
+      .filter(permission => permission === "core:default" || permission.startsWith("core:event:"))).toEqual([]);
+
+    const rust = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+    expect(rust.slice(rust.indexOf("generate_handler!["), rust.indexOf(".run(tauri::generate_context!")))
+      .toContain("panel_window::key_guard::palette_key_guard_clear,");
+    expect(readFileSync(new URL("../src-tauri/build.rs", import.meta.url), "utf8")).toContain('"palette_key_guard_clear",');
+    const permission = readFileSync(new URL("../src-tauri/permissions/autogenerated/palette_key_guard_clear.toml", import.meta.url), "utf8");
+    expect(permission).toContain('identifier = "allow-palette-key-guard-clear"');
+    expect(permission).toContain('commands.allow = ["palette_key_guard_clear"]');
+    const page = readFileSync(new URL("./palettePendingKeys.ts", import.meta.url), "utf8");
+    expect(page).toContain('"palette_key_guard_clear"');
+    expect(page).not.toMatch(/\.emit\(/);
+  });
+
+  it("grants the generic first-paint reveal only to office-object, office-toolset and toolset-first-paint", () => {
+    const directory = new URL("../src-tauri/capabilities/", import.meta.url);
+    const holders = readdirSync(directory).filter(name => name.endsWith(".json")).map(name =>
+      JSON.parse(readFileSync(new URL(name, directory), "utf8")) as {
+        identifier: string; windows?: string[]; webviews?: string[]; platforms?: string[];
+        permissions: (string | { identifier: string })[];
+      }).filter(capability => capability.permissions.some(permission =>
+      (typeof permission === "string" ? permission : permission.identifier) === "allow-window-first-paint"));
+    expect(holders.map(({ identifier, windows, webviews, platforms }) => ({ identifier, windows, webviews, platforms }))
+      .sort((a, b) => a.identifier.localeCompare(b.identifier))).toEqual([
+      { identifier: "office-object", windows: ["office-object-*"], webviews: undefined, platforms: ["windows"] },
+      {
+        identifier: "office-toolset",
+        windows: ["office-utility-office-object-*--toolset-core-*", "office-utility-office-object-*--toolset-popover-*"],
+        webviews: undefined, platforms: ["windows"]
+      },
+      {
+        identifier: "toolset-first-paint",
+        windows: ["toolset-core-*", "toolset-plugin-*", "toolset-user-*", "toolset-popover-*", "toolset-tooltip"],
+        webviews: undefined, platforms: ["windows"]
+      }
+    ]);
+    const permission = readFileSync(new URL("../src-tauri/permissions/autogenerated/window_first_paint.toml", import.meta.url), "utf8");
+    expect(permission).toContain('identifier = "allow-window-first-paint"');
+    expect(permission).toContain('commands.allow = ["window_first_paint"]');
   });
 
   it("pins perf recording grants and restricts completion forwarding to main and shared dialogs", () => {
@@ -172,6 +271,7 @@ describe("core capability grants", () => {
       });
     expect(grants.filter((grant) => grant.permissions.includes("allow-start-window-drag"))
       .map((grant) => grant.windows)).toEqual([
+      ["office-utility-office-object-*--toolset-core-*", "office-utility-office-object-*--toolset-popover-*"],
       ["toolset-core-*", "toolset-plugin-*", "toolset-user-*", "plugin-panel-*"]
     ]);
     expect(grants.some((grant) => grant.permissions.includes("core:window:allow-start-dragging"))).toBe(false);

@@ -4,6 +4,26 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ChemDraft</title>
+    <style>
+      /* Office editor first paint (src/OfficeObjectLoadingState.tsx renders the same state from React). */
+      html.office-object-loading-html,
+      html.office-object-loading-html body {
+        margin: 0;
+        height: 100%;
+        background: #d8dee3;
+      }
+      .office-object-loading {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin: 0;
+        background: #d8dee3;
+        color: #4d5860;
+        font: 13px system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+    </style>
     <script>
       // Palette, popover and tooltip windows paint their own background from the very first frame,
       // before React mounts their content: App.css colors html[data-cd-first-frame] with the same
@@ -21,6 +41,51 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // Runs before any module loads, so an Office editor window never shows an empty frame.
+      // React replaces this on mount; keep it in step with src/OfficeObjectLoadingState.tsx.
+      (function () {
+        var params = new URLSearchParams(window.location.search);
+        if (!params.get("officeObject")) return;
+        document.documentElement.classList.add("office-object-loading-html");
+        var name = Array.from((params.get("officeApp") || "").replace(/\s+/g, " ").trim()
+          .replace(/[\u0000-\u001f\u007f-\u009f]/g, "")).slice(0, 80).join("").trim();
+        var status = document.createElement("div");
+        status.className = "office-object-loading";
+        status.setAttribute("role", "status");
+        status.setAttribute("aria-live", "polite");
+        status.textContent = "Opening structure from " + (name || "Office") + "…";
+        document.getElementById("root").appendChild(status);
+        // The window is built hidden; reveal it once this screen has painted. Same rule as
+        // ackFirstPaint() in src/firstPaint.ts (this runs before any module can load it): two
+        // animation frames while visible, at once while hidden (a hidden page gets no frames).
+        // Rust shows the window anyway after 4 s; only the first reveal counts (first_paint.rs).
+        var tauri = window.__TAURI_INTERNALS__;
+        if (!tauri) return;
+        var sent = false;
+        var acknowledge = function () {
+          if (sent) return;
+          sent = true;
+          document.removeEventListener("visibilitychange", onVisibility);
+          Promise.resolve()
+            .then(function () {
+              return tauri.invoke("window_first_paint", {});
+            })
+            .catch(function () {});
+        };
+        var onVisibility = function () {
+          if (document.visibilityState === "hidden") acknowledge();
+        };
+        if (typeof window.requestAnimationFrame !== "function" || document.visibilityState === "hidden") {
+          acknowledge();
+          return;
+        }
+        document.addEventListener("visibilitychange", onVisibility);
+        window.requestAnimationFrame(function () {
+          window.requestAnimationFrame(acknowledge);
+        });
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

@@ -330,6 +330,8 @@ pub(crate) fn text_read_priority(kind: &str) -> Option<u8> {
         || lower.starts_with("com.microsoft.word")
         || lower.starts_with("com.microsoft.powerpoint")
         || lower.contains("office")
+        // Office's picture archive (a ZIP); paste-back reads it as bytes, never as text.
+        || lower.contains("gvml")
         || lower.contains("embed source")
         || lower.contains("biff")
         || lower.contains("tiff")
@@ -720,6 +722,7 @@ mod tests {
             "com.apple.flat-rtfd",
             "com.apple.webarchive",
             "Office Drawing Shape Format",
+            "com.microsoft.Art--GVML-ClipFormat",
         ] {
             assert_eq!(text_read_priority(kind), None, "{kind}");
         }

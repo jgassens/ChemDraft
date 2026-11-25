@@ -97,7 +97,7 @@ export class DialogCoordinator {
     onPageEnlargementClosed?(tabId: string): void;
     onPluginTextPromptClosed?(tabId: string): void;
     onSettled?(tabId: string, reason: DialogCloseReason, kind?: DialogKind): void;
-  }, private options: { readyTimeoutMs?: number } = {}) {}
+  }, private options: { readyTimeoutMs?: number; ownerWindowId?: string } = {}) {}
 
   reportError(message: string): void { this.owner.onError(message); }
 
@@ -266,7 +266,7 @@ export class DialogCoordinator {
   }
   private async open(tabId: string, kind: DialogKind, data: Extract<DialogMessage, { type: "snapshot" }>["data"], engineInstall?: EngineInstallPresenter, toolInstall?: ToolInstallPresenter, afterClose?: Promise<void>, pageEnlargement?: PageEnlargementQuestion, pluginTextPrompt?: PluginTextPromptQuestion): Promise<void> {
     if (this.stopped) throw new Error("The document window is closing");
-    const snapshot: Session["snapshot"] = { protocolVersion: 1, ownerWindowId: "main", documentTabId: tabId,
+    const snapshot: Session["snapshot"] = { protocolVersion: 1, ownerWindowId: this.options.ownerWindowId ?? "main", documentTabId: tabId,
       dialogKind: kind, sessionId: crypto.randomUUID(), requestId: crypto.randomUUID(), snapshotRevision: 1, type: "snapshot", data } as Session["snapshot"];
     const key = sessionKey(snapshot);
     const existing = this.sessions.get(key);

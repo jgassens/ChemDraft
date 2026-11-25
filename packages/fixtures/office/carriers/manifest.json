@@ -1,0 +1,42 @@
+[
+  {
+    "file": "png-ztxt.png",
+    "kind": "png zTXt",
+    "sha256": "6f1bb356d480f559f966227d8e92b8dd19e81c239a28b8ede265015ced85198e"
+  },
+  {
+    "file": "png-itxt.png",
+    "kind": "png iTXt",
+    "sha256": "d9ec9278a6ba6cadb2550074bb0fe39f1a9f3071c31aae2ad9680a6d5a5c65e5"
+  },
+  {
+    "file": "png-ztxt-96dpi.png",
+    "kind": "png zTXt 96dpi",
+    "sha256": "df3ddf18c1da0d26c8fcf7b5db68921a4af63e9f98e7561b715066860fd7aba0"
+  },
+  {
+    "file": "png-ztxt-384dpi.png",
+    "kind": "png zTXt 384dpi",
+    "sha256": "779e19ecf724be2c38fe36a41427cc5812f2057aea830d7977bab9623ac7d7f6"
+  },
+  {
+    "file": "svg-metadata.svg",
+    "kind": "svg metadata",
+    "sha256": "004735909a71ea476e65850f0327df7b4365a73a40d3082526cf245006c2e731"
+  },
+  {
+    "file": "svg-comment.svg",
+    "kind": "svg comment",
+    "sha256": "e5c4d8158d239a300183df3b7c53c9f02d131ff67b197a62b49258958b512220"
+  },
+  {
+    "file": "pdf-embedded.pdf",
+    "kind": "pdf embedded file",
+    "sha256": "e71aaa73cb78871a1bb198dbbed852ff7c2d3e5ac21b18219b11a7392e66ff68"
+  },
+  {
+    "file": "pdf-catalog-key.pdf",
+    "kind": "pdf catalog key",
+    "sha256": "d570421596a2881d0ad327fee00c3037b08d045557a78a9cb3f84ce096a3514f"
+  }
+]

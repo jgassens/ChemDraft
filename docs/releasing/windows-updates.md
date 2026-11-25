@@ -37,6 +37,10 @@ by the installer. They are there on the next launch, as on macOS.
 
 The NSIS installer hook quotes both the executable path and `.chemdraft` document argument so per-user installs remain openable from paths containing spaces.
 
+The same hooks register ChemDraft's Office object after every install and update, and unregister it
+before uninstall; see [Windows: Office object registration](windows-office-object.md) for what is
+written and how to verify it.
+
 - **Crate:** `tauri-plugin-updater` 2.12.0, `cfg(windows)` only (Apache-2.0 OR MIT).
 - **Frontend package:** `@tauri-apps/plugin-updater` 2.12.0 (Apache-2.0 OR MIT).
 - **Feed:** `https://raw.githubusercontent.com/jgassens/ChemDraft/main/latest.json`. It sits next to

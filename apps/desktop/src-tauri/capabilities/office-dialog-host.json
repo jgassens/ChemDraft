@@ -1,0 +1,21 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "office-dialog-host",
+  "description": "Local editing dialogs for an embedded Office drawing.",
+  "platforms": [
+    "windows"
+  ],
+  "windows": [
+    "dialog-office-object-*-reactionConditions-*",
+    "dialog-office-object-*-pageSize-*",
+    "dialog-office-object-*-arrangementSpacing-*",
+    "dialog-office-object-*-insertTable-*",
+    "dialog-office-object-*-customColor-*",
+    "dialog-office-object-*-structureTemplates-*",
+    "dialog-office-object-*-atomProblem-*"
+  ],
+  "permissions": [
+    "allow-dialog-request",
+    "allow-dialog-send"
+  ]
+}

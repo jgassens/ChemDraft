@@ -1,0 +1,39 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "office-object",
+  "description": "Allow an embedded Office document window to edit, copy, and update its drawing and manage its own native utilities.",
+  "platforms": [
+    "windows"
+  ],
+  "windows": [
+    "office-object-*"
+  ],
+  "permissions": [
+    "core:window:allow-get-all-windows",
+    "core:window:allow-is-visible",
+    "dialog:allow-message",
+    "allow-office-object-connect",
+    "allow-office-object-set-title",
+    "allow-office-toolset-emit",
+    "allow-office-object-update",
+    "allow-office-object-close",
+    "allow-window-first-paint",
+    "allow-read-clipboard-payload",
+    "allow-write-clipboard-items",
+    "allow-rasterize-svg",
+    "allow-list-system-fonts",
+    "allow-popup-canvas-context-menu",
+    "allow-document-canvas-occlusion",
+    "allow-dialog-open",
+    "allow-dialog-publish",
+    "allow-dialog-close",
+    "allow-set-toolbars-menu",
+    "allow-open-toolset-window",
+    "allow-close-toolset-window",
+    "allow-list-toolset-window-states",
+    "allow-open-toolset-popover",
+    "allow-close-toolset-popover",
+    "allow-window-logical-position",
+    "allow-palette-key-guard-clear"
+  ]
+}

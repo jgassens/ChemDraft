@@ -399,7 +399,10 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(observer).toContain("message == WM_EXITSIZEMOVE");
     expect(observer.split("let result = DefSubclassProc").at(-1)!).toContain("drag_finished()");
     const install = panel.split("let drag_target = window.clone()")[1]!.split("struct FocusObserver")[0]!;
-    expect(install).toContain('drag_target.label().starts_with("toolset-")');
+    // Office-owned palettes carry an owner prefix; the guard tests the utility part of the label.
+    expect(install.replace(/\s+/g, "")).toContain(
+      'super::toolset_window_parts(drag_target.label()).1.starts_with("toolset-")',
+    );
     expect(install).toContain("return_focus_after_interaction(&drag_target, true)");
   });
 

@@ -75,6 +75,90 @@ pub(crate) fn check_image_byte_length(source: &str, byte_length: usize) -> Resul
     Ok(())
 }
 
+/// Office's picture clipboard archive (GVML: a ZIP holding the copied picture's original media), on
+/// Windows and macOS. It is read only for paste-back, which recovers a ChemDraft carrier that the
+/// PNG rendition Office re-encodes may have dropped (docs/architecture/office-editing.md, slice 3).
+pub(crate) const OFFICE_PICTURE_ARCHIVE_TYPES: [&str; 2] =
+    ["Art::GVML ClipFormat", "com.microsoft.Art--GVML-ClipFormat"];
+/// One carrier PNG is at most 25 MB; the archive adds a drawing part, relationships and a theme.
+pub(crate) const MAX_OFFICE_ARCHIVE_BYTES: usize = 32 * 1024 * 1024;
+pub(crate) const CHEMDRAFT_SELECTION_TYPE: &str = "application/x-chemdraft-selection+json";
+/// A copied OLE object, on Windows only: "Embedded Object" when Word or PowerPoint copies one,
+/// "Embed Source" when its server does. Read for paste-back only when the object is ChemDraft's
+/// own class (docs/architecture/office-editing.md, slice 3); macOS and Linux have no such format.
+pub(crate) const OFFICE_EMBEDDED_OBJECT_TYPES: [&str; 2] = ["Embedded Object", "Embed Source"];
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ClipboardOfficeItem {
+    pub(crate) r#type: String,
+    pub(crate) bytes_base64: String,
+    /// The OLE class a copied object was stored under; set only for embedded objects.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) clsid: Option<String>,
+}
+
+/// The Office picture archive to read, if any. Never when ChemDraft's own selection is on the
+/// clipboard: that always wins the paste, so Office is not asked to render the archive for nothing.
+pub(crate) fn office_picture_archive_type(types: &[String]) -> Option<&'static str> {
+    if types.iter().any(|kind| kind == CHEMDRAFT_SELECTION_TYPE) {
+        return None;
+    }
+    OFFICE_PICTURE_ARCHIVE_TYPES
+        .into_iter()
+        .find(|source| types.iter().any(|kind| kind == source))
+}
+
+/// Size and signature checks only; the archive is read by the bounded ZIP reader in
+/// `packages/clipboard-adapter` (`recoverPasteBackStructures`).
+pub(crate) fn office_archive_item(
+    source: &str,
+    bytes: &[u8],
+) -> Result<ClipboardOfficeItem, String> {
+    if bytes.len() > MAX_OFFICE_ARCHIVE_BYTES {
+        return Err(format!(
+            "{source} is {:.1} MB; the limit is 32 MB",
+            bytes.len() as f64 / (1024.0 * 1024.0)
+        ));
+    }
+    if !bytes.starts_with(b"PK\x03\x04") {
+        return Err(format!("{source} is not a ZIP archive"));
+    }
+    Ok(ClipboardOfficeItem {
+        r#type: source.to_string(),
+        bytes_base64: STANDARD.encode(bytes),
+        clsid: None,
+    })
+}
+
+/// The embedded-object format to read, if any (Windows). Never beside ChemDraft's own selection,
+/// which wins the paste, so Office is not asked to save the object for nothing.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn office_embedded_object_type(types: &[String]) -> Option<&'static str> {
+    if types.iter().any(|kind| kind == CHEMDRAFT_SELECTION_TYPE) {
+        return None;
+    }
+    OFFICE_EMBEDDED_OBJECT_TYPES
+        .into_iter()
+        .find(|source| types.iter().any(|kind| kind == source))
+}
+
+/// A copied ChemDraft object's drawing: the class it was stored under and its `ChemDraftDocument`
+/// JSON, already bounded and decoded by the OLE storage reader (`office_ole::storage`). The
+/// TypeScript paste-back runs the same carrier and chemistry checks on it as on a picture's.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn office_embedded_object_item(
+    source: &str,
+    clsid: &str,
+    json: &str,
+) -> ClipboardOfficeItem {
+    ClipboardOfficeItem {
+        r#type: source.to_string(),
+        bytes_base64: STANDARD.encode(json),
+        clsid: Some(clsid.to_string()),
+    }
+}
+
 /// Picture flavors must bypass the unbounded text readers, including textual SVG.
 pub(crate) fn is_image_clipboard_type(source: &str) -> bool {
     source.starts_with("image/")
@@ -1085,6 +1169,7 @@ mod tests {
                 100,
                 "CF_DIB decode failed".to_string(),
             )],
+            office_items: Vec::new(),
         };
         assert_eq!(
             serde_json::to_value(payload).unwrap(),
@@ -1099,5 +1184,85 @@ mod tests {
         assert!(svg["pixelsPerMeter"].is_null());
         assert!(svg["pixelWidth"].is_null());
         assert!(svg["pixelHeight"].is_null());
+    }
+
+    #[test]
+    fn office_picture_archive_is_read_only_without_chemdraft_data_and_within_its_cap() {
+        let types = |names: &[&str]| {
+            names
+                .iter()
+                .map(|name| name.to_string())
+                .collect::<Vec<_>>()
+        };
+        for source in OFFICE_PICTURE_ARCHIVE_TYPES {
+            assert_eq!(
+                office_picture_archive_type(&types(&["PNG", source])),
+                Some(source)
+            );
+            assert_eq!(
+                office_picture_archive_type(&types(&[CHEMDRAFT_SELECTION_TYPE, source])),
+                None
+            );
+        }
+        assert_eq!(office_picture_archive_type(&types(&["PNG"])), None);
+
+        let item = office_archive_item("Art::GVML ClipFormat", b"PK\x03\x04rest").unwrap();
+        assert_eq!(
+            serde_json::to_value(item).unwrap(),
+            serde_json::json!({"type": "Art::GVML ClipFormat", "bytesBase64": "UEsDBHJlc3Q="})
+        );
+        assert!(office_archive_item("Art::GVML ClipFormat", b"not a zip").is_err());
+        let mut large = b"PK\x03\x04".to_vec();
+        large.resize(MAX_OFFICE_ARCHIVE_BYTES + 1, 0);
+        assert!(office_archive_item("Art::GVML ClipFormat", &large)
+            .unwrap_err()
+            .contains("the limit is 32 MB"));
+    }
+
+    #[test]
+    fn office_embedded_object_is_read_only_without_chemdraft_data() {
+        let types = |names: &[&str]| {
+            names
+                .iter()
+                .map(|name| name.to_string())
+                .collect::<Vec<_>>()
+        };
+        // Word and PowerPoint offer "Embedded Object"; a server's copy offers "Embed Source".
+        assert_eq!(
+            office_embedded_object_type(&types(&[
+                "Object Descriptor",
+                "Embed Source",
+                "Embedded Object"
+            ])),
+            Some("Embedded Object")
+        );
+        assert_eq!(
+            office_embedded_object_type(&types(&["Object Descriptor", "Embed Source"])),
+            Some("Embed Source")
+        );
+        for source in OFFICE_EMBEDDED_OBJECT_TYPES {
+            assert_eq!(
+                office_embedded_object_type(&types(&[CHEMDRAFT_SELECTION_TYPE, source])),
+                None
+            );
+        }
+        assert_eq!(
+            office_embedded_object_type(&types(&["PNG", "Art::GVML ClipFormat"])),
+            None
+        );
+
+        let item = office_embedded_object_item(
+            "Embedded Object",
+            "{CE37136C-13F0-4A5A-954F-0EF6DFE359D0}",
+            "{}",
+        );
+        assert_eq!(
+            serde_json::to_value(item).unwrap(),
+            serde_json::json!({
+                "type": "Embedded Object",
+                "bytesBase64": "e30=",
+                "clsid": "{CE37136C-13F0-4A5A-954F-0EF6DFE359D0}"
+            })
+        );
     }
 }

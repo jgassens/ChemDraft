@@ -1,7 +1,8 @@
-use tauri::{plugin, AppHandle, Manager, RunEvent, Runtime};
+use tauri::{plugin, AppHandle, Manager, RunEvent, Wry};
 use zbus::{blocking::Connection, interface};
 
-struct SingleInstance<R: Runtime>(AppHandle<R>);
+// `handle_second_launch` takes the concrete app handle, as the stock plugin does.
+struct SingleInstance(AppHandle<Wry>);
 
 struct Primary {
     connection: Connection,
@@ -9,13 +10,13 @@ struct Primary {
 }
 
 #[interface(name = "org.SingleInstance.DBus")]
-impl<R: Runtime> SingleInstance<R> {
+impl SingleInstance {
     fn execute_callback(&mut self, argv: Vec<String>, cwd: String) {
         super::handle_second_launch(&self.0, argv, cwd);
     }
 }
 
-pub(super) fn init<R: Runtime>() -> plugin::TauriPlugin<R> {
+pub(super) fn init() -> plugin::TauriPlugin<Wry> {
     // Match Tauri's Linux service so an AppImage and a .deb can hand off to each other.
     plugin::Builder::new("single-instance")
         .setup(|app, _| {

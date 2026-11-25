@@ -251,7 +251,7 @@ pub(crate) async fn popup_canvas_context_menu<R: Runtime>(
     items: Vec<NativeItem>,
     position: PopupPosition,
 ) -> Result<Option<String>, String> {
-    if window.label() != crate::MAIN_WINDOW_LABEL {
+    if !crate::is_document_window(window.label()) {
         return Err("Canvas menus belong to the document window".into());
     }
     if !position.x.is_finite()
@@ -277,10 +277,11 @@ pub(crate) async fn popup_canvas_context_menu<R: Runtime>(
         });
     }
     let handle = app.clone();
+    let owner = window.label().to_owned();
     if let Err(error) = app.run_on_main_thread(move || {
         let result = (|| {
             let document = handle
-                .get_webview_window(crate::MAIN_WINDOW_LABEL)
+                .get_webview_window(&owner)
                 .ok_or_else(|| "Document window is unavailable".to_string())?;
             let menu = Menu::new(&handle).map_err(|e| e.to_string())?;
             for item in build_items(&handle, converted.items).map_err(|e| e.to_string())? {
@@ -468,18 +469,27 @@ mod tests {
                         == Some("allow-popup-canvas-context-menu")
                 });
             if granted {
-                assert_eq!(capability["windows"], json!(["main"]));
+                if capability["identifier"] == "office-object" {
+                    assert_eq!(capability["windows"], json!(["office-object-*"]));
+                    assert_eq!(capability["platforms"], json!(["windows"]));
+                } else {
+                    assert_eq!(capability["windows"], json!(["main"]));
+                    assert!(capability.get("platforms").is_none());
+                    assert_eq!(
+                        capability["permissions"],
+                        json!(["allow-popup-canvas-context-menu"])
+                    );
+                }
                 assert!(capability.get("webviews").is_none());
-                assert!(capability.get("platforms").is_none());
                 assert!(capability.get("remote").is_none());
-                assert_eq!(
-                    capability["permissions"],
-                    json!(["allow-popup-canvas-context-menu"])
-                );
                 grants.push(path.file_name().unwrap().to_str().unwrap().to_owned());
             }
         }
-        assert_eq!(grants, vec!["canvas-context-menu.json"]);
+        grants.sort();
+        assert_eq!(
+            grants,
+            vec!["canvas-context-menu.json", "office-object.json"]
+        );
     }
 
     #[test]
@@ -504,8 +514,8 @@ mod tests {
             .split("#[cfg(test)]")
             .next()
             .unwrap();
-        assert!(popup.contains("window.label() != crate::MAIN_WINDOW_LABEL"));
-        assert!(popup.contains("get_webview_window(crate::MAIN_WINDOW_LABEL)"));
+        assert!(popup.contains("crate::is_document_window(window.label())"));
+        assert!(popup.contains("get_webview_window(&owner)"));
         assert!(popup.contains("menu.popup_at("));
         assert!(!popup.contains(".set_menu("));
     }

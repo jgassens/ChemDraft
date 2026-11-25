@@ -6,6 +6,8 @@ import { STRUCTURE_SEARCH_DEFAULT_ENABLED } from "./structureSearchSettings";
 import { convertTextToAtomLabelCommandId, nativeStylePresetActions } from "./commands";
 import { formatShortcutLabel } from "./toolsets";
 import { VIBE_CODE_STARTER_COMMAND_ID, vibeCodeStarterCommand } from "./commands/vibeCodeStarter";
+import type { CommandSpec } from "./commands";
+import { IMPORT_OFFICE_STRUCTURES_COMMAND_ID, IMPORT_OFFICE_STRUCTURES_TITLE } from "./officeStructureImport";
 
 /**
  * Declarative model for the in-viewport application menu bar.
@@ -207,6 +209,18 @@ function command(
   };
 }
 
+/** The embedded editor has its own File menu in its document window. */
+export function officeObjectFileMenu(update: CommandSpec, close: CommandSpec, platform?: ShortcutPlatform): AppMenuSection {
+  return {
+    id: "file",
+    label: "File",
+    items: [
+      { ...command(update.id, update.title, { enabled: update.enabled, accelerator: "Cmd+S" }), shortcut: formatMenuShortcut("Cmd+S", platform) },
+      { ...command(close.id, close.title, { enabled: close.enabled, accelerator: "Cmd+W" }), shortcut: formatMenuShortcut("Cmd+W", platform) }
+    ]
+  };
+}
+
 let separatorSeq = 0;
 function separator(): AppMenuSeparator {
   separatorSeq += 1;
@@ -279,6 +293,7 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
       items: [
         command("document.new", "New", { accelerator: "Cmd+N" }),
         command("document.open", "Open…", { accelerator: "Cmd+O" }),
+        command(IMPORT_OFFICE_STRUCTURES_COMMAND_ID, IMPORT_OFFICE_STRUCTURES_TITLE),
         command("document.save", "Save", { accelerator: "Cmd+S" }),
         command("document.saveAs", "Save As…", { accelerator: "Shift+Cmd+S" }),
         separator(),
