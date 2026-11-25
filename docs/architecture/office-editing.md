@@ -62,7 +62,7 @@ feasibility gate (see Slices) and the add-in is built only if it passes.
 | Read the stored PNG (first choice) | `range.getOoxml()`: a flat Office package with each picture in `pkg:binaryData` | `slide.exportAsBase64()` (PowerPointApi 1.8): the slide as a one-slide .pptx; follow the shape's `r:embed` to `ppt/media/…` |
 | Read the stored PNG (fallback) | `Office.context.document.getFileAsync(Office.FileType.Compressed)`: the whole .docx in slices, on web, Windows and Mac, including older perpetual Office | Same, for the whole .pptx |
 | Check the carrier | New reader in `clipboard-adapter`, beside the writer; refuse a picture whose carrier is missing or invalid | Same |
-| Replace (first choice) | `insertOoxml(…, "Replace")` with the new PNG, its own extent and the old width, wrapping and position (measured: keeps a floating picture's placement, one undo step) | Insert with `setSelectedDataAsync`, restore z-order, rotation, name, tags, alt text and a plain link, delete the old shape (measured: works, three undo steps); see "PowerPoint Update: kept, warned, rolled back" below. `shape.fill.setImage` does **not** replace a picture: it sets the shape's fill |
+| Replace (first choice) | `insertOoxml(…, "Replace")` with the new PNG and extents computed to keep the drawing's scale and the picture's position; wrapping is kept (measured: one undo step). The old frame width divided by the stored PNG's natural width gives the scale; at or within 0.5% of 1 it snaps to 1. Otherwise that width-derived scale is applied to the replacement, whose aspect ratio determines the height. If either PNG lacks a usable recorded resolution, the old width is kept and the height follows the replacement image's aspect ratio | Insert with `setSelectedDataAsync`, retain the top-left position and width-derived scale, restore and verify supported state, warn about state that cannot be carried over, then delete the old shape (measured: works, three undo steps); see "PowerPoint Update: kept, warned, rolled back" below. The frame follows the new content using the same width-derived sizing rule and two-PNG fallback as Word. `shape.fill.setImage` does **not** replace a picture: it sets the shape's fill |
 | Refuse | Pictures the measurements show cannot be replaced faithfully | Grouped, cropped or flipped pictures, and rotated ones if rotation cannot be restored; never silently drop shape state: what cannot be carried over is named in a warning after Update |
 | Mark ChemDraft pictures | Alt-text description holds a short marker; the carrier stays the source of truth | Shape tag `CHEMDRAFT` (PowerPointApi 1.3) as a fast filter; the carrier stays the source of truth |
 
@@ -83,7 +83,7 @@ slide's `p:timing` and relationships), because Office.js cannot read most of it.
 
 | State | What Update does |
 | --- | --- |
-| Position, width, stacking order, name, tags | Restored and read back; a mismatch fails the update and removes the new picture |
+| Position, scale, stacking order, name, tags | Position and computed width and height are read back and must be within 0.05 point; stacking order is read back and checked. The name is restored and checked when writable; otherwise the warning names it. Tag writes are synced before read-back, and the ChemDraft marker and carried tags are checked. A failed check fails the update and attempts to remove the new picture |
 | Rotation | Restored and read back with PowerPointApi 1.10; without it a rotated picture is refused before anything is inserted |
 | Alt text title and description, decorative flag | Written with PowerPointApi 1.10 (`altTextTitle`, `altTextDescription`, `isDecorative`) and read back, so the new picture never keeps alt text PowerPoint generated for it. Title and description are read back whether or not the picture is decorative; a mismatch on a non-decorative picture fails the update and removes the new picture; on a decorative picture PowerPoint may clear them, so the update goes ahead and the warning names "its alt text". Without 1.10, alt text or a decorative flag on the old picture is named in the warning |
 | A plain click hyperlink to an external address | Written with `Shape.setHyperlink` (PowerPointApi 1.10). Office.js cannot read a shape's hyperlink back, so a write that fails, or a host without the method, is named in the warning instead |
@@ -459,10 +459,14 @@ private runbooks.
   `getBase64ImageSrc` also matched, but works only on inline pictures; Word for Mac inserts pictures
   floating (square wrap) by default.
 - **Word replacement passes with `insertOoxml(…, "Replace")`**: it kept a floating picture's anchor,
-  wrapping and offsets exactly, in one undo step. It stretched the new picture into the old frame,
-  so the add-in writes the new picture's own extent (keeping the old width) in the OOXML it inserts.
+  wrapping and offsets exactly, in one undo step. The measured `insertOoxml` replacement stretched the
+  new picture into the old frame. Current sizing uses the old frame width divided by the stored PNG's
+  natural width as the scale; at or within 0.5% of 1 it snaps to 1. Otherwise that width-derived scale
+  is applied to the replacement, whose aspect ratio determines the height. If either PNG lacks a
+  usable recorded resolution, the old width is kept and the height follows the replacement image's
+  aspect ratio.
   `insertInlinePictureFromBase64(…, "Replace")` works only on inline pictures (one undo step, kept
-  the width and took the new aspect ratio).
+  the width and took the new aspect ratio in the measured implementation).
 - **PowerPoint `shape.fill.setImage` fails as a replacement**: it reported success but set the
   shape's background fill (`p:spPr/a:blipFill`); the picture the slide shows (`p:blipFill`) was
   unchanged after save and reopen. Do not use it for pictures.
