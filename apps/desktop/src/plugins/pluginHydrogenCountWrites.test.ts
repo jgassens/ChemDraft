@@ -50,7 +50,8 @@ function committedMolecule(document: ChemDraftDocument, id: string): MoleculeObj
 const formulaOf = (object: MoleculeObject) => nativeSingleBondGraphMetadata(object.atoms, object.bonds).formula;
 const countOf = (object: MoleculeObject, atomId: string) => object.atoms.find(candidate => candidate.id === atomId)?.hydrogenCount;
 
-type Outcome = { committed: ChemDraftDocument; refusal?: undefined } | { committed?: undefined; refusal: Error };
+type Outcome = { committed: ChemDraftDocument; refusal?: undefined; pending?: number } |
+  { committed?: undefined; refusal: Error; pending?: number };
 
 /** A plugin command calling documents.applyPatch, committed as MainWindow's applyDocumentPatch does. */
 async function pluginApplyPatch(before: ChemDraftDocument, patch: DocumentPatch, selected: string[]): Promise<Outcome> {
@@ -97,7 +98,7 @@ async function acceptedProposal(before: ChemDraftDocument, patch: DocumentPatch)
     if (refreshed) prepared = await refreshed;
     return { committed: host.acceptProposedPatch(queued.id, before, { apply: () => prepared }) };
   } catch (error) {
-    return { refusal: error as Error };
+    return { refusal: error as Error, pending: host.listProposedPatches("pending").length };
   }
 }
 
@@ -144,20 +145,39 @@ describe("(a) an accepted proposal stating a nonzero hydrogen count", { timeout:
 
 describe("(b) a typed carbon label stating a hydrogen count", { timeout: 30_000 }, () => {
   // Ethane whose a1 is a typed literal "C" stating 3 H. The label text "C" reads as a bare carbon, so the stated
-  // 3 is overridden and the write commits C2H3 (CH3-C with no H on a1) without a word.
+  // 3 would be overridden and the write would commit C2H3 (CH3-C with no H on a1) without a word. Owner ruling:
+  // refuse, naming the atom, the label text and the stated count, on both paths, with nothing written.
   const typedEthane = () => molecule("m2", [atom("a1", "C", 100, { labelLiteral: true, hydrogenCount: 3 }), atom("a2", "C", 130)],
     [bond("b1", "a1", "a2")]);
+  const refusal = 'Plugin write refused: atom "a1" of molecule "m2" has label "C", which ChemDraft reads as its own hydrogen count ' +
+    "(0 H from the label text), but the write states hydrogenCount 3. Remove the count (or state 0), or write the element " +
+    "without the literal label. Nothing was changed.";
 
-  it("BUG (b): documents.applyPatch commits C2H3, the label text overriding the stated 3, instead of C2H6 or a refusal", async () => {
+  it("BUG (b): documents.applyPatch would commit C2H3, the label text overriding the stated 3; it is refused, naming a1, \"C\" and 3", async () => {
+    // Assertion narrowed from expectKeptOrRefused to the refusal and its message: the ruling is to refuse.
     const blank = documentWith([]);
-    expectKeptOrRefused(await pluginApplyPatch(blank, { op: "addObject", pageId: blank.pages[0]!.id, object: typedEthane() }, []),
-      "m2", { formula: "C2H6", counts: { a1: 3 } });
+    const outcome = await pluginApplyPatch(blank, { op: "addObject", pageId: blank.pages[0]!.id, object: typedEthane() }, []);
+    expect(outcome.refusal?.message).toBe(refusal);
   });
 
-  it("BUG (b): an accepted proposal commits C2H3 the same way", async () => {
+  it("BUG (b): an accepted proposal would commit C2H3 the same way; it is refused with the same message and stays pending", async () => {
+    // Assertion narrowed from expectKeptOrRefused to the refusal and its message: the ruling is to refuse.
     const blank = documentWith([]);
-    expectKeptOrRefused(await acceptedProposal(blank, { op: "addObject", pageId: blank.pages[0]!.id, object: typedEthane() }),
-      "m2", { formula: "C2H6", counts: { a1: 3 } });
+    const outcome = await acceptedProposal(blank, { op: "addObject", pageId: blank.pages[0]!.id, object: typedEthane() });
+    expect(outcome.refusal?.message).toBe(refusal);
+    expect(outcome.pending).toBe(1);
+  });
+
+  it("guard: the same write stating what the label text gives (0) commits C2H3 on both paths", async () => {
+    const blank = documentWith([]);
+    const stated0 = () => molecule("m2", [atom("a1", "C", 100, { labelLiteral: true, hydrogenCount: 0 }), atom("a2", "C", 130)],
+      [bond("b1", "a1", "a2")]);
+    for (const outcome of [await pluginApplyPatch(blank, { op: "addObject", pageId: blank.pages[0]!.id, object: stated0() }, []),
+      await acceptedProposal(blank, { op: "addObject", pageId: blank.pages[0]!.id, object: stated0() })]) {
+      expect(outcome.refusal).toBeUndefined();
+      const written = committedMolecule(outcome.committed!, "m2");
+      expect({ formula: formulaOf(written), a1: countOf(written, "a1") }).toEqual({ formula: "C2H3", a1: 0 });
+    }
   });
 
   it("guard: a typed CH3 label states its own 3 H, so ethane commits C2H6", async () => {

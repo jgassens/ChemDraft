@@ -169,9 +169,10 @@ describe("the plugin host without layout-engine (the published SDK)", () => {
   });
 
   // Unbonded, or not typed (read from a structure file), it is actinium, praseodymium or tennessine,
-  // as before; 0 on the bonded group is what it counts anyway.
+  // as before; 0 on the bonded group is what it counts anyway. Typed and unbonded, its label text
+  // gives it 0 H, so 0 is accepted and any other count is refused (below).
   it.each([
-    ["Ac", 2, { typed: true, bonded: false }], ["Pr", 1, { typed: true, bonded: false }], ["Ts", 3, { typed: true, bonded: false }],
+    ["Ac", 0, { typed: true, bonded: false }], ["Pr", 0, { typed: true, bonded: false }], ["Ts", 0, { typed: true, bonded: false }],
     ["Ac", 2, { typed: false, bonded: true }], ["Ts", 0, { typed: true, bonded: true }]
   ] as const)("accepts %s stating %i when %o", async (element, hydrogenCount, options) => {
     const { host, applyDocumentPatch, history } = hostSettingCount(element, hydrogenCount, options);
@@ -179,6 +180,21 @@ describe("the plugin host without layout-engine (the published SDK)", () => {
     expect(applyDocumentPatch).toHaveBeenCalledTimes(1);
     const written = history().present.pages[0]!.objects.find(object => object.id === "mol_1");
     expect(written?.type === "molecule" && written.atoms.find(atom => atom.id === "g")?.hydrogenCount).toBe(hydrogenCount);
+  });
+
+  // A typed, unbonded Ac, Pr or Ts is the element, and its label text says its hydrogens (none): the
+  // label, formula and molfile read the text, so a stated count other than 0 would be dropped silently.
+  it.each([["Ac", 2], ["Pr", 1], ["Ts", 3]] as const)("refuses a typed unbonded %s stating %i, naming the label", async (element, hydrogenCount) => {
+    const { host, applyDocumentPatch, original, history } = hostSettingCount(element, hydrogenCount, { typed: true, bonded: false });
+    await expect(host.invokeCommand("plugin.standalone.run")).rejects.toMatchObject({
+      reason: HydrogenCountUnrepresentableReason,
+      details: { moleculeId: "mol_1", atomId: "g", element, hydrogenCount, labelHydrogenCount: 0 },
+      message: `Plugin write refused: atom "g" of molecule "mol_1" has label "${element}", which ChemDraft reads as its own hydrogen ` +
+        `count (0 H from the label text), but the write states hydrogenCount ${hydrogenCount}. Remove the count (or state 0), or ` +
+        "write the element without the literal label. Nothing was changed."
+    });
+    expect(applyDocumentPatch).not.toHaveBeenCalled();
+    expect(history()).toBe(original);
   });
 
   // The patch engine drops the count of an atom whose bonds change, so a write that bonds an unbonded
@@ -210,9 +226,10 @@ describe("the plugin host without layout-engine (the published SDK)", () => {
   });
 
   // A count stated on an element atom the same write bonds is dropped by the patch engine too, so the
-  // stated count would be lost without a word: refused, wherever in the batch the bond comes.
-  it.each([["same"], ["next"]] as const)("refuses bonding a typed C stating 2 (bond in the %s update)", async bondInPatch => {
-    const { host, applyDocumentPatch, original, history } = hostSettingCount("C", 2, { typed: true, bondInPatch });
+  // stated count would be lost without a word: refused, wherever in the batch the bond comes. (A plain
+  // element C: on a typed C the label text decides, and the refusal says that instead, below.)
+  it.each([["same"], ["next"]] as const)("refuses bonding a C stating 2 (bond in the %s update)", async bondInPatch => {
+    const { host, applyDocumentPatch, original, history } = hostSettingCount("C", 2, { typed: false, bondInPatch });
     await expect(host.invokeCommand("plugin.standalone.run")).rejects.toMatchObject({
       reason: HydrogenCountUnrepresentableReason, details: { moleculeId: "mol_1", atomId: "g", element: "C", hydrogenCount: 2 },
       message: 'Plugin write refused: atom "g" of molecule "mol_1" is C with hydrogenCount 2, which the written molecule would not ' +
@@ -223,10 +240,23 @@ describe("the plugin host without layout-engine (the published SDK)", () => {
     expect(history()).toBe(original);
   });
 
+  // A typed C's label text gives it 0 H whatever its bonds, so a count stated on it is refused as such,
+  // not as one the bond change drops: no later update could state it either.
+  it.each([["same"], ["next"]] as const)("refuses bonding a typed C stating 2 (bond in the %s update), naming the label", async bondInPatch => {
+    const { host, applyDocumentPatch, original, history } = hostSettingCount("C", 2, { typed: true, bondInPatch });
+    await expect(host.invokeCommand("plugin.standalone.run")).rejects.toMatchObject({
+      reason: HydrogenCountUnrepresentableReason,
+      details: { moleculeId: "mol_1", atomId: "g", element: "C", hydrogenCount: 2, labelHydrogenCount: 0 },
+      message: expect.stringContaining('atom "g" of molecule "mol_1" has label "C", which ChemDraft reads as its own hydrogen count')
+    });
+    expect(applyDocumentPatch).not.toHaveBeenCalled();
+    expect(history()).toBe(original);
+  });
+
   // As the refusal says: the count stated in an update after the one that bonds the atom is kept.
   it("accepts a count on an element atom stated in an update after the one that bonds it", async () => {
-    const subject = molecule("C", { typed: true, bonded: false });
-    const bonded = molecule("C", { typed: true, bonded: true });
+    const subject = molecule("C", { typed: false, bonded: false });
+    const bonded = molecule("C", { typed: false, bonded: true });
     const atoms = bonded.atoms.map(atom => atom.id === "g" ? { ...atom, hydrogenCount: 2 } : atom);
     const { host, history } = hostOver([[subject]], [subject.id], { op: "batch", patches: [
       { op: "updateObject", objectId: subject.id, changes: { bonds: bonded.bonds } },
@@ -320,6 +350,77 @@ describe("the plugin host without layout-engine (the published SDK)", () => {
     expect(applyDocumentPatch).toHaveBeenCalledTimes(1);
     const written = history().present.pages[0]!.objects.find(object => object.id === "mol_1");
     expect(written?.type === "molecule" && written.atoms.find(atom => atom.id === "g")?.hydrogenCount).toBe(hydrogenCount);
+  });
+
+  // A typed literal label says its own hydrogens ("C" none, "CH3" three), and the label, formula and
+  // molfile read the text, never a stated count. A write stating another count is refused, naming the
+  // atom, the label and the count; one stating exactly what the text gives is accepted. No grammar
+  // needed: this file's module graph has no layout-engine.
+  it("refuses a typed C stating hydrogenCount 3, naming the atom, its label and the count, and changes nothing", async () => {
+    const { host, applyDocumentPatch, original, history } = hostSettingCount("C", 3, { typed: true });
+    const refused = await host.invokeCommand("plugin.standalone.run").then(() => undefined, (error: unknown) => error);
+    expect(refused).toBeInstanceOf(PluginHostError);
+    expect(refused).toMatchObject({
+      message: 'Plugin write refused: atom "g" of molecule "mol_1" has label "C", which ChemDraft reads as its own hydrogen count ' +
+        "(0 H from the label text), but the write states hydrogenCount 3. Remove the count (or state 0), or write the element " +
+        "without the literal label. Nothing was changed.",
+      reason: HydrogenCountUnrepresentableReason,
+      details: { moleculeId: "mol_1", atomId: "g", element: "C", hydrogenCount: 3, labelHydrogenCount: 0 }
+    });
+    expect(applyDocumentPatch).not.toHaveBeenCalled();
+    expect(history()).toBe(original);
+  });
+
+  it.each([["CH3", 2, 3], ["CH3", 0, 3], ["CH", 2, 1], ["NH2", 1, 2], ["OH", 0, 1], ["Cl", 1, 0]] as const)(
+    "refuses a typed %s stating %i (its text gives %i)", async (element, hydrogenCount, labelHydrogenCount) => {
+      const { host, applyDocumentPatch, original, history } = hostSettingCount(element, hydrogenCount, { typed: true });
+      await expect(host.invokeCommand("plugin.standalone.run")).rejects.toMatchObject({
+        reason: HydrogenCountUnrepresentableReason, details: { atomId: "g", element, hydrogenCount, labelHydrogenCount },
+        message: expect.stringContaining(`has label "${element}"`)
+      });
+      expect(applyDocumentPatch).not.toHaveBeenCalled();
+      expect(history()).toBe(original);
+    });
+
+  // An untyped label that is not an element symbol but names one ("NH2") is read from its text too.
+  it("refuses an untyped NH2 label stating 1", async () => {
+    const { host, applyDocumentPatch } = hostSettingCount("NH2", 1);
+    await expect(host.invokeCommand("plugin.standalone.run")).rejects.toMatchObject({
+      reason: HydrogenCountUnrepresentableReason, details: { atomId: "g", element: "NH2", hydrogenCount: 1, labelHydrogenCount: 2 }
+    });
+    expect(applyDocumentPatch).not.toHaveBeenCalled();
+  });
+
+  it.each([["C", 0], ["CH", 1], ["CH2", 2], ["CH3", 3], ["NH2", 2], ["OH", 1], ["Cl", 0]] as const)(
+    "accepts a typed %s stating %i, what its text gives", async (element, hydrogenCount) => {
+      const { host, applyDocumentPatch, history } = hostSettingCount(element, hydrogenCount, { typed: true });
+      await expect(host.invokeCommand("plugin.standalone.run")).resolves.toMatchObject({ applied: true });
+      expect(applyDocumentPatch).toHaveBeenCalledTimes(1);
+      const written = history().present.pages[0]!.objects.find(object => object.id === "mol_1");
+      expect(written?.type === "molecule" && written.atoms.find(atom => atom.id === "g")?.hydrogenCount).toBe(hydrogenCount);
+    });
+
+  // A group label this host does not read as one element and its hydrogens (and no abbreviation) is
+  // let be, as before.
+  it("accepts a typed group label NHMe stating 2, which it does not judge", async () => {
+    const { host } = hostSettingCount("NHMe", 2, { typed: true });
+    await expect(host.invokeCommand("plugin.standalone.run")).resolves.toMatchObject({ applied: true });
+  });
+
+  // A count the molecule already held on the same typed label (a CDXML literal label keeps its source
+  // NumHydrogens) is let be for an edit elsewhere, as an ignored count is; restating another is refused.
+  it("lets a held typed C count be for an edit elsewhere, and refuses changing it to another overridden count", async () => {
+    const held = withCount(molecule("C", { typed: true }), 2);
+    const moved = held.atoms.map(atom => atom.id === "a1" ? { ...atom, x: atom.x - 5 } : atom);
+    const edit = hostOver([[held]], [held.id], { op: "updateObject", objectId: held.id, changes: { atoms: moved } });
+    await expect(edit.host.invokeCommand("plugin.over.run")).resolves.toMatchObject({ applied: true });
+    const restated = held.atoms.map(atom => atom.id === "g" ? { ...atom, hydrogenCount: 1 } : atom);
+    const change = hostOver([[held]], [held.id], { op: "updateObject", objectId: held.id, changes: { atoms: restated } });
+    await expect(change.host.invokeCommand("plugin.over.run")).rejects.toMatchObject({
+      reason: HydrogenCountUnrepresentableReason, details: { atomId: "g", element: "C", hydrogenCount: 1, labelHydrogenCount: 0 }
+    });
+    expect(change.applyDocumentPatch).not.toHaveBeenCalled();
+    expect(change.history()).toBe(change.original);
   });
 });
 

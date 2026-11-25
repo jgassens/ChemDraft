@@ -8,7 +8,7 @@ import type { ApplyPatchOptions, DocumentObject, DocumentPatch, DocumentPage, Mo
 import { duplicateIdRefusalMessage, insertionPins, objectInWriteScope, objectIsInWriteScope, objectLocations, pinnedObjectMissingMessage,
   pinObject, pinSelectionPages, resolvePinnedObject, resolvePinnedObjects, resolvePinnedPages, scopedObjectRefs, withoutPins, withPins,
   type PageObjectRef, type PagePin, type PinnedObjectPages, type PluginWriteScopePages } from "./pageObjects";
-import { applyPatch, atomIgnoresStatedHydrogenCount, atomWithIgnoredHydrogenCount, hasObjectIdentity, ignoredHydrogenCountAtomKind,
+import { applyPatch, atomicNumberForElementSymbol, atomIgnoresStatedHydrogenCount, atomWithIgnoredHydrogenCount, hasObjectIdentity, ignoredHydrogenCountAtomKind,
   objectIdentity, planOrphanedRepeatUnitCleanup, pruneReactionObjectReferences, removeOrphanedRepeatUnitBrackets, sameBracketIdentity } from "@chemdraft/chem-core";
 import {
   commitRequestPatch, containsBounds, pageContainsBounds, RequestWriteError, type BoundRequestWrite, type RequestDocument, type RequestHistory,
@@ -319,7 +319,8 @@ export function assertPluginPatchWriteScope(
  * typed Ac, Pr or Ts on a bond, which the label grammar reads as acetyl, n-propyl or tosyl
  * (`details.element` gives the label), or a count (0 included) the write states that the written atom
  * would not carry (the patch engine drops the count of an atom whose bonds or statement the write
- * changes). */
+ * changes), or a count other than the one a label's own text gives it (a typed "C" stating 3:
+ * `details.element` gives the label, `details.labelHydrogenCount` what its text gives). */
 export const HydrogenCountUnrepresentableReason = "hydrogen_count_unrepresentable";
 
 /**
@@ -334,7 +335,7 @@ export const HydrogenCountUnrepresentableReason = "hydrogen_count_unrepresentabl
  * duplicating and undoing a user's own document, which must never be refused; the atom validator
  * flags it there instead.
  *
- * Two rules, in order:
+ * Three rules, in order (a count a label's own text overrides is refused by rules 1 and 3 alike):
  *
  * 1. Every count the patch stated, 0 included (`requested`, keyed by the identity of the object each op
  *    reached) must be exactly what the committed atom carries, the same atom of the same object
@@ -353,6 +354,9 @@ export const HydrogenCountUnrepresentableReason = "hydrogen_count_unrepresentabl
  *    uncounted, is let be, so an edit elsewhere in an older document's molecule is not blocked. The
  *    molecule it is compared with is the one the edited value continues, by host identity only;
  *    one with no such predecessor (an insertion) has nothing to keep.
+ * 3. Nor a count its label's own text overrides (`labelTextHydrogenCount`): a typed "C" stating 3
+ *    commits a bare carbon, since the label, formula and molfile read the text. A count equal to
+ *    what the text gives is accepted; one already held unchanged is let be, as in rule 2.
  */
 function assertRepresentableHydrogenCounts(before: ChemDraftDocument, after: ChemDraftDocument,
   requested: RequestedHydrogenCounts = new Map(), droppedHydrogenCountChangesNothing?: DroppedHydrogenCountCheck): void {
@@ -369,6 +373,10 @@ function assertRepresentableHydrogenCounts(before: ChemDraftDocument, after: Che
       if (molecule && atom && atomIgnoresStatedHydrogenCount(stated, molecule.bonds)) {
         throw ignoredHydrogenCountRefusal(molecule.id, stated, molecule.bonds);
       }
+      // A label whose own text gives its hydrogens (a typed "C") never keeps a different stated count,
+      // whatever the write does to its bonds: say so, not that a later update could state it.
+      const spelled = molecule && atom ? labelTextHydrogenCount(stated, molecule.bonds) : undefined;
+      if (molecule && spelled !== undefined && spelled !== stated.hydrogenCount) throw labelHydrogenCountRefusal(molecule.id, stated, spelled);
       // A dropped 0 on an atom that counts 0 anyway (an abbreviation, a label naming no element) loses nothing.
       if (molecule && atom && atom.hydrogenCount === undefined && stated.hydrogenCount === 0 && countsZeroAnyway(atom, molecule.bonds)) continue;
       // A dropped count the embedder's chemistry derives back exactly loses nothing (accept path only).
@@ -394,7 +402,67 @@ function assertRepresentableHydrogenCounts(before: ChemDraftDocument, after: Che
     const previousMolecule = previous?.type === "molecule" ? previous : undefined;
     const atom = atomWithIgnoredHydrogenCount(object.atoms, previousMolecule?.atoms, object.bonds, previousMolecule?.bonds);
     if (atom) throw ignoredHydrogenCountRefusal(object.id, atom, object.bonds);
+    const overridden = atomWithLabelOverriddenHydrogenCount(object, previousMolecule);
+    if (overridden) throw labelHydrogenCountRefusal(object.id, overridden.atom, overridden.spelled);
   }
+}
+
+/**
+ * The hydrogens an atom's label text gives it, for an atom whose stated count ChemDraft does not
+ * count because its label says its hydrogens itself (chem-core `statedHydrogenCountUse` "label"): a
+ * typed literal label ("C", "CH3", an unbonded typed "Ac", which is actinium), or a label that is not
+ * an element symbol but names one ("NH2"). The label, formula, SMILES and molfile all read such an
+ * atom's hydrogens from the text, so a typed "C" stating hydrogenCount 3 commits a bare carbon.
+ *
+ * Read only where the text is one heavy element symbol, optionally followed by its hydrogens ("C" 0,
+ * "CH" 1, "NH2" 2, "OH" 1), as the label grammar's single-element spelling reads it
+ * (layout-engine `nativeSingleHeavyElementLabelValence`, which plugin-host cannot import: only
+ * chem-core is bundled into the SDK). Undefined for any other atom: one whose count is counted (a
+ * plain element), one `atomIgnoresStatedHydrogenCount` judges (H, D and T, the unknown atom, a label
+ * naming no element, an abbreviation, a typed Ac, Pr or Ts on a bond), and a group label this host
+ * does not read ("CO2H", "NHMe", "HO"), whose stated count is let be as before.
+ */
+function labelTextHydrogenCount(atom: MoleculeAtom, bonds: readonly MoleculeBond[]): number | undefined {
+  if (typeof atom.hydrogenCount !== "number") return undefined;
+  if (atom.element === "H" || atom.element === "D" || atom.element === "T") return undefined;
+  if (atomIgnoresStatedHydrogenCount({ ...atom, hydrogenCount: 1 }, bonds)) return undefined;
+  if (atom.labelLiteral !== true && atomicNumberForElementSymbol(atom.element) !== undefined) return undefined;
+  const spelling = /^([A-Z][a-z]?)(?:H(\d*))?$/.exec(atom.element.trim());
+  const head = spelling?.[1];
+  if (!spelling || !head || head === "H" || head === "D" || head === "T" || atomicNumberForElementSymbol(head) === undefined) return undefined;
+  return spelling[2] === undefined ? 0 : spelling[2] === "" ? 1 : Number(spelling[2]);
+}
+
+/** The first atom of `molecule` stating a count its label text overrides (`labelTextHydrogenCount`)
+ * that this write sets: not one `previous` already held unchanged, with the same label, literalness
+ * and count, already overridden (an older document's atom, such as a CDXML literal label keeping its
+ * source NumHydrogens, is not refused for edits elsewhere), as `atomWithIgnoredHydrogenCount` does. */
+function atomWithLabelOverriddenHydrogenCount(molecule: MoleculeObject, previous: MoleculeObject | undefined):
+  { atom: MoleculeAtom; spelled: number } | undefined {
+  const before = new Map(previous?.atoms.map(atom => [atom.id, atom]));
+  for (const atom of molecule.atoms) {
+    const spelled = labelTextHydrogenCount(atom, molecule.bonds);
+    if (spelled === undefined || spelled === atom.hydrogenCount) continue;
+    const old = before.get(atom.id);
+    const oldSpelled = old && previous ? labelTextHydrogenCount(old, previous.bonds) : undefined;
+    if (old && old.element === atom.element && old.labelLiteral === atom.labelLiteral && old.hydrogenCount === atom.hydrogenCount &&
+      oldSpelled !== undefined && oldSpelled !== old.hydrogenCount) continue;
+    return { atom, spelled };
+  }
+  return undefined;
+}
+
+/** The hydrogen_count_unrepresentable refusal for `atom` of molecule `moleculeId`, whose label text
+ * gives it `spelled` hydrogens where the write states another count (`labelTextHydrogenCount`). */
+function labelHydrogenCountRefusal(moleculeId: string, atom: MoleculeAtom, spelled: number): PluginHostError {
+  const label = atom.element.trim();
+  return new PluginHostError(
+    `Plugin write refused: atom "${atom.id}" of molecule "${moleculeId}" has label "${label}", which ChemDraft reads as ` +
+    `its own hydrogen count (${spelled} H from the label text), but the write states hydrogenCount ${atom.hydrogenCount}. ` +
+    `Remove the count (or state ${spelled}), or write the element without the literal label. Nothing was changed.`,
+    { reason: HydrogenCountUnrepresentableReason,
+      details: { moleculeId, atomId: atom.id, element: atom.element, hydrogenCount: atom.hydrogenCount!, labelHydrogenCount: spelled } }
+  );
 }
 
 /** Whether `atom` counts no hydrogens of its own whatever it states, so a stated 0 is what it counts
