@@ -1053,19 +1053,16 @@ const mdlDefaultMass: Readonly<Record<string, number>> = {
 
 function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
   const lines = molfile.split("\n");
-  const countsLineIndex = findV2000CountsLineIndex(lines);
-  if (countsLineIndex === -1) {
-    throw new Error("V2000 molfile is missing its atom/bond counts line.");
-  }
-
-  const countsLine = lines[countsLineIndex] ?? "";
-  const counts = parseV2000CountsLine(countsLine);
+  const counts = locateV2000CountsLine(lines);
   if (!counts) {
     throw new Error("V2000 molfile is missing its atom/bond counts line.");
   }
+  if (counts.error !== undefined) {
+    throw new Error(counts.error);
+  }
 
   const { atomCount, bondCount } = counts;
-  const atomStartIndex = countsLineIndex + 1;
+  const atomStartIndex = counts.index + 1;
   const atomLines = lines.slice(atomStartIndex, atomStartIndex + atomCount);
   const bondLines = lines.slice(atomStartIndex + atomCount, atomStartIndex + atomCount + bondCount);
   // Atom-block charges and M CHG charges are kept separate: per the V2000 spec, the
@@ -1451,24 +1448,39 @@ export function smilesListDecision(input: {
 }
 
 function parseV2000CountsLine(line: string): { atomCount: number; bondCount: number } | undefined {
-  // CTfile counts are aaabbb: two right-justified 3-character integers, with no
-  // separator when both reach 100 (e.g. 266267). Always try these columns first.
+  return v2000CountsReadings(line)[0];
+}
+
+interface V2000CountsReading { atomCount: number; bondCount: number }
+
+/**
+ * Every reading of a counts line's atom and bond counts. CTfile counts are aaabbb: two
+ * right-justified 3-character integers, with no separator when both reach 100 (e.g. 266267), so
+ * the columns are read first. Some writers omit padding, so separate fields of at most three
+ * digits are a second reading when they differ ("100 100" is 100/10 by columns, 100/100 by
+ * fields); a longer digit run may contain adjacent fixed-width counts and is never split. Which
+ * reading holds is for the connection table after the line to decide (`locateV2000CountsLine`).
+ */
+function v2000CountsReadings(line: string): V2000CountsReading[] {
+  const readings: V2000CountsReading[] = [];
   const atoms = line.slice(0, 3).trim();
   const bonds = line.slice(3, 6).trim();
   if (/^\d+$/.test(atoms) && /^\d+$/.test(bonds)) {
-    return { atomCount: Number(atoms), bondCount: Number(bonds) };
+    readings.push({ atomCount: Number(atoms), bondCount: Number(bonds) });
   }
-
-  // Some writers omit padding. Accept separate, at-most-three-digit fields only:
-  // a longer digit run may contain adjacent fixed-width counts and must not be split.
-  const short = line.match(/^\s*(\d{1,3})\s+(\d{1,3})(?=\s|$)/);
-  return short ? { atomCount: Number(short[1]), bondCount: Number(short[2]) } : undefined;
+  const fields = line.match(/^\s*(\d{1,3})\s+(\d{1,3})(?=\s|$)/);
+  if (fields && !readings.some((reading) => reading.atomCount === Number(fields[1]) && reading.bondCount === Number(fields[2]))) {
+    readings.push({ atomCount: Number(fields[1]), bondCount: Number(fields[2]) });
+  }
+  return readings;
 }
 
 /**
  * The atom and bond counts of `line` when it has the shape of a V2000 counts line, in every form
  * this reader accepts: fixed-width "aaabbb" (abutting when both reach 100), or unpadded separate
- * fields, with or without the version tag. Undefined for anything else.
+ * fields, with or without the version tag. Undefined for anything else. This is the shape a
+ * counts line must have when its position is unknown; at line 4 of a molfile a shorter line
+ * ("  6  6") is a counts line too (`locateV2000CountsLine`).
  */
 export function readV2000CountsLine(line: string): { atomCount: number; bondCount: number } | undefined {
   const counts = parseV2000CountsLine(line);
@@ -1482,8 +1494,105 @@ export function readV2000CountsLine(line: string): { atomCount: number; bondCoun
   ) ? counts : undefined;
 }
 
+/** A counts line held only numbers (and the V2000 tag): "  6  6", "  6  6  0  0", "100 100". */
+const shortV2000CountsLine = /^\s*\d+(?:\s+\d+)+(?:\s+V2000)?\s*$/i;
+const v2000Tagged = /\bV2000\s*$/i;
+const v3000Tagged = /\bV3000\s*$/i;
+
+/** One fixed-width V2000 coordinate field (10 characters, `xxxxx.xxxx`); neighbours may touch. */
+const v2000Coordinate = /^ *[-+]?(?:\d+(?:\.\d*)?|\.\d+) *$/;
+const v2000Symbol = /^[A-Za-z*?][A-Za-z0-9#*?]{0,2}$/;
+/** An under-padded atom line from a writer that separates fields with whitespace instead. */
+const v2000LooseAtomLine = /^\s*[-+]?\d+(?:\.\d+)?\s+[-+]?\d+(?:\.\d+)?\s+[-+]?\d+(?:\.\d+)?\s+[A-Za-z*?][A-Za-z0-9#*?]*(?:\s|$)/;
+/** What may follow a V2000 connection table: a property line, the record end, or nothing. */
+const v2000AfterTable = /^(?:M {2}|A {2}|V {2}|G {2}|S {2}SKP|\$\$\$\$|> )/;
+
+function isV2000AtomLine(line: string): boolean {
+  return (line.length >= 34 && [0, 10, 20].every((start) => v2000Coordinate.test(line.slice(start, start + 10))) &&
+    v2000Symbol.test(line.slice(31, 34).trim())) || v2000LooseAtomLine.test(line);
+}
+
+function isV2000BondLine(line: string): boolean {
+  const first = line.slice(0, 3), second = line.slice(3, 6), type = line.slice(6, 9);
+  if ([first, second, type].every((field) => /^ *\d+$/.test(field)) && Number(first) > 0 && Number(second) > 0) return true;
+  return /^\s*[1-9]\d*\s+[1-9]\d*\s+\d+(?:\s|$)/.test(line);
+}
+
+type V2000CountsLocation =
+  | { index: number; atomCount: number; bondCount: number; error?: undefined }
+  | { index: number; error: string };
+
+/**
+ * The counts line of a V2000 molfile and the reading of it that holds. The counts line is line 4:
+ * lines 1-3 are the header (title, program, comment) and are never structure, so a comment shaped
+ * like a counts line, even one declaring no atoms, is never taken for it. A line at that position
+ * is a counts line in any numeric form RDKit reads, including a short one with no tag and fewer
+ * than six fields ("  6  6"). Leading blank lines are allowed before the header, and a blank title
+ * looks the same, so each of those positions is tried in order. Only a text with no counts line
+ * (V2000 or V3000) at any of them, such as a ChemDraw for Mac RXN block with a one-line header, has
+ * its first lines tried instead; this matches `v2000CountsLine` in document-workflow-core's
+ * atomMaps.ts. A candidate whose atom and bond lines and what follows them all fit its counts wins;
+ * a line with two readings (unpadded "100 100": 100/10 by columns, 100/100 by fields) that neither
+ * fits is refused rather than read as either, since one of them would silently drop structure.
+ */
+function locateV2000CountsLine(lines: readonly string[]): V2000CountsLocation | undefined {
+  let leadingBlank = 0;
+  while (leadingBlank < lines.length && lines[leadingBlank]!.trim() === "") leadingBlank += 1;
+  const standard = Array.from({ length: leadingBlank + 1 }, (_, offset) => offset + 3).filter((index) => index < lines.length);
+  const readingsAt = (index: number): V2000CountsReading[] => {
+    const line = lines[index]!;
+    if (v3000Tagged.test(line) || (readV2000CountsLine(line) === undefined && !shortV2000CountsLine.test(line))) return [];
+    return v2000CountsReadings(line);
+  };
+  const hasHeader = standard.some((index) =>
+    readingsAt(index).length > 0 || v2000Tagged.test(lines[index]!) || v3000Tagged.test(lines[index]!));
+  const positions = hasHeader ? standard : Array.from({ length: Math.min(leadingBlank + 3, lines.length) }, (_, index) => index);
+
+  const fits = (index: number, reading: V2000CountsReading): boolean => {
+    const atomStart = index + 1;
+    const bondStart = atomStart + reading.atomCount;
+    const atoms = lines.slice(atomStart, bondStart);
+    const bonds = lines.slice(bondStart, bondStart + reading.bondCount);
+    const after = lines[bondStart + reading.bondCount];
+    return atoms.length === reading.atomCount && atoms.every(isV2000AtomLine) &&
+      bonds.length === reading.bondCount && bonds.every(isV2000BondLine) &&
+      (after === undefined || after.trim() === "" || v2000AfterTable.test(after));
+  };
+  for (const index of positions) {
+    const reading = readingsAt(index).find((candidate) => fits(index, candidate));
+    if (reading) return { index, ...reading };
+  }
+
+  // No reading fits its connection table exactly. Keep the lenient reading of the first counts
+  // line (its atom and bond lines are checked one by one as they are parsed) unless it has two
+  // readings, where taking either could silently change the structure.
+  for (const index of positions) {
+    // Without a header, a first line is only taken unchecked when it has a counts line's full shape.
+    if (!hasHeader && readV2000CountsLine(lines[index]!) === undefined) continue;
+    const readings = readingsAt(index);
+    const line = lines[index]!.trim();
+    if (readings.length === 1) return { index, ...readings[0]! };
+    if (readings.length > 1) {
+      const options = readings.map((reading) => `${reading.atomCount} atoms and ${reading.bondCount} bonds`).join(" or ");
+      return {
+        index,
+        error: `V2000 counts line (line ${index + 1}, "${line}") is ambiguous: its unpadded counts read as ${options}, ` +
+          "and the atom and bond lines after it match neither."
+      };
+    }
+    if (v2000Tagged.test(line)) {
+      return {
+        index,
+        error: `V2000 counts line (line ${index + 1}, "${line}") has no readable atom and bond counts: ` +
+          "they must be two integers of at most three digits each."
+      };
+    }
+  }
+  return undefined;
+}
+
 export function findV2000CountsLineIndex(lines: readonly string[]): number {
-  return lines.findIndex((line) => readV2000CountsLine(line) !== undefined);
+  return locateV2000CountsLine(lines)?.index ?? -1;
 }
 
 function decodeMacLengthPrefixedMolfile(text: string): string | undefined {

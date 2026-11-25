@@ -97,6 +97,14 @@ describe("(b) counts of 100 atoms and 100 bonds", () => {
   ])("never silently reads unpadded counts %j as anything but 100/100", (counts) => {
     expectReadRightOrRefused(withCounts(counts), ringElements, 100);
   });
+
+  it("refuses unpadded '100 100' with an error naming the counts line when neither reading fits", () => {
+    // 55 bond lines: not the 10 the columns declare, nor the 100 the fields declare.
+    const molfile = ["macrocycle", "  Other", "", "100 100  0  0  0  0", ...ring.atoms, ...ring.bonds.slice(0, 55), "M  END"].join("\n");
+    expect(() => parseMolfileGraph(molfile)).toThrow(
+      /V2000 counts line \(line 4, "100 100  0  0  0  0"\) is ambiguous: .*100 atoms and 10 bonds or 100 atoms and 100 bonds/
+    );
+  });
 });
 
 describe("(c) an RXN $MOL block with a blank program line never takes a bond record for its counts", () => {
