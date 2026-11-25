@@ -8,6 +8,7 @@ import { ensureRdkit, resetRdkitForTesting, setRdkitModuleLoader } from "@chemdr
 import appConfig from "../src-tauri/tauri.conf.json";
 import appCancelled from "./appHandoff/__fixtures__/wire/choose-app-cancelled.json";
 import appChosen from "./appHandoff/__fixtures__/wire/choose-app-chosen.json";
+import overlappingChoice from "./appHandoff/__fixtures__/wire/choose-app-request-overlapping.json";
 import retryChoice from "./appHandoff/__fixtures__/wire/choose-app-request-retry.json";
 import type { ListenForAppHandoff } from "./appHandoff/nativeMenu";
 import { getAssistantHistoryPort } from "./assistant/historyPort";
@@ -221,14 +222,16 @@ it.each(["web", "native timeout"] as const)("omits host identity for %s", async 
   }
 });
 
-it("clears the picker refusal when a retry succeeds without command status", async () => {
+it.each(["none", "undo", "another picker"] as const)("clears only the picker refusal when a retry succeeds (newer status: %s)", async newerStatus => {
   const handoffCommand = "plugin.crystalBuilder.chooseApp";
   const invocation = { pluginId: handoffRecord.id, commandId: handoffCommand, nonce: "2".repeat(32) };
+  const overlappingInvocation = { ...invocation, nonce: "3".repeat(32) };
   const retry = deferred<void>();
   const cancelled = deferred<void>();
-  let click!: () => Promise<void>;
-  await render(source, dispatch => { click = () => dispatch(invocation); return () => {}; });
-  host.transport.mockResolvedValueOnce(appCancelled).mockResolvedValueOnce(appChosen);
+  let click!: (proof: typeof invocation) => Promise<void>;
+  await render(source, dispatch => { click = dispatch; return () => {}; });
+  host.transport.mockResolvedValueOnce(appCancelled);
+  let first = true;
   let command!: Promise<void>;
   await act(async () => {
     captured.runtime!.registerPlugin({ id: handoffRecord.id, version: handoffRecord.version,
@@ -237,20 +240,36 @@ it("clears the picker refusal when a retry succeeds without command status", asy
       contributes: { commands: [{ id: handoffCommand, title: "Choose app" }],
         menus: [{ id: "menu.crystalBuilder.chooseApp", commandId: handoffCommand, title: "Choose app" }] } },
     { execution: "worker", commandHandlers: { [handoffCommand]: async ({ apps }) => {
+      if (!first) {
+        expect(await apps!.chooseApp(overlappingChoice)).toEqual(appCancelled);
+        return;
+      }
+      first = false;
       expect(await apps!.chooseApp({ purpose: "Choose an app" })).toEqual(appCancelled);
       cancelled.resolve();
       await retry.promise;
       expect(await apps!.chooseApp(retryChoice)).toEqual(appChosen);
     } } });
-    command = click();
+    command = click(invocation);
     await cancelled.promise;
   });
   const status = () => container.querySelector('[role="status"]')?.textContent;
   expect(status()).toBe("App selection cancelled.");
+  if (newerStatus === "undo") {
+    await menu("edit.undo");
+    expect(status()).toBe("Nothing to undo");
+  } else if (newerStatus === "another picker") {
+    host.transport.mockResolvedValueOnce(appCancelled);
+    await act(async () => { await click(overlappingInvocation); });
+    expect(host.transport).toHaveBeenLastCalledWith(overlappingInvocation, "chooseApp", overlappingChoice);
+    expect(status()).toBe("App selection cancelled.");
+  }
+  const expectedStatus = newerStatus === "none" ? "" : status();
+  host.transport.mockResolvedValueOnce(appChosen);
   await act(async () => { retry.resolve(); await command; });
-  expect(host.transport).toHaveBeenCalledTimes(2);
+  expect(host.transport).toHaveBeenCalledTimes(newerStatus === "another picker" ? 3 : 2);
   expect(host.transport).toHaveBeenLastCalledWith(invocation, "chooseApp", retryChoice);
-  expect(status()).toBe("");
+  expect(status()).toBe(expectedStatus);
 });
 
 it.each([
@@ -358,9 +377,26 @@ it("reads live marked content under fixed IDs and undoes and redoes two separate
   expect(nativeSelection()).toEqual([ids[1]]);
 });
 
+it("preserves an atom selection through an ordinary nudge, undo, and redo", async () => {
+  await render(aromaticSource);
+  await selectAtom("a");
+  const originalX = drawn().atoms[0]!.x;
+  await menu("selection.nudge.right.large");
+  expect(drawn().atoms[0]!.x).toBe(originalX + 10);
+  expect(nativeSelection()).toEqual(["a"]);
+  await menu("edit.undo");
+  expect(drawn().atoms[0]!.x).toBe(originalX);
+  expect(nativeSelection()).toEqual(["a"]);
+  await menu("edit.redo");
+  expect(drawn().atoms[0]!.x).toBe(originalX + 10);
+  expect(nativeSelection()).toEqual(["a"]);
+});
+
 it("clears the mark selection when redoing a later whole-molecule edit", async () => {
   const other = { ...aromaticSource, id: "other", x: aromaticSource.x + 200,
-    atoms: aromaticSource.atoms.map(atom => ({ ...atom, x: atom.x + 200 })) };
+    atoms: aromaticSource.atoms.map(atom => ({ ...atom, id: `other-${atom.id}`, x: atom.x + 200 })),
+    bonds: aromaticSource.bonds.map(bond => ({ ...bond,
+      fromAtomId: `other-${bond.fromAtomId}`, toAtomId: `other-${bond.toAtomId}` })) };
   await render(aromaticSource, undefined, other);
   await selectAtom("a");
   await act(async () => {
@@ -377,11 +413,12 @@ it("clears the mark selection when redoing a later whole-molecule edit", async (
   expect(after.pages[0]!.objects.find(object => object.id === other.id)?.x).toBe(other.x + 10);
   await menu("edit.undo");
   await menu("edit.undo");
+  expect(nativeSelection()).toEqual(["a"]);
   await menu("edit.redo");
   expect(nativeSelection()).toEqual([markerId]);
   await menu("edit.redo");
   expect(present()).toEqual(after);
-  expect(nativeSelection()).not.toContain(markerId);
+  expect(nativeSelection()).toEqual(other.atoms.map(atom => atom.id));
   await menu("edit.forwardDeleteHoveredNativeTarget");
   expect(present().pages[0]!.objects.map(object => object.id)).toEqual([source.id]);
   expect(drawn().atoms.some(atom => atom.id === markerId)).toBe(true);

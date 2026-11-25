@@ -195,7 +195,7 @@ describe("usePluginRuntime installed catalog readiness", () => {
           warnings?.push("Selection contains unsupported labels.");
           return { objectIds: [], molecules: [] };
         },
-        onAppHandoffStatus: status
+        onAppHandoffStatus: message => status(message)
       });
       return null;
     }

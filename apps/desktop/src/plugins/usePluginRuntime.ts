@@ -107,7 +107,7 @@ export interface PluginRuntimeProviders {
   onNameResolutionStatus?: (text: string | undefined) => void;
   onPluginUpdateStatus?: (text: string) => void;
   /** Native relay results and menu refusals use the document window status line. */
-  onAppHandoffStatus?: (text: string) => void;
+  onAppHandoffStatus?: DesktopPluginRuntimeOptions["onAppHandoffStatus"];
   /** Fired whenever the proposed-patch queue changes (new, accepted, rejected). */
   onProposedPatchesChanged?: () => void;
   /** Commits a command-scoped `document.write` patch through the desktop document/history path. */
@@ -236,7 +236,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
         const matches = catalog.records.filter(record => record.id === pluginId);
         return matches.length === 1 && matches[0].version === version ? matches[0] : undefined;
       } : undefined,
-      onAppHandoffStatus: message => providersRef.current.onAppHandoffStatus?.(message)
+      onAppHandoffStatus: (...args) => providersRef.current.onAppHandoffStatus?.(...args)
     });
     const bundledPlugins = registerBundledPlugins(runtime);
     ownerRef.current = { runtime, bundledPlugins };
@@ -264,7 +264,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
         const selection = boundedHandoffText(Array.from(new Set(warnings)).join(" "));
         if (selection) messages.push(`Selection warning: ${selection}`);
         const text = messages.join("\n");
-        if (text) providersRef.current.onAppHandoffStatus?.(text);
+        if (text) providersRef.current.onAppHandoffStatus?.(text, feedback);
       };
       return runtime.invokeAppHandoffMenuCommand(invocation, warnings, feedback).then(
         result => report(result, pluginCommandFailure(result)),
