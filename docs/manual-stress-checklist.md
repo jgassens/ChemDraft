@@ -1745,6 +1745,7 @@ for processor-specific behavior. Use an eligible official catalog plugin and its
 
 - Pick an app, decline consent, then accept and send a file. Revoke consent in Plugin Manager and
   send again; verify consent is requested again.
+- Alternate sending a file and running a build with the same app. Each asks for consent once. Revoke one operation and verify the other stays allowed.
 - Move the chosen app and retry. Check for an `app-changed` or `app-missing` failure, then restore
   the app to its previous location or pick it again before continuing.
 - Send file names with spaces, non-ASCII characters, and a reserved Windows name; check the opened

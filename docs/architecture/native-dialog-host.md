@@ -712,5 +712,5 @@ combination, the reported joint twist score when available, and the repeat offer
 The Rebuild action carries no parameters. Rust reruns the held input with its bound rebuild
 combination and returns the outcome through the original handoff call. The dialog snapshot
 fits the 3400-byte private transport budget and contains display data and choices only.
-Plugin Manager displays app locations in its App handoff consents section. Worker replies
-carry path-free results.
+Plugin Manager displays app locations and a separate consent row for file handoff and each
+approved pipeline. Each row can be revoked independently. Worker replies carry path-free results.

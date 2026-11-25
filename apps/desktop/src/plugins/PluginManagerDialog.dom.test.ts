@@ -88,7 +88,8 @@ it("lists native app handoff consent separately and keeps revoked rows visible",
   };
   const list = vi.fn(async (): Promise<AppHandoffConsent[]> => [
     { ...row, status },
-    { ...row, consentId: "consent-2", appName: "Previous App", status: "inactive" }
+    { ...row, consentId: "consent-2", pipeline: null, status: "allowed" },
+    { ...row, consentId: "consent-3", appName: "Previous App", status: "inactive" }
   ]);
   const revoke = vi.fn(async () => { status = "revoked"; });
   const runtime = createPluginRuntime({
@@ -105,12 +106,16 @@ it("lists native app handoff consent separately and keeps revoked rows visible",
   expect(section.textContent).toContain(entry.record.name);
   expect(section.textContent).toContain(appPath);
   expect(section.textContent).toContain("Pipeline mofBuild · Allowed");
+  expect(section.textContent).toContain("File handoff · Allowed");
   expect(section.textContent).toContain("Pipeline mofBuild · Inactive");
+  expect(button.getAttribute("aria-label")).toContain("(Pipeline mofBuild)");
   button.focus();
   expect(document.activeElement).toBe(button);
   await act(async () => button.click());
   expect(revoke).toHaveBeenCalledExactlyOnceWith(entry.record.id, "consent-1");
   expect(section.textContent).toContain("Pipeline mofBuild · Revoked");
+  expect(section.textContent).toContain("File handoff · Allowed");
+  expect(section.querySelector('button[aria-label$="(File handoff)"]')).not.toBeNull();
   expect(button.isConnected).toBe(false);
   expect(document.activeElement).toBe(section.querySelector("h3"));
 });
