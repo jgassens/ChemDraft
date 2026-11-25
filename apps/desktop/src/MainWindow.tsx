@@ -1854,7 +1854,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.24.17.10-codex";
+const CURRENT_BUILD_STAMP = "11.24.18.10-codex";
 
 /**
  * The commit funnel's chemistry check (AGENTS.md section 7, `commitChemistryGuard.ts`). `before`
@@ -2970,8 +2970,8 @@ export function MainWindow({
     height: 0
   }));
   const [status, setStatus] = useState("Blank native document");
-  const lastAppHandoffStatus = useRef<string>(undefined);
-  const handoffStatusLines = lastAppHandoffStatus.current === status && status.includes("\n")
+  const lastAppHandoffStatus = useRef<{ message: string; feedback?: object }>(undefined);
+  const handoffStatusLines = lastAppHandoffStatus.current?.message === status && status.includes("\n")
     ? status.split("\n") : undefined;
   const tableDraftStatusRef = useRef<{ announced: string; original: string } | undefined>(undefined);
   // Keep import findings and the latest save findings independent for this tab.
@@ -10090,6 +10090,7 @@ export function MainWindow({
     let nextHistory: DocumentHistory | undefined;
     let undoLabel: string | undefined;
     let connectionPointUndoSelection: NativeMoleculeSelectionPart[] | undefined;
+    let leavingRecordedNativePartSelection = false;
     installDocumentHistory((history) => {
       const recordedAfter = recordedHistoryAfterRef.current.get(history.present);
       const currentHistory = { ...history,
@@ -10097,6 +10098,9 @@ export function MainWindow({
       const restored = direction === "undo" ? undoDocumentHistory(currentHistory) : redoDocumentHistory(currentHistory);
       if (restored === currentHistory) return history;
       if (direction === "undo") connectionPointUndoSelection = connectionPointUndoSelectionsRef.current.get(currentHistory.present);
+      const recordedSelections = nativePartHistorySelectionsRef.current;
+      leavingRecordedNativePartSelection = recordedSelections.has(history.present) ||
+        (recordedAfter !== undefined && recordedSelections.has(recordedAfter));
       undoLabel = direction === "undo"
         ? documentUndoLabelsRef.current.get(currentHistory.present)
         : documentUndoLabelsRef.current.get(restored.present);
@@ -10110,6 +10114,8 @@ export function MainWindow({
 
     const nativePartSelection = connectionPointUndoSelection ?? nativePartHistorySelectionsRef.current.get(nextHistory.present);
     if (nativePartSelection) setSelectedNativeMoleculeParts(nativePartSelection);
+    else if (leavingRecordedNativePartSelection) setSelectedNativeMoleculeParts([]);
+    // Otherwise the document-change effect keeps the current parts that still exist.
 
     historyNavigationCountRef.current += 1;
     // Redoing the supplied practice structure returns to the clean starting drawing.
@@ -13353,9 +13359,11 @@ export function MainWindow({
   const pluginRuntime = usePluginRuntime({
     listenForAppHandoff,
     onPluginUpdateStatus: setStatus,
-    onAppHandoffStatus: message => {
-      lastAppHandoffStatus.current = message;
-      setStatus(message);
+    onAppHandoffStatus: (message, feedback, replaceOwnStatus) => {
+      const previous = lastAppHandoffStatus.current;
+      if (replaceOwnStatus && (!previous || previous.feedback !== feedback)) return;
+      lastAppHandoffStatus.current = { message, feedback };
+      setStatus(current => !replaceOwnStatus || current === previous?.message ? message : current);
     },
     onNameResolutionStatus: text => {
       nameResolutionStatusRef.current = text;

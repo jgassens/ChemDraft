@@ -9,7 +9,7 @@ import { unresolvableAromaticRing } from "@chemdraft/layout-engine/testing";
 import { createStructureSourceFingerprint } from "@chemdraft/plugin-api";
 import * as pluginApi from "@chemdraft/plugin-api";
 
-import { buildPluginSelectionSnapshot, computeObjectFingerprint, pluginFacingStructure } from "./selectionSnapshot";
+import { buildPluginSelectionSnapshot, computeObjectFingerprint, pluginFacingStructure, pluginSelectionObjectIds } from "./selectionSnapshot";
 
 // Minimal document shape exercised by buildPluginSelectionSnapshot (id, pages[].id, page.objects,
 // object.type/id/structureFormat/structure, selection.objectIds). Cast to the full type for focus.
@@ -136,6 +136,29 @@ describe("buildPluginSelectionSnapshot", () => {
     expect(buildPluginSelectionSnapshot(document, [], undefined, [
       { kind: "atom", objectId: molecule.id, atomId: point!.id }
     ]).molecules[0]?.selectedAtomIds).toEqual([point!.id]);
+  });
+
+  it("requires a live atom on the applicable page for a part-only selection", () => {
+    const molecule = moleculeWithHydrogen();
+    const document = engineDocumentWith(molecule);
+    const partSelection = [{ kind: "parts" as const, objectId: molecule.id, atomIds: ["obsolete"], bondIds: ["b1"] }];
+    const unselected = { ...document, selection: { ...document.selection, objectIds: [] } };
+    expect(pluginSelectionObjectIds(unselected, partSelection)).toEqual([]);
+    expect(buildPluginSelectionSnapshot(unselected, [], undefined, partSelection)).toEqual({ objectIds: [], molecules: [] });
+    expect(buildPluginSelectionSnapshot(document, [], undefined, partSelection)).toMatchObject({
+      objectIds: [molecule.id], molecules: [{ objectId: molecule.id, selectedAtomIds: [] }]
+    });
+
+    const otherPage = { ...document.pages[0]!, id: "other", objects: [
+      { ...molecule, atoms: [{ ...molecule.atoms[0]!, id: "obsolete" }], bonds: [] }
+    ] };
+    const duplicate = { ...unselected, pages: [...unselected.pages, otherPage] };
+    expect(buildPluginSelectionSnapshot(duplicate, [], undefined, partSelection,
+      new Map([[molecule.id, document.pages[0]!.id]]))).toEqual({ objectIds: [], molecules: [] });
+    expect(buildPluginSelectionSnapshot(duplicate, [], undefined, partSelection,
+      new Map([[molecule.id, otherPage.id]]))).toMatchObject({
+      objectIds: [molecule.id], molecules: [{ pageId: otherPage.id, selectedAtomIds: ["obsolete"] }]
+    });
   });
 
   it("produces a stable fingerprint for unchanged input and a different one after an edit", () => {

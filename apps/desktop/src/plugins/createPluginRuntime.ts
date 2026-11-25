@@ -127,7 +127,7 @@ export interface DesktopPluginRuntimeOptions {
   appHandoffTransport?: PluginHostOptions["appHandoffTransport"];
   appHandoffConsents?: AppHandoffConsents;
   readAppHandoffRecord?: (pluginId: string, version: string) => Promise<InstalledPluginRecord | undefined>;
-  onAppHandoffStatus?: (message: string) => void;
+  onAppHandoffStatus?: (message: string, feedback?: AppHandoffMenuFeedback, replaceOwnStatus?: boolean) => void;
   /** Optional injection seam; default providers use the existing in-process conformer worker. */
   chemistry3d?: import("../chemistry3d/client").Chemistry3dProviders;
   /** Reads the current active document. Called on demand; must reflect the latest state. */
@@ -553,17 +553,21 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
         if (feedback) feedback.pending--;
         if (handoffFeedback.get(invocation) !== feedback) return;
         if (!status) return;
+        let clearedRefusal = false;
         if (status.kind === "success" || status.kind === "confirmed") {
           if (feedback && status.kind === "confirmed") feedback.confirmed = status.message;
           // A retry must have started after the refusal it clears.
           if (previousProblem?.kind === "refused" && feedback?.problems.get(method) === previousProblem) {
-            feedback.problems.delete(method);
+            clearedRefusal = feedback.problems.delete(method);
           }
         } else {
           feedback?.problems.set(method, status);
         }
-        if (status.message) {
-          options.onAppHandoffStatus?.(feedback ? appHandoffFeedbackMessages(feedback).join("\n") : status.message);
+        if (feedback && (status.message || clearedRefusal)) {
+          options.onAppHandoffStatus?.(appHandoffFeedbackMessages(feedback).join("\n"), feedback,
+            clearedRefusal && !status.message);
+        } else if (status.message) {
+          options.onAppHandoffStatus?.(status.message);
         }
       };
       void result.then(value => report(appHandoffResultStatus(method, request, value)),

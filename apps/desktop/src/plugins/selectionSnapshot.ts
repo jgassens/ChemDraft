@@ -9,12 +9,33 @@ import {
   type PluginSelectedMolecule,
   type PluginSelectionSnapshot
 } from "@chemdraft/plugin-api";
-import type { RequestSnapshotBudget } from "@chemdraft/plugin-host";
+import { pinSelectionPages, resolveObjectOnPage, type RequestSnapshotBudget } from "@chemdraft/plugin-host";
 import { toSelectionItemsMulti, type NativeMoleculePartSelection } from "../selection/selectionPolicy";
 
 export function pluginSelectionObjectIds(document: ChemDraftDocument, parts: readonly NativeMoleculePartSelection[]): string[] {
-  const atomHosts = parts.filter(part => part.kind === "atom" || (part.kind === "parts" && part.atomIds.length > 0));
-  return [...new Set([...document.selection.objectIds, ...atomHosts.map(part => part.objectId)])];
+  return [...new Set([...document.selection.objectIds, ...liveSelectedAtoms(document, parts).keys()])];
+}
+
+function liveSelectedAtoms(document: ChemDraftDocument, parts: readonly NativeMoleculePartSelection[],
+  selectionPages?: ReadonlyMap<string, string>): Map<string, string[]> {
+  const atomIdsByObject = new Map<string, Set<string>>();
+  for (const item of toSelectionItemsMulti([], parts)) {
+    if (item.kind !== "atom") continue;
+    const ids = atomIdsByObject.get(item.objectId) ?? new Set<string>();
+    ids.add(item.atomId);
+    atomIdsByObject.set(item.objectId, ids);
+  }
+  const pages = selectionPages ?? pinSelectionPages(document, [...atomIdsByObject.keys()],
+    document.selection.pageId ?? document.pages[0]?.id).pages;
+  const selected = new Map<string, string[]>();
+  for (const [objectId, ids] of atomIdsByObject) {
+    const pageId = pages.get(objectId);
+    const object = pageId === undefined ? undefined : resolveObjectOnPage(document, pageId, objectId)?.object;
+    if (object?.type !== "molecule") continue;
+    const live = [...ids].filter(id => object.atoms?.some(atom => atom.id === id));
+    if (live.length) selected.set(objectId, live);
+  }
+  return selected;
 }
 
 type PluginFacingStructure = Required<Pick<PluginSelectedMolecule, "structureFormat" | "structure" | "connectionPoints">>;
@@ -242,15 +263,9 @@ export function buildPluginSelectionSnapshot(
   selectionPages?: ReadonlyMap<string, string>
 ): PluginSelectionSnapshot {
   const molecules: PluginSelectedMolecule[] = [];
-  const objectIds = pluginSelectionObjectIds(document, parts ?? []);
+  const selectedAtoms = liveSelectedAtoms(document, parts ?? [], selectionPages);
+  const objectIds = [...new Set([...document.selection.objectIds, ...selectedAtoms.keys()])];
   const snapshot = { objectIds, molecules };
-  const selectedAtoms = new Map<string, Set<string>>();
-  for (const item of toSelectionItemsMulti([], parts ?? [])) {
-    if (item.kind !== "atom") continue;
-    const ids = selectedAtoms.get(item.objectId) ?? new Set<string>();
-    ids.add(item.atomId);
-    selectedAtoms.set(item.objectId, ids);
-  }
   budget?.(snapshot);
   const located = new Map<string, { pageId: string; molecule: MoleculeObject }>();
   for (const page of document.pages) {
@@ -272,8 +287,7 @@ export function buildPluginSelectionSnapshot(
       objectId,
       documentId: document.id,
       pageId: hit.pageId,
-      ...(parts && { selectedAtomIds: [...(selectedAtoms.get(objectId) ?? [])]
-        .filter(id => hit.molecule.atoms.some(atom => atom.id === id)) }),
+      ...(parts && { selectedAtomIds: selectedAtoms.get(objectId) ?? [] }),
       ...facing,
       // Retain stereo geometry while keeping pure translations and rotations out of the key.
       sourceFingerprint: moleculeSourceFingerprint(document, hit.pageId, hit.molecule)

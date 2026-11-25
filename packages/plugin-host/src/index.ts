@@ -2189,10 +2189,14 @@ export class PluginHost {
   }
 
   private async readCapturedSelection(invocation: ActiveCommandInvocation, warnings?: string[]): Promise<PluginSelectionSnapshot | undefined> {
+    const requireActiveDocument = () => {
+      if (this.getActiveDocumentKey?.() !== invocation.documentKey) {
+        throw new PluginHostError("The active document changed while reading the command's selection.");
+      }
+    };
+    requireActiveDocument();
     const document = await this.getActiveDocument?.();
-    if (this.getActiveDocumentKey?.() !== invocation.documentKey) {
-      throw new PluginHostError("The active document changed while reading the command's selection.");
-    }
+    requireActiveDocument();
     return document && invocation.startingSelectionPages && invocation.selectionAtStart?.(document, invocation.startingSelectionPages, warnings);
   }
 
