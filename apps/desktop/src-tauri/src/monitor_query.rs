@@ -165,16 +165,50 @@ impl MonitorGeometry {
     }
 }
 
+/// The first monitor whose whole logical bounds contain the logical point (x, y).
+fn monitor_containing(monitors: &[MonitorGeometry], x: f64, y: f64) -> Option<&MonitorGeometry> {
+    monitors.iter().find(|monitor| {
+        let b = monitor.logical_bounds();
+        x >= b.left && x < b.right && y >= b.top && y < b.bottom
+    })
+}
+
 /// The logical bounds of the first monitor that contains the logical point (x, y).
+#[cfg(test)]
 fn logical_bounds_containing(
     monitors: &[MonitorGeometry],
     x: f64,
     y: f64,
 ) -> Option<LogicalBounds> {
-    monitors
-        .iter()
-        .map(MonitorGeometry::logical_bounds)
-        .find(|b| x >= b.left && x < b.right && y >= b.top && y < b.bottom)
+    monitor_containing(monitors, x, y).map(MonitorGeometry::logical_bounds)
+}
+
+/// Logical bounds plus the scale they were divided by, for placement that snaps to the
+/// monitor's physical pixels (the popover's work-area clamp).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub(crate) struct ScaledLogicalBounds {
+    #[serde(flatten)]
+    bounds: LogicalBounds,
+    scale: f64,
+}
+
+/// The monitor under the logical point (x, y): its whole bounds, or with `work_area` its work
+/// area (without taskbar, panels, Dock or menu bar), with its scale either way.
+fn scaled_logical_area_containing(
+    monitors: &[MonitorGeometry],
+    x: f64,
+    y: f64,
+    work_area: bool,
+) -> Option<ScaledLogicalBounds> {
+    let monitor = monitor_containing(monitors, x, y)?;
+    Some(ScaledLogicalBounds {
+        bounds: if work_area {
+            monitor.logical_work_area()
+        } else {
+            monitor.logical_bounds()
+        },
+        scale: monitor.scale(),
+    })
 }
 
 /// The calling window's monitor work area, in logical coordinates. `None` when there is no monitor.
@@ -186,16 +220,19 @@ pub(crate) fn current_window_logical_work_area(
     Some(MonitorGeometry::of(&monitor).logical_work_area())
 }
 
-/// The logical bounds of the monitor under the logical point (x, y), if any.
+/// The logical bounds of the monitor under the logical point (x, y), if any, and its scale.
+/// With `work_area` (`workArea` from the frontend), the monitor's work area instead: a popover
+/// placed against the whole screen can end up under the Windows taskbar or the Dock.
 #[tauri::command]
 pub(crate) fn monitor_logical_bounds_at(
     window: tauri::WebviewWindow,
     x: f64,
     y: f64,
-) -> Option<LogicalBounds> {
+    work_area: Option<bool>,
+) -> Option<ScaledLogicalBounds> {
     let monitors = available_monitors(window.app_handle()).ok()?;
     let geometry: Vec<MonitorGeometry> = monitors.iter().map(MonitorGeometry::of).collect();
-    logical_bounds_containing(&geometry, x, y)
+    scaled_logical_area_containing(&geometry, x, y, work_area.unwrap_or(false))
 }
 
 #[cfg(test)]
@@ -256,5 +293,53 @@ mod tests {
         );
         assert_eq!(logical_bounds_containing(&monitors, 9000.0, 0.0), None);
         assert_eq!(logical_bounds_containing(&[], 0.0, 0.0), None);
+    }
+
+    #[test]
+    fn work_area_at_a_point_is_that_monitors_work_area_and_scale() {
+        // A 150% laptop panel left of a 100% primary, each with a top bar and a bottom taskbar.
+        let monitors = [
+            monitor(1.0, 0.0, 0.0, 1920.0, 1080.0),
+            monitor(1.5, -3456.0, 0.0, 3456.0, 2160.0),
+        ];
+        let left = scaled_logical_area_containing(&monitors, -100.0, 1430.0, true).unwrap();
+        assert_eq!(
+            left,
+            ScaledLogicalBounds {
+                bounds: LogicalBounds {
+                    left: -2304.0,
+                    top: 24.0,
+                    right: 0.0,
+                    bottom: 1400.0
+                },
+                scale: 1.5
+            }
+        );
+        // The same point without `work_area` gets the whole monitor.
+        let whole = scaled_logical_area_containing(&monitors, -100.0, 1430.0, false).unwrap();
+        assert_eq!(whole.bounds.bottom, 1440.0);
+        let primary = scaled_logical_area_containing(&monitors, 10.0, 10.0, true).unwrap();
+        assert_eq!((primary.bounds.bottom, primary.scale), (1040.0, 1.0));
+        assert_eq!(
+            scaled_logical_area_containing(&monitors, 5000.0, 0.0, true),
+            None
+        );
+    }
+
+    #[test]
+    fn scaled_bounds_serialize_flat_for_the_frontend() {
+        let area = ScaledLogicalBounds {
+            bounds: LogicalBounds {
+                left: 0.0,
+                top: 24.0,
+                right: 1920.0,
+                bottom: 1040.0,
+            },
+            scale: 1.25,
+        };
+        assert_eq!(
+            serde_json::to_value(area).unwrap(),
+            serde_json::json!({"left": 0.0, "top": 24.0, "right": 1920.0, "bottom": 1040.0, "scale": 1.25})
+        );
     }
 }

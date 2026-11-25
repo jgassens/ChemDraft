@@ -5,7 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DefaultNativeTextStyle } from "@chemdraft/chem-core";
 import type { ArtInspectorEffectKind } from "./artInspectorModel";
 import { objectCustomColorCommandId, objectEffectColorCommandId } from "./commands";
-import type { ToolsetArtStylePayload, ToolsetPopoverContentPayload, ToolsetTextStylePayload } from "./window-manager";
+import {
+  monitorLogicalWorkAreaAt, setCurrentWindowLogicalPosition,
+  type ToolsetArtStylePayload, type ToolsetPopoverContentPayload, type ToolsetTextStylePayload
+} from "./window-manager";
 import { PalettePopoverWindow } from "./PalettePopoverWindow";
 
 const bridge = vi.hoisted(() => ({
@@ -23,6 +26,7 @@ vi.mock("./window-manager", async (importOriginal) => ({
   listenForToolsetPopoverDismiss: async (handler: typeof bridge.dismiss) => { bridge.dismiss = handler; return () => {}; },
   requestToolsetPopoverContent: vi.fn(async () => undefined), requestToolsetTextStyle: vi.fn(async () => undefined),
   setCurrentWindowLogicalSize: vi.fn(async () => undefined), setCurrentWindowLogicalPosition: vi.fn(async () => undefined),
+  monitorLogicalWorkAreaAt: vi.fn(async () => undefined),
   showCurrentToolsetPopoverWindow: vi.fn(async () => true),
   sendPaletteCommandPreview: bridge.preview, sendPaletteCommandCommit: bridge.commit,
   sendPaletteCommandCancel: bridge.cancel
@@ -97,5 +101,34 @@ describe("native palette color targets", () => {
     expect(bridge.preview).not.toHaveBeenCalled(); expect(bridge.commit).not.toHaveBeenCalled();
     await open("shadow"); click("Commit");
     expect(bridge.commit).toHaveBeenCalledExactlyOnceWith(objectEffectColorCommandId("shadow", "#abcdef"));
+  });
+  // 1.2.4, Windows: an Effect swatch near the bottom of the screen opened its popover at the bare
+  // below-anchor point (top 1208 + height 187 > availHeight 1296), with the CMYK row under the taskbar.
+  it.each([1, 1.25, 1.5])("keeps the Effect color popover inside the work area near the taskbar at scale %s", async (scale) => {
+    const workArea = { left: 0, top: 0, right: 2304, bottom: 1296, scale };
+    vi.mocked(monitorLogicalWorkAreaAt).mockResolvedValue(workArea);
+    const measured = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+      { x: 0, y: 0, left: 0, top: 0, width: 252, height: 187, right: 252, bottom: 187, toJSON: () => ({}) } as DOMRect
+    );
+    try {
+      const swatch = { left: 1500, top: 1182, right: 1522, bottom: 1204 };
+      await act(async () => bridge.content!({
+        toolsetId: "core.art", kind: "artColor", effectKind: "shadow", openedAt: 1, generation: 1,
+        anchor: { x: swatch.left, y: swatch.bottom + 4, rect: swatch }
+      } as ToolsetPopoverContentPayload));
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+      expect(monitorLogicalWorkAreaAt).toHaveBeenCalledWith(1511, 1193);
+      const positions = vi.mocked(setCurrentWindowLogicalPosition).mock.calls.map(([position]) => position);
+      expect(positions.length).toBeGreaterThan(0);
+      for (const position of positions) {
+        expect(position.y).toBeGreaterThanOrEqual(workArea.top);
+        expect(position.y + 187).toBeLessThanOrEqual(workArea.bottom);
+        // Flipped above its swatch rather than shifted over it.
+        expect(position.y + 187).toBeLessThanOrEqual(swatch.top);
+        expect(position.x + 252).toBeLessThanOrEqual(workArea.right);
+      }
+    } finally {
+      measured.mockRestore();
+    }
   });
 });

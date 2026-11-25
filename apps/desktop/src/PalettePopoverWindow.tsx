@@ -13,6 +13,7 @@ import {
   acceptFlyoutOpening, closeFlyoutOpening, currentFlyoutOpening, dismissFlyoutOpenings,
   matchesToolsetPopoverOpening, newFlyoutOpeningState, resolveFlyoutOpening, wasFlyoutOpeningDismissed
 } from "./window-manager/flyoutOpeningRule";
+import { popoverAnchorRect, resolveAnchoredPopoverPosition, type PopoverWorkArea } from "./window-manager/popoverPlacement";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import {
   isToolsetPopoverVisible,
@@ -33,6 +34,7 @@ import {
   sendPaletteCommandCommit,
   sendPaletteCommandPreview,
   sendBondStereoPopoverAction,
+  monitorLogicalWorkAreaAt,
   setCurrentWindowLogicalPosition,
   setCurrentWindowLogicalSize,
   setPaletteCommandHitBoxes,
@@ -118,6 +120,26 @@ export function PalettePopoverWindow({
   // resize: macOS resizes are bottom-anchored, so a height change after Rust's set_position
   // would otherwise shove the window down by the delta — the first-open misposition.
   const anchorRef = useRef<ToolsetPopoverAnchor | undefined>(undefined);
+  // The work area of the monitor under the current anchor, read once per anchor.
+  const anchorWorkAreaRef = useRef<{ anchor: ToolsetPopoverAnchor; area: Promise<PopoverWorkArea | undefined> } | undefined>(
+    undefined
+  );
+  // Never the bare anchor: below it the popover can run past the work area — under the Windows
+  // taskbar or the Dock — when its control is near the bottom (or right) of the screen. Flip above
+  // or shift so the whole frame stays on the anchor's monitor (popoverPlacement.ts).
+  const anchoredPosition = async (anchor: ToolsetPopoverAnchor, size: { width: number; height: number }) => {
+    if (anchorWorkAreaRef.current?.anchor !== anchor) {
+      const rect = popoverAnchorRect(anchor);
+      anchorWorkAreaRef.current = {
+        anchor,
+        area: Promise.resolve()
+          .then(() => monitorLogicalWorkAreaAt((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2))
+          .catch(() => undefined)
+      };
+    }
+    const area = anchorWorkAreaRef.current.area;
+    return resolveAnchoredPopoverPosition(anchor, { width: Math.ceil(size.width), height: Math.ceil(size.height) }, () => area);
+  };
   const [content, setContent] = useState<ToolsetPopoverContent>(() =>
     kind === "flyout"
       ? { kind: "flyout", flyout: { flyoutId: "", title: "", commands: [] } }
@@ -335,7 +357,7 @@ export function PalettePopoverWindow({
         await setCurrentWindowLogicalSize({ width: Math.ceil(rect.width), height: Math.ceil(rect.height) });
         const anchor = anchorRef.current;
         if (anchor) {
-          await setCurrentWindowLogicalPosition(anchor);
+          await setCurrentWindowLogicalPosition(await anchoredPosition(anchor, rect));
         }
       })().catch(() => undefined).finally(resetScroll);
     };
@@ -402,7 +424,11 @@ export function PalettePopoverWindow({
       }
       const anchor = anchorRef.current;
       if (anchor) {
-        await setCurrentWindowLogicalPosition(anchor).catch(() => undefined);
+        const size = rect && rect.width > 0 && rect.height > 0 ? rect : { width: window.innerWidth, height: window.innerHeight };
+        const position = await anchoredPosition(anchor, size).catch(() => anchor);
+        if (!cancelled) {
+          await setCurrentWindowLogicalPosition(position).catch(() => undefined);
+        }
       }
       if (cancelled || dismissedRef.current || contentRef.current !== content) {
         perfHook(() => perfProbe?.surfaceShown(perfShown, "no-op"));

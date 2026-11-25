@@ -1071,13 +1071,25 @@ export function PaletteWindow({
     // Armed only once the open is actually going through. Priming it before the abortable read
     // above meant a press that never opened anything still armed the replay, so the prewarmed
     // window's mount request got answered and revealed a popover nobody asked for at (0, 0).
-    lastPopoverPayloadRef.current = { content, anchor: { x: screenX, y: screenY } };
+    // The control's own rect rides along too: once it knows its size, the popover flips above
+    // the control or shifts to stay inside the work area (never under the taskbar or Dock).
+    const popoverAnchor: ToolsetPopoverAnchor = {
+      x: screenX,
+      y: screenY,
+      rect: {
+        left: windowPosition.x + anchor.left,
+        top: windowPosition.y + anchor.top,
+        right: windowPosition.x + anchor.right,
+        bottom: windowPosition.y + anchor.bottom
+      }
+    };
+    lastPopoverPayloadRef.current = { content, anchor: popoverAnchor };
     await openToolsetPopoverWindow(toolset.id, kind, screenX, screenY);
     if (!isCurrent() || lastPopoverPayloadRef.current?.content !== content) return false;
     // The anchor rides along so the popover can re-assert its position AFTER sizing to
     // content — a bottom-anchored macOS resize otherwise shifts the first open down by
     // the height delta (Rust positions the old-size window; the resize moves its top).
-    await setToolsetPopoverContent(toolset.id, content, { x: screenX, y: screenY });
+    await setToolsetPopoverContent(toolset.id, content, popoverAnchor);
     return isCurrent() && lastPopoverPayloadRef.current?.content === content;
   };
 

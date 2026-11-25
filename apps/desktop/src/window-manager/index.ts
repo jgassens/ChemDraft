@@ -14,6 +14,7 @@ import { ELECTRON_MARK_EDITING_STORAGE_KEY, loadDirectElectronMarkEditing } from
 import { isKeybindingSettings, type KeybindingScheme, type KeybindingSettings } from "../keybindingSettings";
 import { migrateLegacyToolsetIds } from "../toolbars/legacyToolsetIds";
 import { listenCurrentWindowEvent, listenTauriEvent, safeTauriWindowListen } from "./tauriEvents";
+import type { PopoverWorkArea } from "./popoverPlacement";
 import {
   compareToolsetPopoverOpenings, type AcceptedToolsetPopoverOpening, type ToolsetPopoverDismissPayload,
   type ToolsetPopoverOpening, type ToolsetFlyoutClosedNotice
@@ -539,8 +540,12 @@ export type ToolsetPopoverContent = ToolsetPopoverOpening & (
  *  first open down by exactly the height delta. Size first, then position, then show —
  *  the order the tooltip window has always used. */
 export interface ToolsetPopoverAnchor {
+  /** The below-anchor top-left (anchor left, anchor bottom + gap) in global logical coordinates. */
   x: number;
   y: number;
+  /** The control's own rect in global logical coordinates, so the popover can flip above it and
+   *  stay inside the work area (window-manager/popoverPlacement.ts). */
+  rect?: { left: number; top: number; right: number; bottom: number };
 }
 
 export type ToolsetPopoverContentPayload = { toolsetId: string; anchor?: ToolsetPopoverAnchor } & ToolsetPopoverContent;
@@ -1746,6 +1751,22 @@ export async function monitorLogicalBoundsAt(
   const { invoke } = await import("@tauri-apps/api/core");
   const bounds = await invoke<MonitorLogicalBounds | null>("monitor_logical_bounds_at", { x, y }).catch(() => null);
   return bounds ?? undefined;
+}
+
+/** The work area (taskbar, Dock and menu bar excluded) and scale of the monitor under the
+ *  global-logical point, for placing a popover that must stay fully visible. Falls back to the
+ *  calling window's own work area when no monitor contains the point. */
+export async function monitorLogicalWorkAreaAt(x: number, y: number): Promise<PopoverWorkArea | undefined> {
+  if (!isDesktopRuntime()) {
+    return undefined;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  const area = await invoke<PopoverWorkArea | null>("monitor_logical_bounds_at", { x, y, workArea: true }).catch(() => null);
+  if (area && [area.left, area.top, area.right, area.bottom].every(Number.isFinite)) {
+    return area;
+  }
+  const own = await invoke<MonitorLogicalBounds | null>("current_window_logical_work_area").catch(() => null);
+  return own ? { ...own, scale: window.devicePixelRatio || 1 } : undefined;
 }
 
 export async function hidePaletteFloatingTooltip(): Promise<void> {
