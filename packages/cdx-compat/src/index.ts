@@ -5646,6 +5646,14 @@ function importGraphic(
     };
   }
 
+  const graphicType = element.attributes.GraphicType;
+  if (graphicType === "Symbol" || graphicType === "Orbital") {
+    // Lone pairs were taken natively before this point; every other symbol, and every orbital, has
+    // no native shape and is drawn as a labelled placeholder box. Said at import, not only on SVG export.
+    const subtype = graphicType === "Symbol" ? element.attributes.SymbolType : element.attributes.OrbitalType;
+    context.warnings.push({ code: "cdxml.graphic_placeholder", sourceObjectId: element.attributes.id,
+      message: `${context.sourceFormat} ${graphicType} graphic ${element.attributes.id ?? "(unknown)"}${subtype ? ` (${graphicType === "Symbol" ? "SymbolType" : "OrbitalType"} "${subtype}")` : ""} has no native shape; it is shown as a placeholder, and its source attributes are retained for ${context.sourceFormat} export.` });
+  }
   return importShapeGraphic(element, pageIndex, objectIndex, context, "graphic");
 }
 
@@ -5859,6 +5867,10 @@ function importCurveGraphic(
   if (lineType && !["solid", "dashed", "bold"].includes(lineType)) {
     note("cdxml.curve_line_type_approximation", `${context.sourceFormat} curve "${element.attributes.id ?? id}" has LineType="${element.attributes.LineType}"; the Bezier is drawn as a solid native stroke and the source LineType is retained for ${context.sourceFormat} export.`);
   }
+  const ignoredCurveTypeFlags = ignoredCdxCurveTypeFlags(element.attributes);
+  if (ignoredCurveTypeFlags.length) {
+    note("cdxml.curve_type_flags_ignored", `${context.sourceFormat} curve "${element.attributes.id ?? id}" has CurveType="${element.attributes.CurveType}" with flags this import does not honour (${ignoredCurveTypeFlags.join(", ")}); they are not drawn, and the source CurveType is retained for ${context.sourceFormat} export.`);
+  }
   const effectiveElement = { ...element, attributes: { ...context.curveLineDefaults, ...element.attributes } };
   if (["LineWidth", "BoldWidth"].some(name => effectiveElement.attributes[name] !== undefined &&
     !((parseNumber(effectiveElement.attributes[name]) ?? 0) > 0))) {
@@ -5920,7 +5932,58 @@ function curveNodesFromCdxml(value: string | undefined): GraphicPathNode[] | und
 }
 
 function cdxmlCurveIsClosed(attributes: Record<string, string>): boolean {
+  if (attributes.Closed === undefined) {
+    const curveType = cdxCurveTypeBits(attributes);
+    return curveType !== undefined && (curveType & CDX_CURVE_TYPE_CLOSED) !== 0;
+  }
   return ["yes", "true", "1"].includes(normalizedCdxmlToken(attributes.Closed));
+}
+
+// The legacy CurveType bitfield (CDX property 0x0A08, CDXML attribute CurveType). These bit values
+// come from the published CDX format specification (its CDXCurveType enumeration), not from this
+// repository, which only names the property (cdxTags.ts). Explicit Closed, FillType, LineType and
+// Arrowhead* attributes always win over the matching bits.
+const CDX_CURVE_TYPE_CLOSED = 0x0001;
+const CDX_CURVE_TYPE_FILLED = 0x0080;
+const CDX_CURVE_TYPE_SHADED = 0x0100;
+const CDX_CURVE_TYPE_LINE_FLAGS: ReadonlyArray<readonly [number, string]> = [[0x0002, "dashed"], [0x0004, "bold"]];
+const CDX_CURVE_TYPE_ARROW_FLAGS: ReadonlyArray<readonly [number, string]> = [[0x0008, "arrow at end"],
+  [0x0010, "arrow at start"], [0x0020, "half arrow at end"], [0x0040, "half arrow at start"]];
+const CDX_CURVE_TYPE_DOUBLED = 0x0200;
+const CDX_CURVE_TYPE_KNOWN = 0x03ff;
+
+/** The CurveType bits as an unsigned 16-bit value (the binary reader decodes the property signed). */
+function cdxCurveTypeBits(attributes: Record<string, string>): number | undefined {
+  const value = parseInteger(attributes.CurveType?.trim());
+  return value === undefined ? undefined : value & 0xffff;
+}
+
+/** The fill a curve's CurveType states, used only when the curve has no explicit FillType. */
+function cdxCurveTypeFill(attributes: Record<string, string>): "solid" | "shaded" | undefined {
+  if (attributes.FillType !== undefined) return undefined;
+  const curveType = cdxCurveTypeBits(attributes);
+  if (curveType === undefined) return undefined;
+  return curveType & CDX_CURVE_TYPE_FILLED ? "solid" : curveType & CDX_CURVE_TYPE_SHADED ? "shaded" : undefined;
+}
+
+/** CurveType flags this import does not honour, named; flags an explicit attribute overrides are not listed. */
+function ignoredCdxCurveTypeFlags(attributes: Record<string, string>): string[] {
+  const curveType = cdxCurveTypeBits(attributes);
+  if (curveType === undefined) return [];
+  const ignored: string[] = [];
+  if (attributes.LineType === undefined) {
+    for (const [bit, name] of CDX_CURVE_TYPE_LINE_FLAGS) if (curveType & bit) ignored.push(name);
+  }
+  // Arrowheads are read from ArrowheadHead/ArrowheadTail/ArrowheadType; with none of those the bits would be lost.
+  if (["ArrowheadHead", "ArrowheadTail", "ArrowheadType"].every(name => attributes[name] === undefined)) {
+    for (const [bit, name] of CDX_CURVE_TYPE_ARROW_FLAGS) if (curveType & bit) ignored.push(name);
+  }
+  if (curveType & CDX_CURVE_TYPE_DOUBLED) ignored.push("doubled");
+  const unknown = curveType & ~CDX_CURVE_TYPE_KNOWN & 0xffff;
+  for (let bit = 0x0400; bit <= 0x8000; bit <<= 1) {
+    if (unknown & bit) ignored.push(`unknown bit 0x${bit.toString(16).padStart(4, "0")}`);
+  }
+  return ignored;
 }
 
 /** The native arrow tool an imported `<arrow>` stands for, judged by which ends carry heads. */
@@ -6133,7 +6196,8 @@ function graphicStyleFromCdxmlShape(
 
 function graphicStyleFromCdxmlCurve(element: XmlElementView, colorTable: CdxmlColorTable, warn?: (message: string) => void): GraphicObject["style"] {
   const style = graphicStyleFromCdxmlShape(element, colorTable);
-  const fillType = normalizedCdxmlToken(element.attributes.FillType);
+  const curveTypeFill = element.name === "curve" ? cdxCurveTypeFill(element.attributes) : undefined;
+  const fillType = curveTypeFill ?? normalizedCdxmlToken(element.attributes.FillType);
   if (["solid", "2", "shaded", "4"].includes(fillType)) {
     style.fillColor = style.strokeColor;
     // Shape subtypes already define gloss; only curves need the solid approximation.
@@ -6143,8 +6207,9 @@ function graphicStyleFromCdxmlCurve(element: XmlElementView, colorTable: CdxmlCo
     delete style.fillMode;
   }
   if (fillType && !["unspecified", "0", "none", "1", "solid", "2"].includes(fillType)) {
-    warn?.(`Curve "${element.attributes.id ?? "(unknown)"}" has FillType="${element.attributes.FillType}" with no native equivalent; ` +
-      (["shaded", "4"].includes(fillType) ? "a solid fill is used" : "no fill is used") + "; the source FillType is retained for export.");
+    const source = curveTypeFill ? `CurveType="${element.attributes.CurveType}" (shaded)` : `FillType="${element.attributes.FillType}"`;
+    warn?.(`Curve "${element.attributes.id ?? "(unknown)"}" has ${source} with no native equivalent; ` +
+      (["shaded", "4"].includes(fillType) ? "a solid fill is used" : "no fill is used") + `; the source ${curveTypeFill ? "CurveType" : "FillType"} is retained for export.`);
   }
   const width = normalizedCdxmlToken(element.attributes.LineType) === "bold"
     ? parseNumber(element.attributes.BoldWidth) ?? parseNumber(element.attributes.LineWidth)
@@ -6250,14 +6315,21 @@ function unionObjectBounds(
   return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
+/** Where an unknown object stands on the page: its own BoundingBox when it has a usable one, else a
+ *  1x1 frame at its `p`, and only then the page origin. Placing every unknown object at the origin
+ *  stacked them there and stretched an enclosing group's frame (the union of its members) to it. */
+function unknownCompatibilityObjectFrame(element: XmlElementView): { x: number; y: number; width: number; height: number } {
+  const box = parseCdxmlXyBoundingBox(element.attributes.BoundingBox);
+  if (box) return box;
+  const point = parseCdxmlXyPoint(element.attributes.p);
+  return point ? { ...point, width: 1, height: 1 } : { x: 0, y: 0, width: 1, height: 1 };
+}
+
 function importUnknownCompatibilityObject(element: XmlElementView, pageIndex: number, objectIndex: number, sourceFormat: "CDXML" | "CDX"): UnknownCompatibilityObject {
   return {
     id: `cdxml_unknown_${pageIndex + 1}_${objectIndex}`,
     type: "unknown-compatibility-object",
-    x: 0,
-    y: 0,
-    width: 1,
-    height: 1,
+    ...unknownCompatibilityObjectFrame(element),
     rotation: 0,
     style: {},
     sourceFormat: "cdxml",
