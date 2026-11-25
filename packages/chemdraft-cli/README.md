@@ -472,13 +472,18 @@ scaled so every visible bond is `BondLength` points long, styled to match, and t
 declares the same settings on its own root element, so a reader draws labels and lines at the
 reference's sizes. Only geometry and display change; the CDXML identity check still runs.
 
-Setting `CHEMDRAFT_CDXML_STYLE_REFERENCE` to a CDXML file makes it the default for every CDXML
-export (`~` expands to the home directory); `--style-reference` overrides it, and other formats
-ignore it. A structure setting the reference leaves unset keeps ChemDraft's value and is named in
-the job's warnings. An unreadable reference, one larger than 5 MB, or one with an unusable value
-(for example `BondLength="0"`) fails the run with exit 2 and the reason, before any file is written.
-`--style-reference` with a format other than CDXML is a usage error. Successful records carry
-`styleReference`, the reference path used.
+ChemDraft uses a style file only when you name one. `--style-reference` takes precedence over
+`CHEMDRAFT_CDXML_STYLE_REFERENCE`. In the environment variable, a leading `~/` expands to your home
+directory. If neither names a file, CDXML exports use ChemDraft's built-in style. ChemDraft searches
+no configuration directory for style files.
+
+Each CDXML JSON Lines result reports the selected reference as
+`"styleReference": {"path": "house-style.cdxml", "source": "flag"}`. The source is `"flag"` or
+`"environment"`. The field is omitted when no reference is used. A structure setting the reference
+leaves unset keeps ChemDraft's value and is named in the job's warnings. An unreadable reference,
+one larger than 5 MB, or one with an unusable value such as `BondLength="0"` fails the run with exit
+2 and the reason before any file is written. Other formats ignore the environment variable and
+reject `--style-reference`.
 
 ## Built-in structure template layouts
 

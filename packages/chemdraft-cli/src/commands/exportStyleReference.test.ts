@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,7 +9,8 @@ import { applyPatches, createPageLayout, type MoleculeObject } from "@chemdraft/
 import { resetRdkitForTesting } from "@chemdraft/rdkit-adapter";
 
 import { buildSmilesDocument, canonicalSmiles } from "../document";
-import { CDXML_STYLE_REFERENCE_ENV, exportPerJobFormat, loadStyleReference, runExportCommand } from "./export";
+import { CDXML_STYLE_REFERENCE_ENV, loadStyleReference, resolveStyleReference } from "../styleReference";
+import { exportPerJobFormat, runExportCommand } from "./export";
 
 vi.setConfig({ testTimeout: 60_000 });
 
@@ -72,6 +73,18 @@ function reopenedMolecule(contents: string): MoleculeObject {
   return opened.document!.pages[0]!.objects.find((object): object is MoleculeObject => object.type === "molecule")!;
 }
 
+it("resolves a flag, then an argument, then the explicit environment variable", () => {
+  const env = { [CDXML_STYLE_REFERENCE_ENV]: reference };
+  expect(resolveStyleReference({ flag: "flag.cdxml", argument: "argument.cdxml", env })).toEqual({
+    path: "flag.cdxml", source: "flag"
+  });
+  expect(resolveStyleReference({ argument: "argument.cdxml", env })).toEqual({
+    path: "argument.cdxml", source: "argument"
+  });
+  expect(resolveStyleReference({ env })).toEqual({ path: reference, source: "environment" });
+  expect(resolveStyleReference({ env: { [CDXML_STYLE_REFERENCE_ENV]: " " } })).toBeUndefined();
+});
+
 describe("chemdraft export --style-reference", () => {
   it("draws CDXML at the reference's bond length and declares its settings", async () => {
     const out = join(directory, "caffeine.cdxml");
@@ -88,7 +101,9 @@ describe("chemdraft export --style-reference", () => {
     expect(molecule.atoms).toHaveLength(14);
     expect(molecule.bonds).toHaveLength(15);
     expect(molecule.style).toMatchObject({ bondLengthPx: 19.2, atomLabelFontSizePx: 13.3333, bondStrokeWidthPx: 1.2 });
-    expect(JSON.parse(io.stdoutLines[0]!)).toMatchObject({ ok: true, format: "cdxml", styleReference: reference, warnings: [] });
+    expect(JSON.parse(io.stdoutLines[0]!)).toMatchObject({
+      ok: true, format: "cdxml", styleReference: { path: reference, source: "flag" }, warnings: []
+    });
   });
 
   it("keeps stereochemistry: the identity check still runs on the styled file", async () => {
@@ -112,36 +127,76 @@ describe("chemdraft export --style-reference", () => {
       expect(contents).toContain('BondLength="14.4"');
       for (const length of visibleBondLengths(contents)) expect(length).toBeCloseTo(14.4, 2);
     }
+    expect(io.stdoutLines.map(line => JSON.parse(line).styleReference)).toEqual([
+      { path: reference, source: "flag" }, { path: reference, source: "flag" }
+    ]);
+    expect(io.stderrLines).toContain("Exporting caffeine…");
   });
 
-  it(`uses ${CDXML_STYLE_REFERENCE_ENV} as the default reference`, async () => {
+  it("includes the selected reference in a failed CDXML job record", async () => {
+    const io = collectIo();
+    const out = join(directory, "invalid-structure.cdxml");
+    expect(await runExportCommand(["--smiles", "C1CC", "--out", out, "--style-reference", reference], io)).toBe(1);
+    expect(JSON.parse(io.stdoutLines[0]!)).toMatchObject({
+      ok: false, styleReference: { path: reference, source: "flag" }
+    });
+    await expect(readFile(out)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it(`uses and reports the reference named by ${CDXML_STYLE_REFERENCE_ENV}`, async () => {
     const out = join(directory, "from-env.cdxml");
     const io = collectIo();
-    expect(await runExportCommand(["--smiles", "CCO", "--out", out], io, { [CDXML_STYLE_REFERENCE_ENV]: reference })).toBe(0);
+    vi.stubEnv(CDXML_STYLE_REFERENCE_ENV, reference);
+    try {
+      expect(await runExportCommand(["--smiles", "CCO", "--out", out], io)).toBe(0);
+    } finally {
+      vi.unstubAllEnvs();
+    }
     expect(await readFile(out, "utf8")).toContain('BondLength="14.4"');
-    expect(JSON.parse(io.stdoutLines[0]!)).toMatchObject({ ok: true, styleReference: reference });
+    expect(JSON.parse(io.stdoutLines[0]!)).toMatchObject({
+      ok: true, styleReference: { path: reference, source: "environment" }
+    });
   });
 
-  it("lets --style-reference override the environment default", async () => {
+  it("lets --style-reference override the reference named in the environment", async () => {
     const other = join(directory, "other.cdxml");
     await writeFile(other, REFERENCE.replace('BondLength="14.40"', 'BondLength="20"'));
     const out = join(directory, "override.cdxml");
+    const io = collectIo();
     expect(await runExportCommand(
-      ["--smiles", "CCO", "--out", out, "--style-reference", other], collectIo(), { [CDXML_STYLE_REFERENCE_ENV]: reference }
+      ["--smiles", "CCO", "--out", out, "--style-reference", other],
+      io, { env: { [CDXML_STYLE_REFERENCE_ENV]: reference } }
     )).toBe(0);
+    expect(JSON.parse(io.stdoutLines[0]!).styleReference).toEqual({ path: other, source: "flag" });
     for (const length of visibleBondLengths(await readFile(out, "utf8"))) expect(length).toBeCloseTo(20, 2);
   });
 
-  it("ignores the environment default for formats other than CDXML", async () => {
+  it("ignores the environment reference for formats other than CDXML", async () => {
     const out = join(directory, "plain.mol");
     const io = collectIo();
-    expect(await runExportCommand(["--smiles", "CCO", "--out", out], io, { [CDXML_STYLE_REFERENCE_ENV]: join(directory, "missing.cdxml") })).toBe(0);
+    expect(await runExportCommand(["--smiles", "CCO", "--out", out], io, {
+      env: { [CDXML_STYLE_REFERENCE_ENV]: join(directory, "missing.cdxml") }
+    })).toBe(0);
     expect(JSON.parse(io.stdoutLines[0]!)).not.toHaveProperty("styleReference");
   });
 
-  it("leaves CDXML exports unstyled when no reference is configured", async () => {
+  it("omits the report and uses the built-in style even when a file exists in the home config directory", async () => {
     const out = join(directory, "unstyled.cdxml");
-    expect(await runExportCommand(["--smiles", "CCO", "--out", out], collectIo(), {})).toBe(0);
+    const home = join(directory, "home");
+    const config = join(home, ".config", "chemdraft");
+    await mkdir(config, { recursive: true });
+    await writeFile(join(config, "cdxml-style.cdxml"), REFERENCE);
+    const io = collectIo();
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("USERPROFILE", home);
+    vi.stubEnv("XDG_CONFIG_HOME", join(home, ".config"));
+    vi.stubEnv(CDXML_STYLE_REFERENCE_ENV, undefined);
+    try {
+      expect(await runExportCommand(["--smiles", "CCO", "--out", out], io)).toBe(0);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(JSON.parse(io.stdoutLines[0]!)).not.toHaveProperty("styleReference");
     // The root keeps only what an unstyled export always writes (the visible-hash version and the
     // page setup); no style attribute and no font table appear.
     const contents = await readFile(out, "utf8");
@@ -167,7 +222,7 @@ describe("chemdraft export --style-reference", () => {
 
   it.each([
     ["a missing file", () => join(directory, "nope.cdxml"), "ENOENT"],
-    ["a directory", () => directory, "it is not a file"]
+    ["a directory", () => directory, "it is not a regular file"]
   ])("fails the run with exit 2 for %s", async (_name, path, reason) => {
     const io = collectIo();
     const out = join(directory, "never.cdxml");
@@ -180,7 +235,9 @@ describe("chemdraft export --style-reference", () => {
     const broken = join(directory, "broken.cdxml");
     await writeFile(broken, '<?xml version="1.0"?><CDXML BondLength="0"/>');
     const io = collectIo();
-    expect(await runExportCommand(["--smiles", "CCO", "--out", join(directory, "never2.cdxml")], io, { [CDXML_STYLE_REFERENCE_ENV]: broken })).toBe(2);
+    expect(await runExportCommand(["--smiles", "CCO", "--out", join(directory, "never2.cdxml")], io, {
+      env: { [CDXML_STYLE_REFERENCE_ENV]: broken }
+    })).toBe(2);
     const message = io.stderrLines.join("\n");
     expect(message).toContain(CDXML_STYLE_REFERENCE_ENV);
     expect(message).toContain('BondLength="0" is not a usable value');
@@ -189,7 +246,7 @@ describe("chemdraft export --style-reference", () => {
 
 describe("CDXML style reference round trip", () => {
   it("re-imports a styled export: root settings merged with page setup, one font table, identity kept", async () => {
-    const loaded = await loadStyleReference(reference);
+    const loaded = await loadStyleReference({ path: reference, source: "flag" });
     const built = await buildSmilesDocument(CAFFEINE, { name: "caffeine", drawingStyle: loaded.drawingStyle });
     // A landscape page is not the plain default page, so the root also carries page setup (PrintMargins).
     const document = applyPatches(built.document, [

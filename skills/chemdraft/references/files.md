@@ -104,21 +104,28 @@ pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft export --batch 
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft export --batch "$scratch/choices.json" --out "$scratch/choices.smi" --format smi
 ```
 
-CDXML exports may follow a house style. `--style-reference` names a CDXML
-file whose bond length, line widths, hash and bond spacing, chain angle and
-label font, size and face the export copies; the molecule is scaled to that
-bond length and the file declares those settings. The owner can set a default
-with `CHEMDRAFT_CDXML_STYLE_REFERENCE` (see [setup](setup.md)); MCP
-`export_structure` then applies it to every CDXML export and reports
-`styleReference`. Report any warning naming settings the reference left
-unset. Do not set or change the default yourself.
+CDXML exports use a style file only when named. Pass the user's path via
+`--style-reference` in the CLI or `styleReference` in MCP `export_structure`.
+Either takes precedence over the `CHEMDRAFT_CDXML_STYLE_REFERENCE` variable
+in its process environment. With neither, CDXML uses ChemDraft's built-in
+style and omits the `styleReference` result field. A result that uses a
+reference includes its `path` and `source` (`"flag"`, `"argument"`, or
+`"environment"`) in that field. [Environment setup](setup.md)
+
+The reference supplies bond length, line widths, hash and bond spacing,
+chain angle and label font, size and face. ChemDraft scales the molecule to
+that bond length and declares the settings in the exported file. Report any
+warning naming settings the reference left unset.
 
 ```sh
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft export --smiles 'CCO' --out "$scratch/ethanol.cdxml" --style-reference "$scratch/house-style.cdxml"
 ```
 
-MCP takes one `smiles`, required `format`, optional `outDir` root; it creates
-a fresh child directory. It has no batch input, so a multi-record SDF or
+MCP takes one `smiles`, required `format`, an optional `outDir` root and,
+for CDXML only, an optional `styleReference` path. The path must point to a
+regular `.cdxml` file up to 5 MB on the server and follow the CLI's safe
+output path and filename rules. An invalid reference fails before MCP
+creates its output directory. MCP has no batch input, so a multi-record SDF or
 SMILES dataset needs the CLI `--batch` form above. SDF records include
 `SMILES`, `Index` and `Name`.
 For a batch combined dataset, a failed job is omitted from the written

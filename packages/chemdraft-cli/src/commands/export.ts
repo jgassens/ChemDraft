@@ -1,18 +1,11 @@
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { basename, dirname, extname, join, resolve } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
+import { basename, dirname, extname, join } from "node:path";
 
-import {
-  nativeDrawingStyleFromCdxmlStyle,
-  openChemDraftPayload,
-  readCdxmlDocumentStyle,
-  type CdxmlDocumentStyle
-} from "@chemdraft/cdx-compat";
+import { openChemDraftPayload, type CdxmlDocumentStyle } from "@chemdraft/cdx-compat";
 import {
   moleculeToMolfileV2000,
   moleculeToMolfileV3000,
-  type MoleculeObject,
-  type NativeDrawingStyle
+  type MoleculeObject
 } from "@chemdraft/chem-core";
 import { exportDocumentToCdxml, repeatUnitExportWarnings, type ExportWarning } from "@chemdraft/export-engine";
 import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
@@ -28,6 +21,14 @@ import {
   type BuiltSmilesDocument
 } from "../document";
 import { installNodeEngines } from "../engine";
+import {
+  loadStyleReference,
+  resolveStyleReference,
+  styleReferenceReport,
+  styleReferenceWarnings,
+  CDXML_STYLE_REFERENCE_ENV,
+  type LoadedStyleReference
+} from "../styleReference";
 import { installPdfTextMetrics } from "../pdfTextMetrics";
 import {
   CliUsageError,
@@ -69,19 +70,14 @@ interface ParsedArguments {
   styleReference?: string;
 }
 
-/** Names a CDXML file whose drawing settings every CDXML export uses unless --style-reference
- *  names another. Set it in the MCP server's environment to give agent exports a house style. */
-export const CDXML_STYLE_REFERENCE_ENV = "CHEMDRAFT_CDXML_STYLE_REFERENCE";
-
-const MAX_STYLE_REFERENCE_BYTES = 5 * 1024 * 1024;
-
-/** A style reference that loaded: CDXML settings for the file header, the matching native
- *  drawing style for the molecule, and the CDXML attributes the reference left unset. */
-export interface LoadedStyleReference {
-  path: string;
-  style: CdxmlDocumentStyle;
-  drawingStyle: Partial<NativeDrawingStyle>;
-  missing: string[];
+/** How a caller other than the command line runs the export. */
+export interface ExportCommandOptions {
+  /** The environment the style-reference resolver reads; process.env by default. */
+  env?: NodeJS.ProcessEnv;
+  /** A style reference the caller already resolved and loaded (the MCP server validates its
+   *  `styleReference` argument before it creates any output). When given, the command reads
+   *  neither --style-reference nor the environment: `loaded` undefined means no reference. */
+  resolvedStyleReference?: { loaded: LoadedStyleReference | undefined };
 }
 
 export const exportHelp = `ChemDraft headless document exporter
@@ -103,7 +99,10 @@ Options:
   --help                            Print this help
 
 Environment:
-  ${CDXML_STYLE_REFERENCE_ENV}    Default --style-reference for every CDXML export
+  ${CDXML_STYLE_REFERENCE_ENV}    CDXML file to use when --style-reference is absent. CDXML exports
+                                    keep ChemDraft's own style if neither names a reference. When a
+                                    reference is used, results report its path and source ("flag" or
+                                    "environment") in styleReference.
 
 Output:
   One JSON line per structure is written to stdout. Progress is written to stderr.
@@ -180,39 +179,13 @@ function withStyleReference(parsed: ParsedArguments, styleReference: string | un
   return { ...parsed, styleReference };
 }
 
-/** The reference this export uses: the option, else the environment default, and only for CDXML. */
-function styleReferencePath(parsed: ParsedArguments, env: NodeJS.ProcessEnv): { path: string; source: string } | undefined {
-  if (parsed.styleReference !== undefined) return { path: parsed.styleReference, source: "--style-reference" };
-  const configured = env[CDXML_STYLE_REFERENCE_ENV]?.trim();
-  if (!configured || parsed.format !== "cdxml") return undefined;
-  const expanded = configured === "~" || configured.startsWith("~/") ? join(homedir(), configured.slice(1)) : configured;
-  return { path: resolve(expanded), source: CDXML_STYLE_REFERENCE_ENV };
-}
-
-/** Read a CDXML style reference, failing the whole run (exit 2) with the reason when it cannot be used. */
-export async function loadStyleReference(path: string, source = "--style-reference"): Promise<LoadedStyleReference> {
-  const unusable = (reason: string) => new CliUsageError(`CDXML style reference "${path}" (${source}) cannot be used: ${reason}`);
-  let contents: string;
-  try {
-    const info = await stat(path);
-    if (!info.isFile()) throw unusable("it is not a file.");
-    if (info.size > MAX_STYLE_REFERENCE_BYTES) throw unusable(`it is larger than ${MAX_STYLE_REFERENCE_BYTES} bytes.`);
-    contents = await readFile(path, "utf8");
-  } catch (error) {
-    if (error instanceof CliUsageError) throw error;
-    throw unusable(error instanceof Error ? error.message : String(error));
-  }
-  try {
-    const { style, missing } = readCdxmlDocumentStyle(contents);
-    return { path, style, drawingStyle: nativeDrawingStyleFromCdxmlStyle(style), missing };
-  } catch (error) {
-    throw unusable(error instanceof Error ? error.message : String(error));
-  }
-}
-
-function styleReferenceWarnings(reference: LoadedStyleReference | undefined): string[] {
-  if (reference === undefined || reference.missing.length === 0) return [];
-  return [`CDXML style reference "${reference.path}" sets no ${reference.missing.join(", ")}; ChemDraft's own values were kept for those.`];
+/** The loaded reference this export uses, or undefined. Only CDXML takes one: --style-reference
+ *  with another format is already a usage error, and the environment variable is ignored for it. */
+async function exportStyleReference(parsed: ParsedArguments, options: ExportCommandOptions): Promise<LoadedStyleReference | undefined> {
+  if (parsed.format !== "cdxml") return undefined;
+  if (options.resolvedStyleReference !== undefined) return options.resolvedStyleReference.loaded;
+  const resolved = resolveStyleReference({ flag: parsed.styleReference, env: options.env ?? process.env });
+  return resolved === undefined ? undefined : loadStyleReference(resolved);
 }
 
 async function readJobs(path: string): Promise<ExportJob[]> {
@@ -444,14 +417,14 @@ async function runPerJobExport(
         out,
         format,
         bytes,
-        ...(styleReference === undefined ? {} : { styleReference: styleReference.path }),
+        ...styleReferenceReport(styleReference),
         layout: built.layout,
         warnings: [...styleReferenceWarnings(styleReference), ...built.warnings, ...exported.warnings]
       });
       writeProgress(io, `Wrote ${out}`);
     } catch (error) {
       const message = jobErrorMessage(error, job);
-      writeJsonLine(io, { name: job.name, smiles: job.smiles, ok: false, error: message });
+      writeJsonLine(io, { name: job.name, smiles: job.smiles, ok: false, error: message, ...styleReferenceReport(styleReference) });
       writeProgress(io, `Failed ${job.name}: ${message}`);
       allSucceeded = false;
     }
@@ -588,7 +561,7 @@ async function runCombinedExport(
 export async function runExportCommand(
   argv: readonly string[],
   io: CliIo = defaultCliIo,
-  env: NodeJS.ProcessEnv = process.env
+  options: ExportCommandOptions = {}
 ): Promise<CliExitCode> {
   try {
     const parsed = parseArguments(argv);
@@ -597,9 +570,7 @@ export async function runExportCommand(
       return cliExitCode.ok;
     }
 
-    const referencePath = styleReferencePath(parsed, env);
-    const styleReference = referencePath === undefined ? undefined
-      : await loadStyleReference(referencePath.path, referencePath.source);
+    const styleReference = await exportStyleReference(parsed, options);
 
     installNodeEngines();
 

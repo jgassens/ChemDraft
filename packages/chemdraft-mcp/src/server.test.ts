@@ -6,6 +6,7 @@ import {
   readdir,
   rm,
   stat,
+  truncate,
   utimes,
   writeFile
 } from "node:fs/promises";
@@ -20,7 +21,7 @@ import { createEmptyDocument, serializeDocument, type MoleculeObject } from "@ch
 import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import { runRenderDocumentCommand } from "../../chemdraft-cli/src/commands/renderDocument";
 import { NMR_PLUGIN_DIR_ENV, NMR_PLUGIN_ID, runNmrCommand } from "../../chemdraft-cli/src/commands/nmr";
-import { CDXML_STYLE_REFERENCE_ENV } from "../../chemdraft-cli/src/commands/export";
+import { CDXML_STYLE_REFERENCE_ENV, MAX_STYLE_REFERENCE_BYTES } from "../../chemdraft-cli/src/styleReference";
 import { molfileCoordinateScale } from "@chemdraft/layout-engine";
 import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import { metalHydrogenLossCases, preservedRadicalExportCases, radicalExportCases, readAtomStates } from "../../document-workflow-core/test/radicalExportFixtures";
@@ -674,13 +675,14 @@ describe("ChemDraft MCP server", () => {
   it.each(["cdxml", "mol", "sdf", "smi"] as const)(
     "returns %s export contents inline along with the path",
     async (format) => {
-      const client = await connect();
+      const client = await connect({ env: {} });
       const result = await client.callTool({
         name: "export_structure",
         arguments: { smiles: "CC(=O)Oc1ccccc1C(=O)O", format }
       });
       expect(result.isError).not.toBe(true);
       expect(jsonPayload(result.content).out).toMatch(new RegExp(`\\.${format}$`));
+      expect(jsonPayload(result.content)).not.toHaveProperty("styleReference");
       expect(textBlocks(result.content).length).toBeGreaterThan(1);
       if (format === "mol" || format === "sdf") {
         const contents = textBlocks(result.content).find(text => /V(?:2000|3000)/.test(text))!;
@@ -697,18 +699,106 @@ describe("ChemDraft MCP server", () => {
     temporaryDirectories.push(directory);
     const reference = join(directory, "reference.cdxml");
     await writeFile(reference, '<?xml version="1.0"?><CDXML BondLength="14.4" LabelSize="10"><page id="1"/></CDXML>');
-    const previous = process.env[CDXML_STYLE_REFERENCE_ENV];
-    process.env[CDXML_STYLE_REFERENCE_ENV] = reference;
+    vi.stubEnv(CDXML_STYLE_REFERENCE_ENV, reference);
     try {
       const client = await connect();
       const result = await client.callTool({ name: "export_structure", arguments: { smiles: "CCO", format: "cdxml" } });
       expect(result.isError).not.toBe(true);
-      expect(jsonPayload(result.content)).toMatchObject({ ok: true, styleReference: reference });
+      expect(jsonPayload(result.content)).toMatchObject({
+        ok: true, styleReference: { path: reference, source: "environment" }
+      });
       expect(textBlocks(result.content).join("\n")).toContain('BondLength="14.4"');
     } finally {
-      if (previous === undefined) delete process.env[CDXML_STYLE_REFERENCE_ENV];
-      else process.env[CDXML_STYLE_REFERENCE_ENV] = previous;
+      vi.unstubAllEnvs();
     }
+  }, 60_000);
+
+  it("uses the argument in preference to the server environment and reports its source", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "chemdraft-mcp-style-"));
+    temporaryDirectories.push(directory);
+    const reference = join(directory, "argument.CDXML");
+    await writeFile(reference, '<CDXML BondLength="20" LabelSize="11"><page id="1"/></CDXML>');
+    const client = await connect({ env: { [CDXML_STYLE_REFERENCE_ENV]: join(directory, "missing.cdxml") } });
+    const result = await client.callTool({
+      name: "export_structure",
+      arguments: { smiles: "CCO", format: "cdxml", styleReference: reference, outDir: directory }
+    });
+    expect(result.isError).not.toBe(true);
+    expect(jsonPayload(result.content)).toMatchObject({
+      ok: true, styleReference: { path: reference, source: "argument" }
+    });
+    expect(textBlocks(result.content).join("\n")).toContain('BondLength="20"');
+  }, 60_000);
+
+  it("preserves the reference report when a CDXML export fails after validation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "chemdraft-mcp-style-"));
+    temporaryDirectories.push(directory);
+    const reference = join(directory, "reference.cdxml");
+    await writeFile(reference, '<CDXML BondLength="20"/>');
+    const client = await connect({ env: {} });
+    const result = await client.callTool({
+      name: "export_structure",
+      arguments: { smiles: "C1CC", format: "cdxml", styleReference: reference, outDir: directory }
+    });
+    expect(result.isError).toBe(true);
+    expect(jsonPayload(result.content)).toMatchObject({
+      ok: false, styleReference: { path: reference, source: "argument" }
+    });
+  }, 60_000);
+
+  it.each([
+    ["missing.cdxml", "no such file"],
+    ["directory.cdxml", "it is not a regular file"],
+    ["reference.txt", "does not have a .cdxml extension"],
+    ["NUL.cdxml", "Unsafe output filename"],
+    ["bad,name.cdxml", "Invalid batch name"],
+    ["sub/../reference.cdxml", "parent traversal"],
+    ["large.cdxml", "input limit"],
+    ["broken.cdxml", "not well-formed XML"],
+    ["other.cdxml", "no top-level <CDXML> element"],
+    ["invalid-style.cdxml", 'BondLength="0" is not a usable value'],
+    ["deep.cdxml", "Maximum nested tags exceeded"]
+  ])("rejects styleReference %s before creating output", async (name, reason) => {
+    const directory = await mkdtemp(join(tmpdir(), "chemdraft-mcp-style-"));
+    temporaryDirectories.push(directory);
+    const valid = '<CDXML BondLength="20"><page id="1"/></CDXML>';
+    const fallback = join(directory, "fallback.cdxml");
+    await writeFile(fallback, valid);
+    await writeFile(join(directory, "reference.cdxml"), valid);
+    await writeFile(join(directory, "reference.txt"), valid);
+    await mkdir(join(directory, "directory.cdxml"));
+    await writeFile(join(directory, "large.cdxml"), valid);
+    await truncate(join(directory, "large.cdxml"), MAX_STYLE_REFERENCE_BYTES + 1);
+    await writeFile(join(directory, "broken.cdxml"), "<CDXML><page></CDXML>");
+    await writeFile(join(directory, "other.cdxml"), "<svg/>");
+    await writeFile(join(directory, "invalid-style.cdxml"), '<CDXML BondLength="0"/>');
+    await writeFile(join(directory, "deep.cdxml"), `<CDXML>${"<group>".repeat(150)}${"</group>".repeat(150)}</CDXML>`);
+
+    const outDir = join(directory, "output");
+    const client = await connect({ env: { [CDXML_STYLE_REFERENCE_ENV]: fallback } });
+    // Keep ".." in the input so the shared validator sees the actual path the caller supplied.
+    const styleReference = `${directory}/${name}`;
+    const result = await client.callTool({
+      name: "export_structure",
+      arguments: { smiles: "CCO", format: "cdxml", styleReference, outDir }
+    });
+    expect(result.isError).toBe(true);
+    expect(textBlocks(result.content)[0]).toContain(styleReference);
+    expect(textBlocks(result.content)[0]).toContain(reason);
+    await expect(access(outDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("ignores the environment for other formats and rejects an explicit style argument for them", async () => {
+    const client = await connect({ env: { [CDXML_STYLE_REFERENCE_ENV]: "missing.cdxml" } });
+    const request = { name: "export_structure", arguments: { smiles: "CCO", format: "mol" } };
+    const plain = await client.callTool(request);
+    expect(plain.isError).not.toBe(true);
+    expect(jsonPayload(plain.content)).not.toHaveProperty("styleReference");
+    const refused = await client.callTool({
+      ...request, arguments: { ...request.arguments, styleReference: "style.cdxml" }
+    });
+    expect(refused.isError).toBe(true);
+    expect(textBlocks(refused.content)[0]).toContain("styleReference applies only to CDXML exports");
   }, 60_000);
 
   it("returns PDF exports as embedded resources along with the path", async () => {

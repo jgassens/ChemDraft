@@ -1,4 +1,4 @@
-import { XMLParser, XMLValidator } from "fast-xml-parser";
+import { XMLParser } from "fast-xml-parser";
 import {
   ChemDraftDocumentSchema,
   DocumentSchemaVersion,
@@ -71,8 +71,15 @@ import {
 } from "./cdxBinary";
 import { abbreviationExpansionIssue, cdxmlAtomChemistry, cdxmlAtomNativeState, elementFromCdxmlAtom, restoreCdxmlAbbreviations } from "./abbreviations";
 import { cdxmlToCssPx, cssPxToCdxml, formatNumber, formatPoint } from "./coordinates";
-import { countCdxmlFontEntries, indexCdxmlFonts, lookupCdxmlFont, trackCdxmlFontTable, type CdxmlFont } from "./cdxmlFontIndex";
+import {
+  CDXML_FONT_NAME_LIMIT, CDXML_FONT_ENTRY_LIMIT, cdxmlFontEntryChars, cdxmlFontEntryTooLong,
+  countCdxmlFontEntries, indexCdxmlFonts, lookupCdxmlFont, trackCdxmlFontTable, type CdxmlFont
+} from "./cdxmlFontIndex";
 import { cdxmlDocumentStyleFontNames, cdxmlDocumentStyleHeader, type CdxmlDocumentStyle } from "./documentStyle";
+import {
+  childElements, elementView, parseCdxml, stripByteOrderMark, xmlRootElement,
+  type OrderedXmlNode, type OrderedXmlTree, type XmlElementView
+} from "./cdxmlXml";
 
 export {
   cdxmlDocumentStyleFontNames,
@@ -266,25 +273,6 @@ const EncodedVisibleHashVersion = "|x|32";
 // without a native envelope; other readers can ignore it and use the fitted visible page.
 const PageOffsetAttribute = "attrib4346";
 
-const xmlParser = new XMLParser({
-  preserveOrder: true,
-  ignoreAttributes: false,
-  attributeNamePrefix: "",
-  parseAttributeValue: false,
-  trimValues: false,
-  // Decode references once in text and attributes, without enabling named HTML entities.
-  // The custom decoder also leaves document-defined entities unexpanded.
-  entityDecoder: {
-    decode: decodeXmlReferences,
-    reset() {},
-    setExternalEntities() {},
-    addInputEntities() {},
-    setXmlVersion() {}
-  },
-  commentPropName: "#comment",
-  cdataPropName: "#cdata"
-});
-
 // Frozen parser options from the released origin/main hash path. In particular its default
 // decoder leaves numeric references literal. Do not substitute the current XML decoder here.
 const legacyVisibleXmlParser = new XMLParser({
@@ -323,15 +311,6 @@ const standardCdxmlColorTable = [
   "#0000ff",
   "#ff00ff"
 ] as const;
-
-type OrderedXmlNode = Record<string, unknown>;
-type OrderedXmlTree = OrderedXmlNode[];
-
-interface XmlElementView {
-  name: string;
-  children: OrderedXmlTree;
-  attributes: Record<string, string>;
-}
 
 interface IdAllocator {
   next(): string;
@@ -376,20 +355,6 @@ interface CdxmlColorTable {
   copies?: { entries: number; shared?: Readonly<Record<string, string>>; partial?: boolean };
 }
 
-/**
- * Import cap on one font entry. Every caption keeps the fonts its runs name (and its own style
- * names its font again), so an unbounded font name was copied into every caption's saved state:
- * a 331 KB crafted file of 4,000 captions over one long name saved ~48.7 MB of native JSON
- * (Codex security finding). Real font names are short (a Windows face name fits in 32 characters,
- * LF_FACESIZE), so 256 characters is far above any real font yet keeps each caption's copy small.
- * The whole entry (id, charset, name and any other attribute, keys included) is capped too, since
- * the entry is what each caption stores. A font over either cap is
- * not used: text set in it keeps the default font, with one warning naming the font ids. A name is
- * never truncated, which would silently set the text in a different font.
- */
-const CDXML_FONT_NAME_LIMIT = 256;
-const CDXML_FONT_ENTRY_LIMIT = 512;
-
 /** The imported font table, indexed by id (the first entry wins, as a linear search did). */
 interface CdxmlImportFonts {
   table: readonly CdxmlFont[];
@@ -400,17 +365,6 @@ interface CdxmlImportFonts {
   tableChars: number;
   /** Ids of fonts left out for being over the per-font caps (a text naming one is marked). */
   omittedIds: ReadonlySet<string>;
-}
-
-function cdxmlFontEntryChars(font: Readonly<Record<string, unknown>>): number {
-  let chars = 0;
-  for (const [key, value] of Object.entries(font)) chars += key.length + String(value).length;
-  return chars;
-}
-
-/** Over either per-font cap (CDXML_FONT_NAME_LIMIT, CDXML_FONT_ENTRY_LIMIT): the font is not used. */
-function cdxmlFontEntryTooLong(font: Readonly<Record<string, unknown>>, chars = cdxmlFontEntryChars(font)): boolean {
-  return String(font.name ?? "").length > CDXML_FONT_NAME_LIMIT || chars > CDXML_FONT_ENTRY_LIMIT;
 }
 
 /** A font id as a warning names it: an oversized entry's id may itself be long, so only a short number is quoted. */
@@ -870,7 +824,7 @@ export function openChemDraftPayload(contents: string, sourceFormat: "CDXML" | "
 
   let tree: OrderedXmlTree;
   try {
-    tree = parseCdxml(contents, xmlParser, sourceFormat);
+    tree = parseCdxml(contents, undefined, sourceFormat);
   } catch (error) {
     return {
       source: "external-cdxml",
@@ -880,7 +834,7 @@ export function openChemDraftPayload(contents: string, sourceFormat: "CDXML" | "
 
   // XML that is not CDXML at all — `.cdxml` is also PowerShell's cmdlet-definition extension, and
   // those files are XML too. Name what the file is instead of reporting "no page elements".
-  const rootName = xmlRootElementName(tree);
+  const rootName = xmlRootElement(tree)?.name;
   if (rootName !== undefined && rootName.toLowerCase() !== "cdxml") {
     return {
       source: "external-cdxml",
@@ -6312,83 +6266,6 @@ function importUnknownCompatibilityObject(element: XmlElementView, pageIndex: nu
   };
 }
 
-/**
- * fast-xml-parser's validator matches attribute values with `(([\s\S])*?)`, a group repeated once per
- * character, which V8 runs recursively: a value of a few hundred thousand characters overflows the
- * stack. The embedded ChemDraft payload is exactly such a value — base64 of the whole document — so
- * every large drawing failed to save (the export re-parses its own output for the visible hash) and a
- * large saved file could not be reopened. Validation only checks structure, so it runs on a copy with
- * long values shortened; the parser, whose attribute pattern is flat, reads the real text.
- */
-const VALIDATION_ATTRIBUTE_VALUE_LIMIT = 4096;
-
-// A linear scan, not a regular expression: even `"[^"<]{4096,}"` keeps backtracking state per
-// character in V8 and overflows on a multi-megabyte match. It reads quotes only inside markup —
-// never in text, comments, or CDATA. Text may hold a raw quote (the writer escapes only `&`, `<`
-// and `>` there), and a scan keyed on every `=` took `pH = "7` in a caption for an attribute: the
-// quote paired with a later one, the payload after it went unshortened, and the app refused to
-// reopen its own file.
-function withLongAttributeValuesShortened(xml: string): string {
-  let result = "";
-  let copiedUpTo = 0;
-  let cursor = 0;
-  for (;;) {
-    const open = xml.indexOf("<", cursor);
-    if (open === -1) {
-      break;
-    }
-    const skipTo = xml.startsWith("<!--", open)
-      ? xml.indexOf("-->", open + 4)
-      : xml.startsWith("<![CDATA[", open)
-        ? xml.indexOf("]]>", open + 9)
-        : undefined;
-    if (skipTo !== undefined) {
-      if (skipTo === -1) {
-        break;
-      }
-      cursor = skipTo + 3;
-      continue;
-    }
-    // A tag (or `<?…?>`, `<!DOCTYPE …>`): quoted values until the `>` outside them.
-    let index = open + 1;
-    for (; index < xml.length; index += 1) {
-      const character = xml[index];
-      if (character === ">") {
-        break;
-      }
-      if (character !== '"' && character !== "'") {
-        continue;
-      }
-      const close = xml.indexOf(character, index + 1);
-      if (close === -1) {
-        // Unterminated: nothing to shorten, and the validator reports the real error.
-        return copiedUpTo === 0 ? xml : result + xml.slice(copiedUpTo);
-      }
-      const lessThan = xml.indexOf("<", index + 1);
-      if (close - index - 1 >= VALIDATION_ATTRIBUTE_VALUE_LIMIT && (lessThan === -1 || lessThan > close)) {
-        result += `${xml.slice(copiedUpTo, index + 1)}…`;
-        copiedUpTo = close;
-      }
-      index = close;
-    }
-    cursor = index + 1;
-  }
-  return copiedUpTo === 0 ? xml : result + xml.slice(copiedUpTo);
-}
-
-function parseCdxml(contents: string, parser = xmlParser, sourceFormat: "CDXML" | "CDX" = "CDXML"): OrderedXmlTree {
-  const xml = stripByteOrderMark(contents);
-  const validation = XMLValidator.validate(withLongAttributeValuesShortened(xml));
-  if (validation !== true) {
-    throw new Error(validation.err.msg);
-  }
-  const parsed = parser.parse(xml) as unknown;
-  if (!Array.isArray(parsed)) {
-    throw new Error(`${sourceFormat} parser returned an unexpected document shape.`);
-  }
-  return parsed as OrderedXmlTree;
-}
-
 function visibleHashForParsedTree(tree: OrderedXmlTree): string {
   return sha256Utf8Hex(canonicalizeXmlTree(stripChemDraftObjectTags(tree)));
 }
@@ -6467,17 +6344,6 @@ function findChemDraftObjectTags(tree: OrderedXmlTree): Record<string, string> {
   return tags;
 }
 
-/** The document element's name, skipping the XML declaration and other processing instructions. */
-function xmlRootElementName(tree: OrderedXmlTree): string | undefined {
-  for (const node of tree) {
-    const element = elementView(node);
-    if (element && !element.name.startsWith("?") && !element.name.startsWith("!")) {
-      return element.name;
-    }
-  }
-  return undefined;
-}
-
 function findElements(tree: OrderedXmlTree, name: string): XmlElementView[] {
   const matches: XmlElementView[] = [];
   for (const node of tree) {
@@ -6491,32 +6357,6 @@ function findElements(tree: OrderedXmlTree, name: string): XmlElementView[] {
     matches.push(...findElements(element.children, name));
   }
   return matches;
-}
-
-function childElements(parent: XmlElementView, name: string): XmlElementView[] {
-  return parent.children.flatMap((node) => {
-    const element = elementView(node);
-    return element?.name === name ? [element] : [];
-  });
-}
-
-function elementView(node: OrderedXmlNode): XmlElementView | undefined {
-  const name = Object.keys(node).find((key) => key !== ":@");
-  if (!name || name === "#text" || name === "#comment" || name === "#cdata") {
-    return undefined;
-  }
-  const rawChildren = node[name];
-  const children = Array.isArray(rawChildren) ? rawChildren as OrderedXmlTree : [];
-  const attributes = attributesFromNode(node);
-  return { name, children, attributes };
-}
-
-function attributesFromNode(node: OrderedXmlNode): Record<string, string> {
-  const raw = node[":@"];
-  if (!isRecord(raw)) {
-    return {};
-  }
-  return Object.fromEntries(Object.entries(raw).map(([key, value]) => [key, String(value)]));
 }
 
 function isChemDraftObjectTag(element: XmlElementView): boolean {
@@ -7326,22 +7166,6 @@ function parseNumber(value: string | undefined): number | undefined {
 const XML_TEXT_SPECIAL = /[&<>\r]/;
 const XML_ATTRIBUTE_SPECIAL = /[&<>"'\r\n\t]/;
 
-function decodeXmlReferences(value: string): string {
-  const xmlEntities: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
-  // A single replace never scans its replacement text: &amp;#10; stays literal &#10;.
-  return value.replace(/&(amp|lt|gt|quot|apos|#(?:[0-9]+|x[0-9a-fA-F]+));/g, (reference, entity: string) => {
-    if (entity[0] !== "#") return xmlEntities[entity];
-    const codePoint = entity[1] === "x" ? Number.parseInt(entity.slice(2), 16) : Number(entity.slice(1));
-    if (!(codePoint === 9 || codePoint === 10 || codePoint === 13
-      || (codePoint >= 0x20 && codePoint <= 0xd7ff)
-      || (codePoint >= 0xe000 && codePoint <= 0xfffd)
-      || (codePoint >= 0x10000 && codePoint <= 0x10ffff))) {
-      throw new Error(`Invalid XML character reference "${reference}".`);
-    }
-    return String.fromCodePoint(codePoint);
-  });
-}
-
 function escapeXmlText(value: string): string {
   if (!XML_TEXT_SPECIAL.test(value)) {
     return value;
@@ -7372,10 +7196,6 @@ function indent(value: string, spaces: number): string {
 
 function warning(code: string, message: string): CompatibilityConversionWarning {
   return { code, message };
-}
-
-function stripByteOrderMark(value: string): string {
-  return value.charCodeAt(0) === 0xfeff ? value.slice(1) : value;
 }
 
 function errorMessage(error: unknown): string {

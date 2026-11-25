@@ -19,7 +19,8 @@ import { runAnalyzeCommand } from "../../chemdraft-cli/src/commands/analyze";
 import { runDocumentCommand } from "../../chemdraft-cli/src/commands/document";
 import { runRenderDocumentCommand } from "../../chemdraft-cli/src/commands/renderDocument";
 import { MAX_DOCUMENT_BYTES } from "../../chemdraft-cli/src/documentInput";
-import { runExportCommand } from "../../chemdraft-cli/src/commands/export";
+import { runExportCommand, type ExportCommandOptions } from "../../chemdraft-cli/src/commands/export";
+import { loadStyleReference, resolveStyleReference, type LoadedStyleReference } from "../../chemdraft-cli/src/styleReference";
 import { runGridCommand } from "../../chemdraft-cli/src/commands/grid";
 import { runNameCommand } from "../../chemdraft-cli/src/commands/name";
 import { runNmrCommand } from "../../chemdraft-cli/src/commands/nmr";
@@ -31,6 +32,7 @@ import type { CliExitCode, CliIo, JsonLineResult } from "../../chemdraft-cli/src
 import { FigureStyles } from "../../chemdraft-cli/src/figureStyle";
 
 export type CliCommand = (argv: readonly string[], io: CliIo) => Promise<CliExitCode>;
+export type ExportCliCommand = (argv: readonly string[], io: CliIo, options?: ExportCommandOptions) => Promise<CliExitCode>;
 type OutputFileKind = "image" | "text" | "resource";
 type OutputFile = { path: string; kind: OutputFileKind };
 
@@ -55,6 +57,8 @@ export interface ChemDraftMcpDependencies {
   writeFile?: typeof writeFile;
   now?: () => number;
   tempDirectory?: () => string;
+  /** The server's environment, read for CHEMDRAFT_CDXML_STYLE_REFERENCE; process.env by default. */
+  env?: NodeJS.ProcessEnv;
   commands?: Partial<ChemDraftMcpCommands>;
 }
 
@@ -62,7 +66,7 @@ export interface ChemDraftMcpCommands {
   document: CliCommand;
   renderDocument: CliCommand;
   analyze: CliCommand;
-  export: CliCommand;
+  export: ExportCliCommand;
   grid: CliCommand;
   name: CliCommand;
   nmr: CliCommand;
@@ -96,6 +100,7 @@ const defaultDependencies: Omit<Required<ChemDraftMcpDependencies>, "commands"> 
   writeFile,
   now: Date.now,
   tempDirectory: tmpdir,
+  env: process.env,
   commands: {
     document: runDocumentCommand,
     renderDocument: runRenderDocumentCommand,
@@ -637,18 +642,34 @@ export function createChemDraftMcpServer(
   }));
 
   server.registerTool("export_structure", {
-    description: `Export a SMILES structure without changing its chemistry. Exact canonical isomeric SMILES matches use built-in template layouts at default bond length and report layout provenance. ${chemistryHonesty}`,
+    description: `Export a SMILES structure without changing its chemistry. Exact canonical isomeric SMILES matches use built-in template layouts at default bond length and report layout provenance. ${chemistryHonesty} ` +
+      "CDXML only: styleReference names an existing .cdxml file whose bond length, line widths and label font the export copies; " +
+      "without it the server's CHEMDRAFT_CDXML_STYLE_REFERENCE, if set, is used, and otherwise no style file. " +
+      "A CDXML result reports the reference used as styleReference {path, source}.",
     inputSchema: {
       smiles: z.string().min(1),
       format: z.enum(["cdxml", "pdf", "sdf", "mol", "smi"]),
-      outDir: z.string().min(1).optional()
+      outDir: z.string().min(1).optional(),
+      styleReference: z.string().min(1).optional()
     }
-  }, async ({ smiles, format, outDir }) => runTool(async () => {
+  }, async ({ smiles, format, outDir, styleReference }) => runTool(async () => {
+    if (styleReference !== undefined && format !== "cdxml") {
+      return errorResult(`styleReference applies only to CDXML exports, not format ${format}.`);
+    }
+    // Resolve and fully check the reference before any output directory or file exists, so a bad
+    // reference fails the call with its reason and leaves nothing behind. The argument wins over
+    // the server's environment variable; nothing else is ever consulted.
+    let loaded: LoadedStyleReference | undefined;
+    if (format === "cdxml") {
+      const resolved = resolveStyleReference({ argument: styleReference, env: runtime.dependencies.env });
+      if (resolved !== undefined) loaded = await loadStyleReference(resolved);
+    }
     const directory = await outputDirectory(runtime, outDir);
     const output = join(directory, `${slug(smiles)}.${format}`);
     const outcome = await runCommand(
-      runtime.dependencies.commands.export,
-      ["--smiles", smiles, "--format", format, "--out", output]
+      (argv, io) => runtime.dependencies.commands.export(argv, io, { resolvedStyleReference: { loaded } }),
+      ["--smiles", smiles, "--format", format, "--out", output],
+      loaded !== undefined
     );
     return response(runtime, outcome, succeeded(outcome) ? exportFiles(outcome.result, format) : []);
   }));

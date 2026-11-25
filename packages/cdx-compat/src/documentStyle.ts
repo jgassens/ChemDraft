@@ -1,5 +1,7 @@
-import { XMLParser, XMLValidator } from "fast-xml-parser";
 import type { NativeDrawingStyle } from "@chemdraft/chem-core";
+import { cdxmlFontEntryTooLong, indexCdxmlFonts, lookupCdxmlFont, type CdxmlFont } from "./cdxmlFontIndex";
+import { cdxmlLimits } from "./cdxmlLimits";
+import { childElements, parseCdxml, xmlRootElement, type XmlElementView } from "./cdxmlXml";
 
 /** The document-level drawing settings a CDXML file carries on its root `<CDXML>` element, in
  *  CDXML's own units: points, a percent of bond length for `bondSpacingPercent`, degrees for
@@ -53,32 +55,23 @@ const numericAttributes: readonly {
 // Font names land in CDXML attributes and in the SVG/CSS font stack, so only plain names pass.
 const safeFontName = /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/;
 
-const styleParser = new XMLParser({
-  ignoreAttributes: false,
-  attributeNamePrefix: "",
-  parseAttributeValue: false,
-  trimValues: false,
-  isArray: (name) => name === "font"
-});
-
 /** Read the drawing settings from a CDXML file's root element and font table. Throws with the
  *  offending attribute named when the file is not CDXML or a value is not a usable style. */
 export function readCdxmlDocumentStyle(contents: string): CdxmlDocumentStyleReadResult {
-  const text = contents.replace(/^﻿/, "");
-  const validation = XMLValidator.validate(text);
-  if (validation !== true) {
-    throw new Error(`The style reference is not well-formed XML: ${validation.err.msg} (line ${validation.err.line}).`);
+  let root: XmlElementView | undefined;
+  try {
+    root = xmlRootElement(parseCdxml(contents));
+  } catch (error) {
+    throw new Error(`The style reference is not well-formed XML: ${error instanceof Error ? error.message : String(error)}`);
   }
-  const parsed = styleParser.parse(text) as Record<string, unknown>;
-  const root = parsed.CDXML;
-  if (!isRecord(root)) {
+  if (root?.name !== "CDXML") {
     throw new Error("The style reference is not CDXML: it has no top-level <CDXML> element.");
   }
 
   const style: CdxmlDocumentStyle = {};
   const missing: string[] = [];
   for (const { field, attribute, min, max, integer, caption } of numericAttributes) {
-    const raw = root[attribute];
+    const raw = root.attributes[attribute];
     if (typeof raw !== "string" || raw.trim() === "") {
       if (!caption) missing.push(attribute);
       continue;
@@ -91,10 +84,10 @@ export function readCdxmlDocumentStyle(contents: string): CdxmlDocumentStyleRead
   }
 
   const fonts = fontTable(root);
-  const labelFont = fontNameFor(root.LabelFont, fonts, "LabelFont");
+  const labelFont = fontNameFor(root.attributes.LabelFont, fonts, "LabelFont");
   if (labelFont === undefined) missing.push("LabelFont");
   else style.labelFontName = labelFont;
-  const captionFont = fontNameFor(root.CaptionFont, fonts, "CaptionFont");
+  const captionFont = fontNameFor(root.attributes.CaptionFont, fonts, "CaptionFont");
   if (captionFont !== undefined) style.captionFontName = captionFont;
 
   return { style, missing };
@@ -167,24 +160,26 @@ export function cdxmlDocumentStyleHeader(
   return { attributes };
 }
 
-function fontTable(root: Record<string, unknown>): Map<string, string> {
-  const table = root.fonttable;
-  const fonts = new Map<string, string>();
-  if (!isRecord(table) || !Array.isArray(table.font)) return fonts;
-  for (const font of table.font) {
-    if (isRecord(font) && typeof font.id === "string" && typeof font.name === "string") fonts.set(font.id, font.name);
+function fontTable(root: XmlElementView): ReadonlyMap<string | undefined, CdxmlFont> {
+  const fonts = childElements(root, "fonttable").flatMap(table => childElements(table, "font").map(font => font.attributes));
+  if (fonts.length > cdxmlLimits.fontTable) {
+    throw new Error(`The style reference exceeds the CDXML import limit of ${cdxmlLimits.fontTable} font entries.`);
   }
-  return fonts;
+  return indexCdxmlFonts(fonts, font => font.id);
 }
 
-function fontNameFor(id: unknown, fonts: ReadonlyMap<string, string>, attribute: string): string | undefined {
-  if (typeof id !== "string") return undefined;
-  const name = fonts.get(id);
+function fontNameFor(id: string | undefined, fonts: ReadonlyMap<string | undefined, CdxmlFont>, attribute: string): string | undefined {
+  if (id === undefined) return undefined;
+  const font = lookupCdxmlFont(fonts, id);
+  const name = font?.name;
   if (name === undefined) {
     throw new Error(`The style reference's ${attribute}="${id}" names no font in its <fonttable>.`);
   }
   if (!safeFontName.test(name)) {
     throw new Error(`The style reference's ${attribute} font name "${name}" is not a plain font name.`);
+  }
+  if (font && cdxmlFontEntryTooLong(font)) {
+    throw new Error(`The style reference's ${attribute} font entry exceeds the CDXML import size limit.`);
   }
   return name;
 }
@@ -200,8 +195,4 @@ function formatPoints(value: number): string {
 
 function roundStyleNumber(value: number): number {
   return Number(value.toFixed(4));
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

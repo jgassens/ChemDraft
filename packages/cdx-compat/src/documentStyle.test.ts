@@ -59,6 +59,23 @@ describe("readCdxmlDocumentStyle", () => {
     ]);
   });
 
+  it("reads the style when a ChemDraft payload contains a long attribute", () => {
+    const contents = `<CDXML BondLength="14.4"><objecttag Value="${"A".repeat(500_000)}"/></CDXML>`;
+    expect(readCdxmlDocumentStyle(contents).style).toEqual({ bondLengthPt: 14.4 });
+  });
+
+  it("decodes predefined XML references without expanding a document-defined entity", () => {
+    expect(readCdxmlDocumentStyle('<CDXML BondLength="14&#46;4"/>').style).toEqual({ bondLengthPt: 14.4 });
+    const contents = '<!DOCTYPE CDXML [<!ENTITY length "14.4">]><CDXML BondLength="&length;"/>';
+    expect(() => readCdxmlDocumentStyle(contents)).toThrow('BondLength="&length;" is not a usable value');
+  });
+
+  it("rejects a referenced font entry that exceeds the CDXML import limit", () => {
+    const fonts = `<fonttable><font id="21" name="Helvetica" padding="${"a".repeat(512)}"/></fonttable>`;
+    expect(() => readCdxmlDocumentStyle(referenceCdxml('LabelFont="21"', fonts)))
+      .toThrow("LabelFont font entry exceeds the CDXML import size limit");
+  });
+
   it.each([
     ["a file that is not XML", "not xml <<<", "not well-formed XML"],
     ["XML that is not CDXML", '<?xml version="1.0"?><svg/>', "no top-level <CDXML> element"],
