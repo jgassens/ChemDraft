@@ -106,6 +106,38 @@ describe("Office task-pane selection", () => {
     await vi.waitFor(() => expect(officeDocument.removeHandlerAsync).toHaveBeenCalledOnce());
   });
 
+  it("closes the editor on Cancel, dropping edits and leaving the Office picture alone", async () => {
+    const { session, cleanup, select, structure, readSelectedStructure, replaceSelectedStructure } = paneSession();
+    await vi.waitFor(() => expect(session.snapshot().document).toBeDefined());
+    let drawing = session.snapshot().document!;
+    const { loadId } = session.snapshot();
+    const detach = session.attachEditor(loadId, () => drawing);
+    drawing = insertNativeTextObject(drawing, { x: 100, y: 100 }, "Figure label");
+    session.observeEditor();
+    expect(session.snapshot().dirty).toBe(true);
+    // A selection read still in flight must not reopen the editor after Cancel.
+    let finish!: (result: SelectionResult) => void;
+    readSelectedStructure.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const pending = session.refresh();
+    await session.cancel();
+    const idle = {
+      document: undefined, selected: false, dirty: false, busy: false, confirmDiscard: false, loadId: loadId + 1,
+      status: "Editing cancelled. Select a ChemDraft structure",
+    };
+    expect(session.snapshot()).toMatchObject(idle);
+    finish(structure);
+    await pending;
+    expect(session.snapshot()).toMatchObject(idle);
+    expect(replaceSelectedStructure).not.toHaveBeenCalled();
+    detach();
+
+    // Selecting a ChemDraft picture opens it again, from the Office picture rather than the dropped edits.
+    select(structure);
+    await vi.waitFor(() => expect(session.snapshot()).toMatchObject({ selected: true, dirty: false, loadId: loadId + 2 }));
+    expect(session.snapshot().document?.pages[0]?.objects).toHaveLength(1);
+    cleanup();
+  });
+
   it("ignores an older selection read that completes after a newer selection", async () => {
     const { session, readSelectedStructure, structure } = paneSession();
     await vi.waitFor(() => expect(session.snapshot().selected).toBe(true));

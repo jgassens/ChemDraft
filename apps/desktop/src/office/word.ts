@@ -8,6 +8,9 @@ import { A, PIC, OPC, PKG_REL, R, WORD, WP, WP14, child, decodeXml, hasCrop, par
 interface WordRange {
   getOoxml(): { value: string };
   insertOoxml(xml: string, location: "Replace"): WordRange;
+  // WordApi 1.3; feature-detected before use.
+  load?(fields: "isEmpty"): WordRange;
+  isEmpty?: boolean;
 }
 interface WordContext {
   document: { getSelection(): WordRange };
@@ -150,6 +153,22 @@ function replacementOoxml(picture: WordPicture, pngBase64: string, aspect: numbe
     pngBase64 + '</pkg:binaryData></pkg:part></pkg:package>';
 }
 
+/** Whether the Word selection is a bare insertion point. Undefined when Word cannot say. */
+async function selectionIsEmpty(office: OfficeContext, word: WordApi) {
+  if (!office.requirements.isSetSupported("WordApi", "1.3")) return undefined;
+  try {
+    return await word.run(async context => {
+      const range = context.document.getSelection();
+      if (!range.load) return undefined;
+      range.load("isEmpty");
+      await context.sync();
+      return range.isEmpty === true;
+    });
+  } catch {
+    return undefined;
+  }
+}
+
 export function wordAdapter(office: OfficeContext, word: WordApi | undefined): OfficeHostAdapter {
   let selected: { key: string; json: string } | undefined;
   let reading = 0;
@@ -158,11 +177,19 @@ export function wordAdapter(office: OfficeContext, word: WordApi | undefined): O
       const request = ++reading;
       if (!word || !office.requirements.isSetSupported("WordApi", "1.1")) return refuse("Editing needs WordApi 1.1 or later.");
       try {
-        const xml = await word.run(async context => {
-          const file = context.document.getSelection().getOoxml();
-          await context.sync();
-          return file.value;
-        });
+        let xml: string;
+        try {
+          xml = await word.run(async context => {
+            const file = context.document.getSelection().getOoxml();
+            await context.sync();
+            return file.value;
+          });
+        } catch (error) {
+          // Word for Mac fails getOoxml() with GeneralException when the selection is only a text
+          // cursor. That is not a picture, so show the usual prompt; any other failure is reported.
+          if (await selectionIsEmpty(office, word)) return noStructure;
+          throw error;
+        }
         const picture = parseSelection(xml);
         if (picture.kind !== "picture") return picture;
         const carrier = await wordCarrier(office, picture, xml);

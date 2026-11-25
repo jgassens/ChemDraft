@@ -1,7 +1,7 @@
 import { pptxChoiceIsUnderstood, pptxSlidePictureMedia, readZipFromBase64, type OfficeZipEntry } from "@chemdraft/clipboard-adapter";
 import {
-  errorMessage, noStructure, officeAsync, readCarrier, readOfficeDocument, refuse, replacementImage, selectionChanged,
-  type NoStructure, type OfficeContext, type OfficeHostAdapter, type Refusal, type SelectedStructure,
+  errorMessage, noCarrier, noStructure, officeAsync, pdfWithoutCarrier, readCarrier, readOfficeDocument, refuse,
+  replacementImage, selectionChanged, type NoStructure, type OfficeContext, type OfficeHostAdapter, type Refusal, type SelectedStructure,
 } from "./host";
 import { A, P, PKG_REL, R, child, children, decodeXml, hasCrop, relationshipPart, xmlDocument } from "./ooxml";
 
@@ -160,8 +160,11 @@ function findSlide(entries: OfficeZipEntry[], slideId?: string) {
   const presentation = entries.find(entry => entry.name === presentationPath);
   const relationships = entries.find(entry => entry.name === "ppt/_rels/presentation.xml.rels");
   if (!presentation || !relationships) return;
+  // Office.js may report a slide ID as "<sldId>#<creationId>" (for example "267#3281394513") or
+  // "<sldId>#". The part before "#" is the p:sldId id in presentation.xml, unique in the file.
+  const sldId = slideId.split("#")[0];
   const slideList = child(xmlDocument(decodeXml(presentation.data)).documentElement, P, "sldIdLst");
-  const slides = slideList ? children(slideList, P, "sldId").filter(slide => slide.getAttribute("id") === slideId) : [];
+  const slides = slideList && sldId ? children(slideList, P, "sldId").filter(slide => slide.getAttribute("id") === sldId) : [];
   const relId = slides.length === 1 && slides[0]!.getAttributeNS(R, "id");
   if (!relId) return;
   const name = relationshipPart(xmlDocument(decodeXml(relationships.data)).documentElement, relId, presentationPath, "slide");
@@ -274,11 +277,17 @@ export function powerpointAdapter(office: OfficeContext, powerpoint: PowerPointA
         exportError = error;
       }
     }
-    if (!picture || picture.kind === "no-structure" ||
-        (picture.kind === "refusal" && /carrier|stored image|PNG/.test(picture.reason))) {
+    if (!picture || picture.kind === "no-structure" || (picture.kind === "refusal" &&
+        (picture.reason === noCarrier || picture.reason === pdfWithoutCarrier || /carrier|stored image|PNG/.test(picture.reason)))) {
       if (office.requirements.isSetSupported("CompressedFile", "1.1")) {
-        const fallback = await readPicture(await readOfficeDocument(office), shapeId, slideId);
-        if (fallback.kind !== "no-structure" || !picture) picture = fallback;
+        try {
+          const fallback = await readPicture(await readOfficeDocument(office), shapeId, slideId);
+          if (fallback.kind !== "no-structure" || !picture) picture = fallback;
+        } catch (error) {
+          // The exported slide was already read. Keep what it showed, for example that the picture
+          // has no ChemDraft data, rather than report that the second read could not find the slide.
+          if (!picture) throw error;
+        }
       }
     }
     if (!picture) return refuse(exportError ? errorMessage(exportError) : "This PowerPoint cannot read the stored picture.");

@@ -127,14 +127,23 @@ async function readCompressedFile(context: OfficeContext) {
   return readZip(bytes);
 }
 
+/**
+ * ChemDraft keeps its drawing only in its PNG. An ordinary paste may make Office store the PDF or
+ * SVG copy instead, which has no drawing data, so the message says how to paste the PNG.
+ */
+const pasteAsPng = "If it came from ChemDraft, copy it again and paste with Paste Special → Picture (PNG).";
+export const noCarrier = "This picture has no ChemDraft data. " + pasteAsPng;
+export const pdfWithoutCarrier = "This picture was pasted as a PDF and has no ChemDraft data. " + pasteAsPng;
+
 export async function readCarrier(bytes: Uint8Array | undefined) {
   if (!bytes) return refuse("Office did not return the selected picture’s stored image.");
   if (bytes[0] !== 137 || bytes[1] !== 80 || bytes[2] !== 78 || bytes[3] !== 71) {
-    return refuse("The selected picture has no ChemDraft carrier.");
+    const pdf = bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46; // %PDF
+    return refuse(pdf ? pdfWithoutCarrier : noCarrier);
   }
   const result = await readChemDraftSelectionFromPng(bytes);
   if (result.kind === "found") return result;
-  return refuse(result.kind === "absent" ? "The selected picture has no ChemDraft carrier." : result.reason);
+  return refuse(result.kind === "absent" ? noCarrier : result.reason);
 }
 
 export function pngBase64(bytes: Uint8Array): string {

@@ -3,7 +3,7 @@ import { Resvg } from "@resvg/resvg-js";
 import { flatOpcBinaryParts, pngWithChemDraftSelection } from "@chemdraft/clipboard-adapter";
 import { strToU8, zipSync } from "fflate";
 import { describe, expect, it, vi } from "vitest";
-import { readOfficeDocument, type OfficeContext, type OfficeDocument } from "./host";
+import { noStructure, pdfWithoutCarrier, readOfficeDocument, type OfficeContext, type OfficeDocument } from "./host";
 import { A, OPC, P, PIC, PKG_REL, R, WORD, WP, WP14, xmlDocument } from "./ooxml";
 import { powerpointAdapter, type PowerPointApi } from "./powerpoint";
 import { wordAdapter, type WordApi } from "./word";
@@ -119,7 +119,7 @@ describe("Word Office adapter", () => {
     [{ crop: true }, carrier, /cropped/i],
     [{ group: true }, carrier, /grouped/i],
     [{ text: "<w:t>Keep this text</w:t>" }, carrier, /surrounding content/i],
-    [{}, plainPng, /no ChemDraft carrier/i],
+    [{}, plainPng, /no ChemDraft data.*Paste Special → Picture \(PNG\)/],
   ] as const)("refuses unsafe or uneditable Word selections", async (options, png, reason) => {
     const { word, insertOoxml } = wordHost(flatOpc(wordDocument(options), png));
     const adapter = wordAdapter(office({ sets: ["WordApi 1.1"] }), word);
@@ -170,6 +170,44 @@ describe("Word Office adapter", () => {
       kind: "replaced", key: undefined, warnings: ["Could not identify the replacement Word picture."],
     });
     expect(insertOoxml).toHaveBeenCalledOnce();
+  });
+
+  it("names a pasted PDF that has no ChemDraft data and says how to paste the picture instead", async () => {
+    const pdf = strToU8("%PDF-1.7\n%\u00e2\u00e3\n1 0 obj\n<<>>\nendobj\n");
+    const { word } = wordHost(flatOpc(wordDocument(), pdf).replace('pkg:contentType="image/png"', 'pkg:contentType="application/pdf"'));
+    expect(await wordAdapter(office({ sets: ["WordApi 1.1"] }), word).readSelectedStructure()).toEqual({
+      kind: "refusal", reason: pdfWithoutCarrier,
+    });
+    expect(pdfWithoutCarrier).toMatch(/pasted as a PDF.*Paste Special → Picture \(PNG\)/);
+  });
+
+  // Word for Mac rejects getOoxml() for a bare insertion point with GeneralException.
+  function cursorHost(isEmpty: boolean) {
+    const range = { isEmpty: undefined as boolean | undefined, ooxml: false, load: vi.fn((_fields: "isEmpty") => range),
+      getOoxml() { range.ooxml = true; return { value: "" }; }, insertOoxml: vi.fn() };
+    const word = { run: async work => {
+      range.ooxml = false;
+      return work({ document: { getSelection: () => range as never }, sync: async () => {
+        if (range.ooxml) throw new Error("GeneralException");
+        if (range.load.mock.calls.length) range.isEmpty = isEmpty;
+      } });
+    } } satisfies WordApi;
+    return { word, range };
+  }
+
+  it("prompts for a picture when the Word selection is only a text cursor", async () => {
+    const { word, range } = cursorHost(true);
+    expect(await wordAdapter(office({ sets: ["WordApi 1.1", "WordApi 1.3"] }), word).readSelectedStructure()).toEqual(noStructure);
+    expect(range.load).toHaveBeenCalledWith("isEmpty");
+  });
+
+  it("still reports a Word read failure when something is selected", async () => {
+    for (const [sets, empty] of [[["WordApi 1.1", "WordApi 1.3"], false], [["WordApi 1.1"], true]] as const) {
+      const { word } = cursorHost(empty);
+      expect(await wordAdapter(office({ sets: [...sets] }), word).readSelectedStructure()).toEqual({
+        kind: "refusal", reason: "Could not read the selected Word picture. GeneralException",
+      });
+    }
   });
 });
 
@@ -241,11 +279,13 @@ interface PptxOptions {
   mediaName?: string;
   /** Extra ZIP entries. */
   extraEntries?: Record<string, Uint8Array>;
+  /** The picture's stored media bytes, instead of the carrier PNG. */
+  media?: Uint8Array;
 }
 
 function pptx({ rotation = 0, crop = false, group = false, noCarrier = false, properties = {}, shapeProperties = "",
   relationships = "", animated = false, placeholder = false, alternate = false, mediaName = "ppt/media/chemistry.png",
-  extraEntries = {} }: PptxOptions = {}) {
+  extraEntries = {}, media }: PptxOptions = {}) {
   const picture = '<p:pic><p:nvPicPr><p:cNvPr id="22" name="Original figure"' + (properties.attributes ?? "") + '>' +
     (properties.children ?? "") + '</p:cNvPr>' +
     (placeholder ? '<p:cNvPicPr/><p:nvPr><p:ph type="pic" idx="13"/></p:nvPr>' : "") + '</p:nvPicPr>' +
@@ -267,7 +307,7 @@ function pptx({ rotation = 0, crop = false, group = false, noCarrier = false, pr
     "ppt/_rels/presentation.xml.rels": strToU8(rels("rId2", "slide", "slides/slide4.xml")),
     "ppt/slides/slide4.xml": strToU8(slide),
     "ppt/slides/_rels/slide4.xml.rels": strToU8(slideRels),
-    [mediaName]: noCarrier ? plainPng : carrier,
+    [mediaName]: media ?? (noCarrier ? plainPng : carrier),
     "ppt/media/unrelated.png": updated,
     ...extraEntries,
   });
@@ -292,11 +332,13 @@ interface HostOptions extends PptxOptions {
   decorativeClearsAltText?: boolean;
   /** PowerPoint ignores writes to the inserted picture's title and description. */
   ignoresAltTextWrites?: boolean;
+  /** The slide ID Office.js reports. */
+  slideId?: string;
 }
 
 function powerpointHost({ version = 10, writableRotation = true, unwritableName = false, failSyncAfterInsert, extraInsert = false,
   insertOnOtherSlide = false, undeletable = false, oldUndeletable = false, decorativeClearsAltText = false,
-  ignoresAltTextWrites = false, ...pptxOptions }: HostOptions = {}) {
+  ignoresAltTextWrites = false, slideId = "307", ...pptxOptions }: HostOptions = {}) {
   const rotation = pptxOptions.rotation ?? 0;
   const archive = pptx(pptxOptions);
   const sets = ["CompressedFile 1.1", "ImageCoercion 1.1"];
@@ -339,7 +381,7 @@ function powerpointHost({ version = 10, writableRotation = true, unwritableName 
   if (!writableRotation) Object.defineProperty(old, "rotation", { writable: false });
   old.tags.add("ORIGINAL", "keep");
   stack.push(shape("21", "Behind"), old, shape("23", "Front"));
-  const slide = { id: "307", shapes: collection(stack), exportAsBase64: vi.fn(() => ({ value: b64(archive) })) };
+  const slide = { id: slideId, shapes: collection(stack), exportAsBase64: vi.fn(() => ({ value: b64(archive) })) };
   const otherSlide = { ...slide, id: "308", shapes: collection<Shape>([]) };
   let activeSlide = slide;
   const getSelectedSlides = vi.fn(() => collection([activeSlide]));
@@ -431,13 +473,38 @@ describe("PowerPoint Office adapter", () => {
   it.each([
     [{ crop: true }, /cropped/i],
     [{ group: true }, /grouped/i],
-    [{ noCarrier: true }, /no ChemDraft carrier/i],
+    [{ noCarrier: true }, /no ChemDraft data.*Paste Special → Picture \(PNG\)/],
     [{ version: 3 }, /PowerPointApi 1.5/],
   ] as const)("refuses unsafe PowerPoint selections and unsupported hosts", async (options, reason) => {
     const { host, powerpoint } = powerpointHost(options);
     const adapter = powerpointAdapter(host, powerpoint);
     expect(await adapter.readSelectedStructure()).toMatchObject({ kind: "refusal", reason: expect.stringMatching(reason) });
     expect(host.document.setSelectedDataAsync).not.toHaveBeenCalled();
+  });
+
+  // Office.js reports slide IDs as "<sldId>#<creationId>"; the fixture's presentation.xml lists sldId 307.
+  const pdf = strToU8("%PDF-1.7\n1 0 obj\n<<>>\nendobj\n");
+
+  it.each(["307#2468013579", "307#", "999#1"])("reports a picture without ChemDraft data, not the slide lookup (slide %s)", async slideId => {
+    const { host, powerpoint, slide } = powerpointHost({ slideId, media: pdf });
+    expect(await powerpointAdapter(host, powerpoint).readSelectedStructure()).toEqual({ kind: "refusal", reason: pdfWithoutCarrier });
+    expect(slide.exportAsBase64).toHaveBeenCalledOnce();
+    // The whole presentation is still read, since a slide export may re-encode the stored image.
+    expect(host.document.getFileAsync).toHaveBeenCalledOnce();
+  });
+
+  it("finds the slide by an Office.js slide ID in the whole presentation", async () => {
+    const { host, powerpoint } = powerpointHost({ version: 5, slideId: "307#2468013579" });
+    expect(await powerpointAdapter(host, powerpoint).readSelectedStructure()).toMatchObject({ kind: "structure", json: sourceJson });
+    expect(host.document.getFileAsync).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the slide error when only the whole presentation can be read and the slide is not in it", async () => {
+    const { host, powerpoint } = powerpointHost({ version: 5, slideId: "999#1" });
+    expect(await powerpointAdapter(host, powerpoint).readSelectedStructure()).toEqual({
+      kind: "refusal",
+      reason: "Could not read the selected PowerPoint picture. Could not identify the selected PowerPoint slide in the file.",
+    });
   });
 
   it.each([{ version: 8 }, { writableRotation: false }])("refuses to drop a rotation PowerPoint cannot write", async options => {

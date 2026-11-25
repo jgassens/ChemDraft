@@ -51,6 +51,8 @@ html, body, #root {
 #root > .app-shell {
   height: 100%;
   min-height: 0;
+  /* Keep some drawing area even if the controls above it ever grow taller than the pane. */
+  grid-template-rows: auto minmax(160px, 1fr);
 }
 
 #root > .app-shell > header {
@@ -67,6 +69,20 @@ html, body, #root {
 #root > .app-shell .command-bar .tool-group {
   display: flex;
   flex-wrap: wrap;
+}
+
+/* The toolbar sits in the header here and cannot be dragged. */
+#root > .app-shell .command-bar .palette-content-drag-grip {
+  display: none;
+}
+
+/* App.css sizes each tool slot to fill a grid cell (width and height 100%). In the wrapping flex
+   row above that makes every tool as wide as the pane, so the tools stacked into one column taller
+   than the pane and the canvas row was left with no height. Give the slots their button size. */
+#root > .app-shell .command-bar .tool-group > .toolbar-item-grid-slot {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
 }
 
 #root > .app-shell .command-bar .toolbar-command-flyout-menu {

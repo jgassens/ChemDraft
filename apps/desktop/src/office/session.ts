@@ -2,7 +2,7 @@ import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import { assistantDocumentContentUnchanged } from "../assistant/historyPort";
 import { openOfficeDrawing, prepareOfficePicture } from "./drawing";
 import {
-  errorMessage, officeAsync, refuse, selectionChanged, type OfficeDocument, type OfficeHostAdapter,
+  errorMessage, noStructure, officeAsync, refuse, selectionChanged, type OfficeDocument, type OfficeHostAdapter,
   type SelectedStructure, type SelectionResult,
 } from "./host";
 
@@ -154,11 +154,23 @@ export class OfficePaneSession {
     this.patch({ confirmDiscard: false, status: "Edits kept. Select the original picture in Office to update it." });
   }
 
+  /**
+   * Cancel and "Discard edits" share the editor's close command. After a selection change asked
+   * whether to discard, it discards and opens the new Office selection. Otherwise it discards any
+   * edits and closes the editor; the Office picture is unchanged, and selecting a picture opens it again.
+   */
   cancel = async () => {
     if (this.writing) return;
     this.active = undefined;
     this.baseline = undefined;
-    await this.refresh();
+    if (this.state.confirmDiscard) {
+      await this.refresh();
+      return;
+    }
+    // Drop a selection read still in flight, so it cannot reopen the editor after Cancel.
+    this.selectionVersion++;
+    this.updateNotice = undefined;
+    this.load(noStructure, "Editing cancelled.");
   };
 
   update = async () => {
