@@ -115,6 +115,22 @@ current document and selection and place results directly on the page through ty
 
 ---
 
+# Library window with drag-and-drop art (active, 2.0, branch feat/2.0-art-library)
+
+Plan of record: `docs/plans/art-library.md` (owner decisions 2026-11-25).
+
+One floating Library window replaces Insert > Templates…: structure templates and a bundled
+biology art collection together, organized by category, searchable, with a style switch. Tiles
+drag onto the canvas as real SVG files. Users add art by dropping files, folders or zips on the
+window, by watched folders, and by shareable pack files. A placed SVG picture can be converted
+into editable native shapes, with anything that cannot be kept reported first.
+
+Phases: 0 drag spike on macOS and Windows; 1 `art-library` package and built-in pack; 2 Library
+window; 3 drag out of tiles; 4 adding art; 5 Convert to Shapes; 6 shared insert, CLI, MCP and
+skill; 7 closeout. The plugin API does not change in this slice.
+
+---
+
 # Parked
 
 These items are not in flight; reopening any item needs a reason recorded here first.
