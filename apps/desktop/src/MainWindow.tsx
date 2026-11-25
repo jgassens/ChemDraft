@@ -1854,7 +1854,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.24.17.10-codex";
+const CURRENT_BUILD_STAMP = "11.24.18.10-codex";
 
 /**
  * The commit funnel's chemistry check (AGENTS.md section 7, `commitChemistryGuard.ts`). `before`
@@ -10108,8 +10108,9 @@ export function MainWindow({
       return;
     }
 
-    const nativePartSelection = connectionPointUndoSelection ?? nativePartHistorySelectionsRef.current.get(nextHistory.present);
-    if (nativePartSelection) setSelectedNativeMoleculeParts(nativePartSelection);
+    setSelectedNativeMoleculeParts(
+      connectionPointUndoSelection ?? nativePartHistorySelectionsRef.current.get(nextHistory.present) ?? []
+    );
 
     historyNavigationCountRef.current += 1;
     // Redoing the supplied practice structure returns to the clean starting drawing.

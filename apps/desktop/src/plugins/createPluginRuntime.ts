@@ -553,17 +553,20 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
         if (feedback) feedback.pending--;
         if (handoffFeedback.get(invocation) !== feedback) return;
         if (!status) return;
+        let clearedRefusal = false;
         if (status.kind === "success" || status.kind === "confirmed") {
           if (feedback && status.kind === "confirmed") feedback.confirmed = status.message;
           // A retry must have started after the refusal it clears.
           if (previousProblem?.kind === "refused" && feedback?.problems.get(method) === previousProblem) {
-            feedback.problems.delete(method);
+            clearedRefusal = feedback.problems.delete(method);
           }
         } else {
           feedback?.problems.set(method, status);
         }
-        if (status.message) {
-          options.onAppHandoffStatus?.(feedback ? appHandoffFeedbackMessages(feedback).join("\n") : status.message);
+        if (feedback && (status.message || clearedRefusal)) {
+          options.onAppHandoffStatus?.(appHandoffFeedbackMessages(feedback).join("\n"));
+        } else if (status.message) {
+          options.onAppHandoffStatus?.(status.message);
         }
       };
       void result.then(value => report(appHandoffResultStatus(method, request, value)),

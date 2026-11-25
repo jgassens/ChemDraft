@@ -1,5 +1,5 @@
 import { inspectHydrogenNormalizedIdentity, unverifiableStereoReason } from "@chemdraft/document-workflow-core";
-import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
+import { detectMolfileFormat, parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import { compositionFromRdkitJson, rdkitHasIndeterminateBonds, stereochemistryLabels,
   type RdkitMinimalModule, type RdkitJson } from "@chemdraft/rdkit-adapter";
 import { PluginRequestLimits } from "@chemdraft/plugin-api";
@@ -53,6 +53,9 @@ function substanceGroupRefusal(molecules: readonly InspectionMolecule[]): string
 export function inspectStructureInWorker(
   module: Pick<RdkitMinimalModule, "get_mol">, value: string, stereoReference?: string, details?: StructureInspectionDetails
 ): StructureInspection {
+  if (typeof details === "object" && !detectMolfileFormat(value)) {
+    return { valid: false, code: "unsupported", reason: "Connection-point verification requires a molfile." };
+  }
   const writeIdentity = details === "writeIdentity" || typeof details === "object";
   const identity = !details || writeIdentity ? inspectHydrogenNormalizedIdentity(module, value, stereoReference) : undefined;
   if (identity?.valid === false) return identity;

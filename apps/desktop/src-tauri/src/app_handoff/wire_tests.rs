@@ -106,6 +106,13 @@ fn app_handoff_wire_fixtures_are_current() {
             .unwrap(),
         ),
         (
+            "choose-app-request-retry".into(),
+            encode(ChooseRequest {
+                purpose: "Choose another app".into(),
+            })
+            .unwrap(),
+        ),
+        (
             "choose-app-chosen".into(),
             encode(ChooseResult::Chosen {
                 app: ChosenApp {

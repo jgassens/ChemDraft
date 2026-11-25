@@ -6,6 +6,9 @@ import { applyPatch, MoleculeObjectSchema } from "@chemdraft/chem-core";
 import { PluginApiVersion, type PluginCommandContext } from "@chemdraft/plugin-api";
 import { ensureRdkit, resetRdkitForTesting, setRdkitModuleLoader } from "@chemdraft/rdkit-adapter";
 import appConfig from "../src-tauri/tauri.conf.json";
+import appCancelled from "./appHandoff/__fixtures__/wire/choose-app-cancelled.json";
+import appChosen from "./appHandoff/__fixtures__/wire/choose-app-chosen.json";
+import retryChoice from "./appHandoff/__fixtures__/wire/choose-app-request-retry.json";
 import type { ListenForAppHandoff } from "./appHandoff/nativeMenu";
 import { getAssistantHistoryPort } from "./assistant/historyPort";
 import { createPhase4Document } from "./documentWorkflow";
@@ -90,10 +93,11 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-async function render(molecule: typeof source, listenForAppHandoff?: ListenForAppHandoff) {
+async function render(molecule: typeof source, listenForAppHandoff?: ListenForAppHandoff, other?: typeof source) {
   const empty = createPhase4Document("Mark connection points");
   const pageId = empty.pages[0]!.id;
-  const initialDocument = applyPatch(empty, { op: "addObject", pageId, object: molecule });
+  const first = applyPatch(empty, { op: "addObject", pageId, object: molecule });
+  const initialDocument = other ? applyPatch(first, { op: "addObject", pageId, object: other }) : first;
   await act(async () => root.render(createElement(MainWindow, { initialDocument, initialPaletteMode: "hidden",
     initialRulersVisible: false, initialCrosshairsVisible: false, nativePalette: false, listenForAppHandoff })));
   container.querySelector<HTMLElement>(".page")!.getBoundingClientRect = () =>
@@ -217,6 +221,38 @@ it.each(["web", "native timeout"] as const)("omits host identity for %s", async 
   }
 });
 
+it("clears the picker refusal when a retry succeeds without command status", async () => {
+  const handoffCommand = "plugin.crystalBuilder.chooseApp";
+  const invocation = { pluginId: handoffRecord.id, commandId: handoffCommand, nonce: "2".repeat(32) };
+  const retry = deferred<void>();
+  const cancelled = deferred<void>();
+  let click!: () => Promise<void>;
+  await render(source, dispatch => { click = () => dispatch(invocation); return () => {}; });
+  host.transport.mockResolvedValueOnce(appCancelled).mockResolvedValueOnce(appChosen);
+  let command!: Promise<void>;
+  await act(async () => {
+    captured.runtime!.registerPlugin({ id: handoffRecord.id, version: handoffRecord.version,
+      name: "Crystal Builder Plugin", apiVersion: PluginApiVersion,
+      entry: "test.js", permissions: ["apps.handoff", "native.execute"],
+      contributes: { commands: [{ id: handoffCommand, title: "Choose app" }],
+        menus: [{ id: "menu.crystalBuilder.chooseApp", commandId: handoffCommand, title: "Choose app" }] } },
+    { execution: "worker", commandHandlers: { [handoffCommand]: async ({ apps }) => {
+      expect(await apps!.chooseApp({ purpose: "Choose an app" })).toEqual(appCancelled);
+      cancelled.resolve();
+      await retry.promise;
+      expect(await apps!.chooseApp(retryChoice)).toEqual(appChosen);
+    } } });
+    command = click();
+    await cancelled.promise;
+  });
+  const status = () => container.querySelector('[role="status"]')?.textContent;
+  expect(status()).toBe("App selection cancelled.");
+  await act(async () => { retry.resolve(); await command; });
+  expect(host.transport).toHaveBeenCalledTimes(2);
+  expect(host.transport).toHaveBeenLastCalledWith(invocation, "chooseApp", retryChoice);
+  expect(status()).toBe("");
+});
+
 it.each([
   ["unrecognized label", "FakeAbbr", "written as R-group placeholder"],
   ["multiline label", "Abbrev\nFile approved.\u2028End\u200b\u0007", "Abbrev File approved. End"],
@@ -320,6 +356,35 @@ it("reads live marked content under fixed IDs and undoes and redoes two separate
   await menu("edit.redo");
   expect(present()).toEqual(second);
   expect(nativeSelection()).toEqual([ids[1]]);
+});
+
+it("clears the mark selection when redoing a later whole-molecule edit", async () => {
+  const other = { ...aromaticSource, id: "other", x: aromaticSource.x + 200,
+    atoms: aromaticSource.atoms.map(atom => ({ ...atom, x: atom.x + 200 })) };
+  await render(aromaticSource, undefined, other);
+  await selectAtom("a");
+  await act(async () => {
+    const runtime = register(context => context.documents.addConnectionPoints!({ objectId: source.id, anchors: ["a"] }));
+    await runtime.invokeCommand(commandId);
+  });
+  const markerId = drawn().atoms.find(atom => atom.element === "X")!.id;
+  const otherElement = () => container.querySelector('[data-object-id="other"]')!;
+  await click(otherElement(), other.atoms[0]!);
+  await click(otherElement(), other.atoms[0]!);
+  expect(present().selection.objectIds).toEqual([other.id]);
+  await menu("selection.nudge.right.large");
+  const after = present();
+  expect(after.pages[0]!.objects.find(object => object.id === other.id)?.x).toBe(other.x + 10);
+  await menu("edit.undo");
+  await menu("edit.undo");
+  await menu("edit.redo");
+  expect(nativeSelection()).toEqual([markerId]);
+  await menu("edit.redo");
+  expect(present()).toEqual(after);
+  expect(nativeSelection()).not.toContain(markerId);
+  await menu("edit.forwardDeleteHoveredNativeTarget");
+  expect(present().pages[0]!.objects.map(object => object.id)).toEqual([source.id]);
+  expect(drawn().atoms.some(atom => atom.id === markerId)).toBe(true);
 });
 
 it("preserves live whole-object selection for a pre-0.1.28 plugin", async () => {
