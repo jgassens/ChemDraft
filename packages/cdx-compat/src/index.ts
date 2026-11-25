@@ -72,6 +72,16 @@ import {
 import { abbreviationExpansionIssue, cdxmlAtomChemistry, cdxmlAtomNativeState, elementFromCdxmlAtom, restoreCdxmlAbbreviations } from "./abbreviations";
 import { cdxmlToCssPx, cssPxToCdxml, formatNumber, formatPoint } from "./coordinates";
 import { countCdxmlFontEntries, indexCdxmlFonts, lookupCdxmlFont, trackCdxmlFontTable, type CdxmlFont } from "./cdxmlFontIndex";
+import { cdxmlDocumentStyleFontNames, cdxmlDocumentStyleHeader, type CdxmlDocumentStyle } from "./documentStyle";
+
+export {
+  cdxmlDocumentStyleFontNames,
+  cdxmlDocumentStyleHeader,
+  nativeDrawingStyleFromCdxmlStyle,
+  readCdxmlDocumentStyle,
+  type CdxmlDocumentStyle,
+  type CdxmlDocumentStyleReadResult
+} from "./documentStyle";
 
 export interface CompatibilityConversionWarning {
   code: string;
@@ -90,6 +100,9 @@ export interface CdxmlExportOptions {
   creationProgram?: string;
   /** CDXML saves embed by default; interchange CDX explicitly disables this. */
   embedNativePayload?: boolean;
+  /** Document-level drawing settings to declare on the root element. They describe the drawing
+   *  for a reader; they do not restyle it, so the caller styles the molecules to match. */
+  documentStyle?: CdxmlDocumentStyle;
 }
 
 export interface CdxmlExportResult {
@@ -633,7 +646,8 @@ function exportCdxml(
   }
   const nativeJson = JSON.stringify(nativeSave.value);
   const nativePayloadHash = sha256Utf8Hex(nativeJson);
-  const fonts = exportCdxmlFonts(parsedDocument, warnings);
+  const styleFontNames = options.documentStyle === undefined ? [] : cdxmlDocumentStyleFontNames(options.documentStyle);
+  const fonts = exportCdxmlFonts(parsedDocument, warnings, styleFontNames);
   // Source compatibility graphics retain their color indices as well as their other attributes.
   const colors: ExportColorTable = [...standardCdxmlColorTable];
   const sourceColors = new Map<number, string>();
@@ -765,8 +779,18 @@ function exportCdxml(
       message: `Page ${fitted.page.id} has different print margins from page ${parsedDocument.pages[0].id}; CDXML's shared root PrintMargins and every page grid use page ${parsedDocument.pages[0].id}'s margins.`
     });
   }
+  // A document style's settings join the page setup on the one root element. The two sets of names
+  // are disjoint (pageSetup.ts keeps only page attributes on the root), so neither overrides the other.
+  const styleFontId = (name: string) => lookupCdxmlFont(fonts.byName, name)?.id;
+  const styleRoot = options.documentStyle === undefined ? {}
+    : cdxmlDocumentStyleHeader(options.documentStyle, styleFontId).attributes;
+  const unlistedStyleFonts = styleFontNames.filter(name => styleFontId(name) === undefined);
+  if (unlistedStyleFonts.length) warnings.push(warning("cdxml.document_style_font_not_written",
+    `${format.toUpperCase()} export: the document style's ${unlistedStyleFonts.map(name => `"${name}"`).join(" and ")} font ` +
+    "could not be added to the font table, so the root element does not name it; readers use their own label font."));
+  const rootAttributes = { ...styleRoot, ...rootPageSetup };
   const visiblePages = fittedPages.map(({ page, children, setup }) => buildPageXml(page, children, setup));
-  const visibleEnvelope = buildCdxmlEnvelope(creationProgram, visiblePages, fonts.table, colors, embedded, rootPageSetup);
+  const visibleEnvelope = buildCdxmlEnvelope(creationProgram, visiblePages, fonts.table, colors, embedded, rootAttributes);
   const visibleCdxmlHash = visibleHashForCdxml(visibleEnvelope);
   const metadata = buildMetadataObjectTags({
     codecVersion: CdxmlEnvelopeCodecVersion,
@@ -778,7 +802,7 @@ function exportCdxml(
   const envelopePages = fittedPages.map(({ page, children, setup }, pageIndex) =>
     buildPageXml(page, `${children}${pageIndex === 0 ? metadata : ""}`, setup)
   );
-  const contents = buildCdxmlEnvelope(creationProgram, envelopePages, fonts.table, colors, embedded, rootPageSetup);
+  const contents = buildCdxmlEnvelope(creationProgram, envelopePages, fonts.table, colors, embedded, rootAttributes);
   // No runtime self-check that the metadata leaves the visible hash alone. The one this replaced
   // re-parsed and re-hashed the whole finished envelope, payload included — a full XML parse of
   // megabytes on every save — and a textual stand-in could never fire, since `contents` is the
@@ -1117,7 +1141,8 @@ function unsupportedSchemaWarningFromJson(contents: string): CompatibilityConver
 // The font table is built once per export and indexed by name, so registering each restored
 // caption run's font is a lookup, not a scan of the table (Codex security finding: autosave runs
 // this right after a file opens, and a crafted 1.5 MB file cost ~400 million comparisons).
-function exportCdxmlFonts(document: ChemDraftDocument, warnings: CompatibilityConversionWarning[]): CdxmlExportFonts {
+function exportCdxmlFonts(document: ChemDraftDocument, warnings: CompatibilityConversionWarning[],
+  styleFontNames: readonly string[] = []): CdxmlExportFonts {
   const fonts = new Map<string, CdxmlFont>();
   // A stored font over the per-font caps (a native payload's table is not checked by import) is not
   // written, and its id stays reserved so that no new font takes it. An unchanged source text that
@@ -1206,16 +1231,30 @@ function exportCdxmlFonts(document: ChemDraftDocument, warnings: CompatibilityCo
       byName.set(name, font);
     }
   }
+  // A document style's label and caption fonts (a CDXML style reference) join this same table after
+  // the document's own fonts, so the root's LabelFont and CaptionFont ids agree with every font= in
+  // the file. A name already listed keeps its id; one that finds no free id is left out, and the
+  // caller leaves its root attribute out with a warning.
+  for (const name of styleFontNames) {
+    if (!name || name.length > CDXML_FONT_NAME_LIMIT || lookupCdxmlFont(byName, name)) continue;
+    while (nextId < cdxmlLimits.fontId && (fonts.has(String(nextId)) || tooLongIds.has(String(nextId)))) nextId++;
+    if (nextId >= cdxmlLimits.fontId || fonts.size >= cdxmlLimits.fontTable) break;
+    const id = String(nextId++);
+    const font = { id, charset: "iso-8859-1", name };
+    fonts.set(id, font);
+    byName.set(name, font);
+  }
   if (tooLong.length) warnings.push(exportFontEntryTooLongWarning(tooLong));
   return { table: trackCdxmlFontTable([...fonts.values()]), byName, plainCaptionIds, captionRunLimitWarned: false, notWrittenIds: tooLongIds,
     unwritableIds, unwritableIdWarned: false };
 }
 
-function buildCdxmlEnvelope(creationProgram: string, pages: readonly string[], fonts: readonly CdxmlFont[], colors: ExportColorTable, embedded = true, pageSetup: Record<string, string> = {}): string {
+// `rootAttributes` is the page setup plus any document style: every root attribute but the two above.
+function buildCdxmlEnvelope(creationProgram: string, pages: readonly string[], fonts: readonly CdxmlFont[], colors: ExportColorTable, embedded = true, rootAttributes: Record<string, string> = {}): string {
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">',
-    `<CDXML CreationProgram="${escapeXmlAttribute(creationProgram)}"${embedded ? ` ${VisibleHashVersionAttribute}="${EncodedVisibleHashVersion}"` : ""}${Object.keys(pageSetup).length ? ` ${xmlAttributes(pageSetup)}` : ""}>`,
+    `<CDXML CreationProgram="${escapeXmlAttribute(creationProgram)}"${embedded ? ` ${VisibleHashVersionAttribute}="${EncodedVisibleHashVersion}"` : ""}${Object.keys(rootAttributes).length ? ` ${xmlAttributes(rootAttributes)}` : ""}>`,
     buildStandardColorTableXml(colors),
     ...(fonts.length ? ["  <fonttable>", ...fonts.map(font =>
       `    <font ${xmlAttributes(font)}/>`), "  </fonttable>"] : []),

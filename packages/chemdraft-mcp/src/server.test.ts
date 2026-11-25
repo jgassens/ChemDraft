@@ -20,6 +20,7 @@ import { createEmptyDocument, serializeDocument, type MoleculeObject } from "@ch
 import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import { runRenderDocumentCommand } from "../../chemdraft-cli/src/commands/renderDocument";
 import { NMR_PLUGIN_DIR_ENV, NMR_PLUGIN_ID, runNmrCommand } from "../../chemdraft-cli/src/commands/nmr";
+import { CDXML_STYLE_REFERENCE_ENV } from "../../chemdraft-cli/src/commands/export";
 import { molfileCoordinateScale } from "@chemdraft/layout-engine";
 import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import { metalHydrogenLossCases, preservedRadicalExportCases, radicalExportCases, readAtomStates } from "../../document-workflow-core/test/radicalExportFixtures";
@@ -690,6 +691,25 @@ describe("ChemDraft MCP server", () => {
     },
     60_000
   );
+
+  it("styles CDXML exports with the reference named in the server's environment", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "chemdraft-mcp-style-"));
+    temporaryDirectories.push(directory);
+    const reference = join(directory, "reference.cdxml");
+    await writeFile(reference, '<?xml version="1.0"?><CDXML BondLength="14.4" LabelSize="10"><page id="1"/></CDXML>');
+    const previous = process.env[CDXML_STYLE_REFERENCE_ENV];
+    process.env[CDXML_STYLE_REFERENCE_ENV] = reference;
+    try {
+      const client = await connect();
+      const result = await client.callTool({ name: "export_structure", arguments: { smiles: "CCO", format: "cdxml" } });
+      expect(result.isError).not.toBe(true);
+      expect(jsonPayload(result.content)).toMatchObject({ ok: true, styleReference: reference });
+      expect(textBlocks(result.content).join("\n")).toContain('BondLength="14.4"');
+    } finally {
+      if (previous === undefined) delete process.env[CDXML_STYLE_REFERENCE_ENV];
+      else process.env[CDXML_STYLE_REFERENCE_ENV] = previous;
+    }
+  }, 60_000);
 
   it("returns PDF exports as embedded resources along with the path", async () => {
     const client = await connect();

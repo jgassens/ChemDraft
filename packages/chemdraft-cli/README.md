@@ -456,6 +456,30 @@ Isotope labels and their positions are preserved in native documents, rendering,
 and MOL V2000/V3000, SDF, SMILES and CDXML exports. D/T represent hydrogen-2/3; other isotope
 masses are stored per atom. Radical inputs remain refused by drawing and export commands.
 
+### CDXML style reference
+
+`--style-reference <file.cdxml>` gives CDXML exports the drawing settings of an existing CDXML
+file, such as one saved with a journal's document style:
+
+~~~bash
+pnpm -s chemdraft export --smiles 'CC(=O)Oc1ccccc1C(=O)O' --out aspirin.cdxml --style-reference house-style.cdxml
+~~~
+
+The reference's root `<CDXML>` element supplies `BondLength`, `LineWidth`, `BoldWidth`,
+`HashSpacing`, `MarginWidth`, `BondSpacing`, `ChainAngle`, `LabelSize`, `LabelFace` and `LabelFont`
+(resolved through its `<fonttable>`); caption settings are carried when present. The molecule is
+scaled so every visible bond is `BondLength` points long, styled to match, and the written file
+declares the same settings on its own root element, so a reader draws labels and lines at the
+reference's sizes. Only geometry and display change; the CDXML identity check still runs.
+
+Setting `CHEMDRAFT_CDXML_STYLE_REFERENCE` to a CDXML file makes it the default for every CDXML
+export (`~` expands to the home directory); `--style-reference` overrides it, and other formats
+ignore it. A structure setting the reference leaves unset keeps ChemDraft's value and is named in
+the job's warnings. An unreadable reference, one larger than 5 MB, or one with an unusable value
+(for example `BondLength="0"`) fails the run with exit 2 and the reason, before any file is written.
+`--style-reference` with a format other than CDXML is a usage error. Successful records carry
+`styleReference`, the reference path used.
+
 ## Built-in structure template layouts
 
 Use a template name such as `beta-cyclodextrin`, `β-CD`, `cucurbit[7]uril`, or

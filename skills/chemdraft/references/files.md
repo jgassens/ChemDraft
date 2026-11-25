@@ -93,6 +93,7 @@ host-specific; see [setup](setup.md) if missing.
 | `--out` | Required single file; combined batch `sdf`/`smi` destination |
 | `--out-dir` | Batch per-job destination for `cdxml`, `pdf`, `mol` |
 | `--format` | One format above; infer single extension, required in batch |
+| `--style-reference` | CDXML only: take bond length, line widths and label font/size from this CDXML file |
 | `--help` | Print help |
 
 ```sh
@@ -101,6 +102,19 @@ pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft export --smiles
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft export --batch "$scratch/choices.json" --out "$scratch/choices.sdf" --format sdf
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft export --batch "$scratch/choices.json" --out-dir "$scratch/mols" --format mol
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft export --batch "$scratch/choices.json" --out "$scratch/choices.smi" --format smi
+```
+
+CDXML exports may follow a house style. `--style-reference` names a CDXML
+file whose bond length, line widths, hash and bond spacing, chain angle and
+label font, size and face the export copies; the molecule is scaled to that
+bond length and the file declares those settings. The owner can set a default
+with `CHEMDRAFT_CDXML_STYLE_REFERENCE` (see [setup](setup.md)); MCP
+`export_structure` then applies it to every CDXML export and reports
+`styleReference`. Report any warning naming settings the reference left
+unset. Do not set or change the default yourself.
+
+```sh
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft export --smiles 'CCO' --out "$scratch/ethanol.cdxml" --style-reference "$scratch/house-style.cdxml"
 ```
 
 MCP takes one `smiles`, required `format`, optional `outDir` root; it creates

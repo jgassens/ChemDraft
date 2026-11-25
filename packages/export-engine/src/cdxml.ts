@@ -1,10 +1,12 @@
-import { exportDocumentToCdxml as exportCompatDocumentToCdxml } from "@chemdraft/cdx-compat";
+import { exportDocumentToCdxml as exportCompatDocumentToCdxml, type CdxmlDocumentStyle } from "@chemdraft/cdx-compat";
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import { getExportFormatDescriptor } from "./formats";
 import type { ExportWarning, TextExportResult } from "./results";
 
 export interface CdxmlTextExportOptions {
   creationProgram?: string;
+  /** Root-element drawing settings to declare; style the molecules to match first. */
+  documentStyle?: CdxmlDocumentStyle;
 }
 
 export function exportDocumentToCdxml(

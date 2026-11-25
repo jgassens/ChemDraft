@@ -1,11 +1,18 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { basename, dirname, extname, join } from "node:path";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { basename, dirname, extname, join, resolve } from "node:path";
 
-import { openChemDraftPayload } from "@chemdraft/cdx-compat";
+import {
+  nativeDrawingStyleFromCdxmlStyle,
+  openChemDraftPayload,
+  readCdxmlDocumentStyle,
+  type CdxmlDocumentStyle
+} from "@chemdraft/cdx-compat";
 import {
   moleculeToMolfileV2000,
   moleculeToMolfileV3000,
-  type MoleculeObject
+  type MoleculeObject,
+  type NativeDrawingStyle
 } from "@chemdraft/chem-core";
 import { exportDocumentToCdxml, repeatUnitExportWarnings, type ExportWarning } from "@chemdraft/export-engine";
 import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
@@ -59,6 +66,22 @@ interface ParsedArguments {
   outDir?: string;
   smiles?: string;
   format: ExportFormat;
+  styleReference?: string;
+}
+
+/** Names a CDXML file whose drawing settings every CDXML export uses unless --style-reference
+ *  names another. Set it in the MCP server's environment to give agent exports a house style. */
+export const CDXML_STYLE_REFERENCE_ENV = "CHEMDRAFT_CDXML_STYLE_REFERENCE";
+
+const MAX_STYLE_REFERENCE_BYTES = 5 * 1024 * 1024;
+
+/** A style reference that loaded: CDXML settings for the file header, the matching native
+ *  drawing style for the molecule, and the CDXML attributes the reference left unset. */
+export interface LoadedStyleReference {
+  path: string;
+  style: CdxmlDocumentStyle;
+  drawingStyle: Partial<NativeDrawingStyle>;
+  missing: string[];
 }
 
 export const exportHelp = `ChemDraft headless document exporter
@@ -75,7 +98,12 @@ Every other format writes one file per structure into --out-dir, named <job name
 
 Options:
   --format cdxml|pdf|sdf|mol|smi   Output format (single mode normally infers it from --out)
+  --style-reference <file.cdxml>    CDXML only: take bond length, line widths, hash spacing, bond spacing,
+                                    chain angle and label font, size and face from this CDXML file
   --help                            Print this help
+
+Environment:
+  ${CDXML_STYLE_REFERENCE_ENV}    Default --style-reference for every CDXML export
 
 Output:
   One JSON line per structure is written to stdout. Progress is written to stderr.
@@ -87,6 +115,7 @@ const exportOptions = {
   "--out": { kind: "value" },
   "--out-dir": { kind: "value" },
   "--format": { kind: "value" },
+  "--style-reference": { kind: "value" },
   "--help": { kind: "boolean" }
 } as const;
 
@@ -110,6 +139,7 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
   const outDir = stringOption(parsed, "--out-dir");
   const requestedFormat = stringOption(parsed, "--format");
   const format = requestedFormat === undefined ? undefined : parseFormat(requestedFormat);
+  const styleReference = stringOption(parsed, "--style-reference");
 
   if ((smiles ? 1 : 0) + (jobsFile ? 1 : 0) !== 1) {
     throw new CliUsageError("Provide exactly one of --smiles or --batch.");
@@ -128,18 +158,61 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
     if (format && inferred && format !== inferred) {
       throw new CliUsageError(`--format ${format} conflicts with the --out extension "${extension}".`);
     }
-    return { mode: "single", smiles, out, format: format ?? inferred! };
+    return withStyleReference({ mode: "single", smiles, out, format: format ?? inferred! }, styleReference);
   }
 
   if (!format) throw new CliUsageError("Batch mode requires --format.");
   if (COMBINED_FORMATS.includes(format)) {
     if (!out) throw new CliUsageError(`--format ${format} with --batch requires --out.`);
     if (outDir) throw new CliUsageError(`--out-dir is not valid with --format ${format}; use --out.`);
-    return { mode: "batch", jobsFile, out, format };
+    return withStyleReference({ mode: "batch", jobsFile, out, format }, styleReference);
   }
   if (!outDir) throw new CliUsageError(`--format ${format} with --batch requires --out-dir.`);
   if (out) throw new CliUsageError(`--out is not valid with --format ${format}; use --out-dir.`);
-  return { mode: "batch", jobsFile, outDir, format };
+  return withStyleReference({ mode: "batch", jobsFile, outDir, format }, styleReference);
+}
+
+function withStyleReference(parsed: ParsedArguments, styleReference: string | undefined): ParsedArguments {
+  if (styleReference === undefined) return parsed;
+  if (parsed.format !== "cdxml") {
+    throw new CliUsageError(`--style-reference applies only to CDXML exports, not --format ${parsed.format}.`);
+  }
+  return { ...parsed, styleReference };
+}
+
+/** The reference this export uses: the option, else the environment default, and only for CDXML. */
+function styleReferencePath(parsed: ParsedArguments, env: NodeJS.ProcessEnv): { path: string; source: string } | undefined {
+  if (parsed.styleReference !== undefined) return { path: parsed.styleReference, source: "--style-reference" };
+  const configured = env[CDXML_STYLE_REFERENCE_ENV]?.trim();
+  if (!configured || parsed.format !== "cdxml") return undefined;
+  const expanded = configured === "~" || configured.startsWith("~/") ? join(homedir(), configured.slice(1)) : configured;
+  return { path: resolve(expanded), source: CDXML_STYLE_REFERENCE_ENV };
+}
+
+/** Read a CDXML style reference, failing the whole run (exit 2) with the reason when it cannot be used. */
+export async function loadStyleReference(path: string, source = "--style-reference"): Promise<LoadedStyleReference> {
+  const unusable = (reason: string) => new CliUsageError(`CDXML style reference "${path}" (${source}) cannot be used: ${reason}`);
+  let contents: string;
+  try {
+    const info = await stat(path);
+    if (!info.isFile()) throw unusable("it is not a file.");
+    if (info.size > MAX_STYLE_REFERENCE_BYTES) throw unusable(`it is larger than ${MAX_STYLE_REFERENCE_BYTES} bytes.`);
+    contents = await readFile(path, "utf8");
+  } catch (error) {
+    if (error instanceof CliUsageError) throw error;
+    throw unusable(error instanceof Error ? error.message : String(error));
+  }
+  try {
+    const { style, missing } = readCdxmlDocumentStyle(contents);
+    return { path, style, drawingStyle: nativeDrawingStyleFromCdxmlStyle(style), missing };
+  } catch (error) {
+    throw unusable(error instanceof Error ? error.message : String(error));
+  }
+}
+
+function styleReferenceWarnings(reference: LoadedStyleReference | undefined): string[] {
+  if (reference === undefined || reference.missing.length === 0) return [];
+  return [`CDXML style reference "${reference.path}" sets no ${reference.missing.join(", ")}; ChemDraft's own values were kept for those.`];
 }
 
 async function readJobs(path: string): Promise<ExportJob[]> {
@@ -315,14 +388,15 @@ async function assertFinalMolfileIdentity(sourceCanonicalSmiles: string, molfile
 
 export async function exportPerJobFormat(
   format: "cdxml" | "pdf" | "mol",
-  built: BuiltSmilesDocument
+  built: BuiltSmilesDocument,
+  documentStyle?: CdxmlDocumentStyle
 ): Promise<PerJobExportResult> {
   // Identity verification already supplies problem-accounted invalid-structure warnings.
   const identityWarnings: string[] = [];
   const writerWarnings: string[] = [];
   const sourceCanonicalSmiles = await verifiedSourceCanonicalSmiles(built, identityWarnings, writerWarnings);
   if (format === "cdxml") {
-    const result = exportDocumentToCdxml(built.document);
+    const result = exportDocumentToCdxml(built.document, { documentStyle });
     const warnings = await assertCdxmlRoundTripIdentity(result.contents, built, sourceCanonicalSmiles);
     return { contents: result.contents, warnings: [...identityWarnings, ...result.warnings.map((warning) => warning.message), ...warnings] };
   }
@@ -348,15 +422,16 @@ async function runPerJobExport(
   jobs: readonly ExportJob[],
   format: "cdxml" | "pdf" | "mol",
   outFor: (job: ExportJob) => string,
-  io: CliIo
+  io: CliIo,
+  styleReference?: LoadedStyleReference
 ): Promise<boolean> {
   let allSucceeded = true;
   for (const job of jobs) {
     writeProgress(io, `Exporting ${job.name}…`);
     const out = outFor(job);
     try {
-      const built = await buildSmilesDocument(job.smiles, { name: job.name });
-      const exported = await exportPerJobFormat(format, built);
+      const built = await buildSmilesDocument(job.smiles, { name: job.name, drawingStyle: styleReference?.drawingStyle });
+      const exported = await exportPerJobFormat(format, built, styleReference?.style);
       await mkdir(dirname(out), { recursive: true });
       await writeFile(out, exported.contents);
       const bytes = typeof exported.contents === "string"
@@ -369,7 +444,9 @@ async function runPerJobExport(
         out,
         format,
         bytes,
-        layout: built.layout, warnings: [...built.warnings, ...exported.warnings]
+        ...(styleReference === undefined ? {} : { styleReference: styleReference.path }),
+        layout: built.layout,
+        warnings: [...styleReferenceWarnings(styleReference), ...built.warnings, ...exported.warnings]
       });
       writeProgress(io, `Wrote ${out}`);
     } catch (error) {
@@ -510,7 +587,8 @@ async function runCombinedExport(
 /** Run the `chemdraft export` subcommand. */
 export async function runExportCommand(
   argv: readonly string[],
-  io: CliIo = defaultCliIo
+  io: CliIo = defaultCliIo,
+  env: NodeJS.ProcessEnv = process.env
 ): Promise<CliExitCode> {
   try {
     const parsed = parseArguments(argv);
@@ -518,6 +596,10 @@ export async function runExportCommand(
       io.stdout(exportHelp);
       return cliExitCode.ok;
     }
+
+    const referencePath = styleReferencePath(parsed, env);
+    const styleReference = referencePath === undefined ? undefined
+      : await loadStyleReference(referencePath.path, referencePath.source);
 
     installNodeEngines();
 
@@ -535,7 +617,7 @@ export async function runExportCommand(
         ? () => parsed.out!
         : (job: ExportJob) => join(parsed.outDir!, `${job.name}.${format}`);
       if (parsed.mode === "batch") await mkdir(parsed.outDir!, { recursive: true });
-      allSucceeded = await runPerJobExport(jobs, format, outFor, io);
+      allSucceeded = await runPerJobExport(jobs, format, outFor, io, styleReference);
     }
     return resultExitCode(allSucceeded);
   } catch (error) {
