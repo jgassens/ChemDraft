@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="225" height="377" viewBox="0 0 225 377">
+<title>NIH/3T3 — Anatomic Minimalist</title>
+<defs>
+ <path id="membrane" d="M219.5 7.5 C194 35 171.5 68 148 94 C133 112 115 116 101 129 C88 141 73 157 66 173 C58.5 190 60.5 204 60.7 223 C61 247 53 276 44 299 C35 321 20 349 7.5 371 C24 350 40 333 57 317 C80 295 98 284 116 271 C133 258 146 236 156 218 C168 198 184 181 215.5 183 C201 179 190 177 182 169 C169 157 169 135 173 112 C178 76 195 40 219.5 7.5 Z"/>
+ <clipPath id="inside"><use href="#membrane"/></clipPath>
+ <linearGradient id="cyto" x1="0" y1="0.1" x2="0.95" y2="0.75"><stop stop-color="#e3edf3"/><stop offset=".44" stop-color="#cfdfeb"/><stop offset=".8" stop-color="#c3d8e5"/><stop offset="1" stop-color="#cbdde8"/></linearGradient>
+ <linearGradient id="nuc" x1="25%" y1="0%" x2="70%" y2="100%"><stop stop-color="#d9d2e8"/><stop offset=".42" stop-color="#cbc1df"/><stop offset=".85" stop-color="#bcb6d4"/><stop offset="1" stop-color="#b7b1d0"/></linearGradient>
+ <radialGradient id="nucl"><stop stop-color="#c9c1dc"/><stop offset="1" stop-color="#aca3c8"/></radialGradient>
+</defs>
+<use href="#membrane" fill="url(#cyto)"/>
+<g clip-path="url(#inside)">
+ 
+ <path d="M219 8 C190 42 175 68 152 97 C134 119 110 125 96 141 C76 162 67 178 67 202 C68 230 58 279 40 313 L7 372 C36 329 52 309 64 279 C75 253 77 233 80 208 C84 178 103 151 127 131 C155 105 182 56 219 8Z" fill="#e6f0f5" opacity=".85"/>
+ <path d="M219 7 C190 44 182 64 174 102 C165 146 168 159 183 171 Q197 179 216 183 C189 179 177 184 164 202 C153 216 142 245 122 267 C99 286 76 297 57 317 L8 371 C38 330 60 308 84 286 C105 268 122 252 138 231 C150 211 154 195 158 170 C162 134 172 97 181 75Z" fill="#aecbdc" opacity=".26"/>
+ <path d="M70 228 C72 202 76 183 90 163 C107 140 127 124 144 116 C123 137 102 159 96 182 C89 201 86 226 78 253 C67 286 44 318 8 371 C28 329 54 291 63 263 Z" fill="#eef5f7" opacity=".34"/>
+ 
+ <g fill="none" stroke="#7eacc8" stroke-width="1.05" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M215 13 Q182 54 168 83 Q151 106 133 129"/><path d="M199 41 Q170 88 147 153"/><path d="M176 79 Q163 126 160 161"/><path d="M158 169 L157 191" opacity=".75"/><path d="M155 199 Q162 188 176 183"/><path d="M164 182 L187 180"/><path d="M170 171 L181 179"/>
+  <path d="M125 126 Q99 149 83 173" opacity=".75"/><path d="M12 364 Q49 320 78 290 Q94 271 103 258"/><path d="M20 353 Q44 324 61 281"/><path d="M30 339 Q65 304 115 269" opacity=".6"/><path d="M36 333 Q67 301 86 285" opacity=".55"/><path d="M52 308 Q68 290 80 278" opacity=".48"/>
+ </g>
+ 
+ <g fill="none" stroke="#659cbd" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M93 173 C88 176 83 183 80 191 C76 200 74 211 75 215 C77 217 78 209 79 204 C81 194 86 186 94 180"/>
+  <path d="M81 178 C76 182 72 189 70 195 C69 198 68 201 70 202 C72 202 72 198 73 195 C75 187 80 181 82 179 M85 177 C88 174 92 171 94 173 C95 174 92 176 89 179"/>
+  <path d="M95 181 C88 188 84 195 82 202 C81 206 79 209 79 206 C81 196 86 187 93 181"/>
+  <path d="M108 239 C121 235 133 226 140 216 C142 212 144 215 141 220 C133 230 124 237 112 242 C106 245 106 240 108 239Z"/>
+  <path d="M107 247 C118 244 132 235 142 224 Q145 222 143 226 C136 236 122 244 112 249 Q105 251 107 247Z"/>
+  <path d="M115 248 C120 246 124 243 127 241 M131 239 Q135 236 137 234 Q139 232 137 236 C132 243 124 248 116 251 M110 249 Q108 252 106 250"/>
+ </g>
+ <g fill="#78a9c1"><circle cx="150.4" cy="169.8" r="1.75"/><circle cx="153.5" cy="181.4" r="1.7"/><circle cx="142.7" cy="159.2" r="1.4"/><circle cx="153.5" cy="160.8" r=".8"/><circle cx="160.5" cy="164.5" r=".85"/><circle cx="159" cy="176.8" r="1.1"/><circle cx="72" cy="235" r="1.1"/><circle cx="78" cy="240" r=".8"/><circle cx="104.6" cy="162" r=".85" opacity=".5"/><circle cx="102" cy="167.2" r=".8" opacity=".45"/></g>
+ 
+ <ellipse cx="115.3" cy="203.5" rx="35.9" ry="23.5" transform="rotate(-47 115.3 203.5)" fill="url(#nuc)" stroke="#9188b4" stroke-width="1.65"/>
+ <ellipse cx="107.3" cy="210.2" rx="4" ry="4.4" fill="url(#nucl)" stroke="#9890b9" stroke-width="1.05" transform="rotate(23 107.3 210.2)"/>
+ <ellipse cx="122.1" cy="195.5" rx="4.1" ry="4.3" fill="url(#nucl)" stroke="#9890b9" stroke-width="1.05" transform="rotate(30 122.1 195.5)"/>
+ 
+ <g transform="translate(126.7 148.4) rotate(-32)">
+ <rect x="-16.8" y="-6.4" width="33.6" height="12.8" rx="6.4" fill="#f9eae3" stroke="#e58b7c" stroke-width="1.45"/>
+ <path d="M-12 4 q1 -3 0 -5 q-1 -2 2 -3 M-6 -5 q-1 2 1 4 l1 2 M-1 4 q-1 -2 1 -3 q2 -2 0 -4 M5 -4 q2 1 1 3 q-1 2 1 4 M10 4 q2 -2 0 -5 q-1 -2 2 -3" stroke="#e7998b" stroke-width=".85" fill="none" stroke-linecap="round"/>
+ </g>
+ <g transform="translate(76.8 262.9) rotate(-50)">
+ <rect x="-13.6" y="-5.9" width="27.2" height="11.8" rx="5.9" fill="#f9e9e2" stroke="#e28b7c" stroke-width="1.45"/>
+ <path d="M-10 -4 q2 0 1 3 l1 2 M-5 4 q-2 -2 0 -4 l1 -2 M0 -4 q2 2 0 4 l1 3 M5 4 q-1 -3 1 -4 q2 -1 0 -3 M9 -4 q3 1 1 3" fill="none" stroke="#e7998b" stroke-width=".85" stroke-linecap="round"/>
+ </g>
+</g>
+<use href="#membrane" fill="none" stroke="#6d8799" stroke-width="1.85" stroke-linejoin="round"/>
+</svg>

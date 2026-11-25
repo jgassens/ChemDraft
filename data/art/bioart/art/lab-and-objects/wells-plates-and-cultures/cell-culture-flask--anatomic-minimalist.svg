@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="254" height="134" viewBox="0 0 762 402">
+<title>Cell culture flask — Anatomic Minimalist</title>
+<defs>
+<linearGradient id="clear" x1="0" y1="0" x2=".2" y2="1"><stop stop-color="#e6e9f2" stop-opacity=".55"/><stop offset=".5" stop-color="#c5c7d8" stop-opacity=".42"/><stop offset="1" stop-color="#fafbfe" stop-opacity=".65"/></linearGradient>
+<linearGradient id="top" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#b8bdcf" stop-opacity=".45"/><stop offset=".5" stop-color="#e7e9f0" stop-opacity=".62"/><stop offset="1" stop-color="#fcfcff" stop-opacity=".45"/></linearGradient>
+<linearGradient id="pink" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#d98fb0"/><stop offset=".45" stop-color="#eab2c9"/><stop offset="1" stop-color="#e9abc3"/></linearGradient>
+<linearGradient id="pinkside" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#ba4d7e"/><stop offset=".7" stop-color="#df89ac"/><stop offset="1" stop-color="#f2c4d3"/></linearGradient>
+<linearGradient id="cap" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#3c77b4"/><stop offset=".35" stop-color="#3473ad"/><stop offset=".8" stop-color="#144d8d"/><stop offset="1" stop-color="#103c7b"/></linearGradient>
+<radialGradient id="capface"><stop stop-color="#2264a4"/><stop offset=".75" stop-color="#1e5597"/><stop offset="1" stop-color="#4383bc"/></radialGradient>
+<radialGradient id="shadow"><stop stop-color="#b7879d" stop-opacity=".27"/><stop offset="1" stop-color="#b7879d" stop-opacity="0"/></radialGradient>
+</defs>
+<g stroke-linejoin="round" stroke-linecap="round">
+<ellipse cx="404" cy="348" rx="299" ry="40" fill="url(#shadow)"/>
+
+<path d="M153 145 Q153 136 163 131 L283 54 Q288 50 298 50 L638 20 Q647 19 654 24 L735 91 Q742 96 742 108 L738 327 Q738 341 724 345 L332 381 Q322 383 315 378 L157 279 Q150 274 150 266Z" fill="url(#clear)" stroke="#9da4b8" stroke-width="5"/>
+<path d="M290 58 L642 29 L642 234 L286 264Z" fill="url(#top)" stroke="#b6bacc" stroke-width="4"/>
+<path d="M164 141 L290 58 L286 264 L162 273Z" fill="#dae1eb" fill-opacity=".35" stroke="#bcc2d1" stroke-width="3"/>
+<path d="M642 29 L733 99 L730 291 L642 234Z" fill="#e5e6ef" fill-opacity=".45" stroke="#b7bdcc" stroke-width="4"/>
+
+<path d="M160 229 L286 264 L655 230 Q670 232 681 243 L730 291 L324 326Z" fill="url(#pink)" stroke="#dca1b9" stroke-width="2"/>
+<path d="M160 229 L324 326 L322 374 L160 273Z" fill="#e4a0bc" stroke="#e3b4c8" stroke-width="2"/>
+<path d="M324 326 L730 291 L728 332 Q728 338 720 339 L323 374Z" fill="url(#pinkside)" stroke="#d58eaf" stroke-width="2.5"/>
+<path d="M160 229 L286 264 L655 230" fill="none" stroke="#f7c8d9" stroke-width="3.8"/>
+<path d="M160 229 L324 326 L730 291" fill="none" stroke="#f6d0df" stroke-width="4" stroke-opacity=".85"/>
+<path d="M655 230 L730 291 L728 328 L681 292Z" fill="#d989a9" fill-opacity=".42"/>
+
+<path d="M172 194 L330 129 L737 96 L735 327 Q735 340 721 342 L325 378 L158 276 L157 199Z" fill="#ecedf4" fill-opacity=".14" stroke="#a8adbf" stroke-width="4"/>
+<path d="M154 145 L287 54 L641 22 L737 96 L331 129 L172 194 L158 191Z" fill="url(#top)" stroke="#a4abbd" stroke-width="4"/>
+<path d="M163 143 L292 60 L641 30 L727 94 L336 123 L170 187" fill="none" stroke="#f7f8fb" stroke-width="4"/>
+<path d="M173 199 L334 137 L733 104" fill="none" stroke="#929bad" stroke-width="3.6"/>
+<path d="M180 200 L333 143 L731 110" fill="none" stroke="#f6f7fb" stroke-width="3.5"/>
+<path d="M326 136 L325 370 L721 334 Q728 334 730 327 L732 105" fill="none" stroke="#f7f6fa" stroke-width="4.8" stroke-opacity=".9"/>
+<path d="M291 62 L338 123 M286 69 L286 264 L324 326 M650 38 L650 230 M166 270 L318 369" fill="none" stroke="#a5aebe" stroke-opacity=".52" stroke-width="3"/>
+<path d="M159 270 L317 366 M326 374 L721 338 M695 109 L694 276" fill="none" stroke="#aeb3c3" stroke-width="2.2" stroke-opacity=".65"/>
+<path d="M159 277 L319 376 Q325 380 333 379 L727 342" fill="none" stroke="#e9edf4" stroke-width="3.3"/>
+
+<path d="M139 146 C158 143 170 149 183 164 C192 183 191 243 182 261 C172 276 153 277 139 270Z" fill="#c6ccdb" fill-opacity=".62" stroke="#a8aebf" stroke-width="4"/>
+<path d="M151 147 C177 149 183 185 182 215 C181 245 171 268 151 271 M162 149 C187 156 195 184 194 212 C193 240 184 269 164 274" fill="none" stroke="#a6aebe" stroke-width="3"/>
+<path d="M145 157 L172 159 M147 180 L184 183 M146 195 L186 195 M146 237 L183 241 M143 259 L174 264" stroke="#f4f5fa" stroke-width="3" fill="none"/>
+
+<path d="M45 140 L128 136 C141 136 150 168 150 207 C150 245 141 280 129 281 L44 277Z" fill="url(#cap)" stroke="#22558c" stroke-width="4"/>
+<g stroke="#1a4b88" stroke-width="3.3">
+<path d="M57 147 L132 145 M63 157 L138 154 M65 168 L142 165 M67 179 L144 177 M68 191 L145 189 M69 203 L146 201 M69 215 L146 213 M68 227 L144 225 M65 239 L142 238 M63 251 L138 250 M58 263 L134 261 M52 272 L130 272"/>
+</g>
+<g stroke="#5791c8" stroke-width="2.7" opacity=".85"><path d="M55 151 L132 149 M61 162 L137 159 M65 173 L142 170 M67 185 L143 182 M68 197 L145 194 M69 209 L145 206 M68 221 L144 218 M67 233 L142 231 M64 245 L139 243 M60 257 L135 254 M55 268 L130 266"/></g>
+<ellipse cx="44" cy="208" rx="23" ry="68" fill="url(#capface)" stroke="#72a3cf" stroke-width="5.2"/>
+<path d="M129 142 C142 154 145 182 145 208 C145 239 140 266 130 276" stroke="#77a9d1" stroke-width="2.7" opacity=".8" fill="none"/>
+<ellipse cx="44" cy="208" rx="15.5" ry="57" fill="#255c9a" stroke="#2f6ba8" stroke-width="2"/>
+<path d="M39 150 C20 174 20 240 38 263" stroke="#7cadd2" stroke-width="3.2" fill="none" opacity=".75"/>
+
+<g fill="#30343e" stroke="#30343e" transform="matrix(1,-.045,0,1,0,27)">
+<g stroke-width="3.1"><path d="M561 153 H576 M575 188 H606 M586 207 H601 M575 225 H608 M585 244 H605 M574 263 H608 M586 282 H606 M576 300 H625" fill="none"/></g>
+<g font-family="Arial,Helvetica,sans-serif" font-size="31" font-weight="bold" stroke="none"><text x="580" y="161">250 mL</text><text x="615" y="196">200</text><text x="615" y="232">150</text><text x="615" y="271">100</text><text x="634" y="307">50</text></g><path d="M688 150 l14 0 m-8 -5 l7 5 -7 5" fill="none" stroke-width="2.3"/>
+</g></g></svg>

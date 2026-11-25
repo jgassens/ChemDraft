@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="246" height="133" viewBox="0 0 738 399">
+<title>Cell culture flask — Molecular Minimalism</title>
+<defs>
+<linearGradient id="wall" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#e6eef7" stop-opacity=".65"/><stop offset="1" stop-color="#f4f7fc" stop-opacity=".52"/></linearGradient>
+<linearGradient id="cap" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#4b86b9"/><stop offset="1" stop-color="#3166a1"/></linearGradient>
+</defs>
+<g stroke-linejoin="round" stroke-linecap="round">
+<path d="M145 147 Q146 141 155 135 L276 56 L615 28 Q622 27 628 32 L706 94 Q711 98 711 106 L710 324 Q709 335 698 337 L316 371 Q308 371 302 367 L153 274 Q147 270 145 264Z" fill="url(#wall)" stroke="#283f59" stroke-width="5.5"/>
+<path d="M618 30 L618 245 M277 57 L310 129" fill="none" stroke="#c7d1de" stroke-width="3.4"/>
+<path d="M154 141 L277 57 L618 30 L705 99 L331 131 L172 195 L147 195Z" fill="#f6f8fc" fill-opacity=".29"/>
+<path d="M163 229 L276 271 L655 242 L701 284 L312 322Z" fill="#efc0d1" stroke="#e0a7c0" stroke-width="2.4"/>
+<path d="M163 229 L312 322 L312 360 L155 268Z" fill="#ecc1d3" stroke="#e2aec3" stroke-width="2"/>
+<path d="M312 322 L701 284 L701 324 Q700 328 693 328 L313 362Z" fill="#edb9cd" stroke="#d59ab6" stroke-width="2.7"/>
+<path d="M655 242 L701 284 L701 324 L664 288Z" fill="#e1a7c0" fill-opacity=".35"/>
+<path d="M174 198 L331 131 L705 100" fill="none" stroke="#4d6882" stroke-width="4"/>
+<path d="M174 205 L332 138 L704 107 M312 143 L311 361 M317 365 L696 332" fill="none" stroke="#ccd7e4" stroke-width="3.6"/>
+<path d="M177 226 L276 271 M276 271 L312 322 M317 364 L698 330" stroke="#f9e4ec" stroke-width="3" fill="none"/>
+<path d="M167 232 L185 253 L224 274 L197 251Z" fill="#f9f5f9" opacity=".85"/>
+
+<path d="M133 145 L151 146 C175 153 181 180 180 207 C181 235 170 263 151 268 L133 270Z" fill="#e5edf5" fill-opacity=".68" stroke="#a7b8cc" stroke-width="3.8"/>
+<path d="M146 146 C169 149 175 176 175 204 C175 237 164 267 147 269 M159 143 C183 155 190 181 189 209 C189 235 178 262 161 275 M144 197 L172 197 M145 204 L174 204" stroke="#b9c7d7" stroke-width="3" fill="none"/>
+
+<path d="M45 140 L126 137 C138 137 145 169 145 206 C145 245 138 275 127 275 L44 272Z" fill="url(#cap)" stroke="#284d79" stroke-width="4.5"/>
+<g stroke="#265687" stroke-width="3.2"><path d="M55 147 H130 M59 157 H135 M62 167 H138 M65 177 H140 M66 187 H141 M67 197 H142 M67 207 H142 M66 217 H142 M66 227 H140 M64 237 H138 M61 247 H136 M57 257 H133 M52 267 H130"/></g>
+<g stroke="#75a0c9" stroke-width="2.1"><path d="M55 151 H130 M59 161 H135 M62 171 H138 M65 181 H140 M66 191 H141 M67 201 H142 M67 211 H142 M66 221 H142 M66 231 H140 M64 241 H138 M61 251 H136 M57 261 H133"/></g>
+<ellipse cx="44" cy="206" rx="22" ry="66" fill="#6194c2" stroke="#284d79" stroke-width="4.4"/>
+<path d="M35 144 C49 167 52 237 35 267" fill="none" stroke="#32669e" stroke-width="3.5"/>
+<path d="M46 143 C65 167 68 237 46 269" fill="none" stroke="#32669e" stroke-width="3.2"/>
+
+<g transform="matrix(1,-.038,0,1,0,21)" stroke="#2b4155" fill="#2b4155">
+<path d="M538 153 H550 M552 187 H583 M561 204 H578 M552 224 H584 M563 241 H579 M552 261 H584 M563 279 H579 M553 299 H602" fill="none" stroke-width="3.8"/>
+<g stroke="none" font-family="Arial,Helvetica,sans-serif" font-weight="bold" font-size="30"><text x="557" y="159">250 mL</text><text x="589" y="196">200</text><text x="589" y="233">150</text><text x="589" y="270">100</text><text x="609" y="307">50</text></g><path d="M662 144 h13 m-10 6 h8" fill="none" stroke-width="3"/>
+</g></g></svg>

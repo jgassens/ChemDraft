@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="158" height="189" viewBox="0 0 316 378">
+<title>Vortex mixer — Molecular Minimalism</title>
+<defs>
+<linearGradient id="body" x1="0" y1="0" x2=".85" y2="1"><stop stop-color="#fcfdff"/><stop offset="1" stop-color="#edf2f8"/></linearGradient>
+<linearGradient id="side" x1="0" y1=".2" x2="1" y2=".9"><stop stop-color="#fcfdff"/><stop offset="1" stop-color="#e3ebf5"/></linearGradient>
+<linearGradient id="rubber" x1="0" y1="0" x2=".5" y2="1"><stop stop-color="#9ec5e2"/><stop offset=".6" stop-color="#679ac4"/><stop offset="1" stop-color="#3f719d"/></linearGradient>
+<linearGradient id="blue" x1="0" y1="0" x2="1" y2=".9"><stop stop-color="#a5c7e2"/><stop offset="1" stop-color="#6c9fca"/></linearGradient>
+</defs>
+
+<g stroke="#213b54" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+<path d="M20 326 L19 343 Q20 356 43 357 Q64 356 69 346 L69 330Z" fill="url(#blue)"/>
+<path d="M214 337 L214 354 Q217 367 240 367 Q260 366 264 355 L265 337Z" fill="url(#blue)"/>
+<path d="M287 286 L289 310 Q306 308 309 297 L310 278Z" fill="#6e9ac1"/>
+<path d="M90 72 Q101 67 119 67 L247 69 Q269 69 277 84 Q280 92 285 115 L313 242 Q317 258 314 276 L274 332 Q267 344 253 345 L21 336 Q7 335 6 324 L6 297 L45 126 Q48 111 62 96Z" fill="url(#side)" stroke-width="3.2"/>
+<path d="M46 124 Q55 119 74 122 L221 130 Q237 131 243 145 L263 301 Q265 315 249 317 L20 307 Q7 306 7 296Z" fill="url(#body)" stroke="none"/>
+<path d="M49 123 Q48 112 63 99 L90 73 Q101 67 121 68 L245 70 Q265 69 276 83 Q280 91 274 98 L246 139 Q242 131 220 130 L74 122 Q55 122 49 123Z" fill="#fbfdff" stroke="none"/>
+<path d="M49 136 Q53 122 73 123 L222 131 Q240 131 244 149 L261 301 Q264 315 249 317 L21 306 Q10 306 7 296" fill="none" stroke="#829ab1" stroke-width="2.2"/>
+<path d="M47 135 Q52 121 73 123 L222 131 Q238 132 243 145" stroke="#2d465e" stroke-width="2.8" fill="none"/><path d="M274 92 Q254 120 243 145" fill="none" stroke="#435d76" stroke-width="2.4"/>
+<path d="M263 317 L254 343 L21 334 Q8 334 7 323 L7 307Z" fill="#edf3fa" stroke="none"/>
+<path d="M12 303 Q20 308 35 308 L249 317 Q263 317 263 301" fill="none" stroke="#c0cedb" stroke-width="2.2"/>
+<path d="M277 84 Q280 92 285 115 L313 242 Q317 258 314 276 L274 332 Q267 344 253 345 L21 336 Q7 335 6 324 L6 297" fill="none" stroke-width="3"/>
+<path d="M131 72 Q120 82 121 94 Q121 109 166 111 Q210 110 213 96 Q213 82 200 74Z" fill="url(#rubber)"/>
+<ellipse cx="166" cy="95" rx="44.5" ry="15.1" fill="url(#rubber)" stroke="#27465f" stroke-width="2.7"/><path d="M95 37 Q91 55 106 69 Q124 84 166 84 Q211 84 229 67 Q244 53 241 37Z" fill="url(#rubber)"/>
+<ellipse cx="168" cy="34" rx="74" ry="29" fill="#8cb7d9" stroke-width="3"/>
+<ellipse cx="167" cy="28" rx="44.5" ry="15" fill="#5a88b2" stroke-width="2.8"/>
+<path d="M96 37 Q109 55 166 55 Q220 55 240 38" fill="none" stroke="#d6eaf7" stroke-width="2.7"/>
+<path d="M110 69 Q132 79 167 80 Q203 79 227 69" fill="none" stroke="#5f8eb7" stroke-width="1.4"/>
+
+<g transform="rotate(8 75 235)">
+<rect x="53" y="202" width="43" height="71" rx="4.5" fill="#538bbb" stroke-width="3"/>
+<rect x="59" y="208" width="31" height="57" rx="2.5" fill="#b9d8ec" stroke-width="2.2"/>
+<path d="M63 213 H86 L85 260 H63Z" fill="#6aa7d6" stroke-width="1.6"/>
+<path d="M75 220 V231" stroke="#f2f9ff" stroke-width="2.7"/>
+<ellipse cx="75" cy="246" rx="5.6" ry="5.8" fill="none" stroke="#e3f2fc" stroke-width="2.3"/>
+<path d="M65 213 H84" stroke="#e5f2fb" stroke-width="1.6"/>
+</g>
+
+<g stroke-width="3.6" fill="none">
+<path d="M138 216 L144 221 M149 204 L155 210 M165 195 L169 204 M182 190 L183 203 M201 196 L196 207 M215 205 L207 214 M227 223 L217 228"/>
+<path d="M229 252 L222 252" stroke="#9cadbf" stroke-width="2.8"/>
+</g>
+<path d="M142 246 Q142 220 171 216 Q195 214 207 231 Q219 253 204 273 Q187 289 166 283 Q142 277 142 246Z" fill="#5084b0" stroke-width="3.2"/>
+<ellipse cx="170" cy="248" rx="29" ry="31.5" fill="url(#blue)" stroke-width="2.6"/>
+<path d="M175 219 L172 235" stroke="#365b7b" stroke-width="2.1"/>
+<path d="M176 221 Q190 224 197 238" fill="none" stroke="#d8ebf9" stroke-width="2.2"/>
+<path d="M201 238 L208 235 M202 245 L209 242 M201 253 L208 250 M200 261 L205 258" stroke="#9cc2dd" stroke-width="1.5"/>
+</g>
+</svg>

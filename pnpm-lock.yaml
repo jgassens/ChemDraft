@@ -218,6 +218,12 @@ importers:
         specifier: ^3.25.76
         version: 3.25.76
 
+  packages/art-library:
+    dependencies:
+      zod:
+        specifier: ^3.24.2
+        version: 3.25.76
+
   packages/art-engine:
     dependencies:
       '@chemdraft/chem-core':

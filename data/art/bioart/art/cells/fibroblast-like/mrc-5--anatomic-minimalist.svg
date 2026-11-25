@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="444" height="350" viewBox="0 0 444 350"><title>MRC-5_anatomic-minimalist</title><defs><path id="membrane" d="M13 335 C31 309 67 285 94 259 C109 244 113 227 136 205 C149 193 154 178 168 163 C189 140 214 133 241 121 C262 111 276 99 301 89 C329 77 351 72 373 58 C398 43 415 24 435 12 C413 32 399 49 381 65 C358 85 335 97 316 117 C294 141 278 168 252 192 C228 214 204 225 178 237 C152 249 130 256 107 271 C73 291 35 313 13 335Z"/><clipPath id="inside"><use href="#membrane"/></clipPath><linearGradient id="cyto" x1="0%" y1="0%" x2="100%" y2="80%"><stop stop-color="#e5eff4"/><stop offset=".48" stop-color="#d4e3ed"/><stop offset="1" stop-color="#bdd3e0"/></linearGradient><linearGradient id="nuc" x1="18%" y1="0%" x2="80%" y2="100%"><stop stop-color="#d9d2e9"/><stop offset=".55" stop-color="#c7bfdb"/><stop offset="1" stop-color="#b8b3d1"/></linearGradient></defs>
+<use href="#membrane" fill="url(#cyto)"/><g clip-path="url(#inside)">
+<path d="M14 334 C48 298 74 282 99 257 C121 231 132 213 154 189 C172 163 188 148 213 138 C251 123 279 106 307 93 C352 74 386 54 435 12 L413 36 C376 65 344 86 308 112 C282 128 253 142 216 151 C192 160 171 178 155 199 C128 231 120 246 99 266 C72 289 39 310 14 334Z" fill="#e9f3f8" opacity="0.65"/>
+<path d="M13 335 C46 309 80 289 108 271 C135 255 159 246 178 237 C211 222 231 212 252 192 C278 168 295 143 316 117 C336 97 359 85 381 65 L435 12 C401 47 372 73 345 94 C309 124 291 156 263 178 C236 202 210 217 177 232 C146 246 132 253 105 267 C68 291 37 310 13 335Z" fill="#aecbdf" opacity="0.53"/>
+<path d="M158 185 Q179 149 212 140 Q252 125 281 112 Q263 129 250 138 Q213 145 189 167 L164 193Z" fill="#f0f6fa" opacity="0.72"/>
+<path d="M147 221 Q180 210 201 203 Q233 190 257 172 L248 194 Q218 219 177 235 L150 246Z" fill="#c5dfed" opacity="0.45"/>
+<path d="M110 251 Q138 216 156 193 Q172 172 182 163 Q169 184 157 204 Q136 237 110 251Z" fill="#f1f7fa" opacity="0.55"/>
+<path d="M21 326 Q58 293 85 278" stroke="#76a9c9" stroke-width="1.02" opacity="0.9" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+<path d="M73 286 Q97 261 118 240" stroke="#76a9c9" stroke-width="1.0" opacity="0.92" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+<path d="M82 282 Q111 258 134 247" stroke="#76a9c9" stroke-width="1.1" opacity="0.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+<path d="M149 239 Q180 226 214 207" stroke="#76a9c9" stroke-width="1.1" opacity="0.9" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+<path d="M138 214 Q151 199 164 185" stroke="#76a9c9" stroke-width="1.0" opacity="0.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+<path d="M174 163 Q185 150 195 146" stroke="#76a9c9" stroke-width="0.9" opacity="0.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+<path d="M231 125 Q258 115 277 106" stroke="#76a9c9" stroke-width="1.0" opacity="0.92" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+<path d="M253 129 Q265 126 275 121" stroke="#76a9c9" stroke-width="0.9" opacity="0.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+<path d="M308 94 Q340 81 373 61" stroke="#76a9c9" stroke-width="1.0" opacity="0.84" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+<path d="M280 150 Q310 111 354 82 Q395 53 426 21" stroke="#76a9c9" stroke-width="1.05" opacity="0.95" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+<path d="M298 123 Q321 98 363 75" stroke="#76a9c9" stroke-width="0.9" opacity="0.78" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+<path d="M222 201 L228 197" stroke="#76a9c9" stroke-width="1.0" opacity="0.85" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+<path d="M85 278 Q114 257 127 250" stroke="#76a9c9" stroke-width="0.85" opacity="0.65" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+<path d="M283 149 Q302 121 312 112" stroke="#76a9c9" stroke-width="0.85" opacity="0.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+<path d="M165 205 Q163 201 166 200 Q168 198 170 202 Q175 209 183 208 Q189 207 194 207 Q197 207 195 210 Q180 216 165 205Z" stroke="#699fc0" stroke-width="1.1" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M164 209 Q162 212 168 215 Q174 218 181 217 Q184 216 180 215 Q171 215 164 209Z" stroke="#699fc0" stroke-width="1.05" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M170 206 Q176 212 185 211 Q188 212 185 214 Q174 215 170 209" stroke="#699fc0" stroke-width="1.03" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M263 139 Q266 135 267 142 Q266 159 249 175 Q246 177 249 173 Q262 160 263 146Z" stroke="#699fc0" stroke-width="1.1" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M270 137 Q274 145 270 155 Q265 168 252 179" stroke="#699fc0" stroke-width="1.1" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M273 134 Q276 132 277 138 Q277 151 269 161 Q264 168 261 169 Q260 170 262 166 Q273 154 274 143Z" stroke="#699fc0" stroke-width="1.12" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="150.8" cy="207" r="1.25" fill="#73a8c4" opacity="0.75"/>
+<circle cx="173" cy="220" r="1.05" fill="#73a8c4" opacity="0.7"/>
+<circle cx="254.4" cy="129.3" r="1.3" fill="#73a8c4" opacity="0.9"/>
+<circle cx="266.6" cy="128.4" r="1.05" fill="#73a8c4" opacity="0.72"/>
+<circle cx="223.4" cy="202" r="0.9" fill="#73a8c4" opacity="0.55"/>
+<circle cx="158.4" cy="199.8" r="0.9" fill="#73a8c4" opacity="0.45"/>
+<ellipse cx="216.6" cy="169.8" rx="49.4" ry="20.7" transform="rotate(-35.7 216.6 169.8)" fill="url(#nuc)" stroke="#9489b4" stroke-width="1.6"/>
+<ellipse cx="205.1" cy="178.1" rx="4.2" ry="4.3" fill="#c2b9d9" stroke="#9689b7" stroke-width="1.05"/>
+<ellipse cx="223.2" cy="163.7" rx="4.2" ry="4.3" fill="#c2b9d9" stroke="#9689b7" stroke-width="1.05"/>
+<g transform="translate(293.7 108.2) rotate(-37.5)"><rect x="-16.35" y="-5.4" width="32.7" height="10.8" rx="5.4" fill="#fae9e1" stroke="#e58d7f" stroke-width="1.4"/><path d="M-12 -3 q1 2 0 4 l2 2 M-6 3 q-1 -2 1 -4 l-1 -3 M0 -3 q2 2 0 4 l1 2 M6 3 q-2 -2 0 -4 l-1 -2 M11 -2 l-1 4" stroke="#e69588" stroke-width=".8" fill="none" stroke-linecap="round"/>
+<circle cx="-10" cy="1" r="0.6" fill="#e69a8c"/>
+<circle cx="-3" cy="1" r="0.6" fill="#e69a8c"/>
+<circle cx="4" cy="-1" r="0.55" fill="#e69a8c"/>
+<circle cx="11" cy="1" r="0.6" fill="#e69a8c"/>
+</g>
+<g transform="translate(144 229.9) rotate(-29)"><rect x="-16.0" y="-5.9" width="32.0" height="11.8" rx="5.9" fill="#fae9e1" stroke="#e58d7f" stroke-width="1.4"/><path d="M-11 3 q2 -2 0 -4 l1 -2 M-5 -4 q2 2 0 4 l1 3 M1 3 q-1 -2 1 -4 l-1 -3 M7 -3 q2 2 0 4 l1 2 M12 -2 l-1 5" stroke="#e69588" stroke-width=".8" fill="none" stroke-linecap="round"/>
+<circle cx="-10" cy="-1" r="0.55" fill="#e69a8c"/>
+<circle cx="-2" cy="1" r="0.6" fill="#e69a8c"/>
+<circle cx="5" cy="-1" r="0.6" fill="#e69a8c"/>
+<circle cx="11" cy="1" r="0.55" fill="#e69a8c"/>
+</g>
+</g><use href="#membrane" stroke="#6c8799" stroke-width="1.85" fill="none" stroke-linejoin="round"/></svg>

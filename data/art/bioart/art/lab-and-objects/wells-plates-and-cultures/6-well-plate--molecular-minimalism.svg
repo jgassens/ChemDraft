@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="254" height="169" viewBox="0 0 762 507">
+<title>Six-well plate — Molecular Minimalism</title>
+<defs>
+<linearGradient id="medium" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#e5c1c7"/><stop offset="1" stop-color="#efd5d6"/></linearGradient>
+<linearGradient id="clear" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#d1deec" stop-opacity=".49"/><stop offset=".5" stop-color="#e6eef5" stop-opacity=".43"/><stop offset="1" stop-color="#dce8f2" stop-opacity=".47"/></linearGradient>
+<g id="well" stroke-linejoin="round" stroke-linecap="round">
+<path d="M-100 -4 C-100 -49 -55 -84 0 -84 C56 -84 99 -48 99 -3 L94 76 C92 118 48 139 -8 139 C-61 139 -99 113 -100 73Z" fill="url(#clear)" stroke="#b0c4d5" stroke-width="2.5"/>
+<path d="M-90 36 C-69 5 -34 -11 5 -11 C46 -11 77 2 92 30 C72 65 35 80 -6 82 C-44 84 -76 66 -90 36Z" fill="url(#medium)" stroke="#b28e99" stroke-width="3.6"/>
+<path d="M-83 40 C-61 11 -27 -2 7 -2 C45 -2 72 8 85 34" fill="none" stroke="#f4dadd" stroke-width="4"/>
+<path d="M-100 -4 C-100 -49 -55 -84 0 -84 C56 -84 99 -48 99 -3 C100 44 53 86 -5 87 C-60 89 -101 51 -100 -4Z" fill="none" stroke="#4b637a" stroke-width="5.4"/>
+<path d="M-93 -4 C-92 -45 -52 -78 0 -78 C52 -78 92 -46 92 -3 C93 40 50 80 -5 81 C-56 83 -93 48 -93 -4Z" fill="none" stroke="#f5f8fb" stroke-width="5.3"/>
+<path d="M-89 -3 C-88 -43 -50 -74 0 -74 C50 -74 89 -43 89 -3 C90 38 49 77 -5 78 C-55 80 -90 45 -89 -3Z" fill="none" stroke="#839bad" stroke-width="2.7"/>
+<path d="M-45 -64 L-45 -5 M-37 -68 L-37 -10" fill="none" stroke="#afc3d4" stroke-width="2.4" opacity=".69"/>
+</g>
+</defs>
+<g stroke-linejoin="round" stroke-linecap="round">
+<path d="M24 356 L121 43 Q132 27 160 17 L686 30 Q699 30 731 61 L732 142 L707 447 Q704 473 681 481 L49 456 Q24 456 24 435Z" fill="#e0ebf4" fill-opacity=".39" stroke="#344b61" stroke-width="6"/>
+<path d="M40 364 L135 45 L166 30 L686 41 L718 69 L694 391 L680 402 L50 383Z" fill="#e9f0f6" fill-opacity=".36" stroke="#8da5b9" stroke-width="3.8"/>
+<path d="M153 36 L134 204 M334 36 L330 205 M535 40 L530 212 M704 49 L688 218 M89 195 L703 213 M86 205 L702 222" fill="none" stroke="#aec1d3" stroke-width="3" opacity=".64"/>
+<use xlink:href="#well" transform="translate(219 116) rotate(-4) scale(.98 .99)"/>
+<use xlink:href="#well" transform="translate(416 121) rotate(-4) scale(.97 .98)"/>
+<use xlink:href="#well" transform="translate(611 126) rotate(-4) scale(.96 .98)"/>
+<use xlink:href="#well" transform="translate(170 291) rotate(-5) scale(1.02 .99)"/>
+<use xlink:href="#well" transform="translate(375 296) rotate(-5) scale(1.02 .99)"/>
+<use xlink:href="#well" transform="translate(580 301) rotate(-5) scale(1.01 .99)"/>
+
+<path d="M24 356 L121 43 Q132 27 160 17 L686 30 Q699 30 731 61 L702 393 Q699 410 681 413 L47 389 Q25 389 24 356Z M41 357 Q40 370 50 372 L678 398 Q689 398 690 386 L718 68 L683 43 L165 30 L135 46Z" fill="#ecf3f8" fill-opacity=".78" fill-rule="evenodd" stroke="#596f83" stroke-width="4"/>
+<path d="M28 357 L127 43 Q138 31 163 23 L686 35 L726 65 L697 390 Q695 403 679 404 L47 382 Q32 382 28 357Z" stroke="#f9fafc" fill="none" stroke-width="4.5"/>
+<path d="M26 383 L48 397 L678 421 L702 408 L707 450 Q703 473 681 481 L50 456 Q25 455 24 434Z" fill="#e4edf4" fill-opacity=".38" stroke="#5c748a" stroke-width="4.2"/>
+<path d="M26 395 L49 408 L678 431 L704 416 M47 390 L50 453 M676 414 L680 478" stroke="#8098ae" stroke-width="3.4" fill="none"/>
+<path d="M260 389 L261 441 Q266 452 270 443 L273 388 L273 370 Q271 352 268 358 L260 389 M465 395 L466 451 Q472 461 476 450 L477 397 L477 377 Q475 361 472 366 L465 395" fill="none" stroke="#9db2c6" stroke-width="3.6"/>
+<path d="M51 415 L677 438 M50 448 L677 471" fill="none" stroke="#f7f9fc" stroke-width="3.2"/>
+<path d="M731 73 L731 141 L707 448 Q704 469 681 479 L683 418 L701 395Z" fill="#d6e4ef" fill-opacity=".36" stroke="#617a90" stroke-width="3"/>
+</g></svg>

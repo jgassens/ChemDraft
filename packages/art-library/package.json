@@ -1,0 +1,1 @@
+{"name":"@chemdraft/art-library","version":"0.0.0","private":true,"type":"module","exports":{".":{"types":"./src/index.ts","default":"./src/index.ts"}},"dependencies":{"zod":"^3.24.2"}}
