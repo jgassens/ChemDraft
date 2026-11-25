@@ -43,7 +43,7 @@ jobs:
       - name: Release and build tooling tests
         env:
           NODE_OPTIONS: --no-experimental-strip-types
-        run: node --test "scripts/*.test.mjs" "tools/release/*.test.mjs"
+        run: node --test "scripts/*.test.mjs" "tools/release/*.test.mjs" "tools/spin3d-ff-reference/*.test.mjs"
 
       # The Vite build, without the Tauri bundle: catches bundling and import errors that neither
       # tsc nor vitest sees, and needs no macOS runner. The Rust job builds this again because
@@ -129,7 +129,7 @@ jobs:
       - name: Release and build tooling tests
         env:
           NODE_OPTIONS: --no-experimental-strip-types
-        run: node --test "scripts/*.test.mjs" "tools/release/*.test.mjs"
+        run: node --test "scripts/*.test.mjs" "tools/release/*.test.mjs" "tools/spin3d-ff-reference/*.test.mjs"
 
       # Also required by tauri_build (see the rust job). No Sparkle step: it is macOS-only.
       - run: pnpm --filter @chemdraft/desktop build:web

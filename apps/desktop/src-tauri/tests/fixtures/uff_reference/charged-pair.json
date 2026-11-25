@@ -1,0 +1,411 @@
+{
+  "graphs": [
+    {
+      "cutoffCrossing": {
+        "gradientCheck": "cutoff-boundary",
+        "steps": [
+          {
+            "fresh": {
+              "energyKjMol": 0,
+              "gradientKjMolAngstrom": [0, 0, 0, 0, 0, 0]
+            },
+            "persistent": {
+              "energyKjMol": 0,
+              "gradientKjMolAngstrom": [0, 0, 0, 0, 0, 0]
+            },
+            "snapshotId": "outside-cutoff"
+          },
+          {
+            "fresh": {
+              "energyKjMol": -0.004276101544098378,
+              "gradientKjMolAngstrom": [
+                -0.00319458881076007, -0.00007986472026900174, 0.00003993236013450087,
+                0.00319458881076007, 0.00007986472026900174, -0.00003993236013450087
+              ]
+            },
+            "persistent": {
+              "energyKjMol": 0,
+              "gradientKjMolAngstrom": [0, 0, 0, 0, 0, 0]
+            },
+            "snapshotId": "inside-cutoff"
+          },
+          {
+            "fresh": {
+              "energyKjMol": -0.004276101544098378,
+              "gradientKjMolAngstrom": [
+                -0.00319458881076007, -0.00007986472026900174, 0.00003993236013450087,
+                0.00319458881076007, 0.00007986472026900174, -0.00003993236013450087
+              ]
+            },
+            "persistent": {
+              "energyKjMol": 0,
+              "gradientKjMolAngstrom": [0, 0, 0, 0, 0, 0]
+            },
+            "snapshotId": "inside-cutoff"
+          },
+          {
+            "fresh": {
+              "energyKjMol": -0.004276101544098378,
+              "gradientKjMolAngstrom": [
+                -0.00319458881076007, -0.00007986472026900174, 0.00003993236013450087,
+                0.00319458881076007, 0.00007986472026900174, -0.00003993236013450087
+              ]
+            },
+            "persistent": {
+              "energyKjMol": 0,
+              "gradientKjMolAngstrom": [0, 0, 0, 0, 0, 0]
+            },
+            "snapshotId": "inside-cutoff"
+          },
+          {
+            "fresh": {
+              "energyKjMol": -0.004276101544098378,
+              "gradientKjMolAngstrom": [
+                -0.00319458881076007, -0.00007986472026900174, 0.00003993236013450087,
+                0.00319458881076007, 0.00007986472026900174, -0.00003993236013450087
+              ]
+            },
+            "persistent": {
+              "energyKjMol": 0,
+              "gradientKjMolAngstrom": [0, 0, 0, 0, 0, 0]
+            },
+            "snapshotId": "inside-cutoff"
+          },
+          {
+            "fresh": {
+              "energyKjMol": -0.004276101544098378,
+              "gradientKjMolAngstrom": [
+                -0.00319458881076007, -0.00007986472026900174, 0.00003993236013450087,
+                0.00319458881076007, 0.00007986472026900174, -0.00003993236013450087
+              ]
+            },
+            "persistent": {
+              "energyKjMol": 0,
+              "gradientKjMolAngstrom": [0, 0, 0, 0, 0, 0]
+            },
+            "snapshotId": "inside-cutoff"
+          },
+          {
+            "fresh": {
+              "energyKjMol": -0.004276101544098378,
+              "gradientKjMolAngstrom": [
+                -0.00319458881076007, -0.00007986472026900174, 0.00003993236013450087,
+                0.00319458881076007, 0.00007986472026900174, -0.00003993236013450087
+              ]
+            },
+            "persistent": {
+              "energyKjMol": 0,
+              "gradientKjMolAngstrom": [0, 0, 0, 0, 0, 0]
+            },
+            "snapshotId": "inside-cutoff"
+          },
+          {
+            "fresh": {
+              "energyKjMol": -0.004276101544098378,
+              "gradientKjMolAngstrom": [
+                -0.00319458881076007, -0.00007986472026900174, 0.00003993236013450087,
+                0.00319458881076007, 0.00007986472026900174, -0.00003993236013450087
+              ]
+            },
+            "persistent": {
+              "energyKjMol": 0,
+              "gradientKjMolAngstrom": [0, 0, 0, 0, 0, 0]
+            },
+            "snapshotId": "inside-cutoff"
+          },
+          {
+            "fresh": {
+              "energyKjMol": -0.004276101544098378,
+              "gradientKjMolAngstrom": [
+                -0.00319458881076007, -0.00007986472026900174, 0.00003993236013450087,
+                0.00319458881076007, 0.00007986472026900174, -0.00003993236013450087
+              ]
+            },
+            "persistent": {
+              "energyKjMol": 0,
+              "gradientKjMolAngstrom": [0, 0, 0, 0, 0, 0]
+            },
+            "snapshotId": "inside-cutoff"
+          },
+          {
+            "fresh": {
+              "energyKjMol": -0.004276101544098378,
+              "gradientKjMolAngstrom": [
+                -0.00319458881076007, -0.00007986472026900174, 0.00003993236013450087,
+                0.00319458881076007, 0.00007986472026900174, -0.00003993236013450087
+              ]
+            },
+            "persistent": {
+              "energyKjMol": -0.004276101544098378,
+              "gradientKjMolAngstrom": [
+                -0.00319458881076007, -0.00007986472026900174, 0.00003993236013450087,
+                0.00319458881076007, 0.00007986472026900174, -0.00003993236013450087
+              ]
+            },
+            "snapshotId": "inside-cutoff"
+          },
+          {
+            "fresh": {
+              "energyKjMol": 0,
+              "gradientKjMolAngstrom": [0, 0, 0, 0, 0, 0]
+            },
+            "persistent": {
+              "energyKjMol": 0,
+              "gradientKjMolAngstrom": [0, 0, 0, 0, 0, 0]
+            },
+            "snapshotId": "outside-cutoff"
+          }
+        ]
+      },
+      "hydrogenModel": "no-hydrogens",
+      "snapshots": [
+        {
+          "gradientCheck": "smooth",
+          "id": "inside-cutoff",
+          "terms": {
+            "angle": {
+              "centralDifferenceKcalMolAngstrom": [
+                [0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0]
+              ],
+              "centralDifferenceKjMolAngstrom": [
+                [0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0]
+              ],
+              "energyKcalMol": 0,
+              "energyKjMol": 0,
+              "gradientKcalMolAngstrom": [0, 0, 0, 0, 0, 0],
+              "gradientKjMolAngstrom": [0, 0, 0, 0, 0, 0]
+            },
+            "bond": {
+              "centralDifferenceKcalMolAngstrom": [
+                [0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0]
+              ],
+              "centralDifferenceKjMolAngstrom": [
+                [0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0]
+              ],
+              "energyKcalMol": 0,
+              "energyKjMol": 0,
+              "gradientKcalMolAngstrom": [0, 0, 0, 0, 0, 0],
+              "gradientKjMolAngstrom": [0, 0, 0, 0, 0, 0]
+            },
+            "oop": {
+              "centralDifferenceKcalMolAngstrom": [
+                [0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0]
+              ],
+              "centralDifferenceKjMolAngstrom": [
+                [0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0]
+              ],
+              "energyKcalMol": 0,
+              "energyKjMol": 0,
+              "gradientKcalMolAngstrom": [0, 0, 0, 0, 0, 0],
+              "gradientKjMolAngstrom": [0, 0, 0, 0, 0, 0]
+            },
+            "torsion": {
+              "centralDifferenceKcalMolAngstrom": [
+                [0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0]
+              ],
+              "centralDifferenceKjMolAngstrom": [
+                [0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0]
+              ],
+              "energyKcalMol": 0,
+              "energyKjMol": 0,
+              "gradientKcalMolAngstrom": [0, 0, 0, 0, 0, 0],
+              "gradientKjMolAngstrom": [0, 0, 0, 0, 0, 0]
+            },
+            "vdw": {
+              "centralDifferenceKcalMolAngstrom": [
+                [
+                  -0.0007635250503677456, -0.000019088126229378083, 0.000009544063130952074,
+                  0.0007635250503677456, 0.000019088126229378083, -0.000009544063130952074
+                ],
+                [
+                  -0.0007635250503243775, -0.000019088126305272235, 0.000009544063087583987,
+                  0.0007635250503243775, 0.000019088126305272235, -0.000009544063087583987
+                ]
+              ],
+              "centralDifferenceKjMolAngstrom": [
+                [
+                  -0.0031945888107386476, -0.0000798647201437179, 0.00003993236013990348,
+                  0.0031945888107386476, 0.0000798647201437179, -0.00003993236013990348
+                ],
+                [
+                  -0.0031945888105571955, -0.00007986472046125903, 0.0000399323599584514,
+                  0.0031945888105571955, 0.00007986472046125903, -0.0000399323599584514
+                ]
+              ],
+              "energyKcalMol": -0.0010220127973466487,
+              "energyKjMol": -0.004276101544098378,
+              "gradientKcalMolAngstrom": [
+                -0.0007635250503728656, -0.00001908812625932164, 0.00000954406312966082,
+                0.0007635250503728656, 0.00001908812625932164, -0.00000954406312966082
+              ],
+              "gradientKjMolAngstrom": [
+                -0.00319458881076007, -0.00007986472026900174, 0.00003993236013450087,
+                0.00319458881076007, 0.00007986472026900174, -0.00003993236013450087
+              ]
+            }
+          },
+          "topology": {
+            "angleCoordinations": [],
+            "atomTypes": [
+              {
+                "atomicNumber": 11,
+                "label": "Na",
+                "row": 23
+              },
+              {
+                "atomicNumber": 17,
+                "label": "Cl",
+                "row": 35
+              }
+            ],
+            "excludedPairs": [],
+            "tuples": {
+              "angle": [],
+              "bond": [],
+              "oop": [],
+              "torsion": [],
+              "vdw": [
+                [0, 1]
+              ]
+            }
+          },
+          "total": {
+            "centralDifferenceKjMolAngstrom": [
+              [
+                -0.003194588810758597, -0.00007986472013235546, 0.000039932360152913904,
+                0.003194588810758597, 0.00007986472013235546, -0.000039932360152913904
+              ],
+              [
+                -0.0031945888105851246, -0.00007986472039256398, 0.00003993235993607347,
+                0.0031945888105851246, 0.00007986472039256398, -0.00003993235993607347
+              ]
+            ],
+            "evaluateKjMol": -0.004276101544098378,
+            "gradientKjMolAngstrom": [
+              -0.00319458881076007, -0.00007986472026900174, 0.00003993236013450087,
+              0.00319458881076007, 0.00007986472026900174, -0.00003993236013450087
+            ],
+            "valueKjMol": -0.004276101544098378
+          }
+        },
+        {
+          "gradientCheck": "smooth",
+          "id": "outside-cutoff",
+          "terms": {
+            "angle": {
+              "centralDifferenceKcalMolAngstrom": [
+                [0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0]
+              ],
+              "centralDifferenceKjMolAngstrom": [
+                [0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0]
+              ],
+              "energyKcalMol": 0,
+              "energyKjMol": 0,
+              "gradientKcalMolAngstrom": [0, 0, 0, 0, 0, 0],
+              "gradientKjMolAngstrom": [0, 0, 0, 0, 0, 0]
+            },
+            "bond": {
+              "centralDifferenceKcalMolAngstrom": [
+                [0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0]
+              ],
+              "centralDifferenceKjMolAngstrom": [
+                [0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0]
+              ],
+              "energyKcalMol": 0,
+              "energyKjMol": 0,
+              "gradientKcalMolAngstrom": [0, 0, 0, 0, 0, 0],
+              "gradientKjMolAngstrom": [0, 0, 0, 0, 0, 0]
+            },
+            "oop": {
+              "centralDifferenceKcalMolAngstrom": [
+                [0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0]
+              ],
+              "centralDifferenceKjMolAngstrom": [
+                [0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0]
+              ],
+              "energyKcalMol": 0,
+              "energyKjMol": 0,
+              "gradientKcalMolAngstrom": [0, 0, 0, 0, 0, 0],
+              "gradientKjMolAngstrom": [0, 0, 0, 0, 0, 0]
+            },
+            "torsion": {
+              "centralDifferenceKcalMolAngstrom": [
+                [0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0]
+              ],
+              "centralDifferenceKjMolAngstrom": [
+                [0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0]
+              ],
+              "energyKcalMol": 0,
+              "energyKjMol": 0,
+              "gradientKcalMolAngstrom": [0, 0, 0, 0, 0, 0],
+              "gradientKjMolAngstrom": [0, 0, 0, 0, 0, 0]
+            },
+            "vdw": {
+              "centralDifferenceKcalMolAngstrom": [
+                [0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0]
+              ],
+              "centralDifferenceKjMolAngstrom": [
+                [0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0]
+              ],
+              "energyKcalMol": 0,
+              "energyKjMol": 0,
+              "gradientKcalMolAngstrom": [0, 0, 0, 0, 0, 0],
+              "gradientKjMolAngstrom": [0, 0, 0, 0, 0, 0]
+            }
+          },
+          "topology": {
+            "angleCoordinations": [],
+            "atomTypes": [
+              {
+                "atomicNumber": 11,
+                "label": "Na",
+                "row": 23
+              },
+              {
+                "atomicNumber": 17,
+                "label": "Cl",
+                "row": 35
+              }
+            ],
+            "excludedPairs": [],
+            "tuples": {
+              "angle": [],
+              "bond": [],
+              "oop": [],
+              "torsion": [],
+              "vdw": []
+            }
+          },
+          "total": {
+            "centralDifferenceKjMolAngstrom": [
+              [0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0]
+            ],
+            "evaluateKjMol": 0,
+            "gradientKjMolAngstrom": [0, 0, 0, 0, 0, 0],
+            "valueKjMol": 0
+          }
+        }
+      ]
+    }
+  ],
+  "id": "charged-pair"
+}

@@ -1,0 +1,114 @@
+{
+  "id": "methane",
+  "group": "Small organics and term isolation",
+  "geometrySource": "ChemDraft RDKit MinimalLib ETKDGv3 seed 416651 from C",
+  "graphs": [
+    {
+      "hydrogenModel": "explicit-hydrogen",
+      "atoms": [
+        {
+          "element": "C",
+          "atomicNumber": 6,
+          "formalCharge": 0
+        },
+        {
+          "element": "H",
+          "atomicNumber": 1,
+          "formalCharge": 0
+        },
+        {
+          "element": "H",
+          "atomicNumber": 1,
+          "formalCharge": 0
+        },
+        {
+          "element": "H",
+          "atomicNumber": 1,
+          "formalCharge": 0
+        },
+        {
+          "element": "H",
+          "atomicNumber": 1,
+          "formalCharge": 0
+        }
+      ],
+      "bonds": [
+        {
+          "a": 0,
+          "b": 1,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 0,
+          "b": 2,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 0,
+          "b": 3,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 0,
+          "b": 4,
+          "order": 1,
+          "originalOrder": 1
+        }
+      ],
+      "snapshots": [
+        {
+          "id": "seed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [0.0026023038351096527, -0.01552352934300798, 0.007907705154828398],
+            [0.8792613883009341, -0.6841213770680402, 0.058863009485216514],
+            [0.32280465101485994, 0.9172931403380448, -0.5026706783805153],
+            [-0.38617031816421205, 0.23593220514618804, 1.0146150956107798],
+            [-0.8184980249866923, -0.45358043907318457, -0.5787151318703094]
+          ]
+        },
+        {
+          "id": "perturbed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [-0.08239769616489036, -0.01552352934300798, 0.09290770515482841],
+            [0.9132613883009342, -0.7521213770680402, 0.07586300948521651],
+            [0.28880465101485997, 0.9682931403380448, -0.5536706783805153],
+            [-0.301170318164212, 0.21893220514618805, 1.0826150956107798],
+            [-0.8014980249866923, -0.5385804390731845, -0.5787151318703094]
+          ]
+        }
+      ]
+    },
+    {
+      "hydrogenModel": "drawn-heavy-atom-only",
+      "atoms": [
+        {
+          "element": "C",
+          "atomicNumber": 6,
+          "formalCharge": 0
+        }
+      ],
+      "bonds": [],
+      "snapshots": [
+        {
+          "id": "seed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [0.0026023038351096527, -0.01552352934300798, 0.007907705154828398]
+          ]
+        },
+        {
+          "id": "perturbed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [-0.08239769616489036, -0.01552352934300798, 0.09290770515482841]
+          ]
+        }
+      ]
+    }
+  ]
+}

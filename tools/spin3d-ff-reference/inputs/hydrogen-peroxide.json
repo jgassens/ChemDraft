@@ -1,0 +1,115 @@
+{
+  "id": "hydrogen-peroxide",
+  "group": "Small organics and term isolation",
+  "geometrySource": "ChemDraft RDKit MinimalLib ETKDGv3 seed 416651 from OO",
+  "graphs": [
+    {
+      "hydrogenModel": "explicit-hydrogen",
+      "atoms": [
+        {
+          "element": "O",
+          "atomicNumber": 8,
+          "formalCharge": 0
+        },
+        {
+          "element": "O",
+          "atomicNumber": 8,
+          "formalCharge": 0
+        },
+        {
+          "element": "H",
+          "atomicNumber": 1,
+          "formalCharge": 0
+        },
+        {
+          "element": "H",
+          "atomicNumber": 1,
+          "formalCharge": 0
+        }
+      ],
+      "bonds": [
+        {
+          "a": 0,
+          "b": 1,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 0,
+          "b": 2,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 1,
+          "b": 3,
+          "order": 1,
+          "originalOrder": 1
+        }
+      ],
+      "snapshots": [
+        {
+          "id": "seed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [-0.6114707517387489, -0.37825153396579503, -0.26092032930010095],
+            [0.5851064271263374, -0.3470613812695784, 0.2794395454629951],
+            [-1.1272125859795115, 0.3792338257238015, 0.13227159973346464],
+            [1.1535769105919227, 0.34607908951157224, -0.15079081589635818]
+          ]
+        },
+        {
+          "id": "perturbed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [-0.6964707517387488, -0.37825153396579503, -0.17592032930010093],
+            [0.6191064271263375, -0.4150613812695784, 0.2964395454629951],
+            [-1.1612125859795115, 0.4302338257238015, 0.08127159973346464],
+            [1.2385769105919227, 0.3290790895115722, -0.08279081589635817]
+          ]
+        }
+      ]
+    },
+    {
+      "hydrogenModel": "drawn-heavy-atom-only",
+      "atoms": [
+        {
+          "element": "O",
+          "atomicNumber": 8,
+          "formalCharge": 0
+        },
+        {
+          "element": "O",
+          "atomicNumber": 8,
+          "formalCharge": 0
+        }
+      ],
+      "bonds": [
+        {
+          "a": 0,
+          "b": 1,
+          "order": 1,
+          "originalOrder": 1
+        }
+      ],
+      "snapshots": [
+        {
+          "id": "seed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [-0.6114707517387489, -0.37825153396579503, -0.26092032930010095],
+            [0.5851064271263374, -0.3470613812695784, 0.2794395454629951]
+          ]
+        },
+        {
+          "id": "perturbed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [-0.6964707517387488, -0.37825153396579503, -0.17592032930010093],
+            [0.6191064271263375, -0.4150613812695784, 0.2964395454629951]
+          ]
+        }
+      ]
+    }
+  ]
+}

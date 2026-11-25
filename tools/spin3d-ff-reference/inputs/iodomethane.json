@@ -1,0 +1,128 @@
+{
+  "id": "iodomethane",
+  "group": "Element support",
+  "geometrySource": "ChemDraft RDKit MinimalLib ETKDGv3 seed 416651 from CI",
+  "graphs": [
+    {
+      "hydrogenModel": "explicit-hydrogen",
+      "atoms": [
+        {
+          "element": "C",
+          "atomicNumber": 6,
+          "formalCharge": 0
+        },
+        {
+          "element": "I",
+          "atomicNumber": 53,
+          "formalCharge": 0
+        },
+        {
+          "element": "H",
+          "atomicNumber": 1,
+          "formalCharge": 0
+        },
+        {
+          "element": "H",
+          "atomicNumber": 1,
+          "formalCharge": 0
+        },
+        {
+          "element": "H",
+          "atomicNumber": 1,
+          "formalCharge": 0
+        }
+      ],
+      "bonds": [
+        {
+          "a": 0,
+          "b": 1,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 0,
+          "b": 2,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 0,
+          "b": 3,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 0,
+          "b": 4,
+          "order": 1,
+          "originalOrder": 1
+        }
+      ],
+      "snapshots": [
+        {
+          "id": "seed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [-0.19667472070161016, 0.006413270813302185, 0.005895589632562358],
+            [1.9285455835662828, 0.021678061226827656, 0.010043589844104766],
+            [-0.5353347453197553, -0.6393877340422891, -0.8276172185131533],
+            [-0.6057899197540122, 1.0236021508588915, -0.12728262795500087],
+            [-0.5907461977909052, -0.4123057488567319, 0.9389606669914867]
+          ]
+        },
+        {
+          "id": "perturbed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [-0.28167472070161015, 0.006413270813302185, 0.09089558963256236],
+            [1.9625455835662828, -0.04632193877317235, 0.027043589844104765],
+            [-0.5693347453197554, -0.5883877340422891, -0.8786172185131533],
+            [-0.5207899197540122, 1.0066021508588916, -0.05928262795500086],
+            [-0.5737461977909052, -0.4973057488567319, 0.9389606669914867]
+          ]
+        }
+      ]
+    },
+    {
+      "hydrogenModel": "drawn-heavy-atom-only",
+      "atoms": [
+        {
+          "element": "C",
+          "atomicNumber": 6,
+          "formalCharge": 0
+        },
+        {
+          "element": "I",
+          "atomicNumber": 53,
+          "formalCharge": 0
+        }
+      ],
+      "bonds": [
+        {
+          "a": 0,
+          "b": 1,
+          "order": 1,
+          "originalOrder": 1
+        }
+      ],
+      "snapshots": [
+        {
+          "id": "seed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [-0.19667472070161016, 0.006413270813302185, 0.005895589632562358],
+            [1.9285455835662828, 0.021678061226827656, 0.010043589844104766]
+          ]
+        },
+        {
+          "id": "perturbed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [-0.28167472070161015, 0.006413270813302185, 0.09089558963256236],
+            [1.9625455835662828, -0.04632193877317235, 0.027043589844104765]
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,167 @@
+{
+  "id": "methylammonium",
+  "group": "Charges and scope",
+  "geometrySource": "ChemDraft RDKit MinimalLib ETKDGv3 seed 416651 from C[NH3+]",
+  "graphs": [
+    {
+      "hydrogenModel": "explicit-hydrogen",
+      "atoms": [
+        {
+          "element": "C",
+          "atomicNumber": 6,
+          "formalCharge": 0
+        },
+        {
+          "element": "N",
+          "atomicNumber": 7,
+          "formalCharge": 1
+        },
+        {
+          "element": "H",
+          "atomicNumber": 1,
+          "formalCharge": 0
+        },
+        {
+          "element": "H",
+          "atomicNumber": 1,
+          "formalCharge": 0
+        },
+        {
+          "element": "H",
+          "atomicNumber": 1,
+          "formalCharge": 0
+        },
+        {
+          "element": "H",
+          "atomicNumber": 1,
+          "formalCharge": 0
+        },
+        {
+          "element": "H",
+          "atomicNumber": 1,
+          "formalCharge": 0
+        },
+        {
+          "element": "H",
+          "atomicNumber": 1,
+          "formalCharge": 0
+        }
+      ],
+      "bonds": [
+        {
+          "a": 0,
+          "b": 1,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 0,
+          "b": 2,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 0,
+          "b": 3,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 0,
+          "b": 4,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 1,
+          "b": 5,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 1,
+          "b": 6,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 1,
+          "b": 7,
+          "order": 1,
+          "originalOrder": 1
+        }
+      ],
+      "snapshots": [
+        {
+          "id": "seed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [-0.7054958649137333, -0.03410772071327206, -0.05694110714405689],
+            [0.7370462108266385, -0.009639368587281424, 0.040903815418857625],
+            [-1.1613620063558194, -0.17718550362527227, 0.954160801779912],
+            [-1.1048429796634185, 0.9536717315023123, -0.4102950925686103],
+            [-1.1069942185437405, -0.8400806906347048, -0.6762412438069413],
+            [1.1171247559406243, -0.5359184042443861, 0.8474975374263048],
+            [1.2153893825233124, -0.3654074193989252, -0.8068878107956668],
+            [1.0091347201861356, 1.0086673757015263, 0.10780309969019906]
+          ]
+        },
+        {
+          "id": "perturbed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [-0.7904958649137332, -0.03410772071327206, 0.028058892855943117],
+            [0.7710462108266385, -0.07763936858728143, 0.057903815418857627],
+            [-1.1953620063558195, -0.12618550362527226, 0.903160801779912],
+            [-1.0198429796634185, 0.9366717315023123, -0.3422950925686103],
+            [-1.0899942185437406, -0.9250806906347048, -0.6762412438069413],
+            [1.0661247559406244, -0.501918404244386, 0.7794975374263049],
+            [1.2833893825233125, -0.3994074193989252, -0.7558878107956668],
+            [1.0091347201861356, 1.0936673757015263, 0.09080309969019906]
+          ]
+        }
+      ]
+    },
+    {
+      "hydrogenModel": "drawn-heavy-atom-only",
+      "atoms": [
+        {
+          "element": "C",
+          "atomicNumber": 6,
+          "formalCharge": 0
+        },
+        {
+          "element": "N",
+          "atomicNumber": 7,
+          "formalCharge": 1
+        }
+      ],
+      "bonds": [
+        {
+          "a": 0,
+          "b": 1,
+          "order": 1,
+          "originalOrder": 1
+        }
+      ],
+      "snapshots": [
+        {
+          "id": "seed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [-0.7054958649137333, -0.03410772071327206, -0.05694110714405689],
+            [0.7370462108266385, -0.009639368587281424, 0.040903815418857625]
+          ]
+        },
+        {
+          "id": "perturbed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [-0.7904958649137332, -0.03410772071327206, 0.028058892855943117],
+            [0.7710462108266385, -0.07763936858728143, 0.057903815418857627]
+          ]
+        }
+      ]
+    }
+  ]
+}
