@@ -6,9 +6,6 @@ import { boxForPoints, corners, localPathData, parsePath, pathBounds, polygonPat
 import { isLinearPath, isSimpleClosedPath } from "./shapes";
 
 const maxClipSegments = 512;
-// Compare painted area in page units squared, using the native boolean tool's
-// minimum polygon area as the tolerance for surviving intersections.
-const clipAreaTolerance = 0.01;
 
 export interface PreparedClip {
   path: Path;
@@ -113,10 +110,10 @@ export function intersectPaths(first: Path, clip: PreparedClip): { path: Path; r
     return;
   }
   // A numerically empty result can mean that a sliver was filtered out.
-  return { path, roundingLoss: !path.length || intersectionAreaChanged(ring, second, path) };
+  return { path, roundingLoss: !path.length || intersectionBoundaryChanged(ring, second, path) };
 }
 
-function intersectionAreaChanged(first: Path, second: Path, output: Path): boolean {
+function intersectionBoundaryChanged(first: Path, second: Path, output: Path): boolean {
   // Evaluate the sampled input rings before the native tool rounds and
   // simplifies them. Translate all rings together to reduce cancellation.
   const [, x, y] = first[0];
@@ -126,20 +123,45 @@ function intersectionAreaChanged(first: Path, second: Path, output: Path): boole
     const subject = polygon(first), boundary = polygon(second);
     if (!subject.isValid() || !boundary.isValid()) return true;
     const reference = Flatten.BooleanOperations.intersect(subject, boundary);
-    const actual = new Flatten.Polygon();
+    const actual: Point[][] = [];
     let start = 0;
     for (let index = 0; index < output.length; index++) {
       if (output[index][0] !== "Z") continue;
-      actual.addFace(ring(output.slice(start, index)));
+      actual.push(ringCorners(ring(output.slice(start, index))));
       start = index + 1;
     }
-    if (start !== output.length || reference.faces.size !== actual.faces.size) return true;
-    // Compare ink coverage so an equal-area shift cannot hide a lost strip.
-    const sharedArea = Flatten.BooleanOperations.intersect(reference, actual).area();
-    const changedArea = Math.max(reference.area(), actual.area()) - sharedArea;
-    return !Number.isFinite(changedArea) || Math.abs(changedArea) > clipAreaTolerance;
+    if (start !== output.length || reference.faces.size !== actual.length) return true;
+    // Compare boundaries with floating-point tolerance so even a thin lost
+    // strip is detected on a surviving face.
+    for (const face of reference.faces) {
+      const referenceRing = ringCorners(face.vertices);
+      const index = actual.findIndex(candidate => sameRing(referenceRing, candidate));
+      if (index < 0) return true;
+      actual.splice(index, 1);
+    }
+    return false;
   } catch {
     // Keep the computed result and report that its coverage could not be verified.
     return true;
   }
+}
+
+function ringCorners(ring: Point[]): Point[] {
+  return ring.filter((current, index) => {
+    const previous = ring[(index + ring.length - 1) % ring.length], next = ring[(index + 1) % ring.length];
+    const ax = current.x - previous.x, ay = current.y - previous.y;
+    const bx = next.x - current.x, by = next.y - current.y;
+    const cross = ax * by - ay * bx;
+    const margin = 16 * Number.EPSILON * (Math.abs(ax * by) + Math.abs(ay * bx));
+    return ax * bx + ay * by <= 0 || !Number.isFinite(cross) || Math.abs(cross) > margin;
+  });
+}
+
+function sameRing(expected: Point[], actual: Point[]): boolean {
+  if (expected.length !== actual.length || expected.length < 3) return false;
+  const sameCoordinate = (a: number, b: number) =>
+    Math.abs(a - b) <= 16 * Number.EPSILON * Math.max(1, Math.abs(a), Math.abs(b));
+  const samePoint = (p: Point, q: Point) => sameCoordinate(p.x, q.x) && sameCoordinate(p.y, q.y);
+  const offset = actual.findIndex(point => samePoint(expected[0], point));
+  return offset >= 0 && expected.every((point, index) => samePoint(point, actual[(index + offset) % actual.length]));
 }

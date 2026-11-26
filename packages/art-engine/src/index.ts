@@ -26,7 +26,7 @@ import {
 
 export {
   convertSvgToShapes, SvgImportError, SVG_IMPORT_MAX_ELEMENTS, SVG_IMPORT_MAX_EXPANDED_ELEMENTS,
-  SVG_IMPORT_MAX_OBJECTS, SVG_IMPORT_MAX_PATH_CHARS, SVG_IMPORT_MAX_SOURCE_CHARS, SVG_IMPORT_MAX_DEPTH,
+  SVG_IMPORT_MAX_OBJECTS, SVG_IMPORT_MAX_PATH_CHARS, SVG_IMPORT_MAX_TEXT_CHARS, SVG_IMPORT_MAX_SOURCE_CHARS, SVG_IMPORT_MAX_DEPTH,
   SVG_IMPORT_MAX_REFERENCE_DEPTH, type SvgImportErrorCode, type SvgImportFrame, type SvgImportObject,
   type SvgImportOptions, type SvgImportReportCode, type SvgImportReportEntry, type SvgImportResult
 } from "./svgImport";

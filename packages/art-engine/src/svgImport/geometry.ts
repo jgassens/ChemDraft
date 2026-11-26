@@ -1,5 +1,5 @@
 import type { GraphicObject, Point } from "@chemdraft/chem-core";
-import { getPathBBox, isValidPath, normalizePath } from "svg-path-commander/util";
+import { getPathBBox, isValidPath, iterate, normalizePath, pathToAbsolute } from "svg-path-commander/util";
 
 export type Matrix = readonly [number, number, number, number, number, number];
 export type Bounds = Pick<GraphicObject, "x" | "y" | "width" | "height">;
@@ -115,7 +115,7 @@ function transformFunction(name: string, args: number[]): Matrix | undefined {
 
 export function readViewBox(value: string): Bounds | undefined {
   const box = numbers(value);
-  if (box?.length === 4 && box[2] > 0 && box[3] > 0) return { x: box[0], y: box[1], width: box[2], height: box[3] };
+  if (box?.length === 4 && box[2] >= 0 && box[3] >= 0) return { x: box[0], y: box[1], width: box[2], height: box[3] };
 }
 
 export function viewportMatrix(box: Bounds, viewport: Size, value: string): Matrix | undefined {
@@ -158,7 +158,21 @@ export function polygonPath(points: readonly Point[], close: boolean): Path {
 
 export function parsePath(data: string): Path | undefined {
   try {
-    if (isValidPath(data)) return normalizePath(data);
+    if (!isValidPath(data)) return;
+    const path = normalizePath(data);
+    if (/[tT]/.test(data)) {
+      // svg-path-commander 2.2.1 substitutes the origin when T has no previous control.
+      let control: Point | undefined;
+      iterate(pathToAbsolute(data), (segment, index, x, y) => {
+        if (segment[0] === "T") {
+          control = control ? { x: x + (x - control.x), y: y + (y - control.y) } : { x, y };
+          path[index] = ["Q", control.x, control.y, segment[1], segment[2]];
+        } else {
+          control = segment[0] === "Q" ? { x: segment[1], y: segment[2] } : undefined;
+        }
+      });
+    }
+    return path;
   } catch {
     // The path library rejects malformed data by throwing.
   }
