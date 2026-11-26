@@ -2747,7 +2747,7 @@
       "variants": {
         "anatomic-minimalist": {
           "file": "art/cells/fibroblast-like/nih-3t3--anatomic-minimalist.svg",
-          "sha256": "70bbd91e9be18f0c65110c42268b768a73937319b09a2038eff76aacf58d006c",
+          "sha256": "5c392aa4db656c3fd7b1158717d32d88016742748bb89666bf2ea0be1f7d4494",
           "width": 225,
           "height": 377
         },
@@ -3034,7 +3034,7 @@
         },
         "molecular-minimalism": {
           "file": "art/lab-and-objects/benchtop-equipment/benchtop-centrifuge--molecular-minimalism.svg",
-          "sha256": "6d06ce9b919fbb441350eb00a14af0b50b1811615c12f2c9c7e3013de5e6a4e8",
+          "sha256": "ca274d4963eb7c7807cfedf8ea3d303f3c4ab7b51d50517a8a091d251335bdd5",
           "width": 184,
           "height": 285
         }

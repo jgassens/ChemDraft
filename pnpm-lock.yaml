@@ -218,12 +218,6 @@ importers:
         specifier: ^3.25.76
         version: 3.25.76
 
-  packages/art-library:
-    dependencies:
-      zod:
-        specifier: ^3.24.2
-        version: 3.25.76
-
   packages/art-engine:
     dependencies:
       '@chemdraft/chem-core':
@@ -241,6 +235,12 @@ importers:
       svg-path-commander:
         specifier: 2.2.1
         version: 2.2.1
+
+  packages/art-library:
+    dependencies:
+      zod:
+        specifier: ^3.24.2
+        version: 3.25.76
 
   packages/cdx-compat:
     dependencies:
@@ -328,6 +328,9 @@ importers:
       '@chemdraft/analysis-core':
         specifier: workspace:*
         version: link:../analysis-core
+      '@chemdraft/art-library':
+        specifier: workspace:*
+        version: link:../art-library
       '@chemdraft/chem-core':
         specifier: workspace:*
         version: link:../chem-core

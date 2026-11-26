@@ -1,5 +1,5 @@
 export * from "./catalog";
-export * from "./foreignManifest";
+export { readForeignManifest, type FileHint, type ManifestHints } from "./foreignManifest";
 export * from "./importPlan";
 export * from "./limits";
 export * from "./schema";

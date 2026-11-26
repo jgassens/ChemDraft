@@ -1,7 +1,10 @@
 import type { ArtCatalog, CatalogCollection } from "./catalog";
 import type { ArtItem } from "./schema";
 
-/** Folds case, Greek letters, spacing, and punctuation for name matching. */
+/**
+ * Applies NFKC and lowercase, spells out α/ɑ, β, γ and δ, then removes spacing, dashes,
+ * brackets, commas, apostrophes and prime marks. Digits and periods survive exact name matching.
+ */
 export function normalizeArtSearch(text: string): string {
   const greek: Record<string, string> = { α: "alpha", ɑ: "alpha", β: "beta", γ: "gamma", δ: "delta" };
   return text.normalize("NFKC").toLowerCase()

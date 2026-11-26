@@ -1,3 +1,4 @@
+import { normalizeArtSearch } from "../../art-library/src/search";
 import { beforeAll, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import { installNodeRdkitModuleLoader } from "@chemdraft/rdkit-adapter/node";
@@ -936,4 +937,9 @@ describe("validation plumbing for future stereochemical and charged families", (
     expect(segmentToSegmentDistance(a, b, { x: 1, y: -1 }, { x: 1, y: 1 })).toBe(0);
     expect(segmentToSegmentDistance(a, b, { x: 1, y: 0 }, { x: 3, y: 0 })).toBe(0);
   });
+});
+
+it("shares the library search normalizer for exact structure names", () => {
+  expect(normalizeStructureTemplateName).toBe(normalizeArtSearch);
+  expect(normalizeStructureTemplateName(" Ｂ (β)–ɑ′ δ. ")).toBe("bbetaalphadelta.");
 });

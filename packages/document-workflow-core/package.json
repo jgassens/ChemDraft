@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "@chemdraft/analysis-core": "workspace:*",
+    "@chemdraft/art-library": "workspace:*",
     "@chemdraft/chem-core": "workspace:*",
     "@chemdraft/clipboard-adapter": "workspace:*",
     "@chemdraft/export-engine": "workspace:*",
