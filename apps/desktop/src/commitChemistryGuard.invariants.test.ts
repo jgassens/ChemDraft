@@ -149,16 +149,18 @@ describe("a preserving commit refuses every AGENTS.md section 7 invariant change
     expect(exact(before, after)).toEqual([`${prefix}its bond "b5" would have unspecified (either) E/Z instead of the drawn geometry.`]);
   });
 
-  it("refuses wedge to hash, and a wedge turned around", () => {
+  it("refuses wedge to hash, and a wedge turned around, by the stereo they read back as", () => {
+    // Stereo is judged by what it means (commitChemistryGuard.stereoMeaning.test.ts), so each
+    // refusal names the centre's read-back, not the bond's style.
     const before = fixture();
     const hashed = editBond(before, "b1", (bond) => ({ ...bond, display: { bondStyle: "hashed" } }));
     expect(canonical(hashed)).not.toBe(canonical(before));
-    expect(exact(before, hashed)).toEqual([`${prefix}its bond "b1" would be drawn hashed instead of wedge.`]);
+    expect(exact(before, hashed)).toEqual([`${prefix}its atom "c1" would read as stereocentre S instead of stereocentre R.`]);
     expect(funnel(before, hashed)).not.toEqual([]);
     const plain = editBond(before, "b1", ({ display: _display, ...bond }) => bond);
-    expect(exact(before, plain)).toEqual([`${prefix}its bond "b1" would be drawn plain instead of wedge.`]);
+    expect(exact(before, plain)).toEqual([`${prefix}its atom "c1" would read as an unspecified stereocentre instead of stereocentre R.`]);
     const reversed = editBond(before, "b1", (bond) => ({ ...bond, fromAtomId: "f", toAtomId: "c1" }));
-    expect(exact(before, reversed)).toEqual([`${prefix}its wedge bond "b1" would have its narrow end at atom "f" instead of "c1".`]);
+    expect(exact(before, reversed)).toEqual([`${prefix}its atom "c1" would read as an unspecified stereocentre instead of stereocentre R.`]);
   });
 
   it("refuses an added atom, an added bond and a removed bond", () => {
@@ -183,27 +185,28 @@ describe("a preserving commit refuses every AGENTS.md section 7 invariant change
     expect(canonical(mirrored)).not.toBe(canonical(before));
     expect(exact(before, mirrored)).toEqual([expect.stringMatching(
       new RegExp(`^${prefix.replace(/[()"]/g, "\\$&")}its atom "c1" would read as stereocentre [RS] instead of stereocentre [RS]\\.$`))]);
-    // The app's own Flip Horizontal is the same mirror, through the selection-transform policy.
+    // The app's own Flip Horizontal is the same mirror, but mirroring is what Flip means: through
+    // the selection-transform policy it commits, as it did before the guard was widened.
     const flipped = workflow.flipDocumentObjectsAroundPoint(before, [M], { x: 330, y: 300 }, "horizontal");
     expect(canonical(flipped)).not.toBe(canonical(before));
-    expect(funnel(before, flipped, selectionTransformChemistry())).toHaveLength(1);
+    expect(funnel(before, flipped, selectionTransformChemistry())).toEqual([]);
+    expect(funnel(before, flipped)).toHaveLength(1);
   });
 
-  it("refuses the mirror without the engine too (engine-free drawn parity)", () => {
+  it("does not compare stereo without the engine (no guess from wedges)", () => {
     const before = fixture();
     const mirrored = editMolecule(before, M, (molecule) => ({ atoms: molecule.atoms.map((atom) => ({ ...atom, x: 660 - atom.x })) }));
-    expect(exact(before, mirrored, null)).toEqual([`${prefix}its atom "c1" would be drawn with the opposite configuration ` +
-      "(the stereo could not be read back to confirm it)."]);
+    expect(exact(before, mirrored, null)).toEqual([]);
   });
 
-  it("refuses moving one atom across its double bond (E to Z), with and without the engine", () => {
+  it("refuses moving one atom across its double bond (E to Z), read back with the engine", () => {
     const before = fixture();
     // c4 from (376, 300) to (357, 333): the same side of c2=c3 as n, so E becomes Z.
     const swung = editAtom(before, "c4", (atom) => ({ ...atom, x: 357, y: 333 }));
     expect(canonical(swung)).not.toBe(canonical(before));
     expect(exact(before, swung)).toEqual([`${prefix}its double bond between atoms "c2" and "c3" would read Z instead of E.`]);
-    expect(exact(before, swung, null)).toEqual([`${prefix}its double bond "b5" would be drawn with its substituents on the other ` +
-      "sides (the stereo could not be read back to confirm it)."]);
+    // Without the engine stereo is not compared (no guess from the drawing).
+    expect(exact(before, swung, null)).toEqual([]);
   });
 
   it("names a changed molecule and counts the rest on the status line", () => {
