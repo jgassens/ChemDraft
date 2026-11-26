@@ -7,24 +7,24 @@
 //! from the top of the frame, title bar included, while CSS client coordinates start below the
 //! inset. Every drop landed about one title bar below the pointer.
 //!
-//! The document window therefore listens to [`DOCUMENT_FILE_DROP_EVENT`] instead, sent from here
-//! while the drop's window event is handled (on the main thread, after tauri-plugin-fs has added the
-//! paths to its scope, which it does on `RunEvent::WindowEvent` before window listeners run). On
+//! The document window therefore never sees Tauri's event. Each drop is measured here while its
+//! window event is handled (on the main thread, after tauri-plugin-fs has added the paths to its
+//! scope, which it does on `RunEvent::WindowEvent` before window listeners run), then queued whole
+//! for the page to drain (`file_drop_queue.rs`), so a drop made before the page listens is kept. On
 //! macOS the position is corrected by the live inset read from the window at that moment; elsewhere
 //! it is passed on as wry reports it:
 //!
 //! - Windows: `ScreenToClient` on the webview's container window, a child placed at the top-left of
 //!   the frame's client area; the window menu is in the non-client area (`SetMenu`), so physical
-//!   pixels relative to the page. The web side divides by its device pixel ratio.
+//!   pixels relative to the page. The window's scale factor is read at the same moment and travels
+//!   with the drop, so a drop drained after the window moved to a display with another scale still
+//!   lands where it was dropped; the web side divides by it.
 //! - Linux: GTK drag coordinates relative to the WebKitWebView widget, which sits below any menu bar
 //!   in its own box; a client-side header bar is the window's title bar, outside the widget. These
 //!   are logical pixels, CSS pixels at the default zoom.
 
 use serde::Serialize;
 use std::path::PathBuf;
-
-/// The document window's drop event, used instead of `tauri://drag-drop`.
-pub(crate) const DOCUMENT_FILE_DROP_EVENT: &str = "chemdraft://document-file-drop";
 
 /// How the payload's position is measured, relative to the page's top-left corner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -51,6 +51,10 @@ pub(crate) struct DocumentFileDropPayload {
     /// The title-bar inset, in CSS pixels, already taken off `position.y` here (0 where none
     /// applies). The correction is made once, in Rust: the web side never applies another.
     pub top_inset_removed: f64,
+    /// The window's scale factor (physical pixels per CSS pixel) when the drop happened, `None` when
+    /// it could not be read. A `physical` position is divided by this, not by the scale the window
+    /// has when the page drains the drop.
+    pub scale_factor: Option<f64>,
 }
 
 /// A rectangle in AppKit window coordinates: points, origin at the window's bottom-left.
@@ -107,12 +111,14 @@ pub(crate) fn mac_client_y(wry_y: f64, geometry: &MacDropGeometry) -> (f64, f64)
 }
 
 /// The payload for one drop. `mac` is the geometry read at drop time (macOS only; `None` leaves the
-/// position as reported, as when the window could not be read).
+/// position as reported, as when the window could not be read); `scale_factor` the window's scale
+/// at drop time.
 pub(crate) fn document_drop_payload(
     paths: Vec<PathBuf>,
     position: (f64, f64),
     units: DropPositionUnits,
     mac: Option<&MacDropGeometry>,
+    scale_factor: Option<f64>,
 ) -> DocumentFileDropPayload {
     let (x, wry_y) = position;
     let (y, top_inset_removed) = match mac {
@@ -124,19 +130,18 @@ pub(crate) fn document_drop_payload(
         position: DropPoint { x, y },
         units,
         top_inset_removed,
+        scale_factor: scale_factor.filter(|scale| scale.is_finite() && *scale > 0.0),
     }
 }
 
-/// Sends a drop on the document window to its page. Called from the Builder's window-event handler,
-/// which sees each drop once (the document webview is the window's content, so Tauri delivers its
-/// drop as a window event only).
-pub(crate) fn emit_document_drop<R: tauri::Runtime>(
+/// Measures a drop on the document window and queues it for its page. Called from the Builder's
+/// window-event handler, which sees each drop once (the document webview is the window's content,
+/// so Tauri delivers its drop as a window event only).
+pub(crate) fn queue_document_drop<R: tauri::Runtime>(
     window: &tauri::Window<R>,
     paths: &[PathBuf],
     position: tauri::PhysicalPosition<f64>,
 ) {
-    use tauri::Emitter;
-
     // Windows reports physical pixels; macOS (points, corrected below) and Linux CSS pixels.
     let units = if cfg!(windows) {
         DropPositionUnits::Physical
@@ -153,15 +158,23 @@ pub(crate) fn emit_document_drop<R: tauri::Runtime>(
     };
     #[cfg(not(target_os = "macos"))]
     let geometry: Option<MacDropGeometry> = None;
+    // Read now, with the position: by the time the page drains the drop the window may be on
+    // another display.
+    let scale_factor = match window.scale_factor() {
+        Ok(scale) => Some(scale),
+        Err(error) => {
+            eprintln!("Could not read the document window's scale for a file drop: {error}");
+            None
+        }
+    };
     let payload = document_drop_payload(
         paths.to_vec(),
         (position.x, position.y),
         units,
         geometry.as_ref(),
+        scale_factor,
     );
-    if let Err(error) = window.emit_to(window.label(), DOCUMENT_FILE_DROP_EVENT, payload) {
-        eprintln!("Could not send a file drop to the document window: {error}");
-    }
+    crate::file_drop_queue::record_document_drop(window, payload);
 }
 
 /// The window's live geometry: whatever the title bar is now (none in full screen, taller with a tab
@@ -313,6 +326,7 @@ mod tests {
             (40.0, 128.0),
             DropPositionUnits::Css,
             Some(&titled(800.0, 28.0)),
+            Some(2.0),
         );
         assert_eq!(mac.position, DropPoint { x: 40.0, y: 100.0 });
         assert_eq!(mac.top_inset_removed, 28.0);
@@ -321,6 +335,7 @@ mod tests {
             (80.0, 256.0),
             DropPositionUnits::Physical,
             None,
+            Some(1.5),
         );
         assert_eq!(windows.position, DropPoint { x: 80.0, y: 256.0 });
         assert_eq!(windows.top_inset_removed, 0.0);
@@ -329,11 +344,28 @@ mod tests {
             json,
             serde_json::json!({
                 "paths": ["/Users/me/mol.png"], "position": { "x": 80.0, "y": 256.0 },
-                "units": "physical", "topInsetRemoved": 0.0
+                "units": "physical", "topInsetRemoved": 0.0, "scaleFactor": 1.5
             })
         );
-        let linux = document_drop_payload(paths, (3.0, 4.0), DropPositionUnits::Css, None);
-        assert_eq!(serde_json::to_value(&linux).unwrap()["units"], "css");
+        let linux = document_drop_payload(paths, (3.0, 4.0), DropPositionUnits::Css, None, None);
+        let linux = serde_json::to_value(&linux).unwrap();
+        assert_eq!(linux["units"], "css");
+        // An unread scale is sent as null: the web side falls back to its own ratio.
+        assert_eq!(linux["scaleFactor"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn a_scale_that_is_not_a_positive_number_is_not_sent() {
+        for scale in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let payload = document_drop_payload(
+                vec![PathBuf::from("C:\\mol.png")],
+                (1.0, 2.0),
+                DropPositionUnits::Physical,
+                None,
+                Some(scale),
+            );
+            assert_eq!(payload.scale_factor, None, "{scale}");
+        }
     }
 
     #[test]
@@ -364,10 +396,10 @@ mod tests {
             .unwrap()
     }
 
-    const DROP_ARM: &str = "WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, position }) => { file_drop::emit_document_drop(window, paths, *position); }";
+    const DROP_ARM: &str = "WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, position }) => { file_drop::queue_document_drop(window, paths, *position); }";
 
     #[test]
-    fn the_document_window_alone_sends_each_drop_through_emit_document_drop() {
+    fn the_document_window_alone_queues_each_drop_through_queue_document_drop() {
         let lib = squashed(include_str!("lib.rs"));
         let handler = window_event_handler(&lib);
         assert_eq!(
@@ -375,8 +407,17 @@ mod tests {
             1,
             "one DragDrop Drop arm"
         );
-        // Nothing else in the app sends the event, so a drop reaches the page once.
-        assert_eq!(lib.matches("file_drop::emit_document_drop(").count(), 1);
+        // Nothing else in the app queues a drop, so a drop reaches the page once.
+        assert_eq!(lib.matches("file_drop::queue_document_drop(").count(), 1);
+        assert_eq!(
+            squashed(include_str!("file_drop.rs"))
+                .split("#[cfg(test)]")
+                .next()
+                .unwrap()
+                .matches("crate::file_drop_queue::record_document_drop(window, payload);")
+                .count(),
+            1
+        );
         // The arm is inside the document window's branch, which returns before any other window's.
         let main_start = handler
             .find("if window.label() == MAIN_WINDOW_LABEL {")
@@ -406,7 +447,7 @@ mod tests {
     fn file_drop_reads_the_mac_geometry_live_at_each_drop() {
         let source = squashed(include_str!("file_drop.rs"));
         let emit = source
-            .split("pub(crate) fn emit_document_drop<R: tauri::Runtime>(")
+            .split("pub(crate) fn queue_document_drop<R: tauri::Runtime>(")
             .nth(1)
             .unwrap()
             .split("fn mac_drop_geometry<R: tauri::Runtime>(")
@@ -418,9 +459,12 @@ mod tests {
         assert!(emit.contains(
             "#[cfg(not(target_os = \"macos\"))] let geometry: Option<MacDropGeometry> = None;"
         ));
-        assert!(emit.contains("geometry.as_ref(),"));
+        assert!(emit.contains("geometry.as_ref(), scale_factor,"));
         assert!(emit.contains("let units = if cfg!(windows) { DropPositionUnits::Physical } else { DropPositionUnits::Css };"));
-        assert!(emit.contains("window.emit_to(window.label(), DOCUMENT_FILE_DROP_EVENT, payload)"));
+        // The scale is read at the drop, beside the position, never when the page drains it.
+        assert!(emit.contains("let scale_factor = match window.scale_factor() {"));
+        assert!(emit.contains("crate::file_drop_queue::record_document_drop(window, payload);"));
+        assert!(!emit.contains("emit_to("));
         // Read from the window each time, never kept: the title bar changes with full screen and tabs.
         let read = source
             .split("fn mac_drop_geometry<R: tauri::Runtime>(")

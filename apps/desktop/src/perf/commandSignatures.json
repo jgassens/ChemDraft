@@ -240,6 +240,14 @@
     "returnType": "Result<(), String>"
   },
   {
+    "file": "file_drop_queue.rs",
+    "name": "take_pending_document_drops",
+    "async": false,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, queue: tauri::State<'_, PendingDocumentDropQueue>,",
+    "returnType": "Result<PendingDocumentDrops, String>"
+  },
+  {
     "file": "file_warnings_window.rs",
     "name": "file_warnings_open",
     "async": true,

@@ -14,6 +14,7 @@ mod download_diagnosis;
 mod export;
 mod external_tools;
 mod file_drop;
+mod file_drop_queue;
 mod file_warnings_window;
 mod first_paint;
 mod fonts;
@@ -1460,6 +1461,7 @@ pub fn run() {
     let builder = builder
         .manage(perf_log)
         .manage(PendingOpenDocument::default())
+        .manage(file_drop_queue::PendingDocumentDropQueue::default())
         .manage(canvas_context_menu::PopupState::default())
         .manage(panel_window::PanelFocusState::default())
         .manage(panel_full_size::State::default())
@@ -1656,12 +1658,17 @@ pub fn run() {
                         window
                             .state::<naming_engine::NamingEngineState>()
                             .shutdown();
+                        // Drops still waiting were for this window's page; none outlives it.
+                        window
+                            .state::<file_drop_queue::PendingDocumentDropQueue>()
+                            .retire();
                     }
-                    // Files dropped from the file manager: sent to the page with the drop point
-                    // corrected for the title bar (file_drop.rs). tauri-plugin-fs has already
-                    // added the paths to its scope, on the RunEvent that precedes this listener.
+                    // Files dropped from the file manager: queued for the page, which drains them
+                    // once it is ready, with the drop point corrected for the title bar
+                    // (file_drop.rs, file_drop_queue.rs). tauri-plugin-fs has already added the
+                    // paths to its app-wide scope, on the RunEvent that precedes this listener.
                     WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, position }) => {
-                        file_drop::emit_document_drop(window, paths, *position);
+                        file_drop::queue_document_drop(window, paths, *position);
                     }
                     WindowEvent::Focused(true) => {
                         #[cfg(target_os = "macos")]
@@ -2026,6 +2033,7 @@ pub fn run() {
             engine3d_sidecar_poll_session,
             engine3d_sidecar_stop_session,
             take_pending_open_document,
+            file_drop_queue::take_pending_document_drops,
             export::rasterize_svg,
             fonts::list_system_fonts
         ])

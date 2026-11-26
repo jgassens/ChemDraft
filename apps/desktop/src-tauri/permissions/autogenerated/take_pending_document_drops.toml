@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-take-pending-document-drops"
+description = "Enables the take_pending_document_drops command without any pre-configured scope."
+commands.allow = ["take_pending_document_drops"]
+
+[[permission]]
+identifier = "deny-take-pending-document-drops"
+description = "Denies the take_pending_document_drops command without any pre-configured scope."
+commands.deny = ["take_pending_document_drops"]

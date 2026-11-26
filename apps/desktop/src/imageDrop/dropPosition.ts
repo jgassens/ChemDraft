@@ -1,9 +1,10 @@
 export interface DropClientPoint { x: number; y: number }
 
-/** The document window's native drop event, sent by `file_drop.rs` in place of `tauri://drag-drop`. */
-export const DOCUMENT_FILE_DROP_EVENT = "chemdraft://document-file-drop";
-
-/** Its payload; see `DocumentFileDropPayload` in `file_drop.rs`. */
+/**
+ * One native drop on the document window, measured by `file_drop.rs` in place of Tauri's own
+ * `tauri://drag-drop` and drained from Rust's drop queue (`pendingDrops.ts`); see
+ * `DocumentFileDropPayload` in `file_drop.rs`.
+ */
 export interface DocumentFileDropPayload {
   paths: string[];
   position?: { x?: unknown; y?: unknown } | null;
@@ -14,6 +15,12 @@ export interface DocumentFileDropPayload {
    * elsewhere). Never applied again here.
    */
   topInsetRemoved?: unknown;
+  /**
+   * The window's scale factor when the drop happened (physical pixels per CSS pixel), or null when
+   * Rust could not read it. A `physical` position is divided by this, so a drop drained after the
+   * window moved to a display with another scale keeps its point.
+   */
+  scaleFactor?: unknown;
 }
 
 /**
@@ -25,19 +32,25 @@ export interface DocumentFileDropPayload {
  * - Linux: GTK's drag coordinates, logical pixels relative to the webview widget.
  * - Windows: `ScreenToClient` on the webview's own container window, so physical pixels relative to
  *   the page. The container sits below a window menu bar (which is in the frame's non-client area),
- *   so no menu offset applies; dividing by the device pixel ratio gives CSS pixels.
+ *   so no menu offset applies; dividing by the scale factor gives CSS pixels.
  *
- * `scaleFactor` should be the webview's `devicePixelRatio`, which also folds in any webview zoom.
+ * A physical position is divided by the scale the window had at the drop (`payload.scaleFactor`),
+ * read by Rust with the position: the drop may be drained after the window moved to another display.
+ * Only when Rust could not read it is `fallbackScale` used, which should be the webview's
+ * `devicePixelRatio` now. The webview's zoom is off (Tauri's `zoomHotkeysEnabled` defaults to false),
+ * so the two agree while the window stays on one display.
  */
 export function nativeDropClientPoint(
   payload: Omit<DocumentFileDropPayload, "paths"> | null | undefined,
-  scaleFactor: number
+  fallbackScale: number
 ): DropClientPoint | undefined {
   const x = payload?.position?.x;
   const y = payload?.position?.y;
   if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y)) return undefined;
   if (payload?.units !== "css" && payload?.units !== "physical") return undefined;
-  const scale = payload.units === "physical" && Number.isFinite(scaleFactor) && scaleFactor > 0 ? scaleFactor : 1;
+  if (payload.units === "css") return { x, y };
+  const positive = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value > 0;
+  const scale = positive(payload.scaleFactor) ? payload.scaleFactor : positive(fallbackScale) ? fallbackScale : 1;
   return { x: x / scale, y: y / scale };
 }
 

@@ -2142,6 +2142,20 @@ lossy and a lossless WebP, an SVG with gradients and `<use href="#id">`, a BMP, 
   every floating palette, a popover, the Preferences and Export dialogs, and (web build) anywhere
   in the page. The app never replaces itself with the file or URL; text can still be dropped into a
   text field, but a link dropped on a read-only part inside an editable area does not navigate.
+- Drops at launch (1.2.4): leave a session of several tabs, quit, then start ChemDraft and drop a
+  crosshair PNG, then a `.cdxml`, onto the document window the moment it appears, before the
+  restored tabs show. Once they show, the picture is inserted exactly once at the pointer's tip and
+  the `.cdxml` opens exactly once in its own tab, in that order; the status never says the restored
+  documents are still loading. On macOS also launch by dropping a `.cdxml` on the Dock icon, then
+  drop a PNG on the window as it appears: the document opens once and the picture is inserted once.
+  Leave a session with a drawing this version cannot show (the "didn't open" question at launch) and
+  drop during launch and while the question is up: nothing arrives until it is answered (Cancel),
+  then each drop arrives once. On Windows, with two displays at different scaling (100% and 150% or
+  200%), drop the crosshair PNG from Explorer during launch on one display, then drag the window to
+  the other before the restored tabs show: the picture's centre is where the pointer's tip was on the
+  page, not scaled by the second display. Repeat starting on the other display. (The limit of 16
+  drops waiting at once, and the status naming how many more were refused, are covered by tests;
+  not practical by hand.)
 
 ## Status line over the rulers (macOS and Windows, 1.2.3)
 

@@ -4,7 +4,7 @@ import * as smilesListPaste from "./smilesListPaste";
 import * as smilesPasteIdentity from "./smilesPasteIdentity";
 import { IdentityVerificationTimeoutError } from "./depiction2d/identityWorkerClient";
 import { inspectStructureOffThread } from "./depiction2d/identityClient";
-import { DOCUMENT_FILE_DROP_EVENT } from "./imageDrop/dropPosition";
+import { DOCUMENT_FILE_DROPS_CHANGED_EVENT } from "./imageDrop/pendingDrops";
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { act, createElement, StrictMode } from "react";
 import { setNativePromptProvider, type NativePromptOptions } from "./nativePrompt";
@@ -90,6 +90,8 @@ const native = vi.hoisted(() => ({
   picker: vi.fn<() => Promise<string | string[] | null>>(),
   pendingOpenDocuments: [] as Array<{ path: string; displayName: string; contents: string; bytes?: number[] }>,
   drainOpenDocuments: vi.fn<() => Promise<unknown>>(),
+  pendingDrops: [] as unknown[],
+  drainDrops: vi.fn<() => Promise<unknown>>(),
   savePicker: vi.fn<() => Promise<string | null>>(),
   readFile: vi.fn<(path: string) => Promise<Uint8Array>>(),
   writeFile: vi.fn<(path: string, contents: string) => Promise<void>>(),
@@ -156,6 +158,8 @@ vi.mock("./window-manager/tauriEvents", async (original) => {
       if (name === "chemdraft://open-document" && payload) {
         native.pendingOpenDocuments.push(payload as typeof native.pendingOpenDocuments[number]);
       }
+      // The drop queue likewise (`file_drop_queue.rs`): a test's drop is queued whole first.
+      if (name === "chemdraft://document-file-drops-changed" && payload) native.pendingDrops.push(payload);
       handler({ payload });
     };
     native.events.set(name, callback);
@@ -169,6 +173,7 @@ vi.mock("@tauri-apps/api/core", async (original) => ({
   isTauri: () => native.suspendUtilities,
   invoke: vi.fn(async (command: string, options?: { suspended?: boolean; path?: string }) => {
     if (command === "take_pending_open_document") return native.drainOpenDocuments();
+    if (command === "take_pending_document_drops") return native.drainDrops();
     if (command === "plugin:path|basename" && options?.path) {
       const pathApi = /^[a-z]:|^\\\\/i.test(options.path) ? win32 : posix;
       return pathApi.basename(options.path);
@@ -277,6 +282,8 @@ describe("documents in one window", () => {
     native.session = undefined;
     native.pendingOpenDocuments = [];
     native.drainOpenDocuments.mockReset().mockImplementation(async () => native.pendingOpenDocuments.splice(0));
+    native.pendingDrops = [];
+    native.drainDrops.mockReset().mockImplementation(async () => ({ drops: native.pendingDrops.splice(0), refusedDrops: 0 }));
     native.events.clear();
     native.load.mockImplementation(async () => native.session);
     native.saveSession.mockImplementation(async (value) => { native.session = JSON.parse(JSON.stringify(value)); });
@@ -1348,7 +1355,7 @@ describe("documents in one window", () => {
           await act(async () => native.events.get("chemdraft://open-document")!(payload));
         } else if (path === "native drop") {
           native.readFile.mockResolvedValueOnce(new TextEncoder().encode(contents));
-          await act(async () => native.events.get(DOCUMENT_FILE_DROP_EVENT)!({ paths: ["C:\\Drawings\\future.chemdraft"] }));
+          await act(async () => native.events.get(DOCUMENT_FILE_DROPS_CHANGED_EVENT)!({ paths: ["C:\\Drawings\\future.chemdraft"] }));
         } else {
           native.desktop = false;
           // Browser opening now reads bounded bytes so CDX and BOM-encoded text share a transport.
@@ -1586,7 +1593,7 @@ describe("documents in one window", () => {
     expect(tabs()).toHaveLength(1);
     await paste("Keep OS edits");
     native.readFile.mockResolvedValueOnce(new TextEncoder().encode(fileContents("Dropped")));
-    await act(async () => native.events.get(DOCUMENT_FILE_DROP_EVENT)!({ paths: ["C:\\Drawings\\drop.chemdraft"] }));
+    await act(async () => native.events.get(DOCUMENT_FILE_DROPS_CHANGED_EVENT)!({ paths: ["C:\\Drawings\\drop.chemdraft"] }));
     expect(tabs()).toHaveLength(2);
     await act(async () => native.events.get("chemdraft://open-document")!({ path: "C:\\Drawings\\open.chemdraft", displayName: "open.chemdraft", contents: `${contents}\n` }));
     expect(tabs()).toHaveLength(2);
@@ -1867,7 +1874,7 @@ describe("documents in one window", () => {
       native.readFile.mockResolvedValueOnce(new TextEncoder().encode(oversized))
         .mockReturnValueOnce(delayedB)
         .mockReturnValueOnce(delayedC);
-      await act(async () => native.events.get(DOCUMENT_FILE_DROP_EVENT)!({
+      await act(async () => native.events.get(DOCUMENT_FILE_DROPS_CHANGED_EVENT)!({
         paths: ["/drawings/A.cdxml", "/drawings/B.cdxml", "/drawings/C.cdxml"]
       }));
       expectPageFit("A.cdxml");
@@ -1936,7 +1943,7 @@ describe("documents in one window", () => {
             .mockResolvedValueOnce(new TextEncoder().encode("invalid document"))
             .mockResolvedValueOnce(new TextEncoder().encode(oversized))
             .mockResolvedValueOnce(new TextEncoder().encode(oversized));
-          await act(async () => native.events.get(DOCUMENT_FILE_DROP_EVENT)!({
+          await act(async () => native.events.get(DOCUMENT_FILE_DROPS_CHANGED_EVENT)!({
             paths: ["/drawings/unreadable.cdxml", "/drawings/invalid.cdxml", "/drawings/A.cdxml", "/drawings/B.cdxml"]
           }));
         } else if (source === "browser drop") {
@@ -4043,6 +4050,37 @@ describe("documents in one window", () => {
       expect((await autosave()).unrestoredTabs).toEqual(previous.unrestoredTabs);
     });
 
+
+    it("holds native drops made at launch until the kept-drawings question is answered, then delivers each once", async () => {
+      saveStartWithFreshDocument(false);
+      const previous = threeTabSession();
+      previous.tabs![1] = { ...previous.tabs![1]!, contents: "not a document" };
+      native.session = previous;
+      // Dropped while the window was loading: Rust queued it before the page could listen.
+      native.pendingDrops.push({ paths: ["C:\\Drawings\\early.chemdraft"], position: { x: 10, y: 10 }, units: "physical", scaleFactor: 1 });
+      native.readFile.mockResolvedValueOnce(new TextEncoder().encode(fileContents("Early drop")))
+        .mockResolvedValueOnce(new TextEncoder().encode(fileContents("Drop during the question")));
+      // The window mounted before this test drained its own empty queue; count only this launch's.
+      native.drainDrops.mockClear();
+      await remount();
+      expect(pendingPrompt?.prompt.title).toMatch(/didn't open/);
+      expect(tabs()).toHaveLength(2);
+      // Another drop while the question is open joins the queue; nothing is taken yet.
+      await act(async () => native.events.get(DOCUMENT_FILE_DROPS_CHANGED_EVENT)!({ paths: ["C:\\Drawings\\during.chemdraft"], position: { x: 10, y: 10 }, units: "physical", scaleFactor: 1 }));
+      expect(native.drainDrops).not.toHaveBeenCalled();
+      expect(native.readFile).not.toHaveBeenCalled();
+      expect(native.pendingDrops).toHaveLength(2);
+      await modalButton("Cancel");
+      await vi.waitFor(() => expect(tabs()).toHaveLength(4));
+      expect(native.readFile.mock.calls.map(([path]) => path)).toEqual(["C:\\Drawings\\early.chemdraft", "C:\\Drawings\\during.chemdraft"]);
+      expect(tabs().slice(2).map(tab => tab.textContent)).toEqual(["early.chemdraft", "during.chemdraft"]);
+      expect(native.pendingDrops).toHaveLength(0);
+      // One more notice drains an empty queue: no drop is delivered twice.
+      await act(async () => native.events.get(DOCUMENT_FILE_DROPS_CHANGED_EVENT)!(null));
+      await vi.waitFor(() => expect(native.drainDrops.mock.calls.length).toBeGreaterThanOrEqual(2));
+      expect(native.readFile).toHaveBeenCalledTimes(2);
+      expect(tabs()).toHaveLength(4);
+    });
 
     it.each([true, false])("shows the kept-drawings prompt only when not starting fresh (fresh %s)", async enabled => {
       saveStartWithFreshDocument(enabled);

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createImageGraphicObject, serializeDocument, type ChemDraftDocument, type GraphicObject } from "@chemdraft/chem-core";
 import { MainWindow, objectResizeStretches } from "./MainWindow";
 import { createPhase4Document, insertNativeSingleBondMolecule, insertNativeTextObject, selectDocumentObjects } from "./documentWorkflow";
-import { DOCUMENT_FILE_DROP_EVENT } from "./imageDrop/dropPosition";
+import { DOCUMENT_FILE_DROPS_CHANGED_EVENT } from "./imageDrop/pendingDrops";
 import { browserDecodeCheck, browserRasterToPng } from "./imageDrop/rasterDecode";
 import { damagedDropFixture } from "./imageDrop/pngTestImages";
 import { jpegHeader, pngBytes, svgBytes } from "./imageDrop/testFixtures";
@@ -22,7 +22,16 @@ const native = vi.hoisted(() => ({
   files: new Map<string, Uint8Array>(),
   stat: vi.fn<(path: string) => Promise<{ size: number }>>(),
   /** When set, a native read waits for it: a slow disk. */
-  gate: undefined as Promise<void> | undefined
+  gate: undefined as Promise<void> | undefined,
+  /** Rust's drop queue (`file_drop_queue.rs`): drops wait whole, in order, until the page drains. */
+  pendingDrops: [] as unknown[],
+  refusedDrops: 0,
+  /** Every destructive drain the page made. */
+  takes: 0,
+  /** When set, a drain's reply waits for it, after the queue was read. */
+  takeGate: undefined as Promise<void> | undefined,
+  /** The restored session's read; resolves at once unless a test holds it. */
+  loadSession: async (): Promise<unknown> => undefined
 }));
 
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
@@ -38,7 +47,7 @@ vi.mock("./imageDrop/rasterDecode", async (original) => {
 vi.mock("./window-manager", async (original) => ({
   ...await original<typeof import("./window-manager")>(),
   isDesktopRuntime: () => native.desktop,
-  loadDocumentSession: async () => undefined,
+  loadDocumentSession: () => native.loadSession(),
   saveDocumentSession: async () => undefined
 }));
 vi.mock("./window-manager/tauriEvents", async (original) => {
@@ -54,7 +63,16 @@ vi.mock("./window-manager/tauriEvents", async (original) => {
   return { ...await original<typeof import("./window-manager/tauriEvents")>(), listenTauriEvent: listen, listenCurrentWindowEvent: listen };
 });
 vi.mock("@tauri-apps/api/core", async (original) => ({
-  ...await original<typeof import("@tauri-apps/api/core")>(), invoke: vi.fn(async () => null)
+  ...await original<typeof import("@tauri-apps/api/core")>(),
+  invoke: async (command: string) => {
+    if (command !== "take_pending_document_drops") return null;
+    native.takes += 1;
+    // Destructive at once, as in Rust; the reply may then take a while to arrive.
+    const batch = { drops: native.pendingDrops.splice(0), refusedDrops: native.refusedDrops };
+    native.refusedDrops = 0;
+    await native.takeGate;
+    return batch;
+  }
 }));
 vi.mock("@tauri-apps/plugin-fs", async (original) => ({
   ...await original<typeof import("@tauri-apps/plugin-fs")>(),
@@ -111,6 +129,11 @@ describe("dropping picture files on the document window", { timeout: 3 * DROP_WA
     native.files.clear();
     native.stat.mockReset();
     native.gate = undefined;
+    native.pendingDrops.length = 0;
+    native.refusedDrops = 0;
+    native.takes = 0;
+    native.takeGate = undefined;
+    native.loadSession = async () => undefined;
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.stubGlobal("localStorage", new MemoryStorage());
     vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
@@ -174,6 +197,13 @@ describe("dropping picture files on the document window", { timeout: 3 * DROP_WA
     await settle();
     return event;
   }
+
+  /** A drop on the document window as Rust handles it: queued whole, then a notice that carries nothing. */
+  async function nativeDrop(payload: Record<string, unknown>) {
+    native.pendingDrops.push(payload);
+    await act(async () => native.events.get(DOCUMENT_FILE_DROPS_CHANGED_EVENT)?.(null));
+  }
+  const listening = () => native.events.has(DOCUMENT_FILE_DROPS_CHANGED_EVENT);
 
   async function command(id: string) {
     await act(async () => { await agent().command(id); });
@@ -655,9 +685,9 @@ describe("dropping picture files on the document window", { timeout: 3 * DROP_WA
       native.files.set("/Users/me/Drops/mixed.cdxml", new TextEncoder().encode(cdxml()));
       native.stat.mockImplementation(async path => ({ size: native.files.get(path)?.length ?? 0 }));
       await mount(createPhase4Document("Desktop"), "windows");
-      await eventually(() => expect(native.events.has(DOCUMENT_FILE_DROP_EVENT)).toBe(true));
-      await act(async () => native.events.get(DOCUMENT_FILE_DROP_EVENT)!({ paths: ["/Users/me/Drops/mixed.png", "/Users/me/Drops/mixed.cdxml"],
-        position: { x: 10, y: 10 }, units: "physical", topInsetRemoved: 0 }));
+      await eventually(() => expect(listening()).toBe(true));
+      await nativeDrop({ paths: ["/Users/me/Drops/mixed.png", "/Users/me/Drops/mixed.cdxml"],
+        position: { x: 10, y: 10 }, units: "physical", topInsetRemoved: 0 });
       await eventually(() => expect(status()).toBe(`Inserted picture mixed.png; ${opened("mixed.cdxml")}`));
       expect(front()).toBe("mixed.cdxml");
     });
@@ -707,9 +737,9 @@ describe("dropping picture files on the document window", { timeout: 3 * DROP_WA
       native.files.set("C:\\Drawings\\again.png", pngBytes());
       native.stat.mockImplementation(async path => ({ size: native.files.get(path)!.length }));
       await mount(createPhase4Document("Desktop"), "windows");
-      await eventually(() => expect(native.events.has(DOCUMENT_FILE_DROP_EVENT)).toBe(true));
+      await eventually(() => expect(listening()).toBe(true));
       const drop = async (paths: string[]) => {
-        await act(async () => native.events.get(DOCUMENT_FILE_DROP_EVENT)!({ paths, position: { x: 10, y: 10 }, units: "physical" }));
+        await nativeDrop({ paths, position: { x: 10, y: 10 }, units: "physical" });
       };
       await drop([firstPath]);
       await eventually(() => expect(status()).toBe(opened("kept.cdxml")));
@@ -800,10 +830,10 @@ describe("dropping picture files on the document window", { timeout: 3 * DROP_WA
       native.files.set("/Users/me/Pictures/mol.png", pngBytes());
       native.stat.mockImplementation(async path => ({ size: native.files.get(path)?.length ?? 0 }));
       await mount(createPhase4Document("Desktop"), platform);
-      await eventually(() => expect(native.events.has(DOCUMENT_FILE_DROP_EVENT)).toBe(true));
+      await eventually(() => expect(listening()).toBe(true));
       // Tauri's own event, measured from under the macOS title bar, is not listened to: one insertion per drop.
       expect(native.events.has("tauri://drag-drop")).toBe(false);
-      await act(async () => native.events.get(DOCUMENT_FILE_DROP_EVENT)!({ paths: ["/Users/me/Pictures/mol.png"], position, units, topInsetRemoved }));
+      await nativeDrop({ paths: ["/Users/me/Pictures/mol.png"], position, units, topInsetRemoved });
       await eventually(() => expect(status()).toBe("Inserted picture mol.png"));
       expect(pictures()).toHaveLength(1);
       expect(centre(pictures()[0]!)).toEqual({ x: 300, y: 200 });
@@ -814,9 +844,9 @@ describe("dropping picture files on the document window", { timeout: 3 * DROP_WA
       native.files.set("C:\\Drawings\\doc.chemdraft", new TextEncoder().encode(serializeDocument(createPhase4Document("Native document"))));
       native.stat.mockImplementation(async path => ({ size: path.endsWith(".png") ? 21 * 1024 * 1024 : native.files.get(path)!.length }));
       await mount(createPhase4Document("Desktop"), "windows");
-      await eventually(() => expect(native.events.has(DOCUMENT_FILE_DROP_EVENT)).toBe(true));
-      await act(async () => native.events.get(DOCUMENT_FILE_DROP_EVENT)!({ paths: ["C:\\Pictures\\big.png", "C:\\Drawings\\doc.chemdraft"],
-        position: { x: 10, y: 10 }, units: "physical", topInsetRemoved: 0 }));
+      await eventually(() => expect(listening()).toBe(true));
+      await nativeDrop({ paths: ["C:\\Pictures\\big.png", "C:\\Drawings\\doc.chemdraft"],
+        position: { x: 10, y: 10 }, units: "physical", topInsetRemoved: 0 });
       await eventually(() => expect(status()).toBe("No pictures were inserted; Couldn't drop \"big.png\": it is 21.0 MB; a dropped picture can be at most 20.0 MB; "
         + "Opened doc.chemdraft as legacy ChemDraft JSON"));
       expect(snapshot().title).toBe("Native document");
@@ -830,12 +860,12 @@ describe("dropping picture files on the document window", { timeout: 3 * DROP_WA
       native.files.set("/Users/me/Drops/doc.chemdraft", new TextEncoder().encode(serializeDocument(createPhase4Document("Arrived"))));
       native.stat.mockImplementation(async path => ({ size: native.files.get(path)?.length ?? 0 }));
       await mount(createPhase4Document("First"), "windows");
-      await eventually(() => expect(native.events.has(DOCUMENT_FILE_DROP_EVENT)).toBe(true));
+      await eventually(() => expect(listening()).toBe(true));
       await command("document.new");
       await act(async () => { tabs()[0]!.click(); });
       await eventually(() => expect(snapshot().title).toBe("First"));
-      await act(async () => native.events.get(DOCUMENT_FILE_DROP_EVENT)!({ paths: ["/Users/me/Drops/slow.png", "/Users/me/Drops/doc.chemdraft"],
-        position: { x: 10, y: 10 }, units: "physical", topInsetRemoved: 0 }));
+      await nativeDrop({ paths: ["/Users/me/Drops/slow.png", "/Users/me/Drops/doc.chemdraft"],
+        position: { x: 10, y: 10 }, units: "physical", topInsetRemoved: 0 });
       await eventually(() => expect(status()).toBe("Reading the dropped picture…"));
       await act(async () => { tabs()[1]!.click(); });
       await eventually(() => expect(snapshot().title).not.toBe("First"));
@@ -851,9 +881,9 @@ describe("dropping picture files on the document window", { timeout: 3 * DROP_WA
       native.files.set("C:\\Drawings\\doc.chemdraft", new TextEncoder().encode(serializeDocument(createPhase4Document("Native document"))));
       native.stat.mockImplementation(async path => ({ size: native.files.get(path)?.length ?? 0 }));
       await mount(createPhase4Document("Desktop"), "windows");
-      await eventually(() => expect(native.events.has(DOCUMENT_FILE_DROP_EVENT)).toBe(true));
-      await act(async () => native.events.get(DOCUMENT_FILE_DROP_EVENT)!({ paths: ["C:\\Users\\me\\Desktop\\link.url", "C:\\Users\\me\\Desktop\\Drawing.lnk",
-        "C:\\Drawings\\doc.chemdraft"], position: { x: 10, y: 10 }, units: "physical", topInsetRemoved: 0 }));
+      await eventually(() => expect(listening()).toBe(true));
+      await nativeDrop({ paths: ["C:\\Users\\me\\Desktop\\link.url", "C:\\Users\\me\\Desktop\\Drawing.lnk",
+        "C:\\Drawings\\doc.chemdraft"], position: { x: 10, y: 10 }, units: "physical", topInsetRemoved: 0 });
       await eventually(() => expect(status()).toBe([
         "Couldn't drop \"link.url\": it is a web link, not a picture or a drawing",
         "Couldn't drop \"Drawing.lnk\": it is a shortcut; drop the file it points to instead",
@@ -873,28 +903,143 @@ describe("dropping picture files on the document window", { timeout: 3 * DROP_WA
       native.files.set("/Users/me/Pictures/mol.png", pngBytes());
       native.stat.mockImplementation(async path => ({ size: native.files.get(path)?.length ?? 0 }));
       await mount(createPhase4Document("Desktop"), "linux");
-      await eventually(() => expect(native.events.has(DOCUMENT_FILE_DROP_EVENT)).toBe(true));
-      const dropSubscriptions = () => native.subscriptions.filter(entry => entry.endsWith(` ${DOCUMENT_FILE_DROP_EVENT}`));
-      expect(dropSubscriptions()).toEqual([`listen ${DOCUMENT_FILE_DROP_EVENT}`]);
+      await eventually(() => expect(listening()).toBe(true));
+      const dropSubscriptions = () => native.subscriptions.filter(entry => entry.endsWith(` ${DOCUMENT_FILE_DROPS_CHANGED_EVENT}`));
+      expect(dropSubscriptions()).toEqual([`listen ${DOCUMENT_FILE_DROPS_CHANGED_EVENT}`]);
       // A document with another page size comes to the front: the drop handler is re-created.
-      await act(async () => native.events.get(DOCUMENT_FILE_DROP_EVENT)!({ paths: ["/Users/me/Drawings/wide.chemdraft"],
-        position: { x: 10, y: 10 }, units: "css", topInsetRemoved: 0 }));
+      await nativeDrop({ paths: ["/Users/me/Drawings/wide.chemdraft"],
+        position: { x: 10, y: 10 }, units: "css", topInsetRemoved: 0 });
       await eventually(() => expect(snapshot().title).toBe("Wide page"));
       expect(snapshot().pages[0]!.width).toBe(wide.pages[0]!.width);
       await settle();
-      expect(dropSubscriptions()).toEqual([`listen ${DOCUMENT_FILE_DROP_EVENT}`]);
+      expect(dropSubscriptions()).toEqual([`listen ${DOCUMENT_FILE_DROPS_CHANGED_EVENT}`]);
       stubLayout(0);
       // A drop without a position lands at the visible centre, put here past the original page's
       // right edge but inside the wide page: a handler kept from mount would clamp it to the old page.
       const centreX = page.width * 1.5;
       vi.spyOn(canvas(), "clientWidth", "get").mockReturnValue(centreX * 2);
       vi.spyOn(canvas(), "clientHeight", "get").mockReturnValue(page.height);
-      await act(async () => native.events.get(DOCUMENT_FILE_DROP_EVENT)!({ paths: ["/Users/me/Pictures/mol.png"],
-        position: null, units: "css", topInsetRemoved: 0 }));
+      await nativeDrop({ paths: ["/Users/me/Pictures/mol.png"],
+        position: null, units: "css", topInsetRemoved: 0 });
       await eventually(() => expect(status()).toBe("Inserted picture mol.png"));
       expect(snapshot().title).toBe("Wide page");
       expect(pictures()).toHaveLength(1);
       expect(centre(pictures()[0]!)).toEqual({ x: centreX, y: page.height / 2 });
+    });
+  });
+
+  describe("drops made before the page is ready", () => {
+    const desktopPicture = (path: string) => {
+      native.files.set(path, pngBytes());
+      native.stat.mockImplementation(async file => ({ size: native.files.get(file)?.length ?? 0 }));
+    };
+    /**
+     * Holds the restored session's read until `finish` is called. Early drops wait for it, so they
+     * are taken only after `mount` has given jsdom its layout, as a real window has one by then.
+     */
+    const holdSessionRestore = () => {
+      let finish!: () => void;
+      native.loadSession = () => new Promise(resolve => { finish = () => resolve(undefined); });
+      return async () => { await act(async () => finish()); };
+    };
+
+    it("delivers a drop queued before the page listened, once, after it mounts", async () => {
+      native.desktop = true;
+      desktopPicture("/Users/me/Pictures/early.png");
+      // Rust queued it while the window showed; there was no listener for any notice.
+      native.pendingDrops.push({ paths: ["/Users/me/Pictures/early.png"], position: { x: 300, y: 200 }, units: "css", topInsetRemoved: 28, scaleFactor: 2 });
+      const finishRestore = holdSessionRestore();
+      await mount(createPhase4Document("Desktop"), "macos");
+      await finishRestore();
+      await eventually(() => expect(status()).toBe("Inserted picture early.png"));
+      expect(pictures()).toHaveLength(1);
+      // The point Rust measured, title-bar inset already removed, is where it lands.
+      expect(centre(pictures()[0]!)).toEqual({ x: 300, y: 200 });
+      // The page subscribed before it drained; a later notice finds nothing to deliver again.
+      expect(native.subscriptions).toContain(`listen ${DOCUMENT_FILE_DROPS_CHANGED_EVENT}`);
+      const takes = native.takes;
+      await act(async () => native.events.get(DOCUMENT_FILE_DROPS_CHANGED_EVENT)!(null));
+      await eventually(() => expect(native.takes).toBe(takes + 1));
+      await settle();
+      expect(pictures()).toHaveLength(1);
+    });
+
+    it("keeps a Windows drop's point at the scale it was dropped at after the window changed display", async () => {
+      native.desktop = true;
+      desktopPicture("C:\\Pictures\\moved.png");
+      // Dropped at 150%; by the time the page drains it the window is on a 200% display.
+      vi.stubGlobal("devicePixelRatio", 2);
+      native.pendingDrops.push({ paths: ["C:\\Pictures\\moved.png"], position: { x: 450, y: 300 }, units: "physical", topInsetRemoved: 0, scaleFactor: 1.5 });
+      const finishRestore = holdSessionRestore();
+      await mount(createPhase4Document("Desktop"), "windows");
+      await finishRestore();
+      await eventually(() => expect(status()).toBe("Inserted picture moved.png"));
+      expect(centre(pictures()[0]!)).toEqual({ x: 300, y: 200 });
+    });
+
+    it("delivers a drop made while a drain is in flight exactly once, by the next drain", async () => {
+      native.desktop = true;
+      desktopPicture("/Users/me/Pictures/first.png");
+      desktopPicture("/Users/me/Pictures/second.png");
+      let release!: () => void;
+      native.takeGate = new Promise<void>(resolve => { release = resolve; });
+      native.pendingDrops.push({ paths: ["/Users/me/Pictures/first.png"], position: { x: 100, y: 100 }, units: "css", topInsetRemoved: 0 });
+      const finishRestore = holdSessionRestore();
+      await mount(createPhase4Document("Desktop"), "linux");
+      await finishRestore();
+      await eventually(() => expect(native.takes).toBe(1));
+      // The first drain has taken `first.png` and not yet replied; `second.png` arrives now.
+      await nativeDrop({ paths: ["/Users/me/Pictures/second.png"], position: { x: 500, y: 300 }, units: "css", topInsetRemoved: 0 });
+      expect(native.takes).toBe(1);
+      native.takeGate = undefined;
+      release();
+      await eventually(() => expect(pictures()).toHaveLength(2));
+      expect(native.takes).toBe(2);
+      expect(pictures().map(centre)).toEqual([{ x: 100, y: 100 }, { x: 500, y: 300 }]);
+      await settle();
+      expect(pictures()).toHaveLength(2);
+    });
+
+    it("waits for the restored session before taking early drops, instead of refusing them", async () => {
+      native.desktop = true;
+      desktopPicture("/Users/me/Pictures/early.png");
+      const finishRestore = holdSessionRestore();
+      native.pendingDrops.push({ paths: ["/Users/me/Pictures/early.png"], position: { x: 300, y: 200 }, units: "css", topInsetRemoved: 0 });
+      await mount(createPhase4Document("Desktop"), "macos");
+      await eventually(() => expect(listening()).toBe(true));
+      // A drop made while the session loads joins the queue behind it.
+      await nativeDrop({ paths: ["/Users/me/Pictures/early.png"], position: { x: 500, y: 300 }, units: "css", topInsetRemoved: 0 });
+      await settle();
+      expect(native.takes).toBe(0);
+      expect(native.pendingDrops).toHaveLength(2);
+      expect(pictures()).toHaveLength(0);
+      expect(status()).not.toMatch(/still loading/);
+      await finishRestore();
+      await eventually(() => expect(pictures()).toHaveLength(2));
+      expect(pictures().map(centre)).toEqual([{ x: 300, y: 200 }, { x: 500, y: 300 }]);
+      // The first drain took both; the notice that came while it waited asks once more, for nothing.
+      await eventually(() => expect(native.takes).toBe(2));
+      await settle();
+      expect(pictures()).toHaveLength(2);
+    });
+
+    it("says once how many drops Rust refused because too many arrived before the window was ready", async () => {
+      native.desktop = true;
+      desktopPicture("/Users/me/Pictures/kept.png");
+      desktopPicture("/Users/me/Pictures/later.png");
+      native.pendingDrops.push({ paths: ["/Users/me/Pictures/kept.png"], position: { x: 300, y: 200 }, units: "css", topInsetRemoved: 0 });
+      native.refusedDrops = 3;
+      const finishRestore = holdSessionRestore();
+      await mount(createPhase4Document("Desktop"), "macos");
+      await finishRestore();
+      await eventually(() => expect(status()).toBe("Inserted picture kept.png; Couldn't take 3 more drops: too many arrived before the window was ready. Drop them again."));
+      expect(pictures()).toHaveLength(1);
+      await nativeDrop({ paths: ["/Users/me/Pictures/later.png"], position: { x: 500, y: 300 }, units: "css", topInsetRemoved: 0 });
+      await eventually(() => expect(status()).toBe("Inserted picture later.png"));
+      // Refusals alone, with nothing taken beside them, are said on their own.
+      native.refusedDrops = 1;
+      await act(async () => native.events.get(DOCUMENT_FILE_DROPS_CHANGED_EVENT)!(null));
+      await eventually(() => expect(status()).toBe("Couldn't take 1 more drop: too many arrived before the window was ready. Drop it again."));
     });
   });
 });

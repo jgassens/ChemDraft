@@ -962,7 +962,8 @@ import {
 import { installBrowserReloadGuard, wasBrowserReloadPrevented } from "./browserReloadGuard";
 import { assertDocumentSize, decodeNativeDocumentContents, DOCUMENT_OPEN_ACCEPT, documentContentsKey, readBrowserDocumentFile, readNativeDocumentFile, type DocumentContents } from "./documentText";
 import { handleDroppedFiles, type DroppedImageInsertion, type DroppedImageSource } from "./imageDrop/dropHandler";
-import { DOCUMENT_FILE_DROP_EVENT, browserDropClientPoint, drawableCanvasRect, dropPagePoint, nativeDropClientPoint, type DocumentFileDropPayload, type DropClientPoint } from "./imageDrop/dropPosition";
+import { browserDropClientPoint, drawableCanvasRect, dropPagePoint, nativeDropClientPoint, type DocumentFileDropPayload, type DropClientPoint } from "./imageDrop/dropPosition";
+import { DOCUMENT_FILE_DROPS_CHANGED_EVENT, listenAndDrainDocumentDrops, refusedDropsStatus, takePendingDocumentDrops } from "./imageDrop/pendingDrops";
 import { insertDroppedImages, type PagePointLike } from "./imageDrop/insertDroppedImages";
 import type { PreparedDroppedImage } from "./imageDrop/prepareDroppedImage";
 import { savedDocumentBytes } from "./imageDrop/dropDocumentBudget";
@@ -1926,7 +1927,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.26.12.03-opus";
+const CURRENT_BUILD_STAMP = "11.26.12.47-opus";
 
 const NUMERIC_ENTRY_DURING_DRAG_STATUS = "Finish the current drag, then enter a value";
 
@@ -11552,21 +11553,39 @@ export function MainWindow({
 
   useEffect(() => {
     if (!isDesktopRuntime()) return undefined;
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    // Not `tauri://drag-drop`: its macOS position is measured from under the title bar. Rust sends
-    // this one, once per drop, with the position made relative to the page (`file_drop.rs`).
-    void listenCurrentWindowEvent<DocumentFileDropPayload>(DOCUMENT_FILE_DROP_EVENT, (event) => {
-      if (disposed || closeTabPromptRef.current || quitInteractionRef.current) return;
-      // Pixels per CSS pixel right now, including any webview zoom, for Windows' physical position.
-      const client = nativeDropClientPoint(event.payload, window.devicePixelRatio);
-      void dropNativePathsRef.current(event.payload.paths, client);
-    }).then((stop) => {
-      if (disposed) stop();
-      else unlisten = stop;
-    }).catch(() => undefined);
-    return () => { disposed = true; unlisten?.(); };
-  }, []);
+    // Not `tauri://drag-drop`: its macOS position is measured from under the title bar. Rust queues
+    // each drop whole, with the position made relative to the page (`file_drop.rs`), and this page
+    // drains the queue (`pendingDrops.ts`): a drop made before this listener existed is kept.
+    const deliver = (drop: DocumentFileDropPayload): Promise<unknown> | undefined => {
+      if (closeTabPromptRef.current || quitInteractionRef.current) return undefined;
+      // Windows' physical position is divided by the scale Rust read at the drop.
+      const client = nativeDropClientPoint(drop, window.devicePixelRatio);
+      return dropNativePathsRef.current(drop.paths, client);
+    };
+    return listenAndDrainDocumentDrops({
+      subscribe: changed => listenCurrentWindowEvent<null>(DOCUMENT_FILE_DROPS_CHANGED_EVENT, changed),
+      take: takePendingDocumentDrops,
+      // Drops made while the restored documents load, or while the question about drawings that
+      // could not be restored is open, wait in Rust, in order, until both are done.
+      ready: async () => {
+        while (keptDrawingsPromptRef.current || !documentSessionHydratedRef.current) {
+          await new Promise<void>(resolve => pendingDocumentOpensRef.current.push(resolve));
+        }
+      },
+      consume: ({ drops, refusedDrops }) => {
+        const delivered = drops.map(deliver);
+        if (!refusedDrops) return;
+        // Said once, after the drops that were taken have reported, on the tab in front then.
+        const refusal = refusedDropsStatus(refusedDrops);
+        void Promise.allSettled(delivered).then(() => {
+          if (!mountedRef.current) return;
+          const shown = statusRef.current;
+          setTabStatus(activeDocumentTabIdRef.current, drops.length && shown ? `${shown}; ${refusal}` : refusal);
+        });
+      },
+      onError: error => setStatus(`Could not check pending dropped files: ${error instanceof Error ? error.message : String(error)}`)
+    });
+  }, [setTabStatus]);
 
   // The web build: a file dropped anywhere in the document window (the canvas, a toolbar, the tab
   // strip) is taken here. `main.tsx` keeps every other drop from navigating. The desktop webviews

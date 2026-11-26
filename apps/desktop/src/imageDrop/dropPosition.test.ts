@@ -12,6 +12,17 @@ describe("nativeDropClientPoint", () => {
     expect(nativeDropClientPoint({ position: { x: 300 * scale, y: 150 * scale }, units: "physical" }, scale)).toEqual({ x: 300, y: 150 });
   });
 
+  it("divides by the scale read at the drop, not the scale when the drop is drained", () => {
+    // Dropped at 150% (Rust read 1.5 then), drained after the window moved to a 200% display.
+    expect(nativeDropClientPoint({ position: { x: 450, y: 225 }, units: "physical", scaleFactor: 1.5 }, 2)).toEqual({ x: 300, y: 150 });
+    // A CSS position is never scaled, whatever the drop's scale.
+    expect(nativeDropClientPoint({ position: { x: 300, y: 150 }, units: "css", scaleFactor: 2 }, 1)).toEqual({ x: 300, y: 150 });
+    // Rust could not read the scale: the webview's ratio now stands in.
+    for (const scaleFactor of [null, undefined, 0, -1, Number.NaN, "1.5"]) {
+      expect(nativeDropClientPoint({ position: { x: 600, y: 300 }, units: "physical", scaleFactor }, 2)).toEqual({ x: 300, y: 150 });
+    }
+  });
+
   it("never applies the title-bar inset Rust has already removed", () => {
     expect(nativeDropClientPoint({ position: { x: 300, y: 150 }, units: "css", topInsetRemoved: 28 }, 2))
       .toEqual({ x: 300, y: 150 });

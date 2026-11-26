@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "document-file-drops",
+  "description": "Only the document window may drain the files dropped on it. Drops wait in Rust until its page is ready; palettes, popovers, dialogs, Preferences and plugin panels never receive them.",
+  "windows": ["main"],
+  "permissions": ["allow-take-pending-document-drops"]
+}
