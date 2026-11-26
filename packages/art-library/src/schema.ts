@@ -66,7 +66,7 @@ function checkPackUniqueness(pack: { items: ArtItem[] }, ctx: z.RefinementCtx): 
     }
     ids.add(item.id);
     for (const [variantId, variant] of Object.entries(item.variants)) {
-      const key = windowsPathKey(variant.file);
+      const key = windowsPathKey(variant.file).normalize("NFC");
       if (files.has(key)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
