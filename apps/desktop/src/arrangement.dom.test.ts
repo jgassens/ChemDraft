@@ -36,6 +36,18 @@ describe("auto-arrangement toolbar and history", () => {
   async function route(commandId: string) {
     await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } })));
   }
+  async function openSelectedMoleculeMenu(drawing: ReturnType<typeof snapshot>) {
+    const object = drawing.pages[0].objects.find(candidate => candidate.id === drawing.selection.objectIds[0]);
+    if (object?.type !== "molecule") throw new Error("Expected a selected molecule");
+    const atom = object.atoms[0]!;
+    const target = container.querySelector(`[data-object-id="${object.id}"] [data-hit-target="atom"][data-atom-id="${atom.id}"]`)!;
+    const pageBounds = container.querySelector(".page")!.getBoundingClientRect();
+    const scale = Number(container.querySelector<HTMLElement>(".page-stage")!.style.getPropertyValue("--page-scale"));
+    await act(async () => target.dispatchEvent(new MouseEvent("contextmenu", {
+      bubbles: true, cancelable: true, button: 2,
+      clientX: pageBounds.x + atom.x * scale, clientY: pageBounds.y + atom.y * scale
+    })));
+  }
   async function render(selected = true, count = 6,includeNote=true) {
     let document = createPhase4Document("Six compounds");
     for (let i = 0; i < count; i++) {
@@ -57,8 +69,7 @@ describe("auto-arrangement toolbar and history", () => {
     expect(container.querySelector('[data-command-id="layout.arrange.circle"]')).toBeNull();
     await route("layout.arrange.circle"); expect(snapshot()).toEqual(before);
     expect(container.textContent).toContain("Enable Compound layout tools in Settings");
-    const target=container.querySelector<HTMLElement>(`[data-object-id="${before.selection.objectIds[0]}"]`)!;
-    await act(async()=>target.dispatchEvent(new MouseEvent("contextmenu",{bubbles:true,cancelable:true,clientX:100,clientY:100})));
+    await openSelectedMoleculeMenu(before);
     expect(container.querySelector('[aria-label="Object layer options"] [data-command-id="layout.arrange.circle"]')).toBeNull();
     await act(async()=>{saveCompoundLayoutSettings({enabled:true});await broadcastCompoundLayoutSettings({enabled:true});});
     expect(container.querySelector('[data-command-id="layout.arrange.circle"]')).not.toBeNull();
@@ -76,8 +87,7 @@ describe("auto-arrangement toolbar and history", () => {
   });
   it("opens Arrange as a context submenu, supports keyboard navigation and invokes one layout", async () => {
     await render(); const before = snapshot();
-    const target = container.querySelector<HTMLElement>(`[data-object-id="${before.selection.objectIds[0]}"]`)!;
-    await act(async()=>target.dispatchEvent(new MouseEvent("contextmenu",{bubbles:true,cancelable:true,clientX:100,clientY:100})));
+    await openSelectedMoleculeMenu(before);
     const arrange = container.querySelector<HTMLButtonElement>('[data-context-submenu="arrange"]')!;
     expect(arrange.getAttribute("aria-expanded")).toBe("false");
     expect(container.querySelector('[aria-label="Arrange layouts"]')).toBeNull();

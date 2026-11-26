@@ -9,7 +9,7 @@ import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { documentZoomCommandId } from "./documentZoom";
 import { createPhase4Document, getSelectedMolecule, insertSmilesMolecule, selectDocumentObjects } from "./documentWorkflow";
 import { MainWindow } from "./MainWindow";
-import { loadStereoEngine } from "./stereoReadout";
+import { loadStereoEngine, resetStereoEngineForTests } from "./stereoReadout";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 
@@ -53,8 +53,10 @@ afterEach(async () => {
 });
 
 async function mount(smiles = IBUPROFEN, {
-  selected = false, platform = "windows", zoom = 100, labelFontSize
-}: { selected?: boolean; platform?: ShortcutPlatform; zoom?: Zoom; labelFontSize?: number } = {}) {
+  selected = false, platform = "windows", zoom = 100, labelFontSize, overlay
+}: { selected?: boolean; platform?: ShortcutPlatform; zoom?: Zoom; labelFontSize?: number;
+  overlay?: (drawing: ReturnType<typeof createPhase4Document>, molecule: MoleculeObject) => ReturnType<typeof createPhase4Document>;
+} = {}) {
   let drawing = insertSmilesMolecule(createPhase4Document("Context stereo"), { x: 220, y: 170 }, depictSmiles2D(smiles), smiles);
   if (labelFontSize) {
     const molecule = getSelectedMolecule(drawing)!;
@@ -63,8 +65,9 @@ async function mount(smiles = IBUPROFEN, {
     } }]);
   }
   const molecule = getSelectedMolecule(drawing)!;
+  drawing = selected ? drawing : selectDocumentObjects(drawing, drawing.pages[0].id, []);
   await act(async () => root.render(<MainWindow
-    initialDocument={selected ? drawing : selectDocumentObjects(drawing, drawing.pages[0].id, [])}
+    initialDocument={overlay ? overlay(drawing, molecule) : drawing}
     initialActiveToolCommandId="tool.select" initialPaletteMode="hidden" nativePalette={false}
     initialCrosshairsVisible={false} initialRulersVisible={false} shortcutPlatform={platform}
   />));
@@ -93,10 +96,10 @@ const atomTarget = (molecule: MoleculeObject, id: string) =>
 const bondTarget = (molecule: MoleculeObject, id: string) =>
   renderedMolecule(molecule).querySelector(`[data-bond-id="${id}"][data-hit-target="bond"]`)!;
 
-async function clickAt(point: Point, { target = page as Element, button = 2, ctrlKey = false, context = true } = {}) {
+async function clickAt(point: Point, { target = page as Element, button = 2, ctrlKey = false, shiftKey = false, context = true } = {}) {
   expect(page.contains(target)).toBe(true);
   const mouse = { bubbles: true, cancelable: true, clientX: origin.x + point.x * scale,
-    clientY: origin.y + point.y * scale, button, ctrlKey };
+    clientY: origin.y + point.y * scale, button, ctrlKey, shiftKey };
   await act(async () => {
     for (const type of ["pointerdown", "pointerup"]) {
       target.dispatchEvent(new PointerEvent(type, {
@@ -114,6 +117,12 @@ const stereoRows = () => [...(objectMenu()?.querySelectorAll(".object-context-me
   .map(row => row.textContent).filter(label => /^(Stereocentre|Double bond): /.test(label ?? ""));
 const rotateItem = () => objectMenu()?.querySelector('[data-command-id="layout.rotateMolecule"]');
 
+function selectRingInspector() {
+  return act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, {
+    detail: { commandId: "view.toggleRingInspector" }
+  })));
+}
+
 function incidentBondClick(molecule: MoleculeObject, center: MoleculeObject["atoms"][number]) {
   const bond = molecule.bonds.find(bond => bond.fromAtomId === center.id || bond.toAtomId === center.id)!;
   const other = molecule.atoms.find(atom => atom.id === (bond.fromAtomId === center.id ? bond.toAtomId : bond.fromAtomId))!;
@@ -121,6 +130,17 @@ function incidentBondClick(molecule: MoleculeObject, center: MoleculeObject["ato
   return {
     point: { x: center.x + (other.x - center.x) * 12 / length, y: center.y + (other.y - center.y) * 12 / length },
     target: bondTarget(molecule, bond.id)
+  };
+}
+
+function pointNearDoubleBond(molecule: MoleculeObject, offset: number) {
+  const bond = molecule.bonds.find(bond => bond.order === "double")!;
+  const from = molecule.atoms.find(atom => atom.id === bond.fromAtomId)!;
+  const to = molecule.atoms.find(atom => atom.id === bond.toAtomId)!;
+  const length = Math.hypot(to.x - from.x, to.y - from.y);
+  return {
+    x: (from.x + to.x) / 2 + (to.y - from.y) * offset / (length * scale),
+    y: (from.y + to.y) / 2 - (to.x - from.x) * offset / (length * scale)
   };
 }
 
@@ -202,9 +222,7 @@ it("opens the selection menu in the empty middle of a selected ring molecule", a
 it("keeps a ring-part selection when right-clicking its empty middle", async () => {
   const molecule = await mount("c1ccccc1");
   const ring = nativeMoleculeRings(molecule)[0]!;
-  await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, {
-    detail: { commandId: "view.toggleRingInspector" }
-  })));
+  await selectRingInspector();
   await clickAt(ring.center, { button: 0, context: false, target: page.querySelector(`[data-ring-hit-key="${ring.ringKey}"]`)! });
   expect(renderedMolecule(molecule).getAttribute("data-selected-native-ring-key")).toBe(ring.ringKey);
   await clickAt(ring.center);
@@ -212,19 +230,134 @@ it("keeps a ring-part selection when right-clicking its empty middle", async () 
   expect(renderedMolecule(molecule).getAttribute("data-selected-native-ring-key")).toBe(ring.ringKey);
 });
 
+it.each(["atom", "bond"] as const)("opens the unselected overlay %s menu over a selected ring", async kind => {
+  let foreground!: MoleculeObject;
+  await mount("c1ccccc1", { selected: true, overlay: (drawing, background) => {
+    const smiles = kind === "atom" ? "O" : "CC";
+    const withForeground = insertSmilesMolecule(drawing, nativeMoleculeRings(background)[0]!.center, depictSmiles2D(smiles), smiles);
+    foreground = getSelectedMolecule(withForeground)!;
+    return selectDocumentObjects(withForeground, drawing.pages[0].id, [background.id]);
+  } });
+  const [first, second] = foreground.atoms;
+  const point = kind === "atom" ? first! : { x: (first!.x + second!.x) / 2, y: (first!.y + second!.y) / 2 };
+  const target = kind === "atom" ? atomTarget(foreground, first!.id) : bondTarget(foreground, foreground.bonds[0]!.id);
+  await clickAt(point, { target });
+  expect(objectMenu()?.getAttribute("data-context-object-id")).toBe(foreground.id);
+  expect(objectMenu()?.getAttribute("data-context-target-kind")).toBe(kind);
+});
+
+it("opens the selection menu for a selected atom inside a selected ring part", async () => {
+  let foreground!: MoleculeObject;
+  const background = await mount("c1ccccc1", { overlay: (drawing, ringMolecule) => {
+    const center = nativeMoleculeRings(ringMolecule)[0]!.center;
+    const withForeground = insertSmilesMolecule(drawing, { x: center.x + 9, y: center.y }, depictSmiles2D("O"), "O");
+    foreground = getSelectedMolecule(withForeground)!;
+    return selectDocumentObjects(withForeground, drawing.pages[0].id, []);
+  } });
+  await selectRingInspector();
+  const ring = nativeMoleculeRings(background)[0]!;
+  await clickAt({ x: ring.center.x - 7, y: ring.center.y }, {
+    button: 0, context: false, target: renderedMolecule(background).querySelector(`[data-ring-hit-key="${ring.ringKey}"]`)!
+  });
+  const atom = foreground.atoms[0]!;
+  const atomCatcher = atomTarget(foreground, atom.id);
+  await clickAt(atom, { button: 0, context: false, shiftKey: true, target: atomCatcher });
+  expect(renderedMolecule(background).getAttribute("data-selected-native-ring-key")).toBe(ring.ringKey);
+  expect(renderedMolecule(foreground).getAttribute("data-selected-native-atom-id")).toBe(atom.id);
+
+  await clickAt(atom, { target: atomTarget(foreground, atom.id) });
+  expect(objectMenu()?.getAttribute("data-context-object-id")).toBe(foreground.id);
+  expect(objectMenu()?.getAttribute("data-context-target-kind")).toBe("atom");
+  expect(objectMenu()?.querySelector('[data-command-id="clipboard.copy"]')).not.toBeNull();
+  expect(renderedMolecule(background).getAttribute("data-selected-native-ring-key")).toBe(ring.ringKey);
+  expect(renderedMolecule(foreground).getAttribute("data-selected-native-atom-id")).toBe(atom.id);
+});
+
+it("uses the topmost selected whole object when two selection boxes overlap over bare paper", async () => {
+  let foreground!: MoleculeObject;
+  const background = await mount("c1ccccc1", { overlay: (drawing, ringMolecule) => {
+    const withForeground = insertSmilesMolecule(drawing, nativeMoleculeRings(ringMolecule)[0]!.center,
+      depictSmiles2D("c1ccccc1"), "c1ccccc1");
+    foreground = getSelectedMolecule(withForeground)!;
+    return selectDocumentObjects(withForeground, drawing.pages[0].id, [ringMolecule.id, foreground.id]);
+  } });
+  await clickAt(nativeMoleculeRings(background)[0]!.center);
+  expect(objectMenu()?.getAttribute("data-context-object-id")).toBe(foreground.id);
+});
+
+it("uses the topmost selected part when two part boxes overlap over bare paper", async () => {
+  let foreground!: MoleculeObject;
+  const background = await mount("O", { overlay: (drawing, firstMolecule) => {
+    const firstAtom = firstMolecule.atoms[0]!;
+    const withForeground = insertSmilesMolecule(drawing, { x: firstAtom.x + 22, y: firstAtom.y }, depictSmiles2D("O"), "O");
+    foreground = getSelectedMolecule(withForeground)!;
+    return selectDocumentObjects(withForeground, drawing.pages[0].id, []);
+  } });
+  const first = background.atoms[0]!;
+  const second = foreground.atoms[0]!;
+  await clickAt(first, { button: 0, context: false, target: atomTarget(background, first.id) });
+  await clickAt(second, { button: 0, context: false, shiftKey: true, target: atomTarget(foreground, second.id) });
+  expect(renderedMolecule(background).getAttribute("data-selected-native-atom-id")).toBe(first.id);
+  expect(renderedMolecule(foreground).getAttribute("data-selected-native-atom-id")).toBe(second.id);
+
+  await clickAt({ x: (first.x + second.x) / 2, y: first.y });
+  expect(objectMenu()?.getAttribute("data-context-object-id")).toBe(foreground.id);
+});
+
+it("uses the 14 px stereo reach of the top object over a selected ring", async () => {
+  let foreground!: MoleculeObject;
+  const background = await mount("c1ccccc1", { selected: true, zoom: 200, overlay: (drawing, ringMolecule) => {
+    const withForeground = insertSmilesMolecule(drawing, nativeMoleculeRings(ringMolecule)[0]!.center,
+      depictSmiles2D("C/C=C/C"), "C/C=C/C");
+    foreground = getSelectedMolecule(withForeground)!;
+    return selectDocumentObjects(withForeground, drawing.pages[0].id, [ringMolecule.id]);
+  } });
+  const point = pointNearDoubleBond(foreground, 10);
+  const { center } = nativeMoleculeRings(background)[0]!;
+  expect(Math.hypot(point.x - center.x, point.y - center.y)).toBeLessThan(10);
+  await clickAt(point);
+  expect(objectMenu()?.getAttribute("data-context-object-id")).toBe(foreground.id);
+  expect(stereoRows()).toEqual(["Double bond: E"]);
+});
+
+it.each(["pointerleave", "pointerdown", "Escape"] as const)("discards a pending bare-paper stereo menu on %s", async cancel => {
+  const engine = await loadStereoEngine();
+  let finishLoading!: () => void;
+  const pendingEngine = new Promise<typeof engine>(resolve => { finishLoading = () => resolve(engine); });
+  resetStereoEngineForTests();
+  try {
+    void loadStereoEngine(() => pendingEngine);
+    const molecule = await mount("C/C=C/C", { zoom: 200 });
+    await clickAt(pointNearDoubleBond(molecule, 10));
+    expect(objectMenu()).toBeNull();
+    expect(pageMenu()).toBeNull();
+    await act(async () => {
+      if (cancel === "pointerleave") {
+        page.dispatchEvent(new PointerEvent("pointerout", { bubbles: true, relatedTarget: page.closest(".canvas-region") }));
+      } else if (cancel === "pointerdown") {
+        container.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, buttons: 1 }));
+      } else {
+        document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
+      }
+      finishLoading();
+    });
+    expect(objectMenu()).toBeNull();
+    expect(pageMenu()).toBeNull();
+  } finally {
+    finishLoading();
+    resetStereoEngineForTests();
+    await loadStereoEngine();
+  }
+});
+
 it.each([false, true])("shows E/Z near the middle of a stereo double bond (bond selected: %s)", async selected => {
   const molecule = await mount("C/C=C/C", { zoom: 200 });
   const bond = molecule.bonds.find(bond => bond.order === "double")!;
-  const from = molecule.atoms.find(atom => atom.id === bond.fromAtomId)!;
-  const to = molecule.atoms.find(atom => atom.id === bond.toAtomId)!;
-  const length = Math.hypot(to.x - from.x, to.y - from.y);
-  const center = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
   if (selected) {
-    await clickAt(center, { button: 0, context: false, target: bondTarget(molecule, bond.id) });
+    await clickAt(pointNearDoubleBond(molecule, 0), { button: 0, context: false, target: bondTarget(molecule, bond.id) });
     expect(renderedMolecule(molecule).getAttribute("data-selected-native-bond-id")).toBe(bond.id);
   }
-  await clickAt({ x: center.x + (to.y - from.y) * 10 / (length * scale),
-    y: center.y - (to.x - from.x) * 10 / (length * scale) });
+  await clickAt(pointNearDoubleBond(molecule, 10));
   expect(stereoRows()).toEqual(["Double bond: E"]);
   expect(objectMenu()?.getAttribute("data-context-target-kind")).toBe("bond");
 });
@@ -254,9 +387,8 @@ it("omits stereo near a non-stereogenic atom", async () => {
 });
 
 it.each([17, 100])("keeps the canvas menu %s screen pixels away", async offset => {
-  const molecule = await mount(IBUPROFEN, { zoom: 200 });
-  const center = molecule.atoms[10]!;
-  await clickAt({ x: center.x, y: center.y + offset / scale });
+  const molecule = await mount("C/C=C/C", { zoom: 200 });
+  await clickAt(pointNearDoubleBond(molecule, offset));
   expect(pageMenu()).not.toBeNull();
   expect(pageMenu()?.querySelector('[data-command-id="edit.selectAll"]')).not.toBeNull();
   expect(objectMenu()).toBeNull();
