@@ -11,7 +11,9 @@ import { saveKeybindingSettings } from "../keybindingSettings";
 import { MemoryStorage } from "../testSupport/memoryStorage";
 import { DOM_COMMAND_EVENT, broadcastExportPreviewSettings } from "../window-manager";
 import type { ChemDraftAgentBridge } from "../agentBridge";
-import type { MoleculeObject } from "@chemdraft/chem-core";
+import type { GraphicObject, MoleculeObject } from "@chemdraft/chem-core";
+import { pngBytes } from "../imageDrop/testFixtures";
+import type { ExportFrame } from "./exportOptions";
 import type { DialogMessage } from "./dialogProtocol";
 import type { DialogDelivery } from "./dialogTransport";
 import * as atomLabelDraft from "../atomLabelDraft";
@@ -34,6 +36,14 @@ vi.mock("@tauri-apps/plugin-fs", async original => ({
   ...await original<typeof import("@tauri-apps/plugin-fs")>(), writeTextFile: native.writeTextFile
 }));
 vi.mock("../rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
+// jsdom has no canvas: the webview decoder is replaced by one returning a real 1 × 1 PNG.
+vi.mock("../imageDrop/rasterDecode", async (original) => {
+  const { pngBytes: png } = await import("../imageDrop/testFixtures");
+  const browserRasterToPng = vi.fn(async () => ({ png: png(), width: 1, height: 1, sourceWidth: 1, sourceHeight: 1, downscaled: false }));
+  const browserDecodeCheck = vi.fn(async () => ({ width: 1, height: 1 }));
+  return { ...await original<typeof import("../imageDrop/rasterDecode")>(),
+    browserRasterToPng, browserDecodeCheck, browserImageDecoders: { rasterToPng: browserRasterToPng, decodeCheck: browserDecodeCheck } };
+});
 vi.mock("../window-manager", async original => ({
   ...await original<typeof import("../window-manager")>(), isDesktopRuntime: () => true,
   loadDocumentSession: async () => undefined, saveDocumentSession: async () => {},
@@ -255,4 +265,78 @@ it.each(["failed", "cancelled", "saved"] as const)("updates the shared export fo
   await vi.waitFor(() => expect(native.publish).toHaveBeenCalledWith("host", expect.objectContaining({ data: expect.objectContaining({ status: outcome === "failed" ? "error" : "exported" }) })));
   expect(native.writeTextFile).toHaveBeenCalledWith("/chosen/drawing.svg", expect.any(String));
   expect(lastExportDirectory.current).toBe(outcome === "saved" ? "/chosen" : "/previous/exports");
+});
+
+// Owner decision (1.2.4): the Export preview refreshes when the drawing commits, and only then. A
+// committed picture drop is such a commit, even one that leaves the drawing's bounds as they were.
+it("publishes a new preview frame for a committed picture drop, drops a stale preview, and exports the picture", async () => {
+  await act(async () => { saveExportPreviewEnabled(true); await broadcastExportPreviewSettings(true); });
+  const rect = { x: 0, y: 0, left: 0, top: 0, right: 792, bottom: 612, width: 792, height: 612, toJSON: () => ({}) } as DOMRect;
+  for (const element of container.querySelectorAll<HTMLElement>(".page, .canvas-region")) element.getBoundingClientRect = () => rect;
+  const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
+  vi.spyOn(canvas, "clientWidth", "get").mockReturnValue(rect.width);
+  vi.spyOn(canvas, "clientHeight", "get").mockReturnValue(rect.height);
+  await command("export.open"); await send("ready", {});
+  const snapshot = native.snapshot!;
+  if (snapshot.type !== "snapshot" || snapshot.dialogKind !== "export") throw new Error("Missing Export snapshot");
+  const published = (status: string) => native.publish.mock.calls.map(([, message]) => message as DialogMessage)
+    .filter(message => message.type === "result" && (message.data as { status?: string }).status === status);
+  const frames = () => published("frame").map(message => (message.data as { frame: ExportFrame }).frame);
+  const openingFrame = snapshot.data.frame!;
+  expect(openingFrame).toBeDefined();
+  native.publish.mockClear();
+
+  // A preview is requested and is still rendering when the drop commits.
+  const svg = vi.spyOn(workflow, "exportPhase4Svg");
+  const render = svg.getMockImplementation() ?? (workflow.exportPhase4Svg as typeof workflow.exportPhase4Svg);
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let rendering = false;
+  svg.mockImplementationOnce(async (...args) => { rendering = true; await gate; return render(...args); });
+  const options = { ...snapshot.data.options, format: "svg" as const, filename: "drawing.svg" };
+  await act(async () => {
+    void native.receive!({ senderWindowId: "dialog-main-export-1", windowLabel: "dialog-main-export-1",
+      message: { ...native.snapshot!, requestId: crypto.randomUUID(), type: "action", data: { action: "preview", options } } });
+  });
+  await vi.waitFor(() => expect(rendering).toBe(true));
+
+  // A 1 × 1 picture dropped inside the chain's bounds: the content frame keeps its size.
+  const before = bridge().snapshot().document.pages[0].objects.length;
+  const drop = new Event("drop", { bubbles: true, cancelable: true });
+  Object.defineProperty(drop, "dataTransfer", { value: { files: [{ name: "inside.png", size: pngBytes().length,
+    arrayBuffer: async () => pngBytes().slice().buffer as ArrayBuffer }], types: ["Files"] } });
+  const client = bridge().resolvePoint({ page: { x: 390, y: 295 } }).client;
+  Object.defineProperties(drop, { clientX: { value: client.x }, clientY: { value: client.y } });
+  await act(async () => { canvas.dispatchEvent(drop); });
+  const picture = () => bridge().snapshot().document.pages[0].objects
+    .find((object): object is GraphicObject => object.type === "graphic" && object.graphicKind === "image");
+  await vi.waitFor(async () => { await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); }); expect(picture()).toBeDefined(); },
+    { timeout: 10_000, interval: 0 });
+  expect(bridge().snapshot().document.pages[0].objects).toHaveLength(before + 1);
+  expect([picture()!.x, picture()!.y]).toEqual([389.5, 294.5]);
+  await vi.waitFor(() => expect(frames()).toHaveLength(1));
+  const [dropFrame] = frames();
+  expect(dropFrame!.revision).toBeGreaterThan(openingFrame.revision!);
+  expect(dropFrame!.content).toEqual(openingFrame.content);
+  expect(dropFrame!.page).toEqual(openingFrame.page);
+
+  // The preview that started before the drop finishes, but its result is never published.
+  release();
+  await vi.waitFor(() => expect(svg).toHaveBeenCalledTimes(1));
+  await act(async () => { for (let index = 0; index < 10; index += 1) await new Promise(resolve => setTimeout(resolve, 0)); });
+  expect(published("preview")).toHaveLength(0);
+  expect(published("error")).toHaveLength(0);
+
+  // The preview the dialog asks for on the new frame renders the drawing with the picture.
+  await send("action", { action: "preview", options });
+  await vi.waitFor(() => expect(published("preview")).toHaveLength(1));
+  expect(svg.mock.calls.at(-1)![0].pages[0].objects.some(object => object.id === picture()!.id)).toBe(true);
+
+  // And the exported file holds it.
+  native.save.mockResolvedValue("/chosen/drawing.svg");
+  await send("action", { action: "export", options: { ...options, destinationPath: "/chosen/drawing.svg" } });
+  await vi.waitFor(() => expect(published("exported")).toHaveLength(1));
+  const written = native.writeTextFile.mock.calls.find(([path]) => path === "/chosen/drawing.svg")?.[1] as string;
+  expect(written).toContain("<image");
+  expect(written).toContain(btoa(String.fromCharCode(...pngBytes())));
 });
