@@ -232,6 +232,8 @@ import {
   smallestRingAtomIdsByBondId,
   defaultMechanismArrowControls,
   hydrogenCountElement,
+  atomDerivedHydrogenCount,
+  ElectronMarkPlacementIndex,
   mechanismArrowGeometry,
   nativeBondOrderResolution,
   nativeGroupLabelDisplay,
@@ -5010,6 +5012,46 @@ export function insertNativeSymbolGlyph(
   );
 }
 
+/**
+ * A stated hydrogen count on a pasted atom, as the CDXML import keeps `NumHydrogens` on an ordinary
+ * atom (`keepStatedHydrogens`): kept only where it disagrees with the count the atom derives from
+ * its bonds, charge and radicals (`atomDerivedHydrogenCount`, the one copy the label, formula and
+ * SMILES share), so an atom whose source count agrees stays free to follow later edits. A kept
+ * count is counted everywhere and the atom is badged by the validation state; this returns one
+ * compatibility warning naming those atoms. A hydrogen atom keeps only a stated 0 (the reader has
+ * already refused any other count with a warning). Mutates `atoms`.
+ */
+function keepPastedStatedHydrogens(atoms: MoleculeAtom[], bonds: readonly MoleculeBond[]): CompatibilityWarning[] {
+  const candidates = atoms.filter((atom) => atom.hydrogenCount !== undefined);
+  if (candidates.length === 0) return [];
+  // Every count is derived before any is stored: a stored count is part of the resolution's key.
+  const unstored = atoms.map((atom): MoleculeAtom => {
+    const { hydrogenCount: _stated, ...rest } = atom;
+    return rest;
+  });
+  const resolution = nativeBondOrderResolution(unstored, bonds);
+  const kept: { atom: MoleculeAtom; stated: number; derived: number }[] = [];
+  for (const [index, atom] of atoms.entries()) {
+    const stated = atom.hydrogenCount;
+    if (stated === undefined) continue;
+    const derived = atomDerivedHydrogenCount(unstored[index]!, bonds, unstored, resolution);
+    const hydrogenAtom = atom.element === "H" || atom.element === "D" || atom.element === "T";
+    if (derived === stated && !(hydrogenAtom && stated === 0)) {
+      delete atom.hydrogenCount;
+    } else if (derived !== undefined && derived !== stated) {
+      kept.push({ atom, stated, derived });
+    }
+  }
+  if (kept.length === 0) return [];
+  const hydrogens = (count: number) => `${count} hydrogen${count === 1 ? "" : "s"}`;
+  return [{
+    code: "clipboard.molfile_hydrogen_count_kept",
+    message: `MOL paste: ${kept.map(({ atom, stated, derived }) =>
+      `atom ${atom.id.replace(/^a/, "")} (${atom.element}) states ${hydrogens(stated)}, ChemDraft derives ${derived}`).join("; ")}. ` +
+      `The stated count${kept.length === 1 ? " is" : "s are"} kept, and the atom${kept.length === 1 ? " is" : "s are"} flagged.`
+  }];
+}
+
 export function createNativeMolfileMolecule(
   document: ChemDraftDocument,
   point: PagePoint,
@@ -5029,7 +5071,13 @@ export function createNativeMolfileMolecule(
     ...(atom.isotope === undefined ? {} : { isotope: atom.isotope }),
     x: atom.x,
     y: atom.y,
-    formalCharge: atom.formalCharge
+    formalCharge: atom.formalCharge,
+    // Unpaired electrons the file states (M  RAD, RAD=, V2000 charge code 4), as the CDXML import
+    // reads `Radical`: a mark contribution that `insertNativeMolfileMolecule` backs with the
+    // editable radical-dot marks commit normalization needs to keep it.
+    ...(atom.markRadicals ? { markRadicals: atom.markRadicals } : {}),
+    // Candidate stated count (V2000 valence field, V3000 VAL=); `keepPastedStatedHydrogens` decides.
+    ...(atom.hydrogenCount === undefined ? {} : { hydrogenCount: atom.hydrogenCount })
   })) satisfies MoleculeAtom[];
   const atomIds = new Set(atoms.map((atom) => atom.id));
   const bonds = graph.bonds
@@ -5044,8 +5092,10 @@ export function createNativeMolfileMolecule(
       // V3000 CFG) instead of silently dropping them (AGENTS.md §5.7).
       ...(bond.bondStyle ? { display: { bondStyle: bond.bondStyle } } : {})
     })) satisfies MoleculeBond[];
+  const keptHydrogenWarnings = keepPastedStatedHydrogens(atoms, bonds);
   const warnings = [
     ...clipboardWarningsToCompatibilityWarnings(graph.warnings),
+    ...keptHydrogenWarnings,
     {
       code: "clipboard.molfile_imported",
       message: "Pasted from MOL clipboard text; unsupported MOL fields were not imported into native geometry."
@@ -5184,6 +5234,42 @@ export function insertSmilesMoleculeGridStatus(
   return status;
 }
 
+/**
+ * `markRadicals` is a mark contribution, never an intrinsic atom radical: commit normalization
+ * re-derives it from the page's electron marks and would clear one no mark carries. So each
+ * pasted radical electron gets the editable radical-dot mark the atom tool creates, placed the way
+ * the CDXML import places its own (the same layout-engine placement and mark shape).
+ */
+function pastedRadicalMarks(page: DocumentPage, molecule: MoleculeObject): ElectronMarkObject[] {
+  const wanted = molecule.atoms.filter((atom) => (atom.markRadicals ?? 0) > 0);
+  if (wanted.length === 0) return [];
+  const marks = ElectronMarkPlacementIndex.of(page.objects);
+  const ids = new Set(page.objects.map((object) => object.id));
+  ids.add(molecule.id);
+  const created: ElectronMarkObject[] = [];
+  for (const atom of wanted) {
+    for (let index = 0; index < atom.markRadicals!; index++) {
+      const point = nativeRadicalPlacementPointForAtom(molecule, atom.id, marks, page.width, page.height);
+      if (!point) continue;
+      const size = nativeChargeMarkSizePx;
+      let id = `${molecule.id}_${atom.id}_radical_${index + 1}`;
+      while (ids.has(id)) id += "_";
+      ids.add(id);
+      const mark: ElectronMarkObject = {
+        id, type: "electron-mark", markKind: "radical-dot",
+        x: Math.max(0, Math.min(point.x - size / 2, page.width - size)),
+        y: Math.max(0, Math.min(point.y - size / 2, page.height - size)),
+        width: size, height: size, rotation: 0, style: { source: "chemdraft-native-charge" },
+        anchor: { kind: "atom", objectId: molecule.id, atomId: atom.id },
+        atomAssociation: "explicit"
+      };
+      created.push(mark);
+      marks.add(mark);
+    }
+  }
+  return created;
+}
+
 export function insertNativeMolfileMolecule(
   document: ChemDraftDocument,
   point: PagePoint,
@@ -5192,15 +5278,31 @@ export function insertNativeMolfileMolecule(
 ): ChemDraftDocument {
   const page = firstPage(document);
   const object = createNativeMolfileMolecule(document, point, molfile, format);
+  const radicalMarks = pastedRadicalMarks(page, object);
 
   return applyPatches(
     document,
     [
       { op: "addObject", pageId: page.id, object },
+      ...radicalMarks.map((mark) => ({ op: "addObject" as const, pageId: page.id, object: mark })),
       { op: "setSelection", pageId: page.id, objectIds: [object.id] }
     ],
     { now: phase4Timestamp }
   );
+}
+
+/**
+ * Reader warnings about radicals and stated hydrogens that a paste could not keep (a singlet radical,
+ * a valence that gives no count). They go in the paste status, not only the warnings list, because
+ * the structure on the canvas differs from the file in exactly these atoms (AGENTS.md section 7).
+ */
+const molfileRadicalAndValenceWarningCodes: ReadonlySet<string> = new Set([
+  "clipboard.radical_singlet_unsupported", "clipboard.valence_not_read"
+]);
+
+function molfileRadicalAndValenceStatus(warnings: readonly { code: string; message: string }[]): string {
+  return warnings.filter((warning) => molfileRadicalAndValenceWarningCodes.has(warning.code))
+    .map((warning) => `; ${warning.message}`).join("");
 }
 
 /** A pasted MOL/RXN keeps its mapped source text, but no native atom carries the maps. */
@@ -5266,6 +5368,7 @@ export function applyClipboardPastePayload(
       return {
         document: nextDocument,
         status: `Pasted editable ${payload.format === "molfile-v3000" ? "MOL V3000" : "MOL V2000"} structure` +
+          molfileRadicalAndValenceStatus(selected?.compatibility?.warnings ?? []) +
           (molfileAtomMapNumbers(payload.text).length ? `; ${pastedAtomMapsNotKeptStatus}` : ""),
         kind: payload.kind,
         selectedObjectId: selected?.id,
@@ -5317,6 +5420,7 @@ export function applyClipboardPastePayload(
       return {
         document: nextDocument,
         status: `Pasted ${molfileBlocks.length} editable RXN molecule block${molfileBlocks.length === 1 ? "" : "s"}` +
+          molfileRadicalAndValenceStatus(molfileBlocks.flatMap(block => parseMolfileGraph(block.text).warnings)) +
           (molfileBlocks.some(block => molfileAtomMapNumbers(block.text).length) ? `; ${pastedAtomMapsNotKeptStatus}` : ""),
         kind: payload.kind,
         selectedObjectId: selected?.id,
