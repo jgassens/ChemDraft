@@ -1006,9 +1006,26 @@ of what was refused. On `applyPatch` and `insertTable` they appear on the reject
 failure's `error` object, sent only to a plugin declaring `^0.1.27` or later. Handle a refusal that
 carries neither, since most do not.
 
-| `reason` | Refused when | `details` |
-| --- | --- | --- |
-| `hydrogen_count_unrepresentable` | A write would store `hydrogenCount` other than 0 on an atom that cannot carry hydrogens of its own: an `H`, `D` or `T` atom, the unknown atom `*`, another label naming no element (no element symbol starts it), such as the generic labels `A`, `Q`, `M`, `X` and R-groups like `R1`, or an abbreviation such as `OMe`, `Ph` or `CF3`, whose hydrogens come from what it stands for. `details.element` gives the label. No label, formula or export reads such a count, so it would be lost silently. A label that names an element and spells its hydrogens (`NH2`, `CH3`, `NHMe`) is not refused. Omit `hydrogenCount` or set it to 0 (a request write fails with code `invalid`). A count the molecule already held unchanged is not refused. | `{ moleculeId, atomId, element, hydrogenCount }` |
+The host uses `hydrogen_count_unrepresentable` when a plugin write or proposal acceptance cannot
+preserve a stated hydrogen count. Request writes report this reason with code `invalid`.
+The refusal details contain `moleculeId`, `atomId`, `element` (the atom label), and `hydrogenCount`
+(the stated count).
+
+- The host refuses a nonzero count on an `H`, `D` or `T` atom, the unknown atom `*`, a generic label
+  naming no element such as `A` or `R1`, or an abbreviation such as `OMe`, `Ph` or `CF3`. This includes
+  a literal `Ac`, `Pr` or `Ts` on a bond, where the label means acetyl, n-propyl or tosyl. Omit
+  `hydrogenCount` or state 0 for these atoms.
+- When a label spells one heavy atom and its hydrogens, the stated count must match the text.
+  `OH` and `HO` both spell 1, `NH2` and `H2N` spell 2, and `CH3` and `H3C` spell 3. A literal
+  element label such as `C` spells 0. A mismatch adds `details.labelHydrogenCount` with the count
+  read from the text. Omit `hydrogenCount` or state that count. This check also applies to condensed
+  labels without `labelLiteral`. A composite label such as `NHMe` is outside this single-heavy-atom check.
+- A count the patch drops, including 0, is refused if the host cannot verify it on the resulting
+  atom. Bond edits and changes to the atom's chemical fields can drop the count. If the resulting
+  atom survives with the field omitted, both write paths allow a count guaranteed by the label,
+  including 0 on an abbreviation or a label naming no element. Proposal acceptance can also allow
+  a dropped count if the embedding application verifies that the resulting chemistry matches.
+  To set a count that would otherwise be dropped, update it after editing the atom or its bonds.
 
 ```ts
 try {
@@ -1021,8 +1038,8 @@ try {
 }
 ```
 
-Only plugin and assistant writes are refused this way. A document that already stores such a count
-(an older file, a restored session, a paste) opens and edits as stored, and the app flags the atom.
+A document that already stores an ignored or overridden count opens as stored. A plugin edit can
+keep the same count on the same atom if the label and how it treats the count are unchanged.
 
 ### Embedding hosts: object identity (1.2.3)
 

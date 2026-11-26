@@ -6,6 +6,7 @@ import {
   type ApplyPatchOptions,
   type ChemDraftDocument,
   type DocumentObject,
+  type MoleculeAtom,
   type MoleculeObject
 } from "@chemdraft/chem-core";
 import { ChemistryRefusal, PLUGIN_WRITE_REFUSED, chemistryRefusalOf, refusalSentence } from "./requestWrites/chemistryRefusal";
@@ -619,8 +620,26 @@ export function previewAcceptedPluginProposal(
       const applied = applyAcceptedPluginProposal(current, proposed, options);
       warningsOut?.push(...applied.warnings);
       return applied.document;
-    }
+    },
+    droppedHydrogenCountChangesNothing: droppedHydrogenCountKeepsChemistry
   });
+}
+
+/**
+ * Whether `molecule`, whose atom `stated.id` lost the count `stated.hydrogenCount` the proposal stated
+ * (the patch engine drops the count of an atom whose bonds or statement change), still has exactly the
+ * chemistry that count states: the same formula and the same graph SMILES (written in atom order, so a
+ * hydrogen moved to another atom differs) with the count put back. Then the atom derives the stated
+ * count itself and the accept loses nothing; otherwise the host refuses it (AGENTS.md section 7). A
+ * molecule whose formula or SMILES cannot be derived (an unknown bond) never passes.
+ */
+export function droppedHydrogenCountKeepsChemistry(molecule: MoleculeObject, stated: MoleculeAtom): boolean {
+  const asStated = molecule.atoms.map(atom => atom.id === stated.id ? { ...atom, hydrogenCount: stated.hydrogenCount } : atom);
+  const committedFormula = nativeSingleBondGraphMetadata(molecule.atoms, molecule.bonds).formula;
+  if (committedFormula === undefined || committedFormula !== nativeSingleBondGraphMetadata(asStated, molecule.bonds).formula) return false;
+  const committedSmiles = tryNativeSingleBondGraphSmiles(molecule.atoms, molecule.bonds);
+  const statedSmiles = tryNativeSingleBondGraphSmiles(asStated, molecule.bonds);
+  return "smiles" in committedSmiles && "smiles" in statedSmiles && committedSmiles.smiles === statedSmiles.smiles;
 }
 
 /** The proposal with its insertion re-targeted at `document` (see `applyAcceptedPluginProposal`). */

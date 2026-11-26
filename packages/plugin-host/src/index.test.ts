@@ -1110,6 +1110,41 @@ describe("PluginHost", () => {
     expect(() => host.acceptProposedPatch(queued.id, updated)).toThrow(/does not exist/);
   });
 
+  // Accepting checks the hydrogen counts a proposal states as documents.applyPatch does: a count the
+  // patch engine drops (here a1's bond is redrawn) would commit a different formula, so it is refused
+  // and the proposal stays pending. An embedder that derives the dropped count back exactly may let it be.
+  it("refuses accepting a proposal whose stated hydrogen count the applied molecule would not keep", () => {
+    const atom = (id: string, x: number, hydrogenCount?: number) =>
+      ({ id, element: "C", x, y: 120, formalCharge: 0, ...(hydrogenCount === undefined ? {} : { hydrogenCount }) });
+    const ethane: MoleculeObject = { ...moleculeObject("m"), structure: "", atoms: [atom("a1", 100), atom("a2", 130)],
+      bonds: [{ id: "b1", fromAtomId: "a1", toAtomId: "a2", order: "single" }] };
+    const base = createEmptyDocument({ now: timestamp });
+    const document = applyPatch(base, { op: "addObject", pageId: base.pages[0]!.id, object: ethane }, { now: timestamp });
+    const host = new PluginHost({ now: () => timestamp });
+    host.registerPlugin({ id: "org.chemdraft.patch.demo", name: "Patch Demo", version: "0.0.1", apiVersion: "^1.0.0",
+      entry: "dist/plugin.js", permissions: ["document.proposePatch"] });
+    const propose = (hydrogenCount: number) => host.proposePatch("org.chemdraft.patch.demo", { reason: "stated counts", patch: {
+      op: "updateObject", objectId: "m", changes: { atoms: [atom("a1", 100, hydrogenCount), atom("a2", 130)],
+        bonds: [{ id: "b2", fromAtomId: "a1", toAtomId: "a2", order: "single" }] } } });
+
+    for (const hydrogenCount of [2, 0]) {
+      const queued = propose(hydrogenCount);
+      expect(() => host.acceptProposedPatch(queued.id, document, { now: timestamp })).toThrow(expect.objectContaining({
+        reason: "hydrogen_count_unrepresentable",
+        message: expect.stringContaining(`is C with hydrogenCount ${hydrogenCount}, which the written molecule would not keep`)
+      }));
+      expect(host.listProposedPatches("pending").map(pending => pending.id)).toContain(queued.id);
+      host.rejectProposedPatch(queued.id);
+    }
+
+    const derived = propose(3);
+    const check = vi.fn(() => true);
+    const updated = host.acceptProposedPatch(derived.id, document, { now: timestamp, droppedHydrogenCountChangesNothing: check });
+    expect(check).toHaveBeenCalledWith(expect.objectContaining({ id: "m" }), expect.objectContaining({ id: "a1", hydrogenCount: 3 }));
+    const written = updated.pages[0]!.objects[0];
+    expect(written?.type === "molecule" && written.bonds.map(bond => bond.id)).toEqual(["b2"]);
+  });
+
   // A hostile plugin can hand the host a self-referencing proposal: the patch interior is
   // deliberately passthrough() and structuredClone/postMessage both preserve cycles. Freezing that
   // graph without a visited set blew the stack, and the throw escaped through proposePatch /
@@ -2338,8 +2373,9 @@ describe("PluginHost recognition, document binding, and queue release", () => {
     );
     const updated = host.acceptProposedPatch(queued.id, document, { now: timestamp, apply });
 
+    // The host's hooks record the hydrogen counts the proposal states, checked once it applies.
     expect(apply).toHaveBeenCalledWith(document, expect.objectContaining({ patch: documentDerivedPatch }), {
-      now: timestamp
+      now: timestamp, beforeObjectWrite: expect.any(Function), beforeObjectTargets: expect.any(Function)
     });
     expect(updated.pages[0]!.objects.map((object) => object.id)).toEqual(["mol_ocsr_042"]);
     expect(host.listProposedPatches("pending")).toEqual([]);
