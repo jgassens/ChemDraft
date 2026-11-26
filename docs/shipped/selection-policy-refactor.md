@@ -159,6 +159,16 @@ export function fromSelectionItems(
 Net effect: every gesture becomes
 `fromSelectionItems(applySelection(toSelectionItems(cur…), hit, mode))`.
 
+**A plain click selects one** (owner decision, 2026-11-26; `plainClickSelectsOnly` in
+`selectionPolicy.ts`). Pressing, with no modifier, on an object that is already part of a selection
+of several objects keeps them all selected while the press might still become a drag, so dragging
+moves everything selected. Released before it crosses the drag threshold, the press is a click, and
+only that object stays selected. Nothing changes when a modifier is held (Shift toggles, Alt
+subtracts, Cmd or Ctrl keep their own meaning), when the object was not selected, or when it is the
+only thing selected. The rule is the same for every kind of object; for a child of a selected group
+the group is the object, so the whole group stays selected. It changes the selection only and adds
+no undo entry.
+
 ## Hit resolution (precedence + inspector gate in one place)
 
 Centralize the atom→bond→ring precedence and the `!nativeMoleculeHit` gate inside the resolver
