@@ -4280,12 +4280,19 @@ function normalizeFusedBenzeneRingBonds(
     (eligibleMembership.get(bondId) ?? 0) > 1 || inRingOutsideSystem(bondId)
   ));
   // Existing single bonds of the new ring itself (the clicked bond, or a bond a closure reused)
-  // that belong to no other ring. Doubling one is a last resort, for a closure whose new ring has
-  // too few new bonds to hold three double bonds.
+  // that were in no ring before the fusion — no ring of any size or composition, not only the
+  // six-membered carbon rings above. Doubling one is a last resort, for a closure whose new ring
+  // has too few new bonds to hold three double bonds. A bond that already lay in a ring (a
+  // cyclopentane, a cycloheptane, a pyrrolidine or oxane, a macrocycle) keeps its order, so that
+  // ring's unsaturation never changes; the new ring then lands short of a double bond rather than
+  // another ring being rewritten. (Checked on `before`: after the fusion every bond of the new
+  // ring also lies on the envelope cycle around any ring it is fused to. A six-membered carbon ring
+  // this closure completes besides the new one is excluded too, as before.)
   const newRingSingleBondIds = newRing.bondIds.filter((bondId) =>
     !rewritableBondIds.has(bondId) &&
     fused.bonds.find((bond) => bond.id === bondId)?.order === "single" &&
-    !inRingOutsideSystem(bondId)
+    !inRingOutsideSystem(bondId) &&
+    !nativeBondIsInRing(before, bondId)
   );
   const hasRingPi = (molecule: MoleculeObject, atomId: string) => {
     const bonds = bondsAtAtom(molecule, atomId);
@@ -4540,6 +4547,39 @@ function findNativeCarbonRingCycles(
   });
 
   return [...cycles.values()];
+}
+
+/**
+ * Whether a bond lies in a ring of the molecule — of any size, through any element: its two atoms
+ * stay connected without it (it is not a bridge of the graph).
+ */
+function nativeBondIsInRing(molecule: MoleculeObject, bondId: string): boolean {
+  const bond = molecule.bonds.find((candidate) => candidate.id === bondId);
+  if (!bond) {
+    return false;
+  }
+  const adjacency = new Map<string, string[]>();
+  molecule.bonds.forEach((candidate) => {
+    if (candidate.id === bondId) {
+      return;
+    }
+    adjacency.set(candidate.fromAtomId, [...(adjacency.get(candidate.fromAtomId) ?? []), candidate.toAtomId]);
+    adjacency.set(candidate.toAtomId, [...(adjacency.get(candidate.toAtomId) ?? []), candidate.fromAtomId]);
+  });
+  const seen = new Set([bond.fromAtomId]);
+  const queue = [bond.fromAtomId];
+  for (let index = 0; index < queue.length; index += 1) {
+    for (const atomId of adjacency.get(queue[index]!) ?? []) {
+      if (atomId === bond.toAtomId) {
+        return true;
+      }
+      if (!seen.has(atomId)) {
+        seen.add(atomId);
+        queue.push(atomId);
+      }
+    }
+  }
+  return false;
 }
 
 function canonicalNativeRingCycleKey(bondIds: readonly string[]): string {
