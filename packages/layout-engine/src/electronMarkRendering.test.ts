@@ -45,7 +45,9 @@ describe("electron-mark rendering preferences", () => {
     for (const [index, rotation] of [0, 37].entries()) {
       const object = markFor(key, rotation);
       const actual = plan(object);
-      expect(createHash("sha256").update(JSON.stringify(actual)).digest("hex")).toBe(hashes[index]);
+      // Charge glyphs stay upright, so their rotated plan is the unrotated one; the rest still turn.
+      const expected = object.markKind === "charge" ? hashes[0] : hashes[index];
+      expect(createHash("sha256").update(JSON.stringify(actual)).digest("hex")).toBe(expected);
       expect(plan({ ...object, style: { strokeWidth: 1.5 } })).toEqual(actual);
     }
   });
@@ -101,6 +103,33 @@ describe("electron-mark rendering preferences", () => {
       });
       expect(ink[0]).toBeGreaterThan(0);
       for (let i = 1; i < ink.length; i++) expect(ink[i]).toBeGreaterThan(ink[i - 1]);
+    }
+  });
+
+  it.each(["circled:-1", "plain:1", "circled:2", "plain:-3", "radical-ion:1", "radical-ion:-1", "radical-ion:2"])(
+    "never rotates the charge glyph for %s", key => {
+      // The page plan flattens a mark's group attributes onto every drawn piece, so check each piece.
+      for (const direct of [false, true]) {
+        const upright = plan(markFor(key, 0), direct).fragments;
+        expect(upright.length).toBeGreaterThan(0);
+        for (const rotation of [0, 37, 90]) {
+          const fragments = plan(markFor(key, rotation), direct).fragments;
+          for (const fragment of fragments) {
+            expect(fragment.attrs["data-mark-kind"]).toBe("charge");
+            expect(fragment.attrs.transform).toBeUndefined();
+          }
+          // Sign and radical dot are drawn exactly as at rotation 0, so the pair stays together.
+          expect(fragments).toEqual(upright);
+          expect(fragments.some(f => f.key.startsWith("charge-radical-"))).toBe(key.startsWith("radical-ion"));
+        }
+      }
+    });
+
+  it.each(["lone-pair:0", "radical-dot:0"])("still rotates the %s mark", key => {
+    for (const rotation of [37, 90]) {
+      const fragments = plan(markFor(key, rotation)).fragments;
+      expect(fragments.length).toBeGreaterThan(0);
+      for (const fragment of fragments) expect(fragment.attrs.transform).toBe(`rotate(${rotation} 109 109)`);
     }
   });
 

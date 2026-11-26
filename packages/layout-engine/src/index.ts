@@ -5060,7 +5060,9 @@ function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number, scal
     "data-charge": sign * magnitude,
     "data-charge-style": circled ? "circled" : "plain",
     ...(object.radical === true ? { "data-charge-radical": "true" } : {}),
-    transform: rotationTransform(object)
+    // The stored rotation stays on the object (lone pairs need it), but a charge glyph is text-like:
+    // turned about 90 degrees a circled minus reads as a slashed circle. Keep it, and the dot beside
+    // a radical-ion sign, upright. The frame is square, so the bounds do not change.
   }), children);
 }
 

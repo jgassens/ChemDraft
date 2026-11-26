@@ -49,9 +49,34 @@ it("matches electron-mark rendering options and keeps authored styling across op
     Object.assign(mark, { charge, width: 72, height: 72, rotation: 37, style: { strokeWidth: 4.5 } });
     const authored = exportDocumentToSvg(document).contents;
     expect(exportDocumentToSvg(document, { directElectronMarkEditing: true }).contents).toBe(authored);
-    expect(authored).toContain("rotate(37 136 136)");
+    expect(authored).not.toContain("rotate(");
     if (Math.abs(charge) === 1) expect(authored).toContain('stroke-width="4.5"');
     else expect(authored).toContain('stroke-width="1.2"');
+  }
+});
+
+it("keeps charge glyphs upright in SVG and PDF output while lone pairs and radical dots still turn", () => {
+  // exportDocumentToPdf draws the page from exportDocumentToSvg, so this is the one drawer for both.
+  const base = { type: "electron-mark" as const, x: 100, y: 100, width: 18, height: 18, style: {},
+    anchor: { kind: "point" as const, point: { x: 109, y: 109 } } };
+  const render = (mark: Partial<ElectronMarkObject>, rotation: number) => {
+    const document = createEmptyDocument({ title: "Rotated mark", now: timestamp });
+    document.pages[0].objects.push({ ...base, id: "mark", rotation, markKind: "charge", ...mark } as ElectronMarkObject);
+    return exportDocumentToSvg(document).contents;
+  };
+  for (const rotation of [37, 90]) {
+    const variants: Partial<ElectronMarkObject>[] = [
+      { charge: -1 }, { charge: 1, chargeStyle: "plain" }, { charge: 2 }, { charge: -1, radical: true }
+    ];
+    for (const mark of variants) {
+      const svg = render(mark, rotation);
+      expect(svg).toContain('data-mark-kind="charge"');
+      expect(svg).not.toContain("rotate(");
+      expect(svg).toBe(render(mark, 0));
+    }
+    for (const markKind of ["lone-pair", "radical-dot"] as const) {
+      expect(render({ markKind }, rotation)).toContain(`rotate(${rotation} 109 109)`);
+    }
   }
 });
 
