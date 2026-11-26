@@ -156,7 +156,9 @@ describe("hydrogen-count refusals in the standalone plugin host", () => {
 
   // A typed "Ac", "Pr" or "Ts" on a bond is acetyl, n-propyl or tosyl to the label grammar, and its
   // hydrogens come from the group, so a stated count is refused as on OMe. chem-core reads the
-  // table's bonded spellings itself, so the SDK (no layout-engine) refuses it too.
+  // table's bonded spellings itself, so the SDK refuses it too. plugin-host imports labelGrammar.ts
+  // and valence.ts from layout-engine source (bundled into the SDK); the @chemdraft/layout-engine
+  // package itself stays barred.
   it.each([["Ac", 2], ["Pr", 1], ["Ts", 3]] as const)("refuses a typed %s on a bond stating %i as an abbreviation", async (element, hydrogenCount) => {
     const { host, applyDocumentPatch, original, history } = hostSettingCount(element, hydrogenCount, { typed: true });
     await expect(host.invokeCommand("plugin.standalone.run")).rejects.toMatchObject({
