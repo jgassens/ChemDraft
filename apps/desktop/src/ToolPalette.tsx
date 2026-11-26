@@ -3961,8 +3961,7 @@ function ToolbarPaletteItem({
   const [selectedFlyoutCommandId, setSelectedFlyoutCommandId] = useState<string>();
   const followsSelectedTool = defaultPrimaryCommand?.id === "tool.symbol"
     || defaultPrimaryCommand?.id === "tool.charge"
-    || defaultPrimaryCommand?.id === "tool.doubleBond"
-    || defaultPrimaryCommand?.id === "tool.bond";
+    || defaultPrimaryCommand?.id === "tool.doubleBond";
   const activeFlyoutCommand = followsSelectedTool
     ? item.submenu?.items.find((command) => command.id === activeTool)
     : undefined;
