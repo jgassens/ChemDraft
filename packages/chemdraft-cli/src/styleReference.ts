@@ -66,10 +66,20 @@ const styleReferenceSources: readonly StyleReferenceSourceLookup[] = [
 ];
 
 /** The reference a CDXML export should use and where it was named, or undefined when none was. */
-export function resolveStyleReference(request: StyleReferenceRequest): ResolvedStyleReference | undefined {
+export function resolveStyleReference(
+  request: StyleReferenceRequest,
+  platform: NodeJS.Platform = process.platform
+): ResolvedStyleReference | undefined {
   for (const lookup of styleReferenceSources) {
     const resolved = lookup(request);
-    if (resolved !== undefined) return resolved;
+    if (resolved === undefined) continue;
+    // The environment lookup has already resolved its path against the host, which can hide a
+    // network path's shape, so that source is checked from the text the user wrote.
+    if (resolved.source === "environment") {
+      const written = request.env?.[CDXML_STYLE_REFERENCE_ENV]?.trim() ?? "";
+      refuseNonLocalWindowsPath({ ...resolved, path: written }, platform);
+    }
+    return resolved;
   }
   return undefined;
 }
@@ -82,6 +92,29 @@ const sourceLabels: Record<StyleReferenceSource, string> = {
 
 function unusable(reference: ResolvedStyleReference, reason: string): CliUsageError {
   return new CliUsageError(`CDXML style reference "${reference.path}" (${sourceLabels[reference.source]}) cannot be used: ${reason}`);
+}
+
+const leadingTwoSeparators = /^[\\/]{2}/;
+
+/**
+ * Refuses, by the shape of the text alone, a path Windows would send to the network or to the
+ * device namespace: UNC (`\\host\share\x`, `//host/share/x`), `\\.\pipe\x`, `\\?\C:\x` and
+ * `\\?\UNC\host\share\x`. Opening one can make Windows contact another machine and offer the
+ * user's credentials, and a device-namespace name can be a pipe that a stat or open would connect
+ * to, so this runs before any filesystem call, for every source of a reference. It applies on
+ * Windows only; on POSIX a leading `//` is an ordinary path. The path's win32 resolved form is
+ * checked too, in case a relative path resolves onto a share.
+ */
+export function refuseNonLocalWindowsPath(reference: ResolvedStyleReference, platform: NodeJS.Platform = process.platform): void {
+  if (platform !== "win32") return;
+  const path = reference.path;
+  const resolved = leadingTwoSeparators.test(path) ? path : path.includes("\0") ? "" : win32.resolve(path);
+  if (!leadingTwoSeparators.test(resolved)) return;
+  // `\\.\` and `\\?\` (either slash) are the device namespace; anything else is a UNC host.
+  if (/^[\\/]{2}[.?][\\/]/.test(resolved)) {
+    throw unusable(reference, "it is a Windows device-namespace path (\\\\.\\ or \\\\?\\), which is refused before it is opened.");
+  }
+  throw unusable(reference, "it is a network (UNC) path, which is refused so that Windows never contacts another host.");
 }
 
 /** What the path checks found out about an argument's name before anything is read. */
@@ -110,6 +143,7 @@ export function validateStyleReferenceArgumentPath(
   platform: NodeJS.Platform = process.platform
 ): ArgumentPathCheck {
   const path = reference.path;
+  refuseNonLocalWindowsPath(reference, platform);
   if (!path) throw unusable(reference, "the path is empty.");
   if (path.includes("\0")) throw unusable(reference, "the path contains a NUL character.");
   const separators = platform === "win32" ? /[\\/]/ : /\//;
@@ -130,6 +164,8 @@ export function validateStyleReferenceArgumentPath(
 /** Test seams: `afterCheck` runs between the path check and the open, where a swap would happen. */
 export interface LoadStyleReferenceHooks {
   afterCheck?: () => Promise<void> | void;
+  /** The path rules to apply; the host's by default. Tests pass `win32` from a POSIX host. */
+  platform?: NodeJS.Platform;
 }
 
 function sameFile(checked: BigIntStats, opened: BigIntStats): boolean {
@@ -142,15 +178,20 @@ function sameFile(checked: BigIntStats, opened: BigIntStats): boolean {
  * file is parsed with CDXML import's XML rules and limits. A reference from the MCP argument is
  * untrusted agent input: it must also pass the path and extension checks first, and its final path
  * component must not be a symbolic link (a link would let an agent read a file it did not name, and
- * the report would show only the link). For every source, the file opened must be the file checked:
- * the device and inode of the opened handle are compared with the earlier check.
+ * the report would show only the link). For every source, a network (UNC) or Windows
+ * device-namespace path is refused by shape before any filesystem call, and the file opened must
+ * be the file checked: the device and inode of the opened handle are compared with the earlier check.
  */
 export async function loadStyleReference(
   reference: ResolvedStyleReference,
   hooks: LoadStyleReferenceHooks = {}
 ): Promise<LoadedStyleReference> {
   const untrusted = reference.source === "argument";
-  const { shortCdx } = untrusted ? validateStyleReferenceArgumentPath(reference) : { shortCdx: false };
+  const platform = hooks.platform ?? process.platform;
+  // Every source passes through here, so this is the one place that refuses a network or
+  // device-namespace path before the first filesystem call.
+  refuseNonLocalWindowsPath(reference, platform);
+  const { shortCdx } = untrusted ? validateStyleReferenceArgumentPath(reference, platform) : { shortCdx: false };
   let bytes: Buffer;
   try {
     // Check before opening and on the handle. Nonblocking open covers a FIFO swapped in between

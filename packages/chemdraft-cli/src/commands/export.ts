@@ -74,6 +74,8 @@ interface ParsedArguments {
 export interface ExportCommandOptions {
   /** The environment the style-reference resolver reads; process.env by default. */
   env?: NodeJS.ProcessEnv;
+  /** The path rules for the style reference (Windows or POSIX); the host's by default. A test seam. */
+  platform?: NodeJS.Platform;
   /** A style reference the caller already resolved and loaded (the MCP server validates its
    *  `styleReference` argument before it creates any output). When given, the command reads
    *  neither --style-reference nor the environment: `loaded` undefined means no reference. */
@@ -184,8 +186,8 @@ function withStyleReference(parsed: ParsedArguments, styleReference: string | un
 async function exportStyleReference(parsed: ParsedArguments, options: ExportCommandOptions): Promise<LoadedStyleReference | undefined> {
   if (parsed.format !== "cdxml") return undefined;
   if (options.resolvedStyleReference !== undefined) return options.resolvedStyleReference.loaded;
-  const resolved = resolveStyleReference({ flag: parsed.styleReference, env: options.env ?? process.env });
-  return resolved === undefined ? undefined : loadStyleReference(resolved);
+  const resolved = resolveStyleReference({ flag: parsed.styleReference, env: options.env ?? process.env }, options.platform);
+  return resolved === undefined ? undefined : loadStyleReference(resolved, { platform: options.platform });
 }
 
 async function readJobs(path: string): Promise<ExportJob[]> {

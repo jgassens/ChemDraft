@@ -477,7 +477,8 @@ the CDXML identity check still runs.
 ChemDraft uses a style file only when you name one. `--style-reference` takes precedence over
 `CHEMDRAFT_CDXML_STYLE_REFERENCE`. In the environment variable, a leading `~/` expands to your home
 directory. If neither names a file, CDXML exports use ChemDraft's built-in style. ChemDraft searches
-no configuration directory for style files.
+no configuration directory for style files. On Windows, network (UNC) and device-namespace paths
+(`\\host\share\...`, `\\.\...`, `\\?\...`) are refused from every source before the path is opened.
 
 Each CDXML JSON Lines result reports the selected reference as
 `"styleReference": {"path": "house-style.cdxml", "source": "flag"}`. The source is `"flag"` or

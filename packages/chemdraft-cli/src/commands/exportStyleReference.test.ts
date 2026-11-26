@@ -1,3 +1,4 @@
+import * as fsPromises from "node:fs/promises";
 import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,6 +20,26 @@ import {
 import { exportPerJobFormat, runExportCommand } from "./export";
 
 vi.setConfig({ testTimeout: 60_000 });
+
+// Every filesystem function is wrapped so a test can prove a refused path reached none of them.
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  const wrapped: Record<string, unknown> = { ...actual };
+  for (const [name, value] of Object.entries(actual)) {
+    if (typeof value === "function") wrapped[name] = vi.fn(value as (...args: never[]) => unknown);
+  }
+  return { ...wrapped, default: wrapped };
+});
+
+function filesystemCalls(): string[] {
+  return Object.entries(fsPromises)
+    .filter(([, value]) => vi.isMockFunction(value) && value.mock.calls.length > 0)
+    .map(([name]) => name);
+}
+
+function resetFilesystemCalls(): void {
+  for (const value of Object.values(fsPromises)) if (vi.isMockFunction(value)) value.mockClear();
+}
 
 const CAFFEINE = "CN1C=NC2=C1C(=O)N(C(=O)N2C)C";
 const L_ALANINE = "C[C@H](N)C(=O)O";
@@ -291,7 +312,11 @@ describe("styleReference argument: an input path, checked as an input", () => {
     ["win32", "C:\\TEMP\\STYLE~1.CDXML"],
     ["win32", "C:\\TEMP\\STYLE~1.CDX"],
     ["win32", "C:\\Users\\Ana María\\Styles\\ACS 1996, journal.cdxml"],
-    ["win32", "\\\\server\\share\\house style.CdXmL"],
+    ["win32", "C:/TEMP/STYLE~1.CDXML"],
+    ["win32", "styles\\house style.cdxml"],
+    ["win32", "\\TEMP\\style.cdxml"],
+    ["darwin", "//tmp/x.cdxml"],
+    ["linux", "//tmp/x.cdxml"],
     ["darwin", "/Users/ana/Styles/ACS 1996, journal.cdxml"],
     ["darwin", "/tmp/STYLE~1.CDX"],
     ["linux", "/home/ana/styles/house+style (v2).CDXML"]
@@ -328,6 +353,91 @@ describe("styleReference argument: an input path, checked as an input", () => {
     const named = join(directory, "ACS 1996, house style.CDXML");
     await writeFile(named, REFERENCE);
     expect((await loadStyleReference(argument(named))).style.bondLengthPt).toBe(14.4);
+  });
+});
+
+/** Shapes Windows would send to the network or to the device namespace. */
+const NETWORK_PATHS = [
+  ["\\\\host\\share\\x.cdxml", "network (UNC)"],
+  ["//host/share/x.cdxml", "network (UNC)"],
+  ["\\/host/share/x.cdxml", "network (UNC)"],
+  ["/\\host\\share\\x.cdxml", "network (UNC)"],
+  ["\\\\.\\pipe\\x.cdxml", "device-namespace"],
+  ["\\\\?\\C:\\x.cdxml", "device-namespace"],
+  ["\\\\?\\UNC\\host\\share\\x.cdxml", "device-namespace"],
+  ["\\\\.\\C:\\x.cdxml", "device-namespace"],
+  ["//./pipe/x.cdxml", "device-namespace"],
+  ["//?/C:/x.cdxml", "device-namespace"]
+] as const;
+
+describe("style references: network (UNC) and device-namespace paths are refused by shape", () => {
+  it.each(NETWORK_PATHS)("refuses %s on win32 for the MCP argument without touching the filesystem", async (path, kind) => {
+    resetFilesystemCalls();
+    const reference = { path, source: "argument" as const };
+    expect(() => validateStyleReferenceArgumentPath(reference, "win32")).toThrow(kind);
+    await expect(loadStyleReference(reference, { platform: "win32" })).rejects.toThrow(kind);
+    expect(filesystemCalls()).toEqual([]);
+  });
+
+  it.each(NETWORK_PATHS)("refuses %s on win32 for the --style-reference flag without touching the filesystem", async (path, kind) => {
+    resetFilesystemCalls();
+    const resolved = resolveStyleReference({ flag: path }, "win32")!;
+    expect(resolved.source).toBe("flag");
+    await expect(loadStyleReference(resolved, { platform: "win32" })).rejects.toThrow(kind);
+    expect(filesystemCalls()).toEqual([]);
+  });
+
+  it.each(NETWORK_PATHS)("refuses %s on win32 for the environment variable without touching the filesystem", async (path, kind) => {
+    resetFilesystemCalls();
+    const env = { [CDXML_STYLE_REFERENCE_ENV]: path };
+    // The environment lookup resolves the path against the host; the shape is checked first, so a
+    // POSIX host standing in for Windows cannot turn the UNC path into something harmless.
+    expect(() => resolveStyleReference({ env }, "win32")).toThrow(kind);
+    expect(filesystemCalls()).toEqual([]);
+  });
+
+  it.each(NETWORK_PATHS)("refuses %s from the export command's flag and environment on win32", async (path, kind) => {
+    resetFilesystemCalls();
+    const out = join(directory, "never-written.cdxml");
+    for (const options of [{ flag: ["--style-reference", path], env: {} }, { flag: [], env: { [CDXML_STYLE_REFERENCE_ENV]: path } }]) {
+      const io = collectIo();
+      const code = await runExportCommand(
+        ["--smiles", "CCO", "--out", out, ...options.flag],
+        io, { env: options.env, platform: "win32" }
+      );
+      expect(code).not.toBe(0);
+      expect(io.stderrLines.join("\n")).toContain(kind);
+    }
+    expect(filesystemCalls()).toEqual([]);
+  });
+
+  it("refuses a path whose win32 resolved form is a network path", () => {
+    // Backslash-rooted paths resolve against the current drive; a resolution that begins with two
+    // separators is refused the same way. Simulated through a cwd that is itself a UNC share.
+    const cwd = vi.spyOn(process, "cwd").mockReturnValue("\\\\host\\share\\work");
+    try {
+      expect(() => validateStyleReferenceArgumentPath({ path: "styles\\x.cdxml", source: "argument" }, "win32")).toThrow("network (UNC)");
+    } finally {
+      cwd.mockRestore();
+    }
+  });
+
+  it("does not refuse a leading // on POSIX, where it is an ordinary path", async () => {
+    resetFilesystemCalls();
+    for (const platform of ["linux", "darwin"] as const) {
+      expect(() => validateStyleReferenceArgumentPath({ path: "//tmp/x.cdxml", source: "argument" }, platform)).not.toThrow();
+      expect(resolveStyleReference({ env: { [CDXML_STYLE_REFERENCE_ENV]: "//tmp/x.cdxml" } }, platform)?.source).toBe("environment");
+      // Past the shape rule it fails for the ordinary reason that the file does not exist.
+      await expect(loadStyleReference({ path: "//tmp/chemdraft-no-such-dir/x.cdxml", source: "flag" }, { platform }))
+        .rejects.toThrow("no such file");
+    }
+  });
+
+  it("still accepts ordinary drive and relative paths on win32", () => {
+    for (const path of ["C:\\TEMP\\STYLE~1.CDXML", "C:/TEMP/style.cdxml", "style.cdxml", ".\\style.cdxml", "sub\\style.cdxml"]) {
+      expect(() => validateStyleReferenceArgumentPath({ path, source: "argument" }, "win32")).not.toThrow();
+      expect(resolveStyleReference({ flag: path }, "win32")?.path).toBe(path);
+    }
   });
 });
 

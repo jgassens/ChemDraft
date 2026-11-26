@@ -72,7 +72,8 @@ details](../chemdraft-cli/README.md#fixed-scale-document-figures).
   field. When a reference is used, the result includes `styleReference` with its `path` and
   `source` (`"argument"` or `"environment"`). The argument must name an existing regular `.cdxml`
   file (any case; a Windows 8.3 short name ending `.CDX` is accepted when the file is CDXML) up to
-  5 MB, with no `..` segment. Its final path component must not be a symbolic link. Output
+  5 MB, with no `..` segment. Its final path component must not be a symbolic link. On Windows,
+  network (UNC) and device-namespace paths are refused, for the environment variable too. Output
   filename rules do not apply to it. References are parsed with CDXML import limits. An invalid
   reference fails the call before any output is created.
   Other formats ignore the environment variable and reject the argument.

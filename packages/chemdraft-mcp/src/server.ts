@@ -643,7 +643,7 @@ export function createChemDraftMcpServer(
 
   server.registerTool("export_structure", {
     description: `Export a SMILES structure without changing its chemistry. Exact canonical isomeric SMILES matches use built-in template layouts and report layout provenance. ${chemistryHonesty} ` +
-      "CDXML only: styleReference names an existing .cdxml file (or a Windows 8.3 short name ending in .CDX whose content is CDXML; not a symbolic link) whose bond length, line widths and label font the export copies; " +
+      "CDXML only: styleReference names an existing .cdxml file (or a Windows 8.3 short name ending in .CDX whose content is CDXML; not a symbolic link; Windows network (UNC) and device-namespace paths are refused) whose bond length, line widths and label font the export copies; " +
       "the structure, template layouts included, is scaled so its typical bond matches that bond length. " +
       "without it the server's CHEMDRAFT_CDXML_STYLE_REFERENCE, if set, is used, and otherwise no style file. " +
       "A CDXML result reports the reference used as styleReference {path, source}.",
