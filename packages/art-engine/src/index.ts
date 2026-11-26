@@ -20,8 +20,16 @@ import {
   getPathBBox,
   getPointAtLength,
   getTotalLength,
-  isValidPath
+  isValidPath,
+  normalizePath
 } from "svg-path-commander/util";
+
+export {
+  convertSvgToShapes, SvgImportError, SVG_IMPORT_MAX_ELEMENTS, SVG_IMPORT_MAX_EXPANDED_ELEMENTS,
+  SVG_IMPORT_MAX_OBJECTS, SVG_IMPORT_MAX_PATH_CHARS, SVG_IMPORT_MAX_SOURCE_CHARS, SVG_IMPORT_MAX_DEPTH,
+  SVG_IMPORT_MAX_REFERENCE_DEPTH, type SvgImportErrorCode, type SvgImportFrame, type SvgImportObject,
+  type SvgImportOptions, type SvgImportReportCode, type SvgImportReportEntry, type SvgImportResult
+} from "./svgImport";
 
 export const arrowAttachmentPoint = (frame: ArrowAttachmentFrame, point: NativeArtPoint): NativeArtPoint => ({
   x: frame.origin.x + frame.tangent.x * point.x + frame.normal.x * point.y,
@@ -3190,7 +3198,7 @@ function nativeArtPaintPlan(
 function nativeArtGradientStopPlan(stop: GraphicGradientStop, targetOpacity = 1): NativeArtGradientStopPlan {
   return {
     offset: clampUnit(stop.offset),
-    color: normalizeGraphicHexColor(stop.color) ?? "#111111",
+    color: normalizeGraphicHexColor(stop.color) ?? graphicColor(stop.color),
     opacity: clampUnit((stop.opacity ?? 1) * targetOpacity)
   };
 }
@@ -3637,6 +3645,15 @@ function graphicObjectBooleanLocalPoints(object: GraphicObject): {
     return { reason: "open-shape" };
   }
 
+  // Keep real corners for a simple polygon. Uniform samples can cut corners out
+  // of the input before it reaches Flatten's polygon boolean operations.
+  if (isValidPath(storedPath)) {
+    const path = normalizePath(storedPath);
+    if (path[0]?.[0] === "M" && path.at(-1)?.[0] === "Z" && path.length >= 4 && path.length <= 512
+      && path.slice(1, -1).every(segment => segment[0] === "L")) {
+      return { points: path.slice(0, -1).map(segment => ({ x: Number(segment[1]), y: Number(segment[2]) })) };
+    }
+  }
   const points = svgPathSamplePoints(storedPath);
   return points.length >= 3 ? { points } : { reason: "invalid-geometry" };
 }
