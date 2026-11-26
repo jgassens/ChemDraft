@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   applySelection,
   fromSelectionItems,
+  plainClickSelectsOnly,
   selectionAfterElectronMarkPlacement,
   selectionItemFromHit,
   selectionItemsEqual,
@@ -57,6 +58,30 @@ describe("selectionModeFromEvent", () => {
   it("honours getModifierState and the keyboard-tracked fallback for shift", () => {
     expect(selectionModeFromEvent({ getModifierState: (key) => key === "Shift" }, { gesture: "click" })).toBe("toggle");
     expect(selectionModeFromEvent({}, { gesture: "click", shiftFallback: true })).toBe("toggle");
+  });
+});
+
+describe("plainClickSelectsOnly", () => {
+  const selected = ["pic-a", "pic-b", "pic-c"];
+
+  it("collapses a multi-object selection to the plainly clicked member", () => {
+    expect(plainClickSelectsOnly({}, selected, "pic-b")).toBe("pic-b");
+    expect(plainClickSelectsOnly({ shiftKey: false, altKey: false, metaKey: false, ctrlKey: false }, selected, "pic-a")).toBe("pic-a");
+  });
+
+  it("keeps the selection for Shift, Alt, Cmd and Ctrl presses and for the keyboard-tracked Shift", () => {
+    expect(plainClickSelectsOnly({ shiftKey: true }, selected, "pic-b")).toBeUndefined();
+    expect(plainClickSelectsOnly({ getModifierState: (key) => key === "Shift" }, selected, "pic-b")).toBeUndefined();
+    expect(plainClickSelectsOnly({}, selected, "pic-b", { shiftFallback: true })).toBeUndefined();
+    expect(plainClickSelectsOnly({ altKey: true }, selected, "pic-b")).toBeUndefined();
+    expect(plainClickSelectsOnly({ metaKey: true }, selected, "pic-b")).toBeUndefined();
+    expect(plainClickSelectsOnly({ ctrlKey: true }, selected, "pic-b")).toBeUndefined();
+  });
+
+  it("leaves a sole selected object, and an unselected one, alone", () => {
+    expect(plainClickSelectsOnly({}, ["pic-a"], "pic-a")).toBeUndefined();
+    expect(plainClickSelectsOnly({}, selected, "other")).toBeUndefined();
+    expect(plainClickSelectsOnly({}, [], "pic-a")).toBeUndefined();
   });
 });
 

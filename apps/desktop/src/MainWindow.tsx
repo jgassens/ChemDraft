@@ -1094,6 +1094,7 @@ import {
 import {
   applySelection,
   fromSelectionItems,
+  plainClickSelectsOnly,
   selectionModeFromEvent,
   selectionAfterElectronMarkPlacement,
   toSelectionItems,
@@ -1242,6 +1243,10 @@ type ObjectDragState = {
   movePreviewObjectIds?: readonly string[];
   movePreviewArrowIds?: readonly string[];
   dropStatus?: string;
+  // Plain click selects one: set when a plain press landed on a member of a multi-object
+  // selection. A release that never became a drag collapses the selection to this id
+  // (selectionPolicy.plainClickSelectsOnly); a drag still moves the whole selection.
+  clickSelectsOnlyObjectId?: string;
   dragging: boolean;
 };
 type GraphicPathEditDragState = {
@@ -1920,7 +1925,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.26.11.08-codex";
+const CURRENT_BUILD_STAMP = "11.26.12.03-opus";
 
 const NUMERIC_ENTRY_DURING_DRAG_STATUS = "Finish the current drag, then enter a value";
 
@@ -19171,6 +19176,27 @@ export function MainWindow({
     return true;
   }, [commitDocumentHistoryFrom, replacePresentDocument, resizeTextDocumentFromDrag]);
 
+  // Plain click selects one (selectionPolicy.plainClickSelectsOnly): a press on a member of a
+  // multi-object selection that was released without dragging leaves only that object selected.
+  // A selection change only, so it adds no undo entry.
+  const selectOnlyAfterPlainClick = useCallback((drag: ObjectDragState) => {
+    const objectId = drag.clickSelectsOnlyObjectId;
+    if (!objectId) return;
+    const current = documentRef.current;
+    const selected = current.selection.objectIds;
+    if (!selected.includes(objectId) || selected.length < 2 || !findDocumentObject(current, objectId)) return;
+    const collapsed = selectDocumentObject(current, objectId);
+    replacePresentDocument((present) =>
+      present === current ? collapsed
+        : present.selection.objectIds.includes(objectId) && findDocumentObject(present, objectId)
+          ? selectDocumentObject(present, objectId)
+          : present
+    );
+    setSelectedNativeMoleculePart(undefined);
+    setActiveGraphicTransformObjectId(undefined);
+    setStatus(objectSelectionStatusLabel(collapsed));
+  }, [replacePresentDocument, setSelectedNativeMoleculePart]);
+
   const clearObjectDrag = useCallback((event: ObjectPointerEvent) => {
     const drag = objectDragRef.current;
     if (drag?.pointerId === event.pointerId) {
@@ -20522,6 +20548,7 @@ export function MainWindow({
       } else if (objectDrag.bondTarget) {
         cycleNativeBondOrder(objectDrag.bondTarget);
       } else {
+        selectOnlyAfterPlainClick(objectDrag);
         const object = findDocumentObject(documentRef.current, objectDrag.objectId);
         if (shouldOpenMoleculeEditorFromObjectClick(object, activeToolState.activeKind, event.detail)) {
           setActiveEditorObjectId(object.id);
@@ -20678,6 +20705,7 @@ export function MainWindow({
     activeToolState.activeKind,
     clearNativePartDrag,
     clearObjectDrag,
+    selectOnlyAfterPlainClick,
     clearObjectRotateDrag,
     clearObjectResizeDrag,
     clearGraphicCornerRadiusDrag,
@@ -21543,6 +21571,9 @@ export function MainWindow({
           startObjectY: object.y,
           groupObjectIds,
           artPreviewProxies: createArtTransformDragPreviewProxies(selectedDocument, groupObjectIds ?? [objectId], viewportRef.current.scale),
+          clickSelectsOnlyObjectId: plainClickSelectsOnly(event, selectedDocument.selection.objectIds, selectableObjectId, {
+            shiftFallback: shiftKeyPressedRef.current
+          }),
           dragging: false
         };
         captureGesturePointer(captureElement, event.pointerId);
@@ -21706,6 +21737,11 @@ export function MainWindow({
           bondTarget: nativeMoleculeHit?.kind === "bond" ? { objectId, ...nativeMoleculeHit } : undefined,
           groupObjectIds,
           artPreviewProxies: createArtTransformDragPreviewProxies(selectedDocument, groupObjectIds ?? [objectId], viewportRef.current.scale),
+          clickSelectsOnlyObjectId: activeToolState.activeKind === "selection"
+            ? plainClickSelectsOnly(event, selectedDocument.selection.objectIds, selectableObjectId, {
+                shiftFallback: shiftKeyPressedRef.current
+              })
+            : undefined,
           dragging: false
         };
         objectDragMachineRef.current = interactionReducer(initialInteractionState(), {
@@ -23443,6 +23479,7 @@ export function MainWindow({
       } else if (objectDrag.bondTarget) {
         cycleNativeBondOrder(objectDrag.bondTarget);
       } else {
+        selectOnlyAfterPlainClick(objectDrag);
         const object = findDocumentObject(documentRef.current, objectId);
         if (shouldOpenMoleculeEditorFromObjectClick(object, activeToolState.activeKind, event.detail)) {
           setActiveEditorObjectId(object.id);
@@ -23468,6 +23505,7 @@ export function MainWindow({
     clearNativePartDrag,
     clearBezierArtNodeDrag,
     clearObjectDrag,
+    selectOnlyAfterPlainClick,
     clearObjectRotateDrag,
     clearObjectResizeDrag,
     clearGraphicCornerRadiusDrag,

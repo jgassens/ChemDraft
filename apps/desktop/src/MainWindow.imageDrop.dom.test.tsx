@@ -5,7 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createImageGraphicObject, serializeDocument, type ChemDraftDocument, type GraphicObject } from "@chemdraft/chem-core";
 import { MainWindow, objectResizeStretches } from "./MainWindow";
-import { createPhase4Document } from "./documentWorkflow";
+import { createPhase4Document, insertNativeSingleBondMolecule, insertNativeTextObject, selectDocumentObjects } from "./documentWorkflow";
 import { DOCUMENT_FILE_DROP_EVENT } from "./imageDrop/dropPosition";
 import { browserDecodeCheck, browserRasterToPng } from "./imageDrop/rasterDecode";
 import { damagedDropFixture } from "./imageDrop/pngTestImages";
@@ -179,9 +179,9 @@ describe("dropping picture files on the document window", { timeout: 3 * DROP_WA
     await act(async () => { await agent().command(id); });
   }
 
-  async function pointer(target: Element, type: string, x: number, y: number) {
+  async function pointer(target: Element, type: string, x: number, y: number, modifiers: { shiftKey?: boolean; metaKey?: boolean } = {}) {
     const buttons = type === "pointerup" || type === "pointercancel" ? 0 : 1;
-    const event = new MouseEvent(type, { button: 0, buttons, clientX: x, clientY: y, bubbles: true, cancelable: true });
+    const event = new MouseEvent(type, { button: 0, buttons, clientX: x, clientY: y, bubbles: true, cancelable: true, ...modifiers });
     Object.defineProperty(event, "pointerId", { value: 7 });
     await act(async () => target.dispatchEvent(event));
   }
@@ -232,6 +232,135 @@ describe("dropping picture files on the document window", { timeout: 3 * DROP_WA
     await browserDrop([dropFile("scrollbar.png", pngBytes())], { x: 400, y: 695 });
     await eventually(() => expect(pictures()).toHaveLength(2));
     expect(pictures().map(centre)).toEqual([{ x: 300, y: 32 }, { x: 400, y: 685 }]);
+  });
+
+  describe("plain click selects one picture of a multi-file drop", () => {
+    const plainSvg = (name: string) =>
+      dropFile(name, svgBytes('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="blue"/></svg>'));
+    const objectElement = (id: string) => container.querySelector(`[data-object-id="${id}"]`)!;
+    const clientOf = (object: GraphicObject) => agent().resolvePoint({ page: centre(object) }).client;
+    const canUndo = () => container.querySelector("[data-can-undo]")?.getAttribute("data-can-undo");
+
+    /** Drops three pictures, which arrive all selected, and returns them in drop order. */
+    async function dropThree() {
+      await mount();
+      await browserDrop([plainSvg("a.svg"), plainSvg("b.svg"), plainSvg("c.svg")], agent().resolvePoint({ page: { x: 300, y: 200 } }).client);
+      await eventually(() => expect(pictures()).toHaveLength(3));
+      const dropped = pictures();
+      expect(snapshot().selection.objectIds).toEqual(dropped.map(picture => picture.id));
+      return dropped;
+    }
+
+    async function click(object: GraphicObject, modifiers: { shiftKey?: boolean; metaKey?: boolean } = {}) {
+      const { x, y } = clientOf(object);
+      const target = objectElement(object.id);
+      await pointer(target, "pointerdown", x, y, modifiers);
+      await pointer(target, "pointerup", x, y, modifiers);
+      await settle();
+    }
+
+    it("selects only the clicked picture on release, and adds no undo entry", async () => {
+      const dropped = await dropThree();
+      const b = dropped[1]!;
+      const { x, y } = clientOf(b);
+      const target = objectElement(b.id);
+      await pointer(target, "pointerdown", x, y);
+      // Still all three while the press might become a drag.
+      expect(snapshot().selection.objectIds).toHaveLength(3);
+      await pointer(target, "pointerup", x, y);
+      await settle();
+      expect(snapshot().selection.objectIds).toEqual([b.id]);
+      expect(pictures().map(({ x: px, y: py }) => [px, py])).toEqual(dropped.map(picture => [picture.x, picture.y]));
+      // A second plain click on the now single selection keeps it selected.
+      await click(b);
+      expect(snapshot().selection.objectIds).toEqual([b.id]);
+      // The clicks are selection only: one undo still removes the whole drop.
+      expect(canUndo()).toBe("true");
+      await command("edit.undo");
+      expect(status()).toBe("Undid Insert Image");
+      expect(pictures()).toHaveLength(0);
+      expect(canUndo()).toBe("false");
+    });
+
+    it("still moves every selected picture when the press on one becomes a drag", async () => {
+      const dropped = await dropThree();
+      const { x, y } = clientOf(dropped[1]!);
+      const target = objectElement(dropped[1]!.id);
+      await pointer(target, "pointerdown", x, y);
+      await pointer(target, "pointermove", x + 20, y + 10);
+      await pointer(target, "pointermove", x + 40, y + 30);
+      await pointer(target, "pointerup", x + 40, y + 30);
+      await settle();
+      expect(snapshot().selection.objectIds).toEqual(dropped.map(picture => picture.id));
+      expect(pictures().map(({ x: px, y: py }) => [px, py])).toEqual(dropped.map(picture => [picture.x + 40, picture.y + 30]));
+      await command("edit.undo");
+      expect(pictures().map(({ x: px, y: py }) => [px, py])).toEqual(dropped.map(picture => [picture.x, picture.y]));
+    });
+
+    it("keeps Shift toggling a picture out of, and back into, the selection", async () => {
+      const dropped = await dropThree();
+      await click(dropped[1]!, { shiftKey: true });
+      expect(snapshot().selection.objectIds).toEqual([dropped[0]!.id, dropped[2]!.id]);
+      await click(dropped[1]!, { shiftKey: true });
+      expect([...snapshot().selection.objectIds].sort()).toEqual(dropped.map(picture => picture.id).sort());
+    });
+
+    it("keeps the selection for a Cmd click, as before", async () => {
+      const dropped = await dropThree();
+      await click(dropped[0]!, { metaKey: true });
+      expect(snapshot().selection.objectIds).toEqual(dropped.map(picture => picture.id));
+    });
+
+    it("applies the same rule to molecules, text and shapes", async () => {
+      let drawing = insertNativeSingleBondMolecule(createPhase4Document("Mixed"), { x: 150, y: 150 });
+      drawing = insertNativeTextObject(drawing, { x: 400, y: 300 }, "Label");
+      drawing = { ...drawing, pages: [{ ...drawing.pages[0]!, objects: [...drawing.pages[0]!.objects, {
+        id: "rect-a", type: "graphic", graphicKind: "rect", x: 500, y: 100, width: 80, height: 50, rotation: 0, style: {}, data: {}
+      }] }] };
+      const ids = drawing.pages[0]!.objects.map(object => object.id);
+      drawing = selectDocumentObjects(drawing, drawing.pages[0]!.id, ids);
+      await mount(drawing);
+      const molecule = snapshot().pages[0]!.objects.find(object => object.type === "molecule")!;
+      const atom = molecule.type === "molecule" ? molecule.atoms[0]! : undefined;
+      const at = (x: number, y: number) => agent().resolvePoint({ page: { x, y } }).client;
+      const press = async (id: string, from: { x: number; y: number }, to = from) => {
+        const target = objectElement(id);
+        await pointer(target, "pointerdown", from.x, from.y);
+        if (to !== from) await pointer(target, "pointermove", (from.x + to.x) / 2, (from.y + to.y) / 2);
+        if (to !== from) await pointer(target, "pointermove", to.x, to.y);
+        await pointer(target, "pointerup", to.x, to.y);
+        await settle();
+      };
+      // A drag from an atom of the selected molecule still moves the whole selection.
+      await press(molecule.id, at(atom!.x, atom!.y), at(atom!.x + 30, atom!.y + 20));
+      expect(snapshot().selection.objectIds).toEqual(ids);
+      const rect = () => snapshot().pages[0]!.objects.find(object => object.id === "rect-a")!;
+      expect([rect().x, rect().y]).toEqual([530, 120]);
+      // A plain click on the text selects only the text; on the shape, only the shape; on the
+      // molecule, only the molecule. (The molecule goes last: a press on it right after the drag
+      // from it would count as a double-press, which selects the molecule on its own anyway.)
+      const text = snapshot().pages[0]!.objects.find(object => object.type === "text")!;
+      await press(text.id, at(text.x + text.width / 2, text.y + text.height / 2));
+      expect(snapshot().selection.objectIds).toEqual([text.id]);
+      await command("edit.selectAll");
+      expect(snapshot().selection.objectIds).toHaveLength(3);
+      await press("rect-a", at(rect().x + 40, rect().y + 25));
+      expect(snapshot().selection.objectIds).toEqual(["rect-a"]);
+      await command("edit.selectAll");
+      await press(molecule.id, at(atom!.x + 30, atom!.y + 20));
+      expect(snapshot().selection.objectIds).toEqual([molecule.id]);
+    });
+
+    it("keeps a sole selected picture selected on a plain click", async () => {
+      await mount();
+      await browserDrop([plainSvg("only.svg")], agent().resolvePoint({ page: { x: 300, y: 200 } }).client);
+      await eventually(() => expect(pictures()).toHaveLength(1));
+      const [only] = pictures();
+      await click(only!);
+      expect(snapshot().selection.objectIds).toEqual([only!.id]);
+      await command("edit.undo");
+      expect(pictures()).toHaveLength(0);
+    });
   });
 
   it("waits for a live resize to finish, then inserts the picture as its own entry on top", async () => {

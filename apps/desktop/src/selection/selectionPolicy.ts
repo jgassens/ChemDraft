@@ -77,6 +77,39 @@ export function selectionModeFromEvent(
   return options.gesture === "click" ? "toggle" : "add";
 }
 
+/**
+ * Plain click selects one (owner decision, 2026-11-26). A press with no modifier on an object that
+ * is already part of a multi-object selection keeps the whole selection while it may still become
+ * a drag, so a drag moves everything selected. If it is released before crossing the drag
+ * threshold, the selection collapses to that object: this function returns the id to keep.
+ *
+ * It returns `undefined`, leaving the selection as it is, when:
+ * - a modifier is held: Shift toggles, Alt subtracts, and Cmd/Ctrl keep their current meaning;
+ * - the pressed object was not selected (the press itself already replaced the selection);
+ * - the pressed object is the only thing selected.
+ *
+ * The rule is the same for every object kind (pictures, molecules, text, shapes, arrows, groups).
+ * `pressedObjectId` is the selectable id, i.e. the group for a child of a selected group, so a
+ * plain click on a grouped child keeps its whole group.
+ */
+export function plainClickSelectsOnly(
+  event: { shiftKey?: boolean; altKey?: boolean; metaKey?: boolean; ctrlKey?: boolean; getModifierState?(key: string): boolean },
+  selectedObjectIds: readonly string[],
+  pressedObjectId: string,
+  options: { shiftFallback?: boolean } = {}
+): string | undefined {
+  if (selectionModeFromEvent(event, { gesture: "click", shiftFallback: options.shiftFallback }) !== "replace") {
+    return undefined;
+  }
+  if (event.metaKey === true || event.ctrlKey === true) {
+    return undefined;
+  }
+  if (!selectedObjectIds.includes(pressedObjectId)) {
+    return undefined;
+  }
+  return selectedObjectIds.some((objectId) => objectId !== pressedObjectId) ? pressedObjectId : undefined;
+}
+
 /** Identity for membership/dedupe. Ring identity is objectId+ringKey (atomIds/bondIds ignored). */
 function itemKey(item: SelectionItem): string {
   switch (item.kind) {

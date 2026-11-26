@@ -2042,6 +2042,13 @@ lossy and a lossless WebP, an SVG with gradients and `<use href="#id">`, a BMP, 
   Drop five near the bottom-right corner to check that the up-left cascade keeps every picture
   reachable. Drop fifty small pictures to check that the steps shorten to fit and each picture has
   its own position. The status names every picture.
+- Plain click selects one: after dropping five pictures (all selected), click one without moving
+  and without a modifier. On release only that picture is selected; nothing moves and no undo entry
+  is added (the first Cmd/Ctrl+Z still removes all five). Select all five again (Shift-click or a
+  marquee), press one and drag: all five move together, as one "Move". Shift-click one: it leaves the
+  selection; Shift-click it again: it rejoins. Cmd-click (macOS) or Ctrl-click (Windows) one: the
+  selection is unchanged. Click the only selected picture: it stays selected. Repeat with a molecule
+  (press an atom or bond), a text box and a shape in one selection: the same rule applies to each.
 - Mixed: drop a PNG and a `.cdxml` together. The picture lands in the current tab and the document
   opens in its own tab; that tab's status names both files, "Inserted picture mixed.png; Opened
   mixed.cdxml as …", worded as the open itself words it (with its warnings count, if any, and no
