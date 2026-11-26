@@ -14,69 +14,98 @@
 //! shown (`gtk_native_dialog_run` dispatches timeouts in its nested loop) and makes it transient for
 //! the window that asked, or for the document window when that one is hidden (palettes are hidden
 //! while a file panel is up). macOS and Windows never compile the wrapper.
+//!
+//! Nothing GTK shows ties a chooser to the request that opened it: titles repeat, and two windows
+//! can ask at overlapping times. So only one request may be parented at a time, app-wide
+//! ([`ChooserSlot`]), and its poll considers only choosers created after it started. A request
+//! from any window while another is in flight opens nothing and is refused with
+//! [`ALREADY_OPEN`], which the frontend reports as it reports a second dialog in one window.
 
-/// rfd's title for a chooser the request did not title: "Open File", "Select Folder", "Save File".
-const OPEN_FILE_TITLE: &str = "Open File";
-const SELECT_FOLDER_TITLE: &str = "Select Folder";
-const SAVE_FILE_TITLE: &str = "Save File";
+use std::sync::atomic::{AtomicBool, Ordering};
 
-/// The title GTK will show on the chooser for one dialog-plugin request, or `None` when the
-/// command does not open a chooser. `args` is the request's JSON body (`{ "options": { … } }`).
-fn expected_chooser_title(command: &str, args: &serde_json::Value) -> Option<String> {
-    let options = args.get("options");
-    let title = options
-        .and_then(|options| options.get("title"))
-        .and_then(serde_json::Value::as_str);
-    let directory = options
-        .and_then(|options| options.get("directory"))
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-    let untitled = match command {
-        "open" if directory => SELECT_FOLDER_TITLE,
-        "open" => OPEN_FILE_TITLE,
-        "save" => SAVE_FILE_TITLE,
-        _ => return None,
-    };
-    Some(title.unwrap_or(untitled).to_owned())
+/// The rejection a refused request gets. The frontend matches it exactly: it is
+/// `FILE_DIALOG_ALREADY_OPEN_STATUS` in `apps/desktop/src/fileDialogGuard.ts`.
+const ALREADY_OPEN: &str = "A file dialog is already open";
+
+/// Whether a dialog-plugin command opens a file chooser (`message`, `ask` and `confirm` do not).
+fn opens_chooser(command: &str) -> bool {
+    matches!(command, "open" | "save")
+}
+
+/// Whether GTK shows its file choosers through the desktop portal, out of process, where the poll
+/// can never find them (GTK 3's `gdk_should_use_portal`: inside Flatpak, or `GTK_USE_PORTAL=1`).
+/// Such requests are neither polled nor held: no in-process chooser exists to parent wrongly, and
+/// holding them would refuse every other request for the whole wait.
+fn gtk_uses_portal(in_flatpak: bool, gtk_use_portal: Option<&str>) -> bool {
+    in_flatpak || gtk_use_portal.is_some_and(|value| value.starts_with('1'))
+}
+
+/// The one chooser request that may be parented at a time, app-wide.
+struct ChooserSlot {
+    busy: AtomicBool,
+}
+
+impl ChooserSlot {
+    const fn new() -> Self {
+        Self {
+            busy: AtomicBool::new(false),
+        }
+    }
+
+    /// Take the slot, or `None` while another request holds it. The slot is free again when the
+    /// claim is dropped, however its poll ends (chooser closed, poll gave up, poll never started).
+    fn claim(&self) -> Option<ChooserClaim<'_>> {
+        self.busy
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| ChooserClaim { slot: self })
+    }
+}
+
+/// Holds [`ChooserSlot`] until dropped.
+struct ChooserClaim<'a> {
+    slot: &'a ChooserSlot,
+}
+
+impl Drop for ChooserClaim<'_> {
+    fn drop(&mut self) {
+        self.slot.busy.store(false, Ordering::Release);
+    }
 }
 
 /// What the poll sees of one file chooser toplevel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ChooserView<'a> {
-    title: Option<&'a str>,
+struct ChooserView {
+    /// Created after this request's poll started; anything older belongs to an earlier request.
+    new: bool,
     has_parent: bool,
     visible: bool,
 }
 
-/// Which chooser to parent: a shown, still parentless one titled as this request's; failing that,
-/// the only shown parentless chooser (in case GTK titles it differently). With several parentless
-/// choosers and none titled as this request's, wait rather than guess. A chooser that is not shown
-/// yet is skipped: `GtkFileChooserNative` resets the transient parent when it shows the dialog.
-fn pick_chooser(choosers: &[ChooserView<'_>], expected_title: &str) -> Option<usize> {
-    let open: Vec<usize> = choosers
+/// Which chooser is this request's: the only parentless chooser created since the request, once it
+/// is shown. With none, or with several (one may be an earlier request's that appeared late), wait
+/// rather than guess. A chooser that is not shown yet is not parented:
+/// `GtkFileChooserNative` resets the transient parent when it shows the dialog.
+fn pick_chooser(choosers: &[ChooserView]) -> Option<usize> {
+    let mut candidates = choosers
         .iter()
         .enumerate()
-        .filter(|(_, chooser)| chooser.visible && !chooser.has_parent)
-        .map(|(index, _)| index)
-        .collect();
-    open.iter()
-        .copied()
-        .find(|&index| choosers[index].title == Some(expected_title))
-        .or(match open.as_slice() {
-            [only] => Some(*only),
-            _ => None,
-        })
+        .filter(|(_, chooser)| chooser.new && !chooser.has_parent);
+    match (candidates.next(), candidates.next()) {
+        (Some((index, chooser)), None) if chooser.visible => Some(index),
+        _ => None,
+    }
 }
 
 /// How long the poll looks for its chooser. A request can wait for a free async worker on a slow
-/// machine before rfd builds the chooser, so this is generous; a portal chooser (sandboxed GTK,
-/// GTK_USE_PORTAL) is out of process and never found, and the poll simply ends.
+/// machine before rfd builds the chooser, so this is generous. It is also how long a request that
+/// fails before showing a chooser keeps [`ChooserSlot`]: the wrapper cannot see the reply.
 const CHOOSER_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// What one poll does.
 #[derive(Debug, PartialEq, Eq)]
 enum PollStep {
-    /// Make the chooser transient for the owner, and stop.
+    /// Make the chooser transient for the owner, then watch it until it closes.
     Parent,
     Wait,
     /// Stop without parenting: the time is up.
@@ -100,16 +129,20 @@ pub(super) use linux::ParentedFileDialogs;
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::{expected_chooser_title, pick_chooser, poll_step, ChooserView, PollStep};
+    use super::{
+        gtk_uses_portal, opens_chooser, pick_chooser, poll_step, ChooserClaim, ChooserSlot,
+        ChooserView, PollStep, ALREADY_OPEN,
+    };
     use tauri::{
-        ipc::{Invoke, InvokeBody},
-        plugin::Plugin,
-        webview::PageLoadPayload,
-        AppHandle, Manager, RunEvent, Runtime, Webview, Window,
+        ipc::Invoke, plugin::Plugin, webview::PageLoadPayload, AppHandle, Manager, RunEvent,
+        Runtime, Webview, Window,
     };
 
     /// How often the poll looks for the chooser and its owner.
     const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
+
+    /// Held from an `open` or `save` request until its chooser closes, or its poll gives up.
+    static CHOOSER_SLOT: ChooserSlot = ChooserSlot::new();
 
     /// The dialog plugin as registered, with every file chooser it opens made transient for the
     /// window that asked. Everything else is passed through untouched, the request included.
@@ -159,24 +192,46 @@ mod linux {
         }
 
         fn extend_api(&mut self, invoke: Invoke<R>) -> bool {
-            if let InvokeBody::Json(args) = invoke.message.payload() {
-                if let Some(title) = expected_chooser_title(invoke.message.command(), args) {
-                    parent_file_chooser(invoke.message.webview_ref().window(), title);
-                }
+            let portal = || {
+                gtk_uses_portal(
+                    std::path::Path::new("/.flatpak-info").exists(),
+                    std::env::var("GTK_USE_PORTAL").ok().as_deref(),
+                )
+            };
+            if opens_chooser(invoke.message.command()) && !portal() {
+                let Some(claim) = CHOOSER_SLOT.claim() else {
+                    // Another window's chooser is in flight: parenting both could swap them.
+                    invoke.resolver.reject(ALREADY_OPEN);
+                    return true;
+                };
+                parent_file_chooser(invoke.message.webview_ref().window(), claim);
             }
             self.inner.extend_api(invoke)
         }
     }
 
     /// Poll GTK's main thread for this request's chooser and make it transient for `caller`, or
-    /// for the document window while `caller` is hidden. Started before the request is handed on,
-    /// so it is in place before rfd builds the chooser; the IPC handler already runs on the main
-    /// thread, where `run_on_main_thread` runs at once.
-    fn parent_file_chooser<R: Runtime>(caller: Window<R>, expected_title: String) {
+    /// for the document window while `caller` is hidden; then watch it, and drop `claim` once it
+    /// closes. Started before the request is handed on, so the choosers it sees first are all
+    /// earlier requests'; the IPC handler already runs on the main thread, where
+    /// `run_on_main_thread` runs at once. Whichever way the poll ends, or if it never starts,
+    /// its closure is dropped and `claim` with it.
+    fn parent_file_chooser<R: Runtime>(caller: Window<R>, claim: ChooserClaim<'static>) {
         let app = caller.app_handle().clone();
         let _ = caller.clone().run_on_main_thread(move || {
-            use gtk::prelude::{Cast, GtkWindowExt, WidgetExt};
+            use gtk::prelude::{Cast, GtkWindowExt, ObjectExt, WidgetExt};
 
+            let choosers = || {
+                gtk::Window::list_toplevels()
+                    .into_iter()
+                    .filter_map(|widget| widget.downcast::<gtk::FileChooserDialog>().ok())
+                    .collect::<Vec<gtk::FileChooserDialog>>()
+            };
+            // Weak, so a finalized earlier chooser never matches a new one at its address.
+            let earlier: Vec<gtk::glib::WeakRef<gtk::FileChooserDialog>> = choosers()
+                .iter()
+                .map(|chooser| chooser.downgrade())
+                .collect();
             let owner = move || {
                 caller
                     .gtk_window()
@@ -189,30 +244,40 @@ mod linux {
                     })
             };
             let started = std::time::Instant::now();
+            let mut parented: Option<gtk::glib::WeakRef<gtk::FileChooserDialog>> = None;
             let _ = gtk::glib::timeout_add_local(POLL_INTERVAL, move || {
-                let choosers: Vec<gtk::FileChooserDialog> = gtk::Window::list_toplevels()
-                    .into_iter()
-                    .filter_map(|widget| widget.downcast::<gtk::FileChooserDialog>().ok())
-                    .collect();
-                let titles: Vec<Option<gtk::glib::GString>> =
-                    choosers.iter().map(|chooser| chooser.title()).collect();
-                let views: Vec<ChooserView<'_>> = choosers
+                // Moved in so that it is dropped with this closure, when the poll ends.
+                let _claim = &claim;
+                if let Some(chooser) = &parented {
+                    let open = chooser
+                        .upgrade()
+                        .is_some_and(|chooser| chooser.is_visible());
+                    return if open {
+                        gtk::glib::ControlFlow::Continue
+                    } else {
+                        gtk::glib::ControlFlow::Break
+                    };
+                }
+                let choosers = choosers();
+                let views: Vec<ChooserView> = choosers
                     .iter()
-                    .zip(&titles)
-                    .map(|(chooser, title)| ChooserView {
-                        title: title.as_deref(),
+                    .map(|chooser| ChooserView {
+                        new: !earlier
+                            .iter()
+                            .any(|old| old.upgrade().as_ref() == Some(chooser)),
                         has_parent: chooser.transient_for().is_some(),
                         visible: chooser.is_visible(),
                     })
                     .collect();
-                let ours = pick_chooser(&views, &expected_title).map(|index| &choosers[index]);
+                let ours = pick_chooser(&views).map(|index| &choosers[index]);
                 let parent = owner();
                 match poll_step(ours.is_some(), parent.is_some(), started.elapsed()) {
                     PollStep::Parent => {
                         if let (Some(chooser), Some(parent)) = (ours, parent) {
                             chooser.set_transient_for(Some(parent.upcast_ref::<gtk::Window>()));
+                            parented = Some(chooser.downgrade());
                         }
-                        gtk::glib::ControlFlow::Break
+                        gtk::glib::ControlFlow::Continue
                     }
                     PollStep::Wait => gtk::glib::ControlFlow::Continue,
                     PollStep::GiveUp => gtk::glib::ControlFlow::Break,
@@ -225,95 +290,137 @@ mod linux {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
-    fn open_and_save_requests_expect_their_chooser_title() {
-        let titled = json!({ "options": { "title": "Open Structure" } });
-        assert_eq!(
-            expected_chooser_title("open", &titled).as_deref(),
-            Some("Open Structure")
-        );
-        assert_eq!(
-            expected_chooser_title("save", &json!({ "options": { "title": "Export PDF" } }))
-                .as_deref(),
-            Some("Export PDF")
-        );
-        // Untitled requests show rfd's own titles.
-        assert_eq!(
-            expected_chooser_title("open", &json!({ "options": {} })).as_deref(),
-            Some("Open File")
-        );
-        assert_eq!(
-            expected_chooser_title("open", &json!({ "options": { "directory": true } })).as_deref(),
-            Some("Select Folder")
-        );
-        assert_eq!(
-            expected_chooser_title("save", &json!({ "options": { "title": null } })).as_deref(),
-            Some("Save File")
-        );
-        assert_eq!(
-            expected_chooser_title("save", &json!({})).as_deref(),
-            Some("Save File")
-        );
-    }
-
-    #[test]
-    fn only_open_and_save_start_a_poll() {
-        let args = json!({ "options": { "title": "Notice" }, "message": "Saved" });
+    fn only_open_and_save_open_a_chooser() {
+        assert!(opens_chooser("open"));
+        assert!(opens_chooser("save"));
         for command in ["message", "ask", "confirm", "", "Open", "save_file"] {
-            assert_eq!(expected_chooser_title(command, &args), None, "{command}");
+            assert!(!opens_chooser(command), "{command}");
         }
     }
 
-    fn view(title: Option<&str>, has_parent: bool, visible: bool) -> ChooserView<'_> {
+    #[test]
+    fn the_refusal_is_the_status_the_frontend_reports() {
+        let guard = include_str!("../../src/fileDialogGuard.ts");
+        assert!(guard.contains(&format!(
+            "export const FILE_DIALOG_ALREADY_OPEN_STATUS = \"{ALREADY_OPEN}\";"
+        )));
+    }
+
+    #[test]
+    fn portal_choosers_are_neither_polled_nor_held() {
+        assert!(gtk_uses_portal(true, None));
+        assert!(gtk_uses_portal(false, Some("1")));
+        assert!(!gtk_uses_portal(false, None));
+        assert!(!gtk_uses_portal(false, Some("0")));
+        assert!(!gtk_uses_portal(false, Some("")));
+    }
+
+    #[test]
+    fn a_second_request_is_refused_while_one_is_in_flight() {
+        let slot = ChooserSlot::new();
+        let first = slot.claim();
+        assert!(first.is_some());
+        // Window B asks while window A's chooser is in flight: refused, whichever window asks.
+        assert!(slot.claim().is_none());
+        assert!(slot.claim().is_none());
+        drop(first);
+        // A's chooser closed, or its poll gave up: the next request goes through.
+        let second = slot.claim();
+        assert!(second.is_some());
+        assert!(slot.claim().is_none());
+    }
+
+    #[test]
+    fn the_slot_is_released_however_the_poll_ends() {
+        let slot = ChooserSlot::new();
+        // A poll that never started: its closure, and the claim in it, is dropped unrun.
+        let never_run = {
+            let claim = slot.claim().expect("free");
+            move || drop(claim)
+        };
+        assert!(slot.claim().is_none());
+        drop(never_run);
+        assert!(slot.claim().is_some());
+        // A poll that panics on the way out still drops its claim.
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _claim = slot.claim().expect("free");
+            panic!("poll failed");
+        }));
+        assert!(panicked.is_err());
+        assert!(slot.claim().is_some());
+    }
+
+    #[test]
+    fn the_slot_admits_one_request_across_threads() {
+        static SLOT: ChooserSlot = ChooserSlot::new();
+        let barrier = std::sync::Barrier::new(8);
+        let granted = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    barrier.wait();
+                    if let Some(claim) = SLOT.claim() {
+                        granted.fetch_add(1, Ordering::SeqCst);
+                        // Hold it until every thread has tried.
+                        barrier.wait();
+                        drop(claim);
+                    } else {
+                        barrier.wait();
+                    }
+                });
+            }
+        });
+        assert_eq!(granted.load(Ordering::SeqCst), 1);
+        assert!(SLOT.claim().is_some());
+    }
+
+    fn view(new: bool, has_parent: bool, visible: bool) -> ChooserView {
         ChooserView {
-            title,
+            new,
             has_parent,
             visible,
         }
     }
 
     #[test]
-    fn a_shown_parentless_chooser_with_this_title_is_parented() {
+    fn the_only_new_shown_parentless_chooser_is_parented() {
         let choosers = [
-            view(Some("Save As"), true, true),
-            view(Some("Save As"), false, false),
-            view(Some("Open"), false, true),
-            view(Some("Save As"), false, true),
+            // An earlier request's, parented to its own window.
+            view(false, true, true),
+            // An earlier request's that was never parented: not this request's.
+            view(false, false, true),
+            view(true, false, true),
         ];
-        assert_eq!(pick_chooser(&choosers, "Save As"), Some(3));
+        assert_eq!(pick_chooser(&choosers), Some(2));
     }
 
     #[test]
-    fn the_only_shown_parentless_chooser_is_parented_whatever_its_title() {
-        let choosers = [
-            view(Some("Save As"), true, true),
-            view(Some("Other"), false, true),
-        ];
-        assert_eq!(pick_chooser(&choosers, "Save As"), Some(1));
+    fn another_request_s_chooser_is_never_taken() {
+        // Window A's chooser, shown before this request and never parented (A's owner was hidden
+        // until its poll gave up), is the only parentless one: the old rule parented it to B.
+        assert_eq!(pick_chooser(&[view(false, false, true)]), None);
+        // This request's chooser appeared beside it.
         assert_eq!(
-            pick_chooser(&[view(None, false, true)], "Save File"),
-            Some(0)
+            pick_chooser(&[view(false, false, true), view(true, false, true)]),
+            Some(1)
         );
     }
 
     #[test]
     fn nothing_is_parented_when_unsure_or_nothing_is_shown() {
-        assert_eq!(pick_chooser(&[], "Save As"), None);
+        assert_eq!(pick_chooser(&[]), None);
         // Not shown yet: GtkFileChooserNative would reset the parent when it shows it.
-        assert_eq!(
-            pick_chooser(&[view(Some("Save As"), false, false)], "Save As"),
-            None
-        );
-        // Already parented (another request's poll, or a later poll of this one).
-        assert_eq!(
-            pick_chooser(&[view(Some("Save As"), true, true)], "Save As"),
-            None
-        );
-        // Two parentless choosers, neither titled as this request's: do not guess.
-        let two = [view(Some("A"), false, true), view(Some("B"), false, true)];
-        assert_eq!(pick_chooser(&two, "Save As"), None);
+        assert_eq!(pick_chooser(&[view(true, false, false)]), None);
+        // Already parented (a later poll of this one).
+        assert_eq!(pick_chooser(&[view(true, true, true)]), None);
+        // Two new parentless choosers, whatever their titles: do not guess.
+        let two = [view(true, false, true), view(true, false, true)];
+        assert_eq!(pick_chooser(&two), None);
+        // Nor when the other one is not shown yet.
+        let one_hidden = [view(true, false, true), view(true, false, false)];
+        assert_eq!(pick_chooser(&one_hidden), None);
     }
 
     #[test]

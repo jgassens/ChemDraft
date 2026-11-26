@@ -844,7 +844,7 @@
     "name": "monitor_logical_bounds_at",
     "async": false,
     "generics": "",
-    "parameters": "window: tauri::WebviewWindow, x: f64, y: f64, work_area: Option<bool>,",
+    "parameters": "window: tauri::WebviewWindow, x: f64, y: f64, work_area: Option<bool>, toolset_id: Option<String>,",
     "returnType": "Option<ScaledLogicalBounds>"
   },
   {
