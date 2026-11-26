@@ -190,8 +190,7 @@ describe("ToolPalette schema-backed items", () => {
   it.each([
     ["tool.doubleBond", "tool.doubleBond", "Custom_Bond_Double"],
     ["tool.doubleBond", "tool.tripleBond", "Custom_Bond_Triple"],
-    ["tool.doubleBond", "tool.doubleBond:either", undefined],
-    ["tool.bond", "tool.wavyBond", undefined]
+    ["tool.doubleBond", "tool.doubleBond:either", undefined]
   ] as const)("chooses %s → %s once and remembers its face and primary command", async (ownerId, id, asset) => {
     const item = getToolsetItemGroups("core.main").flat().find(entry => entry.id === ownerId)!;
     const { host, button, root, onInvoke } = await renderSchemaPalette(item);
@@ -220,9 +219,7 @@ describe("ToolPalette schema-backed items", () => {
       if (asset) expect(face).toBe(toolbarAsset(asset));
       else {
         expect(face).toBeUndefined();
-        expect(button.querySelector("svg path")?.getAttribute("d")).toBe(id === "tool.wavyBond"
-          ? "M3 12C4 9 5 9 6 12S8 15 9 12S11 9 12 12S14 15 15 12S17 9 18 12S20 15 21 12"
-          : "M4 15 20 9M6 19 18 5");
+        expect(button.querySelector("svg path")?.getAttribute("d")).toBe("M4 15 20 9M6 19 18 5");
       }
       await render("tool.select");
       expect(button.getAttribute("data-command-id")).toBe(id);
@@ -234,6 +231,30 @@ describe("ToolPalette schema-backed items", () => {
         button.click();
       });
       expect(onInvoke).toHaveBeenCalledExactlyOnceWith(id);
+    } finally { await act(async () => root.unmount()); }
+  });
+
+  it("chooses Wavy Bond once while keeping Single Bond as the primary command", async () => {
+    const item = getToolsetItemGroups("core.main").flat().find(entry => entry.id === "tool.bond")!;
+    const { host, button, root, onInvoke } = await renderSchemaPalette(item);
+    try {
+      const initialFace = button.innerHTML;
+      await act(async () => button.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+      const choice = host.querySelector<HTMLButtonElement>('[role="menuitem"][data-command-id="tool.wavyBond"]')!;
+      await act(async () => choice.click());
+      expect(onInvoke).toHaveBeenCalledExactlyOnceWith("tool.wavyBond");
+      await act(async () => root.render(createElement(ToolPalette, {
+        groups: [], itemGroups: [[item]], activeTool: "tool.wavyBond", onInvoke
+      })));
+      expect(button.getAttribute("data-command-id")).toBe("tool.bond");
+      expect(button.innerHTML).toBe(initialFace);
+      onInvoke.mockClear();
+      await act(async () => {
+        dispatchPointerButton(button, "pointerdown");
+        dispatchPointerButton(button, "pointerup");
+        button.click();
+      });
+      expect(onInvoke).toHaveBeenCalledExactlyOnceWith("tool.bond");
     } finally { await act(async () => root.unmount()); }
   });
 
