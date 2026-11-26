@@ -3,6 +3,8 @@ import { Resvg } from "@resvg/resvg-js";
 import {
   applyPatches,
   createEmptyDocument,
+  MAX_IMAGE_SIDE,
+  MAX_IMAGE_DECODED_BYTES,
   stylePresetToObjectStyle,
   DocumentStylePreset,
   isDativeBond,
@@ -828,16 +830,34 @@ export function cropDocumentSvgToContent(
   return style === "document" ? documentStyleSvg(cropped, viewBox) : { svg: cropped, viewBox };
 }
 
+/** Compute and check the pixmap resvg will allocate from our exported SVG root. */
+export function pngOutputSize(svg: string, width: number, style: FigureStyle = "fit", dpi = DocumentStyleScale.defaultDpi as number) {
+  const root = /<svg\b[^>]*>/.exec(svg)?.[0] ?? "";
+  const rootWidth = /\bwidth="([\d.eE+-]+)(?:pt)?"/.exec(root);
+  const rootHeight = /\bheight="([\d.eE+-]+)(?:pt)?"/.exec(root);
+  const sourceWidth = Number(rootWidth?.[1]), sourceHeight = Number(rootHeight?.[1]);
+  if (style === "document" && (!Number.isFinite(dpi) || dpi < DocumentStyleScale.minDpi || dpi > DocumentStyleScale.maxDpi)) {
+    throw new Error("DPI must be between 72 and 1200.");
+  }
+  const outputWidth = style === "document" ? Math.round(sourceWidth * dpi / 72) : Math.round(validateRasterWidth(width, "PNG width"));
+  const outputHeight = style === "document" ? Math.round(sourceHeight * dpi / 72) : Math.round(sourceHeight * outputWidth / sourceWidth);
+  if (![sourceWidth, sourceHeight, outputWidth, outputHeight].every(Number.isFinite) ||
+      sourceWidth <= 0 || sourceHeight <= 0 || outputWidth < 1 || outputHeight < 1 ||
+      outputWidth > MAX_IMAGE_SIDE || outputHeight > MAX_IMAGE_SIDE || outputWidth * outputHeight * 4 > MAX_IMAGE_DECODED_BYTES) {
+    throw new Error(`Requested PNG size ${outputWidth} x ${outputHeight} pixels is invalid or exceeds the limit of ${MAX_IMAGE_SIDE} pixels per side and ${MAX_IMAGE_DECODED_BYTES / 4 / (1024 * 1024)} Mi pixels.`);
+  }
+  return { width: outputWidth, height: outputHeight };
+}
+
 /** Rasterize an SVG to a PNG whose output width is measured in pixels. */
 export function svgToPng(svg: string, width: number, style: FigureStyle = "fit", dpi = DocumentStyleScale.defaultDpi as number): Uint8Array {
+  const size = pngOutputSize(svg, width, style, dpi);
   if (style === "document") {
-    if (!Number.isFinite(dpi) || dpi < DocumentStyleScale.minDpi || dpi > DocumentStyleScale.maxDpi) throw new Error("DPI must be between 72 and 1200.");
     // resvg resolves pt at its configured DPI; no fitTo transform is applied.
     return new Resvg(svg, { dpi }).render().asPng();
   }
-  const pngWidth = validateRasterWidth(width, "PNG width");
   return new Resvg(svg, {
-    fitTo: { mode: "width", value: Math.round(pngWidth) }
+    fitTo: { mode: "width", value: size.width }
   }).render().asPng();
 }
 

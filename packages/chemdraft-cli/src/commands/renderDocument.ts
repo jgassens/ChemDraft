@@ -9,7 +9,7 @@ import { perceiveStereoCentersFromMolfile } from "@chemdraft/ocl-adapter";
 import { numericOption, parseOptions, stringOption } from "../args";
 import { figureStyleHelp, figureStyleOptions, figureStyleResult, parseFigureStyle, validateFigureDpi } from "../figureStyle";
 import { canonicalSmiles, cropDocumentSvgToContent, currentMoleculeIdentityMolfile, documentWithPhysicalStyle, renderDefaults,
-  stereoCenterCounts, svgToPng, validateRasterWidth } from "../document";
+  pngOutputSize, stereoCenterCounts, svgToPng, validateRasterWidth } from "../document";
 import { loadAgentDocument, validateDocumentOutputPath } from "../documentInput";
 import { installNodeEngines } from "../engine";
 import { installNodeRendering } from "../nodeRendering";
@@ -155,6 +155,7 @@ export async function runRenderDocumentCommand(argv: readonly string[], io: CliI
           : cropDocumentSvgToContent(exported.contents, document, padding, background, true, figure.style);
         const svg = cropped?.svg ?? exported.contents;
         physicalSize = cropped?.viewBox;
+        if (format === "png" || format === "both") pngOutputSize(svg, width, figure.style, figure.dpi);
         const base = ["svg", "png"].includes(extension) ? out.slice(0, -extname(out).length) : out;
         if (format === "svg" || format === "both") await save(format === "both" ? `${base}.svg` : extension === format ? out : `${out}.svg`, svg);
         if (format === "png" || format === "both") {

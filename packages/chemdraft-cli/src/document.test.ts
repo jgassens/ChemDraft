@@ -14,6 +14,7 @@ import {
   currentMoleculeIdentityMolfile,
   depictSmiles,
   isRdkitNotConfiguredError,
+  pngOutputSize,
   svgToPng,
   validateRasterWidth
 } from "./document";
@@ -25,6 +26,16 @@ afterAll(() => {
 });
 
 describe("CLI depiction boundary", () => {
+  it("checks rounded PNG dimensions and area before rendering", () => {
+    const root = (width: string, height: string) => `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"></svg>`;
+    for (const [svg, width, style, dpi] of [[root("10.4", "33.4"), 16, "fit", 300],
+      [root("30.1pt", "15.2pt"), 600, "document", 300]] as const) {
+      const size = pngOutputSize(svg, width, style, dpi);
+      const bytes = Buffer.from(svgToPng(svg, width, style, dpi));
+      expect([bytes.readUInt32BE(16), bytes.readUInt32BE(20)]).toEqual([size.width, size.height]);
+    }
+    expect(() => pngOutputSize(root("9000pt", "9000pt"), 600, "document", 72)).toThrow(/9000 x 9000.*64 Mi pixels/);
+  });
   it.each(["nRad", "hydrogenCount", "isotope", "element", "formalCharge"] as const)(
     "refuses charge redistribution when %s also changes", async (field) => {
       const { molecule } = chargeSeparationCases[0]!;

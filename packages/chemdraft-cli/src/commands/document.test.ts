@@ -29,6 +29,29 @@ async function run(args: string[]) {
 }
 
 describe("native document agent commands", () => {
+  it("refuses oversized final PNGs before flattening pictures while leaving SVG and PDF exports available", async () => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><rect width="1" height="1" fill="red"/></svg>';
+    const document = createEmptyDocument();
+    document.pages[0]!.objects = [0, 3000].map((y, i) => createImageGraphicObject({ id: `picture-${i}`,
+      mimeType: "image/svg+xml", dataBase64: Buffer.from(svg).toString("base64"), center: { x: 100, y: 100 + y } }));
+    const input = join(directory, "tall-raster.json");
+    await writeFile(input, JSON.stringify(document));
+    for (const [name, options] of [["fit", ["--width", "4000", "--padding", "0"]],
+      ["document", ["--style", "document", "--dpi", "1200"]]] as const) {
+      const result = await run(["render-document", "--document", input, "--out", join(directory, `${name}-oversized.png`), ...options]);
+      expect(result.code, `${name}: ${JSON.stringify(result)}`).toBe(1);
+      expect(result.stdout).toHaveLength(1);
+      expect(result.result).toMatchObject({ ok: false, error: expect.stringMatching(/Requested PNG size \d+ x \d+ pixels.*16384.*64 Mi pixels/) });
+    }
+    for (const format of ["svg", "pdf"]) {
+      expect((await run(["render-document", "--document", input, "--out", join(directory, `tall.${format}`)])).code).toBe(0);
+    }
+    document.pages[0]!.objects.pop();
+    await writeFile(input, JSON.stringify(document));
+    const normal = await run(["render-document", "--document", input, "--out", join(directory, "tall-normal.png"), "--width", "16", "--padding", "0"]);
+    expect(normal.code, JSON.stringify(normal)).toBe(0);
+    expect((await readFile(join(directory, "tall-normal.png"))).readUInt32BE(16)).toBe(16);
+  }, 30_000);
   it("exports the saved PNG at 144 × 72 pt through CLI render-document in default and document styles", async () => {
     // 288 × 144 transparent PNG with pHYs = 5669 pixels/m (144 dpi, quantized to integers).
     const png = "iVBORw0KGgoAAAANSUhEUgAAASAAAACQCAYAAACoPrZBAAAACXBIWXMAABYlAAAWJQFJUiTwAAAAuElEQVR42u3BMQEAAADCoPVPbQ0PoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAFwOIrgABLLiMAwAAAABJRU5ErkJggg==";
