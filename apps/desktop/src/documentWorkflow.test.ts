@@ -2,6 +2,8 @@ import { defaultCases, bondDepiction, insertionDocument, expectDrawingDefaults }
 import { hitToleranceForScale } from "./interaction/hitTest";
 import { rawMolfileFixture } from "@chemdraft/layout-engine/testing";
 import { describe, expect, it, vi } from "vitest";
+import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
+import { installNodeRdkitModuleLoader } from "@chemdraft/rdkit-adapter/node";
 import { projectGraphicObjectPoint } from "@chemdraft/art-engine";
 import { atomDisplayLabel, mechanismArrowGeometry, nativeMoleculeRings, representativeMoleculeBondLength, resolvePageAnchorPoint } from "@chemdraft/layout-engine";
 import * as layoutEngine from "@chemdraft/layout-engine";
@@ -18,7 +20,7 @@ import { createEmptyDocument as emptyPictureDocument, createImageGraphicObject }
 import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import * as workflowCore from "@chemdraft/document-workflow-core";
 import { nativeSingleBondGraphMetadata } from "@chemdraft/document-workflow-core";
-import { perceiveStereoCentersFromMolfile, relayoutMolfile2D } from "@chemdraft/ocl-adapter";
+import { depictSmiles2D, perceiveStereoCentersFromMolfile, relayoutMolfile2D } from "@chemdraft/ocl-adapter";
 import {
   DefaultNativeDrawingStyle,
   applyPatch,
@@ -17458,11 +17460,12 @@ describe("ring placement chemistry warnings", () => {
     expectHotkeyWarning(nativeRingHotkeyAttachAtAtomTarget(amine.document, moleculeAtomTarget(amine.molecule, "n"), "benzene"), amine.document);
   });
 
-  it("diagnoses aromatic re-pairing overfill after the ring lands", () => {
+  it("fuses benzene beside a dienone without re-pairing the dienone ring", async () => {
+    await installNodeRdkitModuleLoader();
     // cyclohexa-2,4-dien-1-one (r1 carries the C=O) with a two-carbon arm on r6. Fusing benzene on
-    // the arm's far bond re-pairs every six-carbon ring with two double bonds: the dienone ring
-    // gets a third double bond, and every pairing gives one to r1, which gains no new bond and
-    // is neither end of the target bond.
+    // the arm's far bond used to re-pair every six-carbon ring with two double bonds: the dienone
+    // ring gained a third double bond and r1 went pentavalent (a double-bond-overfill warning).
+    // Only the new ring is aromatic now; the dienone keeps its bonds, so the fusion is clean.
     const at = (degrees: number, radius: number = L) => [
       300 + Math.cos(degrees * Math.PI / 180) * radius, 300 + Math.sin(degrees * Math.PI / 180) * radius
     ] as const;
@@ -17475,9 +17478,23 @@ describe("ring placement chemistry warnings", () => {
       ["r1", "r2"], ["r2", "r3", "double"], ["r3", "r4"], ["r4", "r5", "double"], ["r5", "r6"], ["r6", "r1"],
       ["r1", "o", "double"], ["r6", "c1"], ["c1", "c2"]
     ]);
+    const canonical = (graph: MoleculeObject) => workflowCore.moleculeSmiles(graph, 0, [], computeStructureIdentifiers);
     const away = { x: 300 - L * Math.sqrt(3) - L, y: 300 - 1.5 * L };
-    expectAttachedWithWarning(document, molecule, bondPlan(document, molecule, "gb9", "benzene", away), "double-bond-overfill");
-    expectHotkeyWarning(nativeRingHotkeyFuseAtBondTarget(document, moleculeBondTarget(molecule, "gb9"), "benzene"), document);
+    const plan = bondPlan(document, molecule, "gb9", "benzene", away);
+    expect(plan?.kind).toBe("fuse-bond");
+    expect(plan?.fallbackReason).toBeUndefined();
+    const placed = moleculeById(applyNativeTemplatePlacementPlan(document, plan!), molecule.id);
+    expect(nativeMoleculeInvalidAtomStates(placed)).toEqual([]);
+    // 6-phenylcyclohexa-2,4-dien-1-one (the dienone ring unchanged, C12H10O), not a phenol/benzene.
+    const expectedSmiles = "O=C1C=CC=CC1c1ccccc1";
+    const expected = await canonical(selectedMolecule(
+      insertSmilesMolecule(createPhase4Document("Expected dienone"), { x: 400, y: 400 }, depictSmiles2D(expectedSmiles), expectedSmiles)
+    ));
+    expect(await canonical(placed)).toBe(expected);
+    const hotkey = nativeRingHotkeyFuseAtBondTarget(document, moleculeBondTarget(molecule, "gb9"), "benzene");
+    expect(hotkey.refusal).toBeUndefined();
+    expect(nativeMoleculeInvalidAtomStates(selectedMolecule(hotkey.document))).toEqual([]);
+    expect(await canonical(selectedMolecule(hotkey.document))).toBe(expected);
     // A saturated ring changes no bond order and fuses.
     expect(bondPlan(document, molecule, "gb9", "cyclohexane", away)?.kind).toBe("fuse-bond");
     // The closure onto a full rim atom (the oxa-decalin test above) keeps the closure reason.

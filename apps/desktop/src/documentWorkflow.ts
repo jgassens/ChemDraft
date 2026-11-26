@@ -3681,7 +3681,10 @@ function fuseNativeTemplateRingVerticesToBond(
     [...molecule.atoms, ...newAtoms],
     [...molecule.bonds, ...newBonds]
   );
-  return templateId === "benzene" ? normalizeNativeAromaticTemplateBonds(fused) : fused;
+  if (templateId !== "benzene") {
+    return fused;
+  }
+  return normalizeFusedBenzeneRingBonds(molecule, fused, ringAtomIds, new Set(newBonds.map((bond) => bond.id)));
 }
 
 // Closure snap radius. Kept below the minimum distance between two distinct atoms the suite
@@ -4161,73 +4164,314 @@ interface NativeAromaticMatching {
   sharedDoubleBonds: number;
 }
 
-function normalizeNativeAromaticTemplateBonds(molecule: MoleculeObject): MoleculeObject {
-  const allCycles = findNativeSixMemberCarbonRingCycles(molecule);
-  const aromaticCycles = allCycles.filter((cycle) =>
-    cycle.bondIds.filter((bondId) =>
-      molecule.bonds.some((bond) => bond.id === bondId && bond.order === "double")
-    ).length >= 2
+/**
+ * Choose the Kekulé double bonds of a benzene ring just fused onto `before`.
+ *
+ * Only these bonds may change order: the bonds the fusion added, and the bonds of six-membered
+ * carbon rings that were ALREADY benzenoid before the fusion (every atom carrying exactly one
+ * double bond, inside such a ring) and that share atoms with the new ring. Re-choosing double
+ * bonds inside an already aromatic system only moves its Kekulé structure; any other ring — one
+ * with an sp3 carbon, an exocyclic C=O, a cyclohexadiene — keeps every bond order as drawn. The
+ * one exception is an odd fused system (1H-phenalene) that this closure makes even: its single
+ * sp3 carbon was the unavoidable gap in an aromatic polycycle, which the closure completes.
+ */
+function normalizeFusedBenzeneRingBonds(
+  before: MoleculeObject,
+  fused: MoleculeObject,
+  ringAtomIds: readonly string[],
+  newBondIds: ReadonlySet<string>
+): MoleculeObject {
+  const bondBetween = (a: string, b: string) => fused.bonds.find((bond) =>
+    (bond.fromAtomId === a && bond.toAtomId === b) || (bond.fromAtomId === b && bond.toAtomId === a)
   );
-
-  if (aromaticCycles.length === 0) {
-    return molecule;
+  const newRingBonds = ringAtomIds.map((atomId, index) => bondBetween(atomId, ringAtomIds[(index + 1) % ringAtomIds.length] ?? atomId));
+  if (newRingBonds.some((bond) => !bond)) {
+    return fused;
+  }
+  const atomById = new Map(fused.atoms.map((atom) => [atom.id, atom]));
+  const newRing: NativeAromaticRingCycle = {
+    atomIds: [...ringAtomIds],
+    bondIds: newRingBonds.map((bond) => bond!.id),
+    center: centroidOfPoints(ringAtomIds.map((id) => atomById.get(id)).filter((atom): atom is MoleculeAtom => Boolean(atom)))
+  };
+  if (ringAtomIds.some((id) => atomById.get(id)?.element !== "C")) {
+    // A ring through a heteroatom is outside this normalization; keep the template's bonds and
+    // touch nothing else, as before.
+    return fused;
   }
 
-  const allCycleMembership = bondCycleMembership(allCycles);
-  const aromaticCycleMembership = bondCycleMembership(aromaticCycles);
-  const aromaticAtomIds = new Set(aromaticCycles.flatMap((cycle) => cycle.atomIds));
-  const aromaticBondIds = new Set(aromaticCycles.flatMap((cycle) => cycle.bondIds));
-  const candidateBondIds = [...aromaticBondIds].filter((bondId) => {
-    const bond = molecule.bonds.find((candidate) => candidate.id === bondId);
-    if (!bond || !aromaticAtomIds.has(bond.fromAtomId) || !aromaticAtomIds.has(bond.toAtomId)) {
-      return false;
-    }
-
-    // The bond must lie ENTIRELY within aromatic rings, so a benzene/cyclohexane fusion bond —
-    // which also belongs to the saturated ring — stays single. But a bond shared between two
-    // AROMATIC rings (every inner-ring bond of a peri-fused system like coronene) is eligible;
-    // forbidding it left the inner carbons with no double bond at all, reading as sp3.
-    const aromaticMembership = aromaticCycleMembership.get(bondId) ?? 0;
-    const totalMembership = allCycleMembership.get(bondId) ?? 0;
-    return aromaticMembership >= 1 && totalMembership === aromaticMembership;
+  // The aromatic system the new ring joins: benzenoid rings of the original molecule connected
+  // to it through shared atoms.
+  const { benzenoid, oddSystems } = benzenoidNativeCarbonRings(before);
+  const eligible: NativeAromaticRingCycle[] = [newRing];
+  const systemAtomIds = new Set(ringAtomIds);
+  const touchesSystem = (ring: NativeAromaticRingCycle) => ring.atomIds.some((id) => systemAtomIds.has(id));
+  const addToSystem = (rings: readonly NativeAromaticRingCycle[]) => rings.forEach((ring) => {
+    eligible.push(ring);
+    ring.atomIds.forEach((id) => systemAtomIds.add(id));
   });
-  // Bonds shared by more than one aromatic ring. We still PREFER double bonds on unshared
-  // (perimeter) bonds, so cata-condensed systems (naphthalene, acenes) keep their conventional
-  // Kekulé with single fusion bonds, while peri-fused systems use the fewest shared double bonds
-  // needed to give every carbon a double bond (coronene's inner ring gets three, not six spokes).
-  const sharedAromaticBondIds = new Set(
-    candidateBondIds.filter((bondId) => (aromaticCycleMembership.get(bondId) ?? 0) > 1)
-  );
-  const doubleBondIds = new Set(
-    chooseNativeAromaticDoubleBondIds(molecule, aromaticAtomIds, candidateBondIds, sharedAromaticBondIds)
-  );
-  if (doubleBondIds.size === 0) {
-    return molecule;
+  for (let grew = true; grew;) {
+    grew = false;
+    benzenoid.forEach((ring) => {
+      if (!eligible.includes(ring) && touchesSystem(ring)) {
+        addToSystem([ring]);
+        grew = true;
+      }
+    });
+    // An odd fused system with its one unavoidable sp3 carbon (the 1H-phenalene an earlier
+    // closure left on the way to pyrene or coronene) joins only when this closure makes the
+    // system even, so a full Kekulé structure — the aromatic polycycle — now exists.
+    oddSystems.forEach((rings) => {
+      if (rings.some((ring) => eligible.includes(ring)) || !rings.some(touchesSystem)) {
+        return;
+      }
+      const atomCount = new Set([...systemAtomIds, ...rings.flatMap((ring) => ring.atomIds)]).size;
+      if (atomCount % 2 === 0) {
+        addToSystem(rings);
+        grew = true;
+      }
+    });
   }
-
-  const nextBonds = molecule.bonds.map((bond) => {
-    if (!aromaticBondIds.has(bond.id)) {
-      return bond;
+  const preAromaticInSystem = eligible.filter((ring) => ring !== newRing);
+  const allCycles = findNativeSixMemberCarbonRingCycles(fused);
+  const eligibleKeys = new Set(eligible.map((ring) => canonicalNativeRingCycleKey(ring.bondIds)));
+  // A closure can complete another ring out of new bonds and aromatic atoms (a peri-fused
+  // centre); it belongs to the system too.
+  allCycles.forEach((cycle) => {
+    const key = canonicalNativeRingCycleKey(cycle.bondIds);
+    if (!eligibleKeys.has(key) && cycle.bondIds.some((id) => newBondIds.has(id)) &&
+      cycle.atomIds.every((id) => systemAtomIds.has(id))) {
+      eligible.push(cycle);
+      eligibleKeys.add(key);
     }
-
-    if (!doubleBondIds.has(bond.id)) {
-      return nativeBondWithOrderAndDoubleSide(bond, "single");
-    }
-
-    const ring = aromaticCycles.find((cycle) => cycle.bondIds.includes(bond.id));
-    const fromAtom = molecule.atoms.find((atom) => atom.id === bond.fromAtomId);
-    const toAtom = molecule.atoms.find((atom) => atom.id === bond.toAtomId);
-    const side = ring && fromAtom && toAtom
-      ? doubleBondSideTowardPoint(fromAtom, toAtom, ring.center)
-      : bond.display?.doubleBondSide;
-    return nativeBondWithOrderAndDoubleSide(bond, "double", side);
   });
 
-  if (nextBonds.every((bond, index) => bond === molecule.bonds[index])) {
-    return molecule;
+  // Bonds whose order may be re-chosen.
+  const rewritableBondIds = new Set<string>([
+    ...newBondIds,
+    ...preAromaticInSystem.flatMap((ring) => ring.bondIds)
+  ]);
+  const bondsAtAtom = (molecule: MoleculeObject, atomId: string) =>
+    molecule.bonds.filter((bond) => bond.fromAtomId === atomId || bond.toAtomId === atomId);
+  const newRingBondIds = new Set(newRing.bondIds);
+  const systemAtomIdList = [...new Set([...ringAtomIds, ...preAromaticInSystem.flatMap((ring) => ring.atomIds)])];
+  // A new-ring atom whose kept double bond is the shared bond already has its ring double bond.
+  const sharedDoubleAtomIds = new Set(ringAtomIds.filter((atomId) =>
+    bondsAtAtom(fused, atomId).some((bond) =>
+      !rewritableBondIds.has(bond.id) && newRingBondIds.has(bond.id) && bond.order === "double"
+    )
+  ));
+  // A fusion atom whose π electrons already belong to a conjugated ring as drawn (a pyridine's
+  // C=C, or aromatic bond orders) contributes them to the new ring without a second double bond.
+  const conjugatedAtomIds = new Set(ringAtomIds.filter((atomId) => {
+    const kept = bondsAtAtom(before, atomId).filter((bond) => !rewritableBondIds.has(bond.id));
+    return kept.filter((bond) => bond.order === "aromatic").length >= 2 ||
+      kept.some((bond) => bond.order === "double" && nativeBondInFullyConjugatedRing(before, bond));
+  }));
+  // Prefer double bonds on bonds of one aromatic ring only: a bond shared by two aromatic rings,
+  // or with a ring outside the system (the benzene/cyclohexane fusion bond), stays single when a
+  // Kekulé structure allows it. Cata-condensed systems (naphthalene, acenes) keep single fusion
+  // bonds; peri-fused ones (coronene) use only the shared double bonds they need.
+  const eligibleMembership = bondCycleMembership(eligible);
+  const allMembership = bondCycleMembership(allCycles);
+  const inRingOutsideSystem = (bondId: string) =>
+    (allMembership.get(bondId) ?? 0) > (eligibleMembership.get(bondId) ?? 0);
+  const penalizedBondIds = new Set([...rewritableBondIds].filter((bondId) =>
+    (eligibleMembership.get(bondId) ?? 0) > 1 || inRingOutsideSystem(bondId)
+  ));
+  // Existing single bonds of the new ring itself (the clicked bond, or a bond a closure reused)
+  // that were in no ring before the fusion — no ring of any size or composition, not only the
+  // six-membered carbon rings above. Doubling one is a last resort, for a closure whose new ring
+  // has too few new bonds to hold three double bonds. A bond that already lay in a ring (a
+  // cyclopentane, a cycloheptane, a pyrrolidine or oxane, a macrocycle) keeps its order, so that
+  // ring's unsaturation never changes; the new ring then lands short of a double bond rather than
+  // another ring being rewritten. (Checked on `before`: after the fusion every bond of the new
+  // ring also lies on the envelope cycle around any ring it is fused to. A six-membered carbon ring
+  // this closure completes besides the new one is excluded too, as before.)
+  const newRingSingleBondIds = newRing.bondIds.filter((bondId) =>
+    !rewritableBondIds.has(bondId) &&
+    fused.bonds.find((bond) => bond.id === bondId)?.order === "single" &&
+    !inRingOutsideSystem(bondId) &&
+    !nativeBondIsInRing(before, bondId)
+  );
+  const hasRingPi = (molecule: MoleculeObject, atomId: string) => {
+    const bonds = bondsAtAtom(molecule, atomId);
+    return bonds.some((bond) => bond.order === "double") || bonds.filter((bond) => bond.order === "aromatic").length >= 2;
+  };
+
+  const kekulize = (
+    excludedAtomIds: ReadonlySet<string>,
+    extraBondIds: readonly string[] = []
+  ): { next: MoleculeObject; covered: number } => {
+    const rewritable = new Set([...rewritableBondIds, ...extraBondIds]);
+    const matchableAtomIds = new Set(systemAtomIdList.filter((atomId) => !excludedAtomIds.has(atomId)));
+    const candidateBondIds = [...rewritable].filter((bondId) => {
+      const bond = fused.bonds.find((candidate) => candidate.id === bondId);
+      return Boolean(bond && matchableAtomIds.has(bond.fromAtomId) && matchableAtomIds.has(bond.toAtomId));
+    });
+    const doubleBondIds = new Set(
+      chooseNativeAromaticDoubleBondIds(fused, matchableAtomIds, candidateBondIds, penalizedBondIds)
+    );
+    const nextBonds = fused.bonds.map((bond) => {
+      if (!rewritable.has(bond.id)) {
+        return bond;
+      }
+      if (!doubleBondIds.has(bond.id)) {
+        return bond.order === "single" ? bond : nativeBondWithOrderAndDoubleSide(bond, "single");
+      }
+      const ring = eligible.find((cycle) => cycle.bondIds.includes(bond.id));
+      const fromAtom = atomById.get(bond.fromAtomId);
+      const toAtom = atomById.get(bond.toAtomId);
+      const side = ring && fromAtom && toAtom
+        ? doubleBondSideTowardPoint(fromAtom, toAtom, ring.center)
+        : bond.display?.doubleBondSide;
+      if (bond.order === "double" && side === bond.display?.doubleBondSide) {
+        return bond;
+      }
+      return nativeBondWithOrderAndDoubleSide(bond, "double", side);
+    });
+    const next: MoleculeObject = { ...fused, bonds: nextBonds };
+    return { next, covered: systemAtomIdList.filter((atomId) => hasRingPi(next, atomId)).length };
+  };
+
+  // A fusion atom that already carries a C=C or C=O outside any aromatic ring, or is saturated,
+  // still takes a double bond in the new ring: the new benzene stays aromatic and the overfilled
+  // atom is flagged by the atom-state diagnostics, as for any overfilled ring placement, rather
+  // than the ring quietly becoming non-aromatic or another ring being rewritten. A fusion atom
+  // whose π electrons already sit in a conjugated ring (a pyridine) is left at its valence unless
+  // that leaves more of the system without a double bond. Odd systems (a phenalene closure) keep
+  // one atom without a double bond, as drawn chemistry requires. Each later attempt is taken only
+  // if it gives more atoms of the system a double bond. Every bond outside the new ring and the
+  // aromatic system keeps its order.
+  const attempts = [
+    () => kekulize(new Set([...sharedDoubleAtomIds, ...conjugatedAtomIds])),
+    ...(conjugatedAtomIds.size > 0 ? [() => kekulize(sharedDoubleAtomIds)] : []),
+    ...(newRingSingleBondIds.length > 0 ? [() => kekulize(sharedDoubleAtomIds, newRingSingleBondIds)] : [])
+  ];
+  let best = attempts[0]!();
+  for (const attempt of attempts.slice(1)) {
+    if (best.covered === systemAtomIdList.length) {
+      break;
+    }
+    const candidate = attempt();
+    if (candidate.covered > best.covered) {
+      best = candidate;
+    }
+  }
+  const next = best.next;
+  if (next.bonds.every((bond, index) => bond === fused.bonds[index])) {
+    return fused;
+  }
+  return refreshNativeSingleBondGraph(fused, fused.atoms, next.bonds);
+}
+
+/**
+ * Six-membered carbon rings that are aromatic as drawn. `benzenoid`: every ring atom is a neutral
+ * carbon with exactly one double bond, and that double bond belongs to a benzenoid ring (so
+ * naphthalene's second ring, whose fusion atoms take their double bond in the first ring, still
+ * counts). `oddSystems`: fused systems of such rings with an odd number of carbons, all paired
+ * but the one sp3 carbon an odd system must keep (1H-phenalene). A ring with any other sp3
+ * carbon, or an exocyclic C=X, is in neither.
+ */
+function benzenoidNativeCarbonRings(molecule: MoleculeObject): {
+  benzenoid: NativeAromaticRingCycle[];
+  oddSystems: NativeAromaticRingCycle[][];
+} {
+  // Each atom's one double bond; null when it has none; absent when it cannot be aromatic here.
+  const doubleBondByAtom = new Map<string, MoleculeBond | null>();
+  molecule.atoms.forEach((atom) => {
+    const bonds = molecule.bonds.filter((bond) => bond.fromAtomId === atom.id || bond.toAtomId === atom.id);
+    const doubles = bonds.filter((bond) => bond.order === "double");
+    const plain = bonds.every((bond) => bond.order === "single" || bond.order === "double");
+    if (atom.element === "C" && (atom.formalCharge ?? 0) === 0 && !atom.markRadicals && plain && doubles.length <= 1) {
+      doubleBondByAtom.set(atom.id, doubles[0] ?? null);
+    }
+  });
+  // Rings of such carbons with at most one without a double bond, every double bond inside the
+  // ring set; largest such set.
+  let rings = findNativeSixMemberCarbonRingCycles(molecule).filter((ring) =>
+    ring.atomIds.every((atomId) => doubleBondByAtom.has(atomId)) &&
+    ring.atomIds.filter((atomId) => doubleBondByAtom.get(atomId) === null).length <= 1
+  );
+  for (let changed = true; changed;) {
+    const ringBondIds = new Set(rings.flatMap((ring) => ring.bondIds));
+    const kept = rings.filter((ring) =>
+      ring.atomIds.every((atomId) => {
+        const double = doubleBondByAtom.get(atomId);
+        return double === null || ringBondIds.has(double?.id ?? "");
+      })
+    );
+    changed = kept.length !== rings.length;
+    rings = kept;
   }
 
-  return refreshNativeSingleBondGraph(molecule, molecule.atoms, nextBonds);
+  // Group into fused systems (rings sharing an atom) and classify each.
+  const benzenoid: NativeAromaticRingCycle[] = [];
+  const oddSystems: NativeAromaticRingCycle[][] = [];
+  const unassigned = new Set(rings);
+  while (unassigned.size > 0) {
+    const first = unassigned.values().next().value as NativeAromaticRingCycle;
+    unassigned.delete(first);
+    const system = [first];
+    const atomIds = new Set(first.atomIds);
+    for (let grew = true; grew;) {
+      grew = false;
+      [...unassigned].forEach((ring) => {
+        if (ring.atomIds.some((id) => atomIds.has(id))) {
+          unassigned.delete(ring);
+          system.push(ring);
+          ring.atomIds.forEach((id) => atomIds.add(id));
+          grew = true;
+        }
+      });
+    }
+    const unpaired = [...atomIds].filter((id) => doubleBondByAtom.get(id) === null).length;
+    if (unpaired === 0) {
+      benzenoid.push(...system);
+    } else if (unpaired === 1 && atomIds.size % 2 === 1) {
+      oddSystems.push(system);
+    }
+  }
+  return { benzenoid, oddSystems };
+}
+
+/** Whether a double bond lies in a ring (up to eight atoms) where every atom has exactly one double bond. */
+function nativeBondInFullyConjugatedRing(molecule: MoleculeObject, bond: MoleculeBond): boolean {
+  const doubleCount = new Map<string, number>();
+  molecule.bonds.forEach((candidate) => {
+    if (candidate.order === "double") {
+      doubleCount.set(candidate.fromAtomId, (doubleCount.get(candidate.fromAtomId) ?? 0) + 1);
+      doubleCount.set(candidate.toAtomId, (doubleCount.get(candidate.toAtomId) ?? 0) + 1);
+    }
+  });
+  const conjugated = (atomId: string) => doubleCount.get(atomId) === 1 &&
+    molecule.bonds.every((candidate) =>
+      (candidate.fromAtomId !== atomId && candidate.toAtomId !== atomId) ||
+      candidate.order === "single" || candidate.order === "double"
+    );
+  if (!conjugated(bond.fromAtomId) || !conjugated(bond.toAtomId)) {
+    return false;
+  }
+  const maxRingSize = 8;
+  const search = (atomId: string, path: string[]): boolean => {
+    for (const candidate of molecule.bonds) {
+      if (candidate.id === bond.id || (candidate.fromAtomId !== atomId && candidate.toAtomId !== atomId)) {
+        continue;
+      }
+      const next = candidate.fromAtomId === atomId ? candidate.toAtomId : candidate.fromAtomId;
+      if (next === bond.fromAtomId && path.length >= 3) {
+        return true;
+      }
+      if (path.includes(next) || path.length >= maxRingSize || !conjugated(next)) {
+        continue;
+      }
+      if (search(next, [...path, next])) {
+        return true;
+      }
+    }
+    return false;
+  };
+  return search(bond.toAtomId, [bond.fromAtomId, bond.toAtomId]);
 }
 
 function refreshNativeCyclicDoubleBondSides(before: MoleculeObject, after: MoleculeObject): MoleculeObject {
@@ -4303,6 +4547,39 @@ function findNativeCarbonRingCycles(
   });
 
   return [...cycles.values()];
+}
+
+/**
+ * Whether a bond lies in a ring of the molecule — of any size, through any element: its two atoms
+ * stay connected without it (it is not a bridge of the graph).
+ */
+function nativeBondIsInRing(molecule: MoleculeObject, bondId: string): boolean {
+  const bond = molecule.bonds.find((candidate) => candidate.id === bondId);
+  if (!bond) {
+    return false;
+  }
+  const adjacency = new Map<string, string[]>();
+  molecule.bonds.forEach((candidate) => {
+    if (candidate.id === bondId) {
+      return;
+    }
+    adjacency.set(candidate.fromAtomId, [...(adjacency.get(candidate.fromAtomId) ?? []), candidate.toAtomId]);
+    adjacency.set(candidate.toAtomId, [...(adjacency.get(candidate.toAtomId) ?? []), candidate.fromAtomId]);
+  });
+  const seen = new Set([bond.fromAtomId]);
+  const queue = [bond.fromAtomId];
+  for (let index = 0; index < queue.length; index += 1) {
+    for (const atomId of adjacency.get(queue[index]!) ?? []) {
+      if (atomId === bond.toAtomId) {
+        return true;
+      }
+      if (!seen.has(atomId)) {
+        seen.add(atomId);
+        queue.push(atomId);
+      }
+    }
+  }
+  return false;
 }
 
 function canonicalNativeRingCycleKey(bondIds: readonly string[]): string {
