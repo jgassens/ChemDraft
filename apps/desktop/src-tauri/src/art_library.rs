@@ -910,6 +910,7 @@ pub(crate) async fn art_library_start_drag<R: Runtime>(
 /// Runs `start`, turning a panic into an error, so a failure inside the drag library rejects the
 /// drag instead of unwinding into the event loop (which aborts the process). The panic hook still
 /// runs and records the panic.
+#[cfg(any(target_os = "macos", windows))]
 pub(crate) fn guard_drag_panic(start: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(start)) {
         Ok(result) => result,
@@ -1702,6 +1703,7 @@ mod tests {
         ));
     }
 
+    #[cfg(any(target_os = "macos", windows))]
     #[test]
     fn a_panic_in_the_drag_library_rejects_instead_of_unwinding() {
         let error = guard_drag_panic(|| panic!("get_file_data_object returned None")).unwrap_err();
