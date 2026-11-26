@@ -1,3 +1,4 @@
+import { slugId } from "./ids";
 import { importPathProblem } from "./paths";
 
 /** Optional metadata supplied by a foreign manifest for a file. */
@@ -57,7 +58,7 @@ function assetHints(
   isUsablePath: (path: unknown) => path is string,
   addHint: (path: string, hint: FileHint) => void
 ): void {
-  const entries: { id?: string; path: string; hint: FileHint }[] = [];
+  const entries: { id?: string; idKey?: string; path: string; hint: FileHint }[] = [];
   const seenIds = new Set<string>();
   const sharedIds = new Set<string>();
   for (const raw of assets) {
@@ -65,29 +66,40 @@ function assetHints(
     if (!asset || !isUsablePath(asset.path)) continue;
 
     const id = asNonemptyString(asset.id);
-    if (id) {
-      if (seenIds.has(id)) sharedIds.add(id);
-      seenIds.add(id);
+    const subject = asNonemptyString(asset.subject_id) ?? asNonemptyString(asset.subject);
+    const category = asNonemptyString(asset.category);
+    const subcategory = asNonemptyString(asset.subcategory);
+    const idKey = id && !subject ? JSON.stringify(["asset-id", id, category, subcategory]) : undefined;
+    if (idKey) {
+      if (seenIds.has(idKey)) sharedIds.add(idKey);
+      seenIds.add(idKey);
     }
     entries.push({
       id,
+      idKey,
       path: asset.path,
       hint: {
+        groupId: subject ? JSON.stringify(["asset-subject", subject]) : undefined,
         name: asNonemptyString(asset.display_name),
         description: asNonemptyString(asset.description),
-        category: asNonemptyString(asset.category),
-        subcategory: asNonemptyString(asset.subcategory),
+        category,
+        subcategory,
         variant: asNonemptyString(asset.style)
       }
     });
   }
 
-  for (const { id, path, hint } of entries) {
-    if (id && sharedIds.has(id)) {
-      hint.groupId = JSON.stringify(["asset-id", id]);
-    } else if (hint.name) {
-      // Some manifests use a distinct id for each style of the same displayed subject.
-      hint.groupId = JSON.stringify(["asset-name", hint.name]);
+  for (const { id, idKey, path, hint } of entries) {
+    if (idKey && sharedIds.has(idKey)) {
+      hint.groupId = idKey;
+    } else if (id && !hint.groupId) {
+      // Asset IDs may carry the same --variant suffix as their filenames.
+      const variant = slugId(hint.variant ?? "", "");
+      const suffix = "--" + variant;
+      const stem = variant && id.length > suffix.length && id.toLowerCase().endsWith(suffix)
+        ? id.slice(0, -suffix.length)
+        : id;
+      hint.groupId = JSON.stringify(["asset-stem", stem, hint.name, hint.category, hint.subcategory]);
     }
     addHint(path, hint);
   }

@@ -27,9 +27,11 @@ describe("art import planning", () => {
   });
 
   it.each([
-    [{"id": "node", "display_name": "Node light"}, {"id": "node", "display_name": "Node dark"}],
-    [{"id": "light", "display_name": "Lymph node"}, {"id": "dark", "display_name": "Lymph node"}]
-  ])("groups asset rows by shared id or display name", (light, dark) => {
+    [{ id: "node", display_name: "Node light" }, { id: "node", display_name: "Node dark" }],
+    [{ id: "node--light", display_name: "Lymph node" }, { id: "node--dark", display_name: "Lymph node" }],
+    [{ subject_id: "node", id: "light", display_name: "Lymph node" },
+      { subject_id: "node", id: "dark", display_name: "Lymph node" }]
+  ])("groups asset rows by shared id, matching id stem and name, or explicit subject", (light, dark) => {
     const plan = planFromManifest(["light.svg", "dark.svg"], {
       assets: [
         { ...light, style: "Light", path: "light.svg" },
@@ -41,6 +43,32 @@ describe("art import planning", () => {
       light: { path: "light.svg", sha256: "light.svg", byteSize: 1 },
       dark: { path: "dark.svg", sha256: "dark.svg", byteSize: 1 }
     });
+    expect(plan.leftOut).toEqual([]);
+  });
+
+  it.each([
+    ["medullary-node", "Anatomy"],
+    ["medullary-node", "Histology"],
+    ["cortical-node", "Histology"]
+  ])("keeps same-named subjects separate for id stem %s in category %s", (otherStem, otherCategory) => {
+    const subjects = [
+      { prefix: "a", stem: "cortical-node", category: "Anatomy" },
+      { prefix: "b", stem: otherStem, category: otherCategory }
+    ];
+    const assets = subjects.flatMap(({ prefix, stem, category }) => ["light", "dark"].map(style => ({
+      id: `${stem}--${style}`,
+      path: `${prefix}-${style}.svg`,
+      display_name: "Lymph node",
+      category,
+      style
+    })));
+    const plan = planFromManifest(assets.map(asset => asset.path), { assets });
+    expect(plan.items).toMatchObject(subjects.map(({ prefix, category }, index) => ({
+      id: index === 0 ? "lymph-node" : "lymph-node-2",
+      name: "Lymph node",
+      category,
+      variants: { light: { path: `${prefix}-light.svg` }, dark: { path: `${prefix}-dark.svg` } }
+    })));
     expect(plan.leftOut).toEqual([]);
   });
 

@@ -55,8 +55,9 @@ a visual layout builder and does not synthesize reaction semantics from drawings
   built on `chem-core` patches.
 - Chemistry bookkeeping those functions need: element tables, valence, the native SMILES writer.
 - Dependencies limited to `chem-core`, `layout-engine`, `clipboard-adapter` (molfile parsing),
-  `template-library` (the abbreviation table: data only), `analysis-core` (pure contracts, such as
-  the stored stereochemistry label wording), and type-only use of `export-engine` and `rdkit-adapter`.
+  `template-library` (the abbreviation table: data only), `@chemdraft/art-library` (search
+  normalization), `analysis-core` (pure contracts, such as the stored stereochemistry label wording),
+  and type-only use of `export-engine` and `rdkit-adapter`.
 
 `cleanUpMoleculeSelection2d` expands selected bonds to both endpoints and lays out only selected
 connected parts. Unselected atoms (including metals and centres with more than four bonds) retain
