@@ -54,6 +54,12 @@ import { planMoleculeAtomLabels } from "@chemdraft/layout-engine";
 import { atomDerivedHydrogenCount, nativeBondOrderResolution, nativeElementFromAtomLabel } from "@chemdraft/layout-engine";
 import { sha256Hex, utf8Bytes, utf8String } from "./sha256";
 import { PROPS } from "./cdxTags";
+import { resolveReactionStepAtomMaps } from "./reactionAtomMaps";
+export {
+  describeDroppedAtomMapEdges, reactionStepAtomMapAttributes, reactionStepAttributes, resolveReactionStepAtomMaps,
+  type DroppedReactionStepAtomMapEdge, type ReactionStepAtomMapAttribute, type ReactionStepAtomMapEdge,
+  type ReactionStepAtomMapResolution, type ReactionStepAtomRef
+} from "./reactionAtomMaps";
 import { cdxmlLimits } from "./cdxmlLimits";
 import { addImportedRadicalMarks } from "./importedRadicalMarks";
 import { isStandardAtomRadicalMark, standardRadicalMarkPageIndex, type StandardRadicalMarkPageIndex } from "./standardRadicalMarks";
@@ -1366,7 +1372,7 @@ function buildVisiblePageChildren(page: DocumentPage, pageBackgroundColor: strin
   const visibleChildren = page.objects.filter(object => !groupedIds.has(object.id)).map(emit).filter(Boolean);
   // Cyclic or multiply-owned native groups still export each drawable at most once.
   for (const object of page.objects) if (!emitted.has(object.id)) visibleChildren.push(emit(object));
-  visibleChildren.push(...exportReactionSchemes(page, context.ids, allocator, warnings, objectsById));
+  visibleChildren.push(...exportReactionSchemes(page, context, allocator, warnings, objectsById));
   visibleChildren.push(...exportBracketPairs(page, context, allocator, warnings));
   return visibleChildren.length > 0 ? `\n${visibleChildren.map((child) => indent(child, 4)).join("\n")}\n  ` : "";
 }
@@ -1516,10 +1522,44 @@ function importReactionStep(
   };
 }
 
+/**
+ * Rewrites a step's atom-map lists to the node ids its atoms were exported with. A stored id names an
+ * atom of the step's own components (`resolveReactionStepAtomMaps`), so a copied step writes the
+ * copy's nodes and a step whose atoms were renumbered (a copy written first claimed their source
+ * ids) still writes its own. A pair that cannot be resolved, or whose atom was not written, is
+ * dropped with a warning rather than written pointing at another atom.
+ */
+function exportReactionStepAtomMaps(
+  reaction: ReactionObject, attributes: Record<string, string>, context: VisibleExportContext,
+  warnings: CompatibilityConversionWarning[], objects: ReadonlyMap<string, DocumentObject>
+): void {
+  for (const resolution of resolveReactionStepAtomMaps(reaction, objects)) {
+    const { attribute } = resolution;
+    if (attributes[attribute] === undefined) continue;
+    const exported: string[] = [];
+    const dropped = [...resolution.dropped];
+    for (const edge of resolution.edges) {
+      const [fromNode, toNode] = [edge.from, edge.to].map(end => context.atomIdsByObjectId.get(end.objectId)?.get(end.atomId));
+      if (fromNode !== undefined && toNode !== undefined) exported.push(fromNode, toNode);
+      else dropped.push({ sourceIds: [edge.from.sourceId, edge.to.sourceId], reason: "its atom was not written" });
+    }
+    if (dropped.length) {
+      warnings.push({ code: "cdxml.reaction_atom_map_pair_dropped", sourceObjectId: reaction.id,
+        message: `Reaction ${reaction.id}: ${dropped.length} atom-map pair${dropped.length === 1 ? " was" : "s were"} dropped from ${attribute} ` +
+          `on export (${dropped.map(edge => `${edge.sourceIds.join("→")}: ${edge.reason}`).join("; ")}); it is not written pointing at another atom.` });
+    }
+    const value = exported.join(" ");
+    if (!value) delete attributes[attribute];
+    // Keep the source text (its whitespace too) when every pair is written with its source ids.
+    else if (splitCdxmlIdList(attributes[attribute]).join(" ") !== value) attributes[attribute] = value;
+  }
+}
+
 function exportReactionSchemes(
-  page: DocumentPage, ids: Map<string, string>, allocator: IdAllocator,
+  page: DocumentPage, context: VisibleExportContext, allocator: IdAllocator,
   warnings: CompatibilityConversionWarning[], objects: ReadonlyMap<string, DocumentObject>
 ): string[] {
+  const ids = context.ids;
   const schemes = new Map<string, { id: string; attributes: Record<string, string>; reactions: ReactionObject[] }>();
   for (const reaction of page.objects) {
     if (reaction.type !== "reaction") continue;
@@ -1549,6 +1589,7 @@ function exportReactionSchemes(
           message: `Reaction ${reaction.id} has unrecognized source child content preserved only in the native payload.` });
       }
       if (reaction.mappingState === "absent") delete attributes.ReactionStepAtomMap;
+      exportReactionStepAtomMaps(reaction, attributes, context, warnings, objects);
       for (const attribute of Object.keys(attributes)) {
         // Opaque atom-map lists follow the same nonempty-list rule as interpreted step lists.
         if (attribute.startsWith("ReactionStep") && !attributes[attribute].trim()) {
