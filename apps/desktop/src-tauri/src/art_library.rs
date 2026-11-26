@@ -23,12 +23,17 @@
 //! receives that copy, never the original path, so nothing swapped in after the checks can be
 //! dragged out, and the library is never handed a network path (its Windows code panics on one).
 //! A copy is removed when its drag is cancelled or fails, [`DROPPED_COPY_GRACE`] after it is
-//! dropped (the receiving app, our own document window included, reads it after the drag ends),
-//! and at startup once it is older than that same grace period (so a drag started while the startup
-//! sweep runs keeps its copy). Removal is never recursive: it unlinks the one staged file inside a
-//! `drag-<16 hex>` folder and then removes that folder if it is empty, working relative to the
-//! staging folder opened at that moment as a real folder (a link in its place is refused), and it
-//! never follows a link.
+//! dropped (the receiving app, our own document window included, reads it after the drag ends; the
+//! sweep before each drag also measures a dropped copy's grace from its drop, not from staging), and
+//! at startup once it is older than that same grace period (so a drag started while the startup
+//! sweep runs keeps its copy). A drag whose Windows end cannot be told from a failed start (the
+//! library may fail after the drop) keeps its copy for the grace period too. Removal is never
+//! recursive: it unlinks the one staged file inside a `drag-<16 hex>` folder and then removes that
+//! folder if it is empty, working relative to the staging folder opened at that moment as a real
+//! folder (a link in its place is refused), and it never follows a link. The staging folder's
+//! identity (device and inode on Unix, volume serial and file index on Windows) is recorded when a
+//! copy is staged into it; cleanup reopens it by path and removes nothing when the folder found there
+//! is a different one (an ancestor folder replaced or linked elsewhere).
 //!
 //! Threat model. The path guard defends against untrusted input from the webview naming arbitrary
 //! paths. A local process running as the same user that renames or replaces folders inside app data
@@ -44,10 +49,12 @@
 //! SVG for the "Drag test" tile in the Templates dialog of a labelled development build and returns
 //! its path; a stable build returns `None` and writes nothing.
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{ipc::Channel, AppHandle, Manager, Runtime, WebviewWindow};
@@ -516,11 +523,72 @@ pub(crate) fn read_drag_source(
     Ok(DragSource { name, bytes })
 }
 
+/// Which folder an open handle is, independent of its path: device and inode on Unix, volume
+/// serial number and file index on Windows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct FolderId {
+    volume: u64,
+    index: u64,
+}
+
+/// The staging folder last staged into (or first opened) at each staging path, by that path, so
+/// cleanup can tell when the path has come to lead to a different folder.
+fn known_staging_folders() -> &'static Mutex<HashMap<PathBuf, FolderId>> {
+    static KNOWN: OnceLock<Mutex<HashMap<PathBuf, FolderId>>> = OnceLock::new();
+    KNOWN.get_or_init(Default::default)
+}
+
+/// When each dropped copy (by its `drag-<16 hex>` folder name) was dropped, so the sweep measures
+/// its grace period from the drop, not from when it was staged.
+fn dropped_copies() -> &'static Mutex<HashMap<String, Instant>> {
+    static DROPPED: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    DROPPED.get_or_init(Default::default)
+}
+
+/// Whether the copy in folder `entry` was dropped less than `age` ago.
+fn dropped_within(entry: &str, age: Duration) -> bool {
+    dropped_copies()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(entry)
+        .is_some_and(|dropped| dropped.elapsed() < age)
+}
+
+/// Opens the staging folder at `path` for cleanup: a real folder (a link in its place is refused)
+/// that is the very folder `expected` names, or, without `expected`, the folder last staged into
+/// at `path` (recorded now if this process has not opened `path` before). A different folder is
+/// refused, so nothing is removed from it.
+fn open_staging_root_for_cleanup(
+    path: &Path,
+    expected: Option<FolderId>,
+) -> std::io::Result<(File, PathBuf)> {
+    let root = os::open_dir_no_follow(path)?;
+    let found = os::folder_id(&root)?;
+    let known = match expected {
+        Some(expected) => expected,
+        None => *known_staging_folders()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry(path.to_path_buf())
+            .or_insert(found),
+    };
+    if found != known {
+        return Err(std::io::Error::other(format!(
+            "\"{}\" is no longer the staging folder copies were staged into; nothing was removed",
+            path.display()
+        )));
+    }
+    let root_path = os::handle_path(&root)?;
+    Ok((root, root_path))
+}
+
 /// A staged copy: `<staging root>/<entry>/<file name>`, a fresh file made for one drag.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct StagedCopy {
     /// The staging root, as the operating system reports it for the open folder.
     pub root: PathBuf,
+    /// The staging root's identity when the copy was staged; removal refuses any other folder.
+    pub root_id: FolderId,
     /// This drag's own folder name in the root (`drag-<16 hex>`).
     pub entry: String,
     /// The file the drag library is given.
@@ -528,10 +596,16 @@ pub(crate) struct StagedCopy {
 }
 
 impl StagedCopy {
-    /// Removes this copy and its folder now. Errors are logged, never raised.
+    /// Removes this copy and its folder now, only from the folder it was staged into. Errors are
+    /// logged, never raised.
     pub(crate) fn remove(&self) {
         let file_name = self.file.file_name().and_then(|name| name.to_str());
-        if let Err(error) = remove_staged_entry(&self.root, &self.entry, file_name) {
+        let removed = remove_staged_entry(&self.root, Some(self.root_id), &self.entry, file_name);
+        dropped_copies()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.entry);
+        if let Err(error) = removed {
             if error.kind() != std::io::ErrorKind::NotFound {
                 log::warn!(
                     "art drag: could not remove staged copy {}: {error}",
@@ -539,6 +613,14 @@ impl StagedCopy {
                 );
             }
         }
+    }
+
+    /// Records that a target accepted this copy now; its grace period runs from here.
+    fn mark_dropped(&self) {
+        dropped_copies()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(self.entry.clone(), Instant::now());
     }
 
     /// Removes this copy after `grace`, on a background thread.
@@ -588,9 +670,26 @@ fn write_new_file_in(
     name: &str,
     bytes: &[u8],
 ) -> std::io::Result<PathBuf> {
+    write_new_file_with(dir, dir_path, name, |file| {
+        file.write_all(bytes)?;
+        file.flush()
+    })
+}
+
+/// [`write_new_file_in`] with the writing passed in. Once the file is created, a failure to write
+/// it removes the partial file (relative to `dir`) before the error is returned.
+fn write_new_file_with(
+    dir: &File,
+    dir_path: &Path,
+    name: &str,
+    write: impl FnOnce(&mut File) -> std::io::Result<()>,
+) -> std::io::Result<PathBuf> {
     let mut file = os::create_file_in(dir, dir_path, name)?;
-    file.write_all(bytes)?;
-    file.flush()?;
+    if let Err(error) = write(&mut file) {
+        drop(file);
+        let _ = os::remove_file_in(dir, dir_path, name);
+        return Err(error);
+    }
     Ok(dir_path.join(name))
 }
 
@@ -605,6 +704,7 @@ pub(crate) fn stage_copy(
     let fail = |error: std::io::Error| DragSourceError::Staging(error.to_string());
     std::fs::create_dir_all(staging_root).map_err(fail)?;
     let root = os::open_dir_no_follow(staging_root).map_err(fail)?;
+    let root_id = os::folder_id(&root).map_err(fail)?;
     let root_path = os::handle_path(&root).map_err(fail)?;
     let root_lexical = parse_lexical(&root_path.to_string_lossy(), platform, true)
         .map_err(|error| DragSourceError::Staging(error.to_string()))?;
@@ -613,6 +713,11 @@ pub(crate) fn stage_copy(
             staging_root.to_string_lossy().into_owned(),
         ));
     }
+    // This is now the staging folder at this path; cleanup by path refuses any other.
+    known_staging_folders()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(staging_root.to_path_buf(), root_id);
     for _ in 0..8 {
         let entry = staged_entry_name().map_err(fail)?;
         match os::create_dir_in(&root, &root_path, &entry) {
@@ -626,6 +731,7 @@ pub(crate) fn stage_copy(
         return match written {
             Ok(file) => Ok(StagedCopy {
                 root: root_path,
+                root_id,
                 entry,
                 file,
             }),
@@ -641,11 +747,14 @@ pub(crate) fn stage_copy(
 }
 
 /// Removes `<staging_root>/<entry>` without following any link and without recursing. Refuses
-/// names this module did not make, and a staging root that is not a real folder at this moment (a
-/// link in its place included), so nothing outside a per-drag folder is ever deleted. `staged_file`
-/// is the copy's file name when known; otherwise the folder may hold at most one entry.
+/// names this module did not make, a staging root that is not a real folder at this moment (a link
+/// in its place included), and a staging root that is not the folder copies were staged into
+/// (`expected`, or the one recorded for `staging_root`), so nothing outside a per-drag folder of
+/// the staging folder is ever deleted. `staged_file` is the copy's file name when known; otherwise
+/// the folder may hold at most one entry.
 pub(crate) fn remove_staged_entry(
     staging_root: &Path,
+    expected: Option<FolderId>,
     entry: &str,
     staged_file: Option<&str>,
 ) -> std::io::Result<()> {
@@ -655,8 +764,7 @@ pub(crate) fn remove_staged_entry(
             format!("\"{entry}\" is not a staging folder"),
         ));
     }
-    let root = os::open_dir_no_follow(staging_root)?;
-    let root_path = os::handle_path(&root)?;
+    let (root, root_path) = open_staging_root_for_cleanup(staging_root, expected)?;
     remove_entry_in(&root, &root_path, entry, staged_file)
 }
 
@@ -715,14 +823,18 @@ fn remove_entry_in(
 }
 
 /// Removes every per-drag folder in `staging_root` (only those older than `older_than`, when
-/// given). The root itself must be a real folder, not a link; it is opened once and every removal
-/// works relative to that handle. Returns how many were removed.
+/// given, a dropped copy's age counting from its drop). The root itself must be a real folder, not
+/// a link, and the folder last staged into at that path; it is opened once and every removal works
+/// relative to that handle. Returns how many were removed.
 pub(crate) fn sweep_staging(staging_root: &Path, older_than: Option<Duration>) -> usize {
-    let Ok(root) = os::open_dir_no_follow(staging_root) else {
-        return 0;
-    };
-    let Ok(root_path) = os::handle_path(&root) else {
-        return 0;
+    let (root, root_path) = match open_staging_root_for_cleanup(staging_root, None) {
+        Ok(opened) => opened,
+        Err(error) => {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                log::warn!("art drag: staging folder not swept: {error}");
+            }
+            return 0;
+        }
     };
     let Ok(entries) = std::fs::read_dir(&root_path) else {
         return 0;
@@ -734,6 +846,9 @@ pub(crate) fn sweep_staging(staging_root: &Path, older_than: Option<Duration>) -
             continue;
         };
         if let Some(age) = older_than {
+            if dropped_within(name, age) {
+                continue;
+            }
             let old_enough = std::fs::symlink_metadata(root_path.join(name))
                 .and_then(|meta| meta.modified())
                 .ok()
@@ -815,12 +930,27 @@ pub(crate) fn drag_preview_png(svg: &[u8]) -> Vec<u8> {
     render_preview(svg).unwrap_or_else(placeholder_preview)
 }
 
+/// The gzip magic. usvg inflates gzip input without a size limit, so it is refused unparsed.
+const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
+
 fn render_preview(svg: &[u8]) -> Option<Vec<u8>> {
     use resvg::{tiny_skia, usvg};
-    // Never resolve a file path or URL from the SVG; text draws only if a font is embedded.
+    if svg.starts_with(&GZIP_MAGIC) {
+        return None;
+    }
+    // Never resolve a file path or URL from the SVG; text draws only if a font is embedded. A
+    // gzip-compressed `data:` image (an embedded SVGZ, at any depth) is not drawn either.
+    let default_data = usvg::ImageHrefResolver::default_data_resolver();
     let options = usvg::Options {
         image_href_resolver: usvg::ImageHrefResolver {
-            resolve_data: usvg::ImageHrefResolver::default_data_resolver(),
+            resolve_data: Box::new(
+                move |mime: &str, data: std::sync::Arc<Vec<u8>>, options: &usvg::Options| {
+                    if data.starts_with(&GZIP_MAGIC) {
+                        return None;
+                    }
+                    default_data(mime, data, options)
+                },
+            ),
             resolve_string: Box::new(|_, _| None),
         },
         ..Default::default()
@@ -932,9 +1062,27 @@ pub(crate) fn guard_drag_panic(start: impl FnOnce() -> Result<(), String>) -> Re
 /// for [`DROPPED_COPY_GRACE`] when a target accepted it.
 fn finish_staged_copy(staged: StagedCopy, dropped: bool) {
     if dropped {
+        staged.mark_dropped();
         staged.remove_after(DROPPED_COPY_GRACE);
     } else {
         staged.remove();
+    }
+}
+
+/// Whether `error` from `drag::start_drag` may have been raised after a target accepted the file.
+/// On Windows the library runs `DoDragDrop` to its end and then asks for the cursor position,
+/// returning that call's error without reporting the drop; only its errors raised before
+/// `DoDragDrop` (resolving the file, an unsupported window) are a certain failed start. On macOS
+/// the call returns as soon as the drag session begins, so every error is a failed start.
+#[cfg(any(target_os = "macos", windows))]
+fn drag_error_may_follow_a_drop(error: &drag::Error) -> bool {
+    if cfg!(windows) {
+        !matches!(
+            error,
+            drag::Error::Io(_) | drag::Error::UnsupportedWindowHandle
+        )
+    } else {
+        false
     }
 }
 
@@ -952,6 +1100,7 @@ async fn start_native_drag<R: Runtime>(
     let on_ended = staged.clone();
     // AppKit requires the main thread; on Windows DoDragDrop needs the window's (OLE STA) thread.
     let dispatched = app.run_on_main_thread(move || {
+        let mut may_have_dropped = false;
         let started = guard_drag_panic(|| {
             drag::start_drag(
                 &window,
@@ -973,10 +1122,15 @@ async fn start_native_drag<R: Runtime>(
                 },
                 drag::Options::default(),
             )
-            .map_err(|error| format!("Art drag could not start: {error}."))
+            .map_err(|error| {
+                may_have_dropped = drag_error_may_follow_a_drop(&error);
+                format!("Art drag could not start: {error}.")
+            })
         });
         if started.is_err() {
-            on_failure.remove();
+            // An error that may have come after a target accepted the file keeps the copy for the
+            // grace period, as a drop does; a failed start removes it at once.
+            finish_staged_copy(on_failure, may_have_dropped);
         }
         let _ = started_tx.send(started);
     });
@@ -1051,7 +1205,7 @@ pub(crate) fn write_drag_test_file(art_root: &Path) -> std::io::Result<PathBuf> 
     let temporary = format!(".{DRAG_TEST_FILE}.{}.tmp", staged_entry_name()?);
     write_new_file_in(&dir, &folder, &temporary, DRAG_TEST_SVG.as_bytes())?;
     if let Err(error) = os::rename_in(&dir, &folder, &temporary, DRAG_TEST_FILE) {
-        let _ = std::fs::remove_file(folder.join(&temporary));
+        let _ = os::remove_file_in(&dir, &folder, &temporary);
         return Err(error);
     }
     Ok(folder.join(DRAG_TEST_FILE))
@@ -1098,7 +1252,7 @@ mod os {
     use std::os::unix::fs::OpenOptionsExt;
     use std::path::{Path, PathBuf};
 
-    use super::LexicalPath;
+    use super::{FolderId, LexicalPath};
 
     fn c_name(name: &str) -> io::Result<CString> {
         if name.is_empty() || name == "." || name == ".." || name.contains('/') {
@@ -1137,6 +1291,16 @@ mod os {
             .read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
             .open(path)
+    }
+
+    /// The open folder's device and inode.
+    pub(super) fn folder_id(dir: &File) -> io::Result<FolderId> {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = dir.metadata()?;
+        Ok(FolderId {
+            volume: metadata.dev(),
+            index: metadata.ino(),
+        })
     }
 
     pub(super) fn open_dir_in(parent: &File, _parent_path: &Path, name: &str) -> io::Result<File> {
@@ -1264,12 +1428,12 @@ mod os {
     use std::path::{Path, PathBuf};
 
     use windows_sys::Win32::Storage::FileSystem::{
-        GetDriveTypeW, GetFinalPathNameByHandleW, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        VOLUME_NAME_DOS,
+        GetDriveTypeW, GetFileInformationByHandle, GetFinalPathNameByHandleW,
+        BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, VOLUME_NAME_DOS,
     };
 
-    use super::LexicalPath;
+    use super::{FolderId, LexicalPath};
 
     /// `DRIVE_REMOTE` from `GetDriveTypeW` (WindowsProgramming, a feature not otherwise needed).
     const DRIVE_REMOTE: u32 = 4;
@@ -1316,6 +1480,20 @@ mod os {
             )));
         }
         Ok(dir)
+    }
+
+    /// The open folder's volume serial number and file index.
+    pub(super) fn folder_id(dir: &File) -> io::Result<FolderId> {
+        // SAFETY: plain data, filled in by the call below for an open handle.
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: `dir` is open (with attribute access) and `info` is a valid out pointer.
+        if unsafe { GetFileInformationByHandle(dir.as_raw_handle(), &mut info) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(FolderId {
+            volume: u64::from(info.dwVolumeSerialNumber),
+            index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+        })
     }
 
     /// Fails unless `child` (opened by path) is `name` directly inside the open folder `parent`.
@@ -1794,6 +1972,9 @@ mod tests {
         let large = root.join("large.svg");
         let handle = std::fs::File::create(&large).unwrap();
         handle.set_len(MAX_DRAG_FILE_BYTES + 1).unwrap();
+        // Closed before the guard opens it: on Windows the guard shares the file only with readers,
+        // which an open writer would refuse (an `Unreadable` error instead of `TooLarge`).
+        drop(handle);
         assert!(matches!(
             read_drag_source(&host_path(&large), &roots, platform),
             Err(DragSourceError::TooLarge { .. })
@@ -1959,7 +2140,10 @@ mod tests {
             "drag-0123456789ABCDEF",
             "drag-0123/../x",
         ] {
-            assert!(remove_staged_entry(&staging, name, None).is_err(), "{name}");
+            assert!(
+                remove_staged_entry(&staging, None, name, None).is_err(),
+                "{name}"
+            );
         }
         assert!(is_staged_entry_name("drag-0123456789abcdef"));
         // A missing staging folder is simply nothing to do.
@@ -2086,13 +2270,172 @@ mod tests {
         staged.remove();
         assert_eq!(sweep_staging(&staging, None), 0);
         assert_eq!(sweep_staging_at_startup(&staging), 0);
-        assert!(remove_staged_entry(&staging, &staged.entry, Some("a.svg")).is_err());
-        assert!(remove_staged_entry(&staging, &staged.entry, None).is_err());
+        assert!(remove_staged_entry(&staging, None, &staged.entry, Some("a.svg")).is_err());
+        assert!(remove_staged_entry(&staging, None, &staged.entry, None).is_err());
         assert_eq!(std::fs::read(target.join("a.svg")).unwrap(), b"keep");
         assert!(std::fs::symlink_metadata(&staging)
             .unwrap()
             .file_type()
             .is_symlink());
+    }
+
+    #[test]
+    fn a_dropped_copy_keeps_its_grace_period_from_the_drop_not_from_staging() {
+        let scratch = Scratch::new("drop-grace");
+        let staging = scratch.0.join(DRAG_STAGING_FOLDER);
+        let source = DragSource {
+            name: "a.svg".into(),
+            bytes: DRAG_TEST_SVG.as_bytes().to_vec(),
+        };
+        let platform = PathPlatform::current();
+        let aged = std::time::SystemTime::now() - DROPPED_COPY_GRACE - Duration::from_secs(60);
+        // A drag held longer than the grace period, then dropped: its folder already looks old.
+        let held = stage_copy(&staging, &source, platform).unwrap();
+        set_modified_dir(&held.root.join(&held.entry), aged);
+        finish_staged_copy(held.clone(), true);
+        // An abandoned copy of the same age (its end never reported) is still swept.
+        let abandoned = stage_copy(&staging, &source, platform).unwrap();
+        set_modified_dir(&abandoned.root.join(&abandoned.entry), aged);
+        // The next drag's sweep, within the grace period after the drop, keeps the dropped copy.
+        assert_eq!(sweep_staging(&staging, Some(DROPPED_COPY_GRACE)), 1);
+        assert!(held.file.exists());
+        assert!(!abandoned.root.join(&abandoned.entry).exists());
+        // Once the period since the drop has passed, the copy is old enough to go.
+        assert_eq!(sweep_staging(&staging, Some(Duration::ZERO)), 1);
+        assert!(!held.root.join(&held.entry).exists());
+        held.remove();
+        assert!(!dropped_within(&held.entry, DROPPED_COPY_GRACE));
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn a_drag_error_that_may_follow_a_drop_keeps_the_copy() {
+        // Errors raised before the system drag runs are certain failed starts.
+        let io = drag::Error::Io(std::io::Error::other("no such file"));
+        assert!(!drag_error_may_follow_a_drop(&io));
+        assert!(!drag_error_may_follow_a_drop(
+            &drag::Error::UnsupportedWindowHandle
+        ));
+        // On Windows, an error after DoDragDrop (the cursor query) may hide an accepted drop.
+        assert_eq!(
+            drag_error_may_follow_a_drop(&drag::Error::FailedToGetCursorPosition),
+            cfg!(windows)
+        );
+        let scratch = Scratch::new("ambiguous-end");
+        let staging = scratch.0.join(DRAG_STAGING_FOLDER);
+        let source = DragSource {
+            name: "a.svg".into(),
+            bytes: DRAG_TEST_SVG.as_bytes().to_vec(),
+        };
+        let platform = PathPlatform::current();
+        let kept = stage_copy(&staging, &source, platform).unwrap();
+        finish_staged_copy(kept.clone(), true);
+        assert!(kept.file.exists());
+        assert!(dropped_within(&kept.entry, DROPPED_COPY_GRACE));
+        let failed = stage_copy(&staging, &source, platform).unwrap();
+        finish_staged_copy(failed.clone(), false);
+        assert!(!failed.root.join(&failed.entry).exists());
+        kept.remove();
+    }
+
+    #[test]
+    fn cleanup_refuses_a_staging_folder_whose_ancestor_was_replaced() {
+        let scratch = Scratch::new("replaced-ancestor");
+        let ancestor = scratch.0.join("local");
+        let staging = ancestor.join(DRAG_STAGING_FOLDER);
+        let source = DragSource {
+            name: "a.svg".into(),
+            bytes: DRAG_TEST_SVG.as_bytes().to_vec(),
+        };
+        let staged = stage_copy(&staging, &source, PathPlatform::current()).unwrap();
+        // The ancestor is moved away and another real folder put at its path, holding a staging
+        // folder with a per-drag folder of the same name and the same file in it.
+        std::fs::rename(&ancestor, scratch.0.join("moved")).unwrap();
+        let target = staging.join(&staged.entry);
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("a.svg"), b"keep").unwrap();
+        let unrelated = staging.join("drag-00000000000000bb");
+        std::fs::create_dir_all(&unrelated).unwrap();
+
+        staged.remove();
+        assert_eq!(sweep_staging(&staging, None), 0);
+        assert_eq!(sweep_staging_at_startup(&staging), 0);
+        assert!(remove_staged_entry(&staging, None, &staged.entry, Some("a.svg")).is_err());
+        assert!(remove_staged_entry(
+            &staging,
+            Some(staged.root_id),
+            "drag-00000000000000bb",
+            None
+        )
+        .is_err());
+        assert_eq!(std::fs::read(target.join("a.svg")).unwrap(), b"keep");
+        assert!(unrelated.exists());
+        // The moved, original staging folder still holds the copy.
+        assert!(scratch
+            .0
+            .join("moved")
+            .join(DRAG_STAGING_FOLDER)
+            .join(&staged.entry)
+            .join("a.svg")
+            .exists());
+        // A new drag staging into the folder now at the path makes it the staging folder.
+        let next = stage_copy(&staging, &source, PathPlatform::current()).unwrap();
+        next.remove();
+        assert!(!next.root.join(&next.entry).exists());
+        assert_eq!(std::fs::read(target.join("a.svg")).unwrap(), b"keep");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_refuses_a_staging_folder_reached_through_a_linked_ancestor() {
+        use std::os::unix::fs::symlink;
+        let scratch = Scratch::new("linked-ancestor");
+        let ancestor = scratch.0.join("local");
+        let staging = ancestor.join(DRAG_STAGING_FOLDER);
+        let source = DragSource {
+            name: "a.svg".into(),
+            bytes: DRAG_TEST_SVG.as_bytes().to_vec(),
+        };
+        let staged = stage_copy(&staging, &source, Unix).unwrap();
+        std::fs::rename(&ancestor, scratch.0.join("moved")).unwrap();
+        let elsewhere = scratch.0.join("elsewhere");
+        let target = elsewhere.join(DRAG_STAGING_FOLDER).join(&staged.entry);
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("a.svg"), b"keep").unwrap();
+        symlink(&elsewhere, &ancestor).unwrap();
+
+        staged.remove();
+        assert_eq!(sweep_staging(&staging, None), 0);
+        assert!(remove_staged_entry(&staging, None, &staged.entry, Some("a.svg")).is_err());
+        assert_eq!(std::fs::read(target.join("a.svg")).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn the_harness_writer_leaves_no_temporary_file_behind_on_failure() {
+        let scratch = Scratch::new("harness-temp");
+        let folder = scratch.0.join("spike");
+        std::fs::create_dir_all(&folder).unwrap();
+        let dir = os::open_dir_no_follow(&folder).unwrap();
+        // A write that fails part way removes the file it created.
+        let error = write_new_file_with(&dir, &folder, ".partial.tmp", |file| {
+            file.write_all(b"<svg")?;
+            Err(std::io::Error::other("disk full"))
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), "disk full");
+        assert!(!folder.join(".partial.tmp").exists());
+        drop(dir);
+        // A rename that fails (a folder where the file goes) removes the temporary file too.
+        let root = scratch.0.join("art-library");
+        let spike = root.join(DRAG_TEST_FOLDER);
+        std::fs::create_dir_all(spike.join(DRAG_TEST_FILE)).unwrap();
+        std::fs::write(spike.join(DRAG_TEST_FILE).join("keep.txt"), b"keep").unwrap();
+        assert!(write_drag_test_file(&root).is_err());
+        let names: Vec<String> = std::fs::read_dir(&spike)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec![DRAG_TEST_FILE.to_string()]);
     }
 
     #[cfg(unix)]
@@ -2191,6 +2534,39 @@ mod tests {
         // A file reference in the SVG is never followed.
         let linked = br#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="10" height="10"><image width="10" height="10" xlink:href="/etc/hosts"/></svg>"#;
         assert!(image::load_from_memory(&drag_preview_png(linked)).is_ok());
+    }
+
+    #[test]
+    fn gzip_svgs_are_never_inflated_for_the_preview() {
+        use flate2::{write::GzEncoder, Compression};
+        let gzip = |bytes: &[u8]| {
+            let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+            encoder.write_all(bytes).unwrap();
+            encoder.finish().unwrap()
+        };
+        // A gzip-compressed file draws the plain tile, never the decompressed drawing.
+        let compressed = gzip(DRAG_TEST_SVG.as_bytes());
+        assert_eq!(render_preview(&compressed), None);
+        let tile = image::load_from_memory(&drag_preview_png(&compressed)).unwrap();
+        assert_eq!(
+            (tile.width(), tile.height()),
+            (PREVIEW_SIZE / 2, PREVIEW_SIZE / 2)
+        );
+        // Nor is a gzip-compressed SVG embedded as a data: image; the same image uncompressed is.
+        let red = br##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="#ff0000"/></svg>"##;
+        let embedding = |payload: &[u8]| {
+            let encoded: String = payload.iter().map(|byte| format!("%{byte:02X}")).collect();
+            format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="10" height="10"><image width="10" height="10" xlink:href="data:image/svg+xml,{encoded}"/></svg>"#
+            )
+        };
+        let centre_alpha = |svg: String| {
+            let png = render_preview(svg.as_bytes()).unwrap();
+            let image = image::load_from_memory(&png).unwrap().to_rgba8();
+            image.get_pixel(image.width() / 2, image.height() / 2).0
+        };
+        assert_eq!(centre_alpha(embedding(red)), [0xff, 0, 0, 0xff]);
+        assert_eq!(centre_alpha(embedding(&gzip(red)))[3], 0);
     }
 
     #[test]

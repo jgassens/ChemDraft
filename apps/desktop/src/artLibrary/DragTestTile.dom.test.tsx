@@ -79,6 +79,39 @@ describe("DragTestTile (development builds only)", () => {
     expect(fake.startDrag).not.toHaveBeenCalled();
   });
 
+  it("follows a press outside the tile: a release there ends it, a move there starts the drag", async () => {
+    const fake = bridge("/a/art-library/spike/drag-test.svg");
+    await act(async () => root.render(createElement(DragTestTile, { bridge: fake })));
+    const tile = container.querySelector("[data-drag-test-path]")!;
+    // Pressed on the tile, left it before the threshold, released outside: the press is over, so a
+    // later held-button move over the tile starts nothing.
+    pointer(tile, "pointerdown", { x: 10, y: 10 });
+    pointer(document.body, "pointermove", { x: 12, y: 10 });
+    pointer(document.body, "pointerup", { x: 200, y: 10, buttons: 0 });
+    pointer(tile, "pointermove", { x: 40, y: 10 });
+    expect(fake.startDrag).not.toHaveBeenCalled();
+    // A cancelled press is over too.
+    pointer(tile, "pointerdown", { x: 10, y: 10 });
+    pointer(document.body, "pointercancel", { x: 10, y: 10, buttons: 0 });
+    pointer(tile, "pointermove", { x: 40, y: 10 });
+    expect(fake.startDrag).not.toHaveBeenCalled();
+    // Pressed on the tile and moved past the threshold outside it: the drag starts once.
+    pointer(tile, "pointerdown", { x: 10, y: 10 });
+    pointer(document.body, "pointermove", { x: 60, y: 10 });
+    pointer(document.body, "pointermove", { x: 90, y: 10 });
+    expect(fake.startDrag).toHaveBeenCalledOnce();
+  });
+
+  it("stops following a pending press when it unmounts", async () => {
+    const fake = bridge("/a/art-library/spike/drag-test.svg");
+    await act(async () => root.render(createElement(DragTestTile, { bridge: fake })));
+    pointer(container.querySelector("[data-drag-test-path]")!, "pointerdown", { x: 0, y: 0 });
+    act(() => root.unmount());
+    pointer(document.body, "pointermove", { x: 50, y: 0 });
+    expect(fake.startDrag).not.toHaveBeenCalled();
+    root = createRoot(container);
+  });
+
   it("shows Rust's refusal", async () => {
     const fake = bridge("/a/art-library/spike/drag-test.svg");
     vi.mocked(fake.startDrag).mockRejectedValueOnce("Art drag refused: \"/a\" is outside the art library folders.");

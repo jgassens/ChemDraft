@@ -32,9 +32,13 @@ Nobody has done the hands-on drag yet. This page says how, and what to send back
   deleted at once when its drag is cancelled or fails to start, two minutes after it is dropped (the
   receiving app, our own document window included, reads it after the drag ends), and at the next
   launch once it is older than those two minutes (so a drag started during launch keeps its copy).
+  The two minutes run from the drop, not from when the copy was made, so a drag held longer than
+  that keeps its copy after the drop too. On Windows, a drag whose end the library reports as an
+  error that may follow a drop keeps its copy for the same two minutes.
   Cleanup is never recursive: it deletes the one copied file inside a `drag-<hex>` folder of
   `art-drag-staging`, then that folder if it is empty, and never follows a link (a staging folder
-  replaced by a link is left alone). The copy is not marked read-only, because Finder and Explorer carry that onto the file
+  replaced by a link is left alone). It also removes nothing when the folder now at the staging path
+  is not the one the copy was made in (an enclosing folder moved, replaced or linked elsewhere). The copy is not marked read-only, because Finder and Explorer carry that onto the file
   they make at the drop target. If the drag library itself fails (its Windows code panics when the shell cannot build a
   data object), the panic is caught and the drag rejects with "Art drag could not start: …" instead
   of the app quitting.

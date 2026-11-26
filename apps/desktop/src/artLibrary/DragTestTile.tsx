@@ -1,5 +1,5 @@
 // DEV-ONLY drag harness (see dragTestHarness.ts). Remove in phase 3.
-import { useEffect, useRef, useState, type PointerEvent } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { describeDragEnd, nativeDragTestBridge, passedDragThreshold, type DragTestBridge } from "./dragTestHarness";
 import "./DragTestTile.css";
 
@@ -11,8 +11,10 @@ import "./DragTestTile.css";
 export function DragTestTile({ bridge = nativeDragTestBridge }: { bridge?: DragTestBridge }) {
   const [path, setPath] = useState<string | null>(null);
   const [status, setStatus] = useState("Press and drag onto a document, the desktop, or another app.");
-  const press = useRef<{ x: number; y: number; pointerId: number } | null>(null);
   const dragging = useRef(false);
+  /** Stops following a pending press; set while one is pending. */
+  const stopPress = useRef<(() => void) | null>(null);
+  useEffect(() => () => stopPress.current?.(), []);
   useEffect(() => {
     let cancelled = false;
     bridge.prepare().then(prepared => { if (!cancelled) setPath(prepared); })
@@ -20,25 +22,38 @@ export function DragTestTile({ bridge = nativeDragTestBridge }: { bridge?: DragT
     return () => { cancelled = true; };
   }, [bridge]);
   if (!path) return null;
-  const down = (event: PointerEvent<HTMLDivElement>) => {
+  // A pending press is followed on the whole window, so moving out of the tile still starts the
+  // drag and a release or cancel anywhere ends the press (a mouse has no implicit pointer capture).
+  const down = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || dragging.current) return;
-    press.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
+    stopPress.current?.();
+    const start = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
+    const view = event.currentTarget.ownerDocument.defaultView ?? window;
+    const move = (moved: PointerEvent) => {
+      if (moved.pointerId !== start.pointerId || (moved.buttons & 1) === 0) return;
+      if (!passedDragThreshold(start, { x: moved.clientX, y: moved.clientY })) return;
+      stop();
+      dragging.current = true;
+      setStatus("Dragging…");
+      bridge.startDrag(path, ended => { dragging.current = false; setStatus(describeDragEnd(ended)); })
+        .catch((error: unknown) => { dragging.current = false; setStatus(error instanceof Error ? error.message : String(error)); });
+    };
+    const end = (ended: PointerEvent) => { if (ended.pointerId === start.pointerId) stop(); };
+    const stop = () => {
+      view.removeEventListener("pointermove", move, true);
+      view.removeEventListener("pointerup", end, true);
+      view.removeEventListener("pointercancel", end, true);
+      stopPress.current = null;
+    };
+    view.addEventListener("pointermove", move, true);
+    view.addEventListener("pointerup", end, true);
+    view.addEventListener("pointercancel", end, true);
+    stopPress.current = stop;
   };
-  const move = (event: PointerEvent<HTMLDivElement>) => {
-    const start = press.current;
-    if (!start || start.pointerId !== event.pointerId || (event.buttons & 1) === 0) return;
-    if (!passedDragThreshold(start, { x: event.clientX, y: event.clientY })) return;
-    press.current = null;
-    dragging.current = true;
-    setStatus("Dragging…");
-    bridge.startDrag(path, ended => { dragging.current = false; setStatus(describeDragEnd(ended)); })
-      .catch((error: unknown) => { dragging.current = false; setStatus(error instanceof Error ? error.message : String(error)); });
-  };
-  const release = () => { press.current = null; };
   return <section className="cd-drag-test" aria-label="Drag test (development build only)">
     <h3>Drag test <span>development build only</span></h3>
     <div className="cd-drag-test-tile" data-drag-test-path={path} title={path}
-      onPointerDown={down} onPointerMove={move} onPointerUp={release} onPointerCancel={release}
+      onPointerDown={down}
       onDragStart={event => event.preventDefault()}>
       <svg viewBox="0 0 96 96" aria-hidden="true"><rect x="4" y="4" width="88" height="88" rx="14" fill="#eef4fb" stroke="#2f6db5" strokeWidth="4" />
         <path d="M38 20h20M42 20v20L26 72a6 6 0 0 0 5 8h34a6 6 0 0 0 5-8L54 40V20" fill="#cfe2f7" stroke="#2f6db5" strokeWidth="4" strokeLinejoin="round" />
