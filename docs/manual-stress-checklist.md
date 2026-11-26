@@ -1920,9 +1920,9 @@ Run under KDE Plasma (Wayland session, so the app uses XWayland) and on GNOME.
   1920x1080 with 150% scaling (and on a 1366x768 laptop at 100%). Each time the Main toolbar
   shows both rows at full width with no horizontal or vertical scrollbar and runs off the right
   edge; dragging it left reaches every tool, up to the last one, and each is clickable. Palettes
-  that fit the screen (Arrows, Orbitals, Style) are unchanged. (Native Wayland only, with
-  `CHEMDRAFT_NATIVE_WAYLAND=1`: the compositor places palettes, so there Main is still capped to
-  the screen and scrolls sideways.)
+  that fit the screen (Arrows, Orbitals, Style) are unchanged. The same holds in native Wayland
+  mode (`CHEMDRAFT_NATIVE_WAYLAND=1`): Main keeps its natural width, is not capped to the screen,
+  never scrolls sideways, and you drag it to reach the rest.
 - Moving between screens without relaunching (a 1024x768 and a 1680x1050 monitor side by side):
   drag the Main toolbar from the wide monitor onto the narrow one and back. It keeps its natural
   width on both, never gains a scrollbar, and is not resized on its own. Neither move
