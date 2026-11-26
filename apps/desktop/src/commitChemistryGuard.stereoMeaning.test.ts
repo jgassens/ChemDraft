@@ -151,14 +151,19 @@ describe("without the stereo engine (still loading, or a drawing it cannot read)
     expect(exact(before, element, STEREO_ENGINE_LOADING)).toEqual([`${prefix}its atom "n" would be O instead of N.`]);
   });
 
-  it("skips the stereo comparison when the engine cannot read the drawing", () => {
+  it("refuses the commit, naming the failure, when the engine cannot read the drawing (never skips the comparison)", () => {
+    // Bug chemistry-guard-unchecked-stereo (1.2.4): this used to commit, so the inverted centre
+    // below (R to S) went through with its stereo unchecked.
     const before = fixture();
     const hashed = editBonds(before, (bond) => bond.id === "b1" ? styled(bond, "hashed") : bond);
+    expect(canonical(before)).toBe("C/C=C/N[C@H](F)Cl");
+    expect(canonical(hashed)).toBe("C/C=C/N[C@@H](F)Cl");
     const failing: CommitStereoEngine = {
       perceiveStereoCentersFromMolfile: () => { throw new Error("unreadable"); },
       perceiveDoubleBondStereoFromMolfile: () => { throw new Error("unreadable"); }
     };
-    expect(exact(before, hashed, failing)).toEqual([]);
+    expect(exact(before, hashed, failing)).toEqual([`Cannot move: the stereochemistry of molecule "${M}" cannot be checked because ` +
+      "the stereocentre perceiver failed on the drawing before the edit (unreadable)."]);
   });
 });
 

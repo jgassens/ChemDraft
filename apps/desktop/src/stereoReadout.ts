@@ -1,8 +1,10 @@
 import { elementSymbols, type MoleculeObject } from "@chemdraft/chem-core";
 import { stereoPerceptionMolfile } from "@chemdraft/document-workflow-core";
 import type {
+  assertConstrainedLayoutIdentity,
   perceiveDoubleBondStereoFromMolfile,
-  perceiveStereoCentersFromMolfile
+  perceiveStereoCentersFromMolfile,
+  perceiveUnrepresentableStereo
 } from "@chemdraft/ocl-adapter";
 
 /**
@@ -24,6 +26,15 @@ import type {
 export interface StereoEngine {
   perceiveStereoCentersFromMolfile: typeof perceiveStereoCentersFromMolfile;
   perceiveDoubleBondStereoFromMolfile: typeof perceiveDoubleBondStereoFromMolfile;
+  /**
+   * Axial stereo (atropisomer axes), read by the commit chemistry guard only; the readout never
+   * uses it. The default importer (`@chemdraft/ocl-adapter`) always provides both. An engine
+   * without them cannot check a molecule that may carry an axis, and the guard refuses such a
+   * commit as unchecked rather than passing it.
+   */
+  perceiveUnrepresentableStereo?: typeof perceiveUnrepresentableStereo;
+  /** OpenChemLib's canonical (idcode) identity of two molfiles, stereo parities included; throws when they differ. */
+  assertConstrainedLayoutIdentity?: typeof assertConstrainedLayoutIdentity;
 }
 
 export type StereoReadoutTarget =
