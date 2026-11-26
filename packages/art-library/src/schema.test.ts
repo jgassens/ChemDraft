@@ -67,4 +67,15 @@ describe("art pack limits and paths", () => {
       expect(() => packSchema.parse({ ...pack, items: [item, other] })).toThrow("Duplicate variant file");
     }
   );
+
+  it("rejects canonically equivalent variant paths while preserving distinct paths", () => {
+    const composed = { ...variant, file: "art/é.svg" };
+    const decomposed = { ...variant, file: "art/e\u0301.svg" };
+    const withVariants = (second: typeof variant) => ({
+      ...pack, items: [{ ...item, variants: { one: composed, two: second } }]
+    });
+    expect(() => packSchema.parse(withVariants(decomposed))).toThrow("Duplicate variant file");
+    const distinct = { ...variant, file: "art/ê.svg" };
+    expect(packSchema.parse(withVariants(distinct)).items[0]!.variants.one!.file).toBe(composed.file);
+  });
 });
