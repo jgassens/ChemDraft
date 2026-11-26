@@ -1,11 +1,11 @@
 use super::{
-    identity::{App, Identity},
+    identity::{App, ExecutableIdentity, Identity},
     temp_files,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::{self, Write},
     path::{Path, PathBuf},
@@ -13,8 +13,33 @@ use std::{
 };
 
 const CONSENT_TEXT_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 const MAX_CONSENT_BYTES: usize = 1024 * 1024;
 static LOCK: Mutex<()> = Mutex::new(());
+
+type AppScope<'a> = (&'a str, &'a str);
+
+#[derive(Debug)]
+struct Conflict;
+
+impl std::fmt::Display for Conflict {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Conflicting app handoff consents. Revoke the app's consents in Plugin Manager, then pick the app again.")
+    }
+}
+
+impl std::error::Error for Conflict {}
+
+pub(super) fn is_conflict(error: &io::Error) -> bool {
+    error.get_ref().is_some_and(|cause| cause.is::<Conflict>())
+}
+
+fn revocation_id(prefix: &str, scope: impl Serialize) -> String {
+    use sha2::{Digest, Sha256};
+    // The random picker ID stays private. The manager gets a one-way, revocation-only reference.
+    let scope = serde_json::to_vec(&scope).expect("consent scope is serializable");
+    format!("{prefix}-{:x}", Sha256::digest(scope))
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,35 +56,62 @@ pub(super) struct Row {
     pub at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pipeline: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    picked_companion: Option<ExecutableIdentity>,
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
 }
 
 impl Row {
-    pub(super) fn picked(plugin_id: &str, app_id: String, app: App) -> Self {
+    fn ungranted(
+        plugin_id: &str,
+        app_id: String,
+        app_path: PathBuf,
+        mut app_identity: Identity,
+        pipeline: Option<&str>,
+    ) -> Self {
+        app_identity.companion = None;
         Self {
             plugin_id: plugin_id.into(),
             app_id,
-            app_path: app.path,
-            app_identity: app.identity,
+            app_path,
+            app_identity,
             template_digest: String::new(),
             handoff_install_id: None,
             consent_text_version: CONSENT_TEXT_VERSION,
             granted: false,
             at: timestamp(),
-            pipeline: None,
+            pipeline: pipeline.map(str::to_owned),
+            revision: None,
+            picked_companion: None,
             extra: BTreeMap::new(),
         }
     }
 
     pub(super) fn consent_id(&self) -> String {
-        use sha2::{Digest, Sha256};
-        // The random picker ID stays private. The manager gets a one-way, revocation-only reference.
-        format!("consent-{:x}", Sha256::digest(self.app_id.as_bytes()))
+        revocation_id("consent", (&self.plugin_id, &self.app_id, &self.pipeline))
     }
 
-    pub(super) fn grants(&self, app: &App, digest: &str, install_id: &str) -> bool {
+    pub(super) fn conflict_id(&self) -> String {
+        revocation_id("conflict", self.app_scope())
+    }
+
+    fn app_scope(&self) -> AppScope<'_> {
+        (&self.plugin_id, &self.app_id)
+    }
+
+    pub(super) fn grants(
+        &self,
+        app: &App,
+        pipeline: Option<&str>,
+        digest: &str,
+        install_id: &str,
+    ) -> bool {
         self.granted
+            && self.pipeline.as_deref() == pipeline
+            && app.identity.companion.is_some() == pipeline.is_some()
             && self.belongs_to_install(install_id)
             && self.app_path == app.path
             && self.app_identity.matches(&app.identity)
@@ -71,20 +123,35 @@ impl Row {
         self.handoff_install_id.as_deref() == Some(install_id)
     }
 
-    pub(super) fn approve(
-        &mut self,
-        app: &App,
-        pipeline: Option<String>,
-        digest: String,
-        install_id: &str,
-    ) {
-        self.app_identity = app.identity.clone();
-        self.pipeline = pipeline;
+    pub(super) fn accepts_companion(&self, app: &App, digest: &str) -> bool {
+        self.app_identity.companion.is_none()
+            || self.template_digest != digest
+            || self.app_identity.matches(&app.identity)
+            || self
+                .picked_companion
+                .as_ref()
+                .zip(app.identity.companion.as_ref())
+                .is_some_and(|(picked, current)| picked.matches(current))
+    }
+
+    fn approve(&mut self, app: &App, digest: String, install_id: &str) -> io::Result<()> {
+        if self.app_path != app.path
+            || !self.app_identity.main_matches(&app.identity)
+            || self.pipeline.is_some() != app.identity.companion.is_some()
+            || !self.accepts_companion(app, &digest)
+            || digest.is_empty()
+        {
+            return Err(io::Error::other("App handoff consent scope changed."));
+        }
+        self.app_identity.update_from(&app.identity);
         self.template_digest = digest;
         self.handoff_install_id = Some(install_id.into());
         self.consent_text_version = CONSENT_TEXT_VERSION;
         self.granted = true;
         self.at = timestamp();
+        self.picked_companion = None;
+        self.revision = Some(temp_files::nonce()?);
+        Ok(())
     }
 
     pub(super) fn same_grant(&self, other: &Self) -> bool {
@@ -98,7 +165,29 @@ impl Row {
             && self.granted == other.granted
             && self.at == other.at
             && self.pipeline == other.pipeline
+            && self.revision == other.revision
     }
+
+    fn for_operation(&self, pipeline: Option<&str>) -> Self {
+        Self::ungranted(
+            &self.plugin_id,
+            self.app_id.clone(),
+            self.app_path.clone(),
+            self.app_identity.clone(),
+            pipeline,
+        )
+    }
+}
+
+pub(super) struct Entry {
+    pub row: Row,
+    persisted: bool,
+}
+
+#[derive(Debug)]
+pub(super) enum ListedConsent {
+    Operation(Row),
+    Conflict(Row),
 }
 
 #[derive(Deserialize, Serialize)]
@@ -106,6 +195,9 @@ impl Row {
 struct Document {
     schema_version: u32,
     rows: Vec<Row>,
+    // Older v2 readers ignore this field and can only grant from rows.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    quarantined_rows: Vec<Row>,
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
 }
@@ -113,9 +205,60 @@ struct Document {
 impl Document {
     fn empty() -> Self {
         Self {
-            schema_version: 1,
+            schema_version: SCHEMA_VERSION,
             rows: Vec::new(),
+            quarantined_rows: Vec::new(),
             extra: BTreeMap::new(),
+        }
+    }
+
+    fn quarantine_conflicts(&mut self) {
+        // A v1 group with distinct operations could otherwise become valid in v2.
+        // Keep every conflicting row out of older readers' grant lookup.
+        let mut conflicts: BTreeSet<_> = self.quarantined_rows.iter().map(Row::app_scope).collect();
+        let mut apps = BTreeMap::<_, &Row>::new();
+        let mut operations = BTreeSet::new();
+        for row in &self.rows {
+            let app = row.app_scope();
+            let first = apps.entry(app).or_insert(row);
+            let pipeline = if self.schema_version == 1 {
+                None
+            } else {
+                row.pipeline.as_deref()
+            };
+            if first.app_path != row.app_path
+                || !first.app_identity.main_matches(&row.app_identity)
+                || !operations.insert((app, pipeline))
+            {
+                conflicts.insert(app);
+            }
+        }
+        if conflicts.is_empty() {
+            return;
+        }
+        let quarantine: Vec<_> = self
+            .rows
+            .iter()
+            .map(|row| conflicts.contains(&row.app_scope()))
+            .collect();
+        for (row, quarantine) in std::mem::take(&mut self.rows).into_iter().zip(quarantine) {
+            if quarantine {
+                self.quarantined_rows.push(row);
+            } else {
+                self.rows.push(row);
+            }
+        }
+    }
+
+    fn require_unambiguous(&self, scope: AppScope<'_>) -> io::Result<()> {
+        if self
+            .quarantined_rows
+            .iter()
+            .any(|row| row.app_scope() == scope)
+        {
+            Err(io::Error::other(Conflict))
+        } else {
+            Ok(())
         }
     }
 }
@@ -127,13 +270,56 @@ impl Store {
         Self(app_local_data_dir.join("app-handoff").join("consents.json"))
     }
 
-    pub(super) fn list(&self) -> io::Result<Vec<Row>> {
+    pub(super) fn list(&self) -> io::Result<Vec<ListedConsent>> {
         let _lock = LOCK.lock().unwrap();
-        Ok(self.read()?.rows)
+        let document = self.read()?;
+        let mut seen_conflicts = BTreeSet::new();
+        let conflicts = document
+            .quarantined_rows
+            .iter()
+            .filter(|&row| seen_conflicts.insert(row.app_scope()))
+            .cloned()
+            .map(ListedConsent::Conflict);
+        Ok(document
+            .rows
+            .into_iter()
+            .filter(|row| !row.template_digest.is_empty())
+            .map(ListedConsent::Operation)
+            .chain(conflicts)
+            .collect())
     }
 
-    pub(super) fn get(&self, plugin: &str, app: &str) -> io::Result<Option<Row>> {
-        self.with_current(plugin, app, |row| row.cloned())
+    pub(super) fn for_app(&self, plugin: &str, app: &str) -> io::Result<Vec<Row>> {
+        let _lock = LOCK.lock().unwrap();
+        let document = self.read()?;
+        document.require_unambiguous((plugin, app))?;
+        Ok(document
+            .rows
+            .into_iter()
+            .filter(|row| row.plugin_id == plugin && row.app_id == app)
+            .collect())
+    }
+
+    pub(super) fn get(
+        &self,
+        plugin: &str,
+        app: &str,
+        pipeline: Option<&str>,
+    ) -> io::Result<Option<Entry>> {
+        let rows = self.for_app(plugin, app)?;
+        Ok(rows
+            .iter()
+            .find(|row| row.pipeline.as_deref() == pipeline)
+            .map(|row| Entry {
+                row: row.clone(),
+                persisted: true,
+            })
+            .or_else(|| {
+                rows.first().map(|row| Entry {
+                    row: row.for_operation(pipeline),
+                    persisted: false,
+                })
+            }))
     }
 
     /// Order the grant check and launch against revocations and other consent writes.
@@ -142,63 +328,159 @@ impl Store {
         expected: &Row,
         launch: impl FnOnce(&Row) -> T,
     ) -> io::Result<Option<T>> {
-        self.with_current(&expected.plugin_id, &expected.app_id, |row| {
-            row.filter(|row| row.granted && row.same_grant(expected))
-                .map(launch)
-        })
-    }
-
-    fn with_current<T>(
-        &self,
-        plugin: &str,
-        app: &str,
-        use_row: impl FnOnce(Option<&Row>) -> T,
-    ) -> io::Result<T> {
         let _lock = LOCK.lock().unwrap();
         let document = self.read()?;
-        Ok(use_row(
-            document
+        document.require_unambiguous(expected.app_scope())?;
+        Ok(document
+            .rows
+            .iter()
+            .find(|row| row.granted && row.same_grant(expected))
+            .map(launch))
+    }
+
+    pub(super) fn pick(
+        &self,
+        plugin: &str,
+        app: App,
+        mut read_companion: impl FnMut(&Row) -> Option<ExecutableIdentity>,
+    ) -> io::Result<String> {
+        let _lock = LOCK.lock().unwrap();
+        let mut document = self.read()?;
+        // Legacy stores can already have aliases after a companion change. Reuse the first
+        // unambiguous match so later grants cannot change which ID a re-pick returns.
+        let matches_app = |row: &Row| {
+            row.plugin_id == plugin
+                && row.app_path == app.path
+                && row.app_identity.main_matches(&app.identity)
+        };
+        let existing = document.rows.iter().find(|row| matches_app(row));
+        if let Some(id) = existing.map(|row| row.app_id.clone()) {
+            let mut changed = false;
+            for row in document
                 .rows
-                .iter()
-                .find(|row| row.plugin_id == plugin && row.app_id == app),
-        ))
+                .iter_mut()
+                .filter(|row| row.plugin_id == plugin && row.app_id == id)
+            {
+                let Some(approved) = &row.app_identity.companion else {
+                    continue;
+                };
+                let picked = read_companion(row).filter(|current| !approved.matches(current));
+                let same = match (&row.picked_companion, &picked) {
+                    (Some(previous), Some(current)) => previous.matches(current),
+                    (None, None) => true,
+                    _ => false,
+                };
+                if !same {
+                    // This only lets the new companion reach a fresh consent prompt.
+                    row.picked_companion = picked;
+                    row.revision = Some(temp_files::nonce()?);
+                    changed = true;
+                }
+            }
+            if changed {
+                self.write(document)?;
+            }
+            return Ok(id);
+        }
+        if document.quarantined_rows.iter().any(matches_app) {
+            return Err(io::Error::other(Conflict));
+        }
+        let id = temp_files::nonce()?;
+        document.rows.push(Row::ungranted(
+            plugin,
+            id.clone(),
+            app.path,
+            app.identity,
+            None,
+        ));
+        self.write(document)?;
+        Ok(id)
     }
 
+    #[cfg(test)]
     pub(super) fn insert(&self, row: Row) -> io::Result<()> {
-        self.update(|rows| {
-            rows.push(row);
+        self.update(|document| {
+            document.rows.push(row);
             Ok(())
         })
     }
 
-    pub(super) fn replace(&self, before: &Row, next: Row) -> io::Result<()> {
-        self.update(|rows| {
-            let row = rows
-                .iter_mut()
-                .find(|row| row.same_grant(before))
-                .ok_or_else(|| {
-                    io::Error::other("App handoff consent changed while it was open.")
-                })?;
-            *row = next;
-            Ok(())
+    pub(super) fn replace(
+        &self,
+        before: &Entry,
+        app: &App,
+        digest: String,
+        install_id: &str,
+    ) -> io::Result<Row> {
+        self.update(|document| {
+            let scope = &before.row;
+            document.require_unambiguous(scope.app_scope())?;
+            let rows = &mut document.rows;
+            let same_app =
+                |row: &Row| row.plugin_id == scope.plugin_id && row.app_id == scope.app_id;
+            let current = rows
+                .iter()
+                .position(|row| same_app(row) && row.pipeline == scope.pipeline);
+            match current {
+                Some(index) if before.persisted && rows[index].same_grant(scope) => {
+                    let row = &mut rows[index];
+                    row.approve(app, digest, install_id)?;
+                    Ok(row.clone())
+                }
+                None if !before.persisted && rows.iter().any(same_app) => {
+                    let mut row = scope.clone();
+                    row.approve(app, digest, install_id)?;
+                    rows.push(row.clone());
+                    Ok(row)
+                }
+                _ => Err(io::Error::other(
+                    "App handoff consent changed while it was open.",
+                )),
+            }
         })
     }
 
-    pub(super) fn revoke(&self, plugin: &str, consent_id: &str) -> io::Result<()> {
-        self.update(|rows| {
-            let row = rows
+    pub(super) fn revoke(&self, plugin: &str, consent_id: &str) -> io::Result<Vec<String>> {
+        self.update(|document| {
+            let conflict = document
+                .quarantined_rows
+                .iter()
+                .find(|row| row.plugin_id == plugin && row.conflict_id() == consent_id);
+            if let Some(row) = conflict {
+                let app = row.app_id.clone();
+                let mut operation_ids = BTreeSet::new();
+                document.quarantined_rows.retain(|row| {
+                    if row.app_scope() == (plugin, app.as_str()) {
+                        operation_ids.insert(row.consent_id());
+                        false
+                    } else {
+                        true
+                    }
+                });
+                return Ok(operation_ids.into_iter().collect());
+            }
+            let row = document
+                .rows
                 .iter_mut()
-                .find(|row| row.plugin_id == plugin && row.consent_id() == consent_id)
+                .find(|row| {
+                    row.plugin_id == plugin
+                        && !row.template_digest.is_empty()
+                        && row.consent_id() == consent_id
+                })
                 .ok_or(io::ErrorKind::NotFound)?;
             row.granted = false;
             row.at = timestamp();
-            Ok(())
+            row.revision = Some(temp_files::nonce()?);
+            Ok(vec![consent_id.to_owned()])
         })
     }
 
     pub(super) fn clear(&self, plugin: &str) -> io::Result<()> {
-        self.update(|rows| {
-            rows.retain(|row| row.plugin_id != plugin);
+        self.update(|document| {
+            document.rows.retain(|row| row.plugin_id != plugin);
+            document
+                .quarantined_rows
+                .retain(|row| row.plugin_id != plugin);
             Ok(())
         })
     }
@@ -224,19 +506,29 @@ impl Store {
         #[cfg(windows)]
         require_owner_only_acl(&file)?;
         let bytes = temp_files::read_bounded_file(file, MAX_CONSENT_BYTES)?;
-        let document: Document = serde_json::from_slice(&bytes)?;
-        if document.schema_version != 1 {
+        let mut document: Document = serde_json::from_slice(&bytes)?;
+        if !matches!(document.schema_version, 1 | SCHEMA_VERSION) {
             return Err(io::Error::other(
                 "Unknown app handoff consent schema version.",
             ));
         }
+        // Classify conflicts under the on-disk schema without writing anything.
+        document.quarantine_conflicts();
         Ok(document)
     }
 
-    fn update(&self, change: impl FnOnce(&mut Vec<Row>) -> io::Result<()>) -> io::Result<()> {
+    fn update<T>(&self, change: impl FnOnce(&mut Document) -> io::Result<T>) -> io::Result<T> {
         let _lock = LOCK.lock().unwrap();
         let mut document = self.read()?;
-        change(&mut document.rows)?;
+        let changed = change(&mut document)?;
+        self.write(document)?;
+        Ok(changed)
+    }
+
+    fn write(&self, mut document: Document) -> io::Result<()> {
+        // The v1 reader refuses this version before it can use rows keyed only by app.
+        document.schema_version = SCHEMA_VERSION;
+        document.quarantine_conflicts();
         let bytes = serde_json::to_vec(&document)?;
         if bytes.len() >= MAX_CONSENT_BYTES {
             return Err(io::Error::other(

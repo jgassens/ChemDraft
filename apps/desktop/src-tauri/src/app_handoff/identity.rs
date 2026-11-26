@@ -49,10 +49,16 @@ impl ExecutableIdentity {
         })
     }
 
-    fn matches(&self, other: &Self) -> bool {
+    pub(super) fn matches(&self, other: &Self) -> bool {
         self.path == other.path
             && self.sha256 == other.sha256
             && self.signing_identity == other.signing_identity
+    }
+
+    fn update_from(&mut self, current: &Self) {
+        self.path.clone_from(&current.path);
+        self.sha256.clone_from(&current.sha256);
+        self.signing_identity.clone_from(&current.signing_identity);
     }
 }
 
@@ -268,6 +274,16 @@ impl App {
 }
 
 impl Identity {
+    pub(super) fn update_from(&mut self, current: &Self) {
+        self.main.update_from(&current.main);
+        self.bundle_id.clone_from(&current.bundle_id);
+        if let (Some(previous), Some(tool)) = (&mut self.companion, &current.companion) {
+            previous.update_from(tool);
+        } else {
+            self.companion.clone_from(&current.companion);
+        }
+    }
+
     pub(super) fn main_matches(&self, other: &Self) -> bool {
         self.main.matches(&other.main) && self.bundle_id == other.bundle_id
     }

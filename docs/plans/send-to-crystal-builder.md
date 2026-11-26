@@ -22,8 +22,8 @@ Approved in principle, with these conditions:
 3. **Before any code:** one Kimi high review of this plan, after the 1.2 big review, focused on the
    `apps.handoff` security contract: user consent, no path or argument injection, the app picked by
    the user and never by the plugin, and macOS/Windows parity.
-   **Consent: resolved, pending Kimi** (master, 2026-11-10). One-time consent per plugin and app is
-   accepted, provided (a) every handoff still comes only from a user-started command; (b) the consent
+   **Consent: resolved, pending Kimi** (master, 2026-11-10). One-time consent per plugin, app, and
+   operation is accepted, provided (a) every handoff still comes only from a user-started command; (b) the consent
    is listed and revocable in Preferences or the plugin's settings; (c) a different app, or a changed
    app path or bundle ID, asks again; (d) the loss message box shows every time something specific
    would be lost (the "Warn before send" rows in Decision 1); losses inherent to every 3D file
@@ -536,15 +536,22 @@ Rules the host enforces (each one gets a test):
 4. **The plugin never supplies a path, free argv, environment, or verb at run time.** It supplies
    text, an allowlisted extension, a pipeline id fixed in its manifest, and typed parameter values
    (rule 11). The host renders the command line.
-5. **Consent per plugin and per app**, once, in a native message box that names the plugin (name and
-   id), the app's display name and location, and the declared pipeline, and says the plugin will start
-   that app's tool and give it a file each time its command runs. Task 0.3 found the external-tools
+5. **Consent per plugin, app, and operation**, once for file send and once for each declared
+   pipeline. The native message box names the plugin and app, shows the app location, and describes
+   the file handoff or declared companion pipeline. Task 0.3 found the external-tools
    store can't hold this (its `ToolId` is a closed Claude/Codex enum, rows use `deny_unknown_fields`,
    and the UI strings are hard-coded), so apps get a **new, separate store**, and the external-tools
    schema is not widened. `app_local_data_dir()/app-handoff/consents.json`: a top-level object with
-   `schemaVersion: 1` and `rows: [{ pluginId, appId, appPath, appIdentity, templateDigest,
-   consentTextVersion, granted, at }]`, keyed by (pluginId, appId). **`templateDigest`** is SHA-256 of
-   the canonical JSON of the declared pipeline, and it is **re-checked on every call**, not only at
+   `schemaVersion: 2` and consent rows keyed by `(pluginId, appId, pipeline)`. File send uses
+   no pipeline ID and every operation for the same picked app shares its opaque app ID.
+   A version 1 row applies only to its recorded operation. Builds that support only version 1
+   refuse version 2.
+   Conflicting rows block only their plugin and app group. A read classifies conflicts without
+   writing the file. On a write, remaining conflicting groups are preserved in `quarantinedRows`,
+   outside the active `rows` that existing version 2 readers use. This preserves the version 1
+   duplicate-group rule on migration.
+   **`templateDigest`** identifies the native file-send operation or holds the SHA-256 of
+   the canonical JSON of the declared pipeline. It is **re-checked on every call**, not only at
    update time, so a missed update hook or an interrupted swap can never run a changed template
    (Kimi 2026-11-21). Written atomically like `consent.rs` (temp, sync, rename); 0o600 on Unix; on
    Windows the file gets an owner-only DACL through `windows-sys` (already a dependency; a feature
@@ -556,7 +563,9 @@ Rules the host enforces (each one gets a test):
      simply fails the digest check, so consent is asked again on the next call (the box shows the new
      command); if the permission is dropped, the rows are deleted.
    - **App changed or missing** (rule 6): that row stops counting and consent is asked again.
-   - **Revoke** in the Plugin Manager sets `granted: false`; the row is listed until uninstall.
+   - **Revoke** in the Plugin Manager sets `granted: false` on the operation's row, which stays
+     listed until uninstall. For a conflicting group, Plugin Manager lists one entry and Revoke
+     removes all that plugin's rows for the app.
 6. **The app is re-confirmed if it changes** (revised 2026-11-21). `appIdentity` holds SHA-256 of the
    main executable and of the companion tool, plus the code-signing identity where one exists (macOS
    cdhash for ad-hoc builds or the Team ID for signed ones; the Windows Authenticode publisher when the
@@ -763,9 +772,9 @@ The picture-only fallback was considered and dropped (owner, 2026-11-20).
 For the owner:
 
 1. ~~**Release target.**~~ **Answered (owner, 2026-11-20): 1.3; changed (owner, 2026-11-23): ship the host capability in 1.2.3** (API 0.1.28; PR #468 reserves the preceding patch for stated hydrogen counts).
-2. ~~**How often to ask.**~~ **Answered (owner, 2026-11-20): consent once per plugin and app, then a
-   message box only when something specific would be lost.** Consent once per plugin and app, then a message box only when something
-   specific would be lost (recommended), or a confirmation on every send?
+2. ~~**How often to ask.**~~ **Answered (owner, 2026-11-20): one-time consent, then a
+   message box only when something specific would be lost.** Consent is scoped to the plugin, app,
+   and operation as described in rule 5.
 3. ~~**Minimize or not.**~~ **Answered (owner, 2026-11-20): MMFF94s-minimized.** Send the MMFF94s-minimized geometry (recommended) or raw ETKDG coordinates?
 4. ~~**Names.**~~ **Answered (owner, 2026-11-20): the proposed names.** Crystal Builder's author is not
    contacted (question 10). Are `jgassens/ChemDraft-CrystalBuilder-Plugin`, `org.chemdraft.handoff.crystalBuilder`,

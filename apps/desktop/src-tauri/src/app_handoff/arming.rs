@@ -39,6 +39,7 @@ enum Stage {
     Ready,
     Pending {
         shown: bool,
+        consent_id: Option<String>,
     },
     Rejected,
     Used,
@@ -141,6 +142,23 @@ impl State {
         }
     }
 
+    pub(super) fn disarm_consent(&self, plugin: &str, id: &str) {
+        let mut arms = self.arms.lock().unwrap();
+        let matches = arms.get(plugin).is_some_and(|arm| {
+            let stage = arm.stage.lock().unwrap();
+            if matches!(&*stage, Stage::Pending { consent_id: Some(current), .. } if current == id)
+            {
+                arm.invalidate();
+                true
+            } else {
+                false
+            }
+        });
+        if matches {
+            arms.remove(plugin);
+        }
+    }
+
     pub(crate) fn shutdown(&self) {
         for (_, arm) in self.arms.lock().unwrap().drain() {
             arm.invalidate();
@@ -177,7 +195,10 @@ impl Arm {
         let mut state = self.stage.lock().unwrap();
         match *state {
             Stage::Ready if now < self.expires && !*self.invalidated.borrow() => {
-                *state = Stage::Pending { shown: false };
+                *state = Stage::Pending {
+                    shown: false,
+                    consent_id: None,
+                };
                 Ok(Submission(self.clone()))
             }
             Stage::Ready => Err(NO_ARMING.into()),
@@ -194,6 +215,20 @@ impl Arm {
 }
 
 impl Submission {
+    pub(super) fn bind_consent(&self, id: String) -> Result<(), String> {
+        let mut stage = self.0.stage.lock().unwrap();
+        match &mut *stage {
+            Stage::Pending { consent_id, .. }
+                if consent_id.is_none() && !*self.0.invalidated.borrow() =>
+            {
+                *consent_id = Some(id);
+                Ok(())
+            }
+            Stage::Rejected => Err(RACE.into()),
+            _ => Err(NO_ARMING.into()),
+        }
+    }
+
     pub(super) fn assert_pending(&self) -> Result<(), String> {
         let stage = self.0.stage.lock().unwrap();
         if matches!(*stage, Stage::Rejected) {
@@ -207,11 +242,11 @@ impl Submission {
 
     pub(super) fn show_box(&self) -> Result<(), String> {
         let mut stage = self.0.stage.lock().unwrap();
-        match *stage {
-            Stage::Pending { shown }
-                if !*self.0.invalidated.borrow() && (shown || Instant::now() < self.0.expires) =>
+        match &mut *stage {
+            Stage::Pending { shown, .. }
+                if !*self.0.invalidated.borrow() && (*shown || Instant::now() < self.0.expires) =>
             {
-                *stage = Stage::Pending { shown: true };
+                *shown = true;
                 Ok(())
             }
             Stage::Rejected => Err(RACE.into()),
@@ -257,7 +292,7 @@ impl Submission {
     pub(super) fn launch<T>(&self, launch: impl FnOnce() -> T) -> Result<T, String> {
         let mut stage = self.0.stage.lock().unwrap();
         match *stage {
-            Stage::Pending { shown }
+            Stage::Pending { shown, .. }
                 if !*self.0.invalidated.borrow() && (shown || Instant::now() < self.0.expires) =>
             {
                 let output = launch();
@@ -277,7 +312,7 @@ impl Submission {
 impl Drop for Submission {
     fn drop(&mut self) {
         let mut stage = self.0.stage.lock().unwrap();
-        if let Stage::Pending { shown } = *stage {
+        if let Stage::Pending { shown, .. } = *stage {
             *stage = if shown { Stage::Used } else { Stage::Ready };
         }
     }

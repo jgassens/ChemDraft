@@ -206,7 +206,9 @@ can send one file or run one pipeline; a shown host box consumes the allowance e
 
 - `context.apps.chooseApp({ purpose })` opens the native picker and returns `chosen` with an opaque
   `appId` and display name, or `cancelled`. No app path is exposed. `purpose` is at most 200 characters.
-- `status({ appId })` checks whether the chosen app remains available and unchanged.
+- `status({ appId })` reports `available: true` when the chosen main app is present and unchanged.
+  The optional `reason` can still describe a companion problem. The host checks companion
+  availability and identity again when running a pipeline. File send requires its own consent.
 - `sendFile({ appId, fileName, extension, text, warnings? })` writes a temporary UTF-8 file and
   opens it with the app. The host sanitizes the file name; extensions are `xyz`, `cif`, `mol`, `sdf`,
   `pdb`, `smi`, `csv`, `json`, or `txt`. Text is limited to 5 MiB. Warnings appear under the

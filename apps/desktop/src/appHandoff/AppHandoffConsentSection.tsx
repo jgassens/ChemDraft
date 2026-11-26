@@ -46,8 +46,10 @@ export function AppHandoffConsentSection({ consents, pluginNames, catalogKey, di
       listGeneration.current += 1;
       const { activeElement, body } = button.ownerDocument;
       if (activeElement === button || activeElement === body) heading.current?.focus();
-      setRows(current => current?.map(item => item.pluginId === row.pluginId && item.consentId === row.consentId
-        ? { ...item, status: "revoked" } : item));
+      const matches = (item: AppHandoffConsent) => item.pluginId === row.pluginId && item.consentId === row.consentId;
+      setRows(current => row.status === "conflict"
+        ? current?.filter(item => !matches(item))
+        : current?.map(item => matches(item) ? { ...item, status: "revoked" } : item));
       setRevision(value => value + 1);
     } catch (error) {
       setRevokeError(`Could not revoke app handoff to ${row.appName}: ${errorMessage(error)}`);
@@ -65,16 +67,18 @@ export function AppHandoffConsentSection({ consents, pluginNames, catalogKey, di
     {rows && rows.length > 0 && <ul className="plugin-manager-list">
       {rows.map(row => {
         const pluginName = pluginNames.get(row.pluginId);
+        const conflict = row.status === "conflict";
+        const operation = row.pipeline ? `Pipeline ${row.pipeline}` : "File handoff";
         return <li className="plugin-manager-item" key={`${row.pluginId}/${row.consentId}`}>
           <div className="plugin-manager-details">
             <div className="plugin-manager-name">{row.appName}</div>
-            <p>{pluginName ? `${pluginName} (${row.pluginId})` : row.pluginId} · {row.pipeline ? `Pipeline ${row.pipeline}` : "File handoff"} · {
-              { allowed: "Allowed", inactive: "Inactive", revoked: "Revoked" }[row.status]
+            <p>{pluginName ? `${pluginName} (${row.pluginId})` : row.pluginId} · {conflict ? "All operations" : operation} · {
+              { allowed: "Allowed", inactive: "Inactive", revoked: "Revoked", conflict: "Conflicting consents" }[row.status]
             }</p>
             <p className="plugin-manager-id">{row.appPath}</p>
           </div>
           {row.status !== "revoked" && <button type="button" className="plugin-manager-button" disabled={disabled || revoking !== undefined}
-            aria-label={`Revoke app handoff from ${pluginName ?? row.pluginId} to ${row.appName}`} onClick={event => void revoke(row, event.currentTarget)}>
+            aria-label={`Revoke app handoff from ${pluginName ?? row.pluginId} to ${row.appName} (${conflict ? "all operations" : operation})`} onClick={event => void revoke(row, event.currentTarget)}>
             {revoking === row.consentId ? "Revoking…" : "Revoke"}
           </button>}
         </li>;
