@@ -250,6 +250,31 @@ impl Document {
         }
     }
 
+    /// Removes the rows `matches` selects (it is told whether a row is quarantined), records the
+    /// removed consent IDs of `plugin`, and returns how many removed rows belonged to others.
+    fn remove(
+        &mut self,
+        plugin: &str,
+        revoked: &mut BTreeSet<String>,
+        matches: impl Fn(&Row, bool) -> bool,
+    ) -> usize {
+        let mut others = 0;
+        for (rows, quarantined) in [(&mut self.rows, false), (&mut self.quarantined_rows, true)] {
+            rows.retain(|row| {
+                if !matches(row, quarantined) {
+                    return true;
+                }
+                if row.plugin_id == plugin {
+                    revoked.insert(row.consent_id());
+                } else {
+                    others += 1;
+                }
+                false
+            });
+        }
+        others
+    }
+
     fn require_unambiguous(&self, scope: AppScope<'_>) -> io::Result<()> {
         if self
             .quarantined_rows
@@ -441,24 +466,20 @@ impl Store {
     }
 
     pub(super) fn revoke(&self, plugin: &str, consent_id: &str) -> io::Result<Vec<String>> {
-        self.update(|document| {
-            let conflict = document
-                .quarantined_rows
-                .iter()
-                .find(|row| row.plugin_id == plugin && row.conflict_id() == consent_id);
-            if let Some(row) = conflict {
-                let app = row.app_id.clone();
-                let mut operation_ids = BTreeSet::new();
-                document.quarantined_rows.retain(|row| {
-                    if row.app_scope() == (plugin, app.as_str()) {
-                        operation_ids.insert(row.consent_id());
-                        false
-                    } else {
-                        true
-                    }
-                });
-                return Ok(operation_ids.into_iter().collect());
-            }
+        let _lock = LOCK.lock().unwrap();
+        let mut document = self.read()?;
+        let mut revoked = BTreeSet::new();
+        let conflict = document
+            .quarantined_rows
+            .iter()
+            .find(|row| row.plugin_id == plugin && row.conflict_id() == consent_id)
+            .map(|row| row.app_id.clone());
+        let app = if let Some(app) = conflict {
+            document.remove(plugin, &mut revoked, |row, _| {
+                row.app_scope() == (plugin, app.as_str())
+            });
+            app
+        } else {
             let row = document
                 .rows
                 .iter_mut()
@@ -471,18 +492,71 @@ impl Store {
             row.granted = false;
             row.at = timestamp();
             row.revision = Some(temp_files::nonce()?);
-            Ok(vec![consent_id.to_owned()])
-        })
+            revoked.insert(consent_id.to_owned());
+            row.app_id.clone()
+        };
+        self.write_revocation(document, plugin, Some(&app), &mut revoked)?;
+        Ok(revoked.into_iter().collect())
     }
 
     pub(super) fn clear(&self, plugin: &str) -> io::Result<()> {
-        self.update(|document| {
-            document.rows.retain(|row| row.plugin_id != plugin);
-            document
-                .quarantined_rows
-                .retain(|row| row.plugin_id != plugin);
-            Ok(())
-        })
+        let _lock = LOCK.lock().unwrap();
+        let mut document = self.read()?;
+        let mut revoked = BTreeSet::new();
+        document.remove(plugin, &mut revoked, |row, _| row.plugin_id == plugin);
+        self.write_revocation(document, plugin, None, &mut revoked)
+    }
+
+    /// Saves a revocation or clear, which must always land: one that fails to save leaves the
+    /// grant active. Rewriting a store the reader accepted can make it larger (the flipped grant
+    /// gets a wider timestamp and a revision key, legacy rows gain keys, conflicts move to
+    /// `quarantinedRows`), so when the result does not fit, more rows are removed until it does.
+    /// Rows are only ever removed, so no grant widens, and always as whole app scopes, so a
+    /// consent box or job opened before the revocation finds nothing it can match: first
+    /// conflict groups, which grant nothing; then the revoked app's other operations; then the
+    /// plugin's other consents; and as a last resort every consent. IDs removed from `plugin`
+    /// are returned so they are disarmed too, and removing other plugins' rows is logged.
+    fn write_revocation(
+        &self,
+        mut document: Document,
+        plugin: &str,
+        app: Option<&str>,
+        revoked: &mut BTreeSet<String>,
+    ) -> io::Result<()> {
+        let mut others = 0;
+        let mut step = 0;
+        let bytes = loop {
+            if let Some(bytes) = encode(&mut document)? {
+                break bytes;
+            }
+            others += match step {
+                0 => document.remove(plugin, revoked, |_, quarantined| quarantined),
+                1 => match app {
+                    Some(app) => {
+                        document.remove(plugin, revoked, |row, _| row.app_scope() == (plugin, app))
+                    }
+                    None => 0,
+                },
+                2 => document.remove(plugin, revoked, |row, _| row.plugin_id == plugin),
+                3 => {
+                    let removed = document.remove(plugin, revoked, |_, _| true);
+                    document = Document::empty();
+                    removed
+                }
+                _ => {
+                    return Err(io::Error::other(
+                        "App handoff consent exceeds the 1 MiB store limit.",
+                    ))
+                }
+            };
+            step += 1;
+        };
+        if others > 0 {
+            eprintln!(
+                "The app handoff consent store was full, so saving a revocation also removed {others} consents of other plugins."
+            );
+        }
+        self.persist(&bytes)
     }
 
     fn read(&self) -> io::Result<Document> {
@@ -526,15 +600,14 @@ impl Store {
     }
 
     fn write(&self, mut document: Document) -> io::Result<()> {
-        // The v1 reader refuses this version before it can use rows keyed only by app.
-        document.schema_version = SCHEMA_VERSION;
-        document.quarantine_conflicts();
-        let bytes = serde_json::to_vec(&document)?;
-        if bytes.len() >= MAX_CONSENT_BYTES {
-            return Err(io::Error::other(
-                "App handoff consent exceeds the 1 MiB store limit.",
-            ));
-        }
+        let bytes = encode(&mut document)?.ok_or_else(|| {
+            io::Error::other("App handoff consent exceeds the 1 MiB store limit.")
+        })?;
+        self.persist(&bytes)
+    }
+
+    /// Writes bytes from `encode`, which already checked them against the reader's limit.
+    fn persist(&self, bytes: &[u8]) -> io::Result<()> {
         let dir = self.0.parent().expect("consent directory");
         temp_files::private_dir(dir, true)?;
         temp_files::safe_dir(dir)?;
@@ -542,7 +615,7 @@ impl Store {
         let temp = dir.join(format!("consents-{}.tmp", temp_files::nonce()?));
         let result = (|| {
             let mut file = create_private(&temp)?;
-            file.write_all(&bytes)?;
+            file.write_all(bytes)?;
             file.write_all(b"\n")?;
             file.sync_all()?;
             drop(file);
@@ -553,6 +626,16 @@ impl Store {
         }
         result
     }
+}
+
+/// Serializes the document as it will be saved, or returns `None` if the saved file (with its
+/// trailing newline) would exceed what `read` accepts.
+fn encode(document: &mut Document) -> io::Result<Option<Vec<u8>>> {
+    // The v1 reader refuses this version before it can use rows keyed only by app.
+    document.schema_version = SCHEMA_VERSION;
+    document.quarantine_conflicts();
+    let bytes = serde_json::to_vec(&document)?;
+    Ok((bytes.len() < MAX_CONSENT_BYTES).then_some(bytes))
 }
 
 fn timestamp() -> String {
