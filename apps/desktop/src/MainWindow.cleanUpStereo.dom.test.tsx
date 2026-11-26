@@ -4,17 +4,22 @@
 // Clean Up that changed nothing adds no undo entry.
 import { act, createElement, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEmptyDocument, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { createSmilesMolecule } from "@chemdraft/document-workflow-core";
 import * as ocl from "@chemdraft/ocl-adapter";
 import { MainWindow } from "./MainWindow";
-import { cleanUpNativeMolecules2d, type CleanUpStereoGuardOptions } from "./documentWorkflow";
+import { cleanUpNativeMolecules2d, moleculeHasFusedRingSystem, type CleanUpStereoGuardOptions } from "./documentWorkflow";
+import { cleanUpStereoSignature } from "./cleanUpStereoGuard";
 import { getAssistantHistoryPort } from "./assistant/historyPort";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 import { DOM_COMMAND_EVENT } from "./window-manager";
+import { installDomRdkitLoader } from "./testSupport/rdkitIdentity";
 
 vi.mock("@scena/react-ruler", () => ({ default: () => createElement("canvas") }));
+// The engine re-layout falls back to the RDKit layouts; load the real vendored module in jsdom.
+vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
+beforeAll(() => installDomRdkitLoader());
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 class TestResizeObserver { observe() {} unobserve() {} disconnect() {} }
 const rect = { x: 0, y: 0, left: 0, top: 0, right: 792, bottom: 612, width: 792, height: 612,
@@ -162,4 +167,65 @@ describe("Clean Up 2D stereo guard in the window", () => {
     expect(current()).toEqual(before);
     expect(canUndo()).toBe("false");
   }, 20_000);
+
+  // Molecules with a fused ring system take the engine re-layout, whose own read-back is R/S
+  // only. The same guard keeps them as drawn, with the same status.
+  const scuff = (m: MoleculeObject): MoleculeObject =>
+    ({ ...m, atoms: m.atoms.map((atom, i) => ({ ...atom, x: atom.x + ((i * 7) % 5) - 2, y: atom.y + ((i * 11) % 7) - 3 })) });
+  /** An indane whose alkene is drawn with its methyl in line with the double bond: no E/Z. */
+  function inLineFusedAlkene(document: ChemDraftDocument): MoleculeObject {
+    const pasted = molecule(document, "C/C=C/c1ccc2c(c1)CCC2", 220);
+    const bondId = [...cleanUpStereoSignature(pasted, ocl).doubleBonds.keys()][0]!;
+    const bond = pasted.bonds.find(b => b.id === bondId)!;
+    const [end, other] = [bond.fromAtomId, bond.toAtomId].map(id => pasted.atoms.find(a => a.id === id)!);
+    const substituent = pasted.bonds.find(b => b.id !== bondId && (b.fromAtomId === end!.id || b.toAtomId === end!.id))!;
+    const movedId = substituent.fromAtomId === end!.id ? substituent.toAtomId : substituent.fromAtomId;
+    const drawn = { ...pasted, id: "in-line", atoms: pasted.atoms.map(a => a.id === movedId ? { ...a, x: 2 * end!.x - other!.x, y: 2 * end!.y - other!.y } : a) };
+    expect(moleculeHasFusedRingSystem(drawn)).toBe(true);
+    expect(cleanUpStereoSignature(drawn, ocl).doubleBonds.size).toBe(0);
+    return drawn;
+  }
+
+  it("keeps a fused molecule whose alkene would gain an E/Z as drawn, beside a fused one it cleans", async () => {
+    const document = createEmptyDocument();
+    const alkene = inLineFusedAlkene(document);
+    const naphthalene = { ...scuff(molecule(document, "Cc1ccc2ccccc2c1", 520)), id: "naphthalene" };
+    document.pages[0]!.objects.push(alkene, naphthalene);
+    document.selection = { pageId: document.pages[0]!.id, objectIds: [alkene.id, naphthalene.id] };
+    await render(document);
+
+    await cleanUp();
+    await vi.waitFor(async () => {
+      await act(async () => {});
+      expect(status()).toBe(`Cleaned up selected structures — ${SKIP}`);
+    }, { timeout: 15_000 });
+    expect(objects().find(object => object.id === alkene.id)).toEqual(alkene);
+    expect(objects().find(object => object.id === naphthalene.id)!.atoms).not.toEqual(naphthalene.atoms);
+    expect(canUndo()).toBe("true");
+  }, 30_000);
+
+  it("skips a wedged fused molecule with a query bond in plain words instead of failing the command", async () => {
+    const document = createEmptyDocument();
+    const pasted = molecule(document, "C[C@]12CC[C@H]3[C@@H](CCC4=CC(=O)CC[C@@]34C)[C@@H]1CC[C@@H]2O", 220);
+    expect(pasted.bonds.some(b => b.display?.bondStyle === "wedge" || b.display?.bondStyle === "hashed")).toBe(true);
+    // A query bond on a ring CH2-CH2, away from every wedge.
+    const degree = new Map<string, number>();
+    for (const b of pasted.bonds) for (const id of [b.fromAtomId, b.toAtomId]) degree.set(id, (degree.get(id) ?? 0) + 1);
+    const wedged = new Set(pasted.bonds.filter(b => b.display?.bondStyle).flatMap(b => [b.fromAtomId, b.toAtomId]));
+    const query = pasted.bonds.find(b => b.order === "single" && !b.display?.bondStyle && [b.fromAtomId, b.toAtomId].every(id =>
+      degree.get(id) === 2 && !wedged.has(id) && pasted.atoms.find(a => a.id === id)!.element === "C"))!;
+    const steroid = scuff({ ...pasted, id: "steroid", bonds: pasted.bonds.map(b => b.id === query.id ? { ...b, order: "unknown" as const } : b) });
+    document.pages[0]!.objects.push(steroid);
+    document.selection = { pageId: document.pages[0]!.id, objectIds: [steroid.id] };
+    await render(document);
+    const before = current();
+
+    await cleanUp();
+    await vi.waitFor(async () => {
+      await act(async () => {});
+      expect(status()).toBe("Clean Up skipped 1 structure: its stereochemistry couldn't be checked.");
+    }, { timeout: 15_000 });
+    expect(current()).toEqual(before);
+    expect(canUndo()).toBe("false");
+  }, 30_000);
 });

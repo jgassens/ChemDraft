@@ -5,8 +5,8 @@
 // writes for it (RDKit isomeric canonical SMILES of the drawn graph, and the formula) is compared
 // before and after. Harness adapted from the 2026-11-25 silent-chemistry sweep.
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import type { ChemDraftDocument, MoleculeObject } from "@chemdraft/chem-core";
-import { insertSmilesMolecule, moleculeSmiles, nativeSingleBondGraphMetadata, pastedStructureDepictionFromMolfile } from "@chemdraft/document-workflow-core";
+import { nativeDrawingStyleFromObjectStyle, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { cleanUpMoleculeSelection2d, insertSmilesMolecule, moleculeSmiles, nativeSingleBondGraphMetadata, pastedStructureDepictionFromMolfile } from "@chemdraft/document-workflow-core";
 import * as ocl from "@chemdraft/ocl-adapter";
 import { generateSmiles2DMolfile, resetRdkitForTesting } from "@chemdraft/rdkit-adapter";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
@@ -297,4 +297,243 @@ describe("Clean Up 2D stereo guard with a query bond", () => {
     // molecule without stereo marking is never read.
     expect(calls.count).toBe(0);
   }, 60000);
+});
+
+/** The document with one molecule replaced. */
+function withMolecule(d: ChemDraftDocument, id: string, change: (m: MoleculeObject) => MoleculeObject): ChemDraftDocument {
+  return { ...d, pages: d.pages.map(page => ({ ...page, objects: page.objects.map(o => o.type === "molecule" && o.id === id ? change(o) : o) })) };
+}
+const signatureText = (m: MoleculeObject) => {
+  const s = cleanUpStereoSignature(m, engine);
+  return JSON.stringify([...s.centers, ...s.doubleBonds]);
+};
+/**
+ * Redraw a stereo double bond with one substituent in line with it (the way a quick sketch can
+ * leave a chain): the drawing then carries no readable E/Z for that bond.
+ */
+function inLine(m: MoleculeObject, bondId: string): MoleculeObject {
+  const bond = m.bonds.find(b => b.id === bondId)!;
+  const end = m.atoms.find(a => a.id === bond.fromAtomId)!, other = m.atoms.find(a => a.id === bond.toAtomId)!;
+  const substituent = m.bonds.find(b => b.id !== bondId && (b.fromAtomId === end.id || b.toAtomId === end.id))!;
+  const movedId = substituent.fromAtomId === end.id ? substituent.toAtomId : substituent.fromAtomId;
+  return { ...m, atoms: m.atoms.map(a => a.id === movedId ? { ...a, x: 2 * end.x - other.x, y: 2 * end.y - other.y } : a) };
+}
+
+// The engine re-layout Clean Up 2D uses for a molecule with a fused ring system, as MainWindow
+// runs it: OpenChemLib first, the RDKit layouts only if that fails its quality gate.
+async function loadAlternates() {
+  const { createRdkit2DRelayouts } = await import("@chemdraft/rdkit-adapter/depiction");
+  return createRdkit2DRelayouts();
+}
+const engineOptions = (d: ChemDraftDocument, id: string) => ({
+  targetBondLengthPx: nativeDrawingStyleFromObjectStyle(byId(d, id).style).bondLengthPx,
+  warnings: [] as string[],
+  perceiveStereo: ocl.perceiveStereoCentersFromMolfile
+});
+const unguardedEngineCleanUp = (d: ChemDraftDocument, id: string, relayout: w.NativeMoleculeRelayoutEngine = ocl.relayoutMolfile2D) =>
+  w.prepareNativeMoleculeEngineRelayout(d, id, relayout, loadAlternates, engineOptions(d, id));
+/** `stereoEngine: null` runs the guard with no perceiver loaded. */
+async function guardedEngineCleanUp(d: ChemDraftDocument, id: string, stereoEngine: StereoEngine | null = engine,
+  relayout: w.NativeMoleculeRelayoutEngine = ocl.relayoutMolfile2D) {
+  const skipped: Skipped = [];
+  const options = engineOptions(d, id);
+  const document = await w.prepareGuardedCleanUpEngineRelayout(d, id, relayout, loadAlternates, options, { stereoEngine: stereoEngine ?? undefined, skipped });
+  return { document, skipped, warnings: options.warnings };
+}
+
+describe("Clean Up 2D stereo guard on the engine re-layout (fused ring systems)", () => {
+  // Each carries an E/Z double bond outside its rings; the last two also carry wedged centers.
+  const FUSED_ALKENES = ["C/C=C/c1ccc2c(c1)CCC2", "C/C=C\\c1ccc2c(c1)CCC2", "O=C(/C=C/c1ccccc1)c1ccc2ccccc2c1", "OC(=O)/C=C/c1ccc2ccccc2c1",
+    "O=C1/C(=C/c2ccccc2)Cc2ccccc21", "O/N=C1/CCCc2ccccc21", "C/C=C/C[C@H]1Cc2ccccc2C1",
+    "C/C=C1/CC[C@H]2[C@@H]3CCC4=CC(=O)CC[C@]4(C)[C@H]3CC[C@]12C"];
+  const FUSED_STEREO = [...FUSED_ALKENES, "O[C@@H]1C[C@H](/C=C/C)c2ccccc21", "C[C@]12CC[C@H]3[C@@H](CCC4=CC(=O)CC[C@@]34C)[C@@H]1CC[C@@H]2O",
+    "C[C@H](/C=C/[C@H](C)C(C)C)[C@H]1CC[C@H]2[C@@H]3CC=C4C[C@@H](O)CC[C@]4(C)[C@H]3CC[C@]12C"];
+  /** The first E or Z double bond of a drawing. */
+  const alkeneOf = (m: MoleculeObject) => [...cleanUpStereoSignature(m, engine).doubleBonds].find(([, d]) => d !== "unspecified")![0];
+
+  it("keeps a fused molecule whose alkene would come back with an E/Z it was not drawn with", async () => {
+    for (const smiles of ["C/C=C/c1ccc2c(c1)CCC2", "O=C(/C=C/c1ccccc1)c1ccc2ccccc2c1", "C/C=C/C[C@H]1Cc2ccccc2C1"]) {
+      const pasted = await drawn(smiles);
+      const bondId = alkeneOf(pasted.m);
+      const d = withMolecule(pasted.d, pasted.m.id, m => inLine(m, bondId));
+      const m = byId(d, pasted.m.id);
+      expect(w.moleculeHasFusedRingSystem(m), smiles).toBe(true);
+      expect(cleanUpStereoSignature(m, engine).doubleBonds.has(bondId), `${smiles} is drawn without E/Z`).toBe(false);
+      // Without the guard the engine route hands back a definite E: its own read-back is R/S only.
+      const unguarded = byId(await unguardedEngineCleanUp(d, m.id), m.id);
+      expect(cleanUpStereoSignature(unguarded, engine).doubleBonds.get(bondId), `${smiles} gains E/Z unguarded`).toMatch(/^[EZ]$/);
+
+      const { document, skipped } = await guardedEngineCleanUp(d, m.id);
+      expect(skipped, smiles).toEqual([{ objectId: m.id, reason: "changed" }]);
+      expect(document, smiles).toBe(d);
+      expect(coordinates(byId(committed(d, document), m.id)), smiles).toBe(coordinates(m));
+    }
+  }, 120000);
+
+  it("keeps a fused molecule with a query bond as drawn instead of laying out stereo it cannot read", async () => {
+    // A query bond away from the stereo: on a ring CH2-CH2 of the indane, and on the steroid's D ring.
+    const ringSingle = (m: MoleculeObject) => {
+      const degree = new Map<string, number>();
+      for (const b of m.bonds) for (const id of [b.fromAtomId, b.toAtomId]) degree.set(id, (degree.get(id) ?? 0) + 1);
+      const centers = cleanUpStereoSignature(m, engine).centers;
+      return [...m.bonds].reverse().find(b => b.order === "single" && !b.display?.bondStyle &&
+        degree.get(b.fromAtomId) === 2 && degree.get(b.toAtomId) === 2 && !centers.has(b.fromAtomId) && !centers.has(b.toAtomId) &&
+        m.atoms.find(a => a.id === b.fromAtomId)!.element === "C" && m.atoms.find(a => a.id === b.toAtomId)!.element === "C")!.id;
+    };
+    const queried = async (smiles: string) => {
+      const pasted = await drawn(smiles);
+      const bondId = ringSingle(pasted.m);
+      const d = withMolecule(scuffed(pasted.d, pasted.m.id), pasted.m.id, m => ({ ...m, bonds: m.bonds.map(b => b.id === bondId ? { ...b, order: "unknown" as const } : b) }));
+      return { d, m: byId(d, pasted.m.id) };
+    };
+    const status = "Clean Up skipped 1 structure: its stereochemistry couldn't be checked.";
+
+    // E/Z and no wedge: the engine route switches its own read-back off and lays it out unchecked.
+    const alkene = await queried("C/C=C/c1ccc2c(c1)CCC2");
+    expect(w.moleculeHasFusedRingSystem(alkene.m)).toBe(true);
+    expect(alkene.m.bonds.some(b => b.display?.bondStyle === "wedge" || b.display?.bondStyle === "hashed")).toBe(false);
+    expect(await unguardedEngineCleanUp(alkene.d, alkene.m.id)).not.toBe(alkene.d);
+    const alkeneRelayout = vi.fn(ocl.relayoutMolfile2D);
+    const kept = await guardedEngineCleanUp(alkene.d, alkene.m.id, engine, alkeneRelayout);
+    expect(kept.skipped).toEqual([{ objectId: alkene.m.id, reason: "unchecked" }]);
+    expect(kept.document).toBe(alkene.d);
+    expect(alkeneRelayout).not.toHaveBeenCalled();
+    expect(cleanUpStereoSkipStatus(kept.skipped)).toBe(status);
+
+    // Wedges: the engine's own read-back throws, which failed the whole Clean Up command.
+    const steroid = await queried("C[C@]12CC[C@H]3[C@@H](CCC4=CC(=O)CC[C@@]34C)[C@@H]1CC[C@@H]2O");
+    expect(steroid.m.bonds.some(b => b.display?.bondStyle === "wedge" || b.display?.bondStyle === "hashed")).toBe(true);
+    await expect(unguardedEngineCleanUp(steroid.d, steroid.m.id)).rejects.toThrow(/unknown bond order/);
+    const skippedSteroid = await guardedEngineCleanUp(steroid.d, steroid.m.id);
+    expect(skippedSteroid.skipped).toEqual([{ objectId: steroid.m.id, reason: "unchecked" }]);
+    expect(skippedSteroid.document).toBe(steroid.d);
+
+    // No perceiver at all: a readable fused alkene is kept as drawn, never laid out unchecked.
+    const readable = await drawn("C/C=C/c1ccc2c(c1)CCC2");
+    const plain = scuffed(readable.d, readable.m.id);
+    expect(await unguardedEngineCleanUp(plain, readable.m.id)).not.toBe(plain);
+    const noEngineRelayout = vi.fn(ocl.relayoutMolfile2D);
+    const noEngine = await guardedEngineCleanUp(plain, readable.m.id, null, noEngineRelayout);
+    expect(noEngine.skipped).toEqual([{ objectId: readable.m.id, reason: "unchecked" }]);
+    expect(noEngine.document).toBe(plain);
+    expect(noEngineRelayout).not.toHaveBeenCalled();
+  }, 120000);
+
+  it("cleans fused stereo molecules whose stereo reads the same exactly as the unguarded route does", async () => {
+    let cleaned = 0;
+    for (const smiles of FUSED_STEREO) {
+      const pasted = await drawn(smiles);
+      const d = scuffed(pasted.d, pasted.m.id);
+      const m = byId(d, pasted.m.id);
+      expect(w.moleculeHasFusedRingSystem(m), smiles).toBe(true);
+      expect(w.cleanUpMayChangeStereo(m), smiles).toBe(true);
+      const unguarded = await unguardedEngineCleanUp(d, m.id);
+      const { document, skipped } = await guardedEngineCleanUp(d, m.id);
+      expect(skipped, smiles).toEqual([]);
+      expect(document, smiles).toEqual(unguarded);
+      if (document !== d) cleaned++;
+      const after = byId(committed(d, document), m.id);
+      expect(signatureText(after), smiles).toBe(signatureText(m));
+      expect(await written(after), smiles).toBe(await written(m));
+    }
+    expect(cleaned).toBe(FUSED_STEREO.length);
+  }, 180000);
+
+  it("cleans fused molecules without stereo as before, without reading stereo", async () => {
+    for (const smiles of ["Cc1ccc2ccccc2c1", "c1ccc2c(c1)CCC2", "O=C1CCCc2ccccc21", "CC(=O)c1ccc2ccccc2c1"]) {
+      const pasted = await drawn(smiles);
+      const d = scuffed(pasted.d, pasted.m.id);
+      const m = byId(d, pasted.m.id);
+      expect(w.cleanUpMayChangeStereo(m), smiles).toBe(false);
+      const { calls, counted } = countingEngine();
+      const { document, skipped } = await guardedEngineCleanUp(d, m.id, counted);
+      expect(calls.count, smiles).toBe(0);
+      expect(skipped, smiles).toEqual([]);
+      expect(document, smiles).toEqual(await unguardedEngineCleanUp(d, m.id));
+      expect(document, smiles).not.toBe(d);
+    }
+  }, 120000);
+});
+
+// Clean Up Selection (part of a molecule selected) lays out only the selected atoms with the
+// unselected ones fixed, and refuses outright when OpenChemLib's canonical code of the result,
+// which carries every parity including E/Z and absolute configuration, differs from the drawing's.
+// Audit: it never hands back another stereoisomer of the recorded flips.
+describe("Clean Up Selection keeps the stereo of the recorded flips", () => {
+  const engines = { relayout: ocl.relayoutMolfile2D, assertIdentity: ocl.assertConstrainedLayoutIdentity };
+  function neighbors(m: MoleculeObject) {
+    const map = new Map<string, Set<string>>(m.atoms.map(a => [a.id, new Set()]));
+    for (const b of m.bonds) { map.get(b.fromAtomId)!.add(b.toAtomId); map.get(b.toAtomId)!.add(b.fromAtomId); }
+    return map;
+  }
+  /** The ring (atoms left after pruning chains), every stereo element with its neighbors, and
+   *  every atom with its neighbors. Only partial selections. */
+  function selections(m: MoleculeObject): string[][] {
+    const near = neighbors(m);
+    const ring = new Set(m.atoms.map(a => a.id));
+    for (let pruned = true; pruned;) {
+      pruned = false;
+      for (const id of ring) if ([...near.get(id)!].filter(n => ring.has(n)).length < 2) { ring.delete(id); pruned = true; }
+    }
+    const signature = cleanUpStereoSignature(m, engine);
+    const stereo = [...signature.centers.keys(), ...m.bonds.filter(b => signature.doubleBonds.has(b.id)).flatMap(b => [b.fromAtomId, b.toAtomId])];
+    const around = (ids: readonly string[]) => [...new Set(ids.flatMap(id => [id, ...near.get(id)!]))];
+    return [[...ring], around(stereo), ...stereo.map(id => around([id])), ...m.atoms.map(a => around([a.id]))]
+      .filter(ids => ids.length > 1 && ids.length < m.atoms.length);
+  }
+  function moved(m: MoleculeObject, ids: readonly string[]): MoleculeObject {
+    const set = new Set(ids);
+    return { ...m, atoms: m.atoms.map((a, i) => set.has(a.id) ? { ...a, x: a.x + ((i * 7) % 9) - 4, y: a.y + ((i * 11) % 9) - 4 } : a) };
+  }
+
+  it("each partial cleanup keeps every R/S and E/Z or refuses with the drawing untouched", async () => {
+    let cleaned = 0, refused = 0;
+    for (const smiles of CLEAN_UP_BREAKS) {
+      const { m: pasted } = await drawn(smiles);
+      for (const ids of selections(pasted)) {
+        for (const m of [pasted, moved(pasted, ids)]) {
+          const frozen = JSON.stringify(m);
+          let after: MoleculeObject;
+          try {
+            after = cleanUpMoleculeSelection2d(m, { atomIds: ids, bondIds: [] }, engines);
+          } catch (error) {
+            expect((error as Error).message, smiles).toMatch(/^Clean Up Selection/);
+            refused++;
+            continue;
+          } finally {
+            expect(JSON.stringify(m), smiles).toBe(frozen);
+          }
+          if (after === m) continue;
+          cleaned++;
+          expect(signatureText(after), `${smiles} [${ids.join(",")}]`).toBe(signatureText(m));
+          expect(await written(after), `${smiles} [${ids.join(",")}]`).toBe(await written(m));
+        }
+      }
+    }
+    expect(cleaned).toBeGreaterThan(200);
+    console.info(`Clean Up Selection on the recorded flips: ${cleaned} cleaned with the same stereo, ${refused} refused.`);
+  }, 240000);
+
+  it("refuses a drawn-in-line alkene instead of giving it an E/Z, and refuses any query bond", async () => {
+    const pasted = await drawn("C/C=C/c1ccccc1");
+    const bondId = [...cleanUpStereoSignature(pasted.m, engine).doubleBonds.keys()][0]!;
+    const m = inLine(pasted.m, bondId);
+    expect(cleanUpStereoSignature(m, engine).doubleBonds.size).toBe(0);
+    const bond = m.bonds.find(b => b.id === bondId)!;
+    const chain = [...neighbors(m).get(bond.fromAtomId)!, bond.fromAtomId, bond.toAtomId];
+    // The layout engine's own identity check refuses it (the status reads "Clean up failed: 2D
+    // re-layout unexpectedly changed the molecule's identity."); either way nothing is laid out.
+    const frozen = JSON.stringify(m);
+    expect(() => cleanUpMoleculeSelection2d(m, { atomIds: chain, bondIds: [] }, engines)).toThrow(/stereochemistry|identity/);
+    expect(JSON.stringify(m)).toBe(frozen);
+
+    for (const smiles of ["O=C(O)/C=C/c1ccccc1", "C[C@H](O)c1ccccc1", "C[C@H]1CCCCO1"]) {
+      const { m: drawnMolecule } = await drawn(smiles);
+      const queryBond = drawnMolecule.bonds.find(b => b.order === "single" && !b.display?.bondStyle)!;
+      const queried = { ...drawnMolecule, bonds: drawnMolecule.bonds.map(b => b.id === queryBond.id ? { ...b, order: "unknown" as const } : b) };
+      for (const ids of selections({ ...queried, bonds: drawnMolecule.bonds })) {
+        expect(() => cleanUpMoleculeSelection2d(queried, { atomIds: ids, bondIds: [] }, engines), smiles).toThrow(/unknown bond order/);
+      }
+    }
+  }, 120000);
 });

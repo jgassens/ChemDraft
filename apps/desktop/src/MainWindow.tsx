@@ -632,7 +632,7 @@ import {
   formatElementList,
   nativeMoleculeUnmodeledMetalElements,
   applyNativeMoleculeEngineRelayout,
-  prepareNativeMoleculeEngineRelayout,
+  prepareGuardedCleanUpEngineRelayout,
   cleanUpStructureStatus,
   type NativeMoleculeRelayoutEngine,
   carryElectronMarksWithMovedAtoms,
@@ -5798,17 +5798,18 @@ export function MainWindow({
         for (const objectId of engineTargetIds) {
           // 2D Cleanup idealises to the style's bond length like the polygon+tree pass does, so
           // repeated cleanups converge instead of freezing whatever scale the drawing drifted to.
-          // The perceiver is the read-back guard: the rebuilt drawing must say the same R/S it
-          // said before, or nothing commits.
+          // The perceiver drives the engine's own R/S read-back (it redraws wedges to match);
+          // the Clean Up stereo guard then compares R/S and E/Z before and after and keeps a
+          // molecule whose stereo would change, or cannot be read, exactly as drawn.
           const target = findDocumentObject(prepared, objectId);
           const targetBondLengthPx = target?.type === "molecule"
             ? nativeDrawingStyleFromObjectStyle(target.style).bondLengthPx
             : undefined;
-          prepared = await prepareNativeMoleculeEngineRelayout(prepared, objectId, relayoutMolfile2D, loadAlternates, {
+          prepared = await prepareGuardedCleanUpEngineRelayout(prepared, objectId, relayoutMolfile2D, loadAlternates, {
             targetBondLengthPx,
             warnings,
             perceiveStereo: perceiveStereoCentersFromMolfile
-          });
+          }, { stereoEngine: cachedOclAdapter, skipped: stereoSkipped });
         }
         // Loading an alternate can yield to editing. Never replace edits made since preparation
         // started; all accepted candidates otherwise land together in exactly one history entry.
