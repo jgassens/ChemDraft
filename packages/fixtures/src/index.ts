@@ -16,6 +16,8 @@ export const cdxmlFixtureDescriptors: FixtureDescriptor[] = [
   { id: "cdxml.brackets-unresolved-membership", format: "cdxml", description: "Synthetic SRU bracket group with unresolved membership.", path: "packages/fixtures/cdxml/brackets-unresolved-membership.cdxml" },
   { id: "cdxml.brackets-unsupported-usage", format: "cdxml", description: "Synthetic bracket group with unsupported component usage.", path: "packages/fixtures/cdxml/brackets-unsupported-usage.cdxml" },
   { id: "cdxml.scheme-and-sru", format: "cdxml", description: "Synthetic reaction scheme and atom-level polyethylene SRU written for the binary-CDX bracket-reference regression test.", path: "packages/fixtures/cdxml/scheme-and-sru.cdxml" },
+  { id: "cdxml.unknown-objects-in-group", format: "cdxml", description: "Synthetic group of two bioshapes, an embedded object and a label, for unknown-object placement.", path: "packages/fixtures/cdxml/unknown-objects-in-group.cdxml" },
+  { id: "cdxml.curve-type-and-symbols", format: "cdxml", description: "Synthetic curves whose closed/filled state comes from the legacy CurveType bitfield, plus a CirclePlus symbol and an Orbital graphic.", path: "packages/fixtures/cdxml/curve-type-and-symbols.cdxml" },
   {
     id: "cdxml.empty-page",
     format: "cdxml",

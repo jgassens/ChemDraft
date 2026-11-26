@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
+<CDXML CreationProgram="ChemDraft Synthetic Fixture">
+  <page id="p1" BoundingBox="0 0 612 792">
+    <group id="g1">
+      <bioshape id="bs1" BioShapeType="Immunoglobin" BoundingBox="300 240 360 320" color="0"/>
+      <bioshape id="bs2" BioShapeType="Cylinder" BoundingBox="380 250 420 300"/>
+      <embeddedobject id="eo1" BoundingBox="430 260 470 290">placeholder-payload</embeddedobject>
+      <t id="t1" p="310 340"><s font="3" size="10" face="0">antibody sketch</s></t>
+    </group>
+  </page>
+</CDXML>

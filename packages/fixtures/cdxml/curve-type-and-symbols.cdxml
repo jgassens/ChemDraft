@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
+<CDXML CreationProgram="ChemDraft Synthetic Fixture">
+  <page id="p1" BoundingBox="0 0 612 792">
+    <curve id="c1" CurveType="129" CurvePoints="100 100 120 80 140 100 120 120"/>
+    <curve id="c2" CurveType="257" CurvePoints="200 100 220 80 240 100 220 120"/>
+    <curve id="c3" CurveType="129" Closed="no" FillType="None" CurvePoints="300 100 320 80 340 100 320 120"/>
+    <curve id="c4" CurveType="519" CurvePoints="100 200 120 180 140 200 120 220"/>
+    <curve id="c5" CurveType="1" CurvePoints="200 200 220 180 240 200 220 220"/>
+    <graphic id="g1" GraphicType="Symbol" SymbolType="CirclePlus" BoundingBox="400 300 404 304"/>
+    <graphic id="g2" GraphicType="Orbital" OrbitalType="p" BoundingBox="450 280 470 330"/>
+  </page>
+</CDXML>
