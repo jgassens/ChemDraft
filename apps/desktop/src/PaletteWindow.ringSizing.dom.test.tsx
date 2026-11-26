@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
-import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
+import { clearMocks, mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { act, type CSSProperties } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -76,9 +76,11 @@ it.each(["macos", "windows"] as const)(
       }
       if (command === "resize_toolset_window") {
         frame = payload as typeof legacySize;
-        return true;
+        return frame;
       }
+      if (command === "plugin:window|inner_size") return frame;
     });
+    mockWindows("toolset-core-ringInspector");
     mockIPC(invoke);
     vi.spyOn(window, "innerWidth", "get").mockImplementation(() => frame.width);
     vi.spyOn(window, "innerHeight", "get").mockImplementation(() => frame.height);

@@ -1210,11 +1210,14 @@ export async function currentWindowLogicalWorkArea(): Promise<MonitorLogicalBoun
 }
 
 /** Re-evaluate the cap after moving to another display or changing display scale/resolution. */
-export async function listenForCurrentWindowWorkAreaChanges(handler: () => void): Promise<Unlisten> {
+export async function listenForCurrentWindowWorkAreaChanges(
+  handler: () => void, includeNativeResize = false
+): Promise<Unlisten> {
   window.addEventListener("resize", handler);
   const listeners = await Promise.allSettled([
     listenCurrentWindowEvent("tauri://move", handler),
-    listenCurrentWindowEvent("tauri://scale-change", handler)
+    listenCurrentWindowEvent("tauri://scale-change", handler),
+    ...(includeNativeResize ? [listenCurrentWindowEvent("tauri://resize", handler)] : [])
   ]);
   return () => {
     window.removeEventListener("resize", handler);
@@ -1231,13 +1234,19 @@ export async function clampCurrentInspectorFrame(): Promise<void> {
   await invoke("clamp_current_inspector_frame");
 }
 
-/** Fit to content and return whether the native resize was applied. */
-export async function fitCurrentPaletteWindow(size: ToolsetWindowSize, area: MonitorLogicalBounds): Promise<boolean> {
-  if (isDesktopRuntime()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<boolean>("resize_toolset_window", { width: size.width, height: Math.min(size.height, area.bottom - area.top) });
-  }
-  return true;
+/** Request a fit and get the physical client size to verify, or null if the window is minimized. */
+export async function fitCurrentPaletteWindow(size: ToolsetWindowSize, area: MonitorLogicalBounds): Promise<ToolsetWindowSize | null> {
+  if (!isDesktopRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<ToolsetWindowSize | null>("resize_toolset_window", {
+    width: size.width, height: Math.min(size.height, area.bottom - area.top)
+  });
+}
+
+/** Read the live native client size in physical pixels. */
+export async function currentPaletteWindowSize(): Promise<ToolsetWindowSize> {
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  return getCurrentWindow().innerSize();
 }
 
 /**

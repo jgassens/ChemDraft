@@ -7690,13 +7690,13 @@ fn clamp_current_inspector_frame(window: tauri::WebviewWindow) {
     }
 }
 
-/// Resize to measured content, keeping the native top-left that is current when the resize runs.
+/// Request a content resize and return its physical client-size target for settled readback.
 #[tauri::command]
 fn resize_toolset_window(
     window: tauri::WebviewWindow,
     width: f64,
     height: f64,
-) -> Result<bool, String> {
+) -> Result<Option<tauri::PhysicalSize<u32>>, String> {
     let app = window.app_handle();
     let toolset_id = toolset_id_for_window_label(app, window.label());
     if toolset_id.is_none_or(|id| toolset_is_resizable(&id)) {
@@ -7713,7 +7713,7 @@ fn resize_toolset_window(
     let webview: &tauri::Webview = window.as_ref();
     let window = webview.window();
     if toolset_frame_is_transient(app, &window) {
-        return Ok(false);
+        return Ok(None);
     }
     let monitor = monitor_query::current_monitor(&window)
         .map_err(|error| error.to_string())?
@@ -7723,13 +7723,10 @@ fn resize_toolset_window(
     // Only Linux builds use native Wayland (uses_native_wayland is false elsewhere). The compositor
     // places the window, so cap both sides to the work area and leave the position alone.
     if utility_window::uses_native_wayland(app)? {
-        window
-            .set_size(tauri::LogicalSize::new(
-                width.min(area.width),
-                height.min(area.height),
-            ))
-            .map_err(|error| error.to_string())?;
-        return Ok(true);
+        let size = tauri::LogicalSize::new(width.min(area.width), height.min(area.height));
+        let scale = window.scale_factor().map_err(|error| error.to_string())?;
+        window.set_size(size).map_err(|error| error.to_string())?;
+        return Ok(Some(size.to_physical(scale)));
     }
     let scale = monitor.scale_factor();
     #[cfg(not(target_os = "macos"))]
@@ -7807,6 +7804,7 @@ fn resize_toolset_window(
             },
         ),
     });
+    let target = tauri::PhysicalSize::new(placement.size.0, placement.size.1);
     // A palette pinned through a map (palette_map_pin) is held where this fit puts it, with the
     // outer frame the fit gives it. A fit in place keeps the pin's target but still records the
     // new frame, so a later retarget archives the target with the size it really had.
@@ -7839,22 +7837,17 @@ fn resize_toolset_window(
     // X11/XWayland: pin the GtkWindow to the new size before resizing it. GTK clamps a resize to
     // the window's current hints, which still hold the previous content size.
     #[cfg(target_os = "linux")]
-    utility_window::pin_content_fit_frame(
-        &window,
-        tauri::PhysicalSize::new(placement.size.0, placement.size.1).into(),
-    )?;
+    utility_window::pin_content_fit_frame(&window, target.into())?;
     #[cfg(not(target_os = "macos"))]
     if placement.position == origin {
         windows_activation_log::frame_set(window.label(), "toolbar content fit", "pixels", || {
             (placement.position, placement.size)
         });
-        window
-            .set_size(tauri::PhysicalSize::new(placement.size.0, placement.size.1))
-            .map_err(|error| error.to_string())?;
-        return Ok(true);
+        window.set_size(target).map_err(|error| error.to_string())?;
+        return Ok(Some(target));
     }
     panel_full_size::apply(&window, placement, "toolbar content fit")?;
-    Ok(true)
+    Ok(Some(target))
 }
 
 fn toolset_title_in_physical_work_area(

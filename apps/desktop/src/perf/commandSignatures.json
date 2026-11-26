@@ -637,7 +637,7 @@
     "async": false,
     "generics": "",
     "parameters": "window: tauri::WebviewWindow, width: f64, height: f64,",
-    "returnType": "Result<bool, String>"
+    "returnType": "Result<Option<tauri::PhysicalSize<u32>>, String>"
   },
   {
     "file": "lib.rs",

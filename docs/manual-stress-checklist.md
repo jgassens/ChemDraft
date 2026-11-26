@@ -149,6 +149,9 @@ appears, click once on an empty part of another palette. The flyout's `_NET_WM_U
 long-press's time, not the later click's (`xev -root` or `xinput test-xi2 --root` shows both), and
 it still opens without an attention state.
 
+Floating Main toolbar fit (macOS, Windows and Linux): on first launch and after relaunch, check
+that the toolbar fits all its buttons, the title is visible, and there is no empty gray space.
+
 Palette first paint (Windows): quit ChemDraft, then cold-launch it. The Main toolbar and the other
 open palettes appear with their content in the palette's light grey, with no black frame and no
 blank light frames first. Press and hold a flyout button and open a color picker: each popover, and
