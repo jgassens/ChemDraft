@@ -3,6 +3,7 @@ import {
   collapseRepeatedFileExtension,
   DOCUMENT_SAVE_EXTENSIONS,
   isFileAlreadyExistsError,
+  resolveAppendedExtensionSavePath,
   resolveRepeatedExtensionSavePath,
   resolveRepeatedExtensionSaveTarget,
   writeGrantedRepeatedExtensionTarget,
@@ -302,5 +303,63 @@ describe("writeGrantedRepeatedExtensionTarget", () => {
     ctx.confirmReplace.mockImplementationOnce(async () => { grants.set("tab", newer); return true; });
     await expect(writeGrantedRepeatedExtensionTarget(grants, "tab", "/out/fig.svg", ctx, write)).resolves.toBe(true);
     expect(grants.get("tab")).toBe(newer);
+  });
+});
+
+describe("resolveAppendedExtensionSavePath", () => {
+  function appendedContext(existing: readonly string[], replace: boolean, ownPath?: string) {
+    return {
+      ownPath,
+      exists: vi.fn(async (path: string) => existing.includes(path)),
+      confirmReplace: vi.fn(async (_path: string) => replace)
+    };
+  }
+
+  /** The Save As flow: resolve the appended path, then write only what was resolved. */
+  async function saveAs(selected: string, appended: string, ctx: ReturnType<typeof appendedContext>) {
+    const write = vi.fn(async (_path: string) => {});
+    const path = await resolveAppendedExtensionSavePath(selected, appended, ctx);
+    if (path) await write(path);
+    return { path, write };
+  }
+
+  it("asks before replacing an existing file the extension was appended onto; Cancel writes nothing", async () => {
+    const ctx = appendedContext(["/home/me/bare.chemdraft"], false);
+    const { path, write } = await saveAs("/home/me/bare", "/home/me/bare.chemdraft", ctx);
+    expect(ctx.confirmReplace).toHaveBeenCalledWith("/home/me/bare.chemdraft");
+    expect(path).toBeUndefined();
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("writes the appended path once the user chooses Replace", async () => {
+    const ctx = appendedContext(["C:\\Users\\me\\bare.chemdraft"], true);
+    const { path, write } = await saveAs("C:\\Users\\me\\bare", "C:\\Users\\me\\bare.chemdraft", ctx);
+    expect(ctx.confirmReplace).toHaveBeenCalledTimes(1);
+    expect(path).toBe("C:\\Users\\me\\bare.chemdraft");
+    expect(write).toHaveBeenCalledWith("C:\\Users\\me\\bare.chemdraft");
+  });
+
+  it("does not ask when the panel already returned the final path, even if it exists", async () => {
+    const ctx = appendedContext(["/Users/me/bare.chemdraft"], false);
+    const { path, write } = await saveAs("/Users/me/bare.chemdraft", "/Users/me/bare.chemdraft", ctx);
+    expect(ctx.exists).not.toHaveBeenCalled();
+    expect(ctx.confirmReplace).not.toHaveBeenCalled();
+    expect(write).toHaveBeenCalledWith("/Users/me/bare.chemdraft");
+  });
+
+  it("does not ask when the appended path is free or is the document's own file", async () => {
+    const free = appendedContext([], false);
+    await expect(resolveAppendedExtensionSavePath("/tmp/new", "/tmp/new.svg", free)).resolves.toBe("/tmp/new.svg");
+    expect(free.confirmReplace).not.toHaveBeenCalled();
+    const own = appendedContext(["/tmp/doc.chemdraft"], false, "/tmp/doc.chemdraft");
+    await expect(resolveAppendedExtensionSavePath("/tmp/doc", "/tmp/doc.chemdraft", own)).resolves.toBe("/tmp/doc.chemdraft");
+    expect(own.confirmReplace).not.toHaveBeenCalled();
+  });
+
+  it("keeps the appended path, as before, when it cannot be checked", async () => {
+    const ctx = appendedContext([], false);
+    ctx.exists.mockRejectedValueOnce(new Error("forbidden path"));
+    await expect(resolveAppendedExtensionSavePath("/mnt/x", "/mnt/x.pdf", ctx)).resolves.toBe("/mnt/x.pdf");
+    expect(ctx.confirmReplace).not.toHaveBeenCalled();
   });
 });

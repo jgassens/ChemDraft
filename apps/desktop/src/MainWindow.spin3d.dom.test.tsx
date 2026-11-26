@@ -276,6 +276,68 @@ describe("Spin 3D on the canvas", () => {
       { diagnostic: "release 1: rotate ended after 1 moves" }));
   });
 
+  it("names the view Esc and Undo close: Interactive 3D canceled, Spin canceled", async () => {
+    // Linux 1.2.2 retest: Esc in Interactive 3D left the drawing unchanged but said "Spin canceled".
+    const initial = modeledDrawing();
+    const ids = getSelectedMolecule(initial)!.atoms.map(atom => atom.id);
+    vi.mocked(invoke).mockImplementation(async (name, args) => {
+      if (name === "engine3d_sidecar_status") return { available: true, source: "bundled", logEnabled: false };
+      if (!name.startsWith("engine3d_sidecar_")) return undefined;
+      const line = (args as { lines?: string[] })?.lines?.[0];
+      const request = line ? JSON.parse(line) as Engine3DRequest : undefined;
+      const output: Engine3dSidecarSessionOutput = { processSessionId: "process", stdoutLines: [], stderr: "", exited: false };
+      if (request?.type !== "createSession") return output;
+      const envelope = { protocolVersion: Engine3DProtocolVersion, sessionId: "session", requestId: request.requestId };
+      output.stdoutLines.push(
+        JSON.stringify({ ...envelope, type: "response", ok: true, result: { sessionId: "session" } }),
+        JSON.stringify({ ...envelope, type: "event", eventType: "coordinatesChanged", reason: "embed",
+          coordinateRevision: 1, coords3dByAtomId: positionMap(ids, seed) })
+      );
+      return output;
+    });
+    const escape = () => act(async () => {
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    });
+    await mount(initial);
+    const before = snapshot();
+
+    await command("structure.openInteractive3d");
+    await vi.waitFor(() => expect(status()).toContain(`${interactive3dPhaseLabel("ready")} · `));
+    expect(overlay()).toBeTruthy();
+    await escape();
+    expect(overlay()).toBeNull();
+    expect(status()).toContain("Interactive 3D canceled");
+    expect(status()).not.toContain("Spin");
+    expect(snapshot()).toEqual(before);
+
+    // Undo closes Interactive 3D the same way and names it too.
+    await command("structure.openInteractive3d");
+    await vi.waitFor(() => expect(status()).toContain(`${interactive3dPhaseLabel("ready")} · `));
+    expect(overlay()).toBeTruthy();
+    await command("edit.undo");
+    expect(overlay()).toBeNull();
+    expect(status()).toContain("Interactive 3D canceled");
+    expect(status()).not.toContain("Spin");
+    expect(snapshot()).toEqual(before);
+
+    // Spin 3D on the same molecule, after Interactive 3D has closed, keeps its own wording.
+    await command("structure.spin3d");
+    await vi.waitFor(() => expect(overlay()).toBeTruthy());
+    await escape();
+    expect(overlay()).toBeNull();
+    expect(status()).toContain("Spin canceled");
+    expect(status()).not.toContain("Interactive 3D");
+    expect(snapshot()).toEqual(before);
+
+    await command("structure.spin3d");
+    await vi.waitFor(() => expect(overlay()).toBeTruthy());
+    await command("edit.undo");
+    expect(overlay()).toBeNull();
+    expect(status()).toContain("Spin canceled");
+    expect(status()).not.toContain("Interactive 3D");
+    expect(snapshot()).toEqual(before);
+  });
+
   it.each(["outside click", "second grab", "second grab and outside click", "settle timeout",
     "grab during settle timeout", "quick grab after blocked tug"])(
     "handles %s during or after a tug's settle", async action => {

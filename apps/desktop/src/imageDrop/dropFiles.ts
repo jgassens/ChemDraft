@@ -18,7 +18,11 @@ export type DroppedFileRole =
 
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "jpe", "jfif", "pjpeg", "pjp", "gif", "webp", "svg"]);
 
-/** Picture types a webview cannot decode on every platform (TIFF fails in WebView2). */
+/**
+ * Picture types a webview cannot decode on every platform (TIFF fails in WebView2), and links and
+ * shortcuts, which would otherwise be opened as documents and fail with a parser's wording. Refused
+ * by name on every route, without being read.
+ */
 const REFUSED_EXTENSIONS: Readonly<Record<string, string>> = {
   bmp: "BMP and TIFF pictures can't be dropped yet; save it as PNG or JPEG first.",
   dib: "BMP and TIFF pictures can't be dropped yet; save it as PNG or JPEG first.",
@@ -32,7 +36,12 @@ const REFUSED_EXTENSIONS: Readonly<Record<string, string>> = {
   svgz: "compressed SVG (.svgz) can't be dropped; save it as plain SVG first.",
   pdf: "PDF files can't be placed as pictures; export the page as PNG or SVG first.",
   eps: "EPS files can't be placed as pictures; export it as PNG or SVG first.",
-  ai: ".ai files can't be placed as pictures; export it as PNG or SVG first."
+  ai: ".ai files can't be placed as pictures; export it as PNG or SVG first.",
+  // A web link from a browser or the desktop: .url on Windows, .webloc on macOS.
+  url: "it is a web link, not a picture or a drawing.",
+  webloc: "it is a web link, not a picture or a drawing.",
+  // A Windows shortcut: the target is what was meant.
+  lnk: "it is a shortcut; drop the file it points to instead."
 };
 
 export function droppedFileExtension(name: string): string {

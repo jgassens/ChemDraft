@@ -29,8 +29,9 @@ export const windowsFiles = [
   ...windowsUpdates.flatMap(({ installer: name, feed }) => [name, `${name}.sig`, `${name}.build.json`, feed]),
   offlineInstaller, `${offlineInstaller}.build.json`
 ];
-export const deb = `ChemDraft_${version}_amd64.deb`;
-export const appImage = `ChemDraft_${version}_amd64.AppImage`;
+// The Linux beta of 1.2.3 is 1.2.3β, under the same v1.2.3 tag.
+export const deb = `ChemDraft_${version}-beta_amd64.deb`;
+export const appImage = `ChemDraft_${version}-beta_amd64.AppImage`;
 
 // Private keys exist only in memory for this test process.
 const { publicKey, privateKey } = generateKeyPairSync("ed25519");

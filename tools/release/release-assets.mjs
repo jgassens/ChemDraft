@@ -2,7 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { artifactDigest, BUILD_TARGETS, COMMIT_PATTERN, LINUX_BUILD_TARGET } from "./record-build.mjs";
+import { artifactDigest, BUILD_TARGETS, buildFileName, COMMIT_PATTERN, LINUX_BUILD_TARGET } from "./record-build.mjs";
 import { loadUpdaterPublicKey, RELEASE_DOWNLOAD_BASE, verifyUpdaterSignature, WINDOWS_PLATFORM_KEY } from "./windows-updater.mjs";
 
 export { writeReleaseChecksums } from "./release-checksums.mjs";
@@ -72,7 +72,7 @@ export function expectedReleaseCommit({ commit, tag, rootDir }, { run = spawnSyn
 export function releaseBuildFiles(version) {
   if (!/^\d+\.\d+\.\d+$/.test(version ?? "")) throw new Error("Expected --version X.Y.Z");
   return Object.entries(BUILD_TARGETS).flatMap(([target, suffixes]) =>
-    suffixes.map((suffix) => ({ target, name: `ChemDraft_${version}_${suffix}` })));
+    suffixes.map((suffix) => ({ target, name: buildFileName(version, target, suffix) })));
 }
 
 export function missingBuildFiles(assets, version) {

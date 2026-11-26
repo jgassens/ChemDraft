@@ -12,7 +12,7 @@ import {
   readEngine3dSidecarStatus,
   updateEngine3dWorkspaceDrag
 } from "./engine3dSidecar";
-import { interactive3dPhaseLabel, interactive3dSessionStatus } from "./interactive3dStatus";
+import { interactive3dPhaseLabel, interactive3dSessionStatus, spin3dViewCanceledStatus } from "./interactive3dStatus";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
@@ -125,6 +125,12 @@ describe("Interactive 3D status line", () => {
     session = await beginEngine3dWorkspaceDrag(session, "o3");
     session = await updateEngine3dWorkspaceDrag(session, "o3", { x: 1.6, y: 0.3, z: 0.4 });
     expect(interactive3dSessionStatus(session, "pulling")).toBe("Unknown dragged atom id.");
+  });
+
+  it("names the view Esc closes", () => {
+    // Linux 1.2.2 retest: Esc in Interactive 3D said "Spin canceled".
+    expect(spin3dViewCanceledStatus(true)).toBe("Interactive 3D canceled");
+    expect(spin3dViewCanceledStatus(false)).toBe("Spin canceled");
   });
 });
 

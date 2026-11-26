@@ -30,6 +30,7 @@ import { nativeTemplateForToolCommand as sharedTemplateForToolCommand } from "./
 import { projectedDoubleBondSides } from "./interaction/projectedDoubleBondSides";
 import { buildTableObject, pageConstrainedShift } from "@chemdraft/document-workflow-core";
 import { planTableLayout, planTextObjectPlacement, tableVisualBoundsForArrangement, textAutoSizePageLimits, transformPointForObject, rotatedGraphicLocalBounds } from "@chemdraft/layout-engine";
+import { carryElectronMarksToRedrawnMolecule, electronMarkCarryMolecule, type ElectronMarkCarryPlacement } from "@chemdraft/layout-engine";
 import { validTableDimensions, type TableInsertDimensions } from "./dialogs/insertTableOptions";
 import { doubleBondStereoState, perceivedSpecifiedDoubleBondIds } from "./interaction/doubleBondStereo";
 import { separateProjectedStereoLigands, serializeSpin3dMolfile, type Spin3dStereoIssue, type Spin3dStereoReference } from "./interaction/spin3dStereo";
@@ -17853,7 +17854,18 @@ function buildNativeMoleculeEngineRelayout(
     return document;
   }
 
-  return applyPatches(document, [{ op: "updateObject" as const, objectId: molecule.id, changes: cleaned }], {
+  // The molecule's charge, radical and lone-pair marks follow their atoms to the new layout in the
+  // same patch set (one undo step), each kept at its offset or turned to a free side. The marks
+  // carried are the ones the committed owner rule gives this molecule (`atomOwnedMarksForTransform`,
+  // as for Rotate Molecule), never a stale stored anchor: a non-explicit mark still anchored here but
+  // assigned to another molecule's atom stays with that molecule, so its chemistry cannot move.
+  const page = document.pages.find(candidate => candidate.objects.includes(molecule));
+  const owned = page ? atomOwnedMarksForTransform(page.objects, molecule.id, new Set(molecule.atoms.map(atom => atom.id)))
+    .map(({ mark, atomId }) => ({ mark, atomId })) : [];
+  return applyPatches(document, [
+    { op: "updateObject" as const, objectId: molecule.id, changes: cleaned },
+    ...(page ? carriedElectronMarkPatches(page, molecule, cleaned, owned) : [])
+  ], {
     now: phase4Timestamp
   });
 }
@@ -20099,26 +20111,17 @@ export function flattenSpunMolecule(
   }
   const { molecule: flattened, crossings, ...outcome } = result;
   if (!flattened || result.status !== "committed") return { document, ...outcome };
-  const patches: DocumentPatch[] = [{
-    op: "updateObject", objectId, changes: {
-      atoms: flattened.atoms, bonds: flattened.bonds, x: flattened.x, y: flattened.y,
-      width: flattened.width, height: flattened.height, structure: flattened.structure,
-      structureFormat: flattened.structureFormat
-    }
-  }];
-  // Carry the mark's existing offset with its atom. Make legacy atom
-  // associations explicit so a crowded projection cannot reassign them.
-  const oldAtoms = new Map(molecule.atoms.map(atom => [atom.id, atom]));
-  const newAtoms = new Map(flattened.atoms.map(atom => [atom.id, atom]));
-  for (const { mark, atomId } of spin3dCarriedElectronMarks(page, objectId)) {
-    const before = oldAtoms.get(atomId);
-    const after = newAtoms.get(atomId);
-    if (!before || !after) continue;
-    patches.push({ op: "updateObject", objectId: mark.id, changes: {
-      x: mark.x + after.x - before.x, y: mark.y + after.y - before.y, atomAssociation: "explicit",
-      anchor: { kind: "atom", objectId, atomId }
-    } });
-  }
+  const committed = {
+    atoms: flattened.atoms, bonds: flattened.bonds, x: flattened.x, y: flattened.y,
+    width: flattened.width, height: flattened.height, structure: flattened.structure,
+    structureFormat: flattened.structureFormat
+  };
+  const patches: DocumentPatch[] = [{ op: "updateObject", objectId, changes: committed }];
+  // Carry each mark with its atom (its offset kept, or turned to a free side when the projection
+  // puts that spot on another atom, a bond or a label), in the same patch set so one undo restores
+  // it. The frame is the committed molecule's own, its rotation included: the live overlay places
+  // the marks in the same frame (`spinOverlayCarriedMarkPlacements`).
+  patches.push(...carriedElectronMarkPatches(page, molecule, { ...molecule, ...committed }));
   const pageId = page.id;
   for (const crossing of page.crossings) {
     if (crossing.bonds.every(ref => ref.objectId === objectId)) {
@@ -20171,9 +20174,10 @@ function isSpin3dStereoMarker(bond: MoleculeBond): boolean {
 }
 
 /**
- * The charge/radical marks a Spin 3D session carries with molecule `objectId`, each with the atom it
- * follows. Flatten moves each by its atom's (flattened − drawn) offset, and the live overlay paints
- * each at the same offset from the projected atom, so the mark never lags the spin.
+ * The charge/radical/lone-pair marks a Spin 3D session carries with molecule `objectId`, each with the
+ * atom it follows, whether or not the mark itself is selected. Flatten and the live overlay place
+ * them with the same rule (`carriedElectronMarkPlacements`), so the mark never lags the spin and is
+ * committed where it was painted.
  */
 export function spin3dCarriedElectronMarks(
   page: DocumentPage, objectId: string
@@ -20184,6 +20188,82 @@ export function spin3dCarriedElectronMarks(
     const owner = spin3dElectronMarkOwner(mark, assignments);
     return owner?.objectId === objectId ? [{ mark, atomId: owner.atomId }] : [];
   });
+}
+
+/** Where one carried mark goes when its molecule is redrawn (layout-engine's placement, with its mark). */
+export interface CarriedElectronMarkPlacement extends ElectronMarkCarryPlacement {
+  mark: ElectronMarkObject;
+}
+
+/**
+ * Where the marks molecule `before` owns on `page` go when it is redrawn as `after` (same atom ids,
+ * new positions, `after`'s own frame and rotation): Spin 3D flatten and its live overlay, X/Y
+ * rotation of a stored 3D model, and 3D clean-up all use this, so the overlay paints each mark where
+ * the commit puts it. Which marks travel, and what they must keep off (`after`'s atoms, bonds and
+ * the labels it draws, and every other molecule on `page`), is gathered here; where they go is
+ * layout-engine's `carryElectronMarksToRedrawnMolecule`, the one copy of that math. Positions only:
+ * no chemistry.
+ */
+export function carriedElectronMarkPlacements(
+  page: DocumentPage,
+  before: MoleculeObject,
+  after: MoleculeObject,
+  entries: ReadonlyArray<{ mark: ElectronMarkObject; atomId: string }> = spin3dCarriedElectronMarks(page, before.id)
+): Map<string, CarriedElectronMarkPlacement> {
+  const placements = new Map<string, CarriedElectronMarkPlacement>();
+  if (entries.length === 0) return placements;
+  const marks = new Map(entries.map(({ mark }) => [mark.id, mark] as const));
+  const others = page.objects.flatMap(object =>
+    object.type === "molecule" && object.id !== before.id ? [electronMarkCarryMolecule(object)] : []);
+  for (const [markId, placement] of carryElectronMarksToRedrawnMolecule(
+    electronMarkCarryMolecule(before), electronMarkCarryMolecule(after), entries, others
+  )) {
+    placements.set(markId, { ...placement, mark: marks.get(markId)! });
+  }
+  return placements;
+}
+
+/**
+ * The molecule flatten commits for a spun `molecule` whose atoms land at `atoms` (same ids, page
+ * positions in the molecule's own frame): those atoms, its frame refitted around them, and every
+ * other property of the source, its rotation included — a molecule turned on the page stays turned
+ * by the same angle, about its new centre. `flattenNativeMolecule3d` builds its result with this.
+ */
+export function spinFlattenedMoleculeFrame(molecule: MoleculeObject, atoms: MoleculeAtom[]): MoleculeObject {
+  return { ...molecule, atoms, ...moleculeGeometryFromAtoms(atoms) };
+}
+
+/**
+ * Where the Spin 3D live overlay paints the marks of `source` for its projected atoms `atoms`: the
+ * placement flatten commits for those atoms (`carriedElectronMarkPlacements` in
+ * `spinFlattenedMoleculeFrame`), so each mark is painted at the page position release stores it at.
+ * For a molecule turned on the page (rotation not 0) that is the turned position, while the overlay
+ * itself draws the projection unturned (a mismatch of the overlay drawing, not of the marks).
+ * Release still moves everything by the page clamp when flatten has to pull the molecule into the page.
+ */
+export function spinOverlayCarriedMarkPlacements(
+  page: DocumentPage,
+  source: MoleculeObject,
+  atoms: MoleculeAtom[]
+): Map<string, CarriedElectronMarkPlacement> {
+  return carriedElectronMarkPlacements(page, source, spinFlattenedMoleculeFrame(source, atoms));
+}
+
+/** Patches that carry `before`'s marks to `after` (see `carriedElectronMarkPlacements`). Legacy atom
+ * associations become explicit so the redrawn geometry cannot reassign a mark to a nearer atom.
+ * `entries` are the marks to carry with their atoms (default: the Spin 3D owner rule). */
+export function carriedElectronMarkPatches(
+  page: DocumentPage,
+  before: MoleculeObject,
+  after: MoleculeObject,
+  entries?: ReadonlyArray<{ mark: ElectronMarkObject; atomId: string }>
+): DocumentPatch[] {
+  return [...carriedElectronMarkPlacements(page, before, after, entries).values()].map(({ mark, atomId, x, y, rotation }) => ({
+    op: "updateObject" as const, objectId: mark.id, changes: {
+      x, y, ...(rotation !== mark.rotation ? { rotation } : {}), atomAssociation: "explicit" as const,
+      anchor: { kind: "atom" as const, objectId: before.id, atomId }
+    }
+  }));
 }
 
 /** The selection as single-molecule commands (Spin 3D, 3D cleanup, Interactive 3D) read it. */
@@ -20213,6 +20293,32 @@ export function singleMoleculeSelection(
   document: ChemDraftDocument,
   nativePartHostObjectIds: readonly string[] = []
 ): SingleMoleculeSelection {
+  return foldCarriedMarksIntoMolecule(document, nativePartHostObjectIds,
+    (page, moleculeId) => spin3dCarriedElectronMarks(page, moleculeId).map(({ mark }) => mark.id));
+}
+
+/**
+ * The selection as a 2D molecule transform (Rotate Molecule, its angle box) reads it: one molecule
+ * plus only marks the transform cascade carries rigidly with it. The carried marks are exactly the
+ * ones `atomOwnedMarksForTransform` gives the molecule, the rule the rotation itself moves marks by:
+ * a non-explicit charge or radical mark by its committed assignment (never a stale stored anchor),
+ * and an explicit anchor only when it names one of the molecule's live atoms. So a selection is
+ * folded into the molecule exactly when every selected mark will turn with it.
+ */
+export function singleMoleculeTransformSelection(document: ChemDraftDocument): SingleMoleculeSelection {
+  return foldCarriedMarksIntoMolecule(document, [], (page, moleculeId) => {
+    const molecule = page.objects.find(object => object.id === moleculeId);
+    if (molecule?.type !== "molecule") return [];
+    const atomIds = new Set(molecule.atoms.map(atom => atom.id));
+    return atomOwnedMarksForTransform(page.objects, moleculeId, atomIds).map(({ mark }) => mark.id);
+  });
+}
+
+function foldCarriedMarksIntoMolecule(
+  document: ChemDraftDocument,
+  nativePartHostObjectIds: readonly string[],
+  carriedMarkIds: (page: DocumentPage, moleculeId: string) => readonly string[]
+): SingleMoleculeSelection {
   const objectIds = [...new Set([...document.selection.objectIds, ...nativePartHostObjectIds])];
   const page = document.pages.find(candidate => candidate.id === document.selection.pageId) ?? document.pages[0];
   const unchanged = { objectIds, uncarriedMarkIds: [] };
@@ -20222,7 +20328,7 @@ export function singleMoleculeSelection(
   const others = objectIds.filter(id => !markIds.includes(id));
   if (markIds.length === 0 || others.length !== 1 || objectById.get(others[0]!)?.type !== "molecule") return unchanged;
   const moleculeId = others[0]!;
-  const carried = new Set(spin3dCarriedElectronMarks(page, moleculeId).map(({ mark }) => mark.id));
+  const carried = new Set(carriedMarkIds(page, moleculeId));
   const uncarriedMarkIds = markIds.filter(id => !carried.has(id));
   return uncarriedMarkIds.length > 0 ? { objectIds, uncarriedMarkIds } : { objectIds: [moleculeId], uncarriedMarkIds: [] };
 }
@@ -20357,6 +20463,7 @@ export function assertSpin3dDocumentIdentity(
     const originalAssignments = nativeElectronMarkAssignments(page).anchorByMarkId;
     const nextAssignments = nativeElectronMarkAssignments(nextPage).anchorByMarkId;
     const nextObjects = new Map(nextPage.objects.map(object => [object.id, object]));
+    let carried: Map<string, CarriedElectronMarkPlacement> | undefined;
     for (const mark of page.objects) {
       if (mark.type !== "electron-mark") continue;
       const next = nextObjects.get(mark.id);
@@ -20367,11 +20474,13 @@ export function assertSpin3dDocumentIdentity(
         throw new Error(`the atom association of the ${mark.markKind} mark ${mark.id} would change`);
       }
       if (page !== sourcePage || owner?.objectId !== stereo.source.id) continue;
-      const atom = stereo.source.atoms.find(candidate => candidate.id === owner.atomId);
-      const moved = target?.atoms.find(candidate => candidate.id === owner.atomId);
-      const from = nativeChargeMarkCenter(mark);
-      const to = nativeChargeMarkCenter(next);
-      if (!atom || !moved || Math.hypot(to.x - moved.x - (from.x - atom.x), to.y - moved.y - (from.y - atom.y)) > 1e-6) {
+      // The mark must sit where the shared carry rule puts it for the committed atoms: its offset
+      // kept, or turned to a free side (the same placement the live overlay painted).
+      carried ??= target ? carriedElectronMarkPlacements(page, stereo.source, target) : new Map();
+      const expected = carried.get(mark.id);
+      if (!expected || Math.hypot(next.x - expected.x, next.y - expected.y) > 1e-6 ||
+          Math.abs(next.width - mark.width) > 1e-9 || Math.abs(next.height - mark.height) > 1e-9 ||
+          Math.abs(((next.rotation - expected.rotation) % 360 + 540) % 360 - 180) > 1e-6) {
         throw new Error(`the ${mark.markKind} mark ${mark.id} would move away from its atom`);
       }
     }
@@ -20639,12 +20748,7 @@ export function flattenNativeMolecule3d(
     refusalReasons: [`flatten would lose or redirect explicit unknown stereo at ${lostWaves.length} bond(s); re-orient and try again`]
   };
 
-  const stagedMolecule: MoleculeObject = {
-    ...molecule,
-    atoms: nextAtoms,
-    bonds: committedBonds,
-    ...geometry
-  };
+  const stagedMolecule: MoleculeObject = { ...spinFlattenedMoleculeFrame(molecule, nextAtoms), bonds: committedBonds };
   // An injected engine reader can exclude non-stereogenic bonds (equivalent ligands).
   // Without perception or explicit ids, conservatively guard every non-zero drawn state.
   // Either markers are always checked, independently of perceived stereogenicity.

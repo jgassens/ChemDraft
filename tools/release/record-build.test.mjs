@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { artifactDigest, recordBuild } from "./record-build.mjs";
+import { artifactDigest, buildFileName, recordBuild } from "./record-build.mjs";
 import { macosReleasePlist } from "./macos-build-plist.mjs";
 import { allusersInstaller, appImage, arm, deb, fakeReleaseRunner, installer, intel, offlineInstaller } from "./release-test-fixtures.mjs";
 
@@ -51,9 +51,21 @@ test("every release artifact records the checked-out full commit, version, targe
   }
 });
 
+test("only Linux file names carry the beta suffix; macOS and Windows names are unchanged", () => {
+  assert.equal(deb, "ChemDraft_1.2.3-beta_amd64.deb");
+  assert.equal(appImage, "ChemDraft_1.2.3-beta_amd64.AppImage");
+  assert.equal(buildFileName("1.2.3", "x86_64-unknown-linux-gnu", "amd64.deb"), deb);
+  assert.equal(buildFileName("1.2.3", "aarch64-apple-darwin", "aarch64.dmg"), "ChemDraft_1.2.3_aarch64.dmg");
+  assert.equal(buildFileName("1.2.3", "x86_64-pc-windows-msvc", "x64-setup.exe"), "ChemDraft_1.2.3_x64-setup.exe");
+});
+
 test("Linux records require an exact package name for the checked-out version", (t) => {
   const { rootDir } = fixture(t);
-  for (const name of ["ChemDraft_1.2.2_amd64.deb", "ChemDraft_1.2.3_arm64.deb", "ChemDraft_1.2.3_amd64.appimage"]) {
+  // The Linux build is the beta of 1.2.3: the pre-beta name ChemDraft_1.2.3_amd64.* is no longer accepted.
+  for (const name of [
+    "ChemDraft_1.2.2-beta_amd64.deb", "ChemDraft_1.2.3-beta_arm64.deb", "ChemDraft_1.2.3-beta_amd64.appimage",
+    "ChemDraft_1.2.3_amd64.deb", "ChemDraft_1.2.3_amd64.AppImage", "ChemDraft_1.2.3_beta_amd64.deb", "ChemDraft_1.2.3~beta_amd64.deb"
+  ]) {
     const artifact = join(rootDir, "assets", name);
     writeFileSync(artifact, "fixture");
     assert.throws(() => recordBuild({ artifact, target: "x86_64-unknown-linux-gnu", rootDir }),

@@ -64,9 +64,9 @@ test("an installer built without a release-page label fails the Windows section"
 
 test("five-build release includes a Linux beta section and accepts Linux gaps", (t) => {
   const args = fixture(t);
-  assert.match(draft(args), /^## Linux\n\nLinux support is in beta\./m);
+  assert.match(draft(args), /^## Linux\n\nThe Linux build is ChemDraft [^\n]+β, a beta\.\n\nFiles:\n- ChemDraft_[^\n]+-beta_amd64\.deb\n- ChemDraft_[^\n]+-beta_amd64\.AppImage/m);
   assert.match(draft({ ...args, noGaps: false, gaps: ["linux:Feature A: reason"] }),
-    /^## Linux\n\nLinux support is in beta\.\n\nNot in this build: Feature A: reason\n\nPlatform differences: See/m);
+    /^## Linux\n\nThe Linux build is ChemDraft [^\n]+β, a beta\.\n\nFiles:\n- ChemDraft_[^\n]+-beta_amd64\.deb\n- ChemDraft_[^\n]+-beta_amd64\.AppImage\n\nNot in this build: Feature A: reason\n\nPlatform differences: See/m);
 });
 
 test("requesting a Linux section without packages fails", (t) => {
@@ -76,7 +76,7 @@ test("requesting a Linux section without packages fails", (t) => {
 });
 
 test("requesting a Linux section succeeds with the complete verified set", (t) => {
-  assert.match(draft({ ...fixture(t), includeLinux: true }), /^## Linux\n\nLinux support is in beta\./m);
+  assert.match(draft({ ...fixture(t), includeLinux: true }), /^## Linux\n\nThe Linux build is ChemDraft [^\n]+β, a beta\.\n\nFiles:\n- ChemDraft_[^\n]+-beta_amd64\.deb\n- ChemDraft_[^\n]+-beta_amd64\.AppImage/m);
 });
 
 test("requesting a Linux section still requires a complete set when packages are present", (t) => {

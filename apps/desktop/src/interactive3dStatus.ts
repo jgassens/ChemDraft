@@ -30,3 +30,12 @@ export function interactive3dSessionStatus(
 ): string {
   return session.errors.at(-1) ?? INTERACTIVE_3D_PHASE_LABELS[phase];
 }
+
+/**
+ * What the status line says when Esc (or Undo) closes the 3D view without flattening. Interactive 3D
+ * rides the Spin 3D overlay, and the Linux 1.2.2 retest found Esc in Interactive 3D reporting "Spin
+ * canceled", a command the user never chose. Each view now names itself.
+ */
+export function spin3dViewCanceledStatus(interactive3d: boolean): string {
+  return interactive3d ? "Interactive 3D canceled" : "Spin canceled";
+}

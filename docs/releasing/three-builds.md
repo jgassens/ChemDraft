@@ -22,10 +22,11 @@ appcasts in one staging directory.
 - `ChemDraft_X.Y.Z_x64-allusers-offline-setup.exe` and
   `ChemDraft_X.Y.Z_x64-allusers-offline-setup.exe.build.json` (no `.exe.sig` and no feed)
 
-For a release that includes Linux beta builds, add both pairs.
+For a release that includes the Linux beta (`X.Y.Zβ`, under the same `vX.Y.Z` tag), add both pairs.
+The `.deb`'s package version is `X.Y.Z~beta`.
 
-- `ChemDraft_X.Y.Z_amd64.deb` and `ChemDraft_X.Y.Z_amd64.deb.build.json`
-- `ChemDraft_X.Y.Z_amd64.AppImage` and `ChemDraft_X.Y.Z_amd64.AppImage.build.json`
+- `ChemDraft_X.Y.Z-beta_amd64.deb` and `ChemDraft_X.Y.Z-beta_amd64.deb.build.json`
+- `ChemDraft_X.Y.Z-beta_amd64.AppImage` and `ChemDraft_X.Y.Z-beta_amd64.AppImage.build.json`
 
 Every record contains `commit` (full 40-character SHA), `version`, `target` (target triple),
 `clean: true`, `sha256` (lowercase hexadecimal SHA-256 of the artifact), and `size` (byte count).

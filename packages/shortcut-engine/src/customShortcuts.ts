@@ -24,8 +24,19 @@ export function actionShortcutKeys(action: ShortcutAction, overrides: ShortcutOv
   return overrides[action.scope]?.[action.id] ?? action.defaults;
 }
 
-/** Use the physical letter for hover actions, with Shift as the only case selector. */
+/**
+ * Use the physical letter for hover actions, with Shift as the only case selector: the same
+ * physical key fires the same hover letter regardless of layout or Caps Lock (Dvorak "." on KeyE
+ * is still "e", AZERTY "," on KeyM is still "m"). The one exception is the two charge keys: when
+ * the event's key is exactly "+" or "-" it is returned as typed. macOS reports Unicode-typed text
+ * (an injected "+") with the placeholder code KeyA, which must not turn "+" into "a". No real
+ * layout puts "+" or "-" on a letter-position key (Dvorak, Colemak, AZERTY, QWERTZ, Nordic, Swiss
+ * and JIS all keep them on Equal, Minus, BracketRight, Slash, Digit or numpad codes), so this
+ * changes nothing for physical keyboards. All other punctuation on a letter code keeps the
+ * KeyA-KeyZ mapping.
+ */
 export function hoverKeyFromEvent(event: Pick<KeyboardEventLike, "key" | "code" | "shiftKey">): string {
+  if (event.key === "+" || event.key === "-") return event.key;
   const letter = /^Key([A-Z])$/.exec(event.code ?? "")?.[1];
   return letter ? (event.shiftKey ? letter : letter.toLowerCase()) : event.key;
 }
@@ -34,8 +45,12 @@ export function hoverKeyFromEvent(event: Pick<KeyboardEventLike, "key" | "code" 
  * The hover key a Shift+= press stands for when the event reports the unshifted legend. Some macOS
  * input paths (and automation) deliver Shift+= as key "=" with Shift held; the global chord engine
  * folds +/= and drops Shift, but hover tables keep literal characters, so that press means "+".
- * Only the physical Equal key with Shift alone qualifies: bare "=", numpad +, layouts that report
- * "+" directly, and Cmd/Ctrl+= zoom are untouched.
+ * Only the physical Equal key (code "Equal") or code "NumpadEqual" with Shift alone qualifies, as an
+ * allow-list. NumpadEqual is how automation tools inject Shift+=; it also means a physical keypad
+ * Shift+= (key "=", code NumpadEqual) charges like "+", a deliberate, documented alias, since the
+ * code cannot tell automation from a real keypad. Everything else is untouched: bare "=", numpad +,
+ * layouts that report "+" directly, layouts where Shift+0 types "=" (German, Nordic: code Digit0),
+ * and Cmd/Ctrl+= zoom.
  *
  * Known limitation: a layout whose Shift+Equal genuinely types "=" (for example macOS Sindhi or
  * Cherokee-QWERTY) is treated as "+" for hover actions. Literal "=" bindings still win because the
@@ -44,7 +59,7 @@ export function hoverKeyFromEvent(event: Pick<KeyboardEventLike, "key" | "code" 
 export function shiftedHoverKeyAlternate(
   event: Pick<KeyboardEventLike, "key" | "code" | "shiftKey" | "ctrlKey" | "altKey" | "metaKey">
 ): string | undefined {
-  return event.key === "=" && event.code === "Equal" && event.shiftKey &&
+  return event.key === "=" && (event.code === "Equal" || event.code === "NumpadEqual") && event.shiftKey &&
     !event.ctrlKey && !event.altKey && !event.metaKey ? "+" : undefined;
 }
 

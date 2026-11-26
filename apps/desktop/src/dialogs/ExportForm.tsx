@@ -139,6 +139,9 @@ function ExportFormBody({
     return () => { active = false; controller.abort(); window.clearTimeout(timer); };
   }, [previewEnabled, previewKey, state.busy, visual, sizeError, previewOptionsValid, !!renderPreview]);
   const descriptor = getExportFormatDescriptor(state.format);
+  const warningSummary = state.raster.background === "transparent"
+    ? descriptor.transparentBackgroundWarningSummary ?? descriptor.warningSummary
+    : descriptor.warningSummary;
   const implemented = descriptor.status === "implemented";
   const rasterFormat = rasterExportFormatForDialogFormat(state.format);
   const destinationLabel = state.destinationPath ?? (isDesktopRuntime() ? "Choose a location" : "Downloads");
@@ -221,9 +224,9 @@ function ExportFormBody({
             </optgroup>
           ))}
         </select>
-        {descriptor.warningSummary || !implemented ? (
+        {warningSummary || !implemented ? (
           <p style={implemented ? exportDialogHintStyle : exportDialogWarningStyle}>
-            {implemented ? descriptor.warningSummary : `${descriptor.menuLabel} export is not available yet.`}
+            {implemented ? warningSummary : `${descriptor.menuLabel} export is not available yet.`}
           </p>
         ) : null}
 

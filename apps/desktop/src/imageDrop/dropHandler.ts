@@ -162,6 +162,12 @@ function listNames(names: readonly string[]): string {
   return names.length > LISTED ? `${shown} and ${names.length - LISTED} more` : shown;
 }
 
+/** `"a.png"`, `"a.png" and "b.png"`, `"a.png", "b.png" and "c.png"`: every name, quoted. */
+function quotedNames(names: readonly string[]): string {
+  const quoted = names.map(name => `"${droppedFileBaseName(name)}"`);
+  return quoted.length > 1 ? `${quoted.slice(0, -1).join(", ")} and ${quoted[quoted.length - 1]}` : quoted[0] ?? "";
+}
+
 /**
  * One part per refusal, in order. Refusals for the same whole-drop reason share one part, where the
  * first of them would have been, naming every file: `Couldn't drop "a.png", "b.png" and "c.png": …`.
@@ -180,9 +186,20 @@ function refusalParts(refusals: readonly DropRefusalEntry[]): string[] {
   return parts.map(part => {
     if (!Array.isArray(part)) return dropRefusal(part.name, part.reason);
     if (part.length === 1) return dropRefusal(part[0]!.name, part[0]!.reason);
-    const names = part.map(refusal => `"${droppedFileBaseName(refusal.name)}"`);
-    return `Couldn't drop ${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}: ${part[0]!.reason}`;
+    return `Couldn't drop ${quotedNames(part.map(refusal => refusal.name))}: ${part[0]!.reason}`;
   });
+}
+
+/** Pictures that were ready but not inserted, every one by name, and why. */
+export interface NotInsertedPictures {
+  names: readonly string[];
+  /** Worded for one picture or several alike: no "they" or "them". */
+  reason: string;
+}
+
+/** `"slow.png" was not inserted: …` or `"a.png" and "b.png" were not inserted: …`. */
+function notInsertedPart({ names, reason }: NotInsertedPictures): string {
+  return `${quotedNames(names)} ${names.length === 1 ? "was" : "were"} not inserted: ${reason}`;
 }
 
 /** What was inserted, how it was adjusted, and every refusal with its file and reason. */
@@ -190,14 +207,19 @@ export function formatImageDropStatus(outcome: {
   inserted: readonly PreparedDroppedImage[];
   scaledToPage?: readonly string[];
   refusals: readonly DropRefusalEntry[];
-  notInserted?: string;
+  notInserted?: NotInsertedPictures;
+  /**
+   * The drop held no picture to read, only files refused by their type (a .bmp, a web link): those
+   * refusals are the whole status, without "No pictures were inserted".
+   */
+  nothingToRead?: boolean;
 }): string {
   const parts: string[] = [];
   const count = outcome.inserted.length;
-  if (outcome.notInserted) parts.push(outcome.notInserted);
+  if (outcome.notInserted) parts.push(notInsertedPart(outcome.notInserted));
   else if (count === 1) parts.push(`Inserted picture ${outcome.inserted[0]!.name}`);
   else if (count > 1) parts.push(`Inserted ${count} pictures (${listNames(outcome.inserted.map(image => image.name))})`);
-  else if (outcome.refusals.length) parts.push("No pictures were inserted");
+  else if (outcome.refusals.length && !outcome.nothingToRead) parts.push("No pictures were inserted");
   if (!outcome.notInserted) {
     for (const image of outcome.inserted) {
       for (const note of image.notes) parts.push(`${image.name}: ${note}`);
@@ -215,7 +237,10 @@ export type DroppedImageInsertion =
 export interface DroppedFilesHandler<T> {
   nameOf(file: T): string;
   imageSource(file: T): DroppedImageSource;
-  /** The existing document-open path, unchanged; resolves to its own summary status, if any. */
+  /**
+   * The existing document-open path, unchanged; resolves to what the outcome says of the documents
+   * (each by name, then any failures), if anything. Ignored for a drop of documents alone.
+   */
   openDocuments(files: T[]): Promise<string | undefined>;
   /** Why the drop's target cannot take pictures now (the edit guards), asked at drop time. */
   insertRefusal?(): string | undefined;
@@ -262,7 +287,9 @@ export async function handleDroppedFiles<T>(files: readonly T[], handler: Droppe
     const prepared = await prepareDroppedImages(split.images.map(handler.imageSource), handler.decoders,
       { budgetBytes: pictureBudgetBytes(handler.documentBytes()) });
     const prepareRefusals = [...split.refusals, ...prepared.refusals];
-    if (!prepared.images.length) return formatImageDropStatus({ inserted: [], refusals: prepareRefusals });
+    if (!prepared.images.length) {
+      return formatImageDropStatus({ inserted: [], refusals: prepareRefusals, nothingToRead: !split.images.length });
+    }
     const commit = () => {
       // The document may have grown while the pictures were read: measure it again.
       const { fit, refused } = fitPicturesInDocument(prepared.images, handler.documentBytes());
@@ -271,18 +298,20 @@ export async function handleDroppedFiles<T>(files: readonly T[], handler: Droppe
       const insertion = handler.insertImages(fit);
       return insertion.ok
         ? formatImageDropStatus({ inserted: fit, scaledToPage: insertion.scaledToPage, refusals })
-        : formatImageDropStatus({ inserted: fit, refusals, notInserted: `The dropped pictures were not inserted: ${insertion.reason}` });
+        : formatImageDropStatus({ inserted: fit, refusals, notInserted: { names: fit.map(image => image.name), reason: insertion.reason } });
     };
     try {
       return handler.whenIdle ? await handler.whenIdle(commit) : commit();
     } catch (error) {
-      return formatImageDropStatus({ inserted: prepared.images, refusals: prepareRefusals,
-        notInserted: `The dropped pictures were not inserted: ${error instanceof Error ? error.message : String(error)}` });
+      return formatImageDropStatus({ inserted: prepared.images, refusals: prepareRefusals, notInserted: {
+        names: prepared.images.map(image => image.name), reason: error instanceof Error ? error.message : String(error)
+      } });
     }
   };
   const status = refusedNow
-    // Not queued behind an earlier drop still being read: the refusal shows now.
-    ? formatImageDropStatus({ inserted: [], refusals: split.refusals, notInserted: `The dropped pictures were not inserted: ${refusedNow}` })
+    // Not queued behind an earlier drop still being read: the refusal shows now, naming the dropped picture files.
+    ? formatImageDropStatus({ inserted: [], refusals: split.refusals,
+      notInserted: { names: split.images.map(handler.nameOf), reason: refusedNow } })
     : await (handler.serialize ? handler.serialize(pictures) : pictures());
   // The pictures' result replaces "Reading…" on their own tab before any document opens a new one.
   handler.setStatus(status);

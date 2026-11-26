@@ -167,10 +167,28 @@ jobs:
           output=$(ls -t apps/desktop/src-tauri/target/release/build/chemdraft-*/output | head -n1)
           grep -qx 'cargo:rustc-env=CHEMDRAFT_WORKTREE_LABEL=' "$output" || { echo '::error::Native build has a worktree label.'; exit 1; }
           bundle=apps/desktop/src-tauri/target/release/bundle
-          deb="$bundle/deb/ChemDraft_${version}_${ARCH}.deb"
-          appimage="$bundle/appimage/ChemDraft_${version}_${ARCH}.AppImage"
-          [ -f "$deb" ] || { echo "::error::Missing $deb"; exit 1; }
-          [ -f "$appimage" ] || { echo "::error::Missing $appimage"; exit 1; }
+          tauri_deb="$bundle/deb/ChemDraft_${version}_${ARCH}.deb"
+          tauri_appimage="$bundle/appimage/ChemDraft_${version}_${ARCH}.AppImage"
+          [ -f "$tauri_deb" ] || { echo "::error::Missing $tauri_deb"; exit 1; }
+          [ -f "$tauri_appimage" ] || { echo "::error::Missing $tauri_appimage"; exit 1; }
+          # A Linux build is a beta of its parent version, "<version>β". The files are named
+          # ChemDraft_<version>-beta_<arch>.deb / .AppImage, and the .deb's control Version is
+          # <version>~beta: Debian sorts "~" before the plain release, so the later <version> final
+          # upgrades it. Tauri has no setting for the .deb Version short of changing the shared app
+          # version, so rebuild the .deb from its own extracted tree with only that one control line
+          # changed (files, modes and maintainer scripts as Tauri wrote them, owned by root), then
+          # check the result below like any other .deb.
+          deb="$bundle/deb/ChemDraft_${version}-beta_${ARCH}.deb"
+          appimage="$bundle/appimage/ChemDraft_${version}-beta_${ARCH}.AppImage"
+          deb_version="${version}~beta"
+          repack=$(mktemp -d)
+          dpkg-deb -R "$tauri_deb" "$repack/root"
+          [ "$(grep -c '^Version: ' "$repack/root/DEBIAN/control")" = 1 ] || { echo "::error::$tauri_deb control lacks exactly one Version field."; exit 1; }
+          sed -i -E "s/^Version: .*/Version: ${deb_version}/" "$repack/root/DEBIAN/control"
+          dpkg-deb --root-owner-group -b "$repack/root" "$deb"
+          rm -rf -- "$repack" "$tauri_deb"
+          [ "$(dpkg-deb -f "$deb" Version)" = "$deb_version" ] || { echo "::error::$deb does not have Version $deb_version."; exit 1; }
+          mv -- "$tauri_appimage" "$appimage"
           # The .deb must carry the 3D sidecar, the OPSIN runtime and the bundled licences, as the
           # other platforms do.
           # "mode path" per archive entry. dpkg-deb -c may or may not prefix paths with "./" (the

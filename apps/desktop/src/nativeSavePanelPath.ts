@@ -2,6 +2,7 @@ import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { detectDesktopShortcutPlatform } from "./keyboardShortcuts";
 import { nativePrompt } from "./nativePrompt";
 import {
+  resolveAppendedExtensionSavePath,
   resolveRepeatedExtensionSaveTarget,
   writeGrantedRepeatedExtensionTarget,
   type RepeatedExtensionSaveContext,
@@ -57,6 +58,15 @@ export async function resolveNativeSavePanelPath(
   options?: NativeSavePanelOptions
 ): Promise<string | undefined> {
   return (await resolveNativeSavePanelTarget(selected, extensions, options))?.path;
+}
+
+/** `resolveAppendedExtensionSavePath` with the native Replace question; undefined cancels. */
+export function resolveNativeAppendedExtensionPath(
+  selected: string,
+  appended: string,
+  options?: NativeSavePanelOptions
+): Promise<string | undefined> {
+  return resolveAppendedExtensionSavePath(selected, appended, nativeSavePanelContext(options));
 }
 
 /**

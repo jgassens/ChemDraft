@@ -25,11 +25,31 @@ type Point = { x: number; y: number };
 const PLUS = { key: "+", code: "Equal", shiftKey: true };
 // What some macOS input paths (and automation) report for Shift+=: the unshifted legend, Shift held.
 const SHIFTED_EQUAL = { key: "=", code: "Equal", shiftKey: true };
+// What automation tools inject for Shift+=: key "=" with the numpad-equal code.
+const NUMPAD_EQUAL_SHIFTED = { key: "=", code: "NumpadEqual", shiftKey: true };
+// An injected typed "+": macOS reports Unicode-typed text with the placeholder code KeyA.
+const TYPED_PLUS = { key: "+", code: "KeyA" };
 const BARE_EQUAL = { key: "=", code: "Equal" };
 const NUMPAD_PLUS = { key: "+", code: "NumpadAdd" };
 // A layout where + needs no Shift (German, Nordic): the key is labelled + on its own.
 const UNSHIFTED_PLUS = { key: "+", code: "BracketRight" };
 const MINUS = { key: "-", code: "Minus" };
+const NUMPAD_MINUS = { key: "-", code: "NumpadSubtract" };
+const NUMPAD_EQUAL = { key: "=", code: "NumpadEqual" };
+// Real layouts with punctuation on letter positions (Dvorak: , on KeyW, . on KeyE, ; on KeyZ).
+// Hover keys read the PHYSICAL letter there, exactly as RC2 did: only + and - bypass that mapping.
+const DVORAK_COMMA = { key: ",", code: "KeyW" };
+const DVORAK_PERIOD = { key: ".", code: "KeyE" };
+const DVORAK_SEMICOLON = { key: ";", code: "KeyZ" };
+// AZERTY puts , on KeyM; ; sits on Comma, which is not a letter code.
+const AZERTY_COMMA = { key: ",", code: "KeyM" };
+const AZERTY_SEMICOLON = { key: ";", code: "Comma" };
+// Letters from other scripts still map to the physical letter.
+const GREEK_ALPHA = { key: "α", code: "KeyA" };
+const CYRILLIC_EF = { key: "ф", code: "KeyA" };
+const DEAD_KEY = { key: "Dead", code: "KeyE" };
+const LETTER_A = { key: "a", code: "KeyA" };
+const LETTER_E = { key: "e", code: "KeyE" };
 
 beforeAll(async () => { await ensureOclResources(); });
 
@@ -112,12 +132,37 @@ describe.each([
   }
   const marks = () => snapshot().pages[0].objects.filter(object => object.type === "electron-mark");
   const charge = () => dropMolecule(snapshot()).atoms.find(atom => atom.id === "atom_001")!.formalCharge;
+  /** The concrete, comparable result of a key press over the hovered ring atom. */
+  const fingerprint = () => {
+    const molecule = dropMolecule(snapshot());
+    const editor = container.querySelector<HTMLInputElement>('[data-atom-label-editor="true"]')?.value;
+    return {
+      elements: molecule.atoms.map(atom => atom.element),
+      labelLiterals: molecule.atoms.map(atom => atom.labelLiteral === true),
+      charges: molecule.atoms.map(atom => atom.formalCharge),
+      label: editor ?? molecule.atoms.find(atom => atom.labelLiteral === true)?.element,
+      marks: marks().length,
+      charge: charge(),
+      tool: agent().activeToolCommandId as string
+    };
+  };
+  /**
+   * The hover/chemistry part of the fingerprint, without the active tool. After the hover path runs,
+   * the window shortcut registry still resolves by event.key (so "," on KeyM or "." on KeyE can pick a
+   * different tool than the letter would): that is unchanged RC2 behavior, not what these tests guard.
+   */
+  const chemistry = () => { const { tool: _tool, ...rest } = fingerprint(); return rest; };
+  const totalAtoms = () => snapshot().pages[0].objects.reduce((sum, object) =>
+    sum + (object.type === "molecule" ? (object as ReturnType<typeof dropMolecule>).atoms.length : 0), 0);
 
   it.each([
     { name: "+ (Shift+=)", init: PLUS, value: 1, sign: "positive" },
     { name: "numpad +", init: NUMPAD_PLUS, value: 1, sign: "positive" },
     { name: "+ on a layout with an unshifted + key", init: UNSHIFTED_PLUS, value: 1, sign: "positive" },
-    { name: "-", init: MINUS, value: -1, sign: "negative" }
+    { name: "Shift+= injected as \"=\" with code NumpadEqual", init: NUMPAD_EQUAL_SHIFTED, value: 1, sign: "positive" },
+    { name: "a typed + with placeholder code KeyA", init: TYPED_PLUS, value: 1, sign: "positive" },
+    { name: "-", init: MINUS, value: -1, sign: "negative" },
+    { name: "numpad -", init: NUMPAD_MINUS, value: -1, sign: "negative" }
   ])("hovering an atom of a selected ring and pressing $name charges that atom", async ({ init, value, sign }) => {
     const moleculeId = await benzene();
     await hoverAtom(moleculeId);
@@ -133,6 +178,7 @@ describe.each([
   it.runIf(scheme === "chemdraft").each([
     { name: "+ (Shift+=)", init: PLUS, tool: "tool.plus" },
     { name: "Shift+= reported as \"=\"", init: SHIFTED_EQUAL, tool: "tool.plus" },
+    { name: "Shift+= injected with code NumpadEqual", init: NUMPAD_EQUAL_SHIFTED, tool: "tool.plus" },
     { name: "numpad +", init: NUMPAD_PLUS, tool: "tool.plus" },
     { name: "-", init: MINUS, tool: "tool.minus" }
   ])("with nothing hovered, $name picks $tool", async ({ init, tool }) => {
@@ -170,11 +216,144 @@ describe.each([
     expect(agent().activeToolCommandId).toBe(scheme === "chemdraft" ? "tool.plus" : "tool.select");
   });
 
-  it("a bare = (no Shift) over an atom is not the hover + key", async () => {
+  it.each([
+    { name: "= on Equal", init: BARE_EQUAL },
+    { name: "= on NumpadEqual", init: NUMPAD_EQUAL }
+  ])("an unshifted $name over an atom is not the hover + key", async ({ init }) => {
     const moleculeId = await benzene();
     await hoverAtom(moleculeId);
-    await press(BARE_EQUAL);
+    await press(init);
     expect(marks()).toHaveLength(0);
     expect(charge()).toBe(0);
+  });
+
+  it.each([
+    { name: "Dvorak , on KeyW (nitrogen, as w)", init: DVORAK_COMMA },
+    { name: "Dvorak ; on KeyZ (alkyne sprout, as z)", init: DVORAK_SEMICOLON },
+    { name: "AZERTY , on KeyM (Me, as m)", init: AZERTY_COMMA }
+  ])("$name over an atom acts exactly as its physical letter and never as typed punctuation", async ({ init }) => {
+    const letter = { key: init.code.slice(3).toLowerCase(), code: init.code };
+    const moleculeId = await benzene();
+    await hoverAtom(moleculeId);
+    await press(init);
+    const viaPunctuation = chemistry();
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await hoverAtom(await benzene());
+    await press(letter);
+    expect(viaPunctuation).toEqual(chemistry());
+    // Typed "," ";" are never charge or radical keys.
+    expect(viaPunctuation.marks).toBe(0);
+    expect(viaPunctuation.charge).toBe(0);
+  });
+
+  it("AZERTY ; on Comma (not a letter code) is not a hover key and changes nothing", async () => {
+    const moleculeId = await benzene();
+    await hoverAtom(moleculeId);
+    const before = fingerprint();
+    await press(AZERTY_SEMICOLON);
+    expect(fingerprint()).toEqual(before);
+  });
+
+  it("a dead key on KeyE keeps its base behavior (read by physical letter) and never charges", async () => {
+    // key "Dead" is longer than one character, so the physical-letter mapping applies as before;
+    // whatever "e" does in the scheme, it is not a charge.
+    const moleculeId = await benzene();
+    await hoverAtom(moleculeId);
+    await press(DEAD_KEY);
+    expect(marks()).toHaveLength(0);
+    expect(charge()).toBe(0);
+  });
+
+  it("Dvorak . on KeyE acts exactly as the letter e (Et substituent in classic), not as the radical key", async () => {
+    const moleculeId = await benzene();
+    await hoverAtom(moleculeId);
+    await press(LETTER_E);
+    const viaLetter = chemistry();
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await hoverAtom(await benzene());
+    await press(DVORAK_PERIOD);
+    const viaDvorak = chemistry();
+    expect(viaDvorak).toEqual(viaLetter);
+    // No radical was added and the ring atom was not charged by the typed ".".
+    expect(viaDvorak.marks).toBe(0);
+    expect(viaDvorak.charge).toBe(0);
+    if (scheme === "chemdraw") {
+      // The classic scheme's e attaches an Et nickname atom to the hovered ring carbon.
+      expect(viaDvorak.elements).toEqual(["C", "C", "C", "C", "C", "C", "Et"]);
+    } else {
+      // The ChemDraft scheme's e has no hover action over an atom: the ring is untouched.
+      expect(viaDvorak.elements).toEqual(["C", "C", "C", "C", "C", "C"]);
+    }
+  });
+
+  it.runIf(scheme === "chemdraw").each([
+    { name: "a (key a, code KeyA)", init: LETTER_A },
+    { name: "a typed . with placeholder code KeyA (mapped to a, as in RC2)", init: { key: ".", code: "KeyA" } },
+    { name: "a typed 3 with placeholder code KeyA (mapped to a, as in RC2)", init: { key: "3", code: "KeyA" } },
+    { name: "Greek α on KeyA", init: GREEK_ALPHA },
+    { name: "Cyrillic ф on KeyA", init: CYRILLIC_EF }
+  ])("in the classic scheme $name over an atom still attaches a benzene ring", async ({ init }) => {
+    const moleculeId = await benzene();
+    await hoverAtom(moleculeId);
+    const atomsBefore = totalAtoms();
+    await press(init);
+    expect(totalAtoms()).toBeGreaterThan(atomsBefore);
+    expect(marks()).toHaveLength(0);
+    expect(charge()).toBe(0);
+  });
+
+  it.runIf(scheme === "chemdraw")("in the classic scheme + on KeyA charges and never attaches benzene, unlike a", async () => {
+    const moleculeId = await benzene();
+    await hoverAtom(moleculeId);
+    const atomsBefore = totalAtoms();
+    await press(TYPED_PLUS);
+    expect(totalAtoms()).toBe(atomsBefore);
+    expect(charge()).toBe(1);
+    expect(marks()).toHaveLength(1);
+  });
+
+  it.runIf(scheme === "chemdraft").each([
+    { name: "Greek α on KeyA", init: GREEK_ALPHA },
+    { name: "Cyrillic ф on KeyA", init: CYRILLIC_EF }
+  ])("in the ChemDraft scheme $name over an atom charges nothing", async ({ init }) => {
+    const moleculeId = await benzene();
+    await hoverAtom(moleculeId);
+    await press(init);
+    expect(marks()).toHaveLength(0);
+    expect(charge()).toBe(0);
+  });
+
+  it("a typed + with placeholder code KeyA charges the atom and attaches no ring in either scheme", async () => {
+    const moleculeId = await benzene();
+    await hoverAtom(moleculeId);
+    const atomsBefore = dropMolecule(snapshot()).atoms.length;
+    const moleculesBefore = snapshot().pages[0].objects.filter(object => object.type === "molecule").length;
+    await press(TYPED_PLUS);
+    expect(charge()).toBe(1);
+    expect(marks()).toHaveLength(1);
+    expect(dropMolecule(snapshot()).atoms).toHaveLength(atomsBefore);
+    expect(snapshot().pages[0].objects.filter(object => object.type === "molecule")).toHaveLength(moleculesBefore);
+    expect(agent().activeToolCommandId).toBe("tool.select");
+  });
+
+  it.each([
+    { name: "Cmd+=", init: { key: "=", code: "Equal", metaKey: true }, mod: "macos" },
+    { name: "Ctrl+=", init: { key: "=", code: "Equal", ctrlKey: true }, mod: "windows" }
+  ])("$name charges nothing, and zooms only where bound", async ({ init, mod }) => {
+    if (mod !== platform) return;
+    const moleculeId = await benzene();
+    await hoverAtom(moleculeId);
+    const zoomBefore = (agent().viewport as { scale: number }).scale;
+    await press(init);
+    expect(marks()).toHaveLength(0);
+    expect(charge()).toBe(0);
+    expect(agent().activeToolCommandId).toBe("tool.select");
+    const zoomAfter = (agent().viewport as { scale: number }).scale;
+    // Classic scheme: zoom in is Shift+Cmd+> (keybindingScheme.ts "view.zoomIn"), so Cmd/Ctrl+= is
+    // unbound there and leaves the zoom alone. ChemDraft binds Cmd/Ctrl+= to zoom in.
+    if (scheme === "chemdraft") expect(zoomAfter).toBeGreaterThan(zoomBefore);
+    else expect(zoomAfter).toBe(zoomBefore);
   });
 });

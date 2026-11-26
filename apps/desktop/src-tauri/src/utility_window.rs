@@ -113,10 +113,22 @@ pub(super) fn pin_content_fit_frame<R: Runtime>(
         };
 
         let native = target.gtk_window().map_err(|error| error.to_string())?;
-        // Tao's own set_size conversion: GTK sizes are logical at the window's integer scale.
-        let (width, height): (i32, i32) = size
-            .to_logical::<i32>(f64::from(native.scale_factor()))
-            .into();
+        // GTK sizes are logical at the window's integer scale. Round up, never to nearest, so the
+        // min = max pin always covers the physical frame (GitHub #304).
+        use super::{logical_extent_covering, physical_extent_covering};
+        let gtk_scale = f64::from(native.scale_factor());
+        let whole = |logical: f64| i32::try_from(physical_extent_covering(logical, 1.0));
+        let (width, height) = match size {
+            tauri::Size::Physical(size) => (
+                logical_extent_covering(size.width, gtk_scale),
+                logical_extent_covering(size.height, gtk_scale),
+            ),
+            // Already in GTK units: only round up to whole units.
+            tauri::Size::Logical(size) => (
+                whole(size.width).unwrap_or(i32::MAX),
+                whole(size.height).unwrap_or(i32::MAX),
+            ),
+        };
         let geometry = gdk::Geometry::new(
             width,
             height,

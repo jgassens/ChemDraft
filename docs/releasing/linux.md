@@ -1,15 +1,21 @@
 # Linux release
 
-Linux is an optional, community-tested beta indefinitely. macOS and Windows releases never wait
-on Linux. When Linux packages are available and included, both packages
+Linux is an optional, community-tested beta indefinitely. A Linux build is named after its parent
+version plus β: the Linux build of 1.2.3 is ChemDraft 1.2.3β (in general, `<version>β`). It ships
+under the same release tag, `v<version>`, as the macOS and Windows builds. macOS and Windows
+releases never wait on Linux. When Linux packages are available and included, both packages
 and their `.build.json` records must be attached. The release checker validates their names,
 version, hashes, sizes and commit against the same release tag as the macOS DMGs and Windows
 installer. The GitHub-hosted Ubuntu 22.04 runner builds both packages in `linux-release.yml`.
 
 | Package | For | Install |
 | --- | --- | --- |
-| `ChemDraft_<version>_amd64.deb` | Ubuntu 22.04+, Linux Mint 21+, Debian 12+, Pop!_OS, elementary OS, Zorin | `sudo apt install ./ChemDraft_<version>_amd64.deb` |
-| `ChemDraft_<version>_amd64.AppImage` | x86-64 distributions with glibc 2.35 or later and compatible host graphics libraries | `chmod +x ChemDraft_<version>_amd64.AppImage && ./ChemDraft_<version>_amd64.AppImage` |
+| `ChemDraft_<version>-beta_amd64.deb` | Ubuntu 22.04+, Linux Mint 21+, Debian 12+, Pop!_OS, elementary OS, Zorin | `sudo apt install ./ChemDraft_<version>-beta_amd64.deb` |
+| `ChemDraft_<version>-beta_amd64.AppImage` | x86-64 distributions with glibc 2.35 or later and compatible host graphics libraries | `chmod +x ChemDraft_<version>-beta_amd64.AppImage && ./ChemDraft_<version>-beta_amd64.AppImage` |
+
+For 1.2.3 these are `ChemDraft_1.2.3-beta_amd64.deb` and `ChemDraft_1.2.3-beta_amd64.AppImage`.
+The `.deb`'s package version is `<version>~beta` (`1.2.3~beta`). Debian sorts `~` before the plain
+release, so a later `<version>` final installs over the beta as an upgrade.
 
 `SHA256SUMS-linux.txt` lists both package checksums. The combined `SHA256SUMS.txt` covers all
 other attached release assets, including the Linux packages and records when supplied.
@@ -47,7 +53,11 @@ The workflow:
    footer's build stamp says `+dirty` otherwise. It builds a stable `.deb` and AppImage
    (`CHEMDRAFT_STABLE_BUILD=1`, no worktree label) and fails if the bundle build left the tree
    dirty. Any failure fails the job.
-4. Checks the bundle identity and that the `.deb` carries `chemdraft`, the 3D sidecar and the
+4. Names the packages for the beta. Tauri writes `ChemDraft_<version>_amd64.*`; the workflow renames
+   the AppImage to `ChemDraft_<version>-beta_amd64.AppImage` and rebuilds the `.deb` with
+   `dpkg-deb` as `ChemDraft_<version>-beta_amd64.deb`, changing only its control `Version` to
+   `<version>~beta` (Tauri has no setting for it short of changing the shared app version).
+   Then it checks the bundle identity and that the `.deb` carries `chemdraft`, the 3D sidecar and the
    OPSIN runtime. The `.deb`'s sidecar must have the SHA-256 pinned in
    `scripts/engine3d-sidecar-linux.json`, pass the same checks as the committed file
    (`scripts/verify-committed-linux-sidecar.mjs --packaged`), and be a regular file with mode

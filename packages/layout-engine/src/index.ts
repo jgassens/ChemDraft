@@ -1,9 +1,11 @@
 export * from "./layoutQuality";
 export * from "./electronMarkPlacement";
+export * from "./electronMarkCarry";
 export { BoldBondStyle } from "./boldBonds";
 import { boldBondWidth, boldBondPolygonPoints, boldBondEdgeOffsets,
   type BoldBondNeighbor, type BoldBondJoin, type BoldBondJointCache } from "./boldBonds";
 import { nativeChargeMarkSizePx, nativeAtomHitRadiusPx } from "./electronMarkPlacement";
+import { carriedElectronMarkInkRadius, carriedMarkLabelDepth, carryElectronMarksWithAtoms, type CarriedMarkLabelBox } from "./electronMarkCarry";
 export { rotatedGraphicLocalBounds } from "./graphicBounds";
 import type { LayoutLabelBox } from "./layoutQuality";
 import { bondsOverlap } from "./layoutQuality";
@@ -10102,8 +10104,11 @@ export function rotationTransform(object: DocumentObject): string | undefined {
   return `rotate(${formatNumber(object.rotation)} ${formatNumber(object.x + object.width / 2)} ${formatNumber(object.y + object.height / 2)})`;
 }
 
+/** The stored frame an object is drawn in: where it sits and how far it is turned about its centre. */
+export type ObjectRotationFrame = Pick<DocumentObject, "x" | "y" | "width" | "height" | "rotation">;
+
 /** @internal Bounds must use the same pivot as SVG rendering. */
-export function transformPointForObject(object: DocumentObject, point: LayoutPoint): LayoutPoint {
+export function transformPointForObject(object: ObjectRotationFrame, point: LayoutPoint): LayoutPoint {
   if (object.rotation === 0) {
     return point;
   }
@@ -10112,7 +10117,7 @@ export function transformPointForObject(object: DocumentObject, point: LayoutPoi
 }
 
 /** @internal Convert a page point into the object's unrotated coordinate frame. */
-export function inverseTransformPointForObject(object: DocumentObject, point: LayoutPoint): LayoutPoint {
+export function inverseTransformPointForObject(object: ObjectRotationFrame, point: LayoutPoint): LayoutPoint {
   if (object.rotation === 0) {
     return point;
   }
@@ -10121,11 +10126,212 @@ export function inverseTransformPointForObject(object: DocumentObject, point: La
 }
 
 /** @internal Preserve the renderer's pivot when an operation replaces the stored frame. */
-export function objectRotationCenter(object: DocumentObject): LayoutPoint {
+export function objectRotationCenter(object: ObjectRotationFrame): LayoutPoint {
   return {
     x: object.x + object.width / 2,
     y: object.y + object.height / 2
   };
+}
+
+/**
+ * The parts of a molecule the electron-mark carry reads: atoms, bonds and the object frame they are
+ * drawn in, and the glyph boxes of the atom labels it draws there (`electronMarkCarryMolecule` fills
+ * them in from `moleculeLayoutLabelBoxes`; left out, labels are not avoided).
+ */
+export type ElectronMarkCarryMolecule = {
+  atoms: readonly Pick<MoleculeAtom, "id" | "x" | "y">[];
+  bonds: readonly Pick<CoreMoleculeBond, "fromAtomId" | "toAtomId">[];
+  /** Each label's glyph box in the molecule's own frame, with the id of the atom it labels. */
+  labelBoxes?: readonly (LayoutBounds & { atomId: string })[];
+} & ObjectRotationFrame;
+
+const electronMarkCarryMolecules = new WeakMap<MoleculeObject, ElectronMarkCarryMolecule>();
+
+/**
+ * A molecule as the electron-mark carry reads it, with the glyph boxes of the labels it draws at
+ * these atom positions (`moleculeLayoutLabelBoxes`, the collision boxes of the labels the page
+ * renderer draws: an NH3 redrawn as H3N is boxed as H3N). Memoised per molecule object.
+ */
+export function electronMarkCarryMolecule(molecule: MoleculeObject): ElectronMarkCarryMolecule {
+  const known = electronMarkCarryMolecules.get(molecule);
+  if (known) return known;
+  const carried: ElectronMarkCarryMolecule = {
+    atoms: molecule.atoms, bonds: molecule.bonds,
+    x: molecule.x, y: molecule.y, width: molecule.width, height: molecule.height, rotation: molecule.rotation,
+    labelBoxes: moleculeLayoutLabelBoxes(molecule).map(({ atom, x, y, width, height }) => ({ atomId: molecule.atoms[atom]!.id, x, y, width, height }))
+  };
+  electronMarkCarryMolecules.set(molecule, carried);
+  return carried;
+}
+
+/** The parts of an electron mark its drawn ink depends on (`electronMarkInkRadius`). */
+export type ElectronMarkInkShape = Pick<ElectronMarkObject, "id" | "markKind" | "x" | "y" | "width" | "height"> &
+  Partial<Pick<ElectronMarkObject, "charge" | "chargeStyle" | "radical" | "style">>;
+
+/**
+ * How far an electron mark's ink reaches from its centre, as the page renderer draws it (it turns a
+ * mark about that centre, so the reach is the same at any angle). A charge is measured on the very
+ * fragments `chargeMarkFragment` builds for it: its circle to the circle's radius plus half its
+ * stroke (a 2+ or 3− is drawn in a larger circle than a single charge), each round-capped bar to its
+ * ends plus half its stroke, a radical ion's dot to its edge, and a numeral to the corner of its
+ * sans-serif box (`sansSerifAdvanceEm`). A lone pair or radical dot keeps the footprint
+ * `carriedElectronMarkInkRadius` gives its size.
+ */
+export function electronMarkInkRadius(mark: ElectronMarkInkShape): number {
+  if (mark.markKind !== "charge") return carriedElectronMarkInkRadius(mark);
+  const object = {
+    type: "electron-mark", rotation: 0, style: {}, anchor: { kind: "point", point: { x: 0, y: 0 } }, ...mark
+  } as ElectronMarkObject;
+  const centerX = mark.x + mark.width / 2;
+  const centerY = mark.y + mark.height / 2;
+  const number = (value: PageSvgAttributeValue | undefined) => typeof value === "number" ? value : Number(value ?? 0);
+  let reach = 0;
+  const measure = (fragment: PageSvgFragment) => {
+    if (fragment.kind !== "element") return;
+    const attrs = fragment.attrs;
+    const halfStroke = attrs.stroke !== undefined && attrs.stroke !== "none" ? number(attrs["stroke-width"]) / 2 : 0;
+    if (fragment.tag === "circle") {
+      reach = Math.max(reach, Math.hypot(number(attrs.cx) - centerX, number(attrs.cy) - centerY) + number(attrs.r) + halfStroke);
+    } else if (fragment.tag === "line") {
+      reach = Math.max(reach,
+        Math.hypot(number(attrs.x1) - centerX, number(attrs.y1) - centerY) + halfStroke,
+        Math.hypot(number(attrs.x2) - centerX, number(attrs.y2) - centerY) + halfStroke);
+    } else if (fragment.tag === "text") {
+      const text = fragment.children.map(child => child.kind === "text" ? child.text : "").join("");
+      const size = number(attrs["font-size"]);
+      const width = [...text].reduce((sum, character) => sum + (sansSerifAdvanceEm[character] ?? 0.62), 0) * size;
+      const left = attrs["text-anchor"] === "middle" ? width / 2 : attrs["text-anchor"] === "end" ? width : 0;
+      const dx = Math.max(Math.abs(number(attrs.x) - left - centerX), Math.abs(number(attrs.x) - left + width - centerX));
+      reach = Math.max(reach, Math.hypot(dx, Math.abs(number(attrs.y) - centerY) + size / 2) + halfStroke);
+    }
+    fragment.children.forEach(measure);
+  };
+  measure(chargeMarkFragment(object, 0, electronMarkUsesScaledGeometry(object)));
+  return reach;
+}
+
+/** One mark a redrawn molecule carries: the stored mark (page frame) and the atom it follows. */
+export interface ElectronMarkCarryEntry {
+  mark: Pick<ElectronMarkObject, "id" | "markKind" | "x" | "y" | "width" | "height" | "rotation"> &
+    Partial<Pick<ElectronMarkObject, "charge" | "chargeStyle" | "radical" | "style">>;
+  atomId: string;
+}
+
+/** Where one carried mark goes, in the page frame the mark is stored in. Its size never changes. */
+export interface ElectronMarkCarryPlacement {
+  markId: string;
+  atomId: string;
+  /** The mark's new top-left corner. */
+  x: number;
+  y: number;
+  /** The mark's new rotation in degrees: a lone pair that turned turns with it; every other mark keeps its own. */
+  rotation: number;
+  /** Degrees the mark turned about its atom to reach a free side (0 when it kept its offset). */
+  turnDegrees: number;
+}
+
+/**
+ * The ONE placement rule for the marks a molecule carries when it is redrawn with new atom positions
+ * (same atom ids): the Spin 3D live overlay and its flatten (and so a reopened model, a typed or
+ * dragged X/Y rotation, and an Interactive 3D tug), and 3D clean-up. The overlay paints each mark
+ * exactly where the commit stores it because both call this with the atoms they draw.
+ *
+ * Each mark keeps the page offset from its atom it had in `before`, read in `after`'s frame, unless
+ * that spot lands on another atom, a bond, or an atom label's letters (`after`'s labels, as it will
+ * draw them) — its own molecule's or those of `others`, the other molecules on its page, each read
+ * in its own frame — and then it turns about its atom, at the same distance, to the nearest free side
+ * (`carryElectronMarksWithAtoms`). A mark keeps clear by its drawn ink (`electronMarkInkRadius`), and
+ * may sit as deep in a label of its own molecule as it was drawn in `before` (both read from
+ * `labelBoxes`, which `electronMarkCarryMolecule` fills in).
+ * Positions only: the caller keeps every chemical fact (anchor atom, association, charge) as it was.
+ */
+export function carryElectronMarksToRedrawnMolecule(
+  before: ElectronMarkCarryMolecule,
+  after: ElectronMarkCarryMolecule,
+  entries: readonly ElectronMarkCarryEntry[],
+  others: readonly ElectronMarkCarryMolecule[] = []
+): Map<string, ElectronMarkCarryPlacement> {
+  const beforeAtoms = new Map(before.atoms.map(atom => [atom.id, atom] as const));
+  const afterAtoms = new Map(after.atoms.map(atom => [atom.id, atom] as const));
+  const carried = entries.flatMap(entry => {
+    const from = beforeAtoms.get(entry.atomId);
+    const to = afterAtoms.get(entry.atomId);
+    if (!from || !to) return [];
+    // The offset the reader sees is on the page; hold it there, read in the redrawn molecule's frame.
+    const fromPage = transformPointForObject(before, from);
+    const toPage = transformPointForObject(after, to);
+    const center = objectRotationCenter(entry.mark);
+    const local = inverseTransformPointForObject(after, { x: toPage.x + center.x - fromPage.x, y: toPage.y + center.y - fromPage.y });
+    // How deep the mark was drawn into its own molecule's labels: it may stay that deep, no deeper.
+    const inkRadius = electronMarkInkRadius(entry.mark);
+    const drawnCenter = inverseTransformPointForObject(before, center);
+    const labelDepths = new Map<string, number>();
+    for (const box of before.labelBoxes ?? []) {
+      const depth = carriedMarkLabelDepth(drawnCenter, inkRadius, box);
+      if (depth > 0) labelDepths.set(box.atomId, Math.max(depth, labelDepths.get(box.atomId) ?? 0));
+    }
+    return [{ ...entry, offset: { x: local.x - to.x, y: local.y - to.y }, inkRadius, labelDepths }];
+  });
+  if (carried.length === 0) return new Map();
+  // Everything else on the page, read in the redrawn molecule's frame: a molecule turned differently
+  // from it has its points turned into that frame, and its label boxes turned with them.
+  const toAfterFrame = (molecule: ElectronMarkCarryMolecule, point: LayoutPoint) =>
+    inverseTransformPointForObject(after, transformPointForObject(molecule, point));
+  const obstacleAtoms: LayoutPoint[] = [];
+  const obstacleSegments: Array<{ from: LayoutPoint; to: LayoutPoint }> = [];
+  const labelBoxes: CarriedMarkLabelBox[] = [...(after.labelBoxes ?? [])];
+  for (const other of others) {
+    const points = new Map(other.atoms.map(atom => [atom.id, toAfterFrame(other, atom)] as const));
+    obstacleAtoms.push(...points.values());
+    for (const bond of other.bonds) {
+      const from = points.get(bond.fromAtomId);
+      const to = points.get(bond.toAtomId);
+      if (from && to) obstacleSegments.push({ from, to });
+    }
+    const turn = ((other.rotation - after.rotation) % 360 + 360) % 360;
+    for (const box of other.labelBoxes ?? []) {
+      const center = toAfterFrame(other, { x: box.x + box.width / 2, y: box.y + box.height / 2 });
+      labelBoxes.push({ x: center.x - box.width / 2, y: center.y - box.height / 2, width: box.width, height: box.height, rotation: turn });
+    }
+  }
+  const placed = carryElectronMarksWithAtoms(after.atoms, after.bonds, carried.map(({ mark, atomId, offset, inkRadius, labelDepths }) => ({
+    atomId, offset, width: mark.width, height: mark.height, inkRadius, labelDepths
+  })), { atoms: obstacleAtoms, segments: obstacleSegments, labelBoxes });
+  const placements = new Map<string, ElectronMarkCarryPlacement>();
+  carried.forEach(({ mark, atomId }, index) => {
+    const placement = placed[index];
+    if (!placement) return;
+    const center = transformPointForObject(after, placement.center);
+    const turnDegrees = placement.turn * 180 / Math.PI;
+    // A lone pair's two dots sit across the direction to its atom, so they turn with the mark.
+    const rotation = mark.markKind === "lone-pair" && turnDegrees !== 0
+      ? ((mark.rotation + turnDegrees) % 360 + 360) % 360
+      : mark.rotation;
+    placements.set(mark.id, {
+      markId: mark.id, atomId, x: center.x - mark.width / 2, y: center.y - mark.height / 2, rotation, turnDegrees
+    });
+  });
+  return placements;
+}
+
+/**
+ * The SVG transform that paints a mark's stored drawing (its page fragments, already turned by its
+ * own rotation) at `placement`: moved by the placement's offset and turned about its centre by the
+ * rotation it gained. The Spin 3D overlay draws carried marks with this.
+ */
+export function carriedElectronMarkSvgTransform(
+  mark: ElectronMarkCarryEntry["mark"],
+  placement: Pick<ElectronMarkCarryPlacement, "x" | "y" | "rotation">
+): string {
+  const center = objectRotationCenter(mark);
+  const turn = ((placement.rotation - mark.rotation) % 360 + 540) % 360 - 180;
+  // Unrounded, like every other transform the Spin 3D overlay paints (its atom labels, and this
+  // mark's own translate before marks could turn): flatten commits the unrounded placement, so a
+  // rounded transform would paint the mark up to 0.0005 px from where it lands (AGENTS.md §9).
+  const move = `translate(${placement.x - mark.x} ${placement.y - mark.y})`;
+  return Math.abs(turn) > 1e-9
+    ? `${move} rotate(${turn} ${center.x} ${center.y})`
+    : move;
 }
 
 function moleculeDrawingPrimitive(object: MoleculeObject): "single-bond" | undefined {

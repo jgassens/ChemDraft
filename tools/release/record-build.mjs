@@ -19,6 +19,14 @@ export const BUILD_TARGETS = {
   "x86_64-pc-windows-msvc": ["x64-setup.exe", "x64-allusers-setup.exe", "x64-allusers-offline-setup.exe"],
   [LINUX_BUILD_TARGET]: ["amd64.deb", "amd64.AppImage"]
 };
+// A Linux build is the beta of its parent version, "<version>β", released under the same v<version>
+// tag: ChemDraft_<version>-beta_amd64.deb and ChemDraft_<version>-beta_amd64.AppImage. macOS and
+// Windows files are ChemDraft_<version>_<suffix>.
+export const LINUX_VERSION_SUFFIX = "-beta";
+
+export function buildFileName(version, target, suffix) {
+  return `ChemDraft_${version}${target === LINUX_BUILD_TARGET ? LINUX_VERSION_SUFFIX : ""}_${suffix}`;
+}
 
 // Hash in bounded chunks: release installers and DMGs can be hundreds of MB.
 export function artifactDigest(artifact) {
@@ -57,7 +65,7 @@ export function buildSource(rootDir = ROOT, { run = spawnSync } = {}) {
 export function recordBuild({ artifact, target, rootDir = ROOT }, { run = spawnSync } = {}) {
   if (!Object.hasOwn(BUILD_TARGETS, target)) throw new Error(`Unsupported release target: ${target}`);
   const source = buildSource(rootDir, { run });
-  const expected = BUILD_TARGETS[target].map((suffix) => `ChemDraft_${source.version}_${suffix}`);
+  const expected = BUILD_TARGETS[target].map((suffix) => buildFileName(source.version, target, suffix));
   if (!expected.includes(basename(artifact)) || !statSync(artifact).isFile()) {
     throw new Error(`Expected release artifact ${expected.join(" or ")}`);
   }
