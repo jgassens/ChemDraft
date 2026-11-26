@@ -2012,6 +2012,23 @@ Run under KDE Plasma (Wayland session, so the app uses XWayland) and on GNOME.
   file, and with a new untitled document. Export (File ▸ Export) dialogs show their format name.
   macOS and Windows Save dialogs list their file types in the same order as before.
 
+## Linux paste from LibreOffice (1.2.4)
+
+Run under KDE Plasma (Wayland session, so the app uses XWayland), on GNOME, and on an X11 session.
+Use the LibreOffice your distribution ships.
+
+- Writer text: type "Hello benzene" in Writer, make it bold, copy it and press Ctrl+V on the
+  ChemDraft canvas. The status reads "Pasted editable text" and the text box says "Hello benzene",
+  never `{\rtf1\ansi…`. Repeat with plain text, a bulleted line, a heading, and
+  "Ångström β-lactam 日本語 ± 5 °C".
+- SMILES typed in Writer (`c1ccc(O)cc1`): the paste matches pasting the same text from a plain
+  text editor.
+- Two Writer lines with a tab between columns (`Name⇥MW`, `benzene⇥78.11`) paste as a 2×2 table,
+  as on macOS and Windows. A 2×2 Writer table and a Calc range A1:B2 paste as tables, as before.
+- Paste a Writer copy into a focused text field (a text box being edited, a table cell): the plain
+  text goes in.
+- Copy from a text editor (gedit or KWrite), a browser and ChemDraft itself: paste is unchanged.
+
 ## Image drag and drop (macOS and Windows, 1.2.3)
 
 Run on macOS (Retina and a 1x external display) and on Windows at 100%, 150% and 200% display

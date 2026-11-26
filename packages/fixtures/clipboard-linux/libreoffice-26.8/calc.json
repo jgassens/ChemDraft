@@ -1,0 +1,50 @@
+{
+ "types": [
+  "application/x-openoffice-embed-source-xml;windows_formatname=\"Star Embed Source (XML)\"",
+  "application/x-openoffice-objectdescriptor-xml;windows_formatname=\"Star Object Descriptor (XML)\";classname=\"47BBB4CB-CE4C-4E80-a591-42d9ae74950f\";typename=\"LibreOffice 26.8 Spreadsheet\";viewaspect=\"1\";width=\"4517\";height=\"904\";posx=\"0\";posy=\"0\"",
+  "application/x-openoffice-gdimetafile;windows_formatname=\"GDIMetaFile\"",
+  "application/x-openoffice-emf;windows_formatname=\"Image EMF\"",
+  "application/x-openoffice-wmf;windows_formatname=\"Image WMF\"",
+  "image/svg+xml;windows_formatname=\"image/svg+xml\"",
+  "image/png",
+  "application/x-openoffice-bitmap;windows_formatname=\"Bitmap\"",
+  "image/bmp",
+  "text/html",
+  "application/x-openoffice-sylk;windows_formatname=\"Sylk\"",
+  "application/x-openoffice-link;windows_formatname=\"Link\"",
+  "application/x-openoffice-dif;windows_formatname=\"DIF\"",
+  "text/plain;charset=utf-16",
+  "application/x-libreoffice-tsvc",
+  "text/rtf",
+  "text/richtext",
+  "text/plain",
+  "application/x-libreoffice-internal-id-46"
+ ],
+ "textItems": [
+  {
+   "type": "text/html",
+   "text": "<!DOCTYPE html>\n\n<html>\n<head>\n\t\n\t<meta http-equiv=\"content-type\" content=\"text/html; charset=utf-8\"/>\n\t<title></title>\n\t<meta name=\"generator\" content=\"LibreOffice 26.8.3.1 (Linux)\"/>\n\t<style type=\"text/css\">\n\t\tbody,div,table,thead,tbody,tfoot,tr,th,td,p { font-family:\"DejaVu Sans\"; font-size:x-small }\n\t\ta.comment-indicator:hover + comment { background:#ffd; position:absolute; display:block; border:1px solid black; padding:0.5em;  } \n\t\ta.comment-indicator { background:red; display:inline-block; border:1px solid black; width:0.5em; height:0.5em;  } \n\t\tcomment { display:none;  } \n\t</style>\n\t\n</head>\n\n<body>\n<table cellspacing=\"0\" border=\"0\">\n\t<colgroup span=\"2\" width=\"85\"></colgroup>\n\t<tr>\n\t\t<td height=\"17\" align=\"left\" data-sheets-value=\"{ &quot;1&quot;: 2, &quot;2&quot;: &quot;Compound&quot;}\">Compound</td>\n\t\t<td align=\"left\" data-sheets-value=\"{ &quot;1&quot;: 2, &quot;2&quot;: &quot;MW&quot;}\">MW</td>\n\t</tr>\n\t<tr>\n\t\t<td height=\"17\" align=\"left\" data-sheets-value=\"{ &quot;1&quot;: 2, &quot;2&quot;: &quot;benzene&quot;}\">benzene</td>\n\t\t<td align=\"right\" sdval=\"78.11\" sdnum=\"1033;\">78.11</td>\n\t</tr>\n</table>\n</body>\n\n</html>\n"
+  },
+  {
+   "type": "text/richtext",
+   "text": "{\\rtf\\ansi\n{\\fonttbl{\\f0\\fswiss\\fprq2\\fcharset0 DejaVu Sans;}}{\n\\trowd\\trgaph30\\trleft-30\\trrh256\\clvertalb\\cellx1280\\clvertalb\\cellx2560\\pard\\plain\\intbl\n\\f0\\fs20\\ql Compound\\cell\\f0\\fs20\\ql MW\\cell\\row\n\\trowd\\trgaph30\\trleft-30\\trrh256\\clvertalb\\cellx1280\\clvertalb\\cellx2560\\pard\\plain\\intbl\n\\f0\\fs20\\ql benzene\\cell\\f0\\fs20\\qr 78.11\\cell\\row\n}\n}\n"
+  },
+  {
+   "type": "text/plain",
+   "text": "Compound\tMW\nbenzene\t78.11\n"
+  }
+ ],
+ "imageItems": [
+  {
+   "type": "image/png",
+   "bytesBase64": "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",
+   "pixelsPerMeter": {
+    "x": 2835,
+    "y": 2835
+   },
+   "pixelWidth": 171,
+   "pixelHeight": 34
+  }
+ ],
+ "skippedImageItems": []
+}

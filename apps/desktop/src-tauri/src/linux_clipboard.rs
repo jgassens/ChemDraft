@@ -128,11 +128,25 @@ fn read_bytes(clipboard: &gtk::Clipboard, target: &str) -> Option<Vec<u8>> {
 
 pub(crate) fn read_payload() -> Result<ClipboardReadPayload, String> {
     let clipboard = clipboard();
-    let types = clipboard
+    let advertised = clipboard
         .wait_for_targets()
         .unwrap_or_default()
         .into_iter()
         .map(|atom| atom.name().to_string())
+        .collect::<Vec<_>>();
+    Ok(read_advertised(advertised, |target| {
+        read_bytes(&clipboard, target)
+    }))
+}
+
+/// The reader itself: the advertised targets, and `read` for one target's bytes. Kept apart from
+/// GTK so tests can replay a recorded clipboard without a display.
+fn read_advertised(
+    advertised: Vec<String>,
+    mut read: impl FnMut(&str) -> Option<Vec<u8>>,
+) -> ClipboardReadPayload {
+    let types = advertised
+        .into_iter()
         .filter(|name| !META_TARGETS.contains(&name.as_str()))
         .collect::<Vec<_>>();
     // Plain-text aliases collapse onto one `text/plain` entry: the resolver only knows MIME names.
@@ -143,7 +157,7 @@ pub(crate) fn read_payload() -> Result<ClipboardReadPayload, String> {
         .map(|source| {
             let priority = clipboard_limits::text_read_priority(source);
             let priority = if priority == Some(2) {
-                read_bytes(&clipboard, &target_for_type(source)).map_or(priority, |bytes| {
+                read(&target_for_type(source)).map_or(priority, |bytes| {
                     clipboard_limits::text_priority_with_preview(source, &bytes)
                 })
             } else {
@@ -158,10 +172,14 @@ pub(crate) fn read_payload() -> Result<ClipboardReadPayload, String> {
     let mut image_items = Vec::new();
     let mut skipped_image_items = Vec::new();
     let priorities = read_plan.iter().map(|(_, p)| *p).collect::<Vec<_>>();
-    for step in clipboard_limits::clipboard_read_steps(&priorities) {
+    let steps = plain_text_read_first(
+        clipboard_limits::clipboard_read_steps(&priorities),
+        &read_plan,
+    );
+    for step in steps {
         let source = match step {
             clipboard_limits::ClipboardReadStep::Pictures => {
-                (image_items, skipped_image_items) = picture_items(&clipboard, &types, &mut budget);
+                (image_items, skipped_image_items) = picture_items(&mut read, &types, &mut budget);
                 continue;
             }
             clipboard_limits::ClipboardReadStep::Text(index) => &read_plan[index].0,
@@ -169,7 +187,7 @@ pub(crate) fn read_payload() -> Result<ClipboardReadPayload, String> {
         if crate::is_opaque_clipboard_type(source) {
             continue;
         }
-        let Some(bytes) = read_bytes(&clipboard, &target_for_type(source)) else {
+        let Some(bytes) = read(&target_for_type(source)) else {
             continue;
         };
         if clipboard_limits::is_admitted_text_alias(&bytes, &text_items) {
@@ -189,13 +207,52 @@ pub(crate) fn read_payload() -> Result<ClipboardReadPayload, String> {
     }
     text_items.sort_by_key(|item| types.iter().position(|kind| kind == &item.r#type));
 
-    Ok(ClipboardReadPayload {
+    ClipboardReadPayload {
         types,
         text_items,
         image_items,
         skipped_image_items,
         skipped_items: budget.skipped_items,
-    })
+    }
+}
+
+/// Read the `text/plain` entry ahead of the other text flavors just before it in its pass. It
+/// never moves past an advertised chemistry type or into another pass.
+///
+/// A flavor whose text repeats one already read is dropped as its alias, so read order decides
+/// which name a text keeps. LibreOffice offers `text/plain;charset=utf-16` before its UTF-8 copy.
+/// Read first, the UTF-16 copy kept the text under a name the resolver does not paste as plain
+/// text, and the UTF-8 copy was dropped as its repeat. The resolver then pasted the next flavor it
+/// takes for text, `text/richtext`: RTF source (GitHub #304). Read first itself, the UTF-8 copy
+/// keeps `text/plain` and the repeat is dropped. When it cannot be read, the repeat is still
+/// admitted, as before.
+fn plain_text_read_first(
+    mut steps: Vec<clipboard_limits::ClipboardReadStep>,
+    read_plan: &[(String, Option<u8>)],
+) -> Vec<clipboard_limits::ClipboardReadStep> {
+    use clipboard_limits::ClipboardReadStep::Text;
+    let Some(plain) = steps
+        .iter()
+        .position(|step| matches!(step, Text(index) if read_plan[*index].0 == "text/plain"))
+    else {
+        return steps;
+    };
+    let Text(plain_index) = steps[plain] else {
+        return steps;
+    };
+    let pass = read_plan[plain_index].1;
+    let mut target = plain;
+    while target > 0
+        && matches!(steps[target - 1], Text(index) if read_plan[index].1 == pass
+            && !clipboard_limits::is_chemistry_type(&read_plan[index].0))
+    {
+        target -= 1;
+    }
+    if target < plain {
+        let step = steps.remove(plain);
+        steps.insert(target, step);
+    }
+    steps
 }
 
 /// Linux publishes plain text under several names; the editor only knows `text/plain`.
@@ -228,7 +285,7 @@ fn target_for_type(kind: &str) -> String {
 }
 
 fn picture_items(
-    clipboard: &gtk::Clipboard,
+    read: &mut impl FnMut(&str) -> Option<Vec<u8>>,
     types: &[String],
     budget: &mut clipboard_limits::ClipboardReadBudget,
 ) -> (Vec<ClipboardImageItem>, Vec<SkippedClipboardImageItem>) {
@@ -245,7 +302,7 @@ fn picture_items(
             if !types.iter().any(|kind| kind == source) {
                 continue;
             }
-            let Some(bytes) = read_bytes(clipboard, source) else {
+            let Some(bytes) = read(source) else {
                 skipped.push(SkippedClipboardImageItem::new(
                     output_type,
                     0,
@@ -315,5 +372,266 @@ mod tests {
     fn plain_text_is_requested_as_utf8() {
         assert_eq!(target_for_type("text/plain"), "UTF8_STRING");
         assert_eq!(target_for_type("chemical/x-cdxml"), "chemical/x-cdxml");
+    }
+
+    /// A copy recorded from LibreOffice 26.8.3 on X11 (Debian sid): the advertised targets and the
+    /// bytes of its text targets. `text/richtext` held the same bytes as `text/rtf`, and
+    /// `text/plain;charset=utf-8` and `STRING` the same as `UTF8_STRING`, so one file serves each.
+    struct RecordedCopy {
+        targets: &'static str,
+        utf16: &'static [u8],
+        utf8: &'static [u8],
+        rtf: &'static [u8],
+        html: &'static [u8],
+        markdown: Option<&'static [u8]>,
+    }
+
+    impl RecordedCopy {
+        fn advertised(&self) -> Vec<String> {
+            self.targets.lines().map(str::to_string).collect()
+        }
+
+        fn read(&self, target: &str) -> Option<Vec<u8>> {
+            let bytes = match target {
+                "text/plain;charset=utf-16" => self.utf16,
+                "UTF8_STRING" | "text/plain;charset=utf-8" | "STRING" => self.utf8,
+                "text/rtf" | "text/richtext" => self.rtf,
+                "text/html" => self.html,
+                "text/markdown" => self.markdown?,
+                _ => return None,
+            };
+            Some(bytes.to_vec())
+        }
+    }
+
+    /// "Hello benzene" in bold, copied from a Writer document.
+    const WRITER: RecordedCopy = RecordedCopy {
+        targets: include_str!(
+            "../tests/fixtures/linux-clipboard/libreoffice-26.8-writer/targets.txt"
+        ),
+        utf16: include_bytes!(
+            "../tests/fixtures/linux-clipboard/libreoffice-26.8-writer/text-plain-charset-utf-16.bin"
+        ),
+        utf8: include_bytes!("../tests/fixtures/linux-clipboard/libreoffice-26.8-writer/utf8-string.bin"),
+        rtf: include_bytes!("../tests/fixtures/linux-clipboard/libreoffice-26.8-writer/text-rtf.bin"),
+        html: include_bytes!("../tests/fixtures/linux-clipboard/libreoffice-26.8-writer/text-html.bin"),
+        markdown: Some(include_bytes!(
+            "../tests/fixtures/linux-clipboard/libreoffice-26.8-writer/text-markdown.bin"
+        )),
+    };
+
+    /// The cells A1:B2 (Compound, MW / benzene, 78.11), copied from a Calc sheet.
+    const CALC: RecordedCopy = RecordedCopy {
+        targets: include_str!(
+            "../tests/fixtures/linux-clipboard/libreoffice-26.8-calc/targets.txt"
+        ),
+        utf16: include_bytes!(
+            "../tests/fixtures/linux-clipboard/libreoffice-26.8-calc/text-plain-charset-utf-16.bin"
+        ),
+        utf8: include_bytes!(
+            "../tests/fixtures/linux-clipboard/libreoffice-26.8-calc/utf8-string.bin"
+        ),
+        rtf: include_bytes!("../tests/fixtures/linux-clipboard/libreoffice-26.8-calc/text-rtf.bin"),
+        html: include_bytes!(
+            "../tests/fixtures/linux-clipboard/libreoffice-26.8-calc/text-html.bin"
+        ),
+        markdown: None,
+    };
+
+    fn text_of<'a>(payload: &'a ClipboardReadPayload, kind: &str) -> Option<&'a str> {
+        payload
+            .text_items
+            .iter()
+            .find(|item| item.r#type == kind)
+            .map(|item| item.text.as_str())
+    }
+
+    fn utf16le(text: &str) -> Vec<u8> {
+        text.encode_utf16().flat_map(u16::to_le_bytes).collect()
+    }
+
+    #[test]
+    fn libreoffice_writer_text_keeps_its_utf8_copy_as_plain_text() {
+        let payload = read_advertised(WRITER.advertised(), |target| WRITER.read(target));
+        // Before #304's fix the UTF-16 copy took the text and `text/plain` was missing, so the
+        // resolver pasted the RTF source under `text/richtext`.
+        assert_eq!(text_of(&payload, "text/plain"), Some("Hello benzene"));
+        assert_eq!(text_of(&payload, "text/plain;charset=utf-16"), None);
+        // The RTF repeat is still read; it is the resolver's to skip, and it finds `text/plain`.
+        assert!(text_of(&payload, "text/richtext").is_some_and(|text| text.starts_with("{\\rtf1")));
+        assert!(payload.types.iter().any(|kind| kind == "text/plain"));
+    }
+
+    #[test]
+    fn libreoffice_on_kwin_through_xwayland_keeps_its_utf8_copy_as_plain_text() {
+        // The targets an X11 client saw for a Writer copy from LibreOffice's Qt 6 front end on
+        // KWin's Wayland session: KWin turns `text/plain;charset=utf-8` into `UTF8_STRING` and
+        // `text/plain` into `TEXT`, and leaves the UTF-16 name as it is, ahead of them.
+        let advertised = include_str!(
+            "../tests/fixtures/linux-clipboard/libreoffice-26.8-qt6-kwin-xwayland/targets.txt"
+        )
+        .lines()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        let payload = read_advertised(advertised, |target| WRITER.read(target));
+        assert_eq!(text_of(&payload, "text/plain"), Some("Hello benzene"));
+        assert_eq!(text_of(&payload, "text/plain;charset=utf-16"), None);
+    }
+
+    #[test]
+    fn libreoffice_writer_smiles_keeps_its_utf8_copy_ahead_of_other_chemistry_looking_text() {
+        // Text that previews as chemistry is read in the first pass, with the other flavors that
+        // preview the same way (here the unformatted Markdown and the UTF-16 copy).
+        let smiles = "c1ccc(O)cc1";
+        let utf16 = utf16le(smiles);
+        let payload = read_advertised(WRITER.advertised(), |target| match target {
+            "text/plain;charset=utf-16" => Some(utf16.clone()),
+            "UTF8_STRING" => Some(smiles.as_bytes().to_vec()),
+            "text/markdown" => Some(format!("{smiles}\n").into_bytes()),
+            other => WRITER.read(other),
+        });
+        assert_eq!(text_of(&payload, "text/plain"), Some(smiles));
+        assert_eq!(text_of(&payload, "text/plain;charset=utf-16"), None);
+    }
+
+    #[test]
+    fn the_utf16_copy_is_still_read_when_the_utf8_copy_cannot_be() {
+        let payload = read_advertised(WRITER.advertised(), |target| match target {
+            "UTF8_STRING" => None,
+            other => WRITER.read(other),
+        });
+        assert_eq!(text_of(&payload, "text/plain"), None);
+        assert_eq!(
+            text_of(&payload, "text/plain;charset=utf-16"),
+            Some("Hello benzene")
+        );
+    }
+
+    #[test]
+    fn libreoffice_calc_cells_keep_their_html_table_and_tab_separated_text() {
+        let payload = read_advertised(CALC.advertised(), |target| CALC.read(target));
+        assert_eq!(
+            text_of(&payload, "text/plain"),
+            Some("Compound\tMW\nbenzene\t78.11\n")
+        );
+        assert!(text_of(&payload, "text/html").is_some_and(|html| html.contains("<table")));
+        assert_eq!(text_of(&payload, "text/plain;charset=utf-16"), None);
+    }
+
+    #[test]
+    fn cjk_only_writer_text_still_reads_as_plain_text() {
+        // UTF-16 with no zero byte is not recognized as a repeat of the UTF-8 copy, so both items
+        // stay; `text/plain` is there for the resolver either way.
+        let text = "日本語";
+        let utf16 = utf16le(text);
+        let payload = read_advertised(WRITER.advertised(), |target| match target {
+            "text/plain;charset=utf-16" => Some(utf16.clone()),
+            "UTF8_STRING" => Some(text.as_bytes().to_vec()),
+            "text/markdown" => Some(format!("**{text}**\n").into_bytes()),
+            other => WRITER.read(other),
+        });
+        assert_eq!(text_of(&payload, "text/plain"), Some(text));
+    }
+
+    #[test]
+    fn the_paste_test_fixtures_are_this_readers_output() {
+        // `packages/fixtures/clipboard-linux/libreoffice-26.8` holds what this reader returned for
+        // these copies; `apps/desktop/src/linuxLibreOfficePaste.test.ts` pastes them.
+        for (copy, recorded) in [
+            (
+                &WRITER,
+                include_str!(
+                    "../../../../packages/fixtures/clipboard-linux/libreoffice-26.8/writer-text.json"
+                ),
+            ),
+            (
+                &CALC,
+                include_str!(
+                    "../../../../packages/fixtures/clipboard-linux/libreoffice-26.8/calc.json"
+                ),
+            ),
+        ] {
+            let read =
+                serde_json::to_value(read_advertised(copy.advertised(), |target| copy.read(target)))
+                    .unwrap();
+            let recorded: serde_json::Value = serde_json::from_str(recorded).unwrap();
+            assert_eq!(read["types"], recorded["types"]);
+            assert_eq!(read["textItems"], recorded["textItems"]);
+        }
+    }
+
+    #[test]
+    fn an_owner_that_offers_only_utf16_text_is_read_as_before() {
+        let utf16 = utf16le("Hello UTF-16");
+        let payload = read_advertised(
+            vec!["TARGETS".into(), "text/plain;charset=utf-16".into()],
+            |target| (target == "text/plain;charset=utf-16").then(|| utf16.clone()),
+        );
+        assert_eq!(payload.types, ["text/plain;charset=utf-16"]);
+        assert_eq!(
+            text_of(&payload, "text/plain;charset=utf-16"),
+            Some("Hello UTF-16")
+        );
+    }
+
+    #[test]
+    fn plain_text_is_read_first_in_its_pass_but_after_advertised_chemistry() {
+        use clipboard_limits::ClipboardReadStep::{Pictures, Text};
+        fn order(entries: &[(&str, Option<u8>)]) -> Vec<clipboard_limits::ClipboardReadStep> {
+            let read_plan = entries
+                .iter()
+                .map(|(kind, priority)| (kind.to_string(), *priority))
+                .collect::<Vec<_>>();
+            let priorities = read_plan
+                .iter()
+                .map(|(_, priority)| *priority)
+                .collect::<Vec<_>>();
+            plain_text_read_first(
+                clipboard_limits::clipboard_read_steps(&priorities),
+                &read_plan,
+            )
+        }
+        // Prose: plain text moves ahead of the other prose flavors; HTML stays in its later pass.
+        assert_eq!(
+            order(&[
+                ("text/markdown", Some(2)),
+                ("text/plain;charset=utf-16", Some(2)),
+                ("text/html", Some(3)),
+                ("text/plain", Some(2)),
+            ]),
+            [Pictures, Text(3), Text(0), Text(1), Text(2)]
+        );
+        // Previewed as chemistry: ahead of other previewed text, never ahead of a chemistry type.
+        assert_eq!(
+            order(&[
+                ("chemical/x-cdxml", Some(0)),
+                ("text/markdown", Some(0)),
+                ("text/plain", Some(0)),
+                ("image/png", None),
+            ]),
+            [Text(0), Text(2), Text(1), Pictures]
+        );
+        // A chemistry type between them stays ahead of it.
+        assert_eq!(
+            order(&[
+                ("text/markdown", Some(0)),
+                ("chemical/x-cdxml", Some(0)),
+                ("text/plain", Some(0)),
+            ]),
+            [Text(0), Text(1), Text(2), Pictures]
+        );
+        // Already first in its pass, in another pass than the rest, or absent: unchanged.
+        assert_eq!(
+            order(&[("text/plain", Some(2)), ("text/markdown", Some(2))]),
+            [Pictures, Text(0), Text(1)]
+        );
+        assert_eq!(
+            order(&[("text/markdown", Some(2)), ("text/plain", Some(0))]),
+            [Text(1), Pictures, Text(0)]
+        );
+        assert_eq!(
+            order(&[("text/markdown", Some(2)), ("text/html", Some(3))]),
+            [Pictures, Text(0), Text(1)]
+        );
     }
 }
