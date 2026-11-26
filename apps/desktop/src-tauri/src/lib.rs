@@ -31,6 +31,8 @@ mod macos_single_instance;
 mod main_window_placement;
 mod monitor_query;
 mod naming_engine;
+#[cfg(any(target_os = "linux", test))]
+mod native_dialog_parent;
 mod network_error;
 #[cfg(test)]
 mod network_test_http;
@@ -1482,11 +1484,14 @@ pub fn run() {
         .register_uri_scheme_protocol("tauri", installed_plugins::handle_tauri_request);
     let dialogs = tauri_plugin_dialog::init();
     // Every Linux build wraps the dialog plugin: message prompts need a parent (rfd drops it), and
-    // AppImage builds also take over the file pickers.
+    // AppImage builds also take over the file pickers. The outer wrapper makes every file chooser
+    // transient for the window that asked (rfd drops that parent too).
     #[cfg(target_os = "linux")]
-    let builder = builder.plugin(appimage_dialogs::AppImageDialogs {
-        inner: dialogs,
-        appimage: is_appimage,
+    let builder = builder.plugin(native_dialog_parent::ParentedFileDialogs {
+        inner: appimage_dialogs::AppImageDialogs {
+            inner: dialogs,
+            appimage: is_appimage,
+        },
     });
     #[cfg(not(target_os = "linux"))]
     let builder = builder.plugin(dialogs);
