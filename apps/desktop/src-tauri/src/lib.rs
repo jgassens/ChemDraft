@@ -20,6 +20,8 @@ mod fonts;
 mod installed_plugins;
 #[cfg(target_os = "linux")]
 mod linux_clipboard;
+#[cfg(any(target_os = "linux", test))]
+mod linux_file_drop;
 mod linux_session_end;
 #[cfg(any(target_os = "linux", test))]
 mod linux_startup;
@@ -31,12 +33,15 @@ mod macos_single_instance;
 mod main_window_placement;
 mod monitor_query;
 mod naming_engine;
+#[cfg(any(target_os = "linux", test))]
+mod native_dialog_parent;
 mod network_error;
 #[cfg(test)]
 mod network_test_http;
 mod ocsr_engine;
 mod opsin;
 mod palette_first_paint;
+mod palette_fit_math;
 mod palette_map_pin;
 mod panel_full_size;
 mod panel_window;
@@ -1481,11 +1486,14 @@ pub fn run() {
         .register_uri_scheme_protocol("tauri", installed_plugins::handle_tauri_request);
     let dialogs = tauri_plugin_dialog::init();
     // Every Linux build wraps the dialog plugin: message prompts need a parent (rfd drops it), and
-    // AppImage builds also take over the file pickers.
+    // AppImage builds also take over the file pickers. The outer wrapper makes every file chooser
+    // transient for the window that asked (rfd drops that parent too).
     #[cfg(target_os = "linux")]
-    let builder = builder.plugin(appimage_dialogs::AppImageDialogs {
-        inner: dialogs,
-        appimage: is_appimage,
+    let builder = builder.plugin(native_dialog_parent::ParentedFileDialogs {
+        inner: appimage_dialogs::AppImageDialogs {
+            inner: dialogs,
+            appimage: is_appimage,
+        },
     });
     #[cfg(not(target_os = "linux"))]
     let builder = builder.plugin(dialogs);
@@ -1497,6 +1505,9 @@ pub fn run() {
 
     #[cfg(target_os = "linux")]
     let builder = builder.plugin(webview_recovery::plugin());
+    // Accepts a file drag once wry has its file list, so a quick release is not lost (Linux only).
+    #[cfg(target_os = "linux")]
+    let builder = builder.plugin(linux_file_drop::plugin());
 
     // Windows app updates: a signed manifest on main (`plugins.updater` in tauri.windows.conf.json)
     // and a signed NSIS installer. The webview drives the flow, and only a stable build ever checks;
@@ -1773,6 +1784,22 @@ pub fn run() {
             let Some(toolset_id) = toolset_id_for_window_label(app, window.label()) else {
                 return;
             };
+
+            // Linux: GDK's integer scale changed (Tao's only scale event there). Its absence across
+            // a display scale change shows that GDK never saw that change.
+            #[cfg(target_os = "linux")]
+            if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {
+                if palette_frame_log_enabled() {
+                    if let Some(palette) = app.get_webview_window(window.label()) {
+                        let webview: &tauri::Webview<_> = palette.as_ref();
+                        palette_scale_log(
+                            webview,
+                            "scale-changed",
+                            format!("event_scale={scale_factor}"),
+                        );
+                    }
+                }
+            }
 
             // Linux X11: a window manager placing a palette it just mapped again is undone, and
             // never saved, even while a restore keeps the suspension active.
@@ -3308,6 +3335,8 @@ fn restore_utility_labels<R: Runtime>(
         if window.is_minimized().unwrap_or(true) {
             continue;
         }
+        // The pre-hide position a fixed Linux palette is put back at after its show, if any.
+        let mut restore_to: Option<(i32, i32)> = None;
         if let Some(toolset_id) = toolset_id_for_window_label(app, &label) {
             buffer_utility_recovery_position(&window);
             let resizable = toolset_is_resizable(&toolset_id);
@@ -3325,8 +3354,13 @@ fn restore_utility_labels<R: Runtime>(
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .hidden_position(&label);
             let fitted = toolset_fit::with_memory(|memory| memory.is_fitted(&label));
+            // Linux: a fixed palette comes back at the frame it had when the dialog hid it, even one
+            // ChemDraft fitted earlier (GitHub #304: Main came back somewhere else after the
+            // page-size question at 150%). Only an unreachable title still recovers.
+            let keep_hidden_frame =
+                restore_keeps_hidden_frame(cfg!(target_os = "linux"), resizable, hidden_at);
             let mut title_reachable = None;
-            let refit = restore_refits_toolset(resizable, fitted, || {
+            let refit = restore_refits_toolset(resizable, fitted && !keep_hidden_frame, || {
                 let reachable = toolset_title_reachable(app, &window, hidden_at);
                 title_reachable = Some(reachable);
                 reachable
@@ -3334,8 +3368,8 @@ fn restore_utility_labels<R: Runtime>(
             if palette_frame_log_enabled() {
                 palette_frame_log(format_args!(
                     "restore label={label} path=dialog-end hidden_at={hidden_at:?} live={:?} \
-                     resizable={resizable} fitted={fitted} title_reachable={title_reachable:?} \
-                     refit={refit}",
+                     resizable={resizable} fitted={fitted} keep_hidden_frame={keep_hidden_frame} \
+                     title_reachable={title_reachable:?} refit={refit}",
                     window
                         .outer_position()
                         .ok()
@@ -3356,6 +3390,12 @@ fn restore_utility_labels<R: Runtime>(
                 hidden_at.map(Into::into),
                 "dialog-end",
             );
+            // Linux: where the palette must be once it is mapped again (see below the show).
+            restore_to = if keep_hidden_frame && !refit {
+                hidden_at
+            } else {
+                None
+            };
         }
         if dialog_windows::is_dialog_label(&label) {
             dialog_windows::mark_transient(&label);
@@ -3369,6 +3409,9 @@ fn restore_utility_labels<R: Runtime>(
                 buffer_utility_recovery_position(&window);
                 // X11: a palette mapped again at the clamp of its pin may get no Moved event.
                 correct_pinned_palette_after_map(&window, "dialog-end");
+                // Linux: a window manager may place the mapped palette anywhere (centered,
+                // cascaded), not only at its pin's clamp. Put it back at its pre-hide position.
+                return_restored_palette_after_map(&window, restore_to, "dialog-end");
             }
             if dialog_windows::is_dialog_label(&label) {
                 buffer_utility_recovery_position(&window);
@@ -7721,13 +7764,13 @@ fn resize_toolset_window(
         .ok_or("The tool palette's monitor is unavailable.")?;
     let area = monitor_logical_work_area(&monitor);
     // Only Linux builds use native Wayland (uses_native_wayland is false elsewhere). The compositor
-    // places the window, so cap both sides to the work area and leave the position alone.
+    // places the window, so leave the position alone. Like every other platform, a fixed palette
+    // keeps its natural width even when that is wider than the work area (owner rule: a toolbar is
+    // never shrunk or given a scrollbar; it runs off the screen and the user drags it). Only the
+    // height is capped, as toolset_content_placement does.
     if utility_window::uses_native_wayland(app)? {
         window
-            .set_size(tauri::LogicalSize::new(
-                width.min(area.width),
-                height.min(area.height),
-            ))
+            .set_size(tauri::LogicalSize::new(width, height.min(area.height)))
             .map_err(|error| error.to_string())?;
         return Ok(true);
     }
@@ -7785,6 +7828,19 @@ fn resize_toolset_window(
             })
     {
         placement.position = source;
+    }
+    // Linux: the CSS size the page measured and the physical frame this fit gives it.
+    #[cfg(target_os = "linux")]
+    if palette_frame_log_enabled() {
+        palette_scale_log(
+            webview,
+            "content-fit",
+            format!(
+                "css_size=({width}, {height}) monitor_scale={scale} window_scale={window_scale} \
+                 origin={origin:?} placement_position={:?} placement_size={:?}",
+                placement.position, placement.size
+            ),
+        );
     }
     // A move made only to fit the work area is not saved as the user's position (B9).
     let plan = toolset_fit::plan_fit(
@@ -7897,10 +7953,7 @@ fn toolset_content_placement(
     // leave the window a fraction of a CSS pixel smaller than the content it was asked to fit, and
     // WebKitGTK then shows a scrollbar (GitHub #304, 150%). macOS and Windows are unchanged.
     #[cfg(target_os = "linux")]
-    let size = (
-        physical_extent_covering(width, scale),
-        physical_extent_covering(height, scale),
-    );
+    let size = palette_fit_math::physical_size_covering((width, height), scale);
     #[cfg(not(target_os = "linux"))]
     let size = {
         let size = tauri::LogicalSize::new(width, height).to_physical::<u32>(scale);
@@ -7910,51 +7963,6 @@ fn toolset_content_placement(
         position: (position.x, position.y),
         size,
         scale,
-    }
-}
-
-/// Rounding slack for a product that should be a whole number of pixels: binary floating point can
-/// land a hair above it, which must not round up a whole extra pixel.
-const PIXEL_ROUNDING_EPSILON: f64 = 1e-6;
-
-/// The smallest whole number of physical pixels that covers `logical` CSS pixels at `scale`.
-/// Linux content fit uses it so a palette window is never a fraction of a pixel short of its
-/// content (GitHub #304).
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn physical_extent_covering(logical: f64, scale: f64) -> u32 {
-    let scale = if scale.is_finite() && scale > 0.0 {
-        scale
-    } else {
-        1.0
-    };
-    if !logical.is_finite() || logical <= 0.0 {
-        return 0;
-    }
-    let physical = (logical * scale - PIXEL_ROUNDING_EPSILON).ceil().max(1.0);
-    if physical >= f64::from(u32::MAX) {
-        u32::MAX
-    } else {
-        physical as u32
-    }
-}
-
-/// The smallest whole number of GTK (logical) units that covers `physical` pixels at GTK's window
-/// `scale`. GTK3 scales are whole numbers, so this only differs from rounding at scale 3 and up
-/// (1966 / 3 = 655.33 rounds to 655, 1965 pixels: one short).
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn logical_extent_covering(physical: u32, scale: f64) -> i32 {
-    let scale = if scale.is_finite() && scale > 0.0 {
-        scale
-    } else {
-        1.0
-    };
-    let logical = (f64::from(physical) / scale - PIXEL_ROUNDING_EPSILON)
-        .ceil()
-        .max(1.0);
-    if logical >= f64::from(i32::MAX) {
-        i32::MAX
-    } else {
-        logical as i32
     }
 }
 
@@ -9188,13 +9196,85 @@ fn palette_frame_log_enabled() -> bool {
     palette_focus_env_log_enabled()
 }
 
+/// When the first palette-frame line was written. Every line ends with the milliseconds since then,
+/// so the time between a show, the window manager's placement and a save can be read off the log.
+static PALETTE_FRAME_LOG_START: std::sync::LazyLock<std::time::Instant> =
+    std::sync::LazyLock::new(std::time::Instant::now);
+
 /// One line per palette move on a restore or re-show (a dialog ending, View ▸ Toolbars, a window
 /// manager placement): which path, the frame it read, the fit memory, whether the title strip was
-/// reachable, and the old and new position. Off by default.
+/// reachable, and the old and new position, then `t=<ms>`. Off by default.
 fn palette_frame_log(message: std::fmt::Arguments<'_>) {
     if palette_frame_log_enabled() {
-        eprintln!("[palette-frame] {message}");
+        eprintln!(
+            "[palette-frame] {message} t={}ms",
+            PALETTE_FRAME_LOG_START.elapsed().as_millis()
+        );
     }
+}
+
+/// Linux: one `scale` line per call with every scale a palette's frame depends on (only with
+/// CHEMDRAFT_PALETTE_FOCUS_LOG=1). On KDE XWayland at 150% palettes opened at 1x frames around
+/// 1.5x content, and positions saved there came back multiplied by 1.5 (Linux VM, 1.2.3). Tao's
+/// window and monitor scales on Linux are GDK's integer scale (tao window.rs, monitor.rs), and
+/// ChemDraft sizes and saves frames by them; nothing here reads a fractional scale. This line shows
+/// what GDK, GTK's font DPI and WebKitGTK each report, next to the frame, so the next run shows
+/// which of them the 1.5 comes from. Read on the main thread, after `detail` (the caller's own
+/// figures) was taken.
+#[cfg(target_os = "linux")]
+fn palette_scale_log<R: Runtime>(webview: &tauri::Webview<R>, path: &'static str, detail: String) {
+    let window = webview.window();
+    let _ = webview.with_webview(move |platform| {
+        use gtk::prelude::{GtkSettingsExt, WidgetExt};
+        use webkit2gtk::WebViewExt;
+
+        let view = platform.inner();
+        let label = window.label();
+        let tao_window_scale = window.scale_factor().ok();
+        let monitor = monitor_query::current_monitor(&window).ok().flatten();
+        let tao_monitor_scale = monitor.as_ref().map(tauri::Monitor::scale_factor);
+        let bounds = monitor.as_ref().map(|monitor| {
+            let (position, size) = (monitor.position(), monitor.size());
+            (position.x, position.y, size.width, size.height)
+        });
+        let work_area = monitor.as_ref().map(|monitor| {
+            let area = monitor.work_area();
+            (
+                area.position.x,
+                area.position.y,
+                area.size.width,
+                area.size.height,
+            )
+        });
+        let gdk_window_scale = window.gtk_window().ok().map(|native| native.scale_factor());
+        let webview_widget_scale = view.scale_factor();
+        let webview_zoom = view.zoom_level();
+        // GTK keeps the Xft DPI in 1024ths of a dot per inch: 96 is 1x, 144 is 1.5x.
+        let xft_dpi =
+            gtk::Settings::default().map(|settings| f64::from(settings.gtk_xft_dpi()) / 1024.0);
+        let gdk_scale = std::env::var("GDK_SCALE").ok();
+        let gdk_dpi_scale = std::env::var("GDK_DPI_SCALE").ok();
+        let outer_position = window
+            .outer_position()
+            .ok()
+            .map(|position| (position.x, position.y));
+        let outer_size = window
+            .outer_size()
+            .ok()
+            .map(|size| (size.width, size.height));
+        let inner_size = window
+            .inner_size()
+            .ok()
+            .map(|size| (size.width, size.height));
+        palette_frame_log(format_args!(
+            "scale label={label} path={path} {detail} tao_window_scale={tao_window_scale:?} \
+             tao_monitor_scale={tao_monitor_scale:?} gdk_window_scale={gdk_window_scale:?} \
+             webview_widget_scale={webview_widget_scale} webview_zoom={webview_zoom} \
+             xft_dpi={xft_dpi:?} GDK_SCALE={gdk_scale:?} GDK_DPI_SCALE={gdk_dpi_scale:?} \
+             monitor={bounds:?} work_area={work_area:?} outer_position={outer_position:?} \
+             outer_size={outer_size:?} inner_size={inner_size:?}"
+        ));
+    });
 }
 
 fn agent_bridge_status_from<I, S>(env_value: Option<&str>, args: I) -> AgentBridgeStatus
@@ -12091,7 +12171,23 @@ fn ensure_toolset_window<R: Runtime>(
         });
     }
     #[cfg(target_os = "linux")]
-    utility_window::set_visible(&window, true)?;
+    {
+        utility_window::set_visible(&window, true)?;
+        // X11: the first map is judged like a re-show, and starts the creation pin's clock.
+        correct_pinned_palette_after_map(&window, "creation");
+        if palette_frame_log_enabled() {
+            let webview: &tauri::Webview<R> = window.as_ref();
+            palette_scale_log(
+                webview,
+                "creation",
+                format!(
+                    "requested_logical_size=({width}, {height}) \
+                     requested_logical_position=({}, {})",
+                    position.x, position.y
+                ),
+            );
+        }
+    }
     #[cfg(windows)]
     {
         let target = window.clone();
@@ -13280,6 +13376,33 @@ fn restore_refits_toolset(
     resizable || fitted || !title_reachable()
 }
 
+/// Whether restoring a palette after a dialog keeps the frame it had when the dialog hid it, rather
+/// than re-placing a palette ChemDraft fitted earlier from the user's saved frame (B9).
+///
+/// Linux only, and only for a fixed-content palette whose pre-hide position is known: there the
+/// re-place could put the Main toolbar somewhere other than where the user last saw it (GitHub
+/// #304). The work area did not change for the dialog, and the next content fit still runs the B9
+/// return when it does. macOS and Windows keep the re-place they always had. A palette whose title
+/// is unreachable still recovers (restore_refits_toolset).
+fn restore_keeps_hidden_frame(linux: bool, resizable: bool, hidden_at: Option<(i32, i32)>) -> bool {
+    linux && !resizable && hidden_at.is_some()
+}
+
+/// After a restored palette is mapped again: where to move it, if the window manager placed it
+/// away from `target` (the position it had when it was hidden). `None` when it is already there
+/// within `tolerance` pixels, or when there is no target.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn restore_position_correction(
+    target: Option<(i32, i32)>,
+    live: (i32, i32),
+    tolerance: i32,
+) -> Option<(i32, i32)> {
+    let target = target?;
+    let tolerance = tolerance.max(0);
+    let off = (live.0 - target.0).abs() > tolerance || (live.1 - target.1).abs() > tolerance;
+    off.then_some(target)
+}
+
 /// What a pinned palette's positions are judged against (palette_map_pin::Layout): its outer frame,
 /// the monitors' work areas as they are now, and what the title test needs.
 struct PalettePinFrame {
@@ -13403,8 +13526,10 @@ fn palette_position_to_keep_at<R: Runtime>(
 /// clamp puts its pin, the map may report no move (the frame was clamped by an earlier map and the
 /// move back was lost when it was hidden): move it back instead of waiting for a Moved event. The
 /// show is queued on the GTK main loop, so on Linux the frame is judged from that loop once the
-/// palette is mapped (palette_map_pin::after_map_step), not before the map has happened. A no-op
-/// for an unpinned palette, and so on macOS, Windows and native Wayland.
+/// palette is mapped (palette_map_pin::after_map_step), not before the map has happened. The first
+/// look that sees it mapped starts the pin's clock, and the looks go on while the pin lives: KWin's
+/// placement can come long after GTK reports the requested position. A no-op for an unpinned
+/// palette, and so on macOS, Windows and native Wayland.
 fn correct_pinned_palette_after_map<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
     path: &'static str,
@@ -13414,13 +13539,20 @@ fn correct_pinned_palette_after_map<R: Runtime>(
         let target = window.clone();
         let _ = window.run_on_main_thread(move || {
             let started = std::time::Instant::now();
+            let mut looks = palette_map_pin::AfterMapLooks::default();
             let _ = gtk::glib::timeout_add_local(palette_map_pin::AFTER_MAP_INTERVAL, move || {
                 use gtk::prelude::WidgetExt;
 
                 let mapped = target
                     .gtk_window()
                     .is_ok_and(|native| native.is_mapped() && native.is_visible());
-                if look_at_pinned_palette_after_map(&target, mapped, started.elapsed(), path) {
+                if look_at_pinned_palette_after_map(
+                    &target,
+                    mapped,
+                    &mut looks,
+                    started.elapsed(),
+                    path,
+                ) {
                     gtk::glib::ControlFlow::Continue
                 } else {
                     gtk::glib::ControlFlow::Break
@@ -13431,32 +13563,132 @@ fn correct_pinned_palette_after_map<R: Runtime>(
     #[cfg(not(target_os = "linux"))]
     {
         let mapped = window.is_visible().unwrap_or(false);
-        let _ = look_at_pinned_palette_after_map(window, mapped, std::time::Duration::ZERO, path);
+        let _ = look_at_pinned_palette_after_map(
+            window,
+            mapped,
+            &mut palette_map_pin::AfterMapLooks::default(),
+            std::time::Duration::ZERO,
+            path,
+        );
     }
 }
 
+/// Linux X11/XWayland: once a palette restored after a dialog is mapped again, put it back at
+/// `target`, the position it had when the dialog hid it, if the window manager placed it anywhere
+/// else (GitHub #304: Main came back somewhere else after the page-size question).
+/// [`correct_pinned_palette_after_map`] only undoes a placement at the pin's clamp; this undoes
+/// any. The move goes through `_NET_MOVERESIZE_WINDOW` (utility_window::move_mapped), like the
+/// pin's own moves back, and re-targets the pin first so the Moved event it causes is held there
+/// rather than read as a user move. The frame is judged once, when the palette is first seen
+/// mapped (waiting at most `palette_map_pin::AFTER_MAP_WAIT`). A drag the user starts before that
+/// look cancels the move (palette_map_pin::MapPins::move_back_after_restore): the drag is never
+/// undone. A no-op with no target, on native Wayland, and on macOS and Windows.
+fn return_restored_palette_after_map<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    target: Option<(i32, i32)>,
+    path: &'static str,
+) {
+    #[cfg(target_os = "linux")]
+    {
+        let Some(target) = target else {
+            return;
+        };
+        if !utility_window::map_replaces_position(window.app_handle()) {
+            return;
+        }
+        let restored = window.clone();
+        // A drag started from here on is the user's and cancels the move back.
+        let requested = std::time::Instant::now();
+        let _ = window.run_on_main_thread(move || {
+            let started = std::time::Instant::now();
+            let _ = gtk::glib::timeout_add_local(palette_map_pin::AFTER_MAP_INTERVAL, move || {
+                use gtk::prelude::WidgetExt;
+
+                let mapped = restored
+                    .gtk_window()
+                    .is_ok_and(|native| native.is_mapped() && native.is_visible());
+                if !mapped {
+                    return if started.elapsed() < palette_map_pin::AFTER_MAP_WAIT {
+                        gtk::glib::ControlFlow::Continue
+                    } else {
+                        gtk::glib::ControlFlow::Break
+                    };
+                }
+                let Ok(live) = restored.outer_position() else {
+                    return gtk::glib::ControlFlow::Break;
+                };
+                let live = (live.x, live.y);
+                let tolerance = restored
+                    .scale_factor()
+                    .map(toolset_fit::tolerance)
+                    .unwrap_or(2);
+                if let Some(position) = restore_position_correction(Some(target), live, tolerance) {
+                    let webview: &tauri::Webview<R> = restored.as_ref();
+                    let native = webview.window();
+                    let allowed = palette_map_pin::with_pins(|pins| {
+                        pins.move_back_after_restore(
+                            native.label(),
+                            position,
+                            requested,
+                            std::time::Instant::now(),
+                        )
+                    });
+                    if !allowed {
+                        palette_frame_log(format_args!(
+                            "map label={} path={path} live={live:?} target={position:?} \
+                             restore-pre-hide-position skipped=user-drag after={:?}",
+                            native.label(),
+                            started.elapsed()
+                        ));
+                        return gtk::glib::ControlFlow::Break;
+                    }
+                    let sent = utility_window::move_mapped(&native, position);
+                    palette_frame_log(format_args!(
+                        "map label={} path={path} live={live:?} -> {position:?} \
+                         restore-pre-hide-position move-back={sent:?} after={:?}",
+                        native.label(),
+                        started.elapsed()
+                    ));
+                }
+                gtk::glib::ControlFlow::Break
+            });
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (window, target, path);
+}
+
 /// One look at a pinned palette just shown again ([`correct_pinned_palette_after_map`]): moves it
-/// back when it is mapped at its pin's clamp. Returns whether to look again later.
+/// back when it is mapped at its pin's clamp. `looks` is what this run's earlier looks saw. Returns
+/// whether to look again later: while the pin lives and the palette stays shown.
 fn look_at_pinned_palette_after_map<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
     mapped: bool,
+    looks: &mut palette_map_pin::AfterMapLooks,
     elapsed: std::time::Duration,
     path: &str,
 ) -> bool {
     let label = window.label();
     let now = std::time::Instant::now();
     let pinned = palette_map_pin::with_pins(|pins| pins.target(label, now)).is_some();
-    match palette_map_pin::after_map_step(pinned, mapped, elapsed) {
+    match palette_map_pin::after_map_step(pinned, mapped, looks.seen_mapped(), elapsed) {
         palette_map_pin::AfterMapStep::Wait => return true,
         palette_map_pin::AfterMapStep::Stop => return false,
         palette_map_pin::AfterMapStep::Check => {}
     }
-    let webview: &tauri::Webview<R> = window.as_ref();
-    let native = webview.window();
-    let (Ok(live), Some(frame)) = (window.outer_position(), PalettePinFrame::read(&native)) else {
+    let Ok(live) = window.outer_position() else {
         return false;
     };
     let live = (live.x, live.y);
+    // Also starts the pin's clock at the first look. Monitors are read only for a frame to judge.
+    if !palette_map_pin::with_pins(|pins| pins.mapped_look(label, live, looks, now)) {
+        return true;
+    }
+    let webview: &tauri::Webview<R> = window.as_ref();
+    let native = webview.window();
+    let Some(frame) = PalettePinFrame::read(&native) else {
+        return false;
+    };
     let due = frame.judge(|layout| {
         palette_map_pin::with_pins(|pins| pins.correction_due(label, live, layout, now))
     });
@@ -13467,7 +13699,7 @@ fn look_at_pinned_palette_after_map<R: Runtime>(
              after={elapsed:?}"
         ));
     }
-    false
+    true
 }
 
 /// X11/XWayland: hold a palette that is about to be mapped again at the position it must keep
@@ -13533,6 +13765,22 @@ fn palette_moved_by_map<R: Runtime>(window: &tauri::Window<R>) -> bool {
     let label = window.label();
     let now = std::time::Instant::now();
     if palette_map_pin::with_pins(|pins| pins.target(label, now)).is_none() {
+        // A Moved event just after a pin expired by itself is handled as usual and may be saved:
+        // log it, so a window manager placement that came too late shows in the log. Only Linux
+        // X11 pins palettes.
+        let expired = if cfg!(target_os = "linux") && palette_frame_log_enabled() {
+            palette_map_pin::with_pins(|pins| pins.expired_pin(label, now))
+        } else {
+            None
+        };
+        if let Some((pin, ago)) = expired {
+            let moved =
+                visible_toolset_physical_position(window).map(|position| (position.x, position.y));
+            palette_frame_log(format_args!(
+                "map label={label} path=after-pin-expired moved={moved:?} pin={pin:?} \
+                 expired-ago={ago:?} handled-as-usual"
+            ));
+        }
         return false;
     }
     let Some(position) = visible_toolset_physical_position(window) else {
@@ -13683,6 +13931,14 @@ fn persist_toolset_position<R: Runtime>(
     let toolset_id = toolset_id.to_string();
     let position =
         logical_toolset_position_from_physical(f64::from(physical.x), f64::from(physical.y), scale);
+    // Linux: the window manager can move a palette with no user action (KDE rescaling XWayland
+    // positions on a display scale change); this shows what was saved, from what, with which scale.
+    if cfg!(target_os = "linux") && palette_frame_log_enabled() {
+        palette_frame_log(format_args!(
+            "save-position toolset={toolset_id} physical=({}, {}) scale={scale} saved=({}, {})",
+            physical.x, physical.y, position.x, position.y
+        ));
+    }
     update_toolset_layout_state(app, move |layout_state| {
         let state = layout_state.toolsets.entry(toolset_id).or_default();
         state.x = Some(position.x);
@@ -13702,12 +13958,16 @@ fn persist_toolset_size<R: Runtime>(
         return Ok(());
     }
     let scale = window.scale_factor().map_err(|error| error.to_string())?;
-    let size = window
-        .inner_size()
-        .map_err(|error| error.to_string())?
-        .to_logical::<f64>(scale);
+    let physical = window.inner_size().map_err(|error| error.to_string())?;
+    let size = physical.to_logical::<f64>(scale);
     if size.width <= 0.0 || size.height <= 0.0 {
         return Ok(());
+    }
+    if cfg!(target_os = "linux") && palette_frame_log_enabled() {
+        palette_frame_log(format_args!(
+            "save-size toolset={toolset_id} physical=({}, {}) scale={scale} saved=({}, {})",
+            physical.width, physical.height, size.width, size.height
+        ));
     }
     let toolset_id = toolset_id.to_string();
     update_toolset_layout_state(window.app_handle(), move |layout_state| {
@@ -17121,35 +17381,6 @@ mod tests {
     }
 
     #[test]
-    fn content_fit_extents_round_up_to_cover_the_content() {
-        for scale in [1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 3.0] {
-            for logical in 1..=2000 {
-                let logical = f64::from(logical);
-                let physical = physical_extent_covering(logical, scale);
-                // Never short of the content, and never a whole pixel over it.
-                assert!(
-                    f64::from(physical) / scale + 1e-9 >= logical,
-                    "{logical} at {scale}"
-                );
-                assert!(
-                    f64::from(physical) < logical * scale + 1.0,
-                    "{logical} at {scale}"
-                );
-            }
-        }
-        // 81 CSS px at 1.25 is 101.25 px: nearest gives 101 (80.8 CSS px), covering gives 102.
-        assert_eq!(physical_extent_covering(81.0, 1.25), 102);
-        // A product a hair under a whole number is not pushed up a pixel.
-        assert_eq!(physical_extent_covering(1243.0 + 1.0 / 3.0, 1.5), 1865);
-        assert_eq!(physical_extent_covering(0.0, 1.5), 0);
-        assert_eq!(physical_extent_covering(f64::NAN, 1.5), 0);
-        // GTK units: 1966 px at GTK scale 3 needs 656 units (655 would cover only 1965 px).
-        assert_eq!(logical_extent_covering(1966, 3.0), 656);
-        assert_eq!(logical_extent_covering(1966, 2.0), 983);
-        assert_eq!(logical_extent_covering(1967, 1.0), 1967);
-    }
-
-    #[test]
     fn linux_window_menu_items_route_as_registry_commands() {
         let menu_ids = [
             WINDOW_MINIMIZE_COMMAND_ID,
@@ -18243,6 +18474,90 @@ mod tests {
         // A frame ChemDraft fitted earlier still recovers.
         expect_true(restore_refits_toolset(false, true, || true));
         expect_true(toolset_is_resizable("core.molecularInspector"));
+    }
+
+    #[test]
+    fn a_linux_palette_returns_to_its_pre_hide_frame_after_a_dialog() {
+        let source = include_str!("lib.rs");
+        let start = source.find("fn restore_utility_labels<").unwrap();
+        let rest = &source[start..];
+        let restore = &rest[..rest.find("\n}\n").unwrap()];
+        // Decided from the frame recorded before the hide; a fitted fixed palette is not re-placed
+        // on Linux (restore_keeps_hidden_frame), only one whose title is unreachable.
+        let hidden = restore.find(".hidden_position(&label)").unwrap();
+        let keep = restore.find("restore_keeps_hidden_frame(").unwrap();
+        let refit = restore
+            .find("restore_refits_toolset(resizable, fitted && !keep_hidden_frame")
+            .unwrap();
+        expect_true(hidden < keep && keep < refit);
+        // Put back at the pre-hide position after the show, whatever the window manager did.
+        let show = restore
+            .find("restore_utility_in_document_group(&window)")
+            .unwrap();
+        let back = restore
+            .find("return_restored_palette_after_map(&window, restore_to")
+            .unwrap();
+        expect_true(show < back);
+        // With the Linux decision folded in, a fitted palette whose title is reachable keeps its
+        // frame; macOS and Windows still re-place it (restore_keeps_hidden_frame is false there).
+        for linux in [false, true] {
+            let keep = restore_keeps_hidden_frame(linux, false, Some((0, 150)));
+            expect_eq(!linux, restore_refits_toolset(false, !keep, || true));
+            expect_true(restore_refits_toolset(false, !keep, || false));
+        }
+    }
+
+    #[test]
+    fn the_move_back_after_a_restore_yields_to_a_user_drag() {
+        // The look after the map asks the pins first (palette_map_pin's
+        // a_drag_after_a_restore_is_never_undone_by_the_move_back), and a drag tells them.
+        let source = include_str!("lib.rs");
+        let start = source
+            .find("fn return_restored_palette_after_map<")
+            .unwrap();
+        let rest = &source[start..];
+        let callback = &rest[..rest.find("\n}\n").unwrap()];
+        let asked = callback.find(".move_back_after_restore(").unwrap();
+        let moved = callback.find("utility_window::move_mapped(").unwrap();
+        expect_true(asked < moved);
+        expect_false(callback.contains(".moved_by_chemdraft("));
+        expect_true(include_str!("window_drag.rs").contains(".drag_started(window.label()"));
+    }
+
+    #[test]
+    fn only_linux_fixed_palettes_with_a_known_pre_hide_position_keep_it() {
+        let hidden = Some((0, 150));
+        expect_true(restore_keeps_hidden_frame(true, false, hidden));
+        // Inspectors are fitted whole on restore, on every platform.
+        expect_false(restore_keeps_hidden_frame(true, true, hidden));
+        // No frame recorded before the hide: nothing to keep.
+        expect_false(restore_keeps_hidden_frame(true, false, None));
+        // macOS and Windows are unchanged.
+        expect_false(restore_keeps_hidden_frame(false, false, hidden));
+    }
+
+    #[test]
+    fn a_palette_placed_elsewhere_by_the_window_manager_is_moved_back_to_its_pre_hide_position() {
+        let hidden = Some((0, 150));
+        // Mapped where it was hidden, or within the window manager's rounding: left alone.
+        expect_eq(None, restore_position_correction(hidden, (0, 150), 2));
+        expect_eq(None, restore_position_correction(hidden, (2, 148), 2));
+        // Re-placed (centered, cascaded) on the map: moved back.
+        expect_eq(
+            Some((0, 150)),
+            restore_position_correction(hidden, (320, 400), 2),
+        );
+        expect_eq(
+            Some((0, 150)),
+            restore_position_correction(hidden, (0, 153), 2),
+        );
+        // No pre-hide position: nothing to restore.
+        expect_eq(None, restore_position_correction(None, (320, 400), 2));
+        // A negative tolerance is treated as exact.
+        expect_eq(
+            Some((0, 150)),
+            restore_position_correction(hidden, (1, 150), -5),
+        );
     }
 
     #[test]

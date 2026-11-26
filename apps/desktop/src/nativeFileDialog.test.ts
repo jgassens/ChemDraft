@@ -174,6 +174,40 @@ describe("one native file dialog at a time", () => {
     }
   );
 
+  for (const [name, picker, panel] of [["open", open, native.open], ["save", save, native.save]] as const) {
+    it(`${name} refused by Rust while another window's chooser is in flight is reported and resolves null`, async () => {
+      native.invoke.mockResolvedValue(undefined);
+      // Tauri rejects the invoke with the string Rust passed to `reject`.
+      panel.mockRejectedValueOnce("A file dialog is already open");
+      const { refusals, unsubscribe } = listen();
+      try {
+        await expect(picker({ title: "Choose file" })).resolves.toBeNull();
+        expect(refusals).toEqual(["A file dialog is already open"]);
+        // The palettes it hid come back.
+        expect(native.invoke.mock.calls.map(([, args]) => args.suspended)).toEqual([true, false]);
+        // This window's guard is free again: once the other chooser closes, a request opens.
+        panel.mockResolvedValueOnce("/tmp/drawing.chemdraft");
+        await expect(picker({ title: "Choose file" })).resolves.toBe("/tmp/drawing.chemdraft");
+        expect(panel).toHaveBeenCalledTimes(2);
+        expect(refusals).toHaveLength(1);
+      } finally {
+        unsubscribe();
+      }
+    });
+
+    it(`${name} passes on any other rejection without reporting a dialog as open`, async () => {
+      native.invoke.mockResolvedValue(undefined);
+      panel.mockRejectedValueOnce("Some other failure");
+      const { refusals, unsubscribe } = listen();
+      try {
+        await expect(picker({ title: "Choose file" })).rejects.toBe("Some other failure");
+        expect(refusals).toEqual([]);
+      } finally {
+        unsubscribe();
+      }
+    });
+  }
+
   it.each(["rejects", "throws synchronously"])("the guard is released when a step %s", async failure => {
     const step = failure === "rejects"
       ? async (): Promise<string | null> => { throw new Error("step failed"); }

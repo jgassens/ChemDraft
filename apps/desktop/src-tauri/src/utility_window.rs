@@ -114,8 +114,8 @@ pub(super) fn pin_content_fit_frame<R: Runtime>(
 
         let native = target.gtk_window().map_err(|error| error.to_string())?;
         // GTK sizes are logical at the window's integer scale. Round up, never to nearest, so the
-        // min = max pin always covers the physical frame (GitHub #304).
-        use super::{logical_extent_covering, physical_extent_covering};
+        // min = max pin always covers the physical frame (palette_fit_math; GitHub #304).
+        use super::palette_fit_math::{logical_extent_covering, physical_extent_covering};
         let gtk_scale = f64::from(native.scale_factor());
         let whole = |logical: f64| i32::try_from(physical_extent_covering(logical, 1.0));
         let (width, height) = match size {

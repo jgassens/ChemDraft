@@ -12,6 +12,8 @@ import { Molecule } from "openchemlib";
 import { MainWindow, groupedDragObjectIdsForPointer } from "./MainWindow";
 import * as workflow from "./documentWorkflow";
 import { DOM_COMMAND_EVENT } from "./window-manager";
+import { setNativePromptProvider } from "./nativePrompt";
+import { planDocumentPageFit } from "./pageEnlargement";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 class TestResizeObserver { observe() {} unobserve() {} disconnect() {} }
@@ -61,7 +63,7 @@ describe("object move retained SVG preview", () => {
     for (let i = 0; i < count; i++) doc = workflow.insertNativeTemplateMolecule(doc, { x: 300, y: 300 }, "benzene");
     return workflow.selectDocumentObjects(doc, doc.pages[0].id, doc.pages[0].objects.map(object => object.id));
   }
-  async function mount(doc: ChemDraftDocument, shortcutPlatform?: "macos" | "windows") {
+  async function mount(doc: ChemDraftDocument, shortcutPlatform?: "macos" | "windows" | "linux") {
     await act(async () => root.render(createElement(MainWindow, {
       initialDocument: doc, initialActiveToolCommandId: "tool.select", initialPaletteMode: "hidden",
       initialRulersVisible: false, initialCrosshairsVisible: false, nativePalette: false, shortcutPlatform
@@ -383,6 +385,39 @@ describe("object move retained SVG preview", () => {
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Undid Move group");
     expect(container.querySelector("main")?.getAttribute("data-can-undo")).toBe("false");
   });
+
+  // GitHub #304 (Linux, 150%): the toolbars hide only while the page-size question is shown. A
+  // hand move past the page edge never asks it (only insertions and re-layouts do), so a plain drag
+  // must never reach the native prompt, which is what hides the toolbars (nativePrompt acquires
+  // the utility suspension only around a shown box).
+  it.each(["linux", "macos", "windows"] as const)(
+    "moves a large pasted text box past the page edge without the page-size question (%s, 150%%)", async platform => {
+      vi.stubGlobal("devicePixelRatio", 1.5);
+      const asked = vi.fn(async () => "keep");
+      const restoreProvider = setNativePromptProvider(asked);
+      try {
+        let doc = rings(1);
+        doc = workflow.insertNativeTextObject(doc, { x: 360, y: 260 },
+          Array.from({ length: 12 }, (_, line) => `Pasted paragraph line ${line + 1}`).join(" "));
+        doc = workflow.selectDocumentObjects(doc, doc.pages[0].id, doc.pages[0].objects.map(object => object.id));
+        doc = workflow.groupSelectedDocumentObjects(doc);
+        await mount(doc, platform);
+        const drag = await start();
+        const [dx, dy] = [700, 40];
+        for (const step of [0.25, 0.5, 1]) {
+          await move(drag.target, { x: drag.point.x + dx * step, y: drag.point.y + dy * step });
+        }
+        await act(async () => pointer(drag.target, "pointerup", { x: drag.point.x + dx, y: drag.point.y + dy }));
+        await flushFrames();
+        const committed = snapshot();
+        expect(committed).toEqual(oldMove(drag.before, drag.molecule, dx, dy));
+        // The move really left the page: an insertion like it would have asked about the page size.
+        expect(planDocumentPageFit(drag.before, committed).growth.length).toBeGreaterThan(0);
+        expect(asked).not.toHaveBeenCalled();
+      } finally {
+        restoreProvider();
+      }
+    });
 
   it.each(["single", "molecules", "mixed", "rotated tilted", "grouped", "mixed grouped rotated tilted"])(
     "retains SVG and commits the old path's exact document and paint: %s", async kind => {

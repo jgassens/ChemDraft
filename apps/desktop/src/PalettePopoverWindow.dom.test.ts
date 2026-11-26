@@ -5,7 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DefaultNativeTextStyle } from "@chemdraft/chem-core";
 import type { ArtInspectorEffectKind } from "./artInspectorModel";
 import { objectCustomColorCommandId, objectEffectColorCommandId } from "./commands";
-import type { ToolsetArtStylePayload, ToolsetPopoverContentPayload, ToolsetTextStylePayload } from "./window-manager";
+import {
+  monitorLogicalWorkAreaAt, setCurrentWindowLogicalPosition,
+  type ToolsetArtStylePayload, type ToolsetPopoverContentPayload, type ToolsetTextStylePayload
+} from "./window-manager";
 import { PalettePopoverWindow } from "./PalettePopoverWindow";
 
 const bridge = vi.hoisted(() => ({
@@ -23,6 +26,7 @@ vi.mock("./window-manager", async (importOriginal) => ({
   listenForToolsetPopoverDismiss: async (handler: typeof bridge.dismiss) => { bridge.dismiss = handler; return () => {}; },
   requestToolsetPopoverContent: vi.fn(async () => undefined), requestToolsetTextStyle: vi.fn(async () => undefined),
   setCurrentWindowLogicalSize: vi.fn(async () => undefined), setCurrentWindowLogicalPosition: vi.fn(async () => undefined),
+  monitorLogicalWorkAreaAt: vi.fn(async () => undefined),
   showCurrentToolsetPopoverWindow: vi.fn(async () => true),
   sendPaletteCommandPreview: bridge.preview, sendPaletteCommandCommit: bridge.commit,
   sendPaletteCommandCancel: bridge.cancel
@@ -97,5 +101,88 @@ describe("native palette color targets", () => {
     expect(bridge.preview).not.toHaveBeenCalled(); expect(bridge.commit).not.toHaveBeenCalled();
     await open("shadow"); click("Commit");
     expect(bridge.commit).toHaveBeenCalledExactlyOnceWith(objectEffectColorCommandId("shadow", "#abcdef"));
+  });
+  // 1.2.4, Windows: an Effect swatch near the bottom of the screen opened its popover at the bare
+  // below-anchor point (top 1208 + height 187 > availHeight 1296), with the CMYK row under the taskbar.
+  it.each([1, 1.25, 1.5])("keeps the Effect color popover inside the work area near the taskbar at scale %s", async (scale) => {
+    const workArea = { left: 0, top: 0, right: 2304, bottom: 1296, scale };
+    vi.mocked(monitorLogicalWorkAreaAt).mockResolvedValue(workArea);
+    const measured = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+      { x: 0, y: 0, left: 0, top: 0, width: 252, height: 187, right: 252, bottom: 187, toJSON: () => ({}) } as DOMRect
+    );
+    try {
+      const swatch = { left: 1500, top: 1182, right: 1522, bottom: 1204 };
+      await act(async () => bridge.content!({
+        toolsetId: "core.art", kind: "artColor", effectKind: "shadow", openedAt: 1, generation: 1,
+        anchor: { x: swatch.left, y: swatch.bottom + 4, rect: swatch }
+      } as ToolsetPopoverContentPayload));
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+      // With its toolset id, so Rust reads the point at the owning palette's scale: where a
+      // mixed-DPI pair's logical bounds overlap, the first match is the wrong monitor.
+      expect(monitorLogicalWorkAreaAt).toHaveBeenCalledWith(1511, 1193, "core.art");
+      const positions = vi.mocked(setCurrentWindowLogicalPosition).mock.calls.map(([position]) => position);
+      expect(positions.length).toBeGreaterThan(0);
+      for (const position of positions) {
+        expect(position.y).toBeGreaterThanOrEqual(workArea.top);
+        expect(position.y + 187).toBeLessThanOrEqual(workArea.bottom);
+        // Flipped above its swatch rather than shifted over it.
+        expect(position.y + 187).toBeLessThanOrEqual(swatch.top);
+        expect(position.x + 252).toBeLessThanOrEqual(workArea.right);
+      }
+    } finally {
+      measured.mockRestore();
+    }
+  });
+  // A resize-driven placement awaiting the monitor query must not land after a newer open and move
+  // the new popover back to the previous control.
+  it("never lets a superseded resize placement move a newer popover", async () => {
+    const resized: Array<() => void> = [];
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: () => void) { resized.push(callback); }
+      observe() {}
+      disconnect() {}
+    });
+    const measured = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+      { x: 0, y: 0, left: 0, top: 0, width: 252, height: 187, right: 252, bottom: 187, toJSON: () => ({}) } as DOMRect
+    );
+    const flush = () => act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+    let releaseFirstArea: () => void = () => {};
+    const area = { left: 0, top: 0, right: 1920, bottom: 1040, scale: 1 };
+    vi.mocked(monitorLogicalWorkAreaAt).mockImplementation((x) => x === 111
+      ? new Promise<typeof area>(resolve => { releaseFirstArea = () => resolve(area); })
+      : Promise.resolve(area));
+    try {
+      // A fresh window, so the size effect sees the ResizeObserver stub.
+      act(() => root.unmount());
+      root = createRoot(container);
+      await act(async () => root.render(createElement(PalettePopoverWindow, { toolsetId: "core.art", prewarm: true })));
+      const first = { left: 100, top: 100, right: 122, bottom: 122 };
+      const second = { left: 500, top: 300, right: 522, bottom: 322 };
+      await act(async () => bridge.content!({
+        toolsetId: "core.art", kind: "artColor", openedAt: 1, generation: 1,
+        anchor: { x: first.left, y: first.bottom + 4, rect: first }
+      } as ToolsetPopoverContentPayload));
+      await flush();
+      // The first popover resizes; its placement waits on the (slow) monitor query.
+      expect(resized.length).toBeGreaterThan(0);
+      act(() => resized.forEach(callback => callback()));
+      await flush();
+      // A newer open on another control places itself while that query is still pending.
+      await act(async () => bridge.content!({
+        toolsetId: "core.art", kind: "artColor", openedAt: 2, generation: 2,
+        anchor: { x: second.left, y: second.bottom + 4, rect: second }
+      } as ToolsetPopoverContentPayload));
+      await flush();
+      expect(vi.mocked(setCurrentWindowLogicalPosition).mock.calls.at(-1)?.[0]).toEqual({ x: 500, y: 326 });
+      // The stale query answers last: nothing may move the window back to the first control.
+      releaseFirstArea();
+      await flush();
+      const positions = vi.mocked(setCurrentWindowLogicalPosition).mock.calls.map(([position]) => position);
+      expect(positions).not.toContainEqual({ x: 100, y: 126 });
+      expect(positions.at(-1)).toEqual({ x: 500, y: 326 });
+    } finally {
+      measured.mockRestore();
+      vi.unstubAllGlobals();
+    }
   });
 });

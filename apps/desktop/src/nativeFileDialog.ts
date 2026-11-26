@@ -1,6 +1,6 @@
 import type { OpenDialogOptions, OpenDialogReturn, SaveDialogOptions } from "@tauri-apps/plugin-dialog";
 import { detectShortcutPlatform, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
-import { withOneFileDialog } from "./fileDialogGuard";
+import { FILE_DIALOG_ALREADY_OPEN_STATUS, withOneFileDialog } from "./fileDialogGuard";
 import { withNativeUtilitySuspension } from "./nativeUtilitySuspension";
 
 type SaveDialogFilter = NonNullable<SaveDialogOptions["filters"]>[number];
@@ -46,13 +46,31 @@ export function prewarmNativeFileDialogs(): Promise<typeof import("@tauri-apps/p
   return dialogModule;
 }
 
+/**
+ * Linux: Rust lets one file chooser be in flight app-wide, so that it can parent it to the window
+ * that asked, and refuses a request from any other window meanwhile with
+ * FILE_DIALOG_ALREADY_OPEN_STATUS. Report that exactly as this window reports its own second
+ * request, and resolve `cancelled`. Any other failure is passed on.
+ */
+async function refusedAsCancel<T>(panel: () => Promise<T>, cancelled: T): Promise<T> {
+  try {
+    return await panel();
+  } catch (error) {
+    if (error !== FILE_DIALOG_ALREADY_OPEN_STATUS) throw error;
+    // Called while this request still holds the window's guard, which therefore refuses it: it
+    // reports the status and resolves `cancelled`, opening nothing.
+    return withOneFileDialog(async () => cancelled, cancelled);
+  }
+}
+
 /** All document-window file panels use these wrappers, including plugin pickers and exports.
  * At most one is pending at a time; a refused request resolves null, as a cancel. */
 export function open<T extends OpenDialogOptions>(options?: T): Promise<OpenDialogReturn<T>> {
+  const cancelled = null as unknown as OpenDialogReturn<T>;
   return withOneFileDialog(async () => {
     const dialogs = await prewarmNativeFileDialogs();
-    return withNativeUtilitySuspension(() => dialogs.open(options));
-  }, null as unknown as OpenDialogReturn<T>);
+    return withNativeUtilitySuspension(() => refusedAsCancel(() => dialogs.open(options), cancelled));
+  }, cancelled);
 }
 
 export function save(
@@ -63,6 +81,6 @@ export function save(
   return withOneFileDialog(async () => {
     const dialogs = await prewarmNativeFileDialogs();
     const panelOptions = saveDialogOptionsForPlatform(options, platform);
-    return withNativeUtilitySuspension(() => dialogs.save(panelOptions), focusExportSessionId);
+    return withNativeUtilitySuspension(() => refusedAsCancel(() => dialogs.save(panelOptions), null), focusExportSessionId);
   }, null);
 }
