@@ -11,15 +11,8 @@ import { applyPluginDocumentPatch, previewAcceptedPluginProposal, refreshPluginP
 // documents.applyPatch, and the user accepting its documents.proposePatch proposal. Both run here as the
 // desktop runs them (MainWindow's applyDocumentPatch and acceptPluginProposal): the real PluginHost, then
 // the desktop's application, normalization and RDKit-backed chemistry refresh. Each test asserts the
-// committed formula and hydrogen counts: a write that cannot keep what it states must be refused,
-// never committed with different chemistry (AGENTS.md section 7).
-//
-// Bugs pinned (bot review of PRs #487/#489):
-// (a) an accepted proposal drops a nonzero stated count it cannot keep, where documents.applyPatch refuses;
-// (b) a typed carbon label's stated count is overridden by the label text, and the write is accepted;
-// (c) an explicit hydrogenCount 0 is never checked, so a write whose 0 the patch engine drops is accepted.
-// The BUG tests fail on purpose until the fixes land. Run on v1.2.2 (2026-11-25), all three commit the same
-// wrong formulas; there no stated count on a plain atom is counted at all, and nothing is refused.
+// refusal or committed formula and hydrogen counts. These cover counts dropped by bond edits,
+// explicit zero counts, and counts overridden by atom label text (AGENTS.md section 7).
 
 const now = "2026-11-25T00:00:00.000Z";
 const atom = (id: string, element: string, x: number, extra: Partial<MoleculeAtom> = {}): MoleculeAtom =>
@@ -126,7 +119,7 @@ describe("(a) an accepted proposal stating a nonzero hydrogen count", { timeout:
     expectKeptOrRefused(await acceptedProposal(ethane(), toEthyl), "m", { formula: "C2H5", counts: { a1: 2 } });
   });
 
-  it("guard: the same patch through documents.applyPatch is refused (the check the accept path lacks)", async () => {
+  it("guard: the same patch through documents.applyPatch is refused", async () => {
     const outcome = await pluginApplyPatch(ethane(), toEthyl, ["m"]);
     expect(outcome.refusal?.message).toMatch(/hydrogenCount 2, which the written molecule would not keep/);
   });
@@ -216,5 +209,51 @@ describe("(c) an explicit hydrogenCount 0 in a plugin write", { timeout: 30_000 
     const written = committedMolecule(outcome.committed!, "m");
     expect({ formula: formulaOf(written), stored: written.chemistry?.formula, a2: countOf(written, "a2") })
       .toEqual({ formula: "C2H3", stored: "C2H3", a2: 0 });
+  });
+});
+
+describe.each([
+  ["documents.applyPatch", pluginApplyPatch],
+  ["proposal acceptance", acceptedProposal]
+] as const)("counts spelled by a label on %s", (_path, write) => {
+  const methanol = (label: string, hydrogenCount: number) => molecule("m3",
+    [atom("o", label, 100, { labelLiteral: true, hydrogenCount }), atom("c", "C", 130)], [bond("b1", "o", "c")]);
+  const redrawBond = (hydrogenCount: number): DocumentPatch => ({ op: "updateObject", objectId: "m3", changes: {
+    atoms: methanol("HO", hydrogenCount).atoms, bonds: [bond("b2", "o", "c")]
+  } });
+
+  it.each(["HO", "OH"] as const)("refuses a typed %s stating 0 H", async (label) => {
+    const blank = documentWith([]);
+    const outcome = await write(blank, { op: "addObject", pageId: blank.pages[0]!.id, object: methanol(label, 0) }, []);
+    expect(outcome.refusal).toMatchObject({
+      reason: "hydrogen_count_unrepresentable",
+      details: { moleculeId: "m3", atomId: "o", element: label, hydrogenCount: 0, labelHydrogenCount: 1 }
+    });
+    if (write === acceptedProposal) expect(outcome.pending).toBe(1);
+  });
+
+  it("commits a typed HO stating 1 H as CH4O", async () => {
+    const blank = documentWith([]);
+    const outcome = await write(blank, { op: "addObject", pageId: blank.pages[0]!.id, object: methanol("HO", 1) }, []);
+    expect(outcome.refusal).toBeUndefined();
+    const written = committedMolecule(outcome.committed!, "m3");
+    expect({ formula: formulaOf(written), hydrogenCount: countOf(written, "o") }).toEqual({ formula: "CH4O", hydrogenCount: 1 });
+  });
+
+  it("refuses a conflicting count even when a bond redraw drops the count field", async () => {
+    const outcome = await write(documentWith([methanol("HO", 1)]), redrawBond(0), ["m3"]);
+    expect(outcome.refusal).toMatchObject({
+      reason: "hydrogen_count_unrepresentable",
+      details: { moleculeId: "m3", atomId: "o", element: "HO", hydrogenCount: 0, labelHydrogenCount: 1 }
+    });
+    if (write === acceptedProposal) expect(outcome.pending).toBe(1);
+  });
+
+  it("keeps the chemistry of a matching stated count when a bond redraw drops the count field", async () => {
+    const outcome = await write(documentWith([methanol("HO", 1)]), redrawBond(1), ["m3"]);
+    expect(outcome.refusal).toBeUndefined();
+    const written = committedMolecule(outcome.committed!, "m3");
+    expect({ formula: formulaOf(written), hydrogenCount: countOf(written, "o"), bondId: written.bonds[0]?.id })
+      .toEqual({ formula: "CH4O", hydrogenCount: undefined, bondId: "b2" });
   });
 });

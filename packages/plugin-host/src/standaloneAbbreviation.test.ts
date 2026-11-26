@@ -1,8 +1,6 @@
-// The published plugin-host SDK bundles chem-core and nothing else of the app (scripts/build-sdk.mjs):
-// no layout-engine, no label grammar. It must still refuse a hydrogen count stated on an abbreviation
-// (OMe, Ph, CF3), because chem-core reads the abbreviation table itself. This file's module graph is
-// the SDK's: its first test walks it and fails if anything in it reaches layout-engine, so the refusal
-// below cannot pass because some import loaded the grammar.
+// The published plugin-host SDK bundles the sources it needs to check hydrogen counts, including
+// chem-core's abbreviation checks and layout-engine's label grammar. Guard the source graph so
+// it can use the grammar without importing the layout-engine package or its rendering code.
 import { readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -116,11 +114,14 @@ describe("toRepoRelative", () => {
   });
 });
 
-describe("the plugin host without layout-engine (the published SDK)", () => {
-  it("loads no layout-engine anywhere in this test's module graph, and does reach the abbreviation table", () => {
+describe("hydrogen-count refusals in the standalone plugin host", () => {
+  it("reaches the label grammar and abbreviation table directly without importing the layout-engine package", () => {
     const { files, bare } = moduleGraph(fileURLToPath(import.meta.url));
     const reached = [...files].map(file => toRepoRelative(file, repoRoot, sep));
-    expect(reached.filter(file => file.startsWith("packages/layout-engine/"))).toEqual([]);
+    expect(reached.filter(file => file.startsWith("packages/layout-engine/")).sort()).toEqual([
+      "packages/layout-engine/src/labelGrammar.ts",
+      "packages/layout-engine/src/valence.ts"
+    ]);
     expect([...bare].filter(specifier => specifier.startsWith("@chemdraft/layout-engine"))).toEqual([]);
     expect(reached).toContain("packages/plugin-host/src/index.ts");
     expect(reached).toContain("packages/chem-core/src/abbreviationLabels.ts");
@@ -352,10 +353,8 @@ describe("the plugin host without layout-engine (the published SDK)", () => {
     expect(written?.type === "molecule" && written.atoms.find(atom => atom.id === "g")?.hydrogenCount).toBe(hydrogenCount);
   });
 
-  // A typed literal label says its own hydrogens ("C" none, "CH3" three), and the label, formula and
-  // molfile read the text, never a stated count. A write stating another count is refused, naming the
-  // atom, the label and the count; one stating exactly what the text gives is accepted. No grammar
-  // needed: this file's module graph has no layout-engine.
+  // A typed literal label says its own hydrogens ("C" none, "CH3" three). The formula reads the text,
+  // so a write stating another count is refused, naming the atom, label and count.
   it("refuses a typed C stating hydrogenCount 3, naming the atom, its label and the count, and changes nothing", async () => {
     const { host, applyDocumentPatch, original, history } = hostSettingCount("C", 3, { typed: true });
     const refused = await host.invokeCommand("plugin.standalone.run").then(() => undefined, (error: unknown) => error);
@@ -371,7 +370,10 @@ describe("the plugin host without layout-engine (the published SDK)", () => {
     expect(history()).toBe(original);
   });
 
-  it.each([["CH3", 2, 3], ["CH3", 0, 3], ["CH", 2, 1], ["NH2", 1, 2], ["OH", 0, 1], ["Cl", 1, 0]] as const)(
+  it.each([
+    ["CH3", 2, 3], ["CH3", 0, 3], ["CH", 2, 1], ["NH2", 1, 2], ["OH", 0, 1], ["Cl", 1, 0], ["FeH", 0, 1],
+    ["HO", 0, 1], ["H3C", 2, 3], ["H2N", 1, 2], ["HS", 0, 1], ["HF", 0, 1], ["HCl", 0, 1], ["H2O", 1, 2]
+  ] as const)(
     "refuses a typed %s stating %i (its text gives %i)", async (element, hydrogenCount, labelHydrogenCount) => {
       const { host, applyDocumentPatch, original, history } = hostSettingCount(element, hydrogenCount, { typed: true });
       await expect(host.invokeCommand("plugin.standalone.run")).rejects.toMatchObject({
@@ -391,7 +393,7 @@ describe("the plugin host without layout-engine (the published SDK)", () => {
     expect(applyDocumentPatch).not.toHaveBeenCalled();
   });
 
-  it.each([["C", 0], ["CH", 1], ["CH2", 2], ["CH3", 3], ["NH2", 2], ["OH", 1], ["Cl", 0]] as const)(
+  it.each([["C", 0], ["CH", 1], ["CH2", 2], ["CH3", 3], ["NH2", 2], ["OH", 1], ["Cl", 0], ["HO", 1]] as const)(
     "accepts a typed %s stating %i, what its text gives", async (element, hydrogenCount) => {
       const { host, applyDocumentPatch, history } = hostSettingCount(element, hydrogenCount, { typed: true });
       await expect(host.invokeCommand("plugin.standalone.run")).resolves.toMatchObject({ applied: true });

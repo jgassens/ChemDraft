@@ -1,5 +1,5 @@
 import { sameDocumentValue } from "./documentValue";
-// `applyPatch` (and its `ApplyPatchOptions`) are the chem-core RUNTIME the host calls; tsup bundles them
+// `applyPatch` (and its `ApplyPatchOptions`) are the chem-core RUNTIME the host calls; the SDK build bundles them
 // into this package's dist so no `@chemdraft/chem-core` dependency ships (ADR-0031). `ChemDraftDocument`,
 // however, is taken from `@chemdraft/plugin-api` so a consumer using both SDK packages sees ONE canonical
 // document type — not a second, structurally-identical copy inlined here.
@@ -10,6 +10,8 @@ import { duplicateIdRefusalMessage, insertionPins, objectInWriteScope, objectIsI
   type PageObjectRef, type PagePin, type PinnedObjectPages, type PluginWriteScopePages } from "./pageObjects";
 import { applyPatch, atomicNumberForElementSymbol, atomIgnoresStatedHydrogenCount, atomWithIgnoredHydrogenCount, hasObjectIdentity, ignoredHydrogenCountAtomKind,
   objectIdentity, planOrphanedRepeatUnitCleanup, pruneReactionObjectReferences, removeOrphanedRepeatUnitBrackets, sameBracketIdentity } from "@chemdraft/chem-core";
+// Bundle the grammar from source in the SDK without a published layout-engine dependency.
+import { parseCondensedLabelFormula } from "../../layout-engine/src/labelGrammar";
 import {
   commitRequestPatch, containsBounds, pageContainsBounds, RequestWriteError, type BoundRequestWrite, type RequestDocument, type RequestHistory,
   type RequestWriteCommit, type RequestObjectRef, type RequestViewport, type RequestPageSpaceProvider
@@ -344,11 +346,11 @@ export const HydrogenCountUnrepresentableReason = "hydrogen_count_unrepresentabl
  *    (actinium, which may carry a count) and states hydrogenCount 2 on it would otherwise commit
  *    acetyl with the stated 2 silently discarded. A count that did not land is not excused by what
  *    the molecule held before, nor by a same-id object elsewhere; an object or atom that cannot be
- *    followed to the committed result is refused (fail closed). Only two dropped counts are let be,
- *    as they lose nothing: a 0 on an atom that counts 0 anyway (an abbreviation, a label naming no
- *    element), and, when a user accepts a proposal and the embedder passes
+ *    followed to the committed result is refused (fail closed). A dropped count loses nothing
+ *    when the label spells the requested count, or when it is 0 on an abbreviation or a label
+ *    naming no element. When a user accepts a proposal and the embedder passes
  *    `droppedHydrogenCountChangesNothing` (`AcceptProposedPatchOptions`), a count the committed
- *    molecule derives back exactly (the host has no valence model of its own to decide that).
+ *    molecule derives back exactly is also accepted.
  * 2. The committed molecules may not carry an uncounted count this write introduced. A count an
  *    edited molecule already held unchanged, on the same atom, with the same label and already
  *    uncounted, is let be, so an edit elsewhere in an older document's molecule is not blocked. The
@@ -377,8 +379,9 @@ function assertRepresentableHydrogenCounts(before: ChemDraftDocument, after: Che
       // whatever the write does to its bonds: say so, not that a later update could state it.
       const spelled = molecule && atom ? labelTextHydrogenCount(stated, molecule.bonds) : undefined;
       if (molecule && spelled !== undefined && spelled !== stated.hydrogenCount) throw labelHydrogenCountRefusal(molecule.id, stated, spelled);
-      // A dropped 0 on an atom that counts 0 anyway (an abbreviation, a label naming no element) loses nothing.
-      if (molecule && atom && atom.hydrogenCount === undefined && stated.hydrogenCount === 0 && countsZeroAnyway(atom, molecule.bonds)) continue;
+      // These counts are guaranteed by the atom's label even after the field is dropped.
+      if (molecule && atom && atom.hydrogenCount === undefined &&
+        (spelled === stated.hydrogenCount || (stated.hydrogenCount === 0 && countsZeroAnyway(atom, molecule.bonds)))) continue;
       // A dropped count the embedder's chemistry derives back exactly loses nothing (accept path only).
       if (molecule && atom && atom.hydrogenCount === undefined && droppedHydrogenCountChangesNothing?.(molecule, stated)) continue;
       throw new PluginHostError(
@@ -414,23 +417,20 @@ function assertRepresentableHydrogenCounts(before: ChemDraftDocument, after: Che
  * an element symbol but names one ("NH2"). The label, formula, SMILES and molfile all read such an
  * atom's hydrogens from the text, so a typed "C" stating hydrogenCount 3 commits a bare carbon.
  *
- * Read only where the text is one heavy element symbol, optionally followed by its hydrogens ("C" 0,
- * "CH" 1, "NH2" 2, "OH" 1), as the label grammar's single-element spelling reads it
- * (layout-engine `nativeSingleHeavyElementLabelValence`, which plugin-host cannot import: only
- * chem-core is bundled into the SDK). Undefined for any other atom: one whose count is counted (a
- * plain element), one `atomIgnoresStatedHydrogenCount` judges (H, D and T, the unknown atom, a label
- * naming no element, an abbreviation, a typed Ac, Pr or Ts on a bond), and a group label this host
- * does not read ("CO2H", "NHMe", "HO"), whose stated count is let be as before.
+ * Use the label grammar's condensed formula parser to read one heavy atom and its hydrogens in
+ * either order ("NH2", "H2N"). The formula also reads these counts for elements outside the
+ * grammar's valence table, such as a typed "Ac" (0) or "FeH" (1). Plain element atoms and labels
+ * handled by `atomIgnoresStatedHydrogenCount` are checked separately.
  */
 function labelTextHydrogenCount(atom: MoleculeAtom, bonds: readonly MoleculeBond[]): number | undefined {
   if (typeof atom.hydrogenCount !== "number") return undefined;
-  if (atom.element === "H" || atom.element === "D" || atom.element === "T") return undefined;
   if (atomIgnoresStatedHydrogenCount({ ...atom, hydrogenCount: 1 }, bonds)) return undefined;
   if (atom.labelLiteral !== true && atomicNumberForElementSymbol(atom.element) !== undefined) return undefined;
-  const spelling = /^([A-Z][a-z]?)(?:H(\d*))?$/.exec(atom.element.trim());
-  const head = spelling?.[1];
-  if (!spelling || !head || head === "H" || head === "D" || head === "T" || atomicNumberForElementSymbol(head) === undefined) return undefined;
-  return spelling[2] === undefined ? 0 : spelling[2] === "" ? 1 : Number(spelling[2]);
+  const counts = parseCondensedLabelFormula(atom.element);
+  if (!counts) return undefined;
+  const hydrogens = counts.get("H") ?? 0;
+  counts.delete("H");
+  return counts.size === 1 && counts.values().next().value === 1 ? hydrogens : undefined;
 }
 
 /** The first atom of `molecule` stating a count its label text overrides (`labelTextHydrogenCount`)
@@ -960,9 +960,8 @@ export type DroppedHydrogenCountCheck = (molecule: MoleculeObject, stated: Molec
 
 /** Options for the USER accepting a queued proposal (never a plugin call; see `acceptProposedPatch`). */
 export interface AcceptProposedPatchOptions extends ApplyPatchOptions {
-  /** Accept a stated hydrogen count the application dropped when the committed molecule derives the
-   *  same chemistry for that atom anyway. Left out, every dropped stated count refuses the accept, as
-   *  `documents.applyPatch` refuses it. */
+  /** Accept a dropped stated hydrogen count when the committed molecule derives the same chemistry
+   *  for that atom. Counts already guaranteed by the atom's label are accepted by both write paths. */
   droppedHydrogenCountChangesNothing?: DroppedHydrogenCountCheck;
   /** How the accepted proposal reaches the document. Defaults to chem-core `applyPatch`; the desktop
    *  passes one that also selects what was inserted, so acceptance stays a single undo entry. Pass
