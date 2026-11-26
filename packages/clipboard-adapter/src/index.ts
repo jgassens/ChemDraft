@@ -1544,10 +1544,6 @@ function locateV2000CountsLine(lines: readonly string[]): V2000CountsLocation | 
     if (v3000Tagged.test(line) || (readV2000CountsLine(line) === undefined && !shortV2000CountsLine.test(line))) return [];
     return v2000CountsReadings(line);
   };
-  const hasHeader = standard.some((index) =>
-    readingsAt(index).length > 0 || v2000Tagged.test(lines[index]!) || v3000Tagged.test(lines[index]!));
-  const positions = hasHeader ? standard : Array.from({ length: Math.min(leadingBlank + 3, lines.length) }, (_, index) => index);
-
   const fits = (index: number, reading: V2000CountsReading): boolean => {
     const atomStart = index + 1;
     const bondStart = atomStart + reading.atomCount;
@@ -1558,6 +1554,15 @@ function locateV2000CountsLine(lines: readonly string[]): V2000CountsLocation | 
       bonds.length === reading.bondCount && bonds.every(isV2000BondLine) &&
       (after === undefined || after.trim() === "" || v2000AfterTable.test(after));
   };
+  // A headerless CTAB can put a bond record at line 4. Prefer its explicitly tagged first
+  // counts line only when the complete connection table supports that reading.
+  if (lines[0] && v2000Tagged.test(lines[0])) {
+    const reading = readingsAt(0).find((candidate) => fits(0, candidate));
+    if (reading) return { index: 0, ...reading };
+  }
+  const hasHeader = standard.some((index) =>
+    readingsAt(index).length > 0 || v2000Tagged.test(lines[index]!) || v3000Tagged.test(lines[index]!));
+  const positions = hasHeader ? standard : Array.from({ length: Math.min(leadingBlank + 3, lines.length) }, (_, index) => index);
   for (const index of positions) {
     const reading = readingsAt(index).find((candidate) => fits(index, candidate));
     if (reading) return { index, ...reading };

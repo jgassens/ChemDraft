@@ -35,22 +35,6 @@ function expectGraph(graph: ParsedMolfileGraph, elements: readonly string[], bon
   expect(graph.warnings).toEqual([]);
 }
 
-/**
- * The structure is read right, or refused with an error that names the counts line. Anything else
- * (a different atom/bond count, an empty structure, or an error blaming an atom or bond line the
- * reader reached only because it picked the wrong counts) fails.
- */
-function expectReadRightOrRefused(text: string, elements: readonly string[], bondCount: number): void {
-  let graph: ParsedMolfileGraph;
-  try {
-    graph = parseMolfileGraph(text);
-  } catch (error) {
-    expect((error as Error).message).toMatch(/counts line/i);
-    return;
-  }
-  expectGraph(graph, elements, bondCount);
-}
-
 // Comment lines shaped like a zero-count counts line: one with the V2000 tag, one with six fields.
 const zeroCountComments = [
   "  0  0  0  0  0  0  0  0  0  0999 V2000",
@@ -88,14 +72,14 @@ describe("(b) counts of 100 atoms and 100 bonds", () => {
 
   // By columns, "100 100" is aaa="100", bbb=" 10": 100 atoms and 10 bonds, which the 90 further
   // bond lines contradict. RDKit (MinimalLib) refuses each of these files. ChemDraft must read
-  // the 100 bonds that are there, or refuse; never keep 10 bonds and drop the other 90.
+  // the 100 bonds that are there; never keep 10 bonds and drop the other 90.
   it.each([
     "100 100  0  0  0  0",
     "100 100  0  0  0  0  0  0  0  0999 V2000",
     "100 100 V2000",
     "100 100"
   ])("never silently reads unpadded counts %j as anything but 100/100", (counts) => {
-    expectReadRightOrRefused(withCounts(counts), ringElements, 100);
+    expectGraph(parseMolfileGraph(withCounts(counts)), ringElements, 100);
   });
 
   it("refuses unpadded '100 100' with an error naming the counts line when neither reading fits", () => {
@@ -121,8 +105,29 @@ describe("(c) an RXN $MOL block with a blank program line never takes a bond rec
     expect(blocks).toHaveLength(2);
     // Before the fix the first bond record "  1  2  1  0  0  0  0" is read as 1 atom / 2 bonds,
     // and the next bond record becomes an atom with element "0".
-    expectReadRightOrRefused(blocks[0]!.text, ["C", "C", "C", "C", "C", "C"], 6);
+    expectGraph(parseMolfileGraph(blocks[0]!.text), ["C", "C", "C", "C", "C", "C"], 6);
     expectGraph(parseMolfileGraph(blocks[1]!.text), ["C", "O"], 1);
+  });
+});
+
+describe("headerless V2000 connection tables", () => {
+  it("reads the two-atom CTAB whose first bond is on line 4", () => {
+    const molfile = ["  2  1  0  0  0  0  0  0  0  0999 V2000",
+      "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+      "    1.0000    0.0000    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0",
+      "  1  2  1  0  0  0  0", "M  END"].join("\n");
+    expectGraph(parseMolfileGraph(molfile), ["C", "O"], 1);
+  });
+
+  it("reads a one-atom CTAB", () => {
+    const molfile = ["  1  0  0  0  0  0  0  0  0  0999 V2000", atomLine(0, 0, "C"), "M  END"].join("\n");
+    expectGraph(parseMolfileGraph(molfile), ["C"], 0);
+  });
+
+  it("reads a three-atom CTAB", () => {
+    const molfile = ["  3  2  0  0  0  0  0  0  0  0999 V2000", atomLine(0, 0, "C"),
+      atomLine(1, 0, "O"), atomLine(2, 0, "N"), bondLine(1, 2), bondLine(2, 3), "M  END"].join("\n");
+    expectGraph(parseMolfileGraph(molfile), ["C", "O", "N"], 2);
   });
 });
 
