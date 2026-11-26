@@ -3,7 +3,7 @@ import { interactive3dWorkspaceStatusText, Interactive3dWorkspaceStatus } from "
 import { CanvasContextMenu, NATIVE_CANVAS_MENU_CLOSED_EVENT } from "./CanvasContextMenu";
 import { PLUGIN_CHANGE_REFUSED, RECOGNITION_REFUSED, chemistryRefusalOf, refusalSentence } from "./plugins/requestWrites/chemistryRefusal";
 import { buildObjectCanvasMenu, pageCanvasMenu, SET_DEFAULT_ARROW_STYLE_COMMAND_ID } from "./canvasContextMenuModel";
-import { loadStereoEngine, stereoReadoutRequest } from "./stereoReadout";
+import { stereoReadoutRequest } from "./stereoReadout";
 import { RequestWriteError } from "@chemdraft/plugin-host";
 import { createRequestHistory } from "./plugins/requestWrites/requestHistory";
 import { electronMarkInteractionFrames } from "./electronMarkInteraction";
@@ -24,7 +24,7 @@ import { dropElectronMark, dropElectronMarksInSelection, electronMarkDropTarget,
 import { chargeAssociationUndoLabel, electronMarkUndoLabel } from "./electronMarkUndoLabel";
 import {
   CHEMISTRY_EDIT, PLUGIN_WRITE, PRESERVE_CHEMISTRY, TEXT_EDIT, chemistryEditOf, chemistryRefusalStatus, policyChemistryRefusals,
-  preserveChemistry, selectionTransformChemistry, structureEditChemistry, structureEditorChemistry, withIndependentlyMovedMarks,
+  flipChemistry, loadCommitStereoEngine, preserveChemistry, selectionTransformChemistry, structureEditChemistry, structureEditorChemistry, withIndependentlyMovedMarks,
   type CommitChemistryPolicy, type IndependentMarkMoves
 } from "./commitChemistryGuard";
 import { nativeBenzeneHotkeyAtAtomTarget, nativeFragmentSproutTarget, nativeDieneFuseTarget, nativeOxoHotkeyTarget, nativeBranchedHotkeyTarget, type FragmentSproutKind } from "./sproutHotkeys";
@@ -1918,7 +1918,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.26.15.08-opus";
+const CURRENT_BUILD_STAMP = "11.26.15.57-opus";
 
 const NUMERIC_ENTRY_DURING_DRAG_STATUS = "Finish the current drag, then enter a value";
 
@@ -2562,7 +2562,10 @@ export function MainWindow({
   // nor starts one.
   const disarmedGesturePointerIdsRef = useRef(new Set<number>());
   const artStylePreviewRef = useRef<{ startDocument: ChemDraftDocument; undoLabel: string; commandKey: string; commandId: string } | null>(null);
-  const moleculeInspectorPreviewRef = useRef<{ startDocument: ChemDraftDocument; undoLabel: string; commandKey: string; commandId: string } | null>(null);
+  // `chemistry` is the commit policy of a preview that changes chemistry on purpose (a bond stereo
+  // command's scoped chemistry edit); unset, the preview settles under PRESERVE_CHEMISTRY.
+  const moleculeInspectorPreviewRef = useRef<{ startDocument: ChemDraftDocument; undoLabel: string; commandKey: string; commandId: string;
+    chemistry?: CommitChemistryPolicy } | null>(null);
   const settlePalettePreviewRef = useRef<(reason: string) => void>(() => undefined);
   const palettePreviewSettlingRef = useRef(false);
   const palettePreviewHandlersRef = useRef<{
@@ -4258,6 +4261,8 @@ export function MainWindow({
   settlePalettePreviewRef.current = (reason) => {
     const session = artStylePreviewRef.current ?? moleculeInspectorPreviewRef.current;
     if (!session) return;
+    // A molecule-inspector preview that changes chemistry on purpose carries its scoped policy.
+    const chemistry = (artStylePreviewRef.current ? undefined : moleculeInspectorPreviewRef.current?.chemistry) ?? PRESERVE_CHEMISTRY;
     paletteFocusDiagnostic(`settle command=${session.commandId} targets=${JSON.stringify(documentRef.current.selection.objectIds)} before=open: ${session.commandKey} outcome=${documentHistoryRef.current.present === session.startDocument ? "unchanged" : "changed"} reason=${reason}`);
     palettePreviewSettlingRef.current = true;
     // Clear ownership before installing history: recursive installs and late chooser
@@ -4269,7 +4274,7 @@ export function MainWindow({
     // A style preview must not change chemistry either; a refused one is withdrawn, unrecorded. The
     // check runs before the typing checkpoint, so a refusal leaves no "Edit Text" entry either: the
     // undo stack is exactly as it was.
-    const refusal = present && commitChemistryRefusal(session.startDocument, previewDocument, present, PRESERVE_CHEMISTRY, session.undoLabel);
+    const refusal = present && commitChemistryRefusal(session.startDocument, previewDocument, present, chemistry, session.undoLabel);
     if (refusal) {
       installDocumentHistory((history) => history.present === session.startDocument ? history : { ...history, present: session.startDocument });
       palettePreviewSettlingRef.current = false;
@@ -6077,11 +6082,12 @@ export function MainWindow({
       .catch(() => {
         /* best-effort: rotate commits fall back to legacy geometry-only flatten */
       });
-    // Warm the canvas menu's stereo readout too: the native popup (macOS and Windows) waits only
-    // NATIVE_STEREO_READOUT_BUDGET_MS for its R/S or E/Z row before opening without it.
-    void loadStereoEngine().catch(() => {
-      /* best-effort: the menu retries the load and omits the row meanwhile */
-    });
+    // Warm the stereo engine in the background (one shared lazy load, §13) for the canvas menu's
+    // readout (the native popup waits only NATIVE_STEREO_READOUT_BUDGET_MS for its R/S or E/Z row)
+    // and for the commit guard's stereo read-back, which refuses a stereo-relevant preserving
+    // commit until it is ready (`commitChemistryGuard.ts`). Never rejects; a failure is remembered,
+    // named in those refusals and retried on the next commit that needs it.
+    void loadCommitStereoEngine();
     return () => {
       cancelled = true;
     };
@@ -9830,7 +9836,7 @@ export function MainWindow({
   const applyMoleculeInspectorCommandToDocument = useCallback((
     currentDocument: ChemDraftDocument,
     commandId: string
-  ): { document: ChemDraftDocument; handled: boolean; targeted: boolean; message: string } => {
+  ): { document: ChemDraftDocument; handled: boolean; targeted: boolean; message: string; chemistry?: CommitChemistryPolicy } => {
     const fillColor = moleculeRingFillColorForCommand(commandId);
     if (fillColor) {
       const targets = selectedMoleculeRingTargetsForCommand(fillColor.ringKey);
@@ -9999,10 +10005,14 @@ export function MainWindow({
       const state = currentMoleculeInspector.structure.bondStereo!;
       const reason = stereo.value === "flipped" ? nativeBondStereoFlipDisabledReason(currentDocument, bondTargets, bondStereoReader)
         : stereo.value === "either" ? state.eitherDisabledReason : state.geometryDisabledReason;
+      // Setting E/Z unspecified, drawn or the other geometry changes stereo on purpose: a chemistry
+      // edit of exactly the molecules owning the target bonds. Every other molecule, and every
+      // other inspector command (display only), stays under PRESERVE_CHEMISTRY (AGENTS.md section 7).
       return {
         document: applyMoleculeBondStereo(currentDocument, bondTargets, stereo.value, bondStereoReader),
         handled: true, targeted: true,
-        message: reason ?? (stereo.value === "either" ? "E/Z unspecified" : stereo.value === "flipped" ? "Use the other geometry" : "Use drawn geometry")
+        message: reason ?? (stereo.value === "either" ? "E/Z unspecified" : stereo.value === "flipped" ? "Use the other geometry" : "Use drawn geometry"),
+        chemistry: chemistryEditOf([...new Set(bondTargets.map(target => target.objectId))], "change this double bond's E/Z")
       };
     }
     const position = moleculeDoubleBondPositionForCommand(commandId);
@@ -10229,7 +10239,8 @@ export function MainWindow({
       return true;
     }
 
-    const changed = commitDocumentChange(result.document, moleculeDoubleBondPositionForCommand(commandId) || moleculeBondStereoForCommand(commandId) ? result.message : undefined);
+    const changed = commitDocumentChange(result.document, moleculeDoubleBondPositionForCommand(commandId) || moleculeBondStereoForCommand(commandId) ? result.message : undefined,
+      false, undefined, result.chemistry);
     setActiveEditorObjectId(undefined);
     setStatus(changed ? result.message : "Selected molecule style unchanged");
     return true;
@@ -10245,7 +10256,8 @@ export function MainWindow({
       return;
     }
 
-    moleculeInspectorPreviewRef.current = { startDocument, undoLabel: result.message, commandKey: palettePreviewCommandKey(commandId), commandId };
+    moleculeInspectorPreviewRef.current = { startDocument, undoLabel: result.message, commandKey: palettePreviewCommandKey(commandId), commandId,
+      chemistry: result.chemistry };
     replacePresentDocument(result.document, true);
   }, [applyMoleculeInspectorCommandToDocument, replacePresentDocument, settleOtherPalettePreview]);
 
@@ -10266,7 +10278,7 @@ export function MainWindow({
     }
 
     const changed = result.document !== session.startDocument;
-    if (changed) commitDocumentHistoryFrom(session.startDocument, result.document, result.message);
+    if (changed) commitDocumentHistoryFrom(session.startDocument, result.document, result.message, undefined, result.chemistry);
     else replacePresentDocument(session.startDocument, true);
     setActiveEditorObjectId(undefined);
     setStatus(changed ? result.message : "Selected molecule style unchanged");
@@ -13460,8 +13472,10 @@ export function MainWindow({
         }
 
         // `motion` names a turn or flip, which two atoms (or atoms on one line) cannot tell apart.
+        // `chemistry` is the commit policy: only the Flip commands pass `flipChemistry`, the one
+        // policy under which a molecule may be mirrored without the stereo read-back.
         const commitSelectionTransform = (transform: (current: ChemDraftDocument) => ChemDraftDocument, emptyStatus: string,
-          motion?: AtomMotion) => {
+          motion?: AtomMotion, chemistry: typeof selectionTransformChemistry = selectionTransformChemistry) => {
           let markStatus: string | undefined;
           const markIds = new Set<string>();
           const changed = commitDocumentChange(current => {
@@ -13469,13 +13483,13 @@ export function MainWindow({
             markStatus = result.status;
             replaceMarkIds(markIds, result.independentlyMovedMarkIds);
             return result.document;
-          }, layoutUndoLabel, false, undefined, selectionTransformChemistry(undefined, markIds));
+          }, layoutUndoLabel, false, undefined, chemistry(undefined, markIds));
           setStatus(markStatus ?? (changed ? action.title : emptyStatus));
         };
 
         if (action.id === "layout.flipHorizontal" || action.id === "layout.flipVertical") {
           const axis = action.id === "layout.flipHorizontal" ? "horizontal" : "vertical";
-          commitSelectionTransform(current => flipSelectedDocumentObjects(current, axis), "No selected object", "mirror");
+          commitSelectionTransform(current => flipSelectedDocumentObjects(current, axis), "No selected object", "mirror", flipChemistry);
           return;
         }
 

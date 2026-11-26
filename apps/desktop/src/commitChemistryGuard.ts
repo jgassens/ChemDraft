@@ -1,5 +1,6 @@
-import type { ChemDraftDocument, DocumentPage, ElectronMarkObject, MoleculeAtom, MoleculeObject } from "@chemdraft/chem-core";
-import { electronMarkAtomContribution } from "@chemdraft/document-workflow-core";
+import type { ChemDraftDocument, DocumentPage, ElectronMarkObject, MoleculeAtom, MoleculeBond, MoleculeObject } from "@chemdraft/chem-core";
+import { electronMarkAtomContribution, stereoPerceptionMolfile } from "@chemdraft/document-workflow-core";
+import { loadStereoEngine, type StereoEngine } from "./stereoReadout";
 
 /**
  * The commit-time chemistry guard (AGENTS.md section 7: an operation that is not a chemistry edit
@@ -37,6 +38,25 @@ export interface MoleculeChemistryChange {
   before?: AtomChemistry;
   /** Absent when the atom, or its molecule, is gone. */
   after?: AtomChemistry;
+  /**
+   * Set for every change other than an atom's charge or radical marks (`moleculeInvariantChanges`):
+   * what changed, as the end of a refusal sentence ("its atom "a2" would be O instead of N").
+   * Such a change is never explained by a mark the operation moved by itself.
+   */
+  detail?: string;
+  /**
+   * Set when the molecule's stereochemistry had to be read back but the stereo engine is not
+   * available (still loading, or failed to load): the refusal says the check could not run yet,
+   * not that the chemistry would change (`describeMoleculeChemistryChange`).
+   */
+  stereoUnchecked?: StereoEngineUnavailable;
+  /**
+   * Set when the engine is loaded but the stereo read-back could not run on this molecule (the
+   * perception molfile could not be written, a perceiver threw or answered for the wrong atoms, or
+   * the engine cannot read atropisomer axes): why, as the end of "cannot be checked because …".
+   * The commit is refused (fail closed), never passed with its stereo unchecked.
+   */
+  stereoUnreadable?: string;
 }
 
 /**
@@ -71,6 +91,8 @@ export type CommitChemistryPolicy =
     readonly rebuiltMoleculeIds?: readonly string[];
     /** See `IndependentMarkMoves`. */
     readonly independentlyMovedMarkIds?: ReadonlySet<string>;
+    /** Flip Horizontal / Vertical only (`flipChemistry`): see `CommitChemistryCheck.mirrorIsTheOperation`. */
+    readonly mirrorIsTheOperation?: boolean;
   }
   | {
     readonly kind: "exempt";
@@ -146,9 +168,23 @@ export function marksFollowAtoms(policy: CommitChemistryPolicy | undefined): boo
  * moved or not, with no exempt atom. Only the marks the transform itself reports it moved without
  * their atom (`independentlyMovedMarkIds`, a mark drop) may change chemistry, under the mark-move
  * policy; a transform that moved none passes none.
+ *
+ * A selection transform never mirrors a molecule: a drag, align, rotate or resize whose result is a
+ * mirror image of a stereo molecule is read back and refused like any other stereo change. Only Flip
+ * Horizontal / Vertical mirrors, and says so explicitly (`flipChemistry`).
  */
 export function selectionTransformChemistry(operation?: string, independentlyMovedMarkIds?: IndependentMarkMoves): CommitChemistryPolicy {
   return withIndependentlyMovedMarks(preserveChemistry(operation), independentlyMovedMarkIds);
+}
+
+/**
+ * Flip Horizontal / Vertical: a selection transform (`selectionTransformChemistry`) whose whole
+ * point is the mirror image, so an exact affine image of a molecule, mirror included, with its
+ * wedges unchanged is not read back for stereo (`mirrorIsTheOperation`). Only the Flip command path
+ * passes it; nothing infers it from geometry.
+ */
+export function flipChemistry(operation?: string, independentlyMovedMarkIds?: IndependentMarkMoves): CommitChemistryPolicy {
+  return withIndependentlyMovedMarks({ kind: "preserve", operation, mirrorIsTheOperation: true }, independentlyMovedMarkIds);
 }
 
 /** `policy` with the marks the operation moved by itself (`IndependentMarkMoves`); unchanged for none. */
@@ -197,6 +233,10 @@ export interface PreexistingChemistryOptions {
   skipMoleculeIds?: ReadonlySet<string>;
   /** Atoms (`atomChemistryKey`) whose change the operation itself explains; never reported. */
   exemptAtomKeys?: ReadonlySet<string>;
+  /** See `CommitChemistryCheck.stereoEngine`. */
+  stereoEngine?: CommitStereoEngineOption;
+  /** See `CommitChemistryCheck.mirrorIsTheOperation`. */
+  mirrorIsTheOperation?: boolean;
 }
 
 const moleculesById = (page: DocumentPage | undefined) => new Map((page?.objects ?? [])
@@ -305,6 +345,10 @@ export function preexistingMoleculeChemistryChanges(
         if (options.exemptAtomKeys?.has(atomChemistryKey(page.id, molecule.id, change.atomId))) continue;
         changes.push({ pageId: page.id, moleculeId: molecule.id, ...change });
       }
+      for (const change of moleculeInvariantChanges(molecule, found, options.stereoEngine, options.mirrorIsTheOperation)) {
+        if (change.atomId !== undefined && options.exemptAtomKeys?.has(atomChemistryKey(page.id, molecule.id, change.atomId))) continue;
+        changes.push({ pageId: page.id, moleculeId: molecule.id, ...change });
+      }
     }
   }
   return changes;
@@ -312,7 +356,18 @@ export function preexistingMoleculeChemistryChanges(
 
 /** "Cannot <operation> without changing the chemistry of molecule "m": its atom "a" would …". */
 export function describeMoleculeChemistryChange(change: MoleculeChemistryChange, operation = "complete this edit"): string {
+  const unchecked = change.stereoUnchecked;
+  if (unchecked) {
+    return unchecked.unavailable === "loading"
+      ? `Cannot ${operation} yet: checking the stereochemistry of molecule "${change.moleculeId}" is still starting; try again in a moment.`
+      : `Cannot ${operation}: the stereochemistry of molecule "${change.moleculeId}" cannot be checked because the stereo engine ` +
+        `failed to load (${unchecked.reason}); try again, and restart ChemDraft if it keeps failing.`;
+  }
+  if (change.stereoUnreadable !== undefined) {
+    return `Cannot ${operation}: the stereochemistry of molecule "${change.moleculeId}" cannot be checked because ${change.stereoUnreadable}.`;
+  }
   const prefix = `Cannot ${operation} without changing the chemistry of molecule "${change.moleculeId}": `;
+  if (change.detail !== undefined) return `${prefix}${change.detail}.`;
   if (change.atomId === undefined) return `${prefix}it would be removed.`;
   const { before, after } = change;
   if (!after || !before) return `${prefix}its atom "${change.atomId}" would be removed.`;
@@ -357,6 +412,22 @@ export interface CommitChemistryCheck {
   structureEdit?: boolean;
   /** Molecules (by id, each on the first page holding it: `namedMoleculeKeys`) the operation is meant to change. */
   editedMoleculeIds?: readonly string[];
+  /**
+   * The stereo read-back engine (`moleculeInvariantChanges`). Absent: the guard's own lazily loaded
+   * OpenChemLib perceivers (`loadCommitStereoEngine`, which MainWindow warms at mount). While that
+   * engine is still loading, or after it failed to load (`StereoEngineUnavailable`), a commit that
+   * needs the read-back is refused with a message saying so (`stereoUnchecked`), never passed
+   * unchecked and never judged by guessing from wedges; so is one whose drawing the loaded engine
+   * cannot read (`stereoUnreadable`). A molecule with no stereo element (`mayCarryStereo`) and a
+   * layout that cannot change stereo (`layoutKeepsStereo`) never need it.
+   */
+  stereoEngine?: CommitStereoEngineOption;
+  /**
+   * The operation is Flip Horizontal / Vertical (`flipChemistry`): an exact affine image of a
+   * molecule, mirror included, with its wedges unchanged, is then not read back for stereo.
+   * Otherwise only an orientation-preserving one (move, align, rotate, scale) skips the read-back.
+   */
+  mirrorIsTheOperation?: boolean;
 }
 
 /**
@@ -378,7 +449,8 @@ export interface CommitChemistryCheck {
 export function commitChemistryRefusals(check: CommitChemistryCheck): string[] {
   if (check.before === check.after) return [];
   const baseline = check.normalize(check.before);
-  let changes = preexistingMoleculeChemistryChanges(baseline, check.after);
+  let changes = preexistingMoleculeChemistryChanges(baseline, check.after,
+    { stereoEngine: check.stereoEngine, mirrorIsTheOperation: check.mirrorIsTheOperation });
   if (changes.length === 0) return [];
   // A scoped edit: the molecules it edits are the operation's own, removal included (a bond that
   // joins B into A removes B); nothing else is.
@@ -391,7 +463,7 @@ export function commitChemistryRefusals(check: CommitChemistryCheck): string[] {
   const exempt = independentlyMovedMarkAtomKeys(check.before, check.next, [baseline, check.after],
     check.independentlyMovedMarkIds, check.markAtoms);
   return changes
-    .filter((change) => change.atomId === undefined || !change.after ||
+    .filter((change) => change.detail !== undefined || change.atomId === undefined || !change.after ||
       !exempt.has(atomChemistryKey(change.pageId, change.moleculeId, change.atomId)))
     .map((change) => describeMoleculeChemistryChange(change, check.operation));
 }
@@ -469,13 +541,13 @@ export function structurallyEditedMoleculeKeys(before: ChemDraftDocument, next: 
  */
 export function policyChemistryRefusals(
   policy: CommitChemistryPolicy,
-  check: Omit<CommitChemistryCheck, "operation" | "structureEdit" | "editedMoleculeIds" | "independentlyMovedMarkIds">,
+  check: Omit<CommitChemistryCheck, "operation" | "structureEdit" | "editedMoleculeIds" | "independentlyMovedMarkIds" | "mirrorIsTheOperation">,
   operation?: string
 ): string[] {
   if (policy.kind !== "preserve") return [];
   return commitChemistryRefusals({ ...check, operation: policy.operation ?? operation,
     structureEdit: policy.structureEdit, editedMoleculeIds: policy.editedMoleculeIds,
-    independentlyMovedMarkIds: policy.independentlyMovedMarkIds });
+    independentlyMovedMarkIds: policy.independentlyMovedMarkIds, mirrorIsTheOperation: policy.mirrorIsTheOperation });
 }
 
 /**
@@ -525,4 +597,488 @@ export function independentlyMovedMarkAtomKeys(
     }
   }
   return keys;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The AGENTS.md section 7 invariants beyond charge (bug chemistry-guard-too-narrow, 1.2.4): a
+// preserving commit used to compare only charge and radical marks, so an element, isotope, stated
+// hydrogen count, bond order, wedge or a mirrored layout changed silently. Cheap fields first.
+// Stereo is judged by what it means, never by which bond carries a wedge (Spin 3D flatten and
+// Clean Up legitimately re-place wedges): R/S per atom and E/Z per double bond as the app's
+// perceivers read the molecule back, and the axial configuration of an atropisomer axis. The
+// read-back runs only for a molecule whose wedge, hash or wavy marks changed, or whose layout
+// changed other than by an orientation-preserving affine map (move, align, rotate, scale; a
+// mirror too under Flip only, `flipChemistry`), which cannot change it. Without the engine (still loading, or failed to load), or when it cannot read the
+// drawing, a molecule that needs the read-back is refused with a message saying so (fail closed);
+// one without any stereo element never waits and is never refused for it.
+// ---------------------------------------------------------------------------------------------
+
+/** The stereo perceivers the guard reads a molecule back with: the app's OpenChemLib ones (`stereoReadout.ts`). */
+export type CommitStereoEngine = StereoEngine;
+
+/** Why the stereo read-back cannot run for this commit: the engine is still loading, or failed to load (`reason`). */
+export type StereoEngineUnavailable =
+  | { readonly unavailable: "loading" }
+  | { readonly unavailable: "failed"; readonly reason: string };
+export const STEREO_ENGINE_LOADING: StereoEngineUnavailable = { unavailable: "loading" };
+/** `CommitChemistryCheck.stereoEngine`: an engine, or why there is none. */
+export type CommitStereoEngineOption = CommitStereoEngine | StereoEngineUnavailable;
+
+const isUnavailable = (option: CommitStereoEngineOption): option is StereoEngineUnavailable => "unavailable" in option;
+
+let loadedStereoEngine: CommitStereoEngine | undefined;
+let stereoEngineLoad: Promise<CommitStereoEngine | undefined> | undefined;
+/** The last load's failure, kept (and named in refusals) until a later load succeeds. */
+let stereoEngineFailure: string | undefined;
+/** Bumped by the test reset, so a load still in flight from an earlier test cannot settle into the next one. */
+let stereoEngineGeneration = 0;
+
+const errorText = (error: unknown) => {
+  const text = error instanceof Error ? error.message : String(error ?? "");
+  return text.trim() || "unknown error";
+};
+
+/**
+ * Loads the stereo engine for the guard (the app's shared lazy load, §13) and keeps it for the
+ * synchronous commit funnel; MainWindow starts it in the background right after mount. Resolves
+ * undefined when it cannot load, and remembers why (`StereoEngineUnavailable`); a later call retries.
+ */
+export function loadCommitStereoEngine(load: () => Promise<StereoEngine> = loadStereoEngine): Promise<CommitStereoEngine | undefined> {
+  if (loadedStereoEngine) return Promise.resolve(loadedStereoEngine);
+  if (!stereoEngineLoad) {
+    const generation = stereoEngineGeneration;
+    stereoEngineLoad = Promise.resolve().then(load).then((engine) => {
+      if (generation === stereoEngineGeneration) {
+        loadedStereoEngine = engine;
+        stereoEngineFailure = undefined;
+        stereoEngineLoad = undefined;
+      }
+      return engine;
+    }, (error: unknown) => {
+      if (generation === stereoEngineGeneration) {
+        stereoEngineFailure = errorText(error);
+        stereoEngineLoad = undefined;
+      }
+      return undefined;
+    });
+  }
+  return stereoEngineLoad;
+}
+
+/** Test hook: forget the guard's engine, its failure and any load in flight. */
+export function resetCommitStereoEngineForTests(): void {
+  stereoEngineGeneration++;
+  loadedStereoEngine = undefined;
+  stereoEngineLoad = undefined;
+  stereoEngineFailure = undefined;
+}
+
+/** The engine to read back with, or why there is none; asking starts (or retries) the load. */
+function currentStereoEngine(option: CommitStereoEngineOption | undefined): CommitStereoEngineOption {
+  if (option !== undefined) return option;
+  if (loadedStereoEngine) return loadedStereoEngine;
+  void loadCommitStereoEngine();
+  return stereoEngineFailure === undefined ? STEREO_ENGINE_LOADING : { unavailable: "failed", reason: stereoEngineFailure };
+}
+
+const STEREO_STYLES: ReadonlySet<string> = new Set(["wedge", "hashed", "wavy"]);
+const stereoStyle = (bond: MoleculeBond): string | undefined => {
+  const style = bond.display?.bondStyle;
+  return style !== undefined && STEREO_STYLES.has(style) ? style : undefined;
+};
+const quoted = (value: string | number | undefined, none: string) => value === undefined ? none : String(value);
+
+function atomInvariantChanges(before: MoleculeAtom, after: MoleculeAtom): string[] {
+  const id = before.id;
+  const details: string[] = [];
+  if (before.element !== after.element) details.push(`its atom "${id}" would be ${after.element} instead of ${before.element}`);
+  if (before.isotope !== after.isotope) {
+    details.push(`its atom "${id}" would have isotope ${quoted(after.isotope, "none")} instead of ${quoted(before.isotope, "none")}`);
+  }
+  if (before.hydrogenCount !== after.hydrogenCount) {
+    const stated = (count: number | undefined) => count === undefined ? "no stated hydrogen count" : `a stated hydrogen count of ${count}`;
+    details.push(`its atom "${id}" would have ${stated(after.hydrogenCount)} instead of ${stated(before.hydrogenCount)}`);
+  }
+  if ((before.labelLiteral ?? false) !== (after.labelLiteral ?? false)) {
+    details.push(after.labelLiteral
+      ? `its atom "${id}" would become a literal label (no implicit hydrogens)`
+      : `its atom "${id}" would stop being a literal label and gain implicit hydrogens`);
+  }
+  return details;
+}
+
+function bondInvariantChanges(before: MoleculeBond, after: MoleculeBond): string[] {
+  const id = before.id;
+  const sameEnds = (before.fromAtomId === after.fromAtomId && before.toAtomId === after.toAtomId) ||
+    (before.fromAtomId === after.toAtomId && before.toAtomId === after.fromAtomId);
+  if (!sameEnds) {
+    return [`its bond "${id}" would join atoms "${after.fromAtomId}" and "${after.toAtomId}" instead of "${before.fromAtomId}" and "${before.toAtomId}"`];
+  }
+  const details: string[] = [];
+  if (before.order !== after.order) details.push(`its bond "${id}" would be ${after.order} instead of ${before.order}`);
+  if (before.stereo !== after.stereo) {
+    details.push(after.stereo === "either"
+      ? `its bond "${id}" would have unspecified (either) E/Z instead of the drawn geometry`
+      : `its bond "${id}" would take E/Z from the drawn geometry instead of unspecified (either)`);
+  }
+  return details;
+}
+
+/**
+ * Whether any wedge, hash or wavy mark changed: its style, or its narrow end. Not a change by
+ * itself (a mark re-placed on another bond can keep every centre); it means the stereo must be
+ * read back.
+ */
+function stereoMarksChanged(before: MoleculeObject, after: MoleculeObject): boolean {
+  if (before.bonds === after.bonds) return false;
+  const afterBonds = new Map(after.bonds.map((bond) => [bond.id, bond]));
+  return before.bonds.some((bond) => {
+    const found = afterBonds.get(bond.id);
+    if (!found || found === bond) return false;
+    const style = stereoStyle(bond);
+    return style !== stereoStyle(found) || (style !== undefined && bond.fromAtomId !== found.fromAtomId);
+  });
+}
+
+/**
+ * Every AGENTS.md section 7 invariant of `before` that `after` (the same molecule after the
+ * operation) does not keep, other than charge and radical marks (`moleculeAtomChemistryChanges`)
+ * and removed atoms, which that comparison reports: element, isotope, stated hydrogen count,
+ * literal flag, added atoms, added, removed or rejoined bonds, bond order, E/Z "either", and the
+ * stereochemistry the result reads back as (`stereoReadBackChanges`): what the wedges mean, not
+ * which bonds carry them. Atoms and bonds are paired by id. Empty when nothing changed.
+ * `mirrorIsTheOperation`: see `CommitChemistryCheck.mirrorIsTheOperation`.
+ */
+export function moleculeInvariantChanges(
+  before: MoleculeObject,
+  after: MoleculeObject,
+  stereoEngine?: CommitStereoEngineOption,
+  mirrorIsTheOperation = false
+): MoleculeInvariantChange[] {
+  if (before === after || (before.atoms === after.atoms && before.bonds === after.bonds)) return [];
+  const changes: MoleculeInvariantChange[] = [];
+  const beforeAtoms = new Map(before.atoms.map((atom) => [atom.id, atom]));
+  const afterAtoms = new Map(after.atoms.map((atom) => [atom.id, atom]));
+  let sameAtoms = before.atoms.length === after.atoms.length;
+  if (before.atoms !== after.atoms) {
+    for (const atom of before.atoms) {
+      const found = afterAtoms.get(atom.id);
+      if (!found) { sameAtoms = false; continue; }
+      if (found === atom) continue;
+      for (const detail of atomInvariantChanges(atom, found)) changes.push({ atomId: atom.id, detail });
+    }
+    for (const atom of after.atoms) {
+      if (!beforeAtoms.has(atom.id)) {
+        sameAtoms = false;
+        changes.push({ detail: `it would gain atom "${atom.id}" (${atom.element})` });
+      }
+    }
+  }
+  if (before.bonds !== after.bonds) {
+    const afterBonds = new Map(after.bonds.map((bond) => [bond.id, bond]));
+    const beforeBondIds = new Set(before.bonds.map((bond) => bond.id));
+    for (const bond of before.bonds) {
+      const found = afterBonds.get(bond.id);
+      if (!found) {
+        changes.push({ detail: `its bond "${bond.id}" between atoms "${bond.fromAtomId}" and "${bond.toAtomId}" would be removed` });
+      } else if (found !== bond) {
+        for (const detail of bondInvariantChanges(bond, found)) changes.push({ detail });
+      }
+    }
+    for (const bond of after.bonds) {
+      if (!beforeBondIds.has(bond.id)) {
+        changes.push({ detail: `it would gain bond "${bond.id}" between atoms "${bond.fromAtomId}" and "${bond.toAtomId}"` });
+      }
+    }
+  }
+  // Stereo is compared only on an unchanged graph: any other change is already refused, and a
+  // read-back of a different graph would only repeat it less precisely.
+  if (changes.length > 0 || !sameAtoms) return changes;
+  const marksChanged = stereoMarksChanged(before, after);
+  if (!marksChanged && before.atoms === after.atoms) return changes;
+  if (!hasStereoContent(before) && !hasStereoContent(after)) return changes;
+  if (!marksChanged && layoutKeepsStereo(before, after, beforeAtoms, mirrorIsTheOperation)) return changes;
+  const engine = currentStereoEngine(stereoEngine);
+  let unreadable: string | undefined;
+  if (!isUnavailable(engine)) {
+    const readBack = stereoReadBackChanges(before, after, engine);
+    if (Array.isArray(readBack)) return readBack;
+    unreadable = readBack.unreadable;
+  }
+  // No engine yet (or it failed), or it could not read this drawing: never pass a stereo change
+  // unchecked (fail closed), and never guess from the wedges (that refused what the read-back
+  // accepts). A molecule with no stereo element cannot change stereo by any layout, so only one
+  // that has one waits for the engine, or is refused when the engine cannot read it.
+  if (!mayCarryStereo(before) && !mayCarryStereo(after)) return changes;
+  if (!isUnavailable(engine)) {
+    return [{ detail: `its stereochemistry cannot be checked (${unreadable})`, stereoUnreadable: unreadable }];
+  }
+  return [{ detail: engine.unavailable === "loading" ? "its stereochemistry cannot be checked yet"
+    : `its stereochemistry cannot be checked (${engine.reason})`, stereoUnchecked: engine }];
+}
+
+/** One section 7 invariant change of a molecule (`moleculeInvariantChanges`). */
+export interface MoleculeInvariantChange {
+  atomId?: string;
+  detail: string;
+  /** See `MoleculeChemistryChange.stereoUnchecked`. */
+  stereoUnchecked?: StereoEngineUnavailable;
+  /** See `MoleculeChemistryChange.stereoUnreadable`. */
+  stereoUnreadable?: string;
+}
+
+/**
+ * Whether the molecule has a stereo element a layout change could alter the meaning of, decided
+ * without the engine: 3D coordinates, a wedge, hash or wavy bond, a possible atropisomer axis
+ * (`mayBeAtropisomerAxis`), or a double bond that can be E/Z as drawn (not "either", each end with
+ * another drawn neighbour, and not in a ring of seven or fewer atoms, where OpenChemLib perceives
+ * no E/Z). Conservative: aromatic bonds count as double (the perception molfile may write them as
+ * Kekulé doubles), so a large aromatic ring still waits.
+ */
+function mayCarryStereo(molecule: MoleculeObject): boolean {
+  if (molecule.atoms.some((atom) => atom.z !== undefined)) return true;
+  if (molecule.bonds.some((bond) => stereoStyle(bond) !== undefined)) return true;
+  const neighbours = neighbourMap(molecule);
+  if (molecule.bonds.some((bond) => mayBeAtropisomerAxis(neighbours, bond))) return true;
+  return molecule.bonds.some((bond) => {
+    if ((bond.order !== "double" && bond.order !== "aromatic") || bond.stereo === "either") return false;
+    const others = (atomId: string) => (neighbours.get(atomId) ?? []).some((entry) => entry.bondId !== bond.id);
+    if (!others(bond.fromAtomId) || !others(bond.toAtomId)) return false;
+    return !inSmallRing(neighbours, bond.id, bond.fromAtomId, bond.toAtomId, 7);
+  });
+}
+
+type NeighbourMap = ReadonlyMap<string, readonly { atomId: string; bondId: string }[]>;
+
+/** Every atom's drawn neighbours, with the bond to each. */
+function neighbourMap(molecule: MoleculeObject): NeighbourMap {
+  const neighbours = new Map<string, { atomId: string; bondId: string }[]>();
+  const link = (from: string, to: string, bondId: string) => {
+    const list = neighbours.get(from) ?? [];
+    list.push({ atomId: to, bondId });
+    neighbours.set(from, list);
+  };
+  for (const bond of molecule.bonds) {
+    link(bond.fromAtomId, bond.toAtomId, bond.id);
+    link(bond.toAtomId, bond.fromAtomId, bond.id);
+  }
+  return neighbours;
+}
+
+/**
+ * Whether `bond` may be a stereogenic biaryl axis (an atropisomer, as OpenChemLib perceives one
+ * on a hindered biaryl such as BINOL), decided without the engine and on the safe side: a single
+ * bond whose two ends each have two or more other neighbours and sit in a ring of at most eight
+ * atoms, and whose ortho positions (the ends' other neighbours) carry at least three substituents or ring
+ * fusions between them (an ortho atom with three or more drawn neighbours).
+ */
+function mayBeAtropisomerAxis(neighbours: NeighbourMap, bond: MoleculeBond): boolean {
+  if (bond.order !== "single") return false;
+  let hindered = 0;
+  for (const end of [bond.fromAtomId, bond.toAtomId]) {
+    const ortho = (neighbours.get(end) ?? []).filter((entry) => entry.bondId !== bond.id);
+    if (ortho.length < 2) return false;
+    if (!ortho.some((entry) => inSmallRing(neighbours, entry.bondId, end, entry.atomId, 8))) return false;
+    hindered += ortho.filter((entry) => (neighbours.get(entry.atomId)?.length ?? 0) >= 3).length;
+  }
+  return hindered >= 3;
+}
+
+/** Whether a path from `from` to `to` that avoids bond `bondId` closes a ring of at most `maxRing` atoms. */
+function inSmallRing(neighbours: NeighbourMap, bondId: string,
+  from: string, to: string, maxRing: number): boolean {
+  let frontier = [from];
+  const seen = new Set([from]);
+  // A ring of n atoms is a path of n - 1 bonds from `from` to `to` without the bond itself.
+  for (let depth = 1; depth < maxRing && frontier.length > 0; depth++) {
+    const next: string[] = [];
+    for (const atomId of frontier) {
+      for (const entry of neighbours.get(atomId) ?? []) {
+        if (entry.bondId === bondId || seen.has(entry.atomId)) continue;
+        if (entry.atomId === to) return true;
+        seen.add(entry.atomId);
+        next.push(entry.atomId);
+      }
+    }
+    frontier = next;
+  }
+  return false;
+}
+
+/** Whether the molecule can carry stereo at all: a wedge, hash or wavy bond, a double bond, 3D coordinates, or a possible atropisomer axis. */
+function hasStereoContent(molecule: MoleculeObject): boolean {
+  if (molecule.bonds.some((bond) => bond.order === "double" || stereoStyle(bond) !== undefined) ||
+    molecule.atoms.some((atom) => atom.z !== undefined)) return true;
+  const neighbours = neighbourMap(molecule);
+  return molecule.bonds.some((bond) => mayBeAtropisomerAxis(neighbours, bond));
+}
+
+/**
+ * Whether `after`'s atom positions are an orientation-preserving affine image of `before`'s
+ * (translation, rotation, uniform or non-uniform positive scaling, shear), with z unchanged. Such
+ * a map keeps the cyclic order of every atom's neighbours and the side of every line each atom is
+ * on, so the drawn tetrahedral and E/Z configuration is unchanged; the read-back is then skipped.
+ * With `mirrorAllowed` (Flip only, `flipChemistry`), an orientation-reversing affine image (a mirror) is accepted too: it
+ * draws the mirror image, which is what that command means. Exact to floating-point tolerance;
+ * anything else (a mirror under any other commit, a partial drag, a re-layout) falls to the read-back.
+ */
+function layoutKeepsStereo(before: MoleculeObject, after: MoleculeObject, beforeAtoms: ReadonlyMap<string, MoleculeAtom>,
+  mirrorAllowed: boolean): boolean {
+  const pairs: [MoleculeAtom, MoleculeAtom][] = [];
+  for (const atom of after.atoms) {
+    const old = beforeAtoms.get(atom.id);
+    if (!old || old.z !== atom.z) return false;
+    pairs.push([old, atom]);
+  }
+  if (pairs.length === 0) return true;
+  let extent = 1;
+  for (const [old] of pairs) extent = Math.max(extent, Math.abs(old.x - pairs[0][0].x), Math.abs(old.y - pairs[0][0].y));
+  const tolerance = 1e-7 * extent;
+  const dx = pairs[0][1].x - pairs[0][0].x;
+  const dy = pairs[0][1].y - pairs[0][0].y;
+  if (pairs.every(([old, atom]) => Math.abs(atom.x - old.x - dx) <= tolerance && Math.abs(atom.y - old.y - dy) <= tolerance)) return true;
+  let px = 0, py = 0, qx = 0, qy = 0;
+  for (const [old, atom] of pairs) { px += old.x; py += old.y; qx += atom.x; qy += atom.y; }
+  px /= pairs.length; py /= pairs.length; qx /= pairs.length; qy /= pairs.length;
+  let sxx = 0, sxy = 0, syy = 0, axx = 0, axy = 0, ayx = 0, ayy = 0;
+  for (const [old, atom] of pairs) {
+    const ox = old.x - px, oy = old.y - py, nx = atom.x - qx, ny = atom.y - qy;
+    sxx += ox * ox; sxy += ox * oy; syy += oy * oy;
+    axx += nx * ox; axy += nx * oy; ayx += ny * ox; ayy += ny * oy;
+  }
+  const det = sxx * syy - sxy * sxy;
+  // Collinear (or coincident) atoms: no plane to orient, so let the read-back decide.
+  if (!(det > 1e-12 * (sxx + syy) * (sxx + syy))) return false;
+  const m00 = (axx * syy - axy * sxy) / det, m01 = (axy * sxx - axx * sxy) / det;
+  const m10 = (ayx * syy - ayy * sxy) / det, m11 = (ayy * sxx - ayx * sxy) / det;
+  const orientation = m00 * m11 - m01 * m10;
+  if (!((mirrorAllowed ? Math.abs(orientation) : orientation) > 1e-9 * (m00 * m00 + m01 * m01 + m10 * m10 + m11 * m11))) return false;
+  let afterExtent = 1;
+  for (const [, atom] of pairs) afterExtent = Math.max(afterExtent, Math.abs(atom.x - qx), Math.abs(atom.y - qy));
+  const fit = 1e-7 * Math.max(extent, afterExtent);
+  return pairs.every(([old, atom]) => {
+    const ox = old.x - px, oy = old.y - py;
+    return Math.abs(m00 * ox + m01 * oy - (atom.x - qx)) <= fit && Math.abs(m10 * ox + m11 * oy - (atom.y - qy)) <= fit;
+  });
+}
+
+type StereoReading = {
+  molfile: string;
+  centres: Map<string, string>;
+  doubleBonds: Map<string, string>;
+  /** The atropisomer axes OpenChemLib perceives, as bonds of the molecule (`perceiveUnrepresentableStereo`). */
+  axes: MoleculeBond[];
+};
+
+/**
+ * The molecule's stereo as the app's perceivers read it back (`stereoPerceptionMolfile`, as the
+ * flatten and layout guards do), or why it cannot be read: the end of "cannot be checked because
+ * …", naming the step that failed and which drawing (`which`: "before" or "after" the edit).
+ */
+function readStereo(molecule: MoleculeObject, engine: CommitStereoEngine, which: string): StereoReading | { unreadable: string } {
+  const drawing = `the drawing ${which} the edit`;
+  let molfile: string;
+  try {
+    molfile = stereoPerceptionMolfile(molecule);
+  } catch (error) {
+    return { unreadable: `the stereo perception molfile could not be written for ${drawing} (${errorText(error)})` };
+  }
+  const centres = new Map<string, string>();
+  try {
+    const perceived = engine.perceiveStereoCentersFromMolfile(molfile);
+    if (perceived.length !== molecule.atoms.length) {
+      return { unreadable: `the stereocentre perceiver read ${perceived.length} of the ${molecule.atoms.length} atoms of ${drawing}` };
+    }
+    perceived.forEach((centre, index) => {
+      if (centre.isStereoCenter) centres.set(molecule.atoms[index].id, centre.descriptor);
+    });
+  } catch (error) {
+    return { unreadable: `the stereocentre perceiver failed on ${drawing} (${errorText(error)})` };
+  }
+  const doubleBonds = new Map<string, string>();
+  try {
+    for (const bond of engine.perceiveDoubleBondStereoFromMolfile(molfile)) {
+      const from = molecule.atoms[bond.from]?.id;
+      const to = molecule.atoms[bond.to]?.id;
+      if (from === undefined || to === undefined) {
+        return { unreadable: `the double-bond stereo perceiver named an atom ${drawing} does not have` };
+      }
+      doubleBonds.set(JSON.stringify([from, to].sort()), bond.descriptor);
+    }
+  } catch (error) {
+    return { unreadable: `the double-bond stereo perceiver failed on ${drawing} (${errorText(error)})` };
+  }
+  const axes: MoleculeBond[] = [];
+  if (!engine.perceiveUnrepresentableStereo || !engine.assertConstrainedLayoutIdentity) {
+    const neighbours = neighbourMap(molecule);
+    if (molecule.bonds.some((bond) => mayBeAtropisomerAxis(neighbours, bond))) {
+      return { unreadable: "the stereo engine cannot read atropisomer axes" };
+    }
+    return { molfile, centres, doubleBonds, axes };
+  }
+  try {
+    // V2000 input bond order: the perception molfile writes the molecule's bonds in order.
+    for (const index of engine.perceiveUnrepresentableStereo(molfile).atropisomerBonds) {
+      const bond = molecule.bonds[index];
+      if (!bond) return { unreadable: `the atropisomer perceiver named a bond ${drawing} does not have` };
+      axes.push(bond);
+    }
+  } catch (error) {
+    return { unreadable: `the atropisomer perceiver failed on ${drawing} (${errorText(error)})` };
+  }
+  return { molfile, centres, doubleBonds, axes };
+}
+
+const centreReading = (value: string | undefined) => value === undefined ? "no stereocentre"
+  : value === "unspecified" ? "an unspecified stereocentre" : `stereocentre ${value}`;
+const doubleBondReading = (value: string | undefined) => value === undefined ? "no E/Z"
+  : value === "unspecified" ? "unassigned E/Z" : value;
+
+/**
+ * The stereochemistry `after` reads back as against `before`'s, keyed by atom id: every
+ * stereocentre's R/S (or that it is one at all, and whether it is defined: a wavy bond or no mark
+ * reads as unspecified), every specified double bond's E/Z, and, on a molecule with an atropisomer
+ * axis, the axial configuration. A centre inverted, gained or lost, E turned Z, or an axis mirrored
+ * or made undefined is a change; a wedge re-placed on another bond that keeps every centre and axis
+ * is not. The adapter reports axes but not their configuration one by one, so axial stereo is
+ * compared as OpenChemLib's canonical identity (idcode, which carries every stereo parity) of the
+ * two drawings, once no centre or double bond has changed: the graph is the same (checked first),
+ * so a different idcode is a different stereo configuration. When either drawing cannot be read,
+ * `unreadable` says why, and the caller refuses the commit (fail closed) unless the molecule has no
+ * stereo element at all (`moleculeInvariantChanges`).
+ */
+function stereoReadBackChanges(before: MoleculeObject, after: MoleculeObject, engine: CommitStereoEngine):
+  MoleculeInvariantChange[] | { unreadable: string } {
+  const readBefore = readStereo(before, engine, "before");
+  if ("unreadable" in readBefore) return readBefore;
+  const readAfter = readStereo(after, engine, "after");
+  if ("unreadable" in readAfter) return readAfter;
+  const changes: MoleculeInvariantChange[] = [];
+  for (const atom of before.atoms) {
+    const was = readBefore.centres.get(atom.id);
+    const now = readAfter.centres.get(atom.id);
+    if (was !== now) changes.push({ atomId: atom.id, detail: `its atom "${atom.id}" would read as ${centreReading(now)} instead of ${centreReading(was)}` });
+  }
+  for (const key of new Set([...readBefore.doubleBonds.keys(), ...readAfter.doubleBonds.keys()])) {
+    const was = readBefore.doubleBonds.get(key);
+    const now = readAfter.doubleBonds.get(key);
+    if (was === now) continue;
+    const [from, to] = JSON.parse(key) as [string, string];
+    changes.push({ detail: `its double bond between atoms "${from}" and "${to}" would read ${doubleBondReading(now)} instead of ${doubleBondReading(was)}` });
+  }
+  const axisIds = new Set([...readBefore.axes, ...readAfter.axes].map((bond) => bond.id));
+  const axes = before.bonds.filter((bond) => axisIds.has(bond.id));
+  if (changes.length > 0 || axes.length === 0) return changes;
+  const sameIdentity = engine.assertConstrainedLayoutIdentity;
+  if (!sameIdentity) return { unreadable: "the stereo engine cannot read atropisomer axes" };
+  try {
+    sameIdentity(readBefore.molfile, readAfter.molfile);
+  } catch (error) {
+    const text = errorText(error);
+    // The adapter's refusal when the canonical identities differ; anything else is a failure to compare.
+    if (!/would change stereochemistry/.test(text)) return { unreadable: `the atropisomer axes could not be compared (${text})` };
+    const named = axes.map((bond) => `between atoms "${bond.fromAtomId}" and "${bond.toAtomId}"`).join(", ");
+    changes.push({ detail: `its axial stereochemistry would read differently (the atropisomer ${axes.length === 1 ? "axis" : "axes"} ${named})` });
+  }
+  return changes;
 }

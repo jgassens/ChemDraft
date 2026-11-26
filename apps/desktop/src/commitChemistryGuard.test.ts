@@ -441,7 +441,12 @@ describe("scoped chemistry edits", () => {
     // A molecule the edit removed (a bond joining B into A) is the edit's own.
     const joined = applyPatch(addCarbon(document, a.id), { op: "removeObject", objectId: b.id }, { now: phase4Timestamp });
     expect(check(document, joined, structureEditChemistry())).toEqual([]);
-    expect(commitChemistryRefusals({ before: document, next: joined, after: joined, normalize: identity, markAtoms })).toHaveLength(1);
+    // Unscoped, B's removal is refused, and so are A's added atom and bond (chemistry-guard-too-narrow).
+    expect(commitChemistryRefusals({ before: document, next: joined, after: joined, normalize: identity, markAtoms })).toEqual([
+      expect.stringMatching(new RegExp(`^Cannot complete this edit without changing the chemistry of molecule "${a.id}": it would gain atom "added_c"`)),
+      expect.stringMatching(new RegExp(`^Cannot complete this edit without changing the chemistry of molecule "${a.id}": it would gain bond "added_bond"`)),
+      expect.stringMatching(new RegExp(`^Cannot complete this edit without changing the chemistry of molecule "${B_ID}": it would be removed\\.$`))
+    ]);
   });
 
   it("lets a structure-editor (Ketcher) save change only the molecule it edited, and turns off the follow rule", () => {
