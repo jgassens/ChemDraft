@@ -4,6 +4,7 @@ import { CanvasContextMenu, NATIVE_CANVAS_MENU_CLOSED_EVENT } from "./CanvasCont
 import { PLUGIN_CHANGE_REFUSED, RECOGNITION_REFUSED, chemistryRefusalOf, refusalSentence } from "./plugins/requestWrites/chemistryRefusal";
 import { buildObjectCanvasMenu, pageCanvasMenu, SET_DEFAULT_ARROW_STYLE_COMMAND_ID } from "./canvasContextMenuModel";
 import { loadStereoEngine, stereoReadoutRequest } from "./stereoReadout";
+import { cleanUpStereoSkipStatus } from "./cleanUpStereoGuard";
 import { RequestWriteError } from "@chemdraft/plugin-host";
 import { createRequestHistory } from "./plugins/requestWrites/requestHistory";
 import { electronMarkInteractionFrames } from "./electronMarkInteraction";
@@ -631,12 +632,14 @@ import {
   formatElementList,
   nativeMoleculeUnmodeledMetalElements,
   applyNativeMoleculeEngineRelayout,
-  prepareNativeMoleculeEngineRelayout,
+  prepareGuardedCleanUpEngineRelayout,
   cleanUpStructureStatus,
   type NativeMoleculeRelayoutEngine,
   carryElectronMarksWithMovedAtoms,
   type AtomMotion,
   cleanUpNativeMolecules2d,
+  cleanUpMayChangeStereo,
+  type CleanUpStereoGuardOptions,
   moleculeHasFusedRingSystem,
   attachSpin3dModelFromConformer,
   conformerGraphSignature,
@@ -1918,7 +1921,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.25.15.40-opus";
+const CURRENT_BUILD_STAMP = "11.26.12.10-opus";
 
 const NUMERIC_ENTRY_DURING_DRAG_STATUS = "Finish the current drag, then enter a value";
 
@@ -5708,10 +5711,16 @@ export function MainWindow({
       return selected.size > 0 && !target.bonds.some(bond =>
         selected.has(bond.fromAtomId) && selected.has(bond.toAtomId));
     });
-    const cleanedStatus = (changed: boolean, warnings: readonly string[] = []) =>
-      !changed && onlyDisconnectedAtoms
+    // Molecules the stereo guard kept as drawn are named in plain words; when nothing else
+    // changed, that is the whole status rather than "already clean".
+    const cleanedStatus = (changed: boolean, warnings: readonly string[] = [],
+      stereoSkipped: NonNullable<CleanUpStereoGuardOptions["skipped"]> = []) => {
+      const skip = cleanUpStereoSkipStatus(stereoSkipped);
+      if (skip && !changed) return skip;
+      return !changed && onlyDisconnectedAtoms
         ? "Nothing to clean up: the selected atoms aren't connected to each other. Select a bond or neighboring atoms."
-        : cleanUpStructureStatus(documentRef.current, targetObjectIds, changed, warnings);
+        : cleanUpStructureStatus(documentRef.current, targetObjectIds, changed, skip ? [...warnings, skip] : warnings);
+    };
     const partialSelections = fragments.filter(fragment => {
       // The legacy store may include a part's host in objectIds. The part defines its scope;
       // a true whole-molecule pick clears that molecule's part in the selection policy.
@@ -5741,17 +5750,27 @@ export function MainWindow({
       return target?.type === "molecule" && isNativeMoleculeGraph(target) && moleculeHasFusedRingSystem(target);
     });
     const nativeTargetIds = targetObjectIds.filter((targetId) => !engineTargetIds.includes(targetId) && !partialIds.has(targetId));
-    if (engineTargetIds.length === 0 && partialSelections.length === 0) {
+    // The polygon+tree pass can hand back another stereoisomer; its stereo guard needs the CIP
+    // perceivers. A selection with no stereo marking at all stays synchronous and engine-free.
+    const needsStereoEngine = nativeTargetIds.some((targetId) => {
+      const target = findDocumentObject(currentDocument, targetId);
+      return target?.type === "molecule" && isNativeMoleculeGraph(target) && cleanUpMayChangeStereo(target);
+    });
+    if (engineTargetIds.length === 0 && partialSelections.length === 0 && (!needsStereoEngine || cachedOclAdapter)) {
       let assertMembership: ReturnType<typeof prepareCleanupRepeatUnits>["assertMembership"];
+      let stereoSkipped: NonNullable<CleanUpStereoGuardOptions["skipped"]> = [];
       try {
         const changed = commitDocumentChangeWithPageFit((current) => {
-          const result = prepareCleanupRepeatUnits(current, cleanUpNativeMolecules2d(current, nativeTargetIds), nativeTargetIds);
+          // The commit may run this update more than once; report only the last run's skips.
+          stereoSkipped = [];
+          const cleaned = cleanUpNativeMolecules2d(current, nativeTargetIds, { stereoEngine: cachedOclAdapter, skipped: stereoSkipped });
+          const result = prepareCleanupRepeatUnits(current, cleaned, nativeTargetIds);
           assertNoNewCleanupMoleculeOverlaps(current, result.document, cleanupLabel);
           assertMembership = result.assertMembership;
           return result.document;
         }, undefined, undefined, final => assertMembership?.(final));
         resetCleanupChrome();
-        setStatus(cleanedStatus(changed));
+        setStatus(cleanedStatus(changed, [], stereoSkipped));
       } catch (error) {
         reportCleanupFailure(error);
       }
@@ -5771,24 +5790,26 @@ export function MainWindow({
           const { createRdkit2DRelayouts } = await import("@chemdraft/rdkit-adapter/depiction");
           return createRdkit2DRelayouts();
         })();
-        let prepared = cleanUpNativeMolecules2d(currentDocument, nativeTargetIds);
+        const stereoSkipped: NonNullable<CleanUpStereoGuardOptions["skipped"]> = [];
+        let prepared = cleanUpNativeMolecules2d(currentDocument, nativeTargetIds, { stereoEngine: cachedOclAdapter, skipped: stereoSkipped });
         prepared = cleanUpMoleculeSelections2d(prepared, partialSelections, {
           relayout: relayoutMolfile2D, assertIdentity: assertConstrainedLayoutIdentity
         }, { deferPageOverlapCheck: true });
         for (const objectId of engineTargetIds) {
           // 2D Cleanup idealises to the style's bond length like the polygon+tree pass does, so
           // repeated cleanups converge instead of freezing whatever scale the drawing drifted to.
-          // The perceiver is the read-back guard: the rebuilt drawing must say the same R/S it
-          // said before, or nothing commits.
+          // The perceiver drives the engine's own R/S read-back (it redraws wedges to match);
+          // the Clean Up stereo guard then compares R/S and E/Z before and after and keeps a
+          // molecule whose stereo would change, or cannot be read, exactly as drawn.
           const target = findDocumentObject(prepared, objectId);
           const targetBondLengthPx = target?.type === "molecule"
             ? nativeDrawingStyleFromObjectStyle(target.style).bondLengthPx
             : undefined;
-          prepared = await prepareNativeMoleculeEngineRelayout(prepared, objectId, relayoutMolfile2D, loadAlternates, {
+          prepared = await prepareGuardedCleanUpEngineRelayout(prepared, objectId, relayoutMolfile2D, loadAlternates, {
             targetBondLengthPx,
             warnings,
             perceiveStereo: perceiveStereoCentersFromMolfile
-          });
+          }, { stereoEngine: cachedOclAdapter, skipped: stereoSkipped });
         }
         // Loading an alternate can yield to editing. Never replace edits made since preparation
         // started; all accepted candidates otherwise land together in exactly one history entry.
@@ -5822,7 +5843,7 @@ export function MainWindow({
               }
             }
           } : assertMembership);
-        setStatus(cleanedStatus(changed, warnings));
+        setStatus(cleanedStatus(changed, warnings, stereoSkipped));
       } catch (error) {
         reportCleanupFailure(error);
       }
