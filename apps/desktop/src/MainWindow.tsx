@@ -962,7 +962,7 @@ import {
 import { installBrowserReloadGuard, wasBrowserReloadPrevented } from "./browserReloadGuard";
 import { assertDocumentSize, decodeNativeDocumentContents, documentContentsKey, readBrowserDocumentFile, readNativeDocumentFile, type DocumentContents } from "./documentText";
 import { handleDroppedFiles, type DroppedImageInsertion, type DroppedImageSource } from "./imageDrop/dropHandler";
-import { DOCUMENT_FILE_DROP_EVENT, browserDropClientPoint, drawableCanvasRect, dropPagePoint, nativeDropClientPoint, type DocumentFileDropPayload, type DropClientPoint } from "./imageDrop/dropPosition";
+import { DOCUMENT_FILE_DROP_EVENT, DOCUMENT_FILE_DROP_MISSED_EVENT, DOCUMENT_FILE_DROP_MISSED_STATUS, browserDropClientPoint, drawableCanvasRect, dropPagePoint, nativeDropClientPoint, type DocumentFileDropPayload, type DropClientPoint } from "./imageDrop/dropPosition";
 import { insertDroppedImages, type PagePointLike } from "./imageDrop/insertDroppedImages";
 import type { PreparedDroppedImage } from "./imageDrop/prepareDroppedImage";
 import { savedDocumentBytes } from "./imageDrop/dropDocumentBudget";
@@ -11542,7 +11542,16 @@ export function MainWindow({
       if (disposed) stop();
       else unlisten = stop;
     }).catch(() => undefined);
-    return () => { disposed = true; unlisten?.(); };
+    // Linux: a file drag ended over the page without a drop. Say so instead of nothing.
+    let unlistenMissed: (() => void) | undefined;
+    void listenCurrentWindowEvent<null>(DOCUMENT_FILE_DROP_MISSED_EVENT, () => {
+      if (disposed || closeTabPromptRef.current || quitInteractionRef.current) return;
+      setStatus(DOCUMENT_FILE_DROP_MISSED_STATUS);
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlistenMissed = stop;
+    }).catch(() => undefined);
+    return () => { disposed = true; unlisten?.(); unlistenMissed?.(); };
   }, []);
 
   // The web build: a file dropped anywhere in the document window (the canvas, a toolbar, the tab

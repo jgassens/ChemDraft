@@ -3,6 +3,11 @@ export interface DropClientPoint { x: number; y: number }
 /** The document window's native drop event, sent by `file_drop.rs` in place of `tauri://drag-drop`. */
 export const DOCUMENT_FILE_DROP_EVENT = "chemdraft://document-file-drop";
 
+/** Linux only: a file drag ended over the document window without a drop (`linux_file_drop.rs`). */
+export const DOCUMENT_FILE_DROP_MISSED_EVENT = "chemdraft://document-file-drop-missed";
+export const DOCUMENT_FILE_DROP_MISSED_STATUS =
+  "No file was dropped. To drop a file, hold it over the page for a moment before releasing.";
+
 /** Its payload; see `DocumentFileDropPayload` in `file_drop.rs`. */
 export interface DocumentFileDropPayload {
   paths: string[];

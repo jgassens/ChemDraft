@@ -20,6 +20,8 @@ mod fonts;
 mod installed_plugins;
 #[cfg(target_os = "linux")]
 mod linux_clipboard;
+#[cfg(any(target_os = "linux", test))]
+mod linux_file_drop;
 mod linux_session_end;
 #[cfg(any(target_os = "linux", test))]
 mod linux_startup;
@@ -1503,6 +1505,9 @@ pub fn run() {
 
     #[cfg(target_os = "linux")]
     let builder = builder.plugin(webview_recovery::plugin());
+    // Accepts a file drag once wry has its file list, so a quick release is not lost (Linux only).
+    #[cfg(target_os = "linux")]
+    let builder = builder.plugin(linux_file_drop::plugin());
 
     // Windows app updates: a signed manifest on main (`plugins.updater` in tauri.windows.conf.json)
     // and a signed NSIS installer. The webview drives the flow, and only a stable build ever checks;

@@ -1888,6 +1888,17 @@ whole-molecule cleanup with the existing behavior, and check save/reopen and exp
   launch both packages and verify that the document window and drawing canvas appear. Repeat
   on Wayland with XWayland enabled and check the default and an explicit Wayland override.
 
+## Linux file drop (1.2.4)
+
+Run under KDE Plasma (Wayland session, so the app uses XWayland), with Dolphin beside ChemDraft.
+
+- Fast drop: drag a PNG and a `.cdxml` from Dolphin onto the page and release within 0.3 s of the
+  last move. Each must land (picture inserted, document opened), five times out of five.
+- A drag that ends without a drop: drag a file over the page, press Esc before releasing, then move the mouse. The
+  status line reads "No file was dropped. To drop a file, hold it over the page for a moment before
+  releasing." and stderr has one "a dragged file was not dropped" line. A normal drop must never
+  show that line.
+
 ## Linux floating palettes and the Window menu (1.2.2)
 
 Run under KDE Plasma (Wayland session, so the app uses XWayland) and on GNOME.
