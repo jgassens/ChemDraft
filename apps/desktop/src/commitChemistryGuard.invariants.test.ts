@@ -5,7 +5,8 @@ import { applyPatch, applyPatches, createEmptyDocument, type ChemDraftDocument, 
 import { phase4Timestamp, stereoPerceptionMolfile } from "@chemdraft/document-workflow-core";
 import {
   CHEMISTRY_EDIT, PRESERVE_CHEMISTRY, chemistryEditOf, commitChemistryRefusals, loadCommitStereoEngine, policyChemistryRefusals,
-  preserveChemistry, selectionTransformChemistry, structureEditChemistry, type CommitChemistryPolicy, type CommitStereoEngine
+  STEREO_ENGINE_LOADING, flipChemistry, preserveChemistry, selectionTransformChemistry, structureEditChemistry,
+  type CommitChemistryPolicy, type CommitStereoEngine, type CommitStereoEngineOption
 } from "./commitChemistryGuard";
 import * as workflow from "./documentWorkflow";
 
@@ -76,7 +77,7 @@ const identity = (document: ChemDraftDocument) => document;
 
 /** The commit funnel's check under `policy`, with commit normalization (as MainWindow runs it). */
 function funnel(before: ChemDraftDocument, next: ChemDraftDocument, policy: CommitChemistryPolicy = PRESERVE_CHEMISTRY,
-  stereoEngine: CommitStereoEngine | null = engine): string[] {
+  stereoEngine: CommitStereoEngineOption = engine): string[] {
   return policyChemistryRefusals(policy, {
     before, next, after: workflow.committedNormalForm(next), normalize: workflow.committedNormalForm,
     markAtoms: workflow.committedElectronMarkAtoms, stereoEngine
@@ -84,11 +85,12 @@ function funnel(before: ChemDraftDocument, next: ChemDraftDocument, policy: Comm
 }
 
 /** The same check without normalization: exactly the edit, nothing settled around it. */
-const exact = (before: ChemDraftDocument, after: ChemDraftDocument, stereoEngine: CommitStereoEngine | null = engine) =>
+const exact = (before: ChemDraftDocument, after: ChemDraftDocument, stereoEngine: CommitStereoEngineOption = engine) =>
   commitChemistryRefusals({ before, next: after, after, normalize: identity, markAtoms: workflow.committedElectronMarkAtoms,
     operation: "move", stereoEngine });
 
 const prefix = `Cannot move without changing the chemistry of molecule "${M}": `;
+const STARTING = `Cannot move yet: checking the stereochemistry of molecule "${M}" is still starting; try again in a moment.`;
 
 describe("a preserving commit refuses every AGENTS.md section 7 invariant change", () => {
   it("the fixture reads back as one stereocentre and an E double bond", () => {
@@ -186,17 +188,19 @@ describe("a preserving commit refuses every AGENTS.md section 7 invariant change
     expect(exact(before, mirrored)).toEqual([expect.stringMatching(
       new RegExp(`^${prefix.replace(/[()"]/g, "\\$&")}its atom "c1" would read as stereocentre [RS] instead of stereocentre [RS]\\.$`))]);
     // The app's own Flip Horizontal is the same mirror, but mirroring is what Flip means: through
-    // the selection-transform policy it commits, as it did before the guard was widened.
+    // the Flip policy it commits, as it did before the guard was widened. Under any other
+    // selection transform (a drag, align, rotate, resize) the mirror is refused.
     const flipped = workflow.flipDocumentObjectsAroundPoint(before, [M], { x: 330, y: 300 }, "horizontal");
     expect(canonical(flipped)).not.toBe(canonical(before));
-    expect(funnel(before, flipped, selectionTransformChemistry())).toEqual([]);
+    expect(funnel(before, flipped, flipChemistry())).toEqual([]);
+    expect(funnel(before, flipped, selectionTransformChemistry())).toHaveLength(1);
     expect(funnel(before, flipped)).toHaveLength(1);
   });
 
-  it("does not compare stereo without the engine (no guess from wedges)", () => {
+  it("without the engine, refuses until it can read the stereo back (no skip, no guess from wedges)", () => {
     const before = fixture();
     const mirrored = editMolecule(before, M, (molecule) => ({ atoms: molecule.atoms.map((atom) => ({ ...atom, x: 660 - atom.x })) }));
-    expect(exact(before, mirrored, null)).toEqual([]);
+    expect(exact(before, mirrored, STEREO_ENGINE_LOADING)).toEqual([STARTING]);
   });
 
   it("refuses moving one atom across its double bond (E to Z), read back with the engine", () => {
@@ -205,8 +209,8 @@ describe("a preserving commit refuses every AGENTS.md section 7 invariant change
     const swung = editAtom(before, "c4", (atom) => ({ ...atom, x: 357, y: 333 }));
     expect(canonical(swung)).not.toBe(canonical(before));
     expect(exact(before, swung)).toEqual([`${prefix}its double bond between atoms "c2" and "c3" would read Z instead of E.`]);
-    // Without the engine stereo is not compared (no guess from the drawing).
-    expect(exact(before, swung, null)).toEqual([]);
+    // Without the engine the commit waits for it (no skip, no guess from the drawing).
+    expect(exact(before, swung, STEREO_ENGINE_LOADING)).toEqual([STARTING]);
   });
 
   it("names a changed molecule and counts the rest on the status line", () => {
@@ -229,7 +233,8 @@ describe("layout and transform commands that keep chemistry still commit", () =>
       expect(moleculeById(after, M).atoms, name).not.toEqual(moleculeById(before, M).atoms);
       expect(canonical(after), name).toBe(reference);
       expect(funnel(before, after, selectionTransformChemistry(name)), name).toEqual([]);
-      expect(funnel(before, after, PRESERVE_CHEMISTRY, null), name).toEqual([]);
+      // These never need the read-back, so they never wait for the engine.
+      expect(funnel(before, after, PRESERVE_CHEMISTRY, STEREO_ENGINE_LOADING), name).toEqual([]);
     }
   });
 
@@ -245,7 +250,8 @@ describe("layout and transform commands that keep chemistry still commit", () =>
     const nudged = editAtom(before, "c4", (atom) => ({ ...atom, x: atom.x + 4, y: atom.y - 3 }));
     expect(canonical(nudged)).toBe(canonical(before));
     expect(exact(before, nudged)).toEqual([]);
-    expect(exact(before, nudged, null)).toEqual([]);
+    // Only the read-back can tell, so without the engine it waits for it.
+    expect(exact(before, nudged, STEREO_ENGINE_LOADING)).toEqual([STARTING]);
   });
 });
 

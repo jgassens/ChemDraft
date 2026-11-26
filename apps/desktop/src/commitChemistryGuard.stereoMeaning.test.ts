@@ -6,8 +6,8 @@ import { phase4Timestamp, stereoPerceptionMolfile } from "@chemdraft/document-wo
 import { depictSmiles2D, ensureOclResources, oclConformerGenerator, perceiveDoubleBondStereoFromMolfile,
   perceiveStereoCentersFromMolfile, type Depiction2D } from "@chemdraft/ocl-adapter";
 import {
-  PRESERVE_CHEMISTRY, commitChemistryRefusals, loadCommitStereoEngine, policyChemistryRefusals, selectionTransformChemistry,
-  type CommitChemistryPolicy, type CommitStereoEngine
+  PRESERVE_CHEMISTRY, STEREO_ENGINE_LOADING, commitChemistryRefusals, flipChemistry, loadCommitStereoEngine, policyChemistryRefusals,
+  selectionTransformChemistry, type CommitChemistryPolicy, type CommitStereoEngine, type CommitStereoEngineOption
 } from "./commitChemistryGuard";
 import * as workflow from "./documentWorkflow";
 import { quatFromAxisAngle, quatToViewMatrix } from "./interaction/rotation3d";
@@ -59,14 +59,14 @@ beforeAll(async () => {
 
 /** The commit funnel's check under `policy`, with commit normalization, as MainWindow runs it. */
 const funnel = (before: ChemDraftDocument, after: ChemDraftDocument, policy: CommitChemistryPolicy = PRESERVE_CHEMISTRY,
-  stereoEngine: CommitStereoEngine | null = engine) =>
+  stereoEngine: CommitStereoEngineOption = engine) =>
   policyChemistryRefusals(policy, {
     before, next: after, after: workflow.committedNormalForm(after), normalize: workflow.committedNormalForm,
     markAtoms: workflow.committedElectronMarkAtoms, stereoEngine
   });
 
 /** Exactly the edit, nothing settled around it. */
-const exact = (before: ChemDraftDocument, after: ChemDraftDocument, stereoEngine: CommitStereoEngine | null = engine) =>
+const exact = (before: ChemDraftDocument, after: ChemDraftDocument, stereoEngine: CommitStereoEngineOption = engine) =>
   commitChemistryRefusals({ before, next: after, after, normalize: (document) => document,
     markAtoms: workflow.committedElectronMarkAtoms, operation: "move", stereoEngine });
 
@@ -130,24 +130,25 @@ describe("stereo is judged by what it means, not by which bond carries the wedge
     const before = fixture();
     const either = editBonds(before, (bond) => bond.id === "b5" ? { ...bond, stereo: "either" } : bond);
     expect(canonical(either)).toBe("CC=CN[C@H](F)Cl");
-    expect(exact(before, either, null)).toEqual([`${prefix}its bond "b5" would have unspecified (either) E/Z instead of the drawn geometry.`]);
+    expect(exact(before, either, STEREO_ENGINE_LOADING)).toEqual([`${prefix}its bond "b5" would have unspecified (either) E/Z instead of the drawn geometry.`]);
   });
 });
 
 describe("without the stereo engine (still loading, or a drawing it cannot read)", () => {
-  it("skips the stereo comparison rather than guessing from wedges, and keeps every other invariant", () => {
+  it("refuses a commit that needs the read-back (never skips it, never guesses from wedges), and keeps every other invariant", () => {
+    const starting = `Cannot move yet: checking the stereochemistry of molecule "${M}" is still starting; try again in a moment.`;
     const before = fixture();
     const moved = editBonds(before, (bond) => bond.id === "b1" ? plain(bond) : bond.id === "b2" ? styled(bond, "wedge") : bond);
-    expect(exact(before, moved, null)).toEqual([]);
+    expect(exact(before, moved, STEREO_ENGINE_LOADING)).toEqual([starting]);
     const mirrored = applyPatch(before, { op: "updateObject", objectId: M, changes: {
       atoms: moleculeById(before, M).atoms.map((atom) => ({ ...atom, x: 660 - atom.x }))
     } }, { now: phase4Timestamp });
-    expect(exact(before, mirrored, null)).toEqual([]);
+    expect(exact(before, mirrored, STEREO_ENGINE_LOADING)).toEqual([starting]);
     const element = applyPatch(before, { op: "updateObject", objectId: M, changes: {
       atoms: moleculeById(before, M).atoms.map((atom) => atom.id === "n" ? { ...atom, element: "O" } : atom),
       bonds: moleculeById(before, M).bonds.map((bond) => bond.id === "b1" ? plain(bond) : bond)
     } }, { now: phase4Timestamp });
-    expect(exact(before, element, null)).toEqual([`${prefix}its atom "n" would be O instead of N.`]);
+    expect(exact(before, element, STEREO_ENGINE_LOADING)).toEqual([`${prefix}its atom "n" would be O instead of N.`]);
   });
 
   it("skips the stereo comparison when the engine cannot read the drawing", () => {
@@ -168,8 +169,11 @@ describe("Flip Horizontal / Vertical", () => {
       const flipped = workflow.flipDocumentObjectsAroundPoint(before, [M], { x: 330, y: 300 }, axis);
       // The mirror image: the stereocentre inverts, E stays E.
       expect(canonical(flipped), axis).toBe("C/C=C/N[C@@H](F)Cl");
-      expect(funnel(before, flipped, selectionTransformChemistry(undefined, new Set())), axis).toEqual([]);
-      expect(funnel(before, flipped, selectionTransformChemistry()), axis).toEqual([]);
+      expect(funnel(before, flipped, flipChemistry(undefined, new Set())), axis).toEqual([]);
+      expect(funnel(before, flipped, flipChemistry()), axis).toEqual([]);
+      // The same mirror under any other selection transform (a drag, align, rotate, resize) is read back.
+      expect(funnel(before, flipped, selectionTransformChemistry("move", new Set())), axis).toEqual([
+        `Cannot move without changing the chemistry of molecule "${M}": its atom "c1" would read as stereocentre S instead of stereocentre R.`]);
     }
   });
 
@@ -193,7 +197,7 @@ describe("Spin 3D flatten re-places wedges and keeps every stereocentre", () => 
     bond.display?.bondStyle === "wedge" || bond.display?.bondStyle === "hashed" || bond.display?.bondStyle === "wavy"
       ? [[bond.id, bond.display.bondStyle, bond.fromAtomId]] : []));
 
-  it("commits every flattened view of menthol, with and without the engine", async () => {
+  it("commits every flattened view of menthol; without the engine it waits for it rather than skipping the check", async () => {
     const smiles = "CC(C)[C@@H]1CC[C@@H](C)C[C@H]1O";
     const depiction: Depiction2D = depictSmiles2D(smiles);
     const document = workflow.insertSmilesMolecule(workflow.createPhase4Document("stereo-fixture"), { x: 400, y: 320 }, {
@@ -221,7 +225,8 @@ describe("Spin 3D flatten re-places wedges and keeps every stereocentre", () => 
       if (marks(flat) !== marks(start)) replaced++;
       expect(canonical(outcome.document, molId), `view ${attempt}`).toBe(startCanonical);
       expect(funnel(document, outcome.document), `view ${attempt}`).toEqual([]);
-      expect(funnel(document, outcome.document, PRESERVE_CHEMISTRY, null), `view ${attempt}`).toEqual([]);
+      expect(funnel(document, outcome.document, PRESERVE_CHEMISTRY, STEREO_ENGINE_LOADING), `view ${attempt}`).toEqual([
+        `Cannot complete this edit yet: checking the stereochemistry of molecule "${molId}" is still starting; try again in a moment.`]);
     }
     expect(committed).toBe(6);
     // The bug path: wedges on other bonds than before.

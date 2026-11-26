@@ -44,6 +44,12 @@ export interface MoleculeChemistryChange {
    * Such a change is never explained by a mark the operation moved by itself.
    */
   detail?: string;
+  /**
+   * Set when the molecule's stereochemistry had to be read back but the stereo engine is not
+   * available (still loading, or failed to load): the refusal says the check could not run yet,
+   * not that the chemistry would change (`describeMoleculeChemistryChange`).
+   */
+  stereoUnchecked?: StereoEngineUnavailable;
 }
 
 /**
@@ -78,7 +84,7 @@ export type CommitChemistryPolicy =
     readonly rebuiltMoleculeIds?: readonly string[];
     /** See `IndependentMarkMoves`. */
     readonly independentlyMovedMarkIds?: ReadonlySet<string>;
-    /** A selection transform (`selectionTransformChemistry`): see `CommitChemistryCheck.mirrorIsTheOperation`. */
+    /** Flip Horizontal / Vertical only (`flipChemistry`): see `CommitChemistryCheck.mirrorIsTheOperation`. */
     readonly mirrorIsTheOperation?: boolean;
   }
   | {
@@ -156,11 +162,21 @@ export function marksFollowAtoms(policy: CommitChemistryPolicy | undefined): boo
  * their atom (`independentlyMovedMarkIds`, a mark drop) may change chemistry, under the mark-move
  * policy; a transform that moved none passes none.
  *
- * A selection transform may mirror a whole molecule (Flip Horizontal / Vertical): mirroring is what
- * that command means, so, like a move, rotate or scale, an exact affine image of a molecule with
- * its wedges unchanged is not read back for stereo (`mirrorIsTheOperation`).
+ * A selection transform never mirrors a molecule: a drag, align, rotate or resize whose result is a
+ * mirror image of a stereo molecule is read back and refused like any other stereo change. Only Flip
+ * Horizontal / Vertical mirrors, and says so explicitly (`flipChemistry`).
  */
 export function selectionTransformChemistry(operation?: string, independentlyMovedMarkIds?: IndependentMarkMoves): CommitChemistryPolicy {
+  return withIndependentlyMovedMarks(preserveChemistry(operation), independentlyMovedMarkIds);
+}
+
+/**
+ * Flip Horizontal / Vertical: a selection transform (`selectionTransformChemistry`) whose whole
+ * point is the mirror image, so an exact affine image of a molecule, mirror included, with its
+ * wedges unchanged is not read back for stereo (`mirrorIsTheOperation`). Only the Flip command path
+ * passes it; nothing infers it from geometry.
+ */
+export function flipChemistry(operation?: string, independentlyMovedMarkIds?: IndependentMarkMoves): CommitChemistryPolicy {
   return withIndependentlyMovedMarks({ kind: "preserve", operation, mirrorIsTheOperation: true }, independentlyMovedMarkIds);
 }
 
@@ -211,7 +227,7 @@ export interface PreexistingChemistryOptions {
   /** Atoms (`atomChemistryKey`) whose change the operation itself explains; never reported. */
   exemptAtomKeys?: ReadonlySet<string>;
   /** See `CommitChemistryCheck.stereoEngine`. */
-  stereoEngine?: CommitStereoEngine | null;
+  stereoEngine?: CommitStereoEngineOption;
   /** See `CommitChemistryCheck.mirrorIsTheOperation`. */
   mirrorIsTheOperation?: boolean;
 }
@@ -333,6 +349,13 @@ export function preexistingMoleculeChemistryChanges(
 
 /** "Cannot <operation> without changing the chemistry of molecule "m": its atom "a" would …". */
 export function describeMoleculeChemistryChange(change: MoleculeChemistryChange, operation = "complete this edit"): string {
+  const unchecked = change.stereoUnchecked;
+  if (unchecked) {
+    return unchecked.unavailable === "loading"
+      ? `Cannot ${operation} yet: checking the stereochemistry of molecule "${change.moleculeId}" is still starting; try again in a moment.`
+      : `Cannot ${operation}: the stereochemistry of molecule "${change.moleculeId}" cannot be checked because the stereo engine ` +
+        `failed to load (${unchecked.reason}); try again, and restart ChemDraft if it keeps failing.`;
+  }
   const prefix = `Cannot ${operation} without changing the chemistry of molecule "${change.moleculeId}": `;
   if (change.detail !== undefined) return `${prefix}${change.detail}.`;
   if (change.atomId === undefined) return `${prefix}it would be removed.`;
@@ -380,17 +403,18 @@ export interface CommitChemistryCheck {
   /** Molecules (by id, each on the first page holding it: `namedMoleculeKeys`) the operation is meant to change. */
   editedMoleculeIds?: readonly string[];
   /**
-   * The stereo read-back engine (`moleculeInvariantChanges`). Absent: the app's lazily loaded
-   * OpenChemLib perceivers once loaded (`loadStereoEngine`, which MainWindow warms at mount). Until
-   * then, and with `null`, stereo is not compared (every other invariant still is): guessing it
-   * from wedges would refuse what the read-back accepts.
+   * The stereo read-back engine (`moleculeInvariantChanges`). Absent: the guard's own lazily loaded
+   * OpenChemLib perceivers (`loadCommitStereoEngine`, which MainWindow warms at mount). While that
+   * engine is still loading, or after it failed to load (`StereoEngineUnavailable`), a commit that
+   * needs the read-back is refused with a message saying so (`stereoUnchecked`), never passed
+   * unchecked and never judged by guessing from wedges; a molecule with no stereo element
+   * (`mayCarryStereo`) and a layout that cannot change stereo (`layoutKeepsStereo`) never need it.
    */
-  stereoEngine?: CommitStereoEngine | null;
+  stereoEngine?: CommitStereoEngineOption;
   /**
-   * The operation may mirror a whole molecule (Flip Horizontal / Vertical, through
-   * `selectionTransformChemistry`): an exact affine image of a molecule, mirror included, with its
-   * wedges unchanged, is then not read back for stereo. Otherwise only an orientation-preserving one
-   * (move, align, rotate, scale) skips the read-back.
+   * The operation is Flip Horizontal / Vertical (`flipChemistry`): an exact affine image of a
+   * molecule, mirror included, with its wedges unchanged, is then not read back for stereo.
+   * Otherwise only an orientation-preserving one (move, align, rotate, scale) skips the read-back.
    */
   mirrorIsTheOperation?: boolean;
 }
@@ -572,33 +596,77 @@ export function independentlyMovedMarkAtomKeys(
 // Clean Up legitimately re-place wedges): R/S per atom and E/Z per double bond as the app's
 // perceivers read the molecule back. The read-back runs only for a molecule whose wedge, hash or
 // wavy marks changed, or whose layout changed other than by an orientation-preserving affine map
-// (move, align, rotate, scale; a mirror too under a selection transform, Flip), which cannot
-// change it.
+// (move, align, rotate, scale; a mirror too under Flip only, `flipChemistry`), which cannot
+// change it. Without the engine (still loading, or failed to load) a molecule that needs the
+// read-back is refused with a message saying so; one without any stereo element never waits.
 // ---------------------------------------------------------------------------------------------
 
 /** The stereo perceivers the guard reads a molecule back with: the app's OpenChemLib ones (`stereoReadout.ts`). */
 export type CommitStereoEngine = StereoEngine;
 
+/** Why the stereo read-back cannot run for this commit: the engine is still loading, or failed to load (`reason`). */
+export type StereoEngineUnavailable =
+  | { readonly unavailable: "loading" }
+  | { readonly unavailable: "failed"; readonly reason: string };
+export const STEREO_ENGINE_LOADING: StereoEngineUnavailable = { unavailable: "loading" };
+/** `CommitChemistryCheck.stereoEngine`: an engine, or why there is none. */
+export type CommitStereoEngineOption = CommitStereoEngine | StereoEngineUnavailable;
+
+const isUnavailable = (option: CommitStereoEngineOption): option is StereoEngineUnavailable => "unavailable" in option;
+
 let loadedStereoEngine: CommitStereoEngine | undefined;
 let stereoEngineLoad: Promise<CommitStereoEngine | undefined> | undefined;
+/** The last load's failure, kept (and named in refusals) until a later load succeeds. */
+let stereoEngineFailure: string | undefined;
+/** Bumped by the test reset, so a load still in flight from an earlier test cannot settle into the next one. */
+let stereoEngineGeneration = 0;
+
+const loadFailureReason = (error: unknown) => {
+  const text = error instanceof Error ? error.message : String(error ?? "");
+  return text.trim() || "unknown error";
+};
 
 /**
  * Loads the stereo engine for the guard (the app's shared lazy load, §13) and keeps it for the
- * synchronous commit funnel. Resolves undefined when it cannot load; a later call retries.
+ * synchronous commit funnel; MainWindow starts it in the background right after mount. Resolves
+ * undefined when it cannot load, and remembers why (`StereoEngineUnavailable`); a later call retries.
  */
-export function loadCommitStereoEngine(): Promise<CommitStereoEngine | undefined> {
+export function loadCommitStereoEngine(load: () => Promise<StereoEngine> = loadStereoEngine): Promise<CommitStereoEngine | undefined> {
   if (loadedStereoEngine) return Promise.resolve(loadedStereoEngine);
-  stereoEngineLoad ??= loadStereoEngine().then((engine) => (loadedStereoEngine = engine), () => {
-    stereoEngineLoad = undefined;
-    return undefined;
-  });
+  if (!stereoEngineLoad) {
+    const generation = stereoEngineGeneration;
+    stereoEngineLoad = Promise.resolve().then(load).then((engine) => {
+      if (generation === stereoEngineGeneration) {
+        loadedStereoEngine = engine;
+        stereoEngineFailure = undefined;
+        stereoEngineLoad = undefined;
+      }
+      return engine;
+    }, (error: unknown) => {
+      if (generation === stereoEngineGeneration) {
+        stereoEngineFailure = loadFailureReason(error);
+        stereoEngineLoad = undefined;
+      }
+      return undefined;
+    });
+  }
   return stereoEngineLoad;
 }
 
-function currentStereoEngine(option: CommitStereoEngine | null | undefined): CommitStereoEngine | undefined {
-  if (option !== undefined) return option ?? undefined;
-  if (!loadedStereoEngine) void loadCommitStereoEngine();
-  return loadedStereoEngine;
+/** Test hook: forget the guard's engine, its failure and any load in flight. */
+export function resetCommitStereoEngineForTests(): void {
+  stereoEngineGeneration++;
+  loadedStereoEngine = undefined;
+  stereoEngineLoad = undefined;
+  stereoEngineFailure = undefined;
+}
+
+/** The engine to read back with, or why there is none; asking starts (or retries) the load. */
+function currentStereoEngine(option: CommitStereoEngineOption | undefined): CommitStereoEngineOption {
+  if (option !== undefined) return option;
+  if (loadedStereoEngine) return loadedStereoEngine;
+  void loadCommitStereoEngine();
+  return stereoEngineFailure === undefined ? STEREO_ENGINE_LOADING : { unavailable: "failed", reason: stereoEngineFailure };
 }
 
 const STEREO_STYLES: ReadonlySet<string> = new Set(["wedge", "hashed", "wavy"]);
@@ -672,11 +740,11 @@ function stereoMarksChanged(before: MoleculeObject, after: MoleculeObject): bool
 export function moleculeInvariantChanges(
   before: MoleculeObject,
   after: MoleculeObject,
-  stereoEngine?: CommitStereoEngine | null,
+  stereoEngine?: CommitStereoEngineOption,
   mirrorIsTheOperation = false
-): { atomId?: string; detail: string }[] {
+): MoleculeInvariantChange[] {
   if (before === after || (before.atoms === after.atoms && before.bonds === after.bonds)) return [];
-  const changes: { atomId?: string; detail: string }[] = [];
+  const changes: MoleculeInvariantChange[] = [];
   const beforeAtoms = new Map(before.atoms.map((atom) => [atom.id, atom]));
   const afterAtoms = new Map(after.atoms.map((atom) => [atom.id, atom]));
   let sameAtoms = before.atoms.length === after.atoms.length;
@@ -718,7 +786,71 @@ export function moleculeInvariantChanges(
   if (!marksChanged && before.atoms === after.atoms) return changes;
   if (!hasStereoContent(before) && !hasStereoContent(after)) return changes;
   if (!marksChanged && layoutKeepsStereo(before, after, beforeAtoms, mirrorIsTheOperation)) return changes;
-  return stereoReadBackChanges(before, after, currentStereoEngine(stereoEngine));
+  const engine = currentStereoEngine(stereoEngine);
+  if (!isUnavailable(engine)) return stereoReadBackChanges(before, after, engine);
+  // No engine yet (or it failed): never pass a stereo change unchecked, and never guess from the
+  // wedges (that refused what the read-back accepts). A molecule with no stereo element cannot
+  // change stereo by any layout, so only one that has one waits for the engine.
+  if (!mayCarryStereo(before) && !mayCarryStereo(after)) return changes;
+  return [{ detail: engine.unavailable === "loading" ? "its stereochemistry cannot be checked yet"
+    : `its stereochemistry cannot be checked (${engine.reason})`, stereoUnchecked: engine }];
+}
+
+/** One section 7 invariant change of a molecule (`moleculeInvariantChanges`). */
+export interface MoleculeInvariantChange {
+  atomId?: string;
+  detail: string;
+  /** See `MoleculeChemistryChange.stereoUnchecked`. */
+  stereoUnchecked?: StereoEngineUnavailable;
+}
+
+/**
+ * Whether the molecule has a stereo element a layout change could alter the meaning of, decided
+ * without the engine: 3D coordinates, a wedge, hash or wavy bond, or a double bond that can be
+ * E/Z as drawn (not "either", each end with another drawn neighbour, and not in a ring of seven or
+ * fewer atoms, where OpenChemLib perceives no E/Z). Conservative: aromatic bonds count as double
+ * (the perception molfile may write them as Kekulé doubles), so a large aromatic ring still waits.
+ */
+function mayCarryStereo(molecule: MoleculeObject): boolean {
+  if (molecule.atoms.some((atom) => atom.z !== undefined)) return true;
+  if (molecule.bonds.some((bond) => stereoStyle(bond) !== undefined)) return true;
+  const neighbours = new Map<string, { atomId: string; bondId: string }[]>();
+  const link = (from: string, to: string, bondId: string) => {
+    const list = neighbours.get(from) ?? [];
+    list.push({ atomId: to, bondId });
+    neighbours.set(from, list);
+  };
+  for (const bond of molecule.bonds) {
+    link(bond.fromAtomId, bond.toAtomId, bond.id);
+    link(bond.toAtomId, bond.fromAtomId, bond.id);
+  }
+  return molecule.bonds.some((bond) => {
+    if ((bond.order !== "double" && bond.order !== "aromatic") || bond.stereo === "either") return false;
+    const others = (atomId: string) => (neighbours.get(atomId) ?? []).some((entry) => entry.bondId !== bond.id);
+    if (!others(bond.fromAtomId) || !others(bond.toAtomId)) return false;
+    return !inSmallRing(neighbours, bond.id, bond.fromAtomId, bond.toAtomId, 7);
+  });
+}
+
+/** Whether a path from `from` to `to` that avoids bond `bondId` closes a ring of at most `maxRing` atoms. */
+function inSmallRing(neighbours: ReadonlyMap<string, readonly { atomId: string; bondId: string }[]>, bondId: string,
+  from: string, to: string, maxRing: number): boolean {
+  let frontier = [from];
+  const seen = new Set([from]);
+  // A ring of n atoms is a path of n - 1 bonds from `from` to `to` without the bond itself.
+  for (let depth = 1; depth < maxRing && frontier.length > 0; depth++) {
+    const next: string[] = [];
+    for (const atomId of frontier) {
+      for (const entry of neighbours.get(atomId) ?? []) {
+        if (entry.bondId === bondId || seen.has(entry.atomId)) continue;
+        if (entry.atomId === to) return true;
+        seen.add(entry.atomId);
+        next.push(entry.atomId);
+      }
+    }
+    frontier = next;
+  }
+  return false;
 }
 
 /** Whether the molecule can carry stereo at all: a wedge, hash or wavy bond, a double bond, or 3D coordinates. */
@@ -732,7 +864,7 @@ function hasStereoContent(molecule: MoleculeObject): boolean {
  * (translation, rotation, uniform or non-uniform positive scaling, shear), with z unchanged. Such
  * a map keeps the cyclic order of every atom's neighbours and the side of every line each atom is
  * on, so the drawn tetrahedral and E/Z configuration is unchanged; the read-back is then skipped.
- * With `mirrorAllowed` (Flip), an orientation-reversing affine image (a mirror) is accepted too: it
+ * With `mirrorAllowed` (Flip only, `flipChemistry`), an orientation-reversing affine image (a mirror) is accepted too: it
  * draws the mirror image, which is what that command means. Exact to floating-point tolerance;
  * anything else (a mirror under any other commit, a partial drag, a re-layout) falls to the read-back.
  */
@@ -811,15 +943,16 @@ const doubleBondReading = (value: string | undefined) => value === undefined ? "
  * stereocentre's R/S (or that it is one at all, and whether it is defined: a wavy bond or no mark
  * reads as unspecified) and every specified double bond's E/Z. A centre inverted, gained or lost,
  * or E turned Z, is a change; a wedge re-placed on another bond that keeps every centre is not.
- * Without the engine (still loading) or when either drawing cannot be read (the molfile writer
- * refuses a query bond, or the engine fails), stereo is not compared for this commit: guessing it
- * from the drawn wedges would refuse what the read-back accepts. Every other invariant still is.
+ * When either drawing cannot be read (the molfile writer refuses a query bond, or the engine throws
+ * on it), stereo is not compared for this commit: guessing it from the drawn wedges would refuse
+ * what the read-back accepts. Every other invariant still is. (Without the engine at all, the
+ * commit is refused instead: `moleculeInvariantChanges`.)
  */
-function stereoReadBackChanges(before: MoleculeObject, after: MoleculeObject, engine: CommitStereoEngine | undefined): { atomId?: string; detail: string }[] {
-  const readBefore = engine && readStereo(before, engine);
-  const readAfter = readBefore && engine && readStereo(after, engine);
+function stereoReadBackChanges(before: MoleculeObject, after: MoleculeObject, engine: CommitStereoEngine): MoleculeInvariantChange[] {
+  const readBefore = readStereo(before, engine);
+  const readAfter = readBefore && readStereo(after, engine);
   if (!readBefore || !readAfter) return [];
-  const changes: { atomId?: string; detail: string }[] = [];
+  const changes: MoleculeInvariantChange[] = [];
   for (const atom of before.atoms) {
     const was = readBefore.centres.get(atom.id);
     const now = readAfter.centres.get(atom.id);

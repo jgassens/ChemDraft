@@ -3,7 +3,7 @@ import { interactive3dWorkspaceStatusText, Interactive3dWorkspaceStatus } from "
 import { CanvasContextMenu, NATIVE_CANVAS_MENU_CLOSED_EVENT } from "./CanvasContextMenu";
 import { PLUGIN_CHANGE_REFUSED, RECOGNITION_REFUSED, chemistryRefusalOf, refusalSentence } from "./plugins/requestWrites/chemistryRefusal";
 import { buildObjectCanvasMenu, pageCanvasMenu, SET_DEFAULT_ARROW_STYLE_COMMAND_ID } from "./canvasContextMenuModel";
-import { loadStereoEngine, stereoReadoutRequest } from "./stereoReadout";
+import { stereoReadoutRequest } from "./stereoReadout";
 import { RequestWriteError } from "@chemdraft/plugin-host";
 import { createRequestHistory } from "./plugins/requestWrites/requestHistory";
 import { electronMarkInteractionFrames } from "./electronMarkInteraction";
@@ -24,7 +24,7 @@ import { dropElectronMark, dropElectronMarksInSelection, electronMarkDropTarget,
 import { chargeAssociationUndoLabel, electronMarkUndoLabel } from "./electronMarkUndoLabel";
 import {
   CHEMISTRY_EDIT, PLUGIN_WRITE, PRESERVE_CHEMISTRY, TEXT_EDIT, chemistryEditOf, chemistryRefusalStatus, policyChemistryRefusals,
-  preserveChemistry, selectionTransformChemistry, structureEditChemistry, structureEditorChemistry, withIndependentlyMovedMarks,
+  flipChemistry, loadCommitStereoEngine, preserveChemistry, selectionTransformChemistry, structureEditChemistry, structureEditorChemistry, withIndependentlyMovedMarks,
   type CommitChemistryPolicy, type IndependentMarkMoves
 } from "./commitChemistryGuard";
 import { nativeBenzeneHotkeyAtAtomTarget, nativeFragmentSproutTarget, nativeDieneFuseTarget, nativeOxoHotkeyTarget, nativeBranchedHotkeyTarget, type FragmentSproutKind } from "./sproutHotkeys";
@@ -6077,11 +6077,12 @@ export function MainWindow({
       .catch(() => {
         /* best-effort: rotate commits fall back to legacy geometry-only flatten */
       });
-    // Warm the canvas menu's stereo readout too: the native popup (macOS and Windows) waits only
-    // NATIVE_STEREO_READOUT_BUDGET_MS for its R/S or E/Z row before opening without it.
-    void loadStereoEngine().catch(() => {
-      /* best-effort: the menu retries the load and omits the row meanwhile */
-    });
+    // Warm the stereo engine in the background (one shared lazy load, §13) for the canvas menu's
+    // readout (the native popup waits only NATIVE_STEREO_READOUT_BUDGET_MS for its R/S or E/Z row)
+    // and for the commit guard's stereo read-back, which refuses a stereo-relevant preserving
+    // commit until it is ready (`commitChemistryGuard.ts`). Never rejects; a failure is remembered,
+    // named in those refusals and retried on the next commit that needs it.
+    void loadCommitStereoEngine();
     return () => {
       cancelled = true;
     };
@@ -13460,8 +13461,10 @@ export function MainWindow({
         }
 
         // `motion` names a turn or flip, which two atoms (or atoms on one line) cannot tell apart.
+        // `chemistry` is the commit policy: only the Flip commands pass `flipChemistry`, the one
+        // policy under which a molecule may be mirrored without the stereo read-back.
         const commitSelectionTransform = (transform: (current: ChemDraftDocument) => ChemDraftDocument, emptyStatus: string,
-          motion?: AtomMotion) => {
+          motion?: AtomMotion, chemistry: typeof selectionTransformChemistry = selectionTransformChemistry) => {
           let markStatus: string | undefined;
           const markIds = new Set<string>();
           const changed = commitDocumentChange(current => {
@@ -13469,13 +13472,13 @@ export function MainWindow({
             markStatus = result.status;
             replaceMarkIds(markIds, result.independentlyMovedMarkIds);
             return result.document;
-          }, layoutUndoLabel, false, undefined, selectionTransformChemistry(undefined, markIds));
+          }, layoutUndoLabel, false, undefined, chemistry(undefined, markIds));
           setStatus(markStatus ?? (changed ? action.title : emptyStatus));
         };
 
         if (action.id === "layout.flipHorizontal" || action.id === "layout.flipVertical") {
           const axis = action.id === "layout.flipHorizontal" ? "horizontal" : "vertical";
-          commitSelectionTransform(current => flipSelectedDocumentObjects(current, axis), "No selected object", "mirror");
+          commitSelectionTransform(current => flipSelectedDocumentObjects(current, axis), "No selected object", "mirror", flipChemistry);
           return;
         }
 
