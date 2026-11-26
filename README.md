@@ -5,7 +5,7 @@
 <h1 align="center">ChemDraft</h1>
 
 <p align="center">
-  <b>A free, open-source chemical drawing app for macOS and Windows.</b>
+  <b>A free, open-source chemical drawing app for macOS and Windows, with a beta for Linux.</b>
 </p>
 
 <p align="center">
@@ -52,6 +52,28 @@ offers a `.deb` (Ubuntu 22.04+, Linux Mint 21+, Debian 12+ and relatives) and an
 - It leaves beta once it passes testing on real desktops (GNOME, KDE and Cinnamon, on X11 and
   Wayland) and has its own update system. See the [roadmap](ROADMAP.md#linux) and
   [docs/releasing/linux.md](docs/releasing/linux.md).
+
+To install the Linux beta:
+
+1. Find the Linux files on the [releases page](https://github.com/jgassens/ChemDraft/releases). Only
+   some releases have them, often marked Pre-release. The Download link at the top of this page
+   opens the newest macOS and Windows release, which may have no Linux files.
+2. Download the `.deb` or the AppImage, and `SHA256SUMS-linux.txt`. To check the download, run
+   `sha256sum --ignore-missing -c SHA256SUMS-linux.txt` in the same folder, and make sure the
+   `OK` line names the file you are about to install. If your browser renamed the download (for
+   example `ChemDraft_1.2.2_amd64(1).deb`), the check skips it; give it its original name first.
+3. Install it. Use the name of the file you downloaded; the examples are for 1.2.2.
+   - `.deb`: `sudo apt install ./ChemDraft_1.2.2_amd64.deb`, then start ChemDraft from your app
+     menu or with `chemdraft`. To remove it: `sudo apt remove chem-draft`.
+   - AppImage: `chmod +x ChemDraft_1.2.2_amd64.AppImage`, then `./ChemDraft_1.2.2_amd64.AppImage`.
+     If it stops with "Cannot mount AppImage, please check your FUSE setup", run
+     `./ChemDraft_1.2.2_amd64.AppImage --appimage-extract-and-run` instead, or install your
+     distribution's FUSE 2 package (`libfuse2t64` on Ubuntu 24.04, `libfuse2` on Ubuntu 22.04).
+
+If something goes wrong, [open an issue](https://github.com/jgassens/ChemDraft/issues). Say which
+distribution and desktop you use (for example Ubuntu 24.04 with GNOME), whether it runs on X11 or
+Wayland, and which package you installed. Start ChemDraft from a terminal (`chemdraft`, or the
+AppImage) and paste what it prints.
 
 ## What ChemDraft does
 
@@ -180,6 +202,11 @@ node scripts/build-opsin-runtime.mjs   # once per machine; never copy it between
   `./run-app -t x86_64-apple-darwin` builds the Intel app; `./run-app --dev` runs with hot reload.
 - **Windows:** `pnpm dev`, or `pnpm --filter @chemdraft/desktop build --bundles nsis` for an
   installer.
+- **Linux (beta):** on Ubuntu 22.04 or later, Debian 12 or later and their relatives, first install
+  the system libraries:
+  `sudo apt install build-essential pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev libsoup-3.0-dev libssl-dev libxdo-dev patchelf`.
+  Then `pnpm dev` runs with hot reload. Building the `.deb` and AppImage is described in
+  [docs/releasing/linux.md](docs/releasing/linux.md).
 
 Builds from a branch other than `main` run as a separate app, "ChemDraft (dev)", so they never
 replace an installed ChemDraft.
@@ -205,9 +232,11 @@ Bug reports, feature requests and pull requests are all welcome.
 
 - In the app, **Help ▸ Report a Bug…** starts a report for you. Or open a
   [GitHub issue](https://github.com/jgassens/ChemDraft/issues) with the app version, your operating
-  system and the steps that reproduce the problem.
+  system (on Linux, also your desktop and whether it runs on X11 or Wayland) and the steps that
+  reproduce the problem.
 - Code changes go in through pull requests. Every change has to work on macOS Apple silicon, macOS
-  Intel and Windows, and CI must pass on all of its hosts before it merges. Read
+  Intel and Windows and keep the Linux build working, and CI must pass on all of its hosts
+  (Linux included) before it merges. Read
   [AGENTS.md](AGENTS.md) first; it applies to human contributors and AI coding assistants alike.
 - Upcoming work is on the [roadmap](ROADMAP.md).
 
