@@ -4,6 +4,7 @@ import {
   droppedFileBaseName, droppedImageSizeError, dropRefusal, formatDropBytes
 } from "./dropFiles";
 import { prepareDroppedImage, type PrepareDroppedImageResult, type PreparedDroppedImage } from "./prepareDroppedImage";
+import { DropReasonError, dropErrorReason } from "./dropReason";
 import { untilAborted, type DecodeOptions, type DroppedImageDecoders } from "./rasterDecode";
 
 /**
@@ -69,8 +70,6 @@ export interface PrepareDropOptions {
   budgetBytes?: number;
 }
 
-const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
-
 /**
  * `task` under a deadline: it sees the signal (a reader closes its file, a decoder stops), and
  * whatever it delivers after the deadline is dropped.
@@ -78,7 +77,7 @@ const errorText = (error: unknown) => error instanceof Error ? error.message : S
 async function withDeadline<T>(deadlineMs: number, message: (seconds: number) => string, task: (signal: AbortSignal) => Promise<T>): Promise<T> {
   const controller = new AbortController();
   const seconds = Math.round(deadlineMs / 100) / 10;
-  const timer = setTimeout(() => controller.abort(new Error(message(seconds))), deadlineMs);
+  const timer = setTimeout(() => controller.abort(new DropReasonError(message(seconds))), deadlineMs);
   try {
     return await untilAborted(task(controller.signal), controller.signal);
   } finally {
@@ -94,7 +93,7 @@ async function readAndPrepare(source: DroppedImageSource, decoders: DroppedImage
       return prepareDroppedImage(droppedFileBaseName(source.name), bytes, decoders, { signal });
     });
   } catch (error) {
-    return { ok: false, reason: errorText(error) };
+    return { ok: false, reason: dropErrorReason(error, `Could not read the dropped picture ${source.name}`) ?? "it could not be read." };
   }
 }
 
@@ -122,7 +121,8 @@ export async function prepareDroppedImages(
     try {
       size = await withDeadline(deadlineMs, seconds => `it took longer than ${seconds} seconds`, signal => source.size({ signal }));
     } catch (error) {
-      refuse(source.name, `its size could not be read (${errorText(error)}).`);
+      const reason = dropErrorReason(error, `Could not read the size of the dropped picture ${source.name}`);
+      refuse(source.name, reason ? `its size could not be read (${reason}).` : "its size could not be read.");
       continue;
     }
     const sizeError = droppedImageSizeError(size);
@@ -243,8 +243,8 @@ export interface DroppedFilesHandler<T> {
   insertImages(images: PreparedDroppedImage[]): DroppedImageInsertion;
   /**
    * Runs the commit once no canvas gesture is live (a gesture rebuilds the document from its own
-   * start when it ends, which would wipe the pictures). Rejects, with the reason as its message, when
-   * the canvas stays busy too long.
+   * start when it ends, which would wipe the pictures). Rejects with a `DropReasonError` when the
+   * canvas stays busy too long; any other rejection is reported in plain words.
    */
   whenIdle?<R>(commit: () => R): Promise<R>;
   decoders: DroppedImageDecoders;
@@ -297,7 +297,8 @@ export async function handleDroppedFiles<T>(files: readonly T[], handler: Droppe
       return handler.whenIdle ? await handler.whenIdle(commit) : commit();
     } catch (error) {
       return formatImageDropStatus({ inserted: prepared.images, refusals: prepareRefusals, notInserted: {
-        names: prepared.images.map(image => image.name), reason: error instanceof Error ? error.message : String(error)
+        names: prepared.images.map(image => image.name),
+        reason: dropErrorReason(error, "Could not insert the dropped pictures") ?? "the document did not accept the insertion."
       } });
     }
   };

@@ -10,6 +10,7 @@
  */
 
 import { pictureSizeLimitError as dropPixelLimitError } from "@chemdraft/export-engine";
+import { DropReasonError } from "./dropReason";
 
 export interface RasterPngResult {
   png: Uint8Array;
@@ -47,7 +48,7 @@ export interface DroppedImageDecoders {
 }
 
 export function abortReason(signal: AbortSignal): Error {
-  return signal.reason instanceof Error ? signal.reason : new Error("decoding it was stopped.");
+  return signal.reason instanceof Error ? signal.reason : new DropReasonError("decoding it was stopped.");
 }
 
 /**
@@ -95,7 +96,7 @@ export async function encodeWithDownscale(
     width = Math.max(1, Math.floor(width * DOWNSCALE_STEP));
     height = Math.max(1, Math.floor(height * DOWNSCALE_STEP));
     if (Math.max(width, height) < MIN_DOWNSCALED_SIDE) {
-      throw new Error("it is still too large as PNG after scaling it down.");
+      throw new DropReasonError("it is still too large as PNG after scaling it down.");
     }
   }
 }
@@ -164,7 +165,7 @@ export const browserRasterToPng: RasterToPng = async (bytes, mimeType, maxPngByt
     if (!(decoded.width > 0 && decoded.height > 0)) throw new Error("the webview could not decode it.");
     // The decoder's own size, not the header's, decides the canvas: refuse it before allocating one.
     const limit = dropPixelLimitError(decoded.width, decoded.height);
-    if (limit) throw new Error(limit);
+    if (limit) throw new DropReasonError(limit);
     return await encodeWithDownscale(decoded, maxPngBytes, (width, height) => drawToPng(decoded.source, width, height, signal), signal);
   } finally {
     decoded.release();

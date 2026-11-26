@@ -10,6 +10,7 @@ import {
 } from "./dropHandler";
 import { DROP_DOCUMENT_MARGIN_BYTES, savedPictureBytes } from "./dropDocumentBudget";
 import { prepareDroppedImage } from "./prepareDroppedImage";
+import { DropReasonError } from "./dropReason";
 import type { DecodeCheck, DroppedImageDecoders, RasterToPng } from "./rasterDecode";
 import { MAX_OPEN_DOCUMENT_BYTES } from "../documentText";
 import { browserDroppedImageSource, nativeDroppedImageSource } from "./readDroppedFile";
@@ -203,10 +204,63 @@ describe("prepareDroppedImage", () => {
       notes: ["stored at 3000 × 2000 pixels (from 6000 × 4000) to fit the 25.0 MB picture limit"] } });
   });
 
-  it("reports a decoder failure with the format", async () => {
-    const raster: RasterToPng = async () => { throw new Error("the webview could not decode it."); };
-    expect(await prepareDroppedImage("a.webp", webpVp8Header(2, 2), decoders(raster)))
-      .toEqual({ ok: false, reason: "the WebP could not be converted: the webview could not decode it." });
+  it("reports a decoder failure with the format, in plain words", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const raster: RasterToPng = async () => { throw new Error("the webview could not decode it."); };
+      expect(await prepareDroppedImage("a.webp", webpVp8Header(2, 2), decoders(raster)))
+        .toEqual({ ok: false, reason: "the WebP could not be decoded." });
+      // A reason ChemDraft worded itself is kept.
+      const tooLarge: RasterToPng = async () => { throw new DropReasonError("it is still too large as PNG after scaling it down."); };
+      expect(await prepareDroppedImage("b.webp", webpVp8Header(2, 2), decoders(tooLarge)))
+        .toEqual({ ok: false, reason: "the WebP could not be converted: it is still too large as PNG after scaling it down." });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("keeps a webview decoder's own text out of the reason and logs it instead", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const detail = new Error("WebView2 decoder detail 0x123");
+      const raster: RasterToPng = async () => { throw detail; };
+      for (const [name, bytes, label] of [["a.jpg", jpegHeader(2, 2), "JPEG"], ["a.gif", gifHeader(2, 2), "GIF"], ["a.webp", webpVp8Header(2, 2), "WebP"]] as const) {
+        expect(await prepareDroppedImage(name, bytes, decoders(raster))).toEqual({ ok: false, reason: `the ${label} could not be decoded.` });
+      }
+      expect(warn).toHaveBeenCalledTimes(3);
+      expect(warn.mock.calls.every(call => call.includes(detail))).toBe(true);
+      // Through the whole drop: the status names the file and never the decoder's text.
+      const status: string[] = [];
+      await handleDroppedFiles([{ name: "photo.webp", bytes: webpVp8Header(2, 2) }], {
+        nameOf: entry => entry.name,
+        imageSource: entry => memorySource(entry.name, entry.bytes),
+        openDocuments: async () => undefined,
+        documentBytes: () => 0,
+        insertImages: () => ({ ok: true, scaledToPage: [] }),
+        decoders: decoders(raster),
+        setStatus: message => { status.push(message); }
+      });
+      expect(status.at(-1)).toBe("No pictures were inserted; Couldn't drop \"photo.webp\": the WebP could not be decoded.");
+      expect(status.join("\n")).not.toContain("0x123");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("keeps file-system text out of the reason when a size or a read fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const noStat: DroppedImageSource = { name: "a.png", size: async () => { throw new Error("failed to stat (os error 5)"); }, read: async () => pngBytes() };
+      const noRead: DroppedImageSource = { name: "b.png", size: async () => 10, read: async () => { throw new Error("failed to open file (os error 13)"); } };
+      const result = await prepareDroppedImages([noStat, noRead], decoders());
+      expect(result.refusals).toEqual([
+        { name: "a.png", reason: "its size could not be read." },
+        { name: "b.png", reason: "it could not be read." }
+      ]);
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("sanitizes SVG and embeds the sanitized text, decoding UTF-8 and UTF-16 with a BOM", async () => {
@@ -548,9 +602,21 @@ describe("handleDroppedFiles", () => {
 
     const busy = harness();
     await handleDroppedFiles([file("two.png")], { ...busy.handler,
-      whenIdle: async () => { throw new Error("the canvas stayed busy with another edit; try the drop again."); } });
+      whenIdle: async () => { throw new DropReasonError("the canvas stayed busy with another edit; try the drop again."); } });
     expect(busy.calls.inserted).toEqual([]);
     expect(busy.calls.status.at(-1)).toBe("\"two.png\" was not inserted: the canvas stayed busy with another edit; try the drop again.");
+
+    // Any other failure is worded plainly; its own text is only logged.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const broken = harness();
+      await handleDroppedFiles([file("three.png")], { ...broken.handler,
+        whenIdle: async () => { throw new Error("Cannot read properties of undefined (reading 'run')"); } });
+      expect(broken.calls.status.at(-1)).toBe("\"three.png\" was not inserted: the document did not accept the insertion.");
+      expect(warn).toHaveBeenCalledOnce();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("serializes the picture work of overlapping drops", async () => {

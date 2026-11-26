@@ -1,14 +1,15 @@
 import { droppedFileBaseName, droppedImageSizeError, formatDropBytes } from "./dropFiles";
 import type { DroppedImageSource } from "./dropHandler";
+import { DropReasonError } from "./dropReason";
 import { abortReason, untilAborted } from "./rasterDecode";
 
 function tooLarge(size: number, maxBytes: number): Error {
-  return new Error(droppedImageSizeError(size, maxBytes) ?? "it is too large.");
+  return new DropReasonError(droppedImageSizeError(size, maxBytes) ?? "it is too large.");
 }
 
 /** The file outgrew its metadata while it was read. */
 function grewTooLarge(maxBytes: number): Error {
-  return new Error(`it is larger than the ${formatDropBytes(maxBytes)} limit for a dropped picture.`);
+  return new DropReasonError(`it is larger than the ${formatDropBytes(maxBytes)} limit for a dropped picture.`);
 }
 
 /**

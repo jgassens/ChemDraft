@@ -962,6 +962,7 @@ import {
 import { installBrowserReloadGuard, wasBrowserReloadPrevented } from "./browserReloadGuard";
 import { assertDocumentSize, decodeNativeDocumentContents, DOCUMENT_OPEN_ACCEPT, documentContentsKey, readBrowserDocumentFile, readNativeDocumentFile, type DocumentContents } from "./documentText";
 import { handleDroppedFiles, type DroppedImageInsertion, type DroppedImageSource } from "./imageDrop/dropHandler";
+import { DropReasonError, dropErrorReason } from "./imageDrop/dropReason";
 import { browserDropClientPoint, drawableCanvasRect, dropPagePoint, nativeDropClientPoint, type DocumentFileDropPayload, type DropClientPoint } from "./imageDrop/dropPosition";
 import { DOCUMENT_FILE_DROPS_CHANGED_EVENT, listenAndDrainDocumentDrops, refusalsStatus, takePendingDocumentDrops } from "./imageDrop/pendingDrops";
 import { insertDroppedImages, type PagePointLike } from "./imageDrop/insertDroppedImages";
@@ -1927,7 +1928,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.26.14.25-opus";
+const CURRENT_BUILD_STAMP = "11.26.14.30-opus";
 
 const NUMERIC_ENTRY_DURING_DRAG_STATUS = "Finish the current drag, then enter a value";
 
@@ -11493,7 +11494,8 @@ export function MainWindow({
           scaledToPage = inserted.scaledToPage;
           return inserted.document;
         } catch (error) {
-          failure = error instanceof Error ? error.message : String(error);
+          // The error's own text is logged, never shown: the status gets the plain reason below.
+          failure = dropErrorReason(error, "Could not insert the dropped pictures");
           return document;
         }
       }, "Insert Image", undefined, undefined, preserveChemistry("paste"));
@@ -11521,9 +11523,10 @@ export function MainWindow({
         const gate = imageDropWriteGateRef.current;
         if (!gate) return Promise.resolve().then(commit);
         return gate.run(commit).catch((error: unknown) => {
-          throw new Error(error instanceof PluginWriteGateTimeoutError
-            ? "the canvas stayed busy with another edit; try the drop again."
-            : error instanceof Error ? error.message : String(error));
+          // Any other failure is worded plainly by `handleDroppedFiles`, its text logged.
+          throw error instanceof PluginWriteGateTimeoutError
+            ? new DropReasonError("the canvas stayed busy with another edit; try the drop again.")
+            : error;
         });
       },
       serialize: task => {
@@ -11532,7 +11535,8 @@ export function MainWindow({
         return run;
       }
     }).catch((error: unknown) => {
-      const message = `Couldn't finish the drop: ${error instanceof Error ? error.message : String(error)}`;
+      const reason = dropErrorReason(error, "Could not finish a file drop");
+      const message = reason ? `Couldn't finish the drop: ${reason}` : "Couldn't finish the drop.";
       setDropStatus(message);
       showOutcome(message);
     });
@@ -11584,7 +11588,10 @@ export function MainWindow({
           setTabStatus(activeDocumentTabIdRef.current, drops.length && shown ? `${shown}; ${refusal}` : refusal);
         });
       },
-      onError: error => setStatus(`Could not check pending dropped files: ${error instanceof Error ? error.message : String(error)}`)
+      onError: error => {
+        console.warn("Could not check pending dropped files", error);
+        setStatus("Could not check pending dropped files.");
+      }
     });
   }, [setTabStatus]);
 

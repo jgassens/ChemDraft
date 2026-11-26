@@ -2079,7 +2079,9 @@ lossy and a lossless WebP, an SVG with gradients and `<use href="#id">`, a BMP, 
   would insert half black). The same PNGs embedded in an SVG refuse the SVG ("an embedded PNG
   picture could not be decoded"). A truncated PNG and a PNG without image data get the same
   damage wording, including when embedded in SVG. A webview decoder failure says “could not
-  be decoded” with plain wording. On macOS 11 both fixtures are refused the same way. Large valid PNGs
+  be decoded” with plain wording. A JPEG, GIF or WebP the webview cannot decode (on Windows, a
+  WebP with a damaged body) says only “the WebP could not be decoded.”: no decoder text or error
+  code reaches the status, and the developer console logs the decoder's own error. On macOS 11 both fixtures are refused the same way. Large valid PNGs
   (interlaced, 16-bit, palette) still insert. While the 8000 × 8000 PNG is checked the window stays
   responsive: the status shows "Reading…", the menus open and a hover shows its tooltip, with no
   stall longer than a moment. A drop of a refused file and a good one inserts the good one.

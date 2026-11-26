@@ -7,6 +7,7 @@ import {
 } from "@chemdraft/export-engine";
 import { formatDropBytes, rewordPictureError } from "./dropFiles";
 import { DAMAGED_PNG_IMAGE_DATA, pngImageDataError } from "./pngIntegrity";
+import { dropErrorReason } from "./dropReason";
 import { abortReason, type DecodeCheckMimeType, type DecodeOptions, type DroppedImageDecoders } from "./rasterDecode";
 import { decodeSvgBytes, encodeSvgText } from "./svgText";
 
@@ -45,9 +46,6 @@ export function bytesToBase64(bytes: Uint8Array): string {
   }
   return btoa(chunks.join(""));
 }
-
-
-const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 function payloadSizeError(bytes: number): string | undefined {
   return bytes > MAX_IMAGE_OBJECT_BYTES
@@ -135,7 +133,12 @@ export async function prepareDroppedImage(
       encoded = await decoders.rasterToPng(bytes, RASTER_MIME[format], MAX_IMAGE_OBJECT_BYTES, options);
     } catch (error) {
       if (options.signal?.aborted) throw abortReason(options.signal);
-      return { ok: false, reason: `the ${FORMAT_LABEL[format]} could not be converted: ${errorText(error)}` };
+      // A reason ChemDraft worded (still too large after scaling down) is kept; a decoder's own text
+      // never reaches the status, as for a PNG.
+      const reason = dropErrorReason(error, `Could not convert a dropped ${FORMAT_LABEL[format]} picture`);
+      return { ok: false, reason: reason
+        ? `the ${FORMAT_LABEL[format]} could not be converted: ${reason}`
+        : `the ${FORMAT_LABEL[format]} could not be decoded.` };
     }
     const decodedLimit = dropPixelLimitError(encoded.sourceWidth, encoded.sourceHeight);
     if (decodedLimit) return { ok: false, reason: decodedLimit };
