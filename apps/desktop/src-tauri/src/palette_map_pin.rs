@@ -531,9 +531,8 @@ impl MapPins {
             pin.mapped = true;
             pin.until = pin.until.max(now + PIN_DURATION);
         }
-        let due = live != pin.position
-            && looks.judged != Some(live)
-            && (first || previous == Some(live));
+        let due =
+            live != pin.position && looks.judged != Some(live) && (first || previous == Some(live));
         if due {
             looks.judged = Some(live);
         }
@@ -1171,7 +1170,10 @@ mod tests {
             AfterMapStep::Stop
         );
         assert_eq!(after_map_step(false, true, false, soon), AfterMapStep::Stop);
-        assert_eq!(after_map_step(false, false, false, soon), AfterMapStep::Stop);
+        assert_eq!(
+            after_map_step(false, false, false, soon),
+            AfterMapStep::Stop
+        );
     }
 
     #[test]

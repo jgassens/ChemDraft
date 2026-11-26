@@ -9234,19 +9234,33 @@ fn palette_scale_log<R: Runtime>(webview: &tauri::Webview<R>, path: &'static str
         });
         let work_area = monitor.as_ref().map(|monitor| {
             let area = monitor.work_area();
-            (area.position.x, area.position.y, area.size.width, area.size.height)
+            (
+                area.position.x,
+                area.position.y,
+                area.size.width,
+                area.size.height,
+            )
         });
         let gdk_window_scale = window.gtk_window().ok().map(|native| native.scale_factor());
         let webview_widget_scale = view.scale_factor();
         let webview_zoom = view.zoom_level();
         // GTK keeps the Xft DPI in 1024ths of a dot per inch: 96 is 1x, 144 is 1.5x.
-        let xft_dpi = gtk::Settings::default()
-            .map(|settings| f64::from(settings.gtk_xft_dpi()) / 1024.0);
+        let xft_dpi =
+            gtk::Settings::default().map(|settings| f64::from(settings.gtk_xft_dpi()) / 1024.0);
         let gdk_scale = std::env::var("GDK_SCALE").ok();
         let gdk_dpi_scale = std::env::var("GDK_DPI_SCALE").ok();
-        let outer_position = window.outer_position().ok().map(|position| (position.x, position.y));
-        let outer_size = window.outer_size().ok().map(|size| (size.width, size.height));
-        let inner_size = window.inner_size().ok().map(|size| (size.width, size.height));
+        let outer_position = window
+            .outer_position()
+            .ok()
+            .map(|position| (position.x, position.y));
+        let outer_size = window
+            .outer_size()
+            .ok()
+            .map(|size| (size.width, size.height));
+        let inner_size = window
+            .inner_size()
+            .ok()
+            .map(|size| (size.width, size.height));
         palette_frame_log(format_args!(
             "scale label={label} path={path} {detail} tao_window_scale={tao_window_scale:?} \
              tao_monitor_scale={tao_monitor_scale:?} gdk_window_scale={gdk_window_scale:?} \
