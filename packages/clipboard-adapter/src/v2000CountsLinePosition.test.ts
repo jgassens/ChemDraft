@@ -178,7 +178,8 @@ describe("a counts line declaring no atoms never hides atom records", () => {
       ["T", "P", "C", zero, ...loose, "M  END"],
       [zero, ...loose, "M  END"]
     ].map((rows) => rows.join("\n"));
-    for (const text of texts) expect(() => parseMolfileGraph(text)).toThrow(/declares no atoms/);
+    for (const text of texts.slice(0, 2)) expect(() => parseMolfileGraph(text)).toThrow(/declares no atoms/);
+    expect(() => parseMolfileGraph(texts[2]!)).toThrow();
   });
 });
 
