@@ -2562,7 +2562,10 @@ export function MainWindow({
   // nor starts one.
   const disarmedGesturePointerIdsRef = useRef(new Set<number>());
   const artStylePreviewRef = useRef<{ startDocument: ChemDraftDocument; undoLabel: string; commandKey: string; commandId: string } | null>(null);
-  const moleculeInspectorPreviewRef = useRef<{ startDocument: ChemDraftDocument; undoLabel: string; commandKey: string; commandId: string } | null>(null);
+  // `chemistry` is the commit policy of a preview that changes chemistry on purpose (a bond stereo
+  // command's scoped chemistry edit); unset, the preview settles under PRESERVE_CHEMISTRY.
+  const moleculeInspectorPreviewRef = useRef<{ startDocument: ChemDraftDocument; undoLabel: string; commandKey: string; commandId: string;
+    chemistry?: CommitChemistryPolicy } | null>(null);
   const settlePalettePreviewRef = useRef<(reason: string) => void>(() => undefined);
   const palettePreviewSettlingRef = useRef(false);
   const palettePreviewHandlersRef = useRef<{
@@ -4258,6 +4261,8 @@ export function MainWindow({
   settlePalettePreviewRef.current = (reason) => {
     const session = artStylePreviewRef.current ?? moleculeInspectorPreviewRef.current;
     if (!session) return;
+    // A molecule-inspector preview that changes chemistry on purpose carries its scoped policy.
+    const chemistry = (artStylePreviewRef.current ? undefined : moleculeInspectorPreviewRef.current?.chemistry) ?? PRESERVE_CHEMISTRY;
     paletteFocusDiagnostic(`settle command=${session.commandId} targets=${JSON.stringify(documentRef.current.selection.objectIds)} before=open: ${session.commandKey} outcome=${documentHistoryRef.current.present === session.startDocument ? "unchanged" : "changed"} reason=${reason}`);
     palettePreviewSettlingRef.current = true;
     // Clear ownership before installing history: recursive installs and late chooser
@@ -4269,7 +4274,7 @@ export function MainWindow({
     // A style preview must not change chemistry either; a refused one is withdrawn, unrecorded. The
     // check runs before the typing checkpoint, so a refusal leaves no "Edit Text" entry either: the
     // undo stack is exactly as it was.
-    const refusal = present && commitChemistryRefusal(session.startDocument, previewDocument, present, PRESERVE_CHEMISTRY, session.undoLabel);
+    const refusal = present && commitChemistryRefusal(session.startDocument, previewDocument, present, chemistry, session.undoLabel);
     if (refusal) {
       installDocumentHistory((history) => history.present === session.startDocument ? history : { ...history, present: session.startDocument });
       palettePreviewSettlingRef.current = false;
@@ -9831,7 +9836,7 @@ export function MainWindow({
   const applyMoleculeInspectorCommandToDocument = useCallback((
     currentDocument: ChemDraftDocument,
     commandId: string
-  ): { document: ChemDraftDocument; handled: boolean; targeted: boolean; message: string } => {
+  ): { document: ChemDraftDocument; handled: boolean; targeted: boolean; message: string; chemistry?: CommitChemistryPolicy } => {
     const fillColor = moleculeRingFillColorForCommand(commandId);
     if (fillColor) {
       const targets = selectedMoleculeRingTargetsForCommand(fillColor.ringKey);
@@ -10000,10 +10005,14 @@ export function MainWindow({
       const state = currentMoleculeInspector.structure.bondStereo!;
       const reason = stereo.value === "flipped" ? nativeBondStereoFlipDisabledReason(currentDocument, bondTargets, bondStereoReader)
         : stereo.value === "either" ? state.eitherDisabledReason : state.geometryDisabledReason;
+      // Setting E/Z unspecified, drawn or the other geometry changes stereo on purpose: a chemistry
+      // edit of exactly the molecules owning the target bonds. Every other molecule, and every
+      // other inspector command (display only), stays under PRESERVE_CHEMISTRY (AGENTS.md section 7).
       return {
         document: applyMoleculeBondStereo(currentDocument, bondTargets, stereo.value, bondStereoReader),
         handled: true, targeted: true,
-        message: reason ?? (stereo.value === "either" ? "E/Z unspecified" : stereo.value === "flipped" ? "Use the other geometry" : "Use drawn geometry")
+        message: reason ?? (stereo.value === "either" ? "E/Z unspecified" : stereo.value === "flipped" ? "Use the other geometry" : "Use drawn geometry"),
+        chemistry: chemistryEditOf([...new Set(bondTargets.map(target => target.objectId))], "change this double bond's E/Z")
       };
     }
     const position = moleculeDoubleBondPositionForCommand(commandId);
@@ -10230,7 +10239,8 @@ export function MainWindow({
       return true;
     }
 
-    const changed = commitDocumentChange(result.document, moleculeDoubleBondPositionForCommand(commandId) || moleculeBondStereoForCommand(commandId) ? result.message : undefined);
+    const changed = commitDocumentChange(result.document, moleculeDoubleBondPositionForCommand(commandId) || moleculeBondStereoForCommand(commandId) ? result.message : undefined,
+      false, undefined, result.chemistry);
     setActiveEditorObjectId(undefined);
     setStatus(changed ? result.message : "Selected molecule style unchanged");
     return true;
@@ -10246,7 +10256,8 @@ export function MainWindow({
       return;
     }
 
-    moleculeInspectorPreviewRef.current = { startDocument, undoLabel: result.message, commandKey: palettePreviewCommandKey(commandId), commandId };
+    moleculeInspectorPreviewRef.current = { startDocument, undoLabel: result.message, commandKey: palettePreviewCommandKey(commandId), commandId,
+      chemistry: result.chemistry };
     replacePresentDocument(result.document, true);
   }, [applyMoleculeInspectorCommandToDocument, replacePresentDocument, settleOtherPalettePreview]);
 
@@ -10267,7 +10278,7 @@ export function MainWindow({
     }
 
     const changed = result.document !== session.startDocument;
-    if (changed) commitDocumentHistoryFrom(session.startDocument, result.document, result.message);
+    if (changed) commitDocumentHistoryFrom(session.startDocument, result.document, result.message, undefined, result.chemistry);
     else replacePresentDocument(session.startDocument, true);
     setActiveEditorObjectId(undefined);
     setStatus(changed ? result.message : "Selected molecule style unchanged");
