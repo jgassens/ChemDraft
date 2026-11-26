@@ -456,6 +456,37 @@ Isotope labels and their positions are preserved in native documents, rendering,
 and MOL V2000/V3000, SDF, SMILES and CDXML exports. D/T represent hydrogen-2/3; other isotope
 masses are stored per atom. Radical inputs remain refused by drawing and export commands.
 
+### CDXML style reference
+
+`--style-reference <file.cdxml>` gives CDXML exports the drawing settings of an existing CDXML
+file, such as one saved with a journal's document style:
+
+~~~bash
+pnpm -s chemdraft export --smiles 'CC(=O)Oc1ccccc1C(=O)O' --out aspirin.cdxml --style-reference house-style.cdxml
+~~~
+
+The reference's root `<CDXML>` element supplies `BondLength`, `LineWidth`, `BoldWidth`,
+`HashSpacing`, `MarginWidth`, `BondSpacing`, `ChainAngle`, `LabelSize`, `LabelFace` and `LabelFont`
+(resolved through its `<fonttable>`); caption settings are carried when present. The molecule is
+scaled so its typical bond is `BondLength` points long (individual bonds keep their proportions,
+so a stretched bond stays longer), styled to match, and the written file declares the same settings
+on its own root element, so a reader draws labels and lines at the reference's sizes. A built-in
+template layout is rescaled to the reference's bond length too. Only geometry and display change;
+the CDXML identity check still runs.
+
+ChemDraft uses a style file only when you name one. `--style-reference` takes precedence over
+`CHEMDRAFT_CDXML_STYLE_REFERENCE`. In the environment variable, a leading `~/` expands to your home
+directory. If neither names a file, CDXML exports use ChemDraft's built-in style. ChemDraft searches
+no configuration directory for style files.
+
+Each CDXML JSON Lines result reports the selected reference as
+`"styleReference": {"path": "house-style.cdxml", "source": "flag"}`. The source is `"flag"` or
+`"environment"`. The field is omitted when no reference is used. A structure setting the reference
+leaves unset keeps ChemDraft's value and is named in the job's warnings. An unreadable reference,
+one larger than 5 MB, or one with an unusable value such as `BondLength="0"` fails the run with exit
+2 and the reason before any file is written. Other formats ignore the environment variable and
+reject `--style-reference`.
+
 ## Built-in structure template layouts
 
 Use a template name such as `beta-cyclodextrin`, `β-CD`, `cucurbit[7]uril`, or
@@ -468,7 +499,8 @@ Coordinate-less SMILES input to `render`, `document`, `grid`, `reaction`, and
 `export` uses the authored layout only when canonical **isomeric** SMILES matches
 exactly, including stereo and charge. Results report `layout: "template:<id>"`
 (on grid cells and reaction `layouts` entries for multi-molecule figures).
-Templates use the default document bond length; ordinary SMILES sizing is unchanged.
+Templates use the default document bond length, except that a CDXML export with a style
+reference rescales them to the reference's `BondLength`; ordinary SMILES sizing is unchanged.
 Stereo-free or different stereoisomers do not substitute. Native documents supplied to
 `render-document`, MOL/molfile, CDXML and drawn coordinates retain their layouts; a
 native document built from SMILES inherits the layout chosen by `document`.

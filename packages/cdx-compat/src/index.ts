@@ -1,4 +1,4 @@
-import { XMLParser, XMLValidator } from "fast-xml-parser";
+import { XMLParser } from "fast-xml-parser";
 import {
   ChemDraftDocumentSchema,
   DocumentSchemaVersion,
@@ -9,6 +9,7 @@ import {
   bracketUsageSemantics,
   importedBracketUsage,
   createEmptyDocument,
+  DefaultNativeTextStyle,
   readSerializedDocument,
   drawnLabelBondSide,
   isDativeBond,
@@ -71,7 +72,24 @@ import {
 } from "./cdxBinary";
 import { abbreviationExpansionIssue, cdxmlAtomChemistry, cdxmlAtomNativeState, elementFromCdxmlAtom, restoreCdxmlAbbreviations } from "./abbreviations";
 import { cdxmlToCssPx, cssPxToCdxml, formatNumber, formatPoint } from "./coordinates";
-import { countCdxmlFontEntries, indexCdxmlFonts, lookupCdxmlFont, trackCdxmlFontTable, type CdxmlFont } from "./cdxmlFontIndex";
+import {
+  CDXML_FONT_NAME_LIMIT, CDXML_FONT_ENTRY_LIMIT, cdxmlFontEntryChars, cdxmlFontEntryTooLong,
+  countCdxmlFontEntries, indexCdxmlFonts, lookupCdxmlFont, trackCdxmlFontTable, type CdxmlFont
+} from "./cdxmlFontIndex";
+import { cdxmlDocumentStyleFontNames, cdxmlDocumentStyleHeader, type CdxmlDocumentStyle } from "./documentStyle";
+import {
+  childElements, elementView, parseCdxml, stripByteOrderMark, xmlRootElement,
+  type OrderedXmlNode, type OrderedXmlTree, type XmlElementView
+} from "./cdxmlXml";
+
+export {
+  cdxmlDocumentStyleFontNames,
+  cdxmlDocumentStyleHeader,
+  nativeDrawingStyleFromCdxmlStyle,
+  readCdxmlDocumentStyle,
+  type CdxmlDocumentStyle,
+  type CdxmlDocumentStyleReadResult
+} from "./documentStyle";
 
 export interface CompatibilityConversionWarning {
   code: string;
@@ -90,6 +108,9 @@ export interface CdxmlExportOptions {
   creationProgram?: string;
   /** CDXML saves embed by default; interchange CDX explicitly disables this. */
   embedNativePayload?: boolean;
+  /** Document-level drawing settings to declare on the root element. They describe the drawing
+   *  for a reader; they do not restyle it, so the caller styles the molecules to match. */
+  documentStyle?: CdxmlDocumentStyle;
 }
 
 export interface CdxmlExportResult {
@@ -253,25 +274,6 @@ const EncodedVisibleHashVersion = "|x|32";
 // without a native envelope; other readers can ignore it and use the fitted visible page.
 const PageOffsetAttribute = "attrib4346";
 
-const xmlParser = new XMLParser({
-  preserveOrder: true,
-  ignoreAttributes: false,
-  attributeNamePrefix: "",
-  parseAttributeValue: false,
-  trimValues: false,
-  // Decode references once in text and attributes, without enabling named HTML entities.
-  // The custom decoder also leaves document-defined entities unexpanded.
-  entityDecoder: {
-    decode: decodeXmlReferences,
-    reset() {},
-    setExternalEntities() {},
-    addInputEntities() {},
-    setXmlVersion() {}
-  },
-  commentPropName: "#comment",
-  cdataPropName: "#cdata"
-});
-
 // Frozen parser options from the released origin/main hash path. In particular its default
 // decoder leaves numeric references literal. Do not substitute the current XML decoder here.
 const legacyVisibleXmlParser = new XMLParser({
@@ -310,15 +312,6 @@ const standardCdxmlColorTable = [
   "#0000ff",
   "#ff00ff"
 ] as const;
-
-type OrderedXmlNode = Record<string, unknown>;
-type OrderedXmlTree = OrderedXmlNode[];
-
-interface XmlElementView {
-  name: string;
-  children: OrderedXmlTree;
-  attributes: Record<string, string>;
-}
 
 interface IdAllocator {
   next(): string;
@@ -363,20 +356,6 @@ interface CdxmlColorTable {
   copies?: { entries: number; shared?: Readonly<Record<string, string>>; partial?: boolean };
 }
 
-/**
- * Import cap on one font entry. Every caption keeps the fonts its runs name (and its own style
- * names its font again), so an unbounded font name was copied into every caption's saved state:
- * a 331 KB crafted file of 4,000 captions over one long name saved ~48.7 MB of native JSON
- * (Codex security finding). Real font names are short (a Windows face name fits in 32 characters,
- * LF_FACESIZE), so 256 characters is far above any real font yet keeps each caption's copy small.
- * The whole entry (id, charset, name and any other attribute, keys included) is capped too, since
- * the entry is what each caption stores. A font over either cap is
- * not used: text set in it keeps the default font, with one warning naming the font ids. A name is
- * never truncated, which would silently set the text in a different font.
- */
-const CDXML_FONT_NAME_LIMIT = 256;
-const CDXML_FONT_ENTRY_LIMIT = 512;
-
 /** The imported font table, indexed by id (the first entry wins, as a linear search did). */
 interface CdxmlImportFonts {
   table: readonly CdxmlFont[];
@@ -387,17 +366,6 @@ interface CdxmlImportFonts {
   tableChars: number;
   /** Ids of fonts left out for being over the per-font caps (a text naming one is marked). */
   omittedIds: ReadonlySet<string>;
-}
-
-function cdxmlFontEntryChars(font: Readonly<Record<string, unknown>>): number {
-  let chars = 0;
-  for (const [key, value] of Object.entries(font)) chars += key.length + String(value).length;
-  return chars;
-}
-
-/** Over either per-font cap (CDXML_FONT_NAME_LIMIT, CDXML_FONT_ENTRY_LIMIT): the font is not used. */
-function cdxmlFontEntryTooLong(font: Readonly<Record<string, unknown>>, chars = cdxmlFontEntryChars(font)): boolean {
-  return String(font.name ?? "").length > CDXML_FONT_NAME_LIMIT || chars > CDXML_FONT_ENTRY_LIMIT;
 }
 
 /** A font id as a warning names it: an oversized entry's id may itself be long, so only a short number is quoted. */
@@ -555,6 +523,12 @@ interface CdxmlExportFonts {
   unwritableIds: ReadonlySet<string>;
   /** Set once the export has reported an unwritable id (one warning per document). */
   unwritableIdWarned: boolean;
+  /**
+   * The listed font a table whose own font could not be added is written in: the default text
+   * font, or, when the table was too full to add that too, the first font it lists. Undefined only
+   * when every table's font is listed, so a table never names an id the font table does not hold.
+   */
+  tableFallbackFontId?: string;
 }
 
 interface CdxmlCrossingImportHint {
@@ -633,7 +607,8 @@ function exportCdxml(
   }
   const nativeJson = JSON.stringify(nativeSave.value);
   const nativePayloadHash = sha256Utf8Hex(nativeJson);
-  const fonts = exportCdxmlFonts(parsedDocument, warnings);
+  const styleFontNames = options.documentStyle === undefined ? [] : cdxmlDocumentStyleFontNames(options.documentStyle);
+  const fonts = exportCdxmlFonts(parsedDocument, warnings, styleFontNames);
   // Source compatibility graphics retain their color indices as well as their other attributes.
   const colors: ExportColorTable = [...standardCdxmlColorTable];
   const sourceColors = new Map<number, string>();
@@ -765,8 +740,18 @@ function exportCdxml(
       message: `Page ${fitted.page.id} has different print margins from page ${parsedDocument.pages[0].id}; CDXML's shared root PrintMargins and every page grid use page ${parsedDocument.pages[0].id}'s margins.`
     });
   }
+  // A document style's settings join the page setup on the one root element. The two sets of names
+  // are disjoint (pageSetup.ts keeps only page attributes on the root), so neither overrides the other.
+  const styleFontId = (name: string) => lookupCdxmlFont(fonts.byName, name)?.id;
+  const styleRoot = options.documentStyle === undefined ? {}
+    : cdxmlDocumentStyleHeader(options.documentStyle, styleFontId).attributes;
+  const unlistedStyleFonts = styleFontNames.filter(name => styleFontId(name) === undefined);
+  if (unlistedStyleFonts.length) warnings.push(warning("cdxml.document_style_font_not_written",
+    `${format.toUpperCase()} export: the document style's ${unlistedStyleFonts.map(name => `"${name}"`).join(" and ")} font ` +
+    "could not be added to the font table, so the root element does not name it; readers use their own label font."));
+  const rootAttributes = { ...styleRoot, ...rootPageSetup };
   const visiblePages = fittedPages.map(({ page, children, setup }) => buildPageXml(page, children, setup));
-  const visibleEnvelope = buildCdxmlEnvelope(creationProgram, visiblePages, fonts.table, colors, embedded, rootPageSetup);
+  const visibleEnvelope = buildCdxmlEnvelope(creationProgram, visiblePages, fonts.table, colors, embedded, rootAttributes);
   const visibleCdxmlHash = visibleHashForCdxml(visibleEnvelope);
   const metadata = buildMetadataObjectTags({
     codecVersion: CdxmlEnvelopeCodecVersion,
@@ -778,7 +763,7 @@ function exportCdxml(
   const envelopePages = fittedPages.map(({ page, children, setup }, pageIndex) =>
     buildPageXml(page, `${children}${pageIndex === 0 ? metadata : ""}`, setup)
   );
-  const contents = buildCdxmlEnvelope(creationProgram, envelopePages, fonts.table, colors, embedded, rootPageSetup);
+  const contents = buildCdxmlEnvelope(creationProgram, envelopePages, fonts.table, colors, embedded, rootAttributes);
   // No runtime self-check that the metadata leaves the visible hash alone. The one this replaced
   // re-parsed and re-hashed the whole finished envelope, payload included — a full XML parse of
   // megabytes on every save — and a textual stand-in could never fire, since `contents` is the
@@ -846,7 +831,7 @@ export function openChemDraftPayload(contents: string, sourceFormat: "CDXML" | "
 
   let tree: OrderedXmlTree;
   try {
-    tree = parseCdxml(contents, xmlParser, sourceFormat);
+    tree = parseCdxml(contents, undefined, sourceFormat);
   } catch (error) {
     return {
       source: "external-cdxml",
@@ -856,7 +841,7 @@ export function openChemDraftPayload(contents: string, sourceFormat: "CDXML" | "
 
   // XML that is not CDXML at all — `.cdxml` is also PowerShell's cmdlet-definition extension, and
   // those files are XML too. Name what the file is instead of reporting "no page elements".
-  const rootName = xmlRootElementName(tree);
+  const rootName = xmlRootElement(tree)?.name;
   if (rootName !== undefined && rootName.toLowerCase() !== "cdxml") {
     return {
       source: "external-cdxml",
@@ -1117,7 +1102,8 @@ function unsupportedSchemaWarningFromJson(contents: string): CompatibilityConver
 // The font table is built once per export and indexed by name, so registering each restored
 // caption run's font is a lookup, not a scan of the table (Codex security finding: autosave runs
 // this right after a file opens, and a crafted 1.5 MB file cost ~400 million comparisons).
-function exportCdxmlFonts(document: ChemDraftDocument, warnings: CompatibilityConversionWarning[]): CdxmlExportFonts {
+function exportCdxmlFonts(document: ChemDraftDocument, warnings: CompatibilityConversionWarning[],
+  styleFontNames: readonly string[] = []): CdxmlExportFonts {
   const fonts = new Map<string, CdxmlFont>();
   // A stored font over the per-font caps (a native payload's table is not checked by import) is not
   // written, and its id stays reserved so that no new font takes it. An unchanged source text that
@@ -1158,7 +1144,8 @@ function exportCdxmlFonts(document: ChemDraftDocument, warnings: CompatibilityCo
   }
   const byName = indexCdxmlFonts<string | undefined>(fonts.values(), font => font.name);
   const plainCaptionIds = new Set<string>();
-  let nextId = 1, captionRuns = 0, captionRunLimitReached = false, tableFullWarned = false;
+  let nextId = 1, captionRuns = 0, captionRunLimitReached = false, tableFullWarned = false, tableFontMissing = false;
+  let firstFallbackTableId: string | undefined;
   for (const page of document.pages) for (const object of page.objects) {
     let names: unknown[] = [];
     if (object.type === "table") names = [nativeTextStyleFromObjectStyle(object.style).fontFamily];
@@ -1181,6 +1168,7 @@ function exportCdxmlFonts(document: ChemDraftDocument, warnings: CompatibilityCo
       if (typeof name !== "string" || !name || lookupCdxmlFont(byName, name)) continue;
       // Not registered: a caption set in it is written as plain styled text, a table in the default font.
       if (name.length > CDXML_FONT_NAME_LIMIT) {
+        if (object.type === "table") { tableFontMissing = true; firstFallbackTableId ??= object.id; }
         if (!nameTooLong) {
           nameTooLong = true;
           tooLong.push({ label: `the font of ${object.type} ${object.id}`, kind: object.type === "table" ? "table" : "caption" });
@@ -1198,6 +1186,7 @@ function exportCdxmlFonts(document: ChemDraftDocument, warnings: CompatibilityCo
             message: `CDXML export: the font table is full (font ids below ${cdxmlLimits.fontId}); from ${object.type} ${object.id} on, ` +
               "fonts not already in it were not written, and text set in them was written without its caption frame and run fonts, or in the default font." });
         }
+        if (object.type === "table") { tableFontMissing = true; firstFallbackTableId ??= object.id; }
         continue;
       }
       const id = String(nextId++);
@@ -1206,16 +1195,55 @@ function exportCdxmlFonts(document: ChemDraftDocument, warnings: CompatibilityCo
       byName.set(name, font);
     }
   }
+  // A table whose font could not be added is written in the default text font, registered here
+  // through the same index so its id is one this table lists (never an assumed id 1, which may be
+  // absent or, with a style reference, the reference's label font). When the table is too full for
+  // that as well, the first listed font stands in: it is non-empty, since only a full table refuses.
+  let tableFallbackFontId: string | undefined;
+  if (tableFontMissing) {
+    const fallbackName = DefaultNativeTextStyle.fontFamily;
+    if (!lookupCdxmlFont(byName, fallbackName)) {
+      while (nextId < cdxmlLimits.fontId && (fonts.has(String(nextId)) || tooLongIds.has(String(nextId)))) nextId++;
+      if (nextId < cdxmlLimits.fontId && fonts.size < cdxmlLimits.fontTable) {
+        const id = String(nextId++);
+        const font = { id, charset: "iso-8859-1", name: fallbackName };
+        fonts.set(id, font);
+        byName.set(fallbackName, font);
+      }
+    }
+    const defaultFont = lookupCdxmlFont(byName, fallbackName);
+    const fallbackFont = defaultFont ?? fonts.values().next().value;
+    tableFallbackFontId = fallbackFont?.id;
+    if (fallbackFont) {
+      warnings.push({ code: "cdxml.table_font_fallback", ...(firstFallbackTableId ? { sourceObjectId: firstFallbackTableId } : {}),
+        message: `CDXML export: from table ${firstFallbackTableId ?? "?"} on, a table whose font could not be added to the font table was written in ` +
+          (defaultFont ? `the default font "${fallbackFont.name}"` : `the first listed font "${fallbackFont.name}" (the default font is not listed and cannot be added)`) + "." });
+    }
+  }
+  // A document style's label and caption fonts (a CDXML style reference) join this same table after
+  // the document's own fonts, so the root's LabelFont and CaptionFont ids agree with every font= in
+  // the file. A name already listed keeps its id; one that finds no free id is left out, and the
+  // caller leaves its root attribute out with a warning.
+  for (const name of styleFontNames) {
+    if (!name || name.length > CDXML_FONT_NAME_LIMIT || lookupCdxmlFont(byName, name)) continue;
+    while (nextId < cdxmlLimits.fontId && (fonts.has(String(nextId)) || tooLongIds.has(String(nextId)))) nextId++;
+    if (nextId >= cdxmlLimits.fontId || fonts.size >= cdxmlLimits.fontTable) break;
+    const id = String(nextId++);
+    const font = { id, charset: "iso-8859-1", name };
+    fonts.set(id, font);
+    byName.set(name, font);
+  }
   if (tooLong.length) warnings.push(exportFontEntryTooLongWarning(tooLong));
   return { table: trackCdxmlFontTable([...fonts.values()]), byName, plainCaptionIds, captionRunLimitWarned: false, notWrittenIds: tooLongIds,
-    unwritableIds, unwritableIdWarned: false };
+    unwritableIds, unwritableIdWarned: false, tableFallbackFontId };
 }
 
-function buildCdxmlEnvelope(creationProgram: string, pages: readonly string[], fonts: readonly CdxmlFont[], colors: ExportColorTable, embedded = true, pageSetup: Record<string, string> = {}): string {
+// `rootAttributes` is the page setup plus any document style: every root attribute but the two above.
+function buildCdxmlEnvelope(creationProgram: string, pages: readonly string[], fonts: readonly CdxmlFont[], colors: ExportColorTable, embedded = true, rootAttributes: Record<string, string> = {}): string {
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">',
-    `<CDXML CreationProgram="${escapeXmlAttribute(creationProgram)}"${embedded ? ` ${VisibleHashVersionAttribute}="${EncodedVisibleHashVersion}"` : ""}${Object.keys(pageSetup).length ? ` ${xmlAttributes(pageSetup)}` : ""}>`,
+    `<CDXML CreationProgram="${escapeXmlAttribute(creationProgram)}"${embedded ? ` ${VisibleHashVersionAttribute}="${EncodedVisibleHashVersion}"` : ""}${Object.keys(rootAttributes).length ? ` ${xmlAttributes(rootAttributes)}` : ""}>`,
     buildStandardColorTableXml(colors),
     ...(fonts.length ? ["  <fonttable>", ...fonts.map(font =>
       `    <font ${xmlAttributes(font)}/>`), "  </fonttable>"] : []),
@@ -2460,7 +2488,10 @@ function exportTableObject(
 ): string {
   const layout = planTableLayout(table);
   const style = nativeTextStyleFromObjectStyle(table.style);
-  const font = lookupCdxmlFont(fonts.byName, style.fontFamily)?.id ?? "1";
+  // Every font= names an entry of the one font table: the table's own font, else the fallback
+  // exportCdxmlFonts registered for it. With neither (no font listed at all), runs name no font.
+  const font = lookupCdxmlFont(fonts.byName, style.fontFamily)?.id ?? fonts.tableFallbackFontId;
+  const fontAttribute = font === undefined ? "" : ` font="${font}"`;
   const texts: string[] = [];
   const writeLines = (lines: typeof layout.cells[number]["lines"], fontSizePx: number) => {
     for (const line of lines) {
@@ -2480,7 +2511,7 @@ function exportTableObject(
         const face = (weight >= 600 ? 1 : 0) + (italic === "italic" ? 2 : 0) +
           (run.script === "subscript" ? 32 : run.script === "superscript" ? 64 : 0);
         const size = run.script === "normal" && typeof run.style.fontSizePx === "number" ? run.style.fontSizePx : fontSizePx;
-        return `<s font="${font}" size="${formatNumber(cssPxToCdxml(size))}" face="${face}"${cdxmlColorAttribute(run.style.color ?? style.color, colors).map(attribute => ` ${attribute}`).join("")}>${escapeXmlText(run.text)}</s>`;
+        return `<s${fontAttribute} size="${formatNumber(cssPxToCdxml(size))}" face="${face}"${cdxmlColorAttribute(run.style.color ?? style.color, colors).map(attribute => ` ${attribute}`).join("")}>${escapeXmlText(run.text)}</s>`;
       }).join("");
       texts.push(`<t id="${allocator.next()}" p="${formatPoint({ x: first.x + afterWidth, y: line.baselineY })}" Justification="${justification}">${runXml}</t>`);
     }
@@ -6273,83 +6304,6 @@ function importUnknownCompatibilityObject(element: XmlElementView, pageIndex: nu
   };
 }
 
-/**
- * fast-xml-parser's validator matches attribute values with `(([\s\S])*?)`, a group repeated once per
- * character, which V8 runs recursively: a value of a few hundred thousand characters overflows the
- * stack. The embedded ChemDraft payload is exactly such a value — base64 of the whole document — so
- * every large drawing failed to save (the export re-parses its own output for the visible hash) and a
- * large saved file could not be reopened. Validation only checks structure, so it runs on a copy with
- * long values shortened; the parser, whose attribute pattern is flat, reads the real text.
- */
-const VALIDATION_ATTRIBUTE_VALUE_LIMIT = 4096;
-
-// A linear scan, not a regular expression: even `"[^"<]{4096,}"` keeps backtracking state per
-// character in V8 and overflows on a multi-megabyte match. It reads quotes only inside markup —
-// never in text, comments, or CDATA. Text may hold a raw quote (the writer escapes only `&`, `<`
-// and `>` there), and a scan keyed on every `=` took `pH = "7` in a caption for an attribute: the
-// quote paired with a later one, the payload after it went unshortened, and the app refused to
-// reopen its own file.
-function withLongAttributeValuesShortened(xml: string): string {
-  let result = "";
-  let copiedUpTo = 0;
-  let cursor = 0;
-  for (;;) {
-    const open = xml.indexOf("<", cursor);
-    if (open === -1) {
-      break;
-    }
-    const skipTo = xml.startsWith("<!--", open)
-      ? xml.indexOf("-->", open + 4)
-      : xml.startsWith("<![CDATA[", open)
-        ? xml.indexOf("]]>", open + 9)
-        : undefined;
-    if (skipTo !== undefined) {
-      if (skipTo === -1) {
-        break;
-      }
-      cursor = skipTo + 3;
-      continue;
-    }
-    // A tag (or `<?…?>`, `<!DOCTYPE …>`): quoted values until the `>` outside them.
-    let index = open + 1;
-    for (; index < xml.length; index += 1) {
-      const character = xml[index];
-      if (character === ">") {
-        break;
-      }
-      if (character !== '"' && character !== "'") {
-        continue;
-      }
-      const close = xml.indexOf(character, index + 1);
-      if (close === -1) {
-        // Unterminated: nothing to shorten, and the validator reports the real error.
-        return copiedUpTo === 0 ? xml : result + xml.slice(copiedUpTo);
-      }
-      const lessThan = xml.indexOf("<", index + 1);
-      if (close - index - 1 >= VALIDATION_ATTRIBUTE_VALUE_LIMIT && (lessThan === -1 || lessThan > close)) {
-        result += `${xml.slice(copiedUpTo, index + 1)}…`;
-        copiedUpTo = close;
-      }
-      index = close;
-    }
-    cursor = index + 1;
-  }
-  return copiedUpTo === 0 ? xml : result + xml.slice(copiedUpTo);
-}
-
-function parseCdxml(contents: string, parser = xmlParser, sourceFormat: "CDXML" | "CDX" = "CDXML"): OrderedXmlTree {
-  const xml = stripByteOrderMark(contents);
-  const validation = XMLValidator.validate(withLongAttributeValuesShortened(xml));
-  if (validation !== true) {
-    throw new Error(validation.err.msg);
-  }
-  const parsed = parser.parse(xml) as unknown;
-  if (!Array.isArray(parsed)) {
-    throw new Error(`${sourceFormat} parser returned an unexpected document shape.`);
-  }
-  return parsed as OrderedXmlTree;
-}
-
 function visibleHashForParsedTree(tree: OrderedXmlTree): string {
   return sha256Utf8Hex(canonicalizeXmlTree(stripChemDraftObjectTags(tree)));
 }
@@ -6428,17 +6382,6 @@ function findChemDraftObjectTags(tree: OrderedXmlTree): Record<string, string> {
   return tags;
 }
 
-/** The document element's name, skipping the XML declaration and other processing instructions. */
-function xmlRootElementName(tree: OrderedXmlTree): string | undefined {
-  for (const node of tree) {
-    const element = elementView(node);
-    if (element && !element.name.startsWith("?") && !element.name.startsWith("!")) {
-      return element.name;
-    }
-  }
-  return undefined;
-}
-
 function findElements(tree: OrderedXmlTree, name: string): XmlElementView[] {
   const matches: XmlElementView[] = [];
   for (const node of tree) {
@@ -6452,32 +6395,6 @@ function findElements(tree: OrderedXmlTree, name: string): XmlElementView[] {
     matches.push(...findElements(element.children, name));
   }
   return matches;
-}
-
-function childElements(parent: XmlElementView, name: string): XmlElementView[] {
-  return parent.children.flatMap((node) => {
-    const element = elementView(node);
-    return element?.name === name ? [element] : [];
-  });
-}
-
-function elementView(node: OrderedXmlNode): XmlElementView | undefined {
-  const name = Object.keys(node).find((key) => key !== ":@");
-  if (!name || name === "#text" || name === "#comment" || name === "#cdata") {
-    return undefined;
-  }
-  const rawChildren = node[name];
-  const children = Array.isArray(rawChildren) ? rawChildren as OrderedXmlTree : [];
-  const attributes = attributesFromNode(node);
-  return { name, children, attributes };
-}
-
-function attributesFromNode(node: OrderedXmlNode): Record<string, string> {
-  const raw = node[":@"];
-  if (!isRecord(raw)) {
-    return {};
-  }
-  return Object.fromEntries(Object.entries(raw).map(([key, value]) => [key, String(value)]));
 }
 
 function isChemDraftObjectTag(element: XmlElementView): boolean {
@@ -7287,22 +7204,6 @@ function parseNumber(value: string | undefined): number | undefined {
 const XML_TEXT_SPECIAL = /[&<>\r]/;
 const XML_ATTRIBUTE_SPECIAL = /[&<>"'\r\n\t]/;
 
-function decodeXmlReferences(value: string): string {
-  const xmlEntities: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
-  // A single replace never scans its replacement text: &amp;#10; stays literal &#10;.
-  return value.replace(/&(amp|lt|gt|quot|apos|#(?:[0-9]+|x[0-9a-fA-F]+));/g, (reference, entity: string) => {
-    if (entity[0] !== "#") return xmlEntities[entity];
-    const codePoint = entity[1] === "x" ? Number.parseInt(entity.slice(2), 16) : Number(entity.slice(1));
-    if (!(codePoint === 9 || codePoint === 10 || codePoint === 13
-      || (codePoint >= 0x20 && codePoint <= 0xd7ff)
-      || (codePoint >= 0xe000 && codePoint <= 0xfffd)
-      || (codePoint >= 0x10000 && codePoint <= 0x10ffff))) {
-      throw new Error(`Invalid XML character reference "${reference}".`);
-    }
-    return String.fromCodePoint(codePoint);
-  });
-}
-
 function escapeXmlText(value: string): string {
   if (!XML_TEXT_SPECIAL.test(value)) {
     return value;
@@ -7333,10 +7234,6 @@ function indent(value: string, spaces: number): string {
 
 function warning(code: string, message: string): CompatibilityConversionWarning {
   return { code, message };
-}
-
-function stripByteOrderMark(value: string): string {
-  return value.charCodeAt(0) === 0xfeff ? value.slice(1) : value;
 }
 
 function errorMessage(error: unknown): string {

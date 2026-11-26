@@ -77,3 +77,28 @@ export function stopCdxmlFontTableTrackingForTesting(): number {
   tableReadLimit = Number.POSITIVE_INFINITY;
   return tableReads;
 }
+
+/**
+ * Import cap on one font entry. Every caption keeps the fonts its runs name (and its own style
+ * names its font again), so an unbounded font name was copied into every caption's saved state:
+ * a 331 KB crafted file of 4,000 captions over one long name saved ~48.7 MB of native JSON
+ * (Codex security finding). Real font names are short (a Windows face name fits in 32 characters,
+ * LF_FACESIZE), so 256 characters is far above any real font yet keeps each caption's copy small.
+ * The whole entry (id, charset, name and any other attribute, keys included) is capped too, since
+ * the entry is what each caption stores. A font over either cap is
+ * not used: text set in it keeps the default font, with one warning naming the font ids. A name is
+ * never truncated, which would silently set the text in a different font.
+ */
+export const CDXML_FONT_NAME_LIMIT = 256;
+export const CDXML_FONT_ENTRY_LIMIT = 512;
+
+export function cdxmlFontEntryChars(font: Readonly<Record<string, unknown>>): number {
+  let chars = 0;
+  for (const [key, value] of Object.entries(font)) chars += key.length + String(value).length;
+  return chars;
+}
+
+/** Over either per-font cap (CDXML_FONT_NAME_LIMIT, CDXML_FONT_ENTRY_LIMIT): the font is not used. */
+export function cdxmlFontEntryTooLong(font: Readonly<Record<string, unknown>>, chars = cdxmlFontEntryChars(font)): boolean {
+  return String(font.name ?? "").length > CDXML_FONT_NAME_LIMIT || chars > CDXML_FONT_ENTRY_LIMIT;
+}

@@ -130,6 +130,21 @@ macOS and `%APPDATA%\Claude\` on Windows. Restart the client after editing.
 {"mcpServers":{"chemdraft":{"command":"pnpm","args":["-s","--dir","<checkout>","chemdraft-mcp"]}}}
 ```
 
+To use a house style for CDXML exports, set
+`CHEMDRAFT_CDXML_STYLE_REFERENCE` in the server's environment to the CDXML
+file you want to use. For example, in Claude Code:
+
+```sh
+claude mcp add --scope user -e CHEMDRAFT_CDXML_STYLE_REFERENCE="<style-file.cdxml>" chemdraft -- pnpm -s --dir "<checkout>" chemdraft-mcp
+```
+
+In Claude Desktop or Codex configuration, add the same variable to the
+server's `env`. The MCP `export_structure` argument `styleReference` takes
+precedence for that call. The CLI also reads the variable from its own
+environment and gives `--style-reference` precedence. When neither source
+names a reference, exports use ChemDraft's built-in style. Each result that
+uses a reference reports its path and source. [CDXML export options](files.md)
+
 GUI clients may have a different PATH from your terminal. If `pnpm` is not
 found, set `command` to its full executable path. On Windows, if the client
 cannot launch a `pnpm.cmd` shim, use `command: "cmd.exe"` and arguments

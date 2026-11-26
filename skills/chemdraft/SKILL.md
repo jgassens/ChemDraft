@@ -160,7 +160,8 @@ the user asks for a particular size; do not combine document style with
    Keep `source` and `matchedName` or `matchedCas` with dictionary results.
    For hosts such as beta-cyclodextrin, β-CD,
    cucurbit[7]uril and 18-crown-6, use the template name rather than writing SMILES.
-   Templates work without Java and supply an original layout at default bond length.
+   Templates work without Java and supply an original layout at default bond length
+   (a CDXML export with a style reference rescales it to the reference's bond length).
    Only exact canonical isomeric SMILES matches receive that layout; never remove
    stereo or charge to force a match. OPSIN parses
    systematic names, not every trivial or trade name. When the full lookup fails on a

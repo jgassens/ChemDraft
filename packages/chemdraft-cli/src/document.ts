@@ -11,7 +11,8 @@ import {
   UnknownBondOrderError,
   type ChemDraftDocument,
   type MoleculeBond,
-  type MoleculeObject
+  type MoleculeObject,
+  type NativeDrawingStyle
 } from "@chemdraft/chem-core";
 import { ensureSvgFontsLoaded, documentStyleSvg, exportDocumentToSvg, type ExportWarning } from "@chemdraft/export-engine";
 import type { Depiction2D } from "@chemdraft/ocl-adapter";
@@ -40,6 +41,7 @@ import {
   type SourceBondSemantics,
   applyMoleculeTargetBondLength,
   applyDocumentStyle,
+  applyMoleculeDrawingStyle,
   assertMolfileHasKnownBondOrders,
   expandNativeMoleculeLabelGroups,
   nativeSingleHeavyElementLabelValence,
@@ -845,6 +847,8 @@ export interface BuildSmilesDocumentOptions {
   style?: FigureStyle;
   name?: string;
   bondLength?: number;
+  /** A drawing style read from elsewhere (a CDXML style reference); its bond length wins. */
+  drawingStyle?: Partial<NativeDrawingStyle>;
 }
 
 export interface BuiltSmilesDocument {
@@ -900,6 +904,10 @@ export async function buildSmilesDocument(
       document = applyDocumentStyle(document);
       molecule = moleculeFromDocument(document);
     }
+    if (options.drawingStyle !== undefined) {
+      document = applyMoleculeDrawingStyle(document, [molecule.id], options.drawingStyle);
+      molecule = moleculeFromDocument(document);
+    }
     const sourceCanonicalSmiles = await canonicalSmiles(trimmedSmiles, "input");
     await assertCanonicalIdentity(sourceCanonicalSmiles, molecule.structure);
     const ocl = await import("@chemdraft/ocl-adapter");
@@ -934,6 +942,10 @@ export async function buildSmilesDocument(
   }
   if (options.style === "document") {
     document = applyDocumentStyle(document);
+    molecule = moleculeFromDocument(document);
+  }
+  if (options.drawingStyle !== undefined) {
+    document = applyMoleculeDrawingStyle(document, [molecule.id], options.drawingStyle);
     molecule = moleculeFromDocument(document);
   }
 
