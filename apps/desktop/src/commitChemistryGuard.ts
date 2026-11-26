@@ -1,5 +1,6 @@
-import type { ChemDraftDocument, DocumentPage, ElectronMarkObject, MoleculeAtom, MoleculeObject } from "@chemdraft/chem-core";
-import { electronMarkAtomContribution } from "@chemdraft/document-workflow-core";
+import type { ChemDraftDocument, DocumentPage, ElectronMarkObject, MoleculeAtom, MoleculeBond, MoleculeObject } from "@chemdraft/chem-core";
+import { electronMarkAtomContribution, stereoPerceptionMolfile } from "@chemdraft/document-workflow-core";
+import { loadStereoEngine, type StereoEngine } from "./stereoReadout";
 
 /**
  * The commit-time chemistry guard (AGENTS.md section 7: an operation that is not a chemistry edit
@@ -37,6 +38,12 @@ export interface MoleculeChemistryChange {
   before?: AtomChemistry;
   /** Absent when the atom, or its molecule, is gone. */
   after?: AtomChemistry;
+  /**
+   * Set for every change other than an atom's charge or radical marks (`moleculeInvariantChanges`):
+   * what changed, as the end of a refusal sentence ("its atom "a2" would be O instead of N").
+   * Such a change is never explained by a mark the operation moved by itself.
+   */
+  detail?: string;
 }
 
 /**
@@ -197,6 +204,8 @@ export interface PreexistingChemistryOptions {
   skipMoleculeIds?: ReadonlySet<string>;
   /** Atoms (`atomChemistryKey`) whose change the operation itself explains; never reported. */
   exemptAtomKeys?: ReadonlySet<string>;
+  /** See `CommitChemistryCheck.stereoEngine`. */
+  stereoEngine?: CommitStereoEngine | null;
 }
 
 const moleculesById = (page: DocumentPage | undefined) => new Map((page?.objects ?? [])
@@ -305,6 +314,10 @@ export function preexistingMoleculeChemistryChanges(
         if (options.exemptAtomKeys?.has(atomChemistryKey(page.id, molecule.id, change.atomId))) continue;
         changes.push({ pageId: page.id, moleculeId: molecule.id, ...change });
       }
+      for (const change of moleculeInvariantChanges(molecule, found, options.stereoEngine)) {
+        if (change.atomId !== undefined && options.exemptAtomKeys?.has(atomChemistryKey(page.id, molecule.id, change.atomId))) continue;
+        changes.push({ pageId: page.id, moleculeId: molecule.id, ...change });
+      }
     }
   }
   return changes;
@@ -313,6 +326,7 @@ export function preexistingMoleculeChemistryChanges(
 /** "Cannot <operation> without changing the chemistry of molecule "m": its atom "a" would …". */
 export function describeMoleculeChemistryChange(change: MoleculeChemistryChange, operation = "complete this edit"): string {
   const prefix = `Cannot ${operation} without changing the chemistry of molecule "${change.moleculeId}": `;
+  if (change.detail !== undefined) return `${prefix}${change.detail}.`;
   if (change.atomId === undefined) return `${prefix}it would be removed.`;
   const { before, after } = change;
   if (!after || !before) return `${prefix}its atom "${change.atomId}" would be removed.`;
@@ -357,6 +371,12 @@ export interface CommitChemistryCheck {
   structureEdit?: boolean;
   /** Molecules (by id, each on the first page holding it: `namedMoleculeKeys`) the operation is meant to change. */
   editedMoleculeIds?: readonly string[];
+  /**
+   * The stereo read-back engine (`moleculeInvariantChanges`). Absent: the app's lazily loaded
+   * OpenChemLib perceivers once loaded (`loadStereoEngine`, which MainWindow warms at mount), the
+   * engine-free drawn-parity comparison until then. `null` forces the engine-free comparison.
+   */
+  stereoEngine?: CommitStereoEngine | null;
 }
 
 /**
@@ -378,7 +398,7 @@ export interface CommitChemistryCheck {
 export function commitChemistryRefusals(check: CommitChemistryCheck): string[] {
   if (check.before === check.after) return [];
   const baseline = check.normalize(check.before);
-  let changes = preexistingMoleculeChemistryChanges(baseline, check.after);
+  let changes = preexistingMoleculeChemistryChanges(baseline, check.after, { stereoEngine: check.stereoEngine });
   if (changes.length === 0) return [];
   // A scoped edit: the molecules it edits are the operation's own, removal included (a bond that
   // joins B into A removes B); nothing else is.
@@ -391,7 +411,7 @@ export function commitChemistryRefusals(check: CommitChemistryCheck): string[] {
   const exempt = independentlyMovedMarkAtomKeys(check.before, check.next, [baseline, check.after],
     check.independentlyMovedMarkIds, check.markAtoms);
   return changes
-    .filter((change) => change.atomId === undefined || !change.after ||
+    .filter((change) => change.detail !== undefined || change.atomId === undefined || !change.after ||
       !exempt.has(atomChemistryKey(change.pageId, change.moleculeId, change.atomId)))
     .map((change) => describeMoleculeChemistryChange(change, check.operation));
 }
@@ -525,4 +545,314 @@ export function independentlyMovedMarkAtomKeys(
     }
   }
   return keys;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The AGENTS.md section 7 invariants beyond charge (bug chemistry-guard-too-narrow, 1.2.4): a
+// preserving commit used to compare only charge and radical marks, so an element, isotope, stated
+// hydrogen count, bond order, wedge or a mirrored layout changed silently. Cheap fields first; the
+// stereo read-back runs only for a molecule whose layout changed other than by an
+// orientation-preserving affine map (move, align, rotate, scale), which can never change it.
+// ---------------------------------------------------------------------------------------------
+
+/** The stereo perceivers the guard reads a molecule back with: the app's OpenChemLib ones (`stereoReadout.ts`). */
+export type CommitStereoEngine = StereoEngine;
+
+let loadedStereoEngine: CommitStereoEngine | undefined;
+let stereoEngineLoad: Promise<CommitStereoEngine | undefined> | undefined;
+
+/**
+ * Loads the stereo engine for the guard (the app's shared lazy load, §13) and keeps it for the
+ * synchronous commit funnel. Resolves undefined when it cannot load; a later call retries.
+ */
+export function loadCommitStereoEngine(): Promise<CommitStereoEngine | undefined> {
+  if (loadedStereoEngine) return Promise.resolve(loadedStereoEngine);
+  stereoEngineLoad ??= loadStereoEngine().then((engine) => (loadedStereoEngine = engine), () => {
+    stereoEngineLoad = undefined;
+    return undefined;
+  });
+  return stereoEngineLoad;
+}
+
+function currentStereoEngine(option: CommitStereoEngine | null | undefined): CommitStereoEngine | undefined {
+  if (option !== undefined) return option ?? undefined;
+  if (!loadedStereoEngine) void loadCommitStereoEngine();
+  return loadedStereoEngine;
+}
+
+const STEREO_STYLES: ReadonlySet<string> = new Set(["wedge", "hashed", "wavy"]);
+const stereoStyle = (bond: MoleculeBond): string | undefined => {
+  const style = bond.display?.bondStyle;
+  return style !== undefined && STEREO_STYLES.has(style) ? style : undefined;
+};
+const styleName = (style: string | undefined) => style ?? "plain";
+const quoted = (value: string | number | undefined, none: string) => value === undefined ? none : String(value);
+
+function atomInvariantChanges(before: MoleculeAtom, after: MoleculeAtom): string[] {
+  const id = before.id;
+  const details: string[] = [];
+  if (before.element !== after.element) details.push(`its atom "${id}" would be ${after.element} instead of ${before.element}`);
+  if (before.isotope !== after.isotope) {
+    details.push(`its atom "${id}" would have isotope ${quoted(after.isotope, "none")} instead of ${quoted(before.isotope, "none")}`);
+  }
+  if (before.hydrogenCount !== after.hydrogenCount) {
+    const stated = (count: number | undefined) => count === undefined ? "no stated hydrogen count" : `a stated hydrogen count of ${count}`;
+    details.push(`its atom "${id}" would have ${stated(after.hydrogenCount)} instead of ${stated(before.hydrogenCount)}`);
+  }
+  if ((before.labelLiteral ?? false) !== (after.labelLiteral ?? false)) {
+    details.push(after.labelLiteral
+      ? `its atom "${id}" would become a literal label (no implicit hydrogens)`
+      : `its atom "${id}" would stop being a literal label and gain implicit hydrogens`);
+  }
+  return details;
+}
+
+function bondInvariantChanges(before: MoleculeBond, after: MoleculeBond): string[] {
+  const id = before.id;
+  const sameEnds = (before.fromAtomId === after.fromAtomId && before.toAtomId === after.toAtomId) ||
+    (before.fromAtomId === after.toAtomId && before.toAtomId === after.fromAtomId);
+  if (!sameEnds) {
+    return [`its bond "${id}" would join atoms "${after.fromAtomId}" and "${after.toAtomId}" instead of "${before.fromAtomId}" and "${before.toAtomId}"`];
+  }
+  const details: string[] = [];
+  if (before.order !== after.order) details.push(`its bond "${id}" would be ${after.order} instead of ${before.order}`);
+  if (before.stereo !== after.stereo) {
+    details.push(after.stereo === "either"
+      ? `its bond "${id}" would have unspecified (either) E/Z instead of the drawn geometry`
+      : `its bond "${id}" would take E/Z from the drawn geometry instead of unspecified (either)`);
+  }
+  const styleBefore = stereoStyle(before);
+  const styleAfter = stereoStyle(after);
+  if (styleBefore !== styleAfter) {
+    details.push(`its bond "${id}" would be drawn ${styleName(styleAfter)} instead of ${styleName(styleBefore)}`);
+  } else if (styleBefore !== undefined && before.fromAtomId !== after.fromAtomId) {
+    details.push(`its ${styleBefore} bond "${id}" would have its narrow end at atom "${after.fromAtomId}" instead of "${before.fromAtomId}"`);
+  }
+  return details;
+}
+
+/**
+ * Every AGENTS.md section 7 invariant of `before` that `after` (the same molecule after the
+ * operation) does not keep, other than charge and radical marks (`moleculeAtomChemistryChanges`)
+ * and removed atoms, which that comparison reports: element, isotope, stated hydrogen count,
+ * literal flag, added atoms, added, removed or rejoined bonds, bond order, E/Z "either", the
+ * wedge/hash/wavy style and its narrow end, and the stereochemistry the result reads back as
+ * (`stereoReadBackChanges`). Atoms and bonds are paired by id. Empty when nothing changed.
+ */
+export function moleculeInvariantChanges(
+  before: MoleculeObject,
+  after: MoleculeObject,
+  stereoEngine?: CommitStereoEngine | null
+): { atomId?: string; detail: string }[] {
+  if (before === after || (before.atoms === after.atoms && before.bonds === after.bonds)) return [];
+  const changes: { atomId?: string; detail: string }[] = [];
+  const beforeAtoms = new Map(before.atoms.map((atom) => [atom.id, atom]));
+  const afterAtoms = new Map(after.atoms.map((atom) => [atom.id, atom]));
+  let sameAtoms = before.atoms.length === after.atoms.length;
+  if (before.atoms !== after.atoms) {
+    for (const atom of before.atoms) {
+      const found = afterAtoms.get(atom.id);
+      if (!found) { sameAtoms = false; continue; }
+      if (found === atom) continue;
+      for (const detail of atomInvariantChanges(atom, found)) changes.push({ atomId: atom.id, detail });
+    }
+    for (const atom of after.atoms) {
+      if (!beforeAtoms.has(atom.id)) {
+        sameAtoms = false;
+        changes.push({ detail: `it would gain atom "${atom.id}" (${atom.element})` });
+      }
+    }
+  }
+  if (before.bonds !== after.bonds) {
+    const afterBonds = new Map(after.bonds.map((bond) => [bond.id, bond]));
+    const beforeBondIds = new Set(before.bonds.map((bond) => bond.id));
+    for (const bond of before.bonds) {
+      const found = afterBonds.get(bond.id);
+      if (!found) {
+        changes.push({ detail: `its bond "${bond.id}" between atoms "${bond.fromAtomId}" and "${bond.toAtomId}" would be removed` });
+      } else if (found !== bond) {
+        for (const detail of bondInvariantChanges(bond, found)) changes.push({ detail });
+      }
+    }
+    for (const bond of after.bonds) {
+      if (!beforeBondIds.has(bond.id)) {
+        changes.push({ detail: `it would gain bond "${bond.id}" between atoms "${bond.fromAtomId}" and "${bond.toAtomId}"` });
+      }
+    }
+  }
+  // Stereo is compared only on an unchanged graph: any other change is already refused, and a
+  // read-back of a different graph would only repeat it less precisely.
+  if (changes.length > 0 || !sameAtoms || before.atoms === after.atoms) return changes;
+  if (!hasStereoContent(before) && !hasStereoContent(after)) return changes;
+  if (layoutKeepsStereo(before, after, beforeAtoms)) return changes;
+  return stereoReadBackChanges(before, after, currentStereoEngine(stereoEngine));
+}
+
+/** Whether the molecule can carry stereo at all: a wedge, hash or wavy bond, a double bond, or 3D coordinates. */
+function hasStereoContent(molecule: MoleculeObject): boolean {
+  return molecule.bonds.some((bond) => bond.order === "double" || stereoStyle(bond) !== undefined) ||
+    molecule.atoms.some((atom) => atom.z !== undefined);
+}
+
+/**
+ * Whether `after`'s atom positions are an orientation-preserving affine image of `before`'s
+ * (translation, rotation, uniform or non-uniform positive scaling, shear), with z unchanged. Such
+ * a map keeps the cyclic order of every atom's neighbours and the side of every line each atom is
+ * on, so the drawn tetrahedral and E/Z configuration is unchanged; the read-back is then skipped.
+ * Exact to floating-point tolerance; anything else (a mirror, a partial drag, a re-layout) falls to
+ * the read-back.
+ */
+function layoutKeepsStereo(before: MoleculeObject, after: MoleculeObject, beforeAtoms: ReadonlyMap<string, MoleculeAtom>): boolean {
+  const pairs: [MoleculeAtom, MoleculeAtom][] = [];
+  for (const atom of after.atoms) {
+    const old = beforeAtoms.get(atom.id);
+    if (!old || old.z !== atom.z) return false;
+    pairs.push([old, atom]);
+  }
+  if (pairs.length === 0) return true;
+  let extent = 1;
+  for (const [old] of pairs) extent = Math.max(extent, Math.abs(old.x - pairs[0][0].x), Math.abs(old.y - pairs[0][0].y));
+  const tolerance = 1e-7 * extent;
+  const dx = pairs[0][1].x - pairs[0][0].x;
+  const dy = pairs[0][1].y - pairs[0][0].y;
+  if (pairs.every(([old, atom]) => Math.abs(atom.x - old.x - dx) <= tolerance && Math.abs(atom.y - old.y - dy) <= tolerance)) return true;
+  let px = 0, py = 0, qx = 0, qy = 0;
+  for (const [old, atom] of pairs) { px += old.x; py += old.y; qx += atom.x; qy += atom.y; }
+  px /= pairs.length; py /= pairs.length; qx /= pairs.length; qy /= pairs.length;
+  let sxx = 0, sxy = 0, syy = 0, axx = 0, axy = 0, ayx = 0, ayy = 0;
+  for (const [old, atom] of pairs) {
+    const ox = old.x - px, oy = old.y - py, nx = atom.x - qx, ny = atom.y - qy;
+    sxx += ox * ox; sxy += ox * oy; syy += oy * oy;
+    axx += nx * ox; axy += nx * oy; ayx += ny * ox; ayy += ny * oy;
+  }
+  const det = sxx * syy - sxy * sxy;
+  // Collinear (or coincident) atoms: no plane to orient, so let the read-back decide.
+  if (!(det > 1e-12 * (sxx + syy) * (sxx + syy))) return false;
+  const m00 = (axx * syy - axy * sxy) / det, m01 = (axy * sxx - axx * sxy) / det;
+  const m10 = (ayx * syy - ayy * sxy) / det, m11 = (ayy * sxx - ayx * sxy) / det;
+  const orientation = m00 * m11 - m01 * m10;
+  if (!(orientation > 1e-9 * (m00 * m00 + m01 * m01 + m10 * m10 + m11 * m11))) return false;
+  let afterExtent = 1;
+  for (const [, atom] of pairs) afterExtent = Math.max(afterExtent, Math.abs(atom.x - qx), Math.abs(atom.y - qy));
+  const fit = 1e-7 * Math.max(extent, afterExtent);
+  return pairs.every(([old, atom]) => {
+    const ox = old.x - px, oy = old.y - py;
+    return Math.abs(m00 * ox + m01 * oy - (atom.x - qx)) <= fit && Math.abs(m10 * ox + m11 * oy - (atom.y - qy)) <= fit;
+  });
+}
+
+type StereoReading = { centres: Map<string, string>; doubleBonds: Map<string, string> };
+
+/** The molecule's stereo as the app's perceivers read it back (`stereoPerceptionMolfile`, as the flatten and layout guards do); undefined when the writer or engine refuses it. */
+function readStereo(molecule: MoleculeObject, engine: CommitStereoEngine): StereoReading | undefined {
+  try {
+    const molfile = stereoPerceptionMolfile(molecule);
+    const centres = new Map<string, string>();
+    const perceived = engine.perceiveStereoCentersFromMolfile(molfile);
+    if (perceived.length !== molecule.atoms.length) return undefined;
+    perceived.forEach((centre, index) => {
+      if (centre.isStereoCenter) centres.set(molecule.atoms[index].id, centre.descriptor);
+    });
+    const doubleBonds = new Map<string, string>();
+    for (const bond of engine.perceiveDoubleBondStereoFromMolfile(molfile)) {
+      const from = molecule.atoms[bond.from]?.id;
+      const to = molecule.atoms[bond.to]?.id;
+      if (from === undefined || to === undefined) return undefined;
+      doubleBonds.set(JSON.stringify([from, to].sort()), bond.descriptor);
+    }
+    return { centres, doubleBonds };
+  } catch {
+    return undefined;
+  }
+}
+
+const centreReading = (value: string | undefined) => value === undefined ? "no stereocentre"
+  : value === "unspecified" ? "an unspecified stereocentre" : `stereocentre ${value}`;
+const doubleBondReading = (value: string | undefined) => value === undefined ? "no E/Z"
+  : value === "unspecified" ? "unassigned E/Z" : value;
+
+/**
+ * The stereochemistry `after` reads back as against `before`'s, keyed by atom id: every
+ * stereocentre's R/S (or that it is one at all) and every specified double bond's E/Z. A mirrored
+ * layout of a chiral drawing inverts its centres; a wedge turned hash inverts one. Without the
+ * engine (still loading, or the molfile writer refuses the drawing: a query bond), the engine-free
+ * drawn parity (`drawnStereoParities`) is compared instead, which is stricter: it also refuses
+ * mirroring a wedge drawn at an atom that is not a stereocentre.
+ */
+function stereoReadBackChanges(before: MoleculeObject, after: MoleculeObject, engine: CommitStereoEngine | undefined): { atomId?: string; detail: string }[] {
+  const readBefore = engine && readStereo(before, engine);
+  const readAfter = readBefore && engine && readStereo(after, engine);
+  const changes: { atomId?: string; detail: string }[] = [];
+  if (readBefore && readAfter) {
+    for (const atom of before.atoms) {
+      const was = readBefore.centres.get(atom.id);
+      const now = readAfter.centres.get(atom.id);
+      if (was !== now) changes.push({ atomId: atom.id, detail: `its atom "${atom.id}" would read as ${centreReading(now)} instead of ${centreReading(was)}` });
+    }
+    for (const key of new Set([...readBefore.doubleBonds.keys(), ...readAfter.doubleBonds.keys()])) {
+      const was = readBefore.doubleBonds.get(key);
+      const now = readAfter.doubleBonds.get(key);
+      if (was === now) continue;
+      const [from, to] = JSON.parse(key) as [string, string];
+      changes.push({ detail: `its double bond between atoms "${from}" and "${to}" would read ${doubleBondReading(now)} instead of ${doubleBondReading(was)}` });
+    }
+    return changes;
+  }
+  const paritiesBefore = drawnStereoParities(before);
+  const paritiesAfter = drawnStereoParities(after);
+  for (const [key, was] of paritiesBefore) {
+    if (paritiesAfter.get(key) === was) continue;
+    const [kind, id] = JSON.parse(key) as ["centre" | "double", string];
+    changes.push(kind === "centre"
+      ? { atomId: id, detail: `its atom "${id}" would be drawn with the opposite configuration (the stereo could not be read back to confirm it)` }
+      : { detail: `its double bond "${id}" would be drawn with its substituents on the other sides (the stereo could not be read back to confirm it)` });
+  }
+  return changes;
+}
+
+/**
+ * Engine-free drawn configuration, compared only between two layouts of the same graph, so it
+ * ranks neighbours by atom id rather than CIP. For each atom at the narrow end of a wedge or hash:
+ * the sign of the signed volume its neighbours span (wedge +1, hash -1 out of the plane). For each
+ * double bond (not "either") whose ends both carry another neighbour: whether the lowest-id
+ * neighbours sit on the same side. Keyed `["centre", atomId]` / `["double", bondId]`.
+ */
+function drawnStereoParities(molecule: MoleculeObject): Map<string, number> {
+  const atoms = new Map(molecule.atoms.map((atom) => [atom.id, atom]));
+  const neighbours = new Map<string, { atom: MoleculeAtom; bond: MoleculeBond }[]>();
+  for (const bond of molecule.bonds) {
+    const from = atoms.get(bond.fromAtomId);
+    const to = atoms.get(bond.toAtomId);
+    if (!from || !to) continue;
+    (neighbours.get(from.id) ?? neighbours.set(from.id, []).get(from.id)!).push({ atom: to, bond });
+    (neighbours.get(to.id) ?? neighbours.set(to.id, []).get(to.id)!).push({ atom: from, bond });
+  }
+  for (const list of neighbours.values()) list.sort((a, b) => (a.atom.id < b.atom.id ? -1 : a.atom.id > b.atom.id ? 1 : 0));
+  const parities = new Map<string, number>();
+  const centres = new Set(molecule.bonds.flatMap((bond) => bond.display?.bondStyle === "wedge" || bond.display?.bondStyle === "hashed" ? [bond.fromAtomId] : []));
+  for (const id of centres) {
+    const centre = atoms.get(id);
+    const around = neighbours.get(id) ?? [];
+    if (!centre || (around.length !== 3 && around.length !== 4)) continue;
+    const vectors = around.map(({ atom, bond }) => {
+      const length = Math.hypot(atom.x - centre.x, atom.y - centre.y) || 1;
+      const depth = bond.fromAtomId !== id ? 0 : bond.display?.bondStyle === "wedge" ? 1 : bond.display?.bondStyle === "hashed" ? -1 : 0;
+      return [(atom.x - centre.x) / length, (atom.y - centre.y) / length, depth] as const;
+    });
+    const [a, b, c] = around.length === 3 ? vectors
+      : vectors.slice(1).map((vector) => [vector[0] - vectors[0][0], vector[1] - vectors[0][1], vector[2] - vectors[0][2]] as const);
+    const volume = a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0]);
+    parities.set(JSON.stringify(["centre", id]), Math.abs(volume) < 1e-9 ? 0 : Math.sign(volume));
+  }
+  for (const bond of molecule.bonds) {
+    if (bond.order !== "double" || bond.stereo === "either") continue;
+    const from = atoms.get(bond.fromAtomId);
+    const to = atoms.get(bond.toAtomId);
+    const fromNeighbour = neighbours.get(bond.fromAtomId)?.find(({ atom }) => atom.id !== bond.toAtomId)?.atom;
+    const toNeighbour = neighbours.get(bond.toAtomId)?.find(({ atom }) => atom.id !== bond.fromAtomId)?.atom;
+    if (!from || !to || !fromNeighbour || !toNeighbour) continue;
+    const side = (point: MoleculeAtom) => Math.sign((to.x - from.x) * (point.y - from.y) - (to.y - from.y) * (point.x - from.x));
+    parities.set(JSON.stringify(["double", bond.id]), side(fromNeighbour) * side(toNeighbour));
+  }
+  return parities;
 }
