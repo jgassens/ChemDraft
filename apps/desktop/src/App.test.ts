@@ -3033,6 +3033,24 @@ describe("ChemDraft desktop shell", () => {
   });
 
   it("keeps palette buttons backed by command ids", () => {
+    // The desktop build (a Tauri global, as other renders here use) keeps every palette button and
+    // title, Interactive 3D included, while its sidecar status is pending (a static render never
+    // runs the effect that reads it).
+    const tauriGlobal = globalThis as { __TAURI_INTERNALS__?: unknown };
+    tauriGlobal.__TAURI_INTERNALS__ = {};
+    const desktopMarkup = (() => {
+      try {
+        return renderToStaticMarkup(createElement(PaletteWindow));
+      } finally {
+        delete tauriGlobal.__TAURI_INTERNALS__;
+      }
+    })();
+    expect(paletteGroups.flat().some((command) => command.id === structureInteractive3dCommandId)).toBe(true);
+    for (const command of paletteGroups.flat()) {
+      expect(desktopMarkup).toContain(`data-command-id="${command.id}"`);
+      expect(desktopMarkup).toContain(command.title);
+    }
+
     const markup = renderToStaticMarkup(createElement(PaletteWindow));
     // paletteGroups is the shipped registry. The palette leaves out the commands this session
     // cannot provide (AGENTS.md §10): this test host has no desktop bridge, so, like the browser

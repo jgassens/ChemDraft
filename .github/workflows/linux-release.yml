@@ -2,6 +2,9 @@ name: Linux release
 
 # Builds the Linux packages for a release from the same tag as the macOS DMG and the Windows
 # installer: a .deb (Ubuntu, Linux Mint, Debian, Pop!_OS, elementary OS, …) and an AppImage.
+# The Linux build is the beta of that version, "<version>β": ChemDraft_<version>-beta_amd64.deb
+# (package Version <version>~beta) and ChemDraft_<version>-beta_amd64.AppImage. The release tag
+# stays v<version>, shared with macOS and Windows.
 # Dispatch it with the same inputs as windows-release.yml:
 #
 #   gh workflow run linux-release.yml --ref v1.2.0 -f ref=v1.2.0 -f upload_to_release=v1.2.0

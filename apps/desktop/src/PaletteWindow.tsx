@@ -25,7 +25,7 @@ import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { NATIVE_MENU_COMMAND_IDS, paletteMenuShortcut } from "./paletteMenuShortcuts";
 import { installNativeFlyoutKeyboard } from "./nativeFlyoutKeyboard";
 import { createPaletteTooltipDismissal, dispatchPaletteTooltipDismiss } from "./paletteTooltipDismissal";
-import { pollWorkAreaChanges } from "./window-manager/workAreaPoll";
+import { pollPlacementAgainstFit, pollWorkAreaChanges, workAreaPlacementKey } from "./window-manager/workAreaPoll";
 import { disabledControlAtPointer, installPaletteInputFocus, isPaletteInputFocusPending, paletteInputFocusControl, PALETTE_INPUT_FOCUS_COMMIT_EVENT } from "./plugins/pluginPanelInputFocus";
 import { editHistoryDirection, forceDocumentHistoryCommandId, isCleanPaletteNumberInput, isTextEditingElement } from "./editHistoryRouting";
 import { applyKeybindingSchemeToCommands } from "./keybindingScheme";
@@ -565,16 +565,19 @@ export function PaletteWindow({
     // Linux: the work area + scale and the window's inner width at the last accepted fit (below).
     let fittedPlacementKey: string | undefined;
     let fittedViewportWidth: number | undefined;
-    const applySize = async () => {
-      if (disposed) return;
+    // Resolves to whether the window is fitted to the current work area: true after an accepted fit
+    // or when nothing needs sending, false when the fit was refused, deferred behind one in flight,
+    // or abandoned. The Linux work-area poll below retries until it is true.
+    const applySize = async (): Promise<boolean> => {
+      if (disposed) return false;
       if (sizing) {
         pending = true;
-        return;
+        return false;
       }
       sizing = true;
       try {
         const area = await currentWindowLogicalWorkArea();
-        if (disposed) return;
+        if (disposed) return false;
         // Cap the shared body, not individual inspector sections. Keep the title outside the scroll
         // area and measure only after applying the monitor-based cap (never a vh feedback loop).
         const availableHeight = Math.floor(area.bottom - area.top);
@@ -597,7 +600,7 @@ export function PaletteWindow({
         const width = contentWidth || fallbackWidth;
         const height = Math.min(availableHeight,
           Math.max(colorPickerOpen ? 292 : 0, contentHeight || fallbackHeight));
-        if (width <= 0 || height <= 0) return;
+        if (width <= 0 || height <= 0) return false;
         // Dev-only size probe: open the palette window's devtools console to read exact
         // content-vs-window numbers for any palette that still looks wrong.
         if (import.meta.env.DEV) {
@@ -619,16 +622,17 @@ export function PaletteWindow({
         // width alone) never re-sends; an identical request on an unchanged monitor gives the same
         // frame, so a forced re-send settles after at most one more fit. macOS and Windows keep the
         // plain size dedupe.
-        const placementKey = `${area.left}:${area.top}:${area.right}:${area.bottom}@${window.devicePixelRatio || 1}`;
+        const placementKey = workAreaPlacementKey(area);
         const placementChanged = platform === "linux" && fittedPlacementKey !== undefined && (
           placementKey !== fittedPlacementKey
           || (viewportWidth !== fittedViewportWidth && viewportWidth !== fittedPaletteWidthRef.current));
-        if ((sizeKey !== lastSize || placementChanged) && await fitCurrentPaletteWindow({ width, height }, area)) {
-          lastSize = sizeKey;
-          fittedPaletteWidthRef.current = width;
-          fittedPlacementKey = placementKey;
-          fittedViewportWidth = viewportWidth;
-        }
+        if (sizeKey === lastSize && !placementChanged) return true;
+        if (!await fitCurrentPaletteWindow({ width, height }, area)) return false;
+        lastSize = sizeKey;
+        fittedPaletteWidthRef.current = width;
+        fittedPlacementKey = placementKey;
+        fittedViewportWidth = viewportWidth;
+        return true;
       } finally {
         sizing = false;
         if (pending && !disposed) {
@@ -656,13 +660,20 @@ export function PaletteWindow({
       if (disposed) cleanup();
       else unlisten = cleanup;
     });
-    // Linux: a panel added, removed or resized changes the work area with no move, resize or scale
-    // event, and the palette stayed capped (or uncapped) until its next move. Poll it like the
-    // inspector does. A change only schedules the same fit; applySize re-sends only when the work
-    // area differs from the last accepted fit's (placementChanged), so this cannot loop. macOS and
-    // Windows keep the plain size dedupe and do not poll.
+    // Linux: a panel added, removed or resized, or a live resolution change, changes the work area
+    // with no move, resize or scale event. The 1.2.2 VM (KDE, XWayland) left Main at x = 0 and
+    // 1311 px wide on a 1280 or 1024 screen: its width is pinned by the X11 min = max hints (B1), so
+    // the window manager cannot shrink it, and at the left edge nothing moved it. Poll the work area
+    // like the inspector does and refit on a change. The fit runs directly, not through scheduleSize:
+    // a window the compositor is not repainting may not run animation frames. The poll compares each
+    // read (work area and scale) with the placement key of the last accepted fit, which applySize
+    // records from the area that fit actually used: a fit for another area between polls (a move)
+    // is what the next read is checked against, a refused fit is retried on the next poll and an
+    // accepted one ends it; applySize re-sends only when the work area differs from the last
+    // accepted fit's (placementChanged), so this cannot loop. macOS and Windows never cap a
+    // palette's width (toolset_content_placement), keep the plain size dedupe and do not poll.
     const stopAreaPoll = platform === "linux"
-      ? pollWorkAreaChanges(scheduleSize, currentWindowLogicalWorkArea)
+      ? pollPlacementAgainstFit(applySize, currentWindowLogicalWorkArea, () => fittedPlacementKey)
       : undefined;
 
     return () => {

@@ -97,6 +97,28 @@ export async function resolveRepeatedExtensionSavePath(
 }
 
 /**
+ * The path to write when `appended` is the panel's `selected` path with an extension added after
+ * the panel returned (the Linux and Windows pickers return the name as typed). The panel asked only
+ * about `selected`, so an existing file at a different `appended` path is confirmed here; undefined
+ * means the user declined. An unchanged path or the document's own file is never asked about, and
+ * a path that cannot be checked is written as before.
+ */
+export async function resolveAppendedExtensionSavePath(
+  selected: string,
+  appended: string,
+  context: Pick<RepeatedExtensionSaveContext, "ownPath" | "exists" | "confirmReplace">
+): Promise<string | undefined> {
+  if (appended === selected || appended === context.ownPath) return appended;
+  let exists: boolean;
+  try {
+    exists = await context.exists(appended);
+  } catch {
+    return appended;
+  }
+  return !exists || await context.confirmReplace(appended) ? appended : undefined;
+}
+
+/**
  * True when `error` is the fs plugin's report that an exclusive (`createNew`) write found a file
  * already there: Rust's `io::ErrorKind::AlreadyExists`. tauri-plugin-fs 2.5.1 rejects with a plain
  * string, `failed to open file at path: <path> with error: <io::Error>`, and an OS io::Error

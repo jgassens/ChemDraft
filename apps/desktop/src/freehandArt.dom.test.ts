@@ -767,4 +767,36 @@ describe("freehand art and rotation interactions", () => {
     await act(async () => { await window.__CHEMDRAFT_AGENT__?.command("tool.bond"); });
     expect(hint()).not.toContain("rotate handles");
   });
+
+  // 1.2.3 review: an undo while a pencil stroke is being drawn disarms the stroke
+  // (`installDocumentHistory`). The disarm used to drop only the drag, so the stroke's preview path
+  // stayed painted and a pending preview frame painted it again.
+  it("clears a stroke's preview and its pending frame when an undo stops the stroke", async () => {
+    await renderMainWindow("tool.art.pencil");
+    await drawPencilStroke(41);
+    expect(snapshotObjectCount()).toBe(1);
+    await act(async () => { await window.__CHEMDRAFT_AGENT__?.command("tool.art.pencil"); });
+    const page = pageElement();
+    await act(async () => {
+      dispatchPointer(page, "pointerdown", { x: 300, y: 300 }, 42, 0.5);
+      dispatchPointer(page, "pointermove", { x: 330, y: 320 }, 42, 0.5);
+    });
+    await waitForPreviewFrame();
+    const previewPath = container.querySelector<SVGPathElement>("[data-freehand-art-preview-path]");
+    expect(previewPath?.getAttribute("data-active")).toBe("true");
+    // One more move queues a preview frame; the undo lands before it runs.
+    await act(async () => {
+      dispatchPointer(page, "pointermove", { x: 360, y: 310 }, 42, 0.5);
+      await window.__CHEMDRAFT_AGENT__?.command("edit.undo");
+    });
+    expect(snapshotObjectCount()).toBe(0);
+    expect(previewPath?.hasAttribute("d")).toBe(false);
+    expect(previewPath?.hasAttribute("data-active")).toBe(false);
+    await waitForPreviewFrame();
+    expect(previewPath?.hasAttribute("d")).toBe(false);
+    expect(previewPath?.hasAttribute("data-active")).toBe(false);
+    // The held pen's release commits nothing.
+    await act(async () => { dispatchPointer(page, "pointerup", { x: 360, y: 310 }, 42, 0.5); });
+    expect(snapshotObjectCount()).toBe(0);
+  });
 });

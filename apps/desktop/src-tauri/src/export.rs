@@ -2115,4 +2115,56 @@ mod tests {
         assert_rgba_near(&pixels, (60, 10), QUADRANTS[0]);
         assert_rgba_near(&pixels, (60, 60), WHITE);
     }
+
+    // From apps/desktop/src-tauri: RASTER_WARNING_FIXTURE_OUT=../src/__tests__/rasterExportWarnings.writerOutput.json cargo test raster_export_warning_fixture_covers_every_format_and_background -- --ignored
+    #[test]
+    #[ignore]
+    fn raster_export_warning_fixture_covers_every_format_and_background() {
+        // No page rect: the corners are uncovered, so they show exactly what the writer does
+        // with alpha. The dark square stays out of the first 8x8 JPEG block.
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><rect x="12" y="12" width="8" height="8" fill="#111111"/></svg>"##;
+        let mut records = Vec::new();
+        for (format, name) in [
+            (RasterExportFormat::Png, "png"),
+            (RasterExportFormat::Jpeg, "jpeg"),
+            (RasterExportFormat::Bmp, "bmp"),
+            (RasterExportFormat::Gif, "gif"),
+            (RasterExportFormat::Tiff, "tiff"),
+        ] {
+            // The two strings MainWindow sends for the dialog's Transparent and White page.
+            for background in ["transparent", "#ffffff"] {
+                let response = rasterize_svg_impl(RasterExportRequest {
+                    svg: svg.to_string(),
+                    background: Some(background.to_string()),
+                    css_px_per_inch: Some(96.0),
+                    ..request(format)
+                })
+                .expect("encode raster fixture");
+                let decoded = image::load_from_memory(&response.bytes).expect("decode fixture");
+                records.push(serde_json::json!({
+                    "format": name,
+                    "background": background,
+                    "width": response.width,
+                    "height": response.height,
+                    "nativeWarningCodes": response.warnings.iter().map(|w| w.code).collect::<Vec<_>>(),
+                    "rustDecodedColorType": format!("{:?}", decoded.color()),
+                    "rustDecodedCornerRgba": decoded.to_rgba8().get_pixel(0, 0).0,
+                    "bytesBase64": base64::engine::general_purpose::STANDARD.encode(&response.bytes),
+                }));
+            }
+        }
+        assert_eq!(records.len(), 10);
+        if let Ok(path) = std::env::var("RASTER_WARNING_FIXTURE_OUT") {
+            let fixture = serde_json::json!({
+                "generator": "raster_export_warning_fixture_covers_every_format_and_background",
+                "note": "Native raster writer output for transparent and white backgrounds.",
+                "records": records,
+            });
+            std::fs::write(
+                path,
+                serde_json::to_string_pretty(&fixture).expect("serialize"),
+            )
+            .expect("write fixture");
+        }
+    }
 }

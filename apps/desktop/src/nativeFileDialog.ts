@@ -1,5 +1,6 @@
 import type { OpenDialogOptions, OpenDialogReturn, SaveDialogOptions } from "@tauri-apps/plugin-dialog";
 import { detectShortcutPlatform, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
+import { withOneFileDialog } from "./fileDialogGuard";
 import { withNativeUtilitySuspension } from "./nativeUtilitySuspension";
 
 type SaveDialogFilter = NonNullable<SaveDialogOptions["filters"]>[number];
@@ -45,18 +46,23 @@ export function prewarmNativeFileDialogs(): Promise<typeof import("@tauri-apps/p
   return dialogModule;
 }
 
-/** All document-window file panels use these wrappers, including plugin pickers and exports. */
-export async function open<T extends OpenDialogOptions>(options?: T): Promise<OpenDialogReturn<T>> {
-  const dialogs = await prewarmNativeFileDialogs();
-  return withNativeUtilitySuspension(() => dialogs.open(options));
+/** All document-window file panels use these wrappers, including plugin pickers and exports.
+ * At most one is pending at a time; a refused request resolves null, as a cancel. */
+export function open<T extends OpenDialogOptions>(options?: T): Promise<OpenDialogReturn<T>> {
+  return withOneFileDialog(async () => {
+    const dialogs = await prewarmNativeFileDialogs();
+    return withNativeUtilitySuspension(() => dialogs.open(options));
+  }, null as unknown as OpenDialogReturn<T>);
 }
 
-export async function save(
+export function save(
   options?: SaveDialogOptions,
   focusExportSessionId?: string,
   platform: ShortcutPlatform = detectShortcutPlatform()
 ): Promise<string | null> {
-  const dialogs = await prewarmNativeFileDialogs();
-  const panelOptions = saveDialogOptionsForPlatform(options, platform);
-  return withNativeUtilitySuspension(() => dialogs.save(panelOptions), focusExportSessionId);
+  return withOneFileDialog(async () => {
+    const dialogs = await prewarmNativeFileDialogs();
+    const panelOptions = saveDialogOptionsForPlatform(options, platform);
+    return withNativeUtilitySuspension(() => dialogs.save(panelOptions), focusExportSessionId);
+  }, null);
 }

@@ -38,6 +38,7 @@ import {
   selectedGroupObjectIds,
   selectedArrangementObjectIds,
   selectedArtBooleanEligibleObjectIds,
+  singleMoleculeTransformSelection,
   type NativeHotkeyElement
 } from "./documentWorkflow";
 import {
@@ -2152,8 +2153,11 @@ export function createLayerActions(document: ChemDraftDocument, layoutsEnabled =
     ? arrowPage.objects.find(object => object.id === arrow.arrowAttachment!.parentObjectId) : arrow;
   const hasArrow = !!parent && !!arrowAttachmentFrame(arrowPage, parent);
   const hasSelection = document.selection.objectIds.length > 0;
-  const selectedForRotation = document.selection.objectIds.length === 1
-    ? document.pages.flatMap(page => page.objects).find(object => object.id === document.selection.objectIds[0]) : undefined;
+  // A molecule selected with only the marks its rotation carries is that one molecule: the rotation
+  // turns each of them with its atom (`singleMoleculeTransformSelection`, the cascade's own owner rule).
+  const rotationIds = singleMoleculeTransformSelection(document).objectIds;
+  const selectedForRotation = rotationIds.length === 1
+    ? document.pages.flatMap(page => page.objects).find(object => object.id === rotationIds[0]) : undefined;
   const hasRotatableMolecule = selectedForRotation?.type === "molecule" && selectedForRotation.atoms.length > 0;
   const hasMultiSelection = document.selection.objectIds.length >= 2;
   const hasDistributableSelection = document.selection.objectIds.length >= 3;

@@ -41,8 +41,10 @@ Get them from the [latest release](https://github.com/jgassens/ChemDraft/release
 
 For managed or shared Windows machines, the all-users installer installs to `C:\Program Files\ChemDraft` and requires administrator rights for installation and every update. It uses a separate `latest-allusers.json` update feed; installing it alongside the per-user installer gives you two copies. For silent deployment from an elevated prompt, run `ChemDraft_<version>_x64-allusers-setup.exe /S`. The offline all-users installer, `ChemDraft_<version>_x64-allusers-offline-setup.exe`, carries the WebView2 runtime for machines that cannot download it; it has no update feed of its own. Release installers are built only by the GitHub-hosted Windows release workflow. See the [Windows release guide](docs/releasing/windows-updates.md).
 
-**Linux (beta).** Linux is a separate, community-tested beta stream with its own release tags. It
-offers a `.deb` (Ubuntu 22.04+, Linux Mint 21+, Debian 12+ and relatives) and an x86-64 AppImage
+**Linux (beta).** Linux is a community-tested beta. Each Linux build is named after the release it
+comes from, plus β: ChemDraft 1.2.3β is the Linux beta of 1.2.3, attached to the same release as
+`ChemDraft_1.2.3-beta_amd64.deb` and `ChemDraft_1.2.3-beta_amd64.AppImage`. It offers a `.deb`
+(Ubuntu 22.04+, Linux Mint 21+, Debian 12+ and relatives) and an x86-64 AppImage
 (glibc 2.35 or later). How it differs from the macOS and Windows builds:
 
 - macOS and Windows releases never wait for Linux, so the Linux beta may lag behind.

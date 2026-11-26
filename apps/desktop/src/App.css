@@ -6158,6 +6158,8 @@ textarea:focus-visible,
    and the start of the worktree label) readable; then the status truncates. The warnings count never
    shrinks. A long branch-build stamp at a high display scale is wider than a narrow window's row, so
    a stamp that kept its full width ran over the count and past the row's right edge. */
+/* With rulers on, MainWindow pads the row's left by the ruler's width, so the status starts past the
+   vertical ruler rather than over its ticks. */
 .status-row {
   position: absolute;
   left: 8px;
@@ -6180,6 +6182,8 @@ textarea:focus-visible,
   font-size: 11px;
 }
 
+/* The row sits over the canvas, so each text carries the window chrome's background to read over the
+   page; nothing here is translucent, which would let the page show through. */
 .status-message,
 .status-modifier-hint {
   flex: 0 1 auto;
@@ -6187,10 +6191,19 @@ textarea:focus-visible,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--cd-bg-panel);
+}
+
+/* No status: no empty chip. */
+.status-message:empty {
+  padding: 0;
+  background: none;
 }
 
 .status-modifier-hint {
-  opacity: 0.7;
+  color: var(--cd-text-muted);
 }
 
 .status-message {
@@ -6216,8 +6229,9 @@ textarea:focus-visible,
   flex: 0 0 auto;
   pointer-events: auto;
   border: 0;
-  background: none;
-  padding: 0;
+  border-radius: 4px;
+  background: var(--cd-bg-panel);
+  padding: 1px 6px;
   font: inherit;
   color: var(--cd-text-warning, #8a5a00);
   text-decoration: underline dotted;

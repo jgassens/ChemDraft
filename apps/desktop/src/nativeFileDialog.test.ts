@@ -3,6 +3,7 @@ import ts from "typescript";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { filtersMatchingDefaultPathFirst, open, save, saveDialogOptionsForPlatform } from "./nativeFileDialog";
 import { nativePrompt } from "./nativePrompt";
+import { FILE_DIALOG_ALREADY_OPEN_STATUS, onFileDialogRefused, withOneFileDialog } from "./fileDialogGuard";
 
 const native = vi.hoisted(() => ({ invoke: vi.fn(), open: vi.fn(), save: vi.fn(), message: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true, invoke: native.invoke }));
@@ -100,6 +101,121 @@ describe("native file panels", () => {
       }
     };
     visit(root);
+  });
+});
+
+describe("one native file dialog at a time", () => {
+  const panel = () => {
+    let resolve!: (path: string | null) => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<string | null>((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+  };
+  const listen = () => {
+    const refusals: string[] = [];
+    return { refusals, unsubscribe: onFileDialogRefused(status => refusals.push(status)) };
+  };
+
+  it.each(["linux", "macos", "windows"] as const)("on %s a second Save or Open while Save is pending opens nothing and is reported", async platform => {
+    native.invoke.mockResolvedValue(undefined);
+    const first = panel();
+    native.save.mockReturnValueOnce(first.promise);
+    const { refusals, unsubscribe } = listen();
+    try {
+      const pending = save({ title: "Save As" }, undefined, platform);
+      // Pressed again before the first panel even appeared (the lagging-VM case).
+      await expect(save({ title: "Save As" }, undefined, platform)).resolves.toBeNull();
+      await vi.waitFor(() => expect(native.save).toHaveBeenCalledTimes(1));
+      await expect(save({ title: "Save As" }, undefined, platform)).resolves.toBeNull();
+      await expect(open({ title: "Open" })).resolves.toBeNull();
+      expect(native.save).toHaveBeenCalledTimes(1);
+      expect(native.open).not.toHaveBeenCalled();
+      expect(refusals).toEqual(Array(3).fill("A file dialog is already open"));
+      expect(FILE_DIALOG_ALREADY_OPEN_STATUS).toBe("A file dialog is already open");
+      first.resolve("/tmp/drawing.chemdraft");
+      await expect(pending).resolves.toBe("/tmp/drawing.chemdraft");
+      // Only the one real panel suspended and restored the utility windows.
+      expect(native.invoke).toHaveBeenCalledTimes(2);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it.each(["selected", "cancelled", "rejected", "suspension throws"] as const)(
+    "a request after one that was %s opens normally",
+    async ending => {
+      native.invoke.mockResolvedValue(undefined);
+      if (ending === "suspension throws") native.invoke.mockRejectedValueOnce(new Error("quitting"));
+      const first = panel();
+      native.save.mockReturnValueOnce(first.promise);
+      const pending = save({ title: "Save" });
+      if (ending === "suspension throws") {
+        await expect(pending).rejects.toThrow("quitting");
+        expect(native.save).not.toHaveBeenCalled();
+      } else {
+        await vi.waitFor(() => expect(native.save).toHaveBeenCalledTimes(1));
+        if (ending === "rejected") {
+          first.reject(new Error("panel unavailable"));
+          await expect(pending).rejects.toThrow("panel unavailable");
+        } else {
+          first.resolve(ending === "selected" ? "/tmp/drawing.chemdraft" : null);
+          await expect(pending).resolves.toBe(ending === "selected" ? "/tmp/drawing.chemdraft" : null);
+        }
+      }
+      const { refusals, unsubscribe } = listen();
+      try {
+        native.open.mockResolvedValueOnce("/tmp/next.chemdraft");
+        await expect(open({ title: "Open" })).resolves.toBe("/tmp/next.chemdraft");
+        expect(native.open).toHaveBeenCalledTimes(1);
+        expect(refusals).toEqual([]);
+      } finally {
+        unsubscribe();
+      }
+    }
+  );
+
+  it.each(["rejects", "throws synchronously"])("the guard is released when a step %s", async failure => {
+    const step = failure === "rejects"
+      ? async (): Promise<string | null> => { throw new Error("step failed"); }
+      : ((): Promise<string | null> => { throw new Error("step failed"); });
+    await expect(withOneFileDialog(step, null)).rejects.toThrow("step failed");
+    const next = vi.fn(async () => "opened");
+    await expect(withOneFileDialog<string | null>(next, null)).resolves.toBe("opened");
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it("does not hold message boxes such as the Replace prompt", async () => {
+    native.invoke.mockResolvedValue(undefined);
+    const first = panel();
+    native.save.mockReturnValueOnce(first.promise);
+    native.message.mockResolvedValue("Replace");
+    const pending = save({ title: "Save" });
+    await vi.waitFor(() => expect(native.save).toHaveBeenCalledTimes(1));
+    await expect(nativePrompt({
+      title: "Replace existing file?", message: "Replace?", kind: "warning",
+      choices: [{ id: "replace", label: "Replace" }, { id: "cancel", label: "Cancel", cancel: true }]
+    })).resolves.toBe("replace");
+    expect(native.message).toHaveBeenCalledOnce();
+    first.resolve(null);
+    await expect(pending).resolves.toBeNull();
+  });
+
+  it("an unsubscribed listener hears nothing and a replaced listener keeps the newer one", async () => {
+    const older = vi.fn();
+    const newer = vi.fn();
+    const unsubscribeOlder = onFileDialogRefused(older);
+    const unsubscribeNewer = onFileDialogRefused(newer);
+    unsubscribeOlder();
+    let finish!: () => void;
+    const pending = withOneFileDialog(() => new Promise<string | null>(resolve => { finish = () => resolve(null); }), null);
+    await expect(withOneFileDialog<string | null>(async () => "second", null)).resolves.toBeNull();
+    expect(newer).toHaveBeenCalledWith(FILE_DIALOG_ALREADY_OPEN_STATUS);
+    expect(older).not.toHaveBeenCalled();
+    unsubscribeNewer();
+    await expect(withOneFileDialog<string | null>(async () => "third", null)).resolves.toBeNull();
+    expect(newer).toHaveBeenCalledOnce();
+    finish();
+    await pending;
   });
 });
 

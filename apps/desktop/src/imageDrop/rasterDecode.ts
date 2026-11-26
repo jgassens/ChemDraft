@@ -3,8 +3,10 @@
  * document keeps its one raster type. Only the first frame of an animation is kept, and EXIF
  * orientation is applied by the decoder. Callers check the header size first: nothing over the pixel
  * caps reaches the decoder, and the decoder's own size is checked again before a canvas is made.
- * PNG and SVG, and the bitmaps an SVG embeds, are only decoded (`DecodeCheck`), to prove the webview
- * can draw them; their own bytes are kept. Every wait (decode, encode) ends at the file's deadline (`DecodeOptions`).
+ * PNG and SVG, and the bitmaps an SVG embeds, are only decoded (`DecodeCheck`) and their own bytes are
+ * kept. A decode that resolves does not prove the pixels: WebKit decodes a PNG whose image data is
+ * damaged and draws it blank or partly black, so PNG image data is checked first (`pngIntegrity.ts`).
+ * Every wait (decode, encode) ends at the file's deadline (`DecodeOptions`).
  */
 
 import { pictureSizeLimitError as dropPixelLimitError } from "@chemdraft/export-engine";
@@ -31,8 +33,9 @@ export interface DecodeOptions {
 export type RasterToPng = (bytes: Uint8Array, mimeType: string, maxPngBytes: number, options?: DecodeOptions) => Promise<RasterPngResult>;
 
 /**
- * Decode without re-encoding, to prove the webview can draw the picture: resolves to the decoded
- * pixel size (0 × 0 for an SVG without an intrinsic size), rejects when it cannot be decoded.
+ * Decode without re-encoding, to check the webview can open the picture: resolves to the decoded
+ * pixel size (0 × 0 for an SVG without an intrinsic size), rejects when it cannot be decoded. For a
+ * PNG this is not proof of its pixels (see `pngIntegrity.ts`).
  */
 export type DecodeCheck = (bytes: Uint8Array, mimeType: DecodeCheckMimeType, options?: DecodeOptions) => Promise<{ width: number; height: number }>;
 /** A dropped PNG or SVG, or a bitmap an SVG embeds. */

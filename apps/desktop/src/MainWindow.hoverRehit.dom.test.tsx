@@ -89,6 +89,20 @@ describe.each(["windows", "macos"] as const)("hover re-hit (%s shortcuts)", plat
     await act(async () => { target.dispatchEvent(event); });
   }
 
+  async function pointerAs(
+    type: string, point: { x: number; y: number }, { pointerId, buttons }: { pointerId: number; buttons: number },
+    target: EventTarget = container.querySelector(".page")!
+  ) {
+    if (target instanceof Element) {
+      target.setPointerCapture = () => {};
+      target.releasePointerCapture = () => {};
+      target.hasPointerCapture = () => false;
+    }
+    const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, buttons, clientX: point.x, clientY: point.y });
+    Object.defineProperties(event, { pointerId: { value: pointerId }, pointerType: { value: "touch" }, isPrimary: { value: pointerId === 7 } });
+    await act(async () => { target.dispatchEvent(event); });
+  }
+
   async function press(key: string, history = false, shiftKey = false) {
     await act(async () => {
       (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent("keydown", {
@@ -499,5 +513,107 @@ describe.each(["windows", "macos"] as const)("hover re-hit (%s shortcuts)", plat
     expect(snapshot().hoveredNativeTarget).toBeUndefined();
     expect(resolve).not.toHaveBeenCalled();
     await pointer("pointercancel", { x: 500, y: 400 });
+  });
+
+  it("re-hits again once the pointer of a gesture the undo stopped is released", async () => {
+    await mount();
+    const bond = await hoverBond();
+    await press("2");
+    await pointer("pointerdown", { x: 500, y: 400 });
+    await press("z", true);
+    expect(snapshot().hoveredNativeTarget).toBeUndefined();
+    await pointer("pointerup", { x: 500, y: 400 });
+    // No pointer move: the redo re-hits the last canvas position, over the bond.
+    await press("z", true, true);
+    expect(molecule().bonds.find(candidate => candidate.id === bond.id)!.order).toBe("double");
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond", bondId: bond.id });
+  });
+
+  // Starts a Bond-tool drag on empty canvas with pointer 7 and lets an undo disarm it, leaving
+  // pointer 7's button down.
+  async function disarmHeldGesture() {
+    await mount();
+    const bond = await hoverBond();
+    await press("2");
+    await pointer("pointerdown", { x: 500, y: 400 });
+    await press("z", true);
+    expect(molecule().bonds.find(candidate => candidate.id === bond.id)!.order).toBe("single");
+    expect(snapshot().hoveredNativeTarget).toBeUndefined();
+    const from = molecule().atoms.find(atom => atom.id === bond.fromAtomId)!;
+    const to = molecule().atoms.find(atom => atom.id === bond.toAtomId)!;
+    return { bond, midpoint: { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 } };
+  }
+
+  it("sets no hover from a held pointer's moves after an undo stopped its gesture", async () => {
+    const { bond, midpoint } = await disarmHeldGesture();
+    await pointerAs("pointermove", midpoint, { pointerId: 7, buttons: 1 });
+    expect(snapshot().hoveredNativeTarget).toBeUndefined();
+    await pointerAs("pointermove", { x: midpoint.x + 1, y: midpoint.y }, { pointerId: 7, buttons: 1 });
+    expect(snapshot().hoveredNativeTarget).toBeUndefined();
+    await pointerAs("pointerup", midpoint, { pointerId: 7, buttons: 0 });
+    await pointerAs("pointermove", midpoint, { pointerId: 7, buttons: 0 });
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond", bondId: bond.id });
+  });
+
+  it("keeps a held pointer's hold through another pointer's press and release", async () => {
+    const { bond, midpoint } = await disarmHeldGesture();
+    await pointerAs("pointerdown", { x: 900, y: 700 }, { pointerId: 9, buttons: 1 }, document.body);
+    await pointerAs("pointermove", { x: 901, y: 700 }, { pointerId: 9, buttons: 0 }, document.body);
+    await pointerAs("pointerup", { x: 900, y: 700 }, { pointerId: 9, buttons: 0 }, document.body);
+    await pointerAs("pointercancel", { x: 900, y: 700 }, { pointerId: 9, buttons: 0 }, document.body);
+    await pointerAs("pointermove", midpoint, { pointerId: 7, buttons: 1 });
+    expect(snapshot().hoveredNativeTarget).toBeUndefined();
+    const resolve = vi.spyOn(hitTest, "nativeMoleculeCanvasHoverTarget");
+    await press("z", true, true);
+    expect(molecule().bonds.find(candidate => candidate.id === bond.id)!.order).toBe("double");
+    expect(snapshot().hoveredNativeTarget).toBeUndefined();
+    expect(resolve).not.toHaveBeenCalled();
+    resolve.mockRestore();
+    await pointerAs("pointerup", midpoint, { pointerId: 7, buttons: 0 });
+    // No pointer move: the undo re-hits the last canvas position, over the bond.
+    await press("z", true);
+    expect(molecule().bonds.find(candidate => candidate.id === bond.id)!.order).toBe("single");
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond", bondId: bond.id });
+  });
+
+  it("ends the hold of a stopped gesture when the window loses focus", async () => {
+    const { bond, midpoint } = await disarmHeldGesture();
+    await act(async () => { window.dispatchEvent(new Event("blur")); });
+    // The release may have happened elsewhere; a later report of the button still down is stale.
+    await pointerAs("pointermove", midpoint, { pointerId: 7, buttons: 1 });
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond", bondId: bond.id });
+    await press("z", true, true);
+    expect(molecule().bonds.find(candidate => candidate.id === bond.id)!.order).toBe("double");
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond", bondId: bond.id });
+  });
+
+  // 1.2.3 review: an undo that stops a molecule MOVE drag holds that pointer's hover off until its
+  // release, as for every other drag an undo stops.
+  it("holds hover off for the pointer of a molecule move that an undo stopped", async () => {
+    await mount();
+    const bond = await hoverBond();
+    await press("2");
+    await act(async () => { await window.__CHEMDRAFT_AGENT__?.command("tool.select"); });
+    const from = molecule().atoms.find(atom => atom.id === bond.fromAtomId)!;
+    const to = molecule().atoms.find(atom => atom.id === bond.toAtomId)!;
+    const midpoint = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+    const atomsBefore = molecule().atoms;
+    // Press on the molecule's own element: the whole-object move (`objectDragRef`).
+    const moleculeElement = container.querySelector(`[data-object-id="${molecule().id}"]`)!;
+    expect(moleculeElement).not.toBeNull();
+    await pointerAs("pointerdown", midpoint, { pointerId: 7, buttons: 1 }, moleculeElement);
+    await pointerAs("pointermove", { x: midpoint.x + 30, y: midpoint.y + 20 }, { pointerId: 7, buttons: 1 });
+    await pointerAs("pointermove", { x: midpoint.x + 40, y: midpoint.y + 25 }, { pointerId: 7, buttons: 1 });
+    await press("z", true);
+    expect(molecule().bonds.find(candidate => candidate.id === bond.id)!.order).toBe("single");
+    expect(molecule().atoms).toEqual(atomsBefore);
+    expect(snapshot().hoveredNativeTarget).toBeUndefined();
+    // The held button's moves over the bond set no hover until the pointer is released.
+    await pointerAs("pointermove", midpoint, { pointerId: 7, buttons: 1 });
+    expect(snapshot().hoveredNativeTarget).toBeUndefined();
+    await pointerAs("pointerup", midpoint, { pointerId: 7, buttons: 0 });
+    expect(molecule().atoms).toEqual(atomsBefore);
+    await pointerAs("pointermove", midpoint, { pointerId: 7, buttons: 0 });
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond", bondId: bond.id });
   });
 });

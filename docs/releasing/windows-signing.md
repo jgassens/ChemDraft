@@ -175,7 +175,7 @@ machines", which the asset check requires to be attached.
    result is INCOMPLETE, not a publishing pass. Windows passes `--skip-dmg-provenance` explicitly
    because it cannot mount DMGs; the final Mac gate must check their embedded commits.
 8. Collect both DMGs and the three Windows installers with their adjacent `.build.json` files. If you are including
-   Linux, also collect `ChemDraft_X.Y.Z_amd64.deb`, `ChemDraft_X.Y.Z_amd64.AppImage`, and their
+   Linux, also collect `ChemDraft_X.Y.Z-beta_amd64.deb`, `ChemDraft_X.Y.Z-beta_amd64.AppImage`, and their
    records. The [Linux workflow](linux.md#releasing) builds and records both packages and uploads
    them to the existing draft after smoke tests pass when `upload_to_release` is supplied. For a manual
    Linux upload, download `linux-release-amd64` and upload the packages, records, and `SHA256SUMS-linux.txt`.

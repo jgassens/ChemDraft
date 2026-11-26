@@ -46,6 +46,7 @@ export interface ExportFormatDescriptor {
   textOrBinary: ExportPayloadKind;
   chemicallyMeaningful: boolean;
   warningSummary?: string;
+  transparentBackgroundWarningSummary?: string;
   dependency?: string;
 }
 
@@ -144,6 +145,7 @@ export const exportFormatDescriptors = [
     textOrBinary: "binary",
     chemicallyMeaningful: false,
     warningSummary: "TIFF export flattens transparency onto a white background.",
+    transparentBackgroundWarningSummary: "TIFF preserves transparency when a transparent background is selected.",
     dependency: "resvg + image"
   },
   {

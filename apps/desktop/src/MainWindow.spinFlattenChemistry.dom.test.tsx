@@ -95,6 +95,20 @@ describe("Spin 3D flatten chemistry refusals", () => {
   const overlay = () => container.querySelector<SVGSVGElement>("[data-spin3d-overlay]");
   const snapshot = () => window.__CHEMDRAFT_AGENT__!.snapshot().document;
 
+  // Poll OUTSIDE act, flushing React on each try. An act scope holds React updates back until it
+  // exits, so `act(() => vi.waitFor(...))` never sees an update that lands after a macrotask, however
+  // long it waits. Flatten lands after one whenever the mount-time OCL preload is still loading
+  // when it awaits the same import (a cold worker on a loaded Linux runner, CI run 45693901107):
+  // a single injected setTimeout(0) in flatten failed the old wait at 1000 ms and at 5000 ms, with
+  // the commit done at 45 ms. Locally the whole first flatten takes ~45 ms (35 of them RDKit's stereo
+  // reference) on this branch and on 7f2322bb0 alike; the Linux runner spent 1728 ms on the test.
+  async function waitRendered(assertion: () => void, timeout = 1000) {
+    await vi.waitFor(async () => {
+      await act(async () => {});
+      assertion();
+    }, { timeout });
+  }
+
   async function command(commandId: string) {
     await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } })); });
   }
@@ -121,7 +135,8 @@ describe("Spin 3D flatten chemistry refusals", () => {
       bubbles: true, cancelable: true, button: 0, buttons: 1, clientX: 20, clientY: 20
     });
     await act(async () => { spin!.dispatchEvent(event); });
-    await act(async () => vi.waitFor(() => expect(status()).not.toBe(spinStatus)));
+    // The first flatten in a worker may wait on the cold OCL load (above), so allow it time.
+    await waitRendered(() => expect(status()).not.toBe(spinStatus), 5000);
   }
 
   async function mountPhosphineBoraneForRotation() {
@@ -154,7 +169,7 @@ describe("Spin 3D flatten chemistry refusals", () => {
     const writer = vi.mocked(writeClipboardText);
     writer.mockClear();
     await command(flavor === "v2000" ? "clipboard.copyAs.molV2000" : "clipboard.copyAs.mol");
-    await act(async () => vi.waitFor(() => expect(writer, status()).toHaveBeenCalledOnce()));
+    await waitRendered(() => expect(writer, status()).toHaveBeenCalledOnce());
     return writer.mock.calls[0][0];
   }
 
@@ -243,7 +258,7 @@ describe("Spin 3D flatten chemistry refusals", () => {
       expect(overlay(), status()).not.toBeNull();
       const beforeCleanUp = getSelectedMolecule(snapshot())!;
       await command("structure.cleanup2d");
-      await act(async () => vi.waitFor(() => expect(status()).toMatch(/^Cleaned up/)));
+      await waitRendered(() => expect(status()).toMatch(/^Cleaned up/));
       const cleaned = snapshot();
       expect(getSelectedMolecule(cleaned)!.atoms).not.toEqual(beforeCleanUp.atoms);
       return cleaned;
@@ -259,7 +274,7 @@ describe("Spin 3D flatten chemistry refusals", () => {
           bubbles: true, cancelable: true, button: 0, buttons: 1, clientX: 20, clientY: 20
         }));
       });
-      await act(async () => vi.waitFor(() => expect(status()).not.toBe(before)));
+      await waitRendered(() => expect(status()).not.toBe(before));
     }
 
     it("closes the stale overlay when a click outside refuses, keeping the changed drawing", async () => {
@@ -276,7 +291,7 @@ describe("Spin 3D flatten chemistry refusals", () => {
       const cleaned = await mountSpinThenCleanUp();
 
       await command("structure.spin3d");
-      await act(async () => vi.waitFor(() => expect(overlay(), status()).not.toBeNull()));
+      await waitRendered(() => expect(overlay(), status()).not.toBeNull());
       expect(status()).not.toMatch(/already active/);
 
       await clickOutsideSpin();

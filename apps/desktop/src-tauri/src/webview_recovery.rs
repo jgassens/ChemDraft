@@ -36,7 +36,11 @@ impl RecoveryPolicy {
         } else {
             "Quit and restart ChemDraft to reopen it."
         };
-        let appimage = concat!("./ChemDraft_", env!("CARGO_PKG_VERSION"), "_amd64.AppImage");
+        let appimage = concat!(
+            "./ChemDraft_",
+            env!("CARGO_PKG_VERSION"),
+            "-beta_amd64.AppImage"
+        );
         Recovery {
             reload,
             message: format!(
@@ -179,7 +183,7 @@ mod tests {
             ] {
                 let installed = format!("{setting} chemdraft");
                 let appimage = format!(
-                    "{setting} ./ChemDraft_{}_amd64.AppImage",
+                    "{setting} ./ChemDraft_{}-beta_amd64.AppImage",
                     env!("CARGO_PKG_VERSION")
                 );
                 assert!(recovery.message.lines().any(|line| line == installed));

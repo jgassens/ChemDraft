@@ -72,7 +72,8 @@ for (const extra of ["ChemDraft_1.2.2_aarch64.dmg", "ChemDraft_1.2.3_x64.dmg", "
   });
 }
 
-for (const extra of ["other.deb", "OTHER.APPIMAGE", "ChemDraft_1.2.2_amd64.deb", "ChemDraft_1.2.2_amd64.AppImage.build.json"]) {
+for (const extra of ["other.deb", "OTHER.APPIMAGE", "ChemDraft_1.2.2_amd64.deb", "ChemDraft_1.2.2_amd64.AppImage.build.json",
+  "ChemDraft_1.2.2-beta_amd64.deb", "ChemDraft_1.2.3_amd64.deb", "ChemDraft_1.2.3_amd64.AppImage", "ChemDraft_1.2.3_amd64.deb.build.json"]) {
   test(`unexpected Linux file ${extra} is refused with or without the beta packages`, (t) => {
     for (const withLinux of [false, true]) {
       const args = releaseFixture(t, { withLinux });

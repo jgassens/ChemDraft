@@ -6,6 +6,7 @@ import {
   sniffBinaryImageFormat, type EmbeddedSvgBitmap, type SniffedImageFormat
 } from "@chemdraft/export-engine";
 import { formatDropBytes, rewordPictureError } from "./dropFiles";
+import { pngImageDataError } from "./pngIntegrity";
 import type { DecodeOptions, DroppedImageDecoders } from "./rasterDecode";
 import { decodeSvgBytes, encodeSvgText } from "./svgText";
 
@@ -57,6 +58,11 @@ function payloadSizeError(bytes: number): string | undefined {
 /** Decode one bitmap an SVG embeds, under the file's deadline; the reason it fails, if it does. */
 async function embeddedBitmapDecodeError(bitmap: EmbeddedSvgBitmap, decoders: DroppedImageDecoders, options: DecodeOptions): Promise<string | undefined> {
   const label = SVG_PICTURE_FORMAT_LABEL[bitmap.format];
+  // The webview draws a PNG whose image data is damaged (blank or partly black): check it first.
+  if (bitmap.format === "png") {
+    const damaged = await pngImageDataError(bitmap.bytes, options);
+    if (damaged) return `an embedded ${label} picture could not be decoded: ${damaged}`;
+  }
   let decoded;
   try {
     decoded = await decoders.decodeCheck(bitmap.bytes, bitmap.mimeType, options);
@@ -71,7 +77,8 @@ async function embeddedBitmapDecodeError(bitmap: EmbeddedSvgBitmap, decoders: Dr
 
 /**
  * Recognise a dropped picture by its bytes and turn it into PNG or sanitized SVG. A PNG is kept byte
- * for byte once the webview has decoded it; an SVG once the webview has drawn the sanitized text.
+ * for byte once its image data has been checked (`pngIntegrity.ts`) and the webview has decoded it;
+ * an SVG once the webview has drawn the sanitized text.
  * Every decoder call carries `options.signal`, the file's deadline. Every refusal is a reason without
  * the file name; the caller names the file.
  */
@@ -93,7 +100,10 @@ export async function prepareDroppedImage(
     if (result.error) return { ok: false, reason: rewordPictureError(result.error) };
     const sizeError = payloadSizeError(bytes.length);
     if (sizeError) return { ok: false, reason: sizeError };
-    // Chunk framing is not pixels: a PNG whose image data cannot be decoded would draw nothing.
+    // Chunk framing is not pixels, and the webview decodes damaged image data without complaint (an
+    // invisible or half-black picture): the image data itself is checked here, then decoded.
+    const damaged = await pngImageDataError(bytes, options);
+    if (damaged) return { ok: false, reason: `the PNG could not be decoded: ${damaged}` };
     let decoded;
     try {
       decoded = await decoders.decodeCheck(bytes, "image/png", options);

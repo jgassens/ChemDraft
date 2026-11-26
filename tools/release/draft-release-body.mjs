@@ -6,7 +6,7 @@ import { parseArgs } from "node:util";
 import { spawnSync } from "node:child_process";
 import { dmgArchitecture, parseAppcast } from "./macos-appcast.mjs";
 import { expectedReleaseCommit, releaseBuildFiles, verifyBuildAssets, windowsUpdateFiles } from "./release-assets.mjs";
-import { BUILD_TARGETS, LINUX_BUILD_TARGET } from "./record-build.mjs";
+import { BUILD_TARGETS, LINUX_BUILD_TARGET, buildFileName } from "./record-build.mjs";
 import { verifyDmgCommit } from "./verify-macos-feed.mjs";
 
 const ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
@@ -72,7 +72,8 @@ export function draftReleaseBody({ version, commit, tag = `v${version}`, assets 
   }
   if (errors.length) throw new Error(errors.join("\n"));
   if (includeLinux || builds.some((name) => name.endsWith(".deb"))) {
-    platforms.push({ key: "linux", heading: "Linux", content: "Linux support is in beta." });
+    const linuxFiles = BUILD_TARGETS[LINUX_BUILD_TARGET].map((suffix) => `- ${buildFileName(version, LINUX_BUILD_TARGET, suffix)}`).join("\n");
+    platforms.push({ key: "linux", heading: "Linux", content: `The Linux build is ChemDraft ${version}β, a beta.\n\nFiles:\n${linuxFiles}` });
   }
   const gapMap = new Map(platforms.map(({ key }) => [key, []]));
   for (const gap of gaps) {

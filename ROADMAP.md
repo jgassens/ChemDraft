@@ -13,7 +13,7 @@ ChemDraft is free, open source, and runs on macOS and Windows. A [Linux beta](ht
 - Preferences in the File menu on macOS, and right-click a toolbar to customize it.
 
 ## Linux
-Linux is in beta now (.deb and AppImage). It leaves beta once it passes testing on real desktops (GNOME, KDE and Cinnamon, on X11 and Wayland) and has its own update system.
+Linux is in beta now (.deb and AppImage). Each Linux build is named after its parent version plus β; the Linux build of 1.2.3 is ChemDraft 1.2.3β. It leaves beta once it passes testing on real desktops (GNOME, KDE and Cinnamon, on X11 and Wayland) and has its own update system.
 
 ## Later in 1.x
 - A biology clip-art plugin (antibodies, proteins, membranes).

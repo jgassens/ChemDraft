@@ -459,11 +459,42 @@ describe("charge always follows: a mark keeps its exact offset unless its atoms 
     expectOffsetKept(document, committed, markedAtomId);
   });
 
-  it("an engine 2D relayout of a distorted ethylamine keeps the + at its offset from N", () => {
+  // The engine relayout is 3D Clean-up's (and 2D Clean Up's engine stage). Since the Spin 3D mark
+  // fix (2026-11-25) it carries marks with the shared rule (layout-engine
+  // carryElectronMarksToRedrawnMolecule): the exact offset, unless that spot lands on another atom or
+  // a bond, when the mark turns about its atom, at the same distance, to a free side. Here the
+  // relayout flips the chain, and the kept offset would sit ON the C–N bond, nearer the middle C than N.
+  it("an engine 2D relayout of a distorted ethylamine keeps the + at its distance from N, turned off the bond it would land on", () => {
     const { document, moleculeId, markedAtomId } = distortedEthylamine();
     const relaid = workflow.applyNativeMoleculeEngineRelayout(document, moleculeId, relayoutMolfile2D);
     expectAtomMoved(document, relaid, markedAtomId, 0.5);
-    expectOffsetKept(document, commit(document, relaid, undefined), markedAtomId);
+    const committed = commit(document, relaid, undefined);
+    const atoms = dropMolecule(committed).atoms.map(atom => ({ id: atom.id, ...atomPoint(committed, atom.id) }));
+    const nitrogen = atomPoint(committed, markedAtomId);
+    const original = chainOffset(document, markedAtomId);
+    const keptSpot = { x: nitrogen.x + original.x, y: nitrogen.y + original.y };
+    const byId = new Map(atoms.map(atom => [atom.id, atom]));
+    const bondDistance = (point: Point) => Math.min(...dropMolecule(committed).bonds.map(bond => {
+      const from = byId.get(bond.fromAtomId)!, to = byId.get(bond.toAtomId)!;
+      const dx = to.x - from.x, dy = to.y - from.y;
+      const t = Math.max(0, Math.min(1, ((point.x - from.x) * dx + (point.y - from.y) * dy) / (dx * dx + dy * dy)));
+      return Math.hypot(point.x - from.x - t * dx, point.y - from.y - t * dy);
+    }));
+    const nearestOther = (point: Point) => Math.min(...atoms.filter(atom => atom.id !== markedAtomId)
+      .map(atom => Math.hypot(atom.x - point.x, atom.y - point.y)));
+    const distance = Math.hypot(original.x, original.y);
+    // Why it turned: the kept offset lands on a bond, nearer another atom than N.
+    expect(bondDistance(keptSpot)).toBeLessThan(1);
+    expect(nearestOther(keptSpot)).toBeLessThan(distance);
+    // Where it went: as far from N as it was drawn, nearer N than any other atom, off every bond.
+    const center = markCenter(committed);
+    expect(Math.hypot(center.x - nitrogen.x, center.y - nitrogen.y)).toBeCloseTo(distance, 6);
+    expect(nearestOther(center)).toBeGreaterThanOrEqual(distance - 1e-9);
+    expect(bondDistance(center)).toBeGreaterThan(dropMark(committed).width * 0.35);
+    // Chemistry and association unchanged.
+    expect(dropMark(committed).rotation).toBe(dropMark(document).rotation);
+    expect(owner(committed, dropMark(document).id)).toEqual({ objectId: dropMolecule(document).id, atomId: markedAtomId });
+    expect(dropMolecule(committed).atoms.map(chemistry)).toEqual(dropMolecule(document).atoms.map(chemistry));
   });
 
   it("bond-length scaling keeps the mark offset", () => {

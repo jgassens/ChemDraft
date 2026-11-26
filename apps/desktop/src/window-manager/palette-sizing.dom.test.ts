@@ -291,7 +291,7 @@ describe("palette work-area sizing", () => {
         await act(async () => root.unmount());
         container.remove();
       };
-      return { shell, scroller, nativeResize, moveToWorkArea, nativeResizeTo, unmount };
+      return { shell, scroller, settle, nativeResize, moveToWorkArea, nativeResizeTo, unmount };
     };
 
     const expectNoOverflow = (scroller: HTMLElement) => {
@@ -438,6 +438,205 @@ describe("palette work-area sizing", () => {
         } finally {
           await unmount();
         }
+      });
+    });
+
+    describe("a live resolution change that leaves the window where it is", () => {
+      // 1.2.2 VM retest (KDE Plasma, XWayland): Main at x = 0, 1311 px wide, with its width pinned by
+      // the min = max hints, so 1680 -> 1280 or 1024 neither moves nor resizes the window and fires
+      // no tauri://move, tauri://scale-change or webview resize. Main stayed 1311 px wide, its right
+      // end off-screen, for 20 s and more, until the pointer entered it.
+      const changeResolution = async (settle: () => Promise<void>, right: number, bottom: number) => {
+        native.workArea.mockResolvedValue({ left: 0, top: 0, right, bottom });
+        // No native event: the work area is all that changed.
+        await settle();
+      };
+
+      it("refits a Linux Main toolbar within one poll, both ways, and then sends nothing more", async () => {
+        await withWorkAreaPoll(async pollTick => {
+          const { scroller, settle, nativeResize, nativeResizeTo, unmount } = await mountMain("linux", 1680);
+          try {
+            expectNoOverflow(scroller);
+            const before = resizeRequests().length;
+
+            await changeResolution(settle, 1024, 768);
+            // Nothing else would ever re-run the fit: this is the gap the poll closes.
+            expect(resizeRequests()).toHaveLength(before);
+            await pollTick();
+            // Re-sent with the viewport still 1680 wide, so Rust caps the window to the work area.
+            expect(resizeRequests().slice(before)).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }]);
+            await nativeResizeTo(1024);
+            expect(scroller.style.overflowX).toBe("auto");
+            expect(scroller.style.maxWidth).toBe("1024px");
+            expect(resizeRequests().slice(before)).toEqual([
+              { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT },
+              { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT + SCROLLBAR }
+            ]);
+            // Settled: further polls on the same work area and the resize after the height fit send nothing.
+            await nativeResize();
+            await pollTick();
+            await pollTick();
+            expect(resizeRequests()).toHaveLength(before + 2);
+
+            await changeResolution(settle, 1680, 1050);
+            expect(resizeRequests()).toHaveLength(before + 2);
+            await pollTick();
+            expect(resizeRequests().slice(before + 2)).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT + SCROLLBAR }]);
+            await nativeResizeTo(NATURAL_WIDTH);
+            expectNoOverflow(scroller);
+            expect(resizeRequests().slice(before + 2)).toEqual([
+              { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT + SCROLLBAR },
+              { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }
+            ]);
+            await nativeResize();
+            await pollTick();
+            await pollTick();
+            expect(resizeRequests()).toHaveLength(before + 4);
+          } finally {
+            await unmount();
+          }
+        });
+      });
+
+      it("refits directly when the window runs no animation frames", async () => {
+        await withWorkAreaPoll(async pollTick => {
+          const { settle, unmount } = await mountMain("linux", 1680);
+          try {
+            const before = resizeRequests().length;
+            // A window the compositor is not repainting: requestAnimationFrame never calls back.
+            const frames = vi.fn(() => 0);
+            vi.stubGlobal("requestAnimationFrame", frames);
+            await changeResolution(settle, 1024, 768);
+            await pollTick();
+            expect(resizeRequests().slice(before)).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }]);
+            expect(frames).not.toHaveBeenCalled();
+            // Accepted: later polls on the same work area send nothing.
+            await pollTick();
+            await pollTick();
+            expect(resizeRequests()).toHaveLength(before + 1);
+          } finally {
+            await unmount();
+          }
+        });
+      });
+
+      it("retries a refit the native side refused on the next poll, and records the area only once it is accepted", async () => {
+        await withWorkAreaPoll(async pollTick => {
+          const { settle, unmount } = await mountMain("linux", 1680);
+          try {
+            const before = resizeRequests().length;
+            // A transient frame (the document minimized mid-switch): resize_toolset_window says no once.
+            const answer = native.invoke.getMockImplementation()!;
+            let refusals = 1;
+            native.invoke.mockImplementation(async (command, payload) => {
+              if (command === "resize_toolset_window" && refusals > 0) {
+                refusals -= 1;
+                return false;
+              }
+              return answer(command, payload);
+            });
+            await changeResolution(settle, 1024, 768);
+            await pollTick();
+            expect(refusals).toBe(0);
+            await pollTick();
+            const refit = { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT };
+            expect(resizeRequests().slice(before)).toEqual([refit, refit]);
+            // Accepted now: later polls on the same work area send nothing.
+            await pollTick();
+            await pollTick();
+            expect(resizeRequests()).toHaveLength(before + 2);
+          } finally {
+            await unmount();
+          }
+        });
+      });
+
+      it("compares with the last accepted fit, so a silent return after a move between polls still refits", async () => {
+        await withWorkAreaPoll(async pollTick => {
+          const { moveToWorkArea, nativeResizeTo, settle, unmount } = await mountMain("linux", 1680);
+          try {
+            const before = resizeRequests().length;
+            // Between two polls: a move fits Main to a 1024 screen, then the work area silently
+            // returns to 1680 (no move, resize or scale event).
+            await moveToWorkArea(1024, 768);
+            await nativeResizeTo(1024);
+            const afterMove = resizeRequests().length;
+            expect(afterMove).toBeGreaterThan(before);
+            await changeResolution(settle, 1680, 1050);
+            expect(resizeRequests()).toHaveLength(afterMove);
+            // The poll's earlier read was 1680, but the last accepted fit was for 1024: refit.
+            await pollTick();
+            expect(resizeRequests().slice(afterMove)).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT + SCROLLBAR }]);
+          } finally {
+            await unmount();
+          }
+        });
+      });
+
+      it("records the area the accepted fit used, not the one the poll read", async () => {
+        await withWorkAreaPoll(async pollTick => {
+          const { settle, unmount } = await mountMain("linux", 1680);
+          try {
+            const before = resizeRequests().length;
+            await changeResolution(settle, 1024, 768);
+            // The poll reads the new 1024 area, but the fit it starts re-reads a stale 1280 one.
+            native.workArea
+              .mockResolvedValueOnce({ left: 0, top: 0, right: 1024, bottom: 768 })
+              .mockResolvedValueOnce({ left: 0, top: 0, right: 1280, bottom: 768 });
+            await pollTick();
+            const refit = { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT };
+            expect(resizeRequests().slice(before)).toEqual([refit]);
+            // That fit was for 1280, so the 1024 read on the next poll is still a change.
+            await pollTick();
+            expect(resizeRequests().slice(before)).toEqual([refit, refit]);
+            // Fitted to 1024 now: later polls send nothing.
+            await pollTick();
+            await pollTick();
+            expect(resizeRequests()).toHaveLength(before + 2);
+          } finally {
+            await unmount();
+          }
+        });
+      });
+
+      it("refits directly on a scale change alone when the window runs no animation frames", async () => {
+        await withWorkAreaPoll(async pollTick => {
+          const { unmount } = await mountMain("linux", 1680);
+          try {
+            const before = resizeRequests().length;
+            const frames = vi.fn(() => 0);
+            vi.stubGlobal("requestAnimationFrame", frames);
+            // Same work area, new scale, and no tauri://scale-change reached the fit.
+            vi.stubGlobal("devicePixelRatio", (window.devicePixelRatio || 1) * 2);
+            await pollTick();
+            expect(resizeRequests().slice(before)).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }]);
+            expect(frames).not.toHaveBeenCalled();
+            await pollTick();
+            await pollTick();
+            expect(resizeRequests()).toHaveLength(before + 1);
+          } finally {
+            await unmount();
+          }
+        });
+      });
+
+      it("polls nothing while the palette is hidden, and refits once it is shown", async () => {
+        await withWorkAreaPoll(async pollTick => {
+          const { settle, unmount } = await mountMain("linux", 1680);
+          const hidden = vi.spyOn(document, "hidden", "get");
+          try {
+            const before = resizeRequests().length;
+            hidden.mockReturnValue(true);
+            await changeResolution(settle, 1024, 768);
+            await pollTick();
+            expect(resizeRequests()).toHaveLength(before);
+            hidden.mockReturnValue(false);
+            await pollTick();
+            expect(resizeRequests().slice(before)).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }]);
+          } finally {
+            await unmount();
+          }
+        });
       });
     });
 

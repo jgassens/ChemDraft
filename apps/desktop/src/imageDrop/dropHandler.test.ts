@@ -58,6 +58,11 @@ describe("classifyDroppedFile", () => {
     }
     expect(classifyDroppedFile("a.bmp")).toEqual({ kind: "refused",
       reason: "BMP and TIFF pictures can't be dropped yet; save it as PNG or JPEG first." });
+    // Links and shortcuts would otherwise go to the document-open path and fail with a parser's wording.
+    for (const name of ["link.url", "Page.WEBLOC", "C:\\Users\\me\\Desktop\\link.url"]) {
+      expect(classifyDroppedFile(name), name).toEqual({ kind: "refused", reason: "it is a web link, not a picture or a drawing." });
+    }
+    expect(classifyDroppedFile("Drawing.lnk")).toEqual({ kind: "refused", reason: "it is a shortcut; drop the file it points to instead." });
     // Refusals describe a file by its extension, never by the program that writes it.
     expect(classifyDroppedFile("poster.ai")).toEqual({ kind: "refused",
       reason: ".ai files can't be placed as pictures; export it as PNG or SVG first." });
@@ -381,7 +386,7 @@ describe("handleDroppedFiles", () => {
         openDocuments: async (entries: File[]) => { calls.opened.push(entries.map(entry => entry.name)); return "Opened 1 document"; },
         insertImages: (images: { name: string }[]) => {
           calls.inserted.push(images.map(image => image.name));
-          return insert === "ok" ? { ok: true as const, scaledToPage: [] } : { ok: false as const, reason: "the document tab changed while they were read; drop them again." };
+          return insert === "ok" ? { ok: true as const, scaledToPage: [] } : { ok: false as const, reason: "the document tab changed during the read; try the drop again." };
         },
         decoders: decoders(),
         documentBytes: () => 0,
@@ -437,7 +442,7 @@ describe("handleDroppedFiles", () => {
       await handleDroppedFiles(files.map(name => file(name)), { ...handler, insertRefusal: () => refusedNow,
         setStatus: status => dropTab.push(status), showOutcome: status => active.push(status) });
       expect(dropTab.at(-1)).not.toMatch(/^Reading/);
-      expect(dropTab.at(-1)).toMatch(insert === "refuse" || refusedNow ? /^The dropped pictures were not inserted/ : /^Inserted 2 pictures/);
+      expect(dropTab.at(-1)).toMatch(insert === "refuse" || refusedNow ? /^"one\.png" was not inserted/ : /^Inserted 2 pictures/);
       expect(active).toHaveLength(1);
       expect(active[0]).toContain(dropTab.at(-1)!.replace(/\.$/, ""));
     }
@@ -447,7 +452,48 @@ describe("handleDroppedFiles", () => {
     const { calls, handler } = harness("refuse");
     await handleDroppedFiles([file("one.png"), file("a.mol")], handler);
     expect(calls.opened).toEqual([["a.mol"]]);
-    expect(calls.status.at(-1)).toBe("The dropped pictures were not inserted: the document tab changed while they were read; drop them again; Opened 1 document");
+    expect(calls.status.at(-1)).toBe("\"one.png\" was not inserted: the document tab changed during the read; try the drop again; Opened 1 document");
+  });
+
+  it("names every picture a refused insertion leaves out, beside the documents of a mixed drop", async () => {
+    const { calls, handler } = harness("refuse");
+    await handleDroppedFiles([file("a.mol"), file("/in/a.png"), file("b.png"), file("bad.bmp"), file("c.png"), file("b.cdxml")], handler);
+    expect(calls.opened).toEqual([["a.mol", "b.cdxml"]]);
+    expect(calls.status.at(-1)).toBe([
+      "\"a.png\", \"b.png\" and \"c.png\" were not inserted: the document tab changed during the read; try the drop again",
+      "Couldn't drop \"bad.bmp\": BMP and TIFF pictures can't be dropped yet; save it as PNG or JPEG first",
+      "Opened 1 document"
+    ].join("; "));
+    const two = harness("refuse");
+    await handleDroppedFiles([file("a.png"), file("b.png"), file("d.mol")], two.handler);
+    expect(two.calls.status.at(-1)).toBe("\"a.png\" and \"b.png\" were not inserted: the document tab changed during the read; try the drop again; Opened 1 document");
+  });
+
+  it("refuses web links and shortcuts by name without reading or opening them, alone or among pictures", async () => {
+    const { calls, handler } = harness();
+    const link = memorySource("link.url", new TextEncoder().encode("[InternetShortcut]\nURL=https://example.com/\n"));
+    await handleDroppedFiles([file("link.url")], { ...handler, imageSource: () => link });
+    expect(link.reads).toBe(0);
+    expect(calls.opened).toEqual([]);
+    // No "Reading…" and no "No pictures were inserted": the refusal is the whole story, on the drop tab and as the outcome.
+    expect(calls.status).toEqual(Array(2).fill("Couldn't drop \"link.url\": it is a web link, not a picture or a drawing."));
+
+    const mixed = harness();
+    await handleDroppedFiles([file("page.webloc"), file("one.png"), file("Drawing.lnk"), file("a.cdxml")], mixed.handler);
+    expect(mixed.calls.inserted).toEqual([["one.png"]]);
+    expect(mixed.calls.opened).toEqual([["a.cdxml"]]);
+    expect(mixed.calls.status.at(-1)).toBe([
+      "Inserted picture one.png",
+      "Couldn't drop \"page.webloc\": it is a web link, not a picture or a drawing",
+      "Couldn't drop \"Drawing.lnk\": it is a shortcut; drop the file it points to instead",
+      "Opened 1 document"
+    ].join("; "));
+
+    // A link beside documents only: the documents still open, the link is named.
+    const withDocument = harness();
+    await handleDroppedFiles([file("link.url"), file("a.cdxml")], withDocument.handler);
+    expect(withDocument.calls.opened).toEqual([["a.cdxml"]]);
+    expect(withDocument.calls.status.at(-1)).toBe("Couldn't drop \"link.url\": it is a web link, not a picture or a drawing; Opened 1 document");
   });
 
   it("tells a guard refusal at drop time, before reading anything, and still opens the documents", async () => {
@@ -457,7 +503,14 @@ describe("handleDroppedFiles", () => {
       insertRefusal: () => "finish editing the text first." });
     expect(source.reads).toBe(0);
     expect(calls.inserted).toEqual([]);
-    expect(calls.status.at(-1)).toBe("The dropped pictures were not inserted: finish editing the text first; Opened 1 document");
+    expect(calls.status.at(-1)).toBe("\"one.png\" was not inserted: finish editing the text first; Opened 1 document");
+  });
+
+  it("names the dropped picture files in a refusal at drop time, by their base names", async () => {
+    const { calls, handler } = harness();
+    await handleDroppedFiles([file("C:\\in\\one.png"), file("a.mol"), file("/in/two.svg")], { ...handler,
+      insertRefusal: () => "finish editing the text first." });
+    expect(calls.status.at(-1)).toBe("\"one.png\" and \"two.svg\" were not inserted: finish editing the text first; Opened 1 document");
   });
 
   it("commits only when the canvas is idle, and reports a canvas that stayed busy", async () => {
@@ -474,9 +527,9 @@ describe("handleDroppedFiles", () => {
 
     const busy = harness();
     await handleDroppedFiles([file("two.png")], { ...busy.handler,
-      whenIdle: async () => { throw new Error("the canvas stayed busy with another edit; drop them again."); } });
+      whenIdle: async () => { throw new Error("the canvas stayed busy with another edit; try the drop again."); } });
     expect(busy.calls.inserted).toEqual([]);
-    expect(busy.calls.status.at(-1)).toBe("The dropped pictures were not inserted: the canvas stayed busy with another edit; drop them again.");
+    expect(busy.calls.status.at(-1)).toBe("\"two.png\" was not inserted: the canvas stayed busy with another edit; try the drop again.");
   });
 
   it("serializes the picture work of overlapping drops", async () => {
@@ -515,6 +568,17 @@ describe("formatImageDropStatus", () => {
       .toBe("Inserted 7 pictures (p0.png, p1.png, p2.png, p3.png, p4.png and 2 more); scaled to fit the page: p1.png");
     expect(formatImageDropStatus({ inserted: [], refusals: [{ name: "C:\\a\\x.tif", reason: "r." }] }))
       .toBe("No pictures were inserted; Couldn't drop \"x.tif\": r.");
+    // Nothing in the drop was a picture to read: the refusal alone.
+    expect(formatImageDropStatus({ inserted: [], refusals: [{ name: "x.url", reason: "r." }], nothingToRead: true }))
+      .toBe("Couldn't drop \"x.url\": r.");
+  });
+
+  it("names every picture that was not inserted, quoted, one or several", () => {
+    const status = (names: string[]) => formatImageDropStatus({ inserted: [], refusals: [], notInserted: { names, reason: "the reason." } });
+    expect(status(["slow.png"])).toBe("\"slow.png\" was not inserted: the reason.");
+    expect(status(["a.png", "C:\\x\\b.png"])).toBe("\"a.png\" and \"b.png\" were not inserted: the reason.");
+    const many = Array.from({ length: 8 }, (_, index) => `p${index}.png`);
+    expect(status(many)).toBe(`${many.slice(0, -1).map(name => `"${name}"`).join(", ")} and "p7.png" were not inserted: the reason.`);
   });
 
   it("drops a reason's own period before the separator, keeping only the last one", () => {
