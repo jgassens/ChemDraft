@@ -17083,12 +17083,15 @@ export interface CleanUpStereoGuardOptions {
  * True when a molecule has anything the polygon-and-tree layout could change the CIP reading of:
  * a wedge or hash, or a double bond that can carry E/Z (each end has another neighbor and the
  * bond is neither marked "either" nor in a ring of seven or fewer atoms). Cheap and engine-free,
- * so a molecule without any stereo marking never pays for perception. Query bonds without a
- * wedge keep today's behavior, the same exemption the engine relayout's read-back makes.
+ * so a molecule without any stereo marking never pays for perception.
+ *
+ * A query bond (order "unknown") never switches the guard off. Its molecule is still guarded
+ * whenever it has a wedge, a hash or an E/Z-capable double bond; the perception molfile refuses
+ * unknown orders, so the guard reports it "unchecked" and keeps it as drawn instead of cleaning
+ * stereo it cannot read.
  */
 export function cleanUpMayChangeStereo(molecule: MoleculeObject): boolean {
   if (molecule.bonds.some(bond => bond.display?.bondStyle === "wedge" || bond.display?.bondStyle === "hashed")) return true;
-  if (skipUnknownBondStereoGuard(molecule)) return false;
   const candidates = molecule.bonds.filter(bond => bond.order === "double" && bond.stereo !== "either");
   if (candidates.length === 0) return false;
   const degree = new Map<string, number>();

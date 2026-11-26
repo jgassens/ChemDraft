@@ -13,7 +13,7 @@ import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifier
 import { installRealRdkitModuleLoader } from "@chemdraft/rdkit-adapter/testing";
 import * as w from "./documentWorkflow";
 import { PRESERVE_CHEMISTRY, policyChemistryRefusals } from "./commitChemistryGuard";
-import { cleanUpStereoRefusal, cleanUpStereoSignature, cleanUpStereoSkipStatus, type CleanUpStereoRefusal } from "./cleanUpStereoGuard";
+import { cleanUpStereoRefusal, cleanUpStereoSignature, cleanUpStereoSkipStatus, sameCleanUpStereo, type CleanUpStereoRefusal } from "./cleanUpStereoGuard";
 import type { StereoEngine } from "./stereoReadout";
 
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
@@ -211,4 +211,90 @@ describe("Clean Up 2D stereo guard", () => {
     expect(cleanUpStereoSkipStatus([{ reason: "unchecked" }]))
       .toBe("Clean Up skipped 1 structure: its stereochemistry couldn't be checked.");
   });
+});
+
+// A query bond (order "unknown") makes the perception molfile refuse, so the guard cannot read
+// the molecule's stereo. It must then keep the molecule as drawn, never fall back to an unguarded
+// Clean Up: the stereo the drawing still carries elsewhere would go unchecked.
+describe("Clean Up 2D stereo guard with a query bond", () => {
+  /** The single bond from a terminal oxygen (a hydroxyl), away from every stereo element. */
+  function hydroxylBond(m: MoleculeObject) {
+    const degree = new Map<string, number>();
+    for (const b of m.bonds) for (const id of [b.fromAtomId, b.toAtomId]) degree.set(id, (degree.get(id) ?? 0) + 1);
+    const oxygen = new Set(m.atoms.filter(a => a.element === "O" && degree.get(a.id) === 1).map(a => a.id));
+    const bond = m.bonds.find(b => b.order === "single" && !b.display?.bondStyle && (oxygen.has(b.fromAtomId) || oxygen.has(b.toAtomId)));
+    if (!bond) throw new Error("No hydroxyl bond to turn into a query bond.");
+    return bond;
+  }
+  const withOrder = (m: MoleculeObject, bondId: string, order: MoleculeObject["bonds"][number]["order"]): MoleculeObject =>
+    ({ ...m, bonds: m.bonds.map(b => b.id === bondId ? { ...b, order } : b) });
+  /** The document with one hydroxyl bond of the molecule changed to order "unknown". */
+  function queried(d: ChemDraftDocument, id: string) {
+    const bondId = hydroxylBond(byId(d, id)).id;
+    const next: ChemDraftDocument = {
+      ...d,
+      pages: d.pages.map(page => ({ ...page, objects: page.objects.map(o => o.type === "molecule" && o.id === id ? withOrder(o, bondId, "unknown") : o) }))
+    };
+    return { d: next, m: byId(next, id), bondId };
+  }
+
+  it("keeps the recorded cinnamic-acid flip as drawn when an unrelated bond is a query bond", async () => {
+    const pasted = await drawn("O=C(O)/C=C/c1ccccc1");
+    const { d, m, bondId } = queried(pasted.d, pasted.m.id);
+    expect(m.bonds.some(b => b.order === "unknown")).toBe(true);
+    expect(m.bonds.some(b => b.display?.bondStyle === "wedge" || b.display?.bondStyle === "hashed")).toBe(false);
+    expect(w.cleanUpMayChangeStereo(m)).toBe(true);
+    // Without the guard the layout really does flip the alkene this drawing carries.
+    const unguarded = byId(w.cleanUpNativeMolecules2d(d, [m.id]), m.id);
+    expect(sameCleanUpStereo(cleanUpStereoSignature(withOrder(m, bondId, "single"), engine),
+      cleanUpStereoSignature(withOrder(unguarded, bondId, "single"), engine))).toBe(false);
+
+    const { document, skipped } = guardedCleanUp(d, [m.id]);
+    expect(skipped).toEqual([{ objectId: m.id, reason: "unchecked" }]);
+    expect(document).toBe(d);
+    expect(coordinates(byId(committed(d, document), m.id))).toBe(coordinates(m));
+    expect(cleanUpStereoSkipStatus(skipped)).toBe("Clean Up skipped 1 structure: its stereochemistry couldn't be checked.");
+  }, 60000);
+
+  it("keeps any E/Z alkene with a query bond as drawn, even one the layout would not flip", async () => {
+    for (const smiles of ["C/C=C/C(=O)O", "C/C=C\\C(=O)O", "OC(=O)/C=C/C(=O)O"]) {
+      const pasted = await drawn(smiles);
+      const { d, m } = queried(scuffed(pasted.d, pasted.m.id), pasted.m.id);
+      expect(w.cleanUpMayChangeStereo(m), smiles).toBe(true);
+      expect(w.cleanUpNativeMolecules2d(d, [m.id]), `${smiles} has something to clean up`).not.toBe(d);
+      const { document, skipped } = guardedCleanUp(d, [m.id]);
+      expect(skipped, smiles).toEqual([{ objectId: m.id, reason: "unchecked" }]);
+      expect(document, smiles).toBe(d);
+    }
+  }, 60000);
+
+  it("keeps a wedged stereocenter with a query bond as drawn", async () => {
+    for (const smiles of ["C[C@H](O)CC(=O)O", "O[C@@H](CC(=O)O)C(=O)O"]) {
+      const pasted = await drawn(smiles);
+      const { d, m } = queried(scuffed(pasted.d, pasted.m.id), pasted.m.id);
+      expect(m.bonds.some(b => b.display?.bondStyle === "wedge" || b.display?.bondStyle === "hashed"), smiles).toBe(true);
+      expect(w.cleanUpMayChangeStereo(m), smiles).toBe(true);
+      expect(w.cleanUpNativeMolecules2d(d, [m.id]), `${smiles} has something to clean up`).not.toBe(d);
+      const { document, skipped } = guardedCleanUp(d, [m.id]);
+      expect(skipped, smiles).toEqual([{ objectId: m.id, reason: "unchecked" }]);
+      expect(document, smiles).toBe(d);
+    }
+  }, 60000);
+
+  it("skips only the query-bond alkene in a mixed selection and still cleans a query-bond molecule without stereo", async () => {
+    const first = await drawn("O=C(O)/C=C/c1ccccc1");
+    const second = await drawn("CCCC(=O)O", first.d, { x: 600, y: 300 });
+    const a = queried(second.d, first.m.id);
+    const b = queried(scuffed(a.d, second.m.id), second.m.id);
+    const d = b.d;
+    expect(w.cleanUpMayChangeStereo(b.m)).toBe(false);
+    const { calls, counted } = countingEngine();
+    const { document, skipped } = guardedCleanUp(d, [a.m.id, b.m.id], counted);
+    expect(skipped).toEqual([{ objectId: a.m.id, reason: "unchecked" }]);
+    expect(byId(document, a.m.id)).toEqual(byId(d, a.m.id));
+    expect(coordinates(byId(document, b.m.id))).not.toBe(coordinates(byId(d, b.m.id)));
+    // Neither reached the perceiver: the alkene's molfile refuses the query bond, and the
+    // molecule without stereo marking is never read.
+    expect(calls.count).toBe(0);
+  }, 60000);
 });

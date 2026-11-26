@@ -128,4 +128,38 @@ describe("Clean Up 2D stereo guard in the window", () => {
     expect(status()).toBe("Cleaned up selected structure");
     expect(objects()[0]!.atoms).not.toEqual(before[0]!.atoms);
   });
+  it("keeps an alkene with a query bond as drawn on both the first and a repeated Clean Up", async () => {
+    // A query bond makes the alkene's stereo unreadable. Neither the route that loads the
+    // perceivers nor the synchronous one taken once they are loaded may clean it unchecked. (Run
+    // alone, the first Clean Up loads them; after the tests above it is already synchronous.)
+    const document = createEmptyDocument();
+    const pasted = molecule(document, "O=C(O)/C=C/c1ccccc1", 220);
+    const degree = new Map<string, number>();
+    for (const b of pasted.bonds) for (const id of [b.fromAtomId, b.toAtomId]) degree.set(id, (degree.get(id) ?? 0) + 1);
+    const hydroxyl = pasted.bonds.find(b => b.order === "single" && [b.fromAtomId, b.toAtomId].some(id =>
+      degree.get(id) === 1 && pasted.atoms.find(a => a.id === id)!.element === "O"))!;
+    const alkene: MoleculeObject = { ...pasted, id: "alkene",
+      bonds: pasted.bonds.map(b => b.id === hydroxyl.id ? { ...b, order: "unknown" as const } : b),
+      atoms: pasted.atoms.map((atom, i) => ({ ...atom, x: atom.x + ((i * 7) % 5) - 2, y: atom.y + ((i * 11) % 7) - 3 })) };
+    document.pages[0]!.objects.push(alkene);
+    document.selection = { pageId: document.pages[0]!.id, objectIds: [alkene.id] };
+    await render(document);
+    const before = current();
+    const unchecked = "Clean Up skipped 1 structure: its stereochemistry couldn't be checked.";
+
+    await cleanUp();
+    await vi.waitFor(async () => {
+      await act(async () => {});
+      expect(status()).toBe(unchecked);
+    }, { timeout: 10_000 });
+    expect(current()).toEqual(before);
+    expect(canUndo()).toBe("false");
+
+    // The perceivers are loaded now, so this run takes the synchronous route. Its status reads
+    // the same, so the document and the undo stack are what show it was guarded too.
+    await cleanUp();
+    expect(status()).toBe(unchecked);
+    expect(current()).toEqual(before);
+    expect(canUndo()).toBe("false");
+  }, 20_000);
 });
