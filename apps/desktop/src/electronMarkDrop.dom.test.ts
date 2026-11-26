@@ -381,7 +381,9 @@ describe.each([false, true])("electron-mark drop interaction with direct editing
     { size: 54, zoom: 1, rotation: 0, compact: false },
     { size: 54, zoom: 0.5, rotation: 0, compact: true },
     { size: 27, zoom: 2, rotation: 0, compact: false },
-    { size: 40, zoom: 1, rotation: 45, compact: false }
+    // selectedMark builds a charge mark. Charge marks are drawn upright since 1.2.4, so their handle size
+    // follows the upright 40 px frame (under 54 px: compact), not the 45-degree-turned frame (about 57 px).
+    { size: 40, zoom: 1, rotation: 45, compact: true }
   ])("uses screen frame size for compact handles: $size px, zoom $zoom, rotation $rotation", async ({ size, zoom, rotation, compact }) => {
     await selectedMark(zoom, rotation, size);
     expect(container.querySelectorAll(".object-resize-compact")).toHaveLength(compact ? 1 : 0);

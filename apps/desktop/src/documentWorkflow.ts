@@ -22385,6 +22385,8 @@ export function copyAsScopedDocument(document: ChemDraftDocument): ChemDraftDocu
     // that differ from their ink bounds (labels, table overflow and art effects).
     if (object.type === "bracket") return bracketVisualBounds(object);
     if (object.rotation === 0) return object;
+    // A charge mark is always drawn upright, so its frame is not turned about the stored rotation.
+    if (object.type === "electron-mark" && object.markKind === "charge") return object;
     if (object.type === "graphic") return documentObjectVisualBounds(object, page.objects);
     if (object.type === "text") return textVisualBoundsForArrangement(object);
     if (object.type === "molecule") return moleculeVisualBoundsForArrangement(object);

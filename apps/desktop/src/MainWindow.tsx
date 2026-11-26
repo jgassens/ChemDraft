@@ -30966,7 +30966,8 @@ function DocumentObjectViewContent({
   const artObjectTransformFrameStyle = documentObjectSupportsArtTransform(object, directElectronMarkEditing)
     ? documentObjectArtTransformFrameStyle(object, artObjectProjection, objectTransformPreview, pageScale)
     : undefined;
-  const electronMarkFrame = object.type === "electron-mark" && artObjectProjection?.matrix
+  // A charge mark is drawn upright, so its compact-handle decision measures the upright frame.
+  const electronMarkFrame = object.type === "electron-mark" && object.markKind !== "charge" && artObjectProjection?.matrix
     ? documentObjectProjectedPlaneBounds(object.width, object.height, artObjectProjection.matrix)
     : object;
   // Three 18px handle widths, measured on screen, including a rotated mark's frame.

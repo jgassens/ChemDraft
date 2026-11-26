@@ -5502,6 +5502,23 @@ describe("Phase 4 document workflow", () => {
     expect(mergedZn).toMatchObject({ formalCharge: 1 });
   });
 
+  it("fits Copy As page bounds to a rotated charge mark's upright frame", () => {
+    const pageId = createPhase4Document("Charge copy bounds").pages[0].id;
+    const chargeMark = (rotation: number): ElectronMarkObject => ({
+      id: "charge_copy_bounds", type: "electron-mark", x: 200, y: 160, width: 40, height: 10, rotation,
+      style: {}, markKind: "charge", anchor: { kind: "point", point: { x: 220, y: 165 } }, charge: 1
+    });
+    const scopedSize = (rotation: number) => {
+      const document = selectAllDocumentObjects(applyPatches(createPhase4Document("Charge copy bounds"),
+        [{ op: "addObject", pageId, object: chargeMark(rotation) }]), pageId);
+      const page = copyAsScopedDocument(document).pages[0];
+      return { width: page.width, height: page.height };
+    };
+    // The glyph is drawn upright, so a 45-degree stored rotation must not widen the crop.
+    expect(scopedSize(45)).toEqual({ width: 40 + 32, height: 10 + 32 });
+    expect(scopedSize(45)).toEqual(scopedSize(0));
+  });
+
   it("stacks the charge tool into multi-magnitude marks — a Zn earns its 2+", () => {
     const withLigand = insertNativeSingleBondMolecule(createPhase4Document("Zinc 2+"), { x: 300, y: 300 });
     const znText = insertNativeTextObject(withLigand, { x: 460, y: 300 }, "Zn");
