@@ -173,7 +173,10 @@ import {
   exportDocumentToCdxml as exportDocumentToCdxmlEnvelope,
   openChemDraftPayload,
   importCdx,
+  reactionStepAtomMapAttributes,
+  resolveReactionStepAtomMaps,
   type ChemDraftOpenResult,
+  type DroppedReactionStepAtomMapEdge,
   type CompatibilityConversionWarning
 } from "@chemdraft/cdx-compat";
 import type { StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
@@ -15920,7 +15923,8 @@ function duplicateSelectedDocumentObjectsOnce(
 
   // The copies of what was selected at the top level: a nested group's copy is reached through its
   // parent's, as the original was.
-  remapCopiedReactionReferences(document, patches, duplicateIdByOriginalId);
+  remapCopiedReactionReferences(document, patches, duplicateIdByOriginalId,
+    new Map(page.objects.map(object => [object.id, object])), warningsOut);
   // Marks copied only because their molecule was: they follow it but are not part of the selection.
   // Every carried mark is now atom-anchored to its copied molecule, so the move below carries it with
   // that molecule (or the group copy containing it) exactly once, like any atom-anchored mark.
@@ -16403,7 +16407,8 @@ export function pasteSelectionClipboardPayload(
   const fallbackSelectionIds = selectedIds.length > 0
     ? selectedIds
     : [...idBySourceId.values()];
-  remapCopiedReactionReferences(document, patches, idBySourceId);
+  remapCopiedReactionReferences(document, patches, idBySourceId,
+    new Map(sourceChildren.map(object => [object.id, object])), warningsOut);
   patches.push({ op: "setSelection", pageId: page.id, objectIds: fallbackSelectionIds });
 
   const next = applyPatches(document, patches, { now: phase4Timestamp });
@@ -16471,11 +16476,26 @@ function remapCopiedElectronMarkAssociations(
 }
 
 /** A copied step refers to the copied drawables, including forward references and shared intermediates. */
-function remapCopiedReactionReferences(document: ChemDraftDocument, patches: DocumentPatch[], ids: ReadonlyMap<string, string>): void {
+/**
+ * Points each copied reaction at its copied objects. `ids` maps original object ids to copy ids and
+ * `sources` holds the originals by their ids (the page for Duplicate, the clipboard objects for paste).
+ *
+ * A CDXML/CDX step's atom-map edges are source node ids that name atoms of the step's own components
+ * (`resolveReactionStepAtomMaps`). Each edge of the original is resolved, then kept only when both of
+ * its atoms were copied, through `ids`, into a component of the copy that still carries that node id;
+ * the copy's map then names the copy's atoms and never the original's. Any other edge is dropped and
+ * reported in `warningsOut` (AGENTS.md section 7); a copy left with no edges records its map absent.
+ */
+function remapCopiedReactionReferences(
+  document: ChemDraftDocument, patches: DocumentPatch[], ids: ReadonlyMap<string, string>,
+  sources: ReadonlyMap<string, DocumentObject>, warningsOut?: string[]
+): void {
   const remap = (references: readonly string[]) => references.flatMap(id => {
     const copiedId = ids.get(id);
     return copiedId === undefined ? [] : [copiedId];
   });
+  const originalIdByCopyId = new Map([...ids].map(([originalId, copyId]) => [copyId, originalId]));
+  const copiedById = new Map(patches.flatMap(patch => patch.op === "addObject" ? [[patch.object.id, patch.object] as const] : []));
   const copiedSchemeKeys = new Map<string, string>();
   const schemeKeys = new Set<string>();
   for (const object of [
@@ -16513,10 +16533,45 @@ function remapCopiedReactionReferences(document: ChemDraftDocument, patches: Doc
       }
       compatibility = { ...compatibility, unknown };
     }
+    const components = reaction.components.flatMap(component => remap([component.objectId]).map(objectId => ({ ...component, objectId })));
+    const original = sources.get(originalIdByCopyId.get(reaction.id) ?? "");
+    let mappingState = reaction.mappingState;
+    const resolutions = original?.type === "reaction" ? resolveReactionStepAtomMaps(original, sources) : [];
+    if (resolutions.length && compatibility) {
+      const componentIds = new Set(components.map(component => component.objectId));
+      const copiedAtomKeepsNode = (end: { objectId: string; atomId: string; sourceId: string }) => {
+        const copyId = ids.get(end.objectId);
+        const copy = copyId === undefined || !componentIds.has(copyId) ? undefined : copiedById.get(copyId);
+        if (copy?.type !== "molecule" || !copy.atoms.some(atom => atom.id === end.atomId)) return false;
+        const nodeIds = copy.compatibility?.unknown.cdxmlAtomIdsByAtomId;
+        return !!nodeIds && typeof nodeIds === "object" && (nodeIds as Record<string, unknown>)[end.atomId] === end.sourceId;
+      };
+      const stepAttributes = { ...(compatibility.unknown.cdxmlStepAttributes as Record<string, unknown>) };
+      const dropped: DroppedReactionStepAtomMapEdge[] = [];
+      for (const resolution of resolutions) {
+        const kept: string[] = [];
+        dropped.push(...resolution.dropped);
+        for (const edge of resolution.edges) {
+          if (copiedAtomKeepsNode(edge.from) && copiedAtomKeepsNode(edge.to)) kept.push(edge.from.sourceId, edge.to.sourceId);
+          else dropped.push({ sourceIds: [edge.from.sourceId, edge.to.sourceId], reason: "its atom was not copied" });
+        }
+        if (!kept.length) delete stepAttributes[resolution.attribute];
+        else if (kept.length !== resolution.value.trim().split(/\s+/).length) stepAttributes[resolution.attribute] = kept.join(" ");
+      }
+      compatibility = { ...compatibility, unknown: { ...compatibility.unknown, cdxmlStepAttributes: stepAttributes } };
+      if (!reactionStepAtomMapAttributes.some(attribute => typeof stepAttributes[attribute] === "string" && (stepAttributes[attribute] as string).trim())) {
+        mappingState = "absent";
+      }
+      if (dropped.length) {
+        warningsOut?.push(`Copied reaction atom map: ${dropped.length} atom-map pair${dropped.length === 1 ? " was" : "s were"} dropped ` +
+          `(${dropped.map(edge => `${edge.sourceIds.join("→")}: ${edge.reason}`).join("; ")}); the copy's map never names the original's atoms.`);
+      }
+    }
     patch.object = {
       ...reaction,
       ...(compatibility === undefined ? {} : { compatibility }),
-      components: reaction.components.flatMap(component => remap([component.objectId]).map(objectId => ({ ...component, objectId }))),
+      mappingState,
+      components,
       conditionsTextObjectIds: remap(reaction.conditionsTextObjectIds),
       ...(reaction.arrowObjectIds === undefined ? {} : { arrowObjectIds: remap(reaction.arrowObjectIds) }),
       ...(reaction.plusObjectIds === undefined ? {} : { plusObjectIds: remap(reaction.plusObjectIds) })
