@@ -3,7 +3,7 @@ import {
   compose, determinant, diagonal, length, parseTransform, point, scale, similarityScale, translate,
   type Bounds, type Matrix, type Size
 } from "./geometry";
-import { clampUnit, elementChildren, href, inlineStyle, opacity, property, reference, solidColor, type CanonicalColor } from "./presentation";
+import { clampUnit, elementChildren, href, inheritedProperty, inlineStyle, opacity, property, reference, solidColor, type CanonicalColor } from "./presentation";
 import { SVG_IMPORT_MAX_REFERENCE_DEPTH, type ReportLoss } from "./types";
 
 const gradientTags = new Set(["linearGradient", "radialGradient"]);
@@ -122,7 +122,13 @@ function readGradient(element: Element, context: PaintContext): GraphicPaint | u
     report("svgImport.gradient_not_kept", "Unsupported gradient children");
   }
   if ((field("spreadMethod") ?? "pad") !== "pad") return unsupported("Gradient spread method");
-  if ((field("color-interpolation") ?? "sRGB") === "linearRGB") return unsupported("Linear RGB gradient interpolation");
+  // Interpolation belongs to the directly referenced gradient. The href chain
+  // supplies gradient attributes and stops, while CSS inherits through the DOM.
+  const interpolation = inheritedProperty(element, "color-interpolation", "srgb", report);
+  if (interpolation === "linearrgb") report("svgImport.gradient_not_kept", "Linear RGB gradient interpolation rendered as sRGB");
+  else if (interpolation !== "srgb") {
+    report("svgImport.gradient_not_kept", "Unsupported gradient color-interpolation");
+  }
   const units = field("gradientUnits") ?? "objectBoundingBox";
   if (units !== "objectBoundingBox" && units !== "userSpaceOnUse") return unsupported("Unsupported gradientUnits");
   const objectUnits = units === "objectBoundingBox";

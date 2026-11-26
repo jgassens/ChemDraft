@@ -14,12 +14,17 @@ contains the top-level IDs in the same order. The caller owns document insertion
 The picture's frame stretches the SVG's intrinsic viewport. The SVG's own `viewBox` and
 `preserveAspectRatio` still determine layout inside that viewport. Transforms are baked into
 shape geometry. Simple text keeps its SVG baseline and alignment anchor and uses an estimated
-editable text box. SVG groups become native groups, whose schema has no display name field.
+editable text box. SVG groups become native groups. Names from `data-component` and `title`
+are omitted because the native group schema has no name field.
 
 Check `report.exact` before replacing the picture. Report entries have a stable `code`, a
 `detail` string, and the number of distinct source elements affected by that issue. Simple
 closed fills can be intersected with simple clips. Curved clip intersections use sampled
-polygons and are reported. When an exact translation exceeds the native model, entries describe
+polygons and are reported. The converter also reports intersections that may have vanished or
+changed area during rounding. Text in a clipped viewport reports that the ink bounds could not
+be verified. Font metrics are required to bound glyph advance, overhang, ascent and descent,
+including the advance-dependent offset for middle and end anchors.
+When an exact translation exceeds the native model, entries describe
 the unsupported feature or the approximation used. Examples include non-uniformly transformed
 strokes, group opacity, complex text positioning, and gradients whose coordinates cannot fit
 the native shape frame.

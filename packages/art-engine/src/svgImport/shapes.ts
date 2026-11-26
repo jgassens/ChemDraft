@@ -164,7 +164,9 @@ export function primitiveGeometry(shape: Shape, matrix: Matrix, strokeInset: num
   const { box, rx } = primitive;
   const { x, y } = point(matrix, box.x, box.y);
   const width = box.width * factor, height = box.height * factor;
-  if (Math.min(width, height) < (primitive.kind === "ellipse" ? 1 : 0.5)) return;
+  // The canvas clamps the outer frame to 1 and the inset rectangle to 0.5.
+  const minimum = primitive.kind === "ellipse" ? 1 : Math.max(0.5, 1 - 2 * strokeInset);
+  if (Math.min(width, height) < minimum) return;
   // A native SVG ellipse starts at its right edge, as does the fallback path.
   // Rounded native rects share the source's starting corner, except for sub-millipixel rounding.
   if (primitive.kind === "rect" && rx > 0 && dashed) return;

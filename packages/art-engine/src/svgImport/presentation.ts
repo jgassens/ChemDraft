@@ -24,6 +24,15 @@ export type Declarations = ReadonlyMap<string, string>;
 export const property = (element: Element, css: Declarations, name: string): string | undefined =>
   css.get(name) ?? element.getAttribute(name)?.trim();
 
+export function inheritedProperty(element: Element, name: string, initial: string, report: ReportLoss): string {
+  for (let current: Element | null = element; current; current = current.parentElement) {
+    const value = property(current, inlineStyle(current, report), name)?.toLowerCase();
+    if (value === "initial") return initial;
+    if (value !== undefined && value !== "inherit" && value !== "unset") return value;
+  }
+  return initial;
+}
+
 export function* elementChildren(element: Element): IterableIterator<Element> {
   // Indexed access to live HTMLCollections can rescan siblings in XML DOMs.
   for (let child = element.firstElementChild; child; child = child.nextElementSibling) yield child;

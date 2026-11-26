@@ -3,18 +3,18 @@ import { clipRelation, intersectPaths, prepareClip, type PreparedClip } from "./
 import {
   about, boxForPoints, compose, corners, determinant, identity, inverse, length, localPathData, maxScale,
   parseTransform, pathBounds, point, polygonPath, readViewBox, rotate, scale, transformPath, translate, viewportMatrix,
-  type Bounds, type Matrix, type Path, type Size
+  validBounds, type Bounds, type Matrix, type Path, type Size
 } from "./geometry";
 import { readPaint } from "./gradients";
 import {
   colorParser, defaultPresentation, elementChildren, graphicPaintStyle, href, inheritPresentation, inlineStyle, isPresentation, opacity,
-  property, reference, strokeStyle, strokeWidth, transformedStrokeScale, type Declarations, type Presentation
+  inheritedProperty, property, reference, strokeStyle, strokeWidth, transformedStrokeScale, type Declarations, type Presentation
 } from "./presentation";
 import {
   closeSubpaths, isLinearPath, isSimpleClosedPath, nonzeroPathForEvenOdd, primitiveGeometry, readShape,
   shapeAttributes, shapeBounds, type Shape
 } from "./shapes";
-import { readText, textAttributes } from "./text";
+import { hasTextChildren, readText, textAttributes } from "./text";
 import {
   SVG_IMPORT_MAX_DEPTH, SVG_IMPORT_MAX_ELEMENTS, SVG_IMPORT_MAX_EXPANDED_ELEMENTS, SVG_IMPORT_MAX_OBJECTS,
   SVG_IMPORT_MAX_PATH_CHARS, SVG_IMPORT_MAX_REFERENCE_DEPTH, SVG_IMPORT_MAX_SOURCE_CHARS, SvgImportError,
@@ -208,25 +208,32 @@ export function convertSvgToShapes(svgSource: string, options: SvgImportOptions)
     for (const viewport of context.viewports) {
       const localMatrix = compose(viewport.inverseMatrix, matrix);
       const localBounds = strokeBounds(shapeBounds(shape, localMatrix), localMatrix);
-      if (!contains(viewport.box, localBounds, 0)) clips.push({ shape: viewport.clip, report, viewport: true });
+      if (contains(viewport.box, localBounds)) continue;
+      const relation = clipRelation(viewport.clip, strokeBounds(inkBox, matrix));
+      if (relation === "outside") return;
+      clips.push({ shape: viewport.clip, report, viewport: true });
     }
     let clipped = false;
     for (const clip of clips) {
+      const code = clip.viewport ? "svgImport.viewport_clip_not_kept" : "svgImport.clip_not_kept";
       const current = fillVisible ? fillPath : path;
       if (!strokeVisible) {
+        if (clipped && clipRelation(clip.shape, pathBounds(current)) === "outside") return;
         const intersection = intersectPaths(current, clip.shape);
-        if (intersection !== undefined) {
-          if (!intersection.length) return;
+        if (intersection) {
+          if (intersection.roundingLoss) {
+            clip.report(code, "Clip intersection may have lost geometry to rounding");
+          }
+          if (!intersection.path.length) return;
           if (!isLinearPath(current) || !isLinearPath(clip.shape.path)) {
             clip.report("svgImport.clip_curve_sampled", "Curves sampled during geometric clipping");
           }
-          path = fillPath = intersection;
+          path = fillPath = intersection.path;
           clipped = true;
           continue;
         }
       }
-      clip.report(clip.viewport ? "svgImport.viewport_clip_not_kept" : "svgImport.clip_not_kept",
-        clip.viewport ? "Ink may extend beyond the SVG viewport" : "Clip needs simple closed shapes without a stroke");
+      clip.report(code, clip.viewport ? "Ink may extend beyond the SVG viewport" : "Clip needs simple closed shapes without a stroke");
     }
 
     // Native primitives inset the painted outline by half their stroke width.
@@ -274,14 +281,15 @@ export function convertSvgToShapes(svgSource: string, options: SvgImportOptions)
       return;
     }
     const viewport = objectUnits ? { width: 1, height: 1 } : clip.viewport;
-    const structure = resolveClipShape(children[0], viewport, property(clip.element, clipCss, "clip-rule") ?? "nonzero", report);
+    const rule = inheritedProperty(clip.element, "clip-rule", "nonzero", report);
+    const structure = resolveClipShape(children[0], viewport, rule, report);
     if (!structure) {
       report("svgImport.clip_not_kept", "Unsupported clip path presentation");
       return;
     }
-    const { shape, matrix, rule } = structure;
-    const path = rule === "evenodd" && !shape?.primitive ? shape && nonzeroPathForEvenOdd(shape.path) : shape?.path;
-    if (!path || !isSimpleClosedPath(path) || (rule !== "evenodd" && rule !== "nonzero")) {
+    const { shape, matrix, rule: shapeRule } = structure;
+    const path = shapeRule === "evenodd" && !shape?.primitive ? shape && nonzeroPathForEvenOdd(shape.path) : shape?.path;
+    if (!path || !isSimpleClosedPath(path) || (shapeRule !== "evenodd" && shapeRule !== "nonzero")) {
       report("svgImport.clip_not_kept", "Clip path is not a simple closed shape");
       return;
     }
@@ -301,7 +309,7 @@ export function convertSvgToShapes(svgSource: string, options: SvgImportOptions)
       const transform = parseTransform(property(element, css, "transform"));
       if (!allowed || !transform || !clipAttributesSupported(element, css, allowed)) return;
       matrix = compose(matrix, transform);
-      const clipRule = property(element, css, "clip-rule");
+      const clipRule = property(element, css, "clip-rule")?.toLowerCase();
       if (clipRule && clipRule !== "inherit" && clipRule !== "unset") rule = clipRule === "initial" ? "nonzero" : clipRule;
       if (tag !== "use") return { shape: sourceShape(element, css, viewport, 16), matrix, rule };
       const link = href(element);
@@ -376,8 +384,14 @@ export function convertSvgToShapes(svgSource: string, options: SvgImportOptions)
       if (!resolved) return [];
       if (!isRoot) {
         matrix = compose(matrix, translate(resolved.x, resolved.y));
-        if (property(element, css, "overflow") !== "visible") {
-          context.viewports = [...parent.viewports, viewportClip(matrix, resolved)];
+        const overflow = property(element, css, "overflow")?.toLowerCase();
+        if (overflow !== undefined && !["visible", "hidden", "clip", "auto", "scroll"].includes(overflow)) {
+          report("svgImport.viewport_clip_not_kept", "Unsupported nested SVG viewport overflow");
+        }
+        if (overflow !== "visible") {
+          const viewport = viewportClip(matrix, resolved);
+          if (viewport) context.viewports = [...parent.viewports, viewport];
+          else report("svgImport.viewport_clip_not_kept", "Unusable nested SVG viewport boundary");
         }
       }
       context.matrix = compose(matrix, resolved.mapping);
@@ -442,15 +456,21 @@ export function convertSvgToShapes(svgSource: string, options: SvgImportOptions)
       }
       return result;
     }
-    if (style.visibility === "hidden" || style.visibility === "collapse") return [];
+    if (["hidden", "collapse"].includes(style.visibility.toLowerCase())) {
+      if (tag === "text" && hasTextChildren(element)) {
+        report("svgImport.text_style_not_kept", "Text children may override inherited visibility");
+      }
+      return [];
+    }
     if (tag === "text") {
       const text = readText(element, css, style, matrix, context.viewport, context.opacity, canonicalColor, report);
       if (!text) return [];
       for (const item of context.clips) reportFor(item.owner)("svgImport.clip_not_kept", "Clip cannot be applied to editable text");
-      const textMatrix = about(rotate(text.rotation), text.x + text.width / 2, text.y + text.height / 2);
-      for (const viewport of context.viewports) {
-        const bounds = boxForPoints(corners(text).map(p => point(compose(viewport.inverseMatrix, textMatrix), p.x, p.y)));
-        if (!contains(viewport.box, bounds, 0)) report("svgImport.viewport_clip_not_kept", "Text may extend beyond the SVG viewport");
+      if (context.viewports.length) {
+        // The SVG may use arbitrary fonts and fallback glyphs. Without metrics
+        // there is no reliable upper bound on advance, ink overhang, ascent or
+        // descent. The unknown advance also shifts middle and end anchors.
+        report("svgImport.viewport_clip_not_kept", "Text ink bounds cannot be verified against the SVG viewport");
       }
       return [addObject({ id: idFactory(), ...text })];
     }
@@ -464,14 +484,13 @@ export function convertSvgToShapes(svgSource: string, options: SvgImportOptions)
   }
 
   const intrinsic = readSvgInfo(svgSource)?.physicalSize ?? { width: 300, height: 150 };
-  if (["width", "height"].some(name => length(root.getAttribute(name) ?? "", 1) === 0)) {
-    return { objects, selectionIds: [], report: { exact: entries.size === 0, entries: [...entries.values()] } };
-  }
   const rotation = about(rotate(frame.rotation), frame.x + frame.width / 2, frame.y + frame.height / 2);
   const frameMatrix = compose(rotation, translate(frame.x, frame.y));
+  const viewport = viewportClip(frameMatrix, frame);
+  if (!viewport) throw new SvgImportError("invalid_frame", "SVG import could not place the picture viewport in its page frame.");
   const stretch = scale(frame.width / intrinsic.width, frame.height / intrinsic.height);
   const roots = visit(root, { matrix: compose(frameMatrix, stretch), style: defaultPresentation, viewport: intrinsic,
-    viewports: [viewportClip(frameMatrix, frame)], clips: [], opacity: 1, localOpacity: 1, references: [] }, 1);
+    viewports: [viewport], clips: [], opacity: 1, localOpacity: 1, references: [] }, 1);
   return { objects, selectionIds: roots.map(object => object.id), report: { exact: entries.size === 0, entries: [...entries.values()] } };
 }
 
@@ -524,6 +543,7 @@ function svgViewport(element: Element, css: Declarations, available: Size, fixed
   if (root && (css.has("width") || css.has("height"))) {
     report("svgImport.unsupported_attribute", "CSS sizing on the root SVG viewport");
   }
+  if (root && ["width", "height"].some(name => length(property(element, css, name) ?? "", 1) === 0)) return;
   const width = fixed?.width ?? value("width", available.width, available.width);
   const height = fixed?.height ?? value("height", available.height, available.height);
   const x = root ? 0 : value("x", available.width, 0);
@@ -544,20 +564,18 @@ function svgViewport(element: Element, css: Declarations, available: Size, fixed
     mapping: mapping ?? viewportMatrix(box!, viewport, "xMidYMid meet")! };
 }
 
-function viewportClip(matrix: Matrix, size: Size): Viewport {
+function viewportClip(matrix: Matrix, size: Size): Viewport | undefined {
   const box = { x: 0, y: 0, width: size.width, height: size.height };
-  return { inverseMatrix: inverse(matrix), box, clip: prepareClip(transformPath(polygonPath(corners(box), true), matrix))! };
+  const inverseMatrix = inverse(matrix);
+  const clip = prepareClip(transformPath(polygonPath(corners(box), true), matrix));
+  if (clip && inverseMatrix.every(Number.isFinite)) return { inverseMatrix, box, clip };
 }
 
-function validBounds(bounds: Bounds): boolean {
-  return Object.values(bounds).every(Number.isFinite) && bounds.width >= 0 && bounds.height >= 0;
-}
-
-function contains(outer: Bounds, inner: Bounds, pad: number): boolean {
-  const tolerance = 1e-7 * Math.max(1, outer.width, outer.height);
-  return inner.x - pad >= outer.x - tolerance && inner.y - pad >= outer.y - tolerance
-    && inner.x + inner.width + pad <= outer.x + outer.width + tolerance
-    && inner.y + inner.height + pad <= outer.y + outer.height + tolerance;
+function contains(outer: Bounds, inner: Bounds): boolean {
+  const tolerance = 32 * Number.EPSILON * Math.max(1, outer.width, outer.height);
+  return inner.x >= outer.x - tolerance && inner.y >= outer.y - tolerance
+    && inner.x + inner.width <= outer.x + outer.width + tolerance
+    && inner.y + inner.height <= outer.y + outer.height + tolerance;
 }
 
 function samePath(first: Path, second: Path): boolean {

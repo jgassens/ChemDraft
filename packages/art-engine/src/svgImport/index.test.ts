@@ -15,6 +15,10 @@ const domParser = new (new JSDOM("").window.DOMParser)();
 const frame = { x: 0, y: 0, width: 100, height: 100, rotation: 0 };
 const svg = (body: string, attributes = 'viewBox="0 0 100 100"') => `<svg xmlns="${ns}" ${attributes}>${body}</svg>`;
 const convert = (body: string, pictureFrame: SvgImportFrame = frame, attrs?: string) => convertSource(svg(body, attrs), pictureFrame);
+const thinClip = '<defs><clipPath id="c"><rect x="99.99999" width="10" height="100"/></clipPath></defs><rect width="100" height="100" clip-path="url(#c)"/>';
+const edgeText = '<text x="50" y="40" font-size="20">WWWW</text>';
+const gradientStops = '<stop stop-color="black"/><stop offset="1" stop-color="white"/>';
+const gradientFill = '<rect x="10" y="10" width="40" height="20" fill="url(#paint)"/>';
 function convertSource(source: string, pictureFrame: SvgImportFrame = frame) {
   let id = 0;
   return convertSvgToShapes(source, { frame: pictureFrame, idFactory: () => `object-${++id}`, domParser });
@@ -53,6 +57,11 @@ describe("SVG element conversion", () => {
     expect(clamped.graphicKind).toBe("path");
   });
 
+  it("preserves subpixel rect geometry when the native rect frame would widen it", () => {
+    const rect = onlyGraphic('<rect x="10" y="10" width=".75" height="20"/>');
+    expect(rect).toMatchObject({ graphicKind: "path", width: .75 });
+  });
+
   it("returns editable groups with unique child ids and selects only the roots", () => {
     const result = convert('<g data-component="Example"><title>Drawing</title><rect width="20" height="20"/><g><circle cx="25" cy="25" r="2"/></g></g>');
     const [rect, circle, inner, outer] = result.objects;
@@ -65,7 +74,8 @@ describe("SVG element conversion", () => {
 
   it("converts simple text with positioned native baseline and alignment", () => {
     const { objects, report } = convert('<text x="60" y="40" dx="2" dy="-3" text-anchor="middle" font-family="Arial" font-size="12" font-weight="bold" font-style="italic" letter-spacing="1" fill="#013" fill-opacity=".5"> Hi   SVG </text>');
-    expect(report.exact).toBe(true);
+    expect(report).toEqual({ exact: false, entries: [{ code: "svgImport.viewport_clip_not_kept",
+      detail: expect.any(String), elementCount: 1 }] });
     const [text] = objects;
     expect(text).toMatchObject({ type: "text", text: "Hi SVG", style: {
       textAlign: "center", fontFamily: "Arial", fontSizePx: 12, fontWeight: 700, fontStyle: "italic",
@@ -199,12 +209,34 @@ describe("SVG paint and presentation", () => {
       cx: .4, cy: .5, fx: .35, fy: .5, r: .2 });
   });
 
+  it("uses interpolation from the referenced gradient's own ancestry", () => {
+    const shape = onlyGraphic(`<defs color-interpolation="linearRGB" style="color-interpolation: initial">
+      <linearGradient id="base" color-interpolation="linearRGB">${gradientStops}</linearGradient>
+      <linearGradient id="paint" href="#base"/>
+    </defs>${gradientFill}`);
+    expect(shape.style.fillPaint?.kind).toBe("linear-gradient");
+  });
+
   it("clips simple fill geometry and produces no objects for an empty intersection", () => {
     const defs = '<defs><clipPath id="trim" clipPathUnits="objectBoundingBox"><rect x=".25" width=".5" height="1"/></clipPath></defs>';
     const shape = onlyGraphic(defs + '<rect x="10" y="20" width="40" height="30" clip-path="url(#trim)"/>');
     expect(shape).toMatchObject({ x: 20, y: 20, width: 20, height: 30, graphicKind: "path" });
     const empty = convert(defs + '<rect x="150" y="150" width="40" height="30" clip-path="url(#trim)"/>');
     expect(empty).toEqual({ objects: [], selectionIds: [], report: { exact: true, entries: [] } });
+    const disjoint = convert('<defs><clipPath id="c"><rect width="20" height="20"/></clipPath></defs>'
+      + '<rect x="25" width="20" height="20" clip-path="url(#c)"/>');
+    expect(disjoint).toEqual(empty);
+  });
+
+  it.each([90, 30])("reports rounding loss for a surviving intersection with a clip %s units wide", width => {
+    const { objects, report } = convert(
+      `<defs><clipPath id="c"><rect x="20.123451" width="${width}" height="1000"/></clipPath></defs>`
+        + '<rect width="100" height="1000" clip-path="url(#c)"/>',
+      { ...frame, height: 1000 }, 'width="100" height="1000"');
+    expect(objects).toHaveLength(1);
+    expect(report.exact).toBe(false);
+    expect(report.entries).toContainEqual({ code: "svgImport.clip_not_kept",
+      detail: expect.stringContaining("rounding"), elementCount: 1 });
   });
 
   it("resolves a clip use and leaves enclosed geometry unchanged", () => {
@@ -248,6 +280,28 @@ describe("typed conversion reports and refusal limits", () => {
     expect(report.exact).toBe(false);
     const fullCode: SvgImportReportCode = `svgImport.${code}`;
     expect(report.entries).toContainEqual({ code: fullCode, detail: expect.any(String), elementCount: 1 });
+  });
+
+  it.each([
+    ["thin clip", thinClip, "clip_not_kept"],
+    ["text near the viewport edge", edgeText, "viewport_clip_not_kept"],
+    ["linear RGB inherited through defs", `<defs color-interpolation="linearRGB">
+      <linearGradient id="paint">${gradientStops}</linearGradient></defs>${gradientFill}`, "gradient_not_kept"],
+    ["linear RGB inherited from inline style", `<defs color-interpolation="sRGB" style="color-interpolation:linearRGB">
+      <linearGradient id="paint" color-interpolation="inherit" href="#base"/>
+      <linearGradient id="base" color-interpolation="sRGB">${gradientStops}</linearGradient></defs>${gradientFill}`, "gradient_not_kept"],
+    ["CSS overriding a zero root width", tiny, "unsupported_attribute", 'width="0" height="100" style="width:100px"'],
+    ["visible tspan inside hidden text", '<text x="10" y="30" visibility="hidden"><tspan visibility="visible">visible</tspan></text>', "text_style_not_kept"],
+    ["inherited nested viewport overflow", '<g overflow="visible"><svg width="8" height="8" overflow="inherit"><rect width="20" height="20"/></svg></g>', "viewport_clip_not_kept"],
+    ["non-finite clip boundary", `<defs><clipPath id="c" transform="scale(1e200)"><rect x="1e200" width="1e200" height="10"/></clipPath></defs>
+      <rect width="20" height="20" clip-path="url(#c)"/>`, "clip_not_kept"],
+    ["non-finite nested viewport boundary", '<svg transform="scale(1e100)" width="1e210" height="1"><rect width="1e-100" height="1e-100"/></svg>', "viewport_clip_not_kept"],
+    ["inherited even-odd clip rule", `<defs clip-rule="evenodd"><clipPath id="c"><path d="M0 0H90V90H0V0H90V90H0Z"/></clipPath></defs>
+      <rect x="10" y="10" width="20" height="20" clip-path="url(#c)"/>`, "clip_not_kept"]
+  ] as const)("reports losses in the %s scene", (_name, body, code, attrs?) => {
+    const { report } = convert(body, frame, attrs);
+    expect(report.exact).toBe(false);
+    expect(report.entries).toContainEqual({ code: `svgImport.${code}`, detail: expect.any(String), elementCount: 1 });
   });
 
   it("counts affected source elements and groups identical detail entries", () => {
@@ -308,11 +362,13 @@ describe("exported SVG raster equivalence", () => {
         <radialGradient id="r" gradientTransform="translate(.05 .025)"><stop stop-color="#ee3"/><stop offset="1" stop-color="#113"/></radialGradient>
       </defs><use x="10" y="55" href="#shape" fill="url(#r)"/><rect x="9" y="10" width="25" height="30" fill="url(#l)"/>
       <polygon points="32,18 80,24 80,50 30,50" clip-path="url(#c)" fill="#23a"/>`, frame],
-    ["text anchor and rotation", '<text x="50" y="40" text-anchor="middle" font-family="sans-serif" font-size="17" transform="rotate(18 50 40)">SVG art</text>', frame]
-  ] as const)("keeps %s within raster tolerance", (_name, body, pictureFrame) => {
+    ["text anchor and rotation", '<text x="50" y="40" text-anchor="middle" font-family="sans-serif" font-size="17" transform="rotate(18 50 40)">SVG art</text>', frame, "svgImport.viewport_clip_not_kept"]
+  ] as const)("keeps %s within raster tolerance", (_name, body, pictureFrame, expectedLoss?) => {
     const authored = svg(body, 'width="100" height="100" viewBox="2 3 100 100"');
     const result = convertSource(authored, pictureFrame);
-    expect(result.report).toEqual({ exact: true, entries: [] });
+    expect(result.report).toEqual(expectedLoss
+      ? { exact: false, entries: [{ code: expectedLoss, detail: expect.any(String), elementCount: 1 }] }
+      : { exact: true, entries: [] });
     const size = 180;
     const document = createEmptyDocument({ title: "SVG import test" });
     Object.assign(document.pages[0]!, { objects: result.objects, width: size, height: size });
@@ -336,7 +392,9 @@ describe("exported SVG raster equivalence", () => {
       error += delta;
     }
     expect(ink).toBeGreaterThan(10);
-    expect(largeDeltas / ink).toBeLessThan(0.018);
+    // The transformed arc has the largest delta: 19 edge pixels out of 5,471
+    // ink pixels at 2× (0.3473%). The other four scenes have no large deltas.
+    expect(largeDeltas / ink).toBeLessThan(0.0035);
     expect(error / ink).toBeLessThan(2.8);
   });
 });

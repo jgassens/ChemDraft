@@ -146,6 +146,10 @@ export function corners(box: Bounds): Point[] {
   return [{ x, y }, { x: x + width, y }, { x: x + width, y: y + height }, { x, y: y + height }];
 }
 
+export function validBounds({ x, y, width, height }: Bounds): boolean {
+  return width >= 0 && height >= 0 && [x, y, x + width, y + height].every(Number.isFinite);
+}
+
 export function polygonPath(points: readonly Point[], close: boolean): Path {
   const path: Path = points.map(({ x, y }, index) => [index ? "L" : "M", x, y]);
   if (close) path.push(["Z"]);

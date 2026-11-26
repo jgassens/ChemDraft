@@ -4,6 +4,9 @@ import { elementChildren, opacity, property, solidColor, type CanonicalColor, ty
 import type { ReportLoss } from "./types";
 
 export const textAttributes = ["x", "y", "dx", "dy", "rotate", "textLength", "lengthAdjust", "xml:space"];
+const textMetadata = new Set(["title", "desc", "metadata"]);
+export const hasTextChildren = (element: Element): boolean =>
+  [...elementChildren(element)].some(child => !textMetadata.has(child.localName));
 
 export function readText(
   element: Element, css: Declarations, style: Presentation, matrix: Matrix, viewport: Size, objectOpacity: number,
@@ -11,12 +14,12 @@ export function readText(
 ): Omit<TextObject, "id"> | undefined {
   const raw = Array.from(element.childNodes)
     .filter(node => node.nodeType === 3 || node.nodeType === 4 || (node.nodeType === 1
-      && !["title", "desc", "metadata"].includes((node as Element).localName)))
+      && !textMetadata.has((node as Element).localName)))
     .map(node => node.textContent ?? "").join("");
   const preserve = closestSpace(element) === "preserve";
   const text = preserve ? raw.replace(/[\t\r\n]/g, " ") : raw.replace(/[ \t\r\n]+/g, " ").trim();
   if (!text) return;
-  if ([...elementChildren(element)].some(child => !["title", "desc", "metadata"].includes(child.localName))) {
+  if (hasTextChildren(element)) {
     report("svgImport.text_style_not_kept", "Text child positioning and styling");
   }
   if (preserve && /^ | $| {2,}/.test(text)) report("svgImport.text_style_not_kept", "Preserved SVG whitespace");
@@ -64,8 +67,7 @@ export function readText(
   const spacing = style["letter-spacing"] === "normal" ? 0 : length(style["letter-spacing"], baseSize, baseSize);
   if (spacing === undefined) report("svgImport.text_style_not_kept", "Unsupported letter-spacing");
   const letterSpacingPx = (spacing ?? 0) * scale;
-  // SVG supplies actual glyph advance during rendering. The editable auto-sized box
-  // is estimated here without a font or DOM measurement dependency.
+  // The editable box is estimated to place its anchor. It does not bound glyph ink.
   const width = Math.max(fontSizePx, Array.from(text).length * (fontSizePx * 0.6 + letterSpacingPx));
   const height = fontSizePx * 1.2;
   const rotation = Math.atan2(matrix[1], matrix[0]) * 180 / Math.PI;
