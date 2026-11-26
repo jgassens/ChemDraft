@@ -844,8 +844,8 @@
     "name": "monitor_logical_bounds_at",
     "async": false,
     "generics": "",
-    "parameters": "window: tauri::WebviewWindow, x: f64, y: f64,",
-    "returnType": "Option<LogicalBounds>"
+    "parameters": "window: tauri::WebviewWindow, x: f64, y: f64, work_area: Option<bool>, toolset_id: Option<String>,",
+    "returnType": "Option<ScaledLogicalBounds>"
   },
   {
     "file": "naming_engine/mod.rs",

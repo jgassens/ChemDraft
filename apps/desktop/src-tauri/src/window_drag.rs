@@ -12,8 +12,11 @@ pub(crate) fn start(window: &tauri::WebviewWindow, grab_x: f64, grab_y: f64) -> 
         0,
     );
     compensate_before_drag(window, grab_x, grab_y)?;
-    // Every move from here on is the user's, even right after a dialog re-showed the palette.
-    super::palette_map_pin::with_pins(|pins| pins.forget(window.label()));
+    // Every move from here on is the user's, even right after a dialog re-showed the palette: the
+    // pin ends, and a move back to the pre-hide position still scheduled is dropped.
+    super::palette_map_pin::with_pins(|pins| {
+        pins.drag_started(window.label(), std::time::Instant::now())
+    });
     window.start_dragging().map_err(|error| error.to_string())
 }
 

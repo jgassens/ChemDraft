@@ -17,19 +17,30 @@
 //! and so does not pull back into the work area. A Moved event anywhere else is a real move (a drag,
 //! a window manager move the user asked for such as Alt-drag): it ends the pin and is saved as usual.
 //! A move ChemDraft makes itself re-targets the pin; the earlier target is then superseded, and a
-//! Moved event still on its way to it is ignored. A drag the user starts ends the pin. A palette
+//! Moved event still on its way to it is ignored. A drag the user starts ends the pin, and a move
+//! back to a palette's pre-hide position scheduled before the drag is dropped. A palette
 //! shown again while already at its pin's clamp (a move back lost when it was hidden) is moved back
 //! at once, since the map may report no move. A palette closed while pinned saves its pin, and a
 //! reopen of the same hidden window pins that position rather than the clamp it may still sit at.
 //! Only Linux X11/XWayland pins palettes (utility_window::map_replaces_position); elsewhere no pin
 //! exists and every Moved event is handled as before.
+//!
+//! A pin's clock starts again at the first look that sees its palette mapped, and those looks go
+//! on until the pin ends: KWin can report its placement long after the show was requested (Linux
+//! VM, 1.2.3: Main pinned at -143,159 was clamped to 0,159 after a 1.5-s pin had expired, and
+//! 0,159 was saved).
 
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
-/// How long after a map a move to the window manager's clamp counts as its placement.
-const PIN_DURATION: Duration = Duration::from_millis(1500);
+/// How long a move to the window manager's clamp counts as its placement: from the first look that
+/// sees the palette mapped ([`MapPins::mapped_look`]), or from the pin while no look has. A busy
+/// main thread can hand ChemDraft the window manager's Moved event over a second after the map.
+const PIN_DURATION: Duration = Duration::from_secs(5);
+/// How long a pin that expired by itself is remembered, only to log a Moved event that arrives
+/// just after it ([`MapPins::expired_pin`]).
+const EXPIRED_PIN_MEMORY: Duration = Duration::from_secs(10);
 /// How many times a pin moves the palette back before it leaves the window manager's position.
 const MAX_CORRECTIONS: u8 = 2;
 /// Pixels of slack for a window manager rounding a position.
@@ -121,11 +132,24 @@ struct Pin {
     /// predicted with the size it was made for, not only with the size the frame has now.
     sizes: Vec<(i32, i32)>,
     until: Instant,
+    /// Whether a look has seen the palette mapped, which restarted `until`
+    /// ([`MapPins::mapped_look`]).
+    mapped: bool,
     corrections: u8,
+    /// The clamp position a move back was last sent for, by a Moved event or a look: a look that
+    /// finds the frame still there does not send another one (the first is on its way).
+    answered: Option<Pixels>,
     /// Earlier targets ChemDraft moved the palette away from while it was pinned, each with the
     /// frame size it had then: a late clamp of an old target is predicted with the old frame, not
     /// with the size a content fit has given it since.
     superseded: Vec<SupersededTarget>,
+}
+
+/// A pin that expired by itself: its target and when it expired.
+#[derive(Debug, Clone, Copy)]
+struct ExpiredPin {
+    position: Pixels,
+    at: Instant,
 }
 
 /// Where a reported position lies relative to a pin.
@@ -149,6 +173,11 @@ pub(crate) struct MapPins {
     /// target had: a reopen of the same hidden window pins that position, not the clamp the hidden
     /// window may still sit at.
     closed: HashMap<String, ClosedPin>,
+    /// Pins that expired by themselves in the last [`EXPIRED_PIN_MEMORY`], for the diagnostic.
+    expired: HashMap<String, ExpiredPin>,
+    /// When the user last started dragging each palette ([`Self::drag_started`]): a move back
+    /// ChemDraft scheduled before then must not undo the drag. One entry per palette label.
+    drags: HashMap<String, Instant>,
 }
 
 fn near(a: (i32, i32), b: (i32, i32)) -> bool {
@@ -270,7 +299,22 @@ impl Pin {
 
 impl MapPins {
     fn prune(&mut self, now: Instant) {
-        self.pins.retain(|_, pin| now < pin.until);
+        let expired = &mut self.expired;
+        self.pins.retain(|label, pin| {
+            let live = now < pin.until;
+            if !live {
+                expired.insert(
+                    label.clone(),
+                    ExpiredPin {
+                        position: pin.position,
+                        at: pin.until,
+                    },
+                );
+            }
+            live
+        });
+        self.expired
+            .retain(|_, record| now.saturating_duration_since(record.at) < EXPIRED_PIN_MEMORY);
     }
 
     /// Hold `label` at `target` through the map that is about to happen. `size` is its outer
@@ -284,13 +328,16 @@ impl MapPins {
     ) {
         self.prune(now);
         self.closed.remove(label);
+        self.expired.remove(label);
         let ClosedPin { position, sizes } = target.into();
         let mut pin = Pin {
             position,
             size: None,
             sizes,
             until: now + PIN_DURATION,
+            mapped: false,
             corrections: 0,
+            answered: None,
             superseded: Vec::new(),
         };
         if let Some(size) = size {
@@ -327,6 +374,7 @@ impl MapPins {
                     sizes: old_sizes,
                 });
                 pin.corrections = 0;
+                pin.answered = None;
             } else if let Some(size) = size {
                 pin.record_size(size);
             }
@@ -349,6 +397,41 @@ impl MapPins {
     pub(crate) fn forget(&mut self, label: &str) {
         self.pins.remove(label);
         self.closed.remove(label);
+        self.expired.remove(label);
+    }
+
+    /// The user started dragging `label` at `now`: its pin ends ([`Self::forget`]), and a move back
+    /// to its pre-hide position scheduled before now is dropped ([`Self::move_back_after_restore`]).
+    pub(crate) fn drag_started(&mut self, label: &str, now: Instant) {
+        self.forget(label);
+        self.drags.insert(label.to_string(), now);
+    }
+
+    /// A palette restored after a dialog at `requested` was placed away from its pre-hide
+    /// `position` by the window manager: whether ChemDraft may move it back there now. Not when the
+    /// user has started a drag since `requested`: that move is the user's and is never undone.
+    /// Otherwise the pin, if still live, is re-targeted to `position` ([`Self::moved_by_chemdraft`])
+    /// so the Moved event of the move back is held there, and the move goes ahead. A pin a Moved
+    /// event ended does not stop it: the window manager's own placement (centered, cascaded) ends
+    /// the pin too, and undoing that placement is what the move back is for (GitHub #304). Only
+    /// Linux schedules such a move back.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) fn move_back_after_restore(
+        &mut self,
+        label: &str,
+        position: Pixels,
+        requested: Instant,
+        now: Instant,
+    ) -> bool {
+        if self
+            .drags
+            .get(label)
+            .is_some_and(|dragged| *dragged >= requested)
+        {
+            return false;
+        }
+        self.moved_by_chemdraft(label, position, None, now);
+        true
     }
 
     /// The palette is being closed: its pin ends. `kept` is the position saved for it when it was
@@ -358,6 +441,7 @@ impl MapPins {
     /// record keeps every frame size the target had, so the clamp of the frame it was mapped with
     /// is still recognised after a content fit has resized it.
     pub(crate) fn close(&mut self, label: &str, kept: Option<(i32, i32)>) {
+        self.expired.remove(label);
         let pin = self.pins.remove(label);
         match kept {
             Some(kept) => {
@@ -435,7 +519,8 @@ impl MapPins {
     /// A pinned palette was just shown again and its `live` frame already sits at the pin's clamp.
     /// The window manager may report no move for it (the frame was clamped before and the move back
     /// was lost when it was hidden), so the move back is due now: returns the target to move it to,
-    /// and counts it as one of the pin's moves back. `None` when no move back is due.
+    /// and counts it as one of the pin's moves back. `None` when no move back is due, including
+    /// when one was already sent for this very position and has yet to land.
     pub(crate) fn correction_due(
         &mut self,
         label: &str,
@@ -445,14 +530,65 @@ impl MapPins {
     ) -> Option<(i32, i32)> {
         self.prune(now);
         let pin = self.pins.get_mut(label)?;
-        if pin.spot(live, layout) != Spot::Clamp
+        if pin.answered.is_some_and(|answered| near(answered, live))
+            || pin.spot(live, layout) != Spot::Clamp
             || pin.corrections >= MAX_CORRECTIONS
             || !(layout.title_reachable)(pin.position)
         {
             return None;
         }
         pin.corrections += 1;
+        pin.answered = Some(live);
         Some(pin.position)
+    }
+
+    /// One look at `label` while it is mapped (see [`after_map_step`]): `live` is its frame now,
+    /// and `looks` what the same run of looks saw before. The first look at a pin starts its clock
+    /// again, so the pin lasts [`PIN_DURATION`] from the map rather than from the show request.
+    /// Returns whether to judge the frame now ([`Self::correction_due`]): at the run's first look,
+    /// which catches a palette mapped at its old clamp with no Moved event, and after that only
+    /// once the frame has stayed at a new position since the previous look, so that a Moved event
+    /// reporting that position is handled first. Never at the target, and once per position.
+    pub(crate) fn mapped_look(
+        &mut self,
+        label: &str,
+        live: (i32, i32),
+        looks: &mut AfterMapLooks,
+        now: Instant,
+    ) -> bool {
+        self.prune(now);
+        let first = !std::mem::replace(&mut looks.mapped, true);
+        let previous = looks.previous.replace(live);
+        if previous != Some(live) {
+            looks.judged = None;
+        }
+        let Some(pin) = self.pins.get_mut(label) else {
+            return false;
+        };
+        if !pin.mapped {
+            pin.mapped = true;
+            pin.until = pin.until.max(now + PIN_DURATION);
+        }
+        let due =
+            live != pin.position && looks.judged != Some(live) && (first || previous == Some(live));
+        if due {
+            looks.judged = Some(live);
+        }
+        due
+    }
+
+    /// The target of `label`'s pin and how long ago it expired, when it expired by itself within
+    /// the last [`EXPIRED_PIN_MEMORY`] and no newer pin, close or drag has replaced it. Only for
+    /// the diagnostic: a Moved event this late is handled as usual.
+    pub(crate) fn expired_pin(
+        &mut self,
+        label: &str,
+        now: Instant,
+    ) -> Option<((i32, i32), Duration)> {
+        self.prune(now);
+        self.expired
+            .get(label)
+            .map(|record| (record.position, now.saturating_duration_since(record.at)))
     }
 
     pub(crate) fn moved(
@@ -489,6 +625,8 @@ impl MapPins {
                     self.pins.remove(label);
                     return MovedDecision::Unreachable(target);
                 }
+                // A look after the map leaves this position to the move back decided here.
+                pin.answered = Some(position);
                 if pin.corrections >= MAX_CORRECTIONS {
                     return MovedDecision::Hold(target);
                 }
@@ -502,25 +640,52 @@ impl MapPins {
 /// What one look at a palette just shown again does (see [`AFTER_MAP_INTERVAL`]). The show is
 /// queued on the GTK main loop, so the frame is judged once the palette is mapped, not as the show
 /// is requested: judged before the map, a palette that then maps at its pin's clamp with no Moved
-/// event would stay there.
+/// event would stay there. GTK reports the requested position first, and the window manager's
+/// placement may come much later, so the looks go on for as long as the pin lives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AfterMapStep {
-    /// Mapped: judge the frame now, then stop looking.
+    /// Mapped: judge the frame now ([`MapPins::mapped_look`]), and look again after
+    /// [`AFTER_MAP_INTERVAL`] while the pin lives.
     Check,
     /// Not mapped yet: look again after [`AFTER_MAP_INTERVAL`].
     Wait,
-    /// No pin left to hold, or the map did not come within [`AFTER_MAP_WAIT`]: stop looking.
+    /// No pin left to hold, the palette was hidden again after a look saw it mapped, or the map
+    /// did not come within [`AFTER_MAP_WAIT`]: stop looking.
     Stop,
 }
 
+/// What one run of looks at a palette just shown again remembers from look to look.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct AfterMapLooks {
+    /// Whether a look of this run has seen the palette mapped.
+    mapped: bool,
+    /// The frame the previous look saw.
+    previous: Option<Pixels>,
+    /// The frame last judged, until the frame moves.
+    judged: Option<Pixels>,
+}
+
+impl AfterMapLooks {
+    /// Whether a look of this run has seen the palette mapped.
+    pub(crate) fn seen_mapped(&self) -> bool {
+        self.mapped
+    }
+}
+
 /// The decision behind each look: `pinned` is whether the palette still has a live pin, `mapped`
-/// whether it is mapped (and visible), and `elapsed` the time since the show.
-pub(crate) fn after_map_step(pinned: bool, mapped: bool, elapsed: Duration) -> AfterMapStep {
+/// whether it is mapped (and visible), `seen_mapped` whether an earlier look of the same run saw
+/// it mapped, and `elapsed` the time since the show.
+pub(crate) fn after_map_step(
+    pinned: bool,
+    mapped: bool,
+    seen_mapped: bool,
+    elapsed: Duration,
+) -> AfterMapStep {
     if !pinned {
         AfterMapStep::Stop
     } else if mapped {
         AfterMapStep::Check
-    } else if elapsed >= AFTER_MAP_WAIT {
+    } else if seen_mapped || elapsed >= AFTER_MAP_WAIT {
         AfterMapStep::Stop
     } else {
         AfterMapStep::Wait
@@ -823,6 +988,40 @@ mod tests {
     }
 
     #[test]
+    fn a_drag_after_a_restore_is_never_undone_by_the_move_back() {
+        let restored = Instant::now();
+        let look = restored + AFTER_MAP_INTERVAL;
+        let mut pins = MapPins::default();
+        // The page-size prompt ends: Main is pinned at its pre-hide position and shown again.
+        pins.pin(MAIN, (450, 315), Some(MAIN_SIZE), restored);
+        // The user grabs Main before the look 50 ms later: the look must not move it back.
+        pins.drag_started(MAIN, restored + Duration::from_millis(20));
+        assert!(!pins.move_back_after_restore(MAIN, (450, 315), restored, look));
+        assert_eq!(pins.target(MAIN, look), None);
+        // A later restore is not blocked by that earlier drag.
+        let again = look + Duration::from_secs(1);
+        pins.pin(MAIN, (600, 315), Some(MAIN_SIZE), again);
+        let again_look = again + AFTER_MAP_INTERVAL;
+        assert!(pins.move_back_after_restore(MAIN, (600, 315), again, again_look));
+        // Without a drag the window manager's placement is undone, whether or not its Moved event
+        // already ended the pin, and a live pin is re-targeted so the move back is held there.
+        let mut pins = MapPins::default();
+        pins.pin(MAIN, (450, 315), Some(MAIN_SIZE), restored);
+        pins.moved_by_chemdraft(MAIN, (300, 315), None, restored);
+        assert!(pins.move_back_after_restore(MAIN, (450, 315), restored, look));
+        assert_eq!(pins.target(MAIN, look), Some((450, 315)));
+        pins.pin(MAIN, (450, 315), Some(MAIN_SIZE), restored);
+        assert_eq!(
+            pins.moved(MAIN, (184, 463), &vm(), look),
+            MovedDecision::Moved
+        );
+        assert!(pins.move_back_after_restore(MAIN, (450, 315), restored, look));
+        // Other palettes' drags do not count.
+        pins.drag_started("toolset-core-rings", look);
+        assert!(pins.move_back_after_restore(MAIN, (450, 315), restored, look));
+    }
+
+    #[test]
     fn a_correction_to_a_superseded_target_is_neither_saved_nor_corrected() {
         let now = Instant::now();
         let mut pins = MapPins::default();
@@ -1026,24 +1225,194 @@ mod tests {
     fn a_palette_just_shown_is_judged_once_it_is_mapped() {
         let soon = AFTER_MAP_INTERVAL;
         // The show is still queued: look again.
-        assert_eq!(after_map_step(true, false, soon), AfterMapStep::Wait);
+        assert_eq!(after_map_step(true, false, false, soon), AfterMapStep::Wait);
         assert_eq!(
-            after_map_step(true, false, Duration::ZERO),
+            after_map_step(true, false, false, Duration::ZERO),
             AfterMapStep::Wait
         );
         // Mapped: judge now, even at the last look.
-        assert_eq!(after_map_step(true, true, soon), AfterMapStep::Check);
+        assert_eq!(after_map_step(true, true, false, soon), AfterMapStep::Check);
         assert_eq!(
-            after_map_step(true, true, AFTER_MAP_WAIT),
+            after_map_step(true, true, false, AFTER_MAP_WAIT),
             AfterMapStep::Check
         );
         // Never mapped in time, or the pin is gone (expired, dragged, closed): stop.
         assert_eq!(
-            after_map_step(true, false, AFTER_MAP_WAIT),
+            after_map_step(true, false, false, AFTER_MAP_WAIT),
             AfterMapStep::Stop
         );
-        assert_eq!(after_map_step(false, true, soon), AfterMapStep::Stop);
-        assert_eq!(after_map_step(false, false, soon), AfterMapStep::Stop);
+        assert_eq!(after_map_step(false, true, false, soon), AfterMapStep::Stop);
+        assert_eq!(
+            after_map_step(false, false, false, soon),
+            AfterMapStep::Stop
+        );
+    }
+
+    #[test]
+    fn the_looks_after_the_map_go_on_while_the_pin_lives() {
+        // Seen mapped once: keep checking long after the map wait, for as long as the pin lives.
+        let late = PIN_DURATION;
+        assert_eq!(after_map_step(true, true, true, late), AfterMapStep::Check);
+        // Hidden again (another dialog): this run stops; the next show starts its own.
+        assert_eq!(
+            after_map_step(true, false, true, AFTER_MAP_INTERVAL),
+            AfterMapStep::Stop
+        );
+        // The pin ended: stop.
+        assert_eq!(after_map_step(false, true, true, late), AfterMapStep::Stop);
+    }
+
+    /// The Linux VM, 1.2.3: Main at its natural width (1423 x 86) left overhanging the left edge.
+    const OVERHANG: (i32, i32) = (-143, 159);
+    const NATURAL_MAIN: (i32, i32) = (1423, 86);
+
+    fn natural_main() -> Layout<'static> {
+        Layout {
+            size: NATURAL_MAIN,
+            ..vm()
+        }
+    }
+
+    #[test]
+    fn a_window_manager_clamp_reported_after_a_busy_second_is_still_moved_back() {
+        let now = Instant::now();
+        let mut pins = MapPins::default();
+        pins.pin(MAIN, OVERHANG, Some(NATURAL_MAIN), now);
+        // KWin keeps the frame inside the work area on the left edge.
+        assert_eq!(
+            predicted_clamp(OVERHANG, NATURAL_MAIN, &SCREEN),
+            Some((0, 159))
+        );
+        // The main thread was busy after the page-size question: the Moved event for the clamp is
+        // handled 1.6 s after the pin, later than the 1.5-s pin lasted. It is still the map's.
+        let late = now + Duration::from_millis(1600);
+        assert_eq!(
+            pins.moved(MAIN, (0, 159), &natural_main(), late),
+            MovedDecision::Reassert(OVERHANG)
+        );
+        assert_eq!(
+            pins.position_to_keep(MAIN, Some((0, 159)), Some(&natural_main()), late),
+            Some(OVERHANG)
+        );
+    }
+
+    #[test]
+    fn the_pin_clock_starts_when_a_look_first_sees_the_palette_mapped() {
+        let now = Instant::now();
+        let mut pins = MapPins::default();
+        pins.pin(MAIN, OVERHANG, Some(NATURAL_MAIN), now);
+        // The map is seen only 3 s after the pin (a slow show); GTK still reports the target.
+        let mapped = now + Duration::from_secs(3);
+        let mut looks = AfterMapLooks::default();
+        assert!(!pins.mapped_look(MAIN, OVERHANG, &mut looks, mapped));
+        assert!(looks.seen_mapped());
+        // KWin's clamp is handled after the pin's first PIN_DURATION, within the one from the map.
+        let late = now + PIN_DURATION + Duration::from_secs(1);
+        assert_eq!(
+            pins.moved(MAIN, (0, 159), &natural_main(), late),
+            MovedDecision::Reassert(OVERHANG)
+        );
+        // Later looks do not start the clock again: the pin still ends PIN_DURATION after the map.
+        assert!(!pins.mapped_look(MAIN, OVERHANG, &mut looks, late));
+        assert_eq!(pins.target(MAIN, mapped + PIN_DURATION), None);
+        assert_eq!(
+            pins.moved(MAIN, (0, 159), &natural_main(), mapped + PIN_DURATION),
+            MovedDecision::Unpinned
+        );
+    }
+
+    #[test]
+    fn a_look_judges_a_new_position_only_once_it_stays_put() {
+        let now = Instant::now();
+        let mut pins = MapPins::default();
+        pins.pin(MAIN, OVERHANG, Some(NATURAL_MAIN), now);
+        let mut looks = AfterMapLooks::default();
+        let at = |ms: u64| now + Duration::from_millis(ms);
+        // First look: GTK still reports the target. Nothing to judge.
+        assert!(!pins.mapped_look(MAIN, OVERHANG, &mut looks, at(50)));
+        // KWin's clamp appears: its Moved event gets the first turn.
+        assert!(!pins.mapped_look(MAIN, (0, 159), &mut looks, at(100)));
+        // Still there at the next look: judge it, once.
+        assert!(pins.mapped_look(MAIN, (0, 159), &mut looks, at(150)));
+        assert!(!pins.mapped_look(MAIN, (0, 159), &mut looks, at(200)));
+        // A run's first look judges at once: a palette mapped at its old clamp may get no Moved.
+        let mut fresh = AfterMapLooks::default();
+        assert!(pins.mapped_look(MAIN, (0, 159), &mut fresh, at(250)));
+        // No pin, nothing to judge.
+        let mut other = AfterMapLooks::default();
+        assert!(!pins.mapped_look("toolset-core-rings", (0, 0), &mut other, at(250)));
+    }
+
+    #[test]
+    fn a_look_does_not_send_a_second_move_back_for_a_clamp_already_answered() {
+        let now = Instant::now();
+        let mut pins = MapPins::default();
+        pins.pin(MAIN, OVERHANG, Some(NATURAL_MAIN), now);
+        // The Moved event for KWin's clamp is moved back.
+        assert_eq!(
+            pins.moved(MAIN, (0, 159), &natural_main(), now),
+            MovedDecision::Reassert(OVERHANG)
+        );
+        // A look before that move back lands finds the frame still at the clamp: no second one.
+        assert_eq!(
+            pins.correction_due(MAIN, (0, 159), &natural_main(), now),
+            None
+        );
+        // So KWin clamping once more still gets its own move back rather than being left there.
+        assert_eq!(
+            pins.moved(MAIN, (0, 159), &natural_main(), now),
+            MovedDecision::Reassert(OVERHANG)
+        );
+        // A move back a look sent first is not repeated by the next look either.
+        let mut pins = MapPins::default();
+        pins.pin(MAIN, OVERHANG, Some(NATURAL_MAIN), now);
+        assert_eq!(
+            pins.correction_due(MAIN, (0, 159), &natural_main(), now),
+            Some(OVERHANG)
+        );
+        assert_eq!(
+            pins.correction_due(MAIN, (0, 159), &natural_main(), now),
+            None
+        );
+        // A new target ChemDraft moves the palette to starts with nothing answered.
+        pins.moved_by_chemdraft(MAIN, (-100, 159), Some(NATURAL_MAIN), now);
+        assert_eq!(
+            pins.correction_due(MAIN, (0, 159), &natural_main(), now),
+            Some((-100, 159))
+        );
+    }
+
+    #[test]
+    fn a_pin_that_expired_by_itself_is_remembered_briefly_for_the_log() {
+        let now = Instant::now();
+        let mut pins = MapPins::default();
+        pins.pin(MAIN, OVERHANG, Some(NATURAL_MAIN), now);
+        assert_eq!(pins.expired_pin(MAIN, now), None);
+        let late = now + PIN_DURATION + Duration::from_millis(250);
+        assert_eq!(
+            pins.moved(MAIN, (0, 159), &natural_main(), late),
+            MovedDecision::Unpinned
+        );
+        assert_eq!(
+            pins.expired_pin(MAIN, late),
+            Some((OVERHANG, Duration::from_millis(250)))
+        );
+        // Forgotten after a while, and at once by a new pin or a drag.
+        assert_eq!(
+            pins.expired_pin(MAIN, now + PIN_DURATION + EXPIRED_PIN_MEMORY),
+            None
+        );
+        pins.pin(MAIN, OVERHANG, None, late);
+        assert_eq!(pins.expired_pin(MAIN, late), None);
+        pins.forget(MAIN);
+        assert_eq!(pins.expired_pin(MAIN, late + PIN_DURATION), None);
+        // A pin a user move ended did not expire.
+        pins.pin(MAIN, OVERHANG, Some(NATURAL_MAIN), now);
+        assert_eq!(
+            pins.moved(MAIN, (300, 400), &natural_main(), now),
+            MovedDecision::Moved
+        );
+        assert_eq!(pins.expired_pin(MAIN, late), None);
     }
 
     #[test]

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createImageGraphicObject, serializeDocument, type ChemDraftDocument, type GraphicObject } from "@chemdraft/chem-core";
 import { MainWindow, objectResizeStretches } from "./MainWindow";
 import { createPhase4Document } from "./documentWorkflow";
-import { DOCUMENT_FILE_DROP_EVENT } from "./imageDrop/dropPosition";
+import { DOCUMENT_FILE_DROP_EVENT, DOCUMENT_FILE_DROP_MISSED_EVENT } from "./imageDrop/dropPosition";
 import { browserDecodeCheck, browserRasterToPng } from "./imageDrop/rasterDecode";
 import { damagedDropFixture } from "./imageDrop/pngTestImages";
 import { jpegHeader, pngBytes, svgBytes } from "./imageDrop/testFixtures";
@@ -614,6 +614,18 @@ describe("dropping picture files on the document window", { timeout: 3 * DROP_WA
       ].join("; ")));
       expect(snapshot().title).toBe("Native document");
       expect(native.stat.mock.calls.map(([path]) => path).filter(path => !path.endsWith(".chemdraft"))).toEqual([]);
+    });
+
+    it("says so when a Linux file drag ends over the page without a drop, and changes nothing", async () => {
+      native.desktop = true;
+      await mount(createPhase4Document("Desktop"), "linux");
+      await eventually(() => expect(native.events.has(DOCUMENT_FILE_DROP_MISSED_EVENT)).toBe(true));
+      const before = snapshot();
+      await act(async () => native.events.get(DOCUMENT_FILE_DROP_MISSED_EVENT)!(null));
+      await eventually(() => expect(status()).toBe(
+        "No file was dropped. To drop a file, hold it over the page for a moment before releasing."));
+      expect(snapshot()).toEqual(before);
+      expect(tabs()).toHaveLength(1);
     });
 
     it("listens once per mount, so a page-size change leaves no gap, and a later drop uses the current page", async () => {

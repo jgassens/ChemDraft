@@ -196,47 +196,35 @@ describe("palette work-area sizing", () => {
     expect(native.invoke).toHaveBeenCalledExactlyOnceWith("resize_toolset_window", { width: 520, height: 600 });
   });
 
-  describe("Linux horizontal overflow of a capped palette (B3 follow-up)", () => {
-    // The Main toolbar's natural content is 1311 px wide; on a 1024x768 screen Rust caps the window
-    // at the work area. jsdom has no layout, so the shell and content body report a model of what
-    // WebKitGTK lays out: the body capped at its inline max-width once it scrolls sideways, with a
-    // 15 px classic horizontal scrollbar added to its auto height.
+  describe("Linux content fit of a palette wider than its work area: natural size, never scrolled (#304)", () => {
+    // The Main toolbar's natural content is 1311 px wide. On a 1024x768 screen, or at 150% on a
+    // 1920-px screen (a 1280 CSS px work area), it is wider than the work area. Owner rule: a
+    // fixed toolbar keeps its natural size, is never shrunk, scaled, wrapped or given a scrollbar,
+    // runs off the screen, and the user drags it. jsdom has no layout, so the shell reports a model
+    // of what WebKitGTK lays out: its natural box, whatever the window's width. A scroller turned on
+    // the #469 way (overflow-x auto with a max-width) would report the capped width and gain the
+    // height of a 15 px classic scrollbar, so the size requests below would show it.
     const NATURAL_WIDTH = 1311;
     const TITLE_HEIGHT = 22;
     const ROW_HEIGHT = 58;
     const SCROLLBAR = 15;
+    const NATURAL_SIZE = { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT };
+    const WORK_AREA_150 = 1920 / 1.5;
 
     const scrollerOf = (element: Element) =>
       (element.classList.contains("palette-window-content") ? element : element.querySelector(".palette-window-content")) as HTMLElement | null;
-    const scrolling = (scroller: HTMLElement | null) => scroller?.style.overflowX === "auto";
-    const cappedWidth = (scroller: HTMLElement) => Math.min(NATURAL_WIDTH, Number.parseFloat(scroller.style.maxWidth) || NATURAL_WIDTH);
+    const scrolling = (scroller: HTMLElement | null) =>
+      scroller?.style.overflowX === "auto" || scroller?.style.overflowX === "scroll";
     const rect = (width: number, height: number) =>
       ({ x: 0, y: 0, left: 0, top: 0, width, height, right: width, bottom: height, toJSON: () => ({}) }) as DOMRect;
 
-    const installLayoutModel = (scrollbar: number) => {
+    const installLayoutModel = () => {
       vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
         if (!this.classList.contains("palette-window-shell")) return rect(0, 0);
         const scroller = scrollerOf(this);
         if (!scroller || !scrolling(scroller)) return rect(NATURAL_WIDTH, TITLE_HEIGHT + ROW_HEIGHT);
-        return rect(cappedWidth(scroller), TITLE_HEIGHT + ROW_HEIGHT + scrollbar);
-      });
-      const isScroller = (element: Element) => element.classList.contains("palette-window-content");
-      vi.spyOn(Element.prototype, "scrollWidth", "get").mockImplementation(function (this: Element) {
-        return isScroller(this) ? NATURAL_WIDTH : 0;
-      });
-      vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(function (this: Element) {
-        if (!isScroller(this)) return 0;
-        return scrolling(this as HTMLElement) ? cappedWidth(this as HTMLElement) : NATURAL_WIDTH;
-      });
-      vi.spyOn(Element.prototype, "scrollHeight", "get").mockImplementation(function (this: Element) {
-        return isScroller(this) ? ROW_HEIGHT : 0;
-      });
-      vi.spyOn(Element.prototype, "clientHeight", "get").mockImplementation(function (this: Element) {
-        return isScroller(this) ? ROW_HEIGHT : 0;
-      });
-      vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
-        if (!isScroller(this)) return 0;
-        return ROW_HEIGHT + (scrolling(this) ? scrollbar : 0);
+        const capped = Math.min(NATURAL_WIDTH, Number.parseFloat(scroller.style.maxWidth) || NATURAL_WIDTH);
+        return rect(capped, TITLE_HEIGHT + ROW_HEIGHT + SCROLLBAR);
       });
     };
 
@@ -249,15 +237,16 @@ describe("palette work-area sizing", () => {
       index === 0 || size.width !== all[index - 1]!.width || size.height !== all[index - 1]!.height);
 
     // Mount Main at the given platform and window width, then stand in for the native resize that
-    // follows the first fit (Rust capped the width, so the webview viewport keeps `windowWidth`).
-    // `scrollbar` is the horizontal scrollbar's thickness (0 for an overlay scrollbar).
-    const mountMain = async (platform: "linux" | "macos" | "windows", windowWidth: number, scrollbar = SCROLLBAR) => {
+    // follows the first fit. `windowWidth` is the webview's inner width: narrower than the content
+    // stands in for a window that runs off a narrow screen or one the window manager kept narrower.
+    const mountMain = async (platform: "linux" | "macos" | "windows", windowWidth: number, devicePixelRatio = 1) => {
       vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+      vi.stubGlobal("devicePixelRatio", devicePixelRatio);
       vi.stubGlobal("innerWidth", windowWidth);
       vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => window.setTimeout(() => callback(0), 0));
       vi.stubGlobal("cancelAnimationFrame", (handle: number) => window.clearTimeout(handle));
       native.workArea.mockResolvedValue({ left: 0, top: 0, right: windowWidth, bottom: 768 });
-      installLayoutModel(scrollbar);
+      installLayoutModel();
       const container = document.createElement("div");
       document.body.append(container);
       const root = createRoot(container);
@@ -272,8 +261,8 @@ describe("palette work-area sizing", () => {
         window.dispatchEvent(new Event("resize"));
         await settle();
       };
-      // The native window moves to a monitor with this work area; the viewport keeps its width until
-      // Rust resizes the window (a move alone never resizes it).
+      // The native window moves to a monitor with this work area; the viewport keeps its width (a
+      // move alone never resizes it).
       const moveToWorkArea = async (right: number, bottom: number) => {
         native.workArea.mockResolvedValue({ left: 0, top: 0, right, bottom });
         native.workAreaEvents.get("tauri://move")?.();
@@ -294,98 +283,94 @@ describe("palette work-area sizing", () => {
       return { shell, scroller, settle, nativeResize, moveToWorkArea, nativeResizeTo, unmount };
     };
 
-    const expectNoOverflow = (scroller: HTMLElement) => {
+    // Never the #469 sideways scroller, and never shrunk or scaled: the body keeps its natural box.
+    const expectNaturalAndUnscrolled = (scroller: HTMLElement) => {
       expect(scroller.style.overflowX).toBe("");
       expect(scroller.style.maxWidth).toBe("");
-      expect(scroller.dataset.paletteHorizontalOverflow).toBeUndefined();
+      expect(scroller.style.width).toBe("");
+      expect(scroller.style.transform).toBe("");
+      expect(scroller.style.getPropertyValue("zoom")).toBe("");
+      expect(scroller.hasAttribute("data-palette-horizontal-overflow")).toBe(false);
+      expect(scroller.hasAttribute("data-palette-fit-scale")).toBe(false);
     };
 
-    it("scrolls the Main toolbar sideways in a 1024 px Linux window and reports the scrollbar's height", async () => {
-      const { shell, scroller, nativeResize, unmount } = await mountMain("linux", 1024);
+    it.each([
+      ["a 1024 px screen at 100%", 1024, 1],
+      ["a 1920 px screen at 150%", WORK_AREA_150, 1.5]
+    ] as const)("keeps the Linux Main toolbar at its natural width with no scrollbar on %s", async (_case, windowWidth, scale) => {
+      const { shell, scroller, nativeResize, unmount } = await mountMain("linux", windowWidth, scale);
       try {
-        expect(scroller.style.overflowX).toBe("auto");
-        expect(scroller.style.maxWidth).toBe("1024px");
-        expect(scroller.dataset.paletteHorizontalOverflow).toBe("true");
-        // Every tool sits inside the scroller, and its scroll range reaches the natural right edge.
+        expectNaturalAndUnscrolled(scroller);
+        // Every tool sits in the body at its natural place, none behind a scroll offset.
         const tools = shell.querySelectorAll<HTMLElement>("[data-command-id]");
         expect(tools.length).toBeGreaterThan(0);
         for (const tool of Array.from(tools)) expect(scroller.contains(tool)).toBe(true);
-        expect(scroller.clientWidth).toBe(1024);
-        expect(scroller.scrollWidth - scroller.clientWidth).toBe(NATURAL_WIDTH - 1024);
-        // Width stays the natural width; only the height gains the measured scrollbar.
-        expect(distinctSizes()).toEqual([
-          { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT },
-          { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT + SCROLLBAR }
-        ]);
-        // No resize loop: the resizes that follow the height fit ask for nothing new.
+        expect(scroller.scrollLeft).toBe(0);
+        // Only the natural size is ever asked for: no capped width, no scrollbar height.
+        expect(distinctSizes()).toEqual([NATURAL_SIZE]);
+        // The palette's document clips an overhang rather than scrolling it.
+        expect(document.documentElement.style.overflow).toBe("hidden");
+        expect(document.body.style.overflow).toBe("hidden");
+        // No resize loop: later resizes ask for nothing new.
         const settled = resizeRequests().length;
         await nativeResize();
         await nativeResize();
         expect(resizeRequests()).toHaveLength(settled);
-        expect(scroller.style.overflowX).toBe("auto");
+        expectNaturalAndUnscrolled(scroller);
       } finally {
         await unmount();
       }
+      // Unmounting gives the document back its own overflow.
+      expect(document.documentElement.style.overflow).toBe("");
+      expect(document.body.style.overflow).toBe("");
     });
 
     it.each(["macos", "windows"] as const)("leaves the same 1024 px window unchanged on %s", async platform => {
       const { scroller, nativeResize, unmount } = await mountMain(platform, 1024);
       try {
         await nativeResize();
-        expect(scroller.style.overflowX).toBe("");
-        expect(scroller.style.maxWidth).toBe("");
-        expect(scroller.dataset.paletteHorizontalOverflow).toBeUndefined();
-        expect(distinctSizes()).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }]);
+        expectNaturalAndUnscrolled(scroller);
+        expect(document.documentElement.style.overflow).toBe("");
+        expect(document.body.style.overflow).toBe("");
+        expect(distinctSizes()).toEqual([NATURAL_SIZE]);
       } finally {
         await unmount();
       }
     });
 
-    it("turns the scroller off when a capped Linux palette moves to a wider work area", async () => {
+    it("re-sends the natural size once when a Linux palette moves to a wider work area, and never scrolls", async () => {
       const { scroller, nativeResize, moveToWorkArea, nativeResizeTo, unmount } = await mountMain("linux", 1024);
       try {
-        expect(scroller.dataset.paletteHorizontalOverflow).toBe("true");
         const before = resizeRequests().length;
         await moveToWorkArea(1680, 1050);
         // The natural size did not change, but the monitor did: the size is re-sent once so Rust
-        // re-runs its placement against the new work area (no cap there).
-        expect(resizeRequests().slice(before)).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT + SCROLLBAR }]);
-        // Rust gave the window its natural width: the scroller and the scrollbar's height go away.
+        // re-runs its placement against the new work area.
+        expect(resizeRequests().slice(before)).toEqual([NATURAL_SIZE]);
         await nativeResizeTo(NATURAL_WIDTH);
-        expectNoOverflow(scroller);
-        expect(resizeRequests().slice(before)).toEqual([
-          { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT + SCROLLBAR },
-          { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }
-        ]);
-        // Settled: the resize after the height fit, and further moves on the same monitor, send nothing.
+        expectNaturalAndUnscrolled(scroller);
+        // Settled: the resize after the fit, and further moves on the same monitor, send nothing.
         await nativeResize();
         await moveToWorkArea(1680, 1050);
-        expect(resizeRequests()).toHaveLength(before + 2);
-        expectNoOverflow(scroller);
+        expect(resizeRequests().slice(before)).toEqual([NATURAL_SIZE]);
+        expectNaturalAndUnscrolled(scroller);
       } finally {
         await unmount();
       }
     });
 
-    it("caps and scrolls a Linux palette that moves to a narrower work area", async () => {
-      const { scroller, nativeResize, moveToWorkArea, nativeResizeTo, unmount } = await mountMain("linux", 1680);
+    it("keeps the natural width when a Linux palette moves to a narrower work area", async () => {
+      const { scroller, nativeResize, moveToWorkArea, unmount } = await mountMain("linux", 1680);
       try {
-        expectNoOverflow(scroller);
+        expectNaturalAndUnscrolled(scroller);
         const before = resizeRequests().length;
         await moveToWorkArea(1024, 768);
-        // Re-sent even though the viewport still has the old width, so Rust caps the window.
-        expect(resizeRequests().slice(before)).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }]);
-        await nativeResizeTo(1024);
-        expect(scroller.style.overflowX).toBe("auto");
-        expect(scroller.style.maxWidth).toBe("1024px");
-        expect(scroller.dataset.paletteHorizontalOverflow).toBe("true");
-        expect(resizeRequests().slice(before)).toEqual([
-          { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT },
-          { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT + SCROLLBAR }
-        ]);
+        // Re-sent for the new work area, still at the natural width.
+        expect(resizeRequests().slice(before)).toEqual([NATURAL_SIZE]);
+        expectNaturalAndUnscrolled(scroller);
         await nativeResize();
         await nativeResize();
-        expect(resizeRequests()).toHaveLength(before + 2);
+        expect(resizeRequests()).toHaveLength(before + 1);
+        expectNaturalAndUnscrolled(scroller);
       } finally {
         await unmount();
       }
@@ -413,7 +398,7 @@ describe("palette work-area sizing", () => {
       await withWorkAreaPoll(async pollTick => {
         const { scroller, nativeResizeTo, unmount } = await mountMain("linux", 1024);
         try {
-          expect(scroller.dataset.paletteHorizontalOverflow).toBe("true");
+          expectNaturalAndUnscrolled(scroller);
           const before = resizeRequests().length;
           // Unchanged work area: the poll asks for nothing.
           await pollTick();
@@ -421,20 +406,18 @@ describe("palette work-area sizing", () => {
           // A panel went away: the work area widens, but the window neither moves nor resizes.
           native.workArea.mockResolvedValue({ left: 0, top: 0, right: 1680, bottom: 1050 });
           await pollTick();
-          expect(resizeRequests().slice(before)).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT + SCROLLBAR }]);
+          expect(resizeRequests().slice(before)).toEqual([NATURAL_SIZE]);
           await nativeResizeTo(NATURAL_WIDTH);
-          expectNoOverflow(scroller);
+          expectNaturalAndUnscrolled(scroller);
           // No loop: later polls of the same work area re-send nothing.
           await pollTick();
           await pollTick();
-          expect(resizeRequests().slice(before)).toEqual([
-            { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT + SCROLLBAR },
-            { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }
-          ]);
-          // A panel came back: the palette is capped again without being moved.
+          expect(resizeRequests().slice(before)).toEqual([NATURAL_SIZE]);
+          // A panel came back: re-fitted once more, still at the natural width, without being moved.
           native.workArea.mockResolvedValue({ left: 0, top: 0, right: 1024, bottom: 768 });
           await pollTick();
-          expect(resizeRequests().slice(before + 2)).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }]);
+          expect(resizeRequests().slice(before + 1)).toEqual([NATURAL_SIZE]);
+          expectNaturalAndUnscrolled(scroller);
         } finally {
           await unmount();
         }
@@ -442,56 +425,43 @@ describe("palette work-area sizing", () => {
     });
 
     describe("a live resolution change that leaves the window where it is", () => {
-      // 1.2.2 VM retest (KDE Plasma, XWayland): Main at x = 0, 1311 px wide, with its width pinned by
-      // the min = max hints, so 1680 -> 1280 or 1024 neither moves nor resizes the window and fires
-      // no tauri://move, tauri://scale-change or webview resize. Main stayed 1311 px wide, its right
-      // end off-screen, for 20 s and more, until the pointer entered it.
+      // 1.2.2 VM retest (KDE Plasma, XWayland): Main at x = 0, 1311 px wide, and 1680 -> 1280 or
+      // 1024 neither moves nor resizes the window and fires no tauri://move, tauri://scale-change or
+      // webview resize. Nothing re-ran the fit for 20 s and more, until the pointer entered it.
       const changeResolution = async (settle: () => Promise<void>, right: number, bottom: number) => {
         native.workArea.mockResolvedValue({ left: 0, top: 0, right, bottom });
         // No native event: the work area is all that changed.
         await settle();
       };
 
-      it("refits a Linux Main toolbar within one poll, both ways, and then sends nothing more", async () => {
+      it("refits a Linux Main toolbar within one poll, both ways, at its natural width, and then sends nothing more", async () => {
         await withWorkAreaPoll(async pollTick => {
-          const { scroller, settle, nativeResize, nativeResizeTo, unmount } = await mountMain("linux", 1680);
+          const { scroller, settle, nativeResize, unmount } = await mountMain("linux", 1680);
           try {
-            expectNoOverflow(scroller);
+            expectNaturalAndUnscrolled(scroller);
             const before = resizeRequests().length;
 
             await changeResolution(settle, 1024, 768);
             // Nothing else would ever re-run the fit: this is the gap the poll closes.
             expect(resizeRequests()).toHaveLength(before);
             await pollTick();
-            // Re-sent with the viewport still 1680 wide, so Rust caps the window to the work area.
-            expect(resizeRequests().slice(before)).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }]);
-            await nativeResizeTo(1024);
-            expect(scroller.style.overflowX).toBe("auto");
-            expect(scroller.style.maxWidth).toBe("1024px");
-            expect(resizeRequests().slice(before)).toEqual([
-              { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT },
-              { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT + SCROLLBAR }
-            ]);
-            // Settled: further polls on the same work area and the resize after the height fit send nothing.
+            expect(resizeRequests().slice(before)).toEqual([NATURAL_SIZE]);
+            expectNaturalAndUnscrolled(scroller);
+            // Settled: further polls on the same work area and the resize after the fit send nothing.
             await nativeResize();
             await pollTick();
             await pollTick();
-            expect(resizeRequests()).toHaveLength(before + 2);
+            expect(resizeRequests()).toHaveLength(before + 1);
 
             await changeResolution(settle, 1680, 1050);
-            expect(resizeRequests()).toHaveLength(before + 2);
+            expect(resizeRequests()).toHaveLength(before + 1);
             await pollTick();
-            expect(resizeRequests().slice(before + 2)).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT + SCROLLBAR }]);
-            await nativeResizeTo(NATURAL_WIDTH);
-            expectNoOverflow(scroller);
-            expect(resizeRequests().slice(before + 2)).toEqual([
-              { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT + SCROLLBAR },
-              { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }
-            ]);
+            expect(resizeRequests().slice(before + 1)).toEqual([NATURAL_SIZE]);
+            expectNaturalAndUnscrolled(scroller);
             await nativeResize();
             await pollTick();
             await pollTick();
-            expect(resizeRequests()).toHaveLength(before + 4);
+            expect(resizeRequests()).toHaveLength(before + 2);
           } finally {
             await unmount();
           }
@@ -508,7 +478,7 @@ describe("palette work-area sizing", () => {
             vi.stubGlobal("requestAnimationFrame", frames);
             await changeResolution(settle, 1024, 768);
             await pollTick();
-            expect(resizeRequests().slice(before)).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }]);
+            expect(resizeRequests().slice(before)).toEqual([NATURAL_SIZE]);
             expect(frames).not.toHaveBeenCalled();
             // Accepted: later polls on the same work area send nothing.
             await pollTick();
@@ -539,8 +509,7 @@ describe("palette work-area sizing", () => {
             await pollTick();
             expect(refusals).toBe(0);
             await pollTick();
-            const refit = { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT };
-            expect(resizeRequests().slice(before)).toEqual([refit, refit]);
+            expect(resizeRequests().slice(before)).toEqual([NATURAL_SIZE, NATURAL_SIZE]);
             // Accepted now: later polls on the same work area send nothing.
             await pollTick();
             await pollTick();
@@ -553,20 +522,20 @@ describe("palette work-area sizing", () => {
 
       it("compares with the last accepted fit, so a silent return after a move between polls still refits", async () => {
         await withWorkAreaPoll(async pollTick => {
-          const { moveToWorkArea, nativeResizeTo, settle, unmount } = await mountMain("linux", 1680);
+          const { moveToWorkArea, nativeResize, settle, unmount } = await mountMain("linux", 1680);
           try {
             const before = resizeRequests().length;
             // Between two polls: a move fits Main to a 1024 screen, then the work area silently
             // returns to 1680 (no move, resize or scale event).
             await moveToWorkArea(1024, 768);
-            await nativeResizeTo(1024);
+            await nativeResize();
             const afterMove = resizeRequests().length;
             expect(afterMove).toBeGreaterThan(before);
             await changeResolution(settle, 1680, 1050);
             expect(resizeRequests()).toHaveLength(afterMove);
             // The poll's earlier read was 1680, but the last accepted fit was for 1024: refit.
             await pollTick();
-            expect(resizeRequests().slice(afterMove)).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT + SCROLLBAR }]);
+            expect(resizeRequests().slice(afterMove)).toEqual([NATURAL_SIZE]);
           } finally {
             await unmount();
           }
@@ -584,11 +553,10 @@ describe("palette work-area sizing", () => {
               .mockResolvedValueOnce({ left: 0, top: 0, right: 1024, bottom: 768 })
               .mockResolvedValueOnce({ left: 0, top: 0, right: 1280, bottom: 768 });
             await pollTick();
-            const refit = { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT };
-            expect(resizeRequests().slice(before)).toEqual([refit]);
+            expect(resizeRequests().slice(before)).toEqual([NATURAL_SIZE]);
             // That fit was for 1280, so the 1024 read on the next poll is still a change.
             await pollTick();
-            expect(resizeRequests().slice(before)).toEqual([refit, refit]);
+            expect(resizeRequests().slice(before)).toEqual([NATURAL_SIZE, NATURAL_SIZE]);
             // Fitted to 1024 now: later polls send nothing.
             await pollTick();
             await pollTick();
@@ -609,7 +577,7 @@ describe("palette work-area sizing", () => {
             // Same work area, new scale, and no tauri://scale-change reached the fit.
             vi.stubGlobal("devicePixelRatio", (window.devicePixelRatio || 1) * 2);
             await pollTick();
-            expect(resizeRequests().slice(before)).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }]);
+            expect(resizeRequests().slice(before)).toEqual([NATURAL_SIZE]);
             expect(frames).not.toHaveBeenCalled();
             await pollTick();
             await pollTick();
@@ -632,7 +600,7 @@ describe("palette work-area sizing", () => {
             expect(resizeRequests()).toHaveLength(before);
             hidden.mockReturnValue(false);
             await pollTick();
-            expect(resizeRequests().slice(before)).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }]);
+            expect(resizeRequests().slice(before)).toEqual([NATURAL_SIZE]);
           } finally {
             await unmount();
           }
@@ -657,21 +625,6 @@ describe("palette work-area sizing", () => {
       });
     });
 
-    it("adds no height for an overlay scrollbar, capped or not", async () => {
-      const { scroller, moveToWorkArea, nativeResizeTo, unmount } = await mountMain("linux", 1024, 0);
-      try {
-        expect(scroller.style.overflowX).toBe("auto");
-        expect(scroller.dataset.paletteHorizontalOverflow).toBe("true");
-        expect(distinctSizes()).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }]);
-        await moveToWorkArea(1680, 1050);
-        await nativeResizeTo(NATURAL_WIDTH);
-        expectNoOverflow(scroller);
-        expect(distinctSizes()).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }]);
-      } finally {
-        await unmount();
-      }
-    });
-
     it.each(["macos", "windows"] as const)("does not re-send on monitor moves, scale changes or resizes on %s", async platform => {
       const { scroller, nativeResize, moveToWorkArea, nativeResizeTo, unmount } = await mountMain(platform, 1024);
       try {
@@ -683,7 +636,7 @@ describe("palette work-area sizing", () => {
         await nativeResizeTo(1024);
         await nativeResize();
         expect(resizeRequests()).toHaveLength(before);
-        expectNoOverflow(scroller);
+        expectNaturalAndUnscrolled(scroller);
       } finally {
         await unmount();
       }
@@ -693,10 +646,8 @@ describe("palette work-area sizing", () => {
       const { scroller, nativeResize, unmount } = await mountMain("linux", 1400);
       try {
         await nativeResize();
-        expect(scroller.style.overflowX).toBe("");
-        expect(scroller.style.maxWidth).toBe("");
-        expect(scroller.dataset.paletteHorizontalOverflow).toBeUndefined();
-        expect(distinctSizes()).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }]);
+        expectNaturalAndUnscrolled(scroller);
+        expect(distinctSizes()).toEqual([NATURAL_SIZE]);
       } finally {
         await unmount();
       }

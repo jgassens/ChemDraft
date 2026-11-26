@@ -1888,6 +1888,17 @@ whole-molecule cleanup with the existing behavior, and check save/reopen and exp
   launch both packages and verify that the document window and drawing canvas appear. Repeat
   on Wayland with XWayland enabled and check the default and an explicit Wayland override.
 
+## Linux file drop (1.2.4)
+
+Run under KDE Plasma (Wayland session, so the app uses XWayland), with Dolphin beside ChemDraft.
+
+- Fast drop: drag a PNG and a `.cdxml` from Dolphin onto the page and release within 0.3 s of the
+  last move. Each must land (picture inserted, document opened), five times out of five.
+- A drag that ends without a drop: drag a file over the page, press Esc before releasing, then move the mouse. The
+  status line reads "No file was dropped. To drop a file, hold it over the page for a moment before
+  releasing." and stderr has one "a dragged file was not dropped" line. A normal drop must never
+  show that line.
+
 ## Linux floating palettes and the Window menu (1.2.2)
 
 Run under KDE Plasma (Wayland session, so the app uses XWayland) and on GNOME.
@@ -1920,9 +1931,9 @@ Run under KDE Plasma (Wayland session, so the app uses XWayland) and on GNOME.
   1920x1080 with 150% scaling (and on a 1366x768 laptop at 100%). Each time the Main toolbar
   shows both rows at full width with no horizontal or vertical scrollbar and runs off the right
   edge; dragging it left reaches every tool, up to the last one, and each is clickable. Palettes
-  that fit the screen (Arrows, Orbitals, Style) are unchanged. (Native Wayland only, with
-  `CHEMDRAFT_NATIVE_WAYLAND=1`: the compositor places palettes, so there Main is still capped to
-  the screen and scrolls sideways.)
+  that fit the screen (Arrows, Orbitals, Style) are unchanged. The same holds in native Wayland
+  mode (`CHEMDRAFT_NATIVE_WAYLAND=1`): Main keeps its natural width, is not capped to the screen,
+  never scrolls sideways, and you drag it to reach the rest.
 - Moving between screens without relaunching (a 1024x768 and a 1680x1050 monitor side by side):
   drag the Main toolbar from the wide monitor onto the narrow one and back. It keeps its natural
   width on both, never gains a scrollbar, and is not resized on its own. Neither move
