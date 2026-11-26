@@ -4943,11 +4943,16 @@ function placeElectronMarkForAtom(
   return undefined;
 }
 
-/** The direct-edit catcher shares the symbol's frame and rotation, including its blank corners. */
+/**
+ * The direct-edit catcher shares the symbol's frame and rotation, including its blank corners.
+ * A charge glyph is always drawn upright (see `chargeMarkFragment`), so its catcher is upright
+ * too, whatever the frame's shape: a rotated box around a non-square frame would no longer
+ * cover the glyph the user sees.
+ */
 export function electronMarkHitCatcherAttributes(object: ElectronMarkObject) {
   return {
     x: object.x, y: object.y, width: object.width, height: object.height,
-    transform: rotationTransform(object)
+    transform: object.markKind === "charge" ? undefined : rotationTransform(object)
   };
 }
 
@@ -5062,7 +5067,8 @@ function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number, scal
     ...(object.radical === true ? { "data-charge-radical": "true" } : {}),
     // The stored rotation stays on the object (lone pairs need it), but a charge glyph is text-like:
     // turned about 90 degrees a circled minus reads as a slashed circle. Keep it, and the dot beside
-    // a radical-ion sign, upright. The frame is square, so the bounds do not change.
+    // a radical-ion sign, upright. The direct-edit hit catcher stays upright too
+    // (electronMarkHitCatcherAttributes); only a non-square frame's rotated bounds are left as stored.
   }), children);
 }
 

@@ -133,6 +133,25 @@ describe("electron-mark rendering preferences", () => {
     }
   });
 
+  it.each(["circled:-1", "plain:1", "circled:2", "plain:-3", "radical-ion:1", "radical-ion:-1", "radical-ion:2"])(
+    "keeps the direct-edit catcher of a non-square %s mark upright at any rotation", key => {
+      for (const rotation of [0, 37, 90]) {
+        const object = { ...markFor(key, rotation), width: 54, height: 18 };
+        // The catcher covers the same upright frame the glyph is drawn in, with no turn about its center.
+        const attributes = electronMarkHitCatcherAttributes(object);
+        expect(attributes).toEqual({ x: 100, y: 100, width: 54, height: 18, transform: undefined });
+        expect(attributes.transform).toBeUndefined();
+        for (const fragment of plan(object, true).fragments) expect(fragment.attrs.transform).toBeUndefined();
+      }
+    });
+
+  it.each(["lone-pair:0", "radical-dot:0"])("still turns the direct-edit catcher of a non-square %s mark", key => {
+    for (const rotation of [37, 90]) {
+      const object = { ...markFor(key, rotation), width: 54, height: 18 };
+      expect(electronMarkHitCatcherAttributes(object).transform).toBe(`rotate(${rotation} 127 109)`);
+    }
+  });
+
   it("uses the symbol's shared frame and pivot for a rotated direct-edit catcher", () => {
     const object = markFor("lone-pair:0", 37);
     expect(electronMarkHitCatcherAttributes(object)).toEqual({
