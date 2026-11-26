@@ -17,6 +17,30 @@ const SCHEMA_VERSION: u32 = 2;
 const MAX_CONSENT_BYTES: usize = 1024 * 1024;
 static LOCK: Mutex<()> = Mutex::new(());
 
+type AppScope<'a> = (&'a str, &'a str);
+
+#[derive(Debug)]
+struct Conflict;
+
+impl std::fmt::Display for Conflict {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Conflicting app handoff consents. Revoke the app's consents in Plugin Manager, then pick the app again.")
+    }
+}
+
+impl std::error::Error for Conflict {}
+
+pub(super) fn is_conflict(error: &io::Error) -> bool {
+    error.get_ref().is_some_and(|cause| cause.is::<Conflict>())
+}
+
+fn revocation_id(prefix: &str, scope: impl Serialize) -> String {
+    use sha2::{Digest, Sha256};
+    // The random picker ID stays private. The manager gets a one-way, revocation-only reference.
+    let scope = serde_json::to_vec(&scope).expect("consent scope is serializable");
+    format!("{prefix}-{:x}", Sha256::digest(scope))
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Row {
@@ -67,11 +91,15 @@ impl Row {
     }
 
     pub(super) fn consent_id(&self) -> String {
-        use sha2::{Digest, Sha256};
-        // The random picker ID stays private. The manager gets a one-way, revocation-only reference.
-        let scope = serde_json::to_vec(&(&self.plugin_id, &self.app_id, &self.pipeline))
-            .expect("consent scope is serializable");
-        format!("consent-{:x}", Sha256::digest(scope))
+        revocation_id("consent", (&self.plugin_id, &self.app_id, &self.pipeline))
+    }
+
+    pub(super) fn conflict_id(&self) -> String {
+        revocation_id("conflict", self.app_scope())
+    }
+
+    fn app_scope(&self) -> AppScope<'_> {
+        (&self.plugin_id, &self.app_id)
     }
 
     pub(super) fn grants(
@@ -156,11 +184,20 @@ pub(super) struct Entry {
     persisted: bool,
 }
 
+#[derive(Debug)]
+pub(super) enum ListedConsent {
+    Operation(Row),
+    Conflict(Row),
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Document {
     schema_version: u32,
     rows: Vec<Row>,
+    // Older v2 readers ignore this field and can only grant from rows.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    quarantined_rows: Vec<Row>,
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
 }
@@ -170,20 +207,19 @@ impl Document {
         Self {
             schema_version: SCHEMA_VERSION,
             rows: Vec::new(),
+            quarantined_rows: Vec::new(),
             extra: BTreeMap::new(),
         }
     }
 
-    fn validate(&self) -> io::Result<()> {
-        if !matches!(self.schema_version, 1 | SCHEMA_VERSION) {
-            return Err(io::Error::other(
-                "Unknown app handoff consent schema version.",
-            ));
-        }
+    fn quarantine_conflicts(&mut self) {
+        // A v1 group with distinct operations could otherwise become valid in v2.
+        // Keep every conflicting row out of older readers' grant lookup.
+        let mut conflicts: BTreeSet<_> = self.quarantined_rows.iter().map(Row::app_scope).collect();
         let mut apps = BTreeMap::<_, &Row>::new();
         let mut operations = BTreeSet::new();
         for row in &self.rows {
-            let app = (&row.plugin_id, &row.app_id);
+            let app = row.app_scope();
             let first = apps.entry(app).or_insert(row);
             let pipeline = if self.schema_version == 1 {
                 None
@@ -194,10 +230,36 @@ impl Document {
                 || !first.app_identity.main_matches(&row.app_identity)
                 || !operations.insert((app, pipeline))
             {
-                return Err(io::Error::other("Conflicting app handoff consent rows."));
+                conflicts.insert(app);
             }
         }
-        Ok(())
+        if conflicts.is_empty() {
+            return;
+        }
+        let quarantine: Vec<_> = self
+            .rows
+            .iter()
+            .map(|row| conflicts.contains(&row.app_scope()))
+            .collect();
+        for (row, quarantine) in std::mem::take(&mut self.rows).into_iter().zip(quarantine) {
+            if quarantine {
+                self.quarantined_rows.push(row);
+            } else {
+                self.rows.push(row);
+            }
+        }
+    }
+
+    fn require_unambiguous(&self, scope: AppScope<'_>) -> io::Result<()> {
+        if self
+            .quarantined_rows
+            .iter()
+            .any(|row| row.app_scope() == scope)
+        {
+            Err(io::Error::other(Conflict))
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -208,20 +270,30 @@ impl Store {
         Self(app_local_data_dir.join("app-handoff").join("consents.json"))
     }
 
-    pub(super) fn list(&self) -> io::Result<Vec<Row>> {
+    pub(super) fn list(&self) -> io::Result<Vec<ListedConsent>> {
         let _lock = LOCK.lock().unwrap();
-        Ok(self
-            .read()?
+        let document = self.read()?;
+        let mut seen_conflicts = BTreeSet::new();
+        let conflicts = document
+            .quarantined_rows
+            .iter()
+            .filter(|&row| seen_conflicts.insert(row.app_scope()))
+            .cloned()
+            .map(ListedConsent::Conflict);
+        Ok(document
             .rows
             .into_iter()
             .filter(|row| !row.template_digest.is_empty())
+            .map(ListedConsent::Operation)
+            .chain(conflicts)
             .collect())
     }
 
     pub(super) fn for_app(&self, plugin: &str, app: &str) -> io::Result<Vec<Row>> {
         let _lock = LOCK.lock().unwrap();
-        Ok(self
-            .read()?
+        let document = self.read()?;
+        document.require_unambiguous((plugin, app))?;
+        Ok(document
             .rows
             .into_iter()
             .filter(|row| row.plugin_id == plugin && row.app_id == app)
@@ -258,6 +330,7 @@ impl Store {
     ) -> io::Result<Option<T>> {
         let _lock = LOCK.lock().unwrap();
         let document = self.read()?;
+        document.require_unambiguous(expected.app_scope())?;
         Ok(document
             .rows
             .iter()
@@ -274,12 +347,13 @@ impl Store {
         let _lock = LOCK.lock().unwrap();
         let mut document = self.read()?;
         // Legacy stores can already have aliases after a companion change. Reuse the first
-        // matching ID so later grants cannot change which ID a re-pick returns.
-        let existing = document.rows.iter().find(|row| {
+        // unambiguous match so later grants cannot change which ID a re-pick returns.
+        let matches_app = |row: &Row| {
             row.plugin_id == plugin
                 && row.app_path == app.path
                 && row.app_identity.main_matches(&app.identity)
-        });
+        };
+        let existing = document.rows.iter().find(|row| matches_app(row));
         if let Some(id) = existing.map(|row| row.app_id.clone()) {
             let mut changed = false;
             for row in document
@@ -308,6 +382,9 @@ impl Store {
             }
             return Ok(id);
         }
+        if document.quarantined_rows.iter().any(matches_app) {
+            return Err(io::Error::other(Conflict));
+        }
         let id = temp_files::nonce()?;
         document.rows.push(Row::ungranted(
             plugin,
@@ -322,8 +399,8 @@ impl Store {
 
     #[cfg(test)]
     pub(super) fn insert(&self, row: Row) -> io::Result<()> {
-        self.update(|rows| {
-            rows.push(row);
+        self.update(|document| {
+            document.rows.push(row);
             Ok(())
         })
     }
@@ -335,8 +412,10 @@ impl Store {
         digest: String,
         install_id: &str,
     ) -> io::Result<Row> {
-        self.update(|rows| {
+        self.update(|document| {
             let scope = &before.row;
+            document.require_unambiguous(scope.app_scope())?;
+            let rows = &mut document.rows;
             let same_app =
                 |row: &Row| row.plugin_id == scope.plugin_id && row.app_id == scope.app_id;
             let current = rows
@@ -361,9 +440,27 @@ impl Store {
         })
     }
 
-    pub(super) fn revoke(&self, plugin: &str, consent_id: &str) -> io::Result<()> {
-        self.update(|rows| {
-            let row = rows
+    pub(super) fn revoke(&self, plugin: &str, consent_id: &str) -> io::Result<Vec<String>> {
+        self.update(|document| {
+            let conflict = document
+                .quarantined_rows
+                .iter()
+                .find(|row| row.plugin_id == plugin && row.conflict_id() == consent_id);
+            if let Some(row) = conflict {
+                let app = row.app_id.clone();
+                let mut operation_ids = BTreeSet::new();
+                document.quarantined_rows.retain(|row| {
+                    if row.app_scope() == (plugin, app.as_str()) {
+                        operation_ids.insert(row.consent_id());
+                        false
+                    } else {
+                        true
+                    }
+                });
+                return Ok(operation_ids.into_iter().collect());
+            }
+            let row = document
+                .rows
                 .iter_mut()
                 .find(|row| {
                     row.plugin_id == plugin
@@ -374,13 +471,16 @@ impl Store {
             row.granted = false;
             row.at = timestamp();
             row.revision = Some(temp_files::nonce()?);
-            Ok(())
+            Ok(vec![consent_id.to_owned()])
         })
     }
 
     pub(super) fn clear(&self, plugin: &str) -> io::Result<()> {
-        self.update(|rows| {
-            rows.retain(|row| row.plugin_id != plugin);
+        self.update(|document| {
+            document.rows.retain(|row| row.plugin_id != plugin);
+            document
+                .quarantined_rows
+                .retain(|row| row.plugin_id != plugin);
             Ok(())
         })
     }
@@ -406,15 +506,21 @@ impl Store {
         #[cfg(windows)]
         require_owner_only_acl(&file)?;
         let bytes = temp_files::read_bounded_file(file, MAX_CONSENT_BYTES)?;
-        let document: Document = serde_json::from_slice(&bytes)?;
-        document.validate()?;
+        let mut document: Document = serde_json::from_slice(&bytes)?;
+        if !matches!(document.schema_version, 1 | SCHEMA_VERSION) {
+            return Err(io::Error::other(
+                "Unknown app handoff consent schema version.",
+            ));
+        }
+        // Classify conflicts under the on-disk schema without writing anything.
+        document.quarantine_conflicts();
         Ok(document)
     }
 
-    fn update<T>(&self, change: impl FnOnce(&mut Vec<Row>) -> io::Result<T>) -> io::Result<T> {
+    fn update<T>(&self, change: impl FnOnce(&mut Document) -> io::Result<T>) -> io::Result<T> {
         let _lock = LOCK.lock().unwrap();
         let mut document = self.read()?;
-        let changed = change(&mut document.rows)?;
+        let changed = change(&mut document)?;
         self.write(document)?;
         Ok(changed)
     }
@@ -422,7 +528,7 @@ impl Store {
     fn write(&self, mut document: Document) -> io::Result<()> {
         // The v1 reader refuses this version before it can use rows keyed only by app.
         document.schema_version = SCHEMA_VERSION;
-        document.validate()?;
+        document.quarantine_conflicts();
         let bytes = serde_json::to_vec(&document)?;
         if bytes.len() >= MAX_CONSENT_BYTES {
             return Err(io::Error::other(

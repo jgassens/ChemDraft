@@ -3,12 +3,12 @@ import { invoke } from "@tauri-apps/api/core";
 /** Native consent metadata for Plugin Manager. The Worker relay has no access to it. */
 export interface AppHandoffConsent {
   pluginId: string;
-  /** Revocation-only reference for this operation. */
+  /** Revocation-only reference for the operation or conflicting app group. */
   consentId: string;
   appName: string;
   appPath: string;
   pipeline: string | null;
-  status: "allowed" | "inactive" | "revoked";
+  status: "allowed" | "inactive" | "revoked" | "conflict";
   at: string;
 }
 

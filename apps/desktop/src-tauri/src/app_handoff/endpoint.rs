@@ -2,7 +2,7 @@ use super::{
     arming::{self, ApprovedBuild, MenuInvocation, ResultSession, Submission},
     catalog::{self, Plugin},
     command_line::{Pipeline, Platform},
-    consent::{Entry, Row, Store},
+    consent::{self, Entry, ListedConsent, Row, Store},
     dialogs::{self, Action},
     identity::{App, Error as IdentityError},
     picker, runner,
@@ -179,8 +179,12 @@ fn cache(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|_| "ChemDraft's app handoff cache folder is unavailable.".into())
 }
 
-fn io_error(_: std::io::Error) -> String {
-    "ChemDraft could not read or save the app handoff consent store.".into()
+fn io_error(error: std::io::Error) -> String {
+    if consent::is_conflict(&error) {
+        error.to_string()
+    } else {
+        "ChemDraft could not read or save the app handoff consent store.".into()
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -717,9 +721,7 @@ impl Context<'_> {
         if session.template_digest != job.pipeline.digest()
             || session.handoff_graph_digest != held_graph
             || !session.consent.same_grant(&job.grant)
-            || !self
-                .still_authorized(&job.grant, Some(&job.pipeline), &rechecked)
-                .unwrap_or(false)
+            || !self.still_authorized(&job.grant, Some(&job.pipeline), &rechecked)?
         {
             return Err(REBUILD_EXPIRED.into());
         }
@@ -878,7 +880,13 @@ impl BuildJob {
                         runner::Failure::new(run_identity_code(error), error.message())
                     })
             })
-            .map_err(|_| refused())?
+            .map_err(|error| {
+                if consent::is_conflict(&error) {
+                    runner::Failure::new(RunCode::BadParam, error.to_string())
+                } else {
+                    refused()
+                }
+            })?
             .ok_or_else(refused)?
     }
 }
@@ -900,12 +908,10 @@ pub(super) fn target_status(
         Ok(app) => app,
         Err(error) => return unavailable(error),
     };
-    let mut available = false;
     let mut pipeline_changed = false;
     let mut error = None;
     for row in rows.iter().filter(|row| !row.template_digest.is_empty()) {
         let Some(id) = row.pipeline.as_deref() else {
-            available = true;
             continue;
         };
         let pipeline = resolve_pipeline(id);
@@ -913,19 +919,16 @@ pub(super) fn target_status(
             && pipeline
                 .as_ref()
                 .is_none_or(|p| p.digest() != row.template_digest);
-        match pipeline
+        if let Some(Err(problem)) = pipeline
             .as_ref()
             .map(|p| load_target(platform, row, Some(p)))
         {
-            Some(Err(problem)) => error = Some(problem),
-            _ => available = true,
+            error = Some(problem);
         }
     }
-    // A pick alone is available. With operation history, one usable operation suffices.
-    let available = available || error.is_none();
     StatusResult {
-        available,
-        display_name: available.then_some(app.name),
+        available: true,
+        display_name: Some(app.name),
         reason: if pipeline_changed {
             Some("The companion pipeline changed and needs consent again.".into())
         } else {
@@ -1019,6 +1022,7 @@ enum ConsentStatus {
     Allowed,
     Inactive,
     Revoked,
+    Conflict,
 }
 
 impl ConsentSummary {
@@ -1030,8 +1034,21 @@ impl ConsentSummary {
         } else {
             ConsentStatus::Inactive
         };
+        Self::from_row(row, status)
+    }
+
+    pub(super) fn conflict(row: Row) -> Self {
+        Self::from_row(row, ConsentStatus::Conflict)
+    }
+
+    fn from_row(row: Row, status: ConsentStatus) -> Self {
+        let (consent_id, pipeline) = if matches!(status, ConsentStatus::Conflict) {
+            (row.conflict_id(), None)
+        } else {
+            (row.consent_id(), row.pipeline)
+        };
         Self {
-            consent_id: row.consent_id(),
+            consent_id,
             plugin_id: row.plugin_id,
             app_name: row
                 .app_path
@@ -1040,7 +1057,7 @@ impl ConsentSummary {
                 .to_string_lossy()
                 .into_owned(),
             app_path: row.app_path,
-            pipeline: row.pipeline,
+            pipeline,
             status,
             at: row.at,
         }
@@ -1066,13 +1083,16 @@ pub(crate) fn app_handoff_consent_list(
         .list()
         .map_err(io_error)?
         .into_iter()
-        .map(|row| {
-            let install = installs.entry(row.plugin_id.clone()).or_insert_with(|| {
-                Plugin::read(app, &row.plugin_id)
-                    .ok()
-                    .map(|plugin| plugin.handoff_install_id)
-            });
-            ConsentSummary::new(row, install.as_deref())
+        .map(|entry| match entry {
+            ListedConsent::Operation(row) => {
+                let install = installs.entry(row.plugin_id.clone()).or_insert_with(|| {
+                    Plugin::read(app, &row.plugin_id)
+                        .ok()
+                        .map(|plugin| plugin.handoff_install_id)
+                });
+                ConsentSummary::new(row, install.as_deref())
+            }
+            ListedConsent::Conflict(row) => ConsentSummary::conflict(row),
         })
         .collect())
 }
@@ -1085,12 +1105,14 @@ pub(crate) fn app_handoff_consent_revoke(
 ) -> Result<(), String> {
     main_only(&window)?;
     let app = window.app_handle();
-    store(app)?
+    let operation_ids = store(app)?
         .revoke(&plugin_id, &consent_id)
         .map_err(io_error)?;
     let state = app.state::<State>();
-    state.arms.disarm_consent(&plugin_id, &consent_id);
-    state.clear_result(&plugin_id, Some(&consent_id));
+    for id in operation_ids {
+        state.arms.disarm_consent(&plugin_id, &id);
+        state.clear_result(&plugin_id, Some(&id));
+    }
     Ok(())
 }
 

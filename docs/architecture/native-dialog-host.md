@@ -713,4 +713,6 @@ The Rebuild action carries no parameters. Rust reruns the held input with its bo
 combination and returns the outcome through the original handoff call. The dialog snapshot
 fits the 3400-byte private transport budget and contains display data and choices only.
 Plugin Manager displays app locations and a separate consent row for file handoff and each
-approved pipeline. Each row can be revoked independently. Worker replies carry path-free results.
+approved pipeline. Each operation can be revoked independently. A conflicting app group has one
+entry covering all its operations. Revoking that entry removes the whole group. Worker replies carry
+path-free results.

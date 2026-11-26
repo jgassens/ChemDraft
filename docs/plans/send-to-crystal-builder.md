@@ -544,7 +544,12 @@ Rules the host enforces (each one gets a test):
    schema is not widened. `app_local_data_dir()/app-handoff/consents.json`: a top-level object with
    `schemaVersion: 2` and consent rows keyed by `(pluginId, appId, pipeline)`. File send uses
    no pipeline ID and every operation for the same picked app shares its opaque app ID.
-   A version 1 row applies only to its recorded operation. Older builds refuse version 2.
+   A version 1 row applies only to its recorded operation. Builds that support only version 1
+   refuse version 2.
+   Conflicting rows block only their plugin and app group. A read classifies conflicts without
+   writing the file. On a write, remaining conflicting groups are preserved in `quarantinedRows`,
+   outside the active `rows` that existing version 2 readers use. This preserves the version 1
+   duplicate-group rule on migration.
    **`templateDigest`** identifies the native file-send operation or holds the SHA-256 of
    the canonical JSON of the declared pipeline. It is **re-checked on every call**, not only at
    update time, so a missed update hook or an interrupted swap can never run a changed template
@@ -559,7 +564,8 @@ Rules the host enforces (each one gets a test):
      command); if the permission is dropped, the rows are deleted.
    - **App changed or missing** (rule 6): that row stops counting and consent is asked again.
    - **Revoke** in the Plugin Manager sets `granted: false` on the operation's row, which stays
-     listed until uninstall.
+     listed until uninstall. For a conflicting group, Plugin Manager lists one entry and Revoke
+     removes all that plugin's rows for the app.
 6. **The app is re-confirmed if it changes** (revised 2026-11-21). `appIdentity` holds SHA-256 of the
    main executable and of the companion tool, plus the code-signing identity where one exists (macOS
    cdhash for ad-hoc builds or the Team ID for signed ones; the Windows Authenticode publisher when the

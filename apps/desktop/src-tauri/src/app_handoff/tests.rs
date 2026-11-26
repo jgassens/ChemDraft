@@ -4,7 +4,7 @@ use super::{
     arming::{ApprovedBuild, ResultSession, State, RACE},
     catalog,
     command_line::{open_command, Pipeline, Platform},
-    consent::{Row, Store},
+    consent::{ListedConsent, Row, Store},
     dialogs::{self, Action},
     identity,
     runner::{self, CaptureError, ChildProcess},
@@ -1206,10 +1206,14 @@ fn per_operation_consent_keeps_both_send_and_build_grants() {
     let (send, build) = allow_send_and_build(&store);
     let rows = store.list().unwrap();
     assert!(
-        rows.iter().any(|row| row.same_grant(&send)),
+        rows.iter().any(|entry| {
+            matches!(entry, ListedConsent::Operation(row) if row.same_grant(&send))
+        }),
         "granting mofBuild erased the file-send grant"
     );
-    assert!(rows.iter().any(|row| row.same_grant(&build)));
+    assert!(rows
+        .iter()
+        .any(|entry| { matches!(entry, ListedConsent::Operation(row) if row.same_grant(&build)) }));
 }
 
 #[test]
@@ -1296,7 +1300,12 @@ fn grants_are_bound_to_the_operation_even_if_digests_match() {
         .list()
         .unwrap()
         .into_iter()
-        .map(|row| json!(super::endpoint::ConsentSummary::new(row, Some(INSTALL_ID))))
+        .map(|entry| match entry {
+            ListedConsent::Operation(row) => {
+                json!(super::endpoint::ConsentSummary::new(row, Some(INSTALL_ID)))
+            }
+            ListedConsent::Conflict(_) => panic!("operation grants were classified as conflicting"),
+        })
         .collect::<Vec<_>>();
     assert_eq!(summaries.len(), 3);
     for (summary, row) in summaries.iter().zip([&send, &build, &other]) {
@@ -1390,6 +1399,7 @@ fn duplicate_and_conflicting_rows_fail_closed() {
     let dir = TestDir::new();
     let store = Store::new(&dir.0);
     let (send, build) = allow_send_and_build(&store);
+    let pending = store.get(PLUGIN, APP_ID, None).unwrap().unwrap();
     let path = dir.0.join("app-handoff").join("consents.json");
     let mut revoked = json!(build);
     revoked["granted"] = json!(false);
@@ -1404,13 +1414,187 @@ fn duplicate_and_conflicting_rows_fail_closed() {
     ] {
         let corrupt = json!({"schemaVersion": version, "rows": rows}).to_string();
         fs::write(&path, &corrupt).unwrap();
-        assert!(store.list().is_err());
+        let listed = store.list().unwrap();
+        let [ListedConsent::Conflict(group)] = listed.as_slice() else {
+            panic!("Expected one conflicted app group, got {listed:?}");
+        };
+        let summary = json!(super::endpoint::ConsentSummary::conflict(group.clone()));
+        assert_eq!(summary["status"], "conflict");
+        assert_eq!(summary["pipeline"], Value::Null);
+        assert!(!summary.to_string().contains(APP_ID));
+        assert!(store
+            .replace(
+                &pending,
+                &stored_target(false),
+                send.template_digest.clone(),
+                INSTALL_ID
+            )
+            .is_err());
+        assert!(store.pick(PLUGIN, stored_target(false), |_| None).is_err());
         assert!(store
             .with_grant(&send, |_| panic!("ambiguous store launched"))
             .is_err());
+        assert!(store.revoke(PLUGIN, &send.consent_id()).is_err());
         assert!(store.revoke(PLUGIN, &build.consent_id()).is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), corrupt);
+        store
+            .revoke(PLUGIN, summary["consentId"].as_str().unwrap())
+            .unwrap();
+        assert!(store.for_app(PLUGIN, APP_ID).unwrap().is_empty());
     }
+}
+
+fn conflicting_legacy_store(store: &Store, dir: &TestDir) -> (PathBuf, Row, Row, Row, Row) {
+    let (send, build) = allow_send_and_build(store);
+    let mut other_app = send.clone();
+    other_app.app_id = "a".repeat(32);
+    let mut other_plugin = send.clone();
+    other_plugin.plugin_id = "org.chemdraft.handoff.other".into();
+    let mut legacy_build = json!(build);
+    legacy_build["unknownRowField"] = json!({"values": [true, null]});
+    let path = dir.0.join("app-handoff").join("consents.json");
+    fs::write(
+        &path,
+        json!({
+            "schemaVersion": 1,
+            "rows": [send, legacy_build, other_app, other_plugin],
+            "unknownStoreField": {"kept": true}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    (path, send, build, other_app, other_plugin)
+}
+
+#[test]
+fn conflicting_legacy_consent_only_blocks_its_own_group() {
+    let dir = TestDir::new();
+    let store = Store::new(&dir.0);
+    let (path, send, build, other_app, other_plugin) = conflicting_legacy_store(&store, &dir);
+    let before = fs::read(&path).unwrap();
+    for row in [&send, &build] {
+        let error = store
+            .get(PLUGIN, APP_ID, row.pipeline.as_deref())
+            .err()
+            .expect("conflicting consent was returned");
+        assert!(error.to_string().contains("Conflicting"));
+        assert!(store
+            .with_grant(row, |_| panic!("conflicting grant launched"))
+            .is_err());
+    }
+    assert!(
+        matches!(store.with_grant(&other_app, |_| ()), Ok(Some(()))),
+        "a conflict blocked another app's grant"
+    );
+    assert!(
+        matches!(store.with_grant(&other_plugin, |_| ()), Ok(Some(()))),
+        "a conflict blocked another plugin's grant"
+    );
+    assert_eq!(fs::read(&path).unwrap(), before);
+    store
+        .revoke(&other_plugin.plugin_id, &other_plugin.consent_id())
+        .unwrap();
+    assert_eq!(store.with_grant(&other_plugin, |_| ()).unwrap(), None);
+    store.clear(&other_plugin.plugin_id).unwrap();
+    assert!(store
+        .for_app(&other_plugin.plugin_id, APP_ID)
+        .unwrap()
+        .is_empty());
+    assert!(
+        store.for_app(PLUGIN, APP_ID).is_err(),
+        "migration activated a conflicting group"
+    );
+    assert_eq!(store.with_grant(&other_app, |_| ()).unwrap(), Some(()));
+    let original: Value = serde_json::from_slice(&before).unwrap();
+    let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(saved["schemaVersion"], 2);
+    assert_eq!(saved["rows"], json!([other_app]));
+    assert_eq!(
+        saved["quarantinedRows"],
+        json!([original["rows"][0], original["rows"][1]])
+    );
+    assert_eq!(saved["unknownStoreField"], original["unknownStoreField"]);
+    store.revoke(PLUGIN, &send.conflict_id()).unwrap();
+    assert!(store.for_app(PLUGIN, APP_ID).unwrap().is_empty());
+}
+
+#[test]
+fn clear_removes_all_conflicting_rows_for_the_uninstalled_plugin() {
+    let dir = TestDir::new();
+    let store = Store::new(&dir.0);
+    let (path, send, build, other_app, other_plugin) = conflicting_legacy_store(&store, &dir);
+    store
+        .clear(PLUGIN)
+        .expect("clear must recover a conflicting store");
+    assert!(store.for_app(PLUGIN, APP_ID).unwrap().is_empty());
+    for row in [&send, &build, &other_app] {
+        assert_eq!(store.with_grant(row, |_| ()).unwrap(), None);
+    }
+    assert_eq!(store.with_grant(&other_plugin, |_| ()).unwrap(), Some(()));
+    let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(saved["schemaVersion"], 2);
+    assert_eq!(saved["rows"], json!([other_plugin]));
+    assert_eq!(saved["unknownStoreField"], json!({"kept": true}));
+}
+
+#[test]
+fn revoke_removes_the_entire_conflicting_legacy_group() {
+    let dir = TestDir::new();
+    let store = Store::new(&dir.0);
+    let (path, send, build, other_app, other_plugin) = conflicting_legacy_store(&store, &dir);
+    let conflict_id = send.conflict_id();
+    store
+        .revoke(PLUGIN, &conflict_id)
+        .expect("revoke must remove the entire conflicting group");
+    assert!(store.for_app(PLUGIN, APP_ID).unwrap().is_empty());
+    for row in [&send, &build] {
+        assert_eq!(store.with_grant(row, |_| ()).unwrap(), None);
+    }
+    assert_eq!(store.with_grant(&other_app, |_| ()).unwrap(), Some(()));
+    assert_eq!(store.with_grant(&other_plugin, |_| ()).unwrap(), Some(()));
+    let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(saved["schemaVersion"], 2);
+    assert_eq!(saved["rows"], json!([other_app, other_plugin]));
+    assert_eq!(saved["unknownStoreField"], json!({"kept": true}));
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn failed_conflicting_consent_removal_preserves_file_and_retry_recovers() {
+    let dir = TestDir::new();
+    let store = Store::new(&dir.0);
+    let (path, _, _, _, other_plugin) = conflicting_legacy_store(&store, &dir);
+    let before = fs::read(&path).unwrap();
+    #[cfg(unix)]
+    let error = {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = path.parent().unwrap();
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o500)).unwrap();
+        let result = store.clear(PLUGIN);
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).unwrap();
+        result.unwrap_err()
+    };
+    #[cfg(windows)]
+    let error = {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+        let _handle = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(&path)
+            .unwrap();
+        store.clear(PLUGIN).unwrap_err()
+    };
+    assert_eq!(fs::read(&path).unwrap(), before);
+    store
+        .clear(PLUGIN)
+        .expect("retry must remove the conflicting group");
+    assert!(
+        error.raw_os_error().is_some(),
+        "expected a filesystem write failure, got {error}"
+    );
+    assert!(store.for_app(PLUGIN, APP_ID).unwrap().is_empty());
+    assert_eq!(store.with_grant(&other_plugin, |_| ()).unwrap(), Some(()));
 }
 
 #[test]
@@ -1537,6 +1721,55 @@ fn revocation_disarms_only_the_matching_consent_box() {
 
 #[cfg(any(target_os = "macos", windows))]
 #[test]
+fn pipeline_only_consent_keeps_file_send_available_after_companion_disappears() {
+    use super::endpoint::{load_target, target_status};
+
+    let dir = TestDir::new();
+    let (platform, path, tool) = install_stub(&dir.0);
+    let pipeline = pipeline();
+    let operation = Some(pipeline.id.as_str());
+    let store = Store::new(&dir.0);
+    let app_id = store
+        .pick(PLUGIN, App::read(platform, &path, None).unwrap(), |_| None)
+        .unwrap();
+    let get = |op| store.get(PLUGIN, &app_id, op).unwrap().unwrap();
+    let target = App::read(platform, &path, Some(&pipeline)).unwrap();
+    store
+        .replace(&get(operation), &target, pipeline.digest(), INSTALL_ID)
+        .unwrap();
+    fs::remove_file(tool).unwrap();
+
+    let report = target_status(platform, &store.for_app(PLUGIN, &app_id).unwrap(), |_| {
+        Some(pipeline.clone())
+    });
+    let send = get(None).row;
+    let main = load_target(platform, &send, None).expect("main app still supports file send");
+    assert!(!send.granted);
+    assert!(
+        !send.grants(&main, None, "send", INSTALL_ID),
+        "file send must ask its own consent"
+    );
+    assert!(matches!(
+        load_target(platform, &get(operation).row, Some(&pipeline)),
+        Err(identity::Error::Changed)
+    ));
+    assert!(
+        report.available,
+        "a missing companion made file send unavailable"
+    );
+    assert_eq!(report.display_name.as_deref(), Some(main.name.as_str()));
+    assert_eq!(
+        report.reason.as_deref(),
+        Some(identity::Error::Changed.message())
+    );
+    let approved = store
+        .replace(&get(None), &main, "send".into(), INSTALL_ID)
+        .unwrap();
+    assert!(approved.grants(&main, None, "send", INSTALL_ID));
+}
+
+#[cfg(any(target_os = "macos", windows))]
+#[test]
 fn status_and_identity_handle_send_and_pipeline_independently() {
     use super::endpoint::{load_target, target_status};
     use std::io::Write;
@@ -1626,6 +1859,10 @@ fn status_and_identity_handle_send_and_pipeline_independently() {
     };
     update(&executable);
     assert!(!report().available);
+    assert_eq!(
+        report().reason.as_deref(),
+        Some(identity::Error::Changed.message())
+    );
     assert!(!send.grants(&pick(), None, &send.template_digest, INSTALL_ID));
     assert!(!build.grants(
         &App::read(platform, &path, Some(&pipeline)).unwrap(),
