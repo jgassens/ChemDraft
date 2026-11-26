@@ -536,4 +536,17 @@ style step cannot repair).
 - `image` graphics fall back to a placeholder in exports
   (`export.svg.graphic_fallback`); the reflection effect is approximated
   or omitted with a warning. SVG, PNG and PDF render only the first page.
+- **PNG size limit.** A PNG request over 16384 pixels a side or 64 Mi pixels
+  (`--width`, or `--dpi` in document style) fails the job; it is not clamped.
+  Lower the width or DPI.
+- **Picture pixel budget.** Native PNG pictures in a PNG export share one 64
+  Mi-pixel budget. Over it, the largest are downsampled (aspect kept) and one
+  `export.png.pictures_downsampled` warning lists each picture id with its old
+  and new pixel size. Report it; the picture lost resolution. PDF embeds PNG
+  pictures at their own size.
+- **Animated PNG (APNG) pictures.** PNG and PDF draw the first animation
+  frame; SVG keeps the original bytes, so it still animates. An out-of-spec
+  APNG is drawn at its default image with `export.png.apng_default_image`,
+  `export.pdf.apng_default_image`, or, for an APNG inside an SVG picture,
+  `export.<png|pdf>.svg_picture_apng_default_image`. Surface these warnings.
 - OpenChemLib stereo perception can report 0 specified/0 unspecified for ring-symmetric fused centers (for example `C[C@@]12CCCC[C@H]1CCCC2`) while canonical SMILES retains `@`; compare canonical SMILES or InChIKey to confirm chemistry, not stereo counts alone.
