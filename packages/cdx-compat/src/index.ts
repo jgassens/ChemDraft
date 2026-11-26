@@ -1145,6 +1145,7 @@ function exportCdxmlFonts(document: ChemDraftDocument, warnings: CompatibilityCo
   const byName = indexCdxmlFonts<string | undefined>(fonts.values(), font => font.name);
   const plainCaptionIds = new Set<string>();
   let nextId = 1, captionRuns = 0, captionRunLimitReached = false, tableFullWarned = false, tableFontMissing = false;
+  let firstFallbackTableId: string | undefined;
   for (const page of document.pages) for (const object of page.objects) {
     let names: unknown[] = [];
     if (object.type === "table") names = [nativeTextStyleFromObjectStyle(object.style).fontFamily];
@@ -1167,7 +1168,7 @@ function exportCdxmlFonts(document: ChemDraftDocument, warnings: CompatibilityCo
       if (typeof name !== "string" || !name || lookupCdxmlFont(byName, name)) continue;
       // Not registered: a caption set in it is written as plain styled text, a table in the default font.
       if (name.length > CDXML_FONT_NAME_LIMIT) {
-        if (object.type === "table") tableFontMissing = true;
+        if (object.type === "table") { tableFontMissing = true; firstFallbackTableId ??= object.id; }
         if (!nameTooLong) {
           nameTooLong = true;
           tooLong.push({ label: `the font of ${object.type} ${object.id}`, kind: object.type === "table" ? "table" : "caption" });
@@ -1185,7 +1186,7 @@ function exportCdxmlFonts(document: ChemDraftDocument, warnings: CompatibilityCo
             message: `CDXML export: the font table is full (font ids below ${cdxmlLimits.fontId}); from ${object.type} ${object.id} on, ` +
               "fonts not already in it were not written, and text set in them was written without its caption frame and run fonts, or in the default font." });
         }
-        if (object.type === "table") tableFontMissing = true;
+        if (object.type === "table") { tableFontMissing = true; firstFallbackTableId ??= object.id; }
         continue;
       }
       const id = String(nextId++);
@@ -1210,7 +1211,14 @@ function exportCdxmlFonts(document: ChemDraftDocument, warnings: CompatibilityCo
         byName.set(fallbackName, font);
       }
     }
-    tableFallbackFontId = lookupCdxmlFont(byName, fallbackName)?.id ?? fonts.values().next().value?.id;
+    const defaultFont = lookupCdxmlFont(byName, fallbackName);
+    const fallbackFont = defaultFont ?? fonts.values().next().value;
+    tableFallbackFontId = fallbackFont?.id;
+    if (fallbackFont) {
+      warnings.push({ code: "cdxml.table_font_fallback", ...(firstFallbackTableId ? { sourceObjectId: firstFallbackTableId } : {}),
+        message: `CDXML export: from table ${firstFallbackTableId ?? "?"} on, a table whose font could not be added to the font table was written in ` +
+          (defaultFont ? `the default font "${fallbackFont.name}"` : `the first listed font "${fallbackFont.name}" (the default font is not listed and cannot be added)`) + "." });
+    }
   }
   // A document style's label and caption fonts (a CDXML style reference) join this same table after
   // the document's own fonts, so the root's LabelFont and CaptionFont ids agree with every font= in

@@ -228,6 +228,26 @@ describe("CDXML export: every table font= id is in the one font table", () => {
     expect(listed.get("40000")).toBe(DefaultNativeTextStyle.fontFamily);
   }, 60_000);
 
+  it("names the default font in a warning when a table whose font cannot be added falls back to it", () => {
+    const { warnings } = exportDocumentToCdxml(documentWith(fullSource(), "Palatino"), plain);
+    const fallback = warnings.filter(w => w.code === "cdxml.table_font_fallback");
+    expect(fallback).toHaveLength(1);
+    expect(fallback[0]!.message).toContain(`in the default font "${DefaultNativeTextStyle.fontFamily}"`);
+    expect(warnings.map(w => w.code)).toContain("cdxml.font_table_full");
+  }, 60_000);
+
+  it("names the first listed font in a warning when the default font is not listed either", () => {
+    const source = fullSource().map(font => font.id === "40000" ? { ...font, name: "Font40000" } : font);
+    const { contents, warnings } = exportDocumentToCdxml(documentWith(source, "Palatino"), plain);
+    const { listed, used } = fontIdsAndNames(contents);
+    const firstListed = [...listed.values()][0]!;
+    const fallback = warnings.filter(w => w.code === "cdxml.table_font_fallback");
+    expect(fallback).toHaveLength(1);
+    expect(fallback[0]!.message).toContain(`in the first listed font "${firstListed}"`);
+    expect(fallback[0]!.message).not.toContain("in the default font");
+    expect(listed.get([...used][0]!)).toBe(firstListed);
+  }, 60_000);
+
   it("never points a table at a font id the table does not list when the default font is absent too", () => {
     const source = fullSource().map(font => font.id === "40000" ? { ...font, name: "Font40000" } : font);
     const { contents } = exportDocumentToCdxml(documentWith(source, "Palatino"), { ...plain, documentStyle: { labelFontName: "Helvetica" } });
