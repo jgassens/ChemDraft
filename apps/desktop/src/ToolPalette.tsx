@@ -4464,7 +4464,7 @@ export function ToolbarItemIcon({
   }
   // Groups that remember their selected tool preview that command instead of their shared asset.
   const primaryId = item.primary.type === "command" ? item.primary.command.id : undefined;
-  if (command && (primaryId === "tool.symbol" || primaryId === "tool.charge" || primaryId === "tool.doubleBond" || primaryId === "tool.bond")) {
+  if (command && (primaryId === "tool.symbol" || primaryId === "tool.charge" || primaryId === "tool.doubleBond")) {
     return <ToolbarCommandIcon command={command} />;
   }
   // toolbarAsset() returns undefined for an unknown key (e.g. a plugin's unregistered assetName);
