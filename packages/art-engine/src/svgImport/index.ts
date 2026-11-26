@@ -359,6 +359,14 @@ export function convertSvgToShapes(svgSource: string, options: SvgImportOptions)
     const rawOpacity = property(element, css, "opacity");
     const ownOpacity = rawOpacity === "inherit" ? parent.localOpacity : opacity(rawOpacity, "opacity", report);
     if (ownOpacity === 0) return [];
+    const visibility = style.visibility.toLowerCase();
+    // Groups and use instances pass visibility to children, which can restore it.
+    if ((visibility === "hidden" || visibility === "collapse") && !groupTags.has(tag) && tag !== "use") {
+      if (tag === "text" && hasTextChildren(element)) {
+        report("svgImport.text_style_not_kept", "Text children may override inherited visibility");
+      }
+      return [];
+    }
     const context: Context = { ...parent, matrix, style, localOpacity: ownOpacity, opacity: parent.opacity * ownOpacity };
     auditAttributes(element, css, report);
     for (const name of ["mask", "filter"] as const) {
@@ -455,12 +463,6 @@ export function convertSvgToShapes(svgSource: string, options: SvgImportOptions)
         report("svgImport.group_opacity_approximated", "Group opacity applied to individual native objects");
       }
       return result;
-    }
-    if (["hidden", "collapse"].includes(style.visibility.toLowerCase())) {
-      if (tag === "text" && hasTextChildren(element)) {
-        report("svgImport.text_style_not_kept", "Text children may override inherited visibility");
-      }
-      return [];
     }
     if (tag === "text") {
       const text = readText(element, css, style, matrix, context.viewport, context.opacity, canonicalColor, report);

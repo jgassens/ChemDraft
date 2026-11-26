@@ -142,6 +142,35 @@ describe("SVG element conversion", () => {
 });
 
 describe("SVG paint and presentation", () => {
+  it("converts descendants that restore visibility inside a hidden group", () => {
+    const { objects, report } = convert(`<g visibility="hidden">
+      <circle cx="40" cy="40" r="10"/>
+      <g><rect x="10" width="20" height="20" visibility="visible"/></g>
+    </g>`);
+    expect(objects).toHaveLength(3);
+    const [rect, inner, outer] = objects;
+    expect(rect).toMatchObject({ type: "graphic", graphicKind: "rect" });
+    expect(rect.x).toBeCloseTo(10);
+    expect(inner).toMatchObject({ type: "group", childObjectIds: [rect.id] });
+    expect(outer).toMatchObject({ type: "group", childObjectIds: [inner.id] });
+    expect(report).toEqual({ exact: true, entries: [] });
+  });
+
+  it("omits descendants that inherit hidden or collapsed visibility without reporting a loss", () => {
+    const { objects, report } = convert(`<g visibility="hidden">
+      <rect width="20" height="20" filter="url(#unused)"/>
+      <g style="visibility: collapse"><circle cx="40" cy="40" r="10"/></g>
+    </g>`);
+    expect(objects).toEqual([]);
+    expect(report).toEqual({ exact: true, entries: [] });
+  });
+
+  it("omits a display:none subtree even when a descendant sets visibility:visible", () => {
+    const { objects, report } = convert('<g display="none"><rect width="20" height="20" visibility="visible"/></g>');
+    expect(objects).toEqual([]);
+    expect(report).toEqual({ exact: true, entries: [] });
+  });
+
   it.each([
     ['fill="#123"', { fillColor: "#112233" }],
     ['stroke="#abc"', { strokeColor: "#aabbcc" }],
