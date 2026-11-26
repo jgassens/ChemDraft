@@ -1523,19 +1523,39 @@ type V2000CountsLocation =
   | { index: number; error: string };
 
 /**
- * The counts line of a V2000 molfile and the reading of it that holds. The counts line is line 4:
- * lines 1-3 are the header (title, program, comment) and are never structure, so a comment shaped
- * like a counts line, even one declaring no atoms, is never taken for it. A line at that position
- * is a counts line in any numeric form RDKit reads, including a short one with no tag and fewer
- * than six fields ("  6  6"). Leading blank lines are allowed before the header, and a blank title
- * looks the same, so each of those positions is tried in order. Only a text with no counts line
- * (V2000 or V3000) at any of them, such as a ChemDraw for Mac RXN block with a one-line header, has
- * its first lines tried instead; this matches `v2000CountsLine` in document-workflow-core's
- * atomMaps.ts. A candidate whose atom and bond lines and what follows them all fit its counts wins;
- * a line with two readings (unpadded "100 100": 100/10 by columns, 100/100 by fields) that neither
- * fits is refused rather than read as either, since one of them would silently drop structure.
+ * The counts line of a V2000 molfile and the reading of it that holds. A candidate counts line is
+ * accepted in any numeric form RDKit reads, including a short one with no tag and fewer than six
+ * fields ("  6  6"), and is preferred when its atom and bond lines and what follows them (blank, a
+ * property line, the record end, or nothing) all fit its counts. Passes, in order:
+ *
+ * Pass 0 (headerless, tagged): the first non-blank line, when it is a V2000-tagged counts line
+ * declaring atoms whose own blocks fit. It goes first so that a headerless CTAB with exactly three
+ * atom lines is not read through its third atom line, which sits at the standard line-4 position.
+ * Pass 1 (standard): line 4, shifted by the leading blank lines (lines 1-3 are the header: title,
+ * program, comment), so a counts-shaped comment is never taken while a fitting line 4 exists.
+ * Pass 2 (headerless, any form): only if pass 1 found nothing. Where a header is present, just the
+ * first non-blank line qualifies, and only as a full-shaped counts line declaring atoms; with no
+ * header, the first lines are tried (ChemDraw for Mac's RXN block has a one-line header). This
+ * matches `v2000CountsLine` in document-workflow-core's atomMaps.ts.
+ *
+ * If no candidate fits, the first lenient reading is kept, except that a line with two readings
+ * (unpadded "100 100": 100/10 by columns, 100/100 by fields) is refused rather than read as either,
+ * since one of them would silently drop structure. Finally, a selected counts line declaring 0 atoms
+ * while atom-record-shaped lines follow is refused, never returned as an empty molecule.
  */
 function locateV2000CountsLine(lines: readonly string[]): V2000CountsLocation | undefined {
+  const found = locateV2000CountsLineUnguarded(lines);
+  if (found && found.error === undefined && found.atomCount === 0 && lines.slice(found.index + 1).some(isV2000AtomLine)) {
+    return {
+      index: found.index,
+      error: `V2000 counts line (line ${found.index + 1}, "${lines[found.index]!.trim()}") declares no atoms, ` +
+        "but atom records follow it; refusing to read the structure as empty."
+    };
+  }
+  return found;
+}
+
+function locateV2000CountsLineUnguarded(lines: readonly string[]): V2000CountsLocation | undefined {
   let leadingBlank = 0;
   while (leadingBlank < lines.length && lines[leadingBlank]!.trim() === "") leadingBlank += 1;
   const standard = Array.from({ length: leadingBlank + 1 }, (_, offset) => offset + 3).filter((index) => index < lines.length);
@@ -1554,6 +1574,11 @@ function locateV2000CountsLine(lines: readonly string[]): V2000CountsLocation | 
       bonds.length === reading.bondCount && bonds.every(isV2000BondLine) &&
       (after === undefined || after.trim() === "" || v2000AfterTable.test(after));
   };
+  // Pass 0: a tagged counts line at the first non-blank line whose own blocks fit.
+  if (leadingBlank < lines.length && v2000Tagged.test(lines[leadingBlank]!)) {
+    const reading = readingsAt(leadingBlank).find((candidate) => candidate.atomCount > 0 && fits(leadingBlank, candidate));
+    if (reading) return { index: leadingBlank, ...reading };
+  }
   // Pass 1: the standard counts-line positions (line 4, shifted by leading blank lines).
   for (const index of standard) {
     const reading = readingsAt(index).find((candidate) => fits(index, candidate));

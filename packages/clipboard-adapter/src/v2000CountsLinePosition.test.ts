@@ -163,6 +163,25 @@ describe("headerless CTABs of 1, 2 and 3 atoms, tagged or not, with leading blan
   });
 });
 
+describe("a counts line declaring no atoms never hides atom records", () => {
+  const loose = ["0 0 0 C 0 0 0", "1 0 0 O 0 0 0", "2 0 0 N 0 0 0"];
+
+  it("reads a headerless tagged CTAB of three loose whole-number atoms, no bonds", () => {
+    const molfile = ["  3  0  0  0  0  0  0  0  0999 V2000", ...loose, "M  END"].join("\n");
+    expectGraph(parseMolfileGraph(molfile), ["C", "O", "N"], 0);
+  });
+
+  it("refuses, never an empty molecule, when the selected counts line has 0 atoms and atom lines follow", () => {
+    const zero = "  0  0  0  0  0  0  0  0  0  0999 V2000";
+    const texts = [
+      ["T", "P", "C", zero, atomLine(0, 0, "C"), "M  END"],
+      ["T", "P", "C", zero, ...loose, "M  END"],
+      [zero, ...loose, "M  END"]
+    ].map((rows) => rows.join("\n"));
+    for (const text of texts) expect(() => parseMolfileGraph(text)).toThrow(/declares no atoms/);
+  });
+});
+
 describe("RDKit reference for the fixtures above", () => {
   beforeAll(installRealRdkitModuleLoader);
   afterAll(resetRdkitForTesting);
