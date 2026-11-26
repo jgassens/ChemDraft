@@ -2052,7 +2052,11 @@ lossy and a lossless WebP, an SVG with gradients and `<use href="#id">`, a BMP, 
 - Mixed: drop a PNG and a `.cdxml` together. The picture lands in the current tab and the document
   opens in its own tab; that tab's status names both files, "Inserted picture mixed.png; Opened
   mixed.cdxml as …", worded as the open itself words it (with its warnings count, if any, and no
-  "imported content exceeds" once the page-size question is answered). Drop a picture and two
+  "imported content exceeds" once the page-size question is answered). Drop a PNG with a `.cdxml`
+  wider than the page: answer the page-size question with Cancel (keep the page) and the final
+  status ends "…; <name>.cdxml overflows its page"; repeat choosing the larger page and no overflow
+  is named. Drop that `.cdxml` alone and keep the page: the status says the content may extend
+  beyond the kept page. Drop a picture and two
   documents: each document is named. Drop a picture with a document already open in another tab:
   the status says that document was already open. Drop a picture with a document that cannot be
   opened: the failure is named. Drop only a new `.cdxml` to open it. Switch tabs and drop that

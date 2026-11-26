@@ -720,19 +720,51 @@ describe("dropping picture files on the document window", { timeout: 3 * DROP_WA
       expect(tabs()).toHaveLength(2);
     });
 
-    it("leaves out the page-size clause once its prompt has been answered", async () => {
+    /** Answers every page-size prompt with `choice` while `run` runs; returns the prompt titles. */
+    async function answeringPageSize(choice: "keep" | "resize", run: () => Promise<void>) {
       const prompts: string[] = [];
       const restore = setNativePromptProvider(async prompt => {
         prompts.push(prompt.title);
-        return "keep";
+        return choice;
       });
-      try {
+      try { await run(); } finally { restore(); }
+      return prompts;
+    }
+    const pageWidth = () => snapshot().pages[0]!.layout?.widthPx;
+
+    it("after Keep, still names the drawing that overflows its page, without the stale page-size clause", async () => {
+      const prompts = await answeringPageSize("keep", async () => {
         await mount();
+        const before = snapshot().pages[0]!.layout?.widthPx;
+        await browserDrop([dropFile("wide.png", pngBytes()), cdxmlFile("wide.cdxml", oversized)], { x: 100, y: 100 });
+        await eventually(() => expect(status()).toBe(`Inserted picture wide.png; ${opened("wide.cdxml")}; wide.cdxml overflows its page`));
+        expect(front()).toBe("wide.cdxml");
+        expect(pageWidth()).toBe(before);
+      });
+      expect(prompts).toEqual(["Imported Content Exceeds Page"]);
+    });
+
+    it("after Enlarge, names no overflow", async () => {
+      const prompts = await answeringPageSize("resize", async () => {
+        await mount();
+        const before = snapshot().pages[0]!.layout?.widthPx;
         await browserDrop([dropFile("wide.png", pngBytes()), cdxmlFile("wide.cdxml", oversized)], { x: 100, y: 100 });
         await eventually(() => expect(status()).toBe(`Inserted picture wide.png; ${opened("wide.cdxml")}`));
+        // Enlarging the page is an edit: the tab is marked unsaved.
+        expect(front()).toMatch(/^wide\.cdxml/);
+        expect(pageWidth()).toBeGreaterThan(before!);
+      });
+      expect(prompts).toEqual(["Imported Content Exceeds Page"]);
+    });
+
+    it("after Keep on a lone CDXML drop, says the content may extend beyond the kept page", async () => {
+      const prompts = await answeringPageSize("keep", async () => {
+        await mount();
+        await browserDrop([cdxmlFile("wide.cdxml", oversized)]);
+        await eventually(() => expect(status()).toMatch(/^Kept .+; imported content may extend beyond the page$/));
         expect(front()).toBe("wide.cdxml");
-        expect(prompts).toEqual(["Imported Content Exceeds Page"]);
-      } finally { restore(); }
+      });
+      expect(prompts).toEqual(["Imported Content Exceeds Page"]);
     });
 
     it("names a document that fails, and the one that opened beside it", async () => {

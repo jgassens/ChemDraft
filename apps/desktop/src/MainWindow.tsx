@@ -1562,7 +1562,8 @@ type OpenDocumentContentsOptions = {
   /**
    * The open's own status line once its tab is in front, for a drop's outcome: the "Opened …" line
    * (or `statusOverride`) without the page-size clause, which is stale once the prompt is answered,
-   * or that the file was already open.
+   * or that the file was already open. When the prompt is answered with Keep, it is called again
+   * with "<name> overflows its page" appended, since the drawing still overflows; Enlarge adds nothing.
    */
   onStatus?: (status: string) => void;
 };
@@ -3154,6 +3155,8 @@ export function MainWindow({
   tabSaveWarningsRef.current = saveWarningsReport;
   const tabPageFitRef = useRef<ImportedPageFitPromptState | undefined>(undefined);
   const importedPageFitGateRef = useRef(new ImportedPageFitGate());
+  /** Page-size prompts (by request id) answered with Keep: their drawing still overflows the page. */
+  const keptPageFitRequestsRef = useRef(new Set<string>());
   const openWarningsRef = useRef<OpenWarningsReport | undefined>(openWarnings);
   openWarningsRef.current = openWarnings;
   const [exportDialog, setExportDialog] = useState<ExportDialogState | undefined>();
@@ -10959,6 +10962,7 @@ export function MainWindow({
     resetDocumentHistory(resolvedOpen.document, { path, dirty });
     clearDocumentInteractionState({ clearSpin3dModelCache: true });
     tabPageFitRef.current = fitRecommendation ? { ...fitRecommendation, displayName, requestId: crypto.randomUUID() } : undefined;
+    const pageFitRequestId = tabPageFitRef.current?.requestId;
     const pageFitSettled = fitRecommendation ? importedPageFitGateRef.current.wait(id) : undefined;
     setPageFitPrompt(tabPageFitRef.current);
     const sourceLabel = typeof contents === "string"
@@ -10978,6 +10982,11 @@ export function MainWindow({
     options?.onOpened?.();
     perfHook(() => reportOutcome?.("installed"));
     await pageFitSettled;
+    // Keep leaves the drawing overflowing its page, so a drop's outcome still names it; after
+    // Enlarge (or a closed tab) the plain open line stands.
+    if (pageFitRequestId && keptPageFitRequestsRef.current.delete(pageFitRequestId)) {
+      options?.onStatus?.(`${openStatus}; ${displayName} overflows its page`);
+    }
     await notifyInstalledDocumentCompatibility(opened, resolvedOpen.document);
   }, [activateDocumentTab, addDocumentTab, clearDocumentInteractionState, notifyInstalledDocumentCompatibility, resetDocumentHistory, shortcutPlatform, snapshotDocumentTab]);
   const openDocumentContentsNowRef = useRef(openDocumentContentsNow);
@@ -11085,6 +11094,7 @@ export function MainWindow({
       return;
     }
 
+    keptPageFitRequestsRef.current.add(pageFitPrompt.requestId);
     tabPageFitRef.current = undefined;
     setPageFitPrompt(undefined);
     importedPageFitGateRef.current.dismiss(activeDocumentTabIdRef.current);
