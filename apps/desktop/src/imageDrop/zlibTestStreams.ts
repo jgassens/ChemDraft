@@ -170,7 +170,7 @@ export function zlibOfZeros(count: number): Uint8Array {
   }
   // Length 258 (symbol 285, code 11000101) at distance 1 (code 00000): 13 bits, written at once.
   const longest = reverseBits(0xc5, 8);
-  while (left >= 258 + 3) {
+  while (left >= 258) {
     writer.bits(longest, 13);
     left -= 258;
   }
