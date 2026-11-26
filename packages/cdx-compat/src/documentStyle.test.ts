@@ -1,5 +1,6 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { createEmptyDocument } from "@chemdraft/chem-core";
+import { createEmptyDocument, DefaultNativeTextStyle, nativeTextStyleFromObjectStyle, parseDocument, type TableObject, type TextObject } from "@chemdraft/chem-core";
 import {
   cdxmlDocumentStyleFontNames,
   cdxmlDocumentStyleHeader,
@@ -167,5 +168,110 @@ describe("CDXML export with a document style", () => {
     expect(contents).toMatch(/<CDXML CreationProgram="ChemDraft"[^>]*>/);
     expect(contents).not.toMatch(/<CDXML [^>]*(?:LabelFont|BondLength)=/);
     expect(contents).not.toContain("<fonttable>");
+  });
+});
+
+describe("CDXML export: every table font= id is in the one font table", () => {
+  const sharplessTable = () => {
+    const fixture = parseDocument(JSON.parse(readFileSync(new URL("../../fixtures/tables/sharpless-reagent-table.json", import.meta.url), "utf8")));
+    return fixture.pages[0]!.objects.find(object => object.type === "table") as TableObject;
+  };
+  const documentWith = (sourceFonts: Record<string, string>[], tableFont?: string) => {
+    const document = createEmptyDocument({ title: "table fonts" });
+    const holder: TextObject = { type: "text", id: "holder", x: 10, y: 10, width: 40, height: 22, rotation: 0, text: "h", spans: [],
+      style: {}, compatibility: { warnings: [], unknown: { cdxmlTextFontTable: sourceFonts } } };
+    const source = sharplessTable();
+    const table: TableObject = tableFont === undefined ? source : { ...source, style: { ...source.style, fontFamily: tableFont } };
+    document.pages[0].objects = [holder, table];
+    return document;
+  };
+  const fontIdsAndNames = (contents: string) => {
+    const tables = contents.match(/<fonttable>[\s\S]*?<\/fonttable>/g) ?? [];
+    expect(tables).toHaveLength(1);
+    const listed = new Map([...tables[0]!.matchAll(/<font id="(\d+)"[^>]*name="([^"]*)"/g)].map(match => [match[1]!, match[2]!]));
+    const used = new Set([...contents.matchAll(/<s font="([^"]*)"/g)].map(match => match[1]!));
+    expect(used.size).toBeGreaterThan(0);
+    return { listed, used };
+  };
+  const plain = { embedNativePayload: false };
+  const smallSource = [{ id: "2", charset: "iso-8859-1", name: "Times" }, { id: "3", charset: "iso-8859-1", name: "Courier" }];
+
+  it.each([
+    ["no document style", undefined],
+    ["a partial document style with no fonts", { bondLengthPt: 14.4 }]
+  ])("lists the table's font beside a source table using ids 2 and up, with %s", (_name, documentStyle) => {
+    const { contents } = exportDocumentToCdxml(documentWith(smallSource), { ...plain, ...(documentStyle ? { documentStyle } : {}) });
+    const { listed, used } = fontIdsAndNames(contents);
+    const tableFont = nativeTextStyleFromObjectStyle(sharplessTable().style).fontFamily;
+    for (const id of used) expect(listed.get(id), `font="${id}"`).toBe(tableFont);
+  });
+
+  // A full table: id 1 is reserved by a stored font too long to write, ids 2 to 65,534 are taken,
+  // and the default font is among them. The table's own font cannot be added, so it is written in
+  // the default font at the id the table lists it under, never at an assumed id 1.
+  const fullSource = () => [
+    { id: "1", charset: "iso-8859-1", name: "L".repeat(1_000) },
+    ...Array.from({ length: 65_533 }, (_, index) => {
+      const id = index + 2;
+      return { id: String(id), charset: "iso-8859-1", name: id === 40_000 ? DefaultNativeTextStyle.fontFamily : `Font${id}` };
+    })
+  ];
+
+  it.each([
+    ["no document style", undefined],
+    ["a partial document style with no fonts", { bondLengthPt: 14.4 }]
+  ])("writes a table whose font cannot be added in the listed default font, with %s", (_name, documentStyle) => {
+    const { contents } = exportDocumentToCdxml(documentWith(fullSource(), "Palatino"), { ...plain, ...(documentStyle ? { documentStyle } : {}) });
+    const { listed, used } = fontIdsAndNames(contents);
+    expect(listed.has("1")).toBe(false);
+    expect([...used]).toEqual(["40000"]);
+    expect(listed.get("40000")).toBe(DefaultNativeTextStyle.fontFamily);
+  }, 60_000);
+
+  it("never points a table at a font id the table does not list when the default font is absent too", () => {
+    const source = fullSource().map(font => font.id === "40000" ? { ...font, name: "Font40000" } : font);
+    const { contents } = exportDocumentToCdxml(documentWith(source, "Palatino"), { ...plain, documentStyle: { labelFontName: "Helvetica" } });
+    const { listed, used } = fontIdsAndNames(contents);
+    for (const id of used) expect(listed.has(id), `font="${id}" is listed`).toBe(true);
+    expect(contents).not.toMatch(/LabelFont=/);
+  }, 60_000);
+});
+
+describe("style reference font names beyond ASCII", () => {
+  const withLabelFont = (name: string) => referenceCdxml('LabelFont="21"', `<fonttable><font id="21" charset="utf-8" name="${name}"/></fonttable>`);
+
+  it.each(["游ゴシック", "ヒラギノ角ゴ ProN W3", "ＭＳ Ｐゴシック", "Linux Libertine Ö", "Noto Sans CJK JP"])("accepts the font name %s", (name) => {
+    expect(readCdxmlDocumentStyle(withLabelFont(name)).style.labelFontName).toBe(name);
+  });
+
+  it("round-trips a Japanese label font through export and re-import", () => {
+    const { style } = readCdxmlDocumentStyle(referenceCdxml(
+      documentStyleAttributes.replace('CaptionFont="21"', 'CaptionFont="22"'),
+      '<fonttable><font id="21" charset="utf-8" name="游ゴシック"/><font id="22" charset="utf-8" name="ヒラギノ角ゴ ProN W3"/></fonttable>'
+    ));
+    expect(style.labelFontName).toBe("游ゴシック");
+    expect(nativeDrawingStyleFromCdxmlStyle(style).atomLabelFontFamily).toBe("游ゴシック, Arial, Helvetica, sans-serif");
+    const { contents } = exportDocumentToCdxml(createEmptyDocument({ title: "japanese" }), { documentStyle: style });
+    expect(readCdxmlDocumentStyle(contents).style).toEqual(style);
+    const reopened = openChemDraftPayload(contents);
+    expect(reopened.source).toBe("native-payload");
+    expect(reopened.warnings).toEqual([]);
+  });
+
+  it.each([
+    ["a control character (tab)", "Font&#9;Name"],
+    ["a C1 control character", "Font\u0085Name"],
+    ["a line break", "Font&#10;Name"],
+    ["a bidirectional override", "Font‮Name"],
+    ["a zero-width joiner", "Font‍Name"],
+    ["a CSS separator", "Font, Evil"],
+    ["a CSS declaration", "Font;color:red"],
+    ["a quote", "Font&quot;Name"],
+    ["markup", "Font&lt;b&gt;"],
+    ["a backslash", "Font\\Name"],
+    ["a leading space", " Font"],
+    ["a name over 64 characters", "字".repeat(65)]
+  ])("still refuses a font name with %s", (_name, name) => {
+    expect(() => readCdxmlDocumentStyle(withLabelFont(name))).toThrow("is not a plain font name");
   });
 });

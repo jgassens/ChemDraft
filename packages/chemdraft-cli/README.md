@@ -468,9 +468,11 @@ pnpm -s chemdraft export --smiles 'CC(=O)Oc1ccccc1C(=O)O' --out aspirin.cdxml --
 The reference's root `<CDXML>` element supplies `BondLength`, `LineWidth`, `BoldWidth`,
 `HashSpacing`, `MarginWidth`, `BondSpacing`, `ChainAngle`, `LabelSize`, `LabelFace` and `LabelFont`
 (resolved through its `<fonttable>`); caption settings are carried when present. The molecule is
-scaled so every visible bond is `BondLength` points long, styled to match, and the written file
-declares the same settings on its own root element, so a reader draws labels and lines at the
-reference's sizes. Only geometry and display change; the CDXML identity check still runs.
+scaled so its typical bond is `BondLength` points long (individual bonds keep their proportions,
+so a stretched bond stays longer), styled to match, and the written file declares the same settings
+on its own root element, so a reader draws labels and lines at the reference's sizes. A built-in
+template layout is rescaled to the reference's bond length too. Only geometry and display change;
+the CDXML identity check still runs.
 
 ChemDraft uses a style file only when you name one. `--style-reference` takes precedence over
 `CHEMDRAFT_CDXML_STYLE_REFERENCE`. In the environment variable, a leading `~/` expands to your home
@@ -497,7 +499,8 @@ Coordinate-less SMILES input to `render`, `document`, `grid`, `reaction`, and
 `export` uses the authored layout only when canonical **isomeric** SMILES matches
 exactly, including stereo and charge. Results report `layout: "template:<id>"`
 (on grid cells and reaction `layouts` entries for multi-molecule figures).
-Templates use the default document bond length; ordinary SMILES sizing is unchanged.
+Templates use the default document bond length, except that a CDXML export with a style
+reference rescales them to the reference's `BondLength`; ordinary SMILES sizing is unchanged.
 Stereo-free or different stereoisomers do not substitute. Native documents supplied to
 `render-document`, MOL/molfile, CDXML and drawn coordinates retain their layouts; a
 native document built from SMILES inherits the layout chosen by `document`.

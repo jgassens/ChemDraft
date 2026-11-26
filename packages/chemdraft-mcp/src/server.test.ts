@@ -6,6 +6,7 @@ import {
   readdir,
   rm,
   stat,
+  symlink,
   truncate,
   utimes,
   writeFile
@@ -746,19 +747,19 @@ describe("ChemDraft MCP server", () => {
     });
   }, 60_000);
 
-  it.each([
+  it.for([
     ["missing.cdxml", "no such file"],
     ["directory.cdxml", "it is not a regular file"],
     ["reference.txt", "does not have a .cdxml extension"],
-    ["NUL.cdxml", "Unsafe output filename"],
-    ["bad,name.cdxml", "Invalid batch name"],
+    ["reference.cdx", "does not have a .cdxml extension"],
+    ["linked.cdxml", "it is a symbolic link"],
     ["sub/../reference.cdxml", "parent traversal"],
     ["large.cdxml", "input limit"],
     ["broken.cdxml", "not well-formed XML"],
     ["other.cdxml", "no top-level <CDXML> element"],
     ["invalid-style.cdxml", 'BondLength="0" is not a usable value'],
     ["deep.cdxml", "Maximum nested tags exceeded"]
-  ])("rejects styleReference %s before creating output", async (name, reason) => {
+  ] as const)("rejects styleReference %s before creating output", async ([name, reason], context) => {
     const directory = await mkdtemp(join(tmpdir(), "chemdraft-mcp-style-"));
     temporaryDirectories.push(directory);
     const valid = '<CDXML BondLength="20"><page id="1"/></CDXML>';
@@ -773,6 +774,18 @@ describe("ChemDraft MCP server", () => {
     await writeFile(join(directory, "other.cdxml"), "<svg/>");
     await writeFile(join(directory, "invalid-style.cdxml"), '<CDXML BondLength="0"/>');
     await writeFile(join(directory, "deep.cdxml"), `<CDXML>${"<group>".repeat(150)}${"</group>".repeat(150)}</CDXML>`);
+    await writeFile(join(directory, "reference.cdx"), valid);
+    if (name === "linked.cdxml") {
+      try {
+        await symlink(join(directory, "reference.cdxml"), join(directory, "linked.cdxml"));
+      } catch (error) {
+        // Windows without Developer Mode or the symlink privilege cannot create one.
+        if (["EPERM", "EACCES", "ENOSYS"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+          context.skip("this platform cannot create symbolic links without extra privileges");
+        }
+        throw error;
+      }
+    }
 
     const outDir = join(directory, "output");
     const client = await connect({ env: { [CDXML_STYLE_REFERENCE_ENV]: fallback } });
@@ -787,6 +800,23 @@ describe("ChemDraft MCP server", () => {
     expect(textBlocks(result.content)[0]).toContain(reason);
     await expect(access(outDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
+
+  it("accepts a styleReference whose name the output-filename rules would refuse", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "chemdraft-mcp-style-"));
+    temporaryDirectories.push(directory);
+    // An existing input: spaces, a comma and a tilde (as in a Windows 8.3 short name) are all fine.
+    for (const name of ["ACS 1996, house style.CDXML", "STYLE~1.CDX"]) {
+      const reference = join(directory, name);
+      await writeFile(reference, '<CDXML BondLength="20"><page id="1"/></CDXML>');
+      const client = await connect({ env: {} });
+      const result = await client.callTool({
+        name: "export_structure",
+        arguments: { smiles: "CCO", format: "cdxml", styleReference: reference, outDir: join(directory, "out") }
+      });
+      expect(result.isError, textBlocks(result.content)[0]).not.toBe(true);
+      expect(jsonPayload(result.content)).toMatchObject({ ok: true, styleReference: { path: reference, source: "argument" } });
+    }
+  }, 60_000);
 
   it("ignores the environment for other formats and rejects an explicit style argument for them", async () => {
     const client = await connect({ env: { [CDXML_STYLE_REFERENCE_ENV]: "missing.cdxml" } });

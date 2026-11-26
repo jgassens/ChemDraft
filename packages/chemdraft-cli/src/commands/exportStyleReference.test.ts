@@ -1,15 +1,21 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { openChemDraftPayload, readCdxmlDocumentStyle } from "@chemdraft/cdx-compat";
+import { resolveStructureTemplateName } from "@chemdraft/document-workflow-core";
 import { applyPatches, createPageLayout, type MoleculeObject } from "@chemdraft/chem-core";
 import { resetRdkitForTesting } from "@chemdraft/rdkit-adapter";
 
 import { buildSmilesDocument, canonicalSmiles } from "../document";
-import { CDXML_STYLE_REFERENCE_ENV, loadStyleReference, resolveStyleReference } from "../styleReference";
+import {
+  CDXML_STYLE_REFERENCE_ENV,
+  loadStyleReference,
+  resolveStyleReference,
+  validateStyleReferenceArgumentPath
+} from "../styleReference";
 import { exportPerJobFormat, runExportCommand } from "./export";
 
 vi.setConfig({ testTimeout: 60_000 });
@@ -275,5 +281,135 @@ describe("CDXML style reference round trip", () => {
     const molecule = reopenedMolecule(contents);
     expect(molecule.style).toMatchObject({ bondLengthPx: 19.2, atomLabelFontFamily: "Helvetica, Arial, sans-serif" });
     expect(await canonicalSmiles(molecule.structure, "re-imported structure")).toBe(await canonicalSmiles(CAFFEINE, "input"));
+  });
+});
+
+describe("styleReference argument: an input path, checked as an input", () => {
+  const argument = (path: string) => ({ path, source: "argument" as const });
+
+  it.each([
+    ["win32", "C:\\TEMP\\STYLE~1.CDXML"],
+    ["win32", "C:\\TEMP\\STYLE~1.CDX"],
+    ["win32", "C:\\Users\\Ana María\\Styles\\ACS 1996, journal.cdxml"],
+    ["win32", "\\\\server\\share\\house style.CdXmL"],
+    ["darwin", "/Users/ana/Styles/ACS 1996, journal.cdxml"],
+    ["darwin", "/tmp/STYLE~1.CDX"],
+    ["linux", "/home/ana/styles/house+style (v2).CDXML"]
+  ] as const)("accepts the %s input path %s before reading it", (platform, path) => {
+    expect(() => validateStyleReferenceArgumentPath(argument(path), platform)).not.toThrow();
+  });
+
+  it.each([
+    ["win32", "C:\\TEMP\\NUL.cdxml", "Windows device name"],
+    ["win32", "C:\\TEMP\\..\\style.cdxml", "parent traversal"],
+    ["darwin", "/tmp/../style.cdxml", "parent traversal"],
+    ["darwin", "/tmp/style\0.cdxml", "NUL character"],
+    ["win32", "C:\\TEMP\\style.txt", "does not have a .cdxml extension"],
+    ["darwin", "/tmp/reference.cdx", "does not have a .cdxml extension"],
+    ["win32", "C:\\TEMP\\LONGSTYLE1.CDX", "does not have a .cdxml extension"]
+  ] as const)("refuses the %s input path %s", (platform, path, reason) => {
+    expect(() => validateStyleReferenceArgumentPath(argument(path), platform)).toThrow(reason);
+  });
+
+  it("loads a CDXML reference through an 8.3 short name with a truncated .CDX extension", async () => {
+    const short = join(directory, "STYLE~1.CDX");
+    await writeFile(short, REFERENCE);
+    const loaded = await loadStyleReference(argument(short));
+    expect(loaded.style.bondLengthPt).toBe(14.4);
+  });
+
+  it("refuses a short-name .CDX file whose content is not CDXML", async () => {
+    const binary = join(directory, "BINARY~1.CDX");
+    await writeFile(binary, Buffer.from([0x56, 0x6a, 0x43, 0x44, 0x30, 0x31, 0x30, 0x30, 0x04, 0x03, 0x02, 0x01, 0x00]));
+    await expect(loadStyleReference(argument(binary))).rejects.toThrow("accepted only as the 8.3 short name of a CDXML file");
+  });
+
+  it("accepts a name the output-filename rules would refuse", async () => {
+    const named = join(directory, "ACS 1996, house style.CDXML");
+    await writeFile(named, REFERENCE);
+    expect((await loadStyleReference(argument(named))).style.bondLengthPt).toBe(14.4);
+  });
+});
+
+describe("styleReference argument: symbolic links and file identity", () => {
+  async function symlinkOrSkip(target: string, link: string): Promise<boolean> {
+    try {
+      await symlink(target, link);
+      return true;
+    } catch (error) {
+      // Windows without Developer Mode or the SeCreateSymbolicLink privilege refuses symlink(2).
+      if (["EPERM", "EACCES", "ENOSYS"].includes((error as NodeJS.ErrnoException).code ?? "")) return false;
+      throw error;
+    }
+  }
+
+  it("refuses an argument whose final component is a symbolic link, naming it", async (context) => {
+    const link = join(directory, "linked.cdxml");
+    if (!await symlinkOrSkip(reference, link)) {
+      context.skip("this platform cannot create symbolic links without extra privileges (Windows without Developer Mode)");
+    }
+    await expect(loadStyleReference({ path: link, source: "argument" })).rejects.toThrow(
+      `CDXML style reference "${link}" (styleReference argument) cannot be used: it is a symbolic link`
+    );
+    // The CLI flag and the environment variable name a file the user chose; a link there is followed.
+    expect((await loadStyleReference({ path: link, source: "flag" })).style.bondLengthPt).toBe(14.4);
+  });
+
+  it("refuses a symbolic link to a non-CDXML file without reading it", async (context) => {
+    const secret = join(directory, "secret.txt");
+    await writeFile(secret, "not for agents");
+    const link = join(directory, "secret-link.cdxml");
+    if (!await symlinkOrSkip(secret, link)) {
+      context.skip("this platform cannot create symbolic links without extra privileges (Windows without Developer Mode)");
+    }
+    // Refused on the link itself: the message is the link's, not a parse error from the target.
+    await expect(loadStyleReference({ path: link, source: "argument" })).rejects.toThrow(/cannot be used: it is a symbolic link/);
+  });
+
+  it("refuses a file that was replaced between the check and the open", async () => {
+    const swapped = join(directory, "swapped.cdxml");
+    const replacement = join(directory, "replacement.cdxml");
+    await writeFile(swapped, REFERENCE);
+    await writeFile(replacement, REFERENCE);
+    await expect(loadStyleReference({ path: swapped, source: "argument" }, {
+      afterCheck: () => rename(replacement, swapped)
+    })).rejects.toThrow("it changed between the check and the read");
+  });
+});
+
+describe("built-in structure templates with a style reference", () => {
+  // A SMILES that matches a built-in template takes the template's authored layout, drawn at the CLI
+  // default bond length (28 px); the reference's bond length must still rescale it.
+  const template = resolveStructureTemplateName("beta-cyclodextrin")!;
+  const meanBondLength = (molecule: MoleculeObject) => {
+    const atoms = new Map(molecule.atoms.map(atom => [atom.id, atom]));
+    const lengths = molecule.bonds.map(bond => {
+      const a = atoms.get(bond.fromAtomId)!, b = atoms.get(bond.toAtomId)!;
+      return Math.hypot(a.x - b.x, a.y - b.y);
+    });
+    return lengths.reduce((sum, length) => sum + length, 0) / lengths.length;
+  };
+
+  it("rescales the template to the reference bond length", async () => {
+    const loaded = await loadStyleReference({ path: reference, source: "flag" });
+    const plain = await buildSmilesDocument(template.smiles);
+    expect(plain.layout).toBe(`template:${template.id}`);
+    expect(meanBondLength(plain.molecule)).toBeCloseTo(28, 4);
+
+    const styled = await buildSmilesDocument(template.smiles, { drawingStyle: loaded.drawingStyle });
+    expect(styled.layout).toBe(`template:${template.id}`);
+    expect(meanBondLength(styled.molecule)).toBeCloseTo(19.2, 4);
+    expect(styled.molecule.style).toMatchObject({ bondLengthPx: 19.2 });
+  });
+
+  it("exports the template's CDXML with the typical bond at the reference BondLength", async () => {
+    const out = join(directory, "cyclodextrin.cdxml");
+    const io = collectIo();
+    expect(await runExportCommand(["--smiles", template.smiles, "--out", out, "--style-reference", reference], io, {})).toBe(0);
+    expect(JSON.parse(io.stdoutLines[0]!)).toMatchObject({ ok: true, layout: `template:${template.id}` });
+    const lengths = visibleBondLengths(await readFile(out, "utf8")).sort((a, b) => a - b);
+    expect(lengths.length).toBeGreaterThan(50);
+    expect(lengths[Math.floor(lengths.length / 2)]!).toBeCloseTo(14.4, 1);
+    expect(lengths.reduce((sum, length) => sum + length, 0) / lengths.length).toBeCloseTo(14.4, 2);
   });
 });

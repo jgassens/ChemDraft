@@ -113,8 +113,9 @@ reference includes its `path` and `source` (`"flag"`, `"argument"`, or
 `"environment"`) in that field. [Environment setup](setup.md)
 
 The reference supplies bond length, line widths, hash and bond spacing,
-chain angle and label font, size and face. ChemDraft scales the molecule to
-that bond length and declares the settings in the exported file. Report any
+chain angle and label font, size and face. ChemDraft scales the molecule,
+template layouts included, so its typical bond matches that bond length, and
+declares the settings in the exported file. Report any
 warning naming settings the reference left unset.
 
 ```sh
@@ -122,10 +123,10 @@ pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft export --smiles
 ```
 
 MCP takes one `smiles`, required `format`, an optional `outDir` root and,
-for CDXML only, an optional `styleReference` path. The path must point to a
-regular `.cdxml` file up to 5 MB on the server and follow the CLI's safe
-output path and filename rules. An invalid reference fails before MCP
-creates its output directory. MCP has no batch input, so a multi-record SDF or
+for CDXML only, an optional `styleReference` path. The path must point to an
+existing regular `.cdxml` file up to 5 MB on the server, not a symbolic link,
+with no `..` segment; output filename rules do not apply to it. An invalid
+reference fails before MCP creates its output directory. MCP has no batch input, so a multi-record SDF or
 SMILES dataset needs the CLI `--batch` form above. SDF records include
 `SMILES`, `Index` and `Name`.
 For a batch combined dataset, a failed job is omitted from the written

@@ -52,8 +52,13 @@ const numericAttributes: readonly {
   { field: "captionFace", attribute: "CaptionFace", min: 0, max: 255, integer: true, caption: true }
 ];
 
-// Font names land in CDXML attributes and in the SVG/CSS font stack, so only plain names pass.
-const safeFontName = /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/;
+// Font names land in CDXML attributes and in the SVG/CSS font stack, so only plain names pass:
+// letters and digits in any script (a Japanese font such as 游ゴシック, a fullwidth ＭＳ Ｐゴシック),
+// combining marks, the ASCII space, and `.`, `_` and `-`. Everything else is refused: control and
+// format characters (bidi overrides, zero-width joiners), other spaces, the comma that would split
+// the CSS font stack, `;`, `{`, `}`, `\` and quotes that would end or escape a CSS value, and the
+// `<`, `>` and `&` of markup. The writer escapes XML attributes anyway; this keeps the CSS side safe.
+const safeFontName = /^[\p{L}\p{N}][\p{L}\p{M}\p{N} ._-]{0,63}$/u;
 
 /** Read the drawing settings from a CDXML file's root element and font table. Throws with the
  *  offending attribute named when the file is not CDXML or a value is not a usable style. */

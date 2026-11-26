@@ -9,6 +9,7 @@ import {
   bracketUsageSemantics,
   importedBracketUsage,
   createEmptyDocument,
+  DefaultNativeTextStyle,
   readSerializedDocument,
   drawnLabelBondSide,
   isDativeBond,
@@ -522,6 +523,12 @@ interface CdxmlExportFonts {
   unwritableIds: ReadonlySet<string>;
   /** Set once the export has reported an unwritable id (one warning per document). */
   unwritableIdWarned: boolean;
+  /**
+   * The listed font a table whose own font could not be added is written in: the default text
+   * font, or, when the table was too full to add that too, the first font it lists. Undefined only
+   * when every table's font is listed, so a table never names an id the font table does not hold.
+   */
+  tableFallbackFontId?: string;
 }
 
 interface CdxmlCrossingImportHint {
@@ -1137,7 +1144,7 @@ function exportCdxmlFonts(document: ChemDraftDocument, warnings: CompatibilityCo
   }
   const byName = indexCdxmlFonts<string | undefined>(fonts.values(), font => font.name);
   const plainCaptionIds = new Set<string>();
-  let nextId = 1, captionRuns = 0, captionRunLimitReached = false, tableFullWarned = false;
+  let nextId = 1, captionRuns = 0, captionRunLimitReached = false, tableFullWarned = false, tableFontMissing = false;
   for (const page of document.pages) for (const object of page.objects) {
     let names: unknown[] = [];
     if (object.type === "table") names = [nativeTextStyleFromObjectStyle(object.style).fontFamily];
@@ -1160,6 +1167,7 @@ function exportCdxmlFonts(document: ChemDraftDocument, warnings: CompatibilityCo
       if (typeof name !== "string" || !name || lookupCdxmlFont(byName, name)) continue;
       // Not registered: a caption set in it is written as plain styled text, a table in the default font.
       if (name.length > CDXML_FONT_NAME_LIMIT) {
+        if (object.type === "table") tableFontMissing = true;
         if (!nameTooLong) {
           nameTooLong = true;
           tooLong.push({ label: `the font of ${object.type} ${object.id}`, kind: object.type === "table" ? "table" : "caption" });
@@ -1177,6 +1185,7 @@ function exportCdxmlFonts(document: ChemDraftDocument, warnings: CompatibilityCo
             message: `CDXML export: the font table is full (font ids below ${cdxmlLimits.fontId}); from ${object.type} ${object.id} on, ` +
               "fonts not already in it were not written, and text set in them was written without its caption frame and run fonts, or in the default font." });
         }
+        if (object.type === "table") tableFontMissing = true;
         continue;
       }
       const id = String(nextId++);
@@ -1184,6 +1193,24 @@ function exportCdxmlFonts(document: ChemDraftDocument, warnings: CompatibilityCo
       fonts.set(id, font);
       byName.set(name, font);
     }
+  }
+  // A table whose font could not be added is written in the default text font, registered here
+  // through the same index so its id is one this table lists (never an assumed id 1, which may be
+  // absent or, with a style reference, the reference's label font). When the table is too full for
+  // that as well, the first listed font stands in: it is non-empty, since only a full table refuses.
+  let tableFallbackFontId: string | undefined;
+  if (tableFontMissing) {
+    const fallbackName = DefaultNativeTextStyle.fontFamily;
+    if (!lookupCdxmlFont(byName, fallbackName)) {
+      while (nextId < cdxmlLimits.fontId && (fonts.has(String(nextId)) || tooLongIds.has(String(nextId)))) nextId++;
+      if (nextId < cdxmlLimits.fontId && fonts.size < cdxmlLimits.fontTable) {
+        const id = String(nextId++);
+        const font = { id, charset: "iso-8859-1", name: fallbackName };
+        fonts.set(id, font);
+        byName.set(fallbackName, font);
+      }
+    }
+    tableFallbackFontId = lookupCdxmlFont(byName, fallbackName)?.id ?? fonts.values().next().value?.id;
   }
   // A document style's label and caption fonts (a CDXML style reference) join this same table after
   // the document's own fonts, so the root's LabelFont and CaptionFont ids agree with every font= in
@@ -1200,7 +1227,7 @@ function exportCdxmlFonts(document: ChemDraftDocument, warnings: CompatibilityCo
   }
   if (tooLong.length) warnings.push(exportFontEntryTooLongWarning(tooLong));
   return { table: trackCdxmlFontTable([...fonts.values()]), byName, plainCaptionIds, captionRunLimitWarned: false, notWrittenIds: tooLongIds,
-    unwritableIds, unwritableIdWarned: false };
+    unwritableIds, unwritableIdWarned: false, tableFallbackFontId };
 }
 
 // `rootAttributes` is the page setup plus any document style: every root attribute but the two above.
@@ -2453,7 +2480,10 @@ function exportTableObject(
 ): string {
   const layout = planTableLayout(table);
   const style = nativeTextStyleFromObjectStyle(table.style);
-  const font = lookupCdxmlFont(fonts.byName, style.fontFamily)?.id ?? "1";
+  // Every font= names an entry of the one font table: the table's own font, else the fallback
+  // exportCdxmlFonts registered for it. With neither (no font listed at all), runs name no font.
+  const font = lookupCdxmlFont(fonts.byName, style.fontFamily)?.id ?? fonts.tableFallbackFontId;
+  const fontAttribute = font === undefined ? "" : ` font="${font}"`;
   const texts: string[] = [];
   const writeLines = (lines: typeof layout.cells[number]["lines"], fontSizePx: number) => {
     for (const line of lines) {
@@ -2473,7 +2503,7 @@ function exportTableObject(
         const face = (weight >= 600 ? 1 : 0) + (italic === "italic" ? 2 : 0) +
           (run.script === "subscript" ? 32 : run.script === "superscript" ? 64 : 0);
         const size = run.script === "normal" && typeof run.style.fontSizePx === "number" ? run.style.fontSizePx : fontSizePx;
-        return `<s font="${font}" size="${formatNumber(cssPxToCdxml(size))}" face="${face}"${cdxmlColorAttribute(run.style.color ?? style.color, colors).map(attribute => ` ${attribute}`).join("")}>${escapeXmlText(run.text)}</s>`;
+        return `<s${fontAttribute} size="${formatNumber(cssPxToCdxml(size))}" face="${face}"${cdxmlColorAttribute(run.style.color ?? style.color, colors).map(attribute => ` ${attribute}`).join("")}>${escapeXmlText(run.text)}</s>`;
       }).join("");
       texts.push(`<t id="${allocator.next()}" p="${formatPoint({ x: first.x + afterWidth, y: line.baselineY })}" Justification="${justification}">${runXml}</t>`);
     }

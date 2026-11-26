@@ -70,9 +70,11 @@ details](../chemdraft-cli/README.md#fixed-scale-document-figures).
   precedence over the server's `CHEMDRAFT_CDXML_STYLE_REFERENCE` environment variable. If neither
   names a file, the export uses ChemDraft's built-in style and omits the `styleReference` result
   field. When a reference is used, the result includes `styleReference` with its `path` and
-  `source` (`"argument"` or `"environment"`). The argument requires an existing regular `.cdxml`
-  file up to 5 MB and follows the CLI's safe output path and filename rules. References are parsed
-  with CDXML import limits. An invalid reference fails the call before any output is created.
+  `source` (`"argument"` or `"environment"`). The argument must name an existing regular `.cdxml`
+  file (any case; a Windows 8.3 short name ending `.CDX` is accepted when the file is CDXML) up to
+  5 MB, with no `..` segment. Its final path component must not be a symbolic link. Output
+  filename rules do not apply to it. References are parsed with CDXML import limits. An invalid
+  reference fails the call before any output is created.
   Other formats ignore the environment variable and reject the argument.
   [CDXML drawing settings](../chemdraft-cli/README.md#cdxml-style-reference)
 
@@ -113,7 +115,8 @@ Use template names such as `beta-cyclodextrin`, `β-CD`, `cucurbit[7]uril` or
 Name results report `source` and, for templates, `templateId` and `templateName`.
 SMILES drawing tools inherit exact canonical isomeric template matching from the CLI
 and report `layout: "template:<id>"` (per cell/component for grids/reactions).
-Stereo and charge must match; template drawings use the default document bond length.
+Stereo and charge must match; template drawings use the default document bond length, except
+that a CDXML `export_structure` with a style reference rescales them to its bond length.
 `render_document` preserves the coordinates in its native JSON input.
 
 Name-to-structure preserves built-in template lookup, then tries local OPSIN, then the offline
