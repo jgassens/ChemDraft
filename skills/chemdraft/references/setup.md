@@ -143,7 +143,10 @@ server's `env`. The MCP `export_structure` argument `styleReference` takes
 precedence for that call. The CLI also reads the variable from its own
 environment and gives `--style-reference` precedence. When neither source
 names a reference, exports use ChemDraft's built-in style. Each result that
-uses a reference reports its path and source. [CDXML export options](files.md)
+uses a reference reports its path and source. On Windows, network (UNC) and
+device-namespace paths, and a relative path whose working directory is a network
+share, are refused; mapped network drive letters are not refused by this rule, so
+copy a file on a share to a local folder. [CDXML export options](files.md)
 
 GUI clients may have a different PATH from your terminal. If `pnpm` is not
 found, set `command` to its full executable path. On Windows, if the client

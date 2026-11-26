@@ -125,7 +125,7 @@ pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft export --smiles
 MCP takes one `smiles`, required `format`, an optional `outDir` root and,
 for CDXML only, an optional `styleReference` path. The path must point to an
 existing regular `.cdxml` file (or a Windows 8.3 short name ending in `.CDX` whose content is CDXML) up to 5 MB on the server, not a symbolic link,
-with no `..` segment (network (UNC) and device-namespace paths are refused on Windows); output filename rules do not apply to it. An invalid
+with no `..` segment (network (UNC) and device-namespace paths, and a relative path whose working directory is a network share, are refused on Windows; mapped network drive letters are not refused by this rule, so copy a file on a share to a local folder); output filename rules do not apply to it. An invalid
 reference fails before MCP creates its output directory. MCP has no batch input, so a multi-record SDF or
 SMILES dataset needs the CLI `--batch` form above. SDF records include
 `SMILES`, `Index` and `Name`.

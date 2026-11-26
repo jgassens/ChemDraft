@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -21,24 +22,33 @@ import { exportPerJobFormat, runExportCommand } from "./export";
 
 vi.setConfig({ testTimeout: 60_000 });
 
-// Every filesystem function is wrapped so a test can prove a refused path reached none of them.
-vi.mock("node:fs/promises", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:fs/promises")>();
+// Every filesystem function of both modules styleReference.ts imports (node:fs for `constants`,
+// node:fs/promises for lstat, stat and open) is wrapped, so a test can prove a refused path reached
+// none of them. The positive-control test below proves the wrapper sees the module's own calls.
+async function wrapFilesystemModule<T extends object>(importOriginal: () => Promise<T>): Promise<T & { default: unknown }> {
+  const actual = await importOriginal();
   const wrapped: Record<string, unknown> = { ...actual };
   for (const [name, value] of Object.entries(actual)) {
     if (typeof value === "function") wrapped[name] = vi.fn(value as (...args: never[]) => unknown);
   }
-  return { ...wrapped, default: wrapped };
-});
+  return { ...(wrapped as T), default: wrapped };
+}
+
+vi.mock("node:fs/promises", async (importOriginal) => wrapFilesystemModule(importOriginal<typeof import("node:fs/promises")>));
+vi.mock("node:fs", async (importOriginal) => wrapFilesystemModule(importOriginal<typeof import("node:fs")>));
 
 function filesystemCalls(): string[] {
-  return Object.entries(fsPromises)
-    .filter(([, value]) => vi.isMockFunction(value) && value.mock.calls.length > 0)
-    .map(([name]) => name);
+  return [["fs", fs], ["fs/promises", fsPromises]].flatMap(([label, module]) =>
+    Object.entries(module as Record<string, unknown>)
+      .filter(([, value]) => vi.isMockFunction(value) && value.mock.calls.length > 0)
+      .map(([name]) => `${label as string}.${name}`)
+  );
 }
 
 function resetFilesystemCalls(): void {
-  for (const value of Object.values(fsPromises)) if (vi.isMockFunction(value)) value.mockClear();
+  for (const module of [fs, fsPromises] as Array<Record<string, unknown>>) {
+    for (const value of Object.values(module)) if (vi.isMockFunction(value)) value.mockClear();
+  }
 }
 
 const CAFFEINE = "CN1C=NC2=C1C(=O)N(C(=O)N2C)C";
@@ -364,7 +374,9 @@ const NETWORK_PATHS = [
   ["/\\host\\share\\x.cdxml", "network (UNC)"],
   ["\\\\.\\pipe\\x.cdxml", "device-namespace"],
   ["\\\\?\\C:\\x.cdxml", "device-namespace"],
-  ["\\\\?\\UNC\\host\\share\\x.cdxml", "device-namespace"],
+  ["\\\\?\\UNC\\host\\share\\x.cdxml", "network (UNC)"],
+  ["//?/UNC/host/share/x.cdxml", "network (UNC)"],
+  ["\\\\.\\UNC\\host\\share\\x.cdxml", "network (UNC)"],
   ["\\\\.\\C:\\x.cdxml", "device-namespace"],
   ["//./pipe/x.cdxml", "device-namespace"],
   ["//?/C:/x.cdxml", "device-namespace"]
@@ -422,15 +434,31 @@ describe("style references: network (UNC) and device-namespace paths are refused
     }
   });
 
-  it("does not refuse a leading // on POSIX, where it is an ordinary path", async () => {
-    resetFilesystemCalls();
+  it("does not refuse a leading // on POSIX, where it is an ordinary path", () => {
+    // Pure shape assertions only: these touch no filesystem, so they run on every host.
     for (const platform of ["linux", "darwin"] as const) {
       expect(() => validateStyleReferenceArgumentPath({ path: "//tmp/x.cdxml", source: "argument" }, platform)).not.toThrow();
       expect(resolveStyleReference({ env: { [CDXML_STYLE_REFERENCE_ENV]: "//tmp/x.cdxml" } }, platform)?.source).toBe("environment");
-      // Past the shape rule it fails for the ordinary reason that the file does not exist.
+    }
+  });
+
+  // loadStyleReference's filesystem calls run on the HOST whatever platform is passed, so on a
+  // Windows host `//tmp/...` would be a real UNC lookup of a machine named `tmp`. Run it elsewhere only.
+  it.skipIf(process.platform === "win32")("a leading // on POSIX fails past the shape rule for the ordinary reason", async () => {
+    for (const platform of ["linux", "darwin"] as const) {
       await expect(loadStyleReference({ path: "//tmp/chemdraft-no-such-dir/x.cdxml", source: "flag" }, { platform }))
         .rejects.toThrow("no such file");
     }
+  });
+
+  it("positive control: an ordinary local path registers calls through the same filesystem spy", async () => {
+    resetFilesystemCalls();
+    const loaded = await loadStyleReference({ path: reference, source: "flag" });
+    expect(loaded.style.bondLengthPt).toBe(14.4);
+    // If the spy could not see the module, the "refused without touching the filesystem" tests
+    // above would pass vacuously; here the same spy must observe the module's own calls.
+    expect(filesystemCalls()).toEqual(expect.arrayContaining(["fs/promises.stat", "fs/promises.open"]));
+    resetFilesystemCalls();
   });
 
   it("still accepts ordinary drive and relative paths on win32", () => {

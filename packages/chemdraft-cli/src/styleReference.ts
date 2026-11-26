@@ -110,8 +110,9 @@ export function refuseNonLocalWindowsPath(reference: ResolvedStyleReference, pla
   const path = reference.path;
   const resolved = leadingTwoSeparators.test(path) ? path : path.includes("\0") ? "" : win32.resolve(path);
   if (!leadingTwoSeparators.test(resolved)) return;
-  // `\\.\` and `\\?\` (either slash) are the device namespace; anything else is a UNC host.
-  if (/^[\\/]{2}[.?][\\/]/.test(resolved)) {
+  // `\\.\` and `\\?\` (either slash) are the device namespace, except `UNC\host\share` inside
+  // it, which addresses a network share; anything else is a UNC host.
+  if (/^[\\/]{2}[.?][\\/]/.test(resolved) && !/^[\\/]{2}[.?][\\/]UNC(?:[\\/]|$)/i.test(resolved)) {
     throw unusable(reference, "it is a Windows device-namespace path (\\\\.\\ or \\\\?\\), which is refused before it is opened.");
   }
   throw unusable(reference, "it is a network (UNC) path, which is refused so that Windows never contacts another host.");
