@@ -31,8 +31,10 @@ Nobody has done the hands-on drag yet. This page says how, and what to send back
   (A stable build uses `org.chemdraft.desktop` in place of `org.chemdraft.desktop.dev`.) A copy is
   deleted at once when its drag is cancelled or fails to start, two minutes after it is dropped (the
   receiving app, our own document window included, reads it after the drag ends), and at the next
-  launch. Cleanup deletes only `drag-<hex>` folders inside `art-drag-staging` and never follows a
-  link. The copy is not marked read-only, because Finder and Explorer carry that onto the file
+  launch once it is older than those two minutes (so a drag started during launch keeps its copy).
+  Cleanup is never recursive: it deletes the one copied file inside a `drag-<hex>` folder of
+  `art-drag-staging`, then that folder if it is empty, and never follows a link (a staging folder
+  replaced by a link is left alone). The copy is not marked read-only, because Finder and Explorer carry that onto the file
   they make at the drop target. If the drag library itself fails (its Windows code panics when the shell cannot build a
   data object), the panic is caught and the drag rejects with "Art drag could not start: …" instead
   of the app quitting.
@@ -107,7 +109,8 @@ label, and the app bundle path under `<worktree>/app/`.
 8. **Staging cleanup.** Open
    `~/Library/Application Support/org.chemdraft.desktop.dev/art-drag-staging/` in Finder.
    - Expect: one `drag-<hex>` folder per drag made in the last two minutes, none older; after a
-     cancelled drag, no new folder stays. Quit and relaunch: the folder is empty.
+     cancelled drag, no new folder stays. Quit, wait two minutes and relaunch: the folder is
+     empty.
 
 ## Windows
 
@@ -150,7 +153,8 @@ also a development build and also shows the tile.)
      Templates dialog appearing on the taskbar, or a menu-bar flicker.
 8. **Staging cleanup.** Open `%LOCALAPPDATA%\org.chemdraft.desktop.dev\art-drag-staging\`.
    - Expect: one `drag-<hex>` folder per drag made in the last two minutes, none older; after a
-     cancelled drag, no new folder stays. Quit and relaunch: the folder is empty.
+     cancelled drag, no new folder stays. Quit, wait two minutes and relaunch: the folder is
+     empty.
 
 ## What to report back
 

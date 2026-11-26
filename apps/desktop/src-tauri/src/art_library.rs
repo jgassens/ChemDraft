@@ -24,8 +24,18 @@
 //! dragged out, and the library is never handed a network path (its Windows code panics on one).
 //! A copy is removed when its drag is cancelled or fails, [`DROPPED_COPY_GRACE`] after it is
 //! dropped (the receiving app, our own document window included, reads it after the drag ends),
-//! and at startup. Removal touches only `drag-<16 hex>` entries of the staging folder and never
-//! follows a link.
+//! and at startup once it is older than that same grace period (so a drag started while the startup
+//! sweep runs keeps its copy). Removal is never recursive: it unlinks the one staged file inside a
+//! `drag-<16 hex>` folder and then removes that folder if it is empty, working relative to the
+//! staging folder opened at that moment as a real folder (a link in its place is refused), and it
+//! never follows a link.
+//!
+//! Threat model. The path guard defends against untrusted input from the webview naming arbitrary
+//! paths. A local process running as the same user that renames or replaces folders inside app data
+//! (an allow-listed root swapped after it was canonicalized, an ancestor of the harness's art root
+//! replaced while it writes) is out of scope: it already has the user's privileges. The one
+//! exception: our own cleanup must never delete anything outside the staging folder, whatever such
+//! a process does, which is why removal is non-recursive and handle-relative.
 //!
 //! The lexical half takes the platform as a parameter so one host tests Windows rules (drive
 //! letters, `\` and `/`, UNC shares, case-insensitive names) and Unix rules alike.
@@ -520,7 +530,8 @@ pub(crate) struct StagedCopy {
 impl StagedCopy {
     /// Removes this copy and its folder now. Errors are logged, never raised.
     pub(crate) fn remove(&self) {
-        if let Err(error) = remove_staged_entry(&self.root, &self.entry) {
+        let file_name = self.file.file_name().and_then(|name| name.to_str());
+        if let Err(error) = remove_staged_entry(&self.root, &self.entry, file_name) {
             if error.kind() != std::io::ErrorKind::NotFound {
                 log::warn!(
                     "art drag: could not remove staged copy {}: {error}",
@@ -619,7 +630,7 @@ pub(crate) fn stage_copy(
                 file,
             }),
             Err(error) => {
-                let _ = remove_staged_entry(&root_path, &entry);
+                let _ = remove_entry_in(&root, &root_path, &entry, Some(&source.name));
                 Err(fail(error))
             }
         };
@@ -629,33 +640,91 @@ pub(crate) fn stage_copy(
     ))
 }
 
-/// Removes `<staging_root>/<entry>` without following any link. Refuses names this module did not
-/// make, so nothing outside a per-drag folder is ever deleted.
-pub(crate) fn remove_staged_entry(staging_root: &Path, entry: &str) -> std::io::Result<()> {
+/// Removes `<staging_root>/<entry>` without following any link and without recursing. Refuses
+/// names this module did not make, and a staging root that is not a real folder at this moment (a
+/// link in its place included), so nothing outside a per-drag folder is ever deleted. `staged_file`
+/// is the copy's file name when known; otherwise the folder may hold at most one entry.
+pub(crate) fn remove_staged_entry(
+    staging_root: &Path,
+    entry: &str,
+    staged_file: Option<&str>,
+) -> std::io::Result<()> {
     if !is_staged_entry_name(entry) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("\"{entry}\" is not a staging folder"),
         ));
     }
-    let path = staging_root.join(entry);
-    let metadata = std::fs::symlink_metadata(&path)?;
-    if !metadata.is_dir() {
-        // A link or a file where the folder was: remove that entry itself, never its target.
-        return std::fs::remove_file(&path).or_else(|_| std::fs::remove_dir(&path));
+    let root = os::open_dir_no_follow(staging_root)?;
+    let root_path = os::handle_path(&root)?;
+    remove_entry_in(&root, &root_path, entry, staged_file)
+}
+
+/// Removes the per-drag entry `entry` of the open staging folder `root`: a link or file in its
+/// place is unlinked as itself; a real folder has its one staged file unlinked and is then removed
+/// only if empty. Nothing is ever removed recursively.
+fn remove_entry_in(
+    root: &File,
+    root_path: &Path,
+    entry: &str,
+    staged_file: Option<&str>,
+) -> std::io::Result<()> {
+    if !is_staged_entry_name(entry) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("\"{entry}\" is not a staging folder"),
+        ));
     }
-    // Removes links inside as links; never descends through one.
-    std::fs::remove_dir_all(&path)
+    let dir = match os::open_dir_in(root, root_path, entry) {
+        Ok(dir) => dir,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(error),
+        // A link or a file where the folder was: remove that entry itself, never its target.
+        Err(_) => return os::remove_file_in(root, root_path, entry),
+    };
+    let dir_path = root_path.join(entry);
+    let names: Vec<String> = match staged_file {
+        Some(name) => vec![name.to_string()],
+        None => {
+            let mut names = Vec::new();
+            for child in std::fs::read_dir(os::handle_path(&dir)?)? {
+                let child = child?.file_name();
+                let Some(child) = child.to_str() else {
+                    return Err(std::io::Error::other(format!(
+                        "\"{entry}\" holds a file whose name is not valid text"
+                    )));
+                };
+                names.push(child.to_string());
+            }
+            if names.len() > 1 {
+                return Err(std::io::Error::other(format!(
+                    "\"{entry}\" holds more than the one staged file"
+                )));
+            }
+            names
+        }
+    };
+    for name in &names {
+        match os::remove_file_in(&dir, &dir_path, name) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    drop(dir);
+    os::remove_dir_in(root, root_path, entry)
 }
 
 /// Removes every per-drag folder in `staging_root` (only those older than `older_than`, when
-/// given). The root itself must be a real folder, not a link. Returns how many were removed.
+/// given). The root itself must be a real folder, not a link; it is opened once and every removal
+/// works relative to that handle. Returns how many were removed.
 pub(crate) fn sweep_staging(staging_root: &Path, older_than: Option<Duration>) -> usize {
-    let is_real_dir = std::fs::symlink_metadata(staging_root).is_ok_and(|meta| meta.is_dir());
-    if !is_real_dir {
+    let Ok(root) = os::open_dir_no_follow(staging_root) else {
         return 0;
-    }
-    let Ok(entries) = std::fs::read_dir(staging_root) else {
+    };
+    let Ok(root_path) = os::handle_path(&root) else {
+        return 0;
+    };
+    let Ok(entries) = std::fs::read_dir(&root_path) else {
         return 0;
     };
     let mut removed = 0;
@@ -665,7 +734,7 @@ pub(crate) fn sweep_staging(staging_root: &Path, older_than: Option<Duration>) -
             continue;
         };
         if let Some(age) = older_than {
-            let old_enough = std::fs::symlink_metadata(entry.path())
+            let old_enough = std::fs::symlink_metadata(root_path.join(name))
                 .and_then(|meta| meta.modified())
                 .ok()
                 .and_then(|modified| modified.elapsed().ok())
@@ -674,12 +743,20 @@ pub(crate) fn sweep_staging(staging_root: &Path, older_than: Option<Duration>) -
                 continue;
             }
         }
-        match remove_staged_entry(staging_root, name) {
+        match remove_entry_in(&root, &root_path, name, None) {
             Ok(()) => removed += 1,
             Err(error) => log::warn!("art drag: could not remove staged folder {name}: {error}"),
         }
     }
     removed
+}
+
+/// The startup sweep: copies a previous run left behind, but only those older than
+/// [`DROPPED_COPY_GRACE`]. It runs on a background thread, uncoordinated with drags, so a copy this
+/// process stages meanwhile (always younger than that) is never touched; a younger leftover from an
+/// earlier run goes at the next drag's sweep instead.
+pub(crate) fn sweep_staging_at_startup(staging_root: &Path) -> usize {
+    sweep_staging(staging_root, Some(DROPPED_COPY_GRACE))
 }
 
 fn drag_staging_root<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, DragSourceError> {
@@ -689,7 +766,8 @@ fn drag_staging_root<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, DragSour
         .map_err(|error| DragSourceError::Staging(format!("no local app data folder ({error})")))
 }
 
-/// Removes every staged copy a previous run left behind. Runs on a background thread.
+/// Removes the staged copies a previous run left behind ([`sweep_staging_at_startup`]). Runs on a
+/// background thread.
 pub(crate) fn clean_drag_staging_at_startup<R: Runtime>(app: &AppHandle<R>) {
     let Ok(root) = drag_staging_root(app) else {
         return;
@@ -697,7 +775,7 @@ pub(crate) fn clean_drag_staging_at_startup<R: Runtime>(app: &AppHandle<R>) {
     let spawned = std::thread::Builder::new()
         .name("art-drag-staging-cleanup".into())
         .spawn(move || {
-            let removed = sweep_staging(&root, None);
+            let removed = sweep_staging_at_startup(&root);
             if removed > 0 {
                 log::info!("art drag: removed {removed} staged copies left by an earlier run");
             }
@@ -1005,7 +1083,7 @@ pub(crate) async fn art_library_dev_drag_test_prepare<R: Runtime>(
 
 /// File-system primitives that must not follow links, one side per platform.
 ///
-/// Unix works relative to open folder descriptors (`openat`, `mkdirat`, `renameat`), so a folder
+/// Unix works relative to open folder descriptors (`openat`, `mkdirat`, `renameat`, `unlinkat`), so a folder
 /// swapped for a link after it was opened is never written through. Windows has no such calls in
 /// the standard library; it holds each folder open WITHOUT delete sharing, which stops the folder
 /// being renamed, removed or replaced while held, opens with `FILE_FLAG_OPEN_REPARSE_POINT` (a link
@@ -1106,6 +1184,28 @@ mod os {
         let fd = dir.as_raw_fd();
         // SAFETY: a valid descriptor and NUL-terminated names.
         if unsafe { libc::renameat(fd, from.as_ptr(), fd, to.as_ptr()) } == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
+    /// Unlinks `name` in `dir`: a file, or a link as itself. A folder is refused (never recursed).
+    pub(super) fn remove_file_in(dir: &File, _dir_path: &Path, name: &str) -> io::Result<()> {
+        let name = c_name(name)?;
+        // SAFETY: a valid descriptor and NUL-terminated name.
+        if unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), 0) } == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
+    /// Removes the EMPTY folder `name` in `dir`; a link in its place is refused, not followed.
+    pub(super) fn remove_dir_in(dir: &File, _dir_path: &Path, name: &str) -> io::Result<()> {
+        let name = c_name(name)?;
+        // SAFETY: a valid descriptor and NUL-terminated name.
+        if unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) } == 0 {
             Ok(())
         } else {
             Err(io::Error::last_os_error())
@@ -1260,6 +1360,29 @@ mod os {
             dir_path.join(checked_name(from)?),
             dir_path.join(checked_name(to)?),
         )
+    }
+
+    /// Removes `name` in the open folder `dir`: a file, or a link or junction as itself (neither call
+    /// follows one). A real folder is refused (never recursed). The folder is held without delete
+    /// sharing, so the name stays inside it.
+    pub(super) fn remove_file_in(_dir: &File, dir_path: &Path, name: &str) -> io::Result<()> {
+        let path = dir_path.join(checked_name(name)?);
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if metadata.is_dir() {
+            return Err(io::Error::other(format!("\"{name}\" is a folder")));
+        }
+        if metadata.file_type().is_symlink() {
+            std::fs::remove_file(&path).or_else(|_| std::fs::remove_dir(&path))
+        } else {
+            std::fs::remove_file(&path)
+        }
+    }
+
+    /// Removes the EMPTY folder `name` in the open folder `dir` (`RemoveDirectoryW`, which removes
+    /// a link or junction as itself and never empties a folder). The folder is held without delete
+    /// sharing, so the name stays inside it.
+    pub(super) fn remove_dir_in(_dir: &File, dir_path: &Path, name: &str) -> io::Result<()> {
+        std::fs::remove_dir(dir_path.join(checked_name(name)?))
     }
 
     /// The open file's own path (`\\?\C:\…` or `\\?\UNC\…`), as `std::fs::canonicalize` returns it.
@@ -1834,7 +1957,7 @@ mod tests {
             "drag-0123456789ABCDEF",
             "drag-0123/../x",
         ] {
-            assert!(remove_staged_entry(&staging, name).is_err(), "{name}");
+            assert!(remove_staged_entry(&staging, name, None).is_err(), "{name}");
         }
         assert!(is_staged_entry_name("drag-0123456789abcdef"));
         // A missing staging folder is simply nothing to do.
@@ -1873,6 +1996,101 @@ mod tests {
         std::fs::create_dir_all(elsewhere.join("drag-fedcba9876543210")).unwrap();
         assert_eq!(sweep_staging(&scratch.0.join("drag-root-link"), None), 0);
         assert!(elsewhere.join("drag-fedcba9876543210").exists());
+    }
+
+    #[test]
+    fn the_startup_sweep_keeps_copies_younger_than_the_grace_period() {
+        let scratch = Scratch::new("startup-sweep");
+        let staging = scratch.0.join(DRAG_STAGING_FOLDER);
+        let source = DragSource {
+            name: "a.svg".into(),
+            bytes: DRAG_TEST_SVG.as_bytes().to_vec(),
+        };
+        // A drag staged while the startup sweep runs keeps its copy.
+        let fresh = stage_copy(&staging, &source, PathPlatform::current()).unwrap();
+        assert_eq!(sweep_staging_at_startup(&staging), 0);
+        assert!(fresh.file.exists());
+        // A leftover older than the grace period goes.
+        let old = stage_copy(&staging, &source, PathPlatform::current()).unwrap();
+        let aged = std::time::SystemTime::now() - DROPPED_COPY_GRACE - Duration::from_secs(60);
+        set_modified_dir(&old.root.join(&old.entry), aged);
+        assert_eq!(sweep_staging_at_startup(&staging), 1);
+        assert!(!old.root.join(&old.entry).exists());
+        assert!(fresh.file.exists());
+    }
+
+    fn set_modified_dir(dir: &Path, time: std::time::SystemTime) {
+        #[cfg(windows)]
+        let handle = {
+            use std::os::windows::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS)
+                .open(dir)
+                .unwrap()
+        };
+        #[cfg(not(windows))]
+        let handle = File::open(dir).unwrap();
+        handle.set_modified(time).unwrap();
+    }
+
+    #[test]
+    fn staging_removal_never_recurses() {
+        let scratch = Scratch::new("no-recurse");
+        let staging = scratch.0.join(DRAG_STAGING_FOLDER);
+        let source = DragSource {
+            name: "a.svg".into(),
+            bytes: DRAG_TEST_SVG.as_bytes().to_vec(),
+        };
+        let staged = stage_copy(&staging, &source, PathPlatform::current()).unwrap();
+        // Something other than the one staged file inside a drag folder is never removed.
+        let nested = staged.root.join(&staged.entry).join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("keep.txt"), b"keep").unwrap();
+        staged.remove();
+        assert!(!staged.file.exists());
+        assert_eq!(std::fs::read(nested.join("keep.txt")).unwrap(), b"keep");
+        assert_eq!(sweep_staging(&staging, None), 0);
+        assert_eq!(std::fs::read(nested.join("keep.txt")).unwrap(), b"keep");
+        // A folder with more than one entry is refused by the sweep, which knows no file name.
+        let crowded = staging.join("drag-00000000000000aa");
+        std::fs::create_dir_all(&crowded).unwrap();
+        std::fs::write(crowded.join("one.svg"), b"1").unwrap();
+        std::fs::write(crowded.join("two.svg"), b"2").unwrap();
+        assert_eq!(sweep_staging(&staging, None), 0);
+        assert!(crowded.join("one.svg").exists() && crowded.join("two.svg").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_leaves_a_replaced_staging_root_untouched() {
+        use std::os::unix::fs::symlink;
+        let scratch = Scratch::new("replaced-root");
+        let staging = scratch.0.join(DRAG_STAGING_FOLDER);
+        let source = DragSource {
+            name: "a.svg".into(),
+            bytes: DRAG_TEST_SVG.as_bytes().to_vec(),
+        };
+        let staged = stage_copy(&staging, &source, Unix).unwrap();
+        // The staging root is moved away and a link to another folder put in its place, holding a
+        // folder of the same per-drag name with the same file in it.
+        std::fs::rename(&staging, scratch.0.join("moved")).unwrap();
+        let elsewhere = scratch.0.join("elsewhere");
+        let target = elsewhere.join(&staged.entry);
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("a.svg"), b"keep").unwrap();
+        symlink(&elsewhere, &staging).unwrap();
+
+        staged.remove();
+        assert_eq!(sweep_staging(&staging, None), 0);
+        assert_eq!(sweep_staging_at_startup(&staging), 0);
+        assert!(remove_staged_entry(&staging, &staged.entry, Some("a.svg")).is_err());
+        assert!(remove_staged_entry(&staging, &staged.entry, None).is_err());
+        assert_eq!(std::fs::read(target.join("a.svg")).unwrap(), b"keep");
+        assert!(std::fs::symlink_metadata(&staging)
+            .unwrap()
+            .file_type()
+            .is_symlink());
     }
 
     #[cfg(unix)]
