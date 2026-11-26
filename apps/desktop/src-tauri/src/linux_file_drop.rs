@@ -26,7 +26,10 @@ fn is_external_file_drag<S: AsRef<str>>(
     in_process: bool,
     targets: impl IntoIterator<Item = S>,
 ) -> bool {
-    !in_process && targets.into_iter().any(|target| target.as_ref() == "text/uri-list")
+    !in_process
+        && targets
+            .into_iter()
+            .any(|target| target.as_ref() == "text/uri-list")
 }
 
 /// The file drag over the page; `D` identifies a drag (its `gdk::DragContext` on Linux).
@@ -39,7 +42,10 @@ struct DropWatch<D> {
 
 impl<D> Default for DropWatch<D> {
     fn default() -> Self {
-        Self { over: None, left: None }
+        Self {
+            over: None,
+            left: None,
+        }
     }
 }
 
@@ -117,7 +123,9 @@ fn install<R: tauri::Runtime>(webview: tauri::Webview<R>) {
         let watch = Rc::new(RefCell::new(DropWatch::<gdk::DragContext>::default()));
         let missed = Rc::new(move |why: &str| {
             eprintln!("ChemDraft: a dragged file was not dropped on the document window ({why})");
-            if let Err(error) = document.emit_to(document.label(), DOCUMENT_FILE_DROP_MISSED_EVENT, ()) {
+            if let Err(error) =
+                document.emit_to(document.label(), DOCUMENT_FILE_DROP_MISSED_EVENT, ())
+            {
                 eprintln!("ChemDraft: could not report a missed file drop: {error}");
             }
         });
@@ -187,16 +195,17 @@ fn install<R: tauri::Runtime>(webview: tauri::Webview<R>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        is_external_file_drag, DropWatch, DOCUMENT_FILE_DROP_MISSED_EVENT, RETURN_WINDOW,
-    };
+    use super::{is_external_file_drag, DropWatch, DOCUMENT_FILE_DROP_MISSED_EVENT, RETURN_WINDOW};
     use std::time::{Duration, Instant};
 
     #[test]
     fn a_fast_drop_is_accepted_as_soon_as_the_file_list_is_here() {
         let mut watch = DropWatch::default();
         assert!(!watch.position(1), "no answer before the file list");
-        assert!(watch.file_list(&1), "accepted the moment wry holds the files, not after the page");
+        assert!(
+            watch.file_list(&1),
+            "accepted the moment wry holds the files, not after the page"
+        );
         assert!(watch.position(1), "every later position is answered");
         // The release right after: GTK's leave for the drop is not a miss.
         let now = Instant::now();
@@ -209,9 +218,15 @@ mod tests {
         let mut watch = DropWatch::default();
         watch.position(1);
         watch.leave(&1, false, Instant::now());
-        assert!(!watch.file_list(&1), "a file list that arrives after the drag left is not answered");
+        assert!(
+            !watch.file_list(&1),
+            "a file list that arrives after the drag left is not answered"
+        );
         assert!(!watch.position(2), "the next drag starts unaccepted");
-        assert!(!watch.file_list(&1), "nor is the previous drag's late file list");
+        assert!(
+            !watch.file_list(&1),
+            "nor is the previous drag's late file list"
+        );
         assert!(watch.file_list(&2));
     }
 
@@ -222,7 +237,10 @@ mod tests {
         watch.position(1);
         watch.leave(&1, false, start);
         assert!(watch.pointer_returned(start + Duration::from_millis(30)));
-        assert!(!watch.pointer_returned(start + Duration::from_millis(40)), "said once");
+        assert!(
+            !watch.pointer_returned(start + Duration::from_millis(40)),
+            "said once"
+        );
         // The drag went elsewhere and the pointer came back later.
         watch.position(3);
         watch.leave(&3, false, start);
@@ -239,8 +257,14 @@ mod tests {
 
     #[test]
     fn only_file_drags_from_another_program_are_watched() {
-        assert!(is_external_file_drag(false, ["text/plain", "text/uri-list"]));
-        assert!(!is_external_file_drag(true, ["text/uri-list"]), "a drag inside ChemDraft");
+        assert!(is_external_file_drag(
+            false,
+            ["text/plain", "text/uri-list"]
+        ));
+        assert!(
+            !is_external_file_drag(true, ["text/uri-list"]),
+            "a drag inside ChemDraft"
+        );
         assert!(!is_external_file_drag(false, ["text/plain", "text/html"]));
         assert!(!is_external_file_drag::<&str>(false, []));
     }
@@ -258,8 +282,9 @@ mod tests {
     /// handlers run, a taken drop returns true). Re-check `linux_file_drop.rs` when wry changes.
     #[test]
     fn wry_is_the_version_this_module_mirrors() {
-        let lock: Vec<&str> =
-            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock")).lines().collect();
+        let lock: Vec<&str> = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock"))
+            .lines()
+            .collect();
         assert!(lock
             .windows(2)
             .any(|pair| pair == ["name = \"wry\"", "version = \"0.55.1\""]));
