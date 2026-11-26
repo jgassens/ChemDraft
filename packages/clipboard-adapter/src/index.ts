@@ -145,6 +145,19 @@ export interface ParsedClipboardAtom {
   x: number;
   y: number;
   formalCharge: number;
+  /**
+   * Unpaired electrons the source states for the atom, in the native `markRadicals` sense: 1 for a
+   * doublet (V2000 `M  RAD` 2 or atom-block charge code 4, V3000 `RAD=2`), 2 for a triplet (3).
+   * Absent when the atom is not a radical. A singlet (code 1) has no native form and is reported
+   * as a `clipboard.radical_singlet_unsupported` warning instead.
+   */
+  markRadicals?: number;
+  /**
+   * The hydrogen count the source states through its explicit valence (V2000 valence field,
+   * V3000 `VAL=`): valence minus the atom's bond-order sum, the native `hydrogenCount` sense.
+   * Absent when no valence is stated or it cannot be turned into a count (a warning says why).
+   */
+  hydrogenCount?: number;
 }
 
 export interface ParsedClipboardBond {
@@ -1071,14 +1084,20 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
   // Atom-block charges and M CHG charges are kept separate: per the V2000 spec, the
   // presence of ANY M CHG line means every atom-block charge must be treated as zero.
   const atomBlockCharges = new Map<number, number>();
+  const atomBlockChargeCodes = new Map<number, number>();
   const chgLineCharges = new Map<number, number>();
   const massDifferences = new Map<number, number>();
   const isotopeMasses = new Map<number, number>();
+  // Radical codes: atom-block charge code 4 (doublet), replaced per atom by an M  RAD entry.
+  const atomBlockRadicals = new Map<number, number>();
+  const radLineRadicals = new Map<number, number>();
+  const valences = new Map<string, StatedValence>();
   let sawChgLine = false;
+  let sawRadLine = false;
   const warnings: ClipboardTransferWarning[] = [];
 
   const atoms = atomLines.map((line, index): ParsedClipboardAtom => {
-    const { x, y, element, chargeCode, massDifference } = parseV2000AtomLine(line);
+    const { x, y, element, chargeCode, massDifference, valenceCode } = parseV2000AtomLine(line);
     if (!Number.isInteger(massDifference)) {
       throw new Error(`V2000 atom ${index + 1} has an invalid mass difference.`);
     }
@@ -1090,6 +1109,16 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
     const atomLineCharge = chargeFromV2000AtomCode(chargeCode);
     if (atomLineCharge !== 0) {
       atomBlockCharges.set(index + 1, atomLineCharge);
+      atomBlockChargeCodes.set(index + 1, chargeCode);
+    }
+    if (chargeCode === 4) atomBlockRadicals.set(index + 1, 2);
+    // V2000 valence: 0 = not stated, 15 = zero valence, 1..14 = that valence.
+    if (valenceCode !== 0) {
+      if (Number.isInteger(valenceCode) && valenceCode >= 1 && valenceCode <= 15) {
+        valences.set(atomId(index + 1), { atomNumber: index + 1, valence: valenceCode === 15 ? 0 : valenceCode });
+      } else {
+        warnings.push(invalidValenceWarning(index + 1, element, valenceCode));
+      }
     }
 
     return {
@@ -1148,6 +1177,25 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
       }
       continue;
     }
+    if (fields[0] === "M" && fields[1] === "RAD") {
+      sawRadLine = true;
+      const pairCount = Number(fields[2]);
+      if (!Number.isInteger(pairCount) || pairCount < 1 || pairCount > 8) {
+        throw new Error("V2000 M RAD line has an invalid entry count.");
+      }
+      for (let index = 0; index < pairCount; index += 1) {
+        const atomIndex = Number(fields[3 + index * 2]);
+        const code = Number(fields[4 + index * 2]);
+        if (!Number.isInteger(atomIndex) || !atoms[atomIndex - 1]) {
+          throw new Error("V2000 M RAD line has an invalid atom reference.");
+        }
+        if (!Number.isInteger(code) || code < 0 || code > 3) {
+          throw new Error(`V2000 M RAD line has an invalid radical code for atom ${atomIndex}.`);
+        }
+        radLineRadicals.set(atomIndex, code);
+      }
+      continue;
+    }
     if (fields[0] !== "M" || fields[1] !== "CHG") {
       continue;
     }
@@ -1163,11 +1211,28 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
     }
   }
 
-  // V2000 spec: any M CHG line supersedes ALL atom-block charges (which otherwise stay
-  // as phantom charges on atoms not named in an M CHG entry).
+  // Read as RDKit's MOL reader reads it (measured, see molRadicals.test.ts): any M  CHG or M  RAD
+  // line supersedes EVERY atom's atom-block charge-field code (charge codes 1-3 and 5-7, and the
+  // radical code 4), not only the atoms the line names; an M  ISO line supersedes neither (it only
+  // replaces the mass-difference field). Without the rule an atom not named in an M  CHG entry
+  // would keep a phantom atom-block charge.
+  const superseding = [sawChgLine ? "M  CHG" : "", sawRadLine ? "M  RAD" : ""].filter(Boolean);
+  const supersededBy = superseding.length === 0 ? ""
+    : superseding.length === 1 ? `an ${superseding[0]} line supersedes`
+    : `${superseding[0]} and ${superseding[1]} lines supersede`;
   atoms.forEach((atom, index) => {
     const i = index + 1;
-    atom.formalCharge = sawChgLine ? (chgLineCharges.get(i) ?? 0) : (atomBlockCharges.get(i) ?? 0);
+    const blockCharge = atomBlockCharges.get(i) ?? 0;
+    atom.formalCharge = superseding.length > 0 ? (chgLineCharges.get(i) ?? 0) : blockCharge;
+    if (superseding.length > 0 && blockCharge !== 0 && atom.formalCharge !== blockCharge) {
+      // Never silent: the file's atom block states a charge that its own property block overrides.
+      warnings.push({
+        code: "clipboard.charge_code_superseded",
+        message: `Atom ${i} (${atom.element}) has atom-block charge code ${atomBlockChargeCodes.get(i)} ` +
+          `(${blockCharge > 0 ? "+" : ""}${blockCharge}), but ${supersededBy} the atom block's charge codes ` +
+          `(as RDKit reads it), so it was read as charge ${atom.formalCharge > 0 ? "+" : ""}${atom.formalCharge}.`
+      });
+    }
     // M ISO overrides the mass-difference field only on atoms named in an entry.
     let mass = isotopeMasses.get(i);
     const difference = massDifferences.get(i);
@@ -1188,7 +1253,20 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
       Object.assign(atom, normalized);
       if (normalized.isotope === undefined) delete atom.isotope;
     }
+    const blockRadical = atomBlockRadicals.get(i);
+    const radLineRadical = radLineRadicals.get(i);
+    const superseded = superseding.length > 0;
+    if (radLineRadical === undefined && blockRadical !== undefined && superseded) {
+      // Never silent: the file's atom block states a radical that its own property block overrides.
+      warnings.push({
+        code: "clipboard.radical_code_superseded",
+        message: `Atom ${i} (${atom.element}) has atom-block charge code 4 (radical), but ${supersededBy} ` +
+          "the atom block's charge and radical codes (as RDKit reads it), so it was read as an ordinary atom."
+      });
+    }
+    applyRadicalCode(atom, i, radLineRadical ?? (superseded ? 0 : blockRadical ?? 0), warnings);
   });
+  readStatedHydrogens(atoms, bonds, valences, "V2000", warnings);
 
   if (atoms.length === 0) {
     warnings.push({
@@ -1203,6 +1281,120 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
     bonds,
     warnings
   };
+}
+
+/** A valence a molfile states for one atom, already decoded: 0 is the zero-valence sentinel. */
+interface StatedValence {
+  atomNumber: number;
+  valence: number;
+}
+
+function invalidValenceWarning(atomNumber: number, element: string, value: number): ClipboardTransferWarning {
+  return {
+    code: "clipboard.valence_not_read",
+    message: `Atom ${atomNumber} (${element}) has a valence field of ${value}, which is not a valid CTfile valence; ` +
+      "it was ignored, so the atom's hydrogen count may differ from the source."
+  };
+}
+
+/**
+ * CTfile radical code to the native radical count: doublet (2) is one unpaired electron, triplet (3)
+ * two, the same reading the CDXML reader and the molfile writer use. A singlet (1) is a spin state
+ * with no unpaired electron to draw, which the native model cannot hold, so it is reported rather
+ * than dropped without a word.
+ */
+function applyRadicalCode(
+  atom: ParsedClipboardAtom,
+  atomNumber: number,
+  code: number,
+  warnings: ClipboardTransferWarning[]
+): void {
+  if (code === 2) atom.markRadicals = 1;
+  else if (code === 3) atom.markRadicals = 2;
+  else if (code === 1) {
+    warnings.push({
+      code: "clipboard.radical_singlet_unsupported",
+      message: `Atom ${atomNumber} (${atom.element}) is marked as a singlet radical (paired electrons); ` +
+        "ChemDraft cannot represent that, so it was read as an ordinary atom and its hydrogen count may differ."
+    });
+  }
+}
+
+const bondOrderValence: Readonly<Partial<Record<ParsedClipboardBond["order"], number>>> = {
+  single: 1, double: 2, triple: 3
+};
+
+/**
+ * Turn each stated valence into the hydrogen count it means: valence minus the atom's bond-order
+ * sum. Where the sum is unknown (an aromatic or query bond, a V2000 coordination bond) or the
+ * valence is smaller than the bonds, no count is invented; the atom gets a warning instead.
+ * V3000 coordination bonds follow the writer's convention: the first atom is the donor and
+ * contributes nothing to its own valence.
+ */
+function readStatedHydrogens(
+  atoms: readonly ParsedClipboardAtom[],
+  bonds: readonly ParsedClipboardBond[],
+  valences: ReadonlyMap<string, StatedValence>,
+  format: "V2000" | "V3000",
+  warnings: ClipboardTransferWarning[]
+): void {
+  if (valences.size === 0) return;
+  const sums = new Map<string, number>();
+  const unreadable = new Map<string, string>();
+  for (const bond of bonds) {
+    let increments: [number, number] | undefined;
+    let reason: string | undefined;
+    if (bond.bondStyle === "dashed") {
+      if (format === "V3000") increments = [0, 1];
+      else reason = "it has a coordination bond, whose valence contribution V2000 does not define";
+    } else if (bondOrderValence[bond.order] !== undefined) {
+      increments = [bondOrderValence[bond.order]!, bondOrderValence[bond.order]!];
+    } else {
+      reason = bond.order === "aromatic" ? "it has an aromatic bond with no Kekulé order"
+        : "it has a bond of unknown or query type";
+    }
+    const ends = [bond.fromAtomId, bond.toAtomId];
+    ends.forEach((id, side) => {
+      if (increments) sums.set(id, (sums.get(id) ?? 0) + increments[side]!);
+      else if (reason && !unreadable.has(id)) unreadable.set(id, reason);
+    });
+  }
+  for (const atom of atoms) {
+    const stated = valences.get(atom.id);
+    if (!stated) continue;
+    const where = `Atom ${stated.atomNumber} (${atom.element}) states valence ${stated.valence}`;
+    const reason = unreadable.get(atom.id);
+    if (reason) {
+      warnings.push({
+        code: "clipboard.valence_not_read",
+        message: `${where}, but its hydrogen count could not be worked out because ${reason}; ` +
+          "the hydrogen count may differ from the source."
+      });
+      continue;
+    }
+    const count = stated.valence - (sums.get(atom.id) ?? 0);
+    if (count < 0) {
+      warnings.push({
+        code: "clipboard.valence_not_read",
+        message: `${where}, below the ${sums.get(atom.id)} its bonds already use; ` +
+          "it was ignored, so the hydrogen count may differ from the source."
+      });
+      continue;
+    }
+    if (atom.element === "H" || atom.element === "D" || atom.element === "T") {
+      if (count > 0) {
+        warnings.push({
+          code: "clipboard.valence_not_read",
+          message: `${where}, which would give a hydrogen atom hydrogens of its own; it was ignored.`
+        });
+        continue;
+      }
+      // A neutral, unmarked hydrogen stating zero is the app's own reading of a lone H (one atom,
+      // one radical electron, written with this very sentinel) or of a bonded H: no count to keep.
+      if (atom.formalCharge === 0 && !atom.markRadicals) continue;
+    }
+    atom.hydrogenCount = count;
+  }
 }
 
 /**
@@ -1254,6 +1446,7 @@ function parseV3000Molfile(molfile: string): ParsedMolfileGraph {
   let section: "atom" | "bond" | undefined;
   const atoms: ParsedClipboardAtom[] = [];
   const bonds: ParsedClipboardBond[] = [];
+  const valences = new Map<string, StatedValence>();
 
   for (const line of lines) {
     if (line === "M  END") break;
@@ -1286,14 +1479,33 @@ function parseV3000Molfile(molfile: string): ParsedMolfileGraph {
 
       const chargeMatch = line.match(/\bCHG=(-?\d+)\b/);
       const massMatch = line.match(/\bMASS=([^\s]+)/);
-      atoms.push(normalizeAtomIsotope({
+      const radMatch = line.match(/\bRAD=(-?\d+)\b/);
+      const valMatch = line.match(/\bVAL=(-?\d+)\b/);
+      const atom: ParsedClipboardAtom = normalizeAtomIsotope({
         id: atomId(index),
         element,
         ...(massMatch ? { isotope: Number(massMatch[1]) } : {}),
         x,
         y,
         formalCharge: chargeMatch ? Number(chargeMatch[1]) : 0
-      }));
+      });
+      atoms.push(atom);
+      if (radMatch) {
+        const code = Number(radMatch[1]);
+        if (code < 0 || code > 3) {
+          throw new Error(`V3000 atom ${index} has an invalid RAD= radical code.`);
+        }
+        applyRadicalCode(atom, index, code, warnings);
+      }
+      // V3000 VAL: 0 = not stated, -1 = zero valence, 1..14 = that valence.
+      if (valMatch) {
+        const value = Number(valMatch[1]);
+        if (value === -1 || (value >= 1 && value <= 14)) {
+          valences.set(atom.id, { atomNumber: index, valence: value === -1 ? 0 : value });
+        } else if (value !== 0) {
+          warnings.push(invalidValenceWarning(index, element, value));
+        }
+      }
     }
 
     if (section === "bond") {
@@ -1326,6 +1538,8 @@ function parseV3000Molfile(molfile: string): ParsedMolfileGraph {
       });
     }
   }
+
+  readStatedHydrogens(atoms, bonds, valences, "V3000", warnings);
 
   if (atoms.length === 0) {
     warnings.push({
@@ -1542,7 +1756,7 @@ function bondId(index: number): string {
 // in bond lines ("100200") abut too — both break a naive whitespace split. Parse by column
 // offset, falling back to whitespace only for non-conforming writers that under-pad.
 function parseV2000AtomLine(line: string): {
-  x: number; y: number; element: string; chargeCode: number; massDifference: number
+  x: number; y: number; element: string; chargeCode: number; massDifference: number; valenceCode: number
 } {
   if (line.length >= 34) {
     // x[0,10) y[10,20) z[20,30) symbol[31,34) … charge[36,39)
@@ -1551,7 +1765,9 @@ function parseV2000AtomLine(line: string): {
       y: Number(line.slice(10, 20)),
       element: line.slice(31, 34).trim() || "C",
       massDifference: Number(line.slice(34, 36).trim() || "0"),
-      chargeCode: Number(line.slice(36, 39).trim() || "0")
+      chargeCode: Number(line.slice(36, 39).trim() || "0"),
+      // parity[39,42) hydrogen-count[42,45) stereo-care[45,48) valence[48,51)
+      valenceCode: Number(line.slice(48, 51).trim() || "0")
     };
   }
   const fields = line.trim().split(/\s+/);
@@ -1560,7 +1776,8 @@ function parseV2000AtomLine(line: string): {
     y: Number(fields[1]),
     element: fields[3] ?? "C",
     massDifference: Number(fields[4] ?? "0"),
-    chargeCode: Number(fields[5] ?? "0")
+    chargeCode: Number(fields[5] ?? "0"),
+    valenceCode: Number(fields[9] ?? "0")
   };
 }
 
