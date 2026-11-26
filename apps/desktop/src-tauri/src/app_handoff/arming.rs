@@ -1,4 +1,7 @@
-use super::{temp_files, wire::Input};
+use super::{
+    temp_files,
+    wire::{Input, RetryCondition},
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -287,6 +290,34 @@ impl Submission {
         self.launch(launch)
     }
 
+    /// A later attempt of the approved retry sequence. The first attempt used this click, so the
+    /// click must still be the live, used one for the same native build choice.
+    pub(super) fn relaunch_build<T>(
+        &self,
+        build: &ApprovedBuild,
+        launch: impl FnOnce() -> T,
+    ) -> Result<T, String> {
+        if self.0.build.get() != Some(&BuildChoice::from(build)) {
+            return Err("The companion launch differs from the native build choice.".into());
+        }
+        let stage = self.0.stage.lock().unwrap();
+        self.assert_used_locked(&stage)?;
+        Ok(launch())
+    }
+
+    /// Between attempts: the click has launched and nothing has invalidated it since.
+    pub(super) fn assert_used(&self) -> Result<(), String> {
+        self.assert_used_locked(&self.0.stage.lock().unwrap())
+    }
+
+    fn assert_used_locked(&self, stage: &Stage) -> Result<(), String> {
+        match stage {
+            Stage::Used if !*self.0.invalidated.borrow() => Ok(()),
+            Stage::Rejected => Err(RACE.into()),
+            _ => Err(NO_ARMING.into()),
+        }
+    }
+
     // Recheck under the same lock as submit. A duplicate that arrives before this launch
     // boundary rejects both requests. A duplicate after this boundary has no remaining allowance.
     pub(super) fn launch<T>(&self, launch: impl FnOnce() -> T) -> Result<T, String> {
@@ -326,6 +357,36 @@ pub(super) struct ApprovedBuild {
     pub input: Option<Input>,
     pub open_output: bool,
     pub warnings: Vec<String>,
+    /// API 0.1.29: the inputs after `input`, in attempt order, and the declared retry condition.
+    pub retry: Option<ApprovedRetry>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct ApprovedRetry {
+    pub inputs: Vec<Input>,
+    pub when: RetryCondition,
+}
+
+impl ApprovedBuild {
+    pub(super) fn variants(&self) -> usize {
+        1 + self.retry.as_ref().map_or(0, |retry| retry.inputs.len())
+    }
+
+    pub(super) fn variant(&self, index: usize) -> Option<&Input> {
+        match index {
+            0 => self.input.as_ref(),
+            _ => self.retry.as_ref()?.inputs.get(index - 1),
+        }
+    }
+
+    /// The single build a later rebuild repeats: the input finally used, with no further retry.
+    pub(super) fn settle(&mut self, variant: usize) {
+        if let Some(mut retry) = self.retry.take() {
+            if variant > 0 && variant <= retry.inputs.len() {
+                self.input = Some(retry.inputs.swap_remove(variant - 1));
+            }
+        }
+    }
 }
 
 #[derive(PartialEq, Eq)]

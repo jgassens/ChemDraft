@@ -1,15 +1,15 @@
 #[cfg(any(target_os = "macos", windows))]
 use super::identity::App;
 use super::{
-    arming::{ApprovedBuild, ResultSession, State, RACE},
+    arming::{ApprovedBuild, ApprovedRetry, ResultSession, State, RACE},
     catalog,
     command_line::{open_command, Pipeline, Platform},
     consent::{ListedConsent, Row, Store},
     dialogs::{self, Action},
-    identity,
+    identity, retry,
     runner::{self, CaptureError, ChildProcess},
     temp_files::{self, TempFiles},
-    wire::{Call, Extension, Input, RunCode, StepResult},
+    wire::{Call, Extension, Input, Request, Retry, RetryCondition, RunCode, StepResult},
 };
 use serde_json::{json, Value};
 use std::{
@@ -101,6 +101,7 @@ fn build(combination: &str) -> ApprovedBuild {
         }),
         open_output: true,
         warnings: vec!["The node supplies these carboxylates.".into()],
+        retry: None,
     }
 }
 
@@ -579,6 +580,7 @@ fn confirmation_size_preflight_uses_the_private_dialog_envelope() {
             "small",
             None,
             warnings,
+            None,
         )
     };
     assert!(snapshot(&pipeline, &[]).is_ok());
@@ -621,6 +623,7 @@ fn confirmation_and_result_show_the_same_sanitized_warning_lines() {
         "small",
         None,
         &warnings,
+        None,
     )
     .unwrap();
     let result = serde_json::to_value(dialogs::result_snapshot(
@@ -883,6 +886,7 @@ fn companion_runs_ordered_steps_and_reports_preflight_and_step_failures() {
                 ChildProcess::spawn_before(rust_stub(), args, cwd, deadline, &stopped)
             },
             &stopped,
+            Instant::now() + runner::PIPELINE_LIMIT,
         )
     };
     fs::write(files.root.join("untested"), "").unwrap();
@@ -2242,4 +2246,604 @@ fn companion_clears_parent_overrides_and_uses_null_stdin() {
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
+}
+
+// API 0.1.29 bounded retry.
+
+const TWIST: &str = "Joint twist left";
+
+fn twist_condition() -> RetryCondition {
+    RetryCondition {
+        step: "build".into(),
+        label: TWIST.into(),
+        not_equal: 0.0,
+    }
+}
+
+fn report(id: &str, json: Value) -> StepResult {
+    StepResult {
+        id: id.into(),
+        json,
+    }
+}
+
+fn twist_report(value: Value) -> Vec<StepResult> {
+    vec![
+        report("preflight", json!({"version": "1.1.1"})),
+        report(
+            "build",
+            json!({"ok": true, "tables": [{"rows": [{"label": TWIST, "value": value}]}]}),
+        ),
+    ]
+}
+
+/// The test XYZ with its comment line set, so the stub companion reports `twist`.
+fn xyz_with(comment: &str) -> String {
+    XYZ.replacen("1 2", comment, 1)
+}
+
+fn retry_build(combination: &str, comments: &[&str]) -> ApprovedBuild {
+    let mut approved = build(combination);
+    approved.retry = Some(ApprovedRetry {
+        inputs: comments
+            .iter()
+            .map(|comment| Input {
+                extension: Extension::Xyz,
+                text: xyz_with(comment),
+            })
+            .collect(),
+        when: twist_condition(),
+    });
+    approved
+}
+
+#[test]
+fn retry_reads_exactly_one_labelled_row_in_the_named_step_tables() {
+    let when = twist_condition();
+    let read = |steps: &[StepResult]| retry::reading(steps, &when);
+    assert_eq!(read(&twist_report(json!("6.000"))), Some(6.0));
+    assert_eq!(read(&twist_report(json!(" 0.25 "))), Some(0.25));
+    assert_eq!(read(&twist_report(json!(-1.5))), Some(-1.5));
+    assert!(retry::wants_retry(&twist_report(json!("6.000")), &when));
+    assert!(retry::wants_retry(&twist_report(json!(0.01)), &when));
+    // Equal to the declared number, including signed zero, ends the sequence.
+    for good in [json!("0.000"), json!(0), json!("-0"), json!(0.0)] {
+        assert!(!retry::wants_retry(&twist_report(good), &when));
+    }
+    // A missing, duplicate, malformed or non-finite value never triggers a retry.
+    for unreadable in [
+        json!("NaN"),
+        json!("inf"),
+        json!("-infinity"),
+        json!("1e400"),
+        json!("6 degrees"),
+        json!(""),
+        Value::Null,
+        json!(true),
+        json!([6]),
+        json!({"value": 6}),
+    ] {
+        let steps = twist_report(unreadable.clone());
+        assert_eq!(read(&steps), None, "{unreadable}");
+        assert!(!retry::wants_retry(&steps, &when), "{unreadable}");
+    }
+    let build_json = |json: Value| vec![report("build", json)];
+    let row = json!({"label": TWIST, "value": "6"});
+    for (case, steps) in [
+        (
+            "no such step",
+            vec![report("inspect", json!({"tables": [{"rows": [row]}]}))],
+        ),
+        ("no steps", vec![]),
+        (
+            "duplicate step",
+            vec![
+                report("build", json!({"tables": [{"rows": [row]}]})),
+                report("build", json!({"tables": [{"rows": [row]}]})),
+            ],
+        ),
+        (
+            "duplicate row in one table",
+            build_json(json!({"tables": [{"rows": [row, row]}]})),
+        ),
+        (
+            "duplicate row across tables",
+            build_json(json!({"tables": [{"rows": [row]}, {"rows": [row]}]})),
+        ),
+        ("no tables", build_json(json!({"rows": [row]}))),
+        (
+            "tables not an array",
+            build_json(json!({"tables": {"rows": [row]}})),
+        ),
+        ("report not an object", build_json(json!([{"rows": [row]}]))),
+        (
+            "nested deeper",
+            build_json(json!({"tables": [{"groups": [{"rows": [row]}]}]})),
+        ),
+        (
+            "label differs in case",
+            build_json(
+                json!({"tables": [{"rows": [{"label": "joint twist left", "value": "6"}]}]}),
+            ),
+        ),
+        (
+            "label padded",
+            build_json(
+                json!({"tables": [{"rows": [{"label": " Joint twist left", "value": "6"}]}]}),
+            ),
+        ),
+        (
+            "value missing",
+            build_json(json!({"tables": [{"rows": [{"label": TWIST}]}]})),
+        ),
+    ] {
+        assert_eq!(read(&steps), None, "{case}");
+    }
+    // Rows that are not objects and tables without rows contribute nothing.
+    assert_eq!(
+        read(&build_json(
+            json!({"tables": [{"header": ["a"]}, {"rows": [1, "x", row]}]})
+        )),
+        Some(6.0)
+    );
+}
+
+fn run_request(retry: Option<Value>, input: bool) -> Value {
+    let mut request = json!({"appId": APP_ID, "pipeline": "mofBuild", "combination": "small"});
+    if input {
+        request["input"] = json!({"extension": "xyz", "text": XYZ});
+    }
+    if let Some(retry) = retry {
+        request["retry"] = retry;
+    }
+    json!({
+        "invocation": {"pluginId": PLUGIN, "commandId": COMMAND, "nonce": "0".repeat(32)},
+        "method": "runCompanion", "request": request
+    })
+}
+
+#[test]
+fn retry_request_limits_and_validation_apply_before_any_box() {
+    let parse = |retry: Value| Call::parse(run_request(Some(retry), true));
+    let when = json!({"step": "build", "label": TWIST, "notEqual": 0});
+    let valid = json!({"inputs": [xyz_with("twist=1")], "when": when});
+    let Ok((_, Request::Run(request))) = parse(valid.clone()) else {
+        panic!("a bounded retry is valid");
+    };
+    let retry = request.retry.unwrap();
+    assert_eq!(retry.inputs.len(), 1);
+    assert_eq!(retry.when, twist_condition());
+    // Without the new field the request decodes exactly as before.
+    let Ok((_, Request::Run(plain))) = Call::parse(run_request(None, true)) else {
+        panic!("a request without retry is valid");
+    };
+    assert!(plain.retry.is_none());
+    assert!(
+        Call::parse(run_request(Some(valid.clone()), false)).is_err(),
+        "retry needs an input"
+    );
+    let two = json!({"inputs": [xyz_with("a"), xyz_with("b")], "when": when});
+    assert!(parse(two).is_ok());
+    let exact = "x".repeat(super::wire::INPUT_BYTES);
+    assert!(parse(json!({"inputs": [exact.clone()], "when": when})).is_ok());
+    let mut refused = vec![
+        json!({"inputs": [], "when": when}),
+        json!({"inputs": [xyz_with("a"), xyz_with("b"), xyz_with("c")], "when": when}),
+        json!({"inputs": [exact + "x"], "when": when}),
+        json!({"inputs": [0], "when": when}),
+        json!({"inputs": xyz_with("a"), "when": when}),
+        json!({"inputs": [xyz_with("a")]}),
+        json!({"inputs": [xyz_with("a")], "when": when, "extension": "cif"}),
+        json!({"inputs": [xyz_with("a")], "when": {"step": "build", "label": TWIST, "notEqual": 0, "path": "$.x"}}),
+        json!({"inputs": [xyz_with("a")], "when": {"step": "build", "label": TWIST, "notEqual": "0"}}),
+        json!({"inputs": [xyz_with("a")], "when": {"step": "build", "label": TWIST}}),
+        Value::Null,
+        json!([]),
+    ];
+    for step in ["", "../build", "build step", "-build"] {
+        refused.push(json!({"inputs": [xyz_with("a")], "when": {"step": step, "label": TWIST, "notEqual": 0}}));
+    }
+    for label in [
+        String::new(),
+        " Joint".into(),
+        "Joint ".into(),
+        "Joint\ntwist".into(),
+        "Joint\u{200b}twist".into(),
+        "Joint\u{0}".into(),
+        "x".repeat(81),
+    ] {
+        refused.push(json!({"inputs": [xyz_with("a")], "when": {"step": "build", "label": label, "notEqual": 0}}));
+    }
+    for retry in refused {
+        assert!(parse(retry.clone()).is_err(), "{retry}");
+    }
+    assert!(parse(json!({"inputs": [xyz_with("a")], "when": {"step": "build", "label": "🧪".repeat(80), "notEqual": -2.5e-3}})).is_ok());
+}
+
+#[test]
+fn retry_inputs_keep_atoms_and_bonds_and_differ_from_earlier_inputs() {
+    let first = build("small").input.unwrap();
+    let retry = |inputs: &[String]| Retry {
+        inputs: inputs.to_vec(),
+        when: twist_condition(),
+    };
+    let nudged = XYZ.replace("X 1 0 0", "X 1.01 0 0");
+    let variants = retry::variants(&first, &retry(&[nudged.clone(), xyz_with("comment")])).unwrap();
+    assert_eq!(
+        variants
+            .iter()
+            .map(|input| input.text.as_str())
+            .collect::<Vec<_>>(),
+        [XYZ, nudged.as_str(), xyz_with("comment").as_str()]
+    );
+    assert!(variants
+        .iter()
+        .all(|input| input.extension == Extension::Xyz));
+    for (case, text) in [
+        ("identical", XYZ.to_owned()),
+        ("other element", XYZ.replace("X 1 0 0", "Y 1 0 0")),
+        ("other bond", XYZ.replace("0 2 S", "0 2 D")),
+        ("missing bond", XYZ.replace("0 2 S\n", "")),
+        ("malformed", "3\n\nC 0 0\n".into()),
+        ("not xyz", "data_cif".into()),
+    ] {
+        assert!(retry::variants(&first, &retry(&[text])).is_err(), "{case}");
+    }
+    assert!(
+        retry::variants(&first, &retry(&[nudged.clone(), nudged])).is_err(),
+        "alternatives must differ from each other"
+    );
+}
+
+#[test]
+fn retry_sequence_continues_only_after_a_poor_completed_attempt_and_stops_at_three() {
+    use std::{cell::RefCell, rc::Rc};
+    struct Done(usize, Rc<RefCell<Vec<usize>>>);
+    impl Drop for Done {
+        fn drop(&mut self) {
+            self.1.borrow_mut().push(self.0);
+        }
+    }
+    let run = |variants: usize, outcomes: &[Result<bool, RunCode>]| {
+        let dropped = Rc::new(RefCell::new(Vec::new()));
+        let started = RefCell::new(Vec::new());
+        let (attempts, outcome) = retry::run_sequence(
+            variants,
+            |index| {
+                // Every earlier completed attempt is gone before the next one starts.
+                assert_eq!(*dropped.borrow(), (0..index).collect::<Vec<_>>());
+                started.borrow_mut().push(index);
+                outcomes[index].map(|poor| (Done(index, dropped.clone()), poor))
+            },
+            |(_, poor)| *poor,
+        );
+        let returned = outcome.map(|(done, _)| done.0);
+        (attempts, returned, started.into_inner())
+    };
+    // No retry fields: one attempt whatever the report says.
+    assert_eq!(run(1, &[Ok(true)]), (1, Ok(0), vec![0]));
+    assert_eq!(run(3, &[Ok(false)]), (1, Ok(0), vec![0]));
+    assert_eq!(run(3, &[Ok(true), Ok(false)]), (2, Ok(1), vec![0, 1]));
+    // Every attempt poor: the last one is returned as a single run would be.
+    assert_eq!(
+        run(3, &[Ok(true), Ok(true), Ok(true)]),
+        (3, Ok(2), vec![0, 1, 2])
+    );
+    assert_eq!(run(2, &[Ok(true), Ok(true)]), (2, Ok(1), vec![0, 1]));
+    // Never more than three, whatever the caller passes.
+    assert_eq!(run(10, &[Ok(true); 10]), (3, Ok(2), vec![0, 1, 2]));
+    // A failure never retries, and a later failure is reported as that failure.
+    for code in [
+        RunCode::Timeout,
+        RunCode::ExitNonzero,
+        RunCode::BadOutput,
+        RunCode::ToolMissing,
+    ] {
+        assert_eq!(run(3, &[Err(code)]), (1, Err(code), vec![0]));
+        assert_eq!(run(3, &[Ok(true), Err(code)]), (2, Err(code), vec![0, 1]));
+    }
+}
+
+/// One attempt as `BuildJob::attempt` makes it: a fresh handoff folder, the variant's input, and
+/// every launch gated by consent and the companion identity.
+struct StubAttempt {
+    files: TempFiles,
+    completed: runner::Completed,
+}
+
+fn stub_sequence(
+    approved: &ApprovedBuild,
+    pipeline: &Pipeline,
+    cache: &Path,
+    mut launch: impl FnMut(
+        usize,
+        &mut dyn FnMut() -> Result<ChildProcess, runner::Failure>,
+    ) -> Result<ChildProcess, runner::Failure>,
+    mut between: impl FnMut(usize),
+) -> (usize, Result<StubAttempt, runner::Failure>, Vec<PathBuf>) {
+    let stopped = AtomicBool::new(false);
+    let deadline = Instant::now() + retry::SEQUENCE_LIMIT;
+    let mut roots = Vec::new();
+    let (attempts, outcome) = retry::run_sequence(
+        approved.variants(),
+        |index| {
+            if index > 0 {
+                between(index);
+            }
+            let files = TempFiles::new(cache, PLUGIN).unwrap();
+            roots.push(files.root.clone());
+            let input = approved.variant(index).unwrap();
+            files
+                .write(&files.stem, input.extension, &input.text)
+                .unwrap();
+            let completed = runner::run(
+                pipeline,
+                approved,
+                &files,
+                |args, cwd, _, step_deadline| {
+                    launch(index, &mut || {
+                        ChildProcess::spawn_before(rust_stub(), args, cwd, step_deadline, &stopped)
+                    })
+                },
+                &stopped,
+                deadline,
+            )?;
+            Ok(StubAttempt { files, completed })
+        },
+        |attempt| {
+            approved
+                .retry
+                .as_ref()
+                .is_some_and(|retry| retry::wants_retry(&attempt.completed.steps, &retry.when))
+        },
+    );
+    (attempts, outcome, roots)
+}
+
+#[test]
+fn retry_runs_real_attempts_and_keeps_only_the_final_output() {
+    let dir = TestDir::new();
+    let pipeline = pipeline();
+    // Launch every step unconditionally; the gating tests below wrap this.
+    let open = |_: usize, start: &mut dyn FnMut() -> _| start();
+    let twist =
+        |attempt: &StubAttempt| retry::reading(&attempt.completed.steps, &twist_condition());
+
+    // Poor, poor, good: three attempts, the third returned.
+    let mut approved = retry_build("small", &["twist=3.5", "twist=0.000"]);
+    approved.input = Some(Input {
+        extension: Extension::Xyz,
+        text: xyz_with("twist=6.000"),
+    });
+    let (attempts, outcome, roots) = stub_sequence(&approved, &pipeline, &dir.0, open, |_| {});
+    let last = outcome.unwrap();
+    assert_eq!(attempts, 3);
+    assert_eq!(twist(&last), Some(0.0));
+    assert_eq!(roots.len(), 3);
+    assert!(
+        !roots[0].exists() && !roots[1].exists(),
+        "earlier attempts are cleaned up"
+    );
+    assert!(runner::verified_output(
+        &last.files.root,
+        last.completed.output.as_ref().unwrap()
+    ));
+    assert_eq!(roots[2], last.files.root);
+    drop(last);
+    assert!(!roots[2].exists());
+
+    // Good on the second attempt: the third input never runs.
+    let approved = retry_build("small", &["twist=0", "twist=9"]);
+    let (attempts, outcome, roots) = stub_sequence(&approved, &pipeline, &dir.0, open, |_| {});
+    assert_eq!((attempts, twist(&outcome.unwrap())), (2, Some(0.0)));
+    assert_eq!(roots.len(), 2);
+
+    // Every attempt poor: the last attempt is returned.
+    let approved = retry_build("small", &["twist=5", "twist=4"]);
+    let (attempts, outcome, _) = stub_sequence(&approved, &pipeline, &dir.0, open, |_| {});
+    assert_eq!((attempts, twist(&outcome.unwrap())), (3, Some(4.0)));
+
+    // A good first result runs once.
+    let mut approved = retry_build("small", &["twist=5"]);
+    approved.input = Some(Input {
+        extension: Extension::Xyz,
+        text: xyz_with("twist=0.0"),
+    });
+    let (attempts, outcome, _) = stub_sequence(&approved, &pipeline, &dir.0, open, |_| {});
+    assert_eq!((attempts, twist(&outcome.unwrap())), (1, Some(0.0)));
+
+    // No retry after a nonzero exit, unreadable output, or a missing output file.
+    for (combination, code) in [
+        ("exit", RunCode::ExitNonzero),
+        ("bad-json", RunCode::BadOutput),
+        ("no-file", RunCode::BadOutput),
+    ] {
+        let approved = retry_build(combination, &["twist=1", "twist=2"]);
+        let (attempts, outcome, _) = stub_sequence(&approved, &pipeline, &dir.0, open, |_| {});
+        assert_eq!(
+            (attempts, outcome.err().unwrap().code),
+            (1, code),
+            "{combination}"
+        );
+    }
+
+    // No retry after a timeout.
+    let mut slow: Value = template();
+    slow["steps"][1]["args"] = json!(["tree", "{inputDir}"]);
+    slow["steps"][1]["timeoutSeconds"] = json!(1);
+    slow["steps"].as_array_mut().unwrap().truncate(2);
+    let slow: Pipeline = serde_json::from_value(slow).unwrap();
+    let approved = retry_build("small", &["twist=1"]);
+    let (attempts, outcome, _) = stub_sequence(&approved, &slow, &dir.0, open, |_| {});
+    assert_eq!(
+        (attempts, outcome.err().unwrap().code),
+        (1, RunCode::Timeout)
+    );
+}
+
+#[test]
+fn revocation_between_attempts_stops_the_next_launch() {
+    let dir = TestDir::new();
+    let store = Store::new(&dir.0.join("consent"));
+    let grant = stored_grant();
+    store.insert(grant.clone()).unwrap();
+    let approved = retry_build("small", &["twist=2", "twist=3"]);
+    let mut launched = Vec::new();
+    let (attempts, outcome, _) = stub_sequence(
+        &approved,
+        &pipeline(),
+        &dir.0,
+        |index, start| {
+            store
+                .with_grant(&grant, |_| {
+                    launched.push(index);
+                    start()
+                })
+                .unwrap()
+                .unwrap_or_else(|| Err(runner::Failure::new(RunCode::BadParam, "consent changed")))
+        },
+        |_| {
+            store.revoke(PLUGIN, &grant.consent_id()).unwrap();
+        },
+    );
+    assert_eq!(attempts, 2);
+    assert_eq!(outcome.err().unwrap().code, RunCode::BadParam);
+    assert_eq!(
+        launched,
+        [0, 0, 0],
+        "only the first attempt's three steps ran"
+    );
+}
+
+#[cfg(any(target_os = "macos", windows))]
+#[test]
+fn a_changed_companion_between_attempts_is_never_launched() {
+    let dir = TestDir::new();
+    let (platform, path, tool) = install_stub(&dir.0);
+    let pipeline = pipeline();
+    let target = App::read(platform, &path, Some(&pipeline)).unwrap();
+    let approved = retry_build("small", &["twist=2"]);
+    let mut launched = Vec::new();
+    let cache = dir.0.join("cache");
+    fs::create_dir(&cache).unwrap();
+    let (attempts, outcome, _) = stub_sequence(
+        &approved,
+        &pipeline,
+        &cache,
+        |index, start| {
+            target
+                .with_verified_launch(platform, Some(&pipeline), |_| {
+                    launched.push(index);
+                    start()
+                })
+                .unwrap_or_else(|error| {
+                    Err(runner::Failure::new(RunCode::AppChanged, error.message()))
+                })
+        },
+        |_| fs::write(&tool, b"replacement tool").unwrap(),
+    );
+    assert_eq!(attempts, 2);
+    assert_eq!(outcome.err().unwrap().code, RunCode::AppChanged);
+    assert_eq!(launched, [0, 0, 0]);
+}
+
+#[test]
+fn later_attempts_require_the_same_used_and_still_live_menu_click() {
+    let now = Instant::now();
+    let approved = retry_build("small", &["twist=2"]);
+    let used = |state: &State| {
+        let arm = state.arm(PLUGIN, COMMAND, now).unwrap();
+        state.begin(&arm.invocation(PLUGIN), now).unwrap();
+        let submission = arm.submit(now).unwrap();
+        submission.show_box().unwrap();
+        submission.bind_build(&approved).unwrap();
+        (arm, submission)
+    };
+    let state = State::default();
+    let (arm, submission) = used(&state);
+    assert!(
+        submission.relaunch_build(&approved, || ()).is_err(),
+        "a later attempt cannot stand in for the first launch"
+    );
+    assert!(submission.assert_used().is_err());
+    submission.launch_build(&approved, || ()).unwrap();
+    assert!(submission.assert_used().is_ok());
+    assert_eq!(
+        submission.relaunch_build(&approved, || "second").unwrap(),
+        "second"
+    );
+    assert!(submission
+        .relaunch_build(&build("large"), || panic!("other combination"))
+        .is_err());
+    // The command finished, or the window reloaded: no further attempt.
+    state.finish(&arm.invocation(PLUGIN));
+    assert!(submission.assert_used().is_err());
+    assert!(submission
+        .relaunch_build(&approved, || panic!("finished"))
+        .is_err());
+
+    for stop in [
+        (|state: &State| state.shutdown()) as fn(&State),
+        |state| state.disarm(PLUGIN),
+        |state| {
+            state.arm(PLUGIN, COMMAND, Instant::now()).unwrap();
+        },
+    ] {
+        let state = State::default();
+        let (_, submission) = used(&state);
+        submission.launch_build(&approved, || ()).unwrap();
+        stop(&state);
+        assert!(submission
+            .relaunch_build(&approved, || panic!("stopped"))
+            .is_err());
+    }
+}
+
+#[test]
+fn a_rebuild_after_retries_repeats_only_the_input_finally_used() {
+    let mut approved = retry_build("small", &["twist=2", "twist=3"]);
+    assert_eq!(approved.variants(), 3);
+    assert_eq!(approved.variant(2).unwrap().text, xyz_with("twist=3"));
+    assert!(approved.variant(3).is_none());
+    approved.settle(1);
+    assert!(approved.retry.is_none());
+    assert_eq!(approved.input.as_ref().unwrap().text, xyz_with("twist=2"));
+    assert_eq!(approved.variants(), 1);
+    let mut first = retry_build("small", &["twist=2"]);
+    first.settle(0);
+    assert_eq!(
+        (first.input.unwrap().text, first.retry.is_none()),
+        (XYZ.into(), true)
+    );
+}
+
+#[test]
+fn the_confirmation_states_the_bounded_retry() {
+    let pipeline = pipeline();
+    let when = twist_condition();
+    let snapshot = dialogs::confirmation_snapshot(
+        &pipeline,
+        "Crystal Builder",
+        "ChemDraft",
+        "small",
+        None,
+        &[],
+        Some(dialogs::RetryNotice::new(3, &when)),
+    )
+    .unwrap();
+    assert_eq!(
+        snapshot["retry"],
+        json!({"attempts": 3, "step": "build", "label": TWIST, "notEqual": 0.0})
+    );
+    let plain = dialogs::confirmation_snapshot(
+        &pipeline,
+        "Crystal Builder",
+        "ChemDraft",
+        "small",
+        None,
+        &[],
+        None,
+    )
+    .unwrap();
+    assert!(plain.get("retry").is_none());
 }

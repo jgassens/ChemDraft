@@ -1,0 +1,10 @@
+{
+  "attempts": 3,
+  "code": "timeout",
+  "diagnostic": {
+    "step": "build"
+  },
+  "message": "Companion step \"build\" exceeded its time limit or was stopped.",
+  "status": "failed",
+  "variant": 2
+}

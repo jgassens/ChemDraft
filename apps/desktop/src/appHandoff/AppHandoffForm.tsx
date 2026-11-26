@@ -4,6 +4,16 @@ import { useDialogContentReady } from "../dialogs/dialogContentFit";
 import { detectDesktopShortcutPlatform } from "../keyboardShortcuts";
 import type { AppHandoffDialogAction, AppHandoffDialogSnapshot } from "./dialogTypes";
 
+type RetryNotice = NonNullable<Extract<AppHandoffDialogSnapshot, { mode: "confirm" }>["retry"]>;
+
+/** Plain words for the one confirmation that covers a bounded retry sequence. */
+export function retryNotice({ attempts, step, label, notEqual }: RetryNotice): string {
+  return `This confirmation covers up to ${attempts} builds. If the ${step} step reports ` +
+    `“${label}” as a number other than ${notEqual}, ChemDraft builds again without asking, using ` +
+    "the plugin's next input: the same atoms and bonds at slightly different positions. " +
+    "A build that fails, times out, or reports no such number ends the run. Only the last build is kept.";
+}
+
 export function AppHandoffForm({
   snapshot, onReady, onAction, busy, error, platform = detectDesktopShortcutPlatform()
 }: {
@@ -68,6 +78,7 @@ export function AppHandoffForm({
       {snapshot.mode === "confirm" ? <>
         <p>{snapshot.appName} · {snapshot.pipeline}</p>
         {snapshot.composition && <p>Input formula {snapshot.composition.formula} · {snapshot.composition.atomCount} {snapshot.composition.atomCount === 1 ? "atom" : "atoms"}</p>}
+        {snapshot.retry && <p style={{ overflowWrap: "anywhere" }}>{retryNotice(snapshot.retry)}</p>}
         <div className="cd-page-size-fields">
           <label htmlFor={combinationId} style={{ minWidth: 0, maxWidth: "100%" }}>
             Build combination

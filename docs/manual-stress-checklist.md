@@ -1745,6 +1745,12 @@ for processor-specific behavior. Use an eligible official catalog plugin and its
 
 - Pick an app, decline consent, then accept and send a file. Revoke consent in Plugin Manager and
   send again; verify consent is requested again.
+- Bounded retry (API 0.1.29): run a build whose plugin sends two alternative inputs and a retry
+  condition, with the companion reporting a poor value for the first input. Verify the build
+  confirmation says up to 3 builds and when it builds again, that no box appears between attempts,
+  that only the final build opens, and that the status names the attempt count. Revoke consent, or
+  replace the companion, while the first attempt runs and verify no second attempt starts. Repeat
+  with a companion that exits nonzero or times out and verify there is no second attempt.
 - Alternate sending a file and running a build with the same app. Each asks for consent once. Revoke one operation and verify the other stays allowed.
 - With a fresh app pick, approve only a pipeline. Remove or change its companion executable while
   leaving the main app intact. Check that app status still reports the app as available and includes

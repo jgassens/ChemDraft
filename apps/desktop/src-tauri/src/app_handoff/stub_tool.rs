@@ -57,7 +57,13 @@ fn main() {
                 "no-file" => {}
                 _ => fs::write(output, "stub cif").unwrap(),
             }
-            println!("{{\"ok\":true,\"tables\":[{{\"rows\":[{{\"label\":\"Joint twist left\",\"value\":\"6.000\"}}]}}]}}");
+            // A retry test variant names its reported value on the XYZ comment line.
+            let twist = text
+                .lines()
+                .nth(1)
+                .and_then(|line| line.strip_prefix("twist="))
+                .unwrap_or("6.000");
+            println!("{{\"ok\":true,\"tables\":[{{\"rows\":[{{\"label\":\"Joint twist left\",\"value\":\"{twist}\"}}]}}]}}");
         }
         "inspect" => {
             assert_eq!(fs::read_to_string(&args[1]).unwrap(), "stub cif");

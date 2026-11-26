@@ -71,6 +71,20 @@ describe("native app handoff relay", () => {
       diagnostic: { step: "build", stderrTail: "private diagnostic" } });
     await relay("runCompanion", build);
     expect(status).toHaveBeenLastCalledWith("Companion build failed: Companion step build timed out.");
+    // API 0.1.29: the status names the attempt count only when the host retried.
+    native.mockResolvedValueOnce({ status: "done", opened: true, steps: [], attempts: 1, variant: 0 });
+    await relay("runCompanion", { ...build, openOutput: true });
+    expect(status).toHaveBeenLastCalledWith("Build completed and opened in the chosen app.");
+    native.mockResolvedValueOnce({ status: "done", opened: true, steps: [], attempts: 3, variant: 2 });
+    await relay("runCompanion", { ...build, openOutput: true });
+    expect(status).toHaveBeenLastCalledWith("Build completed after 3 attempts and opened in the chosen app.");
+    native.mockResolvedValueOnce({ status: "failed", code: "exit-nonzero", message: "Companion step \"build\" exited unsuccessfully.",
+      attempts: 2, variant: 1 });
+    await relay("runCompanion", build);
+    expect(status).toHaveBeenLastCalledWith("Companion build failed on attempt 2: Companion step \"build\" exited unsuccessfully.");
+    native.mockResolvedValueOnce({ status: "done", opened: true, steps: [], attempts: 2, variant: 0 });
+    await relay("runCompanion", build);
+    expect(status).toHaveBeenLastCalledWith("ChemDraft received an invalid app handoff reply.");
     native.mockResolvedValueOnce({ status: "declined" });
     await relay("runCompanion", build);
     expect(status).toHaveBeenLastCalledWith("Companion build cancelled.");

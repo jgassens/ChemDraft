@@ -30,7 +30,12 @@ export const PluginAppHandoffLimits = {
   stderrTailBytes: 4 * 1024,
   parameterCharacters: 32,
   stepSeconds: 300,
-  pipelineSeconds: 600
+  pipelineSeconds: 600,
+  /** API 0.1.29: alternative inputs after the first, so at most three attempts. */
+  retryInputs: 2,
+  retryLabelCharacters: 80,
+  /** API 0.1.29: one bound for a whole retry sequence; each attempt keeps `pipelineSeconds`. */
+  retrySequenceSeconds: 1200
 } as const;
 
 const limits = PluginAppHandoffLimits;
@@ -237,6 +242,35 @@ export const PluginHandoffSendFileResultSchema = z.discriminatedUnion("status", 
   z.object({ status: z.literal("failed"), code: PluginHandoffSendFileFailureCodeSchema, message: nonempty }).strict()
 ]);
 
+/**
+ * API 0.1.29. Holds when step `step` reported exactly one row labelled `label` at
+ * `json.tables[i].rows[j]` (a row object whose `label` string equals `label` exactly), and that row's
+ * `value` is a finite JSON number, or a string whose trimmed text parses as one, other than `notEqual`.
+ * A missing step, report, table, row or value, a duplicate step or row, or a non-numeric or non-finite
+ * value does not hold. Labels are plain text: no control or invisible format characters, no line
+ * breaks, and no leading or trailing spaces.
+ */
+export const PluginCompanionRetryConditionSchema = z.object({
+  step: companionId,
+  label: z.string().min(1).max(2 * limits.retryLabelCharacters).refine(
+    label => boundedHandoffText(label, limits.retryLabelCharacters, false) === label,
+    { message: `Expected a plain label of up to ${limits.retryLabelCharacters} characters.` }
+  ),
+  notEqual: z.number().finite()
+}).strict();
+
+/**
+ * API 0.1.29. One or two alternative input texts with the first input's extension and size limit,
+ * tried in order after a completed attempt meets `when`. The host refuses alternatives whose atoms
+ * or bonds differ from the first input, or that repeat an earlier input.
+ */
+export const PluginCompanionRetrySchema = z.object({
+  inputs: z.array(utf8Text(limits.inputBytes)).min(1).max(limits.retryInputs),
+  when: PluginCompanionRetryConditionSchema
+}).strict();
+export type PluginCompanionRetry = z.infer<typeof PluginCompanionRetrySchema>;
+export type PluginCompanionRetryCondition = z.infer<typeof PluginCompanionRetryConditionSchema>;
+
 export const PluginHandoffRunCompanionRequestSchema = z.object({
   appId: nonempty,
   pipeline: companionId,
@@ -244,8 +278,12 @@ export const PluginHandoffRunCompanionRequestSchema = z.object({
   input: z.object({ extension: companionInputExtension, text: utf8Text(limits.inputBytes) }).strict().optional(),
   openOutput: z.boolean().optional(),
   /** Plain text shown for review before the build, up to 20 lines of 300 code points. */
-  warnings: handoffWarnings
-}).strict();
+  warnings: handoffWarnings,
+  /** API 0.1.29: a bounded retry under the same confirmation. Requires `input`. */
+  retry: PluginCompanionRetrySchema.optional()
+}).strict().refine(request => request.retry === undefined || request.input !== undefined, {
+  message: "A companion retry requires an input.", path: ["retry"]
+});
 
 export const PluginHandoffRunCompanionFailureCodeSchema = z.enum([
   "app-missing", "app-changed", "tool-missing", "bad-param", "version-untested",
@@ -264,20 +302,36 @@ export const PluginHandoffDiagnosticSchema = z.object({
 }).strict();
 export type PluginHandoffDiagnostic = z.infer<typeof PluginHandoffDiagnosticSchema>;
 
+/**
+ * API 0.1.29: present only when the request declared `retry`. `attempts` counts the attempts the
+ * host started; `variant` is the input behind the returned reports, output or failure: 0 for
+ * `input` and n for `retry.inputs[n - 1]`. Attempts run in order, so `variant` is `attempts - 1`.
+ */
+const retrySequence = {
+  attempts: z.number().int().min(1).max(limits.retryInputs + 1).optional(),
+  variant: z.number().int().min(0).max(limits.retryInputs).optional()
+};
+const sequenceConsistent = (result: { attempts?: number; variant?: number }) =>
+  result.attempts === undefined ? result.variant === undefined : result.variant === result.attempts - 1;
+
 export const PluginHandoffRunCompanionResultSchema = z.discriminatedUnion("status", [
   z.object({
     status: z.literal("done"),
     steps: z.array(z.object({ id: companionId, json: stepJson }).strict()),
-    opened: z.boolean()
+    opened: z.boolean(),
+    ...retrySequence
   }).strict(),
   declined,
   z.object({
     status: z.literal("failed"),
     code: PluginHandoffRunCompanionFailureCodeSchema,
     message: nonempty,
-    diagnostic: PluginHandoffDiagnosticSchema.optional()
+    diagnostic: PluginHandoffDiagnosticSchema.optional(),
+    ...retrySequence
   }).strict()
-]);
+]).refine(result => result.status === "declined" || sequenceConsistent(result), {
+  message: "A retry result reports its attempts and the variant of the last attempt together."
+});
 
 export const PluginAppHandoffSchemas = {
   chooseApp: { request: PluginHandoffChooseAppRequestSchema, result: PluginHandoffChooseAppResultSchema },
@@ -303,6 +357,9 @@ export interface PluginAppsAPI {
   status(request: PluginHandoffStatusRequest): Promise<PluginHandoffStatusResult>;
   /** Ask the native host to write a temporary file and open it with the chosen app. */
   sendFile(request: PluginHandoffSendFileRequest): Promise<PluginHandoffSendFileResult>;
-  /** Suggest a declared combination and ask the native host to run the entire declared pipeline. */
+  /**
+   * Suggest a declared combination and ask the native host to run the entire declared pipeline.
+   * With `retry` (API 0.1.29), one confirmation covers up to three attempts; see `PluginCompanionRetrySchema`.
+   */
   runCompanion(request: PluginHandoffRunCompanionRequest): Promise<PluginHandoffRunCompanionResult>;
 }

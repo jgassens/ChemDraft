@@ -1,7 +1,7 @@
 import { boundedHandoffText, PluginAppHandoffLimits } from "@chemdraft/plugin-api";
 import { z } from "zod";
 
-const { warningCount, warningCharacters } = PluginAppHandoffLimits;
+const { warningCount, warningCharacters, retryInputs, retryLabelCharacters } = PluginAppHandoffLimits;
 const displayText = z.string().min(1).refine(value => !value.includes("\0"));
 const attributedText = (limit: number) => z.string().min(1).refine(value =>
   value.length <= limit * 2 && boundedHandoffText(value, limit, false) === value);
@@ -24,7 +24,14 @@ export const AppHandoffDialogSnapshotSchema = z.discriminatedUnion("mode", [
     composition: z.object({ formula: z.string().regex(/^(?:[A-Z][a-z]?[0-9]*)+$/u),
       atomCount: z.number().int().safe().positive() }).strict().optional(),
     suggestedCombination: CompanionDialogIdSchema,
-    combinations: z.record(CompanionDialogIdSchema, combination)
+    combinations: z.record(CompanionDialogIdSchema, combination),
+    /** API 0.1.29: the bounded retry this one confirmation covers. `attempts` includes the first. */
+    retry: z.object({
+      attempts: z.number().int().min(2).max(retryInputs + 1),
+      step: CompanionDialogIdSchema,
+      label: attributedText(retryLabelCharacters),
+      notEqual: z.number().finite()
+    }).strict().optional()
   }).strict(),
   header.extend({
     mode: z.literal("result"),

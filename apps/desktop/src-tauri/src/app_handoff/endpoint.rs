@@ -1,22 +1,22 @@
 use super::{
-    arming::{self, ApprovedBuild, MenuInvocation, ResultSession, Submission},
+    arming::{self, ApprovedBuild, ApprovedRetry, MenuInvocation, ResultSession, Submission},
     catalog::{self, Plugin},
     command_line::{Pipeline, Platform},
     consent::{self, Entry, ListedConsent, Row, Store},
     dialogs::{self, Action},
     identity::{App, Error as IdentityError},
-    picker, runner,
+    picker, retry, runner,
     temp_files::{self, TempFiles},
     wire::{
         self, ChooseResult, ChosenApp, Request, RunCode, RunRequest, RunResult, SendCode,
-        SendRequest, SendResult, StatusResult,
+        SendRequest, SendResult, Sequence, StatusResult,
     },
 };
 use serde::Serialize;
 use serde_json::Value;
 use std::{
     collections::HashMap,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -38,6 +38,9 @@ fn send_template_digest() -> String {
 }
 const REBUILD_EXPIRED: &str =
     "The handoff app, pipeline, or consent changed. Start the build again from the menu.";
+const RETRY_STOPPED: &str =
+    "ChemDraft stopped the companion retries because the menu command that started them ended or was replaced.";
+const RETRY_TIMEOUT: &str = "The companion attempts reached their 1200-second total time limit.";
 
 #[derive(Default)]
 pub(crate) struct State {
@@ -519,6 +522,30 @@ impl Context<'_> {
             Ok(composition) => composition,
             Err(message) => return Ok(run_failed(RunCode::BadParam, message)),
         };
+        // API 0.1.29: every alternative input passes the first input's checks before any box.
+        let retry = match (&request.retry, &request.input) {
+            (None, _) => None,
+            (Some(retry), Some(input))
+                if pipeline.steps.iter().any(|step| step.id == retry.when.step) =>
+            {
+                match retry::variants(input, retry) {
+                    Ok(mut inputs) => {
+                        inputs.remove(0);
+                        Some(ApprovedRetry {
+                            inputs,
+                            when: retry.when.clone(),
+                        })
+                    }
+                    Err(message) => return Ok(run_failed(RunCode::BadParam, message)),
+                }
+            }
+            (Some(_), _) => {
+                return Ok(run_failed(
+                    RunCode::BadParam,
+                    "A companion retry needs an input and a step declared by the pipeline.",
+                ))
+            }
+        };
         let Some(entry) = self
             .store
             .get(self.plugin_id, &request.app_id, Some(&pipeline.id))
@@ -549,6 +576,9 @@ impl Context<'_> {
             &request.combination,
             composition.as_ref(),
             &warnings,
+            retry
+                .as_ref()
+                .map(|retry| dialogs::RetryNotice::new(1 + retry.inputs.len(), &retry.when)),
         ) else {
             return Ok(run_failed(
                 RunCode::BadParam,
@@ -581,6 +611,7 @@ impl Context<'_> {
             input: request.input,
             open_output: request.open_output.unwrap_or(false),
             warnings,
+            retry,
         };
         proof.bind_build(&build)?;
         let graph = composition.map(|composition| composition.graph_digest);
@@ -655,16 +686,20 @@ impl Context<'_> {
             Ok(result) => result,
             Err(error) => {
                 state.take_result(self.plugin_id, &marker);
-                return match error {
-                    JobError::Refused(message) => Err(message),
-                    JobError::Failed(failure) => Ok(failure_result(failure)),
-                };
+                return error.into_result();
             }
         };
-        let RunResult::Done { steps, .. } = &result else {
+        let RunResult::Done {
+            steps, sequence, ..
+        } = &result
+        else {
             state.take_result(self.plugin_id, &marker);
             return Ok(result);
         };
+        // A rebuild repeats only the input that produced this result, once.
+        if let Some(sequence) = sequence {
+            job.build.settle(sequence.variant);
+        }
         let twist = dialogs::twist(steps);
         let Some(rebuild) = job
             .pipeline
@@ -737,14 +772,10 @@ impl Context<'_> {
 
     async fn run_rebuild(&self, job: BuildJob, proof: Submission) -> Result<RunResult, String> {
         let window = self.window.clone();
-        match tauri::async_runtime::spawn_blocking(move || job.run(&window, &proof))
+        tauri::async_runtime::spawn_blocking(move || job.run(&window, &proof))
             .await
             .map_err(|_| "The native companion supervisor stopped unexpectedly.")?
-        {
-            Ok(result) => Ok(result),
-            Err(JobError::Refused(error)) => Err(error),
-            Err(JobError::Failed(failure)) => Ok(failure_result(failure)),
-        }
+            .or_else(JobError::into_result)
     }
 }
 
@@ -759,21 +790,118 @@ struct BuildJob {
 
 enum JobError {
     Refused(String),
-    Failed(runner::Failure),
+    Failed(runner::Failure, Option<Sequence>),
+}
+
+impl JobError {
+    fn failed(failure: runner::Failure) -> Self {
+        Self::Failed(failure, None)
+    }
+
+    fn within(self, sequence: Option<Sequence>) -> Self {
+        match self {
+            Self::Failed(failure, _) => Self::Failed(failure, sequence),
+            refused => refused,
+        }
+    }
+
+    fn into_result(self) -> Result<RunResult, String> {
+        match self {
+            Self::Refused(message) => Err(message),
+            Self::Failed(failure, sequence) => Ok(failure_result(failure, sequence)),
+        }
+    }
+}
+
+/// One complete pipeline run whose output has not been opened. Dropping it removes its files.
+struct Attempt {
+    files: TempFiles,
+    completed: runner::Completed,
 }
 
 impl BuildJob {
+    /// Run the approved build. With a declared retry, run the next input only after a completed
+    /// attempt meets the plugin's condition, revalidating everything a single run checks before
+    /// each attempt and at every launch. Only the final attempt can be opened or returned.
     fn run(&self, window: &WebviewWindow, proof: &Submission) -> Result<RunResult, JobError> {
+        let cache = cache(window.app_handle()).map_err(JobError::Refused)?;
+        let retry = self.build.retry.as_ref();
+        let deadline = Instant::now() + retry::SEQUENCE_LIMIT;
+        let (attempts, outcome) = retry::run_sequence(
+            self.build.variants(),
+            |index| {
+                if index > 0 {
+                    self.before_retry(window, proof, deadline)?;
+                }
+                self.attempt(window, proof, &cache, index, deadline)
+            },
+            |attempt: &Attempt| {
+                retry.is_some_and(|retry| retry::wants_retry(&attempt.completed.steps, &retry.when))
+            },
+        );
+        let sequence = retry.map(|_| Sequence::after(attempts));
+        let Attempt {
+            mut files,
+            completed,
+        } = outcome.map_err(|error| error.within(sequence))?;
+        let mut opened = false;
+        if self.build.open_output {
+            if let Some(output) = completed.output {
+                opened = self
+                    .with_authorized_launch(window, |current| {
+                        runner::verified_output(&files.root, &output)
+                            && current.open(self.platform, &output).is_ok()
+                    })
+                    .map_err(|failure| JobError::Failed(failure, sequence))?;
+                if opened {
+                    files.keep_for_open_app();
+                }
+            }
+        }
+        Ok(RunResult::Done {
+            steps: completed.steps,
+            opened,
+            sequence,
+        })
+    }
+
+    fn before_retry(
+        &self,
+        window: &WebviewWindow,
+        proof: &Submission,
+        deadline: Instant,
+    ) -> Result<(), JobError> {
+        if Instant::now() >= deadline {
+            return Err(JobError::failed(runner::Failure::new(
+                RunCode::Timeout,
+                RETRY_TIMEOUT,
+            )));
+        }
+        // Consent, plugin, command, shutdown and identity first, for their specific reasons.
+        self.with_authorized_launch(window, |_| ())
+            .map_err(JobError::failed)?;
+        proof
+            .assert_used()
+            .map_err(|_| JobError::failed(runner::Failure::new(RunCode::BadParam, RETRY_STOPPED)))
+    }
+
+    fn attempt(
+        &self,
+        window: &WebviewWindow,
+        proof: &Submission,
+        cache: &Path,
+        index: usize,
+        deadline: Instant,
+    ) -> Result<Attempt, JobError> {
         let app = window.app_handle();
-        let failed = |code, message| JobError::Failed(runner::Failure::new(code, message));
-        let cache = cache(app).map_err(JobError::Refused)?;
-        let mut files = TempFiles::new(&cache, &self.grant.plugin_id).map_err(|_| {
+        let failed = |code, message| JobError::failed(runner::Failure::new(code, message));
+        let files = TempFiles::new(cache, &self.grant.plugin_id).map_err(|_| {
             failed(
                 RunCode::WriteFailed,
                 "ChemDraft could not create the companion handoff folder.",
             )
         })?;
-        if let Some(input) = &self.build.input {
+        if let Some(input) = self.build.variant(index) {
             files
                 .write(&files.stem, input.extension, &input.text)
                 .map_err(|_| {
@@ -789,7 +917,7 @@ impl BuildJob {
             &self.pipeline,
             &self.build,
             &files,
-            |args, cwd, first, deadline| {
+            |args, cwd, first, step_deadline| {
                 self.with_authorized_launch(window, |current| {
                     let tool = current.tool().ok_or_else(|| {
                         runner::Failure::new(
@@ -802,49 +930,42 @@ impl BuildJob {
                             tool,
                             args,
                             cwd,
-                            deadline,
+                            step_deadline,
                             &state.stopped,
                         )
                     };
-                    if first {
-                        match proof.launch_build(&self.build, start) {
-                            Ok(result) => result,
-                            Err(error) => {
-                                refused = Some(error);
-                                Err(runner::Failure::new(
-                                    RunCode::BadParam,
-                                    "The native companion launch was refused.",
-                                ))
-                            }
+                    if !first {
+                        return start();
+                    }
+                    if index > 0 {
+                        // Later attempts reuse the approved click; it must still be live.
+                        return proof
+                            .relaunch_build(&self.build, start)
+                            .unwrap_or_else(|_| {
+                                Err(runner::Failure::new(RunCode::BadParam, RETRY_STOPPED))
+                            });
+                    }
+                    match proof.launch_build(&self.build, start) {
+                        Ok(result) => result,
+                        Err(error) => {
+                            refused = Some(error);
+                            Err(runner::Failure::new(
+                                RunCode::BadParam,
+                                "The native companion launch was refused.",
+                            ))
                         }
-                    } else {
-                        start()
                     }
                 })?
             },
             &state.stopped,
+            deadline,
         );
         if let Some(error) = refused {
             return Err(JobError::Refused(error));
         }
-        let completed = run.map_err(JobError::Failed)?;
-        let mut opened = false;
-        if self.build.open_output {
-            if let Some(output) = completed.output {
-                opened = self
-                    .with_authorized_launch(window, |current| {
-                        runner::verified_output(&files.root, &output)
-                            && current.open(self.platform, &output).is_ok()
-                    })
-                    .map_err(JobError::Failed)?;
-                if opened {
-                    files.keep_for_open_app();
-                }
-            }
-        }
-        Ok(RunResult::Done {
-            steps: completed.steps,
-            opened,
+        Ok(Attempt {
+            files,
+            completed: run.map_err(JobError::failed)?,
         })
     }
 
@@ -994,13 +1115,15 @@ fn run_failed(code: RunCode, message: impl Into<String>) -> RunResult {
         code,
         message: message.into(),
         diagnostic: None,
+        sequence: None,
     }
 }
-fn failure_result(failure: runner::Failure) -> RunResult {
+fn failure_result(failure: runner::Failure, sequence: Option<Sequence>) -> RunResult {
     RunResult::Failed {
         code: failure.code,
         message: failure.message,
         diagnostic: failure.diagnostic.map(|diagnostic| *diagnostic),
+        sequence,
     }
 }
 

@@ -147,7 +147,7 @@ describe("isPluginApiVersionCompatible", () => {
     expect(isPluginApiVersionCompatible("^0.1.14", "0.1.13")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.15", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.15", "0.1.14")).toBe(false);
-    expect(PluginApiVersion).toBe("0.1.28");
+    expect(PluginApiVersion).toBe("0.1.29");
     expect(isPluginApiVersionCompatible("^0.1.23", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.24", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.24", "0.1.23")).toBe(false);
@@ -156,6 +156,8 @@ describe("isPluginApiVersionCompatible", () => {
     expect(isPluginApiVersionCompatible("^0.1.26", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.26", "0.1.25")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.28", PluginApiVersion)).toBe(true);
+    expect(isPluginApiVersionCompatible("^0.1.29", PluginApiVersion)).toBe(true);
+    expect(isPluginApiVersionCompatible("^0.1.29", "0.1.28")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.28", "0.1.27")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.23", "0.1.22")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.16", PluginApiVersion)).toBe(true);
@@ -265,6 +267,35 @@ describe("runPluginWorker", () => {
     endpoint.deliver({ kind: "invokeTool", commandRequestId: 2, call: { requestId: "r", sessionId: "s", name: "find", input: {} } });
     await flush();
     expect(seen).toEqual([false, false]);
+  });
+
+  it("relays a bounded companion retry and its attempts through the Worker (API 0.1.29)", async () => {
+    const endpoint = new ControlledEndpoint();
+    const request = {
+      appId: "opaque", pipeline: "mofBuild", combination: "pcu", input: { extension: "xyz" as const, text: "1\n\nC 0 0 0\n" },
+      retry: { inputs: ["1\nb\nC 0 0 0.01\n"], when: { step: "build", label: "Joint twist left", notEqual: 0 } }
+    };
+    runPluginWorker({
+      manifest: { ...manifest(["apps.handoff", "native.execute"]), apiVersion: "^0.1.29" },
+      commandHandlers: { [commandId]: async context => {
+        const tooMany = { ...request, retry: { ...request.retry, inputs: ["a", "b", "c"] } };
+        await expect(context.apps!.runCompanion(tooMany)).rejects.toMatchObject({ code: PluginWorkerErrorCodes.MalformedMessage });
+        return context.apps!.runCompanion(request);
+      } }
+    }, endpoint);
+    endpoint.deliver({ kind: "invokeCommand", commandRequestId: 1, commandId });
+    await flush();
+    endpoint.deliver({ kind: "capabilityResult", requestId: 1, ok: false, error: {
+      code: "PluginHostError", message: "Invalid apps.runCompanion request."
+    } });
+    await flush();
+    expect(endpoint.sent.at(-1)).toEqual({
+      kind: "capabilityRequest", requestId: 2, commandRequestId: 1, namespace: "apps", method: "runCompanion", args: [request]
+    });
+    const done = { status: "done", steps: [], opened: true, attempts: 3, variant: 2 };
+    endpoint.deliver({ kind: "capabilityResult", requestId: 2, ok: true, value: done });
+    await flush();
+    expect(endpoint.sent.at(-1)).toMatchObject({ kind: "commandSettled", ok: true, value: done });
   });
 
   it("forwards strict apps payloads without a credential and rejects extra request or result fields", async () => {

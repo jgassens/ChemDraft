@@ -111,6 +111,31 @@ pub(super) struct RunRequest {
         deserialize_with = "optional"
     )]
     pub warnings: Option<Vec<String>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional"
+    )]
+    pub retry: Option<Retry>,
+}
+
+/// API 0.1.29: alternative inputs, tried in order after a completed attempt whose report meets
+/// `when`. Each text has the first input's extension and limits.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct Retry {
+    pub inputs: Vec<String>,
+    pub when: RetryCondition,
+}
+
+/// Holds when step `step` reports exactly one row labelled `label` whose value is a finite
+/// number other than `not_equal`. See `retry::reading` for the lookup.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct RetryCondition {
+    pub step: String,
+    pub label: String,
+    pub not_equal: f64,
 }
 
 pub(super) fn optional<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
@@ -190,6 +215,9 @@ impl Call {
                     return Err("The companion input exceeds 1 MiB.".into());
                 }
                 check_warnings(request.warnings.as_deref())?;
+                if let Some(retry) = &request.retry {
+                    super::retry::check_request(retry, request.input.as_ref())?;
+                }
                 Request::Run(request)
             }
         };
@@ -293,12 +321,31 @@ pub(super) struct StepResult {
     pub json: Value,
 }
 
+/// Present only for a request with `retry`. Variant 0 is `input`; variant n is `retry.inputs[n - 1]`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct Sequence {
+    pub attempts: usize,
+    pub variant: usize,
+}
+
+impl Sequence {
+    pub(super) fn after(attempts: usize) -> Self {
+        Self {
+            attempts,
+            variant: attempts.saturating_sub(1),
+        }
+    }
+}
+
 #[derive(Serialize)]
 #[serde(tag = "status", rename_all = "camelCase")]
 pub(super) enum RunResult {
     Done {
         steps: Vec<StepResult>,
         opened: bool,
+        #[serde(flatten, skip_serializing_if = "Option::is_none")]
+        sequence: Option<Sequence>,
     },
     Declined,
     Failed {
@@ -306,6 +353,8 @@ pub(super) enum RunResult {
         message: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         diagnostic: Option<Diagnostic>,
+        #[serde(flatten, skip_serializing_if = "Option::is_none")]
+        sequence: Option<Sequence>,
     },
 }
 

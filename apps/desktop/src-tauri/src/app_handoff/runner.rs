@@ -63,17 +63,22 @@ pub(super) struct Completed {
     pub output: Option<PathBuf>,
 }
 
+pub(super) const PIPELINE_LIMIT: Duration = Duration::from_secs(600);
+
+/// Run every declared step once. `deadline` is at most `PIPELINE_LIMIT` from the start; a retry
+/// sequence passes an earlier one when its own total bound ends first.
 pub(super) fn run(
     pipeline: &Pipeline,
     build: &ApprovedBuild,
     files: &TempFiles,
     mut start_step: impl FnMut(&[OsString], &Path, bool, Instant) -> Result<ChildProcess, Failure>,
     stopped: &AtomicBool,
+    deadline: Instant,
 ) -> Result<Completed, Failure> {
     let mut previous = None;
     let mut final_output = None;
     let mut results = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(600);
+    let deadline = deadline.min(Instant::now() + PIPELINE_LIMIT);
     for (index, step) in pipeline.steps.iter().enumerate() {
         let rendered = pipeline
             .render(

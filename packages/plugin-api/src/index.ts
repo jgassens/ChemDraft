@@ -56,6 +56,9 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * 0.1.28 adds drawn X connection points to selection snapshots.
  * 0.1.28 adds the selected-molecule handoff graph and bond growth suggestions, and graph input to embed3d.
  * 0.1.28 adds companion warnings, host identity, selected atom IDs, connection point writes, and handoff success status.
+ * 0.1.29 adds an optional bounded `retry` to `apps.runCompanion`: up to two alternative inputs under one
+ *   confirmation, tried only after a completed attempt whose declared report row is a finite number other
+ *   than the declared one, with `attempts` and `variant` in the result.
  *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
  * the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` — the NMR
@@ -65,7 +68,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * local structure recognition, `^0.1.7` for structure naming, `^0.1.8` for external tools), which this host satisfies and an
  * older one correctly does not.
  */
-export const PluginApiVersion = "0.1.28" as const;
+export const PluginApiVersion = "0.1.29" as const;
 
 export const pluginPermissions = [
   "document.read",
