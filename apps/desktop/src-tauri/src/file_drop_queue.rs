@@ -10,8 +10,13 @@
 //!
 //! The queue is bounded: [`MAX_PENDING_DROPS`] drops, [`MAX_PENDING_PATHS`] paths and
 //! [`MAX_PENDING_PATH_BYTES`] bytes of path text in all. A drop that does not fit is refused whole,
-//! never cut down, and counted; the next drain reports the count once. Destroying the document
-//! window retires everything pending, so a later window never receives an earlier window's drops.
+//! never cut down. There is no smaller limit for one drop: the page takes a drop of any size (it
+//! refuses the pictures past its own limit by name), so a drop is refused for its size only when it
+//! alone passes the totals, which no drop the page could have taken in ordinary use does. That
+//! refusal is recorded with the drop's size ([`OversizedDrop`]) and the next drain names it. A drop
+//! that would fit an empty queue but not beside the drops already waiting is only counted: the
+//! drain reports the count once. Destroying the document window retires everything pending, so a
+//! later window never receives an earlier window's drops.
 //!
 //! Queuing does not affect file access: tauri-plugin-fs adds each dropped path to its app-wide scope
 //! on the drop's `RunEvent::WindowEvent`, and that grant lasts for the run, so a drained path reads
@@ -28,10 +33,33 @@ pub(crate) const DOCUMENT_FILE_DROPS_CHANGED_EVENT: &str =
 
 /// Drops held at once.
 pub(crate) const MAX_PENDING_DROPS: usize = 16;
-/// Paths held at once, across every pending drop.
-pub(crate) const MAX_PENDING_PATHS: usize = 256;
-/// Bytes of path text held at once, across every pending drop.
-pub(crate) const MAX_PENDING_PATH_BYTES: usize = 1024 * 1024;
+/// Paths held at once, across every pending drop; also the most one drop may name.
+pub(crate) const MAX_PENDING_PATHS: usize = 4096;
+/// Bytes of path text held at once, across every pending drop; also the most one drop may name.
+pub(crate) const MAX_PENDING_PATH_BYTES: usize = 4 * 1024 * 1024;
+/// Oversized drops remembered for the next drain; the rest are only counted with the refused.
+const MAX_REPORTED_OVERSIZED_DROPS: usize = 16;
+
+/// Which limit a single drop passed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum OversizeKind {
+    /// It named more files than [`MAX_PENDING_PATHS`].
+    Files,
+    /// Its path text came to more than [`MAX_PENDING_PATH_BYTES`].
+    PathText,
+}
+
+/// One drop refused for its own size: more than the queue could hold even when empty.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OversizedDrop {
+    /// Files the drop named.
+    pub files: u32,
+    pub kind: OversizeKind,
+    /// The limit passed: a count of files, or bytes of path text.
+    pub limit: u32,
+}
 
 /// What one destructive drain hands the page.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -41,14 +69,19 @@ pub(crate) struct PendingDocumentDrops {
     pub drops: Vec<DocumentFileDropPayload>,
     /// Drops refused whole since the last drain because the queue was full.
     pub refused_drops: u32,
+    /// Drops refused whole since the last drain for their own size, oldest first.
+    pub oversized_drops: Vec<OversizedDrop>,
 }
 
 /// Whether a drop was queued.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DropAdmission {
     Queued,
-    /// The queue had no room for the whole drop; it was counted and not kept.
+    /// The queue had no room for the whole drop beside the drops waiting; it was counted and not
+    /// kept.
     Refused,
+    /// The drop alone passes a limit; it was recorded with its size and not kept.
+    Oversized,
     /// A drop with no paths: nothing to deliver.
     Empty,
     /// A path is not valid Unicode, so it cannot be sent to the page (serde refuses it). Queued, it
@@ -63,6 +96,7 @@ struct Queue {
     paths: usize,
     path_bytes: usize,
     refused_drops: u32,
+    oversized_drops: Vec<OversizedDrop>,
 }
 
 #[derive(Debug, Default)]
@@ -89,8 +123,28 @@ impl PendingDocumentDropQueue {
             return Ok(DropAdmission::NotUnicode);
         }
         let mut queue = self.queue.lock().map_err(|error| error.to_string())?;
+        let own_bytes = path_bytes(&payload);
+        let oversize = if payload.paths.len() > MAX_PENDING_PATHS {
+            Some((OversizeKind::Files, MAX_PENDING_PATHS))
+        } else if own_bytes > MAX_PENDING_PATH_BYTES {
+            Some((OversizeKind::PathText, MAX_PENDING_PATH_BYTES))
+        } else {
+            None
+        };
+        if let Some((kind, limit)) = oversize {
+            if queue.oversized_drops.len() < MAX_REPORTED_OVERSIZED_DROPS {
+                queue.oversized_drops.push(OversizedDrop {
+                    files: u32::try_from(payload.paths.len()).unwrap_or(u32::MAX),
+                    kind,
+                    limit: u32::try_from(limit).unwrap_or(u32::MAX),
+                });
+            } else {
+                queue.refused_drops = queue.refused_drops.saturating_add(1);
+            }
+            return Ok(DropAdmission::Oversized);
+        }
         let paths = queue.paths.saturating_add(payload.paths.len());
-        let path_bytes = queue.path_bytes.saturating_add(path_bytes(&payload));
+        let path_bytes = queue.path_bytes.saturating_add(own_bytes);
         if queue.drops.len() >= MAX_PENDING_DROPS
             || paths > MAX_PENDING_PATHS
             || path_bytes > MAX_PENDING_PATH_BYTES
@@ -111,6 +165,7 @@ impl PendingDocumentDropQueue {
         Ok(PendingDocumentDrops {
             drops: taken.drops.into(),
             refused_drops: taken.refused_drops,
+            oversized_drops: taken.oversized_drops,
         })
     }
 
@@ -145,6 +200,11 @@ pub(crate) fn record_document_drop<R: tauri::Runtime>(
         Ok(DropAdmission::Queued) => {}
         Ok(DropAdmission::Refused) => {
             eprintln!("Too many file drops are waiting for the document window; one was refused.");
+        }
+        Ok(DropAdmission::Oversized) => {
+            eprintln!(
+                "A file drop is larger than the document window's queue holds; it was refused."
+            );
         }
         Err(error) => {
             eprintln!("Could not queue a file drop for the document window: {error}");
@@ -287,15 +347,16 @@ mod tests {
     #[test]
     fn a_drop_passing_the_path_count_is_refused_whole_not_cut_down() {
         let queue = PendingDocumentDropQueue::default();
-        let first: Vec<String> = (0..200).map(|index| format!("/a{index}.png")).collect();
+        let first = many_paths("/a", MAX_PENDING_PATHS - 100);
         let first: Vec<&str> = first.iter().map(String::as_str).collect();
         assert_eq!(queue.record(drop_of(&first)), Ok(DropAdmission::Queued));
-        // 200 + 57 = 257 paths: the whole second drop is refused, none of its paths kept.
-        let second: Vec<String> = (0..57).map(|index| format!("/b{index}.png")).collect();
+        // 100 paths short of the limit, plus 101: the whole second drop is refused, none of its
+        // paths kept, and it is only counted: it would have fit an empty queue.
+        let second = many_paths("/b", 101);
         let second: Vec<&str> = second.iter().map(String::as_str).collect();
         assert_eq!(queue.record(drop_of(&second)), Ok(DropAdmission::Refused));
         // Exactly at the limit still fits.
-        let third: Vec<String> = (0..56).map(|index| format!("/c{index}.png")).collect();
+        let third = many_paths("/c", 100);
         let third: Vec<&str> = third.iter().map(String::as_str).collect();
         assert_eq!(queue.record(drop_of(&third)), Ok(DropAdmission::Queued));
         let drained = queue.drain().unwrap();
@@ -305,22 +366,108 @@ mod tests {
                 .iter()
                 .map(|drop| drop.paths.len())
                 .collect::<Vec<_>>(),
-            vec![200, 56]
+            vec![MAX_PENDING_PATHS - 100, 100]
         );
         assert_eq!(drained.refused_drops, 1);
-        // One drop larger than the whole limit is refused even into an empty queue.
-        let huge: Vec<String> = (0..=MAX_PENDING_PATHS)
-            .map(|index| format!("/h{index}.png"))
-            .collect();
-        let huge: Vec<&str> = huge.iter().map(String::as_str).collect();
-        assert_eq!(queue.record(drop_of(&huge)), Ok(DropAdmission::Refused));
+        assert!(drained.oversized_drops.is_empty());
+    }
+
+    fn many_paths(prefix: &str, count: usize) -> Vec<String> {
+        (0..count)
+            .map(|index| format!("{prefix}{index}.png"))
+            .collect()
+    }
+
+    #[test]
+    fn a_drop_the_page_takes_in_ordinary_use_is_queued_whole_not_refused() {
+        // A 300-file drop reached the page before the queue existed, and must still.
+        let queue = PendingDocumentDropQueue::default();
+        let three_hundred = many_paths("/Users/me/Pictures/mol-", 300);
+        let three_hundred: Vec<&str> = three_hundred.iter().map(String::as_str).collect();
         assert_eq!(
-            queue.drain().unwrap(),
-            PendingDocumentDrops {
-                drops: Vec::new(),
-                refused_drops: 1
-            }
+            queue.record(drop_of(&three_hundred)),
+            Ok(DropAdmission::Queued)
         );
+        // So does one at the limit, into an empty queue.
+        queue.drain().unwrap();
+        let at_limit = many_paths("/p", MAX_PENDING_PATHS);
+        let at_limit: Vec<&str> = at_limit.iter().map(String::as_str).collect();
+        assert_eq!(queue.record(drop_of(&at_limit)), Ok(DropAdmission::Queued));
+        let drained = queue.drain().unwrap();
+        assert_eq!(drained.drops[0].paths.len(), MAX_PENDING_PATHS);
+        assert_eq!(drained.refused_drops, 0);
+        assert!(drained.oversized_drops.is_empty());
+    }
+
+    #[test]
+    fn one_drop_passing_the_file_count_is_refused_for_its_own_size_not_as_a_pile_up() {
+        let queue = PendingDocumentDropQueue::default();
+        assert_eq!(
+            queue.record(drop_of(&["/before.png"])),
+            Ok(DropAdmission::Queued)
+        );
+        let huge = many_paths("/h", MAX_PENDING_PATHS + 1);
+        let huge: Vec<&str> = huge.iter().map(String::as_str).collect();
+        assert_eq!(queue.record(drop_of(&huge)), Ok(DropAdmission::Oversized));
+        assert_eq!(
+            queue.record(drop_of(&["/after.png"])),
+            Ok(DropAdmission::Queued)
+        );
+        let drained = queue.drain().unwrap();
+        assert_eq!(
+            names(&drained),
+            vec![vec!["/before.png"], vec!["/after.png"]]
+        );
+        // Named by its size, and not counted among the drops that piled up.
+        assert_eq!(drained.refused_drops, 0);
+        assert_eq!(
+            drained.oversized_drops,
+            vec![OversizedDrop {
+                files: MAX_PENDING_PATHS as u32 + 1,
+                kind: OversizeKind::Files,
+                limit: MAX_PENDING_PATHS as u32
+            }]
+        );
+        assert_eq!(
+            serde_json::to_value(&drained.oversized_drops).unwrap(),
+            serde_json::json!([{ "files": 4097, "kind": "files", "limit": 4096 }])
+        );
+        // Reported once.
+        assert!(queue.drain().unwrap().oversized_drops.is_empty());
+    }
+
+    #[test]
+    fn one_drop_passing_the_path_text_is_refused_for_its_own_size() {
+        let queue = PendingDocumentDropQueue::default();
+        let long = format!("/{}", "x".repeat(MAX_PENDING_PATH_BYTES));
+        assert_eq!(
+            queue.record(drop_of(&[&long, "/b.png"])),
+            Ok(DropAdmission::Oversized)
+        );
+        let drained = queue.drain().unwrap();
+        assert!(drained.drops.is_empty());
+        assert_eq!(drained.refused_drops, 0);
+        assert_eq!(
+            drained.oversized_drops,
+            vec![OversizedDrop {
+                files: 2,
+                kind: OversizeKind::PathText,
+                limit: MAX_PENDING_PATH_BYTES as u32
+            }]
+        );
+    }
+
+    #[test]
+    fn oversized_drops_remembered_are_bounded_and_the_rest_are_counted() {
+        let queue = PendingDocumentDropQueue::default();
+        let huge = many_paths("/h", MAX_PENDING_PATHS + 1);
+        let huge: Vec<&str> = huge.iter().map(String::as_str).collect();
+        for _ in 0..MAX_REPORTED_OVERSIZED_DROPS + 3 {
+            assert_eq!(queue.record(drop_of(&huge)), Ok(DropAdmission::Oversized));
+        }
+        let drained = queue.drain().unwrap();
+        assert_eq!(drained.oversized_drops.len(), MAX_REPORTED_OVERSIZED_DROPS);
+        assert_eq!(drained.refused_drops, 3);
     }
 
     #[test]
@@ -451,7 +598,8 @@ mod tests {
                     "paths": ["/Users/me/mol.png"], "position": { "x": 1.0, "y": 2.0 },
                     "units": "css", "topInsetRemoved": 0.0, "scaleFactor": 2.0
                 }],
-                "refusedDrops": 0
+                "refusedDrops": 0,
+                "oversizedDrops": []
             })
         );
     }

@@ -963,7 +963,7 @@ import { installBrowserReloadGuard, wasBrowserReloadPrevented } from "./browserR
 import { assertDocumentSize, decodeNativeDocumentContents, DOCUMENT_OPEN_ACCEPT, documentContentsKey, readBrowserDocumentFile, readNativeDocumentFile, type DocumentContents } from "./documentText";
 import { handleDroppedFiles, type DroppedImageInsertion, type DroppedImageSource } from "./imageDrop/dropHandler";
 import { browserDropClientPoint, drawableCanvasRect, dropPagePoint, nativeDropClientPoint, type DocumentFileDropPayload, type DropClientPoint } from "./imageDrop/dropPosition";
-import { DOCUMENT_FILE_DROPS_CHANGED_EVENT, listenAndDrainDocumentDrops, refusedDropsStatus, takePendingDocumentDrops } from "./imageDrop/pendingDrops";
+import { DOCUMENT_FILE_DROPS_CHANGED_EVENT, listenAndDrainDocumentDrops, refusalsStatus, takePendingDocumentDrops } from "./imageDrop/pendingDrops";
 import { insertDroppedImages, type PagePointLike } from "./imageDrop/insertDroppedImages";
 import type { PreparedDroppedImage } from "./imageDrop/prepareDroppedImage";
 import { savedDocumentBytes } from "./imageDrop/dropDocumentBudget";
@@ -1927,7 +1927,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.26.12.47-opus";
+const CURRENT_BUILD_STAMP = "11.26.13.10-opus";
 
 const NUMERIC_ENTRY_DURING_DRAG_STATUS = "Finish the current drag, then enter a value";
 
@@ -11572,11 +11572,12 @@ export function MainWindow({
           await new Promise<void>(resolve => pendingDocumentOpensRef.current.push(resolve));
         }
       },
-      consume: ({ drops, refusedDrops }) => {
+      consume: batch => {
+        const { drops } = batch;
         const delivered = drops.map(deliver);
-        if (!refusedDrops) return;
+        const refusal = refusalsStatus(batch);
+        if (!refusal) return;
         // Said once, after the drops that were taken have reported, on the tab in front then.
-        const refusal = refusedDropsStatus(refusedDrops);
         void Promise.allSettled(delivered).then(() => {
           if (!mountedRef.current) return;
           const shown = statusRef.current;

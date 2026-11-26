@@ -2156,6 +2156,11 @@ lossy and a lossless WebP, an SVG with gradients and `<use href="#id">`, a BMP, 
   page, not scaled by the second display. Repeat starting on the other display. (The limit of 16
   drops waiting at once, and the status naming how many more were refused, are covered by tests;
   not practical by hand.)
+- Large drop on a ready window (1.2.4): select a folder of about 300 small PNGs and drop it on the
+  window once it is fully up. The first 50 pictures are inserted, and the status names every other
+  file as refused ("only 50 pictures can be dropped at once"), as before drops were queued; it never
+  says "too many arrived before the window was ready". (A single drop of more than 4096 files is
+  refused with "Couldn't take a drop of N files: at most 4096 files per drop."; covered by tests.)
 
 ## Status line over the rulers (macOS and Windows, 1.2.3)
 

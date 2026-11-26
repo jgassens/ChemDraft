@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { DocumentFileDropPayload } from "./dropPosition";
-import { listenAndDrainDocumentDrops, pendingDocumentDropsFrom, refusedDropsStatus, type PendingDocumentDrops } from "./pendingDrops";
+import { listenAndDrainDocumentDrops, oversizedDropStatus, pendingDocumentDropsFrom, refusalsStatus, refusedDropsStatus, type PendingDocumentDrops } from "./pendingDrops";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -20,7 +20,7 @@ function rustQueue() {
     refuse() { refusedDrops += 1; changed?.(); },
     subscribe: vi.fn(async (handler: () => void) => { changed = handler; return () => { changed = undefined; }; }),
     take: vi.fn(async () => {
-      const batch = { drops: drops.splice(0), refusedDrops };
+      const batch = { drops: drops.splice(0), refusedDrops, oversizedDrops: [] };
       refusedDrops = 0;
       return batch;
     }),
@@ -33,12 +33,31 @@ const delivered = (consume: ReturnType<typeof vi.fn<(batch: PendingDocumentDrops
 
 describe("pending document drops", () => {
   it("keeps only well-formed drops and a positive whole refused count", () => {
-    expect(pendingDocumentDropsFrom(null)).toEqual({ drops: [], refusedDrops: 0 });
+    expect(pendingDocumentDropsFrom(null)).toEqual({ drops: [], refusedDrops: 0, oversizedDrops: [] });
     expect(pendingDocumentDropsFrom({ drops: [drop("/a.png"), { paths: [1] }, { paths: "/b.png" }, null], refusedDrops: 2 }))
-      .toEqual({ drops: [drop("/a.png")], refusedDrops: 2 });
+      .toEqual({ drops: [drop("/a.png")], refusedDrops: 2, oversizedDrops: [] });
     for (const refusedDrops of [-1, 1.5, "3", Number.NaN]) {
       expect(pendingDocumentDropsFrom({ drops: [], refusedDrops }).refusedDrops).toBe(0);
     }
+  });
+
+  it("keeps only well-formed oversized drops", () => {
+    const good = { files: 5000, kind: "files", limit: 4096 };
+    const text = { files: 1, kind: "pathText", limit: 4194304 };
+    expect(pendingDocumentDropsFrom({ drops: [], refusedDrops: 0, oversizedDrops: [good, text, null, { files: 0, kind: "files", limit: 4096 },
+      { files: 3, kind: "other", limit: 4096 }, { files: "3", kind: "files", limit: 4096 }, { files: 3, kind: "files" }] }).oversizedDrops)
+      .toEqual([good, text]);
+    expect(pendingDocumentDropsFrom({ drops: [], oversizedDrops: "x" }).oversizedDrops).toEqual([]);
+  });
+
+  it("says of a drop too large on its own how big it was and what the limit is", () => {
+    expect(oversizedDropStatus({ files: 5000, kind: "files", limit: 4096 })).toBe("Couldn't take a drop of 5000 files: at most 4096 files per drop.");
+    expect(oversizedDropStatus({ files: 1, kind: "pathText", limit: 4 * 1024 * 1024 }))
+      .toBe("Couldn't take a drop of 1 file: their paths are too long; at most 4.0 MB of path text per drop.");
+    expect(refusalsStatus({ refusedDrops: 0, oversizedDrops: [] })).toBe("");
+    expect(refusalsStatus({ refusedDrops: 1, oversizedDrops: [{ files: 5000, kind: "files", limit: 4096 }] }))
+      .toBe("Couldn't take a drop of 5000 files: at most 4096 files per drop. "
+        + "Couldn't take 1 more drop: too many arrived before the window was ready. Drop it again.");
   });
 
   it("names how many drops were refused and why", () => {
@@ -105,7 +124,7 @@ describe("pending document drops", () => {
     queue.refuse();
     queue.refuse();
     await vi.waitFor(() => expect(consume).toHaveBeenCalledOnce());
-    expect(consume.mock.calls[0]![0]).toEqual({ drops: [], refusedDrops: 2 });
+    expect(consume.mock.calls[0]![0]).toEqual({ drops: [], refusedDrops: 2, oversizedDrops: [] });
     dispose();
   });
 

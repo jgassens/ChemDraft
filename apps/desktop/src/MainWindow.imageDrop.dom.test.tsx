@@ -26,6 +26,8 @@ const native = vi.hoisted(() => ({
   /** Rust's drop queue (`file_drop_queue.rs`): drops wait whole, in order, until the page drains. */
   pendingDrops: [] as unknown[],
   refusedDrops: 0,
+  /** Drops Rust refused for their own size since the last drain. */
+  oversizedDrops: [] as unknown[],
   /** Every destructive drain the page made. */
   takes: 0,
   /** When set, a drain's reply waits for it, after the queue was read. */
@@ -68,7 +70,7 @@ vi.mock("@tauri-apps/api/core", async (original) => ({
     if (command !== "take_pending_document_drops") return null;
     native.takes += 1;
     // Destructive at once, as in Rust; the reply may then take a while to arrive.
-    const batch = { drops: native.pendingDrops.splice(0), refusedDrops: native.refusedDrops };
+    const batch = { drops: native.pendingDrops.splice(0), refusedDrops: native.refusedDrops, oversizedDrops: native.oversizedDrops.splice(0) };
     native.refusedDrops = 0;
     await native.takeGate;
     return batch;
@@ -131,6 +133,7 @@ describe("dropping picture files on the document window", { timeout: 3 * DROP_WA
     native.gate = undefined;
     native.pendingDrops.length = 0;
     native.refusedDrops = 0;
+    native.oversizedDrops.length = 0;
     native.takes = 0;
     native.takeGate = undefined;
     native.loadSession = async () => undefined;
@@ -1040,6 +1043,40 @@ describe("dropping picture files on the document window", { timeout: 3 * DROP_WA
       native.refusedDrops = 1;
       await act(async () => native.events.get(DOCUMENT_FILE_DROPS_CHANGED_EVENT)!(null));
       await eventually(() => expect(status()).toBe("Couldn't take 1 more drop: too many arrived before the window was ready. Drop it again."));
+    });
+
+    it("hands a 300-file drop on a ready window to the drop handler, as before the queue: 50 pictures, the rest named", async () => {
+      native.desktop = true;
+      const paths = Array.from({ length: 300 }, (_, index) => `/Users/me/Pictures/mol-${index}.png`);
+      for (const path of paths) native.files.set(path, pngBytes());
+      native.stat.mockImplementation(async file => ({ size: native.files.get(file)?.length ?? 0 }));
+      await mount(createPhase4Document("Desktop"), "macos");
+      await eventually(() => expect(listening()).toBe(true));
+      await nativeDrop({ paths, position: { x: 300, y: 200 }, units: "css", topInsetRemoved: 0, scaleFactor: 2 });
+      await eventually(() => expect(status()).toContain("only 50 pictures can be dropped at once"));
+      expect(pictures()).toHaveLength(50);
+      // The drop handler's own refusal names every file it left out, and says nothing of a queue.
+      expect(status()).toContain("\"mol-50.png\"");
+      expect(status()).toContain("\"mol-299.png\"");
+      expect(status()).not.toContain("before the window was ready");
+      expect(status()).not.toContain("Couldn't take");
+    });
+
+    it("says of a drop too large for the queue how big it was and what the limit is, not that drops piled up", async () => {
+      native.desktop = true;
+      desktopPicture("/Users/me/Pictures/kept.png");
+      await mount(createPhase4Document("Desktop"), "macos");
+      await eventually(() => expect(listening()).toBe(true));
+      native.oversizedDrops.push({ files: 5000, kind: "files", limit: 4096 });
+      await act(async () => native.events.get(DOCUMENT_FILE_DROPS_CHANGED_EVENT)!(null));
+      await eventually(() => expect(status()).toBe("Couldn't take a drop of 5000 files: at most 4096 files per drop."));
+      native.oversizedDrops.push({ files: 2, kind: "pathText", limit: 4 * 1024 * 1024 });
+      native.refusedDrops = 2;
+      await act(async () => native.events.get(DOCUMENT_FILE_DROPS_CHANGED_EVENT)!(null));
+      await eventually(() => expect(status()).toBe(
+        "Couldn't take a drop of 2 files: their paths are too long; at most 4.0 MB of path text per drop. "
+        + "Couldn't take 2 more drops: too many arrived before the window was ready. Drop them again."));
+      expect(pictures()).toHaveLength(0);
     });
   });
 });
