@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="257" height="177" viewBox="0 0 771 531">
+<title>Petri dish — Molecular Minimalism</title>
+<defs><linearGradient id="medium" x1="0" y1="0" x2=".3" y2="1"><stop stop-color="#edcfd3"/><stop offset="1" stop-color="#f1d9d9"/></linearGradient><linearGradient id="clear" x1="0" y1="0" x2=".4" y2="1"><stop stop-color="#f0f5f9" stop-opacity=".7"/><stop offset="1" stop-color="#e3edf4" stop-opacity=".22"/></linearGradient></defs>
+<g stroke-linecap="round" stroke-linejoin="round">
+
+<path d="M117 281 C126 207 270 136 452 136 C615 135 752 195 752 269 L744 382 C737 459 604 510 440 511 C276 513 136 461 127 384 Z" fill="#e9f0f6" fill-opacity=".47" stroke="#30465b" stroke-width="6"/>
+<path d="M136 320 C162 269 291 226 449 229 C601 228 709 268 733 307 L730 378 C724 444 593 492 440 493 C289 494 145 449 140 380 Z" fill="url(#medium)" stroke="#b78b95" stroke-width="3.8"/>
+<path d="M143 324 C183 279 311 248 452 246 C584 246 684 273 721 304 C692 361 573 411 437 415 C293 417 168 377 143 324Z" fill="url(#medium)"/>
+<path d="M117 281 C122 207 271 138 452 137 C620 135 751 195 752 268 C752 349 600 414 441 417 C282 420 136 368 118 303Z" fill="none" stroke="#526a7e" stroke-width="5.2"/>
+<path d="M130 280 C137 212 279 145 453 145 C615 143 743 199 742 268 C742 344 596 404 441 408 C284 412 148 362 130 303" fill="none" stroke="#f7f9fb" stroke-width="4"/>
+<path d="M154 296 C194 250 316 217 449 216 C586 216 695 254 724 292" stroke="#8ca4b6" stroke-width="4" fill="none"/>
+<path d="M143 376 C147 446 280 494 441 497 C602 497 731 447 736 376" fill="none" stroke="#fff" stroke-width="4" stroke-opacity=".84"/>
+
+<path d="M17 234 C30 294 168 310 326 257 C486 205 599 114 582 63 L597 125 C608 177 496 260 340 310 C193 358 66 357 38 316 C30 304 24 262 17 234Z" fill="#f1f6fa" fill-opacity=".37" stroke="#344c60" stroke-width="6"/>
+<path d="M17 234 C16 177 144 95 299 47 C437 4 554 11 581 54 C612 107 491 200 330 255 C177 305 30 309 17 248 C16 243 16 239 17 234Z" fill="url(#clear)" stroke="#293c50" stroke-width="6"/>
+<path d="M27 231 C33 178 158 104 303 60 C436 20 549 24 574 59 C601 104 481 192 327 246 C182 295 38 299 27 244Z" fill="none" stroke="#8da2b4" stroke-width="4"/>
+<path d="M121 287 L129 333" fill="none" stroke="#7a91a5" stroke-width="4"/>
+</g></svg>

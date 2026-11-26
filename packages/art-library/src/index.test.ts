@@ -1,0 +1,21 @@
+import { describe, expect, it } from "vitest";
+import { readFileSync, readdirSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { join } from "node:path";
+import { buildCategoryTree, normalizeArtSearch, packSchema, parseVariantFilename, planImport, prettifyStem, readForeignManifest, searchCatalog, variantLabel, type ArtItem } from "./index";
+
+describe("art library", () => {
+  it.each([
+    ["β-CD28", "betacd28"],
+    ["α, δ (γ)", "alphadeltagamma"],
+    [" ＡＢＣ ", "abc"],
+    ["Lymph-node's", "lymphnodes"],
+    ["a.b", "a.b"],
+    ["ɑ′ x", "alphax"]
+  ])("normalizes %s for search", (name, normalized) => {
+    expect(normalizeArtSearch(name)).toBe(normalized);
+  });
+  it("validates strict packs and safe paths", () => { const item={id:"a",name:"A",description:"",category:"C",subcategory:"S",keywords:[],variants:{one:{file:"art/a.svg",sha256:"a".repeat(64),width:20,height:30}}}; const p={id:"p",name:"Pack",version:"1",license:"CC-BY-4.0",items:[item]}; expect(packSchema.safeParse(p).success).toBe(true); for(const file of ["../a.svg","/a.svg","C:/a.svg","a\\b.svg","a/../b.svg","a.png"]) expect(packSchema.safeParse({...p,items:[{...item,variants:{one:{...item.variants.one,file}}}]}).success).toBe(false); expect(packSchema.safeParse({...p,extra:1}).success).toBe(false); expect(packSchema.safeParse({...p,license:""}).success).toBe(false); });
+  it("pairs variants and builds a stable category tree and ranked search", () => { expect(parseVariantFilename("assets/lymph-node--anatomic-minimalist.svg")).toEqual({stem:"lymph-node",variant:"anatomic-minimalist"}); expect(prettifyStem("lymph-node")).toBe("Lymph node"); expect(variantLabel("anatomic-minimalist")).toBe("Anatomic Minimalist"); const base={id:"a",name:"Antibody",description:"β cell",category:"Biology",subcategory:"Cells",keywords:["CD28"],variants:{}} as ArtItem; const catalog={collections:[{id:"x",name:"BioArt",items:[{...base,id:"b",name:"Other",keywords:["antibody"]},base]}]}; expect(searchCatalog(catalog,"antibody").map(x=>x.item.id)).toEqual(["a","b"]); expect(searchCatalog(catalog,"beta CD28").map(x=>x.item.id)).toEqual(["a"]); expect(buildCategoryTree(catalog)[0]!.categories[0]!.subcategories[0]!.items).toHaveLength(2); });
+  it("reads both foreign shapes and plans ten pairs, accounting for noise", () => { const root = "packages/art-library/fixtures/foreign"; const paths = ["assets", "evidence", "proofs"].flatMap(dir => readdirSync(join(root,dir)).map(name => `${dir}/${name}`)).concat(["plate.svg", "preview.png"]); const entries=paths.map(path => { const bytes=readFileSync(join(root,path)); return {path,sha256:createHash("sha256").update(bytes).digest("hex"),byteSize:bytes.length}; }); const files=entries.filter(f=>f.path.startsWith("assets/")); const noise=entries.filter(f=>!f.path.startsWith("assets/")); const manifest=JSON.parse(readFileSync(join(root,"manifest.json"),"utf8")); const hints=readForeignManifest(manifest,files.map(f=>f.path)); const plan=planImport([...files,...noise],hints); expect(plan.name).toBe("Collection"); expect(plan.items).toHaveLength(10); expect(plan.items.every(i=>Object.keys(i.variants).length===2)).toBe(true); expect(plan.leftOut).toHaveLength(noise.length); expect(plan.leftOut.every(x=>x.reason)).toBe(true); expect(readForeignManifest({unknown:[]},[])).toBeUndefined(); expect(readForeignManifest({subjects:[{name:"Node",variants:{one:files[0]!.path}}]},files.map(f=>f.path))?.files[files[0]!.path]?.name).toBe("Node"); const duplicate=planImport([{path:"a.svg",sha256:"x",byteSize:1},{path:"b.svg",sha256:"x",byteSize:1}]); expect(duplicate.leftOut[0]?.reason).toContain("duplicate"); });
+});

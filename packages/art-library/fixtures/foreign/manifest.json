@@ -1,0 +1,105 @@
+{
+  "title": "Collection",
+  "assets": [
+    {
+      "path": "assets/item-0--anatomic-minimalist.svg",
+      "display_name": "Item 0",
+      "style": "anatomic minimalist"
+    },
+    {
+      "path": "assets/item-0--molecular-minimalism.svg",
+      "display_name": "Item 0",
+      "style": "molecular minimalism"
+    },
+    {
+      "path": "assets/item-1--anatomic-minimalist.svg",
+      "display_name": "Item 1",
+      "style": "anatomic minimalist"
+    },
+    {
+      "path": "assets/item-1--molecular-minimalism.svg",
+      "display_name": "Item 1",
+      "style": "molecular minimalism"
+    },
+    {
+      "path": "assets/item-2--anatomic-minimalist.svg",
+      "display_name": "Item 2",
+      "style": "anatomic minimalist"
+    },
+    {
+      "path": "assets/item-2--molecular-minimalism.svg",
+      "display_name": "Item 2",
+      "style": "molecular minimalism"
+    },
+    {
+      "path": "assets/item-3--anatomic-minimalist.svg",
+      "display_name": "Item 3",
+      "style": "anatomic minimalist"
+    },
+    {
+      "path": "assets/item-3--molecular-minimalism.svg",
+      "display_name": "Item 3",
+      "style": "molecular minimalism"
+    },
+    {
+      "path": "assets/item-4--anatomic-minimalist.svg",
+      "display_name": "Item 4",
+      "style": "anatomic minimalist"
+    },
+    {
+      "path": "assets/item-4--molecular-minimalism.svg",
+      "display_name": "Item 4",
+      "style": "molecular minimalism"
+    },
+    {
+      "path": "assets/item-5--anatomic-minimalist.svg",
+      "display_name": "Item 5",
+      "style": "anatomic minimalist"
+    },
+    {
+      "path": "assets/item-5--molecular-minimalism.svg",
+      "display_name": "Item 5",
+      "style": "molecular minimalism"
+    },
+    {
+      "path": "assets/item-6--anatomic-minimalist.svg",
+      "display_name": "Item 6",
+      "style": "anatomic minimalist"
+    },
+    {
+      "path": "assets/item-6--molecular-minimalism.svg",
+      "display_name": "Item 6",
+      "style": "molecular minimalism"
+    },
+    {
+      "path": "assets/item-7--anatomic-minimalist.svg",
+      "display_name": "Item 7",
+      "style": "anatomic minimalist"
+    },
+    {
+      "path": "assets/item-7--molecular-minimalism.svg",
+      "display_name": "Item 7",
+      "style": "molecular minimalism"
+    },
+    {
+      "path": "assets/item-8--anatomic-minimalist.svg",
+      "display_name": "Item 8",
+      "style": "anatomic minimalist"
+    },
+    {
+      "path": "assets/item-8--molecular-minimalism.svg",
+      "display_name": "Item 8",
+      "style": "molecular minimalism"
+    },
+    {
+      "path": "assets/item-9--anatomic-minimalist.svg",
+      "display_name": "Item 9",
+      "style": "anatomic minimalist"
+    },
+    {
+      "path": "assets/item-9--molecular-minimalism.svg",
+      "display_name": "Item 9",
+      "style": "molecular minimalism"
+    }
+  ]
+}

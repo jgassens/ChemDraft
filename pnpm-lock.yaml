@@ -236,6 +236,12 @@ importers:
         specifier: 2.2.1
         version: 2.2.1
 
+  packages/art-library:
+    dependencies:
+      zod:
+        specifier: ^3.24.2
+        version: 3.25.76
+
   packages/cdx-compat:
     dependencies:
       '@chemdraft/chem-core':
@@ -322,6 +328,9 @@ importers:
       '@chemdraft/analysis-core':
         specifier: workspace:*
         version: link:../analysis-core
+      '@chemdraft/art-library':
+        specifier: workspace:*
+        version: link:../art-library
       '@chemdraft/chem-core':
         specifier: workspace:*
         version: link:../chem-core

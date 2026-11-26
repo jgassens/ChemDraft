@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="254" height="175" viewBox="0 0 762 525">
+<title>Petri dish — Anatomic Minimalist</title>
+<defs>
+ <linearGradient id="glass" x1="0" y1="0" x2="0.85" y2="1"><stop stop-color="#d1deeb" stop-opacity=".74"/><stop offset=".5" stop-color="#e8eef5" stop-opacity=".45"/><stop offset="1" stop-color="#a3b6ca" stop-opacity=".64"/></linearGradient>
+ <linearGradient id="wall" x1="0" x2="1" y1="0" y2=".1"><stop stop-color="#91a6ba"/><stop offset=".055" stop-color="#c6d4e2"/><stop offset=".18" stop-color="#d9c1c8"/><stop offset=".48" stop-color="#dcbac3"/><stop offset=".68" stop-color="#f0d1d5"/><stop offset=".73" stop-color="#e8c6cc"/><stop offset=".91" stop-color="#d6b2bf"/><stop offset="1" stop-color="#a9b7c8"/></linearGradient>
+ <linearGradient id="medium" x1="0" y1="0" x2=".3" y2="1"><stop stop-color="#c7a0aa"/><stop offset=".48" stop-color="#dfbec5"/><stop offset="1" stop-color="#eacdd1"/></linearGradient>
+ <linearGradient id="lidwall" x1="0" y1="0" x2="1" y2=".15"><stop stop-color="#a6b8cd" stop-opacity=".86"/><stop offset=".2" stop-color="#e6edf4" stop-opacity=".66"/><stop offset=".46" stop-color="#b8c4d5" stop-opacity=".42"/><stop offset=".49" stop-color="#f8fafb" stop-opacity=".91"/><stop offset=".55" stop-color="#e5dce4" stop-opacity=".52"/><stop offset=".84" stop-color="#ccd8e4" stop-opacity=".48"/><stop offset="1" stop-color="#91a5bb" stop-opacity=".86"/></linearGradient>
+ <linearGradient id="shadow" x1="0" y1="0" x2=".25" y2="1"><stop stop-color="#927e9b" stop-opacity=".27"/><stop offset="1" stop-color="#927e9b" stop-opacity=".02"/></linearGradient>
+ <linearGradient id="lidtop" x1="0" y1="0" x2=".5" y2="1"><stop stop-color="#d4e0ec" stop-opacity=".92"/><stop offset=".7" stop-color="#d3deeb" stop-opacity=".55"/><stop offset="1" stop-color="#eaf1f7" stop-opacity=".2"/></linearGradient>
+</defs>
+<g stroke-linejoin="round" stroke-linecap="round">
+
+<path d="M139 264 C148 194 294 132 460 132 C623 132 741 192 741 267 L736 348 C732 435 600 499 440 503 C280 507 149 449 143 371 Z" fill="url(#glass)" stroke="#71869a" stroke-width="6.5"/>
+<path d="M144 304 C171 246 296 208 447 211 C595 213 712 257 735 298 L731 348 C726 426 596 488 440 492 C288 495 161 441 157 371 Z" fill="url(#wall)" stroke="#bda8b4" stroke-width="2.4"/>
+<path d="M157 312 C169 254 290 218 445 218 C595 218 708 253 727 299 C712 352 585 401 444 407 C290 408 180 376 157 312Z" fill="url(#medium)"/>
+<path d="M171 313 C207 270 327 221 445 218 C507 218 554 224 594 236 C530 294 414 344 309 370 C247 386 199 367 171 313Z" fill="url(#shadow)"/>
+<path d="M162 325 C196 260 319 229 447 229 C589 229 696 264 718 303" fill="none" stroke="#f7e0e3" stroke-opacity=".75" stroke-width="4"/>
+<path d="M160 369 C174 434 288 480 440 479 C588 479 712 423 725 348" fill="none" stroke="#f8e4e5" stroke-width="4" stroke-opacity=".85"/>
+<path d="M139 264 C145 191 287 133 450 132 C619 130 742 194 741 267 C738 345 602 412 444 415 C283 419 147 359 139 286Z" fill="none" stroke="#73899d" stroke-width="6.3"/>
+<path d="M142 265 C150 194 291 135 450 135 C616 134 737 195 737 264" fill="none" stroke="#9aafc3" stroke-width="2.7"/>
+<path d="M146 268 C153 200 291 141 450 140 C606 138 732 197 732 265 C729 340 599 404 444 407 C288 412 156 355 146 282" fill="none" stroke="#f0f6fa" stroke-width="4.5"/>
+<path d="M148 376 C157 445 289 495 441 496 C599 494 726 430 732 349" fill="none" stroke="#dce5ed" stroke-width="4"/>
+
+<path d="M20 233 C32 308 179 300 333 249 C492 198 613 104 590 52 L607 111 C625 173 504 259 344 313 C202 362 69 369 37 325 C30 314 27 281 20 233Z" fill="url(#lidwall)" stroke="#71869b" stroke-width="5"/>
+<path d="M28 247 C36 282 114 294 232 268 C390 234 548 148 584 84 L598 104 C614 160 497 247 344 304 C212 350 81 359 43 320" fill="none" stroke="#f0f6fa" stroke-width="4.5" stroke-opacity=".9"/>
+<path d="M20 233 C20 171 155 87 310 42 C450 1 571 9 590 52 C613 104 492 198 333 249 C179 300 32 309 20 250 C19 244 19 239 20 233Z" fill="url(#lidtop)" stroke="#7e91a6" stroke-width="6"/>
+<path d="M31 235 C35 175 166 95 316 50 C450 11 565 18 582 57 C600 102 485 190 330 241 C177 290 42 300 31 247Z" fill="none" stroke="#edf5fb" stroke-width="4.5"/>
+<path d="M145 268 C158 203 291 143 450 141 C485 141 521 144 550 149" fill="none" stroke="#edf4fa" stroke-width="2.6" stroke-opacity=".65"/>
+<path d="M40 226 C65 170 188 104 319 67 C452 30 552 27 578 60" fill="none" stroke="#9fb2c6" stroke-width="4" stroke-opacity=".55"/>
+<path d="M26 248 C45 299 181 296 334 246 C486 195 598 109 587 59" fill="none" stroke="#f9fcff" stroke-opacity=".75" stroke-width="2.8"/>
+</g></svg>

@@ -28,7 +28,8 @@
     "templates:check-images": "node tools/template-layouts/render-check.mjs",
     "test:ocsr-real": "node packages/fixtures/ocsr/run-real-engine-check.mjs",
     "build:sdk": "node scripts/build-sdk.mjs plugin-api && node scripts/build-sdk.mjs plugin-host",
-    "smoke:sdk-identity": "node tools/sdk-smoke/identity-two-write.mjs"
+    "smoke:sdk-identity": "node tools/sdk-smoke/identity-two-write.mjs",
+    "art:pack": "node --import tsx tools/art-pack/build.mjs"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.30.1",

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="118" height="356" viewBox="0 0 236 712"><title>separatory funnel molecular</title><g stroke="#2b4658" stroke-width="3.1" stroke-linecap="round" stroke-linejoin="round" fill="#f4f8fa">
+<g id="vessel"><path d="M86 96 L89 137 Q88 146 76 152 C36 173 10 211 16 263 C24 321 60 402 108 505 Q111 514 111 528 L133 528 Q131 515 136 505 C181 407 217 324 226 263 C233 213 207 174 165 152 Q153 146 154 137 L158 96 Z"/>
+<path d="M20 254 Q28 302 43 345 Q116 358 199 345 Q215 307 222 254 Z" fill="#f9dba0" stroke="none"/><path d="M43 345 Q121 357 199 345 C179 403 155 458 131 508 Q122 518 113 509 C87 458 64 401 43 345 Z" fill="#c3e4f7" stroke="none"/>
+<path d="M43 345 Q121 357 199 345" fill="none" stroke="#7bb2d3" stroke-width="2"/><ellipse cx="121" cy="254" rx="102" ry="14" fill="#fce8b7" stroke="#c29955" stroke-width="2.2"/>
+<path d="M16 258 C24 321 60 402 108 505 Q111 514 111 528 M226 258 C217 324 181 407 136 505 Q131 515 133 528" fill="none"/>
+<path d="M111 509 Q121 518 132 509" fill="none" stroke="#a9cee1" stroke-width="2"/>
+<path d="M86 97 L89 137 Q121 149 154 137 L158 97 Z" fill="#f0f5f8" stroke-width="2.5"/>
+</g><g id="stopper"><path d="M107 79 L107 74 C91 63 89 46 100 31 C111 16 131 15 143 30 C157 46 152 64 137 74 L136 79 Z"/><rect x="78" y="79" width="87" height="17" rx="7"/></g>
+<g id="stopcock"><path d="M111 568 L132 568 L131 679 Q131 685 117 694 Q113 694 113 687 Z"/><path d="M68 533 Q59 535 59 550 Q59 568 68 568 L83 568 L83 532 Z"/><path d="M77 535 V566" fill="none"/><path d="M159 539 L167 539 L172 516 Q174 506 183 507 Q195 508 194 519 L190 541 Q196 551 190 558 L194 579 Q196 591 184 592 Q174 593 172 582 L168 561 L159 561 Z" fill="#bbaad8"/><path d="M92 528 Q104 528 111 531 L133 531 L145 528 Q153 529 157 536 L157 560 Q154 570 146 570 L94 570 Q86 569 86 561 L86 535 Z"/><path d="M155 535 L155 562 M84 534 L84 566" stroke-width="2.1" fill="none"/><path d="M179 514 L177 541 M175 561 L181 584" stroke="#ded0e9" stroke-width="2.5" fill="none"/>
+</g></g></svg>

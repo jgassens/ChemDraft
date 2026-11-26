@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="253" height="167" viewBox="0 0 759 501">
+<title>Permeable cell culture insert — Anatomic Minimalist</title>
+<defs>
+<linearGradient id="outer" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#a2a5ba" stop-opacity=".65"/><stop offset=".06" stop-color="#f0eff5" stop-opacity=".7"/><stop offset=".19" stop-color="#c5c9da" stop-opacity=".44"/><stop offset=".46" stop-color="#e2e4ee" stop-opacity=".38"/><stop offset=".83" stop-color="#d1d5e3" stop-opacity=".5"/><stop offset=".95" stop-color="#f7f6fa" stop-opacity=".65"/><stop offset="1" stop-color="#9ea4b7" stop-opacity=".76"/></linearGradient>
+<linearGradient id="pinkSide" x1="0" y1="0" x2="1" y2=".06"><stop stop-color="#cd7196"/><stop offset=".14" stop-color="#e5a0b9"/><stop offset=".18" stop-color="#f1b5cc"/><stop offset=".24" stop-color="#da8caf"/><stop offset=".6" stop-color="#d78bad"/><stop offset=".91" stop-color="#df92b2"/><stop offset="1" stop-color="#c66b92"/></linearGradient>
+<radialGradient id="contactShadow" cx=".5" cy="0" r=".8" gradientTransform="translate(0 .06) scale(1 .96)"><stop stop-color="#a7376a" stop-opacity=".48"/><stop offset=".63" stop-color="#b34e7c" stop-opacity=".25"/><stop offset="1" stop-color="#e0a0bd" stop-opacity="0"/></radialGradient>
+<linearGradient id="depth" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#963e67" stop-opacity=".22"/><stop offset=".6" stop-color="#d88eb1" stop-opacity=".07"/><stop offset="1" stop-color="#f6b5cd" stop-opacity=".31"/></linearGradient>
+<linearGradient id="pinkSurface" x1="0" y1="0" x2=".05" y2="1"><stop stop-color="#e8b5cc"/><stop offset=".55" stop-color="#dc92b2"/><stop offset="1" stop-color="#e7a5be"/></linearGradient>
+<linearGradient id="inner" x1="0" y1="0" x2="1" y2=".1"><stop stop-color="#b7b9cc" stop-opacity=".58"/><stop offset=".18" stop-color="#e2e4ee" stop-opacity=".47"/><stop offset=".31" stop-color="#f9fafc" stop-opacity=".82"/><stop offset=".37" stop-color="#e5e7ee" stop-opacity=".6"/><stop offset=".67" stop-color="#f0f0f7" stop-opacity=".6"/><stop offset=".84" stop-color="#d9dbe7" stop-opacity=".52"/><stop offset="1" stop-color="#b5b9cc" stop-opacity=".65"/></linearGradient>
+<linearGradient id="rim" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#f6f5f9"/><stop offset=".5" stop-color="#d4d7e4"/><stop offset="1" stop-color="#aaaec2"/></linearGradient>
+<radialGradient id="membrane"><stop stop-color="#e3e2e5"/><stop offset=".8" stop-color="#d9d9e0"/><stop offset="1" stop-color="#c4c6d1"/></radialGradient>
+<pattern id="pores" width="7.5" height="6.1" patternUnits="userSpaceOnUse"><circle cx="1.7" cy="1.6" r="1.12" fill="#9a9dac" opacity=".7"/><circle cx="5.4" cy="4.6" r="1.02" fill="#a4a4ae" opacity=".67"/></pattern>
+</defs>
+<g stroke-linecap="round" stroke-linejoin="round">
+
+<path d="M126 115 C126 61 237 25 376 25 C514 25 627 61 630 116 L620 386 C620 435 513 474 376 475 C238 475 135 438 133 388Z" fill="url(#outer)" stroke="#969bac" stroke-width="4.7"/>
+<path d="M136 127 L142 381 C142 428 242 463 377 463 C510 463 609 427 610 384 L620 123" fill="none" stroke="#f8f8fb" stroke-width="5" stroke-opacity=".82"/>
+<path d="M140 304 C140 256 246 216 377 215 C508 214 611 257 611 305 L610 383 C609 427 505 461 377 461 C246 461 142 428 141 383Z" fill="url(#pinkSide)" stroke="#c387a4" stroke-width="3"/>
+<path d="M141 304 C145 350 248 385 376 386 C508 386 605 348 611 305 L610 383 C609 427 505 461 377 461 C246 461 142 428 141 383Z" fill="url(#depth)"/>
+<ellipse cx="376" cy="301" rx="235" ry="85" fill="url(#pinkSurface)" stroke="#e9a9c1" stroke-width="2.7"/>
+<path d="M145 307 C152 345 246 382 377 384 C502 384 603 346 607 306" fill="none" stroke="#f7d0df" stroke-width="3.4" opacity=".87"/>
+<path d="M141 304 C145 350 248 385 376 386 C508 386 605 348 611 305 L610 383 C609 427 505 461 377 461 C246 461 142 428 141 383Z" fill="url(#contactShadow)"/>
+
+<path d="M176 105 C184 56 270 27 376 27 C481 27 569 58 578 103 L552 326 C548 358 473 384 378 385 C280 385 209 360 201 328Z" fill="url(#inner)" stroke="#a1a5b9" stroke-width="4.3"/>
+<path d="M191 101 L222 319 M564 101 L534 322" fill="none" stroke="#afb3c4" stroke-width="4"/>
+<path d="M200 103 L231 319 M557 106 L528 321" fill="none" stroke="#f5f5f8" stroke-width="3" stroke-opacity=".6"/>
+<ellipse cx="377" cy="322" rx="171" ry="56" fill="url(#membrane)" stroke="#a1a4b4" stroke-width="4.6"/>
+<ellipse cx="377" cy="322" rx="165" ry="51.4" fill="url(#pores)"/>
+<ellipse cx="377" cy="322" rx="167" ry="52" fill="none" stroke="#e9e9ed" stroke-width="3.4"/>
+<path d="M203 325 C206 359 281 387 377 389 C474 389 549 360 552 325" fill="none" stroke="#a8aabb" stroke-width="5"/>
+<path d="M208 328 C214 357 283 380 378 382 C474 382 542 354 547 329" fill="none" stroke="#faf9fb" stroke-width="4"/>
+
+<path d="M167 62 C215 32 294 17 376 17 C462 17 543 35 590 63 L581 78 C526 52 455 40 376 40 C297 40 228 51 183 77Z" fill="url(#rim)" stroke="#a0a4b6" stroke-width="4"/>
+<path d="M172 67 C217 37 299 23 377 23 C460 23 538 40 585 68" stroke="#f9f9fc" stroke-width="4" fill="none"/>
+<path d="M185 105 C180 81 158 56 132 54 L53 54 C35 54 20 61 18 77 C16 94 33 101 56 102 L91 102 C107 102 116 106 124 118 C136 143 149 151 180 162 L190 148 C187 131 185 117 185 105Z" fill="url(#rim)" fill-opacity=".8" stroke="#9297aa" stroke-width="4.4"/>
+<path d="M574 103 C581 79 599 56 625 54 L698 54 C720 55 738 67 738 81 C738 96 721 102 697 102 L666 102 C646 102 638 109 631 121 C618 145 606 151 579 160 L567 147 C570 128 574 115 574 103Z" fill="url(#rim)" fill-opacity=".8" stroke="#9297aa" stroke-width="4.4"/>
+<path d="M22 78 C22 63 40 59 55 59 L128 59 Q158 58 174 87 M734 81 C734 65 716 60 698 59 L629 59 Q600 60 584 88" stroke="#faf9fc" stroke-width="4.2" fill="none"/>
+<path d="M125 112 C120 85 140 64 158 64 C187 65 197 99 202 142 L208 166 M632 111 C640 86 616 63 601 64 C577 65 560 100 554 141 L549 166" fill="none" stroke="#a5a8ba" stroke-width="5"/>
+<path d="M139 118 L161 93 L179 82 M618 119 L598 92 L580 83" stroke="#b0b4c4" stroke-width="3.4" fill="none" opacity=".75"/>
+<path d="M136 113 C134 89 149 72 161 73 C177 78 186 102 190 140 M622 112 C624 91 613 75 601 74 C583 82 573 105 570 143" fill="none" stroke="#f0eff5" stroke-width="5"/>
+<path d="M123 118 C137 155 241 187 377 190 C510 190 613 158 633 119 L628 136 C608 176 505 211 377 211 C243 209 142 177 127 138Z" fill="url(#rim)" stroke="#a2a6b8" stroke-width="4"/>
+<path d="M127 123 C144 160 245 193 377 195 C508 195 612 162 629 123" stroke="#fcfbfd" stroke-width="4.6" fill="none"/>
+<path d="M166 160 C210 187 289 202 377 204 C468 204 547 188 586 164" fill="none" stroke="#c1c4d0" stroke-width="2.8"/>
+
+<path d="M133 389 C138 439 241 473 376 475 C512 475 616 434 620 387" fill="none" stroke="#8c91a6" stroke-width="5"/>
+<path d="M142 385 C149 429 246 461 376 462 C505 462 605 430 609 387" fill="none" stroke="#f2a9c3" stroke-width="2.9"/>
+<path d="M140 388 C144 432 247 465 376 466 C505 466 610 430 613 388" fill="none" stroke="#f5edf4" stroke-width="4.5"/>
+</g></svg>
