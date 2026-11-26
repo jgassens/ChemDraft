@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import {
   moleculeToMolfileV2000, moleculeToMolfileV3000, type MoleculeAtom, type MoleculeObject
 } from "@chemdraft/chem-core";
+import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import { installNodeRdkitModuleLoader } from "@chemdraft/rdkit-adapter/node";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
 import { nativeSingleBondGraphMetadata } from "../../document-workflow-core/src/atoms";
@@ -115,6 +116,12 @@ function moleculeFromGraph(graph: ParsedMolfileGraph): MoleculeObject {
   } as MoleculeObject;
 }
 
+/** The options the real Copy As MOL path passes (`copyAsMolfile`): the drawing's frame and its Kekulé orders. */
+function copyAsMolOptions(molecule: MoleculeObject) {
+  return { fromDocFrame: true,
+    kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders } as const;
+}
+
 async function canonicalSmiles(molfile: string): Promise<string | undefined> {
   return (await computeStructureIdentifiers(molfile))?.smiles;
 }
@@ -140,8 +147,8 @@ describe("pasted MOL keeps radicals and stated hydrogens", () => {
       const molecule = moleculeFromGraph(graph);
       expect(formulaOf(molecule)).toBe(row.formula);
       const copied = [
-        moleculeToMolfileV2000(molecule, { fromDocFrame: true }).contents,
-        moleculeToMolfileV3000(molecule, { fromDocFrame: true }).contents
+        moleculeToMolfileV2000(molecule, copyAsMolOptions(molecule)).contents,
+        moleculeToMolfileV3000(molecule, copyAsMolOptions(molecule)).contents
       ];
       for (const molfile of copied) expect(await canonicalSmiles(molfile), label).toBe(row.smiles);
       expect(graph.warnings.map((warning) => warning.code)).toEqual([]);
@@ -163,9 +170,25 @@ describe("radical codes", () => {
     expect(graph.atoms.map((a) => [a.markRadicals ?? 0, a.formalCharge])).toEqual([[0, 0], [2, 0]]);
     expect(parseMolfileGraph(ethyl(["M  RAD  1   2   0"], 4)).atoms[1]!.markRadicals ?? 0).toBe(0);
   });
-  it("keeps charge code 4 as a radical when an M  CHG line charges another atom", () => {
-    const graph = parseMolfileGraph(ethyl(["M  CHG  1   1   1"], 4));
-    expect(graph.atoms.map((a) => [a.markRadicals ?? 0, a.formalCharge])).toEqual([[0, 1], [1, 0]]);
+  // CTfile: any M  CHG, M  RAD or M  ISO line supersedes the atom block's charge-field codes, block-wide
+  // (not only on the atoms the line names), and charge code 4 is one of them.
+  it.each(["M  CHG  1   1   1", "M  RAD  1   1   2", "M  ISO  1   1  13"])(
+    "a property line (%s) supersedes atom-block charge code 4 on every atom, with a warning", (line) => {
+      const text = v2000({ atoms: [C(), C({ charge: 4 }), C()], bonds: [[1, 2, 1], [2, 3, 1]], v2000Props: [line] });
+      const graph = parseMolfileGraph(text);
+      expect(graph.atoms.map((a) => a.markRadicals ?? 0)).toEqual([line.startsWith("M  RAD") ? 1 : 0, 0, 0]);
+      expect(graph.warnings).toEqual([expect.objectContaining({ code: "clipboard.radical_code_superseded" })]);
+      expect(graph.warnings[0]!.message).toMatch(/atom 2/i);
+    });
+  it("an M  RAD line for one atom supersedes the atom-block code 4 on another", () => {
+    const graph = parseMolfileGraph(v2000({
+      atoms: [C(), C({ charge: 4 }), C()], bonds: [[1, 2, 1], [2, 3, 1]], v2000Props: ["M  RAD  1   3   2"]
+    }));
+    expect(graph.atoms.map((a) => a.markRadicals ?? 0)).toEqual([0, 0, 1]);
+  });
+  it("reports no supersession when the line names the same atom (M  RAD replaces code 4 there)", () => {
+    const graph = parseMolfileGraph(ethyl(["M  RAD  1   2   3"], 4));
+    expect(graph.warnings).toEqual([]);
   });
   it("reads a V3000 RAD= doublet and triplet", () => {
     const text = v3000({ atoms: [C({ rad: 2 }), C({ rad: 3 }), C()], bonds: [[1, 2, 1], [2, 3, 1]] });
@@ -238,11 +261,11 @@ describe("Copy As MOL -> paste round trips keep radicals and stated counts", () 
     ["13C stated 0 H", native([atom("a1", "C", { isotope: 13, hydrogenCount: 0 })], [])]
   ];
   it.each(cases)("%s", async (_name, original) => {
-    const expected = await canonicalSmiles(moleculeToMolfileV2000(original, { fromDocFrame: true }).contents);
+    const expected = await canonicalSmiles(moleculeToMolfileV2000(original, copyAsMolOptions(original)).contents);
     expect(expected).toBeTruthy();
     for (const write of [moleculeToMolfileV2000, moleculeToMolfileV3000]) {
-      const pasted = moleculeFromGraph(parseMolfileGraph(write(original, { fromDocFrame: true }).contents));
-      const again = [moleculeToMolfileV2000, moleculeToMolfileV3000].map((w) => w(pasted, { fromDocFrame: true }).contents);
+      const pasted = moleculeFromGraph(parseMolfileGraph(write(original, copyAsMolOptions(original)).contents));
+      const again = [moleculeToMolfileV2000, moleculeToMolfileV3000].map((w) => w(pasted, copyAsMolOptions(pasted)).contents);
       for (const molfile of again) expect(await canonicalSmiles(molfile)).toBe(expected);
       expect(formulaOf(pasted)).toBe(formulaOf(original));
     }

@@ -1092,6 +1092,9 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
   const radLineRadicals = new Map<number, number>();
   const valences = new Map<string, StatedValence>();
   let sawChgLine = false;
+  // CTfile: any M  CHG, M  RAD or M  ISO line supersedes the atom block's charge-field codes on
+  // every atom (RDKit reads it the same way), so charge code 4 then no longer states a radical.
+  let sawSupersedingLine = false;
   const warnings: ClipboardTransferWarning[] = [];
 
   const atoms = atomLines.map((line, index): ParsedClipboardAtom => {
@@ -1157,6 +1160,7 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
   for (const line of lines.slice(atomStartIndex + atomCount + bondCount)) {
     if (line.trim() === "M  END") break;
     const fields = line.trim().split(/\s+/);
+    if (fields[0] === "M" && (fields[1] === "ISO" || fields[1] === "RAD" || fields[1] === "CHG")) sawSupersedingLine = true;
     if (fields[0] === "M" && fields[1] === "ISO") {
       const pairCount = Number(fields[2]);
       if (!Number.isInteger(pairCount) || pairCount < 1 || pairCount > 8) {
@@ -1232,7 +1236,17 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
       Object.assign(atom, normalized);
       if (normalized.isotope === undefined) delete atom.isotope;
     }
-    applyRadicalCode(atom, i, radLineRadicals.get(i) ?? atomBlockRadicals.get(i) ?? 0, warnings);
+    const blockRadical = atomBlockRadicals.get(i);
+    const radLineRadical = radLineRadicals.get(i);
+    if (radLineRadical === undefined && blockRadical !== undefined && sawSupersedingLine) {
+      // Never silent: the file's atom block states a radical that its own property block overrides.
+      warnings.push({
+        code: "clipboard.radical_code_superseded",
+        message: `Atom ${i} (${atom.element}) has atom-block charge code 4 (radical), but an M  CHG, M  RAD or M  ISO ` +
+          "line supersedes the atom block's charge and radical codes (CTfile), so it was read as an ordinary atom."
+      });
+    }
+    applyRadicalCode(atom, i, radLineRadical ?? (sawSupersedingLine ? 0 : blockRadical ?? 0), warnings);
   });
   readStatedHydrogens(atoms, bonds, valences, "V2000", warnings);
 

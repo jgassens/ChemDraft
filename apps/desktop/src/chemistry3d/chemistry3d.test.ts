@@ -224,7 +224,7 @@ describe("plugin 3D chemistry round trips on the vendored WASM", () => {
     read.mockRestore();
   });
 
-  it.each(["[NH4+]", "[NH3+]CC(=O)[O-]", "[CH2]C", "C[C@H](F)/C=C/Cl"])(
+  it.each(["[NH4+]", "[NH3+]CC(=O)[O-]", "[CH2]C", "C[N]C", "C[C@H](F)/C=C/Cl"])(
     "round-trips charge, radical and stereo through embed/minimize/flatten: %s", async smiles => {
       const input = await providers.embed3d({ components: [{ smiles }] }, stop());
       const minimized = await providers.minimize3d({ model: input.model, interfragment: false }, stop());
@@ -234,6 +234,9 @@ describe("plugin 3D chemistry round trips on the vendored WASM", () => {
       const retained = input.model.atoms.filter(atom => !atom.addedHydrogen);
       expect(molecule.atoms.map(atom => atom.formalCharge)).toEqual(retained.map(atom => atom.charge));
       expect(molecule.atoms.map(atom => atom.markRadicals ?? 0)).toEqual(retained.map(atom => atom.radical ?? 0));
+      // The molfile reader's own radical/valence reading of RDKit's molblock is not carried over:
+      // radicals come from the signed graph above and hydrogens stay derived, as before.
+      expect(molecule.atoms.every(atom => atom.hydrogenCount === undefined)).toBe(true);
       expect(minimized.model.atoms).toEqual(input.model.atoms);
       expect(minimized.model.bonds).toEqual(input.model.bonds);
     }

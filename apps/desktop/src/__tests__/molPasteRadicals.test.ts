@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { ChemDraftDocument, ElectronMarkObject, MoleculeAtom, MoleculeObject } from "@chemdraft/chem-core";
 import { inspectClipboardPayload } from "@chemdraft/clipboard-adapter";
 import { nativeSingleBondGraphMetadata } from "@chemdraft/document-workflow-core";
+import { nativeRadicalPlacementPointForAtom } from "@chemdraft/layout-engine";
 import { installNodeRdkitModuleLoader } from "@chemdraft/rdkit-adapter/node";
 import {
   applyClipboardPastePayload, copyAsMolfile, copyAsSmiles, createPhase4Document, normalizeCommittedDocument
@@ -10,6 +11,11 @@ import {
 // The wasm loader the app registers is a bundler import; the node loader installed below is the
 // same RDKit, so canonical SMILES here is the app's own (`copyAsSmiles` -> `moleculeSmiles`).
 vi.mock("../rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
+// Delegates to the real placement; one test makes it find no free spot.
+vi.mock("@chemdraft/layout-engine", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@chemdraft/layout-engine")>();
+  return { ...original, nativeRadicalPlacementPointForAtom: vi.fn(original.nativeRadicalPlacementPointForAtom) };
+});
 
 // Bug mol-paste-drops-radicals (1.2.4): a pasted MOL keeps its radicals and stated hydrogen counts.
 // Every row goes through the function the Paste command calls (`applyClipboardPastePayload`), then
@@ -172,6 +178,62 @@ describe("pasted MOL says what it could not keep", () => {
     const { result } = paste(write({ atoms: [C({ valence: 2 }), C()], bonds: [[1, 2, 3]] }));
     expect(result.status).toMatch(/^Pasted editable MOL V[23]000 structure; Atom 1 \(C\) states valence 2/);
     expect(result.warnings.map((warning) => warning.code)).toContain("clipboard.valence_not_read");
+  });
+});
+
+describe("pasted MOL names what it kept or could not place (review of mol-paste-drops-radicals)", () => {
+  it("names a kept hydrogen count by its atom number, never a mangled id", () => {
+    const { result, document } = paste(v2000({
+      atoms: [C({ valence: 4 }), C({ valence: 4 }), { symbol: "N", valence: 1 }], bonds: [[1, 2, 1], [2, 3, 1]]
+    }));
+    const warning = moleculeOf(document).compatibility!.warnings.find((w) => w.code === "clipboard.molfile_hydrogen_count_kept")!;
+    expect(warning.message).toMatch(/atom 3 \(N\) states 0 hydrogens, ChemDraft derives 2/);
+    expect(warning.message).not.toMatch(/tom_\d/);
+    expect(result.warnings.map((w) => w.code)).toContain("clipboard.molfile_hydrogen_count_kept");
+  });
+
+  it.each(flavors)("%s: a count stated on a label that names no element is kept with the CDXML 'not counted' warning", (_flavor, write) => {
+    const { result, document } = paste(write({ atoms: [C(), { symbol: "A", valence: 3 }], bonds: [[1, 2, 1]] }));
+    const atoms = moleculeOf(document).atoms;
+    expect(atoms[1]!.hydrogenCount).toBe(2);
+    const warning = result.warnings.find((w) => w.code === "clipboard.molfile_hydrogen_count_not_counted");
+    expect(warning?.message).toMatch(/atom 2 \(A\) states 2 hydrogens/);
+    expect(warning?.message).toMatch(/kept as stored but not counted/);
+    expect(warning?.message).not.toMatch(/tom_\d/);
+  });
+
+  it("puts a radical dot at a default spot, and says so in the paste status, when no free spot is found", async () => {
+    vi.mocked(nativeRadicalPlacementPointForAtom).mockReturnValueOnce(undefined);
+    const { result, document } = paste(v2000(rows[1]!.spec));
+    // The radical is not cleared by commit normalization, so the chemistry is still the benzyl radical.
+    expect(await copyAsSmiles(document)).toBe("[CH2]c1ccccc1");
+    expect(formulaOf(moleculeOf(document))).toBe("C7H7");
+    expect(marksOf(document).map((mark) => mark.markKind)).toEqual(["radical-dot"]);
+    expect(result.status).toMatch(/^Pasted editable MOL V2000 structure; .*atom 1 \(C\).*radical/);
+    expect(result.warnings.map((w) => w.code)).toContain("clipboard.molfile_radical_mark_default_placement");
+  });
+
+  it("puts reader warnings about skipped V3000 lines and unknown isotope masses in the paste status", () => {
+    const v3000Bad = [
+      "audit", "  hand-written", "", "  0  0  0  0  0  0            999 V3000",
+      "M  V30 BEGIN CTAB", "M  V30 COUNTS 2 1 0 0 0", "M  V30 BEGIN ATOM",
+      "M  V30 1 C 0 0 0 0", "M  V30 2 C 1.5 0 0 0", "M  V30 x O 3 0 0 0", "M  V30 END ATOM",
+      "M  V30 BEGIN BOND", "M  V30 1 1 1 2", "M  V30 y 1 2 1", "M  V30 END BOND", "M  V30 END CTAB", "M  END"
+    ].join("\n");
+    const status = paste(v3000Bad).result.status;
+    expect(status).toMatch(/Skipped unsupported V3000 atom line: x O 3 0 0 0/);
+    expect(status).toMatch(/Skipped unsupported V3000 bond line: y 1 2 1/);
+    const isotope = v2000({ atoms: [{ symbol: "Tc" }, C()], bonds: [[1, 2, 1]] })
+      .replace("Tc  0  0", "Tc  1  0");
+    const isotopeResult = paste(isotope).result;
+    expect(isotopeResult.status).toMatch(/Atom 1 \(Tc\) has mass difference 1/);
+    expect(isotopeResult.warnings.map((w) => w.code)).toContain("clipboard.isotope_default_mass_unknown");
+  });
+
+  it("names a radical that the property block superseded in the paste status", () => {
+    const text = v2000({ atoms: [C(), C({ charge: 4 }), C()], bonds: [[1, 2, 1], [2, 3, 1]] })
+      .replace("M  END", "M  CHG  1   1   1\nM  END");
+    expect(paste(text).result.status).toMatch(/Atom 2 \(C\) has atom-block charge code 4/);
   });
 });
 

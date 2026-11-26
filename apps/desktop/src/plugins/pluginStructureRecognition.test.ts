@@ -1,3 +1,4 @@
+import type { MoleculeObject } from "@chemdraft/chem-core";
 import { PluginRecognitionResultSchema } from "@chemdraft/plugin-api";
 import { describe, expect, it, vi } from "vitest";
 
@@ -108,6 +109,53 @@ describe("preparePluginStructureRecognition", () => {
       "import.radicals_not_drawn",
       "import.isotopes_not_drawn"
     ]);
+  });
+
+  // The proposal is one addObject patch, which cannot carry radical-dot marks, so a radical or a stated
+  // hydrogen count the shared MOL import now reads is deliberately not applied here: the drawn
+  // chemistry is what it was before, and the reviewer is told (AGENTS.md section 7).
+  describe("radicals and stated hydrogen counts in a recognized molfile", () => {
+    const atomLine = (x: number, symbol: string, extra: { charge?: number; valence?: number } = {}) =>
+      `${x.toFixed(4).padStart(10)}${(0).toFixed(4).padStart(10)}${(0).toFixed(4).padStart(10)} ${symbol.padEnd(3)} 0` +
+      `${String(extra.charge ?? 0).padStart(3)}  0  0  0${String(extra.valence ?? 0).padStart(3)}  0  0  0  0  0  0`;
+    const build = (second: { charge?: number; valence?: number }, props: string[] = []) => [
+      "Recognized ethanol-like", "  MolScribe", "", "  2  1  0  0  0  0            999 V2000",
+      atomLine(-0.75, "C"), atomLine(0.75, "O", second), "  1  2  1  0  0  0  0", ...props, "M  END"
+    ].join("\n");
+    const recognize = async (text: string) => {
+      const validate = vi.fn(async () => ({ valid: true, errors: [], warnings: [] }));
+      const prepared = await preparePluginStructureRecognition({ ...outcome, molfile: text }, image, createPhase4Document(), validate);
+      if (prepared.status !== "recognized") throw new Error("expected recognized result");
+      const patch = prepared.result.proposedPatch!;
+      return { object: (patch.patch as unknown as { object: MoleculeObject }).object, warnings: patch.warnings };
+    };
+
+    it.each([
+      ["V2000 charge code 4", build({ charge: 4 })],
+      ["M  RAD", build({}, ["M  RAD  1   2   2"])]
+    ])("%s: the proposal is drawn closed-shell as before, with a warning that names the atom", async (_name, text) => {
+      const plain = await recognize(build({}));
+      const { object, warnings } = await recognize(text);
+      expect(object.atoms.every((atom) => atom.markRadicals === undefined && atom.hydrogenCount === undefined)).toBe(true);
+      expect(object.chemistry).toEqual(plain.object.chemistry);
+      expect(object.structure).toBe(text);
+      expect(warnings.map((warning) => warning.code)).toEqual(["import.radicals_not_drawn"]);
+      expect(warnings[0]!.message).toMatch(/atom 2 \(O\)/);
+    });
+
+    it("a stated count that differs from the derived one is not applied to the drawing, and is named", async () => {
+      const plain = await recognize(build({}));
+      const { object, warnings } = await recognize(build({ valence: 1 }));
+      expect(object.atoms.every((atom) => atom.hydrogenCount === undefined)).toBe(true);
+      expect(object.chemistry).toEqual(plain.object.chemistry);
+      expect(warnings.map((warning) => warning.code)).toEqual(["import.hydrogen_counts_not_drawn"]);
+      expect(warnings[0]!.message).toMatch(/atom 2 \(O\)/);
+    });
+
+    it("says nothing about a stated count that agrees with the derived one", async () => {
+      const { warnings } = await recognize(build({ valence: 2 }));
+      expect(warnings).toEqual([]);
+    });
   });
 
   it("reports invalid chemistry and never constructs a proposal", async () => {

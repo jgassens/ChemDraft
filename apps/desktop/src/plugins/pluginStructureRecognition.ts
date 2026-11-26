@@ -1,4 +1,5 @@
 import type { ChemDraftDocument, MoleculeObject } from "@chemdraft/chem-core";
+import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import type { PluginProvidedImage, RecognitionWarning } from "@chemdraft/plugin-api";
 import type { HostRecognitionOutcome } from "@chemdraft/plugin-host";
 
@@ -50,14 +51,29 @@ export async function preparePluginStructureRecognition(
   }
 
   let object: MoleculeObject;
+  // What the shared MOL import would keep beyond element, position and charge, and this path
+  // deliberately does not: radicals and stated hydrogen counts. The proposal is one addObject patch,
+  // which cannot carry the radical-dot marks a radical needs to survive commit normalization, and
+  // a recognition result's chemistry stays what it was before the importer read them (AGENTS.md
+  // section 7); both stay in the stored molfile and the reviewer is told.
+  let radicalAtoms: string[] = [];
+  let hydrogenCountAtoms: string[] = [];
   try {
     const page = document.pages[0];
-    object = createNativeMolfileMolecule(
-      document,
-      { x: page.width / 2, y: page.height / 2 },
-      outcome.molfile,
-      format
-    );
+    const at = { x: page.width / 2, y: page.height / 2 };
+    const graph = parseMolfileGraph(outcome.molfile);
+    const named = (atom: { id: string; element: string }) =>
+      `atom ${Number(/(\d+)$/.exec(atom.id)?.[1] ?? Number.NaN) || atom.id} (${atom.element})`;
+    radicalAtoms = graph.atoms.filter((atom) => atom.markRadicals).map(named);
+    const stripped = {
+      ...graph,
+      atoms: graph.atoms.map(({ markRadicals: _radicals, hydrogenCount: _hydrogens, ...atom }) => atom)
+    };
+    // The import keeps a stated count only where it differs from the one the atom derives; a
+    // trial import tells which of this molfile's counts that is.
+    hydrogenCountAtoms = createNativeMolfileMolecule(document, at, outcome.molfile, format, graph).atoms
+      .filter((atom) => atom.hydrogenCount !== undefined).map(named);
+    object = createNativeMolfileMolecule(document, at, outcome.molfile, format, stripped);
   } catch (error) {
     return {
       status: "failed",
@@ -71,12 +87,21 @@ export async function preparePluginStructureRecognition(
   const importWarnings: RecognitionWarning[] = (object.compatibility?.warnings ?? [])
     .filter((warning) => warning.code !== "clipboard.molfile_imported")
     .map((warning) => ({ code: `import.${warning.code}`, message: warning.message }));
-  // The shared MOL import draws atoms with element, position, and charge only. Radicals and isotope
-  // labels stay in the stored molfile but are not drawn, so say so before the user accepts.
-  if (/^M {2}RAD\b/m.test(outcome.molfile) || /\bRAD=[1-9]/.test(outcome.molfile)) {
+  // The proposal draws atoms with element, position, and charge (and isotope) only. Radicals stay
+  // in the stored molfile but are not drawn, so say so before the user accepts. The molfile's text
+  // is checked as well as the reader's result: an M  RAD line the reader refuses never gets here.
+  if (radicalAtoms.length > 0 || /^M {2}RAD\b/m.test(outcome.molfile) || /\bRAD=[1-9]/.test(outcome.molfile)) {
     importWarnings.push({
       code: "import.radicals_not_drawn",
-      message: "The recognized structure has radicals; they are kept in the structure data but not drawn."
+      message: "The recognized structure has radicals" +
+        `${radicalAtoms.length > 0 ? ` (${radicalAtoms.join(", ")})` : ""}; they are kept in the structure data but not drawn.`
+    });
+  }
+  if (hydrogenCountAtoms.length > 0) {
+    importWarnings.push({
+      code: "import.hydrogen_counts_not_drawn",
+      message: `The recognized structure states hydrogen counts ChemDraft derives differently (${hydrogenCountAtoms.join(", ")}); ` +
+        "they are kept in the structure data but not applied to the drawing."
     });
   }
   if (/^M {2}ISO\b/m.test(outcome.molfile) || /\bMASS=\d/.test(outcome.molfile)) {

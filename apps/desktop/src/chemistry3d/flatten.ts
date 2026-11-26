@@ -82,8 +82,13 @@ export function flattenPluginModel(request: PluginFlatten3DRequest, method: Plug
         atoms: graph.atoms.map((atom, i) => {
           // The lightweight molfile graph reader does not retain every atom property.
           // Restore charge and radicals from the signed graph, in unchanged atom order.
+          // The reader's own `markRadicals` and `hydrogenCount` (RDKit's M  RAD lines and valence
+          // fields) are deliberately not carried: the signed graph is the one source of radicals
+          // (below), and a stated count would freeze the atom's hydrogens and badge it, where this
+          // path has always left them derived.
+          const { markRadicals: _readRadicals, hydrogenCount: _readHydrogens, ...base } = atom;
           const source = model.atoms[retained[i]];
-          return { ...atom, y: -atom.y, formalCharge: source.charge,
+          return { ...base, y: -atom.y, formalCharge: source.charge,
             ...(source.radical ? { markRadicals: source.radical } : {}) };
         }),
         bonds: graph.bonds.map(bond => {
