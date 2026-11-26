@@ -1,5 +1,5 @@
-import { Resvg } from "@resvg/resvg-js";
-import { readSvgInfo, type ChemDraftDocument } from "@chemdraft/chem-core";
+import { Resvg, type ResvgRenderOptions } from "@resvg/resvg-js";
+import { apngFirstFrame, readSvgInfo, type ChemDraftDocument } from "@chemdraft/chem-core";
 import {
   parseSvgLength, pictureSizeLimitError, sanitizeSvgPicture, type ExportWarning, type SanitizedSvg
 } from "@chemdraft/export-engine";
@@ -33,7 +33,7 @@ const SVG_DATA = /^\s*data:image\/svg\+xml[;,]/i;
 interface Xml { parser: DOMParser; serializer: XMLSerializer }
 let xmlTools: Promise<Xml> | undefined;
 /** jsdom's XML parser, as the PDF export uses; its own window, so no globals are touched. */
-function xml(): Promise<Xml> {
+export function xml(): Promise<Xml> {
   xmlTools ??= import("jsdom").then(({ JSDOM }) => {
     const { window } = new JSDOM("<!doctype html><html><body></body></html>");
     return { parser: new window.DOMParser() as unknown as DOMParser, serializer: new window.XMLSerializer() as unknown as XMLSerializer };
@@ -63,6 +63,23 @@ export async function rasterizeSvgPictureWithResvg(request: SvgPictureRasterRequ
   return new Uint8Array(renderBounded(wrapper));
 }
 
+const PNG_DATA = /^\s*data:image\/png;base64,([A-Za-z0-9+/=\s]*)$/i;
+
+/**
+ * The `href` to draw for a PNG data URI, from the shared `apngFirstFrame`: an animated PNG's first animation
+ * frame, or the default image alone of one whose first frame can't be read; undefined to keep `href` as it is
+ * (a still PNG, a default image that is the first frame, or not a PNG data URI). `warning` says why an
+ * animated PNG's default image is drawn instead of its first frame.
+ */
+export function apngFirstFrameHref(href: string): { href?: string; warning?: string } {
+  const base64 = PNG_DATA.exec(href)?.[1];
+  if (base64 === undefined) return {};
+  const bytes = new Uint8Array(Buffer.from(base64.replace(/\s+/g, ""), "base64"));
+  const frame = apngFirstFrame(bytes);
+  return { ...(frame.bytes !== bytes ? { href: `data:image/png;base64,${Buffer.from(frame.bytes).toString("base64")}` } : {}),
+    ...(frame.warning ? { warning: frame.warning } : {}) };
+}
+
 /** Why a pixmap of this size is not drawn, or undefined: at most `MAX_RENDER_SIDE` a side and within the shared decoded limit. */
 function pixmapSizeError(width: number, height: number): string | undefined {
   if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) return `it is ${width} × ${height} pixels`;
@@ -71,8 +88,8 @@ function pixmapSizeError(width: number, height: number): string | undefined {
 }
 
 /** Render an SVG whose root size is the pixmap wanted, refusing before the pixmap exists if that size is out of bounds. */
-function renderBounded(svg: string): Buffer {
-  const resvg = new Resvg(svg);
+export function renderBounded(svg: string, options?: ResvgRenderOptions): Buffer {
+  const resvg = new Resvg(svg, options);
   const width = Math.ceil(resvg.width), height = Math.ceil(resvg.height);
   const error = pixmapSizeError(width, height);
   if (error) throw new Error(`the picture would render too large: ${error}`);
@@ -104,6 +121,14 @@ async function sizedSvg(svg: string, pixelWidth: number, pixelHeight: number): P
   if (limit) throw new Error(limit.replace(/\.$/, ""));
   const scale = Math.min(Math.max(pixelWidth / width, pixelHeight / height), MAX_RENDER_SIDE / Math.max(width, height));
   const renderSide = (side: number) => Math.min(MAX_RENDER_SIDE, Math.max(1, Math.round(side * scale)));
+  // An embedded animated PNG is drawn at its first animation frame, as native pictures are.
+  for (const image of Array.from(parsed.getElementsByTagNameNS(SVG_NS, "image"))) {
+    for (const attribute of Array.from(image.attributes)) {
+      if (attribute.localName !== "href") continue;
+      const frame = apngFirstFrameHref(attribute.value);
+      if (frame.href) attribute.value = frame.href;
+    }
+  }
   if (!root.hasAttribute("viewBox")) root.setAttribute("viewBox", `0 0 ${width} ${height}`);
   root.setAttribute("width", String(renderSide(width)));
   root.setAttribute("height", String(renderSide(height)));
@@ -114,7 +139,8 @@ async function sizedSvg(svg: string, pixelWidth: number, pixelHeight: number): P
  * resvg-js draws PNG, JPEG and GIF bitmaps only: a WebP an SVG picture embeds is left out. One warning
  * per such picture on the rendered (first) page, so the loss is never silent. Only a picture that was
  * drawn gets it: one the check refused, or that the export could not draw (`exportWarnings`, the
- * export's own warnings, already say it "was not drawn"), gets that warning alone.
+ * export's own warnings, already say it "was not drawn"), gets that warning alone. An embedded animated
+ * PNG whose first frame can't be read gets a warning too: its default image is drawn instead.
  */
 export async function headlessSvgPictureWarnings(
   document: ChemDraftDocument, format: "png" | "pdf", exportWarnings: readonly ExportWarning[]
@@ -130,6 +156,11 @@ export async function headlessSvgPictureWarnings(
       sanitized = await sanitizeSvgForResvg(Buffer.from(image.dataBase64, "base64").toString("utf8"));
     } catch {
       continue;
+    }
+    for (const bitmap of sanitized.embeddedBitmaps) {
+      const warning = bitmap.format === "png" ? apngFirstFrame(bitmap.bytes).warning : undefined;
+      if (warning) warnings.push({ code: `export.${format}.svg_picture_apng_default_image`, severity: "warning", objectId: object.id,
+        message: `${format.toUpperCase()} export: SVG picture ${object.id}: ${warning}` });
     }
     if (!sanitized.embeddedBitmaps.some((bitmap) => bitmap.format === "webp")) continue;
     warnings.push({ code: `export.${format}.svg_picture_bitmap_not_drawn`, severity: "warning", objectId: object.id,

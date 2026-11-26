@@ -1,4 +1,5 @@
 import { CSS_PX_PER_INCH } from "./page-layout";
+import { hasPngSignature, pngChunkAt } from "./png";
 
 export interface ImagePixelInfo {
   pixelWidth: number;
@@ -14,21 +15,19 @@ export const MAX_IMAGE_DECODED_BYTES = 256 * 1024 * 1024;
 /** Inspect chunk framing without decompressing pixels or checking CRCs. */
 function inspectPng(bytes: Uint8Array): { info?: ImagePixelInfo; error?: string } {
   const invalid = { error: "the PNG has invalid structure." };
-  const signature = [137, 80, 78, 71, 13, 10, 26, 10];
-  if (bytes.length < 33 || !signature.every((value, index) => bytes[index] === value)) return invalid;
+  if (bytes.length < 33 || !hasPngSignature(bytes)) return invalid;
+  const header = pngChunkAt(bytes, 8);
+  if (header?.type !== "IHDR" || header.length !== 13) return invalid;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const chunkType = (offset: number) => String.fromCharCode(...bytes.subarray(offset + 4, offset + 8));
-  if (view.getUint32(8) !== 13 || chunkType(8) !== "IHDR") return invalid;
   const pixelWidth = view.getUint32(16);
   const pixelHeight = view.getUint32(20);
   if (pixelWidth === 0 || pixelHeight === 0 || pixelWidth > 0x7fffffff || pixelHeight > 0x7fffffff) return invalid;
   const info: ImagePixelInfo = { pixelWidth, pixelHeight };
   let hasData = false;
   for (let offset = 33; offset < bytes.length;) {
-    if (offset + 12 > bytes.length) return invalid;
-    const length = view.getUint32(offset);
-    if (length > bytes.length - offset - 12) return invalid;
-    const type = chunkType(offset);
+    const chunk = pngChunkAt(bytes, offset);
+    if (!chunk) return invalid;
+    const { type, length } = chunk;
     if (type === "IHDR") return invalid;
     if (type === "pHYs") {
       if (length !== 9) return invalid;
@@ -41,7 +40,7 @@ function inspectPng(bytes: Uint8Array): { info?: ImagePixelInfo; error?: string 
       if (length !== 0) return invalid;
       return hasData ? { info } : { error: "the PNG has no image data." };
     }
-    offset += length + 12;
+    offset = chunk.end;
   }
   return hasData ? invalid : { error: "the PNG has no image data." };
 }

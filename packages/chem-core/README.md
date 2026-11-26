@@ -150,6 +150,12 @@ Native document loading enforces the same PNG chunk structure and pixel limits a
 SVG loading checks only base64 validity and the payload byte cap. SVG completeness and pixel limits
 are checked at paste time, including namespace-prefixed SVG roots. PNG allocation padding after IEND is accepted. Legacy imageHref-only
 and picture-less image graphics remain loadable.
+PNG chunk framing (`pngChunkAt`, `pngCrc32`, `buildPngChunk`) lives in `src/png.ts`, the one copy the
+packages share. `apngFirstFrame` returns an animated PNG's first animation frame as a still PNG, for
+exporters that draw one picture (PDF, CLI PNG): the input itself for a still PNG or when the default
+image is frame 0; otherwise IHDR, the colour chunks (PLTE, tRNS, gAMA, cHRM, sRGB, iCCP), frame 0's
+fdAT data as IDAT and IEND, without decoding pixels. An animated PNG out of spec or over its bounds
+(`APNG_MAX_BYTES`, `APNG_MAX_CHUNKS`) comes back unchanged with a warning, so its default image is drawn.
 
 The MOL writers require an explicit `kekuleBondOrders` map and return `{ contents, warnings }`.
 Callers resolve orders through layout-engine; this package cannot depend on it. An empty or partial

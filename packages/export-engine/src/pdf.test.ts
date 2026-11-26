@@ -17,12 +17,13 @@ import { Resvg } from "@resvg/resvg-js";
 import { jsPDF } from "jspdf";
 import { exportDocumentToCdxml } from "@chemdraft/cdx-compat";
 import { describe, expect, it } from "vitest";
-import { crc32 } from "node:zlib";
+import { crc32, inflateSync } from "node:zlib";
 import { exportDocumentToPdf, exportSvgToPdf, svgPictureRasterSize, SVG_PICTURE_MAX_RASTER_PIXELS, type SvgPictureRasterRequest } from "./pdf";
 import { exportDocumentToSvg } from "./svg";
 import { extractPdfPositionedTextRuns, extractPdfTextRuns, largePicturePng, pdfFontStreams, sfntName, sfntTable, standardFontTextWidth } from "./pdf.testUtils";
 import { multilineScriptedTextDocument, scriptedTextDocument } from "./scriptedText.fixture";
 import { ringHaloDocument } from "../../layout-engine/src/ringFillHalos.fixture";
+import { BLUE, defaultImageFirstFrameApng, pngChunk, RED, separateFirstFrameApng, solidTestPng, u32 } from "../../chem-core/src/apng.fixture";
 import { nativeMoleculeRings, planPageSvgRender } from "@chemdraft/layout-engine";
 import { elementFragments } from "@chemdraft/layout-engine/testing";
 
@@ -1093,6 +1094,77 @@ describe("SVG pictures in PDF export", () => {
     expect(good.reduce((total, request) => total + request.pixelWidth * request.pixelHeight, 0)).toBeLessThanOrEqual(SVG_PICTURE_MAX_RASTER_PIXELS);
   }, 30_000);
 });
+
+describe("animated PNG pictures in PDF export", () => {
+  const documentWith = (png: Buffer) => {
+    const document = createEmptyDocument({ now: timestamp });
+    document.pages[0]!.objects = [{ ...createImageGraphicObject({ id: "animated", mimeType: "image/png", dataBase64: png.toString("base64"),
+      center: { x: 0, y: 0 } }), x: 100, y: 100, width: 40, height: 30, rotation: 0 }];
+    return document;
+  };
+  const exportPdf = (png: Buffer) => withPdfDom((domParser) => exportDocumentToPdf(documentWith(png), { domParser, compress: false }));
+
+  it("embeds the first animation frame, not the default image, when the default image is not part of the animation", async () => {
+    const result = await exportPdf(separateFirstFrameApng(4, 3, RED, BLUE, { channels: 3 }));
+    expect(result.warnings).toEqual([]);
+    expect(pdfImagePixels(result.bytes)).toEqual({ width: 4, height: 3, colors: [[0, 0, 255]] });
+  });
+
+  it("embeds the default image when it is the first frame", async () => {
+    const result = await exportPdf(defaultImageFirstFrameApng(4, 3, BLUE, RED));
+    expect(result.warnings).toEqual([]);
+    expect(pdfImagePixels(result.bytes).colors).toEqual([[0, 0, 255]]);
+  });
+
+  it("embeds a still PNG as before, with no warning", async () => {
+    // apngFirstFrame hands a still PNG back as the very same bytes (chem-core's apng tests); jsPDF re-encodes the pixels.
+    const result = await exportPdf(solidTestPng(4, 3, RED, 3));
+    expect(result.warnings).toEqual([]);
+    expect(pdfImagePixels(result.bytes)).toEqual({ width: 4, height: 3, colors: [[255, 0, 0]] });
+  });
+
+  it("embeds the default image of a malformed animated PNG, with a warning naming the picture", async () => {
+    const result = await exportPdf(separateFirstFrameApng(4, 3, RED, BLUE, { channels: 3, actl: pngChunk("acTL", u32(2)) }));
+    expect(result.warnings).toEqual([{ code: "export.pdf.apng_default_image", severity: "warning", objectId: "animated",
+      message: "PDF export: picture animated: the animated PNG's first frame can't be read (its animation control chunk is malformed); its default image is drawn instead." }]);
+    expect(pdfImagePixels(result.bytes).colors).toEqual([[255, 0, 0]]);
+  });
+});
+
+/** The one image XObject's size and distinct RGB colours, undoing Flate and PNG predictors. */
+function pdfImagePixels(bytes: Uint8Array): { width: number; height: number; colors: number[][] } {
+  const pdf = Buffer.from(bytes).toString("latin1");
+  const object = [...pdf.matchAll(/\d+ 0 obj\n([\s\S]*?)\nendobj/g)].map((match) => match[1]!).find((body) => body.includes("/Subtype /Image"))!;
+  const number = (name: string) => Number(new RegExp(`/${name} (\\d+)`).exec(object)?.[1]);
+  const width = number("Width"), height = number("Height");
+  const start = object.indexOf("stream\n") + 7;
+  let data = Buffer.from(object.slice(start, start + number("Length")), "latin1");
+  if (object.includes("/FlateDecode")) data = inflateSync(data);
+  const colorsPerPixel = object.includes("/DeviceRGB") ? 3 : 1;
+  const stride = width * colorsPerPixel;
+  const pixels = Buffer.alloc(stride * height);
+  if (number("Predictor") >= 10) {
+    // PNG predictors: each row starts with its filter type.
+    for (let row = 0; row < height; row++) {
+      const filter = data[row * (stride + 1)]!;
+      for (let index = 0; index < stride; index++) {
+        const raw = data[row * (stride + 1) + 1 + index]!;
+        const left = index >= colorsPerPixel ? pixels[row * stride + index - colorsPerPixel]! : 0;
+        const up = row > 0 ? pixels[(row - 1) * stride + index]! : 0;
+        const upLeft = row > 0 && index >= colorsPerPixel ? pixels[(row - 1) * stride + index - colorsPerPixel]! : 0;
+        const paeth = () => {
+          const p = left + up - upLeft, pa = Math.abs(p - left), pb = Math.abs(p - up), pc = Math.abs(p - upLeft);
+          return pa <= pb && pa <= pc ? left : pb <= pc ? up : upLeft;
+        };
+        const predicted = [0, left, up, (left + up) >> 1, paeth()][filter]!;
+        pixels[row * stride + index] = (raw + predicted) & 0xff;
+      }
+    }
+  } else data.copy(pixels);
+  const colors = new Set<string>();
+  for (let index = 0; index < pixels.length; index += colorsPerPixel) colors.add([...pixels.subarray(index, index + colorsPerPixel)].join(","));
+  return { width, height, colors: [...colors].map((color) => color.split(",").map(Number)) };
+}
 
 async function withPdfDom<T>(callback: (domParser: DOMParser) => Promise<T>, useStandardTextMetrics = false): Promise<T> {
   const dom = new JSDOM("<!doctype html><html><body></body></html>", {

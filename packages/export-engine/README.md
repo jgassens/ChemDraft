@@ -62,6 +62,11 @@ size, bounded per picture and per document): the desktop app uses its webview ra
 `chemdraft-cli` uses resvg. Without a hook, or when it fails, the picture is skipped with an
 `export.pdf.svg_picture_not_drawn` warning. A PNG picture jsPDF cannot embed (a corrupt data chunk)
 is skipped with an `export.pdf.picture_not_drawn` warning rather than failing the export.
+An animated PNG picture is embedded at its first animation frame (`apngFirstFrame` from
+`@chemdraft/chem-core`, which rebuilds a still PNG from the frame's chunks without decoding pixels);
+one whose first frame can't be read is embedded at its default image with an
+`export.pdf.apng_default_image` warning. SVG export keeps the picture's original bytes, so an
+animated PNG still animates there.
 
 SVG picture safety (`src/svgSafety/`, exported from the package index, so it loads without jsPDF) is
 the one sanitiser for untrusted SVG pictures: the desktop drop path removes what reaches outside a

@@ -175,6 +175,18 @@ nests another SVG, or refers to anything but an element of itself or an inline P
 WebP whose bytes and size check out, so a document opened from disk cannot make the renderer read
 files on this machine. resvg does not draw WebP: a picture embedding one gets a
 `export.<format>.svg_picture_bitmap_not_drawn` warning.
+An animated PNG (APNG) picture, native or embedded in an SVG picture, is drawn at its first
+animation frame in PNG and PDF (`apngFirstFrame` from `@chemdraft/chem-core`); SVG output keeps
+the original bytes, so it still animates in a viewer. An animated PNG whose first frame can't be
+read is drawn at its default image with an `export.<format>.apng_default_image` warning
+(`export.<format>.svg_picture_apng_default_image` when an SVG picture embeds it).
+PNG pictures in a PNG export share one decoded-pixel budget, `RASTER_PICTURE_MAX_PIXELS`
+(64 Mi pixels, the same as the SVG picture budget): over it, the largest pictures are downsampled
+first, keeping their aspect and never going below the size the output draws them at while that
+fits, and one `export.png.pictures_downsampled` warning names each picture shrunk and its new
+pixel size, for example `PNG export: 1 picture was downsampled so all pictures fit the 64 Mi-pixel
+picture budget: picture g12 from 8000 x 8000 to 6400 x 6400 pixels.` PDF embeds PNG pictures at
+their own size.
 
 The input read is capped at 5 MB before parsing. Limits are 100 pages, 2000 objects per page,
 500 heavy atoms per molecule, and 2000 total atoms / 4000 bonds per molecule. Output filenames

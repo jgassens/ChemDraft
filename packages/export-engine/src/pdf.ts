@@ -1,5 +1,7 @@
 import {
+  apngFirstFrame,
   CSS_PX_PER_INCH,
+  decodeImageBase64,
   GraphicObjectSchema,
   validatePngImage,
   type ChemDraftDocument,
@@ -172,11 +174,20 @@ export async function exportSvgToPdf(
           continue;
         }
         await flush();
-        let png: Uint8Array | string = `data:image/png;base64,${picture.data.image.dataBase64}`;
-        if (picture.data.image.mimeType === "image/svg+xml") {
+        const image = picture.data.image;
+        let png: Uint8Array | string = `data:image/png;base64,${image.dataBase64}`;
+        const svgPicture = image.mimeType === "image/svg+xml";
+        if (svgPicture) {
           const raster = await rasterizeSvgPicture(picture, options.rasterizeSvgPicture, rasterCache, rasterBudget);
           if ("warning" in raster) { warnings.push(raster.warning); continue; }
           png = raster.png;
+        } else {
+          // An animated PNG is drawn at its first animation frame, not its default image; a still PNG is embedded as it is.
+          const bytes = decodeImageBase64(image.dataBase64, picture.id);
+          const frame = apngFirstFrame(bytes);
+          if (frame.bytes !== bytes) png = frame.bytes;
+          if (frame.warning) warnings.push({ code: "export.pdf.apng_default_image", severity: "warning", objectId: picture.id,
+            message: `PDF export: picture ${picture.id}: ${frame.warning}` });
         }
         const scale = Math.min(widthPt / page.width, heightPt / page.height);
         const offsetX = (widthPt - page.width * scale) / 2;
@@ -199,7 +210,7 @@ export async function exportSvgToPdf(
         } catch (error) {
           // A PNG jsPDF cannot embed (a bad rasteriser result, or a native PNG with a corrupt data chunk)
           // costs that one picture, not the export.
-          warnings.push(typeof png === "string"
+          warnings.push(!svgPicture
             ? { code: "export.pdf.picture_not_drawn", severity: "warning", objectId: picture.id,
               message: `PDF export: picture ${picture.id} was not drawn: the PNG could not be embedded (${errorReason(error)})` }
             : svgPictureNotDrawn(picture.id, `the rasterised PNG could not be embedded (${errorReason(error)})`));

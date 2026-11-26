@@ -15,6 +15,7 @@ import { installNodeEngines } from "../engine";
 import { installNodeRendering } from "../nodeRendering";
 import { CliUsageError, cliExitCode, defaultCliIo, handleCliError, writeJsonLine,
   writeProgress, type CliIo } from "../output";
+import { fitRasterPictures } from "../rasterPictures";
 import { flattenSvgPictures, headlessSvgPictureWarnings, rasterizeSvgPictureWithResvg } from "../svgPictureRaster";
 import { withPdfDom } from "./export";
 import { perceiveDoubleBondStereo } from "./stereo";
@@ -163,7 +164,9 @@ export async function runRenderDocumentCommand(argv: readonly string[], io: CliI
           const viewBoxWidth = Number(/<svg\b[^>]*\sviewBox="[^"]*?\s([\d.eE+-]+)\s+[\d.eE+-]+"/.exec(svg)?.[1]);
           const pixelsPerUnit = figure.style === "document" ? DocumentStyleScale.pointsPerUnit * (figure.dpi ?? DocumentStyleScale.defaultDpi) / 72
             : viewBoxWidth > 0 ? width / viewBoxWidth : 1;
-          const flattened = await flattenSvgPictures(svg, pixelsPerUnit, warnings);
+          // PNG pictures: an animated one at its first frame, all of them within one decoded-pixel budget.
+          const fitted = await fitRasterPictures(svg, pixelsPerUnit, warnings);
+          const flattened = await flattenSvgPictures(fitted, pixelsPerUnit, warnings);
           warnings.push(...await headlessSvgPictureWarnings(document, "png", warnings));
           await save(format === "both" ? `${base}.png` : extension === format ? out : `${out}.png`, svgToPng(flattened, width, figure.style, figure.dpi));
         }
