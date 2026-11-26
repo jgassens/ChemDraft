@@ -17,7 +17,7 @@ import {
 import { hasTextChildren, readText, textAttributes } from "./text";
 import {
   SVG_IMPORT_MAX_DEPTH, SVG_IMPORT_MAX_ELEMENTS, SVG_IMPORT_MAX_EXPANDED_ELEMENTS, SVG_IMPORT_MAX_OBJECTS,
-  SVG_IMPORT_MAX_PATH_CHARS, SVG_IMPORT_MAX_REFERENCE_DEPTH, SVG_IMPORT_MAX_SOURCE_CHARS, SvgImportError,
+  SVG_IMPORT_MAX_PATH_CHARS, SVG_IMPORT_MAX_REFERENCE_DEPTH, SVG_IMPORT_MAX_SOURCE_CHARS, SVG_IMPORT_MAX_TEXT_CHARS, SvgImportError,
   type ReportLoss, type SvgImportErrorCode, type SvgImportObject, type SvgImportOptions, type SvgImportReportCode,
   type SvgImportReportEntry, type SvgImportResult
 } from "./types";
@@ -80,11 +80,17 @@ export function convertSvgToShapes(svgSource: string, options: SvgImportOptions)
   };
   for (const stylesheet of stylesheets) reportFor(stylesheet)("svgImport.stylesheet_not_kept", "SVG stylesheet");
 
-  let expanded = 0, processedPathChars = 0, outputPathChars = 0, drawables = 0;
+  let expanded = 0, processedPathChars = 0, outputPathChars = 0, processedTextChars = 0, drawables = 0;
   function countExpanded(count: number): void {
     expanded += count;
     if (expanded > SVG_IMPORT_MAX_EXPANDED_ELEMENTS) {
       failLimit("object_limit", SVG_IMPORT_MAX_EXPANDED_ELEMENTS, "expanded SVG elements");
+    }
+  }
+  function countText(count: number): void {
+    processedTextChars += count;
+    if (processedTextChars > SVG_IMPORT_MAX_TEXT_CHARS) {
+      failLimit("text_limit", SVG_IMPORT_MAX_TEXT_CHARS, "expanded SVG text characters");
     }
   }
   function addObject<T extends SvgImportObject>(object: T): T {
@@ -378,12 +384,16 @@ export function convertSvgToShapes(svgSource: string, options: SvgImportOptions)
     }
     const vectorEffect = property(element, css, "vector-effect");
     if (vectorEffect && vectorEffect !== "none") report("svgImport.unsupported_attribute", "SVG vector-effect");
+    let ownedClip: Clip | undefined;
     const clip = property(element, css, "clip-path");
     if (clip && !["none", "initial", "unset"].includes(clip)) {
       const link = reference(clip);
       const target = link && !link.fallback && byId.get(link.id);
       if (!target || target.localName !== "clipPath") report("svgImport.clip_not_kept", "Unsupported or unresolved clip path");
-      else context.clips = [...parent.clips, { owner: element, element: target, matrix, viewport: parent.viewport }];
+      else {
+        ownedClip = { owner: element, element: target, matrix, viewport: parent.viewport };
+        context.clips = [...parent.clips, ownedClip];
+      }
     }
 
     const before = drawables;
@@ -448,8 +458,17 @@ export function convertSvgToShapes(svgSource: string, options: SvgImportOptions)
       }
       let size: Size | undefined;
       if (target.localName === "symbol" || target.localName === "svg") {
-        const width = length(property(element, css, "width") ?? target.getAttribute("width") ?? "100%", context.viewport.width, em);
-        const height = length(property(element, css, "height") ?? target.getAttribute("height") ?? "100%", context.viewport.height, em);
+        const targetReport = reportFor(target);
+        const targetCss = inlineStyle(target, targetReport);
+        const targetEm = Number(inheritPresentation(target, targetCss, style, targetReport)["font-size"]);
+        const dimension = (name: keyof Size) => {
+          const basis = context.viewport[name];
+          const instance = property(element, css, name);
+          if (instance !== undefined && instance !== "auto") return length(instance, basis, em);
+          const value = property(target, targetCss, name);
+          return value === undefined || value === "auto" ? basis : length(value, basis, targetEm);
+        };
+        const width = dimension("width"), height = dimension("height");
         if (width === undefined || height === undefined || width < 0 || height < 0) {
           report("svgImport.invalid_geometry", "Unsupported <use> viewport dimensions");
           return [];
@@ -457,7 +476,9 @@ export function convertSvgToShapes(svgSource: string, options: SvgImportOptions)
         if (width === 0 || height === 0) return [];
         size = { width, height };
       }
-      const result = visit(target, { ...context, matrix: compose(matrix, translate(x, y)),
+      const instanceMatrix = compose(matrix, translate(x, y));
+      if (ownedClip) ownedClip.matrix = instanceMatrix;
+      const result = visit(target, { ...context, matrix: instanceMatrix,
         references: [...context.references, target] }, depth + 1, size);
       if (drawables - before > 1 && ownOpacity < 1) {
         report("svgImport.group_opacity_approximated", "Group opacity applied to individual native objects");
@@ -465,7 +486,7 @@ export function convertSvgToShapes(svgSource: string, options: SvgImportOptions)
       return result;
     }
     if (tag === "text") {
-      const text = readText(element, css, style, matrix, context.viewport, context.opacity, canonicalColor, report);
+      const text = readText(element, css, style, matrix, context.viewport, context.opacity, canonicalColor, countText, report);
       if (!text) return [];
       for (const item of context.clips) reportFor(item.owner)("svgImport.clip_not_kept", "Clip cannot be applied to editable text");
       if (context.viewports.length) {
@@ -559,6 +580,7 @@ function svgViewport(element: Element, css: Declarations, available: Size, fixed
   const rawBox = element.getAttribute("viewBox");
   const box = rawBox ? readViewBox(rawBox) : undefined;
   if (rawBox !== null && !box) report("svgImport.invalid_geometry", "Unsupported SVG viewBox");
+  if (box && (box.width === 0 || box.height === 0)) return;
   const rawAlign = element.getAttribute("preserveAspectRatio") ?? "xMidYMid meet";
   const mapping = box ? viewportMatrix(box, viewport, rawAlign) : identity;
   if (!mapping) report("svgImport.unsupported_attribute", "Unsupported preserveAspectRatio");

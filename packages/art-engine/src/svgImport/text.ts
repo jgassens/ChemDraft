@@ -1,5 +1,5 @@
 import type { TextObject } from "@chemdraft/chem-core";
-import { determinant, length, point, rotate, similarityScale, type Matrix, type Size } from "./geometry";
+import { determinant, length, point, rotate, similarityScale, validBounds, type Matrix, type Size } from "./geometry";
 import { elementChildren, opacity, property, solidColor, type CanonicalColor, type Declarations, type Presentation } from "./presentation";
 import type { ReportLoss } from "./types";
 
@@ -10,12 +10,24 @@ export const hasTextChildren = (element: Element): boolean =>
 
 export function readText(
   element: Element, css: Declarations, style: Presentation, matrix: Matrix, viewport: Size, objectOpacity: number,
-  canonicalColor: CanonicalColor, report: ReportLoss
+  canonicalColor: CanonicalColor, countText: (count: number) => void, report: ReportLoss
 ): Omit<TextObject, "id"> | undefined {
-  const raw = Array.from(element.childNodes)
-    .filter(node => node.nodeType === 3 || node.nodeType === 4 || (node.nodeType === 1
-      && !textMetadata.has((node as Element).localName)))
-    .map(node => node.textContent ?? "").join("");
+  const baseSize = Number(style["font-size"]);
+  if (baseSize === 0) {
+    if (hasTextChildren(element)) {
+      report("svgImport.text_style_not_kept", "Text children may override inherited zero font size");
+    }
+    return;
+  }
+  let raw = "";
+  for (let node = element.firstChild; node; node = node.nextSibling) {
+    if (node.nodeType === 3 || node.nodeType === 4 || (node.nodeType === 1
+      && !textMetadata.has((node as Element).localName))) {
+      const part = node.textContent ?? "";
+      countText(part.length);
+      raw += part;
+    }
+  }
   const preserve = closestSpace(element) === "preserve";
   const text = preserve ? raw.replace(/[\t\r\n]/g, " ") : raw.replace(/[ \t\r\n]+/g, " ").trim();
   if (!text) return;
@@ -31,7 +43,6 @@ export function readText(
     report("svgImport.text_not_kept", "Sheared, reflected or non-uniformly scaled text");
     return;
   }
-  const baseSize = Number(style["font-size"]);
   const fontSizePx = baseSize * scale;
   const coordinate = (name: string, basis: number): number =>
     length(property(element, css, name) ?? "0", basis, baseSize) ?? NaN;
@@ -68,13 +79,19 @@ export function readText(
   if (spacing === undefined) report("svgImport.text_style_not_kept", "Unsupported letter-spacing");
   const letterSpacingPx = (spacing ?? 0) * scale;
   // The editable box is estimated to place its anchor. It does not bound glyph ink.
-  const width = Math.max(fontSizePx, Array.from(text).length * (fontSizePx * 0.6 + letterSpacingPx));
+  let characters = 0;
+  for (const _ of text) characters++;
+  const width = Math.max(fontSizePx, characters * (fontSizePx * 0.6 + letterSpacingPx));
   const height = fontSizePx * 1.2;
   const rotation = Math.atan2(matrix[1], matrix[0]) * 180 / Math.PI;
   const anchorOffset = point(rotate(rotation), (alignment - 0.5) * width, fontSizePx - height / 2);
+  const bounds = { width, height, x: origin.x - anchorOffset.x - width / 2, y: origin.y - anchorOffset.y - height / 2 };
+  if (!validBounds(bounds) || !Number.isFinite(letterSpacingPx) || fontSizePx <= 0) {
+    report("svgImport.text_not_kept", "Unusable editable text frame");
+    return;
+  }
   return {
-    type: "text", text, spans: [], rotation, width, height,
-    x: origin.x - anchorOffset.x - width / 2, y: origin.y - anchorOffset.y - height / 2,
+    ...bounds, type: "text", text, spans: [], rotation,
     style: { color, fontFamily: style["font-family"], fontSizePx, textAlign, letterSpacingPx,
       fontWeight: Number.isFinite(fontWeight) && fontWeight > 0 ? fontWeight : 400, fontStyle, textDecoration }
   };

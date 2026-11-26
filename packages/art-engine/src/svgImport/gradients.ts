@@ -3,7 +3,8 @@ import {
   compose, determinant, diagonal, length, parseTransform, point, scale, similarityScale, translate,
   type Bounds, type Matrix, type Size
 } from "./geometry";
-import { clampUnit, elementChildren, href, inheritedProperty, inlineStyle, opacity, property, reference, solidColor, type CanonicalColor } from "./presentation";
+import { clampUnit, elementChildren, href, inheritedProperty, inlineStyle, opacity, property, reference, solidColor,
+  type CanonicalColor, type Declarations } from "./presentation";
 import { SVG_IMPORT_MAX_REFERENCE_DEPTH, type ReportLoss } from "./types";
 
 const gradientTags = new Set(["linearGradient", "radialGradient"]);
@@ -59,10 +60,11 @@ function gradientChain(first: Element, { byId, report }: PaintContext): Element[
   }
 }
 
-function stopColorContext(stop: Element, report: ReportLoss): string {
-  for (let element: Element | null = stop; element; element = element.parentElement) {
-    const color = property(element, inlineStyle(element, report), "color");
-    if (color === "initial") break;
+function stopColorContext(stop: Element, css: Declarations, gradient: Element, report: ReportLoss): string {
+  // Referenced stops inherit as children of the gradient that paints the shape.
+  for (let element: Element | null = stop; element; element = element === stop ? gradient : element.parentElement) {
+    const color = property(element, element === stop ? css : inlineStyle(element, report), "color");
+    if (color?.toLowerCase() === "initial") break;
     if (color && !["inherit", "unset", "currentcolor"].includes(color.toLowerCase())) return color;
   }
   return "#000000";
@@ -87,7 +89,7 @@ function gradientStops(chain: Element[], { canonicalColor, countExpanded, report
     const offset = Math.max(previous, opacity(property(element, css, "offset") ?? "0", "stop offset", report));
     previous = offset;
     const rawColor = property(element, css, "stop-color") ?? "#000000";
-    const color = solidColor(rawColor, stopColorContext(element, report), canonicalColor);
+    const color = solidColor(rawColor, stopColorContext(element, css, chain[0], report), canonicalColor);
     if (!color) report("svgImport.gradient_not_kept", "Unsupported stop color");
     return {
       offset, color: color?.color ?? "#000000",

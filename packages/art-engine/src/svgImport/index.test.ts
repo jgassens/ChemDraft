@@ -86,6 +86,25 @@ describe("SVG element conversion", () => {
     DocumentObjectSchema.parse(text);
   });
 
+  it("omits zero-size text and allows descendants to restore the font size", () => {
+    const { objects, report } = convert(`<g font-size="0">
+      <text x="10" y="20">Hidden</text><text x="10" y="40" font-size="12">Visible</text>
+    </g><text x="10" y="60" style="font-size:0px">Hidden again</text>`);
+    expect(objects).toHaveLength(2);
+    expect(objects[0]).toMatchObject({ type: "text", text: "Visible", style: { fontSizePx: 12 } });
+    expect(report.entries.map(entry => entry.code)).toEqual(["svgImport.viewport_clip_not_kept"]);
+  });
+
+  it.each(['font-size="1e308"', 'font-size="5e307" x="-1.7e308" text-anchor="end"'])(
+    "reports an unusable editable text frame for %s", attributes => {
+      const { objects, report } = convert(`<text y="20" ${attributes}>abc</text>`);
+      expect(objects).toEqual([]);
+      expect(report.exact).toBe(false);
+      expect(report.entries).toContainEqual({ code: "svgImport.text_not_kept",
+        detail: expect.stringContaining("frame"), elementCount: 1 });
+    }
+  );
+
   it("resolves nested use, instance style, href and xlink:href", () => {
     const result = convert(`<defs><path id="leaf" d="M0 0h5v5z"/><g id="copy" transform="translate(4 6)"><use href="#leaf" x="2"/></g></defs>
       <use href="#copy" x="10" y="12" fill="red"/><use xlink:href="#leaf" x="50" y="50" fill="#0f0"/>`,
@@ -103,6 +122,33 @@ describe("SVG element conversion", () => {
       <use href="#icon" x="20" y="30" width="30" height="20"/>`);
     expect(report.exact).toBe(true);
     expect(objects[0]).toMatchObject({ x: 25, y: 30, width: 20, height: 20 });
+  });
+
+  it.each(["symbol", "svg"])("uses CSS viewport dimensions on a referenced %s unless overridden", tag => {
+    const { objects, report } = convert(`<defs>
+      <${tag} id="icon" width="20" height="10" style="width:2em;height:30px;font-size:20px"
+        viewBox="0 0 10 10" preserveAspectRatio="none"><path d="M0 0H10V10H0Z"/></${tag}>
+    </defs><use href="#icon"/><use href="#icon" x="50" width="25" style="height:20px"/>`);
+    expect(report.exact).toBe(true);
+    expect(objects.filter(object => object.type === "graphic")).toMatchObject([
+      { x: 0, y: 0, width: 40, height: 30 }, { x: 50, y: 0, width: 25, height: 20 }
+    ]);
+  });
+
+  it.each(["0 0 0 10", "0 0 10 0"])("suppresses nested viewports with viewBox %s", viewBox => {
+    const { objects, report } = convert(`<defs><symbol id="icon" viewBox="${viewBox}">
+      <rect width="10" height="10"/>
+    </symbol></defs><use href="#icon" width="20" height="20"/>
+    <svg width="20" height="20" viewBox="${viewBox}"><rect width="10" height="10"/></svg>
+    <rect x="30" width="10" height="10"/>`);
+    expect(objects).toHaveLength(1);
+    expect(objects[0].x).toBeCloseTo(30);
+    expect(report).toEqual({ exact: true, entries: [] });
+  });
+
+  it("expands smooth quadratics using the current point or the reflected quadratic control", () => {
+    const path = onlyGraphic('<path d="M10 20 L20 20 T30 20 Q35 20 40 30 t10 10 10 0 Z M10 50 T20 50" fill="none" stroke="black"/>');
+    expect(path.data.pathD).toBe("M0 0 L10 0 Q10 0 20 0 Q25 0 30 10 Q35 20 40 20 Q45 20 50 20 Z M0 30 Q0 30 10 30");
   });
 
   it("bakes transform lists, nested transforms, viewBox origin, outer stretch and frame rotation", () => {
@@ -238,6 +284,16 @@ describe("SVG paint and presentation", () => {
       cx: .4, cy: .5, fx: .35, fy: .5, r: .2 });
   });
 
+  it("inherits currentColor for cloned stops from the referencing gradient and honors a stop override", () => {
+    const shape = onlyGraphic(`<defs>
+      <linearGradient id="base" color="#f00"><stop stop-color="currentColor"/>
+        <stop offset="1" stop-color="currentColor" style="color:#0f0"/></linearGradient>
+      <linearGradient id="paint" href="#base" color="#00f"/>
+    </defs>${gradientFill}`);
+    expect(shape.style.fillPaint).toMatchObject({ kind: "linear-gradient",
+      stops: [{ color: "#0000ff" }, { color: "#00ff00" }] });
+  });
+
   it("uses interpolation from the referenced gradient's own ancestry", () => {
     const shape = onlyGraphic(`<defs color-interpolation="linearRGB" style="color-interpolation: initial">
       <linearGradient id="base" color-interpolation="linearRGB">${gradientStops}</linearGradient>
@@ -266,6 +322,24 @@ describe("SVG paint and presentation", () => {
     expect(report.exact).toBe(false);
     expect(report.entries).toContainEqual({ code: "svgImport.clip_not_kept",
       detail: expect.stringContaining("rounding"), elementCount: 1 });
+  });
+
+  it.each([10.00004, 10.0000004])("reports a surviving clip edge rounded from %s", width => {
+    const { objects, report } = convert(`<defs><clipPath id="c"><rect width="${width}" height="20"/></clipPath></defs>`
+      + '<rect width="20" height="20" clip-path="url(#c)"/>');
+    expect(objects).toHaveLength(1);
+    expect(report.exact).toBe(false);
+    expect(report.entries).toContainEqual({ code: "svgImport.clip_not_kept",
+      detail: expect.stringContaining("rounding"), elementCount: 1 });
+  });
+
+  it("translates clips on a use instance while leaving ancestor clips in place", () => {
+    const { objects, report } = convert(`<defs><rect id="shape" width="10" height="10"/>
+      <clipPath id="instance"><rect x="1" width="9" height="10"/></clipPath>
+      <clipPath id="ancestor"><rect x="25" width="30" height="10"/></clipPath>
+    </defs><g clip-path="url(#ancestor)"><use href="#shape" x="20" clip-path="url(#instance)"/></g>`);
+    expect(report.exact).toBe(true);
+    expect(objects[0]).toMatchObject({ type: "graphic", x: 25, y: 0, width: 5, height: 10 });
   });
 
   it("resolves a clip use and leaves enclosed geometry unchanged", () => {
@@ -360,6 +434,13 @@ describe("typed conversion reports and refusal limits", () => {
     const path = `<path id="p" d="M0 0H10V10Z${" ".repeat(5_000)}"/>`;
     const body = `<defs>${path}</defs>${'<use href="#p"/>'.repeat(400)}`;
     rejects(() => convert(body), "path_limit", `${SVG_IMPORT_MAX_PATH_CHARS} expanded path-data characters`);
+  });
+  it("bounds expanded text from references before whitespace normalization", () => {
+    const label = `<text id="label" x="20" y="20">Label${" ".repeat(10_000)}</text>`;
+    const body = `<defs>${label}</defs>${'<use href="#label"/>'.repeat(200)}`;
+    expect(() => convert(body)).toThrowError(expect.objectContaining({
+      code: "text_limit", message: expect.stringContaining("expanded SVG text characters")
+    }));
   });
   it("refuses excessive SVG source size before XML parsing", () => {
     rejects(() => convertSource(" ".repeat(SVG_IMPORT_MAX_SOURCE_CHARS + 1)), "source_limit",

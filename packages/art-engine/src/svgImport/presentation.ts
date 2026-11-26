@@ -80,7 +80,7 @@ export function inheritPresentation(element: Element, css: Declarations, parent:
     if (value === "initial") computed[name] = defaults[name];
     else if (name === "font-size") {
       const size = length(value, Number(parent[name]), Number(parent[name]));
-      if (size !== undefined && size > 0) computed[name] = String(size);
+      if (size !== undefined && size >= 0) computed[name] = String(size);
       else report("svgImport.text_style_not_kept", "Unsupported font-size");
     } else computed[name] = value;
   }

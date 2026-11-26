@@ -4,6 +4,7 @@ export const SVG_IMPORT_MAX_ELEMENTS = 20_000;
 export const SVG_IMPORT_MAX_OBJECTS = 20_000;
 export const SVG_IMPORT_MAX_EXPANDED_ELEMENTS = 40_000;
 export const SVG_IMPORT_MAX_PATH_CHARS = 2_000_000;
+export const SVG_IMPORT_MAX_TEXT_CHARS = 2_000_000;
 export const SVG_IMPORT_MAX_SOURCE_CHARS = 20 * 1024 * 1024;
 export const SVG_IMPORT_MAX_DEPTH = 128;
 export const SVG_IMPORT_MAX_REFERENCE_DEPTH = 32;
@@ -47,7 +48,7 @@ export interface SvgImportResult {
 }
 
 export type SvgImportErrorCode =
-  | "invalid_svg" | "invalid_frame" | "element_limit" | "object_limit" | "path_limit" | "source_limit" | "depth_limit";
+  | "invalid_svg" | "invalid_frame" | "element_limit" | "object_limit" | "path_limit" | "text_limit" | "source_limit" | "depth_limit";
 
 export class SvgImportError extends Error {
   constructor(readonly code: SvgImportErrorCode, message: string) {
