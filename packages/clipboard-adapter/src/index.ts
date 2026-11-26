@@ -1554,19 +1554,30 @@ function locateV2000CountsLine(lines: readonly string[]): V2000CountsLocation | 
       bonds.length === reading.bondCount && bonds.every(isV2000BondLine) &&
       (after === undefined || after.trim() === "" || v2000AfterTable.test(after));
   };
-  // A headerless CTAB can put a bond record at line 4. Prefer its explicitly tagged first
-  // counts line only when the complete connection table supports that reading.
-  if (lines[0] && v2000Tagged.test(lines[0])) {
-    const reading = readingsAt(0).find((candidate) => fits(0, candidate));
-    if (reading) return { index: 0, ...reading };
-  }
-  const hasHeader = standard.some((index) =>
-    readingsAt(index).length > 0 || v2000Tagged.test(lines[index]!) || v3000Tagged.test(lines[index]!));
-  const positions = hasHeader ? standard : Array.from({ length: Math.min(leadingBlank + 3, lines.length) }, (_, index) => index);
-  for (const index of positions) {
+  // Pass 1: the standard counts-line positions (line 4, shifted by leading blank lines).
+  for (const index of standard) {
     const reading = readingsAt(index).find((candidate) => fits(index, candidate));
     if (reading) return { index, ...reading };
   }
+  const hasHeader = standard.some((index) =>
+    readingsAt(index).length > 0 || v2000Tagged.test(lines[index]!) || v3000Tagged.test(lines[index]!));
+  // Pass 2: a headerless CTAB (counts line first), tagged or not, with or without leading blank
+  // lines. Its line 4 may hold an atom or bond record that merely looks like a counts line
+  // (a bond "  1  2  1  0  0  0  0" reads as 1 atom and 2 bonds), so a headerless candidate must
+  // have its whole atom and bond block fit, which no bond record can: the lines after a bond are
+  // never atom records. Where a header is present, only a full-shaped counts line declaring atoms
+  // at the first non-blank line qualifies, so a counts-shaped title (even a zero-atom one) is never
+  // preferred over a malformed header's own counts line; with no header, the first lines are tried
+  // (ChemDraw's one-line RXN header).
+  const headerless = hasHeader
+    ? Array.from({ length: Math.min(leadingBlank + 1, lines.length) }, (_, index) => index)
+    : Array.from({ length: Math.min(leadingBlank + 3, lines.length) }, (_, index) => index);
+  for (const index of headerless) {
+    const shaped = !hasHeader || readV2000CountsLine(lines[index]!) !== undefined;
+    const reading = readingsAt(index).find((candidate) => (!hasHeader || candidate.atomCount > 0) && shaped && fits(index, candidate));
+    if (reading) return { index, ...reading };
+  }
+  const positions = hasHeader ? standard : headerless;
 
   // No reading fits its connection table exactly. Keep the lenient reading of the first counts
   // line (its atom and bond lines are checked one by one as they are parsed) unless it has two

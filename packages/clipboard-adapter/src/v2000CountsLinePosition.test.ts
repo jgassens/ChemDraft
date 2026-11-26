@@ -131,6 +131,38 @@ describe("headerless V2000 connection tables", () => {
   });
 });
 
+describe("headerless CTABs of 1, 2 and 3 atoms, tagged or not, with leading blank lines", () => {
+  const fullCounts = (atoms: number, bonds: number, tagged: boolean) =>
+    `${String(atoms).padStart(3)}${String(bonds).padStart(3)}  0  0  0  0  0  0  0  0999${tagged ? " V2000" : ""}`;
+  const tables = {
+    "one-atom": { atoms: [atomLine(0, 0, "C")], bonds: [] as string[], elements: ["C"] },
+    "two-atom": { atoms: [atomLine(0, 0, "C"), atomLine(1, 0, "O")], bonds: [bondLine(1, 2)], elements: ["C", "O"] },
+    "three-atom": { atoms: [atomLine(0, 0, "C"), atomLine(1, 0, "O"), atomLine(2, 0, "N")], bonds: [bondLine(1, 2), bondLine(2, 3)], elements: ["C", "O", "N"] }
+  } as const;
+  const cases = Object.entries(tables).flatMap(([name, table]) =>
+    [true, false].flatMap((tagged) => [0, 1, 2].map((blanks) => ({ name, table, tagged, blanks }))));
+
+  it.each(cases)("reads the $name headerless CTAB (tagged: $tagged, $blanks leading blank lines)", ({ table, tagged, blanks }) => {
+    const molfile = [...Array.from({ length: blanks }, () => ""), fullCounts(table.atoms.length, table.bonds.length, tagged),
+      ...table.atoms, ...table.bonds, "M  END"].join("\n");
+    expect(detectMolfileFormat(molfile)).toBe("molfile-v2000");
+    const graph = parseMolfileGraph(molfile);
+    expectGraph(graph, table.elements, table.bonds.length);
+    if (table.bonds.length > 0) {
+      const ids = graph.atoms.map((atom) => atom.id);
+      expect(graph.bonds.map((bond) => [ids.indexOf(bond.fromAtomId), ids.indexOf(bond.toAtomId)]))
+        .toEqual(table.bonds.map((_, index) => [index, index + 1]));
+    }
+  });
+
+  it("still reads a headered two-atom molfile whose title is blank, tagged or not", () => {
+    for (const tagged of [true, false]) {
+      const molfile = ["", "  Other", "", fullCounts(2, 1, tagged), ...methanol.atoms, ...methanol.bonds, "M  END"].join("\n");
+      expectGraph(parseMolfileGraph(molfile), ["C", "O"], 1);
+    }
+  });
+});
+
 describe("RDKit reference for the fixtures above", () => {
   beforeAll(installRealRdkitModuleLoader);
   afterAll(resetRdkitForTesting);
