@@ -2148,6 +2148,7 @@ fn setup_primary_app(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::E
     let ocsr = app.state::<ocsr_engine::OcsrEngineState>();
     ocsr.start_idle_reaper();
     ocsr.remove_stale_staging(app);
+    art_library::clean_drag_staging_at_startup(app);
     external_tools::setup(app);
     let naming = app.state::<naming_engine::NamingEngineState>();
     naming.start_idle_reaper();

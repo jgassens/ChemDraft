@@ -7,13 +7,25 @@
 //! has no drag yet: the command refuses there and the capability is not granted.
 //!
 //! [`art_library_start_drag`] is fail-closed. A path is accepted only when it
-//! - is absolute and written plainly (no `..`, no Windows device, verbatim or drive-relative form,
-//!   no alternate data stream, no reserved device name, no trailing dot or space),
+//! - is absolute and written plainly (no `..`, no Windows device, verbatim, drive-relative or UNC
+//!   form, no alternate data stream, no reserved device name, no trailing dot or space),
 //! - names an `.svg` file,
-//! - lies inside an allow-listed root, `<app data>/art-library/` or `<resource dir>/art/`, first by
-//!   its text (so nothing outside a root, a network share included, is ever touched) and again after
-//!   every link is resolved (so a linked folder inside a root cannot lead out of it),
-//! - is not itself a symbolic link, and is a regular, non-empty file under [`MAX_DRAG_FILE_BYTES`].
+//! - lies inside an allow-listed root, `<app data>/art-library/` or `<resource dir>/art/`, by its
+//!   text before anything on disk is touched,
+//! - opens, ONCE and without following a link as the final component, to a regular, non-empty file
+//!   under [`MAX_DRAG_FILE_BYTES`] whose own path (asked of the open handle, so it carries the true
+//!   case and every link resolved) lies inside the canonical form of a root, compared exactly,
+//! - and is not on a network location (a UNC share, a mapped network drive, a non-local volume).
+//!
+//! The bytes are then read from that same handle, bounded, and written to a fresh copy in an
+//! app-owned local staging folder ([`DRAG_STAGING_FOLDER`] under the app's LOCAL data folder,
+//! one `drag-<16 hex>` folder per drag, the original file name kept). The drag library only ever
+//! receives that copy, never the original path, so nothing swapped in after the checks can be
+//! dragged out, and the library is never handed a network path (its Windows code panics on one).
+//! A copy is removed when its drag is cancelled or fails, [`DROPPED_COPY_GRACE`] after it is
+//! dropped (the receiving app, our own document window included, reads it after the drag ends),
+//! and at startup. Removal touches only `drag-<16 hex>` entries of the staging folder and never
+//! follows a link.
 //!
 //! The lexical half takes the platform as a parameter so one host tests Windows rules (drive
 //! letters, `\` and `/`, UNC shares, case-insensitive names) and Unix rules alike.
@@ -22,7 +34,10 @@
 //! SVG for the "Drag test" tile in the Templates dialog of a labelled development build and returns
 //! its path; a stable build returns `None` and writes nothing.
 
+use std::fs::File;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::Serialize;
 use tauri::{ipc::Channel, AppHandle, Manager, Runtime, WebviewWindow};
@@ -40,6 +55,18 @@ pub(crate) const RESOURCE_ART_FOLDER: &str = "art";
 const DRAG_SOURCE_WINDOW_PREFIXES: &[&str] = &["dialog-main-structureTemplates-"];
 /// Side of the square the drag preview is fitted into, in pixels.
 const PREVIEW_SIZE: u32 = 96;
+/// Folder under the app's LOCAL data directory holding the per-drag copies the drag library is
+/// given: `~/Library/Application Support/<identifier>/art-drag-staging` on macOS,
+/// `%LOCALAPPDATA%\<identifier>\art-drag-staging` on Windows (local even when the roaming
+/// profile is redirected to a share).
+pub(crate) const DRAG_STAGING_FOLDER: &str = "art-drag-staging";
+/// Prefix of each per-drag folder in the staging folder; the rest is 16 lowercase hex digits.
+const STAGED_ENTRY_PREFIX: &str = "drag-";
+/// How long a dropped copy stays, so the receiving app can finish reading it (Finder and Explorer
+/// may copy in the background, and our document window reads a dropped file asynchronously).
+pub(crate) const DROPPED_COPY_GRACE: Duration = Duration::from_secs(120);
+/// Whether this build can start an operating-system file drag at all.
+const DRAG_SUPPORTED: bool = cfg!(any(target_os = "macos", windows));
 
 /// Path rules to apply. Passed in so tests on one host exercise both sets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,28 +97,20 @@ pub(crate) enum DragSourceError {
     NotAbsolute(String),
     DevicePath(String),
     ParentComponent(String),
-    BadComponent {
-        path: String,
-        component: String,
-    },
+    BadComponent { path: String, component: String },
     NotSvg(String),
     NoRoots,
     OutsideRoots(String),
     ResolvesOutsideRoots(String),
     NotFound(String),
-    Unreadable {
-        path: String,
-        reason: String,
-    },
+    Unreadable { path: String, reason: String },
     SymbolicLink(String),
     NotRegularFile(String),
     EmptyFile(String),
-    TooLarge {
-        path: String,
-        bytes: u64,
-    },
+    TooLarge { path: String, bytes: u64 },
     WrongWindow(String),
-    #[cfg_attr(any(target_os = "macos", windows), allow(dead_code))]
+    NetworkLocation(String),
+    Staging(String),
     Unsupported,
 }
 
@@ -140,6 +159,14 @@ impl std::fmt::Display for DragSourceError {
             Self::WrongWindow(label) => {
                 write!(f, "{P}: window \"{label}\" may not start an art drag.")
             }
+            Self::NetworkLocation(path) => write!(
+                f,
+                "{P}: \"{path}\" is on a network location (a UNC share or a mapped network drive); art is dragged only from and through local folders."
+            ),
+            Self::Staging(reason) => write!(
+                f,
+                "Art drag could not prepare its local copy of the file: {reason}."
+            ),
             Self::Unsupported => write!(f, "{P}: dragging art out is not available on this platform yet."),
         }
     }
@@ -153,15 +180,34 @@ pub(crate) struct LexicalPath {
     platform: PathPlatform,
 }
 
+/// How two path names are compared.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NameMatch {
+    /// Byte for byte. The only rule for CANONICAL paths: the operating system returns those with
+    /// each name's true case, so a different case is a different directory entry. On a
+    /// case-sensitive Windows directory, `art-library` and `ART-LIBRARY` are two siblings, and only
+    /// an exact comparison tells them apart.
+    Exact,
+    /// Windows names ignoring case; Unix names exactly. Used ONLY by the text pre-check, whose
+    /// input comes from the webview and may differ in case from the root as the app composes it
+    /// (`AppData\Roaming` against `appdata\roaming`, say). That check only decides whether the
+    /// disk is touched at all; the exact canonical check after opening decides whether the file is
+    /// dragged.
+    PlatformDefault,
+}
+
 impl LexicalPath {
-    /// Whether `self` is strictly inside `root` (the root itself is not a file to drag).
-    pub(crate) fn is_strictly_inside(&self, root: &LexicalPath) -> bool {
+    /// Whether `self` is strictly inside `root` (the root itself is not a file to drag), comparing
+    /// names by `rule`.
+    pub(crate) fn is_strictly_inside(&self, root: &LexicalPath, rule: NameMatch) -> bool {
         if self.platform != root.platform || self.components.len() <= root.components.len() {
             return false;
         }
-        let same = |a: &str, b: &str| match self.platform {
-            PathPlatform::Windows => a.to_lowercase() == b.to_lowercase(),
-            PathPlatform::Unix => a == b,
+        let same = |a: &str, b: &str| match (rule, self.platform) {
+            (NameMatch::PlatformDefault, PathPlatform::Windows) => {
+                a.to_lowercase() == b.to_lowercase()
+            }
+            _ => a == b,
         };
         same(&self.prefix, &root.prefix)
             && root
@@ -169,6 +215,18 @@ impl LexicalPath {
                 .iter()
                 .zip(&self.components)
                 .all(|(r, c)| same(r, c))
+    }
+
+    /// Whether this is a network path by its text alone: a UNC share on Windows. A mapped network
+    /// drive is a drive letter, so `drive_is_remote` is asked about drive prefixes (`"Z:"`).
+    /// Unix paths carry no such mark; the volume is asked instead ([`os::is_network`]).
+    pub(crate) fn is_network(&self, drive_is_remote: impl Fn(&str) -> bool) -> bool {
+        match self.platform {
+            PathPlatform::Windows => {
+                self.prefix.starts_with(r"\\") || drive_is_remote(&self.prefix)
+            }
+            PathPlatform::Unix => false,
+        }
     }
 
     fn file_name(&self) -> Option<&str> {
@@ -319,19 +377,23 @@ fn has_svg_extension(path: &LexicalPath) -> bool {
 }
 
 /// The text-only half of the guard: syntax, extension, and containment in a root by text. Nothing
-/// on disk is read, so a path outside every root (a network share, say) is refused untouched.
+/// on disk is read, so a path outside every root is refused untouched, and a UNC share is refused
+/// before any network access (a mapped network drive is caught on the open handle).
 pub(crate) fn check_lexical(
     raw: &str,
     roots: &[PathBuf],
     platform: PathPlatform,
 ) -> Result<LexicalPath, DragSourceError> {
     let candidate = parse_lexical(raw, platform, false)?;
+    if candidate.is_network(|_| false) {
+        return Err(DragSourceError::NetworkLocation(raw.to_string()));
+    }
     if !has_svg_extension(&candidate) {
         return Err(DragSourceError::NotSvg(raw.to_string()));
     }
     let inside = roots.iter().any(|root| {
         parse_lexical(&root.to_string_lossy(), platform, true)
-            .is_ok_and(|root| candidate.is_strictly_inside(&root))
+            .is_ok_and(|root| candidate.is_strictly_inside(&root, NameMatch::PlatformDefault))
     });
     if inside {
         Ok(candidate)
@@ -340,30 +402,63 @@ pub(crate) fn check_lexical(
     }
 }
 
+/// Whether `canonical`, a path the operating system returned for an open file, lies strictly
+/// inside one of `canonical_roots` (also as the operating system returns them), comparing names
+/// exactly, and still names an `.svg` file.
+pub(crate) fn canonical_inside(
+    canonical: &str,
+    canonical_roots: &[PathBuf],
+    platform: PathPlatform,
+) -> bool {
+    let Ok(resolved) = parse_lexical(canonical, platform, true) else {
+        return false;
+    };
+    has_svg_extension(&resolved)
+        && canonical_roots.iter().any(|root| {
+            parse_lexical(&root.to_string_lossy(), platform, true)
+                .is_ok_and(|root| resolved.is_strictly_inside(&root, NameMatch::Exact))
+        })
+}
+
+/// An art file read for a drag: its name on disk and its bytes, taken from one open handle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DragSource {
+    /// The file's own name as the file system records it, which the receiving app will see.
+    pub name: String,
+    pub bytes: Vec<u8>,
+}
+
 /// The whole guard. `roots` are the allow-listed folders as the app resolves them; a root missing on
-/// disk is skipped. Returns the canonical path to hand to the operating system.
-pub(crate) fn resolve_drag_source(
+/// disk is skipped. The file is opened once, without following a link as its final component; the
+/// open handle is validated (type, size, its own canonical path inside a canonical root, local
+/// volume) and the bytes are read from it, at most [`MAX_DRAG_FILE_BYTES`] of them. The path is
+/// never opened again, so swapping a link in after the checks changes nothing.
+pub(crate) fn read_drag_source(
     raw: &str,
     roots: &[PathBuf],
     platform: PathPlatform,
-) -> Result<PathBuf, DragSourceError> {
+) -> Result<DragSource, DragSourceError> {
     check_lexical(raw, roots, platform)?;
-    let path = Path::new(raw);
-    let unreadable = |error: std::io::Error| {
+    let unreadable = |error: std::io::Error| DragSourceError::Unreadable {
+        path: raw.to_string(),
+        reason: error.to_string(),
+    };
+    let file = os::open_file_no_follow(Path::new(raw)).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             DragSourceError::NotFound(raw.to_string())
+        } else if os::is_link_refusal(&error) {
+            DragSourceError::SymbolicLink(raw.to_string())
         } else {
-            DragSourceError::Unreadable {
-                path: raw.to_string(),
-                reason: error.to_string(),
-            }
+            unreadable(error)
         }
-    };
-    let link = std::fs::symlink_metadata(path).map_err(unreadable)?;
-    if link.file_type().is_symlink() {
+    })?;
+    let metadata = file.metadata().map_err(unreadable)?;
+    if metadata.file_type().is_symlink() {
         return Err(DragSourceError::SymbolicLink(raw.to_string()));
     }
-    let canonical = std::fs::canonicalize(path).map_err(unreadable)?;
+    if !metadata.is_file() {
+        return Err(DragSourceError::NotRegularFile(raw.to_string()));
+    }
     let canonical_roots: Vec<PathBuf> = roots
         .iter()
         .filter_map(|root| std::fs::canonicalize(root).ok())
@@ -371,29 +466,245 @@ pub(crate) fn resolve_drag_source(
     if canonical_roots.is_empty() {
         return Err(DragSourceError::NoRoots);
     }
-    let resolved = parse_lexical(&canonical.to_string_lossy(), platform, true)
-        .map_err(|_| DragSourceError::ResolvesOutsideRoots(raw.to_string()))?;
-    let contained = canonical_roots.iter().any(|root| {
-        parse_lexical(&root.to_string_lossy(), platform, true)
-            .is_ok_and(|root| resolved.is_strictly_inside(&root))
-    });
-    if !contained || !has_svg_extension(&resolved) {
+    let canonical = os::handle_path(&file).map_err(unreadable)?;
+    let canonical_text = canonical.to_string_lossy();
+    if !canonical_inside(&canonical_text, &canonical_roots, platform) {
         return Err(DragSourceError::ResolvesOutsideRoots(raw.to_string()));
     }
-    let metadata = std::fs::metadata(&canonical).map_err(unreadable)?;
-    if !metadata.is_file() {
-        return Err(DragSourceError::NotRegularFile(raw.to_string()));
+    let resolved = parse_lexical(&canonical_text, platform, true)
+        .map_err(|_| DragSourceError::ResolvesOutsideRoots(raw.to_string()))?;
+    if os::is_network(&file, &resolved).map_err(unreadable)? {
+        return Err(DragSourceError::NetworkLocation(raw.to_string()));
     }
+    let too_large = |bytes: u64| DragSourceError::TooLarge {
+        path: raw.to_string(),
+        bytes,
+    };
     if metadata.len() == 0 {
         return Err(DragSourceError::EmptyFile(raw.to_string()));
     }
     if metadata.len() > MAX_DRAG_FILE_BYTES {
-        return Err(DragSourceError::TooLarge {
-            path: raw.to_string(),
-            bytes: metadata.len(),
-        });
+        return Err(too_large(metadata.len()));
     }
-    Ok(canonical)
+    // The file may have grown or shrunk since the handle was inspected; the read is bounded and
+    // its result checked again.
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    (&file)
+        .take(MAX_DRAG_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(unreadable)?;
+    if bytes.is_empty() {
+        return Err(DragSourceError::EmptyFile(raw.to_string()));
+    }
+    if bytes.len() as u64 > MAX_DRAG_FILE_BYTES {
+        return Err(too_large(bytes.len() as u64));
+    }
+    let name = resolved
+        .file_name()
+        .ok_or_else(|| DragSourceError::ResolvesOutsideRoots(raw.to_string()))?
+        .to_string();
+    Ok(DragSource { name, bytes })
+}
+
+/// A staged copy: `<staging root>/<entry>/<file name>`, a fresh file made for one drag.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StagedCopy {
+    /// The staging root, as the operating system reports it for the open folder.
+    pub root: PathBuf,
+    /// This drag's own folder name in the root (`drag-<16 hex>`).
+    pub entry: String,
+    /// The file the drag library is given.
+    pub file: PathBuf,
+}
+
+impl StagedCopy {
+    /// Removes this copy and its folder now. Errors are logged, never raised.
+    pub(crate) fn remove(&self) {
+        if let Err(error) = remove_staged_entry(&self.root, &self.entry) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                log::warn!(
+                    "art drag: could not remove staged copy {}: {error}",
+                    self.file.display()
+                );
+            }
+        }
+    }
+
+    /// Removes this copy after `grace`, on a background thread.
+    pub(crate) fn remove_after(self, grace: Duration) {
+        let spawned = std::thread::Builder::new()
+            .name("art-drag-staging".into())
+            .spawn(move || {
+                std::thread::sleep(grace);
+                self.remove();
+            });
+        if let Err(error) = spawned {
+            log::warn!("art drag: could not schedule staged copy removal: {error}");
+        }
+    }
+}
+
+fn staged_entry_name() -> std::io::Result<String> {
+    let mut random = [0u8; 8];
+    getrandom::fill(&mut random).map_err(|error| std::io::Error::other(error.to_string()))?;
+    Ok(format!(
+        "{STAGED_ENTRY_PREFIX}{:016x}",
+        u64::from_le_bytes(random)
+    ))
+}
+
+/// Whether `name` is a per-drag folder this module made; nothing else in the staging folder is
+/// ever removed.
+pub(crate) fn is_staged_entry_name(name: &str) -> bool {
+    name.strip_prefix(STAGED_ENTRY_PREFIX).is_some_and(|hex| {
+        hex.len() == 16
+            && hex
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
+}
+
+/// Writes `bytes` to a new file `name` inside the open folder `dir` (whose path is `dir_path`):
+/// created atomically (it must not exist; a link at its place is not followed), written through
+/// that one handle, and verified to have landed in `dir`.
+///
+/// Deliberately NOT made read-only: Finder and Explorer keep that permission on the copy they make
+/// at the drop target, which would leave the user's dropped file locked. The copy is private to
+/// this drag (a fresh, randomly named folder) and nothing writes to it after this.
+fn write_new_file_in(
+    dir: &File,
+    dir_path: &Path,
+    name: &str,
+    bytes: &[u8],
+) -> std::io::Result<PathBuf> {
+    let mut file = os::create_file_in(dir, dir_path, name)?;
+    file.write_all(bytes)?;
+    file.flush()?;
+    Ok(dir_path.join(name))
+}
+
+/// Copies `source` into a new `drag-<16 hex>` folder of `staging_root` (created if missing) and
+/// returns where. The root must be a real, local folder: a link, a UNC share or a mapped network
+/// drive is refused.
+pub(crate) fn stage_copy(
+    staging_root: &Path,
+    source: &DragSource,
+    platform: PathPlatform,
+) -> Result<StagedCopy, DragSourceError> {
+    let fail = |error: std::io::Error| DragSourceError::Staging(error.to_string());
+    std::fs::create_dir_all(staging_root).map_err(fail)?;
+    let root = os::open_dir_no_follow(staging_root).map_err(fail)?;
+    let root_path = os::handle_path(&root).map_err(fail)?;
+    let root_lexical = parse_lexical(&root_path.to_string_lossy(), platform, true)
+        .map_err(|error| DragSourceError::Staging(error.to_string()))?;
+    if os::is_network(&root, &root_lexical).map_err(fail)? {
+        return Err(DragSourceError::NetworkLocation(
+            staging_root.to_string_lossy().into_owned(),
+        ));
+    }
+    for _ in 0..8 {
+        let entry = staged_entry_name().map_err(fail)?;
+        match os::create_dir_in(&root, &root_path, &entry) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(fail(error)),
+        }
+        let entry_path = root_path.join(&entry);
+        let written = os::open_dir_in(&root, &root_path, &entry)
+            .and_then(|dir| write_new_file_in(&dir, &entry_path, &source.name, &source.bytes));
+        return match written {
+            Ok(file) => Ok(StagedCopy {
+                root: root_path,
+                entry,
+                file,
+            }),
+            Err(error) => {
+                let _ = remove_staged_entry(&root_path, &entry);
+                Err(fail(error))
+            }
+        };
+    }
+    Err(DragSourceError::Staging(
+        "no unused staging folder name was found".into(),
+    ))
+}
+
+/// Removes `<staging_root>/<entry>` without following any link. Refuses names this module did not
+/// make, so nothing outside a per-drag folder is ever deleted.
+pub(crate) fn remove_staged_entry(staging_root: &Path, entry: &str) -> std::io::Result<()> {
+    if !is_staged_entry_name(entry) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("\"{entry}\" is not a staging folder"),
+        ));
+    }
+    let path = staging_root.join(entry);
+    let metadata = std::fs::symlink_metadata(&path)?;
+    if !metadata.is_dir() {
+        // A link or a file where the folder was: remove that entry itself, never its target.
+        return std::fs::remove_file(&path).or_else(|_| std::fs::remove_dir(&path));
+    }
+    // Removes links inside as links; never descends through one.
+    std::fs::remove_dir_all(&path)
+}
+
+/// Removes every per-drag folder in `staging_root` (only those older than `older_than`, when
+/// given). The root itself must be a real folder, not a link. Returns how many were removed.
+pub(crate) fn sweep_staging(staging_root: &Path, older_than: Option<Duration>) -> usize {
+    let is_real_dir = std::fs::symlink_metadata(staging_root).is_ok_and(|meta| meta.is_dir());
+    if !is_real_dir {
+        return 0;
+    }
+    let Ok(entries) = std::fs::read_dir(staging_root) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str().filter(|name| is_staged_entry_name(name)) else {
+            continue;
+        };
+        if let Some(age) = older_than {
+            let old_enough = std::fs::symlink_metadata(entry.path())
+                .and_then(|meta| meta.modified())
+                .ok()
+                .and_then(|modified| modified.elapsed().ok())
+                .is_some_and(|elapsed| elapsed >= age);
+            if !old_enough {
+                continue;
+            }
+        }
+        match remove_staged_entry(staging_root, name) {
+            Ok(()) => removed += 1,
+            Err(error) => log::warn!("art drag: could not remove staged folder {name}: {error}"),
+        }
+    }
+    removed
+}
+
+fn drag_staging_root<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, DragSourceError> {
+    app.path()
+        .app_local_data_dir()
+        .map(|dir| dir.join(DRAG_STAGING_FOLDER))
+        .map_err(|error| DragSourceError::Staging(format!("no local app data folder ({error})")))
+}
+
+/// Removes every staged copy a previous run left behind. Runs on a background thread.
+pub(crate) fn clean_drag_staging_at_startup<R: Runtime>(app: &AppHandle<R>) {
+    let Ok(root) = drag_staging_root(app) else {
+        return;
+    };
+    let spawned = std::thread::Builder::new()
+        .name("art-drag-staging-cleanup".into())
+        .spawn(move || {
+            let removed = sweep_staging(&root, None);
+            if removed > 0 {
+                log::info!("art drag: removed {removed} staged copies left by an earlier run");
+            }
+        });
+    if let Err(error) = spawned {
+        log::warn!("art drag: could not start staging cleanup: {error}");
+    }
 }
 
 /// The allow-listed roots for this app: `<app data>/art-library` and `<resource dir>/art`.
@@ -490,8 +801,10 @@ pub(crate) struct DragEnded {
 
 /// Starts an operating-system file drag of one SVG from the calling window.
 ///
+/// The drag carries a fresh local copy of the file (see the module notes), never the original.
 /// Resolves once the drag has started (macOS) or finished (Windows, where `DoDragDrop` runs its
-/// own loop until the drop); `on_end` receives how it ended either way.
+/// own loop until the drop); `on_end` receives how it ended either way. A drag that cannot start,
+/// the drag library panicking included, rejects with a message and removes its copy.
 #[tauri::command]
 pub(crate) async fn art_library_start_drag<R: Runtime>(
     app: AppHandle<R>,
@@ -502,65 +815,114 @@ pub(crate) async fn art_library_start_drag<R: Runtime>(
     if !may_start_drag(window.label()) {
         return Err(DragSourceError::WrongWindow(window.label().to_string()).to_string());
     }
-    let file = resolve_drag_source(&path, &allowed_roots(&app), PathPlatform::current())
+    if !DRAG_SUPPORTED {
+        return Err(DragSourceError::Unsupported.to_string());
+    }
+    let platform = PathPlatform::current();
+    let source = read_drag_source(&path, &allowed_roots(&app), platform)
         .map_err(|error| error.to_string())?;
-    let svg = std::fs::read(&file).map_err(|error| {
-        DragSourceError::Unreadable {
-            path: path.clone(),
-            reason: error.to_string(),
+    let staging_root = drag_staging_root(&app).map_err(|error| error.to_string())?;
+    // Copies whose removal never ran (a crash, a lost end callback) go before a new one is made.
+    sweep_staging(&staging_root, Some(DROPPED_COPY_GRACE));
+    let staged = stage_copy(&staging_root, &source, platform).map_err(|error| error.to_string())?;
+    let preview = drag_preview_png(&source.bytes);
+    start_native_drag(&app, window, staged, preview, on_end).await
+}
+
+/// Runs `start`, turning a panic into an error, so a failure inside the drag library rejects the
+/// drag instead of unwinding into the event loop (which aborts the process). The panic hook still
+/// runs and records the panic.
+pub(crate) fn guard_drag_panic(start: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(start)) {
+        Ok(result) => result,
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<&str>()
+                .map(|text| (*text).to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "no message".into());
+            log::error!("art drag: the drag library panicked: {message}");
+            Err(format!(
+                "Art drag could not start: the system drag failed ({message})."
+            ))
         }
-        .to_string()
-    })?;
-    let preview = drag_preview_png(&svg);
-    start_native_drag(&app, window, file, preview, on_end).await
+    }
+}
+
+/// What happens to a staged copy when its drag ends: removed at once when nothing took it, kept
+/// for [`DROPPED_COPY_GRACE`] when a target accepted it.
+fn finish_staged_copy(staged: StagedCopy, dropped: bool) {
+    if dropped {
+        staged.remove_after(DROPPED_COPY_GRACE);
+    } else {
+        staged.remove();
+    }
 }
 
 #[cfg(any(target_os = "macos", windows))]
 async fn start_native_drag<R: Runtime>(
     app: &AppHandle<R>,
     window: WebviewWindow<R>,
-    file: PathBuf,
+    staged: StagedCopy,
     preview: Vec<u8>,
     on_end: Channel<DragEnded>,
 ) -> Result<(), String> {
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let file = staged.file.clone();
+    let on_failure = staged.clone();
+    let on_ended = staged.clone();
     // AppKit requires the main thread; on Windows DoDragDrop needs the window's (OLE STA) thread.
-    app.run_on_main_thread(move || {
-        let started = drag::start_drag(
-            &window,
-            drag::DragItem::Files(vec![file]),
-            drag::Image::Raw(preview),
-            move |result, cursor| {
-                let outcome = match result {
-                    drag::DragResult::Dropped => "dropped",
-                    drag::DragResult::Cancel => "cancelled",
-                };
-                log::info!("art drag ended: {outcome} at ({}, {})", cursor.x, cursor.y);
-                let _ = on_end.send(DragEnded {
-                    outcome,
-                    x: cursor.x,
-                    y: cursor.y,
-                });
-            },
-            drag::Options::default(),
-        );
-        let _ =
-            started_tx.send(started.map_err(|error| format!("Art drag could not start: {error}.")));
-    })
-    .map_err(|error| format!("Art drag could not start: {error}."))?;
-    started_rx
-        .await
-        .map_err(|_| "Art drag could not start: the main thread did not answer.".to_string())?
+    let dispatched = app.run_on_main_thread(move || {
+        let started = guard_drag_panic(|| {
+            drag::start_drag(
+                &window,
+                drag::DragItem::Files(vec![file]),
+                drag::Image::Raw(preview),
+                move |result, cursor| {
+                    // Called from AppKit or OLE: a panic here would abort, so none may escape.
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let dropped = matches!(result, drag::DragResult::Dropped);
+                        let outcome = if dropped { "dropped" } else { "cancelled" };
+                        log::info!("art drag ended: {outcome} at ({}, {})", cursor.x, cursor.y);
+                        let _ = on_end.send(DragEnded {
+                            outcome,
+                            x: cursor.x,
+                            y: cursor.y,
+                        });
+                        finish_staged_copy(on_ended.clone(), dropped);
+                    }));
+                },
+                drag::Options::default(),
+            )
+            .map_err(|error| format!("Art drag could not start: {error}."))
+        });
+        if started.is_err() {
+            on_failure.remove();
+        }
+        let _ = started_tx.send(started);
+    });
+    if let Err(error) = dispatched {
+        staged.remove();
+        return Err(format!("Art drag could not start: {error}."));
+    }
+    match started_rx.await {
+        Ok(result) => result,
+        Err(_) => {
+            staged.remove();
+            Err("Art drag could not start: the main thread did not answer.".to_string())
+        }
+    }
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]
 async fn start_native_drag<R: Runtime>(
     _app: &AppHandle<R>,
     _window: WebviewWindow<R>,
-    _file: PathBuf,
+    staged: StagedCopy,
     _preview: Vec<u8>,
     _on_end: Channel<DragEnded>,
 ) -> Result<(), String> {
+    finish_staged_copy(staged, false);
     Err(DragSourceError::Unsupported.to_string())
 }
 
@@ -591,8 +953,10 @@ pub(crate) const DRAG_TEST_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/sv
 pub(crate) const DRAG_TEST_FOLDER: &str = "spike";
 pub(crate) const DRAG_TEST_FILE: &str = "drag-test.svg";
 
-/// Writes the fixed SVG to `<art root>/spike/drag-test.svg` and returns its path. A link left at
-/// either place is removed first, so the write can never follow it out of the folder.
+/// Writes the fixed SVG to `<art root>/spike/drag-test.svg` and returns its path. Neither folder
+/// may be a link. The SVG goes to a new, uniquely named file in the open spike folder (created
+/// atomically, never through a link) and is then renamed over `drag-test.svg`, which replaces
+/// whatever entry was there (a link or a hard link included) instead of writing through it.
 pub(crate) fn write_drag_test_file(art_root: &Path) -> std::io::Result<PathBuf> {
     let folder = art_root.join(DRAG_TEST_FOLDER);
     for path in [art_root, folder.as_path()] {
@@ -604,12 +968,14 @@ pub(crate) fn write_drag_test_file(art_root: &Path) -> std::io::Result<PathBuf> 
         }
     }
     std::fs::create_dir_all(&folder)?;
-    let file = folder.join(DRAG_TEST_FILE);
-    if std::fs::symlink_metadata(&file).is_ok_and(|meta| meta.file_type().is_symlink()) {
-        std::fs::remove_file(&file)?;
+    let dir = os::open_dir_no_follow(&folder)?;
+    let temporary = format!(".{DRAG_TEST_FILE}.{}.tmp", staged_entry_name()?);
+    write_new_file_in(&dir, &folder, &temporary, DRAG_TEST_SVG.as_bytes())?;
+    if let Err(error) = os::rename_in(&dir, &folder, &temporary, DRAG_TEST_FILE) {
+        let _ = std::fs::remove_file(folder.join(&temporary));
+        return Err(error);
     }
-    std::fs::write(&file, DRAG_TEST_SVG)?;
-    Ok(file)
+    Ok(folder.join(DRAG_TEST_FILE))
 }
 
 /// DEV-ONLY. `None` in a stable build (nothing is written); otherwise the drag-test file's path.
@@ -635,6 +1001,305 @@ pub(crate) async fn art_library_dev_drag_test_prepare<R: Runtime>(
     let file = write_drag_test_file(&root)
         .map_err(|error| format!("Drag test file not written: {error}."))?;
     Ok(Some(file.to_string_lossy().into_owned()))
+}
+
+/// File-system primitives that must not follow links, one side per platform.
+///
+/// Unix works relative to open folder descriptors (`openat`, `mkdirat`, `renameat`), so a folder
+/// swapped for a link after it was opened is never written through. Windows has no such calls in
+/// the standard library; it holds each folder open WITHOUT delete sharing, which stops the folder
+/// being renamed, removed or replaced while held, opens with `FILE_FLAG_OPEN_REPARSE_POINT` (a link
+/// is opened as itself, never followed), and checks each created file's final path afterwards.
+#[cfg(unix)]
+mod os {
+    use std::ffi::CString;
+    use std::fs::{File, OpenOptions};
+    use std::io;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::path::{Path, PathBuf};
+
+    use super::LexicalPath;
+
+    fn c_name(name: &str) -> io::Result<CString> {
+        if name.is_empty() || name == "." || name == ".." || name.contains('/') {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("\"{name}\" is not a single file name"),
+            ));
+        }
+        CString::new(name).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in name"))
+    }
+
+    fn from_fd(fd: libc::c_int) -> io::Result<File> {
+        if fd < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            // SAFETY: `fd` was just returned open by the kernel and is owned by nothing else.
+            Ok(unsafe { File::from_raw_fd(fd) })
+        }
+    }
+
+    /// Opens a file to read. A link as the final component fails (`ELOOP`); a FIFO does not block.
+    pub(super) fn open_file_no_follow(path: &Path) -> io::Result<File> {
+        OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(path)
+    }
+
+    pub(super) fn is_link_refusal(error: &io::Error) -> bool {
+        error.raw_os_error() == Some(libc::ELOOP)
+    }
+
+    /// Opens a folder; a link as the final component fails.
+    pub(super) fn open_dir_no_follow(path: &Path) -> io::Result<File> {
+        OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
+            .open(path)
+    }
+
+    pub(super) fn open_dir_in(parent: &File, _parent_path: &Path, name: &str) -> io::Result<File> {
+        let name = c_name(name)?;
+        // SAFETY: a valid descriptor and NUL-terminated name.
+        from_fd(unsafe {
+            libc::openat(
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        })
+    }
+
+    pub(super) fn create_dir_in(parent: &File, _parent_path: &Path, name: &str) -> io::Result<()> {
+        let name = c_name(name)?;
+        // SAFETY: a valid descriptor and NUL-terminated name.
+        if unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) } == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
+    /// Creates `name` in `parent`; fails if anything, a link included, is already there.
+    pub(super) fn create_file_in(
+        parent: &File,
+        _parent_path: &Path,
+        name: &str,
+    ) -> io::Result<File> {
+        let name = c_name(name)?;
+        let mode: libc::c_uint = 0o644;
+        // SAFETY: a valid descriptor and NUL-terminated name; `mode` is the variadic argument.
+        from_fd(unsafe {
+            libc::openat(
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                mode,
+            )
+        })
+    }
+
+    pub(super) fn rename_in(dir: &File, _dir_path: &Path, from: &str, to: &str) -> io::Result<()> {
+        let (from, to) = (c_name(from)?, c_name(to)?);
+        let fd = dir.as_raw_fd();
+        // SAFETY: a valid descriptor and NUL-terminated names.
+        if unsafe { libc::renameat(fd, from.as_ptr(), fd, to.as_ptr()) } == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
+    /// The open file's own path, with every link resolved and each name's true case.
+    #[cfg(target_os = "macos")]
+    pub(super) fn handle_path(file: &File) -> io::Result<PathBuf> {
+        use std::os::unix::ffi::OsStrExt;
+        let mut buffer = vec![0u8; libc::PATH_MAX as usize + 1];
+        // SAFETY: F_GETPATH writes at most PATH_MAX bytes, NUL-terminated, into `buffer`.
+        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETPATH, buffer.as_mut_ptr()) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        let length = buffer.iter().position(|&byte| byte == 0).unwrap_or(0);
+        if length == 0 {
+            return Err(io::Error::other("the system returned no path for the file"));
+        }
+        Ok(PathBuf::from(std::ffi::OsStr::from_bytes(
+            &buffer[..length],
+        )))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub(super) fn handle_path(file: &File) -> io::Result<PathBuf> {
+        std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))
+    }
+
+    /// Whether the open file or folder is on a volume that is not local.
+    #[cfg(target_os = "macos")]
+    pub(super) fn is_network(file: &File, _path: &LexicalPath) -> io::Result<bool> {
+        // SAFETY: `statfs` is plain data; fstatfs fills it for a valid descriptor.
+        let mut stats: libc::statfs = unsafe { std::mem::zeroed() };
+        if unsafe { libc::fstatfs(file.as_raw_fd(), &mut stats) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(stats.f_flags & libc::MNT_LOCAL as u32 == 0)
+    }
+
+    /// Linux has no drag (refused before anything is read); nothing to classify.
+    #[cfg(not(target_os = "macos"))]
+    pub(super) fn is_network(_file: &File, _path: &LexicalPath) -> io::Result<bool> {
+        Ok(false)
+    }
+}
+
+#[cfg(windows)]
+mod os {
+    use std::fs::{File, OpenOptions};
+    use std::io;
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use std::path::{Path, PathBuf};
+
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetDriveTypeW, GetFinalPathNameByHandleW, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        VOLUME_NAME_DOS,
+    };
+
+    use super::LexicalPath;
+
+    /// `DRIVE_REMOTE` from `GetDriveTypeW` (WindowsProgramming, a feature not otherwise needed).
+    const DRIVE_REMOTE: u32 = 4;
+
+    fn checked_name(name: &str) -> io::Result<&str> {
+        if name.is_empty() || name == "." || name == ".." || name.contains(['\\', '/', ':']) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("\"{name}\" is not a single file name"),
+            ));
+        }
+        Ok(name)
+    }
+
+    /// Opens a file to read, as itself if it is a link (the caller refuses that), sharing it only
+    /// with readers so it cannot change while it is read.
+    pub(super) fn open_file_no_follow(path: &Path) -> io::Result<File> {
+        OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)
+    }
+
+    /// Windows opens a link as itself; the caller sees it in the handle's metadata.
+    pub(super) fn is_link_refusal(_error: &io::Error) -> bool {
+        false
+    }
+
+    /// Opens a real folder (not a link or junction) and holds it without delete sharing. Only
+    /// attribute access is asked for, which takes no part in sharing checks, so creating and
+    /// renaming files inside it still works while it is held.
+    pub(super) fn open_dir_no_follow(path: &Path) -> io::Result<File> {
+        let dir = OpenOptions::new()
+            .access_mode(FILE_READ_ATTRIBUTES)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)?;
+        let metadata = dir.metadata()?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(io::Error::other(format!(
+                "\"{}\" is not a plain folder",
+                path.display()
+            )));
+        }
+        Ok(dir)
+    }
+
+    /// Fails unless `child` (opened by path) is `name` directly inside the open folder `parent`.
+    fn verify_child(parent: &File, child: &File, name: &str) -> io::Result<()> {
+        if handle_path(child)? == handle_path(parent)?.join(name) {
+            Ok(())
+        } else {
+            Err(io::Error::other(format!(
+                "\"{name}\" did not land in the folder it was created in"
+            )))
+        }
+    }
+
+    pub(super) fn open_dir_in(parent: &File, parent_path: &Path, name: &str) -> io::Result<File> {
+        let dir = open_dir_no_follow(&parent_path.join(checked_name(name)?))?;
+        verify_child(parent, &dir, name)?;
+        Ok(dir)
+    }
+
+    pub(super) fn create_dir_in(_parent: &File, parent_path: &Path, name: &str) -> io::Result<()> {
+        std::fs::create_dir(parent_path.join(checked_name(name)?))
+    }
+
+    /// Creates `name` in `parent` (`CREATE_NEW`: fails if anything, a link included, is there).
+    pub(super) fn create_file_in(
+        parent: &File,
+        parent_path: &Path,
+        name: &str,
+    ) -> io::Result<File> {
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(parent_path.join(checked_name(name)?))?;
+        verify_child(parent, &file, name)?;
+        Ok(file)
+    }
+
+    pub(super) fn rename_in(_dir: &File, dir_path: &Path, from: &str, to: &str) -> io::Result<()> {
+        // The folder is held without delete sharing, so these names stay inside it.
+        std::fs::rename(
+            dir_path.join(checked_name(from)?),
+            dir_path.join(checked_name(to)?),
+        )
+    }
+
+    /// The open file's own path (`\\?\C:\…` or `\\?\UNC\…`), as `std::fs::canonicalize` returns it.
+    pub(super) fn handle_path(file: &File) -> io::Result<PathBuf> {
+        use std::os::windows::ffi::OsStringExt;
+        let handle = file.as_raw_handle();
+        let mut buffer = vec![0u16; 512];
+        loop {
+            // SAFETY: `handle` is open; the call writes at most `buffer.len()` wide characters.
+            let length = unsafe {
+                GetFinalPathNameByHandleW(
+                    handle,
+                    buffer.as_mut_ptr(),
+                    buffer.len() as u32,
+                    VOLUME_NAME_DOS,
+                )
+            } as usize;
+            if length == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if length < buffer.len() {
+                return Ok(PathBuf::from(std::ffi::OsString::from_wide(
+                    &buffer[..length],
+                )));
+            }
+            buffer.resize(length + 1, 0);
+        }
+    }
+
+    /// A UNC path, or a drive the system reports as a network drive.
+    pub(super) fn is_network(_file: &File, path: &LexicalPath) -> io::Result<bool> {
+        Ok(path.is_network(|drive| {
+            let root: Vec<u16> = std::ffi::OsStr::new(&format!("{drive}\\"))
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+            // SAFETY: a NUL-terminated wide string.
+            unsafe { GetDriveTypeW(root.as_ptr()) == DRIVE_REMOTE }
+        }))
+    }
 }
 
 #[cfg(test)]
@@ -775,10 +1440,17 @@ mod tests {
         ] {
             assert!(lexical(raw, Windows).is_err(), "{raw}");
         }
-        assert!(matches!(
-            lexical(r"\\attacker\share\x.svg", Windows),
-            Err(DragSourceError::OutsideRoots(_))
-        ));
+        // A UNC share is refused as a network location before anything else is checked.
+        for raw in [
+            r"\\attacker\share\x.svg",
+            r"//attacker/share/art-library/x.svg",
+        ] {
+            assert_eq!(
+                lexical(raw, Windows).unwrap_err(),
+                DragSourceError::NetworkLocation(raw.into()),
+                "{raw}"
+            );
+        }
         assert!(matches!(
             lexical(r"\\?\C:\Program Files\ChemDraft\art\x.svg", Windows),
             Err(DragSourceError::DevicePath(_))
@@ -790,30 +1462,135 @@ mod tests {
     }
 
     #[test]
-    fn windows_roots_and_canonical_paths_may_be_verbatim_or_on_a_share() {
+    fn windows_canonical_paths_may_be_verbatim_and_compare_exactly() {
         // std::fs::canonicalize on Windows returns verbatim paths; containment sees through them.
-        let root = parse_lexical(r"\\?\C:\Program Files\ChemDraft\art", Windows, true).unwrap();
-        let file =
-            parse_lexical(r"\\?\c:\program files\chemdraft\ART\x.svg", Windows, true).unwrap();
-        assert!(file.is_strictly_inside(&root));
-        // A redirected AppData folder on a share works when the root itself is on that share.
-        let share_root =
-            parse_lexical(r"\\?\UNC\Corp\Home$\ada\art-library", Windows, true).unwrap();
-        let share_file =
-            parse_lexical(r"\\corp\home$\Ada\art-library\x.svg", Windows, false).unwrap();
-        assert!(share_file.is_strictly_inside(&share_root));
-        let other_share =
-            parse_lexical(r"\\corp\other\ada\art-library\x.svg", Windows, false).unwrap();
-        assert!(!other_share.is_strictly_inside(&share_root));
-        assert!(check_lexical(
-            r"\\corp\home$\ada\art-library\x.svg",
-            &[PathBuf::from(r"\\?\UNC\corp\home$\ada\art-library")],
+        let root = r"\\?\C:\Program Files\ChemDraft\art";
+        let roots = [PathBuf::from(root)];
+        assert!(canonical_inside(
+            r"\\?\C:\Program Files\ChemDraft\art\bioart\x.svg",
+            &roots,
             Windows
-        )
-        .is_ok());
+        ));
+        // Canonical paths carry each name's true case, so a different case is a different entry.
+        assert!(!canonical_inside(
+            r"\\?\c:\program files\chemdraft\ART\x.svg",
+            &roots,
+            Windows
+        ));
+        assert!(!canonical_inside(
+            r"\\?\C:\Program Files\ChemDraft\art\x.png",
+            &roots,
+            Windows
+        ));
+        assert!(!canonical_inside(
+            r"\\?\C:\Program Files\ChemDraft\art",
+            &roots,
+            Windows
+        ));
         // Rules never mix: a Unix path is not inside a Windows root.
         let unix = parse_lexical("/c/x.svg", Unix, false).unwrap();
-        assert!(!unix.is_strictly_inside(&root));
+        let windows_root = parse_lexical(root, Windows, true).unwrap();
+        assert!(!unix.is_strictly_inside(&windows_root, NameMatch::Exact));
+        assert!(!unix.is_strictly_inside(&windows_root, NameMatch::PlatformDefault));
+    }
+
+    #[test]
+    fn windows_case_sensitive_sibling_of_a_root_is_outside_it() {
+        // A Windows directory with case sensitivity on (fsutil file setCaseSensitiveInfo) may hold
+        // both `art-library` and `ART-LIBRARY`. Their canonical paths differ only by case, and the
+        // second is NOT inside the first.
+        let base = r"\\?\C:\Users\Ada\AppData\Roaming\org.chemdraft.desktop.dev";
+        let roots = [PathBuf::from(format!(r"{base}\art-library"))];
+        assert!(canonical_inside(
+            &format!(r"{base}\art-library\spike\drag-test.svg"),
+            &roots,
+            Windows
+        ));
+        for sibling in [
+            format!(r"{base}\ART-LIBRARY\spike\drag-test.svg"),
+            format!(r"{base}\Art-Library\x.svg"),
+            format!(r"{base}\art-library\..\ART-LIBRARY\x.svg"),
+        ] {
+            assert!(!canonical_inside(&sibling, &roots, Windows), "{sibling}");
+        }
+        // Same rule for the drive letter and the share name of the root.
+        assert!(!canonical_inside(
+            r"\\?\c:\Users\Ada\AppData\Roaming\org.chemdraft.desktop.dev\art-library\x.svg",
+            &roots,
+            Windows
+        ));
+        // The text pre-check alone still ignores case on Windows (webview text may differ in case
+        // from the root as composed); it only decides whether the disk is touched.
+        let sibling = parse_lexical(
+            r"C:\Users\Ada\AppData\Roaming\org.chemdraft.desktop.dev\ART-LIBRARY\x.svg",
+            Windows,
+            false,
+        )
+        .unwrap();
+        let root = parse_lexical(&roots[0].to_string_lossy(), Windows, true).unwrap();
+        assert!(sibling.is_strictly_inside(&root, NameMatch::PlatformDefault));
+        assert!(!sibling.is_strictly_inside(&root, NameMatch::Exact));
+    }
+
+    #[test]
+    fn unix_canonical_containment_is_exact() {
+        let roots = [PathBuf::from(
+            "/Users/ada/Library/Application Support/x/art-library",
+        )];
+        assert!(canonical_inside(
+            "/Users/ada/Library/Application Support/x/art-library/a.svg",
+            &roots,
+            Unix
+        ));
+        assert!(!canonical_inside(
+            "/Users/ada/Library/Application Support/x/ART-LIBRARY/a.svg",
+            &roots,
+            Unix
+        ));
+    }
+
+    #[test]
+    fn network_locations_are_recognised_by_platform() {
+        let never = |_: &str| false;
+        for (raw, verbatim) in [
+            (r"\\?\UNC\corp\home$\ada\art-library\x.svg", true),
+            (r"\\corp\home$\ada\x.svg", false),
+        ] {
+            let path = parse_lexical(raw, Windows, verbatim).unwrap();
+            assert!(path.is_network(never), "{raw}");
+        }
+        // A mapped network drive is a drive letter; the system is asked about it.
+        let mapped = parse_lexical(r"\\?\Z:\art-library\x.svg", Windows, true).unwrap();
+        assert!(mapped.is_network(|drive| drive.eq_ignore_ascii_case("Z:")));
+        assert!(!mapped.is_network(never));
+        let local = parse_lexical(r"\\?\C:\art\x.svg", Windows, true).unwrap();
+        assert!(!local.is_network(|drive| drive.eq_ignore_ascii_case("Z:")));
+        // Unix text carries no network mark; the volume is asked instead.
+        let unix = parse_lexical("/Volumes/share/x.svg", Unix, false).unwrap();
+        assert!(!unix.is_network(|_| true));
+        // UNC roots no longer make a UNC file acceptable: the share itself is refused.
+        assert!(matches!(
+            check_lexical(
+                r"\\corp\home$\ada\art-library\x.svg",
+                &[PathBuf::from(r"\\?\UNC\corp\home$\ada\art-library")],
+                Windows
+            ),
+            Err(DragSourceError::NetworkLocation(_))
+        ));
+    }
+
+    #[test]
+    fn a_panic_in_the_drag_library_rejects_instead_of_unwinding() {
+        let error = guard_drag_panic(|| panic!("get_file_data_object returned None")).unwrap_err();
+        assert!(error.contains("could not start"), "{error}");
+        assert!(error.contains("get_file_data_object"), "{error}");
+        let owned = guard_drag_panic(|| std::panic::panic_any(String::from("owned"))).unwrap_err();
+        assert!(owned.contains("owned"), "{owned}");
+        assert_eq!(guard_drag_panic(|| Ok(())), Ok(()));
+        assert_eq!(
+            guard_drag_panic(|| Err("plain".into())),
+            Err("plain".to_string())
+        );
     }
 
     #[test]
@@ -868,44 +1645,45 @@ mod tests {
             scratch.0.join("missing-resources").join("art"),
         ];
         let platform = PathPlatform::current();
-        let resolved = resolve_drag_source(&host_path(&file), &roots, platform).unwrap();
-        assert_eq!(resolved, std::fs::canonicalize(&file).unwrap());
+        let source = read_drag_source(&host_path(&file), &roots, platform).unwrap();
+        assert_eq!(source.name, DRAG_TEST_FILE);
+        assert_eq!(source.bytes, DRAG_TEST_SVG.as_bytes());
 
         let missing = root.join("spike").join("missing.svg");
         assert!(matches!(
-            resolve_drag_source(&host_path(&missing), &roots, platform),
+            read_drag_source(&host_path(&missing), &roots, platform),
             Err(DragSourceError::NotFound(_))
         ));
         let folder = root.join("folder.svg");
         std::fs::create_dir_all(&folder).unwrap();
         assert!(matches!(
-            resolve_drag_source(&host_path(&folder), &roots, platform),
+            read_drag_source(&host_path(&folder), &roots, platform),
             Err(DragSourceError::NotRegularFile(_))
         ));
         let empty = root.join("empty.svg");
         std::fs::write(&empty, b"").unwrap();
         assert!(matches!(
-            resolve_drag_source(&host_path(&empty), &roots, platform),
+            read_drag_source(&host_path(&empty), &roots, platform),
             Err(DragSourceError::EmptyFile(_))
         ));
         let large = root.join("large.svg");
         let handle = std::fs::File::create(&large).unwrap();
         handle.set_len(MAX_DRAG_FILE_BYTES + 1).unwrap();
         assert!(matches!(
-            resolve_drag_source(&host_path(&large), &roots, platform),
+            read_drag_source(&host_path(&large), &roots, platform),
             Err(DragSourceError::TooLarge { .. })
         ));
         let outside = scratch.0.join("outside.svg");
         std::fs::write(&outside, DRAG_TEST_SVG).unwrap();
         assert!(matches!(
-            resolve_drag_source(&host_path(&outside), &roots, platform),
+            read_drag_source(&host_path(&outside), &roots, platform),
             Err(DragSourceError::OutsideRoots(_))
         ));
         // With no root on disk at all, nothing passes.
         let gone = vec![scratch.0.join("nope").join("art-library")];
         let ghost = scratch.0.join("nope").join("art-library").join("x.svg");
         assert!(matches!(
-            resolve_drag_source(&host_path(&ghost), &gone, platform),
+            read_drag_source(&host_path(&ghost), &gone, platform),
             Err(DragSourceError::NotFound(_))
         ));
     }
@@ -926,13 +1704,13 @@ mod tests {
         // A link as the file itself, even one pointing inside, is refused.
         symlink(&secret, root.join("leaf.svg")).unwrap();
         assert!(matches!(
-            resolve_drag_source(&host_path(&root.join("leaf.svg")), &roots, Unix),
+            read_drag_source(&host_path(&root.join("leaf.svg")), &roots, Unix),
             Err(DragSourceError::SymbolicLink(_))
         ));
         // A linked folder inside the root leads out of it.
         symlink(&secret_dir, root.join("linked")).unwrap();
         assert!(matches!(
-            resolve_drag_source(&host_path(&root.join("linked").join("x.svg")), &roots, Unix),
+            read_drag_source(&host_path(&root.join("linked").join("x.svg")), &roots, Unix),
             Err(DragSourceError::ResolvesOutsideRoots(_))
         ));
         // The harness writer never follows a link left at the file's place.
@@ -972,9 +1750,166 @@ mod tests {
             return;
         }
         assert!(matches!(
-            resolve_drag_source(&host_path(&root.join("leaf.svg")), &[root], Windows),
+            read_drag_source(&host_path(&root.join("leaf.svg")), &[root], Windows),
             Err(DragSourceError::SymbolicLink(_))
         ));
+    }
+
+    #[test]
+    fn the_drag_is_given_a_fresh_local_copy_never_the_original() {
+        let scratch = Scratch::new("staging");
+        let root = scratch.0.join("art-library");
+        let original = write_drag_test_file(&root).unwrap();
+        let platform = PathPlatform::current();
+        let source =
+            read_drag_source(&host_path(&original), std::slice::from_ref(&root), platform).unwrap();
+        let staging = scratch.0.join("local").join(DRAG_STAGING_FOLDER);
+        let first = stage_copy(&staging, &source, platform).unwrap();
+        let second = stage_copy(&staging, &source, platform).unwrap();
+
+        // A unique folder per drag, inside the staging folder, keeping the original file name.
+        let canonical_staging = std::fs::canonicalize(&staging).unwrap();
+        assert_ne!(first.entry, second.entry);
+        for staged in [&first, &second] {
+            assert!(is_staged_entry_name(&staged.entry), "{}", staged.entry);
+            assert_eq!(
+                std::fs::canonicalize(&staged.file).unwrap(),
+                canonical_staging.join(&staged.entry).join(DRAG_TEST_FILE)
+            );
+            assert_ne!(
+                std::fs::canonicalize(&staged.file).unwrap(),
+                std::fs::canonicalize(&original).unwrap()
+            );
+            assert_eq!(
+                std::fs::read(&staged.file).unwrap(),
+                DRAG_TEST_SVG.as_bytes()
+            );
+            // Not read-only: the drop target's copy would inherit that and be locked.
+            assert!(!std::fs::metadata(&staged.file)
+                .unwrap()
+                .permissions()
+                .readonly());
+        }
+        // The copy is the bytes read once: replacing the original afterwards changes nothing.
+        std::fs::remove_file(&original).unwrap();
+        std::fs::write(&original, b"<svg xmlns='http://www.w3.org/2000/svg'/>").unwrap();
+        assert_eq!(
+            std::fs::read(&first.file).unwrap(),
+            DRAG_TEST_SVG.as_bytes()
+        );
+
+        // Removal deletes exactly that copy's folder.
+        first.remove();
+        assert!(!canonical_staging.join(&first.entry).exists());
+        assert!(second.file.exists());
+        assert!(original.exists());
+    }
+
+    #[test]
+    fn staging_cleanup_removes_only_its_own_folders() {
+        let scratch = Scratch::new("sweep");
+        let staging = scratch.0.join(DRAG_STAGING_FOLDER);
+        let source = DragSource {
+            name: "a.svg".into(),
+            bytes: DRAG_TEST_SVG.as_bytes().to_vec(),
+        };
+        let platform = PathPlatform::current();
+        let staged = stage_copy(&staging, &source, platform).unwrap();
+        // Things that are not staging folders stay, whatever they are called.
+        let keep_file = staging.join("notes.txt");
+        std::fs::write(&keep_file, b"keep").unwrap();
+        let keep_dir = staging.join("drag-NOTHEX0000000000");
+        std::fs::create_dir_all(&keep_dir).unwrap();
+        // Recent copies survive a sweep with a grace period; a full sweep removes them.
+        assert_eq!(sweep_staging(&staging, Some(Duration::from_secs(3600))), 0);
+        assert!(staged.file.exists());
+        assert_eq!(sweep_staging(&staging, None), 1);
+        assert!(!staged.file.exists());
+        assert!(keep_file.exists() && keep_dir.exists());
+        // Names this module did not make are refused outright.
+        for name in [
+            "..",
+            "notes.txt",
+            "drag-",
+            "drag-0123456789ABCDEF",
+            "drag-0123/../x",
+        ] {
+            assert!(remove_staged_entry(&staging, name).is_err(), "{name}");
+        }
+        assert!(is_staged_entry_name("drag-0123456789abcdef"));
+        // A missing staging folder is simply nothing to do.
+        assert_eq!(sweep_staging(&scratch.0.join("missing"), None), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staging_never_follows_links() {
+        use std::os::unix::fs::symlink;
+        let scratch = Scratch::new("staging-links");
+        let source = DragSource {
+            name: "a.svg".into(),
+            bytes: DRAG_TEST_SVG.as_bytes().to_vec(),
+        };
+        // A staging folder that is a link is refused, and nothing is written at its target.
+        let elsewhere = scratch.0.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let linked = scratch.0.join("linked-staging");
+        symlink(&elsewhere, &linked).unwrap();
+        assert!(matches!(
+            stage_copy(&linked, &source, Unix),
+            Err(DragSourceError::Staging(_))
+        ));
+        assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+        // Cleanup removes a link in a staging folder's place, never what it points to.
+        let staging = scratch.0.join(DRAG_STAGING_FOLDER);
+        std::fs::create_dir_all(&staging).unwrap();
+        let victim = elsewhere.join("victim.svg");
+        std::fs::write(&victim, b"keep").unwrap();
+        symlink(&elsewhere, staging.join("drag-0123456789abcdef")).unwrap();
+        assert_eq!(sweep_staging(&staging, None), 1);
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+        // A staging root that is itself a link is never swept.
+        symlink(&elsewhere, scratch.0.join("drag-root-link")).unwrap();
+        std::fs::create_dir_all(elsewhere.join("drag-fedcba9876543210")).unwrap();
+        assert_eq!(sweep_staging(&scratch.0.join("drag-root-link"), None), 0);
+        assert!(elsewhere.join("drag-fedcba9876543210").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_in_a_root_is_refused_without_blocking() {
+        let scratch = Scratch::new("fifo");
+        let root = scratch.0.join("art-library");
+        std::fs::create_dir_all(&root).unwrap();
+        let fifo = root.join("pipe.svg");
+        let name = std::ffi::CString::new(fifo.to_string_lossy().into_owned()).unwrap();
+        // SAFETY: a NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        assert!(matches!(
+            read_drag_source(&host_path(&fifo), &[root], Unix),
+            Err(DragSourceError::NotRegularFile(_))
+        ));
+    }
+
+    #[test]
+    fn the_harness_writer_replaces_a_hard_link_instead_of_writing_through_it() {
+        let scratch = Scratch::new("hardlink");
+        let root = scratch.0.join("art-library");
+        let spike = root.join(DRAG_TEST_FOLDER);
+        std::fs::create_dir_all(&spike).unwrap();
+        let victim = scratch.0.join("victim.txt");
+        std::fs::write(&victim, b"keep").unwrap();
+        std::fs::hard_link(&victim, spike.join(DRAG_TEST_FILE)).unwrap();
+        let file = write_drag_test_file(&root).unwrap();
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), DRAG_TEST_SVG);
+        // Writing again replaces the file; no temporary file is left behind.
+        write_drag_test_file(&root).unwrap();
+        let names: Vec<String> = std::fs::read_dir(&spike)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec![DRAG_TEST_FILE.to_string()]);
     }
 
     #[test]
