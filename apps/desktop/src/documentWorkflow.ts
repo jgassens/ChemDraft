@@ -39,6 +39,8 @@ import { loadDrawingSettings } from "./drawingSettings";
 import { marksFollowAtoms, moleculeAtomChemistryChanges, type CommitChemistryPolicy } from "./commitChemistryGuard";
 import type { storedCoordinatesMatchStereo } from "@chemdraft/ocl-adapter";
 import type { DoubleBondStereoReader } from "./interaction/doubleBondStereo";
+import { cleanUpStereoRefusal, type CleanUpStereoRefusal } from "./cleanUpStereoGuard";
+import type { StereoEngine } from "./stereoReadout";
 import { nativeDocumentExportWarnings, nativeMoleculeExportWarnings } from "@chemdraft/document-workflow-core";
 import {
   ATOM_MAPS_NOT_KEPT_NOTICE, ATOM_MAPS_NOT_KEPT_OPEN_CODE, atomMapsDroppedMessage, atomMapsNotKeptOpenWarnings, molfileAtomMapNumbers,
@@ -17068,9 +17070,46 @@ export function cleanUpSelectedNativeMolecule2d(document: ChemDraftDocument): Ch
   return cleanUpNativeMolecules2d(document, document.selection.objectIds);
 }
 
+/** The Clean Up 2D stereo guard (see cleanUpStereoGuard.ts). */
+export interface CleanUpStereoGuardOptions {
+  /** The app's CIP perceivers. Required whenever a target may carry stereo
+   *  (`cleanUpMayChangeStereo`); without it such a target is kept as drawn. */
+  stereoEngine?: StereoEngine;
+  /** Receives every molecule the guard kept as drawn, and why. */
+  skipped?: { objectId: string; reason: CleanUpStereoRefusal }[];
+}
+
+/**
+ * True when a molecule has anything the polygon-and-tree layout could change the CIP reading of:
+ * a wedge or hash, or a double bond that can carry E/Z (each end has another neighbor and the
+ * bond is neither marked "either" nor in a ring of seven or fewer atoms). Cheap and engine-free,
+ * so a molecule without any stereo marking never pays for perception. Query bonds without a
+ * wedge keep today's behavior, the same exemption the engine relayout's read-back makes.
+ */
+export function cleanUpMayChangeStereo(molecule: MoleculeObject): boolean {
+  if (molecule.bonds.some(bond => bond.display?.bondStyle === "wedge" || bond.display?.bondStyle === "hashed")) return true;
+  if (skipUnknownBondStereoGuard(molecule)) return false;
+  const candidates = molecule.bonds.filter(bond => bond.order === "double" && bond.stereo !== "either");
+  if (candidates.length === 0) return false;
+  const degree = new Map<string, number>();
+  for (const bond of molecule.bonds) {
+    degree.set(bond.fromAtomId, (degree.get(bond.fromAtomId) ?? 0) + 1);
+    degree.set(bond.toAtomId, (degree.get(bond.toAtomId) ?? 0) + 1);
+  }
+  const smallRing = cleanupDoubleBondGeometryExemptions(molecule);
+  return candidates.some(bond => !smallRing.has(bond.id) &&
+    (degree.get(bond.fromAtomId) ?? 0) >= 2 && (degree.get(bond.toAtomId) ?? 0) >= 2);
+}
+
+function coincidentNativeAtomIds(molecule: MoleculeObject): [string, string][] {
+  return nativeMoleculeLayoutQuality(molecule, false).overlappingAtoms
+    .map(([from, to]) => [molecule.atoms[from]!.id, molecule.atoms[to]!.id]);
+}
+
 export function cleanUpNativeMolecules2d(
   document: ChemDraftDocument,
-  objectIds: readonly string[]
+  objectIds: readonly string[],
+  stereoGuard?: CleanUpStereoGuardOptions
 ): ChemDraftDocument {
   const targetIds = [...new Set(objectIds)];
   if (targetIds.length === 0) {
@@ -17094,10 +17133,23 @@ export function cleanUpNativeMolecules2d(
 
     const cleaned = cleanUpNativeMoleculeGeometry2d(molecule);
     const bondDisplayChanged = cleaned.bonds.some((bond, index) => bond !== molecule.bonds[index]);
-    return nativeMoleculeGeometryOrTransformChanged(molecule, cleaned) || bondDisplayChanged ||
-      molecule.style.projection !== cleaned.style.projection
-      ? [{ op: "updateObject" as const, objectId: molecule.id, changes: cleaned }]
-      : [];
+    if (!(nativeMoleculeGeometryOrTransformChanged(molecule, cleaned) || bondDisplayChanged ||
+      molecule.style.projection !== cleaned.style.projection)) {
+      return [];
+    }
+    // The polygon-and-tree layout keeps wedges but not ring winding, so it can hand back another
+    // stereoisomer. With a guard, a molecule whose CIP reading would change keeps its exact
+    // drawing (1.2.4 stopgap). Without one (unit tests of pure geometry) behave as before.
+    if (stereoGuard && cleanUpMayChangeStereo(molecule)) {
+      const reason = stereoGuard.stereoEngine
+        ? cleanUpStereoRefusal(molecule, cleaned, stereoGuard.stereoEngine, coincidentNativeAtomIds)
+        : "unchecked";
+      if (reason) {
+        stereoGuard.skipped?.push({ objectId: molecule.id, reason });
+        return [];
+      }
+    }
+    return [{ op: "updateObject" as const, objectId: molecule.id, changes: cleaned }];
   });
 
   if (patches.length === 0) {
