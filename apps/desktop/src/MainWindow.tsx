@@ -33702,7 +33702,10 @@ function documentObjectOuterCssTransform(
       : objectTransformPreviewCssTransform(preview);
   }
 
-  if (object.type === "graphic" || projection?.matrix || Math.abs(object.rotation) < 0.001) {
+  // A charge glyph is always drawn upright (chargeMarkFragment), so the outline, hover outline and
+  // handle frame around it stay upright too. Lone pairs and radical dots still turn with their rotation.
+  if (object.type === "graphic" || (object.type === "electron-mark" && object.markKind === "charge") ||
+      projection?.matrix || Math.abs(object.rotation) < 0.001) {
     return undefined;
   }
 

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Resvg } from "@resvg/resvg-js";
 import { createEmptyDocument, type ElectronMarkObject } from "@chemdraft/chem-core";
-import { electronMarkHitCatcherAttributes, planPageSvgRender } from "./index";
+import { electronMarkHitCatcherAttributes, objectFrameBoundsForPageFit, planPageSvgRender } from "./index";
 import { legacyElectronMarkHashes } from "./electronMarkLegacy.fixture";
 
 function markFor(key: string, rotation = 0): ElectronMarkObject {
@@ -158,5 +158,18 @@ describe("electron-mark rendering preferences", () => {
       x: 100, y: 100, width: 18, height: 18, transform: "rotate(37 109 109)"
     });
     expect(plan(object).fragments[0].attrs.transform).toBe(electronMarkHitCatcherAttributes(object).transform);
+  });
+
+  it.each(["charge:2", "radical-ion:1", "plain:-1"])("measures the page-fit frame of a non-square %s mark unturned", key => {
+    for (const rotation of [37, 90]) {
+      const object = { ...markFor(key, rotation), width: 54, height: 18 };
+      expect(objectFrameBoundsForPageFit(object)).toEqual({ x: 100, y: 100, width: 54, height: 18 });
+    }
+  });
+
+  it.each(["lone-pair:0", "radical-dot:0"])("still measures the page-fit frame of a turned %s mark turned", key => {
+    const bounds = objectFrameBoundsForPageFit({ ...markFor(key, 90), width: 54, height: 18 });
+    expect(bounds.width).toBeCloseTo(18);
+    expect(bounds.height).toBeCloseTo(54);
   });
 });

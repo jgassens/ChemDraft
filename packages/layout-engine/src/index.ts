@@ -7130,6 +7130,10 @@ export function textAutoSizePageLimits(
 
 /** Exact rotated frame, without a circumscribed-circle overestimate near page edges. */
 export function objectFrameBoundsForPageFit(object: DocumentObject): LayoutBounds {
+  // A charge glyph is always drawn upright, so its frame is measured unturned.
+  if (object.type === "electron-mark" && object.markKind === "charge") {
+    return { x: object.x, y: object.y, width: object.width, height: object.height };
+  }
   const corners = [
     { x: object.x, y: object.y },
     { x: object.x + object.width, y: object.y },

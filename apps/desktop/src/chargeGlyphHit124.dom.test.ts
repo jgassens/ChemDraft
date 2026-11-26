@@ -92,6 +92,35 @@ describe.each([false, true])("charge glyph hit target, direct editing %s", enabl
     expect(snapshot().selection.objectIds).toEqual([mark.id]);
   });
 
+  it.each([37, 90])("draws the selection chrome of a wide charge mark rotated %s degrees upright", async rotation => {
+    const mark = await mountWithMark(rotation, { width: 72, height: 18 });
+    await click(mark.id, { x: mark.x + 36, y: mark.y + 9 });
+    expect(snapshot().selection.objectIds).toEqual([mark.id]);
+    const chrome = [...container.querySelectorAll<HTMLElement>(`[data-object-controls="${mark.id}"]`)];
+    expect(chrome.length).toBeGreaterThan(0);
+    // The outline, hover outline, handle frame and transform frame all live in this one box.
+    for (const element of chrome) expect(element.style.transform).not.toContain("rotate");
+  });
+
+  it("keeps the selection chrome of a lone pair turned with its stored rotation", async () => {
+    const base = workflow.createPhase4Document("Lone pair chrome");
+    const pair: ElectronMarkObject = { id: "turned-pair", type: "electron-mark", markKind: "lone-pair",
+      x: 300, y: 300, width: 18, height: 18, rotation: 37, style: {}, anchor: { kind: "point", point: { x: 300, y: 300 } } };
+    const document = applyPatches(base, [{ op: "addObject", pageId: base.pages[0].id, object: pair }],
+      { now: workflow.phase4Timestamp });
+    await act(async () => root.render(createElement(MainWindow, { initialDocument: document,
+      initialActiveToolCommandId: "tool.select", initialPaletteMode: "hidden", nativePalette: false,
+      initialRulersVisible: false, initialCrosshairsVisible: false })));
+    container.querySelector<HTMLElement>(".page")!.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0,
+      right: 792, bottom: 612, width: 792, height: 612, toJSON: () => ({}) });
+    await click(pair.id, { x: 309, y: 309 });
+    expect(snapshot().selection.objectIds).toEqual([pair.id]);
+    const chrome = [...container.querySelectorAll<HTMLElement>(`[data-object-controls="${pair.id}"]`)];
+    expect(chrome.length).toBeGreaterThan(0);
+    // Direct editing draws every mark's chrome unturned already (its handles use the unrotated frame).
+    for (const element of chrome) expect(element.style.transform).toBe(enabled ? "" : "rotate(37deg)");
+  });
+
   it("does not select at a point that was only inside the old rotated box", async () => {
     const mark = await mountWithMark(90, { width: 72, height: 18 });
     const center = { x: mark.x + 36, y: mark.y + 9 };
