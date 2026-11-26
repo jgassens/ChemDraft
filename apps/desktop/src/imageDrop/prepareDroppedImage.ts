@@ -1,13 +1,13 @@
 import {
-  MAX_IMAGE_OBJECT_BYTES, isSvgImageSource, readPngInfo, validatePngImage, validateSvgImage, type ImageObjectData
+  MAX_IMAGE_OBJECT_BYTES, isSvgImageSource, readPngInfo, validateSvgImage, type ImageObjectData
 } from "@chemdraft/chem-core";
 import {
   SVG_PICTURE_FORMAT_LABEL, pictureSizeLimitError as dropPixelLimitError, readRasterHeaderSize, sanitizeSvgPicture,
   sniffBinaryImageFormat, type EmbeddedSvgBitmap, type SniffedImageFormat
 } from "@chemdraft/export-engine";
 import { formatDropBytes, rewordPictureError } from "./dropFiles";
-import { pngImageDataError } from "./pngIntegrity";
-import type { DecodeOptions, DroppedImageDecoders } from "./rasterDecode";
+import { DAMAGED_PNG_IMAGE_DATA, pngImageDataError } from "./pngIntegrity";
+import { abortReason, type DecodeCheckMimeType, type DecodeOptions, type DroppedImageDecoders } from "./rasterDecode";
 import { decodeSvgBytes, encodeSvgText } from "./svgText";
 
 /** A picture ready to become a native image object; built at commit time, not here. */
@@ -55,6 +55,29 @@ function payloadSizeError(bytes: number): string | undefined {
     : undefined;
 }
 
+/** Check framing and retain the size-limit explanation separately from damage. */
+function pngFrameError(bytes: Uint8Array, label: string): string | undefined {
+  const info = readPngInfo(bytes);
+  return info
+    ? dropPixelLimitError(info.pixelWidth, info.pixelHeight)
+    : `${label} could not be decoded: ${DAMAGED_PNG_IMAGE_DATA}`;
+}
+
+/** Webviews and injected decoders can report different errors for the same bytes. */
+async function checkBitmap(
+  bytes: Uint8Array, mimeType: DecodeCheckMimeType, decoders: DroppedImageDecoders, options: DecodeOptions
+): Promise<{ width: number; height: number } | undefined> {
+  let decoded;
+  try {
+    decoded = await decoders.decodeCheck(bytes, mimeType, options);
+  } catch {
+    if (options.signal?.aborted) throw abortReason(options.signal);
+    return undefined;
+  }
+  if (options.signal?.aborted) throw abortReason(options.signal);
+  return decoded.width > 0 && decoded.height > 0 ? decoded : undefined;
+}
+
 /** Decode one bitmap an SVG embeds, under the file's deadline; the reason it fails, if it does. */
 async function embeddedBitmapDecodeError(bitmap: EmbeddedSvgBitmap, decoders: DroppedImageDecoders, options: DecodeOptions): Promise<string | undefined> {
   const label = SVG_PICTURE_FORMAT_LABEL[bitmap.format];
@@ -63,14 +86,8 @@ async function embeddedBitmapDecodeError(bitmap: EmbeddedSvgBitmap, decoders: Dr
     const damaged = await pngImageDataError(bitmap.bytes, options);
     if (damaged) return `an embedded ${label} picture could not be decoded: ${damaged}`;
   }
-  let decoded;
-  try {
-    decoded = await decoders.decodeCheck(bitmap.bytes, bitmap.mimeType, options);
-  } catch (error) {
-    if (options.signal?.aborted) throw error;
-    return `an embedded ${label} picture could not be decoded: ${errorText(error)}`;
-  }
-  if (!(decoded.width > 0 && decoded.height > 0)) return `an embedded ${label} picture could not be decoded: the webview could not decode it.`;
+  const decoded = await checkBitmap(bitmap.bytes, bitmap.mimeType, decoders, options);
+  if (!decoded) return `an embedded ${label} picture could not be decoded.`;
   const limit = dropPixelLimitError(decoded.width, decoded.height);
   return limit ? `an embedded picture ${limit.replace(/^it /, "")}` : undefined;
 }
@@ -93,24 +110,16 @@ export async function prepareDroppedImage(
   if (refused) return { ok: false, reason: refused };
 
   if (format === "png") {
-    const info = readPngInfo(bytes);
-    const limit = info && dropPixelLimitError(info.pixelWidth, info.pixelHeight);
-    if (limit) return { ok: false, reason: limit };
-    const result = validatePngImage(bytes);
-    if (result.error) return { ok: false, reason: rewordPictureError(result.error) };
+    const frameError = pngFrameError(bytes, "the PNG");
+    if (frameError) return { ok: false, reason: frameError };
     const sizeError = payloadSizeError(bytes.length);
     if (sizeError) return { ok: false, reason: sizeError };
     // Chunk framing is not pixels, and the webview decodes damaged image data without complaint (an
     // invisible or half-black picture): the image data itself is checked here, then decoded.
     const damaged = await pngImageDataError(bytes, options);
     if (damaged) return { ok: false, reason: `the PNG could not be decoded: ${damaged}` };
-    let decoded;
-    try {
-      decoded = await decoders.decodeCheck(bytes, "image/png", options);
-    } catch (error) {
-      return { ok: false, reason: `the PNG could not be decoded: ${errorText(error)}` };
-    }
-    if (!(decoded.width > 0 && decoded.height > 0)) return { ok: false, reason: "the PNG could not be decoded: the webview could not decode it." };
+    const decoded = await checkBitmap(bytes, "image/png", decoders, options);
+    if (!decoded) return { ok: false, reason: "the PNG could not be decoded." };
     const decodedLimit = dropPixelLimitError(decoded.width, decoded.height);
     if (decodedLimit) return { ok: false, reason: decodedLimit };
     return { ok: true, image: { name, mimeType: "image/png", dataBase64: bytesToBase64(bytes), notes: [] } };
@@ -125,12 +134,13 @@ export async function prepareDroppedImage(
     try {
       encoded = await decoders.rasterToPng(bytes, RASTER_MIME[format], MAX_IMAGE_OBJECT_BYTES, options);
     } catch (error) {
+      if (options.signal?.aborted) throw abortReason(options.signal);
       return { ok: false, reason: `the ${FORMAT_LABEL[format]} could not be converted: ${errorText(error)}` };
     }
     const decodedLimit = dropPixelLimitError(encoded.sourceWidth, encoded.sourceHeight);
     if (decodedLimit) return { ok: false, reason: decodedLimit };
-    const result = validatePngImage(encoded.png);
-    if (result.error) return { ok: false, reason: `the converted picture is invalid: ${rewordPictureError(result.error)}` };
+    const frameError = pngFrameError(encoded.png, "the converted PNG");
+    if (frameError) return { ok: false, reason: frameError };
     const notes: string[] = [];
     let naturalSize: PreparedDroppedImage["naturalSize"];
     if (encoded.downscaled) {
@@ -150,7 +160,13 @@ export async function prepareDroppedImage(
     return { ok: false, reason: "its contents are not a PNG, JPEG, GIF, WebP or SVG picture." };
   }
   const sanitized = sanitizeSvgPicture(decoded.text);
-  if (!sanitized.ok) return { ok: false, reason: sanitized.error };
+  if (!sanitized.ok) {
+    // The shared SVG sanitizer checks embedded PNG headers before returning the bitmaps.
+    const reason = sanitized.error === "an embedded PNG picture's header is damaged, so its size can't be read."
+      ? `an embedded PNG picture could not be decoded: ${DAMAGED_PNG_IMAGE_DATA}`
+      : sanitized.error;
+    return { ok: false, reason };
+  }
   // The headers were checked; each bitmap must also decode, or the picture would draw without it.
   for (const bitmap of sanitized.embeddedBitmaps) {
     const failure = await embeddedBitmapDecodeError(bitmap, decoders, options);
@@ -163,8 +179,9 @@ export async function prepareDroppedImage(
   if (sizeError) return { ok: false, reason: sizeError };
   try {
     await decoders.decodeCheck(svgBytes, "image/svg+xml", options);
-  } catch (error) {
-    return { ok: false, reason: `the SVG could not be drawn: ${errorText(error)}` };
+  } catch {
+    if (options.signal?.aborted) throw abortReason(options.signal);
+    return { ok: false, reason: "the SVG could not be drawn." };
   }
   const notes = [
     ...(sanitized.removedExternal ? ["external content was removed"] : []),

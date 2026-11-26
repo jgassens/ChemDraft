@@ -60,9 +60,13 @@ async function scene(): Promise<Scene> {
   expect(atob(images[2]!.dataBase64)).not.toContain("script");
   const { document: dropped, objectIds: ids } = insertDroppedImages(base, images, { x: 200, y: 200 });
   // Move, resize and rotate, differently for each picture.
+  const centreOf = (id: string) => {
+    const frame = pictures(dropped).find(picture => picture.id === id)!;
+    return { x: frame.x + frame.width / 2, y: frame.y + frame.height / 2 };
+  };
   let edited = moveDocumentObjects(dropped, [ids[0]!], 17, 23);
-  edited = scaleDocumentObjectsAroundPoint(edited, [ids[1]!], { x: 224, y: 224 }, 30, 20);
-  edited = scaleDocumentObjectsAroundPoint(edited, [ids[2]!], { x: 300, y: 300 }, 1.5, 0.5);
+  edited = scaleDocumentObjectsAroundPoint(edited, [ids[1]!], centreOf(ids[1]!), 30, 20);
+  edited = scaleDocumentObjectsAroundPoint(edited, [ids[2]!], centreOf(ids[2]!), 1.5, 0.5);
   edited = applyPatch(edited, { op: "updateObject", objectId: ids[0]!, changes: { rotation: 30 } });
   edited = applyPatch(edited, { op: "updateObject", objectId: ids[2]!, changes: { rotation: -45 } });
   return { base, dropped, edited: selectDocumentObjects(edited, edited.pages[0]!.id, ids), ids };

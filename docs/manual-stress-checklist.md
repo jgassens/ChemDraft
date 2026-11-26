@@ -2017,7 +2017,7 @@ Run under KDE Plasma (Wayland session, so the app uses XWayland) and on GNOME.
 Run on macOS (Retina and a 1x external display) and on Windows at 100%, 150% and 200% display
 scaling. Prepare a small and a large PNG, a phone JPEG with an EXIF rotation, an animated GIF, a
 lossy and a lossless WebP, an SVG with gradients and `<use href="#id">`, a BMP, a TIFF, a HEIC, a
-`.svgz`, a picture over 20 MB, a `.cdxml`, a web link (`.url` dragged from a browser on Windows,
+`.svgz`, a picture over 20 MB, a `.cdxml`, a `.txt`, a web link (`.url` dragged from a browser on Windows,
 `.webloc` on macOS), a Windows shortcut (`.lnk`) and an 8000 × 8000 PNG photo.
 
 - Each format: drag it from Finder / Explorer onto the page. It appears centred under the pointer,
@@ -2035,18 +2035,21 @@ lossy and a lossless WebP, an SVG with gradients and `<use href="#id">`, a BMP, 
   ruler and over each scrollbar: the picture lands just inside the drawable area, never under the
   ruler or scrollbar. Move the window between displays with different scaling and drop again: the
   picture still lands under the pointer.
-- Several files: drop five PNGs at once. They cascade down and to the right from the drop point in
-  one "Insert Image" undo entry, all selected. Undo removes all five; Redo restores them exactly.
-  The first Cmd/Ctrl+Z after the drop undoes the drop. Drop five near the bottom-right corner: they
-  cascade up and to the left, none on top of another. Drop fifty small pictures: every one has its
-  own position on the page.
+- Several files: drop five PNGs of different sizes where there is room. The first is centred at
+  the pointer, and each following top-left corner steps 24 page pixels down and right, leaving
+  each earlier picture reachable along its top and left edges. The five pictures are selected in
+  one "Insert Image" undo entry. The first Cmd/Ctrl+Z removes them, and Redo restores them exactly.
+  Drop five near the bottom-right corner to check that the up-left cascade keeps every picture
+  reachable. Drop fifty small pictures to check that the steps shorten to fit and each picture has
+  its own position. The status names every picture.
 - Mixed: drop a PNG and a `.cdxml` together. The picture lands in the current tab and the document
   opens in its own tab; that tab's status names both files, "Inserted picture mixed.png; Opened
   mixed.cdxml as …", worded as the open itself words it (with its warnings count, if any, and no
   "imported content exceeds" once the page-size question is answered). Drop a picture and two
   documents: each document is named. Drop a picture with a document already open in another tab:
   the status says that document was already open. Drop a picture with a document that cannot be
-  opened: the failure is named. Drop only a `.cdxml`: it opens and its status reads as before.
+  opened: the failure is named. Drop only a new `.cdxml` to open it. Switch tabs and drop that
+  drawing again to confirm its tab comes forward with the status “<name> was already open”.
 - Mixed drop status on both tabs: drop five pictures, a BMP and a `.cdxml` on a tab holding a
   drawing. The new tab's status names the inserted pictures and the BMP refusal. Switch back to the
   receiving tab: its status shows the pictures' result, never "Reading 5 dropped pictures…". Drop a
@@ -2055,13 +2058,17 @@ lossy and a lossless WebP, an SVG with gradients and `<use href="#id">`, a BMP, 
   ellipsis: the tooltip shows it in full, with any file warnings on the lines after it.
   Drop 13 files with 6 refused: the status and its tooltip name every refused file (no "more files").
 - Refusals: the BMP, TIFF, HEIC, `.svgz`, `.ai` and 20 MB+ files are refused by name with a specific
-  reason, immediately (no read of the large file); the `.ai` reason names the extension only. A
+  reason, immediately (no read of the large file); the `.ai` reason names the extension only.
+  Drop the `.txt` by itself and with a PNG and a `.cdxml`. Its refusal says “it is not a picture or
+  a drawing ChemDraft can open”, and the supported files are added. A
   `.png` renamed from a text file is refused as not a picture. A PNG whose chunks and CRCs are intact
   but whose image data is damaged is refused by name as "the PNG could not be decoded: its image data
   is damaged", both kinds: data that cannot be inflated at all (`r8-damaged.png`, which the webview
   would insert as an invisible picture) and data corrupted mid-stream (`r9-midcorrupt.png`, which it
   would insert half black). The same PNGs embedded in an SVG refuse the SVG ("an embedded PNG
-  picture could not be decoded"). On macOS 11 both are refused the same way. Large valid PNGs
+  picture could not be decoded"). A truncated PNG and a PNG without image data get the same
+  damage wording, including when embedded in SVG. A webview decoder failure says “could not
+  be decoded” with plain wording. On macOS 11 both fixtures are refused the same way. Large valid PNGs
   (interlaced, 16-bit, palette) still insert. While the 8000 × 8000 PNG is checked the window stays
   responsive: the status shows "Reading…", the menus open and a hover shows its tooltip, with no
   stall longer than a moment. A drop of a refused file and a good one inserts the good one.

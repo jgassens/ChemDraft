@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { browserDropClientPoint, drawableCanvasRect, dropPagePoint, nativeDropClientPoint } from "./dropPosition";
+import { placeDroppedImages } from "./insertDroppedImages";
 
 describe("nativeDropClientPoint", () => {
   // The same pointer at CSS point (300, 150) as each platform's payload reports it.
@@ -40,6 +41,12 @@ describe("dropPagePoint", () => {
   it("maps a client point to page units at the current zoom", () => {
     expect(dropPagePoint({ x: 300, y: 280 }, canvas, { left: 150, top: 130 }, 2, page)).toEqual({ x: 75, y: 75 });
     expect(dropPagePoint({ x: 300, y: 280 }, canvas, { left: 150, top: 130 }, 0.5, page)).toEqual({ x: 300, y: 300 });
+  });
+
+  it("centres the first picture at the mapped point and steps later corners in page units", () => {
+    const point = dropPagePoint({ x: 300, y: 280 }, canvas, { left: 150, top: 130 }, 2, page);
+    const frames = placeDroppedImages(page, point, [{ width: 40, height: 20 }, { width: 100, height: 120 }]);
+    expect(frames.map(({ x, y }) => [x, y])).toEqual([[55, 65], [79, 89]]);
   });
 
   it("puts a drop over a toolbar or the pasteboard at the nearest point of the visible page", () => {

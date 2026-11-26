@@ -960,7 +960,7 @@ import {
   enableLastDocumentCloseAction
 } from "./keyboardShortcuts";
 import { installBrowserReloadGuard, wasBrowserReloadPrevented } from "./browserReloadGuard";
-import { assertDocumentSize, decodeNativeDocumentContents, documentContentsKey, readBrowserDocumentFile, readNativeDocumentFile, type DocumentContents } from "./documentText";
+import { assertDocumentSize, decodeNativeDocumentContents, DOCUMENT_OPEN_ACCEPT, documentContentsKey, readBrowserDocumentFile, readNativeDocumentFile, type DocumentContents } from "./documentText";
 import { handleDroppedFiles, type DroppedImageInsertion, type DroppedImageSource } from "./imageDrop/dropHandler";
 import { DOCUMENT_FILE_DROP_EVENT, browserDropClientPoint, drawableCanvasRect, dropPagePoint, nativeDropClientPoint, type DocumentFileDropPayload, type DropClientPoint } from "./imageDrop/dropPosition";
 import { insertDroppedImages, type PagePointLike } from "./imageDrop/insertDroppedImages";
@@ -1548,6 +1548,8 @@ type ResolvedOpenDocument = {
 type OpenDocumentContentsOptions = {
   onOpened?: () => void;
   onRefused?: (message: string) => void;
+  /** A drop reports when it activates a tab for a file that was already open. */
+  announceAlreadyOpen?: boolean;
   /** Restore-session path: the contents hold edits never written to `path`. */
   dirty?: boolean;
   /** Replaces the "Opened …" status line (e.g. "Restored last session — …"). */
@@ -1918,7 +1920,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.25.15.40-opus";
+const CURRENT_BUILD_STAMP = "11.26.10.31-codex";
 
 const NUMERIC_ENTRY_DURING_DRAG_STATUS = "Finish the current drag, then enter a value";
 
@@ -10902,16 +10904,22 @@ export function MainWindow({
     };
     await waitUntilReady();
     const browserKey = path ? undefined : `${displayName}\n${sha256Utf8Hex(documentContentsKey(contents))}`;
-    const existing = documentTabsRef.current.find((tab) =>
-      path ? (tab.id === activeDocumentTabIdRef.current ? fileStateRef.current.path :
-        documentTabSnapshotsRef.current.get(tab.id)?.file.path) !== undefined &&
-        documentTabPathKey((tab.id === activeDocumentTabIdRef.current ? fileStateRef.current.path :
-          documentTabSnapshotsRef.current.get(tab.id)?.file.path)!) === documentTabPathKey(path) :
-        browserFileKeysRef.current.get(tab.id) === browserKey);
+    const pathKey = path ? documentTabPathKey(path, shortcutPlatform) : undefined;
+    const existing = documentTabsRef.current.find(tab => {
+      if (pathKey === undefined) return browserFileKeysRef.current.get(tab.id) === browserKey;
+      const tabPath = tab.id === activeDocumentTabIdRef.current ? fileStateRef.current.path :
+        documentTabSnapshotsRef.current.get(tab.id)?.file.path;
+      return tabPath !== undefined && documentTabPathKey(tabPath, shortcutPlatform) === pathKey;
+    });
     if (existing) {
       activateDocumentTab(existing.id, options?.onRefused);
       if (activeDocumentTabIdRef.current === existing.id) {
-        options?.onStatus?.(`${displayName} was already open`);
+        const message = `${displayName} was already open`;
+        if (options?.announceAlreadyOpen) {
+          statusRef.current = message;
+          setStatus(message);
+        }
+        options?.onStatus?.(message);
         options?.onOpened?.();
       }
       perfHook(() => reportOutcome?.("already-open"));
@@ -10966,7 +10974,7 @@ export function MainWindow({
     perfHook(() => reportOutcome?.("installed"));
     await pageFitSettled;
     await notifyInstalledDocumentCompatibility(opened, resolvedOpen.document);
-  }, [activateDocumentTab, addDocumentTab, clearDocumentInteractionState, notifyInstalledDocumentCompatibility, resetDocumentHistory, snapshotDocumentTab]);
+  }, [activateDocumentTab, addDocumentTab, clearDocumentInteractionState, notifyInstalledDocumentCompatibility, resetDocumentHistory, shortcutPlatform, snapshotDocumentTab]);
   const openDocumentContentsNowRef = useRef(openDocumentContentsNow);
   openDocumentContentsNowRef.current = openDocumentContentsNow;
   const documentOpenQueueRef = useRef<Promise<unknown>>(Promise.resolve());
@@ -11007,7 +11015,7 @@ export function MainWindow({
   // Every open shows the batch summary in status. It also resolves to a drop's outcome: each opened
   // document's own status line, then, if any failed, the count opened and each failure with its own
   // reason. Only a drop with pictures shows that text; every other open ignores it.
-  const openDocumentBatch = useCallback((requests: readonly DocumentOpenRequest[]): Promise<string | undefined> => {
+  const openDocumentBatch = useCallback((requests: readonly DocumentOpenRequest[], announceAlreadyOpen = false): Promise<string | undefined> => {
     const results = requests.map(({ contents, displayName, path, receipt }) => {
       // Confirm at tab installation, before optional page-fit and compatibility dialogs.
       // A rejected parse or an early return (e.g. unfinished table edit) fails the receipt.
@@ -11020,6 +11028,7 @@ export function MainWindow({
           setStatus(`Could not confirm opening ${displayName}: ${String(error)}`));
       };
       const options: OpenDocumentContentsOptions = {
+        announceAlreadyOpen,
         onOpened: () => { opened = true; confirm(true); },
         onRefused: message => { refusal = message; },
         onStatus: message => { status = message; }
@@ -11395,10 +11404,10 @@ export function MainWindow({
     return true;
   }, []);
 
-  const openDroppedDocumentPaths = useCallback(async (paths: readonly string[]) => {
+  const openDocumentPaths = useCallback((paths: readonly string[], announceAlreadyOpen = false) => {
     return openDocumentBatch(paths.map(path => ({
       contents: () => readNativeDocumentFile(path), displayName: nativePathBasename(path), path
-    })));
+    })), announceAlreadyOpen);
   }, [openDocumentBatch]);
 
   // Dropped pictures: prepared one drop at a time, so two drops never interleave their commits.
@@ -11515,7 +11524,7 @@ export function MainWindow({
 
   const dropNativePaths = useCallback((paths: readonly string[], client: DropClientPoint | undefined) =>
     runFileDrop(paths, client, { nameOf: nativePathBasename, imageSource: nativeDroppedImageSource,
-      openDocuments: openDroppedDocumentPaths }), [openDroppedDocumentPaths, runFileDrop]);
+      openDocuments: entries => openDocumentPaths(entries, true) }), [openDocumentPaths, runFileDrop]);
   // The native drop listener below is registered once per mount and calls the latest handler, so a
   // re-created `dropNativePaths` (after a page-size change, say) never leaves a gap with no listener.
   const dropNativePathsRef = useRef(dropNativePaths);
@@ -11523,8 +11532,7 @@ export function MainWindow({
 
   const dropBrowserFiles = useCallback((files: readonly File[], client: DropClientPoint | undefined) =>
     runFileDrop(files, client, { nameOf: file => file.name, imageSource: browserDroppedImageSource,
-      // The document path exactly as before the picture drop existed.
-      openDocuments: entries => openDocumentBatch(entries.map(file => ({ contents: () => readBrowserDocumentFile(file), displayName: file.name }))) }),
+      openDocuments: entries => openDocumentBatch(entries.map(file => ({ contents: () => readBrowserDocumentFile(file), displayName: file.name })), true) }),
   [openDocumentBatch, runFileDrop]);
 
   useEffect(() => {
@@ -11578,8 +11586,8 @@ export function MainWindow({
       return;
     }
 
-    await openDroppedDocumentPaths(paths);
-  }, [openDroppedDocumentPaths]);
+    await openDocumentPaths(paths);
+  }, [openDocumentPaths]);
 
   useEffect(() => {
     if (!shouldEnableAgentBridge()) {
@@ -24099,7 +24107,7 @@ export function MainWindow({
       <input
         ref={fileInputRef}
         type="file"
-        accept=".chemdraft,.cdx,.cdxml,.xml,.json,chemical/x-cdx,chemical/x-cdxml,application/xml,text/xml,application/json,application/vnd.chemdraft+json"
+        accept={DOCUMENT_OPEN_ACCEPT}
         className="native-file-input"
         aria-label="Open native ChemDraft document"
         onChange={handleOpenFile}

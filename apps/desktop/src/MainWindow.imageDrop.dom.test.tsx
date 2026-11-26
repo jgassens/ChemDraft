@@ -192,7 +192,7 @@ describe("dropping picture files on the document window", { timeout: 3 * DROP_WA
     const inserted = pictures();
     expect(inserted.map(object => object.data.image!.mimeType)).toEqual(["image/png", "image/png", "image/svg+xml"]);
     expect(centre(inserted[0]!)).toEqual({ x: 300, y: 200 });
-    expect(centre(inserted[1]!)).toEqual({ x: 324, y: 224 });
+    expect(inserted.map(({ x, y }) => [x, y])).toEqual([[299.5, 199.5], [323.5, 223.5], [347.5, 247.5]]);
     expect([inserted[2]!.width, inserted[2]!.height]).toEqual([40, 20]);
     expect(atob(inserted[2]!.data.image!.dataBase64)).not.toContain("script");
     expect(snapshot().selection.objectIds).toEqual(inserted.map(object => object.id));
@@ -447,6 +447,14 @@ describe("dropping picture files on the document window", { timeout: 3 * DROP_WA
     expect(pictures().map(picture => picture.data.image!.dataBase64)).toEqual([btoa(String.fromCharCode(...pngBytes()))]);
   });
 
+  it("shows a plain refusal when the webview reports its own PNG decoder error", async () => {
+    await mount();
+    vi.mocked(browserDecodeCheck).mockRejectedValueOnce(new Error("WebView decoder detail 0x123"));
+    await browserDrop([dropFile("broken.png", pngBytes())]);
+    await eventually(() => expect(status()).toBe('No pictures were inserted; Couldn\'t drop "broken.png": the PNG could not be decoded.'));
+    expect(pictures()).toHaveLength(0);
+  });
+
   describe("a mixed drop names the picture and every document", () => {
     const cdxml = (atoms = '<n id="10" Element="6" p="20 30"/><n id="11" Element="8" p="40 30"/>') =>
       `<?xml version="1.0" encoding="UTF-8"?><CDXML><page id="1" BoundingBox="0 0 612 792"><fragment id="2">${atoms}`
@@ -493,15 +501,51 @@ describe("dropping picture files on the document window", { timeout: 3 * DROP_WA
       expect(tabs()).toHaveLength(3);
     });
 
-    it("names a document that was already open as such", async () => {
+    it.each([true, false])("reports an already-open CDXML in its tab with picture=%s", async (withPicture) => {
       await mount();
-      await browserDrop([documentFile("Kept")]);
-      await eventually(() => expect(snapshot().title).toBe("Kept"));
+      await browserDrop([cdxmlFile("kept.cdxml")]);
+      await eventually(() => expect(status()).toBe(opened("kept.cdxml")));
       await command("document.new");
       await eventually(() => expect(tabs()).toHaveLength(2));
-      await browserDrop([dropFile("again.png", pngBytes()), documentFile("Kept")], { x: 100, y: 100 });
-      await eventually(() => expect(status()).toBe("Inserted picture again.png; Kept.chemdraft was already open"));
-      expect(snapshot().title).toBe("Kept");
+      await browserDrop([...(withPicture ? [dropFile("again.png", pngBytes())] : []), cdxmlFile("kept.cdxml")], { x: 100, y: 100 });
+      await eventually(() => expect(status()).toBe(`${withPicture ? "Inserted picture again.png; " : ""}kept.cdxml was already open`));
+      expect(front()).toBe("kept.cdxml");
+      expect(tabs()).toHaveLength(2);
+    });
+
+    it("refuses a text file unread both alone and beside a picture and a drawing", async () => {
+      await mount();
+      const notes = dropFile("notes.txt", new TextEncoder().encode(cdxml()));
+      const refusal = 'Couldn\'t drop "notes.txt": it is not a picture or a drawing ChemDraft can open';
+      await browserDrop([notes]);
+      await eventually(() => expect(status()).toBe(`${refusal}.`));
+      expect(tabs()).toHaveLength(1);
+      await browserDrop([notes, dropFile("one.png", pngBytes()), cdxmlFile("drawing.cdxml")], { x: 100, y: 100 });
+      await eventually(() => expect(status()).toBe(`Inserted picture one.png; ${refusal}; ${opened("drawing.cdxml")}`));
+      expect(notes.reads()).toBe(0);
+      expect(front()).toBe("drawing.cdxml");
+    });
+
+    it.each([true, false])("recognizes the same native Windows document path with picture=%s", async (withPicture) => {
+      native.desktop = true;
+      const firstPath = "C:\\Drawings\\kept.cdxml";
+      const secondPath = "c:/drawings/kept.cdxml";
+      const bytes = new TextEncoder().encode(cdxml());
+      native.files.set(firstPath, bytes);
+      native.files.set(secondPath, bytes);
+      native.files.set("C:\\Drawings\\again.png", pngBytes());
+      native.stat.mockImplementation(async path => ({ size: native.files.get(path)!.length }));
+      await mount(createPhase4Document("Desktop"), "windows");
+      await eventually(() => expect(native.events.has(DOCUMENT_FILE_DROP_EVENT)).toBe(true));
+      const drop = async (paths: string[]) => {
+        await act(async () => native.events.get(DOCUMENT_FILE_DROP_EVENT)!({ paths, position: { x: 10, y: 10 }, units: "physical" }));
+      };
+      await drop([firstPath]);
+      await eventually(() => expect(status()).toBe(opened("kept.cdxml")));
+      await command("document.new");
+      await drop([...(withPicture ? ["C:\\Drawings\\again.png"] : []), secondPath]);
+      await eventually(() => expect(status()).toBe(`${withPicture ? "Inserted picture again.png; " : ""}kept.cdxml was already open`));
+      expect(front()).toBe("kept.cdxml");
       expect(tabs()).toHaveLength(2);
     });
 

@@ -41,7 +41,7 @@ export interface SplitDrop<T> {
   refusals: DropRefusalEntry[];
 }
 
-/** Pictures by extension; picture types that cannot be dropped are refused by name; the rest open. */
+/** Route pictures and drawings by extension and refuse unsupported types by name. */
 export function splitDrop<T>(files: readonly T[], nameOf: (file: T) => string): SplitDrop<T> {
   const split: SplitDrop<T> = { images: [], documents: [], refusals: [] };
   for (const file of files) {
@@ -146,8 +146,6 @@ export async function prepareDroppedImages(
   return result;
 }
 
-const LISTED = 5;
-
 /**
  * Status parts joined with "; ". A part's own closing period is dropped before a separator, so a
  * refusal reason never reads "….; Couldn't"; the last part keeps its period.
@@ -155,11 +153,6 @@ const LISTED = 5;
 export function joinStatusParts(parts: readonly (string | undefined)[]): string {
   const shown = parts.filter((part): part is string => !!part);
   return shown.map((part, index) => index < shown.length - 1 ? part.replace(/\.$/, "") : part).join("; ");
-}
-
-function listNames(names: readonly string[]): string {
-  const shown = names.slice(0, LISTED).join(", ");
-  return names.length > LISTED ? `${shown} and ${names.length - LISTED} more` : shown;
 }
 
 /** `"a.png"`, `"a.png" and "b.png"`, `"a.png", "b.png" and "c.png"`: every name, quoted. */
@@ -218,13 +211,13 @@ export function formatImageDropStatus(outcome: {
   const count = outcome.inserted.length;
   if (outcome.notInserted) parts.push(notInsertedPart(outcome.notInserted));
   else if (count === 1) parts.push(`Inserted picture ${outcome.inserted[0]!.name}`);
-  else if (count > 1) parts.push(`Inserted ${count} pictures (${listNames(outcome.inserted.map(image => image.name))})`);
+  else if (count > 1) parts.push(`Inserted ${count} pictures (${outcome.inserted.map(image => image.name).join(", ")})`);
   else if (outcome.refusals.length && !outcome.nothingToRead) parts.push("No pictures were inserted");
   if (!outcome.notInserted) {
     for (const image of outcome.inserted) {
       for (const note of image.notes) parts.push(`${image.name}: ${note}`);
     }
-    if (outcome.scaledToPage?.length) parts.push(`scaled to fit the page: ${listNames(outcome.scaledToPage)}`);
+    if (outcome.scaledToPage?.length) parts.push(`scaled to fit the page: ${outcome.scaledToPage.join(", ")}`);
   }
   for (const part of refusalParts(outcome.refusals)) parts.push(part);
   return joinStatusParts(parts);

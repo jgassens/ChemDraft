@@ -1,6 +1,13 @@
 /** Open transport shared by file pickers and shell requests. CDX stays binary; text uses its BOM. */
 export type DocumentContents = string | Uint8Array;
 
+/** File > Open's recognized document suffixes. The parser still identifies the format by bytes. */
+export const DOCUMENT_OPEN_EXTENSIONS: readonly string[] = ["chemdraft", "cdx", "cdxml", "xml", "json"];
+export const DOCUMENT_OPEN_ACCEPT = [
+  ...DOCUMENT_OPEN_EXTENSIONS.map(extension => `.${extension}`),
+  "chemical/x-cdx", "chemical/x-cdxml", "application/xml", "text/xml", "application/json", "application/vnd.chemdraft+json"
+].join(",");
+
 export const MAX_OPEN_DOCUMENT_BYTES = 64 * 1024 * 1024;
 
 export function assertDocumentSize(size: number): void {

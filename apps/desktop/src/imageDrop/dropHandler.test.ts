@@ -66,13 +66,16 @@ describe("classifyDroppedFile", () => {
     // Refusals describe a file by its extension, never by the program that writes it.
     expect(classifyDroppedFile("poster.ai")).toEqual({ kind: "refused",
       reason: ".ai files can't be placed as pictures; export it as PNG or SVG first." });
-    for (const name of ["a.cdxml", "a.chemdraft", "a.cdx", "a.mol", "a.sdf", "a.rxn", "a.smi", "noextension", ".png"]) {
+    for (const name of ["a.cdxml", "a.chemdraft", "a.cdx", "a.XML", "a.json", "noextension", ".png"]) {
       expect(classifyDroppedFile(name).kind, name).toBe("document");
+    }
+    for (const name of ["a.txt", "a.docx", "a.zip", "a.mol", "a.sdf", "a.rxn", "a.smi", "a.constructor"]) {
+      expect(classifyDroppedFile(name), name).toEqual({ kind: "refused", reason: "it is not a picture or a drawing ChemDraft can open." });
     }
   });
 
   it("rewords the shared paste validators for a drop", () => {
-    expect(rewordPictureError("Couldn't paste the picture: the PNG has invalid structure.")).toBe("the PNG has invalid structure.");
+    expect(rewordPictureError("Couldn't paste the picture: the SVG is incomplete.")).toBe("the SVG is incomplete.");
   });
 });
 
@@ -88,11 +91,11 @@ describe("prepareDroppedImage", () => {
   });
 
   it("refuses a PNG whose chunks frame correctly but whose pixels cannot be decoded", async () => {
-    const broken: DecodeCheck = async () => { throw new Error("the webview could not decode it."); };
+    const broken: DecodeCheck = async () => { throw new Error("Arbitrary WebView2 decoder detail"); };
     expect(await prepareDroppedImage("a.png", pngWithSize(4, 4), decoders(fakeRaster(), broken)))
-      .toEqual({ ok: false, reason: "the PNG could not be decoded: the webview could not decode it." });
+      .toEqual({ ok: false, reason: "the PNG could not be decoded." });
     expect(await prepareDroppedImage("b.png", pngWithSize(4, 4), decoders(fakeRaster(), fakeCheck({ width: 0, height: 0 }))))
-      .toEqual({ ok: false, reason: "the PNG could not be decoded: the webview could not decode it." });
+      .toEqual({ ok: false, reason: "the PNG could not be decoded." });
     // The decoder's own size is held to the caps too.
     expect(await prepareDroppedImage("c.png", pngWithSize(4, 4), decoders(fakeRaster(), fakeCheck({ width: 16_385, height: 1 }))))
       .toEqual({ ok: false, reason: "it is 16385 × 1 pixels; the limit is 16384 pixels on a side." });
@@ -105,9 +108,9 @@ describe("prepareDroppedImage", () => {
     // An SVG without an intrinsic size decodes to 0 × 0 and is still fine.
     expect(result.ok).toBe(true);
     expect(check.calls.map(([mimeType]) => mimeType)).toEqual(["image/svg+xml"]);
-    const broken: DecodeCheck = async () => { throw new Error("the webview could not decode it."); };
+    const broken: DecodeCheck = async () => { throw new Error("Arbitrary WebKit decoder detail"); };
     expect(await prepareDroppedImage("b.svg", svg, decoders(fakeRaster(), broken)))
-      .toEqual({ ok: false, reason: "the SVG could not be drawn: the webview could not decode it." });
+      .toEqual({ ok: false, reason: "the SVG could not be drawn." });
   });
 
   it("decodes every bitmap an SVG embeds under the file's deadline, and refuses the SVG naming one that fails", async () => {
@@ -125,10 +128,13 @@ describe("prepareDroppedImage", () => {
       return { width: 2, height: 2 };
     };
     expect(await prepareDroppedImage("b.svg", svg, decoders(fakeRaster(), failsJpeg)))
-      .toEqual({ ok: false, reason: "an embedded JPEG picture could not be decoded: the webview could not decode it." });
+      .toEqual({ ok: false, reason: "an embedded JPEG picture could not be decoded." });
     const empty: DecodeCheck = async (_bytes, mimeType) => mimeType === "image/png" ? { width: 0, height: 0 } : { width: 2, height: 2 };
     expect(await prepareDroppedImage("c.svg", svg, decoders(fakeRaster(), empty)))
-      .toEqual({ ok: false, reason: "an embedded PNG picture could not be decoded: the webview could not decode it." });
+      .toEqual({ ok: false, reason: "an embedded PNG picture could not be decoded." });
+    const failsPng: DecodeCheck = async () => { throw new Error("Arbitrary embedded PNG decoder detail"); };
+    expect(await prepareDroppedImage("d.svg", svg, decoders(fakeRaster(), failsPng)))
+      .toEqual({ ok: false, reason: "an embedded PNG picture could not be decoded." });
     // A decoder that never settles on the embedded bitmap ends at the deadline like any other.
     const hangs: DecodeCheck = (_bytes, mimeType) => mimeType === "image/png" ? new Promise(() => {}) : Promise.resolve({ width: 2, height: 2 });
     const result = await prepareDroppedImages([memorySource("d.svg", svg)], decoders(fakeRaster(), hangs), { deadlineMs: 50 });
@@ -167,8 +173,23 @@ describe("prepareDroppedImage", () => {
     expect(await prepareDroppedImage("a.svg", new Uint8Array([0x1f, 0x8b, 8, 0]), decoders(raster)))
       .toEqual({ ok: false, reason: "compressed SVG (.svgz) can't be dropped; save it as plain SVG first." });
     expect(await prepareDroppedImage("a.png", pngBytes().subarray(0, 40), decoders(raster)))
-      .toEqual({ ok: false, reason: "the PNG has invalid structure." });
+      .toEqual({ ok: false, reason: "the PNG could not be decoded: its image data is damaged." });
     expect(raster.calls).toBe(0);
+  });
+
+  it("uses the same damage wording for PNGs without image data, including inside SVG", async () => {
+    const noData = pngBytes().subarray(0, 33);
+    const brokenHeader = noData.subarray(0, 16);
+    const check = fakeCheck();
+    expect(await prepareDroppedImage("empty.png", noData, decoders(fakeRaster(), check)))
+      .toEqual({ ok: false, reason: "the PNG could not be decoded: its image data is damaged." });
+    for (const bytes of [noData, brokenHeader]) {
+      const png = btoa(String.fromCharCode(...bytes));
+      const svg = svgBytes(`<svg ${NS}><image href="data:image/png;base64,${png}" width="2" height="2"/></svg>`);
+      expect(await prepareDroppedImage("embedded.svg", svg, decoders(fakeRaster(), check)))
+        .toEqual({ ok: false, reason: "an embedded PNG picture could not be decoded: its image data is damaged." });
+    }
+    expect(check.calls).toEqual([]);
   });
 
   it("recognises a PNG named .jpg by its bytes", async () => {
@@ -450,22 +471,22 @@ describe("handleDroppedFiles", () => {
 
   it("reports a refused insertion and still opens the documents", async () => {
     const { calls, handler } = harness("refuse");
-    await handleDroppedFiles([file("one.png"), file("a.mol")], handler);
-    expect(calls.opened).toEqual([["a.mol"]]);
+    await handleDroppedFiles([file("one.png"), file("a.cdxml")], handler);
+    expect(calls.opened).toEqual([["a.cdxml"]]);
     expect(calls.status.at(-1)).toBe("\"one.png\" was not inserted: the document tab changed during the read; try the drop again; Opened 1 document");
   });
 
   it("names every picture a refused insertion leaves out, beside the documents of a mixed drop", async () => {
     const { calls, handler } = harness("refuse");
-    await handleDroppedFiles([file("a.mol"), file("/in/a.png"), file("b.png"), file("bad.bmp"), file("c.png"), file("b.cdxml")], handler);
-    expect(calls.opened).toEqual([["a.mol", "b.cdxml"]]);
+    await handleDroppedFiles([file("a.chemdraft"), file("/in/a.png"), file("b.png"), file("bad.bmp"), file("c.png"), file("b.cdxml")], handler);
+    expect(calls.opened).toEqual([["a.chemdraft", "b.cdxml"]]);
     expect(calls.status.at(-1)).toBe([
       "\"a.png\", \"b.png\" and \"c.png\" were not inserted: the document tab changed during the read; try the drop again",
       "Couldn't drop \"bad.bmp\": BMP and TIFF pictures can't be dropped yet; save it as PNG or JPEG first",
       "Opened 1 document"
     ].join("; "));
     const two = harness("refuse");
-    await handleDroppedFiles([file("a.png"), file("b.png"), file("d.mol")], two.handler);
+    await handleDroppedFiles([file("a.png"), file("b.png"), file("d.cdx")], two.handler);
     expect(two.calls.status.at(-1)).toBe("\"a.png\" and \"b.png\" were not inserted: the document tab changed during the read; try the drop again; Opened 1 document");
   });
 
@@ -499,7 +520,7 @@ describe("handleDroppedFiles", () => {
   it("tells a guard refusal at drop time, before reading anything, and still opens the documents", async () => {
     const { calls, handler } = harness();
     const source = memorySource("one.png", pngBytes());
-    await handleDroppedFiles([file("one.png"), file("a.mol")], { ...handler, imageSource: () => source,
+    await handleDroppedFiles([file("one.png"), file("a.cdxml")], { ...handler, imageSource: () => source,
       insertRefusal: () => "finish editing the text first." });
     expect(source.reads).toBe(0);
     expect(calls.inserted).toEqual([]);
@@ -508,7 +529,7 @@ describe("handleDroppedFiles", () => {
 
   it("names the dropped picture files in a refusal at drop time, by their base names", async () => {
     const { calls, handler } = harness();
-    await handleDroppedFiles([file("C:\\in\\one.png"), file("a.mol"), file("/in/two.svg")], { ...handler,
+    await handleDroppedFiles([file("C:\\in\\one.png"), file("a.cdxml"), file("/in/two.svg")], { ...handler,
       insertRefusal: () => "finish editing the text first." });
     expect(calls.status.at(-1)).toBe("\"one.png\" and \"two.svg\" were not inserted: finish editing the text first; Opened 1 document");
   });
@@ -562,10 +583,11 @@ describe("formatImageDropStatus", () => {
     expect(status).toContain("f0.png");
     expect(status).toContain("f149999.png");
   });
-  it("lists a few names, then counts the rest", () => {
+  it("names every inserted and scaled picture", () => {
     const images = Array.from({ length: 7 }, (_, index) => ({ name: `p${index}.png`, mimeType: "image/png" as const, dataBase64: "", notes: [] }));
-    expect(formatImageDropStatus({ inserted: images, refusals: [], scaledToPage: ["p1.png"] }))
-      .toBe("Inserted 7 pictures (p0.png, p1.png, p2.png, p3.png, p4.png and 2 more); scaled to fit the page: p1.png");
+    const names = "p0.png, p1.png, p2.png, p3.png, p4.png, p5.png, p6.png";
+    expect(formatImageDropStatus({ inserted: images, refusals: [], scaledToPage: images.map(image => image.name) }))
+      .toBe(`Inserted 7 pictures (${names}); scaled to fit the page: ${names}`);
     expect(formatImageDropStatus({ inserted: [], refusals: [{ name: "C:\\a\\x.tif", reason: "r." }] }))
       .toBe("No pictures were inserted; Couldn't drop \"x.tif\": r.");
     // Nothing in the drop was a picture to read: the refusal alone.

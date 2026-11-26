@@ -73,9 +73,25 @@ describe("placeDroppedImages with mixed sizes", () => {
     const frames = placeDroppedImages(page, { x: 400, y: 300 }, [page, { width: 40, height: 40 }, { width: 40, height: 40 }]);
     expect(frames.map(frame => [frame.x, frame.y])).toEqual([
       [0, 0],
-      [380 + DROP_CASCADE_OFFSET, 280 + DROP_CASCADE_OFFSET],
-      [380 + 2 * DROP_CASCADE_OFFSET, 280 + 2 * DROP_CASCADE_OFFSET]
+      [DROP_CASCADE_OFFSET, DROP_CASCADE_OFFSET],
+      [2 * DROP_CASCADE_OFFSET, 2 * DROP_CASCADE_OFFSET]
     ]);
+  });
+
+  it("leaves a strip above and to the left of every later picture in a five-size cascade", () => {
+    const sizes = [
+      { width: 40, height: 60 }, { width: 120, height: 40 }, { width: 60, height: 180 },
+      { width: 400, height: 300 }, { width: 200, height: 120 }
+    ];
+    const frames = placeDroppedImages(page, { x: 200, y: 150 }, sizes);
+    expect(frames[0]).toMatchObject({ x: 180, y: 120 });
+    expect(frames.map(({ width, height }) => ({ width, height }))).toEqual(sizes);
+    for (const [index, frame] of frames.entries()) {
+      for (const later of frames.slice(index + 1)) {
+        expect(later.x - frame.x).toBeGreaterThanOrEqual(DROP_CASCADE_OFFSET);
+        expect(later.y - frame.y).toBeGreaterThanOrEqual(DROP_CASCADE_OFFSET);
+      }
+    }
   });
 
   it("keeps each picture within its own room, with distinct positions for every picture that has room", () => {
@@ -89,6 +105,14 @@ describe("placeDroppedImages with mixed sizes", () => {
     }
     const small = frames.slice(1, 11).map(frame => `${frame.x},${frame.y}`);
     expect(new Set(small).size).toBe(10);
+  });
+
+  it("keeps large pictures of the same size distinct when reversing at a page edge", () => {
+    const sizes = [{ width: 40, height: 40 }, ...Array.from({ length: 14 }, () => ({ width: 700, height: 500 }))];
+    const frames = placeDroppedImages(page, { x: 780, y: 580 }, sizes);
+    expect(frames[0]).toMatchObject({ x: 760, y: 560 });
+    expect(new Set(frames.map(({ x, y }) => `${x},${y}`)).size).toBe(sizes.length);
+    expect(frames.at(-1)).toMatchObject({ x: 0, y: 0, width: 700, height: 500 });
   });
 });
 
@@ -120,5 +144,20 @@ describe("insertDroppedImages", () => {
     expect(wide!.width).toBeCloseTo(pageWidth);
     expect(wide!.height).toBeCloseTo(10 * pageWidth / 4000);
     expect(result.scaledToPage).toEqual(["big.png"]);
+  });
+
+  it("keeps a later large picture behind a smaller one it would hide in an up-left cascade", () => {
+    const document = createEmptyDocument({ title: "Drop" });
+    const page = document.pages[0]!;
+    const result = insertDroppedImages(document, [
+      image("small.png", { naturalSize: { width: 40, height: 40 } }),
+      image("large.png", { naturalSize: { width: 300, height: 300 } })
+    ], { x: page.width - 50, y: page.height - 50 });
+    const [large, small] = result.document.pages[0]!.objects as GraphicObject[];
+    expect([large!.id, small!.id]).toEqual([...result.objectIds].reverse());
+    expect(small).toMatchObject({ x: page.width - 70, y: page.height - 70, width: 40, height: 40 });
+    expect(large).toMatchObject({
+      x: page.width - 300 - DROP_CASCADE_OFFSET, y: page.height - 300 - DROP_CASCADE_OFFSET, width: 300, height: 300
+    });
   });
 });

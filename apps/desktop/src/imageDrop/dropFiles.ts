@@ -1,8 +1,4 @@
-/**
- * Which dropped files are pictures. The extension only decides which files are read as pictures;
- * what a picture actually is comes from its bytes (export-engine `svgSafety/imageSniff.ts`). Everything else keeps the
- * document-open path exactly as before, so a dropped .cdxml, .chemdraft, .cdx or .mol still opens.
- */
+import { DOCUMENT_OPEN_EXTENSIONS } from "../documentText";
 
 /** Per file, checked from metadata before reading and again while reading. */
 export const MAX_DROPPED_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -58,8 +54,12 @@ export function droppedFileBaseName(name: string): string {
 export function classifyDroppedFile(name: string): DroppedFileRole {
   const extension = droppedFileExtension(name);
   if (IMAGE_EXTENSIONS.has(extension)) return { kind: "image" };
-  const reason = REFUSED_EXTENSIONS[extension];
-  return reason ? { kind: "refused", reason } : { kind: "document" };
+  // Keep content-based document opening for extensionless files.
+  if (!extension || DOCUMENT_OPEN_EXTENSIONS.includes(extension)) return { kind: "document" };
+  const reason = Object.hasOwn(REFUSED_EXTENSIONS, extension)
+    ? REFUSED_EXTENSIONS[extension]!
+    : "it is not a picture or a drawing ChemDraft can open.";
+  return { kind: "refused", reason };
 }
 
 export function formatDropBytes(bytes: number): string {
