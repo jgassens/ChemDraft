@@ -1920,7 +1920,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.26.10.31-codex";
+const CURRENT_BUILD_STAMP = "11.26.11.08-codex";
 
 const NUMERIC_ENTRY_DURING_DRAG_STATUS = "Finish the current drag, then enter a value";
 
@@ -11502,7 +11502,7 @@ export function MainWindow({
         return savedDocumentBytes(payload.contents);
       },
       whenIdle: <R,>(commit: () => R): Promise<R> => {
-        const gate = pluginWriteGateRef.current;
+        const gate = imageDropWriteGateRef.current;
         if (!gate) return Promise.resolve().then(commit);
         return gate.run(commit).catch((error: unknown) => {
           throw new Error(error instanceof PluginWriteGateTimeoutError
@@ -14055,19 +14055,32 @@ export function MainWindow({
   // to the session's snapshot as well was the alternative, but every session keeps its snapshot in a
   // different shape; one predicate is easier to keep true than two dozen snapshot rewrites.
   const pluginWriteGateRef = useRef<PluginWriteGate | undefined>(undefined);
+  const imageDropWriteGateRef = useRef<PluginWriteGate | undefined>(undefined);
   const pluginChemistryPendingRef = useRef(false);
   useEffect(() => {
-    const gate = createPluginWriteGate({ isGestureActive: () => pluginChemistryPendingRef.current || isSnapshotSessionActive() });
+    const isWriteBusy = () => pluginChemistryPendingRef.current || isSnapshotSessionActive();
+    const gate = createPluginWriteGate({ isGestureActive: isWriteBusy });
+    // Region gestures can replace the picture selection or erase the new picture on release.
+    // Their refs are set at pointer-down, including before the drag threshold.
+    const dropGate = createPluginWriteGate({
+      isGestureActive: () => isWriteBusy() || selectionMarqueeRef.current !== null || selectionLassoRef.current !== null
+    });
     pluginWriteGateRef.current = gate;
+    imageDropWriteGateRef.current = dropGate;
     // Sessions end on a release; check right after the canvas handlers have committed (window listeners
     // run after React's). The gate's own timer covers endings that are not a release (a double-click).
-    const flush = () => gate.flush();
+    const flush = () => {
+      gate.flush();
+      dropGate.flush();
+    };
     const events = ["pointerup", "pointercancel", "keyup", "blur"] as const;
     for (const type of events) window.addEventListener(type, flush);
     return () => {
       for (const type of events) window.removeEventListener(type, flush);
       gate.dispose();
+      dropGate.dispose();
       if (pluginWriteGateRef.current === gate) pluginWriteGateRef.current = undefined;
+      if (imageDropWriteGateRef.current === dropGate) imageDropWriteGateRef.current = undefined;
     };
   }, [isSnapshotSessionActive]);
 

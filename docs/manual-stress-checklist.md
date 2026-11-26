@@ -2116,6 +2116,10 @@ lossy and a lossless WebP, an SVG with gradients and `<use href="#id">`, a BMP, 
   moving, rotating and drawing) another object; hold the gesture past the moment the picture would
   appear, then finish it. The picture appears once the gesture ends, the gesture's result is kept,
   and Undo removes the picture first, then the gesture.
+- Region gestures: start a Select marquee or Lasso before the picture appears. Repeat with the
+  pointer held below the drag threshold, after dragging, and with the gesture cancelled. Also drag
+  an Eraser marquee across the drop point on a blank page. The picture appears at the original drop
+  point after release or cancellation, stays selected, is named in the status, and takes one Undo.
 - Resize: drag every corner handle of a picture, with and without Shift, rotated, and inside a
   group: the aspect ratio never changes. Move, Delete, Cut/Paste still work. Double-click a corner
   handle of a picture for the stretch entry: typing in X fills Y with the same value (and the other

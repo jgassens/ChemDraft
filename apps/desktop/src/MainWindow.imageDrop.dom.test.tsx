@@ -179,6 +179,13 @@ describe("dropping picture files on the document window", { timeout: 3 * DROP_WA
     await act(async () => { await agent().command(id); });
   }
 
+  async function pointer(target: Element, type: string, x: number, y: number) {
+    const buttons = type === "pointerup" || type === "pointercancel" ? 0 : 1;
+    const event = new MouseEvent(type, { button: 0, buttons, clientX: x, clientY: y, bubbles: true, cancelable: true });
+    Object.defineProperty(event, "pointerId", { value: 7 });
+    await act(async () => target.dispatchEvent(event));
+  }
+
   const centre = (object: GraphicObject) => ({ x: object.x + object.width / 2, y: object.y + object.height / 2 });
 
   it("inserts PNG, JPEG and SVG at the drop point as one selected 'Insert Image' entry, undone and redone exactly", async () => {
@@ -243,11 +250,6 @@ describe("dropping picture files on the document window", { timeout: 3 * DROP_WA
     let decoded = false;
     vi.mocked(browserDecodeCheck).mockImplementationOnce(async () => { decoded = true; return { width: 1, height: 1 }; });
     await browserDrop([slow], { x: 400, y: 400 });
-    async function pointer(target: Element, type: string, x: number, y: number) {
-      const event = new MouseEvent(type, { button: 0, buttons: type === "pointerup" ? 0 : 1, clientX: x, clientY: y, bubbles: true, cancelable: true });
-      Object.defineProperty(event, "pointerId", { value: 7 });
-      await act(async () => target.dispatchEvent(event));
-    }
     const handle = container.querySelector('[data-object-resize-corner="bottom-right"]')!;
     expect(handle).not.toBeNull();
     await pointer(handle, "pointerdown", 180, 150);
@@ -270,6 +272,46 @@ describe("dropping picture files on the document window", { timeout: 3 * DROP_WA
     expect((snapshot().pages[0]!.objects.find(object => object.id === "rect-a") as GraphicObject).width).toBe(resized.width);
     await command("edit.undo");
     expect((snapshot().pages[0]!.objects.find(object => object.id === "rect-a") as GraphicObject).width).toBe(80);
+  });
+
+  it.each([
+    ["an armed Select marquee", "tool.select", 61, "pointerup"],
+    ["a dragged Select marquee", "tool.select", 100, "pointerup"],
+    ["a cancelled Select marquee", "tool.select", 100, "pointercancel"],
+    ["an armed Lasso", "tool.lasso", 61, "pointerup"],
+    ["a dragged Lasso", "tool.lasso", 100, "pointerup"],
+    ["a cancelled Lasso", "tool.lasso", 100, "pointercancel"],
+    ["an eraser sweep across the drop point", "tool.eraser", 200, "pointerup"]
+  ] as const)("waits for %s before committing the drop", async (_gesture, tool, end, finish) => {
+    const drawing = createPhase4Document("Region gesture");
+    drawing.selection.pageId = drawing.pages[0]!.id;
+    await mount(drawing);
+    await command(tool);
+    const before = snapshot();
+    const page = container.querySelector(".page")!;
+    await pointer(page, "pointerdown", 60, 60);
+    await pointer(page, "pointermove", end, end);
+    const region = () => container.querySelector(".selection-marquee, .selection-lasso-surface");
+    expect(Boolean(region())).toBe(end > 61);
+
+    let decoded = false;
+    vi.mocked(browserDecodeCheck).mockImplementationOnce(async () => { decoded = true; return { width: 1, height: 1 }; });
+    const dropPoint = { x: 140, y: 140 };
+    await browserDrop([dropFile("region.png", pngBytes())], dropPoint);
+    await eventually(() => expect(decoded).toBe(true));
+    expect(pictures()).toHaveLength(0);
+
+    await pointer(page, finish, end, end);
+    expect(region()).toBeNull();
+    await eventually(() => expect(status()).toBe("Inserted picture region.png"));
+    const inserted = pictures();
+    expect(inserted).toHaveLength(1);
+    expect(centre(inserted[0]!)).toEqual(dropPoint);
+    expect(snapshot().selection.objectIds).toEqual([inserted[0]!.id]);
+    await command("edit.undo");
+    expect(status()).toBe("Undid Insert Image");
+    expect(snapshot()).toEqual(before);
+    expect(container.querySelector("[data-can-undo]")?.getAttribute("data-can-undo")).toBe("false");
   });
 
   it("refuses BMP, TIFF and oversize files by name before reading them, and inserts the rest", async () => {
