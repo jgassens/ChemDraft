@@ -1084,6 +1084,7 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
   // Atom-block charges and M CHG charges are kept separate: per the V2000 spec, the
   // presence of ANY M CHG line means every atom-block charge must be treated as zero.
   const atomBlockCharges = new Map<number, number>();
+  const atomBlockChargeCodes = new Map<number, number>();
   const chgLineCharges = new Map<number, number>();
   const massDifferences = new Map<number, number>();
   const isotopeMasses = new Map<number, number>();
@@ -1092,9 +1093,7 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
   const radLineRadicals = new Map<number, number>();
   const valences = new Map<string, StatedValence>();
   let sawChgLine = false;
-  // CTfile: any M  CHG, M  RAD or M  ISO line supersedes the atom block's charge-field codes on
-  // every atom (RDKit reads it the same way), so charge code 4 then no longer states a radical.
-  let sawSupersedingLine = false;
+  let sawRadLine = false;
   const warnings: ClipboardTransferWarning[] = [];
 
   const atoms = atomLines.map((line, index): ParsedClipboardAtom => {
@@ -1110,6 +1109,7 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
     const atomLineCharge = chargeFromV2000AtomCode(chargeCode);
     if (atomLineCharge !== 0) {
       atomBlockCharges.set(index + 1, atomLineCharge);
+      atomBlockChargeCodes.set(index + 1, chargeCode);
     }
     if (chargeCode === 4) atomBlockRadicals.set(index + 1, 2);
     // V2000 valence: 0 = not stated, 15 = zero valence, 1..14 = that valence.
@@ -1160,7 +1160,6 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
   for (const line of lines.slice(atomStartIndex + atomCount + bondCount)) {
     if (line.trim() === "M  END") break;
     const fields = line.trim().split(/\s+/);
-    if (fields[0] === "M" && (fields[1] === "ISO" || fields[1] === "RAD" || fields[1] === "CHG")) sawSupersedingLine = true;
     if (fields[0] === "M" && fields[1] === "ISO") {
       const pairCount = Number(fields[2]);
       if (!Number.isInteger(pairCount) || pairCount < 1 || pairCount > 8) {
@@ -1179,6 +1178,7 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
       continue;
     }
     if (fields[0] === "M" && fields[1] === "RAD") {
+      sawRadLine = true;
       const pairCount = Number(fields[2]);
       if (!Number.isInteger(pairCount) || pairCount < 1 || pairCount > 8) {
         throw new Error("V2000 M RAD line has an invalid entry count.");
@@ -1211,11 +1211,28 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
     }
   }
 
-  // V2000 spec: any M CHG line supersedes ALL atom-block charges (which otherwise stay
-  // as phantom charges on atoms not named in an M CHG entry).
+  // Read as RDKit's MOL reader reads it (measured, see molRadicals.test.ts): any M  CHG or M  RAD
+  // line supersedes EVERY atom's atom-block charge-field code (charge codes 1-3 and 5-7, and the
+  // radical code 4), not only the atoms the line names; an M  ISO line supersedes neither (it only
+  // replaces the mass-difference field). Without the rule an atom not named in an M  CHG entry
+  // would keep a phantom atom-block charge.
+  const superseding = [sawChgLine ? "M  CHG" : "", sawRadLine ? "M  RAD" : ""].filter(Boolean);
+  const supersededBy = superseding.length === 0 ? ""
+    : superseding.length === 1 ? `an ${superseding[0]} line supersedes`
+    : `${superseding[0]} and ${superseding[1]} lines supersede`;
   atoms.forEach((atom, index) => {
     const i = index + 1;
-    atom.formalCharge = sawChgLine ? (chgLineCharges.get(i) ?? 0) : (atomBlockCharges.get(i) ?? 0);
+    const blockCharge = atomBlockCharges.get(i) ?? 0;
+    atom.formalCharge = superseding.length > 0 ? (chgLineCharges.get(i) ?? 0) : blockCharge;
+    if (superseding.length > 0 && blockCharge !== 0 && atom.formalCharge !== blockCharge) {
+      // Never silent: the file's atom block states a charge that its own property block overrides.
+      warnings.push({
+        code: "clipboard.charge_code_superseded",
+        message: `Atom ${i} (${atom.element}) has atom-block charge code ${atomBlockChargeCodes.get(i)} ` +
+          `(${blockCharge > 0 ? "+" : ""}${blockCharge}), but ${supersededBy} the atom block's charge codes ` +
+          `(as RDKit reads it), so it was read as charge ${atom.formalCharge > 0 ? "+" : ""}${atom.formalCharge}.`
+      });
+    }
     // M ISO overrides the mass-difference field only on atoms named in an entry.
     let mass = isotopeMasses.get(i);
     const difference = massDifferences.get(i);
@@ -1238,15 +1255,16 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
     }
     const blockRadical = atomBlockRadicals.get(i);
     const radLineRadical = radLineRadicals.get(i);
-    if (radLineRadical === undefined && blockRadical !== undefined && sawSupersedingLine) {
+    const superseded = superseding.length > 0;
+    if (radLineRadical === undefined && blockRadical !== undefined && superseded) {
       // Never silent: the file's atom block states a radical that its own property block overrides.
       warnings.push({
         code: "clipboard.radical_code_superseded",
-        message: `Atom ${i} (${atom.element}) has atom-block charge code 4 (radical), but an M  CHG, M  RAD or M  ISO ` +
-          "line supersedes the atom block's charge and radical codes (CTfile), so it was read as an ordinary atom."
+        message: `Atom ${i} (${atom.element}) has atom-block charge code 4 (radical), but ${supersededBy} ` +
+          "the atom block's charge and radical codes (as RDKit reads it), so it was read as an ordinary atom."
       });
     }
-    applyRadicalCode(atom, i, radLineRadical ?? (sawSupersedingLine ? 0 : blockRadical ?? 0), warnings);
+    applyRadicalCode(atom, i, radLineRadical ?? (superseded ? 0 : blockRadical ?? 0), warnings);
   });
   readStatedHydrogens(atoms, bonds, valences, "V2000", warnings);
 

@@ -1,5 +1,9 @@
-import type { ChemDraftDocument, MoleculeObject } from "@chemdraft/chem-core";
+import {
+  atomIgnoresStatedHydrogenCount, ignoredHydrogenCountAtomKind, type ChemDraftDocument, type MoleculeAtom,
+  type MoleculeObject
+} from "@chemdraft/chem-core";
 import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
+import { atomDerivedHydrogenCount, nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import type { PluginProvidedImage, RecognitionWarning } from "@chemdraft/plugin-api";
 import type { HostRecognitionOutcome } from "@chemdraft/plugin-host";
 
@@ -71,8 +75,20 @@ export async function preparePluginStructureRecognition(
     };
     // The import keeps a stated count only where it differs from the one the atom derives; a
     // trial import tells which of this molfile's counts that is.
-    hydrogenCountAtoms = createNativeMolfileMolecule(document, at, outcome.molfile, format, graph).atoms
-      .filter((atom) => atom.hydrogenCount !== undefined).map(named);
+    const trial = createNativeMolfileMolecule(document, at, outcome.molfile, format, graph);
+    const unstored = trial.atoms.map(({ hydrogenCount: _stated, ...rest }) => rest as MoleculeAtom);
+    const resolution = nativeBondOrderResolution(unstored, trial.bonds);
+    hydrogenCountAtoms = trial.atoms.flatMap((atom, index) => {
+      if (atom.hydrogenCount === undefined) return [];
+      const hydrogens = `${atom.hydrogenCount} hydrogen${atom.hydrogenCount === 1 ? "" : "s"}`;
+      // The wording paste uses: what ChemDraft derives for an element atom, and why a label that
+      // carries no count cannot take the stated one.
+      if (atomIgnoresStatedHydrogenCount(atom, trial.bonds)) {
+        return [`${named(atom)} states ${hydrogens}, which ${ignoredHydrogenCountAtomKind(atom, trial.bonds)} cannot carry: only 0 counts`];
+      }
+      const derived = atomDerivedHydrogenCount(unstored[index]!, trial.bonds, unstored, resolution);
+      return [`${named(atom)} states ${hydrogens}${derived === undefined ? "" : `, ChemDraft derives ${derived}`}`];
+    });
     object = createNativeMolfileMolecule(document, at, outcome.molfile, format, stripped);
   } catch (error) {
     return {
@@ -100,7 +116,7 @@ export async function preparePluginStructureRecognition(
   if (hydrogenCountAtoms.length > 0) {
     importWarnings.push({
       code: "import.hydrogen_counts_not_drawn",
-      message: `The recognized structure states hydrogen counts ChemDraft derives differently (${hydrogenCountAtoms.join(", ")}); ` +
+      message: `The recognized structure states hydrogen counts ChemDraft does not apply (${hydrogenCountAtoms.join("; ")}); ` +
         "they are kept in the structure data but not applied to the drawing."
     });
   }

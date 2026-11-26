@@ -5350,14 +5350,32 @@ export function insertNativeMolfileMolecule(
  */
 const molfileRadicalAndValenceWarningCodes: ReadonlySet<string> = new Set([
   "clipboard.radical_singlet_unsupported", "clipboard.valence_not_read", "clipboard.radical_code_superseded",
+  "clipboard.charge_code_superseded",
   "clipboard.molfile_radical_mark_default_placement",
   // Reader warnings that were only in the warnings list: the lines and isotopes they name are not on the canvas.
   "clipboard.v3000_atom_skipped", "clipboard.v3000_bond_skipped", "clipboard.isotope_default_mass_unknown"
 ]);
 
-function molfileRadicalAndValenceStatus(warnings: readonly { code: string; message: string }[]): string {
+function molfileRadicalAndValenceStatus(warnings: readonly { code: string; message: string }[], block?: string): string {
   return warnings.filter((warning) => molfileRadicalAndValenceWarningCodes.has(warning.code))
-    .map((warning) => `; ${warning.message}`).join("");
+    .map((warning) => `; ${block ? `${block}: ` : ""}${warning.message}`).join("");
+}
+
+/**
+ * Which molecule of an RXN file an inserted `$MOL` block is, for the paste status: atom numbers in a
+ * warning restart at 1 in every block, so "Atom 3" alone could be any of them. The V2000 RXN counts
+ * line (the fifth line: reactants, products, then agents) says how the blocks divide; a file whose
+ * counts cannot be read gets "molecule block N".
+ */
+function rxnBlockLabel(rxnText: string, index: number): string {
+  const counts = rxnText.replace(/\r\n?/g, "\n").trimStart().split("\n")[4] ?? "";
+  const fields = counts.match(/\d{1,3}/g);
+  if (!fields || fields.length < 2) return `molecule block ${index + 1}`;
+  const reactants = Number(fields[0]);
+  const products = Number(fields[1]);
+  if (index < reactants) return `reactant ${index + 1}`;
+  if (index < reactants + products) return `product ${index - reactants + 1}`;
+  return `agent ${index - reactants - products + 1}`;
 }
 
 /** A pasted MOL/RXN keeps its mapped source text, but no native atom carries the maps. */
@@ -5459,14 +5477,15 @@ export function applyClipboardPastePayload(
     try {
       // Each inserted block's own warnings, read where it was inserted: the paste status names the
       // radicals and counts a block could not keep, not only the last block's.
-      const blockWarnings: { code: string; message: string }[] = [];
+      let blockStatus = "";
       const nextDocument = molfileBlocks.reduce((currentDocument, block, index) => {
         const offsetPoint = {
           x: point.x + index * 180,
           y: point.y
         };
         const inserted = insertNativeMolfileMolecule(currentDocument, offsetPoint, block.text, block.format);
-        blockWarnings.push(...getSelectedMolecule(inserted)?.compatibility?.warnings ?? []);
+        blockStatus += molfileRadicalAndValenceStatus(
+          getSelectedMolecule(inserted)?.compatibility?.warnings ?? [], rxnBlockLabel(payload.text, index));
         return inserted;
       }, document);
       const selected = getSelectedMolecule(nextDocument);
@@ -5480,7 +5499,7 @@ export function applyClipboardPastePayload(
       return {
         document: nextDocument,
         status: `Pasted ${molfileBlocks.length} editable RXN molecule block${molfileBlocks.length === 1 ? "" : "s"}` +
-          molfileRadicalAndValenceStatus(blockWarnings) +
+          blockStatus +
           (molfileBlocks.some(block => molfileAtomMapNumbers(block.text).length) ? `; ${pastedAtomMapsNotKeptStatus}` : ""),
         kind: payload.kind,
         selectedObjectId: selected?.id,

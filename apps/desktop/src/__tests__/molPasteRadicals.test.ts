@@ -235,6 +235,27 @@ describe("pasted MOL names what it kept or could not place (review of mol-paste-
       .replace("M  END", "M  CHG  1   1   1\nM  END");
     expect(paste(text).result.status).toMatch(/Atom 2 \(C\) has atom-block charge code 4/);
   });
+
+  it("names a charge code that an M  RAD line superseded in the paste status", () => {
+    const text = v2000({ atoms: [C(), C({ charge: 3 }), C()], bonds: [[1, 2, 1], [2, 3, 1]] })
+      .replace("M  END", "M  RAD  1   1   2\nM  END");
+    const status = paste(text).result.status;
+    expect(status).toMatch(/Atom 2 \(C\) has atom-block charge code 3 \(\+1\)/);
+    expect(status).toContain("an M  RAD line supersedes");
+  });
+
+  it("an RXN status says which block (reactant or product number) an atom number belongs to", () => {
+    const radical = (charge: number) => v2000({ atoms: [C(), C({ charge }), C()], bonds: [[1, 2, 1], [2, 3, 1]] })
+      .replace("M  END", "M  CHG  1   1   1\nM  END");
+    const plain = v2000({ atoms: [C(), C()], bonds: [[1, 2, 1]] });
+    const rxn = ["$RXN", "", "  test", "", "  2  1", "$MOL", plain, "$MOL", radical(4), "$MOL", radical(3)].join("\n");
+    const status = applyClipboardPastePayload(createPhase4Document("RXN paste"), inspectClipboardPayload({
+      types: ["chemical/x-mdl-rxnfile"], textItems: [{ type: "chemical/x-mdl-rxnfile", text: rxn }]
+    }), point).status;
+    expect(status).toContain("reactant 2: Atom 2 (C) has atom-block charge code 4");
+    expect(status).toContain("product 1: Atom 2 (C) has atom-block charge code 3");
+    expect(status).not.toContain("reactant 1:");
+  });
 });
 
 describe("Copy As MOL -> paste round trips keep radicals and stated counts", () => {

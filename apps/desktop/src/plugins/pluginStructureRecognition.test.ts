@@ -152,6 +152,16 @@ describe("preparePluginStructureRecognition", () => {
       expect(warnings[0]!.message).toMatch(/atom 2 \(O\)/);
     });
 
+    it("names a stated count in the words paste uses: what ChemDraft derives, or why a label cannot carry it", async () => {
+      const { warnings } = await recognize(build({ valence: 1 }));
+      expect(warnings[0]!.message).toContain("atom 2 (O) states 0 hydrogens, ChemDraft derives 1");
+      expect(warnings[0]!.message).not.toContain("derives differently");
+      const generic = (await recognize(build({ valence: 3 }).replace(" O   0", " R1  0"))).warnings;
+      expect(generic.map((warning) => warning.code)).toEqual(["import.hydrogen_counts_not_drawn"]);
+      expect(generic[0]!.message).toContain("atom 2 (R1) states 2 hydrogens, which a label naming no element cannot carry: only 0 counts");
+      expect(generic[0]!.message).not.toContain("derives");
+    });
+
     it("says nothing about a stated count that agrees with the derived one", async () => {
       const { warnings } = await recognize(build({ valence: 2 }));
       expect(warnings).toEqual([]);
