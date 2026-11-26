@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { createEmptyDocument, type GraphicObject } from "@chemdraft/chem-core";
-import { DROP_CASCADE_OFFSET, insertDroppedImages, placeDroppedImages } from "./insertDroppedImages";
+import { createEmptyDocument, type ChemDraftDocument, type GraphicObject } from "@chemdraft/chem-core";
+import { visiblePaintOrder } from "./dropStacking";
+import { DROP_CASCADE_OFFSET, arrangeDroppedImages, insertDroppedImages, placeDroppedImages } from "./insertDroppedImages";
 import type { PreparedDroppedImage } from "./prepareDroppedImage";
 import { PNG_1X1_BASE64, pngWithSize } from "./testFixtures";
 
@@ -159,5 +160,126 @@ describe("insertDroppedImages", () => {
     expect(large).toMatchObject({
       x: page.width - 300 - DROP_CASCADE_OFFSET, y: page.height - 300 - DROP_CASCADE_OFFSET, width: 300, height: 300
     });
+  });
+});
+
+interface Box { x: number; y: number; width: number; height: number }
+
+/** `box` minus `cut`: up to four boxes, exactly. */
+function subtractBox(box: Box, cut: Box): Box[] {
+  const left = Math.max(box.x, cut.x);
+  const right = Math.min(box.x + box.width, cut.x + cut.width);
+  const top = Math.max(box.y, cut.y);
+  const bottom = Math.min(box.y + box.height, cut.y + cut.height);
+  if (left >= right || top >= bottom) return [box];
+  const pieces: Box[] = [
+    { x: box.x, y: box.y, width: left - box.x, height: box.height },
+    { x: right, y: box.y, width: box.x + box.width - right, height: box.height },
+    { x: left, y: box.y, width: right - left, height: top - box.y },
+    { x: left, y: bottom, width: right - left, height: box.y + box.height - bottom }
+  ];
+  return pieces.filter(piece => piece.width > 0 && piece.height > 0);
+}
+
+const identical = (a: Box, b: Box) =>
+  [a.x - b.x, a.y - b.y, a.width - b.width, a.height - b.height].every(difference => Math.abs(difference) <= 1e-9);
+
+/** For each picture on the page, bottom to top: the area no picture painted above it covers, unless that one has its very frame. */
+function visibleAreas(pictures: readonly Box[]): number[] {
+  return pictures.map((picture, index) => {
+    let pieces = [{ x: picture.x, y: picture.y, width: picture.width, height: picture.height }];
+    for (const above of pictures.slice(index + 1)) {
+      if (!identical(above, picture)) pieces = pieces.flatMap(piece => subtractBox(piece, above));
+    }
+    return pieces.reduce((sum, piece) => sum + piece.width * piece.height, 0);
+  });
+}
+
+describe("every picture of a drop keeps visible area", () => {
+  const image = (name: string, width: number, height: number): PreparedDroppedImage =>
+    ({ name, mimeType: "image/png", dataBase64: PNG_1X1_BASE64, notes: [], naturalSize: { width, height } });
+  const onPage = (width: number, height: number): ChemDraftDocument => {
+    const document = createEmptyDocument({ title: "Drop" });
+    const page = document.pages[0]!;
+    return { ...document, pages: [{ ...page, width, height, layout: { ...page.layout!, widthPx: width, heightPx: height } }] };
+  };
+  const pictures = (document: ChemDraftDocument) => document.pages[0]!.objects as GraphicObject[];
+
+  it("paints a narrow picture above the wider one two others would hide between them", () => {
+    const result = insertDroppedImages(onPage(800, 600), [image("80.png", 80, 600), image("160.png", 160, 600), image("760.png", 760, 600)],
+      { x: 740, y: 560 });
+    const painted = pictures(result.document);
+    // The cascade is kept: these pictures only change paint order.
+    expect(painted.map(({ x, width }) => [x, width])).toEqual([[0, 760], [620, 160], [700, 80]]);
+    for (const area of visibleAreas(painted)) expect(area).toBeGreaterThan(0);
+    expect(result.document.selection.objectIds).toEqual(result.objectIds);
+    expect(result.objectIds.map(id => painted.find(object => object.id === id)!.width)).toEqual([80, 160, 760]);
+  });
+
+  it("gives pictures a shared corner when no paint order of the cascade leaves each one visible", () => {
+    // The cascade puts the 20 and 780 wide pictures side by side, tiling the page-sized one.
+    const sizes = [{ width: 20, height: 600 }, { width: 780, height: 600 }, { width: 800, height: 600 }];
+    const cascade = placeDroppedImages({ width: 800, height: 600 }, { x: 5, y: 300 }, sizes);
+    expect(cascade.map(({ x }) => x)).toEqual([0, 20, 0]);
+    expect(visiblePaintOrder(cascade)).toBeUndefined();
+    const result = insertDroppedImages(onPage(800, 600), sizes.map(({ width, height }) => image(`${width}.png`, width, height)), { x: 5, y: 300 });
+    const painted = pictures(result.document);
+    expect(painted.map(({ x, y, width }) => [x, y, width])).toEqual([[0, 0, 800], [0, 0, 780], [0, 0, 20]]);
+    for (const area of visibleAreas(painted)) expect(area).toBeGreaterThan(0);
+    expect(result.document.selection.objectIds).toEqual(result.objectIds);
+  });
+
+  it("holds over many mixed sizes, page sizes and drop points, with the selection in drop order", () => {
+    // Deterministic: mulberry32.
+    let seed = 0x5eed1234;
+    const random = () => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const pick = <T,>(values: readonly T[]): T => values[Math.floor(random() * values.length)]!;
+    const between = (low: number, high: number) => Math.round(low + random() * (high - low));
+    let reordered = 0;
+    let sharedCorner = 0;
+    for (let trial = 0; trial < 1500; trial++) {
+      const page = pick([{ width: 800, height: 600 }, { width: 612, height: 792 }, { width: between(80, 2000), height: between(80, 2000) }]);
+      const count = random() < 0.1 ? between(9, 20) : between(1, 8);
+      const sizes: Array<{ width: number; height: number }> = [];
+      for (let index = 0; index < count; index++) {
+        const side = (extent: number) => pick([
+          between(1, 30), between(20, Math.max(20, extent / 2)), between(extent / 2, extent), extent, extent - between(1, 30),
+          between(extent, 3 * extent)
+        ]);
+        sizes.push(index && random() < 0.15 ? { ...sizes[between(0, index - 1)]! } : { width: Math.max(1, side(page.width)), height: Math.max(1, side(page.height)) });
+      }
+      const coordinate = (extent: number) => pick([between(0, extent), 0, extent, between(extent - 40, extent), between(0, 40), between(-50, extent + 50)]);
+      const point = { x: coordinate(page.width), y: coordinate(page.height) };
+      const cascade = placeDroppedImages(page, point, sizes);
+      const order = visiblePaintOrder(cascade);
+      if (!order) sharedCorner++;
+      else if (order.some((index, at) => index !== at)) reordered++;
+      const result = insertDroppedImages(onPage(page.width, page.height), sizes.map(({ width, height }, index) => image(`${index}.png`, width, height)), point);
+      const painted = pictures(result.document);
+      const context = JSON.stringify({ page, point, sizes });
+      const areas = visibleAreas(painted);
+      for (const [index, area] of areas.entries()) {
+        const frame = painted[index]!;
+        expect(area, `${context}: picture ${frame.id}`).toBeGreaterThan(1e-9);
+        expect(frame.x).toBeGreaterThanOrEqual(0);
+        expect(frame.y).toBeGreaterThanOrEqual(0);
+        expect(frame.x + frame.width).toBeLessThanOrEqual(page.width + 1e-9);
+        expect(frame.y + frame.height).toBeLessThanOrEqual(page.height + 1e-9);
+      }
+      expect(result.document.selection.objectIds).toEqual(result.objectIds);
+      const arranged = arrangeDroppedImages(page, point, sizes);
+      expect(result.objectIds.map(id => painted.find(object => object.id === id)!))
+        .toMatchObject(arranged.frames.map(({ x, y, width, height }) => ({ x, y, width, height })));
+      // Wherever the cascade can be ordered, it is kept as placed.
+      if (order) expect(arranged.frames).toEqual(cascade);
+    }
+    // Both repairs are exercised.
+    expect(reordered).toBeGreaterThan(20);
+    expect(sharedCorner).toBeGreaterThan(0);
   });
 });

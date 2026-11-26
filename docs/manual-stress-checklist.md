@@ -2109,6 +2109,11 @@ lossy and a lossless WebP, an SVG with gradients and `<use href="#id">`, a BMP, 
   they draw the same, and an SVG embedding a WebP bitmap warns that headless export leaves it out.
 - Mixed sizes: drop a page-sized picture together with two small ones: the small ones sit at their
   own cascaded positions, not on top of each other.
+- Mixed sizes near a corner: on an 800 × 600 page, drop three full-height pictures 80, 160 and 760
+  wide together near the bottom-right corner. Each can be clicked on its own: the 760 is painted at
+  the back, the 160 above it, the 80 on top. Then drop full-height pictures 20, 780 and 800 wide near
+  the left edge: all three share the top-left corner, largest at the back, and each can be clicked.
+  Only pictures with exactly the same frame hide one another.
 - Stalled disk: drop a picture from a network share, then disconnect it mid-read: after 30 seconds
   the status names the file, and a later drop works.
 - Tabs and guards: start a drop of the large JPEG and switch tabs before it appears: it is not
