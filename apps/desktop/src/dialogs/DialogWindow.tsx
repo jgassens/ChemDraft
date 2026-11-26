@@ -15,6 +15,8 @@ import { EngineInstallForm } from "./EngineInstallForm";
 import { ToolInstallForm } from "./ToolInstallForm";
 import { InsertTableForm } from "./InsertTableForm";
 import { AtomProblemForm } from "./AtomProblemForm";
+// DEV-ONLY drag harness gate (docs/plans/art-library-drag-spike.md); remove in phase 3.
+import { dragTestHarnessRequested } from "../artLibrary/dragTestHarness";
 import { measureDialogContentWhenFontsReady, observeDialogContent, type DialogContentFit } from "./dialogContentFit";
 const AboutWindow = lazy(() => import("../about/AboutWindow").then(module => ({ default: module.AboutWindow })));
 const TourForm = lazy(() => import("../tour/TourForm").then(module => ({ default: module.TourForm })));
@@ -291,7 +293,7 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
   </Suspense>;
   if (snapshot.dialogKind === "vibeCodeGuide") return <Suspense fallback={<p>Opening guide…</p>}><VibeCodeGuideForm onReady={reportReady} onAction={action => sendAction({ action })} /></Suspense>;
   if (snapshot.dialogKind === "structureTemplates") return <Suspense fallback={<p role="status">Opening Templates…</p>}>
-    <StructureTemplatePicker {...snapshot.data} busy={busy} error={error} onReady={reportReady}
+    <StructureTemplatePicker {...snapshot.data} busy={busy} error={error} onReady={reportReady} showDragTest={dragTestHarnessRequested()}
       onInsert={templateId => sendAction({ action: "insert", templateId })} onClose={() => sendAction({ action: "cancel" })} />
   </Suspense>;
   if (snapshot.dialogKind === "reactionConditions" && conditions) return <ReactionConditionsForm title={snapshot.data.title} onReady={reportReady}

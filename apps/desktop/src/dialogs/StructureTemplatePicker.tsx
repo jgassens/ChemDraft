@@ -1,8 +1,13 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { structureTemplateFamilyNames, type StructureTemplate } from "@chemdraft/template-library";
 import { detectDialogPlatform, type DialogPlatform, type StructureTemplatesSnapshot } from "./dialogProtocol";
 import { structureTemplatePickerFamilies } from "./structureTemplatePickerModel";
 import "./StructureTemplatePicker.css";
+
+// DEV-ONLY drag harness (docs/plans/art-library-drag-spike.md); remove in phase 3. Only the native
+// Templates dialog turns it on, only in a labelled desktop build (`dragTestHarnessRequested`), and the
+// tile renders nothing unless Rust confirms a development app identity.
+const DragTestTile = lazy(() => import("../artLibrary/DragTestTile").then(module => ({ default: module.DragTestTile })));
 
 /** Commit the searchable picker before loading rendering code or generating any SVGs. */
 function TemplateThumbnail({ template }: { template: StructureTemplate }) {
@@ -41,8 +46,10 @@ function TemplateThumbnail({ template }: { template: StructureTemplate }) {
 
 /** Native dialog body and browser fallback. Insertion is a typed owner action, never a document write. */
 export function StructureTemplatePicker({ title, templateIds, onInsert, onClose, onReady, busy = false, error,
-  platform = detectDialogPlatform() }: StructureTemplatesSnapshot & {
+  platform = detectDialogPlatform(), showDragTest = false }: StructureTemplatesSnapshot & {
   onInsert(id: string): void; onClose(): void; onReady?(): void; busy?: boolean; error?: string; platform?: DialogPlatform;
+  /** DEV-ONLY drag harness slot, set by the native dialog window only; remove in phase 3. */
+  showDragTest?: boolean;
 }) {
   const [query, setQuery] = useState("");
   const [focusedId, setFocusedId] = useState<string>();
@@ -101,6 +108,7 @@ export function StructureTemplatePicker({ title, templateIds, onInsert, onClose,
       <label>Search templates<input ref={search} type="search" autoCorrect="off" autoCapitalize="off" spellCheck={false} value={query} onChange={event => setQuery(event.target.value)} /></label>
     </header>
     <div className="cd-template-families">
+      {showDragTest && <Suspense fallback={null}><DragTestTile /></Suspense>}
       {families.map(({ family, templates }) => <section key={family} aria-labelledby={`template-family-${family}`}>
         <h3 id={`template-family-${family}`}>{structureTemplateFamilyNames[family]}</h3>
         <div className="cd-template-grid" role="group" aria-label={structureTemplateFamilyNames[family]}>

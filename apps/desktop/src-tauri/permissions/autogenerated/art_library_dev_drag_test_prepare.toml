@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-art-library-dev-drag-test-prepare"
+description = "Enables the art_library_dev_drag_test_prepare command without any pre-configured scope."
+commands.allow = ["art_library_dev_drag_test_prepare"]
+
+[[permission]]
+identifier = "deny-art-library-dev-drag-test-prepare"
+description = "Denies the art_library_dev_drag_test_prepare command without any pre-configured scope."
+commands.deny = ["art_library_dev_drag_test_prepare"]

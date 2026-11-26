@@ -1,0 +1,7 @@
+/* DEV-ONLY drag harness. Remove in phase 3. */
+.cd-drag-test { margin-top: 12px; padding: 8px 10px; border: 1px dashed #b5651d; border-radius: 6px; background: #fff8ef; }
+.cd-drag-test h3 { margin: 0 0 6px; font-size: 13px; }
+.cd-drag-test h3 span { font-weight: normal; color: #8a4b12; }
+.cd-drag-test-tile { display: inline-flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px 10px; border: 1px solid #c9d5d0; border-radius: 6px; background: white; cursor: grab; user-select: none; -webkit-user-select: none; touch-action: none; }
+.cd-drag-test-tile svg { width: 56px; height: 56px; }
+.cd-drag-test p { margin: 6px 0 0; font-size: 12px; }

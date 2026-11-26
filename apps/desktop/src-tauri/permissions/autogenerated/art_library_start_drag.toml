@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-art-library-start-drag"
+description = "Enables the art_library_start_drag command without any pre-configured scope."
+commands.allow = ["art_library_start_drag"]
+
+[[permission]]
+identifier = "deny-art-library-start-drag"
+description = "Denies the art_library_start_drag command without any pre-configured scope."
+commands.deny = ["art_library_start_drag"]
