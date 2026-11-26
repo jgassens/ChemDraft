@@ -181,6 +181,12 @@ export function exportDocumentToCdx(document: ChemDraftDocument, options: CdxExp
       const standard = parseCdxmlXyPoint(x.attrs[endpoint]);
       if (point && standard && point.x === standard.x && point.y === standard.y) delete x.attrs[alias];
     }
+    // Binary Closed is a presence-only flag, so an explicit Closed="no" cannot be written. Without it
+    // the import reads the closed bit of CurveType, and an explicitly open curve would reopen closed.
+    if (x.name === "curve" && x.attrs.Closed !== undefined && !cdxmlCurveIsClosed(x.attrs)) {
+      const curveType = parseInteger(x.attrs.CurveType?.trim());
+      if (curveType !== undefined && curveType & CDX_CURVE_TYPE_CLOSED) x.attrs.CurveType = String(curveType & ~CDX_CURVE_TYPE_CLOSED);
+    }
     x.kids = x.kids.filter((child) => {
       if (child.name === "objecttag" && child.attrs.Name?.startsWith(ChemDraftObjectTagPrefix)) {
         tags.push([child.attrs.Name, child.attrs.Value]);
@@ -5571,7 +5577,8 @@ function importGraphic(
   if (element.attributes.GraphicType === "Bracket" && !["Square", "Round", "Curly"].includes(element.attributes.BracketType)) {
     context.warnings.push({ code: "cdxml.bracket_type_preserved", sourceObjectId: element.attributes.id,
       message: `${context.sourceFormat} bracket ${element.attributes.id ?? "(unknown)"} has unsupported bracket kind "${element.attributes.BracketType ?? "unspecified"}"; it is not imported as a native glyph and is not written to visible export. Its source remains an unknown compatibility object.` });
-    return importUnknownCompatibilityObject(element, pageIndex, objectIndex, context.sourceFormat);
+    // Its frame is the graphic BoundingBox, which codec v1 wrote x-first like every native graphic.
+    return importUnknownCompatibilityObject(element, pageIndex, objectIndex, context.sourceFormat, "xy");
   }
   if (element.attributes.GraphicType === "Bracket" && ["Square", "Round", "Curly"].includes(element.attributes.BracketType)) {
     if (hasUnmappedBracketStyle(element.attributes)) {
@@ -5829,12 +5836,14 @@ function importCurveGraphic(
 ): DocumentObject {
   const nodes = curveNodesFromCdxml(element.attributes.CurvePoints);
   if (!nodes) {
-    const object = importUnknownCompatibilityObject(element, pageIndex, objectIndex, context.sourceFormat);
+    const object = importUnknownCompatibilityObject(element, pageIndex, objectIndex, context.sourceFormat, "xy");
     const message = `${context.sourceFormat} curve "${element.attributes.id ?? object.id}" has invalid or unsupported CurvePoints; the original curve is preserved for ${context.sourceFormat} export.`;
     context.warnings.push({ code: "cdxml.curve_points_preserved", message, sourceObjectId: object.id });
     return { ...object, compatibility: { ...object.compatibility!, unknown: {
       cdxmlCurveAttributes: element.attributes,
-      cdxmlCurveColor: colorForCdxmlIndex(element.attributes.color, context.colorTable) ?? defaultCdxmlStrokeColor
+      cdxmlCurveColor: colorForCdxmlIndex(element.attributes.color, context.colorTable) ?? defaultCdxmlStrokeColor,
+      // Its frame is the curve BoundingBox, x-first in codec v1 exactly as for a valid curve.
+      cdxmlCoordinateSpace: "xy"
     } } };
   }
   const id = `cdxml_graphic_${pageIndex + 1}_${objectIndex}`;
@@ -6317,7 +6326,14 @@ function unionObjectBounds(
 
 /** Where an unknown object stands on the page: its own BoundingBox when it has a usable one, else a
  *  1x1 frame at its `p`, and only then the page origin. Placing every unknown object at the origin
- *  stacked them there and stretched an enclosing group's frame (the union of its members) to it. */
+ *  stacked them there and stretched an enclosing group's frame (the union of its members) to it.
+ *
+ *  Codec v1 transposition: the frame is read x-first, so a caller whose element codec v1 wrote
+ *  x-first (a `<curve>` or `<graphic>` BoundingBox) passes `coordinateSpace: "xy"`, and the object is
+ *  tagged as native objects of that source are, so the v1 transpose leaves it alone. Every other
+ *  caller passes nothing: codec v1 never wrote those elements (unknown objects were not exported to
+ *  the visible layer at all), steps, schemes and bracketed groups carry no BoundingBox or `p` in
+ *  practice, and invalid long tags are added after the transpose has run. */
 function unknownCompatibilityObjectFrame(element: XmlElementView): { x: number; y: number; width: number; height: number } {
   const box = parseCdxmlXyBoundingBox(element.attributes.BoundingBox);
   if (box) return box;
@@ -6325,7 +6341,13 @@ function unknownCompatibilityObjectFrame(element: XmlElementView): { x: number; 
   return point ? { ...point, width: 1, height: 1 } : { x: 0, y: 0, width: 1, height: 1 };
 }
 
-function importUnknownCompatibilityObject(element: XmlElementView, pageIndex: number, objectIndex: number, sourceFormat: "CDXML" | "CDX"): UnknownCompatibilityObject {
+function importUnknownCompatibilityObject(
+  element: XmlElementView,
+  pageIndex: number,
+  objectIndex: number,
+  sourceFormat: "CDXML" | "CDX",
+  coordinateSpace?: "xy"
+): UnknownCompatibilityObject {
   return {
     id: `cdxml_unknown_${pageIndex + 1}_${objectIndex}`,
     type: "unknown-compatibility-object",
@@ -6340,7 +6362,7 @@ function importUnknownCompatibilityObject(element: XmlElementView, pageIndex: nu
       sourceFormat: "cdxml",
       originalId: element.attributes.id,
       warnings: [],
-      unknown: {}
+      unknown: coordinateSpace ? { cdxmlCoordinateSpace: coordinateSpace } : {}
     }
   };
 }

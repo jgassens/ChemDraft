@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { ChemDraftDocument, DocumentObject, GraphicObject, UnknownCompatibilityObject } from "@chemdraft/chem-core";
 import { cdxmlFixtures } from "@chemdraft/fixtures";
 import { cdxmlToCssPx } from "./coordinates";
-import { exportDocumentToCdxml, importCdx, openChemDraftPayload, type ChemDraftOpenResult } from "./index";
+import { readCdx, type CdxElement } from "./cdxBinary";
+import { CdxmlEnvelopeCodecVersionV1, ChemDraftObjectTags, exportDocumentToCdx, exportDocumentToCdxml, importCdx, openChemDraftPayload, type ChemDraftOpenResult } from "./index";
 
 function requireDocument(result: ChemDraftOpenResult): ChemDraftDocument {
   expect(result.document, JSON.stringify(result.warnings)).toBeDefined();
@@ -185,7 +186,70 @@ describe("legacy CurveType bitfield on <curve>", () => {
       expect(after.compatibility?.unknown.cdxmlCurveAttributes, id).toMatchObject({ CurveType: (before.compatibility?.unknown.cdxmlCurveAttributes as Record<string, string>).CurveType });
     }
   });
+
+  // What the exporter writes, not only what reopening it yields: an unedited curve whose closed or
+  // filled state came from CurveType alone must not gain Closed or FillType, and explicit ones stay.
+  const expectedCurveAttributes: Record<string, { CurveType: string; Closed?: string; FillType?: string }> = {
+    c1: { CurveType: "129" }, c2: { CurveType: "257" }, c3: { CurveType: "129", Closed: "no", FillType: "None" },
+    c4: { CurveType: "519" }, c5: { CurveType: "1" }
+  };
+  const expectCurveAttributes = (curves: Map<string, Record<string, string>>, expectations = expectedCurveAttributes) => {
+    for (const [id, expected] of Object.entries(expectations)) {
+      const written = curves.get(id);
+      expect(written, id).toBeDefined();
+      expect(written!.CurveType, id).toBe(expected.CurveType);
+      expect(written!.Closed, id).toBe(expected.Closed);
+      expect(written!.FillType, id).toBe(expected.FillType);
+    }
+  };
+
+  it("writes the source CurveType, and no Closed or FillType the source did not state, to visible CDXML", () => {
+    const document = requireDocument(openChemDraftPayload(source));
+    const exported = exportDocumentToCdxml(document, { embedNativePayload: false }).contents;
+    const curves = new Map<string, Record<string, string>>();
+    for (const match of exported.matchAll(/<curve\b([^>]*?)\/?>/g)) {
+      const attributes = Object.fromEntries([...match[1].matchAll(/([A-Za-z0-9_]+)="([^"]*)"/g)].map(([, name, value]) => [name, value]));
+      curves.set(attributes.id, attributes);
+    }
+    // Exported ids are reallocated; map them back through the source CurvePoints, which are unique here.
+    const bySourceId = new Map<string, Record<string, string>>();
+    for (const element of cdxmlCurveElements(source)) {
+      const written = [...curves.values()].find(attributes => attributes.CurvePoints === element.CurvePoints);
+      if (written) bySourceId.set(element.id, written);
+    }
+    expectCurveAttributes(bySourceId);
+  });
+
+  it("writes the source CurveType, and no Closed or FillType the source did not state, to binary CDX", () => {
+    const document = requireDocument(openChemDraftPayload(source));
+    const bytes = exportDocumentToCdx(document, { embedNativePayload: false }).bytes;
+    const curves = cdxElements(readCdx(bytes), "curve").map(element => element.attrs);
+    expect(curves).toHaveLength(5);
+    // Binary CDX stores CurvePoints as fixed-point pairs, so match curves by their order on the page.
+    const ids = cdxmlCurveElements(source).map(element => element.id);
+    // Binary Closed is a presence-only flag, so c3's explicit Closed="no" cannot be written; the
+    // exporter clears CurveType's closed bit instead (129 -> 128) so the curve still reads as open.
+    expectCurveAttributes(new Map(curves.map((attributes, index) => [ids[index], attributes])),
+      { ...expectedCurveAttributes, c3: { CurveType: "128", FillType: "None" } });
+    const reopenedCurves = requireDocument(importCdx(bytes)).pages[0].objects.filter((object): object is GraphicObject =>
+      object.type === "graphic" && object.compatibility?.unknown.cdxmlElementName === "curve");
+    expect(reopenedCurves).toHaveLength(5);
+    ids.forEach((id, index) => {
+      const before = graphicBySourceId(document, id);
+      expect(reopenedCurves[index].data.pathClosed, id).toBe(before.data.pathClosed);
+      expect(reopenedCurves[index].style.fillMode, id).toBe(before.style.fillMode);
+    });
+  });
 });
+
+function cdxmlCurveElements(xml: string): Array<Record<string, string>> {
+  return [...xml.matchAll(/<curve\b([^>]*?)\/?>/g)].map(match =>
+    Object.fromEntries([...match[1].matchAll(/([A-Za-z0-9_]+)="([^"]*)"/g)].map(([, name, value]) => [name, value])));
+}
+
+function cdxElements(node: CdxElement, name: string): CdxElement[] {
+  return [...(node.name === name ? [node] : []), ...node.kids.flatMap(child => cdxElements(child, name))];
+}
 
 // Independent synthetic CDX records, built byte by byte as cdxRectangleFill.test.ts does.
 const u16 = (value: number) => [value & 255, value >>> 8 & 255];
@@ -209,5 +273,94 @@ describe("legacy CurveType bitfield in binary CDX", () => {
     const imported = graphicBySourceId(document, "10");
     expect(imported.data.pathClosed).toBe(true);
     expect(imported.style.fillMode).toBe("solid");
+  });
+
+  it("reads a high-bit CurveType, which the binary reader decodes as a negative i16, as unsigned bits", () => {
+    // 0x8081 = closed | filled | undefined bit 0x8000; as a signed 16-bit value it is -32639.
+    const bytes = new Uint8Array([
+      ...new TextEncoder().encode("VjCD0100"), 4, 3, 2, 1, ...Array(10).fill(0),
+      ...object(0x8000, 0, object(0x8001, 1, curve(11, 0x8081), curve(12, 0x8001)))
+    ]);
+    const result = importCdx(bytes);
+    const document = requireDocument(result);
+    const filled = graphicBySourceId(document, "11");
+    expect((filled.compatibility?.unknown.cdxmlCurveAttributes as Record<string, string>).CurveType).toBe("-32639");
+    expect(filled.data.pathClosed).toBe(true);
+    expect(filled.style.fillMode).toBe("solid");
+    // -32767 = 0x8001: closed, unfilled, plus the undefined high bit.
+    const closed = graphicBySourceId(document, "12");
+    expect((closed.compatibility?.unknown.cdxmlCurveAttributes as Record<string, string>).CurveType).toBe("-32767");
+    expect(closed.data.pathClosed).toBe(true);
+    expect(closed.style.fillMode).toBeUndefined();
+    const ignored = result.warnings.filter(warning => warning.code === "cdxml.curve_type_flags_ignored");
+    expect(ignored).toHaveLength(2);
+    for (const warning of ignored) {
+      expect(warning.message).toContain("unknown bit 0x8000");
+      expect(warning.message).not.toContain("closed");
+    }
+  });
+});
+
+describe("unknown objects in binary CDX keep their raw source through the native payload", () => {
+  const fixture = cdxmlFixtures["unknown-objects-in-group.cdxml"];
+
+  it("round-trips raw bioshape and embeddedobject data through a binary CDX save", () => {
+    const document = requireDocument(openChemDraftPayload(fixture));
+    const before = ["bs1", "bs2", "eo1"].map(id => unknownBySourceId(document, id));
+    const reopened = importCdx(exportDocumentToCdx(document, { embedNativePayload: true }).bytes);
+    expect(reopened.source).toBe("native-payload");
+    const after = requireDocument(reopened);
+    for (const original of before) {
+      const restored = unknownBySourceId(after, original.compatibility!.originalId!);
+      expect(restored.raw).toEqual(original.raw);
+      expect(restored.sourceObjectType).toBe(original.sourceObjectType);
+      expect(frameOf(restored)).toEqual(frameOf(original));
+    }
+    expect(unknownBySourceId(after, "eo1").raw).toMatchObject({ name: "embeddedobject", attributes: { id: "eo1", BoundingBox: "430 260 470 290" } });
+    expect(unknownBySourceId(after, "bs1").raw).toMatchObject({ name: "bioshape", attributes: { BioShapeType: "Immunoglobin" } });
+  });
+});
+
+describe("unknown objects in a payload-stripped codec-v1 visible layer", () => {
+  // Codec v1 wrote atom and text `p` (and fragment BoundingBox) y-first but every graphic BoundingBox
+  // x-first, so the import transposes only the y-first half. A curve or graphic preserved as an
+  // unknown object takes its frame from that x-first BoundingBox and must not be transposed.
+  const v1 = (content: string) => `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
+<CDXML CreationProgram="ChemDraft 0.1.0">
+  <page id="p1" BoundingBox="0 0 792 612">
+    <objecttag Name="${ChemDraftObjectTags.codecVersion}" Persistent="yes" TagType="String" Value="${CdxmlEnvelopeCodecVersionV1}"/>
+    <fragment id="f1">
+      <n id="a1" p="75 75"/>
+      <n id="a2" p="75 111"/>
+      <b id="b1" B="a1" E="a2" Order="1"/>
+    </fragment>
+    ${content}
+  </page>
+</CDXML>`;
+  const expectTransposedAtoms = (document: ChemDraftDocument) => {
+    const molecule = document.pages[0].objects.find(object => object.type === "molecule");
+    expect(molecule?.type === "molecule" && molecule.atoms[1]?.x).toBeCloseTo(148);
+    expect(molecule?.type === "molecule" && molecule.atoms[1]?.y).toBeCloseTo(100);
+  };
+
+  it("leaves an invalid curve at its own x-first BoundingBox", () => {
+    const result = openChemDraftPayload(v1('<curve id="c9" BoundingBox="100 200 140 260" CurvePoints="bad"/>'));
+    const document = requireDocument(result);
+    expectTransposedAtoms(document);
+    expect(result.warnings.map(warning => warning.code)).toContain("cdxml.curve_points_preserved");
+    const curve = unknownBySourceId(document, "c9");
+    expect(curve.sourceObjectType).toBe("curve");
+    expect(frameOf(curve)).toEqual(frame(100, 200, 140, 260));
+  });
+
+  it("leaves an unsupported bracket graphic at its own x-first BoundingBox", () => {
+    const result = openChemDraftPayload(v1('<graphic id="g9" GraphicType="Bracket" BracketType="Angle" BoundingBox="100 200 110 300"/>'));
+    const document = requireDocument(result);
+    expectTransposedAtoms(document);
+    expect(result.warnings.map(warning => warning.code)).toContain("cdxml.bracket_type_preserved");
+    const bracket = unknownBySourceId(document, "g9");
+    expect(bracket.sourceObjectType).toBe("graphic");
+    expect(frameOf(bracket)).toEqual(frame(100, 200, 110, 300));
   });
 });
