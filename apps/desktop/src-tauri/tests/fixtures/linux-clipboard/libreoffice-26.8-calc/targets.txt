@@ -1,0 +1,25 @@
+TIMESTAMP
+TARGETS
+MULTIPLE
+SAVE_TARGETS
+application/x-openoffice-embed-source-xml;windows_formatname="Star Embed Source (XML)"
+application/x-openoffice-objectdescriptor-xml;windows_formatname="Star Object Descriptor (XML)";classname="47BBB4CB-CE4C-4E80-a591-42d9ae74950f";typename="LibreOffice 26.8 Spreadsheet";viewaspect="1";width="4517";height="904";posx="0";posy="0"
+application/x-openoffice-gdimetafile;windows_formatname="GDIMetaFile"
+application/x-openoffice-emf;windows_formatname="Image EMF"
+application/x-openoffice-wmf;windows_formatname="Image WMF"
+image/svg+xml;windows_formatname="image/svg+xml"
+image/png
+application/x-openoffice-bitmap;windows_formatname="Bitmap"
+image/bmp
+text/html
+application/x-openoffice-sylk;windows_formatname="Sylk"
+application/x-openoffice-link;windows_formatname="Link"
+application/x-openoffice-dif;windows_formatname="DIF"
+text/plain;charset=utf-16
+application/x-libreoffice-tsvc
+text/rtf
+text/richtext
+text/plain;charset=utf-8
+UTF8_STRING
+STRING
+application/x-libreoffice-internal-id-46
