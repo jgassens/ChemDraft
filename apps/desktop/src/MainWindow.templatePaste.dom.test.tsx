@@ -339,7 +339,8 @@ describe("template SMILES paste", () => {
         await act(async () => container.querySelector(".page")!.dispatchEvent(new MouseEvent("contextmenu", {
           bubbles: true, cancelable: true, button: 2, clientX: 180, clientY: 240
         })));
-        const button = container.querySelector<HTMLButtonElement>('[data-context-target-kind="page"] [data-command-id="clipboard.paste"]')!;
+        // At the same point, the pasted selection can now supply the menu.
+        const button = container.querySelector<HTMLButtonElement>('.object-context-menu [data-command-id="clipboard.paste"]')!;
         expect(button).not.toBeNull();
         await act(async () => {
           button.click();

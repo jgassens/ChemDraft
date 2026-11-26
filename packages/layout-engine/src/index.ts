@@ -1183,7 +1183,7 @@ export function distance(left: LayoutPoint, right: LayoutPoint): number {
   return Math.hypot(left.x - right.x, left.y - right.y);
 }
 
-function distanceToSegment(point: LayoutPoint, start: LayoutPoint, end: LayoutPoint): number {
+export function distanceToSegment(point: LayoutPoint, start: LayoutPoint, end: LayoutPoint): number {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
   const lengthSquared = dx * dx + dy * dy;

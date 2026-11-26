@@ -4,6 +4,7 @@ import type {
   perceiveDoubleBondStereoFromMolfile,
   perceiveStereoCentersFromMolfile
 } from "@chemdraft/ocl-adapter";
+import type { contextStereoHits } from "./interaction/hitTest";
 
 /**
  * Read-only CIP readout for the canvas context menu ("Stereocentre: R", "Double bond: E").
@@ -66,37 +67,66 @@ export function stereoReadoutMolfile(molecule: MoleculeObject): string | undefin
   return lines.some(line => line.startsWith("M  RGP")) ? undefined : molfile;
 }
 
+function stereoLabelsForMolecule(molecule: MoleculeObject, engine: StereoEngine) {
+  let molfile: string | undefined;
+  try {
+    molfile = stereoReadoutMolfile(molecule);
+  } catch {
+    // Query bonds and other shapes refused by the writer have no readout.
+  }
+  const atomIndices = new Map(molecule.atoms.map((atom, index) => [atom.id, index]));
+  let centers: ReturnType<StereoEngine["perceiveStereoCentersFromMolfile"]> | undefined;
+  let doubles: ReturnType<StereoEngine["perceiveDoubleBondStereoFromMolfile"]> | undefined;
+  return (target: { atomId: string } | { bondId: string }): string | undefined => {
+    if (!molfile) return undefined;
+    try {
+      if ("atomId" in target) {
+        const index = atomIndices.get(target.atomId);
+        if (index === undefined) return undefined;
+        // The perceiver reports in the molfile's input order, including disconnected components.
+        const center = (centers ??= engine.perceiveStereoCentersFromMolfile(molfile))[index];
+        if (center?.isStereoCenter && (center.descriptor === "R" || center.descriptor === "S")) {
+          return `Stereocentre: ${center.descriptor}`;
+        }
+        return undefined;
+      }
+      const bond = molecule.bonds.find(candidate => candidate.id === target.bondId);
+      // An "either" double bond is unspecified even when its coordinates look E or Z.
+      if (bond?.order !== "double" || bond.stereo === "either") return undefined;
+      const from = atomIndices.get(bond.fromAtomId), to = atomIndices.get(bond.toAtomId);
+      if (from === undefined || to === undefined) return undefined;
+      const perceived = (doubles ??= engine.perceiveDoubleBondStereoFromMolfile(molfile))
+        .find(entry => (entry.from === from && entry.to === to) || (entry.from === to && entry.to === from));
+      return perceived?.descriptor === "E" || perceived?.descriptor === "Z" ? `Double bond: ${perceived.descriptor}` : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+}
+
 /** Synchronous readout against an already loaded engine. Never throws. */
 export function stereoReadoutLabel(target: StereoReadoutTarget, engine: StereoEngine): string | undefined {
-  const { molecule } = target;
+  return stereoLabelsForMolecule(target.molecule, engine)(target);
+}
+
+/** The first geometric candidate the engine can actually describe. */
+export async function resolveContextStereo(candidates: ReturnType<typeof contextStereoHits>) {
   try {
-    if ("atomId" in target) {
-      const index = molecule.atoms.findIndex(atom => atom.id === target.atomId);
-      if (index < 0) return undefined;
-      const molfile = stereoReadoutMolfile(molecule);
-      if (!molfile) return undefined;
-      // Index-aligned to molecule.atoms: stereoPerceptionMolfile writes atoms in document order,
-      // and the perceiver reports in that input order (disconnected components included).
-      const center = engine.perceiveStereoCentersFromMolfile(molfile)[index];
-      if (!center?.isStereoCenter) return undefined;
-      return center.descriptor === "R" || center.descriptor === "S" ? `Stereocentre: ${center.descriptor}` : undefined;
+    const engine = await loadStereoEngine();
+    const readers = new Map<MoleculeObject, ReturnType<typeof stereoLabelsForMolecule>>();
+    for (const { molecule, hit } of candidates) {
+      let read = readers.get(molecule);
+      if (!read) {
+        read = stereoLabelsForMolecule(molecule, engine);
+        readers.set(molecule, read);
+      }
+      const label = read(hit);
+      if (label) return { hit, label };
     }
-    const bond = molecule.bonds.find(candidate => candidate.id === target.bondId);
-    // An "either" (crossed/wavy) double bond is drawn as unspecified; respect it even if the
-    // coordinates happen to look E or Z.
-    if (!bond || bond.order !== "double" || bond.stereo === "either") return undefined;
-    const from = molecule.atoms.findIndex(atom => atom.id === bond.fromAtomId);
-    const to = molecule.atoms.findIndex(atom => atom.id === bond.toAtomId);
-    if (from < 0 || to < 0) return undefined;
-    const molfile = stereoReadoutMolfile(molecule);
-    if (!molfile) return undefined;
-    const perceived = engine.perceiveDoubleBondStereoFromMolfile(molfile)
-      .find(entry => (entry.from === from && entry.to === to) || (entry.from === to && entry.to === from));
-    return perceived?.descriptor === "E" || perceived?.descriptor === "Z" ? `Double bond: ${perceived.descriptor}` : undefined;
   } catch {
-    // Query bonds (refused by the molfile writer) or an engine failure: show nothing.
-    return undefined;
+    // The menu still opens when the stereo engine is unavailable.
   }
+  return undefined;
 }
 
 type StereoEngineImporter = () => Promise<StereoEngine>;

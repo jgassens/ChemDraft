@@ -3,14 +3,14 @@ import { interactive3dWorkspaceStatusText, Interactive3dWorkspaceStatus } from "
 import { CanvasContextMenu, NATIVE_CANVAS_MENU_CLOSED_EVENT } from "./CanvasContextMenu";
 import { PLUGIN_CHANGE_REFUSED, RECOGNITION_REFUSED, chemistryRefusalOf, refusalSentence } from "./plugins/requestWrites/chemistryRefusal";
 import { buildObjectCanvasMenu, pageCanvasMenu, SET_DEFAULT_ARROW_STYLE_COMMAND_ID } from "./canvasContextMenuModel";
-import { loadStereoEngine, stereoReadoutRequest } from "./stereoReadout";
+import { loadStereoEngine, resolveContextStereo, stereoReadoutRequest } from "./stereoReadout";
 import { RequestWriteError } from "@chemdraft/plugin-host";
 import { createRequestHistory } from "./plugins/requestWrites/requestHistory";
 import { electronMarkInteractionFrames } from "./electronMarkInteraction";
 import { installPopoverEscapeRouting } from "./window-manager/popoverEscape";
 import { BracketLabelEditor, type BracketLabelEditorHandle } from "./BracketLabelEditor";
 import { createBracketCommands, selectedBracketPair, toggleBracketRepeatUnit, setBracketRepeatLabel, bracketRepeatUnitStatus, prepareCleanupRepeatUnits } from "./bracketCommands";
-import { bracketLabelPlan, bracketLabelContainsPoint, carriedElectronMarkSvgTransform, lonePairDragDirection, transformPointForObject } from "@chemdraft/layout-engine";
+import { bracketLabelPlan, bracketLabelContainsPoint, carriedElectronMarkSvgTransform, inverseTransformPointForObject, lonePairDragDirection, transformPointForObject } from "@chemdraft/layout-engine";
 import { useCanvasHandwritingFont } from "./canvasHandwritingFont";
 import { nativeTemplateForToolCommand } from "./ringTemplates";
 import { ATOM_MAPS_REMOVED_STATUS, documentDrawingDefaults, stripSmilesAtomMaps } from "@chemdraft/document-workflow-core";
@@ -1073,6 +1073,7 @@ import {
 } from "./conformerDebug";
 import {
   BOND_HIT_CATCHER_STROKE_PX,
+  contextStereoHits,
   currentTemplateTargetFromHoverOrHit,
   hitToleranceForScale,
   nativeMoleculeCanvasHoverTarget,
@@ -1700,16 +1701,11 @@ type ObjectContextMenuState = {
   bondDepthContext?: BondDepthContext;
   /** Present when the right-clicked scope carries (or has dismissed) valence warnings. */
   atomWarning?: { scope: readonly NativeWarningSuppressionScope[]; suppressed: boolean; count: number; problemCommandId?: string };
-  /** The single atom or bond the menu was opened on, for the read-only R/S or E/Z row. */
-  stereoPart?: ObjectContextMenuStereoPart;
+  loadStereoReadout?: () => Promise<string | undefined>;
   x: number;
   y: number;
 };
-type ObjectContextMenuStereoPart = Extract<NativeMoleculeSelectionPart, { kind: "atom" | "bond" }>;
-/** The part a stereo readout can describe: exactly one atom or one bond, nothing broader. */
-function objectContextMenuStereoPart(part: NativeMoleculeSelectionPart | undefined): ObjectContextMenuStereoPart | undefined {
-  return part?.kind === "atom" || part?.kind === "bond" ? part : undefined;
-}
+type ContextMenuSelection = { objectId: string; part?: NativeMoleculeSelectionPart };
 type BondDepthMenuCrossing = Pick<ResolvedBondCrossing, "key" | "bonds" | "front" | "back" | "hasOverride">;
 export type BondDepthCommandId = "bondDepth.bringInFront" | "bondDepth.sendBehind" | "bondDepth.useDefault";
 export interface BondDepthContext {
@@ -3100,6 +3096,7 @@ export function MainWindow({
   const [objectContextMenu, setObjectContextMenu] = useState<ObjectContextMenuState | undefined>();
   /** Page (empty-canvas) right-click menu position; undefined when the menu is closed. */
   const [pageContextMenu, setPageContextMenu] = useState<ClientPoint | undefined>();
+  const pendingCanvasContextMenu = useRef<AbortController | undefined>(undefined);
   const [freeformNativeBond, setFreeformNativeBond] = useState<FreeformNativeBondPreview | undefined>();
   const [nativeDoubleBondSidePreview, setNativeDoubleBondSidePreview] = useState<NativeDoubleBondSidePreview | undefined>();
   const nativeDoubleBondSidePreviewRef = useRef(nativeDoubleBondSidePreview);
@@ -19830,21 +19827,6 @@ export function MainWindow({
     startNativePlacementDrag
   ]);
 
-  // Right-clicking bare page is still a right-click: it opens the page menu, whose whole point is
-  // Paste. Without it the only way to paste with the mouse was the Edit menu, because the object
-  // menu (the one with Paste in it) needs an object under the pointer.
-  const handlePageContextMenu = useCallback((event: ObjectMouseEvent) => {
-    if (isEditableTarget(event.target)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    setObjectContextMenu(undefined);
-    selectionClipboardPasteStateRef.current = undefined;
-    // Paste from this menu lands where the menu was opened, not where the mouse drifted while
-    // reading it.
-    lastCanvasPointerClientPointRef.current = { x: event.clientX, y: event.clientY };
-    setPageContextMenu({ x: event.clientX, y: event.clientY });
-  }, []);
-
   const handlePagePointerMove = useCallback((event: ObjectPointerEvent) => {
     const groupTransform = groupTransformDragRef.current;
     if (groupTransform?.pointerId === event.pointerId) {
@@ -22735,52 +22717,18 @@ export function MainWindow({
     openObjectResizeInput(objectId, corner);
   }, [openObjectResizeInput]);
 
-  const handleObjectContextMenu = useCallback((objectId: string, event: ObjectMouseEvent) => {
-    if (isEditableTarget(event.target)) return;
+  const showObjectContextMenu = useCallback((
+    objectId: string,
+    position: ClientPoint,
+    point: ClientPoint | undefined,
+    nativeMoleculeHit: NativeMoleculeDeleteHit | undefined,
+    selectionBox: ContextMenuSelection | undefined,
+    loadStereoReadout?: () => Promise<string | undefined>
+  ) => {
     const currentDocument = documentRef.current;
-    const point = pagePointFromPointerEvent(event);
     const crossingHit = point ? findNearestCrossingHit(pageSvgRenderPlan.crossings, point) : undefined;
-
-    const clickedObject = findDocumentObject(currentDocument, objectId);
-    const nativeContext = clickedObject?.type === "molecule" && isNativeMoleculeGraph(clickedObject);
-    // Resolve by geometry before crossing actions, so a right-click at a weave still acts
-    // on the atom/bond under the pointer. Crossing state is secondary menu context.
-    const resolvedNativeHit = nativeContext && point
-      ? nativeMoleculeCanvasHoverTarget(
-          currentDocument,
-          point,
-          event.target,
-          hitToleranceForScale(viewportRef.current.scale)
-        )
-      : undefined;
-    let nativeMoleculeHit: NativeMoleculeDeleteHit | undefined;
-    if (resolvedNativeHit) {
-      objectId = resolvedNativeHit.objectId;
-      nativeMoleculeHit = resolvedNativeHit.kind === "atom"
-        ? {
-            kind: "atom",
-            atomId: resolvedNativeHit.atomId,
-            distanceToPointer: resolvedNativeHit.distanceToPointer
-          }
-        : {
-            kind: "bond",
-            bondId: resolvedNativeHit.bondId,
-            fromAtomId: resolvedNativeHit.fromAtomId,
-            toAtomId: resolvedNativeHit.toAtomId,
-            distanceToPointer: resolvedNativeHit.distanceToPointer
-          };
-    } else if (nativeContext && crossingHit) {
-      objectId = crossingHit.front.objectId;
-    }
     const object = findDocumentObject(currentDocument, objectId);
-    nativeMoleculeHit ??= object?.type === "molecule" && point
-      ? nativeMoleculeHitFromPointerTarget(
-          object,
-          point,
-          event.target,
-          hitToleranceForScale(viewportRef.current.scale)
-        )
-      : undefined;
+    if (!object || !shouldActivateDocumentObject(object, "selection")) return;
     let nextSelectedNativePart: NativeMoleculeSelectionPart | undefined;
     let targetKind: ObjectContextMenuState["targetKind"] = "object";
 
@@ -22800,7 +22748,10 @@ export function MainWindow({
     // being preserved — preserveMultiSelection only decides whether the document SELECTION
     // collapses to this one object below, not whether bond-depth/layer-part menu options are
     // available for the exact thing the user right-clicked.
-    if (object?.type === "molecule" && nativeMoleculeHit) {
+    if (selectionBox?.part) {
+      nextSelectedNativePart = selectionBox.part;
+      targetKind = selectionBox.part.kind;
+    } else if (object.type === "molecule" && nativeMoleculeHit) {
       const selectionResolution = nativeContextMenuSelectionResolutionFromHit(
         currentDocument,
         objectId,
@@ -22809,12 +22760,6 @@ export function MainWindow({
       );
       nextSelectedNativePart = selectionResolution.selectedPart;
       targetKind = selectionResolution.targetKind;
-    } else if (!preserveMultiSelection && object?.type === "molecule" && isNativeMoleculeGraph(object) && !nativeMoleculeHit) {
-      return;
-    }
-
-    if (!object || !shouldActivateDocumentObject(object, "selection")) {
-      return;
     }
 
     // A right-click INSIDE a lassoed fragment keeps that fragment as the whole selection. The
@@ -22827,8 +22772,6 @@ export function MainWindow({
       nextSelectedNativePart !== undefined &&
       selectedNativeMoleculeParts.includes(nextSelectedNativePart);
 
-    event.preventDefault();
-    event.stopPropagation();
     if (object.type === "table") {
       // Commit before changing cells: contextmenu can also arrive without a pointerdown/blur.
       const commit = tableCellEditorRef.current?.commit();
@@ -22843,7 +22786,7 @@ export function MainWindow({
       activeTableCellRef.current = cell;
       setActiveTableCell(cell);
     }
-    if (!preserveMultiSelection && !preserveFragmentSelection) {
+    if (!selectionBox && !preserveMultiSelection && !preserveFragmentSelection) {
       replacePresentDocument((current) => selectDocumentObject(current, objectId));
     }
     setActiveEditorObjectId(undefined);
@@ -22855,7 +22798,7 @@ export function MainWindow({
     // preserved multi-selection the document selection stays authoritative, so Delete and other
     // selection-wide commands keep acting on everything selected, not the hit bond. A preserved
     // fragment is left exactly as it was, across every molecule it covers.
-    if (!preserveFragmentSelection) {
+    if (!selectionBox && !preserveFragmentSelection) {
       setSelectedNativeMoleculePart(preserveMultiSelection ? undefined : nextSelectedNativePart);
     }
     assignHoveredNativeDeleteTarget(undefined);
@@ -22897,19 +22840,15 @@ export function MainWindow({
       return { scope, suppressed: flagged === 0, count: flagged > 0 ? flagged : suppressedCount, problemCommandId };
     })();
     setPageContextMenu(undefined);
-    lastCanvasPointerClientPointRef.current = { x: event.clientX, y: event.clientY };
+    lastCanvasPointerClientPointRef.current = position;
     selectionClipboardPasteStateRef.current = undefined;
     setObjectContextMenu({
       objectId,
       targetKind,
       bondDepthContext: bondDepthContextFromNativeSelection(nextSelectedNativePart, pageSvgRenderPlan.crossings, currentDocument),
       ...(atomWarning ? { atomWarning } : {}),
-      // The readout describes what was right-clicked, not the (possibly broader or different)
-      // preserved selection: a selected bond or whole fragment must not hijack an atom's R/S.
-      stereoPart: object?.type === "molecule" && nativeMoleculeHit
-        ? objectContextMenuStereoPart(nativeSelectionFromHit(objectId, nativeMoleculeHit)) : undefined,
-      x: event.clientX,
-      y: event.clientY
+      loadStereoReadout,
+      ...position
     });
     setStatus(preserveMultiSelection
       ? (crossingHit && targetKind !== "object"
@@ -22922,12 +22861,79 @@ export function MainWindow({
         : targetKind === "object" ? "Layer options for selected object" : "Layer options for selected molecule part");
   }, [
     assignHoveredNativeDeleteTarget,
-    pagePointFromPointerEvent,
     pageSvgRenderPlan.crossings,
     replacePresentDocument,
     selectedNativeMoleculePart,
     selectedNativeMoleculeParts
   ]);
+
+  const handleCanvasContextMenu = useCallback((clickedId: string | undefined, event: ObjectMouseEvent) => {
+    if (isEditableTarget(event.target)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    pendingCanvasContextMenu.current?.abort();
+
+    const currentDocument = documentRef.current;
+    const page = currentDocument.pages[0];
+    const position = { x: event.clientX, y: event.clientY };
+    const point = pagePointFromPointerEvent(event);
+    const scale = viewportRef.current.scale;
+    const clickedObject = clickedId ? findDocumentObject(currentDocument, clickedId) : undefined;
+    const nativeContext = clickedObject?.type === "molecule" && isNativeMoleculeGraph(clickedObject);
+    const tolerance = hitToleranceForScale(scale);
+    // A precise hit keeps the existing atom, bond and crossing command routing.
+    const hoverHit = nativeContext && point
+      ? nativeMoleculeCanvasHoverTarget(currentDocument, point, event.target, tolerance)
+      : undefined;
+    const crossing = nativeContext && point && !hoverHit
+      ? findNearestCrossingHit(pageSvgRenderPlan.crossings, point) : undefined;
+    const objectId = hoverHit?.objectId ?? crossing?.front.objectId ?? clickedId;
+    const object = crossing ? findDocumentObject(currentDocument, crossing.front.objectId) : clickedObject;
+    const nativeHit = hoverHit ?? (object?.type === "molecule" && point
+      ? nativeMoleculeHitFromPointerTarget(object, point, event.target, tolerance) : undefined);
+    const selectionBox = point && contextMenuSelectionAtPoint(page.objects, currentDocument.selection.objectIds,
+      selectedNativeMoleculeParts, point, objectId);
+    const candidates = point ? contextStereoHits(page.objects, point, scale) : [];
+    const stereo = candidates.length > 0 ? resolveContextStereo(candidates) : undefined;
+    const loadStereoReadout = stereo ? async () => (await stereo)?.label : undefined;
+
+    if (selectionBox) {
+      showObjectContextMenu(selectionBox.objectId, position, point,
+        objectId === selectionBox.objectId ? nativeHit : undefined, selectionBox, loadStereoReadout);
+      return;
+    }
+    const selectedIds = currentDocument.selection.objectIds;
+    const clickedInMultiSelection = objectId && selectedIds.length > 1 &&
+      selectedIds.includes(selectableDocumentObjectIdForSelection(page.objects, objectId));
+    if (objectId && object && (!nativeContext || nativeHit || clickedInMultiSelection)) {
+      showObjectContextMenu(objectId, position, point, nativeHit, undefined, loadStereoReadout);
+      return;
+    }
+
+    const showPageMenu = () => {
+      setObjectContextMenu(undefined);
+      selectionClipboardPasteStateRef.current = undefined;
+      lastCanvasPointerClientPointRef.current = position;
+      setPageContextMenu(position);
+    };
+    if (!stereo) {
+      showPageMenu();
+      return;
+    }
+    // A click on bare paper needs the engine result to choose the menu. Discard
+    // the pending opening if the user starts another gesture or leaves the drawing.
+    const request = new AbortController();
+    pendingCanvasContextMenu.current = request;
+    void stereo.then(result => {
+      if (request.signal.aborted || !pageRef.current || currentDocument !== documentRef.current) return;
+      pendingCanvasContextMenu.current = undefined;
+      if (result) {
+        showObjectContextMenu(result.hit.objectId, position, point, result.hit, undefined, loadStereoReadout);
+      } else {
+        showPageMenu();
+      }
+    });
+  }, [pagePointFromPointerEvent, pageSvgRenderPlan.crossings, selectedNativeMoleculeParts, showObjectContextMenu]);
 
   const handleObjectPointerMove = useCallback((objectId: string, event: ObjectPointerEvent) => {
     event.stopPropagation();
@@ -23951,7 +23957,7 @@ export function MainWindow({
     onObjectResizeInputKeep: handleObjectResizeInputKeep,
     onObjectResizeInputHome: handleObjectResizeInputHome,
     onObjectResizeInputCancel: handleObjectResizeInputCancel,
-    onContextMenu: handleObjectContextMenu,
+    onContextMenu: handleCanvasContextMenu,
     onAtomProblemInvoke: (commandId: string) => { void invokeCommandRef.current(commandId); },
     onBondStereoBadgeOpen: openBondStereoPopover,
     onTextChange: updateTextObjectContent,
@@ -24033,6 +24039,7 @@ export function MainWindow({
   useEffect(() => { refreshModifierHintRef.current(); });
 
   const openCanvasKeyboardContextMenu = useCallback(() => {
+    pendingCanvasContextMenu.current?.abort();
     const page = pageRef.current;
     if (!page) return;
     const rect = page.getBoundingClientRect();
@@ -24051,10 +24058,11 @@ export function MainWindow({
       lastCanvasPointerClientPointRef.current = anchor;
       setPageContextMenu(undefined);
       // A clicked atom or bond is the selected part even while its molecule is the selected object.
-      const stereoPart = selection.length <= 1 && selectedNativeMoleculePartsRef.current.length === 1 &&
-        part?.objectId === object.id ? objectContextMenuStereoPart(part) : undefined;
+      const loadStereoReadout = object.type === "molecule" && selection.length <= 1 &&
+        selectedNativeMoleculePartsRef.current.length === 1 && part?.objectId === object.id
+        ? stereoReadoutRequest(object, part) : undefined;
       setObjectContextMenu({ objectId: object.id, targetKind: part && selection.length === 0 ? "parts" : "object",
-        stereoPart, ...anchor });
+        loadStereoReadout, ...anchor });
       return;
     }
     page.dispatchEvent(new MouseEvent("contextmenu", {
@@ -24397,8 +24405,13 @@ export function MainWindow({
             openCanvasKeyboardContextMenu();
           }}
           onPointerDownCapture={(event) => {
+            pendingCanvasContextMenu.current?.abort();
             const canvas = event.currentTarget;
-            if (event.button === 0 && event.isPrimary !== false) {
+            const macContextPress = event.button === 0 && event.ctrlKey &&
+              (shortcutPlatform ?? detectDesktopShortcutPlatform()) === "macos" &&
+              !isEditableTarget(event.target) && isCanvasDrawingPress(canvas, event);
+            const primaryPress = event.button === 0 && event.isPrimary !== false && !macContextPress;
+            if (primaryPress) {
               badgePressRef.current = undefined;
               const badge = bondStereoBadgeAtPointer(canvas, event);
               if (badge) {
@@ -24415,7 +24428,7 @@ export function MainWindow({
             // Leave editor controls alone. The edited glyph is pointer-transparent while its
             // HTML preview shows, so its second double-click press lands on the editor.
             const editingControl = target?.closest(".text-resize-handle")?.closest("[data-object-id]")?.getAttribute("data-object-id") === textEditId;
-            if (textEditId && event.button === 0 && event.isPrimary !== false
+            if (textEditId && primaryPress
               && !isEditableTarget(event.target) && !editingControl && isCanvasDrawingPress(canvas, event)) {
               event.preventDefault();
               event.stopPropagation();
@@ -24427,7 +24440,7 @@ export function MainWindow({
               return;
             }
             const bracketEditor = bracketLabelEditorRef.current;
-            if (bracketEditor && event.button === 0 && event.isPrimary !== false
+            if (bracketEditor && primaryPress
               && !isEditableTarget(event.target) && isCanvasDrawingPress(canvas, event)) {
               // Canvas tools cancel default focus, so finish the edit before they claim the press.
               event.preventDefault();
@@ -24448,12 +24461,16 @@ export function MainWindow({
             // Its document pointer listener has already cancelled action-focus recovery.
             if (overlay) {
               canvas.focus({ preventScroll: true });
-            } else if (event.button === 0
+            } else if (primaryPress
               && (globalThis.document.activeElement === globalThis.document.body || globalThis.document.activeElement === globalThis.document.documentElement)
               && !canvasFocusCompositionRef.current.active && !canvasFocusCompositionRef.current.recentKey
               && !isEditableTarget(event.target) && !isBlockedByModalDialog(event.target)) {
               // Page tools cancel default focus. Restore it only when no control owns it.
               canvas.focus({ preventScroll: true });
+            }
+            if (macContextPress) {
+              // Let WebKit emit contextmenu without starting a selection or drawing gesture.
+              event.stopPropagation();
             }
           }}
           onPointerMoveCapture={event => {
@@ -24527,7 +24544,7 @@ export function MainWindow({
                 onPointerUp={handlePagePointerUp}
                 onPointerCancel={handlePagePointerCancel}
                 onPointerLeave={handlePagePointerLeave}
-                onContextMenu={handlePageContextMenu}
+                onContextMenu={event => handleCanvasContextMenu(undefined, event)}
                 onDoubleClickCapture={handlePageDoubleClick}
               >
                 {crosshairsVisible ? (
@@ -25119,10 +25136,7 @@ export function MainWindow({
           targetKind={objectContextMenu.targetKind}
           bondDepthContext={objectContextMenu.bondDepthContext}
           atomWarning={objectContextMenu.atomWarning}
-          loadStereoReadout={(() => {
-            const menuObject = findDocumentObject(document, objectContextMenu.objectId);
-            return menuObject?.type === "molecule" ? stereoReadoutRequest(menuObject, objectContextMenu.stereoPart) : undefined;
-          })()}
+          loadStereoReadout={objectContextMenu.loadStereoReadout}
           arrowStyleSource={(() => {
             const menuObject = findDocumentObject(document, objectContextMenu.objectId);
             return menuObject ? nativeArrowStyleDefaultFromGraphic(menuObject) : undefined;
@@ -28848,6 +28862,60 @@ export function visualSelectionBounds(
   };
 }
 
+/** Use the same frames as selection chrome, including empty space between selected elements. */
+function contextMenuSelectionAtPoint(
+  objects: readonly DocumentObject[],
+  selectedIds: readonly string[],
+  selectedParts: readonly NativeMoleculeSelectionPart[],
+  point: ClientPoint,
+  preferredObjectId?: string
+): ContextMenuSelection | undefined {
+  if (selectedIds.length === 0 && selectedParts.length === 0) return undefined;
+  const partsByObjectId = new Map(selectedParts.map(part => [part.objectId, part]));
+  for (const object of objects) {
+    const part = partsByObjectId.get(object.id);
+    if (!part || object.type !== "molecule") continue;
+    const localPoint = inverseTransformPointForObject(object, point);
+    const rings = nativeRingSelectionItems(part);
+    if (rings.length > 0) {
+      if (rings.some(ring => {
+        const bounds = nativeMoleculePartBounds(object, { ...ring, objectId: object.id, kind: "parts" });
+        return bounds && pointInRect(localPoint, bounds);
+      })) return { objectId: object.id, part };
+      continue;
+    }
+    const target = nativeTransformableSelectionPart(part);
+    const bounds = target && nativeMoleculePartBounds(object, target);
+    if (!bounds) continue;
+    const frame = moleculeTransformFrameForSelection(object, bounds, new Set(nativeSelectionCoveredAtomIds(object, part)));
+    if (pointInRect(localPoint, { ...frame, x: object.x + frame.x, y: object.y + frame.y })) {
+      return { objectId: object.id, part };
+    }
+  }
+
+  const wholeIds = resolveGroupedDocumentObjectIds(objects, selectedIds).filter(id => !partsByObjectId.has(id));
+  const [firstId, secondId] = wholeIds;
+  if (!firstId) return undefined;
+  if (secondId) {
+    const bounds = visualSelectionBounds(objects, wholeIds);
+    if (!bounds || !pointInRect(point, bounds)) return undefined;
+    const objectId = preferredObjectId && wholeIds.includes(preferredObjectId) ? preferredObjectId : firstId;
+    return { objectId };
+  }
+  const object = objects.find(candidate => candidate.id === firstId);
+  if (!object) return undefined;
+  if (object.type === "molecule" && isNativeMoleculeGraph(object)) {
+    const frame = moleculeTransformFrameForSelection(object, undefined);
+    if (pointInRect(inverseTransformPointForObject(object, point), { ...frame, x: object.x + frame.x, y: object.y + frame.y })) {
+      return { objectId: object.id };
+    }
+  } else if (object.type === "text" ? textObjectAtPoint([object], point)
+    : pointInRect(point, documentObjectVisualBounds(object, objects))) {
+    return { objectId: object.id };
+  }
+  return undefined;
+}
+
 function previewedGroupSelectionBounds(
   bounds: SelectionBounds,
   selectedIds: readonly string[],
@@ -29434,8 +29502,8 @@ function nativeSelectionAtomIds(part: NativeMoleculeSelectionPart | undefined): 
   return part?.kind === "parts" ? [...part.atomIds] : [];
 }
 
-/** Every atom a selection part covers for warning actions — bond parts include their endpoints. */
-function nativeWarningScopeAtomIds(molecule: MoleculeObject, part: NativeMoleculeSelectionPart): string[] {
+/** Every atom a selection part covers, including the endpoints of selected bonds. */
+function nativeSelectionCoveredAtomIds(molecule: MoleculeObject, part: NativeMoleculeSelectionPart): string[] {
   const bondEndpointIds = (bondIds: readonly string[]): string[] =>
     bondIds.flatMap((bondId) => {
       const bond = molecule.bonds.find((candidate) => candidate.id === bondId);
@@ -29494,7 +29562,7 @@ export function nativeWarningSuppressionScopeForSelection(
       continue;
     }
 
-    const atomIds = [...new Set(selectedParts.flatMap((part) => nativeWarningScopeAtomIds(molecule, part)))];
+    const atomIds = [...new Set(selectedParts.flatMap((part) => nativeSelectionCoveredAtomIds(molecule, part)))];
     if (atomIds.length > 0) {
       scope.push({ objectId, atomIds });
     }

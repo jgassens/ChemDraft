@@ -12,8 +12,8 @@
  * `EventTarget`, never from live layout), so they unit-test in the node environment.
  */
 
-import type { ChemDraftDocument, MoleculeObject } from "@chemdraft/chem-core";
-import { inverseTransformPointForObject, nativeMoleculeRingAtPoint } from "@chemdraft/layout-engine";
+import type { ChemDraftDocument, DocumentObject, MoleculeObject } from "@chemdraft/chem-core";
+import { distanceToSegment, inverseTransformPointForObject, nativeMoleculeRingAtPoint } from "@chemdraft/layout-engine";
 import {
   findNativeMoleculeDeleteHit,
   findNativeMoleculeTemplateHit,
@@ -55,6 +55,45 @@ export function bondHitRadiusForScale(scale: number): number {
 /** The hit tolerances for the current camera scale (pointer path). */
 export function hitToleranceForScale(scale: number): NativeMoleculeHitTolerance {
   return { bondHitRadius: bondHitRadiusForScale(scale) };
+}
+
+const CONTEXT_STEREO_RADIUS_SCREEN_PX = 14;
+
+/** Candidates for the read-only stereo row, in nearest-first order. The stereo engine
+ * determines which candidates have a descriptor. The ordinary selection hit is independent. */
+export function contextStereoHits(
+  objects: readonly DocumentObject[],
+  point: Point,
+  scale: number
+): Array<{ molecule: MoleculeObject; hit: NativeMoleculeDeleteTarget }> {
+  const radius = CONTEXT_STEREO_RADIUS_SCREEN_PX / scale;
+  const candidates: Array<{ molecule: MoleculeObject; hit: NativeMoleculeDeleteTarget }> = [];
+  // Walk from the front so exact ties follow the paint order.
+  for (let index = objects.length - 1; index >= 0; index--) {
+    const molecule = objects[index]!;
+    if (molecule.type !== "molecule") continue;
+    const localPoint = inverseTransformPointForObject(molecule, point);
+    const objectId = molecule.id;
+    for (const atom of molecule.atoms) {
+      const distanceToPointer = distance(atom, localPoint);
+      if (distanceToPointer <= radius) {
+        candidates.push({ molecule, hit: { kind: "atom", objectId, atomId: atom.id, distanceToPointer } });
+      }
+    }
+    const doubleBonds = molecule.bonds.filter(bond => bond.order === "double" && bond.stereo !== "either");
+    if (doubleBonds.length === 0) continue;
+    const atoms = new Map(molecule.atoms.map(atom => [atom.id, atom]));
+    for (const bond of doubleBonds) {
+      const { id: bondId, fromAtomId, toAtomId } = bond;
+      const from = atoms.get(fromAtomId), to = atoms.get(toAtomId);
+      if (!from || !to) continue;
+      const distanceToPointer = distanceToSegment(localPoint, from, to);
+      if (distanceToPointer <= radius) {
+        candidates.push({ molecule, hit: { kind: "bond", objectId, bondId, fromAtomId, toAtomId, distanceToPointer } });
+      }
+    }
+  }
+  return candidates.sort((left, right) => left.hit.distanceToPointer - right.hit.distanceToPointer);
 }
 
 // The transparent DOM stroke that catches bond pointer events (`.native-bond-hit-target`).
