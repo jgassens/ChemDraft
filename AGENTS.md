@@ -240,6 +240,7 @@ row says so.
 | `clipboard-adapter` | Clipboard format detection and conversion, with warnings | Silent lossy conversion |
 | `layout-engine` | Align, rotate, snap, bond-length normalization, **all molecule rendering math** (§9), and the pure atom-label grammar (what a label's text means) | Change chemical identity |
 | `art-engine` | Art visual plans: strokes, markers, arrow geometry, boolean ops | Touch molecules, own documents, copy molecule rendering math |
+| `art-library` | Art pack schemas, catalog, search, variant naming, and pure import planning | UI, DOM globals, Tauri, filesystem, documents, rendering engines |
 | `export-engine` | SVG, PDF, CDXML writers with warnings | Report a format done that `isExportFormatImplemented` denies; diverge from the canvas |
 | `shortcut-engine`, `toolset-registry` | Shortcut registry and conflicts; toolset schemas, overrides, menu models, command-ID validation | Bind actions only in click handlers; chemistry, permissions, windows |
 | `template-library`, `style-compat` | Original templates and abbreviations; `.cds` style import into native presets | Copy proprietary templates (studying them for conventions is fine, §12); parse `.cds` in UI; commit user `.cds` files; claim a partial import worked |

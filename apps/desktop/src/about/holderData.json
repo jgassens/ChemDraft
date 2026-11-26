@@ -38,6 +38,16 @@
       "from": "license file",
       "platforms": "all"
     },
+    "cargo:drag@2.1.1": {
+      "holders": [
+        "Copyright (c) 2023 - Present CrabNebula Ltd."
+      ],
+      "from": "license file",
+      "platforms": [
+        "macos",
+        "windows"
+      ]
+    },
     "cargo:flate2@1.1.9": {
       "holders": [
         "Copyright (c) 2014-2026 Alex Crichton"
