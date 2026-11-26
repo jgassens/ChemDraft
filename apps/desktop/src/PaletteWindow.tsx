@@ -141,57 +141,6 @@ function pendingPlaceholderToolset(toolsetId: string): DesktopToolsetDefinition 
   };
 }
 
-/** Rounding slack between the reported content width and the window's integer viewport width. */
-const LINUX_PALETTE_OVERFLOW_TOLERANCE_PX = 1;
-
-/**
- * Linux only (B3 follow-up). Rust caps a palette window's width at the monitor work area, but the
- * shell is width:max-content with a nowrap row, so on a narrow screen the right end of the Main
- * toolbar (natural 1311 px) was clipped and unreachable. Once the window we were given is narrower
- * than the natural width we reported, cap the content body at the viewport and let it scroll
- * sideways. Returns the size to report:
- * - width stays the NATURAL content width in both modes (the capped body's hidden part is added back
- *   from scrollWidth - clientWidth), so turning the scroller on or off never changes the width
- *   request and cannot change the window width that decides the mode;
- * - height gains the horizontal scrollbar's measured thickness (offsetHeight - clientHeight of the
- *   scroller; 0 for an overlay scrollbar), so the X11 min = max pin (B1) shows the row and the bar.
- * `fittedWidth` is the width Rust last accepted. The scroller turns on only after Rust has been given
- * this natural width (so a window that has not been fitted yet never flashes a scrollbar) and stays
- * on while the natural width still exceeds the viewport.
- */
-function fitLinuxPaletteHorizontalOverflow(
-  shell: HTMLElement,
-  body: HTMLElement,
-  measured: DOMRect,
-  fittedWidth: number | undefined,
-  viewportWidth: number
-): { width: number; height: number } {
-  const wasOverflowing = body.dataset.paletteHorizontalOverflow === "true";
-  let width = Math.ceil(wasOverflowing ? measured.width + body.scrollWidth - body.clientWidth : measured.width);
-  // A capped body's scrollWidth is rounded to whole pixels; keep the accepted width across that
-  // rounding so the size key does not jitter by a pixel between the two modes.
-  if (wasOverflowing && fittedWidth !== undefined
-    && Math.abs(width - fittedWidth) <= LINUX_PALETTE_OVERFLOW_TOLERANCE_PX) {
-    width = fittedWidth;
-  }
-  const overflow = (wasOverflowing || width === fittedWidth)
-    && width - viewportWidth > LINUX_PALETTE_OVERFLOW_TOLERANCE_PX;
-  const maxWidth = overflow ? `${Math.max(0, Math.floor(viewportWidth))}px` : "";
-  let rect = measured;
-  if (overflow !== wasOverflowing || body.style.maxWidth !== maxWidth) {
-    if (overflow) body.dataset.paletteHorizontalOverflow = "true";
-    else delete body.dataset.paletteHorizontalOverflow;
-    body.style.overflowX = overflow ? "auto" : "";
-    body.style.maxWidth = maxWidth;
-    rect = shell.getBoundingClientRect();
-  }
-  if (!overflow) return { width, height: Math.ceil(rect.height) };
-  const scrollbar = Math.max(0, body.offsetHeight - body.clientHeight);
-  // Everything but the scroller's box, plus the scroller's full content and its scrollbar. Correct
-  // whether the engine adds the bar to the auto height or takes it out of the content area.
-  return { width, height: Math.ceil(rect.height - body.offsetHeight + body.scrollHeight + scrollbar) };
-}
-
 export function PaletteWindow({
   toolsetId = "core.main",
   resizable = false,
@@ -206,6 +155,23 @@ export function PaletteWindow({
   platform?: ShortcutPlatform;
 }) {
   useEffect(() => installNativeFlyoutKeyboard(platform), [platform]);
+  // Linux: a fixed-content palette always keeps its natural size and never scrolls (GitHub #304;
+  // owner rule for toolbars). If its window comes out narrower than the content, whether by a
+  // pixel of rounding at a fractional scale or because the window manager refused a frame wider
+  // than the screen, the document clips the overhang instead of showing a scrollbar that scrolls
+  // the tools out of view. Resizable inspectors, macOS and Windows are unchanged.
+  useEffect(() => {
+    if (platform !== "linux" || resizable) return;
+    const html = document.documentElement;
+    const page = document.body;
+    const previous = { html: html.style.overflow, page: page.style.overflow };
+    html.style.overflow = "hidden";
+    page.style.overflow = "hidden";
+    return () => {
+      html.style.overflow = previous.html;
+      page.style.overflow = previous.page;
+    };
+  }, [platform, resizable]);
   const dragRef = useRef<PaletteWindowDrag | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
   const bodyRef = useRef<HTMLDivElement | null>(null);
@@ -586,17 +552,14 @@ export function PaletteWindow({
         // width/height:max-content (see CSS), so its measured box is the natural content size:
         // the window shrinks when the manifest size is too big (blank gaps) and grows when
         // content is larger (crowded rows). colorPickerOpen reserves room for the open swatch.
+        // A fixed palette always reports its natural size, on every platform: it is never shrunk,
+        // scaled, wrapped or given a scrollbar, even when it is wider than the work area (owner rule
+        // for toolbars). It may then run off the screen, and the user drags it.
         const rect = shell?.getBoundingClientRect();
-        let contentWidth = rect ? Math.ceil(rect.width) : 0;
-        let contentHeight = rect ? Math.ceil(rect.height) : 0;
-        // The window's live inner width: the overflow decision and the re-send check below both use it.
+        const contentWidth = rect ? Math.ceil(rect.width) : 0;
+        const contentHeight = rect ? Math.ceil(rect.height) : 0;
+        // The window's live inner width, for the re-send check below.
         const viewportWidth = window.innerWidth;
-        // Linux: when the capped window is narrower than the content, scroll sideways (width stays
-        // natural; height gains the scrollbar). macOS and Windows never take this branch.
-        if (platform === "linux" && shell && bodyRef.current && rect && contentWidth > 0) {
-          ({ width: contentWidth, height: contentHeight } = fitLinuxPaletteHorizontalOverflow(
-            shell, bodyRef.current, rect, fittedPaletteWidthRef.current, viewportWidth));
-        }
         const width = contentWidth || fallbackWidth;
         const height = Math.min(availableHeight,
           Math.max(colorPickerOpen ? 292 : 0, contentHeight || fallbackHeight));
@@ -611,17 +574,16 @@ export function PaletteWindow({
           }
         }
         const sizeKey = `${width}x${height}`;
-        // Linux: Rust caps a palette's width at its monitor's work area (toolset_content_placement),
-        // so one natural size needs a different window on another monitor. Re-send an unchanged size
-        // when what Rust caps against changed since the last accepted fit: the work area or scale (a
-        // move to another monitor, a resolution or panel change), or the window's inner width when it
-        // is not simply the width we asked for. Rust then widens a capped palette on a wide monitor
-        // or caps it on a narrow one, and the resize that follows re-runs the overflow decision
-        // against the new width. Both values are recorded on every accepted fit, so a re-run with
-        // nothing changed (including the resize after our own height change, which leaves the inner
-        // width alone) never re-sends; an identical request on an unchanged monitor gives the same
-        // frame, so a forced re-send settles after at most one more fit. macOS and Windows keep the
-        // plain size dedupe.
+        // Linux: Rust places a palette against its monitor's work area (toolset_content_placement:
+        // the height is capped there and the frame rounded at the monitor's scale; the width is
+        // never capped), so one natural size can need a different frame on another monitor. Re-send
+        // an unchanged size when what Rust places against changed since the last accepted fit: the
+        // work area or scale (a move to another monitor, a resolution or panel change), or the
+        // window's inner width when it is not simply the width we asked for. Both values are
+        // recorded on every accepted fit, so a re-run with nothing changed (including the resize
+        // after our own height change, which leaves the inner width alone) never re-sends; an
+        // identical request on an unchanged monitor gives the same frame, so a forced re-send
+        // settles after at most one more fit. macOS and Windows keep the plain size dedupe.
         const placementKey = workAreaPlacementKey(area);
         const placementChanged = platform === "linux" && fittedPlacementKey !== undefined && (
           placementKey !== fittedPlacementKey
@@ -662,16 +624,16 @@ export function PaletteWindow({
     });
     // Linux: a panel added, removed or resized, or a live resolution change, changes the work area
     // with no move, resize or scale event. The 1.2.2 VM (KDE, XWayland) left Main at x = 0 and
-    // 1311 px wide on a 1280 or 1024 screen: its width is pinned by the X11 min = max hints (B1), so
-    // the window manager cannot shrink it, and at the left edge nothing moved it. Poll the work area
-    // like the inspector does and refit on a change. The fit runs directly, not through scheduleSize:
+    // 1311 px wide on a 1280 or 1024 screen with no refit at all. Poll the work area like the
+    // inspector does and refit on a change (the width stays natural; the height cap and the
+    // placement follow the new work area). The fit runs directly, not through scheduleSize:
     // a window the compositor is not repainting may not run animation frames. The poll compares each
     // read (work area and scale) with the placement key of the last accepted fit, which applySize
     // records from the area that fit actually used: a fit for another area between polls (a move)
     // is what the next read is checked against, a refused fit is retried on the next poll and an
     // accepted one ends it; applySize re-sends only when the work area differs from the last
-    // accepted fit's (placementChanged), so this cannot loop. macOS and Windows never cap a
-    // palette's width (toolset_content_placement), keep the plain size dedupe and do not poll.
+    // accepted fit's (placementChanged), so this cannot loop. macOS and Windows keep the plain size
+    // dedupe and do not poll.
     const stopAreaPoll = platform === "linux"
       ? pollPlacementAgainstFit(applySize, currentWindowLogicalWorkArea, () => fittedPlacementKey)
       : undefined;

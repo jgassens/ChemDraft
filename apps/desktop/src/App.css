@@ -2639,13 +2639,6 @@ textarea:focus-visible,
   overflow-y: auto;
 }
 
-/* Linux only: PaletteWindow sets this when the window is narrower than the palette's natural width
-   (fitLinuxPaletteHorizontalOverflow). The body is capped at the viewport and scrolls sideways; its
-   content keeps its natural layout instead of shrinking into the narrower box. */
-.palette-window-content[data-palette-horizontal-overflow] > * {
-  min-width: max-content;
-}
-
 .palette-window-shell[data-resizable] {
   width: 100%;
   height: 100vh;
