@@ -165,12 +165,37 @@ impl MonitorGeometry {
     }
 }
 
-/// The first monitor whose whole logical bounds contain the logical point (x, y).
-fn monitor_containing(monitors: &[MonitorGeometry], x: f64, y: f64) -> Option<&MonitorGeometry> {
-    monitors.iter().find(|monitor| {
+/// The monitor under the global-logical point (x, y).
+///
+/// Global-logical bounds are each monitor's physical frame divided by its own scale, so on
+/// mixed-DPI setups they overlap: a 150% display right of a 100% primary at physical x = 1920
+/// spans logical 1280..3840, inside the primary's 0..1920. `scale` is the scale factor of the
+/// window the point was measured in (its outer position divided by that scale, plus its own
+/// logical offsets), making (x * scale, y * scale) that window's physical pixel.
+/// Among the monitors whose logical bounds contain the point, the one at that scale is the one
+/// whose physical frame holds that pixel, and two monitors at one scale never overlap, so it is
+/// unambiguous. Without `scale`, or when no containing monitor has it (the point lies off the
+/// measuring window's monitor), the first monitor containing the point.
+fn monitor_containing(
+    monitors: &[MonitorGeometry],
+    x: f64,
+    y: f64,
+    scale: Option<f64>,
+) -> Option<&MonitorGeometry> {
+    let contains = |monitor: &&MonitorGeometry| {
         let b = monitor.logical_bounds();
         x >= b.left && x < b.right && y >= b.top && y < b.bottom
-    })
+    };
+    scale
+        .filter(|scale| scale.is_finite() && *scale > 0.0)
+        .and_then(|scale| {
+            // Scales are read from different native calls; compare them with some slack.
+            monitors
+                .iter()
+                .filter(contains)
+                .find(|monitor| (monitor.scale() - scale).abs() < 0.01)
+        })
+        .or_else(|| monitors.iter().find(contains))
 }
 
 /// The logical bounds of the first monitor that contains the logical point (x, y).
@@ -180,7 +205,7 @@ fn logical_bounds_containing(
     x: f64,
     y: f64,
 ) -> Option<LogicalBounds> {
-    monitor_containing(monitors, x, y).map(MonitorGeometry::logical_bounds)
+    monitor_containing(monitors, x, y, None).map(MonitorGeometry::logical_bounds)
 }
 
 /// Logical bounds plus the scale they were divided by, for placement that snaps to the
@@ -192,15 +217,17 @@ pub(crate) struct ScaledLogicalBounds {
     scale: f64,
 }
 
-/// The monitor under the logical point (x, y): its whole bounds, or with `work_area` its work
-/// area (without taskbar, panels, Dock or menu bar), with its scale either way.
+/// The monitor under the logical point (x, y), measured in a window at `scale` when known (see
+/// [`monitor_containing`]): its whole bounds, or with `work_area` its work area (without taskbar,
+/// panels, Dock or menu bar), with its scale either way.
 fn scaled_logical_area_containing(
     monitors: &[MonitorGeometry],
     x: f64,
     y: f64,
+    scale: Option<f64>,
     work_area: bool,
 ) -> Option<ScaledLogicalBounds> {
-    let monitor = monitor_containing(monitors, x, y)?;
+    let monitor = monitor_containing(monitors, x, y, scale)?;
     Some(ScaledLogicalBounds {
         bounds: if work_area {
             monitor.logical_work_area()
@@ -220,19 +247,36 @@ pub(crate) fn current_window_logical_work_area(
     Some(MonitorGeometry::of(&monitor).logical_work_area())
 }
 
+/// The scale factor of the window a toolset popover's anchor was measured in: the palette that
+/// owns `toolset_id` (every palette opens its popovers under its own toolset id), else the document
+/// window (the canvas's bond-stereo popover has no palette).
+fn popover_owner_scale<R: Runtime>(app: &AppHandle<R>, toolset_id: &str) -> Option<f64> {
+    app.get_webview_window(&crate::toolset_window_label(toolset_id))
+        .or_else(|| app.get_webview_window(crate::MAIN_WINDOW_LABEL))?
+        .scale_factor()
+        .ok()
+}
+
 /// The logical bounds of the monitor under the logical point (x, y), if any, and its scale.
 /// With `work_area` (`workArea` from the frontend), the monitor's work area instead: a popover
-/// placed against the whole screen can end up under the Windows taskbar or the Dock.
+/// placed against the whole screen can end up under the Windows taskbar or the Dock. With
+/// `toolset_id` (a popover's), the point was measured in that popover's owner window, whose scale
+/// picks the right monitor where mixed-DPI logical bounds overlap (see [`monitor_containing`]).
 #[tauri::command]
 pub(crate) fn monitor_logical_bounds_at(
     window: tauri::WebviewWindow,
     x: f64,
     y: f64,
     work_area: Option<bool>,
+    toolset_id: Option<String>,
 ) -> Option<ScaledLogicalBounds> {
-    let monitors = available_monitors(window.app_handle()).ok()?;
+    let app = window.app_handle();
+    let scale = toolset_id
+        .as_deref()
+        .and_then(|toolset_id| popover_owner_scale(app, toolset_id));
+    let monitors = available_monitors(app).ok()?;
     let geometry: Vec<MonitorGeometry> = monitors.iter().map(MonitorGeometry::of).collect();
-    scaled_logical_area_containing(&geometry, x, y, work_area.unwrap_or(false))
+    scaled_logical_area_containing(&geometry, x, y, scale, work_area.unwrap_or(false))
 }
 
 #[cfg(test)]
@@ -302,7 +346,7 @@ mod tests {
             monitor(1.0, 0.0, 0.0, 1920.0, 1080.0),
             monitor(1.5, -3456.0, 0.0, 3456.0, 2160.0),
         ];
-        let left = scaled_logical_area_containing(&monitors, -100.0, 1430.0, true).unwrap();
+        let left = scaled_logical_area_containing(&monitors, -100.0, 1430.0, None, true).unwrap();
         assert_eq!(
             left,
             ScaledLogicalBounds {
@@ -316,14 +360,87 @@ mod tests {
             }
         );
         // The same point without `work_area` gets the whole monitor.
-        let whole = scaled_logical_area_containing(&monitors, -100.0, 1430.0, false).unwrap();
+        let whole = scaled_logical_area_containing(&monitors, -100.0, 1430.0, None, false).unwrap();
         assert_eq!(whole.bounds.bottom, 1440.0);
-        let primary = scaled_logical_area_containing(&monitors, 10.0, 10.0, true).unwrap();
+        let primary = scaled_logical_area_containing(&monitors, 10.0, 10.0, None, true).unwrap();
         assert_eq!((primary.bounds.bottom, primary.scale), (1040.0, 1.0));
         assert_eq!(
-            scaled_logical_area_containing(&monitors, 5000.0, 0.0, true),
+            scaled_logical_area_containing(&monitors, 5000.0, 0.0, None, true),
             None
         );
+    }
+
+    #[test]
+    fn overlapping_mixed_dpi_bounds_pick_the_monitor_at_the_measuring_scale() {
+        // A 150% display right of a 100% primary: its logical bounds (1280..3840) start inside
+        // the primary's (0..1920), so logical x = 1600 lies on both.
+        let monitors = [
+            monitor(1.0, 0.0, 0.0, 1920.0, 1080.0),
+            monitor(1.5, 1920.0, 0.0, 3840.0, 2160.0),
+        ];
+        // Measured in a palette on the 150% display: physical x 2400, the secondary.
+        let secondary =
+            scaled_logical_area_containing(&monitors, 1600.0, 500.0, Some(1.5), true).unwrap();
+        assert_eq!(
+            secondary,
+            ScaledLogicalBounds {
+                bounds: LogicalBounds {
+                    left: 1280.0,
+                    top: 24.0,
+                    right: 3840.0,
+                    bottom: 1400.0
+                },
+                scale: 1.5
+            }
+        );
+        // A scale that differs in its last digits still matches.
+        assert_eq!(
+            scaled_logical_area_containing(&monitors, 1600.0, 500.0, Some(1.500_000_1), true)
+                .unwrap()
+                .scale,
+            1.5
+        );
+        // Measured in a window on the primary: physical x 1600, the primary.
+        let primary =
+            scaled_logical_area_containing(&monitors, 1600.0, 500.0, Some(1.0), true).unwrap();
+        assert_eq!((primary.bounds.right, primary.scale), (1920.0, 1.0));
+        // Outside the overlap only one monitor contains the point, whatever the scale.
+        let only =
+            scaled_logical_area_containing(&monitors, 2500.0, 500.0, Some(1.0), true).unwrap();
+        assert_eq!(only.scale, 1.5);
+        // No scale (or a nonsense one): the first match, as before.
+        for scale in [None, Some(0.0), Some(f64::NAN), Some(2.0)] {
+            assert_eq!(
+                scaled_logical_area_containing(&monitors, 1600.0, 500.0, scale, true)
+                    .unwrap()
+                    .scale,
+                1.0
+            );
+        }
+    }
+
+    #[test]
+    fn same_scale_monitors_ignore_the_scale() {
+        let monitors = [
+            monitor(1.5, 0.0, 0.0, 2880.0, 1620.0),
+            monitor(1.5, 2880.0, 0.0, 2880.0, 1620.0),
+        ];
+        for scale in [None, Some(1.5), Some(1.0)] {
+            assert_eq!(
+                scaled_logical_area_containing(&monitors, 1919.0, 10.0, scale, false)
+                    .unwrap()
+                    .bounds
+                    .right,
+                1920.0
+            );
+            assert_eq!(
+                scaled_logical_area_containing(&monitors, 1920.0, 10.0, scale, false)
+                    .unwrap()
+                    .bounds
+                    .left,
+                1920.0
+            );
+        }
     }
 
     #[test]

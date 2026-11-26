@@ -1754,14 +1754,22 @@ export async function monitorLogicalBoundsAt(
 }
 
 /** The work area (taskbar, Dock and menu bar excluded) and scale of the monitor under the
- *  global-logical point, for placing a popover that must stay fully visible. Falls back to the
- *  calling window's own work area when no monitor contains the point. */
-export async function monitorLogicalWorkAreaAt(x: number, y: number): Promise<PopoverWorkArea | undefined> {
+ *  global-logical point, for placing a popover that must stay fully visible. `toolsetId` is the
+ *  popover's: the point was measured in the window that owns it (its palette, or the document
+ *  window), whose scale picks the right monitor where mixed-DPI monitors' logical bounds overlap
+ *  (monitor_query.rs). Falls back to the calling window's own work area when no monitor contains
+ *  the point. */
+export async function monitorLogicalWorkAreaAt(
+  x: number,
+  y: number,
+  toolsetId?: string
+): Promise<PopoverWorkArea | undefined> {
   if (!isDesktopRuntime()) {
     return undefined;
   }
   const { invoke } = await import("@tauri-apps/api/core");
-  const area = await invoke<PopoverWorkArea | null>("monitor_logical_bounds_at", { x, y, workArea: true }).catch(() => null);
+  const area = await invoke<PopoverWorkArea | null>("monitor_logical_bounds_at", { x, y, workArea: true, toolsetId })
+    .catch(() => null);
   if (area && [area.left, area.top, area.right, area.bottom].every(Number.isFinite)) {
     return area;
   }

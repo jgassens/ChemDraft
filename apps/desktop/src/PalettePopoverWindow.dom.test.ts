@@ -117,7 +117,9 @@ describe("native palette color targets", () => {
         anchor: { x: swatch.left, y: swatch.bottom + 4, rect: swatch }
       } as ToolsetPopoverContentPayload));
       await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
-      expect(monitorLogicalWorkAreaAt).toHaveBeenCalledWith(1511, 1193);
+      // With its toolset id, so Rust reads the point at the owning palette's scale: where a
+      // mixed-DPI pair's logical bounds overlap, the first match is the wrong monitor.
+      expect(monitorLogicalWorkAreaAt).toHaveBeenCalledWith(1511, 1193, "core.art");
       const positions = vi.mocked(setCurrentWindowLogicalPosition).mock.calls.map(([position]) => position);
       expect(positions.length).toBeGreaterThan(0);
       for (const position of positions) {
@@ -129,6 +131,58 @@ describe("native palette color targets", () => {
       }
     } finally {
       measured.mockRestore();
+    }
+  });
+  // A resize-driven placement awaiting the monitor query must not land after a newer open and move
+  // the new popover back to the previous control.
+  it("never lets a superseded resize placement move a newer popover", async () => {
+    const resized: Array<() => void> = [];
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: () => void) { resized.push(callback); }
+      observe() {}
+      disconnect() {}
+    });
+    const measured = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+      { x: 0, y: 0, left: 0, top: 0, width: 252, height: 187, right: 252, bottom: 187, toJSON: () => ({}) } as DOMRect
+    );
+    const flush = () => act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+    let releaseFirstArea: () => void = () => {};
+    const area = { left: 0, top: 0, right: 1920, bottom: 1040, scale: 1 };
+    vi.mocked(monitorLogicalWorkAreaAt).mockImplementation((x) => x === 111
+      ? new Promise<typeof area>(resolve => { releaseFirstArea = () => resolve(area); })
+      : Promise.resolve(area));
+    try {
+      // A fresh window, so the size effect sees the ResizeObserver stub.
+      act(() => root.unmount());
+      root = createRoot(container);
+      await act(async () => root.render(createElement(PalettePopoverWindow, { toolsetId: "core.art", prewarm: true })));
+      const first = { left: 100, top: 100, right: 122, bottom: 122 };
+      const second = { left: 500, top: 300, right: 522, bottom: 322 };
+      await act(async () => bridge.content!({
+        toolsetId: "core.art", kind: "artColor", openedAt: 1, generation: 1,
+        anchor: { x: first.left, y: first.bottom + 4, rect: first }
+      } as ToolsetPopoverContentPayload));
+      await flush();
+      // The first popover resizes; its placement waits on the (slow) monitor query.
+      expect(resized.length).toBeGreaterThan(0);
+      act(() => resized.forEach(callback => callback()));
+      await flush();
+      // A newer open on another control places itself while that query is still pending.
+      await act(async () => bridge.content!({
+        toolsetId: "core.art", kind: "artColor", openedAt: 2, generation: 2,
+        anchor: { x: second.left, y: second.bottom + 4, rect: second }
+      } as ToolsetPopoverContentPayload));
+      await flush();
+      expect(vi.mocked(setCurrentWindowLogicalPosition).mock.calls.at(-1)?.[0]).toEqual({ x: 500, y: 326 });
+      // The stale query answers last: nothing may move the window back to the first control.
+      releaseFirstArea();
+      await flush();
+      const positions = vi.mocked(setCurrentWindowLogicalPosition).mock.calls.map(([position]) => position);
+      expect(positions).not.toContainEqual({ x: 100, y: 126 });
+      expect(positions.at(-1)).toEqual({ x: 500, y: 326 });
+    } finally {
+      measured.mockRestore();
+      vi.unstubAllGlobals();
     }
   });
 });

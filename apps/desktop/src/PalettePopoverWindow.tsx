@@ -120,6 +120,10 @@ export function PalettePopoverWindow({
   // resize: macOS resizes are bottom-anchored, so a height change after Rust's set_position
   // would otherwise shove the window down by the delta — the first-open misposition.
   const anchorRef = useRef<ToolsetPopoverAnchor | undefined>(undefined);
+  // Bumped by every placement and every new anchor. A placement still awaiting the monitor query
+  // when a newer one starts (or a newer anchor arrives) must not write its stale position over the
+  // newer popover's.
+  const placementRef = useRef(0);
   // The work area of the monitor under the current anchor, read once per anchor.
   const anchorWorkAreaRef = useRef<{ anchor: ToolsetPopoverAnchor; area: Promise<PopoverWorkArea | undefined> } | undefined>(
     undefined
@@ -133,7 +137,7 @@ export function PalettePopoverWindow({
       anchorWorkAreaRef.current = {
         anchor,
         area: Promise.resolve()
-          .then(() => monitorLogicalWorkAreaAt((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2))
+          .then(() => monitorLogicalWorkAreaAt((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2, toolsetId))
           .catch(() => undefined)
       };
     }
@@ -285,6 +289,7 @@ export function PalettePopoverWindow({
       dismissedRef.current = false;
       if (payload.anchor && typeof payload.anchor.x === "number" && typeof payload.anchor.y === "number") {
         anchorRef.current = payload.anchor;
+        ++placementRef.current;
       }
       if (payload.kind === "textColor" || payload.kind === "artColor") setDraft(undefined);
       const next: ToolsetPopoverContent = { ...payload, ...opening,
@@ -353,11 +358,15 @@ export function PalettePopoverWindow({
       if (!rect || rect.width === 0 || rect.height === 0) {
         return;
       }
+      const placement = ++placementRef.current;
       void (async () => {
         await setCurrentWindowLogicalSize({ width: Math.ceil(rect.width), height: Math.ceil(rect.height) });
         const anchor = anchorRef.current;
-        if (anchor) {
-          await setCurrentWindowLogicalPosition(await anchoredPosition(anchor, rect));
+        if (anchor && placement === placementRef.current) {
+          const position = await anchoredPosition(anchor, rect);
+          if (placement === placementRef.current) {
+            await setCurrentWindowLogicalPosition(position);
+          }
         }
       })().catch(() => undefined).finally(resetScroll);
     };
@@ -413,6 +422,8 @@ export function PalettePopoverWindow({
     // chain's position write would move the visible window back to the old anchor.
     let cancelled = false;
     const perfShown = perfShownRef.current;
+    // This reveal places the popover itself; resize placements still in flight are superseded.
+    ++placementRef.current;
     void (async () => {
       if (rect && rect.width > 0 && rect.height > 0) {
         await setCurrentWindowLogicalSize({ width: Math.ceil(rect.width), height: Math.ceil(rect.height) }).catch(
