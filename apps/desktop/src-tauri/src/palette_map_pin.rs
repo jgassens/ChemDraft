@@ -17,7 +17,8 @@
 //! and so does not pull back into the work area. A Moved event anywhere else is a real move (a drag,
 //! a window manager move the user asked for such as Alt-drag): it ends the pin and is saved as usual.
 //! A move ChemDraft makes itself re-targets the pin; the earlier target is then superseded, and a
-//! Moved event still on its way to it is ignored. A drag the user starts ends the pin. A palette
+//! Moved event still on its way to it is ignored. A drag the user starts ends the pin, and a move
+//! back to a palette's pre-hide position scheduled before the drag is dropped. A palette
 //! shown again while already at its pin's clamp (a move back lost when it was hidden) is moved back
 //! at once, since the map may report no move. A palette closed while pinned saves its pin, and a
 //! reopen of the same hidden window pins that position rather than the clamp it may still sit at.
@@ -174,6 +175,9 @@ pub(crate) struct MapPins {
     closed: HashMap<String, ClosedPin>,
     /// Pins that expired by themselves in the last [`EXPIRED_PIN_MEMORY`], for the diagnostic.
     expired: HashMap<String, ExpiredPin>,
+    /// When the user last started dragging each palette ([`Self::drag_started`]): a move back
+    /// ChemDraft scheduled before then must not undo the drag. One entry per palette label.
+    drags: HashMap<String, Instant>,
 }
 
 fn near(a: (i32, i32), b: (i32, i32)) -> bool {
@@ -394,6 +398,40 @@ impl MapPins {
         self.pins.remove(label);
         self.closed.remove(label);
         self.expired.remove(label);
+    }
+
+    /// The user started dragging `label` at `now`: its pin ends ([`Self::forget`]), and a move back
+    /// to its pre-hide position scheduled before now is dropped ([`Self::move_back_after_restore`]).
+    pub(crate) fn drag_started(&mut self, label: &str, now: Instant) {
+        self.forget(label);
+        self.drags.insert(label.to_string(), now);
+    }
+
+    /// A palette restored after a dialog at `requested` was placed away from its pre-hide
+    /// `position` by the window manager: whether ChemDraft may move it back there now. Not when the
+    /// user has started a drag since `requested`: that move is the user's and is never undone.
+    /// Otherwise the pin, if still live, is re-targeted to `position` ([`Self::moved_by_chemdraft`])
+    /// so the Moved event of the move back is held there, and the move goes ahead. A pin a Moved
+    /// event ended does not stop it: the window manager's own placement (centered, cascaded) ends
+    /// the pin too, and undoing that placement is what the move back is for (GitHub #304). Only
+    /// Linux schedules such a move back.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) fn move_back_after_restore(
+        &mut self,
+        label: &str,
+        position: Pixels,
+        requested: Instant,
+        now: Instant,
+    ) -> bool {
+        if self
+            .drags
+            .get(label)
+            .is_some_and(|dragged| *dragged >= requested)
+        {
+            return false;
+        }
+        self.moved_by_chemdraft(label, position, None, now);
+        true
     }
 
     /// The palette is being closed: its pin ends. `kept` is the position saved for it when it was
@@ -947,6 +985,40 @@ mod tests {
         pins.pin("toolset-core-rings", (10, 10), None, now);
         pins.forget(MAIN);
         assert_eq!(pins.target("toolset-core-rings", now), Some((10, 10)));
+    }
+
+    #[test]
+    fn a_drag_after_a_restore_is_never_undone_by_the_move_back() {
+        let restored = Instant::now();
+        let look = restored + AFTER_MAP_INTERVAL;
+        let mut pins = MapPins::default();
+        // The page-size prompt ends: Main is pinned at its pre-hide position and shown again.
+        pins.pin(MAIN, (450, 315), Some(MAIN_SIZE), restored);
+        // The user grabs Main before the look 50 ms later: the look must not move it back.
+        pins.drag_started(MAIN, restored + Duration::from_millis(20));
+        assert!(!pins.move_back_after_restore(MAIN, (450, 315), restored, look));
+        assert_eq!(pins.target(MAIN, look), None);
+        // A later restore is not blocked by that earlier drag.
+        let again = look + Duration::from_secs(1);
+        pins.pin(MAIN, (600, 315), Some(MAIN_SIZE), again);
+        let again_look = again + AFTER_MAP_INTERVAL;
+        assert!(pins.move_back_after_restore(MAIN, (600, 315), again, again_look));
+        // Without a drag the window manager's placement is undone, whether or not its Moved event
+        // already ended the pin, and a live pin is re-targeted so the move back is held there.
+        let mut pins = MapPins::default();
+        pins.pin(MAIN, (450, 315), Some(MAIN_SIZE), restored);
+        pins.moved_by_chemdraft(MAIN, (300, 315), None, restored);
+        assert!(pins.move_back_after_restore(MAIN, (450, 315), restored, look));
+        assert_eq!(pins.target(MAIN, look), Some((450, 315)));
+        pins.pin(MAIN, (450, 315), Some(MAIN_SIZE), restored);
+        assert_eq!(
+            pins.moved(MAIN, (184, 463), &vm(), look),
+            MovedDecision::Moved
+        );
+        assert!(pins.move_back_after_restore(MAIN, (450, 315), restored, look));
+        // Other palettes' drags do not count.
+        pins.drag_started("toolset-core-rings", look);
+        assert!(pins.move_back_after_restore(MAIN, (450, 315), restored, look));
     }
 
     #[test]

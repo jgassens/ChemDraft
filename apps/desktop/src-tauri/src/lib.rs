@@ -13580,8 +13580,9 @@ fn correct_pinned_palette_after_map<R: Runtime>(
 /// any. The move goes through `_NET_MOVERESIZE_WINDOW` (utility_window::move_mapped), like the
 /// pin's own moves back, and re-targets the pin first so the Moved event it causes is held there
 /// rather than read as a user move. The frame is judged once, when the palette is first seen
-/// mapped (waiting at most `palette_map_pin::AFTER_MAP_WAIT`). A no-op with no target, on native
-/// Wayland, and on macOS and Windows.
+/// mapped (waiting at most `palette_map_pin::AFTER_MAP_WAIT`). A drag the user starts before that
+/// look cancels the move (palette_map_pin::MapPins::move_back_after_restore): the drag is never
+/// undone. A no-op with no target, on native Wayland, and on macOS and Windows.
 fn return_restored_palette_after_map<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
     target: Option<(i32, i32)>,
@@ -13596,6 +13597,8 @@ fn return_restored_palette_after_map<R: Runtime>(
             return;
         }
         let restored = window.clone();
+        // A drag started from here on is the user's and cancels the move back.
+        let requested = std::time::Instant::now();
         let _ = window.run_on_main_thread(move || {
             let started = std::time::Instant::now();
             let _ = gtk::glib::timeout_add_local(palette_map_pin::AFTER_MAP_INTERVAL, move || {
@@ -13622,14 +13625,23 @@ fn return_restored_palette_after_map<R: Runtime>(
                 if let Some(position) = restore_position_correction(Some(target), live, tolerance) {
                     let webview: &tauri::Webview<R> = restored.as_ref();
                     let native = webview.window();
-                    palette_map_pin::with_pins(|pins| {
-                        pins.moved_by_chemdraft(
+                    let allowed = palette_map_pin::with_pins(|pins| {
+                        pins.move_back_after_restore(
                             native.label(),
                             position,
-                            None,
+                            requested,
                             std::time::Instant::now(),
                         )
                     });
+                    if !allowed {
+                        palette_frame_log(format_args!(
+                            "map label={} path={path} live={live:?} target={position:?} \
+                             restore-pre-hide-position skipped=user-drag after={:?}",
+                            native.label(),
+                            started.elapsed()
+                        ));
+                        return gtk::glib::ControlFlow::Break;
+                    }
                     let sent = utility_window::move_mapped(&native, position);
                     palette_frame_log(format_args!(
                         "map label={} path={path} live={live:?} -> {position:?} \
@@ -18493,6 +18505,23 @@ mod tests {
             expect_eq(!linux, restore_refits_toolset(false, !keep, || true));
             expect_true(restore_refits_toolset(false, !keep, || false));
         }
+    }
+
+    #[test]
+    fn the_move_back_after_a_restore_yields_to_a_user_drag() {
+        // The look after the map asks the pins first (palette_map_pin's
+        // a_drag_after_a_restore_is_never_undone_by_the_move_back), and a drag tells them.
+        let source = include_str!("lib.rs");
+        let start = source
+            .find("fn return_restored_palette_after_map<")
+            .unwrap();
+        let rest = &source[start..];
+        let callback = &rest[..rest.find("\n}\n").unwrap()];
+        let asked = callback.find(".move_back_after_restore(").unwrap();
+        let moved = callback.find("utility_window::move_mapped(").unwrap();
+        expect_true(asked < moved);
+        expect_false(callback.contains(".moved_by_chemdraft("));
+        expect_true(include_str!("window_drag.rs").contains(".drag_started(window.label()"));
     }
 
     #[test]
