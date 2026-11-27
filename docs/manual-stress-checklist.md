@@ -179,7 +179,11 @@ with the menu open: nothing runs. Repeat on another toolbar (Arrows, Style) and 
 Hide hides that toolbar, not Main. Afterwards, left-click a tool and drag the grip: both still work,
 and the document keeps the keyboard (M switches tools). On Windows also check that the toolbar never
 takes the taskbar or the keyboard while its menu is open, with the toolbar on a second monitor at a
-different scale: the menu opens at the pointer on that monitor.
+different scale: the menu opens at the pointer on that monitor. Still on Windows, click another
+application (Notepad) so it is in front, then right-click a ChemDraft toolbar without clicking
+ChemDraft first: no menu opens and ChemDraft does not come forward; click the document, then
+right-click the toolbar again and the menu opens. With a plugin that contributes a toolbar
+installed, right-click that toolbar: the menu has Hide Toolbar only, and Hide hides that toolbar.
 
 Palette first paint (Windows): quit ChemDraft, then cold-launch it. The Main toolbar and the other
 open palettes appear with their content in the palette's light grey, with no black frame and no

@@ -64,6 +64,14 @@
     "returnType": "Result<Option<String>, String>"
   },
   {
+    "file": "canvas_context_menu.rs",
+    "name": "popup_toolbar_context_menu",
+    "async": true,
+    "generics": "<R: Runtime>",
+    "parameters": "app: AppHandle<R>, window: WebviewWindow<R>, toolset_id: String,",
+    "returnType": "Result<Option<ToolbarMenuChoice>, String>"
+  },
+  {
     "file": "canvas_occlusion.rs",
     "name": "document_canvas_occlusion",
     "async": false,

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "toolbar-context-menu",
+  "description": "Floating toolbars request their right-click menu, which the document window presents at the pointer on macOS, Windows and Linux. The toolbar sends only its toolset id; Rust builds the fixed items (Customize on the Main toolbar, Hide) for the toolset its window was created for. Toolbars cannot open caller-built canvas menus.",
+  "windows": ["toolset-core-*", "toolset-plugin-*", "toolset-user-*"],
+  "permissions": ["allow-popup-toolbar-context-menu"]
+}

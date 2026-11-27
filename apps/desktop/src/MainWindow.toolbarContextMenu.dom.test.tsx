@@ -2,7 +2,7 @@
 // Right-click a floating toolbar, choose Customize Toolbar…: the command travels the real palette
 // route (sendPaletteCommand -> route_toolset_command -> the document window's native-command event),
 // MainWindow runs the REGISTERED customize command, and the clicked toolbar opens its customize
-// gallery. Only the two Tauri IPC hops are stood in for: the native popup returns the chosen item, and
+// gallery. Only the two Tauri IPC hops are stood in for: the native popup returns Rust's fixed choice, and
 // route_toolset_command delivers the command into the document window exactly as Rust does
 // (`dispatch_dom_command_event`). The press itself is a real right-click on the toolbar's button.
 import { act, createElement } from "react";
@@ -15,20 +15,19 @@ import { createPhase4Document } from "./documentWorkflow";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 
-type NativeItem = { kind: "separator" } | { kind: "item"; id: string; label: string };
-
 const native = vi.hoisted(() => ({
-  choose: undefined as string | undefined,
+  choose: null as string | null,
   popups: 0,
   routed: [] as string[]
 }));
 vi.mock("@tauri-apps/api/core", async original => ({
   ...await original<typeof import("@tauri-apps/api/core")>(),
   invoke: vi.fn(async (command: string, args?: Record<string, unknown>) => {
-    if (command === "popup_canvas_context_menu") {
+    if (command === "popup_toolbar_context_menu") {
+      // Rust builds the items for the calling window's toolset and returns the fixed choice.
       native.popups += 1;
-      const chosen = (args!.items as NativeItem[]).find(item => item.kind === "item" && item.label === native.choose);
-      return chosen && chosen.kind === "item" ? chosen.id : null;
+      expect(args).toEqual({ toolsetId: "core.main" });
+      return native.choose;
     }
     if (command === "route_toolset_command") {
       native.routed.push(args!.commandId as string);
@@ -70,7 +69,7 @@ describe.each(["macos", "windows", "linux"] as const)("Customize Toolbar… from
   let paletteContainer: HTMLDivElement;
 
   beforeEach(async () => {
-    native.choose = undefined;
+    native.choose = null;
     native.popups = 0;
     native.routed = [];
     vi.stubGlobal("localStorage", new MemoryStorage());
@@ -102,7 +101,7 @@ describe.each(["macos", "windows", "linux"] as const)("Customize Toolbar… from
     const palette = () => paletteContainer.querySelector<HTMLElement>("main.palette-window-shell")!;
     const bond = palette().querySelector<HTMLButtonElement>('button[data-command-id="tool.bond"]')!;
     expect(palette().querySelector(".customize-gallery-tray")).toBeNull();
-    native.choose = "Customize Toolbar…";
+    native.choose = "customize";
 
     await act(async () => {
       fire(bond, "pointerdown");

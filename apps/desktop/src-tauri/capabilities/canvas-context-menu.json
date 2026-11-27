@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "canvas-context-menu",
-  "description": "The document window presents its native canvas and object popup menus, and floating toolbars request their right-click menu, which the document window presents at the pointer, on macOS, Windows and Linux. Popovers and the tooltip get none.",
-  "windows": ["main", "toolset-core-*", "toolset-plugin-*", "toolset-user-*"],
+  "description": "The document window presents its native canvas and object popup menus on macOS, Windows and Linux. Only the document window may send a menu's items; floating toolbars use toolbar-context-menu, popovers and the tooltip get none.",
+  "windows": ["main"],
   "permissions": ["allow-popup-canvas-context-menu"]
 }

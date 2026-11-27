@@ -1898,6 +1898,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             first_paint::window_first_paint,
             canvas_context_menu::popup_canvas_context_menu,
+            canvas_context_menu::popup_toolbar_context_menu,
             file_warnings_window::file_warnings_open,
             file_warnings_window::file_warnings_request,
             file_warnings_window::file_warnings_publish,

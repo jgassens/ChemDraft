@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // Right-click on a floating toolbar (1.2.3 RC5): the grip, a gap or a button opens the toolbar's NATIVE
-// menu, presented through the document window's popup command, and the press never reaches the
-// button under it. Real DOM events are dispatched on the elements themselves (not the agent bridge,
+// menu, presented by the document window through the toolbar-menu command, and the press never
+// reaches the button under it. The palette sends only its toolset id; Rust builds the items. Real DOM events are dispatched on the elements themselves (not the agent bridge,
 // which skips default actions), in each platform's own order, with the platform passed in.
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -13,16 +13,15 @@ import { allShellCommands } from "./commands";
 import { createPhase4Document } from "./documentWorkflow";
 import { createDesktopToolsetRegistry, getToolsetToggleActions, toolsetUsesResizableWindow } from "./toolsets";
 import { broadcastToolsetCustomizeMode } from "./window-manager";
-import { isSecondaryPress, toolsetContextMenuItems } from "./nativeToolsetContextMenu";
+import { installToolsetContextMenu, isSecondaryPress, toolbarMenuChoiceCommandId } from "./nativeToolsetContextMenu";
 import { PALETTE_TOOLTIP_DISMISS_DOM_EVENT } from "./toolbars/toolbarTooltip";
 
-type NativeItem = { kind: "separator" } | { kind: "item"; id: string; label: string; enabled: boolean };
-type PopupCall = { items: NativeItem[]; position: { x: number; y: number } };
+type PopupCall = { command: string; args: Record<string, unknown> | undefined };
 
 const native = vi.hoisted(() => ({
   popups: [] as PopupCall[],
-  /** The label the user picks in the next native menu; undefined dismisses it. */
-  choose: undefined as string | undefined,
+  /** What the native toolbar menu returns next (Rust's fixed choice); null dismisses it. */
+  choose: null as unknown,
   command: vi.fn(async (_commandId: string) => {}),
   drag: vi.fn(async (_x: number, _y: number) => {}),
   close: vi.fn(async (_toolsetId: string) => {})
@@ -30,11 +29,9 @@ const native = vi.hoisted(() => ({
 vi.mock("@tauri-apps/api/core", async original => ({
   ...await original<typeof import("@tauri-apps/api/core")>(),
   invoke: vi.fn(async (command: string, args?: Record<string, unknown>) => {
-    if (command !== "popup_canvas_context_menu") return undefined;
-    const call = args as unknown as PopupCall;
-    native.popups.push(call);
-    const chosen = call.items.find(item => item.kind === "item" && item.label === native.choose);
-    return chosen && chosen.kind === "item" ? chosen.id : null;
+    if (command !== "popup_toolbar_context_menu" && command !== "popup_canvas_context_menu") return undefined;
+    native.popups.push({ command, args });
+    return native.choose;
   })
 }));
 vi.mock("./window-manager", async importOriginal => ({
@@ -59,7 +56,7 @@ let root: Root | undefined;
 beforeEach(() => {
   vi.clearAllMocks();
   native.popups = [];
-  native.choose = undefined;
+  native.choose = null;
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -159,31 +156,59 @@ async function leftClick(target: Element) {
   await settle();
 }
 
-const labels = (call: PopupCall) => call.items.map(item => item.kind === "item" ? item.label : "—");
-const MAIN_MENU = ["Customize Toolbar…", "—", "Hide Toolbar"];
+/** The palette asks for its own toolbar's menu by id alone: no items, labels or position. */
+const toolbarMenuRequest = (toolsetId: string): PopupCall => ({ command: "popup_toolbar_context_menu", args: { toolsetId } });
+const MAIN_MENU = toolbarMenuRequest("core.main");
 
 describe("toolbar menu model", () => {
-  it("offers only registered commands: Customize for Main, the View ▸ Toolbars toggle as Hide", () => {
+  it("maps Rust's fixed choices to registered commands only: Customize for Main, the View ▸ Toolbars toggle as Hide", () => {
     const registered = new Set([
       ...allShellCommands(createPhase4Document("Toolbar menu")).map(command => command.id),
       ...getToolsetToggleActions(createDesktopToolsetRegistry()).map(command => command.id)
     ]);
-    expect(toolsetContextMenuItems("core.main")).toEqual([
-      { kind: "command", commandId: "view.customizeMainToolbar", label: "Customize Toolbar…", enabled: true },
-      { kind: "separator" },
-      { kind: "command", commandId: createToolsetToggleCommandId("core.main"), label: "Hide Toolbar", enabled: true }
-    ]);
+    expect(toolbarMenuChoiceCommandId("core.main", "customize")).toBe("view.customizeMainToolbar");
+    expect(toolbarMenuChoiceCommandId("core.main", "hide")).toBe(createToolsetToggleCommandId("core.main"));
     for (const toolset of createDesktopToolsetRegistry().listToolsets()) {
-      for (const item of toolsetContextMenuItems(toolset.id)) {
-        if (item.kind === "command") expect(registered, `${toolset.id}: ${item.commandId}`).toContain(item.commandId);
+      for (const choice of ["customize", "hide"]) {
+        const commandId = toolbarMenuChoiceCommandId(toolset.id, choice);
+        if (commandId) expect(registered, `${toolset.id}: ${commandId}`).toContain(commandId);
       }
     }
-    // The gallery customizes Main only; another toolbar gets Hide alone, for itself.
-    expect(toolsetContextMenuItems("core.structure")).toEqual([
-      { kind: "command", commandId: "view.toolset.toggle.core.structure", label: "Hide Toolbar", enabled: true }
-    ]);
+    // The gallery customizes Main only; another toolbar's Hide hides itself.
+    expect(toolbarMenuChoiceCommandId("core.structure", "customize")).toBeUndefined();
+    expect(toolbarMenuChoiceCommandId("core.structure", "hide")).toBe("view.toolset.toggle.core.structure");
     // Inherited object keys are not toolsets with a customize command.
-    expect(toolsetContextMenuItems("constructor")).toHaveLength(1);
+    expect(toolbarMenuChoiceCommandId("constructor", "customize")).toBeUndefined();
+    // Anything but the two fixed choices runs nothing.
+    for (const other of [null, undefined, "", "Hide Toolbar", "view.customizeMainToolbar", "canvas-context:toolbar:hide", { choice: "hide" }, ["hide"]]) {
+      expect(toolbarMenuChoiceCommandId("core.main", other), String(other)).toBeUndefined();
+    }
+  });
+
+  it("a plugin toolbar's request carries only its own toolset id, and only its own Hide can run", async () => {
+    const invoked: string[] = [];
+    const requests: unknown[][] = [];
+    const replies: unknown[] = [
+      "customize",
+      { kind: "item", id: "canvas-context:x", label: "Delete All Files" },
+      "canvas-context:toolbar:hide",
+      "view.toolset.toggle.core.main",
+      "hide"
+    ];
+    const uninstall = installToolsetContextMenu(window, {
+      platform: "windows",
+      toolsetId: () => "plugin.evil.tools",
+      onInvoke: commandId => invoked.push(commandId),
+      popup: async (...args: unknown[]) => { requests.push(args); return replies.shift(); }
+    });
+    try {
+      for (let index = 0; index < 5; index += 1) await rightClick(document.body, "windows");
+    } finally {
+      uninstall();
+    }
+    expect(requests).toEqual(Array.from({ length: 5 }, () => ["plugin.evil.tools"]));
+    // Customize is Main's alone, a spoofed item or id is not a choice: only its own Hide ran.
+    expect(invoked).toEqual(["view.toolset.toggle.plugin.evil.tools"]);
   });
 
   it("treats Control-click as a right-click on macOS only", () => {
@@ -208,8 +233,7 @@ describe.each(["macos", "windows", "linux"] as const)("floating toolbar right-cl
     const events = await rightClick(target, platform);
     window.removeEventListener(PALETTE_TOOLTIP_DISMISS_DOM_EVENT, tooltipDismissed);
 
-    expect(native.popups).toHaveLength(1);
-    expect(labels(native.popups[0])).toEqual(MAIN_MENU);
+    expect(native.popups).toEqual([MAIN_MENU]);
     // The press and the contextmenu are handled: no webview menu, no focus move, no range step.
     for (const event of events) expect(event.defaultPrevented, event.type).toBe(true);
     expect(native.command).not.toHaveBeenCalled();
@@ -223,7 +247,7 @@ describe.each(["macos", "windows", "linux"] as const)("floating toolbar right-cl
 
   it("runs Customize Toolbar… as the registered customize command for this toolbar", async () => {
     const { bond } = await renderPalette(platform);
-    native.choose = "Customize Toolbar…";
+    native.choose = "customize";
 
     await rightClick(bond, platform);
 
@@ -232,11 +256,11 @@ describe.each(["macos", "windows", "linux"] as const)("floating toolbar right-cl
 
   it("offers Hide Toolbar alone on another toolbar and hides that toolbar, not Main", async () => {
     const { gap } = await renderPalette(platform, "core.structure");
-    native.choose = "Hide Toolbar";
+    native.choose = "hide";
 
     await rightClick(gap, platform);
 
-    expect(labels(native.popups[0])).toEqual(["Hide Toolbar"]);
+    expect(native.popups).toEqual([toolbarMenuRequest("core.structure")]);
     expect(native.command).toHaveBeenCalledExactlyOnceWith("view.toolset.toggle.core.structure");
   });
 
@@ -272,7 +296,7 @@ describe.each(["macos", "windows", "linux"] as const)("floating toolbar right-cl
         for (const event of events) expect(event.defaultPrevented, event.type).toBe(true);
       }
 
-      expect(native.popups.map(labels)).toEqual([MAIN_MENU, MAIN_MENU]);
+      expect(native.popups).toEqual([MAIN_MENU, MAIN_MENU]);
       expect(native.command).not.toHaveBeenCalled();
       expect(native.drag).not.toHaveBeenCalled();
     });
