@@ -1,13 +1,20 @@
 import { describe, expect, it } from "vitest";
 import { type ChemDraftDocument, type MoleculeAtom, type MoleculeObject } from "@chemdraft/chem-core";
+import { nativeAtomLabelReading } from "@chemdraft/layout-engine";
+import { abbreviationBondedSpellings, bondedElementLabelMeaning } from "@chemdraft/template-library";
 import {
   applyNativeAtomElementTarget,
   applyNativeAtomLabelDraft,
+  chargedAtomRelabelRefusal,
+  chargedLabelOnChargeMarkRefusal,
   commitNativeAtomLabelTarget,
+  convertNativeTextObjectToAtom,
+  convertNativeTextObjectToAtomLabel,
   createPhase4Document,
   finishNativeAtomLabelEdit,
   insertNativeSingleBondMolecule,
-  insertNativeTemplateMolecule
+  insertNativeTemplateMolecule,
+  insertNativeTextObject
 } from "./documentWorkflow";
 
 // Relabelling an existing atom with typed text: an element symbol with a charge ("Zn2+", "N+")
@@ -133,5 +140,123 @@ describe("a label draft and its close carry the charge", () => {
     // The session's last written state still holds a charge an earlier draft key typed.
     const stale = withAtom(document, atom.id, { element: "SCN", labelLiteral: true, formalCharge: -1 });
     expect(atomIn(finishNativeAtomLabelEdit(stale, target, start), atom.id)).toMatchObject({ element: "SCN", formalCharge: 0 });
+  });
+});
+
+describe("a charged label the atom cannot hold is refused and changes nothing", () => {
+  /** Ethane whose first carbon's +2 all comes from charge marks (`markCharge`), as reconciliation records it. */
+  function markedEthane() {
+    const { document, atom, target } = ethane();
+    return { document: withAtom(document, atom.id, { formalCharge: 2, markCharge: 2 }), atom, target };
+  }
+
+  /** One unbonded carbon, made the way a finished "C" text box becomes an atom. */
+  function loneCarbon() {
+    const typed = insertNativeTextObject(createPhase4Document("Lone atom"), { x: 300, y: 300 }, "C");
+    const document = convertNativeTextObjectToAtom(typed, typed.selection.objectIds[0]!);
+    const object = molecule(document);
+    expect(object.atoms).toHaveLength(1);
+    expect(object.bonds).toHaveLength(0);
+    const atom = object.atoms[0]!;
+    return { document, atom, target: { objectId: object.id, kind: "atom" as const, atomId: atom.id, distanceToPointer: 0 } };
+  }
+
+  it.each(["N+", "N-", "Zn2+", "C+"])("refuses %s over an atom carrying a charge mark", label => {
+    const { document, atom, target } = markedEthane();
+    expect(chargedAtomRelabelRefusal(atomIn(document, atom.id), molecule(document), label)).toBe(chargedLabelOnChargeMarkRefusal);
+    // The label draft writes nothing, and the close refuses with the message, the document untouched.
+    expect(applyNativeAtomElementTarget(document, target, label, { literal: true })).toBe(document);
+    expect(applyNativeAtomLabelDraft(document, target, label, { element: "C", literal: false, formalCharge: 2 })).toBe(document);
+    const result = commitNativeAtomLabelTarget(document, target, label, { literal: true, replaceElement: true });
+    expect(result.refusal).toBe("Remove the charge mark before typing a charged label.");
+    expect(result.message).toBe(result.refusal);
+    expect(result.document).toBe(document);
+    expect(atomIn(result.document, atom.id)).toMatchObject({ element: "C", formalCharge: 2, markCharge: 2 });
+  });
+
+  it("still relabels a marked atom with an uncharged label, keeping its charge and mark", () => {
+    const { document, atom, target } = markedEthane();
+    const result = commitNativeAtomLabelTarget(document, target, "O", { literal: true, replaceElement: true });
+    expect(result.refusal).toBeUndefined();
+    expect(atomIn(result.document, atom.id)).toMatchObject({ element: "O", formalCharge: 2, markCharge: 2 });
+  });
+
+  it("keeps a charged text box on a marked atom as text, with the refusal", () => {
+    const { document, atom } = markedEthane();
+    const typed = insertNativeTextObject(document, atomIn(document, atom.id), "N+");
+    const result = convertNativeTextObjectToAtomLabel(typed, typed.selection.objectIds[0]!);
+    expect(result.disabledReason).toBe(chargedLabelOnChargeMarkRefusal);
+    expect(result.message).toBe(`Text kept: ${chargedLabelOnChargeMarkRefusal}`);
+    expect(result.document).toBe(typed);
+    expect(convertNativeTextObjectToAtom(typed, typed.selection.objectIds[0]!)).toBe(typed);
+  });
+
+  // Every element symbol a bonded typed label reads as something else, from the table itself.
+  const bondedSymbols = [...abbreviationBondedSpellings, "Ar"];
+  it("covers the table's bonded spellings", () => {
+    expect(abbreviationBondedSpellings).toEqual(expect.arrayContaining(["Ac", "Pr", "Ts"]));
+    for (const symbol of bondedSymbols) expect(bondedElementLabelMeaning(symbol)).toBeTruthy();
+  });
+
+  it.each(bondedSymbols.flatMap(symbol => [`${symbol}+`, `${symbol}3+`, `${symbol}-`]))(
+    "refuses %s on a bonded atom, naming the group it would read as", label => {
+      const { document, atom, target } = ethane();
+      const symbol = label.replace(/[0-9+-]+$/, "");
+      const expected = `${label} on a bonded atom reads as the ${bondedElementLabelMeaning(symbol)} group; draw the ion unbonded or set the charge separately.`;
+      expect(chargedAtomRelabelRefusal(atom, molecule(document), label)).toBe(expected);
+      expect(applyNativeAtomElementTarget(document, target, label, { literal: true })).toBe(document);
+      const result = commitNativeAtomLabelTarget(document, target, label, { literal: true, replaceElement: true });
+      expect(result.refusal).toBe(expected);
+      expect(result.document).toBe(document);
+      expect(atomIn(result.document, atom.id)).toEqual(atom);
+    }
+  );
+
+  it("names acetyl for Ac+ on a bonded atom", () => {
+    const { document, atom } = ethane();
+    expect(chargedAtomRelabelRefusal(atom, molecule(document), "Ac+"))
+      .toBe("Ac+ on a bonded atom reads as the acetyl group; draw the ion unbonded or set the charge separately.");
+  });
+
+  it("keeps a charged Ac text box on a bonded atom as text", () => {
+    const { document, atom } = ethane();
+    const typed = insertNativeTextObject(document, atom, "Ac+");
+    const result = convertNativeTextObjectToAtomLabel(typed, typed.selection.objectIds[0]!);
+    expect(result.disabledReason).toMatch(/^Ac\+ on a bonded atom reads as the acetyl group/);
+    expect(result.document).toBe(typed);
+  });
+
+  it("leaves an uncharged Ac on a bonded atom the acetyl abbreviation", () => {
+    const { document, atom, target } = ethane();
+    const result = commitNativeAtomLabelTarget(document, target, "Ac", { literal: true, replaceElement: true });
+    expect(result.refusal).toBeUndefined();
+    const relabeled = atomIn(result.document, atom.id);
+    expect(relabeled).toMatchObject({ element: "Ac", formalCharge: 0, labelLiteral: true });
+    expect(nativeAtomLabelReading(relabeled.element, { bonded: true, typed: true })).toMatchObject({
+      kind: "group", group: { kind: "abbreviation", label: "Ac", definition: { name: "acetyl" } }
+    });
+  });
+
+  it.each([["Ac+", "Ac", 1], ["Pr3+", "Pr", 3], ["Ar+", "Ar", 1]] as const)(
+    "relabels an unbonded atom typed %s as the element %s with charge %d", (label, element, charge) => {
+      const { document, atom, target } = loneCarbon();
+      expect(chargedAtomRelabelRefusal(atom, molecule(document), label)).toBeUndefined();
+      const result = commitNativeAtomLabelTarget(document, target, label, { literal: true, replaceElement: true });
+      expect(result.refusal).toBeUndefined();
+      expect(atomIn(result.document, atom.id)).toMatchObject({ element, formalCharge: charge });
+    }
+  );
+
+  it("turns a free Ac+ text box into an actinium atom with charge +1", () => {
+    const typed = insertNativeTextObject(createPhase4Document("Free ion"), { x: 300, y: 300 }, "Ac+");
+    const converted = convertNativeTextObjectToAtom(typed, typed.selection.objectIds[0]!);
+    expect(molecule(converted).atoms).toEqual([expect.objectContaining({ element: "Ac", formalCharge: 1 })]);
+  });
+
+  it("never refuses a label with no charge of its own", () => {
+    const { document, atom } = markedEthane();
+    for (const label of ["N", "O", "Ac", "Ts", "NH4+", "OMe", "Zn"]) {
+      expect(chargedAtomRelabelRefusal(atomIn(document, atom.id), molecule(document), label)).toBeUndefined();
+    }
   });
 });
