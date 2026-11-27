@@ -1025,7 +1025,7 @@ import { arrangementLayoutForCommand, arrangementGridAlignmentForCommand } from 
 import { KEYBINDING_SCHEME } from "./keybindingSettings";
 import { nativeMenuShortcutOverrides } from "./customKeyboardShortcuts";
 import { useShortcutPreference } from "./useShortcutPreference";
-import { takeShortcutSetNotice } from "./shortcutDefaultMigration";
+import { confirmShortcutSetNoticeShown, peekShortcutSetNotice } from "./shortcutDefaultMigration";
 import { aboutCommand, openAbout } from "./about/aboutCommand";
 import { documentWindowTitle } from "./appVersionLabel";
 import packageInfo from "../package.json";
@@ -1910,7 +1910,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.27.02.20-opus";
+const CURRENT_BUILD_STAMP = "11.27.02.50-opus";
 
 const NUMERIC_ENTRY_DURING_DRAG_STATUS = "Finish the current drag, then enter a value";
 
@@ -3775,10 +3775,16 @@ export function MainWindow({
   }, [shortcutOverrides, shortcutPlatform]);
   useEffect(() => {
     // Announce the one-time move to the single shortcut set (shortcutDefaultMigration.ts, run before
-    // this window mounted). takeShortcutSetNotice returns the message once per move, never again.
-    // No cleanup: a StrictMode re-run must not cancel the only delivery.
-    const notice = takeShortcutSetNotice();
-    if (notice) window.setTimeout(() => setStatus(notice), 0);
+    // this window mounted). It is recorded as shown only in the callback that puts it in the status
+    // line, so a launch that quits first shows it next time. The cleanup cancels a delivery that has
+    // not happened yet; a StrictMode re-run peeks again and schedules the one that does.
+    const notice = peekShortcutSetNotice();
+    if (!notice) return;
+    const timer = window.setTimeout(() => {
+      setStatus(notice);
+      confirmShortcutSetNoticeShown();
+    }, 0);
+    return () => window.clearTimeout(timer);
   // eslint-disable-next-line react-hooks/exhaustive-deps -- once per window, on mount
   }, []);
   const toolCommandSpecs = useMemo(

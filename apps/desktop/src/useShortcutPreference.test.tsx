@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 // A window's shortcut settings start from the webview cache and then take the native preferences
-// file's custom keys. When the move to the single set could not save a cache-only custom key to the
-// native file, that key must stay pending (and be saved later), not be dropped by the window's first
-// read of the native file; explicit edits and removals in Preferences still take effect.
+// file's custom keys, once that file names the single set. When the move to the single set could not
+// write the native file, both stores stay as they were: no window writes the native file in the
+// background, a cache-only custom key is neither dropped nor saved behind the user's back, and the
+// next launch makes the move again. Explicit edits and removals in Preferences always take effect.
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,25 +18,45 @@ const native = vi.hoisted(() => ({
   failWrite: false,
   failRead: false,
   writes: [] as unknown[],
+  /** When set, the next call waits for `release()`; a read answers with the file as it was when called. */
+  holdNext: false,
+  held: [] as (() => void)[],
   listeners: new Set<(settings: KeybindingSettings) => void>()
 }));
 vi.mock("./desktopPreferences", () => ({
   desktopPreferences: async (patch?: DesktopPreferences) => {
-    if (native.failRead) throw new Error("expected value at line 1 column 1");
-    if (patch) {
-      native.writes.push(JSON.parse(JSON.stringify(patch)));
-      if (native.failWrite) throw new Error("disk full");
-      native.preferences = {
-        ...native.preferences,
-        ...(patch.shortcutScheme ? { shortcutScheme: patch.shortcutScheme } : {}),
-        ...(patch.shortcutOverrides ? {
-          shortcutOverrides: { ...(native.preferences.shortcutOverrides as object | undefined), ...patch.shortcutOverrides }
-        } : {})
-      };
+    if (native.holdNext) {
+      native.holdNext = false;
+      const asCalled = JSON.parse(JSON.stringify(native.preferences)) as DesktopPreferences;
+      return new Promise<DesktopPreferences>((resolve, reject) => {
+        native.held.push(() => {
+          try {
+            resolve(patch ? apply(patch) : asCalled);
+          } catch (error) {
+            reject(error);
+          }
+        });
+      });
     }
-    return JSON.parse(JSON.stringify(native.preferences)) as DesktopPreferences;
+    return apply(patch);
   }
 }));
+/** One call to the native file, as lib.rs answers it. */
+function apply(patch?: DesktopPreferences): DesktopPreferences {
+  if (native.failRead) throw new Error("expected value at line 1 column 1");
+  if (patch) {
+    native.writes.push(JSON.parse(JSON.stringify(patch)));
+    if (native.failWrite) throw new Error("disk full");
+    native.preferences = {
+      ...native.preferences,
+      ...(patch.shortcutScheme ? { shortcutScheme: patch.shortcutScheme } : {}),
+      ...(patch.shortcutOverrides ? {
+        shortcutOverrides: { ...(native.preferences.shortcutOverrides as object | undefined), ...patch.shortcutOverrides }
+      } : {})
+    };
+  }
+  return JSON.parse(JSON.stringify(native.preferences)) as DesktopPreferences;
+}
 vi.mock("./window-manager", async original => ({
   ...await original<typeof import("./window-manager")>(),
   // Tauri's emit reaches every window, the sender included.
@@ -56,8 +77,12 @@ import { migrateShortcutDefault, resetShortcutDefaultMigrationForTests } from ".
 import { updateShortcutPreference, useShortcutPreference } from "./useShortcutPreference";
 
 const nativeKeys: ShortcutOverrides = { commands: { "document.save": ["Mod+F9"] } };
-/** A custom key only the webview cache holds. */
+/** The cache's custom keys: the native file's, and one only the cache holds. */
 const cacheOnly: ShortcutOverrides = { commands: { "document.save": ["Mod+F9"], "tool.eraser": ["F6"] } };
+/** The retired preset's custom key, carried into the set when the install moves. */
+const legacy: ShortcutOverrides = { commands: { "view.toggleCrosshairs": ["Mod+F8"] } };
+/** Everything the move combines from both stores. */
+const combined: ShortcutOverrides = { commands: { ...cacheOnly.commands, ...legacy.commands } };
 
 let storage: MemoryStorage;
 let roots: Root[] = [];
@@ -94,6 +119,19 @@ async function launch() {
   });
 }
 
+/** Let every held native call answer, in the order they were made. */
+async function release(): Promise<void> {
+  const held = native.held.splice(0);
+  await act(async () => { held.forEach(answer => answer()); });
+  await settle();
+}
+
+/** An install still on the retired preset, whose cache holds a custom key the native file lacks. */
+function retiredInstall(): void {
+  native.preferences = { shortcutScheme: "chemdraft", shortcutOverrides: { chemdraft: legacy, chemdraw: nativeKeys } };
+  storage.setItem(KEYBINDING_STORAGE_KEY, JSON.stringify({ scheme: "chemdraft", overrides: { chemdraw: cacheOnly } }));
+}
+
 const nativeSetKeys = () => (native.preferences.shortcutOverrides as Record<string, unknown> | undefined)?.chemdraw;
 const cachedSetKeys = () => loadKeybindingSettings().overrides?.chemdraw;
 
@@ -105,6 +143,8 @@ beforeEach(() => {
   native.failWrite = false;
   native.failRead = false;
   native.writes = [];
+  native.holdNext = false;
+  native.held = [];
   native.listeners.clear();
   latest = undefined;
   storage.setItem(KEYBINDING_STORAGE_KEY, JSON.stringify({ scheme: "chemdraw", overrides: { chemdraw: cacheOnly } }));
@@ -112,6 +152,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  native.held.splice(0).forEach(answer => answer());
   for (const root of roots) await act(async () => { root.unmount(); });
   roots = [];
   resetShortcutDefaultMigrationForTests();
@@ -119,80 +160,85 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-describe("a custom key the native file has not saved yet", () => {
-  it("is saved to the native file by the first window once it can write, and never dropped", async () => {
+describe("a launch whose native write fails", () => {
+  it("leaves both stores as they were, lets no window write, and the next launch saves the combined keys", async () => {
+    retiredInstall();
+    const before = { preferences: JSON.parse(JSON.stringify(native.preferences)) as unknown, cache: storage.getItem(KEYBINDING_STORAGE_KEY) };
     native.failWrite = true;
-    expect(await launch()).toEqual({ kind: "current" });
-    expect(nativeSetKeys()).toEqual(nativeKeys);
-    expect(cachedSetKeys()).toEqual(cacheOnly);
+    expect((await launch()).kind).toBe("migrated");
+    expect(native.preferences).toEqual(before.preferences);
+    expect(storage.getItem(KEYBINDING_STORAGE_KEY)).toBe(before.cache);
 
+    // Windows run on the cache's keys, the cache-only one included, and never write the native file.
+    const writes = native.writes.length;
+    await openWindow();
+    expect(latest?.overrides?.chemdraw).toEqual(cacheOnly);
     native.failWrite = false;
     await openWindow();
     expect(latest?.overrides?.chemdraw).toEqual(cacheOnly);
-    expect(cachedSetKeys()).toEqual(cacheOnly);
-    expect(nativeSetKeys()).toEqual(cacheOnly);
+    expect(native.writes.length).toBe(writes);
+    expect(native.preferences).toEqual(before.preferences);
+    expect(storage.getItem(KEYBINDING_STORAGE_KEY)).toBe(before.cache);
 
-    // Saved once: the next window reads the native file and writes nothing.
+    // The next launch can write: it makes the same move from the same stores, and nothing is lost.
+    expect((await launch()).kind).toBe("migrated");
+    expect(native.preferences.shortcutScheme).toBe("chemdraw");
+    expect(nativeSetKeys()).toEqual(combined);
+    expect(cachedSetKeys()).toEqual(combined);
     native.writes = [];
     await openWindow();
     expect(native.writes).toEqual([]);
-    expect(latest?.overrides?.chemdraw).toEqual(cacheOnly);
+    expect(latest?.overrides?.chemdraw).toEqual(combined);
   });
 
-  it("stays in the cache and in use while the native file still cannot be written", async () => {
-    native.failWrite = true;
-    await launch();
-    await openWindow();
-    expect(latest?.overrides?.chemdraw).toEqual(cacheOnly);
-    expect(cachedSetKeys()).toEqual(cacheOnly);
-    await openWindow();
-    expect(cachedSetKeys()).toEqual(cacheOnly);
-
-    // The next launch that can write saves it, and windows then read it back from the native file.
-    native.failWrite = false;
-    expect(await launch()).toEqual({ kind: "current" });
-    expect(nativeSetKeys()).toEqual(cacheOnly);
-    native.writes = [];
-    await openWindow();
-    expect(native.writes).toEqual([]);
-    expect(latest?.overrides?.chemdraw).toEqual(cacheOnly);
-  });
-
-  it("can still be removed in Preferences, and does not come back", async () => {
+  it("never brings back a key the user removed in Preferences meanwhile", async () => {
+    retiredInstall();
     native.failWrite = true;
     await launch();
     await openWindow();
     native.failWrite = false;
+    // The user clears every custom key the window shows: the edit is the set's whole map, now empty.
+    const seen = Object.keys(latest?.overrides?.chemdraw?.commands ?? {});
+    expect(seen.length).toBeGreaterThan(0);
+    await act(async () => { await updateShortcutPreference({}); });
+    expect(nativeSetKeys()).toEqual({});
+    expect(latest?.overrides?.chemdraw).toEqual({});
 
-    // The user removes the cache-only key: the edit carries the set's whole map without it.
-    await act(async () => { await updateShortcutPreference(nativeKeys); });
-    expect(nativeSetKeys()).toEqual(nativeKeys);
-    expect(cachedSetKeys()).toEqual(nativeKeys);
-    expect(latest?.overrides?.chemdraw).toEqual(nativeKeys);
-
+    // The next launch makes the move; none of the keys the user removed comes back.
+    expect((await launch()).kind).toBe("migrated");
+    for (const id of seen) {
+      expect((nativeSetKeys() as ShortcutOverrides | undefined)?.commands?.[id]).toBeUndefined();
+      expect(cachedSetKeys()?.commands?.[id]).toBeUndefined();
+    }
     await openWindow();
-    expect(latest?.overrides?.chemdraw).toEqual(nativeKeys);
-    expect(cachedSetKeys()).toEqual(nativeKeys);
-    expect(await launch()).toEqual({ kind: "current" });
-    expect(nativeSetKeys()).toEqual(nativeKeys);
-    expect(cachedSetKeys()).toEqual(nativeKeys);
+    for (const id of seen) expect(latest?.overrides?.chemdraw?.commands?.[id]).toBeUndefined();
   });
 
-  it("lets an edit in Preferences win over the pending keys", async () => {
+  it("keeps an edit in Preferences when a window's earlier call to the native file answers after it", async () => {
+    retiredInstall();
     native.failWrite = true;
     await launch();
     native.failWrite = false;
-    const edited: ShortcutOverrides = { commands: { "document.save": ["Mod+F10"], "tool.eraser": ["F6"] } };
-    await updateShortcutPreference(edited);
+
+    // A window starts its first call to the native file, which answers only after the edit below.
+    native.holdNext = true;
+    await openWindow();
+    expect(native.held).toHaveLength(1);
+    const edited: ShortcutOverrides = { commands: { "document.save": ["Mod+F10"] } };
+    await act(async () => { await updateShortcutPreference(edited); });
     expect(nativeSetKeys()).toEqual(edited);
+    await release();
+
+    expect(nativeSetKeys()).toEqual(edited);
+    expect(cachedSetKeys()).toEqual(edited);
+    expect(latest?.overrides?.chemdraw).toEqual(edited);
     await openWindow();
     expect(latest?.overrides?.chemdraw).toEqual(edited);
-    expect(nativeSetKeys()).toEqual(edited);
   });
 });
 
 describe("a window's first read of the native file", () => {
-  it("takes the native file's custom keys when nothing is pending", async () => {
+  it("takes the native file's custom keys once it names the set", async () => {
     // Both stores agreed at launch; another build later changed the native file.
     storage.setItem(KEYBINDING_STORAGE_KEY, JSON.stringify({ scheme: "chemdraw", overrides: { chemdraw: nativeKeys } }));
     await launch();
@@ -202,5 +248,19 @@ describe("a window's first read of the native file", () => {
     expect(latest?.overrides?.chemdraw).toEqual(changed);
     expect(cachedSetKeys()).toEqual(changed);
     expect(native.writes).toEqual([]);
+  });
+
+  it("never replaces an edit that reached the window first, even with the older map", async () => {
+    storage.setItem(KEYBINDING_STORAGE_KEY, JSON.stringify({ scheme: "chemdraw", overrides: { chemdraw: nativeKeys } }));
+    await launch();
+    native.holdNext = true;
+    await openWindow();
+    const edited: ShortcutOverrides = { commands: { "document.save": ["Mod+F10"] } };
+    await act(async () => { await updateShortcutPreference(edited); });
+    // The read answers with the native file as it was before the edit.
+    await release();
+    expect(latest?.overrides?.chemdraw).toEqual(edited);
+    expect(cachedSetKeys()).toEqual(edited);
+    expect(nativeSetKeys()).toEqual(edited);
   });
 });

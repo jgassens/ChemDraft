@@ -13,18 +13,24 @@
  *     existed before 1.2.3, when that preset was the unnamed default: the install moves. Its own
  *     custom keys for the retired preset (`overrides.chemdraft`) are carried into the set when no other
  *     command already uses the key (customKeyboardShortcuts.ts `mergeLegacyShortcutOverrides`); the
- *     others are dropped. A one-time status message tells the user (`takeShortcutSetNotice`). It is
- *     pending in the cache until the status line shows it, so a launch that quits first still gets it;
+ *     others are dropped. A one-time status message tells the user (`peekShortcutSetNotice`). It is
+ *     pending in the cache until the status line has shown it (`confirmShortcutSetNoticeShown`), so a
+ *     launch that quits first still gets it;
  *   - a fresh install records the set and sees no message.
  *
  * On every branch the set's custom keys are taken from both stores entry by entry, never as one
  * store's whole map: the native file's entry wins for a command, the cache's other entries are kept
  * unless they collide with a key already in use, and an invalid entry in either store is dropped
  * alone. Where the native file lacks one of the combined keys it is written there too, so neither
- * store is ever overwritten with a map that lost a valid customization. When that write fails, the
- * cache is marked as holding keys the native file lacks (keybindingSettings.ts
- * `UNSAVED_SHORTCUTS_STORAGE_KEY`), so a window's first read of the native file saves them there
- * rather than replacing them with the file's older copy (useShortcutPreference.ts).
+ * store is ever overwritten with a map that lost a valid customization.
+ *
+ * The cache is written only after the native file has taken the combined keys. When that write fails,
+ * neither store is touched and the failure is logged: on every branch that moves, the native file still
+ * does not name the set, so the move is not recorded as done, and the next launch combines the same two
+ * stores again and loses nothing. Meanwhile a window keeps the cache's keys rather than taking the
+ * native file's (useShortcutPreference.ts), since only a native file that names the set is known to hold
+ * every key the cache does. Nothing writes the native file in the background: a window's own reads
+ * never write, so no stale map can land after an edit in Preferences.
  *
  * The set's id in the native file is the "done" marker (preferences.json has no room for a separate
  * flag: lib.rs parses it with deny_unknown_fields), so every later launch takes the first branch.
@@ -49,7 +55,6 @@ import {
   KEYBINDING_SCHEME,
   KEYBINDING_STORAGE_KEY,
   LEGACY_KEYBINDING_SCHEME,
-  setUnsavedShortcuts,
   type KeybindingSettings,
   type StoredKeybindingScheme,
   type StoredShortcutOverrides,
@@ -66,8 +71,9 @@ export const PENDING_FRESH_INSTALL_KEY = "chemdraft.shortcutDefault.pendingFresh
 export const SHORTCUT_SET_NOTICE_SHOWN_KEY = "chemdraft.keybindings.singleSetNoticeShown";
 
 /**
- * Set when the move is recorded and cleared when the status line shows its message, so a launch that
- * quits in between still shows it on the next one. Never shown while SHORTCUT_SET_NOTICE_SHOWN_KEY is set.
+ * Set when the move is recorded and cleared once the status line has shown its message, so a launch
+ * that quits in between still shows it on the next one. Never shown while SHORTCUT_SET_NOTICE_SHOWN_KEY
+ * is set.
  */
 export const SHORTCUT_SET_NOTICE_PENDING_KEY = "chemdraft.keybindings.singleSetNoticePending";
 
@@ -94,6 +100,8 @@ export type ShortcutDefaultMigrationOutcome =
 
 /** This launch's pending message, for a webview whose cache cannot record it. */
 let noticePending = false;
+/** Set once this process has shown the message, so it is never shown again even if the cache cannot record it. */
+let noticeShown = false;
 
 export async function migrateShortcutDefault(host: ShortcutDefaultMigrationHost): Promise<ShortcutDefaultMigrationOutcome> {
   let outcome: ShortcutDefaultMigrationOutcome;
@@ -120,34 +128,45 @@ export const SHORTCUT_SET_NOTICE =
   "Keyboard shortcuts now use one standard set. You can change any key in Preferences ▸ Keyboard.";
 
 /**
- * The move's status message, exactly once, for the status line to show now: the first call after a
- * move (on the launch that moved the install, or on a later one if that launch quit before showing
- * it) returns it and records it as shown; every other call returns undefined.
+ * The move's status message, if the status line still has to show it: after a move, on the launch that
+ * moved the install or on a later one if that launch quit before showing it. Records nothing, so a
+ * launch that quits before showing it shows it next time; call `confirmShortcutSetNoticeShown` from the
+ * same callback that puts it in the status line. Undefined once that has been called.
  */
-export function takeShortcutSetNotice(
+export function peekShortcutSetNotice(
   storage: ShortcutDefaultMigrationHost["storage"] = defaultStorage()
 ): string | undefined {
+  if (noticeShown) return undefined;
   const pending = noticePending || readFlag(storage, SHORTCUT_SET_NOTICE_PENDING_KEY);
+  return pending && !noticeAlreadyShown(storage) ? SHORTCUT_SET_NOTICE : undefined;
+}
+
+/**
+ * Record that the status line has shown the message `peekShortcutSetNotice` returned, so no later call,
+ * on this launch or any other, returns it again.
+ */
+export function confirmShortcutSetNoticeShown(
+  storage: ShortcutDefaultMigrationHost["storage"] = defaultStorage()
+): void {
+  noticeShown = true;
   noticePending = false;
-  if (!pending) return undefined;
   // Shown is recorded before pending is cleared, so a marker left behind can never show it twice.
-  const shown = noticeAlreadyShown(storage);
   try {
-    if (!shown) storage?.setItem(SHORTCUT_SET_NOTICE_SHOWN_KEY, "1");
+    if (!noticeAlreadyShown(storage)) storage?.setItem(SHORTCUT_SET_NOTICE_SHOWN_KEY, "1");
   } catch {
-    // Best-effort: the pending marker is cleared below, and the native file records the move.
+    // Best-effort: the pending marker is cleared below, and this process remembers it was shown.
   }
   try {
-    storage?.removeItem(SHORTCUT_SET_NOTICE_PENDING_KEY);
+    if (readFlag(storage, SHORTCUT_SET_NOTICE_PENDING_KEY)) storage?.removeItem(SHORTCUT_SET_NOTICE_PENDING_KEY);
   } catch {
     // The shown marker, when it could be written, keeps a leftover pending marker silent.
   }
-  return shown ? undefined : SHORTCUT_SET_NOTICE;
 }
 
 /** Tests only: forget a pending notice and the once-per-process run. */
 export function resetShortcutDefaultMigrationForTests(): void {
   noticePending = false;
+  noticeShown = false;
   started = undefined;
 }
 
@@ -209,15 +228,14 @@ async function resolveShortcutSet(host: ShortcutDefaultMigrationHost): Promise<S
 }
 
 /**
- * Write the patch (if any) to the native file and the combined custom keys to the cache. When the
- * native file could not take the custom keys but the cache did, the cache is marked as holding keys the
- * native file lacks (keybindingSettings.ts `UNSAVED_SHORTCUTS_STORAGE_KEY`), so a window's first read of
- * the native file saves them there instead of dropping them; otherwise the mark is cleared.
+ * Write the patch (if any) to the native file, then the combined custom keys to the cache. The cache is
+ * written only once the native file has taken the patch: when that write fails, both stores are left
+ * exactly as they were, so the cache never holds keys the native file lacks because of this move, and
+ * the next launch combines the same stores again.
  */
 async function recordSet(host: ShortcutDefaultMigrationHost, patch: DesktopPreferences, overrides: StoredShortcutOverrides): Promise<void> {
-  const nativeSaved = Object.keys(patch).length === 0 || await writeNative(host, patch);
-  const cached = mirrorCache(host.storage, overrides);
-  if (host.native && host.storage) setUnsavedShortcuts(!nativeSaved && patch.shortcutOverrides !== undefined && cached, host.storage);
+  if (Object.keys(patch).length > 0 && !await writeNative(host, patch)) return;
+  mirrorCache(host.storage, overrides);
 }
 
 /**
@@ -323,8 +341,8 @@ async function writeNative(host: ShortcutDefaultMigrationHost, patch: DesktopPre
     await host.native.writePreferences(patch);
     return true;
   } catch (error) {
-    // The cache still records the move, and the next launch copies it to the native file.
-    console.error("Could not save the shortcut set", error);
+    // Neither store records the move, so the next launch makes it again from the same stores.
+    console.error("Could not save the shortcut set; it will be saved on the next launch", error);
     return false;
   }
 }
@@ -358,20 +376,14 @@ function readCache(storage: ShortcutDefaultMigrationHost["storage"]): {
   }
 }
 
-/**
- * Write the single set and its custom keys into the webview cache. Leaves an identical cache untouched.
- * Whether the cache now holds them.
- */
-function mirrorCache(storage: ShortcutDefaultMigrationHost["storage"], overrides: StoredShortcutOverrides | undefined): boolean {
+/** Write the single set and its custom keys into the webview cache. Leaves an identical cache untouched. */
+function mirrorCache(storage: ShortcutDefaultMigrationHost["storage"], overrides: StoredShortcutOverrides | undefined): void {
   const settings: KeybindingSettings = { scheme: KEYBINDING_SCHEME, ...(overrides && Object.keys(overrides).length ? { overrides } : {}) };
   try {
-    if (!storage) return false;
     const value = JSON.stringify(settings);
-    if (storage.getItem(KEYBINDING_STORAGE_KEY) !== value) storage.setItem(KEYBINDING_STORAGE_KEY, value);
-    return true;
+    if (storage?.getItem(KEYBINDING_STORAGE_KEY) !== value) storage?.setItem(KEYBINDING_STORAGE_KEY, value);
   } catch {
     // Best-effort, as in saveKeybindingSettings: every reader resolves the single set anyway.
-    return false;
   }
 }
 
