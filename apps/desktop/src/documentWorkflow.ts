@@ -4743,10 +4743,25 @@ export function selectedTextToAtomLabelResult(document: ChemDraftDocument): Text
 }
 
 /**
- * Whether a text box's whole-object formatting is what a new box in this document gets: the
- * document's text defaults (`createNativeTextObject` with no style), compared property by property
- * after resolution, so a box that omits a property matches the default it falls back to. Sizing
- * mode is layout, not formatting, and is not compared.
+ * The whole-object text properties that change how the characters themselves look. Only these keep
+ * a typed element symbol as text; layout properties (alignment, line height, paragraph and letter
+ * spacing, box sizing mode, width, wrapping, rotation) say nothing about the glyphs and are ignored.
+ */
+const nativeTextCharacterAppearanceKeys = [
+  "fontFamily",
+  "fontSizePx",
+  "color",
+  "fontWeight",
+  "fontStyle",
+  "textDecoration"
+] as const;
+
+/**
+ * Whether a text box's characters look the way a new box's do in this document: the document's
+ * text defaults (`createNativeTextObject` with no style), compared on the character-appearance
+ * properties (`nativeTextCharacterAppearanceKeys`) after resolution, so a box that omits a
+ * property matches the default it falls back to. Layout (alignment, spacing, sizing mode) is not
+ * formatting here and is not compared, so a right-aligned box still reads as plain.
  */
 function nativeTextObjectHasDefaultStyle(
   style: Record<string, unknown> | undefined,
@@ -4757,7 +4772,7 @@ function nativeTextObjectHasDefaultStyle(
     (document.styles.drawing !== undefined || document.styles.text !== undefined)
     ? documentDrawingDefaults(document).textStyle : {});
   const resolved = textStyleToObjectStyle(nativeTextStyleFromObjectStyle(style));
-  return Object.keys(defaults).every(key => Object.is(resolved[key], defaults[key]));
+  return nativeTextCharacterAppearanceKeys.every(key => Object.is(resolved[key], defaults[key]));
 }
 
 /**
@@ -4768,7 +4783,8 @@ function nativeTextObjectHasDefaultStyle(
  * is omitted), no run styling, the symbol on the baseline, and the charge on the baseline or
  * superscript, so "Zn" with a superscript "2+" reads as Zn2+. Anything else stays text: words,
  * formulas ("H2O"), abbreviations, several lines, an unknown symbol ("Xx"), subscripts, styled runs,
- * or a box formatted as a whole (bold, a color, another font or size).
+ * or a box whose characters are formatted as a whole (bold, italic, underline, a color, another font
+ * or size). Layout alone (a right-aligned or fixed-width box) does not count as formatting.
  */
 export function nativeTextObjectElementWithCharge(
   object: { text: string; spans?: readonly TextSpan[]; style?: Record<string, unknown> },

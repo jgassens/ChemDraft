@@ -224,6 +224,41 @@ describe("typed element symbols in a box formatted as a whole", () => {
     expect(nativeTextObjectElementWithCharge(object, createPhase4Document("App defaults"))).toBeUndefined();
   });
 
+  it.each([
+    ["right-aligned", { textAlign: "right" }],
+    ["center-aligned", { textAlign: "center" }],
+    ["fixed-width", { textBoxSizingMode: "fixed-width" }],
+    ["line-spaced", { lineHeight: 2, paragraphSpacingPx: 8 }],
+    ["letter-spaced", { letterSpacingPx: 2 }]
+  ] as const)("converts a %s 'Mg' box: layout is not formatting", (_label, style) => {
+    const base = insertNativeTextObject(createPhase4Document("Layout only"), { x: 300, y: 300 }, "Mg");
+    const id = base.selection.objectIds[0]!;
+    // Sizing mode is not a text style, so it is set on the stored object directly.
+    const document = "textBoxSizingMode" in style
+      ? { ...base, pages: base.pages.map(page => ({ ...page, objects: page.objects.map(candidate =>
+        candidate.id === id ? { ...candidate, style: { ...candidate.style, ...style } } : candidate) })) } as ChemDraftDocument
+      : updateNativeTextObjectStyle(base, id, style);
+    const object = document.pages[0].objects.find(candidate => candidate.id === id)!;
+    if (object.type !== "text") throw new Error("Expected text");
+    for (const [key, value] of Object.entries(style)) expect(object.style[key]).toBe(value);
+    expect(nativeTextObjectElementWithCharge(object, document)).toEqual({ element: "Mg", formalCharge: 0 });
+    expect(canAutoConvertNativeTextObjectToAtom(document, id)).toBe(true);
+    expect(onlyAtom(convertNativeTextObjectToAtom(document, id)).atom).toMatchObject({ element: "Mg", formalCharge: 0 });
+  });
+
+  it("keeps a bold 'Mg' box as text, and a bold right-aligned one too", () => {
+    const base = insertNativeTextObject(createPhase4Document("Bold Mg"), { x: 300, y: 300 }, "Mg");
+    const id = base.selection.objectIds[0]!;
+    for (const style of [{ fontWeight: 700 }, { fontWeight: 700, textAlign: "right" }] as const) {
+      const document = updateNativeTextObjectStyle(base, id, style);
+      const object = document.pages[0].objects.find(candidate => candidate.id === id)!;
+      if (object.type !== "text") throw new Error("Expected text");
+      expect(nativeTextObjectElementWithCharge(object, document)).toBeUndefined();
+      expect(canAutoConvertNativeTextObjectToAtom(document, id)).toBe(false);
+      expect(convertNativeTextObjectToAtom(document, id)).toBe(document);
+    }
+  });
+
   it("treats a box without stored formatting as default", () => {
     expect(nativeTextObjectElementWithCharge({ text: "Na+", spans: [], style: {} })).toEqual({ element: "Na", formalCharge: 1 });
   });
