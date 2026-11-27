@@ -1107,9 +1107,9 @@ struct ToolbarsMenuModel(std::sync::Mutex<(Vec<ToolbarMenuEntry>, ViewMenuState)
 #[derive(Default)]
 struct NativeMenuNeedsRebuild(AtomicBool);
 
-/// Which keyboard-shortcut scheme the app runs under (mirrors the webview's persisted setting; JS
-/// pushes it on startup and on change via `set_keybinding_scheme`). Read at menu-build time so the
-/// few native accelerators that differ between the schemes stay in step with the webview registry.
+/// ChemDraft's one built-in keyboard-shortcut set (owner decision, 2026-11-26). Its id, "chemdraw",
+/// is a storage and protocol id only and is never shown. The native menu's default accelerators come
+/// from it; the user's custom keys arrive from the webview as `MenuAcceleratorOverrides`.
 #[derive(
     Clone,
     Copy,
@@ -1124,15 +1124,9 @@ struct NativeMenuNeedsRebuild(AtomicBool);
 )]
 #[serde(rename_all = "lowercase")]
 enum KeybindingScheme {
-    ChemDraft,
-    /// The industry-standard scheme, the default for new installs since 1.2.3. The native menu is
-    /// built with it until the document window pushes the stored scheme (`set_keybinding_scheme`).
     #[default]
     ChemDraw,
 }
-
-#[derive(Default)]
-struct KeybindingSchemeState(std::sync::Mutex<KeybindingScheme>);
 
 type MenuAccelerators = std::collections::BTreeMap<String, Option<String>>;
 
@@ -1150,12 +1144,6 @@ fn native_menu_shortcut<R: Runtime>(
 fn custom_menu_shortcut<R: Runtime>(app: &tauri::AppHandle<R>, id: &str) -> Option<Option<String>> {
     app.try_state::<MenuAcceleratorOverrides>()
         .and_then(|state| state.0.lock().unwrap().get(id).cloned())
-}
-
-fn current_keybinding_scheme<R: Runtime>(app: &tauri::AppHandle<R>) -> KeybindingScheme {
-    app.try_state::<KeybindingSchemeState>()
-        .and_then(|state| state.0.lock().ok().map(|guard| *guard))
-        .unwrap_or_default()
 }
 
 #[derive(Clone, Copy, Debug, serde::Serialize)]
@@ -1471,7 +1459,6 @@ pub fn run() {
         .manage(PluginNativeMenuItems::default())
         .manage(ToolbarsMenuModel::default())
         .manage(NativeMenuNeedsRebuild::default())
-        .manage(KeybindingSchemeState::default())
         .manage(MenuAcceleratorOverrides::default())
         // Take over the app's OWN `tauri://` origin so one handler serves both the document and any
         // staged plugin package (ADR-0029 §6 as amended; M36). This *replaces* Tauri's built-in
@@ -4719,7 +4706,7 @@ fn set_toolbars_menu(
                     &entries,
                     view_state,
                     &current_plugin_menu_items(&app),
-                    current_keybinding_scheme(&app),
+                    KeybindingScheme::ChemDraw,
                 )
             },
         )?;
@@ -10437,7 +10424,7 @@ fn sync_plugin_menu_items(
             |previous, next| update_installed_plugin_menu(&app, previous, next),
             |next| {
                 let (entries, view) = current_toolbars_menu_model(&app);
-                reinstall_app_menu(&app, &entries, view, next, current_keybinding_scheme(&app))
+                reinstall_app_menu(&app, &entries, view, next, KeybindingScheme::ChemDraw)
             },
         )
     })?
@@ -10647,7 +10634,6 @@ fn classify_toolbars_menu_update(
 impl KeybindingScheme {
     fn export(self) -> &'static str {
         match self {
-            Self::ChemDraft => "CmdOrCtrl+Shift+E",
             Self::ChemDraw if cfg!(target_os = "macos") => "Ctrl+Command+E",
             Self::ChemDraw => "CmdOrCtrl+E",
         }
@@ -10655,27 +10641,34 @@ impl KeybindingScheme {
 
     fn rulers(self) -> &'static str {
         match self {
-            Self::ChemDraft => "CmdOrCtrl+R",
             Self::ChemDraw => "CmdOrCtrl+;",
         }
     }
 
     fn crosshairs(self) -> &'static str {
         match self {
-            Self::ChemDraft => "CmdOrCtrl+Shift+R",
             Self::ChemDraw => "Alt+CmdOrCtrl+X",
         }
     }
 }
 
+/// A shortcut-set id exactly as preferences.json stores it. The native side has one set
+/// (`KeybindingScheme`) and never reads this: the menu always runs on that set. The id is kept
+/// verbatim, whatever an older version wrote, because the webview's one-time move to the single set
+/// (`shortcutDefaultMigration.ts`) reads it, and the custom keys an older version stored under it, to
+/// map the install onto the single set. So an old value still loads and never fails startup.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize, serde::Serialize)]
+#[serde(transparent)]
+struct StoredShortcutSetId(String);
+
 #[derive(Default, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DesktopPreferences {
     #[serde(skip_serializing_if = "Option::is_none")]
-    shortcut_scheme: Option<KeybindingScheme>,
+    shortcut_scheme: Option<StoredShortcutSetId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     shortcut_overrides:
-        Option<std::collections::BTreeMap<KeybindingScheme, ShortcutScopeOverrides>>,
+        Option<std::collections::BTreeMap<StoredShortcutSetId, ShortcutScopeOverrides>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     guided_tour_seen: Option<bool>,
 }
@@ -10693,7 +10686,9 @@ struct ShortcutScopeOverrides {
 
 impl DesktopPreferences {
     fn apply_patch(&mut self, patch: Self) {
-        self.shortcut_scheme = patch.shortcut_scheme.or(self.shortcut_scheme);
+        if patch.shortcut_scheme.is_some() {
+            self.shortcut_scheme = patch.shortcut_scheme;
+        }
         if let Some(overrides) = patch.shortcut_overrides {
             self.shortcut_overrides
                 .get_or_insert_with(Default::default)
@@ -10769,13 +10764,12 @@ fn set_keybinding_scheme(
     if window.label() != MAIN_WINDOW_LABEL {
         return Err("Only the document window can update menu shortcuts.".into());
     }
+    // There is one set; the webview names it, and nothing else is accepted.
     let parsed = match scheme.as_deref() {
-        Some("chemdraft") => KeybindingScheme::ChemDraft,
         Some("chemdraw") => KeybindingScheme::ChemDraw,
         _ => return Err("Unknown keybinding scheme.".into()),
     };
     run_on_main_thread_blocking(&app.clone(), move || {
-        let changed = current_keybinding_scheme(&app) != parsed;
         let overrides = app.state::<MenuAcceleratorOverrides>();
         let old_accelerators = {
             let mut live = overrides.0.lock().unwrap();
@@ -10783,33 +10777,16 @@ fn set_keybinding_scheme(
                 .filter(|next| *live != *next)
                 .map(|next| std::mem::replace(&mut *live, next))
         };
-        let update = if old_accelerators.is_some() || (changed && cfg!(windows)) {
+        // The set never changes, so only new custom keys change the menu.
+        let update = if old_accelerators.is_some() {
             MenuUpdate::Rebuild
-        } else if changed {
-            MenuUpdate::Properties
         } else {
             MenuUpdate::Unchanged
         };
         let result = apply_menu_update(
             &app.state::<NativeMenuNeedsRebuild>().0,
             update,
-            || {
-                let menu = installed_app_menu(&app)?;
-                for (id, default) in [
-                    ("export.open", parsed.export()),
-                    ("view.toggleRulers", parsed.rulers()),
-                    ("view.toggleCrosshairs", parsed.crosshairs()),
-                ] {
-                    let accelerator = native_menu_shortcut(&app, id, default);
-                    match required_menu_item(&menu, id)? {
-                        MenuItemKind::MenuItem(item) => item.set_accelerator(accelerator),
-                        MenuItemKind::Check(item) => item.set_accelerator(accelerator),
-                        _ => return Err(format!("Expected an accelerator menu item for {id}")),
-                    }
-                    .map_err(|e| e.to_string())?;
-                }
-                Ok(())
-            },
+            || Ok(()),
             || {
                 let (entries, view) = current_toolbars_menu_model(&app);
                 reinstall_app_menu(
@@ -10827,7 +10804,6 @@ fn set_keybinding_scheme(
             }
             return Err(error);
         }
-        *app.state::<KeybindingSchemeState>().0.lock().unwrap() = parsed;
         Ok(())
     })?
 }
@@ -10954,7 +10930,7 @@ fn create_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<
         &[],
         ViewMenuState::default(),
         &plugin_items,
-        current_keybinding_scheme(app),
+        KeybindingScheme::ChemDraw,
     )
 }
 
@@ -14215,15 +14191,47 @@ mod tests {
     use super::*;
 
     #[test]
-    fn keybinding_scheme_defaults_to_the_industry_standard_scheme() {
+    fn the_native_menu_has_one_shortcut_set() {
         assert_eq!(KeybindingScheme::default(), KeybindingScheme::ChemDraw);
-        let state = KeybindingSchemeState::default();
-        assert_eq!(*state.0.lock().unwrap(), KeybindingScheme::ChemDraw);
-        assert_eq!(KeybindingScheme::default().rulers(), "CmdOrCtrl+;");
-        // An explicit scheme in the preferences file still wins, and none stored stays None.
-        let stored: DesktopPreferences =
-            serde_json::from_value(serde_json::json!({ "shortcutScheme": "chemdraft" })).unwrap();
-        assert_eq!(stored.shortcut_scheme, Some(KeybindingScheme::ChemDraft));
+        assert_eq!(KeybindingScheme::ChemDraw.rulers(), "CmdOrCtrl+;");
+        assert_eq!(KeybindingScheme::ChemDraw.crosshairs(), "Alt+CmdOrCtrl+X");
+        #[cfg(target_os = "macos")]
+        assert_eq!(KeybindingScheme::ChemDraw.export(), "Ctrl+Command+E");
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(KeybindingScheme::ChemDraw.export(), "CmdOrCtrl+E");
+        // The set's id is the only one the webview's menu push and the tour protocol accept.
+        assert_eq!(
+            serde_json::to_value(KeybindingScheme::ChemDraw).unwrap(),
+            serde_json::json!("chemdraw")
+        );
+        assert!(
+            serde_json::from_value::<KeybindingScheme>(serde_json::json!("chemdraft")).is_err()
+        );
+    }
+
+    #[test]
+    fn desktop_preferences_load_any_stored_shortcut_set_id_unchanged() {
+        // A retired preset's id, an unknown id and the set's own id all load, so an old
+        // preferences.json never fails startup, and the webview's one-time move still sees the old
+        // id and the custom keys stored under it.
+        for id in ["chemdraft", "chemdraw", "vim"] {
+            let stored: DesktopPreferences = serde_json::from_value(serde_json::json!({
+                "shortcutScheme": id,
+                "shortcutOverrides": { id: { "commands": { "document.save": ["Mod+F9"] } } }
+            }))
+            .unwrap();
+            assert_eq!(
+                stored.shortcut_scheme,
+                Some(StoredShortcutSetId(id.to_owned()))
+            );
+            assert_eq!(
+                serde_json::to_value(&stored).unwrap(),
+                serde_json::json!({
+                    "shortcutScheme": id,
+                    "shortcutOverrides": { id: { "commands": { "document.save": ["Mod+F9"] } } }
+                })
+            );
+        }
         let empty: DesktopPreferences = serde_json::from_value(serde_json::json!({})).unwrap();
         assert_eq!(empty.shortcut_scheme, None);
     }

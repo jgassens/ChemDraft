@@ -6,7 +6,6 @@ import { createPhase4Document } from "./documentWorkflow";
 import { withStandaloneDrawingToolCommands } from "./drawingTools";
 import { capturedShortcut, keyboardShortcutActions, nativeMenuShortcutOverrides } from "./customKeyboardShortcuts";
 import { applyKeybindingSchemeToCommands, createHoverShortcutTables } from "./keybindingScheme";
-import { DEFAULT_KEYBINDING_SETTINGS, LEGACY_DEFAULT_KEYBINDING_SCHEME } from "./keybindingSettings";
 import {
   createDesktopShortcutRegistry,
   createMainWindowShortcutCommands,
@@ -19,24 +18,17 @@ describe("document window shortcuts", () => {
   // Every accelerator the menu advertises must reach its command through the document window's own
   // registry. On macOS an unclaimed key still reaches the native menu's accelerator, so a gap here was
   // invisible; WebView2 on Windows never forwards it, so the same gap is a dead shortcut there.
-  it.each([
-    ["windows", "chemdraft"],
-    ["windows", "chemdraw"],
-    ["macos", "chemdraft"],
-    ["macos", "chemdraw"]
-  ] as const)("binds every menu accelerator to its command (%s, %s scheme)", (platform, scheme) => {
+  it.each(["windows", "macos"] as const)("binds every menu accelerator to its command (%s)", platform => {
     const document = createPhase4Document("Shortcuts");
     const toolCommandSpecs = applyKeybindingSchemeToCommands(
-      withStandaloneDrawingToolCommands(getToolsetCommandSpecs(desktopToolsetRegistry)),
-      scheme
+      withStandaloneDrawingToolCommands(getToolsetCommandSpecs(desktopToolsetRegistry))
     );
     const commands = createMainWindowShortcutCommands(
       {
         quickActions: createQuickActions(document, undefined, { canUndo: true, canRedo: true }),
         layerActions: createLayerActions(document),
         toolCommandSpecs
-      },
-      scheme
+      }
     );
     // Enabled-ness is state, not binding: Group is disabled until two objects are selected, and the
     // question here is whether its chord would reach it at all.
@@ -52,8 +44,7 @@ describe("document window shortcuts", () => {
       hasSelection: true,
       hasSelectedMolecule: true,
       toolbars: [],
-      platform,
-      keybindingScheme: scheme
+      platform
     });
 
     const accelerated = flattenAppMenuCommands(menu).filter((item) => item.accelerator);
@@ -75,30 +66,53 @@ describe("document window shortcuts", () => {
   });
 });
 
-describe.each(["windows", "macos"] as const)("default scheme for new installs (%s)", platform => {
-  // The default only reaches new installs: shortcutDefaultMigration.ts pins existing ones to
-  // LEGACY_DEFAULT_KEYBINDING_SCHEME first. What the default resolves to must hold on both platforms.
-  it("binds the industry-standard keys in the document window", () => {
-    const document = createPhase4Document("Default scheme");
-    const scheme = DEFAULT_KEYBINDING_SETTINGS.scheme;
+describe.each(["windows", "macos"] as const)("the one built-in shortcut set (%s)", platform => {
+  // There is one set (keybindingSettings.ts); it must resolve the same way on both platforms.
+  const registryFor = () => {
+    const document = createPhase4Document("Shortcut set");
     const commands = createMainWindowShortcutCommands({
       quickActions: createQuickActions(document, undefined, { canUndo: true, canRedo: true }),
       layerActions: createLayerActions(document),
       toolCommandSpecs: applyKeybindingSchemeToCommands(
-        withStandaloneDrawingToolCommands(getToolsetCommandSpecs(desktopToolsetRegistry)), scheme)
-    }, scheme, undefined, platform);
-    const registry = createDesktopShortcutRegistry(commands, { platform, includeDisabled: true });
+        withStandaloneDrawingToolCommands(getToolsetCommandSpecs(desktopToolsetRegistry)))
+    }, undefined, platform);
+    return createDesktopShortcutRegistry(commands, { platform, includeDisabled: true });
+  };
+  const mod = platform === "macos" ? { metaKey: true } : { ctrlKey: true };
+
+  it("binds the set's keys in the document window", () => {
+    const registry = registryFor();
     expect(registry.resolve({ key: "x" })).toBe("tool.bond");
+    expect(registry.resolve({ key: "X", shiftKey: true })).toBe("tool.chain");
     expect(registry.resolve({ key: " " })).toBe("tool.select");
-    expect(registry.resolve({ key: ";", ...(platform === "macos" ? { metaKey: true } : { ctrlKey: true }) }))
-      .toBe("view.toggleRulers");
-    expect(createHoverShortcutTables(scheme).atom.get("b")).toBe("atom.setHoveredElement.Br");
+    expect(registry.resolve({ key: "e" })).toBe("tool.reactionArrow");
+    expect(registry.resolve({ key: ";", ...mod })).toBe("view.toggleRulers");
+    expect(registry.resolve({ key: "x", altKey: true, ...mod })).toBe("view.toggleCrosshairs");
+    expect(registry.resolve({ key: "e", ctrlKey: true, metaKey: platform === "macos" })).toBe("export.open");
+    const hover = createHoverShortcutTables();
+    expect(hover.atom.get("b")).toBe("atom.setHoveredElement.Br");
+    expect(hover.atom.get("B")).toBe("atom.setHoveredElement.B");
+    expect(hover.atom.get("2")).toBe("atom.addCarbonylToHoveredAtom");
+    expect(hover.bond.get("h")).toBe("bond.setHoveredBondDisplay.hashed");
   });
 
-  it("leaves the old default on ChemDraft's own keys", () => {
-    const legacy = keyboardShortcutActions(LEGACY_DEFAULT_KEYBINDING_SCHEME, platform);
-    expect(legacy.find(action => action.id === "tool.bond")?.defaults).not.toContain("X");
-    expect(createHoverShortcutTables(LEGACY_DEFAULT_KEYBINDING_SCHEME).atom.get("b")).toBe("atom.setHoveredElement.B");
+  it("never binds Ctrl+R or F5, so neither can reload the webview", () => {
+    const registry = registryFor();
+    for (const chord of [{ key: "r", ...mod }, { key: "R", shiftKey: true, ...mod }, { key: "F5" }, { key: "F5", ctrlKey: true }]) {
+      expect(registry.resolve(chord), JSON.stringify(chord)).toBeUndefined();
+    }
+    expect(isBrowserReloadChord({ key: "r", ctrlKey: true }, platform)).toBe(platform === "windows");
+  });
+
+  it("keeps commands the set leaves without a key assignable in Preferences > Keyboard", () => {
+    const registry = registryFor();
+    const actions = keyboardShortcutActions(platform);
+    for (const id of ["tool.eraser", "tool.lasso", "tool.cyclopentane", "tool.plus", "tool.minus", "layout.bringForward"]) {
+      expect(actions.find(action => action.id === id && action.scope === "commands"), id).toMatchObject({ defaults: [] });
+    }
+    // The old preset's keys for them are not bound.
+    expect(registry.resolve({ key: "r" })).toBeUndefined();
+    expect(actions.find(action => action.id === "tool.bond")?.defaults).toEqual(["X"]);
   });
 });
 
@@ -149,8 +163,7 @@ describe("last document close command", () => {
 
 describe.each(["windows", "macos"] as const)("custom keyboard shortcuts (%s)", platform => {
   it("applies overrides to the window registry, menus, and hovered targets", () => {
-    const scheme = "chemdraw";
-    const actions = keyboardShortcutActions(scheme, platform);
+    const actions = keyboardShortcutActions(platform);
     const save = actions.find(action => action.id === "document.save")!;
     const bond = actions.find(action => action.id === "tool.bond")!;
     const bromine = actions.find(action => action.id === "atom.setHoveredElement.Br")!;
@@ -164,7 +177,7 @@ describe.each(["windows", "macos"] as const)("custom keyboard shortcuts (%s)", p
       quickActions: createQuickActions(document, undefined),
       layerActions: createLayerActions(document),
       toolCommandSpecs: withStandaloneDrawingToolCommands(getToolsetCommandSpecs())
-    }, scheme, overrides, platform);
+    }, overrides, platform);
     const registry = createDesktopShortcutRegistry(commands, { platform, overrides });
     const mod = platform === "macos" ? { metaKey: true } : { ctrlKey: true };
     expect(registry.resolve({ key: "F9", ...mod })).toBe(save.id);
@@ -174,7 +187,7 @@ describe.each(["windows", "macos"] as const)("custom keyboard shortcuts (%s)", p
     const menu = buildAppMenuModel({
       rulersVisible: true, crosshairsVisible: true, canUndo: true, canRedo: true,
       hasSelection: true, hasSelectedMolecule: true, toolbars: [], platform,
-      keybindingScheme: scheme, keybindingOverrides: overrides
+      keybindingOverrides: overrides
     });
     expect(flattenAppMenuCommands(menu).find(item => item.commandId === save.id)).toMatchObject({
       accelerator: "Mod+F9", shortcut: platform === "macos" ? "⌘F9" : "Ctrl+F9"
@@ -182,7 +195,7 @@ describe.each(["windows", "macos"] as const)("custom keyboard shortcuts (%s)", p
     expect(nativeMenuShortcutOverrides(overrides, platform)).toEqual({
       [save.id]: platform === "macos" ? "Cmd+f9" : "Ctrl+f9"
     });
-    const hover = createHoverShortcutTables(scheme, overrides);
+    const hover = createHoverShortcutTables(overrides);
     expect(hover.atom.get("D")).toBe(bromine.id);
     expect(hover.atom.get("b")).toBeUndefined();
     expect(hover.atom.get("B")).toBe(boron.id);
@@ -190,12 +203,10 @@ describe.each(["windows", "macos"] as const)("custom keyboard shortcuts (%s)", p
     expect(cleared.kind === "updated" && nativeMenuShortcutOverrides(cleared.overrides, platform)).toEqual({ [save.id]: null });
   });
 
-  // + and - each name a hover charge command and, in the ChemDraft scheme, a charge tool. The
-  // pairs are intended (hover acts on the atom; no hover picks the tool), so the Preferences conflict
-  // check must treat + exactly as it treats -: the shipped defaults overlap silently, and binding
-  // either key again reports the same one-row conflict. Shift on + must not make it a different chord.
-  it("treats the hover +/- charge keys and the charge tools as the same intended pairs", () => {
-    const actions = keyboardShortcutActions("chemdraft", platform);
+  // + and - act on the hovered atom only; the charge tools have no key in the set. Shift on + must not
+  // make it a different chord, and giving a charge tool the same key is a conflict Preferences reports.
+  it("keeps the hover +/- charge keys hover-only, with the charge tools assignable", () => {
+    const actions = keyboardShortcutActions(platform);
     const pairs = [
       { hover: "atom.addPositiveChargeToHoveredAtom", tool: "tool.plus", key: "+" },
       { hover: "atom.addNegativeChargeToHoveredAtom", tool: "tool.minus", key: "-" }
@@ -205,28 +216,13 @@ describe.each(["windows", "macos"] as const)("custom keyboard shortcuts (%s)", p
       const result = editShortcut(actions, {}, action, edit, platform);
       return result.kind === "conflict" ? { kind: result.kind, with: result.actions.map(other => other.id) } : { kind: result.kind };
     };
-    const results = pairs.map(({ hover, tool, key }) => {
+    for (const { hover, tool, key } of pairs) {
       expect(actions.find(action => action.id === hover)).toMatchObject({ scope: "atom", defaults: [key] });
-      expect(actions.find(action => action.id === tool)).toMatchObject({ scope: "commands", defaults: [key] });
-      return {
-        resetHover: outcome(hover, "atom", { kind: "reset" }),
-        resetTool: outcome(tool, "commands", { kind: "reset" }),
-        assignHover: outcome(hover, "atom", { kind: "assign", key }),
-        assignTool: outcome(tool, "commands", { kind: "assign", key })
-      };
-    });
-    expect(results[0]).toEqual({
-      resetHover: { kind: "updated" }, resetTool: { kind: "updated" },
-      assignHover: { kind: "conflict", with: ["tool.plus"] },
-      assignTool: { kind: "conflict", with: ["atom.addPositiveChargeToHoveredAtom"] }
-    });
-    expect(results[1]).toEqual({
-      resetHover: { kind: "updated" }, resetTool: { kind: "updated" },
-      assignHover: { kind: "conflict", with: ["tool.minus"] },
-      assignTool: { kind: "conflict", with: ["atom.addNegativeChargeToHoveredAtom"] }
-    });
-    // Both live tables still hold both keys: the hover table literally, the window registry by chord.
-    const hover = createHoverShortcutTables("chemdraft");
+      expect(actions.find(action => action.id === tool)).toMatchObject({ scope: "commands", defaults: [] });
+      expect(outcome(hover, "atom", { kind: "reset" })).toEqual({ kind: "updated" });
+      expect(outcome(tool, "commands", { kind: "assign", key })).toEqual({ kind: "conflict", with: [hover] });
+    }
+    const hover = createHoverShortcutTables();
     expect(hover.atom.get("+")).toBe("atom.addPositiveChargeToHoveredAtom");
     expect(hover.atom.get("-")).toBe("atom.addNegativeChargeToHoveredAtom");
     const document = createPhase4Document("Charge keys");
@@ -234,15 +230,12 @@ describe.each(["windows", "macos"] as const)("custom keyboard shortcuts (%s)", p
       quickActions: createQuickActions(document, undefined),
       layerActions: createLayerActions(document),
       toolCommandSpecs: withStandaloneDrawingToolCommands(getToolsetCommandSpecs())
-    }, "chemdraft", undefined, platform), { platform });
-    expect(registry.resolve({ key: "+", code: "Equal", shiftKey: true })).toBe("tool.plus");
-    expect(registry.resolve({ key: "+", code: "NumpadAdd" })).toBe("tool.plus");
-    expect(registry.resolve({ key: "-", code: "Minus" })).toBe("tool.minus");
-    // Shift+= reported as "=" (some macOS input paths): the window registry folds it into the tool's
-    // + chord, so with nothing hovered it picks the tool; the hover lookup reads the same press as
-    // the hover table's literal "+", so over an atom the hover action wins.
+    }, undefined, platform), { platform });
+    // With nothing hovered, +/- pick no tool.
+    expect(registry.resolve({ key: "+", code: "Equal", shiftKey: true })).toBeUndefined();
+    expect(registry.resolve({ key: "-", code: "Minus" })).toBeUndefined();
+    // Shift+= reported as "=" (some macOS input paths) reads as the hover table's literal "+".
     const shiftedEqual = { key: "=", code: "Equal", shiftKey: true };
-    expect(registry.resolve(shiftedEqual)).toBe("tool.plus");
     expect(resolveHoverKey(shiftedEqual, key => hover.atom.get(key)))
       .toEqual({ key: "+", match: "atom.addPositiveChargeToHoveredAtom" });
     expect(resolveHoverKey({ key: "=", code: "Equal" }, key => hover.atom.get(key)).match).toBeUndefined();
@@ -257,12 +250,12 @@ describe.each(["windows", "macos"] as const)("custom keyboard shortcuts (%s)", p
   });
 
   it("includes and clears the Windows redo alternate with its action", () => {
-    const redo = keyboardShortcutActions("chemdraft", platform).find(action => action.id === "edit.redo");
+    const redo = keyboardShortcutActions(platform).find(action => action.id === "edit.redo");
     expect(redo?.defaults.includes("Ctrl+Y")).toBe(platform === "windows");
     const overrides = { commands: { "edit.redo": [] } };
     const commands = applyKeybindingSchemeToCommands([
       { id: "edit.redo", title: "Redo", icon: "redo", source: "core", shortcut: "Mod+Shift+Z" }
-    ], "chemdraft", overrides, platform);
+    ], overrides, platform);
     expect(createDesktopShortcutRegistry(commands, { platform, overrides }).resolve({ key: "y", ctrlKey: true })).toBeUndefined();
   });
 });

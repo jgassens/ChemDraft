@@ -25,7 +25,7 @@ describe.each(["macos", "windows"] as const)("same-head label input (%s)", platf
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
-    saveKeybindingSettings({ scheme: "chemdraft" });
+    saveKeybindingSettings({ scheme: "chemdraw" });
     Object.defineProperty(navigator, "platform", { configurable: true, value: platform === "macos" ? "MacIntel" : "Win32" });
     originalResizeObserver = globalThis.ResizeObserver;
     globalThis.ResizeObserver = TestResizeObserver;
@@ -228,7 +228,7 @@ describe.each(["macos", "windows"] as const)("same-head label input (%s)", platf
     expect(container.querySelector('[role="status"]')?.textContent).not.toContain("Relabeled");
   });
 
-  it.each(["hover", "text"] as const)("commits SH through %s, with one undo entry", async entry => {
+  it("commits SH through the Text tool, with one undo entry", async () => {
     const seed = insertNativeSingleBondMolecule(createPhase4Document(), { x: 300, y: 300 });
     const original = seed.pages[0].objects[0] as MoleculeObject;
     const initial = applyPatches(seed, [{ op: "updateObject", objectId: original.id, changes: {
@@ -244,7 +244,7 @@ describe.each(["macos", "windows"] as const)("same-head label input (%s)", platf
     } }]);
     await act(async () => {
       root.render(createElement(MainWindow, {
-        initialActiveToolCommandId: entry === "text" ? "tool.text" : "tool.bond",
+        initialActiveToolCommandId: "tool.text",
         initialCrosshairsVisible: false,
         initialDocument: selectDocumentObjects(initial, initial.pages[0].id, []),
         initialPaletteMode: "hidden", initialRulersVisible: false, nativePalette: true
@@ -254,17 +254,13 @@ describe.each(["macos", "windows"] as const)("same-head label input (%s)", platf
     for (const element of container.querySelectorAll<HTMLElement>(".page, .canvas-region")) element.getBoundingClientRect = () => rect;
     const before = molecule();
     await act(async () => {
-      const event = new MouseEvent(entry === "text" ? "pointerdown" : "pointermove", {
-        bubbles: true, cancelable: true, button: 0, buttons: entry === "text" ? 1 : 0,
+      const event = new MouseEvent("pointerdown", {
+        bubbles: true, cancelable: true, button: 0, buttons: 1,
         clientX: 300, clientY: 300, detail: 1
       });
       Object.defineProperties(event, { pointerId: { value: 7 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
-      container.querySelector<HTMLElement>(entry === "text" ? `[data-object-id="${original.id}"]` : ".page")!.dispatchEvent(event);
+      container.querySelector<HTMLElement>(`[data-object-id="${original.id}"]`)!.dispatchEvent(event);
     });
-    if (entry === "hover") {
-      await press("S");
-      await press("H");
-    }
     const input = container.querySelector<HTMLInputElement>('[data-atom-label-editor="true"]')!;
     expect(input).not.toBeNull();
     expect(document.activeElement).toBe(input);

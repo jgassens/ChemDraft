@@ -670,15 +670,14 @@ or on a since-detached display.
 Keybinding and molecule-editing surfaces added since: the Chain tools flyout (Chain / Flexible
 Chain) opened cold and warm, with a flexible-chain drag that turns corners both free and
 atom-anchored while a straight drag still reproduces the straight planner exactly; the numeric
-hover hotkeys in both keybinding schemes (rings 3–0 attach/fuse over atoms and bonds, wedge/hash
+hover hotkeys (rings 3–0 attach/fuse over atoms and bonds, wedge/hash
 sprouts 4/5, carbonyl 2, gem-dimethyl 9, the 0-key cyclic bond closing a ring), `g` over an atom or bond
 for cyclopropyl or fused cyclopropane, `u` over a bond for fused cyclobutane, and `.` over an atom
-for a radical; each edit undoes in one step. In the compatibility scheme, `v` mirrors `g`; in the
-default scheme, `v` selects the Select tool even over an atom. Check these on both platforms, with tool keys
-following the selected scheme — `e` over an atom applies the Et nickname in the ChemDraw scheme,
-while ChemDraft's `e` arms the eraser; charge stacking
+for a radical; each edit undoes in one step. `v` mirrors `g`. Check these on both platforms — `e`
+over an atom applies the Et nickname, while `e` over empty canvas with nothing selected arms the
+arrow tool; charge stacking
 by hotkey and by the charge tool up to ±9 and back down to mark removal;
-hover an atom of a selected and an unselected ring and press + (Shift+= and numpad +) and then -; a PHYSICAL main-keyboard Shift+= must be pressed by a person, because automation tools inject "=" with code NumpadEqual and do not prove the physical path; holding the pointer still after Shift raises the rotation handles: each charges that atom, in both schemes; with nothing hovered (including after moving off the canvas) and no atom selected, + and - pick the charge tools in the ChemDraft scheme, while with one atom selected and nothing hovered, + and - charge the selected atom (as a literal + did before);
+hover an atom of a selected and an unselected ring and press + (Shift+= and numpad +) and then -; a PHYSICAL main-keyboard Shift+= must be pressed by a person, because automation tools inject "=" with code NumpadEqual and do not prove the physical path; holding the pointer still after Shift raises the rotation handles: each charges that atom; with nothing hovered (including after moving off the canvas) and no atom selected, + and - do nothing (the charge tools have no default key), while with one atom selected and nothing hovered, + and - charge the selected atom (as a literal + did before);
 with **Direct electron-mark editing** off (the default), check radical/lone-pair painted-ink-only picking over
 atoms, bonds and filled rings, repeated radical/lone-pair tool placement on existing ink, and
 absence of mark resize/rotation handles.
@@ -718,8 +717,8 @@ stripping a labeled atom back to skeleton carbon before the second press deletes
 dragged onto another molecule object's atom merging the two objects into one; magnetic
 canonical-geometry snap during atom drags, partial-selection drags, and fragment rotations — a
 release outside the capture window must land exactly at the pointer; junction-pivot rotation
-holding the junction and attachment bond fixed; and switching the keybinding scheme live with the
-main window, detached palettes, and the native menu accelerators all following.
+holding the junction and attachment bond fixed; and changing a key in Preferences ▸ Keyboard live
+with the main window, detached palettes, and the native menu accelerators all following.
 
 File open: with ChemDraft quit, double-click a `.chemdraft` in Finder (macOS) / Explorer (Windows); the app opens with that document and does not crash.
 
@@ -1883,18 +1882,28 @@ whole-molecule cleanup with the existing behavior, and check save/reopen and exp
 
 ## Preferences > Keyboard
 
-- On macOS and Windows, use **Try it** on step 2 of the guided tour. Preferences should open or
+- On macOS and Windows, step 2 of the guided tour is "Keyboard shortcuts": it shows a few keys and
+  no choice of presets, and Preferences > Keyboard has no preset chooser either. Use **Try it** on
+  that step. Preferences should open or
   raise with the Keyboard search field focused. Filter for Save and assign a new shortcut.
   Check the File menu label and trigger Save from the document window with the new shortcut.
 - Assign Save's shortcut to another action. Cancel first, then repeat and choose Replace.
   Check that only the replacement action runs. Clear and reset a menu, tool, and hover action,
-  then use **Reset all to scheme defaults**. Switch schemes and relaunch to verify each scheme
-  retains its own changes. Repeat with the Preferences window already open.
+  then use **Reset all to defaults**. Relaunch to verify custom keys persist. Repeat with the
+  Preferences window already open. Eraser, Lasso and Cyclopentane have no default key: assign one
+  each and use it.
 - While the recorder is active try F5, Ctrl+R, and Cmd/Ctrl+Q and W. Verify the reserved-key
   explanation for keys delivered to the recorder and that the document never reloads or closes.
   Try Escape to cancel and verify normal menu accelerators work again afterward.
-- In the Classic desktop-compatible scheme record and use B and Shift+B with Caps Lock both
+- Record and use B and Shift+B with Caps Lock both
   off and on. Only Shift changes the hover key. Lowercase b sets Br and uppercase B sets boron.
+- Upgrade check, on macOS and Windows: start from an install whose `preferences.json` has
+  `"shortcutScheme": "chemdraft"` and a custom key under `shortcutOverrides.chemdraft` (one free,
+  such as F6 for Eraser, and one taken, such as E). Launch the new build: the status line says once
+  "Keyboard shortcuts now use one standard set. You can change any key in Preferences ▸ Keyboard."
+  (the same words on Windows); F6 still erases, E is the arrow tool, and the
+  message does not come back on the next launch. A corrupt `preferences.json` must not stop the
+  app from starting on the one set.
 - Try the normal Cut, Copy and Paste menu items with focus on a text field and with canvas
   selection, before and after changing their shortcuts. Check that Windows utility windows
   stay menu-free and the macOS app menu restores its shortcuts if Preferences loses focus mid-recording.

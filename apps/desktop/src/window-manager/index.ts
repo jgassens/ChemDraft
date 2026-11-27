@@ -11,7 +11,7 @@ import { isSpin3dSettings, type Spin3dSettings } from "../spin3dSettings";
 import { isCompoundLayoutSettings, COMPOUND_LAYOUT_STORAGE_KEY, loadCompoundLayoutSettings, type CompoundLayoutSettings } from "../compoundLayoutSettings";
 import { isDrawingSettings, DRAWING_SETTINGS_STORAGE_KEY, loadDrawingSettings, type DrawingSettings } from "../drawingSettings";
 import { ELECTRON_MARK_EDITING_STORAGE_KEY, loadDirectElectronMarkEditing } from "../electronMarkEditingSettings";
-import { isKeybindingSettings, type KeybindingScheme, type KeybindingSettings } from "../keybindingSettings";
+import { isKeybindingSettings, KEYBINDING_SCHEME, type KeybindingSettings } from "../keybindingSettings";
 import { migrateLegacyToolsetIds } from "../toolbars/legacyToolsetIds";
 import { listenCurrentWindowEvent, listenTauriEvent, safeTauriWindowListen } from "./tauriEvents";
 import {
@@ -785,14 +785,14 @@ export async function listenForKeybindingSettings(
   };
 }
 
-/** Keep native menu accelerators in step with the shortcut scheme. */
-export async function pushKeybindingSchemeToNativeMenu(scheme: KeybindingScheme, accelerators: Record<string, string | null> = {}): Promise<void> {
+/** Keep native menu accelerators in step with the shortcut set and the user's custom keys. */
+export async function pushKeybindingSchemeToNativeMenu(accelerators: Record<string, string | null> = {}): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
 
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("set_keybinding_scheme", { scheme, accelerators }).catch(error => console.error("Could not update menu shortcuts", error));
+  await invoke("set_keybinding_scheme", { scheme: KEYBINDING_SCHEME, accelerators }).catch(error => console.error("Could not update menu shortcuts", error));
 }
 
 export async function listToolsetWindowStates(): Promise<ToolsetWindowState[]> {

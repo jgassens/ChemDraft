@@ -41,8 +41,8 @@ carries avogadrolibs and Eigen for the shipped sidecars.
 
 Palettes stay above the document; minimize/restore hides and shows them; maximize/restore. Menu bar on
 the document window only (Preferences, 3D Debugger, plugin panel windows have none); checkmarks update
-(View ▸ Show Rulers). Bond and ring drawing; Ctrl+Z/Y/N/S/O/R/Ctrl+,; menus read "Ctrl+…". Keybinding
-scheme switch rebuilds the menu live (Export: Ctrl+Shift+E ↔ Ctrl+E). Color picker popover opens at
+(View ▸ Show Rulers). Bond and ring drawing; Ctrl+Z/Y/N/S/O/Ctrl+;/Ctrl+,; menus read "Ctrl+…"; Ctrl+R
+and F5 never reload. A custom key set in Preferences ▸ Keyboard rebuilds the menu live (Export is Ctrl+E). Color picker popover opens at
 the swatch and takes typing. Copy As SMILES → Notepad, Notepad → paste as structure, Copy As PNG → Paint.
 Save / reopen round trip (fill color preserved). Help ▸ About shows 0.3.4. File ▸ Exit and the close
 button both exit with code 0. Analyze ▸ Mass (IsoSpec WASM) in panel and pop-out window. Spin 3D and

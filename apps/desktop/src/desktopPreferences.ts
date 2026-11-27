@@ -1,9 +1,10 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import type { KeybindingSettings } from "./keybindingSettings";
+import type { StoredKeybindingScheme, StoredShortcutOverrides } from "./keybindingSettings";
 
 export interface DesktopPreferences {
-  shortcutScheme?: KeybindingSettings["scheme"];
-  shortcutOverrides?: KeybindingSettings["overrides"];
+  /** The shortcut set's id. Older versions may have stored the retired preset's (shortcutDefaultMigration.ts). */
+  shortcutScheme?: StoredKeybindingScheme;
+  shortcutOverrides?: StoredShortcutOverrides;
   guidedTourSeen?: true;
 }
 

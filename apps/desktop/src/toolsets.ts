@@ -851,9 +851,9 @@ export function toolsetItemToPaletteItem(
   const liveCommand = preferCommandPresentation && primary.type === "command"
     ? primary.command
     : undefined;
-  // The merged command wins over the manifest tooltip text: a keybinding-scheme remap (or a
+  // The merged command wins over the manifest tooltip text: the shortcut set's remap (or a
   // plugin override) rewrites the command's shortcut while the manifest still carries the
-  // ChemDraft-native key. An empty-string shortcut is the scheme's "unbound" sentinel — it
+  // registry's own key. An empty-string shortcut is the set's "unbound" sentinel — it
   // survives the `override ?? base` merges above, and normalizes to null here so tooltips show
   // no shortcut at all.
   const tooltipShortcut = (liveCommand

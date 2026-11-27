@@ -63,7 +63,7 @@ function DocumentWindow({ nameToStructure }: { nameToStructure: boolean }) {
   const command = { id: NAME_TO_STRUCTURE_COMMAND_ID, title: "Name to Structure", pluginId: "org.chemdraft.opsin.nameToStructure", enabled: true } as unknown as CommandDefinition;
   const menuItems = [...buildPluginMenuItems([]), ...buildOfficialPluginMenuItems(id => nameToStructure && id === command.id ? command : undefined)];
   const tour = useGuidedTour({
-    coordinator: () => coordinator.current, readyAndIdle: () => true, scheme: "chemdraft",
+    coordinator: () => coordinator.current, readyAndIdle: () => true,
     plugins: () => availableTourPluginCommands(menuItems), mode: "suppress", setStatus: () => {}
   });
   action.current = next => tour.completeOrRun(next, { invoke: invokeCommand, has: id => nameToStructure && id === TOUR_NAME_COMMAND });
@@ -168,7 +168,7 @@ describe.each([["macos", "MacIntel"], ["windows", "Win32"]] as const)("the nativ
     const { tour, button } = await openToNameStep(true);
     expect(host.opened).toHaveLength(1);
     expect(host.opened[0]).toMatchObject({ dialogKind: "guidedTour", type: "snapshot",
-      data: { title: "Take the Tour", scheme: "chemdraft", automatic: false, plugins: [TOUR_NAME_COMMAND] } });
+      data: { title: "Take the Tour", scheme: "chemdraw", automatic: false, plugins: [TOUR_NAME_COMMAND] } });
     expect(tour.querySelector("h1")!.textContent).toBe("Names and structure search");
     expect(tour.textContent).toContain("The Name to Structure plugin draws from a chemical name through the Structure menu.");
     expect(tour.textContent).not.toContain("Optional plugin");
@@ -252,7 +252,7 @@ describe.each([["macos", "MacIntel"], ["windows", "Win32"]] as const)("the nativ
 describe("the guidedTour snapshot's plugin list", () => {
   const snapshot = (data: Record<string, unknown>) => ({
     protocolVersion: 1, ownerWindowId: "main", documentTabId: "guidedTour", dialogKind: "guidedTour", sessionId: "s",
-    requestId: "r", snapshotRevision: 1, type: "snapshot", data: { title: "Take the Tour", scheme: "chemdraft", automatic: true, ...data }
+    requestId: "r", snapshotRevision: 1, type: "snapshot", data: { title: "Take the Tour", scheme: "chemdraw", automatic: true, ...data }
   });
 
   it("is optional and holds only known tour plugin commands, each once", () => {

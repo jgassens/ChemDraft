@@ -21,7 +21,6 @@ import {
   type CommandSpec
 } from "./commands";
 import { applyKeybindingSchemeToCommands } from "./keybindingScheme";
-import type { KeybindingScheme } from "./keybindingSettings";
 import { isEditableTarget } from "./editableTarget";
 export { isBrowserReloadChord } from "./browserReloadGuard";
 
@@ -94,7 +93,6 @@ export function createMainWindowShortcutCommands(
     layerActions: readonly CommandSpec[];
     toolCommandSpecs: readonly CommandSpec[];
   },
-  scheme: KeybindingScheme,
   overrides?: ShortcutOverrides,
   platform?: ShortcutPlatform
 ): CommandSpec[] {
@@ -110,7 +108,7 @@ export function createMainWindowShortcutCommands(
     ...pageOrientationActions,
     ...textToolbarActions,
     ...toolbarCustomizationActions
-  ].filter(command => !isHoverOnlyShortcutCommand(command.id)), scheme, overrides, platform);
+  ].filter(command => !isHoverOnlyShortcutCommand(command.id)), overrides, platform);
 }
 
 export function createDesktopShortcutRegistry(

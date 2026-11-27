@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-// FAIL 6.5 regression: the shortcut scheme chosen on tour step 2 must reach the same setting,
-// persistence and live update that Preferences > Keyboard uses. The tour runs in its own native
-// dialog window, so this drives the real chain: TourForm in DialogWindow → DialogCoordinator →
-// useGuidedTour → updateShortcutPreference → every window's useShortcutPreference.
+// One built-in shortcut set: the tour's shortcuts step and Preferences > Keyboard offer no preset to
+// choose, even for an install that still stores the retired one, and every window resolves the one
+// set's keys. The tour runs in its own native dialog window, so this drives the real chain: TourForm
+// in DialogWindow → DialogCoordinator → useGuidedTour, beside every window's useShortcutPreference.
 import { act, createElement, useEffect, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -49,7 +49,7 @@ import { DialogWindow } from "../dialogs/DialogWindow";
 import { DialogCoordinator } from "../dialogs/DialogCoordinator";
 import { PreferencesWindow } from "../PreferencesWindow";
 import { useShortcutPreference } from "../useShortcutPreference";
-import { loadKeybindingSettings, saveKeybindingSettings } from "../keybindingSettings";
+import { KEYBINDING_STORAGE_KEY, loadKeybindingSettings, saveKeybindingSettings } from "../keybindingSettings";
 import { createHoverShortcutTables } from "../keybindingScheme";
 import { buildAppMenuModel, flattenAppMenuCommands } from "../appMenu";
 import { createMainWindowShortcutCommands } from "../keyboardShortcuts";
@@ -59,16 +59,16 @@ import { useGuidedTour } from "./useGuidedTour";
 import type { TourAction } from "./tourCommands";
 
 const DIALOG_LABEL = "dialog-main-guidedTour-1";
-let mainScheme: string | undefined;
+let mainSettings: KeybindingSettings | undefined;
 
 /** The document window's part of the tour, wired as MainWindow wires it. */
 function DocumentWindow() {
   const settings = useShortcutPreference();
-  mainScheme = settings.scheme;
+  mainSettings = settings;
   const coordinator = useRef<DialogCoordinator>(undefined);
   const action = useRef<(action: TourAction) => Promise<void>>(async () => {});
   const tour = useGuidedTour({
-    coordinator: () => coordinator.current, readyAndIdle: () => true, scheme: settings.scheme,
+    coordinator: () => coordinator.current, readyAndIdle: () => true,
     shortcutOverrides: settings.overrides, mode: "suppress", setStatus: () => {}
   });
   action.current = next => tour.completeOrRun(next, { invoke: async () => {}, has: () => true });
@@ -90,17 +90,17 @@ function DocumentWindow() {
   return null;
 }
 
-/** Resolve a command's shortcut label the way the document window does for the active scheme. */
+/** Resolve a command's shortcut label the way the document window does. */
 function shortcutFor(commandId: string, settings: KeybindingSettings, platform: ShortcutPlatform) {
   const commands = createMainWindowShortcutCommands({
     quickActions: createQuickActions(createEmptyDocument(), undefined), layerActions: [], toolCommandSpecs: getToolsetCommandSpecs()
-  }, settings.scheme, settings.overrides?.[settings.scheme]);
+  }, settings.overrides?.chemdraw, platform);
   const spec = commands.find(command => command.id === commandId);
   return formatShortcutLabel(spec?.shortcut || spec?.defaultShortcut, platform);
 }
 function menuShortcut(commandId: string, settings: KeybindingSettings, platform: ShortcutPlatform) {
   return flattenAppMenuCommands(buildAppMenuModel({
-    platform, keybindingScheme: settings.scheme, keybindingOverrides: settings.overrides?.[settings.scheme],
+    platform, keybindingOverrides: settings.overrides?.chemdraw,
     rulersVisible: true, crosshairsVisible: true, canUndo: false, canRedo: false,
     hasSelection: false, hasSelectedMolecule: false, toolbars: []
   })).find(item => item.commandId === commandId)?.shortcut;
@@ -131,7 +131,7 @@ beforeEach(() => {
     }
     return undefined;
   });
-  mainScheme = undefined;
+  mainSettings = undefined;
 });
 afterEach(() => {
   act(() => roots.splice(0).forEach(root => root.unmount()));
@@ -139,69 +139,65 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it.each(["macos", "windows"] as const)("applies Classic from tour step 2 through the Preferences setting on %s", async platform => {
-  // Start from ChemDraft's scheme, as an existing install has it after shortcutDefaultMigration.ts,
-  // so choosing Classic is a real switch.
+it.each(["macos", "windows"] as const)("shows one shortcut set in the tour and Preferences, even with the retired preset stored, on %s", async platform => {
+  // An install that has not moved yet: both stores still name the retired preset.
   host.native = { shortcutScheme: "chemdraft" };
-  saveKeybindingSettings({ scheme: "chemdraft" });
+  localStorage.setItem(KEYBINDING_STORAGE_KEY, JSON.stringify({ scheme: "chemdraft" }));
   const preferences = await mount(createElement(PreferencesWindow));
   const tour = await mount(createElement(DialogWindow, { hostId: "tour" }));
   await mount(createElement(DocumentWindow));
   await act(async () => { await import("./TourForm"); });
   await settle();
 
-  const before = loadKeybindingSettings();
-  expect(before.scheme).toBe("chemdraft");
-  expect(shortcutFor("view.toggleRulers", before, platform)).toBe(platform === "macos" ? "⌘R" : "Ctrl+R");
-  const checked = (root: HTMLElement, name: string) =>
-    [...root.querySelectorAll<HTMLInputElement>(`input[type=radio][name="${name}"]`)].map(radio => radio.checked);
-  expect(checked(preferences, "keybinding-scheme")).toEqual([true, false]);
+  // Every window resolves the one set.
+  const settings = loadKeybindingSettings();
+  expect(settings.scheme).toBe("chemdraw");
+  expect(mainSettings?.scheme).toBe("chemdraw");
+  const rulers = platform === "macos" ? "⌘;" : "Ctrl+;";
+  expect(shortcutFor("view.toggleRulers", settings, platform)).toBe(rulers);
+  expect(menuShortcut("view.toggleRulers", settings, platform)).toBe(rulers);
 
+  // No preset chooser anywhere.
+  expect(preferences.querySelectorAll("input[type=radio][name=keybinding-scheme]")).toHaveLength(0);
   const button = (text: string) => [...tour.querySelectorAll("button")].find(item => item.textContent === text)!;
   await act(async () => button("Next").click());
-  expect(tour.textContent).toContain("Your choice applies right away.");
-  await act(async () => tour.querySelectorAll<HTMLInputElement>("input[name=tour-shortcuts]")[1]!.click());
-  await settle();
-
-  // Same stored setting and native file as Preferences, and the document window switched live.
-  const after = loadKeybindingSettings();
-  expect(after.scheme).toBe("chemdraw");
-  expect(host.native.shortcutScheme).toBe("chemdraw");
-  expect(host.invoke).toHaveBeenCalledWith("desktop_preferences", { patch: { shortcutScheme: "chemdraw" } });
-  expect(mainScheme).toBe("chemdraw");
-  expect(shortcutFor("view.toggleRulers", after, platform)).toBe(platform === "macos" ? "⌘;" : "Ctrl+;");
-  expect(menuShortcut("view.toggleRulers", after, platform)).toBe(platform === "macos" ? "⌘;" : "Ctrl+;");
-  // Preferences, already open, shows the new scheme; the tour confirms the choice.
-  expect(checked(preferences, "keybinding-scheme")).toEqual([false, true]);
-  expect(checked(tour, "tour-shortcuts")).toEqual([false, true]);
-  expect(tour.querySelector("[role=alert]")).toBeNull();
-
-  // Next does not undo or re-apply the choice.
+  expect(tour.querySelector("h1")?.textContent).toBe("Keyboard shortcuts");
+  expect(tour.querySelectorAll("input[type=radio], fieldset")).toHaveLength(0);
+  // The tour window formats keys for the platform it runs on; the Rulers example is the set's semicolon chord.
+  expect([...tour.querySelectorAll(".guided-tour-shortcuts > span")].find(item => item.textContent?.startsWith("Rulers"))
+    ?.querySelector("kbd")?.textContent).toMatch(/;$/);
+  expect(tour.textContent).toContain("Preferences > Keyboard");
+  // Opening and stepping through the tour changes no shortcut setting.
   await act(async () => button("Next").click());
   await settle();
-  expect(loadKeybindingSettings().scheme).toBe("chemdraw");
-  expect(mainScheme).toBe("chemdraw");
+  expect(host.invoke).not.toHaveBeenCalledWith("desktop_preferences", { patch: expect.objectContaining({ shortcutScheme: expect.anything() }) });
+  expect(tour.querySelector("[role=alert]")).toBeNull();
 });
 
 /** The browser build draws the tour inside the document window, wired as MainWindow wires it. */
 function BrowserDocumentWindow() {
   const settings = useShortcutPreference();
   const tour = useGuidedTour({
-    coordinator: () => undefined, readyAndIdle: () => true, scheme: settings.scheme,
+    coordinator: () => undefined, readyAndIdle: () => true,
     shortcutOverrides: settings.overrides, mode: "suppress", setStatus: () => {}
   });
   useEffect(() => { void tour.open(); }, []);
   return tour.renderBrowser(async next => tour.completeOrRun(next, { invoke: async () => {}, has: () => true }));
 }
 
+const SINGLE_BOND = "atom.addSingleBondToHoveredAtom";
+
 describe.each(["native window", "browser"] as const)("tour drawing lesson on the %s surface", surface => {
-  it("names the effective Add Single Bond to Hovered Atom key, or none when it is cleared", async () => {
-    const SINGLE_BOND = "atom.addSingleBondToHoveredAtom";
-    const overrides = { chemdraft: { atom: { [SINGLE_BOND]: [] } }, chemdraw: { atom: { [SINGLE_BOND]: ["j"] } } };
-    saveKeybindingSettings({ scheme: "chemdraft", overrides });
-    // The canvas honors both overrides: cleared in ChemDraft, moved to j in Classic.
-    expect(createHoverShortcutTables("chemdraft", overrides.chemdraft).atom.get("1")).toBeUndefined();
-    expect(createHoverShortcutTables("chemdraw", overrides.chemdraw).atom.get("j")).toBe(SINGLE_BOND);
+  it.each([
+    // The retired preset's custom keys are never applied: the set's own key is named.
+    ["the built-in key", { chemdraft: { atom: { [SINGLE_BOND]: ["k"] } } }, "press 1 to add a single bond"],
+    ["a custom key", { chemdraw: { atom: { [SINGLE_BOND]: ["j"] } } }, "press j to add a single bond"],
+    ["no key when it is cleared", { chemdraw: { atom: { [SINGLE_BOND]: [] } } }, undefined]
+  ] as const)("names %s for Add Single Bond to Hovered Atom", async (_label, overrides, expected) => {
+    saveKeybindingSettings({ scheme: "chemdraw", overrides });
+    // The canvas reads the same table.
+    const custom = "chemdraw" in overrides ? overrides.chemdraw : undefined;
+    expect(createHoverShortcutTables(custom).atom.get("1")).toBe(custom ? undefined : SINGLE_BOND);
     host.desktop = surface === "native window";
     const tour = surface === "native window" ? await mount(createElement(DialogWindow, { hostId: "tour" })) : undefined;
     const main = await mount(createElement(surface === "native window" ? DocumentWindow : BrowserDocumentWindow));
@@ -213,13 +209,7 @@ describe.each(["native window", "browser"] as const)("tour drawing lesson on the
     await act(async () => button("Next").click());
     await act(async () => button("Next").click());
     expect(drawingText()).toContain("Click and drag with the bond tool");
-    expect(drawingText(), "a cleared binding names no key").not.toMatch(/press \S+ to add a single bond/);
-    await act(async () => button("Back").click());
-    await act(async () => root.querySelectorAll<HTMLInputElement>("input[name=tour-shortcuts]")[1]!.click());
-    await settle();
-    expect(loadKeybindingSettings().scheme).toBe("chemdraw");
-    await act(async () => button("Next").click());
-    expect(drawingText()).toContain("press j to add a single bond");
-    expect(drawingText()).not.toContain("press 1");
+    if (expected) expect(drawingText()).toContain(expected);
+    else expect(drawingText(), "a cleared binding names no key").not.toMatch(/press \S+ to add a single bond/);
   });
 });

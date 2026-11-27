@@ -73,13 +73,18 @@ Its HTTPS links open in the system browser.
 ## Guided tour
 
 The app-wide `guidedTour` session uses the document-owned dialog host and remembers its frame
-by kind. Its allowlist covers the three practice commands, shortcut selection, Skip and Finish.
+by kind. Its allowlist covers the practice commands, Skip and Finish. The tour offers no shortcut
+choice: there is one shortcut set, and its Keyboard step's Try it opens Preferences ▸ Keyboard.
 The dialog sends only the typed action and the owner invokes registered commands. The practice
 drawing is a separate clean tab populated through the structure template workflow.
 
-The native `preferences.json` file in app data stores the shortcut scheme and the guided-tour
-seen flag. An absent flag is unseen for both new installs and upgrades. The previous shortcut
-setting remains readable as the migration fallback until a scheme is saved to the native file.
+The native `preferences.json` file in app data stores the shortcut set's id, the user's custom
+keys and the guided-tour seen flag. An absent flag is unseen for both new installs and upgrades.
+There is one shortcut set, native and webview alike: the native menu, `set_keybinding_scheme` and
+the tour's snapshot know only its id. The native file keeps whatever set id and custom keys an older
+version stored, verbatim, so an old file always loads; the webview's one-time move
+(`shortcutDefaultMigration.ts`) reads them on launch and maps the install onto the single set,
+merging the file's and the cache's custom keys entry by entry so none is lost.
 The desktop writes the seen flag on Skip, Finish or title-bar close. The browser preview has its
 own local setting. Document-window tests can set `tourMode` to `force` or `suppress`.
 

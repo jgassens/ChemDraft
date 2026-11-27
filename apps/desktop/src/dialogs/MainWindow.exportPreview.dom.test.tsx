@@ -7,7 +7,6 @@ import { desktopExportFormatDescriptors } from "../desktopExportFormats";
 import { updateExportDialogFormat } from "./ExportForm";
 import { applyNativeChainTool, createPhase4Document, selectDocumentObjects } from "../documentWorkflow";
 import { saveExportPreviewEnabled } from "../exportPreviewSettings";
-import { saveKeybindingSettings } from "../keybindingSettings";
 import { MemoryStorage } from "../testSupport/memoryStorage";
 import { DOM_COMMAND_EVENT, broadcastExportPreviewSettings } from "../window-manager";
 import type { ChemDraftAgentBridge } from "../agentBridge";
@@ -61,8 +60,6 @@ beforeEach(async () => {
   native.save.mockReset(); native.writeTextFile.mockReset();
   vi.clearAllMocks(); native.publish.mockResolvedValue(undefined); native.invoke.mockResolvedValue(null); native.events.clear();
   vi.stubGlobal("localStorage", new MemoryStorage()); vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  // Typing N on a hovered atom opens its label editor in ChemDraft's scheme; pin it rather than rely on the default.
-  saveKeybindingSettings({ scheme: "chemdraft" });
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   vi.stubGlobal("MessageChannel", class {
     port1 = { onmessage: () => {}, close() {} };
@@ -164,15 +161,16 @@ it.each([false, true])("uses the owner's preference (%s) for stale dialog presen
 
 it("renders preview from the same pending atom-label flush as export without closing the edit", async () => {
   await act(async () => { saveExportPreviewEnabled(true); await broadcastExportPreviewSettings(true); });
-  await command("export.open"); await send("ready", {}); await command("tool.bond");
+  await command("export.open"); await send("ready", {}); await command("tool.atom");
   const rect = { x: 0, y: 0, left: 0, top: 0, right: 792, bottom: 612, width: 792, height: 612, toJSON: () => ({}) } as DOMRect;
   for (const element of container.querySelectorAll<HTMLElement>(".page, .canvas-region")) element.getBoundingClientRect = () => rect;
   const molecule = bridge().snapshot().document.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule")!;
   const atom = molecule.atoms[1];
+  // The Atom Label tool opens the label editor on the clicked atom.
   await act(async () => {
-    const event = new MouseEvent("pointermove", { bubbles: true, clientX: atom.x, clientY: atom.y, buttons: 0 });
+    const event = new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 0, clientX: atom.x, clientY: atom.y, buttons: 1 });
     Object.defineProperties(event, { pointerId: { value: 7 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
-    container.querySelector(".page")!.dispatchEvent(event);
+    container.querySelector(`[data-object-id="${molecule.id}"]`)!.dispatchEvent(event);
   });
   for (const key of "NMe") {
     const target = document.activeElement ?? document.body;

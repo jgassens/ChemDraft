@@ -53,17 +53,15 @@ const LETTER_E = { key: "e", code: "KeyE" };
 
 beforeAll(async () => { await ensureOclResources(); });
 
-// The ChemDraft scheme binds + and - to the charge tools as well as to the hovered atom; the
-// classic (ChemDraw) scheme binds them to the hovered atom only.
+// The shortcut set binds + and - to the hovered atom only; the charge tools have no key.
 describe.each([
-  { platform: "macos", scheme: "chemdraft" }, { platform: "windows", scheme: "chemdraft" },
-  { platform: "macos", scheme: "chemdraw" }, { platform: "windows", scheme: "chemdraw" }
-] as const)("hover charge keys on $platform, $scheme scheme", ({ platform, scheme }) => {
+  { platform: "macos" }, { platform: "windows" }
+] as const)("hover charge keys on $platform", ({ platform }) => {
   let container: HTMLDivElement, root: Root;
   let frames: Map<number, FrameRequestCallback>, frameId: number;
   beforeEach(() => {
     const storage = new MemoryStorage();
-    storage.setItem(KEYBINDING_STORAGE_KEY, JSON.stringify({ scheme }));
+    storage.setItem(KEYBINDING_STORAGE_KEY, JSON.stringify({ scheme: "chemdraw" }));
     vi.stubGlobal("localStorage", storage);
     frames = new Map(); frameId = 0;
     vi.stubGlobal("ResizeObserver", TestResizeObserver);
@@ -175,21 +173,6 @@ describe.each([
     expect([...snapshot().selection.objectIds].sort()).toEqual([moleculeId, marks()[0]!.id].sort());
   });
 
-  it.runIf(scheme === "chemdraft").each([
-    { name: "+ (Shift+=)", init: PLUS, tool: "tool.plus" },
-    { name: "Shift+= reported as \"=\"", init: SHIFTED_EQUAL, tool: "tool.plus" },
-    { name: "Shift+= injected with code NumpadEqual", init: NUMPAD_EQUAL_SHIFTED, tool: "tool.plus" },
-    { name: "numpad +", init: NUMPAD_PLUS, tool: "tool.plus" },
-    { name: "-", init: MINUS, tool: "tool.minus" }
-  ])("with nothing hovered, $name picks $tool", async ({ init, tool }) => {
-    await benzene(false);
-    await move({ x: 700, y: 550 });
-    expect(agent().hoveredNativeTarget).toBeUndefined();
-    await press(init);
-    expect(agent().activeToolCommandId).toBe(tool);
-    expect(marks()).toHaveLength(0);
-  });
-
   it.each([
     { name: "Shift+= reported as \"=\"", init: SHIFTED_EQUAL, selected: true },
     { name: "Shift+= reported as \"=\"", init: SHIFTED_EQUAL, selected: false },
@@ -213,7 +196,7 @@ describe.each([
     expect(agent().hoveredNativeTarget).toBeUndefined();
     await press(BARE_EQUAL);
     expect(marks()).toHaveLength(0);
-    expect(agent().activeToolCommandId).toBe(scheme === "chemdraft" ? "tool.plus" : "tool.select");
+    expect(agent().activeToolCommandId).toBe("tool.select");
   });
 
   it.each([
@@ -257,7 +240,7 @@ describe.each([
 
   it("a dead key on KeyE keeps its base behavior (read by physical letter) and never charges", async () => {
     // key "Dead" is longer than one character, so the physical-letter mapping applies as before;
-    // whatever "e" does in the scheme, it is not a charge.
+    // whatever "e" does, it is not a charge.
     const moleculeId = await benzene();
     await hoverAtom(moleculeId);
     await press(DEAD_KEY);
@@ -265,7 +248,7 @@ describe.each([
     expect(charge()).toBe(0);
   });
 
-  it("Dvorak . on KeyE acts exactly as the letter e (Et substituent in classic), not as the radical key", async () => {
+  it("Dvorak . on KeyE acts exactly as the letter e (Et substituent), not as the radical key", async () => {
     const moleculeId = await benzene();
     await hoverAtom(moleculeId);
     await press(LETTER_E);
@@ -279,22 +262,17 @@ describe.each([
     // No radical was added and the ring atom was not charged by the typed ".".
     expect(viaDvorak.marks).toBe(0);
     expect(viaDvorak.charge).toBe(0);
-    if (scheme === "chemdraw") {
-      // The classic scheme's e attaches an Et nickname atom to the hovered ring carbon.
-      expect(viaDvorak.elements).toEqual(["C", "C", "C", "C", "C", "C", "Et"]);
-    } else {
-      // The ChemDraft scheme's e has no hover action over an atom: the ring is untouched.
-      expect(viaDvorak.elements).toEqual(["C", "C", "C", "C", "C", "C"]);
-    }
+    // e attaches an Et nickname atom to the hovered ring carbon.
+    expect(viaDvorak.elements).toEqual(["C", "C", "C", "C", "C", "C", "Et"]);
   });
 
-  it.runIf(scheme === "chemdraw").each([
+  it.each([
     { name: "a (key a, code KeyA)", init: LETTER_A },
     { name: "a typed . with placeholder code KeyA (mapped to a, as in RC2)", init: { key: ".", code: "KeyA" } },
     { name: "a typed 3 with placeholder code KeyA (mapped to a, as in RC2)", init: { key: "3", code: "KeyA" } },
     { name: "Greek α on KeyA", init: GREEK_ALPHA },
     { name: "Cyrillic ф on KeyA", init: CYRILLIC_EF }
-  ])("in the classic scheme $name over an atom still attaches a benzene ring", async ({ init }) => {
+  ])("$name over an atom still attaches a benzene ring", async ({ init }) => {
     const moleculeId = await benzene();
     await hoverAtom(moleculeId);
     const atomsBefore = totalAtoms();
@@ -304,7 +282,7 @@ describe.each([
     expect(charge()).toBe(0);
   });
 
-  it.runIf(scheme === "chemdraw")("in the classic scheme + on KeyA charges and never attaches benzene, unlike a", async () => {
+  it("+ on KeyA charges and never attaches benzene, unlike a", async () => {
     const moleculeId = await benzene();
     await hoverAtom(moleculeId);
     const atomsBefore = totalAtoms();
@@ -314,18 +292,7 @@ describe.each([
     expect(marks()).toHaveLength(1);
   });
 
-  it.runIf(scheme === "chemdraft").each([
-    { name: "Greek α on KeyA", init: GREEK_ALPHA },
-    { name: "Cyrillic ф on KeyA", init: CYRILLIC_EF }
-  ])("in the ChemDraft scheme $name over an atom charges nothing", async ({ init }) => {
-    const moleculeId = await benzene();
-    await hoverAtom(moleculeId);
-    await press(init);
-    expect(marks()).toHaveLength(0);
-    expect(charge()).toBe(0);
-  });
-
-  it("a typed + with placeholder code KeyA charges the atom and attaches no ring in either scheme", async () => {
+  it("a typed + with placeholder code KeyA charges the atom and attaches no ring", async () => {
     const moleculeId = await benzene();
     await hoverAtom(moleculeId);
     const atomsBefore = dropMolecule(snapshot()).atoms.length;
@@ -341,7 +308,7 @@ describe.each([
   it.each([
     { name: "Cmd+=", init: { key: "=", code: "Equal", metaKey: true }, mod: "macos" },
     { name: "Ctrl+=", init: { key: "=", code: "Equal", ctrlKey: true }, mod: "windows" }
-  ])("$name charges nothing, and zooms only where bound", async ({ init, mod }) => {
+  ])("$name charges nothing and does not zoom", async ({ init, mod }) => {
     if (mod !== platform) return;
     const moleculeId = await benzene();
     await hoverAtom(moleculeId);
@@ -351,9 +318,8 @@ describe.each([
     expect(charge()).toBe(0);
     expect(agent().activeToolCommandId).toBe("tool.select");
     const zoomAfter = (agent().viewport as { scale: number }).scale;
-    // Classic scheme: zoom in is Shift+Cmd+> (keybindingScheme.ts "view.zoomIn"), so Cmd/Ctrl+= is
-    // unbound there and leaves the zoom alone. ChemDraft binds Cmd/Ctrl+= to zoom in.
-    if (scheme === "chemdraft") expect(zoomAfter).toBeGreaterThan(zoomBefore);
-    else expect(zoomAfter).toBe(zoomBefore);
+    // Zoom in is Shift+Cmd+> (keybindingScheme.ts "view.zoomIn"), so Cmd/Ctrl+= is unbound and
+    // leaves the zoom alone.
+    expect(zoomAfter).toBe(zoomBefore);
   });
 });

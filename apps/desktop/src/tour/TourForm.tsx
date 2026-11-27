@@ -1,10 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type Ref } from "react";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
-import type { KeybindingScheme } from "../keybindingSettings";
+import { KEYBINDING_SCHEME } from "../keybindingSettings";
 import { detectDesktopShortcutPlatform } from "../keyboardShortcuts";
 import { DIALOG_FONTS_READY_TIMEOUT_MS } from "../dialogs/dialogContentFit";
 import { TOUR_TITLE, type TourAction, type TourPluginCommand } from "./tourCommands";
-import { tourShortcutChoices, tourSteps, type TourBondKeys } from "./tourSteps";
+import { tourShortcutExamples, tourSteps, type TourBondKeys } from "./tourSteps";
 import "./TourForm.css";
 
 /** The tallest step's text area reserves at most this many CSS pixels; longer text scrolls. The host
@@ -13,15 +13,13 @@ export const TOUR_STEP_MAX_RESERVED_HEIGHT = 480;
 
 type TourStepData = ReturnType<typeof tourSteps>[number];
 
-/** One step's scrolling content: counter, title, text, link and shortcut choice. The sizer renders every
- *  step with `ghost` set (no handlers, no focus target, its own radio groups) to measure the tallest. */
-function TourStepContent({ step, index, count, scheme, platform, busy, heading, send, ghost }: {
+/** One step's scrolling content: counter, title, text, link and example shortcuts. The sizer renders
+ *  every step with `ghost` set (no handlers, no focus target) to measure the tallest. */
+function TourStepContent({ step, index, count, platform, heading, send, ghost }: {
   step: TourStepData;
   index: number;
   count: number;
-  scheme: KeybindingScheme;
   platform: ShortcutPlatform;
-  busy?: boolean;
   heading?: Ref<HTMLHeadingElement>;
   send?: (action: TourAction) => void;
   ghost?: boolean;
@@ -44,19 +42,9 @@ function TourStepContent({ step, index, count, scheme, platform, busy, heading, 
           onDragStart={event => event.preventDefault()}>{url}</a>
       </p> : null}
       {step.shortcuts ? (
-        <fieldset disabled={ghost || busy}>
-          <legend>Keyboard shortcuts</legend>
-          {tourShortcutChoices(platform).map(choice => (
-            <label key={choice.scheme}>
-              <input type="radio" name={ghost ? `tour-shortcuts-sizer-${index}` : "tour-shortcuts"} checked={scheme === choice.scheme}
-                readOnly={ghost}
-                onChange={ghost ? undefined : () => send?.({ action: "chooseShortcuts", scheme: choice.scheme })} />
-              <span>{choice.label}
-                <small>{choice.examples.map(({ label, key }) => <span key={label}>{label} <kbd>{key}</kbd></span>)}</small>
-              </span>
-            </label>
-          ))}
-        </fieldset>
+        <p className="guided-tour-shortcuts">
+          {tourShortcutExamples(platform).map(({ label, key }) => <span key={label}>{label} <kbd>{key}</kbd></span>)}
+        </p>
       ) : null}
     </>
   );
@@ -68,9 +56,8 @@ function fontsSettledNow(): boolean {
 }
 
 export function TourForm({
-  scheme, onAction, onReady, busy, error, platform = detectDesktopShortcutPlatform(), plugins = [], bondKeys
+  onAction, onReady, busy, error, platform = detectDesktopShortcutPlatform(), plugins = [], bondKeys
 }: {
-  scheme: KeybindingScheme;
   onAction: (action: TourAction) => void;
   /** Called once the form has reserved room for its tallest step, with the element the native host
    *  measures (`fit_content` in dialog_windows.rs), so the window fits every step without resizing. */
@@ -81,7 +68,7 @@ export function TourForm({
   /** Plugin commands the menus offered when the tour opened. Missing means none: never demo a plugin
    *  that might not be installed. */
   plugins?: readonly TourPluginCommand[];
-  /** The Add Single Bond to Hovered Atom key per scheme, after the user's overrides (`tourBondKeys`). */
+  /** The Add Single Bond to Hovered Atom key, after the user's custom keys (`tourBondKeys`). */
   bondKeys?: TourBondKeys;
 }) {
   const [index, setIndex] = useState(0);
@@ -103,7 +90,7 @@ export function TourForm({
   const measuredWidth = useRef<number | undefined>(undefined);
   const readied = useRef(false);
   const heading = useRef<HTMLHeadingElement>(null);
-  const steps = tourSteps(scheme, platform, openedWith, bondKeys?.[scheme]);
+  const steps = tourSteps(platform, openedWith, bondKeys?.[KEYBINDING_SCHEME]);
   const step = steps[index];
   const tryCommand = step.tryCommand;
   const visibleError = errorStep === index ? error : undefined;
@@ -185,13 +172,13 @@ export function TourForm({
       {/* Only the step's text scrolls. Try it and its error sit in the action row below, and Back,
           Next and Finish in the footer, so a long step never pushes an action out of sight. */}
       <div className="guided-tour-content" style={contentStyle}>
-        <TourStepContent step={step} index={index} count={steps.length} scheme={scheme} platform={platform}
-          busy={busy} heading={heading} send={send} />
+        <TourStepContent step={step} index={index} count={steps.length} platform={platform}
+          heading={heading} send={send} />
         {sizing ? (
           <div ref={sizerRef} className="guided-tour-sizer" aria-hidden="true" inert>
             {steps.map((item, itemIndex) => (
               <div key={itemIndex} className="guided-tour-sizer-step">
-                <TourStepContent step={item} index={itemIndex} count={steps.length} scheme={scheme} platform={platform} ghost />
+                <TourStepContent step={item} index={itemIndex} count={steps.length} platform={platform} ghost />
               </div>
             ))}
             <div className="guided-tour-actions"><button type="button" tabIndex={-1}>Try it</button></div>

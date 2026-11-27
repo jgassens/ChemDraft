@@ -40,7 +40,7 @@ describe("status row", () => {
   let originalResizeObserver: typeof ResizeObserver | undefined;
 
   beforeEach(async () => {
-    saveKeybindingSettings({ scheme: "chemdraft" });
+    saveKeybindingSettings({ scheme: "chemdraw" });
     originalResizeObserver = globalThis.ResizeObserver;
     globalThis.ResizeObserver = TestResizeObserver as unknown as typeof ResizeObserver;
     window.history.replaceState(null, "", "/?agentBridge=1");

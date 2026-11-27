@@ -31,7 +31,7 @@ import { disabledControlAtPointer, installPaletteInputFocus, isPaletteInputFocus
 import { editHistoryDirection, forceDocumentHistoryCommandId, isCleanPaletteNumberInput, isTextEditingElement } from "./editHistoryRouting";
 import { applyKeybindingSchemeToCommands } from "./keybindingScheme";
 import { useCompoundLayoutSettings } from "./useCompoundLayoutTools";
-import { loadKeybindingSettings } from "./keybindingSettings";
+import { KEYBINDING_SCHEME, loadKeybindingSettings } from "./keybindingSettings";
 import { TOOLBAR_SELECTION_KINDS, type ToolbarSelectionModel } from "./toolbars/toolbarSelectionKind";
 import { filterToolbarCustomizationCommands } from "./toolbars/toolbarCustomizationCommands";
 import { ToolbarCustomizeController } from "./toolbars/CustomizeMainToolbar/ToolbarCustomizeController";
@@ -249,8 +249,7 @@ export function PaletteWindow({
   const commandSpecsRef = useRef(commandSpecs);
   const commandSpecsSignatureRef = useRef(toolsetCommandSpecsSignature(commandSpecs));
   const [keybindingSettings, setKeybindingSettings] = useState(loadKeybindingSettings);
-  const { scheme: keybindingScheme } = keybindingSettings;
-  const shortcutOverrides = keybindingSettings.overrides?.[keybindingScheme];
+  const shortcutOverrides = keybindingSettings.overrides?.[KEYBINDING_SCHEME];
   useEffect(() => installPopoverEscapeRouting(), []);
 
   useEffect(() => {
@@ -324,15 +323,15 @@ export function PaletteWindow({
   );
   // The main window owns live command metadata/availability and publishes snapshots to detached
   // palettes. The state initializer above is only a first-paint fallback before that handshake.
-  // Snapshots arrive already remapped for the active keybinding scheme; re-applying here covers the
-  // first-paint fallback and live scheme flips (the transform is idempotent by command id).
+  // Snapshots arrive already remapped to the shortcut set and custom keys; re-applying here covers the
+  // first-paint fallback and live custom-key changes (the transform is idempotent by command id).
   // The fallback specs are built before the sidecar status is known: filter them too, so the
   // Customize gallery and shortcuts never offer what the palette leaves out.
   const allCommands = useMemo(
     () => applyKeybindingSchemeToCommands(
-      withoutSessionUnavailableCommands(commandSpecs, unavailableCommandIds), keybindingScheme, shortcutOverrides
+      withoutSessionUnavailableCommands(commandSpecs, unavailableCommandIds), shortcutOverrides
     ),
-    [commandSpecs, keybindingScheme, shortcutOverrides, unavailableCommandIds]
+    [commandSpecs, shortcutOverrides, unavailableCommandIds]
   );
   const galleryCommands = useMemo(
     () => filterToolbarCustomizationCommands(allCommands, compoundLayoutSettings),

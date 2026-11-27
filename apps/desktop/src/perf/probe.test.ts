@@ -156,13 +156,15 @@ describe("bridge-gated timing probe", () => {
   it.each(["macos", "windows"] as const)("resolves bound %s chords using the app registry, including native clipboard and redo", platform => {
     const h = harness(); const probe = createPerfProbe(true, () => h.env)!;
     const quickActions = createQuickActions(createPhase4Document(), undefined, { canUndo: true, canRedo: true, hasMoleculeFragmentSelection: true });
-    const commands = createMainWindowShortcutCommands({ quickActions, layerActions: [], toolCommandSpecs: [] }, "chemdraft");
+    const commands = createMainWindowShortcutCommands({ quickActions, layerActions: [], toolCommandSpecs: [] });
     const registry = createDesktopShortcutRegistry(commands, platform);
     probe.setShortcutRegistry(registry);
     const modifier = platform === "macos" ? { metaKey: true } : { ctrlKey: true };
     for (const [key, shiftKey, commandId] of [
       ["z", false, "edit.undo"], ["z", true, "edit.redo"], ["a", false, "edit.selectAll"],
-      ["c", false, "clipboard.copy"], ["+", true, "view.zoomIn"], ["-", false, "view.zoomOut"]
+      ["c", false, "clipboard.copy"],
+      // The shortcut set's Magnify / Reduce chords.
+      [">", true, "view.zoomIn"], ["<", true, "view.zoomOut"]
     ] as const) {
       h.input("keydown", true, { key, shiftKey, ...modifier }); h.tasks(); h.paint();
       expect(h.records.at(-1)).toMatchObject({ kind: "keydown", commandId, extra: { chord: expect.any(String) } });

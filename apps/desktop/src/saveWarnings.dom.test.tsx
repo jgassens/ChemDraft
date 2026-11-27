@@ -106,7 +106,7 @@ describe("save warnings in the existing file warnings list", () => {
     native.save.mockReset().mockResolvedValue("/tmp/table.chemdraft");
     native.write.mockReset().mockResolvedValue(undefined);
     vi.stubGlobal("localStorage", new MemoryStorage());
-    saveKeybindingSettings({ scheme: "chemdraft" });
+    saveKeybindingSettings({ scheme: "chemdraw" });
     vi.stubGlobal("ResizeObserver", TestResizeObserver);
     vi.stubGlobal("URL", class extends URL {
       static createObjectURL = vi.fn(() => "blob:save-warning-test");

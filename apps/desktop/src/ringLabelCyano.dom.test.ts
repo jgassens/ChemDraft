@@ -34,7 +34,7 @@ describe.each(["macos", "windows"] as const)("cyano labels typed on a ring atom 
     Object.defineProperty(navigator, "platform", { configurable: true, value: platform === "macos" ? "MacIntel" : "Win32" });
     captureDescriptors = captureNames.map(name => Object.getOwnPropertyDescriptor(HTMLElement.prototype, name));
     for (const name of captureNames) Object.defineProperty(HTMLElement.prototype, name, { configurable: true, value: name === "hasPointerCapture" ? () => false : () => {} });
-    saveKeybindingSettings({ scheme: "chemdraft" });
+    saveKeybindingSettings({ scheme: "chemdraw" });
     window.history.replaceState(null, "", "/?agentBridge=1");
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   });
@@ -45,7 +45,7 @@ describe.each(["macos", "windows"] as const)("cyano labels typed on a ring atom 
       if (descriptor) Object.defineProperty(HTMLElement.prototype, name, descriptor); else Reflect.deleteProperty(HTMLElement.prototype, name);
     });
     Reflect.deleteProperty(navigator, "platform"); delete window.__CHEMDRAFT_AGENT__;
-    window.history.replaceState(null, "", "/"); saveKeybindingSettings({ scheme: "chemdraft" });
+    window.history.replaceState(null, "", "/"); saveKeybindingSettings({ scheme: "chemdraw" });
   });
   async function mount() {
     await act(async () => root.render(createElement(MainWindow, {

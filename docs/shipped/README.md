@@ -218,9 +218,10 @@ the superseding entry says so — read the newest entry that touches a subsystem
 
 **Slices with their own file:**
 
-- [ChemDraw-compatible keybinding scheme](chemdraw-keybinding-scheme.md) — a Preferences toggle that
-  remaps tools, hover hotkeys, and menu chords to match ChemDraw's defaults for migrating users;
-  documents the mapping rules, what is covered, and what is deliberately unmapped.
+- [Keyboard shortcuts: one built-in set](keyboard-shortcuts.md) — the single shortcut set
+  (tools, hover hotkeys, and menu chords familiar to users of other desktop drawing programs), the
+  one-time move of installs from the retired second preset (2026-11-26), the mapping rules, what is
+  covered, and what is deliberately unmapped.
 
 - [Analyzers: property and prediction suite](analyzers-property-prediction-suite.md) — the Molecular
   Inspector, isotope envelopes, OPSIN and OpenClatura plugin work, Joback estimates, and the pKa
@@ -623,11 +624,11 @@ preview build, and the intro text now says which images come from which build.
 
 ---
 
-## ChemDraw-parity drawing interactions (2026-08-31; extended 2026-09-20)
+## Classic-parity drawing interactions (2026-08-31; extended 2026-09-20)
 
-Implemented and tested on `claude/chemdraw-keybindings`, integrated with its later clipboard,
-interchange, and cleanup slices. The keybinding scheme that rides with them has its own doc,
-[chemdraw-keybinding-scheme.md](chemdraw-keybinding-scheme.md). Unless noted, the code lives in
+Implemented and tested on the original keybindings branch, integrated with its later clipboard,
+interchange, and cleanup slices. The keyboard shortcut set that rides with them (since 2026-11-26
+the app's only set) has its own doc, [keyboard-shortcuts.md](keyboard-shortcuts.md). Unless noted, the code lives in
 `apps/desktop/src/documentWorkflow.ts` with coverage in `documentWorkflow.test.ts` and
 `App.test.ts`.
 
@@ -739,14 +740,14 @@ commit plan identical vertices, free and atom-anchored alike.
 
 ### First-bond 30° orientation, ring reorientation
 
-Hotkey sprouts follow geometry and the growth arrow, ChemDraw-style: candidates are open-space
-bisectors and ±chain-angle directions with ties breaking upward (matching ChemDraw's rising
+Hotkey sprouts follow geometry and the growth arrow, classic-style: candidates are open-space
+bisectors and ±chain-angle directions with ties breaking upward (matching classic rising
 sprouts); a bare atom's first bond and the empty-canvas seed bond default to 30° above horizontal
 instead of lying flat; and the hexagon templates (cyclohexane, benzene) stamp vertex-up — the
 journals' orientation — so fresh-ring sprouts head vertically and diagonally. When a bond tool's
 growth arrow is on screen, the hotkeys commit exactly what it shows (steered candidate, guided
 ring closure included), and carbonyl on an atom that can't carry =O (aromatic carbon, existing
-carbonyl) sprouts a new carbon along the open direction and puts the C=O on it — ChemDraw's
+carbonyl) sprouts a new carbon along the open direction and puts the C=O on it — the classic
 aldehyde behavior — instead of refusing.
 
 ### Fragment copy and mixed selections

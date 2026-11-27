@@ -15,10 +15,7 @@ import {
   type Spin3dRefinementMode,
   type Spin3dSettings
 } from "./spin3dSettings";
-import {
-  KEYBINDING_SCHEME_LABELS,
-  type KeybindingScheme
-} from "./keybindingSettings";
+import { KEYBINDING_SCHEME } from "./keybindingSettings";
 import { compoundLayoutFeatures, loadCompoundLayoutSettings, saveCompoundLayoutSettings } from "./compoundLayoutSettings";
 import { loadDrawingSettings, saveDrawingSettings, type DefaultDoubleBond } from "./drawingSettings";
 import { broadcastDrawingSettings, listenForDrawingSettings } from "./window-manager";
@@ -48,20 +45,6 @@ const ENGINES: RadioOption<Spin3dEnginePreference>[] = [
   { value: "auto", title: "Automatic", description: "RDKit ETKDG when available (fast), with automatic fallback to OpenChemLib. Recommended." },
   { value: "rdkit", title: "RDKit ETKDG", description: "Prefer RDKit's fast embedding. Falls back to OpenChemLib only if RDKit can't load." },
   { value: "openchemlib", title: "OpenChemLib (legacy)", description: "Force the original engine. Much slower on large rings; use only to compare geometry." }
-];
-
-const KEYBINDING_SCHEMES: RadioOption<KeybindingScheme>[] = [
-  {
-    value: "chemdraft",
-    title: KEYBINDING_SCHEME_LABELS.chemdraft,
-    description: "The native ChemDraft shortcuts."
-  },
-  {
-    value: "chemdraw",
-    title: KEYBINDING_SCHEME_LABELS.chemdraw,
-    description:
-      "The default for new installs. Classic desktop shortcuts and hover hotkeys (Space for select, X for the bond tool, hover an atom and press 2 for a carbonyl, \"l\" for Cl, \"b\" for Br…). Case matters for element keys: B = boron, b = Br."
-  }
 ];
 
 const FORCE_FIELDS: RadioOption<Spin3dForceField>[] = [
@@ -139,7 +122,6 @@ export function PreferencesWindow() {
   const [askToSave, setAskToSave] = useState(loadAskToSaveBeforeQuit);
   const [settings, setSettings] = useState<Spin3dSettings>(() => loadSpin3dSettings());
   const shortcutSettings = useShortcutPreference();
-  const keybindingScheme = shortcutSettings.scheme;
 
   useEffect(() => {
     let disposed = false;
@@ -169,10 +151,6 @@ export function PreferencesWindow() {
     saveSpin3dSettings(next);
     // Tell the document window to pick up the change live (localStorage persists it).
     void broadcastSpin3dSettings(next);
-  };
-
-  const updateKeybindings = (scheme: KeybindingScheme): void => {
-    void updateShortcutPreference(scheme).catch(error => console.error("Could not save keyboard shortcuts", error));
   };
 
   return (
@@ -301,17 +279,8 @@ export function PreferencesWindow() {
 
       <section id="keyboard" className="preferences-section" aria-labelledby="preferences-keyboard">
         <h2 id="preferences-keyboard">Keyboard</h2>
-        <PreferenceRadioGroup
-          legend="Shortcut scheme"
-          hint="Each scheme keeps its own shortcuts."
-          name="keybinding-scheme"
-          options={KEYBINDING_SCHEMES}
-          value={keybindingScheme}
-          onSelect={updateKeybindings}
-        />
-        <KeyboardPreferences key={keybindingScheme} scheme={keybindingScheme}
-          overrides={shortcutSettings.overrides?.[keybindingScheme]}
-          onUpdate={overrides => updateShortcutPreference(keybindingScheme, overrides)} />
+        <KeyboardPreferences overrides={shortcutSettings.overrides?.[KEYBINDING_SCHEME]}
+          onUpdate={overrides => updateShortcutPreference(overrides)} />
       </section>
 
       <PreferenceRadioGroup

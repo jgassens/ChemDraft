@@ -224,7 +224,7 @@ struct GuidedTourSnapshot {
     /// Plugin commands the menus offered when the tour opened. Absent in older payloads.
     #[serde(default)]
     plugins: Vec<GuidedTourPluginCommand>,
-    /// An optional map of schemes to single-character keys, or null for cleared bindings.
+    /// The bond key a tour step shows, by set id (only the one set's), or null when cleared.
     #[serde(default, rename = "bondKeys")]
     _bond_keys: BTreeMap<super::KeybindingScheme, Option<char>>,
 }
@@ -253,10 +253,6 @@ enum GuidedTourPluginCommand {
 enum GuidedTourAction {
     Cancel {},
     Finish {},
-    ChooseShortcuts {
-        #[serde(rename = "scheme")]
-        _scheme: super::KeybindingScheme,
-    },
     TryTourCommand {
         #[serde(rename = "command")]
         _command: GuidedTourCommand,
@@ -5860,19 +5856,22 @@ mod tests {
         assert!(is_dialog_label("dialog-main-guidedTour-1"));
         let mut message = snapshot();
         message.dialog_kind = "guidedTour".into();
-        message.data = json!({"title":"Take the Tour", "scheme":"chemdraft", "automatic":true});
+        message.data = json!({"title":"Take the Tour", "scheme":"chemdraw", "automatic":true});
         assert!(message.validate().is_ok());
         message.data["automatic"] = json!("true");
         assert!(message.validate().is_err());
         message.message_type = "action".into();
-        for data in [
-            json!({"action":"cancel"}),
-            json!({"action":"finish"}),
-            json!({"action":"chooseShortcuts","scheme":"chemdraft"}),
-            json!({"action":"chooseShortcuts","scheme":"chemdraw"}),
-        ] {
+        for data in [json!({"action":"cancel"}), json!({"action":"finish"})] {
             message.data = data;
             assert!(message.validate().is_ok());
+        }
+        // There is one shortcut set: the tour offers no choice of set.
+        for data in [
+            json!({"action":"chooseShortcuts","scheme":"chemdraw"}),
+            json!({"action":"chooseShortcuts","scheme":"chemdraft"}),
+        ] {
+            message.data = data;
+            assert!(message.validate().is_err(), "{}", message.data);
         }
     }
 
@@ -5881,8 +5880,7 @@ mod tests {
         let mut message = snapshot();
         message.dialog_kind = "guidedTour".into();
         let tour = |plugins: Option<Value>| {
-            let mut data =
-                json!({"title":"Take the Tour", "scheme":"chemdraft", "automatic":false});
+            let mut data = json!({"title":"Take the Tour", "scheme":"chemdraw", "automatic":false});
             if let Some(plugins) = plugins {
                 data["plugins"] = plugins;
             }
@@ -5910,14 +5908,14 @@ mod tests {
     }
 
     #[test]
-    fn guided_tour_snapshot_accepts_only_known_schemes_and_single_character_keys() {
+    fn guided_tour_snapshot_accepts_only_the_one_set_and_single_character_keys() {
         let mut message = snapshot();
         message.dialog_kind = "guidedTour".into();
-        message.data = json!({"title":"Take the Tour", "scheme":"chemdraft", "automatic":false});
+        message.data = json!({"title":"Take the Tour", "scheme":"chemdraw", "automatic":false});
         assert_eq!(message.validate(), Ok(()));
         for bond_keys in [
-            json!({"chemdraft":"1", "chemdraw":null}),
-            json!({"chemdraft":null, "chemdraw":"😀"}),
+            json!({"chemdraw":null}),
+            json!({"chemdraw":"😀"}),
             json!({"chemdraw":"j"}),
             json!({}),
         ] {
@@ -5926,9 +5924,9 @@ mod tests {
         }
         for bond_keys in [
             json!({"unknown":"1"}),
-            json!({"ChemDraft":"1"}),
-            json!({"chemdraft":"12"}),
-            json!({"chemdraft":""}),
+            json!({"chemdraft":"1"}),
+            json!({"chemdraw":"12"}),
+            json!({"chemdraw":""}),
             json!({"chemdraw":1}),
             json!([]),
             json!(null),
@@ -5936,6 +5934,8 @@ mod tests {
             message.data["bondKeys"] = bond_keys;
             assert!(message.validate().is_err(), "{}", message.data);
         }
+        message.data = json!({"title":"Take the Tour", "scheme":"chemdraft", "automatic":false});
+        assert!(message.validate().is_err());
     }
 
     #[test]
@@ -5972,7 +5972,7 @@ mod tests {
         let mut registry = Registry::default();
         let mut tour = snapshot();
         tour.dialog_kind = "guidedTour".into();
-        tour.data = json!({"title":"Take the Tour", "scheme":"chemdraft", "automatic":false});
+        tour.data = json!({"title":"Take the Tour", "scheme":"chemdraw", "automatic":false});
         let (registration, _) = register(&mut registry, tour.clone(), false).unwrap();
         let session = registry.sessions.get_mut(&registration.host_id).unwrap();
         // Messages are built from the JSON the dialog window sends, then checked as `dialog_send` does.
@@ -5987,7 +5987,7 @@ mod tests {
             message
         };
         for (index, data) in [
-            json!({"action":"chooseShortcuts","scheme":"chemdraw"}),
+            json!({"action":"tryTourCommand","command":"view.openKeyboardPreferences"}),
             json!({"action":"tryTourCommand","command":"help.tour.openSample"}),
             json!({"action":"tryTourCommand","command":"analyze.molecularProperties"}),
         ]

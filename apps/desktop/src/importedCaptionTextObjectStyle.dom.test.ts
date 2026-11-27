@@ -26,7 +26,7 @@ describe.each(["macos", "windows"] as const)("whole-object formatting of an impo
     vi.stubGlobal("ResizeObserver", TestResizeObserver);
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
     Object.defineProperty(navigator, "platform", { configurable: true, value: platform === "macos" ? "MacIntel" : "Win32" });
-    saveKeybindingSettings({ scheme: "chemdraft" });
+    saveKeybindingSettings({ scheme: "chemdraw" });
     window.history.replaceState(null, "", "/?agentBridge=1");
     container = document.createElement("div");
     document.body.append(container);

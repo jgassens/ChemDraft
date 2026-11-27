@@ -37,7 +37,7 @@ describe("MainWindow assistant history port", () => {
     HTMLElement.prototype.setPointerCapture = () => {};
     HTMLElement.prototype.releasePointerCapture = () => {};
     HTMLElement.prototype.hasPointerCapture = () => false;
-    saveKeybindingSettings({ scheme: "chemdraft" });
+    saveKeybindingSettings({ scheme: "chemdraw" });
     window.history.replaceState(null, "", "/?agentBridge=1");
     container = document.createElement("div"); document.body.append(container);
     root = createRoot(container);

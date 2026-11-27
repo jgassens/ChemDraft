@@ -26,7 +26,7 @@ describe("arrow nudge", () => {
   describe.each(["macos", "windows"] as const)("%s command shortcuts", platform => {
     const registry = createDesktopShortcutRegistry(createMainWindowShortcutCommands({
       quickActions: [], layerActions: [], toolCommandSpecs: []
-    }, "chemdraft"), platform);
+    }), platform);
     it("registers every direction and size through the shared shortcut registry", () => {
       expect(registry.conflicts()).toEqual([]);
       expect(selectionNudgeActions).toHaveLength(8);

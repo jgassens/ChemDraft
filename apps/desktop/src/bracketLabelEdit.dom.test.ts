@@ -13,7 +13,6 @@ import { MemoryStorage } from "./testSupport/memoryStorage";
 import { DOCUMENT_SESSION_SAVE_DEBOUNCE_MS, type DocumentSessionEnvelope } from "./documentSession";
 import { setNativePromptProvider, type NativePromptOptions } from "./nativePrompt";
 import { saveAskToSaveBeforeQuit } from "./quitSettings";
-import { saveKeybindingSettings } from "./keybindingSettings";
 
 const native = vi.hoisted(() => ({
   writeFile: vi.fn<(path: string, contents: string) => Promise<void>>(),
@@ -69,8 +68,6 @@ describe.each(["macos", "windows"] as const)("repeat label editing (%s)", platfo
     native.writeFile.mockReset().mockResolvedValue();
     native.saveSession.mockResolvedValue();
     vi.stubGlobal("localStorage", new MemoryStorage());
-    // Cmd/Ctrl+R is Show Rulers in ChemDraft's scheme; pin it rather than rely on the default.
-    saveKeybindingSettings({ scheme: "chemdraft" });
     pendingPrompt = undefined;
     restorePrompt = setNativePromptProvider(prompt => new Promise(resolve => { pendingPrompt = { prompt, resolve }; }));
     saveAskToSaveBeforeQuit(true);
@@ -196,35 +193,35 @@ describe.each(["macos", "windows"] as const)("repeat label editing (%s)", platfo
     expect(editor()).toBeNull();
     expect(label().textContent).toBe("候補");
   });
-  if (platform === "macos") it("keeps Cmd+R owned by the editor and by Show Rulers on the canvas", async () => {
+  if (platform === "macos") it("keeps Cmd+; owned by the editor and by Show Rulers on the canvas", async () => {
     await openSavedLabel();
     const before = snapshot();
-    expect((await key("r", { metaKey: true })).defaultPrevented).toBe(false);
+    expect((await key(";", { metaKey: true })).defaultPrevented).toBe(false);
     expect(snapshot()).toEqual(before);
     expect(container.querySelector(".document-rulers-overlay")).toBeNull();
     await key("Escape");
-    const event = new KeyboardEvent("keydown", { key: "r", metaKey: true, bubbles: true, cancelable: true });
+    const event = new KeyboardEvent("keydown", { key: ";", metaKey: true, bubbles: true, cancelable: true });
     await act(async () => { document.body.dispatchEvent(event); });
     expect(event.defaultPrevented).toBe(true);
     expect(container.querySelector(".document-rulers-overlay")).not.toBeNull();
   });
   if (platform === "windows") {
     it.each([
-      ["r", false, ".document-rulers-overlay"],
-      ["R", true, ".crosshair-overlay"]
-    ] as const)("routes canvas Ctrl+%s to its toggle while preventing reload", async (name, shiftKey, selector) => {
+      [";", false, ".document-rulers-overlay"],
+      ["x", true, ".crosshair-overlay"]
+    ] as const)("routes canvas Ctrl+%s to its toggle", async (name, altKey, selector) => {
       await mount(false);
       const canvas = container.querySelector(".page")!;
       expect(container.querySelector(selector)).toBeNull();
       for (const visible of [true, false]) {
-        const event = new KeyboardEvent("keydown", { key: name, ctrlKey: true, shiftKey, bubbles: true, cancelable: true });
+        const event = new KeyboardEvent("keydown", { key: name, ctrlKey: true, altKey, bubbles: true, cancelable: true });
         await act(async () => { canvas.dispatchEvent(event); });
         expect(event.defaultPrevented).toBe(true);
         expect(container.querySelector(selector) !== null).toBe(visible);
       }
     });
     it.each([
-      { key: "F5" }, { key: "F5", ctrlKey: true }, { key: "BrowserRefresh" }
+      { key: "F5" }, { key: "F5", ctrlKey: true }, { key: "BrowserRefresh" }, { key: "r", ctrlKey: true }, { key: "R", ctrlKey: true, shiftKey: true }
     ])("prevents canvas $key without a command", async chord => {
       await mount(false);
       const before = snapshot();

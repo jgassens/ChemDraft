@@ -26,7 +26,7 @@ describe.each(["macos", "windows"] as const)("orbital placement and rotation on 
       configurable: true, value: name === "hasPointerCapture" ? () => false : () => {}
     });
     Object.defineProperty(navigator, "platform", { configurable: true, value: platform === "macos" ? "MacIntel" : "Win32" });
-    saveKeybindingSettings({ scheme: "chemdraft" });
+    saveKeybindingSettings({ scheme: "chemdraw" });
     window.history.replaceState(null, "", "/?agentBridge=1");
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   });

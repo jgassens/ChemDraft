@@ -105,7 +105,7 @@ describe("atom label editor width", () => {
   let originalResizeObserver: typeof ResizeObserver | undefined;
 
   beforeEach(() => {
-    saveKeybindingSettings({ scheme: "chemdraft" });
+    saveKeybindingSettings({ scheme: "chemdraw" });
     originalResizeObserver = globalThis.ResizeObserver;
     globalThis.ResizeObserver = TestResizeObserver as unknown as typeof ResizeObserver;
     HTMLElement.prototype.setPointerCapture = () => {};
@@ -128,7 +128,7 @@ describe("atom label editor width", () => {
     });
     container.remove();
     vi.restoreAllMocks();
-    saveKeybindingSettings({ scheme: "chemdraft" });
+    saveKeybindingSettings({ scheme: "chemdraw" });
     window.history.replaceState(null, "", "/");
     delete window.__CHEMDRAFT_AGENT__;
     if (originalResizeObserver) {

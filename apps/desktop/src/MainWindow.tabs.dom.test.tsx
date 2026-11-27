@@ -21,7 +21,7 @@ import { PAN_CLICK_WINDOW_MS, TOUCH_PAN_SLOP } from "./DocumentTabList";
 import { exportPhase4Svg, applyNativeChainTool, createNativeSingleBondMolecule, arrangeSelectedDocumentObjects, createNativeSavePayload, createPhase4Document, openNativeDocument, selectDocumentObjects } from "./documentWorkflow";
 import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import { saveCompoundLayoutSettings } from "./compoundLayoutSettings";
-import { loadKeybindingSettings, saveKeybindingSettings } from "./keybindingSettings";
+import { KEYBINDING_STORAGE_KEY } from "./keybindingSettings";
 import type { DesktopPreferences } from "./desktopPreferences";
 import type { TourMode } from "./tour/tourState";
 import { TOUR_WAITING_FOR_IDLE } from "./tour/tourState";
@@ -472,14 +472,15 @@ describe("documents in one window", () => {
     };
     const idle = async () => { await act(async () => vi.advanceTimersByTimeAsync(1000)); };
 
-    it.each([["new install", "chemdraw", "cancel"], ["upgrade", "chemdraft", "finish"]] as const)(
-      "shows for a %s, persists the exit, and reopens from the Help command", async (profile, scheme, action) => {
+    it.each([["new install", "cancel"], ["upgrade", "finish"]] as const)(
+      "shows for a %s, persists the exit, and reopens from the Help command", async (profile, action) => {
         vi.useFakeTimers();
-        if (profile === "upgrade") saveKeybindingSettings({ scheme });
+        // An upgrade may still hold the retired preset's id; the tour names the one set either way.
+        if (profile === "upgrade") localStorage.setItem(KEYBINDING_STORAGE_KEY, JSON.stringify({ scheme: "chemdraft" }));
         await restart("automatic");
         expect(native.dialogSnapshot).toBeUndefined();
         await idle();
-        expect(native.dialogSnapshot).toMatchObject({ dialogKind: "guidedTour", data: { automatic: true, title: "Take the Tour", scheme } });
+        expect(native.dialogSnapshot).toMatchObject({ dialogKind: "guidedTour", data: { automatic: true, title: "Take the Tour", scheme: "chemdraw" } });
         await pageSizeMessage("ready", {});
         await pageSizeMessage("action", { action });
         expect(native.savePreferences).toHaveBeenCalledExactlyOnceWith({ guidedTourSeen: true });
@@ -541,18 +542,16 @@ describe("documents in one window", () => {
       expect(native.dialogSnapshot?.dialogKind).toBe("guidedTour");
     });
 
-    it("uses the shortcut preference store and creates a clean practice tab with its own undo", async () => {
+    it("opens Keyboard preferences and creates a clean practice tab with its own undo", async () => {
       const drawing = applyNativeChainTool(createPhase4Document("User drawing"), { x: 100, y: 100 }, { x: 180, y: 140 });
       await restart("suppress", drawing);
       const before = structuredClone(bridge().snapshot().document);
       await command("help.showTour");
+      // One shortcut set: the snapshot names it and its single-bond key; there is nothing to choose.
+      expect(native.dialogSnapshot).toMatchObject({
+        dialogKind: "guidedTour", data: { title: "Take the Tour", scheme: "chemdraw", automatic: false, plugins: [], bondKeys: { chemdraw: "1" } }
+      });
       await pageSizeMessage("ready", {});
-      await pageSizeMessage("action", { action: "chooseShortcuts", scheme: "chemdraw" });
-      expect(native.preferences.shortcutScheme).toBe("chemdraw");
-      expect(loadKeybindingSettings().scheme).toBe("chemdraw");
-      expect(native.dialogPublish).toHaveBeenCalledWith("opaque", expect.objectContaining({
-        type: "snapshot", data: { title: "Take the Tour", scheme: "chemdraw", automatic: false, plugins: [], bondKeys: { chemdraft: "1", chemdraw: "1" } }
-      }));
       await pageSizeMessage("action", { action: "tryTourCommand", command: "view.openKeyboardPreferences" });
       expect(tauriInvoke).toHaveBeenCalledWith("toggle_preferences_window", { keyboard: true });
       expect(tabs()).toHaveLength(1);
@@ -915,14 +914,13 @@ describe("documents in one window", () => {
     await act(async () => { await invocation; });
   });
 
-  async function mountHoverChain() {
+  async function mountLabelChain() {
     act(() => root!.unmount());
     container.innerHTML = "";
     vi.mocked(createPluginRuntime).mockClear();
-    saveKeybindingSettings({ scheme: "chemdraft" });
-    const chain = applyNativeChainTool(createPhase4Document("Hover cancellation"), { x: 80, y: 300 }, { x: 700, y: 300 });
+    const chain = applyNativeChainTool(createPhase4Document("Atom label"), { x: 80, y: 300 }, { x: 700, y: 300 });
     await mount(selectDocumentObjects(chain, chain.pages[0]!.id, []));
-    await command("tool.bond");
+    await command("tool.atom");
     const rect = { x: 0, y: 0, left: 0, top: 0, right: 792, bottom: 612, width: 792, height: 612, toJSON: () => ({}) } as DOMRect;
     for (const element of container.querySelectorAll<HTMLElement>(".page, .canvas-region")) {
       element.getBoundingClientRect = () => rect;
@@ -930,14 +928,15 @@ describe("documents in one window", () => {
   }
   const hoverMolecule = () => bridge().snapshot().document.pages[0]!.objects.find((object): object is MoleculeObject => object.type === "molecule")!;
   const labelEditor = () => container.querySelector<HTMLInputElement>('[data-atom-label-editor="true"]');
-  async function hoverChainAtom(index: number) {
+  /** Open the label editor on a chain atom with the Atom Label tool. */
+  async function openChainAtomLabel(index: number) {
     const atom = hoverMolecule().atoms[index]!;
     await act(async () => {
-      const event = new MouseEvent("pointermove", { bubbles: true, clientX: atom.x, clientY: atom.y, buttons: 0 });
+      const event = new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 0, clientX: atom.x, clientY: atom.y, buttons: 1 });
       Object.defineProperties(event, { pointerId: { value: 7 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
-      container.querySelector(".page")!.dispatchEvent(event);
+      container.querySelector(`[data-object-id="${hoverMolecule().id}"]`)!.dispatchEvent(event);
     });
-    expect(bridge().snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom", atomId: atom.id });
+    expect(labelEditor()).not.toBeNull();
   }
   async function labelKey(key: string) {
     const target = document.activeElement ?? document.body;
@@ -952,102 +951,6 @@ describe("documents in one window", () => {
       });
     }
   }
-
-  it("Escape preserves an accepted chemistry proposal between the first hover letter and the draft", async () => {
-    await mountHoverChain();
-    await hoverChainAtom(1);
-    await labelKey("N");
-    const beforeProposal = hoverMolecule();
-    const proposal = await propose({ op: "updateObject", objectId: beforeProposal.id, changes: {
-      atoms: beforeProposal.atoms.map((atom, index) => index === 3 ? { ...atom, element: "O" } : atom)
-    } });
-    await decide("acceptPluginProposal", proposal.id);
-    const acceptedAtom = hoverMolecule().atoms[3]!;
-    expect(acceptedAtom.element).toBe("O");
-    await labelKey("M");
-    await labelKey("e");
-    expect(labelEditor()?.value).toBe("NMe");
-    await labelKey("Escape");
-    expect(labelEditor()).toBeNull();
-    expect(hoverMolecule().atoms[3]).toEqual(acceptedAtom);
-    expect(hoverMolecule().atoms[1]!.element).toBe("N");
-    expect(bridge().snapshot().file.dirty).toBe(true);
-    // The external proposal keeps its undo entry.
-    await command("edit.undo");
-    expect(hoverMolecule().atoms[3]!.element).toBe("C");
-    expect(hoverMolecule().atoms[1]!.element).toBe("N");
-  });
-
-  it.each(["O", "N"])("Escape preserves a same-atom proposal that supersedes the open draft with %s", async element => {
-    await mountHoverChain();
-    await hoverChainAtom(1);
-    for (const key of "NMe") await labelKey(key);
-    expect(labelEditor()?.value).toBe("NMe");
-    const beforeProposal = hoverMolecule();
-    const proposal = await propose({ op: "updateObject", objectId: beforeProposal.id, changes: {
-      atoms: beforeProposal.atoms.map((atom, index) => index === 1 ? { ...atom, element } : atom)
-    } });
-    await decide("acceptPluginProposal", proposal.id);
-    const accepted = bridge().snapshot().document;
-    expect(hoverMolecule().atoms[1]!.element).toBe(element);
-    expect(labelEditor()?.value).toBe("NMe");
-    await labelKey("Escape");
-    expect(labelEditor()).toBeNull();
-    expect(bridge().snapshot().document).toEqual(accepted);
-    // Escape neither overwrites the accepted atom nor removes the proposal's history entry.
-    await command("edit.undo");
-    expect(hoverMolecule().atoms[1]!.element).toBe("N");
-  });
-
-  it("Escape keeps the first letter and its undo entry even when rollback constructs document keys in a different order", async () => {
-    await mountHoverChain();
-    const before = bridge().snapshot().document;
-    await hoverChainAtom(1);
-    await labelKey("N");
-    const afterFirstLetter = bridge().snapshot().document;
-    for (const key of "Me") await labelKey(key);
-    const restore = atomLabelDraft.restoreAtomLabelDraft;
-    vi.spyOn(atomLabelDraft, "restoreAtomLabelDraft").mockImplementation((document, state) => {
-      const restored = restore(document, state);
-      return Object.fromEntries(Object.entries(restored).reverse()) as typeof restored;
-    });
-    await labelKey("Escape");
-    expect(labelEditor()).toBeNull();
-    expect(bridge().snapshot().document).toEqual(afterFirstLetter);
-    expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("true");
-    await command("edit.undo");
-    expect(bridge().snapshot().document).toEqual(before);
-  });
-
-  it.each(["document.save", "document.saveAs"])("Escape after %s during a hover draft keeps the saved path and marks the canvas dirty", async saveCommand => {
-    await mountHoverChain();
-    native.savePicker.mockResolvedValueOnce("/tmp/chain.chemdraft");
-    await command("document.save");
-    expect(bridge().snapshot().file).toEqual({ path: "/tmp/chain.chemdraft", dirty: false });
-    const before = bridge().snapshot().document;
-    await hoverChainAtom(1);
-    await labelKey("N");
-    const afterFirstLetter = bridge().snapshot().document;
-    for (const key of "Me") await labelKey(key);
-    expect(labelEditor()?.value).toBe("NMe");
-    const savedPath = saveCommand === "document.saveAs" ? "/tmp/renamed-chain.chemdraft" : "/tmp/chain.chemdraft";
-    if (saveCommand === "document.saveAs") native.savePicker.mockResolvedValueOnce(savedPath);
-    await command(saveCommand);
-    expect(labelEditor()?.value).toBe("NMe");
-    const [path, contents] = native.writeFile.mock.calls.at(-1)!;
-    expect(path).toBe(savedPath);
-    const saved = openChemDraftPayload(contents).document!;
-    const savedMolecule = saved.pages[0]!.objects.find((object): object is MoleculeObject => object.type === "molecule")!;
-    expect(savedMolecule.atoms[1]!.element).toBe("NMe");
-    expect(bridge().snapshot().file).toEqual({ path: savedPath, dirty: false });
-    await labelKey("Escape");
-    expect(bridge().snapshot().document).toEqual(afterFirstLetter);
-    expect(bridge().snapshot().file).toEqual({ path: savedPath, dirty: true });
-    expect(document.title).toContain(`${savedPath.split("/").at(-1)} •`);
-    expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("true");
-    await command("edit.undo");
-    expect(bridge().snapshot().document).toEqual(before);
-  });
 
   it("keeps proposals across switches and activates their source tab for one selected, undoable insertion", async () => {
     await open("Source");
@@ -3114,11 +3017,11 @@ describe("documents in one window", () => {
   });
 
   it("Export commits the still-focused atom-label draft before rendering", async () => {
-    await mountHoverChain();
+    await mountLabelChain();
     await command("export.open"); await pageSizeMessage("ready", {});
     const snapshot = native.dialogSnapshot!;
     if (snapshot.type !== "snapshot" || snapshot.dialogKind !== "export") throw new Error("Missing Export snapshot");
-    await hoverChainAtom(1);
+    await openChainAtomLabel(1);
     for (const key of "NMe") await labelKey(key);
     expect(labelEditor()?.value).toBe("NMe");
     expect(document.activeElement).toBe(labelEditor());
@@ -3892,7 +3795,6 @@ describe("documents in one window", () => {
     expect(runtime.host.listProposedPatches("pending")).toEqual([proposal]);
   });
 
-
   describe("fresh-document launch preference", () => {
     it.each([false, true])("uses the launch preference %s without changing live history", async enabled => {
       const defaultViewport = bridge().snapshot().viewport;
@@ -4042,7 +3944,6 @@ describe("documents in one window", () => {
       await paste("New run with recovery");
       expect((await autosave()).unrestoredTabs).toEqual(previous.unrestoredTabs);
     });
-
 
     it.each([true, false])("shows the kept-drawings prompt only when not starting fresh (fresh %s)", async enabled => {
       saveStartWithFreshDocument(enabled);

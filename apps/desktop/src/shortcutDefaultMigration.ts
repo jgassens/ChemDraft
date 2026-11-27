@@ -1,206 +1,267 @@
 /**
- * One-time move of the shortcut-scheme default (ChemDraft 1.2.3).
+ * One-time move to ChemDraft's single keyboard-shortcut set (owner decision, 2026-11-26).
  *
- * New installs now default to the industry-standard scheme. An install that never chose a scheme
- * has nothing stored, so flipping DEFAULT_KEYBINDING_SETTINGS alone would silently switch it. On
- * launch, before the document window mounts, this writes a scheme explicitly:
+ * Older versions had two presets: "chemdraft" (the default before 1.2.3) and "chemdraw" (now the one
+ * set, keybindingSettings.ts). On launch, before the document window mounts, this decides which
+ * preset the install last used and records the single set:
  *
- *   - a scheme already in the native preferences file is an explicit choice: nothing is written to
- *     it, and it is mirrored into the webview cache;
- *   - a scheme only in the webview cache (older versions kept it there) is kept and copied over;
- *   - an existing install with no scheme gets LEGACY_DEFAULT_KEYBINDING_SCHEME;
- *   - a fresh install gets DEFAULT_KEYBINDING_SETTINGS.scheme.
+ *   - the native preferences file already names the single set: nothing to move. The custom keys are
+ *     mirrored into the webview cache;
+ *   - the set is named only in the webview cache (the browser build, or a native write that failed):
+ *     it is copied to the native file;
+ *   - the retired preset is named (native file, else cache), or nothing is named but the install
+ *     existed before 1.2.3, when that preset was the unnamed default: the install moves. Its own
+ *     custom keys for the retired preset (`overrides.chemdraft`) are carried into the set when no other
+ *     command already uses the key (customKeyboardShortcuts.ts `mergeLegacyShortcutOverrides`); the
+ *     others are dropped. A one-time status message tells the user (`takeShortcutSetNotice`);
+ *   - a fresh install records the set and sees no message.
  *
- * The written scheme is itself the "done" marker (preferences.json has no room for a separate flag:
- * lib.rs parses it with deny_unknown_fields), so every later launch takes the first branch.
+ * On every branch the set's custom keys are taken from both stores entry by entry, never as one
+ * store's whole map: the native file's entry wins for a command, the cache's other entries are kept
+ * unless they collide with a key already in use, and an invalid entry in either store is dropped
+ * alone. Where the native file lacks one of the combined keys it is written there too, so neither
+ * store is ever overwritten with a map that lost a valid customization.
  *
- * Every path ends with the resolved scheme in the webview cache (KEYBINDING_STORAGE_KEY) or, where
- * it must not be persisted, in setLaunchKeybindingScheme, so the document window's first render,
- * its first native-menu push, and every window it opens already use it. None of them waits for a
- * second read of the native file.
+ * The set's id in the native file is the "done" marker (preferences.json has no room for a separate
+ * flag: lib.rs parses it with deny_unknown_fields), so every later launch takes the first branch.
+ * The retired preset's stored custom keys are left in place, unread.
  *
- * When the native preferences cannot be read, the install can never be proven new, so it never gets
- * the new default:
- *   - a scheme in the webview cache (the mirror of the native file) is used for this launch;
- *   - otherwise LEGACY_DEFAULT_KEYBINDING_SCHEME is used for this launch. It goes into the webview
- *     cache only when other evidence shows an existing install (a preferences file that exists but
- *     cannot be parsed is such evidence); with no evidence at all it is kept in memory only, so a
- *     later launch that can read the file classifies the install from scratch. That launch still
- *     runs the app, which writes toolbar-state.json and other settings that would otherwise read as
- *     existing-install evidence, so it also leaves PENDING_FRESH_INSTALL_KEY in the webview cache:
- *     while that marker is present, no existing-install evidence counts (only an explicit scheme in
- *     the native file or the cache does), and the first launch that can read the file classifies
- *     the install as new and removes the marker. The marker is written only when nothing showed an
- *     existing install, so everything found after it was written by such fallback launches.
- *   Nothing is written to the native file: lib.rs reads it before applying a patch, so the write
- *   would fail the same way, and it must never replace a file whose other settings it cannot see.
+ * When the native preferences cannot be read, nothing is written and nothing moves this launch: the
+ * app runs on the single set with whatever custom keys for it the cache holds, and the next launch
+ * that can read the file moves the install. Nothing here throws to the caller, whatever is stored.
  *
- * Existing-install evidence, in order:
+ * Existing-install evidence, used only when no preset is named anywhere:
  *   1. toolbar-state.json (TOOLSET_LAYOUT_STATE_FILENAME in lib.rs) in the app data folder. Every
- *      desktop launch writes it at startup (MainWindow's startup layout save), on macOS and Windows
- *      alike, and has since before 1.1.1. Updates never remove it. A file that exists but cannot be
- *      read still counts.
- *   2. Any key in the native preferences file (tour seen, custom shortcuts; 1.2.2 and later), or a
- *      preferences file that exists but cannot be parsed.
+ *      desktop launch writes it at startup, on macOS and Windows alike, and has since before 1.1.1.
+ *      A file that exists but cannot be read still counts.
+ *   2. Any key in the native preferences file (tour seen, custom shortcuts; 1.2.2 and later).
  *   3. Any `chemdraft.` key in the webview's localStorage (the browser build's only store).
  * Behavior is the same on every platform; only the stores differ, and they come in through the host.
  */
+import type { ShortcutOverrides, ShortcutPlatform, ShortcutScope } from "@chemdraft/shortcut-engine";
 import type { DesktopPreferences } from "./desktopPreferences";
 import {
-  DEFAULT_KEYBINDING_SETTINGS,
-  isKeybindingScheme,
-  isSchemeOverrides,
+  isStoredKeybindingScheme,
+  KEYBINDING_SCHEME,
   KEYBINDING_STORAGE_KEY,
-  LEGACY_DEFAULT_KEYBINDING_SCHEME,
-  setLaunchKeybindingScheme,
-  type KeybindingScheme,
-  type KeybindingSettings
+  LEGACY_KEYBINDING_SCHEME,
+  type KeybindingSettings,
+  type StoredKeybindingScheme,
+  type StoredShortcutOverrides,
+  validSchemeOverrides
 } from "./keybindingSettings";
 
 /**
- * Left in the webview cache by a launch that could not read the native preferences and found no
- * existing-install evidence (see the header). Not itself existing-install evidence.
+ * Left in the webview cache by 1.2.3 release candidates whose launch could not read the native
+ * preferences. Meaningless now; removed when found, and never counted as existing-install evidence.
  */
 export const PENDING_FRESH_INSTALL_KEY = "chemdraft.shortcutDefault.pendingFresh";
+
+/** Set once the move's status message has been shown, so a repeated move never shows it again. */
+export const SHORTCUT_SET_NOTICE_SHOWN_KEY = "chemdraft.keybindings.singleSetNoticeShown";
 
 export interface ShortcutDefaultMigrationHost {
   /** The webview's localStorage, or undefined where it is unavailable. */
   storage: Pick<Storage, "getItem" | "setItem" | "removeItem" | "key" | "length"> | undefined;
   /** The desktop runtime's native stores; undefined in the browser build. */
   native?: {
-    /**
-     * Reads preferences.json. Rejects with lib.rs's error string: serde_json's message (which ends
-     * in "at line L column C") when the file exists but cannot be parsed, an I/O error otherwise.
-     */
+    /** Reads preferences.json. Rejects when it cannot be read or parsed. */
     readPreferences(): Promise<DesktopPreferences>;
-    writeScheme(scheme: KeybindingScheme): Promise<unknown>;
+    /** Applies a patch to preferences.json the way lib.rs `apply_patch` does. */
+    writePreferences(patch: DesktopPreferences): Promise<unknown>;
     /** Whether toolbar-state.json exists. Rejects when it exists but cannot be read. */
     hasToolbarLayout(): Promise<boolean>;
   };
+  /** The platform whose key conflicts decide which carried-over keys survive. Defaults to detection. */
+  platform?: ShortcutPlatform;
 }
 
-export type ShortcutDefaultMigrationOutcome = {
-  kind: "already-set" | "kept-stored-choice" | "existing-install" | "fresh-install" | "preferences-unreadable";
-  scheme: KeybindingScheme;
-};
+export type ShortcutDefaultMigrationOutcome =
+  | { kind: "current" | "fresh-install" | "preferences-unreadable" }
+  /** Moved from the retired preset: `kept` custom keys carried over, `dropped` ones that conflicted. */
+  | { kind: "migrated"; kept: number; dropped: number };
+
+let noticePending = false;
 
 export async function migrateShortcutDefault(host: ShortcutDefaultMigrationHost): Promise<ShortcutDefaultMigrationOutcome> {
-  const outcome = await resolveShortcutDefault(host);
-  // Whatever the cache holds (or fails to hold), this launch's windows fall back to the resolved
-  // scheme rather than to the new default.
-  setLaunchKeybindingScheme(outcome.scheme);
+  let outcome: ShortcutDefaultMigrationOutcome;
+  try {
+    outcome = await resolveShortcutSet(host);
+  } catch (error) {
+    // Whatever was stored, the app still starts on the single set.
+    console.error("Could not move to the single shortcut set", error);
+    return { kind: "preferences-unreadable" };
+  }
+  if (outcome.kind === "migrated" && !noticeAlreadyShown(host.storage)) noticePending = true;
   return outcome;
 }
 
-async function resolveShortcutDefault(host: ShortcutDefaultMigrationHost): Promise<ShortcutDefaultMigrationOutcome> {
+/** The status message announcing the move: the owner's wording, the same on every platform. */
+export const SHORTCUT_SET_NOTICE =
+  "Keyboard shortcuts now use one standard set. You can change any key in Preferences ▸ Keyboard.";
+
+/**
+ * The move's status message, exactly once: after this launch moved the install, the first call
+ * returns it and records it as shown; every other call returns undefined.
+ */
+export function takeShortcutSetNotice(
+  storage: ShortcutDefaultMigrationHost["storage"] = defaultStorage()
+): string | undefined {
+  if (!noticePending) return undefined;
+  noticePending = false;
+  try {
+    storage?.setItem(SHORTCUT_SET_NOTICE_SHOWN_KEY, "1");
+  } catch {
+    // Best-effort: the native file already records the move, so it does not repeat.
+  }
+  return SHORTCUT_SET_NOTICE;
+}
+
+/** Tests only: forget a pending notice and the once-per-process run. */
+export function resetShortcutDefaultMigrationForTests(): void {
+  noticePending = false;
+  started = undefined;
+}
+
+async function resolveShortcutSet(host: ShortcutDefaultMigrationHost): Promise<ShortcutDefaultMigrationOutcome> {
+  clearPendingFreshInstall(host.storage);
   let preferences: DesktopPreferences = {};
   if (host.native) {
     try {
-      preferences = (await host.native.readPreferences()) ?? {};
+      const read = await host.native.readPreferences();
+      preferences = read && typeof read === "object" ? read : {};
     } catch (error) {
-      console.error("Could not read preferences to migrate the shortcut default", error);
-      return unreadablePreferences(host, error);
-    }
-    if (isKeybindingScheme(preferences.shortcutScheme)) {
-      mirrorCache(host.storage, preferences.shortcutScheme, preferences);
-      clearPendingFreshInstall(host.storage);
-      return { kind: "already-set", scheme: preferences.shortcutScheme };
+      console.error("Could not read preferences to move to the single shortcut set", error);
+      return { kind: "preferences-unreadable" };
     }
   }
-
+  const nativeScheme = isStoredKeybindingScheme(preferences.shortcutScheme) ? preferences.shortcutScheme : undefined;
+  const nativeOverrides = validSchemeOverrides(preferences.shortcutOverrides);
   const cached = readCache(host.storage);
-  if (cached.scheme) {
-    clearPendingFreshInstall(host.storage);
-    if (!host.native) return { kind: "already-set", scheme: cached.scheme };
-    await writeNative(host, cached.scheme);
-    return { kind: "kept-stored-choice", scheme: cached.scheme };
+  // Custom keys are combined entry by entry, never by taking one store's whole map: the native file's
+  // entries win, the cache's fill the gaps unless they collide, and an invalid entry in either is
+  // dropped alone. So a valid customization kept in only one store survives every branch below.
+  const setKeys = await combineSetKeys(nativeOverrides?.[KEYBINDING_SCHEME], cached.overrides?.[KEYBINDING_SCHEME], host.platform);
+  const legacy = combineEntries(nativeOverrides?.[LEGACY_KEYBINDING_SCHEME], cached.overrides?.[LEGACY_KEYBINDING_SCHEME]);
+  const stored = (keys: ShortcutOverrides | undefined): StoredShortcutOverrides => ({
+    ...(legacy ? { [LEGACY_KEYBINDING_SCHEME]: legacy } : {}),
+    ...(keys ? { [KEYBINDING_SCHEME]: keys } : {})
+  });
+  // The native file gets the set's custom keys whenever its own copy lacks one of them.
+  const setKeysPatch = (keys: ShortcutOverrides | undefined): DesktopPreferences =>
+    sameKeys(keys, rawSetEntry(preferences)) ? {} : { shortcutOverrides: { [KEYBINDING_SCHEME]: keys ?? {} } };
+
+  if (nativeScheme === KEYBINDING_SCHEME) {
+    const patch = setKeysPatch(setKeys);
+    if (patch.shortcutOverrides) await writeNative(host, patch);
+    mirrorCache(host.storage, stored(setKeys));
+    return { kind: "current" };
   }
 
-  // Only fallback launches have run since nothing showed an existing install: what they wrote
-  // (toolbar layout, other settings) is not evidence of one.
-  const existing = !hasPendingFreshInstall(host.storage) && (cached.present || hasChemDraftStorage(host.storage)
-    || Object.keys(preferences).length > 0 || await hasToolbarLayout(host));
-  const scheme = existing ? LEGACY_DEFAULT_KEYBINDING_SCHEME : DEFAULT_KEYBINDING_SETTINGS.scheme;
-  const written = host.native ? await writeNative(host, scheme) : false;
-  // Mirror into the webview cache the way updateShortcutPreference does, so every window's first
-  // render agrees, and so a failed native write is finished from the cache on the next launch.
-  mirrorCache(host.storage, scheme, preferences, cached);
-  // The marker goes once the scheme is stored somewhere a later launch reads first.
-  if (written || readCache(host.storage).scheme === scheme) clearPendingFreshInstall(host.storage);
-  return { kind: existing ? "existing-install" : "fresh-install", scheme };
+  const previous: StoredKeybindingScheme | undefined = nativeScheme ?? cached.scheme;
+  if (previous === KEYBINDING_SCHEME) {
+    // Named in the cache only: the set is copied to the native file with the combined custom keys.
+    await writeNative(host, { shortcutScheme: KEYBINDING_SCHEME, ...setKeysPatch(setKeys) });
+    mirrorCache(host.storage, stored(setKeys));
+    return { kind: "current" };
+  }
+
+  const movesFromRetiredPreset = previous === LEGACY_KEYBINDING_SCHEME || cached.present ||
+    hasChemDraftStorage(host.storage) || Object.keys(preferences).length > 0 || await hasToolbarLayout(host);
+  if (!movesFromRetiredPreset) {
+    await writeNative(host, { shortcutScheme: KEYBINDING_SCHEME, ...setKeysPatch(setKeys) });
+    mirrorCache(host.storage, stored(setKeys));
+    return { kind: "fresh-install" };
+  }
+
+  const merged = legacy
+    ? (await import("./customKeyboardShortcuts")).mergeLegacyShortcutOverrides(legacy, setKeys, host.platform)
+    : { overrides: setKeys, kept: 0, dropped: 0 };
+  const movedKeys = withoutEmptyScopes(merged.overrides);
+  await writeNative(host, { shortcutScheme: KEYBINDING_SCHEME, ...setKeysPatch(movedKeys) });
+  mirrorCache(host.storage, stored(movedKeys));
+  return { kind: "migrated", kept: merged.kept, dropped: merged.dropped };
 }
 
 /**
- * The native file could not be read, so an explicit choice cannot be told from none and a new
- * install cannot be proven. Never the new default; never a native write.
+ * The set's custom keys from both stores: `native` wins per command, and the cache's other entries are
+ * added unless they collide (customKeyboardShortcuts.ts `mergeStoredShortcutOverrides`). The command
+ * table is loaded only when the cache has an entry the native file lacks.
  */
-async function unreadablePreferences(host: ShortcutDefaultMigrationHost, error: unknown): Promise<ShortcutDefaultMigrationOutcome> {
-  const cached = readCache(host.storage);
-  // The cache mirrors the native file (or holds an older version's choice): the best evidence left.
-  if (cached.scheme) return { kind: "preferences-unreadable", scheme: cached.scheme };
-  const scheme = LEGACY_DEFAULT_KEYBINDING_SCHEME;
-  // An earlier fallback launch found no evidence; whatever exists now, it wrote.
-  const pendingFresh = hasPendingFreshInstall(host.storage);
-  const existing = !pendingFresh && (isUnparsablePreferences(error) || cached.present || hasChemDraftStorage(host.storage)
-    || await hasToolbarLayout(host));
-  // Proven existing: keep the legacy scheme in the cache, where the next launch that can read the
-  // file copies it over (as for an older version's choice). Not proven either way: this launch
-  // only, and the marker tells the next launch that what this one writes is no evidence.
-  if (existing) mirrorCache(host.storage, scheme, {}, cached);
-  else if (!pendingFresh) markPendingFreshInstall(host.storage);
-  return { kind: "preferences-unreadable", scheme };
+async function combineSetKeys(
+  native: ShortcutOverrides | undefined,
+  cached: ShortcutOverrides | undefined,
+  platform: ShortcutPlatform | undefined
+): Promise<ShortcutOverrides | undefined> {
+  const missing = SCOPES.some(scope => Object.keys(cached?.[scope] ?? {}).some(id => !Object.hasOwn(native?.[scope] ?? {}, id)));
+  if (!missing) return withoutEmptyScopes(native);
+  const { mergeStoredShortcutOverrides } = await import("./customKeyboardShortcuts");
+  return withoutEmptyScopes(mergeStoredShortcutOverrides(native, cached, platform).overrides);
 }
 
-function hasPendingFreshInstall(storage: ShortcutDefaultMigrationHost["storage"]): boolean {
-  try {
-    return storage?.getItem(PENDING_FRESH_INSTALL_KEY) != null;
-  } catch {
-    return false;
+/** The retired preset's custom keys from both stores, `primary` winning per command. Never applied as they are. */
+function combineEntries(primary: ShortcutOverrides | undefined, secondary: ShortcutOverrides | undefined): ShortcutOverrides | undefined {
+  const combined: ShortcutOverrides = {};
+  for (const scope of SCOPES) {
+    const rows = { ...secondary?.[scope], ...primary?.[scope] };
+    if (Object.keys(rows).length) combined[scope] = rows;
   }
+  return withoutEmptyScopes(combined);
 }
 
-function markPendingFreshInstall(storage: ShortcutDefaultMigrationHost["storage"]): void {
-  try {
-    storage?.setItem(PENDING_FRESH_INSTALL_KEY, "1");
-  } catch {
-    // Without the marker the next launch counts this one's writes as an existing install: the
-    // old scheme, the safe side.
+const SCOPES = ["commands", "atom", "bond"] as const satisfies readonly ShortcutScope[];
+
+function withoutEmptyScopes(overrides: ShortcutOverrides | undefined): ShortcutOverrides | undefined {
+  const kept = SCOPES.filter(scope => Object.keys(overrides?.[scope] ?? {}).length > 0);
+  return kept.length ? Object.fromEntries(kept.map(scope => [scope, overrides?.[scope]])) as ShortcutOverrides : undefined;
+}
+
+/** The set's entry exactly as the native file holds it, valid or not. */
+function rawSetEntry(preferences: DesktopPreferences): unknown {
+  const overrides: unknown = preferences.shortcutOverrides;
+  return overrides && typeof overrides === "object" && !Array.isArray(overrides)
+    ? (overrides as Record<string, unknown>)[KEYBINDING_SCHEME]
+    : undefined;
+}
+
+/** Whether the native file's raw set entry already holds exactly these custom keys (empty scopes ignored). */
+function sameKeys(keys: ShortcutOverrides | undefined, raw: unknown): boolean {
+  const scopes = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? Object.entries(raw).filter(([, rows]) => !(rows && typeof rows === "object" && !Array.isArray(rows) && Object.keys(rows).length === 0))
+    : undefined;
+  if (raw !== undefined && raw !== null && !scopes) return false;
+  return stableJson(keys ?? {}) === stableJson(Object.fromEntries(scopes ?? []));
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableJson((value as Record<string, unknown>)[key])}`).join(",")}}`;
   }
-}
-
-function clearPendingFreshInstall(storage: ShortcutDefaultMigrationHost["storage"]): void {
-  try {
-    if (storage?.getItem(PENDING_FRESH_INSTALL_KEY) != null) storage?.removeItem(PENDING_FRESH_INSTALL_KEY);
-  } catch {
-    // A marker left behind only matters while no scheme is stored; one is stored by now.
-  }
-}
-
-/** serde_json's Display for a parse error ends in "at line L column C"; I/O errors never do. */
-function isUnparsablePreferences(error: unknown): boolean {
-  const message = typeof error === "string" ? error : error instanceof Error ? error.message : "";
-  return / at line \d+ column \d+$/.test(message);
-}
-
-async function hasToolbarLayout(host: ShortcutDefaultMigrationHost): Promise<boolean> {
-  return host.native ? host.native.hasToolbarLayout().catch(() => true) : false;
+  return JSON.stringify(value) ?? "null";
 }
 
 let started: Promise<void> | undefined;
 
 /**
- * Run the migration once per process against the real stores. Never rejects: the document window
+ * Run the move once per process against the real stores. Never rejects: the document window
  * waits on it before mounting.
  */
 export function runShortcutDefaultMigration(): Promise<void> {
   started ??= defaultHost()
     .then(migrateShortcutDefault)
     .then(() => undefined, error => {
-      // Nothing proved a new install: keep the old default for this launch only.
-      setLaunchKeybindingScheme(LEGACY_DEFAULT_KEYBINDING_SCHEME);
-      console.error("Could not migrate the shortcut default", error);
+      console.error("Could not move to the single shortcut set", error);
     });
   return started;
+}
+
+function defaultStorage(): Storage | undefined {
+  try {
+    return globalThis.localStorage ?? undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function defaultHost(): Promise<ShortcutDefaultMigrationHost> {
@@ -208,48 +269,46 @@ async function defaultHost(): Promise<ShortcutDefaultMigrationHost> {
     import("./desktopPreferences"),
     import("./window-manager")
   ]);
-  let storage: Storage | undefined;
-  try {
-    storage = globalThis.localStorage ?? undefined;
-  } catch {
-    storage = undefined;
-  }
   return {
-    storage,
+    storage: defaultStorage(),
     native: isDesktopRuntime() ? {
       readPreferences: () => desktopPreferences(),
-      writeScheme: shortcutScheme => desktopPreferences({ shortcutScheme }),
+      writePreferences: patch => desktopPreferences(patch),
       hasToolbarLayout: async () => (await loadToolsetLayoutState()) !== undefined
     } : undefined
   };
 }
 
-async function writeNative(host: ShortcutDefaultMigrationHost, scheme: KeybindingScheme): Promise<boolean> {
+async function writeNative(host: ShortcutDefaultMigrationHost, patch: DesktopPreferences): Promise<void> {
+  if (!host.native) return;
   try {
-    await host.native?.writeScheme(scheme);
-    return true;
+    await host.native.writePreferences(patch);
   } catch (error) {
-    console.error("Could not save the shortcut scheme", error);
-    return false;
+    // The cache still records the move, and the next launch copies it to the native file.
+    console.error("Could not save the shortcut set", error);
   }
+}
+
+async function hasToolbarLayout(host: ShortcutDefaultMigrationHost): Promise<boolean> {
+  return host.native ? host.native.hasToolbarLayout().catch(() => true) : false;
 }
 
 function readCache(storage: ShortcutDefaultMigrationHost["storage"]): {
   present: boolean;
-  scheme?: KeybindingScheme;
-  overrides?: KeybindingSettings["overrides"];
+  scheme?: StoredKeybindingScheme;
+  overrides?: StoredShortcutOverrides;
 } {
   try {
     const raw = storage?.getItem(KEYBINDING_STORAGE_KEY);
     if (raw === null || raw === undefined) return { present: false };
     try {
-      const parsed = JSON.parse(raw) as Partial<KeybindingSettings> | null;
+      const parsed = JSON.parse(raw) as Partial<Record<keyof KeybindingSettings, unknown>> | null;
       const scheme = parsed?.scheme;
       const overrides = parsed?.overrides;
       return {
         present: true,
-        scheme: isKeybindingScheme(scheme) ? scheme : undefined,
-        overrides: isSchemeOverrides(overrides) ? overrides : undefined
+        scheme: isStoredKeybindingScheme(scheme) ? scheme : undefined,
+        overrides: validSchemeOverrides(overrides)
       };
     } catch {
       return { present: true };
@@ -259,23 +318,30 @@ function readCache(storage: ShortcutDefaultMigrationHost["storage"]): {
   }
 }
 
-/**
- * Write the resolved scheme into the webview cache the way updateShortcutPreference does: native
- * overrides win, else the cache's own. Leaves an identical cache untouched.
- */
-function mirrorCache(
-  storage: ShortcutDefaultMigrationHost["storage"],
-  scheme: KeybindingScheme,
-  preferences: DesktopPreferences,
-  cached: ReturnType<typeof readCache> = readCache(storage)
-): void {
-  const overrides = isSchemeOverrides(preferences.shortcutOverrides) ? preferences.shortcutOverrides : cached.overrides;
-  const settings: KeybindingSettings = { scheme, ...(overrides ? { overrides } : {}) };
+/** Write the single set and its custom keys into the webview cache. Leaves an identical cache untouched. */
+function mirrorCache(storage: ShortcutDefaultMigrationHost["storage"], overrides: StoredShortcutOverrides | undefined): void {
+  const settings: KeybindingSettings = { scheme: KEYBINDING_SCHEME, ...(overrides && Object.keys(overrides).length ? { overrides } : {}) };
   try {
     const value = JSON.stringify(settings);
     if (storage?.getItem(KEYBINDING_STORAGE_KEY) !== value) storage?.setItem(KEYBINDING_STORAGE_KEY, value);
   } catch {
-    // Best-effort, as in saveKeybindingSettings; setLaunchKeybindingScheme still covers this launch.
+    // Best-effort, as in saveKeybindingSettings: every reader resolves the single set anyway.
+  }
+}
+
+function noticeAlreadyShown(storage: ShortcutDefaultMigrationHost["storage"]): boolean {
+  try {
+    return storage?.getItem(SHORTCUT_SET_NOTICE_SHOWN_KEY) != null;
+  } catch {
+    return false;
+  }
+}
+
+function clearPendingFreshInstall(storage: ShortcutDefaultMigrationHost["storage"]): void {
+  try {
+    if (storage?.getItem(PENDING_FRESH_INSTALL_KEY) != null) storage?.removeItem(PENDING_FRESH_INSTALL_KEY);
+  } catch {
+    // A leftover marker means nothing now.
   }
 }
 
@@ -283,7 +349,7 @@ function hasChemDraftStorage(storage: ShortcutDefaultMigrationHost["storage"]): 
   try {
     for (let index = 0; index < (storage?.length ?? 0); index += 1) {
       const key = storage?.key(index);
-      if (key?.startsWith("chemdraft.") && key !== PENDING_FRESH_INSTALL_KEY) return true;
+      if (key?.startsWith("chemdraft.") && key !== PENDING_FRESH_INSTALL_KEY && key !== SHORTCUT_SET_NOTICE_SHOWN_KEY) return true;
     }
   } catch {
     // Unreadable storage is no evidence either way.

@@ -35,7 +35,7 @@ describe("shortcut-engine", () => {
     expect(shortcutChord(normalizeShortcut({ commandId: "document.save", keys: ["Cmd", "S"] }, "macos"))).toBe("Meta+s");
     expect(shortcutChord(normalizeShortcut({ commandId: "document.save", keys: ["Cmd", "S"] }, "windows"))).toBe("Ctrl+s");
     expect(shortcutChord(normalizeShortcut({ commandId: "document.save", keys: ["Cmd", "S"] }, "linux"))).toBe("Ctrl+s");
-    // The ChemDraw scheme's Ctrl+Cmd+E collapses to one Ctrl off macOS.
+    // The shortcut set's Ctrl+Cmd+E (Export) collapses to one Ctrl off macOS.
     expect(shortcutChord(normalizeShortcut({ commandId: "export.open", keys: ["Ctrl", "Cmd", "E"] }, "windows"))).toBe("Ctrl+e");
 
     const registry = createShortcutRegistry([
@@ -191,7 +191,7 @@ describe("shouldIgnoreShortcutTarget", () => {
   });
 
   it("ignores a focused button so Space activates it without also firing a bound tool", () => {
-    // ChemDraw scheme binds Space → select tool. Without `button` in the ignore list, pressing
+    // The shortcut set binds Space → select tool. Without `button` in the ignore list, pressing
     // Space on a focused palette button both activated the button AND switched tools — one press,
     // two actions. (The palette button's own keydown handler invokes its command; it does not
     // depend on the global handler.)

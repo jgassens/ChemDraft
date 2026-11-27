@@ -72,7 +72,7 @@ import { withStandaloneDrawingToolCommands } from "./drawingTools";
 import { createMainWindowShortcutCommands } from "./keyboardShortcuts";
 import { desktopToolsetRegistry, getToolsetCommandSpecs, sessionAvailableRegistry } from "./toolsets";
 import { elementSymbols } from "@chemdraft/chem-core";
-import { chemDrawHoveredTargetHotkeyCommand } from "./keybindingScheme";
+import { defaultHoverHotkeyCommand } from "./keybindingScheme";
 
 describe("fragment hotkey commands", () => {
   it("reserves hover element and continuation keys for any new fragment bindings", () => {
@@ -87,25 +87,25 @@ describe("fragment hotkey commands", () => {
       expect(["k", "K", "+", "-"].includes(key), `ChemDraft hover key ${key}`).toBe(false);
       for (const target of ["atom", "bond"] as const) {
         const ownBinding = (target === "atom" ? fragmentAtomDrawingHotkeys : fragmentBondDrawingHotkeys)[key];
-        const resolved = chemDrawHoveredTargetHotkeyCommand(target, key);
+        const resolved = defaultHoverHotkeyCommand(target, key);
         expect(resolved === undefined || resolved === ownBinding, `compatibility hover key ${key}`).toBe(true);
       }
       expect(!(key in fragmentAtomDrawingHotkeys && key in fragmentBondDrawingHotkeys), `duplicate fragment key ${key}`).toBe(true);
     }
   });
-  it.each(["chemdraft", "chemdraw"] as const)("keeps every fragment key free of tool/command shortcuts in %s", scheme => {
+  it("keeps every fragment key free of tool/command shortcuts", () => {
     const document = createPhase4Document();
     const commands = createMainWindowShortcutCommands({
       quickActions: createQuickActions(document, undefined),
       layerActions: createLayerActions(document),
       toolCommandSpecs: withStandaloneDrawingToolCommands(getToolsetCommandSpecs(desktopToolsetRegistry))
-    }, scheme);
+    });
     for (const platform of ["macos", "windows"] as const) {
       const bindings = commands.flatMap(command => {
         const shortcut = command.shortcut ?? command.defaultShortcut;
         return shortcut ? [normalizeShortcut({ commandId: command.id, keys: parseShortcutDisplay(shortcut) }, platform)] : [];
       });
-      const keys = new Set([...Object.keys(fragmentAtomDrawingHotkeys), ...Object.keys(fragmentBondDrawingHotkeys), ".", ...(scheme === "chemdraw" ? ["v"] : [])]);
+      const keys = new Set([...Object.keys(fragmentAtomDrawingHotkeys), ...Object.keys(fragmentBondDrawingHotkeys), ".", "v"]);
       for (const key of keys) {
         const fragment = normalizeShortcut({ commandId: "fragment", keys: /^[A-Z]$/.test(key) ? ["Shift", key] : [key] }, platform);
         expect(bindings.filter(binding => binding.key === fragment.key &&

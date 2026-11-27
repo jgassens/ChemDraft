@@ -3,7 +3,7 @@
 // Tester report: while typing a substituent label (OMe, CO2Et) "the text kept getting erased even
 // though I hadn't clicked the eraser tool". Once the label editor lost focus mid-word, the rest of
 // the word reached the canvas hotkeys: the edit had selected the atom, so "O" relabeled it,
-// Backspace stripped it, and "e" armed the eraser (ChemDraft scheme) or applied Et (ChemDraw).
+// Backspace stripped it, and "e" applied Et.
 
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -75,7 +75,7 @@ describe("atom label editor focus", () => {
     nativeFocus.invoke.mockReset().mockResolvedValue(undefined);
     nativeFocus.windowSetFocus.mockReset().mockResolvedValue(undefined);
     nativeFocus.webviewSetFocus.mockReset().mockResolvedValue(undefined);
-    saveKeybindingSettings({ scheme: "chemdraft" });
+    saveKeybindingSettings({ scheme: "chemdraw" });
     originalResizeObserver = globalThis.ResizeObserver;
     globalThis.ResizeObserver = TestResizeObserver as unknown as typeof ResizeObserver;
     HTMLElement.prototype.setPointerCapture = () => {};
@@ -96,7 +96,7 @@ describe("atom label editor focus", () => {
     container.remove();
     vi.restoreAllMocks();
     vi.useRealTimers();
-    saveKeybindingSettings({ scheme: "chemdraft" });
+    saveKeybindingSettings({ scheme: "chemdraw" });
     window.history.replaceState(null, "", "/");
     Reflect.deleteProperty(navigator, "platform");
     delete window.__CHEMDRAFT_AGENT__;
@@ -876,7 +876,7 @@ describe("atom label editor focus", () => {
     expect(document.activeElement).toBe(labelEditor());
   });
 
-  it("leaves no atom for hotkeys to hit after a blur-ended edit (ChemDraft scheme)", async () => {
+  it("leaves no atom for hotkeys to hit after a blur-ended edit", async () => {
     await renderMainWindow(ringDocument());
     const atomId = await startLabelEdit();
     expect(bridge().snapshot().selectedNativeMoleculePart).toMatchObject({ kind: "atom", atomId });
@@ -898,8 +898,7 @@ describe("atom label editor focus", () => {
     expect(molecule().atoms).toHaveLength(6);
   });
 
-  it("does not apply Et to the edited atom after a blur-ended edit (ChemDraw scheme)", async () => {
-    saveKeybindingSettings({ scheme: "chemdraw" });
+  it("does not apply Et to the edited atom after a blur-ended edit", async () => {
     await renderMainWindow(ringDocument());
     const atomId = await startLabelEdit();
     await typeIntoEditor("O");

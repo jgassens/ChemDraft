@@ -148,8 +148,7 @@ export interface AppMenuContext {
    * for the pure core menu, so the native-sync test's base model is unaffected.
    */
   pluginMenuItems?: readonly PluginAppMenuItem[];
-  /** Active keybinding scheme; the ChemDraw scheme relabels the accelerators that differ. */
-  keybindingScheme?: "chemdraft" | "chemdraw";
+  /** The user's custom keys for the shortcut set; they relabel the accelerators they change. */
   keybindingOverrides?: ShortcutOverrides;
   /**
    * Commands this build cannot run for the whole session (`sessionUnavailableCommandIds`). Their
@@ -265,7 +264,6 @@ function buildPageSetupSubmenu(): AppMenuSubmenu {
  */
 export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
   separatorSeq = 0;
-  const chemDrawScheme = context.keybindingScheme === "chemdraw";
   const platform = context.platform ?? detectShortcutPlatform();
   const preferences = preferencesMenuPlacement(platform);
 
@@ -290,7 +288,7 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
         separator(),
         buildPageSetupSubmenu(),
         separator(),
-        command("export.open", "Export…", { accelerator: chemDrawScheme ? "Ctrl+Cmd+E" : "Shift+Cmd+E" }),
+        command("export.open", "Export…", { accelerator: "Ctrl+Cmd+E" }),
         ...(platform === "macos" ? [] : [separator(), command("view.togglePreferences", preferences.label, { accelerator: "Cmd+," })])
       ]
     },
@@ -338,11 +336,11 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
       label: "View",
       items: [
         command("view.toggleRulers", "Show Rulers", {
-          accelerator: chemDrawScheme ? "Cmd+;" : "Cmd+R",
+          accelerator: "Cmd+;",
           checked: context.rulersVisible
         }),
         command("view.toggleCrosshairs", "Show Crosshairs", {
-          accelerator: chemDrawScheme ? "Alt+Cmd+X" : "Shift+Cmd+R",
+          accelerator: "Alt+Cmd+X",
           checked: context.crosshairsVisible
         }),
         separator(),
