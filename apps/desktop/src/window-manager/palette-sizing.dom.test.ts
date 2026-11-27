@@ -141,7 +141,7 @@ describe("palette work-area sizing", () => {
     expect(generated).toContain(`commands.allow = ["${command}"]`);
   });
 
-  it("uses the calling palette's live position and native work area for title-strip recovery", () => {
+  it("uses the calling palette's live position and native work area for grip-rail recovery", () => {
     const nativeSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/lib.rs"), "utf8");
     const resize = nativeSource.split("fn resize_toolset_window(")[1]!.split("/// Pre-build")[0]!;
     expect(resize).toMatch(
@@ -152,16 +152,22 @@ describe("palette work-area sizing", () => {
     expect(resize.match(/let area = /g)).toHaveLength(1);
     expect(resize).toContain("toolset_position_in_work_area(position, width, height, area)");
     const recover = nativeSource.split("fn toolset_position_in_work_area(")[1]!.split("/// Pull a palette")[0]!;
-    expect(recover).toContain("area.contains_title_strip(position.x, position.y, width, TOOLSET_TITLE_HEIGHT)");
+    // Palettes have no title row: recovery judges the 14 pt left grip rail, not a title strip.
+    expect(recover).toContain("area.contains_grip_rail(position.x, position.y)");
+    expect(recover).not.toContain("contains_title_strip");
+    // Inspectors (resizable) still recover by full-frame clamp into the work area.
+    const inspector = nativeSource.split("fn inspector_frame_in_work_area(")[1]!.split("fn toolset_position_in_work_area(")[0]!;
+    expect(inspector).toContain("position.x.clamp(area.x, area.x + (area.width - width))");
+    expect(inspector).toContain("position.y.clamp(area.y, area.y + (area.height - height))");
     const reopen = nativeSource.split("fn clamp_toolset_frame<")[1]!.split("fn toolset_frame_in_work_area")[0]!;
-    expect(reopen).toMatch(/toolset_work_area_for_origin\([\s\S]*area\.contains_title_strip\(/);
+    expect(reopen).toMatch(/toolset_work_area_for_origin\([\s\S]*toolset_frame_in_work_area\(/);
   });
 
-  it("checks full display bounds before title visibility when restoring a logical inspector frame", () => {
+  it("checks full display bounds before grip-rail visibility when restoring a logical inspector frame", () => {
     const nativeSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/lib.rs"), "utf8");
     const restore = nativeSource.split("fn clamp_toolset_frame<")[1]!.split("fn toolset_frame_in_work_area")[0]!;
     expect(restore).toMatch(/monitor_logical_bounds\(monitor\)[\s\S]*toolset_work_area_for_origin\(/);
-    expect(restore).toMatch(/\.find\(\|\(bounds, _\)\|[\s\S]*\.contains\(&position\.y\)[\s\S]*\.or_else\([\s\S]*contains_title_strip\(/);
+    expect(restore).toMatch(/\.find\(\|\(bounds, _\)\|[\s\S]*\.contains\(&position\.y\)[\s\S]*\.or_else\([\s\S]*contains_grip_rail\(/);
   });
 
   it("recovers the Windows inspector from its native physical origin and applies the destination frame", () => {
