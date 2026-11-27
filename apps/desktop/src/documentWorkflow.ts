@@ -5482,7 +5482,9 @@ export function updateNativeTextObjectText(
   document: ChemDraftDocument,
   objectId: string,
   editedText: string,
-  originalFrame?: Pick<TextObject, "x" | "y" | "width" | "height">
+  originalFrame?: Pick<TextObject, "x" | "y" | "width" | "height">,
+  /** Characters just typed after a script toggle at a collapsed caret take that script. */
+  typedScript?: { range: NativeTextSelectionRange; script: TextSpan["script"] }
 ): ChemDraftDocument {
   const location = findTextObjectLocation(document, objectId);
   if (!location) {
@@ -5492,7 +5494,12 @@ export function updateNativeTextObjectText(
   // Text box text holds LF only (docs/plans/textbox-behavior.md). Compare against the stored
   // runs with their line breaks normalized too, so an older CRLF object keeps its formatting.
   const text = normalizeTextLineBreaks(editedText);
-  const spans = textObjectSpansForTextChange(textObjectWithNormalizedLineBreaks(object), text);
+  const changedSpans = textObjectSpansForTextChange(textObjectWithNormalizedLineBreaks(object), text);
+  // Applied before sizing, so the box is measured with the smaller script glyphs.
+  const spans = typedScript
+    ? updateTextObjectSpansInRange({ ...object, text, spans: changedSpans }, typedScript.range,
+      (span) => ({ ...span, script: typedScript.script }))
+    : changedSpans;
   const fixedWidth = object.style.textBoxSizingMode === "fixed-width" || object.style.textBoxSizingMode === "fixed-size";
   const fixedSize = object.style.textBoxSizingMode === "fixed-size";
   const frame = { ...object, x: 0, y: 0 };
@@ -5670,6 +5677,17 @@ export function updateNativeTextObjectScript(
     },
     { now: phase4Timestamp }
   );
+}
+
+/**
+ * The script a character typed at `offset` would take: the run it lands in, else the run before
+ * it, else the object's own script (the same choice a text change makes for inserted text).
+ */
+export function textScriptForTypingAt(stored: TextObject, offset: number): TextSpan["script"] {
+  const object = textObjectWithNormalizedLineBreaks(stored);
+  const spans = textObjectSpansForWorkflow(object);
+  return (textSpanAtOffset(spans, offset) ?? textSpanAtOffset(spans, Math.max(0, offset - 1)))?.script
+    ?? textObjectUniformScript(object);
 }
 
 export function updateNativeTextObjectScriptRange(

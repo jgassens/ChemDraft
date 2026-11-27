@@ -3,6 +3,7 @@ import { interactive3dWorkspaceStatusText, Interactive3dWorkspaceStatus } from "
 import { CanvasContextMenu, NATIVE_CANVAS_MENU_CLOSED_EVENT } from "./CanvasContextMenu";
 import { PLUGIN_CHANGE_REFUSED, RECOGNITION_REFUSED, chemistryRefusalOf, refusalSentence } from "./plugins/requestWrites/chemistryRefusal";
 import { buildObjectCanvasMenu, pageCanvasMenu, SET_DEFAULT_ARROW_STYLE_COMMAND_ID } from "./canvasContextMenuModel";
+import { pendingTypedScriptStatus, toggledPendingTypedScript, typedScriptInsertion, type PendingTypedScript } from "./typedTextScript";
 import { CONTEXT_STEREO_DEADLINE_MS, loadStereoEngine, resolveContextStereo, stereoReadoutRequest } from "./stereoReadout";
 import { RequestWriteError } from "@chemdraft/plugin-host";
 import { createRequestHistory } from "./plugins/requestWrites/requestHistory";
@@ -789,6 +790,7 @@ import {
   setDocumentCustomPageSize,
   updateNativeTextObjectScript,
   updateNativeTextObjectScriptRange,
+  textScriptForTypingAt,
   updateNativeTextObjectStyle,
   updateNativeTextObjectStyleRange,
   convertNativeTextObjectToAtom,
@@ -3363,6 +3365,8 @@ export function MainWindow({
   const templatePreviewPlanRef = useRef<NativeTemplatePlacementPlan | undefined>(undefined);
   const activeTextSelectionRef = useRef<{ objectId: string; range: NativeTextSelectionRange } | undefined>(undefined);
   const toolbarStyleTargetRef = useRef<ToolbarStyleTargetSnapshot | undefined>(undefined);
+  /** Subscript/superscript toggled at a collapsed caret, for the next typed characters. */
+  const pendingTypedScriptRef = useRef<PendingTypedScript | undefined>(undefined);
   const viewportRef = useRef(viewport);
 
   useEffect(() => {
@@ -7954,6 +7958,10 @@ export function MainWindow({
 
   const recordTextSelection = useCallback((objectId: string, range: NativeTextSelectionRange) => {
     const nextSelection = { objectId, range };
+    // A range selection means the next keystroke replaces text, not types at the toggled caret.
+    if (range.start !== range.end || pendingTypedScriptRef.current?.objectId !== objectId) {
+      pendingTypedScriptRef.current = undefined;
+    }
     activeTextSelectionRef.current = nextSelection;
     setActiveTextSelection((current) =>
       current?.objectId === objectId &&
@@ -7967,6 +7975,11 @@ export function MainWindow({
   useEffect(() => () => {
     clearScheduledTextEditorFocus();
   }, [clearScheduledTextEditorFocus]);
+
+  // A script toggled at the caret belongs to one editing session.
+  useEffect(() => {
+    if (pendingTypedScriptRef.current?.objectId !== activeTextEditObjectId) pendingTypedScriptRef.current = undefined;
+  }, [activeTextEditObjectId]);
 
   const restoreToolAfterTextPlacement = useCallback(() => {
     const previousToolState = toolBeforeTextPlacementRef.current;
@@ -8801,7 +8814,14 @@ export function MainWindow({
     const original = edit?.objectId === objectId && edit.documentIdentity === documentIdentityRef.current
       ? findDocumentObject(edit.document, objectId) : undefined;
     const originalFrame = original?.type === "text" && original.text === text ? original : undefined;
-    if (replacePresentDocument((current) => updateNativeTextObjectText(current, objectId, text, originalFrame))) {
+    const previous = findDocumentObject(documentRef.current, objectId);
+    const insertion = previous?.type === "text"
+      ? typedScriptInsertion(pendingTypedScriptRef.current, objectId, normalizeTextLineBreaks(previous.text), normalizeTextLineBreaks(text))
+      : undefined;
+    // Any other change (a deletion, typing elsewhere) leaves the toggled caret behind.
+    pendingTypedScriptRef.current = insertion?.next;
+    const typedScript = insertion ? { range: insertion.range, script: insertion.next.script } : undefined;
+    if (replacePresentDocument((current) => updateNativeTextObjectText(current, objectId, text, originalFrame, typedScript))) {
       reconcileSavedDocumentDirtyState();
     }
   }, [reconcileSavedDocumentDirtyState, replacePresentDocument]);
@@ -9169,6 +9189,18 @@ export function MainWindow({
     );
     const textScript = textScriptForCommand(commandId);
     if (textScript) {
+      // A collapsed caret in the open editor: the script applies to what is typed next, as in a
+      // word processor. The text already there is left alone.
+      if (selected && selectedTextObjects.length <= 1 && selectedTextRange &&
+          selectedTextRange.start === selectedTextRange.end &&
+          activeTextEditObjectIdRef.current === selected.id) {
+        const caret = selectedTextRange.start;
+        const pending = toggledPendingTypedScript(pendingTypedScriptRef.current, selected.id, caret, textScript,
+          textScriptForTypingAt(selected, caret));
+        pendingTypedScriptRef.current = pending;
+        setStatus(pendingTypedScriptStatus(pending.script));
+        return true;
+      }
       if (selected) {
         const multiple = selectedTextObjects.length > 1;
         const currentScript = hasSelectedTextRange && selectedTextRange
