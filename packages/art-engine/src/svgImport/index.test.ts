@@ -151,6 +151,15 @@ describe("SVG element conversion", () => {
     expect(path.data.pathD).toBe("M0 0 L10 0 Q10 0 20 0 Q25 0 30 10 Q35 20 40 20 Q45 20 50 20 Z M0 30 Q0 30 10 30");
   });
 
+  it("expands smooth cubics reflecting only a cubic control, else using the current point", () => {
+    // After Q, S starts at the current point (20,20), not the reflected quadratic control (25,30).
+    const afterQ = onlyGraphic('<path d="M10 20 Q15 10 20 20 S30 30 40 20" fill="none" stroke="black"/>');
+    expect(afterQ.data.pathD).toBe("M0 5 Q5 -5 10 5 C10 5 20 15 30 5");
+    // After C and after S (relative s included), the previous second control is reflected.
+    const afterC = onlyGraphic('<path d="M10 20 C15 10 20 10 25 20 S35 30 40 20 s5 -10 10 0" fill="none" stroke="black"/>');
+    expect(afterC.data.pathD).toBe("M0 7.5 C5 -2.5 10 -2.5 15 7.5 C20 17.5 25 17.5 30 7.5 C35 -2.5 35 -2.5 40 7.5");
+  });
+
   it("bakes transform lists, nested transforms, viewBox origin, outer stretch and frame rotation", () => {
     const result = convert(`<g transform="translate(4 2) scale(2)"><line x1="2" y1="2" x2="6" y2="2" stroke="#000"/></g>`,
       { x: 100, y: 50, width: 80, height: 40, rotation: 90 }, 'width="20" height="20" viewBox="5 5 20 20"');

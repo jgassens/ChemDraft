@@ -30,7 +30,9 @@ export function DragTestTile({ bridge = nativeDragTestBridge }: { bridge?: DragT
     const start = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
     const view = event.currentTarget.ownerDocument.defaultView ?? window;
     const move = (moved: PointerEvent) => {
-      if (moved.pointerId !== start.pointerId || (moved.buttons & 1) === 0) return;
+      if (moved.pointerId !== start.pointerId) return;
+      // Releasing the primary button while another is held reports a move, not a pointerup.
+      if ((moved.buttons & 1) === 0) { stop(); return; }
       if (!passedDragThreshold(start, { x: moved.clientX, y: moved.clientY })) return;
       stop();
       dragging.current = true;

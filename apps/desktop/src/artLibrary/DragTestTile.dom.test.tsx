@@ -22,11 +22,12 @@ function bridge(path: string | null) {
   return fake;
 }
 
-function pointer(target: Element, type: string, init: { x: number; y: number; buttons?: number; button?: number }) {
+function pointer(target: Element, type: string,
+  init: { x: number; y: number; buttons?: number; button?: number; pointerId?: number }) {
   // jsdom has no PointerEvent; React reads these fields from a MouseEvent of the pointer type.
   const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: init.x, clientY: init.y,
     buttons: init.buttons ?? 1, button: init.button ?? 0 });
-  Object.defineProperty(event, "pointerId", { value: 1 });
+  Object.defineProperty(event, "pointerId", { value: init.pointerId ?? 1 });
   act(() => { target.dispatchEvent(event); });
 }
 
@@ -77,6 +78,24 @@ describe("DragTestTile (development builds only)", () => {
     pointer(tile, "pointerup", { x: 50, y: 0, buttons: 0 });
     pointer(tile, "pointermove", { x: 90, y: 0 });
     expect(fake.startDrag).not.toHaveBeenCalled();
+  });
+
+  it("ends the press when the primary button is released while another stays held", async () => {
+    const fake = bridge("/a/art-library/spike/drag-test.svg");
+    await act(async () => root.render(createElement(DragTestTile, { bridge: fake })));
+    const tile = container.querySelector("[data-drag-test-path]")!;
+    // Primary pressed with the secondary held, then the primary released first: the browser reports
+    // a move with only the secondary bit, not a pointerup. Pressing the primary again elsewhere
+    // (a chorded press, reported as a move) must not start a drag from the old press.
+    pointer(tile, "pointerdown", { x: 10, y: 10, buttons: 3 });
+    pointer(document.body, "pointermove", { x: 12, y: 10, buttons: 2 });
+    pointer(document.body, "pointermove", { x: 90, y: 10, buttons: 3 });
+    expect(fake.startDrag).not.toHaveBeenCalled();
+    // Another pointer's moves, even without the primary button, leave the tracked press alone.
+    pointer(tile, "pointerdown", { x: 10, y: 10 });
+    pointer(document.body, "pointermove", { x: 12, y: 10, buttons: 0, pointerId: 2 });
+    pointer(document.body, "pointermove", { x: 60, y: 10 });
+    expect(fake.startDrag).toHaveBeenCalledOnce();
   });
 
   it("follows a press outside the tile: a release there ends it, a move there starts the drag", async () => {

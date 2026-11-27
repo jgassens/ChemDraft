@@ -655,12 +655,27 @@ impl StagedCopy {
         }
     }
 
-    /// Records that a target accepted this copy now; its grace period runs from here.
+    /// Records that a target accepted this copy now; its grace period runs from here. The record
+    /// lives only in this process, so the copy's folder is also given the drop as its modification
+    /// time: a later run's startup sweep then measures its age from the drop, not from staging.
     fn mark_dropped(&self) {
         dropped_copies()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(self.entry.clone(), Instant::now());
+        if let Err(error) = self.set_folder_modified(std::time::SystemTime::now()) {
+            log::warn!(
+                "art drag: could not record the drop time of {}: {error}",
+                self.file.display()
+            );
+        }
+    }
+
+    /// Sets this copy's per-drag folder's modification time, only in the folder it was staged
+    /// into, through a handle opened relative to that folder (a link in its place is not followed).
+    fn set_folder_modified(&self, time: std::time::SystemTime) -> std::io::Result<()> {
+        let (root, root_path) = open_staging_root_for_cleanup(&self.root, Some(self.root_id))?;
+        os::set_dir_modified_in(&root, &root_path, &self.entry, time)
     }
 
     /// Removes this copy after `grace`, on a background thread.
@@ -1295,6 +1310,7 @@ mod os {
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::fs::OpenOptionsExt;
     use std::path::{Path, PathBuf};
+    use std::time::SystemTime;
 
     use super::{FolderId, LexicalPath};
 
@@ -1367,6 +1383,17 @@ mod os {
         } else {
             Err(io::Error::last_os_error())
         }
+    }
+
+    /// Sets the modification time of the folder `name` in the open folder `parent`, through a
+    /// descriptor opened relative to it (a link in its place is refused).
+    pub(super) fn set_dir_modified_in(
+        parent: &File,
+        parent_path: &Path,
+        name: &str,
+        time: SystemTime,
+    ) -> io::Result<()> {
+        open_dir_in(parent, parent_path, name)?.set_modified(time)
     }
 
     /// Creates `name` in `parent`; fails if anything, a link included, is already there.
@@ -1470,11 +1497,13 @@ mod os {
     use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::AsRawHandle;
     use std::path::{Path, PathBuf};
+    use std::time::SystemTime;
 
     use windows_sys::Win32::Storage::FileSystem::{
         GetDriveTypeW, GetFileInformationByHandle, GetFinalPathNameByHandleW,
         BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-        FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, VOLUME_NAME_DOS,
+        FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES,
+        VOLUME_NAME_DOS,
     };
 
     use super::{FolderId, LexicalPath};
@@ -1559,6 +1588,32 @@ mod os {
 
     pub(super) fn create_dir_in(_parent: &File, parent_path: &Path, name: &str) -> io::Result<()> {
         std::fs::create_dir(parent_path.join(checked_name(name)?))
+    }
+
+    /// Sets the modification time of the real folder `name` in the open folder `parent` (a link or
+    /// junction in its place is refused, never followed). Opened as [`open_dir_in`] does, plus the
+    /// attribute-writing access setting a time needs.
+    pub(super) fn set_dir_modified_in(
+        parent: &File,
+        parent_path: &Path,
+        name: &str,
+        time: SystemTime,
+    ) -> io::Result<()> {
+        let path = parent_path.join(checked_name(name)?);
+        let dir = OpenOptions::new()
+            .access_mode(FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+            .open(&path)?;
+        let metadata = dir.metadata()?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(io::Error::other(format!(
+                "\"{}\" is not a plain folder",
+                path.display()
+            )));
+        }
+        verify_child(parent, &dir, name)?;
+        dir.set_modified(time)
     }
 
     /// Creates `name` in `parent` (`CREATE_NEW`: fails if anything, a link included, is there).
@@ -2351,6 +2406,35 @@ mod tests {
         assert!(!dropped_within(&held.entry, DROPPED_COPY_GRACE));
     }
 
+    #[test]
+    fn a_recent_drop_survives_a_restart_and_an_old_abandoned_copy_does_not() {
+        let scratch = Scratch::new("drop-restart");
+        let staging = scratch.0.join(DRAG_STAGING_FOLDER);
+        let source = DragSource {
+            name: "a.svg".into(),
+            bytes: DRAG_TEST_SVG.as_bytes().to_vec(),
+        };
+        let platform = PathPlatform::current();
+        let aged = std::time::SystemTime::now() - DROPPED_COPY_GRACE - Duration::from_secs(60);
+        // A drag held longer than the grace period, dropped just before the app quit.
+        let held = stage_copy(&staging, &source, platform).unwrap();
+        set_modified_dir(&held.root.join(&held.entry), aged);
+        finish_staged_copy(held.clone(), true);
+        // An abandoned copy of the same age.
+        let abandoned = stage_copy(&staging, &source, platform).unwrap();
+        set_modified_dir(&abandoned.root.join(&abandoned.entry), aged);
+        // A restart forgets this process's drop records; the next run's startup sweep keeps the
+        // recent drop and removes the old abandoned copy.
+        dropped_copies()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&held.entry);
+        assert_eq!(sweep_staging_at_startup(&staging), 1);
+        assert!(held.file.exists());
+        assert!(!abandoned.root.join(&abandoned.entry).exists());
+        held.remove();
+    }
+
     #[cfg(any(target_os = "macos", windows))]
     #[test]
     fn a_drag_error_that_may_follow_a_drop_keeps_the_copy() {
@@ -2360,11 +2444,18 @@ mod tests {
         assert!(!drag_error_may_follow_a_drop(
             &drag::Error::UnsupportedWindowHandle
         ));
-        // On Windows, an error after DoDragDrop (the cursor query) may hide an accepted drop.
-        assert_eq!(
-            drag_error_may_follow_a_drop(&drag::Error::FailedToGetCursorPosition),
-            cfg!(windows)
-        );
+        // On Windows, drag 2.1.1 runs `GetCursorPos(&mut pt)?` after `DoDragDrop`, before the drop
+        // callback: a `windows::core::Error` (windows-core 0.52) turned by drag's `#[from]`
+        // conversion into `Error::WindowsError`. That crate is not a dependency here, so the inner
+        // error is made through one of its own conversions; the variant is what the classifier sees.
+        #[cfg(windows)]
+        let after_do_drag_drop =
+            drag::Error::WindowsError(u8::try_from(256u32).unwrap_err().into());
+        // On macOS the call returns once the drag session begins, so any error is a failed start.
+        #[cfg(not(windows))]
+        let after_do_drag_drop = drag::Error::FailedToStartDrag;
+        let may_have_dropped = drag_error_may_follow_a_drop(&after_do_drag_drop);
+        assert_eq!(may_have_dropped, cfg!(windows));
         let scratch = Scratch::new("ambiguous-end");
         let staging = scratch.0.join(DRAG_STAGING_FOLDER);
         let source = DragSource {
@@ -2372,14 +2463,18 @@ mod tests {
             bytes: DRAG_TEST_SVG.as_bytes().to_vec(),
         };
         let platform = PathPlatform::current();
-        let kept = stage_copy(&staging, &source, platform).unwrap();
-        finish_staged_copy(kept.clone(), true);
-        assert!(kept.file.exists());
-        assert!(dropped_within(&kept.entry, DROPPED_COPY_GRACE));
+        // The classifier's answer decides retention, as in `start_native_drag`.
+        let ambiguous = stage_copy(&staging, &source, platform).unwrap();
+        finish_staged_copy(ambiguous.clone(), may_have_dropped);
+        assert_eq!(ambiguous.file.exists(), cfg!(windows));
+        assert_eq!(
+            dropped_within(&ambiguous.entry, DROPPED_COPY_GRACE),
+            cfg!(windows)
+        );
         let failed = stage_copy(&staging, &source, platform).unwrap();
-        finish_staged_copy(failed.clone(), false);
+        finish_staged_copy(failed.clone(), drag_error_may_follow_a_drop(&io));
         assert!(!failed.root.join(&failed.entry).exists());
-        kept.remove();
+        ambiguous.remove();
     }
 
     #[test]

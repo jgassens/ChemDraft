@@ -160,15 +160,24 @@ export function parsePath(data: string): Path | undefined {
   try {
     if (!isValidPath(data)) return;
     const path = normalizePath(data);
-    if (/[tT]/.test(data)) {
-      // svg-path-commander 2.2.1 substitutes the origin when T has no previous control.
-      let control: Point | undefined;
+    if (/[sStT]/.test(data)) {
+      // svg-path-commander 2.2.1 substitutes the origin when T has no previous control, and may
+      // reflect a quadratic control for S. SVG reflects only a control of the same kind (Q or T
+      // before T, C or S before S); otherwise the first control is the current point.
+      let quadratic: Point | undefined, cubic: Point | undefined;
       iterate(pathToAbsolute(data), (segment, index, x, y) => {
         if (segment[0] === "T") {
-          control = control ? { x: x + (x - control.x), y: y + (y - control.y) } : { x, y };
-          path[index] = ["Q", control.x, control.y, segment[1], segment[2]];
+          quadratic = quadratic ? { x: x + (x - quadratic.x), y: y + (y - quadratic.y) } : { x, y };
+          path[index] = ["Q", quadratic.x, quadratic.y, segment[1], segment[2]];
+          cubic = undefined;
+        } else if (segment[0] === "S") {
+          const first = cubic ? { x: x + (x - cubic.x), y: y + (y - cubic.y) } : { x, y };
+          path[index] = ["C", first.x, first.y, segment[1], segment[2], segment[3], segment[4]];
+          cubic = { x: segment[1], y: segment[2] };
+          quadratic = undefined;
         } else {
-          control = segment[0] === "Q" ? { x: segment[1], y: segment[2] } : undefined;
+          quadratic = segment[0] === "Q" ? { x: segment[1], y: segment[2] } : undefined;
+          cubic = segment[0] === "C" ? { x: segment[3], y: segment[4] } : undefined;
         }
       });
     }
