@@ -2137,6 +2137,32 @@ fn legacy_store_at_its_size_limit_with_conflicts_still_revokes_and_clears() {
 }
 
 #[test]
+fn size_fallback_returns_the_conflict_id_of_a_removed_conflict_group() {
+    // The Plugin Manager lists a conflict group under its conflict ID, so the removed group's row
+    // disappears even if the manager's refresh fails.
+    let dir = TestDir::new();
+    let store = Store::new(&dir.0);
+    let (path, send, build, other_app, _) = conflicting_legacy_store(&store, &dir);
+    let document: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    fill_store_to_limit(&path, document, |count| json!("x".repeat(count)));
+    let revoked = store
+        .revoke(PLUGIN, &other_app.consent_id())
+        .expect("revoking must succeed at the size limit");
+    assert!(revoked.contains(&other_app.consent_id()));
+    assert!(
+        revoked.contains(&send.conflict_id()),
+        "the removed conflict group's listed ID was not returned: {revoked:?}"
+    );
+    assert!(revoked.contains(&send.consent_id()) && revoked.contains(&build.consent_id()));
+    assert!(!store
+        .list()
+        .unwrap()
+        .iter()
+        .any(|entry| matches!(entry, ListedConsent::Conflict(row) if row.plugin_id == PLUGIN)));
+    assert_readable_within_limit(&store, &path);
+}
+
+#[test]
 fn revocation_and_clear_land_even_when_rewriting_inflates_unknown_data() {
     for clear in [false, true] {
         let dir = TestDir::new();

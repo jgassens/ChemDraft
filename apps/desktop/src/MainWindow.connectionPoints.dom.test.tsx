@@ -495,3 +495,53 @@ it("redoes a mark to its markers after a later repeat unit on the same molecule 
   expect(present()).toEqual(repeated);
   expect(nativeSelection()).toEqual([]);
 });
+
+it("undoes a repeat unit to its toggled atom after a selection-only Select All, and redoes it", async () => {
+  await render(aromaticSource);
+  await selectAtom("a");
+  await act(async () => {
+    const runtime = register(context => context.documents.addConnectionPoints!({ objectId: source.id, anchors: ["a"] }));
+    await runtime.invokeCommand(commandId);
+  });
+  const marked = present();
+  const markerId = drawn().atoms.find(atom => atom.element === "X")!.id;
+  expect(nativeSelection()).toEqual([markerId]);
+  await selectAtom("d");
+  await menu("bracket.repeatUnit.toggle");
+  const brackets = present().pages[0]!.objects.filter(object => object.type === "bracket").map(object => object.id);
+  expect(brackets).toHaveLength(2);
+  await menu("edit.selectAll");
+  const selectedAll = present();
+  expect(selectedAll.selection.objectIds.length).toBeGreaterThan(1);
+  await menu("edit.undo");
+  expect(present()).toEqual(marked);
+  expect(nativeSelection()).toEqual(["d"]);
+  await menu("edit.redo");
+  expect(present()).toEqual(selectedAll);
+  // The whole-object selection draws every atom; no toggled or marker part selection is restored.
+  expect(nativeSelection()).toEqual(drawn().atoms.map(atom => atom.id));
+  await menu("edit.undo");
+  expect(present()).toEqual(marked);
+  expect(nativeSelection()).toEqual(["d"]);
+});
+
+it("undoes and redoes a connection-point mark after a selection-only Select All", async () => {
+  await render(aromaticSource);
+  await selectAtom("a");
+  const before = present();
+  await act(async () => {
+    const runtime = register(context => context.documents.addConnectionPoints!({ objectId: source.id, anchors: ["a"] }));
+    await runtime.invokeCommand(commandId);
+  });
+  const marked = present();
+  const markerId = drawn().atoms.find(atom => atom.element === "X")!.id;
+  expect(nativeSelection()).toEqual([markerId]);
+  await menu("edit.selectAll");
+  expect(present().selection.objectIds).toEqual([source.id]);
+  await menu("edit.undo");
+  expect(present()).toEqual(before);
+  expect(nativeSelection()).toEqual(["a"]);
+  await menu("edit.redo");
+  expect(present()).toEqual(marked);
+  expect(nativeSelection()).toEqual([markerId]);
+});

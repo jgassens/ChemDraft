@@ -251,7 +251,9 @@ impl Document {
     }
 
     /// Removes the rows `matches` selects (it is told whether a row is quarantined), records the
-    /// removed consent IDs of `plugin`, and returns how many removed rows belonged to others.
+    /// removed consent IDs of `plugin`, and returns how many removed rows belonged to others. A
+    /// removed conflict group is also recorded under the conflict ID the Plugin Manager lists it by;
+    /// no arming or result holds a conflict ID, so disarming it does nothing.
     fn remove(
         &mut self,
         plugin: &str,
@@ -266,6 +268,9 @@ impl Document {
                 }
                 if row.plugin_id == plugin {
                     revoked.insert(row.consent_id());
+                    if quarantined {
+                        revoked.insert(row.conflict_id());
+                    }
                 } else {
                     others += 1;
                 }

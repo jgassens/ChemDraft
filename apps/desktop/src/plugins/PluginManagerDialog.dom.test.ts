@@ -159,6 +159,41 @@ it("drops sibling consents the native revoke also removed when the refresh fails
   expect(remaining[0]!.getAttribute("aria-label")).toContain("Previous App");
 });
 
+it("drops a conflict group the native revoke removed to fit the store when the refresh fails", async () => {
+  const entry = installedEntry();
+  const allowed: AppHandoffConsent = {
+    pluginId: entry.record.id, consentId: "consent-1", appName: "Crystal Builder",
+    appPath: "/Applications/Crystal Builder.app", pipeline: null, status: "allowed", at: "2026-11-23T12:00:00Z"
+  };
+  const conflict: AppHandoffConsent = {
+    ...allowed, consentId: "conflict-1", appName: "Test App", appPath: "/Applications/Test App.app", status: "conflict"
+  };
+  const list = vi.fn()
+    .mockResolvedValueOnce([allowed, conflict])
+    .mockRejectedValue(new Error("store unavailable"));
+  // The store was full, so revoking also removed the plugin's conflict group, listed by its conflict ID.
+  const revoke = vi.fn(async () => ["consent-1", "consent-a", "consent-b", "conflict-1"]);
+  const runtime = createPluginRuntime({
+    getActiveDocument: () => undefined,
+    appHandoffConsents: { list, revoke, clearPlugin: async () => {} }
+  });
+  mount(createElement(PluginManagerDialog, {
+    runtime, bundledPlugins: descriptors, installedPlugins: [entry], onClose: () => {}
+  }));
+  await act(async () => {});
+  const button = document.querySelector<HTMLButtonElement>('button[aria-label*="Crystal Builder"]')!;
+  const section = button.closest("section")!;
+  expect(section.textContent).toContain("Conflicting consents");
+  await act(async () => button.click());
+  expect(revoke).toHaveBeenCalledExactlyOnceWith(entry.record.id, "consent-1");
+  expect(list).toHaveBeenCalledTimes(2);
+  expect(section.textContent).toContain("Could not list app handoff consents: store unavailable");
+  expect(section.textContent).toContain("File handoff · Revoked");
+  expect(section.textContent).not.toContain("Conflicting consents");
+  expect(section.textContent).not.toContain("Test App");
+  expect(section.querySelectorAll("button")).toHaveLength(0);
+});
+
 it("ignores a handoff consent read that resolves just after revoke succeeds", async () => {
   const entry = installedEntry();
   const row: AppHandoffConsent = {

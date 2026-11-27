@@ -1854,7 +1854,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.26.17.30-opus";
+const CURRENT_BUILD_STAMP = "11.26.20.30-opus";
 
 /**
  * The commit funnel's chemistry check (AGENTS.md section 7, `commitChemistryGuard.ts`). `before`
@@ -3762,6 +3762,16 @@ export function MainWindow({
     const previous = documentHistoryRef.current;
     const history = typeof update === "function" ? update(previous) : update;
     if (history === previous) return;
+    if (!switchingTabs && history.present !== previous.present &&
+      history.past === previous.past && history.future === previous.future) {
+      // A selection-only replacement keeps the part selections undo and redo restore for the
+      // present, as it keeps its undo label; a content change starts without them.
+      const carried = [nativePartUndoSelectionsRef.current, nativePartHistorySelectionsRef.current]
+        .filter(selections => selections.has(previous.present) && !selections.has(history.present));
+      if (carried.length && assistantDocumentContentUnchanged(previous.present, history.present)) {
+        for (const selections of carried) selections.set(history.present, selections.get(previous.present)!);
+      }
+    }
     if (selectionClipboardPasteStateRef.current?.document && history.present !== previous.present) {
       selectionClipboardPasteStateRef.current = undefined;
     }
