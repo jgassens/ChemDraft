@@ -22694,6 +22694,17 @@ export function MainWindow({
       }
       break;
     }
+    // Selection handles are the molecule's portaled chrome, so a press on one arrives with the
+    // molecule's id even where the handle lies over another object. Resolve the objects that
+    // occupy the point before falling back to the selection frame.
+    if (!normalHit && clickedId !== undefined && point) {
+      for (let layer = objects.length - 1; layer >= 0; layer--) {
+        const object = objects[layer]!;
+        if (object.type === "molecule" || object.type === "group" || !contextMenuObjectOccupiesPoint(object, objects, point)) continue;
+        normalHit = { object, layer };
+        break;
+      }
+    }
     const wholeIds = new Set(resolveGroupedDocumentObjectIds(objects, currentDocument.selection.objectIds));
     const partsByObjectId = new Map(selectedNativeMoleculeParts.map(part => [part.objectId, part]));
     const selectionForHit = (object: DocumentObject, hit?: NativeMoleculeDeleteHit): ContextMenuSelection | undefined => {
@@ -28512,6 +28523,14 @@ export function visualSelectionBounds(
   };
 }
 
+/** Whether a non-molecule object's frame (text: its rotated box) covers the point. */
+function contextMenuObjectOccupiesPoint(
+  object: DocumentObject, objects: readonly DocumentObject[], point: ClientPoint
+): boolean {
+  return object.type === "text" ? textObjectAtPoint([object], point) !== undefined
+    : pointInRect(point, documentObjectVisualBounds(object, objects));
+}
+
 /** Use the selection frames from the topmost object down. */
 function contextMenuSelectionAtPoint(
   objects: readonly DocumentObject[],
@@ -28543,8 +28562,7 @@ function contextMenuSelectionAtPoint(
       if (pointInRect(localPoint, { ...frame, x: object.x + frame.x, y: object.y + frame.y })) {
         return { objectId: object.id, part };
       }
-    } else if (object.type === "text" ? textObjectAtPoint([object], point)
-      : pointInRect(point, documentObjectVisualBounds(object, objects))) {
+    } else if (contextMenuObjectOccupiesPoint(object, objects, point)) {
       return { objectId: object.id };
     }
   }

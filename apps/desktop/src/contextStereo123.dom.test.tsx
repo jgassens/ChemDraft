@@ -2,12 +2,15 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { applyPatches, type MoleculeObject } from "@chemdraft/chem-core";
+import { applyPatches, type DocumentObject, type MoleculeObject } from "@chemdraft/chem-core";
 import { moleculeLayoutLabelBoxes, nativeMoleculeRings } from "@chemdraft/layout-engine";
 import { depictSmiles2D, ensureOclResources } from "@chemdraft/ocl-adapter";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { documentZoomCommandId } from "./documentZoom";
-import { createPhase4Document, getSelectedMolecule, insertSmilesMolecule, selectDocumentObjects } from "./documentWorkflow";
+import {
+  applyReactionArrowToolAtPoint, createPhase4Document, documentObjectVisualBounds, getSelectedMolecule, insertSmilesMolecule,
+  selectDocumentObjects
+} from "./documentWorkflow";
 import { MainWindow } from "./MainWindow";
 import { loadStereoEngine, resetStereoEngineForTests } from "./stereoReadout";
 import { MemoryStorage } from "./testSupport/memoryStorage";
@@ -532,5 +535,59 @@ describe("right-click inside the drawn group selection frame", () => {
     expect(atom.x).toBeLessThan(frame.x + frame.width);
     await clickAt(atom, { target: atomTarget(middle!, atom.id) });
     expect(objectMenu()?.getAttribute("data-context-object-id")).toBe(middle!.id);
+  });
+});
+
+// Review (1.2.3 RC5): a selected molecule's selection handles are portaled chrome, so a right-click
+// on one reaches the canvas with the molecule's id even where the handle lies over another object.
+describe("right-click on a selected molecule's selection handle", () => {
+  async function mountHandleOver(withArrow: boolean, platform: ShortcutPlatform) {
+    let drawn!: ReturnType<typeof createPhase4Document>;
+    let arrow: DocumentObject | undefined;
+    const molecule = await mount("CCO", { platform, overlay: (drawing, molecule) => {
+      let next = drawing;
+      if (withArrow) {
+        // A default reaction arrow through the selection frame's top-left corner.
+        next = applyReactionArrowToolAtPoint(drawing, { x: molecule.x - 60, y: molecule.y }, "forward");
+        arrow = next.pages[0].objects.at(-1);
+        expect(arrow?.type).toBe("reaction-arrow");
+      }
+      drawn = selectDocumentObjects(next, drawing.pages[0].id, [molecule.id]);
+      return drawn;
+    } });
+    const handle = page.querySelector<HTMLElement>(".object-resize-handle.object-resize-top-left")!;
+    expect(handle).not.toBeNull();
+    const chrome = handle.closest<HTMLElement>(".document-object-chrome")!;
+    const frame = handle.closest<HTMLElement>(".object-transform-frame")!;
+    const { width, height } = drawn.pages[0];
+    const calcPx = (value: string) => Number(/^calc\(([-\d.]+)px/.exec(value)![1]);
+    const point = {
+      x: Number.parseFloat(chrome.style.left) / 100 * width + calcPx(frame.style.left),
+      y: Number.parseFloat(chrome.style.top) / 100 * height + calcPx(frame.style.top)
+    };
+    // Off every atom and bond, and past the 14 px stereo reach.
+    for (const atom of molecule.atoms) expect(Math.hypot(atom.x - point.x, atom.y - point.y) * scale).toBeGreaterThan(14);
+    if (arrow) {
+      const bounds = documentObjectVisualBounds(arrow, drawn.pages[0].objects);
+      expect(point.x).toBeGreaterThan(bounds.x);
+      expect(point.x).toBeLessThan(bounds.x + bounds.width);
+      expect(point.y).toBeGreaterThanOrEqual(bounds.y);
+      expect(point.y).toBeLessThanOrEqual(bounds.y + bounds.height);
+    }
+    return { molecule, arrow, handle, point };
+  }
+
+  it.each<ShortcutPlatform>(["macos", "windows"])("opens the arrow's menu under the handle on %s", async platform => {
+    const { arrow, handle, point } = await mountHandleOver(true, platform);
+    await clickAt(point, { target: handle, ...(platform === "macos" ? { button: 0, ctrlKey: true } : {}) });
+    expect(pageMenu()).toBeNull();
+    expect(objectMenu()?.getAttribute("data-context-object-id")).toBe(arrow!.id);
+  });
+
+  it.each<ShortcutPlatform>(["macos", "windows"])("keeps the selection menu on a handle over bare paper on %s", async platform => {
+    const { molecule, handle, point } = await mountHandleOver(false, platform);
+    await clickAt(point, { target: handle, ...(platform === "macos" ? { button: 0, ctrlKey: true } : {}) });
+    expect(pageMenu()).toBeNull();
+    expect(objectMenu()?.getAttribute("data-context-object-id")).toBe(molecule.id);
   });
 });
