@@ -957,8 +957,27 @@ textarea:focus-visible,
   max-height: calc(100vh - var(--palette-y) - 38px);
 }
 
-.web-floating-palette[data-toolset-id="core.main"] {
-  max-width: calc(100vw - var(--palette-x) - 8px);
+/* A palette wider than the viewport (WebFloatingPaletteSection, webFloatingPaletteFrame.ts): the frame
+   is clamped into the viewport and its item grid scrolls sideways inside it, so every item stays
+   reachable; the title row stays the frame's width. The grid keeps its natural layout (nothing
+   shrinks) and shows its scrollbar, which `.tool-palette.floating` otherwise hides. */
+.web-floating-palette[data-palette-horizontal-scroll] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.web-floating-palette[data-palette-horizontal-scroll] > .tool-palette.floating.horizontal {
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+  max-height: none;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+
+.web-floating-palette[data-palette-horizontal-scroll] > .tool-palette.floating.horizontal > * {
+  flex-shrink: 0;
 }
 
 .web-floating-palette:has(> .ring-inspector-palette) {

@@ -264,7 +264,9 @@ describe("document switch pointer capture", () => {
       nativePalette: false
     });
     const dragSurface = paletteDragSurface();
-    const initialX = palette().style.getPropertyValue("--palette-x");
+    // Vertical: in JSDOM's 1024 px viewport the standard Main frame fills the width (clamped, its grid
+    // scrolls), so it has nowhere to move sideways.
+    const initialY = palette().style.getPropertyValue("--palette-y");
     await act(async () => { dispatchPointer(dragSurface, "pointerdown", { x: 100, y: 100 }, 74); });
     expect(captures.get(74)).toBe(dragSurface);
 
@@ -276,7 +278,7 @@ describe("document switch pointer capture", () => {
       dispatchPointer(page(), "pointermove", { x: 160, y: 145 }, 74);
       dispatchPointer(page(), "pointerup", { x: 160, y: 145 }, 74);
     });
-    expect(palette().style.getPropertyValue("--palette-x")).not.toBe(initialX);
+    expect(palette().style.getPropertyValue("--palette-y")).not.toBe(initialY);
     expect(captures.has(74)).toBe(false);
     expect(captureReleases.filter((release) => release.pointerId === 74)).toEqual([{ owner: dragSurface, pointerId: 74 }]);
   });

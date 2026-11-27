@@ -215,6 +215,7 @@ import { PluginCommandInputSchema, type PluginCommandInput, type PluginPanelRepo
 import { createCoreCommandRegistrar } from "./commands/coreCommandRegistrar";
 import { createFixturePluginOptions, fixturePluginManifest, FIXTURE_PLUGIN_ID } from "./plugins/fixturePlugin";
 import { createToolbarCatalog } from "./toolbars/toolbarCatalog";
+import { WebFloatingPaletteSection } from "./toolbars/WebFloatingPaletteSection";
 import { filterToolbarCustomizationCommands } from "./toolbars/toolbarCustomizationCommands";
 import { classifyToolbarSelection } from "./toolbars/toolbarSelectionKind";
 import { CustomizeToolbarsDialog } from "./toolbars/CustomizeToolbars/CustomizeToolbarsDialog";
@@ -1940,7 +1941,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.27.14.51-opus";
+const CURRENT_BUILD_STAMP = "11.27.14.52-opus";
 
 /** How a command is invoked. `liveRerunStillWanted` marks a live panel's automatic re-run: a queued
  *  one that reaches the front of its plugin's queue starts only while this still returns true. */
@@ -17134,7 +17135,11 @@ export function MainWindow({
       return;
     }
 
-    const position = webPalettePositions[toolsetId] ?? defaultToolsetPosition(toolsetId, toolsetRegistry);
+    const stored = webPalettePositions[toolsetId] ?? defaultToolsetPosition(toolsetId, toolsetRegistry);
+    // Drag from where the frame is drawn: a frame clamped into a narrow viewport sits left of its
+    // stored position, and dragging from the stored one would leave a dead zone.
+    const drawnX = Number((event.currentTarget.closest("[data-palette-x]") as HTMLElement | null)?.dataset.paletteX);
+    const position = Number.isFinite(drawnX) ? { x: drawnX, y: stored.y } : stored;
     webPaletteDragRef.current = {
       toolsetId,
       pointerId: event.pointerId,
@@ -24256,19 +24261,12 @@ export function MainWindow({
               />
             );
             return (
-              <section
-                className="web-floating-palette"
-                aria-label={`Floating ${toolset.title}`}
-                data-floating-palette="web-preview"
-                data-toolset-id={toolset.id}
+              <WebFloatingPaletteSection
+                toolsetId={toolset.id}
+                title={toolset.title}
                 key={toolset.id}
-                style={
-                  {
-                    "--palette-x": `${position.x}px`,
-                    "--palette-y": `${position.y}px`,
-                    "--palette-width": `${webFloatingPaletteWidth(toolset, paletteGroups.map(group => group.items))}px`
-                  } as CSSProperties
-                }
+                naturalWidth={webFloatingPaletteWidth(toolset, paletteGroups.map(group => group.items))}
+                position={position}
                 onPointerDown={(event) => startWebPaletteDrag(toolset.id, event)}
                 onPointerMove={moveWebPalette}
                 onPointerUp={stopWebPaletteDrag}
@@ -24312,7 +24310,7 @@ export function MainWindow({
                 ) : (
                   renderPalette(paletteGroups)
                 )}
-              </section>
+              </WebFloatingPaletteSection>
             );
           })
         : null}
