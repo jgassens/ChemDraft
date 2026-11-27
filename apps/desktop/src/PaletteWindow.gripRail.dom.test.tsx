@@ -140,7 +140,28 @@ describe.each(["macos", "windows", "linux"] as const)("floating Main toolbar chr
   });
 
   it("closes the palette from the close button without starting a drag", async () => {
-    const { close } = await renderPalette(platform);
+    const { shell, close } = await renderPalette(platform);
+
+    // The close control lives at the top of the grip rail, the shell's first column beside the
+    // content, not in a title row above it.
+    const rail = close.parentElement!;
+    expect(rail.dataset.paletteWindowGrip).toBe("true");
+    expect(shell.firstElementChild).toBe(rail);
+    expect(rail.nextElementSibling?.classList.contains("palette-window-content")).toBe(true);
+    expect(getComputedStyle(shell).gridTemplateColumns).toBe("14px minmax(0, auto)");
+    expect(getComputedStyle(rail).width).toBe("14px");
+    const closeStyle = getComputedStyle(close);
+    if (platform === "windows") {
+      // The Windows "x" is a full-width 14px cell at the top of the rail, not a 28px caption button.
+      expect(closeStyle.width).toBe("auto");
+      expect(closeStyle.height).toBe("14px");
+      expect(closeStyle.minHeight).toBe("0px");
+    } else {
+      // The macOS/Linux dot sits 3px from the rail's top, not centered in a title row.
+      expect(closeStyle.top).toBe("3px");
+      expect(closeStyle.left).toBe("1px");
+      expect(closeStyle.transform).toBe("none");
+    }
 
     await clickClose(close, platform);
     await settleDrag();
@@ -150,7 +171,20 @@ describe.each(["macos", "windows", "linux"] as const)("floating Main toolbar chr
   });
 
   it("starts a window drag from a pointerdown on the grip, never from a tool button", async () => {
-    const { shell, grip } = await renderPalette(platform);
+    const { shell } = await renderPalette(platform);
+
+    // The rail is the window's one drag grip: there is no in-content grip any more, and the rail is
+    // 14px wide beside the content, whose tools keep a uniform 4px margin.
+    const grips = shell.querySelectorAll<HTMLElement>("[data-palette-window-grip], [data-palette-content-drag-grip]");
+    expect(grips).toHaveLength(1);
+    const grip = grips[0]!;
+    expect(grip.dataset.paletteWindowGrip).toBe("true");
+    expect(shell.firstElementChild).toBe(grip);
+    expect(getComputedStyle(grip).width).toBe("14px");
+    expect(getComputedStyle(grip).height).toBe("auto");
+    const content = grip.nextElementSibling as HTMLElement;
+    expect(content.classList.contains("palette-window-content")).toBe(true);
+    expect(getComputedStyle(content.querySelector(".tool-palette")!).padding).toBe("4px");
 
     let down: MouseEvent | undefined;
     await act(async () => { down = fire(grip, "pointerdown", 7); fire(grip, "mousedown", 7); });
