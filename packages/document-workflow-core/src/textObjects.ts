@@ -10,8 +10,8 @@ import {
   type TextSpan,
   textStyleToObjectStyle
 } from "@chemdraft/chem-core";
-import { measureNativeTextSpanLineWidth, textObjectSpanLines, textObjectSpansForRendering, nativeTextSpanLayout } from "@chemdraft/layout-engine";
-import { nativeTextObjectLineMetrics, nativeTextSpanMetrics } from "@chemdraft/layout-engine";
+import { measureNativeTextSpanLineWidth, textObjectSpanLines } from "@chemdraft/layout-engine";
+import { nativeTextObjectBoxHeight, nativeTextObjectLineMetrics, nativeTextSpanMetrics, normalizeTextLineBreaks } from "@chemdraft/layout-engine";
 import { clamp, firstPage, nextObjectId, type PagePoint, phase4Timestamp } from "./shared";
 import { documentDrawingDefaults } from "./drawingDefaults";
 
@@ -32,6 +32,7 @@ const nativeTextBoxVerticalPadding = 4;
 export function nativeTextObjectSizeForText(
   text: string,
   style: Record<string, unknown> | Partial<NativeTextStyle> = {},
+  /** Caps `height` only; the content height is never capped. */
   options: { width?: number; height?: number; maxWidth?: number; maxHeight?: number; spans?: TextSpan[] } = {}
 ): { width: number; height: number } {
   const textStyle = nativeTextStyleFromObjectStyle(style);
@@ -43,7 +44,6 @@ export function nativeTextObjectSizeForText(
     ? textObjectSpanLines({ text, spans: options.spans }).map((line, index) =>
       Math.max(plainLineWidths[index] ?? 0, estimateNativeTextSpanLineWidth(line, textStyle)))
     : plainLineWidths;
-  const lineHeightPx = textStyle.fontSizePx * textStyle.lineHeight;
   const naturalContentWidth = Math.max(
     ...lineWidths,
     nativeTextObjectMinimumDimensions.width - nativeTextBoxHorizontalPadding
@@ -54,21 +54,21 @@ export function nativeTextObjectSizeForText(
     nativeTextObjectMinimumDimensions.width,
     Math.max(nativeTextObjectMinimumDimensions.width, maxWidth)
   );
-  const wrappedLines = options.width === undefined ? undefined : nativeTextSpanLayout(
-    textObjectSpansForRendering({ text, spans: options.spans ?? [] }), textStyle, Math.max(1, width - nativeTextBoxHorizontalPadding));
-  const wrappedLineCount = wrappedLines?.length ?? lineWidths.reduce((count, lineWidth) => (
-    count + Math.max(1, Math.ceil(lineWidth / Math.max(1, width - nativeTextBoxHorizontalPadding)))
-  ), 0);
-  const paragraphSpacing = Math.max(0, paragraphs.length - 1) * textStyle.paragraphSpacingPx;
-  const naturalHeight = clamp(
-    Math.max(wrappedLineCount * lineHeightPx + paragraphSpacing + nativeTextBoxVerticalPadding,
-      wrappedLines ? nativeTextObjectLineMetrics({ text, spans: options.spans ?? [], width,
-        style: { ...textStyle, textBoxSizingMode: "fixed-width" } }).height : 0),
-    nativeTextObjectMinimumDimensions.height,
-    Number.MAX_SAFE_INTEGER
-  );
-  const height = clamp(
-    options.height ?? naturalHeight,
+  // The editor's height, from the lines the SVG draws (docs/plans/textbox-behavior.md H1, H3).
+  // Auto width never wraps, even when its width is capped; dividing that width into estimated
+  // lines added lines the SVG never draws, and floating-point division turned one line into two.
+  const naturalHeight = Math.max(nativeTextObjectMinimumDimensions.height, nativeTextObjectBoxHeight({
+    text,
+    spans: options.spans ?? [],
+    ...(options.width === undefined
+      ? { style: textStyleToObjectStyle(textStyle) }
+      : { style: { ...textStyleToObjectStyle(textStyle), textBoxSizingMode: "fixed-width" }, width })
+  }));
+  // The content height is never capped (H2): near the page bottom the box reaches past the
+  // bottom, as an auto-width line reaches past the right edge. maxHeight caps only a height the
+  // caller chose (a fixed-size box).
+  const height = options.height === undefined ? naturalHeight : clamp(
+    options.height,
     nativeTextObjectMinimumDimensions.height,
     Math.max(nativeTextObjectMinimumDimensions.height, options.maxHeight ?? Number.MAX_SAFE_INTEGER)
   );
@@ -101,7 +101,8 @@ export function createNativeTextObject(
   style: Partial<NativeTextStyle> = {}
 ): TextObject {
   const page = firstPage(document);
-  const resolvedText = text.length > 0 ? text : "Text";
+  // Text box text holds LF only, as the editor's textarea does (docs/plans/textbox-behavior.md).
+  const resolvedText = text.length > 0 ? normalizeTextLineBreaks(text) : "Text";
   const objectStyle = textStyleToObjectStyle({
     ...(document.styles.drawing !== undefined || document.styles.text !== undefined
       ? documentDrawingDefaults(document).textStyle : {}),

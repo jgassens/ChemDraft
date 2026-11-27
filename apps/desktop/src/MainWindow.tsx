@@ -33,7 +33,7 @@ import { TableCellEditor, TableColumnResizers, type TableCellEditorHandle } from
 import { tableCellAtPoint, tableEditingContent, tableTextAtPoint, type TableEditingAction } from "./tableInteraction";
 import type { ActiveTableText } from "./tableCommands";
 import { tableValidationMessage } from "./tableCommands";
-import { tableCellElementId } from "@chemdraft/layout-engine";
+import { normalizeTextLineBreaks, tableCellElementId, textObjectWithNormalizedLineBreaks } from "@chemdraft/layout-engine";
 import { insertTableIntoDocument } from "./documentWorkflow";
 import { doubleBondGestureCycle } from "./doubleBondCycle";
 import { clearCustomSwatchSlot, customSwatchCommandId, loadCustomSwatches, parseCustomSwatchCommandId, setCustomSwatchSlot, type CustomSwatchNumber, type CustomSwatchSlot } from "./customColorSwatches";
@@ -340,6 +340,10 @@ import {
   type ResolvedBondCrossing
 } from "@chemdraft/layout-engine";
 import { measureTextEditorMetrics, measureTextEditorViewport } from "./textEditorMetrics";
+import {
+  createTextEditorSession, dragTextEditor, moveTextEditorCaretForKey, paintTextEditorChrome, pressTextEditor,
+  selectTextEditorLineDeletion, textEditorLayout as textBoxEditorLayout, type TextEditorSession
+} from "./textBoxEditor";
 // `/adapter`, NOT the barrel: the barrel re-exports `./analysis`, which reaches the pKa network's
 // 4.2 MB of JSON. Measured with the repo's own vite build, that model was 4,042,470 characters of a
 // 7.43 MB startup chunk — parsed synchronously before the first frame, on the path this app's whole
@@ -30420,6 +30424,57 @@ function DocumentObjectViewContent({
   onAtomLabelFinish(state: AtomLabelEditState, reason: AtomLabelFinishReason): void;
 }) {
   const textEditorRef = useRef<HTMLTextAreaElement | null>(null);
+  // The editor's caret and highlight are painted from the layout engine's model of the lines
+  // the page SVG draws (docs/plans/textbox-behavior.md); the textarea is only an input sink.
+  const textCaretRef = useRef<HTMLDivElement | null>(null);
+  const textSelectionLayerRef = useRef<HTMLDivElement | null>(null);
+  const textEditorSessionRef = useRef<TextEditorSession>(createTextEditorSession());
+  const textEditorViewRef = useRef<{
+    object: TextObject; scale: number; originX: number; offset: { x: number; y: number };
+  } | undefined>(undefined);
+  const textEditorModelLayout = (current: TextObject) => textBoxEditorLayout(current,
+    interactionLayer?.closest(".page")?.querySelector<SVGTextContentElement>(
+      `.page-svg-visual-layer [data-page-svg-object-visual="${cssEscapeIdentifier(current.id)}"] text`));
+  const paintTextEditor = (applyPendingSelection = false) => {
+    const view = textEditorViewRef.current, editor = textEditorRef.current;
+    const caret = textCaretRef.current, selectionLayer = textSelectionLayerRef.current;
+    if (!view || !editor || !caret || !selectionLayer) return;
+    const session = textEditorSessionRef.current;
+    const pending = applyPendingSelection ? session.pendingSelection : undefined;
+    if (pending) {
+      session.pendingSelection = undefined;
+      if (editor.value === pending.text) {
+        editor.setSelectionRange(pending.start, pending.end);
+        onTextSelectionChange(view.object.id, { start: pending.start, end: pending.end });
+      }
+    }
+    paintTextEditorChrome({ editor, caret, selectionLayer, layout: textEditorModelLayout(view.object), session,
+      scale: view.scale, originX: view.originX });
+  };
+  const paintTextEditorRef = useRef(paintTextEditor);
+  paintTextEditorRef.current = paintTextEditor;
+  // Invert the same viewport (SVG CTM scale and offset) that places the editor chrome over the
+  // glyphs, then undo the object's rotation: object-relative, unrotated page units.
+  const textEditorPointFromClient = (clientX: number, clientY: number) => {
+    const view = textEditorViewRef.current;
+    if (!view || !interactionLayer || !(view.scale > 0)) return undefined;
+    const layerRect = interactionLayer.getBoundingClientRect();
+    const pagePoint = inverseTransformPointForObject(view.object, {
+      x: (clientX - layerRect.left - view.offset.x) / view.scale,
+      y: (clientY - layerRect.top - view.offset.y) / view.scale
+    });
+    return { x: pagePoint.x - view.object.x, y: pagePoint.y - view.object.y };
+  };
+  useLayoutEffect(() => {
+    if (editingText) paintTextEditorRef.current(true);
+  });
+  useEffect(() => {
+    if (!editingText) return;
+    // Caret moves inside the textarea (arrows, native undo) fire selectionchange on the document.
+    const repaint = () => paintTextEditorRef.current();
+    globalThis.document.addEventListener("selectionchange", repaint);
+    return () => globalThis.document.removeEventListener("selectionchange", repaint);
+  }, [editingText]);
   const textEditorStyle = object.type === "text" ? nativeTextStyleFromObjectStyle(object.style) : undefined;
   const [textEditorLayout, setTextEditorLayout] = useState<{
     metrics: NativeTextCssMetrics | undefined;
@@ -30471,6 +30526,7 @@ function DocumentObjectViewContent({
       return;
     }
 
+    textEditorSessionRef.current = createTextEditorSession();
     editor.focus();
     if (isTextPlaceholderPending(object.id)) {
       editor.select();
@@ -30480,6 +30536,7 @@ function DocumentObjectViewContent({
       const end = editor.value.length;
       editor.setSelectionRange(end, end);
     }
+    paintTextEditorRef.current();
   }, [editingText, object.id, isTextPlaceholderPending]);
 
   if (object.type === "group") {
@@ -30542,6 +30599,8 @@ function DocumentObjectViewContent({
   };
   const handleTextChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
     if (inlineEditorReadOnly) return;
+    textEditorSessionRef.current.affinity = "downstream";
+    textEditorSessionRef.current.goalX = undefined;
     onTextPlaceholderClear(object.id);
     recordTextEditorSelection(event.currentTarget);
     onTextChange(object.id, event.currentTarget.value);
@@ -30563,16 +30622,16 @@ function DocumentObjectViewContent({
     const currentValue = editor.value;
     const nextValue = `${currentValue.slice(0, start)}${text}${currentValue.slice(end)}`;
     const cursor = start + text.length;
+    // Placed by the next commit's layout effect, once the textarea holds the new text: no
+    // frame shows the caret at the end, and a later key cannot race a deferred move.
+    textEditorSessionRef.current.pendingSelection = { start: cursor, end: cursor, text: nextValue };
     onTextChange(object.id, nextValue);
-    window.requestAnimationFrame(() => {
-      editor.focus();
-      editor.setSelectionRange(cursor, cursor);
-      recordTextEditorSelection(editor);
-    });
   };
   const handleTextPaste = (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
     if (inlineEditorReadOnly) { event.preventDefault(); event.stopPropagation(); return; }
-    const text = event.clipboardData.getData("text/plain");
+    // Text box text holds LF only: a Windows clipboard's CRLF would put the caret, and every
+    // later offset, one character per line break past the textarea's.
+    const text = normalizeTextLineBreaks(event.clipboardData.getData("text/plain"));
     if (text.length === 0) {
       return;
     }
@@ -30607,6 +30666,24 @@ function DocumentObjectViewContent({
       recordTextEditorSelection(event.currentTarget);
       return;
     }
+
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+    // Vertical moves and line start/end follow the rendered lines, not the hidden textarea's.
+    const session = textEditorSessionRef.current;
+    const view = textEditorViewRef.current;
+    const platform = shortcutPlatform ?? detectDesktopShortcutPlatform();
+    // Cmd+Backspace/Delete: the native delete then removes exactly the rendered line's span.
+    if (view) selectTextEditorLineDeletion(event.currentTarget, session, textEditorModelLayout(view.object), event, platform);
+    if (view && moveTextEditorCaretForKey(event.currentTarget, session, textEditorModelLayout(view.object), event, platform)) {
+      event.preventDefault();
+      recordTextEditorSelection(event.currentTarget);
+      paintTextEditor();
+      return;
+    }
+    session.goalX = undefined;
+    session.affinity = "downstream";
+    // Other keys move the caret by their default action, after this handler.
+    window.setTimeout(() => paintTextEditorRef.current(), 0);
 
     // Cmd/Ctrl+V is intentionally not intercepted here: preventing the default action would also
     // cancel the native `paste` event that handleTextPaste relies on. Let it through so the editor's
@@ -31310,6 +31387,11 @@ function DocumentObjectViewContent({
       // Replaced in the layout effect before paint. Non-layout hosts (jsdom) have
       // no measurable CSS font metrics; they can inject them through the reader.
       textEditorLayout?.metrics ?? { ascentPx: textStyle.fontSizePx * scale, descentPx: 0 }, textEditorLayout?.offset);
+    // Chrome-local x of object.x: the frame may grow around the alignment anchor.
+    textEditorViewRef.current = editingText ? {
+      object, scale, offset: textEditorLayout?.offset ?? { x: 0, y: 0 },
+      originX: (textEditorLayout?.offset.x ?? 0) + object.x * scale - editorPlacement.frame.left
+    } : undefined;
     // Editor chrome only; never rewrite old/undone stored frames on open.
     const editorFrameCss: CSSProperties = {};
     if (editingText) {
@@ -31338,7 +31420,8 @@ function DocumentObjectViewContent({
       ...textCss,
       ...editorPlacement.content,
       color: "transparent",
-      caretColor: textStyle.color,
+      // The textarea's own caret and highlight follow its browser wrap, not the SVG's lines.
+      caretColor: "transparent",
       ...(objectTextScript === "normal" ? {} : {
         fontSize: `calc(${textStyle.fontSizePx * nativeTextScriptFontScale}px * var(--page-scale))`,
         lineHeight: Math.max(1, textStyle.lineHeight),
@@ -31421,7 +31504,8 @@ function DocumentObjectViewContent({
               spellCheck={false}
               data-text-script={objectTextScript}
               style={textEditorCss}
-              value={object.text}
+              // LF line breaks, as the textarea's own value reports them (an older file can store CR).
+              value={normalizeTextLineBreaks(object.text)}
               onChange={handleTextChange}
               onPaste={handleTextPaste}
               onFocus={(event) => {
@@ -31429,6 +31513,7 @@ function DocumentObjectViewContent({
                   event.currentTarget.select();
                 }
                 recordTextEditorSelection(event.currentTarget);
+                paintTextEditor();
               }}
               // Click-away commits (exact element-symbol text becomes an atom). The
               // explicit id matters: canvas pointer handlers clear the edit state before blur.
@@ -31436,19 +31521,67 @@ function DocumentObjectViewContent({
                 if (!inlineEditorReadOnly && inlineEditorBlurEndsEdit(event.currentTarget)) {
                   onTextEditFinish(object.id);
                 }
+                paintTextEditor();
               }}
               onKeyDown={handleTextKeyDown}
-              onKeyUp={(event) => recordTextEditorSelection(event.currentTarget)}
-              onSelect={(event) => recordTextEditorSelection(event.currentTarget)}
+              onKeyUp={(event) => {
+                recordTextEditorSelection(event.currentTarget);
+                paintTextEditor();
+              }}
+              onSelect={(event) => {
+                recordTextEditorSelection(event.currentTarget);
+                paintTextEditor();
+              }}
+              // Presses and drags hit-test the rendered lines, never the textarea's own layout,
+              // so the highlighted range is always the range typing replaces.
               onPointerDown={(event) => {
                 if (!inlineEditorReadOnly) onTextPlaceholderClear(object.id);
                 event.stopPropagation();
+                const view = textEditorViewRef.current;
+                const point = event.button === 0 ? textEditorPointFromClient(event.clientX, event.clientY) : undefined;
+                if (!view || !point) return;
+                event.preventDefault();
+                const editor = event.currentTarget;
+                if (editor.ownerDocument.activeElement !== editor) editor.focus({ preventScroll: true });
+                pressTextEditor(editor, textEditorSessionRef.current, textEditorModelLayout(view.object), point, {
+                  pointerId: event.pointerId, time: event.timeStamp, clientX: event.clientX, clientY: event.clientY,
+                  shiftKey: event.shiftKey
+                });
+                try { editor.setPointerCapture(event.pointerId); } catch { /* the pointer is already gone */ }
+                recordTextEditorSelection(editor);
+                paintTextEditor();
+              }}
+              onMouseDown={(event) => {
+                // The press above owns caret placement; the compatibility mousedown must not.
+                if (event.button === 0 && textEditorPointFromClient(event.clientX, event.clientY)) event.preventDefault();
+              }}
+              onPointerMove={(event) => {
+                const session = textEditorSessionRef.current, view = textEditorViewRef.current;
+                if (!session.drag || session.drag.pointerId !== event.pointerId || !view) return;
+                event.stopPropagation();
+                if ((event.buttons & 1) === 0) { session.drag = undefined; return; }
+                const point = textEditorPointFromClient(event.clientX, event.clientY);
+                if (!point) return;
+                dragTextEditor(event.currentTarget, session, textEditorModelLayout(view.object), point);
+                recordTextEditorSelection(event.currentTarget);
+                paintTextEditor();
               }}
               onPointerUp={(event) => {
                 event.stopPropagation();
+                const session = textEditorSessionRef.current, view = textEditorViewRef.current;
+                if (session.drag?.pointerId === event.pointerId && view) {
+                  const point = textEditorPointFromClient(event.clientX, event.clientY);
+                  if (point) dragTextEditor(event.currentTarget, session, textEditorModelLayout(view.object), point);
+                  session.drag = undefined;
+                  try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* already released */ }
+                }
                 recordTextEditorSelection(event.currentTarget);
+                paintTextEditor();
               }}
+              onPointerCancel={() => { textEditorSessionRef.current.drag = undefined; }}
             />
+            <div className="text-editor-selection-layer" ref={textSelectionLayerRef} aria-hidden="true" />
+            <div className="text-editor-caret" ref={textCaretRef} aria-hidden="true" style={{ backgroundColor: textStyle.color }} />
           </>
         ) : null}
         </>, { ...textCss, ...editorFrameCss })}
@@ -34181,7 +34314,9 @@ function textScriptForTextObject(object: TextObject): TextSpan["script"] {
   return scripts.size === 1 ? [...scripts][0] ?? "normal" : "normal";
 }
 
-function textScriptForTextRange(object: TextObject, range: NativeTextSelectionRange): TextSpan["script"] {
+function textScriptForTextRange(stored: TextObject, range: NativeTextSelectionRange): TextSpan["script"] {
+  // The range is the editor's (LF line breaks); read an older CRLF object the same way.
+  const object = textObjectWithNormalizedLineBreaks(stored);
   const start = Math.max(0, Math.min(range.start, range.end, object.text.length));
   const end = Math.max(0, Math.min(Math.max(range.start, range.end), object.text.length));
   if (start === end) {
@@ -34202,7 +34337,9 @@ function textScriptForTextRange(object: TextObject, range: NativeTextSelectionRa
   return scripts.size === 1 ? [...scripts][0] ?? "normal" : "normal";
 }
 
-function textStyleForTextRange(object: TextObject, range: NativeTextSelectionRange): Record<string, unknown> {
+function textStyleForTextRange(stored: TextObject, range: NativeTextSelectionRange): Record<string, unknown> {
+  // The range is the editor's (LF line breaks); read an older CRLF object the same way.
+  const object = textObjectWithNormalizedLineBreaks(stored);
   const start = Math.max(0, Math.min(range.start, range.end, object.text.length));
   const end = Math.max(0, Math.min(Math.max(range.start, range.end), object.text.length));
   if (start === end) {

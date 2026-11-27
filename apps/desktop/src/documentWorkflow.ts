@@ -17,7 +17,7 @@ import { identifiersWithMolfileStereo, sourceCoordinateWarnings } from "./docume
 import { IMPLIED_RADICAL_CACHE_NOT_REFRESHED_CODE } from "./openWarnings";
 /** The open report's code for a molecule whose lone-H (H•) cache the refresh declined to change. */
 export { IMPLIED_RADICAL_CACHE_NOT_REFRESHED_CODE } from "./openWarnings";
-import { bracketVisualBounds } from "@chemdraft/layout-engine";
+import { bracketVisualBounds, normalizeTextLineBreaks, textObjectWithNormalizedLineBreaks } from "@chemdraft/layout-engine";
 import { repeatUnits, repeatUnitExportWarnings, repeatUnitMolfileGroups } from "@chemdraft/export-engine";
 import { nativeMoleculeLayoutQuality } from "./depiction2d/layoutQuality";
 import { planObjectArrangement, moleculeAnchorForArrangement, moleculeVisualBoundsForArrangement, textVisualBoundsForArrangement, type ArrangementLayout, type ArrangementOptions, type ArrangementItem, type LayoutBounds } from "@chemdraft/layout-engine";
@@ -5375,7 +5375,7 @@ export function getSelectedTextObject(document: ChemDraftDocument): TextObject |
 export function updateNativeTextObjectText(
   document: ChemDraftDocument,
   objectId: string,
-  text: string,
+  editedText: string,
   originalFrame?: Pick<TextObject, "x" | "y" | "width" | "height">
 ): ChemDraftDocument {
   const location = findTextObjectLocation(document, objectId);
@@ -5383,21 +5383,26 @@ export function updateNativeTextObjectText(
     return document;
   }
   const { object, page } = location;
-  const spans = textObjectSpansForTextChange(object, text);
+  // Text box text holds LF only (docs/plans/textbox-behavior.md). Compare against the stored
+  // runs with their line breaks normalized too, so an older CRLF object keeps its formatting.
+  const text = normalizeTextLineBreaks(editedText);
+  const spans = textObjectSpansForTextChange(textObjectWithNormalizedLineBreaks(object), text);
   const fixedWidth = object.style.textBoxSizingMode === "fixed-width" || object.style.textBoxSizingMode === "fixed-size";
   const fixedSize = object.style.textBoxSizingMode === "fixed-size";
   const frame = { ...object, x: 0, y: 0 };
   const placement = planTextObjectPlacement(frame);
   const minimumHeight = nativeTextObjectMinimumDimensions.height;
-  const limits = fixedWidth ? undefined : textAutoSizePageLimits(object, page, minimumHeight);
+  // The height is never capped at the page bottom (H2): the box reaches past it instead. Auto
+  // width never wraps (H3), so its height does not depend on the width the page leaves it.
+  const limits = fixedWidth ? undefined : textAutoSizePageLimits(object, page, minimumHeight,
+    nativeTextObjectSizeForText(text, object.style, { spans }).height);
   const size = nativeTextObjectSizeForText(text, object.style, {
     spans,
     width: fixedWidth ? object.width : undefined,
     height: fixedSize ? object.height : undefined,
     maxWidth: limits?.maxWidth ?? page.width - object.x,
-    maxHeight: fixedWidth ? Math.max(minimumHeight, page.height - object.y) : undefined
+    maxHeight: fixedSize ? Math.max(minimumHeight, page.height - object.y) : undefined
   });
-  if (limits) size.height = Math.min(size.height, Math.max(minimumHeight, limits.maxHeight(size.width)));
 
   let { x, y } = object;
   if (!fixedWidth) {
@@ -5487,7 +5492,9 @@ export function updateNativeTextObjectStyle(
   if (!location) {
     return document;
   }
-  const { object, page } = location;
+  const { page } = location;
+  // An older CRLF object is stored with LF, its runs on the same characters (N1).
+  const object = textObjectWithNormalizedLineBreaks(location.object);
   const nextStyle = nativeTextStyleFromObjectStyle({
     ...nativeTextStyleFromObjectStyle(object.style),
     ...style
@@ -5510,7 +5517,6 @@ export function updateNativeTextObjectStyle(
     maxWidth: Math.max(nativeTextObjectMinimumDimensions.width, page.width - object.x),
     maxHeight: Math.max(nativeTextObjectMinimumDimensions.height, page.height - object.y)
   });
-
   return applyPatch(
     document,
     {
@@ -5523,7 +5529,8 @@ export function updateNativeTextObjectStyle(
           ...object.style,
           ...textStyleToObjectStyle(nextStyle)
         },
-        ...(spans ? { spans } : {})
+        ...(object === location.object ? {} : { text: object.text }),
+        ...(spans || object !== location.object ? { spans: spans ?? object.spans } : {})
       }
     },
     { now: phase4Timestamp }
@@ -5539,7 +5546,8 @@ export function updateNativeTextObjectScript(
   if (!location) {
     return document;
   }
-  const { object } = location;
+  // An older CRLF object is stored with LF, its runs on the same characters (N1).
+  const object = textObjectWithNormalizedLineBreaks(location.object);
   const spans = textObjectSpansForWorkflow(object);
 
   return applyPatch(
@@ -5548,6 +5556,7 @@ export function updateNativeTextObjectScript(
       op: "updateObject",
       objectId,
       changes: {
+        ...(object === location.object ? {} : { text: object.text }),
         spans: spans.length > 0
           ? normalizeTextSpans(spans.map(span => ({ ...span, script })))
           : [{ text: object.text, script, style: {} }]
@@ -5568,7 +5577,9 @@ export function updateNativeTextObjectScriptRange(
     return document;
   }
 
-  const spans = updateTextObjectSpansInRange(location.object, range, (span) => ({
+  // The range is the editor's (LF line breaks); an older CRLF object is normalized with it.
+  const object = textObjectWithNormalizedLineBreaks(location.object);
+  const spans = updateTextObjectSpansInRange(object, range, (span) => ({
     ...span,
     script
   }));
@@ -5578,7 +5589,7 @@ export function updateNativeTextObjectScriptRange(
     {
       op: "updateObject",
       objectId,
-      changes: { spans }
+      changes: object === location.object ? { spans } : { text: object.text, spans }
     },
     { now: phase4Timestamp }
   );
@@ -5595,7 +5606,9 @@ export function updateNativeTextObjectStyleRange(
     return document;
   }
 
-  const spans = updateTextObjectSpansInRange(location.object, range, (span) => ({
+  // The range is the editor's (LF line breaks); an older CRLF object is normalized with it.
+  const object = textObjectWithNormalizedLineBreaks(location.object);
+  const spans = updateTextObjectSpansInRange(object, range, (span) => ({
     ...span,
     style: {
       ...span.style,
@@ -5608,7 +5621,7 @@ export function updateNativeTextObjectStyleRange(
     {
       op: "updateObject",
       objectId,
-      changes: { spans }
+      changes: object === location.object ? { spans } : { text: object.text, spans }
     },
     { now: phase4Timestamp }
   );

@@ -110,8 +110,15 @@ import { planTableObjectSvg, tableVisualBoundsForArrangement } from "./table";
 import { textAdvanceEm, measureTextRun, measureNativeTextSpanLineWidth, nativeTextMetrics, isPatrickHandFont, patrickHandTextAdvanceEm, patrickHandTextInkBoundsEm } from "./textMetrics";
 import { planTextObjectPlacement } from "./textPlacement";
 import { formatNumber } from "./formatNumber";
-import { nativeTextSpanLayout } from "./textLayout";
-export { nativeTextSpanLayout } from "./textLayout";
+import {
+  nativeTextObjectLineMetrics, nativeTextSpanLayout, nativeTextSpanMetrics, textObjectSpanLayout, textObjectSpanLines,
+  textObjectSpansForRendering, textObjectWrapsAtWidth
+} from "./textLayout";
+export {
+  nativeTextObjectLineMetrics, nativeTextSpanLayout, nativeTextSpanMetrics, textObjectSpanLayout, textObjectSpanLines,
+  textObjectSpansForRendering, textObjectWrapsAtWidth, type NativeTextLayoutLine
+} from "./textLayout";
+export * from "./textEditorLayout";
 import { nativeTextScriptFontScale, nativeTextSubscriptOffsetEm, nativeTextSuperscriptOffsetEm } from "./textMetrics";
 import { nativeGroupLabelDisplay, type AtomLabelAnchor } from "./labelGrammar";
 import { moleculeSketchTickPath, type MoleculeSketchTick } from "./sketchTicks";
@@ -4239,7 +4246,7 @@ export function planTextObjectSvg(object: TextObject, layerIndex: number): PageS
   const { style: textStyle, textAnchor, x, y, lineAdvance } = planTextObjectPlacement(object);
   const layout = textObjectSpanLayout(object);
   const lines = layout.map(line => line.spans);
-  const wrapped = isFixedWidthTextObject(object);
+  const wrapped = textObjectWrapsAtWidth(object);
   const metrics = wrapped ? nativeTextObjectLineMetrics(object) : undefined;
   // Preserve the established markup for wholly unscripted text. With scripts, reset each
   // line's baseline, then move relatively within it to keep one text-anchor chunk per line.
@@ -4309,55 +4316,6 @@ export function textSpanLineFragments(
       "letter-spacing": metadataNumber(span.style.letterSpacingPx)
     }, [textFragment(`text-line-${lineIndex}-${spanIndex}-text`, span.text)]);
   });
-}
-
-/** Explicit baselines prevent a script run from shifting the following run or line.
- * Reserve each line's actual script ascent/descent before laying out its neighbor. */
-export function nativeTextSpanMetrics(span: TextSpan, objectStyle: TextObject['style']): {fontSize:number;offset:number;ascent:number;descent:number} {
-  const size=nativeTextStyleFromObjectStyle({...objectStyle,...span.style}).fontSizePx;
-  const fontSize=Number((size*(span.script==='normal'?1:.72)).toFixed(6));
-  const offset=Number((span.script==='subscript'?size*.22:span.script==='superscript'?-size*.4:0).toFixed(6));
-  return {fontSize,offset,ascent:fontSize*.8-offset,descent:fontSize*.2+offset};
-}
-export function nativeTextObjectLineMetrics(object: Pick<TextObject,'text'|'spans'|'style'> & Partial<Pick<TextObject,'width'|'arrowAttachment'>>): {
-  lines:{spans:TextSpan[];baseline:number;ascent:number;descent:number}[];height:number
-} {
-  const style=nativeTextStyleFromObjectStyle(object.style),layout=textObjectSpanLayout(object);
-  let previousBaseline=0,previousDescent=0;
-  const measured=layout.map(({spans,paragraphIndex},index)=>{
-    const metrics=spans.map(span=>nativeTextSpanMetrics(span,object.style));
-    const ascent=Math.max(style.fontSizePx*.8,...metrics.map(m=>m.ascent));
-    const descent=Math.max(style.fontSizePx*.2,...metrics.map(m=>m.descent));
-    const baseline=index===0?Math.max(style.fontSizePx,ascent+2):previousBaseline+
-      Math.max(style.fontSizePx*style.lineHeight,previousDescent+ascent+style.fontSizePx*.18)+
-        (paragraphIndex!==layout[index-1]!.paragraphIndex?style.paragraphSpacingPx:0);
-    previousBaseline=baseline;previousDescent=descent;
-    return {spans,baseline,ascent,descent};
-  });
-  return {lines:measured,height:previousBaseline+previousDescent+2};
-}
-
-type TextLayoutObject = Pick<TextObject, "text" | "spans"> & Partial<Pick<TextObject, "style" | "width" | "arrowAttachment">>;
-function isFixedWidthTextObject(object: TextLayoutObject): boolean {
-  return typeof object.width === "number" &&
-    (object.style?.textBoxSizingMode === "fixed-width" || object.style?.textBoxSizingMode === "fixed-size") &&
-    object.arrowAttachment?.kind !== "conditions" && !(object.text === "+" && object.style?.reactionPlus === true);
-}
-function textObjectSpanLayout(object: TextLayoutObject) {
-  return nativeTextSpanLayout(textObjectSpansForRendering(object), nativeTextStyleFromObjectStyle(object.style ?? {}),
-    isFixedWidthTextObject(object) ? Math.max(1, object.width! - 6) : undefined);
-}
-export function textObjectSpanLines(object: TextLayoutObject): TextSpan[][] {
-  return textObjectSpanLayout(object).map(line => line.spans);
-}
-
-export function textObjectSpansForRendering(object: Pick<TextObject, "text" | "spans">): TextSpan[] {
-  const spans = object.spans.filter((span) => span.text.length > 0);
-  if (spans.length > 0 && spans.map((span) => span.text).join("") === object.text) {
-    return spans;
-  }
-
-  return [{ text: object.text, script: "normal", style: {} }];
 }
 
 interface FrameHalfExtents { halfWidth: number; halfHeight: number }
@@ -7091,10 +7049,16 @@ export function textVisualBoundsForArrangement(object: TextObject): LayoutBounds
   return objectFrameBoundsForPageFit(object);
 }
 
-/** Frame size allowed by the page while keeping the rotated alignment anchor fixed. */
+/** Frame width allowed by the page while keeping the rotated alignment anchor fixed. The height
+ * is never limited: a box keeps its lowest drawn line even past the page bottom
+ * (docs/plans/textbox-behavior.md H2). An edge along the writing direction (left or right, at a
+ * small rotation) caps the width with the box's content height, so a rotated frame stays on the
+ * page there. An edge the height faces (the bottom) caps it with the minimum height, as before:
+ * the box crosses that edge only by its height, and its width never collapses there. */
 export function textAutoSizePageLimits(
-  object: TextObject, page: { width: number; height: number }, minimumHeight: number
-): { maxWidth: number; maxHeight: (width: number) => number } {
+  object: TextObject, page: { width: number; height: number }, minimumHeight: number,
+  contentHeight = minimumHeight
+): { maxWidth: number } {
   const { x, alignment } = planTextObjectPlacement(object);
   // The aligned point on the top edge stays fixed with the baseline. The frame extends
   // to either side of it along the rotated writing direction and down along the rotated normal.
@@ -7115,8 +7079,8 @@ export function textAutoSizePageLimits(
   // Round inward to the stored frame's hundredth-of-a-pixel precision.
   const inward = (size: number) => Math.floor((size + 1e-9) * 100) / 100;
   return {
-    maxWidth: inward(Math.min(...edges.map(edge => limit(edge.room - minimumHeight * edge.height, edge.width)))),
-    maxHeight: width => inward(Math.min(...edges.map(edge => limit(edge.room - width * edge.width, edge.height))))
+    maxWidth: inward(Math.min(...edges.map(edge =>
+      limit(edge.room - (edge.width >= edge.height ? contentHeight : minimumHeight) * edge.height, edge.width))))
   };
 }
 
@@ -7158,7 +7122,7 @@ export function textContentFrame(object: TextObject): LayoutBounds {
   let left = object.x, right = object.x + object.width;
   let top = object.y, bottom = object.y + object.height;
   const advance = style.fontSizePx * style.lineHeight + style.paragraphSpacingPx;
-  const wrappedMetrics = isFixedWidthTextObject(object) ? nativeTextObjectLineMetrics(object) : undefined;
+  const wrappedMetrics = textObjectWrapsAtWidth(object) ? nativeTextObjectLineMetrics(object) : undefined;
   lines.forEach((line, index) => {
     const width = measureNativeTextSpanLineWidth(line, style);
     const x = style.textAlign === "center" ? anchor - width / 2
@@ -7246,7 +7210,7 @@ function rotateInkBounds(object: DocumentObject, box: LayoutBounds): LayoutBound
 function textInkBounds(object: TextObject): LayoutBounds | null {
   const conditions = object.arrowAttachment?.kind === "conditions" ? conditionsTextPlacement(object) : undefined;
   const { x, y, style, alignment, lineAdvance } = conditions ?? planTextObjectPlacement(object);
-  const wrappedMetrics = isFixedWidthTextObject(object) ? nativeTextObjectLineMetrics(object) : undefined;
+  const wrappedMetrics = textObjectWrapsAtWidth(object) ? nativeTextObjectLineMetrics(object) : undefined;
   const boxes = textObjectSpanLines(object).flatMap((line, index) => {
     if (!line.some(span => span.text.trim())) return [];
     const width = measureNativeTextSpanLineWidth(line, style,

@@ -6040,8 +6040,48 @@ textarea:focus-visible,
   background: transparent;
 }
 
+/* The textarea's own browser layout wraps differently from the page SVG, so its caret and
+   highlight are hidden; .text-editor-caret and .text-editor-selection-rect are painted from the
+   layout engine's model of the rendered lines (docs/plans/textbox-behavior.md). */
+.rich-text-object-editor {
+  caret-color: transparent;
+}
+
 .rich-text-object-editor::selection {
+  background: transparent;
+}
+
+.text-editor-selection-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.text-editor-selection-rect {
+  position: absolute;
   background: color-mix(in srgb, var(--cd-accent) 28%, transparent);
+}
+
+.text-editor-caret {
+  position: absolute;
+  z-index: 3;
+  width: 1px;
+  pointer-events: none;
+  animation: text-editor-caret-blink 1.06s steps(1, end) infinite;
+}
+
+.text-editor-caret[hidden] {
+  display: none;
+}
+
+@keyframes text-editor-caret-blink {
+  0%, 60% { opacity: 1; }
+  61%, 100% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .text-editor-caret { animation: none; }
 }
 
 .native-atom-label-editor {
