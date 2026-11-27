@@ -1,6 +1,6 @@
 import { MAX_IMAGE_OBJECT_BYTES } from "./imageBytes";
 import { imagePixelLimitError } from "./imageInfo";
-import { buildPngChunk, concatBytes, hasPngSignature, PNG_SIGNATURE, pngChunkAt, type PngChunk } from "./png";
+import { buildPngChunk, concatBytes, hasPngSignature, PNG_SIGNATURE, pngChunkAt, pngCrc32, type PngChunk } from "./png";
 
 const u32 = (data: Uint8Array, offset: number) =>
   ((data[offset]! << 24) >>> 0) + (data[offset + 1]! << 16) + (data[offset + 2]! << 8) + data[offset + 3]!;
@@ -11,6 +11,9 @@ export const APNG_MAX_CHUNKS = 100_000;
 export const APNG_MAX_BYTES = MAX_IMAGE_OBJECT_BYTES;
 /** Ancillary chunks before the image data that describe how its pixels read; copied into the rebuilt PNG. */
 const APNG_COPIED_CHUNKS = new Set(["PLTE", "tRNS", "gAMA", "cHRM", "sRGB", "iCCP"]);
+
+/** Whether a chunk's stored CRC matches its type and data. */
+const crcMatches = (bytes: Uint8Array, chunk: PngChunk) => u32(bytes, chunk.end - 4) === pngCrc32(bytes.subarray(chunk.offset + 4, chunk.end - 4));
 
 export interface ApngFirstFrameResult {
   /** The PNG to draw: the input object itself unless a first frame was rebuilt. */
@@ -34,8 +37,9 @@ export interface ApngFirstFrameResult {
  * unchanged (`default-image`). Otherwise frame 0 is the first fcTL's fdAT data: it must start at 0,0 and
  * cover the whole canvas (so, blended over a transparent canvas, it alone is the picture), and the result is
  * IHDR (with frame 0's size), the colour chunks that apply (PLTE, tRNS, gAMA, cHRM, sRGB, iCCP), frame 0's
- * data as IDAT and IEND, with fresh CRCs. An animated PNG out of spec or out of bounds comes back as its
- * default image with a warning (`fallback`), so the export draws that rather than failing.
+ * data as IDAT and IEND, with fresh CRCs. An animated PNG out of spec or out of bounds, including one where a
+ * chunk this relies on or copies (IHDR, acTL, the colour chunks, frame 0's fcTL and fdAT) fails its CRC, comes
+ * back as its default image with a warning (`fallback`), so the export draws that rather than failing.
  */
 export function apngFirstFrame(bytes: Uint8Array): ApngFirstFrameResult {
   const unchanged: ApngFirstFrameResult = { bytes, frame: "static" };
@@ -55,6 +59,11 @@ export function apngFirstFrame(bytes: Uint8Array): ApngFirstFrameResult {
     ({ bytes: withoutAnimation(bytes) ?? bytes, frame: "fallback", warning: `the animated PNG's first frame can't be read (${reason}); its default image is drawn instead.` });
   if (bytes.length > APNG_MAX_BYTES) return fallback(`it is larger than ${APNG_MAX_BYTES / (1024 * 1024)} MB`);
   if (animation.length !== 8 || u32(animation.data, 0) === 0) return fallback("its animation control chunk is malformed");
+  // Every chunk this relies on or copies must pass its CRC: copied as they are, a damaged colour chunk can make
+  // a decoder draw the rebuilt picture wrongly (resvg draws it transparent) with no warning.
+  const damaged = (chunk: PngChunk) => fallback(`its ${chunk.type} chunk fails its CRC check`);
+  if (!crcMatches(bytes, header)) return damaged(header);
+  if (!crcMatches(bytes, animation)) return damaged(animation);
 
   const canvasWidth = u32(header.data, 0), canvasHeight = u32(header.data, 4);
   const copied: Uint8Array[] = [];
@@ -85,6 +94,7 @@ export function apngFirstFrame(bytes: Uint8Array): ApngFirstFrameResult {
           control = chunk;
           controlBeforeImageData = !sawImageData;
           if (chunk.length !== 26) return fallback("its first frame control chunk is malformed");
+          if (!crcMatches(bytes, chunk)) return damaged(chunk);
           nextSequence = u32(chunk.data, 0) + 1;
         } else {
           frameDone = true;
@@ -93,12 +103,16 @@ export function apngFirstFrame(bytes: Uint8Array): ApngFirstFrameResult {
       case "fdAT":
         if (!control || controlBeforeImageData || frameDone) break;
         if (chunk.length < 4) return fallback("a frame data chunk is malformed");
+        if (!crcMatches(bytes, chunk)) return damaged(chunk);
         if (u32(chunk.data, 0) !== nextSequence) return fallback("its frame data chunks are out of sequence");
         nextSequence += 1;
         if (chunk.length > 4) frameData.push(chunk.data.subarray(4));
         break;
       default:
-        if (APNG_COPIED_CHUNKS.has(chunk.type) && !sawImageData) copied.push(bytes.subarray(chunk.offset, chunk.end));
+        if (APNG_COPIED_CHUNKS.has(chunk.type) && !sawImageData) {
+          if (!crcMatches(bytes, chunk)) return damaged(chunk);
+          copied.push(bytes.subarray(chunk.offset, chunk.end));
+        }
     }
   }
   if (!sawImageData) return fallback("it has no image data");

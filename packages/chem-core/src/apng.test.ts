@@ -16,6 +16,17 @@ function chunks(bytes: Uint8Array) {
 }
 const imageData = (bytes: Uint8Array) => inflateSync(Buffer.concat(chunks(bytes).filter((c) => c.type === "IDAT").map((c) => c.data)));
 const apng = (options: Parameters<typeof separateFirstFrameApng>[4] = {}) => separateFirstFrameApng(4, 3, RED, BLUE, options);
+/** A copy of a chunk whose stored CRC no longer matches its type and data. */
+const damaged = (chunk: Buffer) => {
+  const copy = Buffer.from(chunk);
+  copy[copy.length - 1]! ^= 0xff;
+  return copy;
+};
+/** The indexed 2 x 1 animated PNG: a palette, transparency, a red default image and a frame 0 of palette index 1. */
+const indexedApng = (plte = pngChunk("PLTE", Buffer.from([255, 0, 0, 0, 0, 255]))) => Buffer.concat([PNG_SIGNATURE_BYTES,
+  pngChunk("IHDR", Buffer.concat([u32(2, 1), Buffer.from([8, 3, 0, 0, 0])])), pngChunk("acTL", u32(1, 0)), plte,
+  pngChunk("tRNS", Buffer.from([255, 128])), pngChunk("IDAT", deflateSync(Buffer.from([0, 0, 0]))), fcTLChunk(0, 2, 1),
+  fdATChunk(1, deflateSync(Buffer.from([0, 1, 1]))), pngChunk("IEND")]);
 
 describe("PNG chunk framing", () => {
   it("computes the chunk CRC as zlib does", () => {
@@ -61,11 +72,7 @@ describe("apngFirstFrame", () => {
   });
 
   it("keeps the palette and transparency chunks of an indexed picture", () => {
-    const header = pngChunk("IHDR", Buffer.concat([u32(2, 1), Buffer.from([8, 3, 0, 0, 0])]));
-    const plte = pngChunk("PLTE", Buffer.from([255, 0, 0, 0, 0, 255])), trns = pngChunk("tRNS", Buffer.from([255, 128]));
-    const png = Buffer.concat([PNG_SIGNATURE_BYTES, header, pngChunk("acTL", u32(1, 0)), plte, trns,
-      pngChunk("IDAT", deflateSync(Buffer.from([0, 0, 0]))), fcTLChunk(0, 2, 1), fdATChunk(1, deflateSync(Buffer.from([0, 1, 1]))), pngChunk("IEND")]);
-    const result = apngFirstFrame(png);
+    const result = apngFirstFrame(indexedApng());
     expect(chunks(result.bytes).map((c) => c.type)).toEqual(["IHDR", "PLTE", "tRNS", "IDAT", "IEND"]);
     expect(imageData(result.bytes)).toEqual(Buffer.from([0, 1, 1]));
   });
@@ -95,6 +102,31 @@ describe("apngFirstFrame", () => {
     expect(imageData(result.bytes)).toEqual(rawPixels(4, 3, RED));
     expect(result.warning).toContain(reason);
     expect(result.warning).toContain("its default image is drawn instead");
+  });
+
+  it.each([
+    ["frame 0's fcTL", { frame: [damaged(fcTLChunk(0, 4, 3)), fdATChunk(1, pixelData(4, 3, BLUE))] }, "fcTL"],
+    ["frame 0's fdAT", { frame: [fcTLChunk(0, 4, 3), damaged(fdATChunk(1, pixelData(4, 3, BLUE)))] }, "fdAT"],
+    ["the acTL", { actl: damaged(pngChunk("acTL", u32(2, 0))) }, "acTL"]
+  ])("falls back to the default image with a warning when %s fails its CRC", (_name, options, type) => {
+    const result = apngFirstFrame(new Uint8Array(apng(options)));
+    expect(result.frame).toBe("fallback");
+    expect(chunks(result.bytes).map((c) => c.type)).toEqual(["IHDR", "IDAT", "IEND"]);
+    expect(imageData(result.bytes)).toEqual(rawPixels(4, 3, RED));
+    expect(result.warning).toContain(`its ${type} chunk fails its CRC check`);
+  });
+
+  it.each([
+    ["a gAMA", () => apng({ extra: [damaged(pngChunk("gAMA", u32(45455)))] }), "gAMA", ["IHDR", "gAMA", "IDAT", "IEND"]],
+    ["a PLTE", () => indexedApng(damaged(pngChunk("PLTE", Buffer.from([255, 0, 0, 0, 0, 255])))), "PLTE", ["IHDR", "PLTE", "tRNS", "IDAT", "IEND"]],
+    ["the IHDR", () => Buffer.concat([PNG_SIGNATURE_BYTES, damaged(ihdrChunk(4, 3)), apng().subarray(8 + 25)]), "IHDR", ["IHDR", "IDAT", "IEND"]]
+  ])("falls back with a warning rather than copy %s chunk that fails its CRC", (_name, build, type, kept) => {
+    const result = apngFirstFrame(new Uint8Array(build()));
+    expect(result.frame).toBe("fallback");
+    expect(result.warning).toContain(`its ${type} chunk fails its CRC check`);
+    expect(result.warning).toContain("its default image is drawn instead");
+    // The existing fallback: the default image alone, its chunks as they were.
+    expect(chunks(result.bytes).map((c) => c.type)).toEqual(kept);
   });
 
   it("falls back rather than walk more chunks than the bound", () => {
