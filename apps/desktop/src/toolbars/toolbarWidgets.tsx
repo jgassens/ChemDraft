@@ -135,11 +135,18 @@ export function isGridWidgetItem(item: ToolbarPaletteItemModel): boolean {
  */
 export const DOCUMENT_ZOOM_GRID_SPAN = { colSpan: 4, rowSpan: 1 } as const;
 
+/**
+ * The Main style widget's footprint on the tool grid: eleven cells wide and two tall, exactly the
+ * cells its controls draw (no blank column beside them). This is the single source of the span:
+ * Main's manifest (desktop-toolsets.json) declares the same value, and a test holds the two equal.
+ */
+export const MAIN_STYLE_CONTROLS_GRID_SPAN = { colSpan: 11, rowSpan: 2 } as const;
+
 /** Grid spans for widgets the customize gallery can (re)add as grid citizens, sized in icon cells
  *  (24px + gap) to fit each widget's intrinsic content. Widgets not listed here re-add as appended
  *  sections (legacy behavior). */
 export const TOOLBAR_WIDGET_GRID_SPANS: Readonly<Record<string, { colSpan: number; rowSpan: number }>> = {
   [TOOLBAR_WIDGET_IDS.documentZoom]: { ...DOCUMENT_ZOOM_GRID_SPAN },
   ...Object.fromEntries(([1, 2, 3, 4] as const).map(swatch => [`widget.core.customColorSwatch${swatch}`, { colSpan: 2, rowSpan: 1 }])),
-  [TOOLBAR_WIDGET_IDS.mainStyleControls]: { colSpan: 12, rowSpan: 2 }
+  [TOOLBAR_WIDGET_IDS.mainStyleControls]: { ...MAIN_STYLE_CONTROLS_GRID_SPAN }
 };

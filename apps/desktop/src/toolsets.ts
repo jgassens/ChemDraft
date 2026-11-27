@@ -22,7 +22,7 @@ import {
 import { detectShortcutPlatform, parseShortcutDisplay, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { isCompoundLayoutCommand, isCompoundLayoutCommandHidden, type CompoundLayoutSettings, loadCompoundLayoutSettings } from "./compoundLayoutSettings";
 import manifest from "./toolsets/desktop-toolsets.json";
-import { DOCUMENT_ZOOM_GRID_SPAN, isGridWidgetItem, isToolbarWidgetItem, TOOLBAR_WIDGET_GRID_SPANS, TOOLBAR_WIDGET_IDS } from "./toolbars/toolbarWidgets";
+import { DOCUMENT_ZOOM_GRID_SPAN, MAIN_STYLE_CONTROLS_GRID_SPAN, isGridWidgetItem, isToolbarWidgetItem, TOOLBAR_WIDGET_GRID_SPANS, TOOLBAR_WIDGET_IDS } from "./toolbars/toolbarWidgets";
 import { MAIN_TOOLBAR_DEFAULTS_REVISION, withCurrentMainToolbarDefaults } from "./toolbars/toolbarLayoutState";
 import type { CommandSpec } from "./commands";
 import { renamedCommandId } from "./renamedCommands";
@@ -84,21 +84,22 @@ export interface ToolbarPaletteItemModel {
 export { DOCUMENT_ZOOM_GRID_SPAN };
 
 /**
- * The Main style widget's footprint on the tool grid: eleven cells wide and two tall. Every layout
- * of the widget (text, molecule, shape, arrow) draws exactly eleven cells per row
- * (`MAIN_STYLE_ROW_CELLS` in toolbars/mainStyleWidget/cells.tsx, asserted equal in tests), so the
- * span is exactly the cells its controls cover.
+ * The Main style widget's eleven-cell by two-row span (defined beside the other widget spans in
+ * toolbars/toolbarWidgets.tsx, and declared the same in Main's manifest). Every layout of the widget
+ * (text, molecule, shape, arrow) draws exactly eleven cells per row (`MAIN_STYLE_ROW_CELLS` in
+ * toolbars/mainStyleWidget/cells.tsx, asserted equal in tests). Re-exported here because this module
+ * applies it.
  *
- * Main's manifest, the gallery's re-add span and layouts saved by 1.2.2/RC5 carry a twelve-cell
- * span, which left one empty column (a blank cell in each row) beside the controls: after them in
- * Customize Toolbar, before them once Customize closed. As with the zoom widget's saved layouts, the
- * item id is unchanged and this read-time override is the whole migration.
+ * Layouts saved by 1.2.2/RC5 still carry the earlier twelve-cell span (an `itemOverrides` layout on
+ * Main, a gallery `itemAdditions` entry, or the item inside a user toolbar), which left a blank
+ * column beside the controls. The item id is unchanged, so the read-time override below is the
+ * migration: any saved layout holding the widget loads in the eleven-cell form, nothing rewritten.
  */
-export const MAIN_STYLE_CONTROLS_GRID_SPAN = { colSpan: 11, rowSpan: 2 } as const;
+export { MAIN_STYLE_CONTROLS_GRID_SPAN };
 
-/** Spans that replace whatever a manifest, gallery or saved layout declares for these widgets. For
- *  the zoom widget the manifest and gallery already declare its span; the entry is there for saved
- *  layouts (see DOCUMENT_ZOOM_GRID_SPAN). */
+/** Spans that replace whatever a manifest, gallery or saved layout declares for these widgets. The
+ *  manifest and gallery already declare the zoom and style widgets' spans; the entries are there for
+ *  saved layouts (see DOCUMENT_ZOOM_GRID_SPAN, MAIN_STYLE_CONTROLS_GRID_SPAN). */
 const WIDGET_GRID_SPAN_OVERRIDES: Readonly<Record<string, { readonly colSpan: number; readonly rowSpan: number }>> = {
   [TOOLBAR_WIDGET_IDS.documentZoom]: DOCUMENT_ZOOM_GRID_SPAN,
   [TOOLBAR_WIDGET_IDS.mainStyleControls]: MAIN_STYLE_CONTROLS_GRID_SPAN
