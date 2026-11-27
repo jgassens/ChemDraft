@@ -1614,6 +1614,9 @@ pub fn run() {
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
                         if !prompt_waits_for_user(&QUIT) {
+                            // Hiding keeps the app alive, so end the window's menu clicks here:
+                            // running companion work launches and opens nothing more.
+                            window.state::<app_handoff::State>().discard_menu_invocations();
                             dialog_windows::dismiss_owned(window.app_handle(), "ownerClose");
                             if let Err(error) = window.hide() {
                                 eprintln!("Could not hide ChemDraft main window: {error}");
@@ -1626,6 +1629,8 @@ pub fn run() {
                     #[cfg(not(target_os = "macos"))]
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
+                        // Quitting waits for the document's flush; launch nothing meanwhile.
+                        window.state::<app_handoff::State>().discard_menu_invocations();
                         request_quit(window.app_handle());
                     }
                     WindowEvent::Destroyed => {

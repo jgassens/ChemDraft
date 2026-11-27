@@ -35,7 +35,9 @@ export const PluginAppHandoffLimits = {
   retryInputs: 2,
   retryLabelCharacters: 80,
   /** API 0.1.29: one bound for a whole retry sequence; each attempt keeps `pipelineSeconds`. */
-  retrySequenceSeconds: 1200
+  retrySequenceSeconds: 1200,
+  /** API 0.1.29: the farthest a retry input may move any atom from the first input, in ångströms. */
+  retryDisplacementAngstroms: 0.1
 } as const;
 
 const limits = PluginAppHandoffLimits;
@@ -261,8 +263,13 @@ export const PluginCompanionRetryConditionSchema = z.object({
 
 /**
  * API 0.1.29. One or two alternative input texts with the first input's extension and size limit,
- * tried in order after a completed attempt meets `when`. The host refuses alternatives whose atoms
- * or bonds differ from the first input, or that repeat an earlier input.
+ * tried in order after a completed attempt meets `when`. Each must be the first input with only atom
+ * coordinates changed: the same lines and line breaks, the atom count line, comment line and bond
+ * records byte for byte, and each atom record's element; only its three coordinates and the spaces
+ * or tabs between its fields may differ. No atom may move more than
+ * `PluginAppHandoffLimits.retryDisplacementAngstroms` (0.1 Å) from the first input, and each
+ * alternative must move at least one atom from where every earlier input has it. The host refuses
+ * any other request with `bad-param` before showing anything.
  */
 export const PluginCompanionRetrySchema = z.object({
   inputs: z.array(utf8Text(limits.inputBytes)).min(1).max(limits.retryInputs),

@@ -292,7 +292,11 @@ file must declare a single XYZ input. The plugin supplies only a declared combin
 placeholders provide file paths and declared combination values; they must occupy an argument or
 follow a fixed `key=` prefix. The host validates the declaration, runs all steps in order, checks
 the app and tool, and refuses untested versions. See `PluginCompanionPipeline` in the SDK for the
-schema; each step is capped at 300 seconds and the pipeline at 600 seconds.
+schema; each step is capped at 300 seconds and the pipeline at 600 seconds. Every launch after the
+first step, and opening the output, also needs the menu click to be still live (hosts with API
+0.1.29): closing or reloading the document window, choosing one of the plugin's menu commands again,
+or clearing the plugin's consents ends the build before its next step with `bad-param`, and the
+output is not opened. A step already running finishes within its time limit; quitting stops it.
 
 The native host asks for consent for the app and, for a companion, its pipeline. Consent is visible
 and revocable in Plugin Manager, and is cleared on uninstall or an update dropping `apps.handoff`.
@@ -325,10 +329,14 @@ if (result.status === "done" && result.attempts && result.attempts > 1) {
 ```
 
 - **Inputs.** `retry` requires `input`. Supply every alternative up front: one or two texts with the
-  first input's extension and its 1 MiB UTF-8 limit. Before anything is shown or run, the host
-  parses each one like the first input and refuses the request with `bad-param` unless every
-  alternative has the same atoms and bonds as the first (only coordinates may differ) and differs
-  from every earlier input.
+  first input's extension and its 1 MiB UTF-8 limit. Each alternative must be the first input with
+  only atom coordinates changed: the same lines in the same order with the same line breaks, and
+  the atom count line, comment line and bond records byte for byte. Each atom record keeps its
+  element; only its three coordinates, and the spaces or tabs between its fields, may differ. No
+  atom may be more than 0.1 Å (`PluginAppHandoffLimits.retryDisplacementAngstroms`) from its
+  position in the first input, and each alternative must move at least one atom from where every
+  earlier input has it. Before anything is shown or run, the host refuses any other request with
+  `bad-param`.
 - **Condition.** `when` is data, not code: a declared step ID, a row label of 1–80 plain characters
   (no control or invisible format characters, no line breaks, no leading or trailing spaces), and one
   finite number. The step must belong to the pipeline. After an attempt **completes**, the host looks
@@ -343,14 +351,16 @@ if (result.status === "done" && result.attempts && result.attempts > 1) {
 - **When it retries.** Only after a completed attempt for which the condition holds, and only while an
   untried input remains: at most three attempts. A crash, timeout, nonzero exit, unreadable or
   missing output, refused launch, or declined box never leads to another attempt.
-- **One confirmation.** The build confirmation states the maximum number of builds, that the inputs
-  differ slightly, and when the host builds again. No box appears between attempts. The invocation
+- **One confirmation.** The build confirmation states the maximum number of builds, that the next
+  input keeps the atoms, bonds and comment line and moves no atom more than 0.1 Å, and when the host
+  builds again. No box appears between attempts. The invocation
   still allows one `runCompanion` call. A later rebuild offer reruns only the input finally used.
 - **Checks on every launch.** Each attempt revalidates consent, the app and companion identity, the
-  plugin install, and the menu command, exactly as each step of a single run does. Before a later
-  attempt, the menu click must still be live: revoking consent, uninstalling or disabling the plugin,
-  a changed app or companion, closing or reloading the document window, quitting, or starting the
-  plugin's command again stops further attempts. Each attempt keeps the 600-second pipeline bound,
+  plugin install, and the menu command, exactly as each step of a single run does. Every step of
+  every later attempt, and opening the final output, also needs the menu click to be still live:
+  revoking consent, uninstalling or disabling the plugin, a changed app or companion, closing or
+  reloading the document window, quitting, or choosing one of the plugin's menu commands again
+  stops the sequence before its next launch. Each attempt keeps the 600-second pipeline bound,
   and the whole sequence is bounded by `PluginAppHandoffLimits.retrySequenceSeconds` (1200 seconds).
 - **Output.** Each attempt uses its own temporary folder, removed like a single run's. Only the final
   attempt's output is opened when `openOutput` is set; earlier outputs are never opened. If every

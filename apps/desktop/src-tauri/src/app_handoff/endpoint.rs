@@ -16,6 +16,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::{
     collections::HashMap,
+    ffi::OsString,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -38,15 +39,16 @@ fn send_template_digest() -> String {
 }
 const REBUILD_EXPIRED: &str =
     "The handoff app, pipeline, or consent changed. Start the build again from the menu.";
-const RETRY_STOPPED: &str =
-    "ChemDraft stopped the companion retries because the menu command that started them ended or was replaced.";
+/// A launch after the first, or the output's open, found the click no longer live.
+const STOPPED: &str =
+    "ChemDraft stopped the companion build because the menu command that started it ended or was replaced, or its document window closed or reloaded.";
 const RETRY_TIMEOUT: &str = "The companion attempts reached their 1200-second total time limit.";
 
 #[derive(Default)]
 pub(crate) struct State {
-    arms: arming::State,
+    pub(super) arms: arming::State,
     results: Mutex<HashMap<String, PendingResult>>,
-    stopped: AtomicBool,
+    pub(super) stopped: AtomicBool,
 }
 
 struct PendingResult {
@@ -56,16 +58,20 @@ struct PendingResult {
 }
 
 impl State {
+    /// The document window reloaded, or the user closed it (on macOS closing only hides it). No
+    /// menu click from it stays live, so running companion work launches no further step or
+    /// attempt and opens nothing, and no rebuild offer survives. Unlike `shutdown`, a companion
+    /// step already running is left to finish within its time limit, and later clicks arm again.
     pub(crate) fn discard_menu_invocations(&self) {
-        self.arms.shutdown();
-    }
-
-    pub(crate) fn shutdown(&self) {
-        self.stopped.store(true, Ordering::Release);
         self.arms.shutdown();
         for (_, result) in self.results.lock().unwrap().drain() {
             result.replaced.send_replace(true);
         }
+    }
+
+    pub(crate) fn shutdown(&self) {
+        self.stopped.store(true, Ordering::Release);
+        self.discard_menu_invocations();
     }
 
     fn clear_result(&self, plugin_id: &str, consent_id: Option<&str>) {
@@ -82,7 +88,7 @@ impl State {
         }
     }
 
-    fn begin_result(&self, row: &Row) -> Arc<watch::Sender<bool>> {
+    pub(super) fn begin_result(&self, row: &Row) -> Arc<watch::Sender<bool>> {
         let marker = Arc::new(watch::channel(false).0);
         let previous = self.results.lock().unwrap().insert(
             row.plugin_id.clone(),
@@ -522,7 +528,7 @@ impl Context<'_> {
             Ok(composition) => composition,
             Err(message) => return Ok(run_failed(RunCode::BadParam, message)),
         };
-        // API 0.1.29: every alternative input passes the first input's checks before any box.
+        // API 0.1.29: every alternative input passes `retry::variants` before any box.
         let retry = match (&request.retry, &request.input) {
             (None, _) => None,
             (Some(retry), Some(input))
@@ -595,6 +601,7 @@ impl Context<'_> {
             .question(
                 snapshot,
                 proof.invalidated(),
+                None,
                 Duration::from_secs(600),
                 Some(&proof),
             )
@@ -622,11 +629,12 @@ impl Context<'_> {
     async fn question(
         &self,
         snapshot: Value,
-        mut cancelled: watch::Receiver<bool>,
+        cancelled: watch::Receiver<bool>,
+        click_ended: Option<watch::Receiver<bool>>,
         limit: Duration,
         submission: Option<&Submission>,
     ) -> Result<Action, String> {
-        if *cancelled.borrow() {
+        if *cancelled.borrow() || click_ended.as_ref().is_some_and(|ended| *ended.borrow()) {
             return Ok(Action::Cancel {});
         }
         let open = async {
@@ -646,7 +654,7 @@ impl Context<'_> {
         };
         let answer = tokio::select! {
             biased;
-            _ = cancelled.changed() => Action::Cancel {},
+            () = either_changed(cancelled, click_ended) => Action::Cancel {},
             result = tokio::time::timeout(limit, &mut choice) => result.ok().and_then(Result::ok).unwrap_or(Action::Cancel {}),
         };
         crate::dialog_windows::close_app_handoff(self.app(), &host_id);
@@ -675,9 +683,9 @@ impl Context<'_> {
             command,
         };
         let window = self.window.clone();
-        let (returned, result) = tauri::async_runtime::spawn_blocking(move || {
+        let (returned, proof, result) = tauri::async_runtime::spawn_blocking(move || {
             let result = job.run(&window, &proof);
-            (job, result)
+            (job, proof, result)
         })
         .await
         .map_err(|_| "The native companion supervisor stopped unexpectedly.")?;
@@ -733,8 +741,18 @@ impl Context<'_> {
             twist,
             &job.build.warnings,
         );
+        // The offer ends with the click that ran the build (reload, close, or a new click).
         let action = match wire::encode(snapshot) {
-            Ok(snapshot) => self.question(snapshot, marker.subscribe(), ttl, None).await,
+            Ok(snapshot) => {
+                self.question(
+                    snapshot,
+                    marker.subscribe(),
+                    Some(proof.invalidated()),
+                    ttl,
+                    None,
+                )
+                .await
+            }
             Err(error) => Err(error),
         };
         let session = state.take_result(self.plugin_id, &marker);
@@ -762,33 +780,142 @@ impl Context<'_> {
         }
         job.build = session.take_rebuild(Instant::now())?;
         job.target = rechecked;
+        // The click that ran this build must still be live, checked atomically with arming the
+        // rebuild; the rebuild's own click then ends on the same events.
         let new_proof = state
             .arms
-            .arm_host_event(self.plugin_id, self.command, Instant::now())?;
-        new_proof.bind_build(&job.build)?;
+            .arm_rebuild(self.plugin_id, self.command, Instant::now(), &proof)
+            .map_err(|_| REBUILD_EXPIRED)?;
+        drop(proof);
+        if let Err(error) = new_proof.bind_build(&job.build) {
+            state.arms.release(self.plugin_id, &new_proof);
+            return Err(error);
+        }
         // Continue entirely in Rust using the held input and the declared rebuild combination.
         self.run_rebuild(job, new_proof).await
     }
 
     async fn run_rebuild(&self, job: BuildJob, proof: Submission) -> Result<RunResult, String> {
         let window = self.window.clone();
-        tauri::async_runtime::spawn_blocking(move || job.run(&window, &proof))
-            .await
-            .map_err(|_| "The native companion supervisor stopped unexpectedly.")?
-            .or_else(JobError::into_result)
+        let (proof, result) = tauri::async_runtime::spawn_blocking(move || {
+            let result = job.run(&window, &proof);
+            (proof, result)
+        })
+        .await
+        .map_err(|_| "The native companion supervisor stopped unexpectedly.")?;
+        self.app()
+            .state::<State>()
+            .arms
+            .release(self.plugin_id, &proof);
+        result.or_else(JobError::into_result)
     }
 }
 
-struct BuildJob {
-    pipeline: Pipeline,
-    target: App,
-    grant: Row,
-    build: ApprovedBuild,
-    platform: Platform,
-    command: String,
+/// What an approved build needs from ChemDraft: its cache folder, the quit flag, the launch-time
+/// checks, and the two kinds of process launch. The document window provides it in the app; the
+/// tests provide a stand-in that runs the stub companion.
+pub(super) trait BuildHost {
+    fn cache(&self) -> Result<PathBuf, String>;
+    fn stopped(&self) -> &AtomicBool;
+    /// Calls `launch` with the freshly verified app only while consent, the plugin install, the
+    /// menu command and the app and companion identity all still allow `job`.
+    fn authorized<T>(
+        &self,
+        job: &BuildJob,
+        launch: impl FnOnce(&App) -> T,
+    ) -> Result<T, runner::Failure>;
+    fn spawn(
+        &self,
+        current: &App,
+        args: &[OsString],
+        cwd: &Path,
+        deadline: Instant,
+    ) -> Result<runner::ChildProcess, runner::Failure>;
+    fn open(&self, current: &App, platform: Platform, file: &Path) -> bool;
 }
 
-enum JobError {
+impl BuildHost for WebviewWindow {
+    fn cache(&self) -> Result<PathBuf, String> {
+        cache(self.app_handle())
+    }
+
+    fn stopped(&self) -> &AtomicBool {
+        &self.app_handle().state::<State>().inner().stopped
+    }
+
+    fn authorized<T>(
+        &self,
+        job: &BuildJob,
+        launch: impl FnOnce(&App) -> T,
+    ) -> Result<T, runner::Failure> {
+        let app = self.app_handle();
+        let refused = || runner::Failure::new(RunCode::BadParam, REBUILD_EXPIRED);
+        store(app)
+            .map_err(|_| refused())?
+            .with_grant(&job.grant, |row| {
+                let plugin = Plugin::read(app, &job.grant.plugin_id).map_err(|_| refused())?;
+                let pipeline = plugin
+                    .pipeline(&job.build.pipeline)
+                    .map_err(|_| refused())?;
+                if !plugin.owns_menu_command(&job.command)
+                    || !current_command(app, &job.command)
+                    || self.stopped().load(Ordering::Acquire)
+                    || !row.grants(
+                        &job.target,
+                        Some(&pipeline.id),
+                        &pipeline.digest(),
+                        &plugin.handoff_install_id,
+                    )
+                {
+                    return Err(refused());
+                }
+                job.target
+                    .with_verified_launch(job.platform, Some(&job.pipeline), launch)
+                    .map_err(|error| {
+                        runner::Failure::new(run_identity_code(error), error.message())
+                    })
+            })
+            .map_err(|error| {
+                if consent::is_conflict(&error) {
+                    runner::Failure::new(RunCode::BadParam, error.to_string())
+                } else {
+                    refused()
+                }
+            })?
+            .ok_or_else(refused)?
+    }
+
+    fn spawn(
+        &self,
+        current: &App,
+        args: &[OsString],
+        cwd: &Path,
+        deadline: Instant,
+    ) -> Result<runner::ChildProcess, runner::Failure> {
+        let tool = current.tool().ok_or_else(|| {
+            runner::Failure::new(
+                RunCode::ToolMissing,
+                "The declared companion executable is missing.",
+            )
+        })?;
+        runner::ChildProcess::spawn_before(tool, args, cwd, deadline, self.stopped())
+    }
+
+    fn open(&self, current: &App, platform: Platform, file: &Path) -> bool {
+        current.open(platform, file).is_ok()
+    }
+}
+
+pub(super) struct BuildJob {
+    pub(super) pipeline: Pipeline,
+    pub(super) target: App,
+    pub(super) grant: Row,
+    pub(super) build: ApprovedBuild,
+    pub(super) platform: Platform,
+    pub(super) command: String,
+}
+
+pub(super) enum JobError {
     Refused(String),
     Failed(runner::Failure, Option<Sequence>),
 }
@@ -805,7 +932,7 @@ impl JobError {
         }
     }
 
-    fn into_result(self) -> Result<RunResult, String> {
+    pub(super) fn into_result(self) -> Result<RunResult, String> {
         match self {
             Self::Refused(message) => Err(message),
             Self::Failed(failure, sequence) => Ok(failure_result(failure, sequence)),
@@ -823,17 +950,21 @@ impl BuildJob {
     /// Run the approved build. With a declared retry, run the next input only after a completed
     /// attempt meets the plugin's condition, revalidating everything a single run checks before
     /// each attempt and at every launch. Only the final attempt can be opened or returned.
-    fn run(&self, window: &WebviewWindow, proof: &Submission) -> Result<RunResult, JobError> {
-        let cache = cache(window.app_handle()).map_err(JobError::Refused)?;
+    pub(super) fn run(
+        &self,
+        host: &impl BuildHost,
+        proof: &Submission,
+    ) -> Result<RunResult, JobError> {
+        let cache = host.cache().map_err(JobError::Refused)?;
         let retry = self.build.retry.as_ref();
         let deadline = Instant::now() + retry::SEQUENCE_LIMIT;
         let (attempts, outcome) = retry::run_sequence(
             self.build.variants(),
             |index| {
                 if index > 0 {
-                    self.before_retry(window, proof, deadline)?;
+                    self.before_retry(host, proof, deadline)?;
                 }
-                self.attempt(window, proof, &cache, index, deadline)
+                self.attempt(host, proof, &cache, index, deadline)
             },
             |attempt: &Attempt| {
                 retry.is_some_and(|retry| retry::wants_retry(&attempt.completed.steps, &retry.when))
@@ -847,12 +978,16 @@ impl BuildJob {
         let mut opened = false;
         if self.build.open_output {
             if let Some(output) = completed.output {
-                opened = self
-                    .with_authorized_launch(window, |current| {
-                        runner::verified_output(&files.root, &output)
-                            && current.open(self.platform, &output).is_ok()
+                // Opening is a launch too: it needs the same live click, under the click's lock.
+                opened = host
+                    .authorized(self, |current| {
+                        proof.relaunch_build(&self.build, || {
+                            runner::verified_output(&files.root, &output)
+                                && host.open(current, self.platform, &output)
+                        })
                     })
-                    .map_err(|failure| JobError::Failed(failure, sequence))?;
+                    .map_err(|failure| JobError::Failed(failure, sequence))?
+                    .map_err(|_| JobError::Failed(stopped(), sequence))?;
                 if opened {
                     files.keep_for_open_app();
                 }
@@ -867,7 +1002,7 @@ impl BuildJob {
 
     fn before_retry(
         &self,
-        window: &WebviewWindow,
+        host: &impl BuildHost,
         proof: &Submission,
         deadline: Instant,
     ) -> Result<(), JobError> {
@@ -878,22 +1013,18 @@ impl BuildJob {
             )));
         }
         // Consent, plugin, command, shutdown and identity first, for their specific reasons.
-        self.with_authorized_launch(window, |_| ())
-            .map_err(JobError::failed)?;
-        proof
-            .assert_used()
-            .map_err(|_| JobError::failed(runner::Failure::new(RunCode::BadParam, RETRY_STOPPED)))
+        host.authorized(self, |_| ()).map_err(JobError::failed)?;
+        proof.assert_used().map_err(|_| JobError::failed(stopped()))
     }
 
     fn attempt(
         &self,
-        window: &WebviewWindow,
+        host: &impl BuildHost,
         proof: &Submission,
         cache: &Path,
         index: usize,
         deadline: Instant,
     ) -> Result<Attempt, JobError> {
-        let app = window.app_handle();
         let failed = |code, message| JobError::failed(runner::Failure::new(code, message));
         let files = TempFiles::new(cache, &self.grant.plugin_id).map_err(|_| {
             failed(
@@ -911,42 +1042,20 @@ impl BuildJob {
                     )
                 })?;
         }
-        let state = app.state::<State>();
         let mut refused = None;
         let run = runner::run(
             &self.pipeline,
             &self.build,
             &files,
             |args, cwd, first, step_deadline| {
-                self.with_authorized_launch(window, |current| {
-                    let tool = current.tool().ok_or_else(|| {
-                        runner::Failure::new(
-                            RunCode::ToolMissing,
-                            "The declared companion executable is missing.",
-                        )
-                    })?;
-                    let start = || {
-                        runner::ChildProcess::spawn_before(
-                            tool,
-                            args,
-                            cwd,
-                            step_deadline,
-                            &state.stopped,
-                        )
-                    };
-                    if !first {
-                        return start();
-                    }
-                    if index > 0 {
-                        // Later attempts reuse the approved click; it must still be live.
-                        return proof
-                            .relaunch_build(&self.build, start)
-                            .unwrap_or_else(|_| {
-                                Err(runner::Failure::new(RunCode::BadParam, RETRY_STOPPED))
-                            });
-                    }
-                    match proof.launch_build(&self.build, start) {
+                host.authorized(self, |current| {
+                    let start = || host.spawn(current, args, cwd, step_deadline);
+                    // Only the first step of the first attempt uses the click's allowance. Every
+                    // later step and attempt needs the same click to be still live.
+                    let first_launch = index == 0 && first;
+                    match proof.launch_step(&self.build, first_launch, start) {
                         Ok(result) => result,
+                        Err(_) if !first_launch => Err(stopped()),
                         Err(error) => {
                             refused = Some(error);
                             Err(runner::Failure::new(
@@ -957,7 +1066,7 @@ impl BuildJob {
                     }
                 })?
             },
-            &state.stopped,
+            host.stopped(),
             deadline,
         );
         if let Some(error) = refused {
@@ -968,47 +1077,22 @@ impl BuildJob {
             completed: run.map_err(JobError::failed)?,
         })
     }
+}
 
-    fn with_authorized_launch<T>(
-        &self,
-        window: &WebviewWindow,
-        launch: impl FnOnce(&App) -> T,
-    ) -> Result<T, runner::Failure> {
-        let app = window.app_handle();
-        let refused = || runner::Failure::new(RunCode::BadParam, REBUILD_EXPIRED);
-        store(app)
-            .map_err(|_| refused())?
-            .with_grant(&self.grant, |row| {
-                let plugin = Plugin::read(app, &self.grant.plugin_id).map_err(|_| refused())?;
-                let pipeline = plugin
-                    .pipeline(&self.build.pipeline)
-                    .map_err(|_| refused())?;
-                if !plugin.owns_menu_command(&self.command)
-                    || !current_command(app, &self.command)
-                    || app.state::<State>().stopped.load(Ordering::Acquire)
-                    || !row.grants(
-                        &self.target,
-                        Some(&pipeline.id),
-                        &pipeline.digest(),
-                        &plugin.handoff_install_id,
-                    )
-                {
-                    return Err(refused());
-                }
-                self.target
-                    .with_verified_launch(self.platform, Some(&self.pipeline), launch)
-                    .map_err(|error| {
-                        runner::Failure::new(run_identity_code(error), error.message())
-                    })
-            })
-            .map_err(|error| {
-                if consent::is_conflict(&error) {
-                    runner::Failure::new(RunCode::BadParam, error.to_string())
-                } else {
-                    refused()
-                }
-            })?
-            .ok_or_else(refused)?
+fn stopped() -> runner::Failure {
+    runner::Failure::new(RunCode::BadParam, STOPPED)
+}
+
+/// Resolves when either receiver changes or loses its sender.
+async fn either_changed(mut first: watch::Receiver<bool>, second: Option<watch::Receiver<bool>>) {
+    match second {
+        None => {
+            let _ = first.changed().await;
+        }
+        Some(mut second) => tokio::select! {
+            _ = first.changed() => {},
+            _ = second.changed() => {},
+        },
     }
 }
 

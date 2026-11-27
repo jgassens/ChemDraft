@@ -34,9 +34,9 @@ const render = (name: string) => {
 
 it("states the bounded retry in plain words in the one build confirmation (API 0.1.29)", () => {
   const expected = "This confirmation covers up to 3 builds. If the build step reports “Joint twist left” as a " +
-    "number other than 0, ChemDraft builds again without asking, using the plugin's next input: the same atoms " +
-    "and bonds at slightly different positions. A build that fails, times out, or reports no such number ends " +
-    "the run. Only the last build is kept.";
+    "number other than 0, ChemDraft builds again without asking, using the plugin's next input: the same atoms, " +
+    "bonds and comment line, with no atom moved more than 0.1 Å from the first input. A build that fails, times " +
+    "out, or reports no such number ends the run. Only the last build is kept.";
   expect(render("dialog-confirm-retry")).toContain(expected);
   expect(retryNotice({ attempts: 2, step: "build", label: "Twist", notEqual: -0.5 }))
     .toMatch(/^This confirmation covers up to 2 builds\. If the build step reports “Twist” as a number other than -0\.5,/u);

@@ -63,16 +63,21 @@ finally used.
 Host shape (API 0.1.29, additive and generic; the host knows nothing about frameworks or twist):
 
 - `runCompanion` takes an optional `retry: { inputs, when }`. `inputs` holds one or two alternative
-  texts, with the first input's extension and 1 MiB limit. The host refuses alternatives whose atoms or
-  bonds differ from the first input's, or that repeat an earlier input, before any box.
+  texts, with the first input's extension and 1 MiB limit. Each must be the first input with only atom
+  coordinates changed (same lines, atom count line, comment line, elements and bond records), move no
+  atom more than 0.1 Å from the first input, and move at least one atom from every earlier input; the
+  host refuses anything else with `bad-param` before any box.
 - `when: { step, label, notEqual }` names a declared step, a plain row label of up to 80 characters,
   and a finite number. The host reads the step's report at `tables[i].rows[j]` only, needs exactly one
   row whose `label` equals the label, and retries only when its `value` reads as a finite number other
   than `notEqual`. No regex, code, or path expressions.
-- The build confirmation states up to how many builds, that inputs differ slightly, and when it builds
-  again. No box between attempts. Every launch rechecks consent, app and companion identity, the
-  plugin install and the menu command; before a later attempt the menu click must still be live. The
-  sequence has a 1200-second bound; each attempt keeps its 600-second pipeline bound.
+- The build confirmation states up to how many builds, that the next input keeps the atoms, bonds and
+  comment line and moves no atom more than 0.1 Å, and when it builds again. No box between attempts.
+  Every launch rechecks consent, app and companion identity, the plugin install and the menu command.
+  Every launch after the first (each step and attempt, and a rebuild) and the output's open also need
+  the menu click to be still live, checked with the launch: closing or reloading the document window
+  or choosing the plugin's command again stops the build, a single run included. The sequence has a
+  1200-second bound; each attempt keeps its 600-second pipeline bound.
 - Each attempt has its own temporary folder; only the final attempt's output is opened. The result
   carries `attempts` and `variant`; a later failure is returned as that failure.
 

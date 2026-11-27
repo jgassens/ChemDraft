@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { PluginAppHandoffLimits } from "@chemdraft/plugin-api";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { useDialogContentReady } from "../dialogs/dialogContentFit";
 import { detectDesktopShortcutPlatform } from "../keyboardShortcuts";
@@ -10,7 +11,8 @@ type RetryNotice = NonNullable<Extract<AppHandoffDialogSnapshot, { mode: "confir
 export function retryNotice({ attempts, step, label, notEqual }: RetryNotice): string {
   return `This confirmation covers up to ${attempts} builds. If the ${step} step reports ` +
     `“${label}” as a number other than ${notEqual}, ChemDraft builds again without asking, using ` +
-    "the plugin's next input: the same atoms and bonds at slightly different positions. " +
+    "the plugin's next input: the same atoms, bonds and comment line, with no atom moved more than " +
+    `${PluginAppHandoffLimits.retryDisplacementAngstroms} Å from the first input. ` +
     "A build that fails, times out, or reports no such number ends the run. Only the last build is kept.";
 }
 

@@ -90,15 +90,46 @@ impl State {
         }
     }
 
-    /// Only the Rust result handler can start this invocation. It is never visible to IPC.
-    pub(super) fn arm_host_event(
+    /// The rebuild a completed build's result box offers. Only the Rust result handler can start
+    /// it, and only while `original`, the click that ran the build, is still the plugin's live,
+    /// used click: checked under the arms lock, so a reload, close or new click either ends the
+    /// original first (and the rebuild is refused) or ends the rebuild's own click after it.
+    /// The rebuild's click takes the original's place, so the same events end it. Its nonce is
+    /// never sent anywhere, so no IPC call can claim or finish it; `release` removes it.
+    pub(super) fn arm_rebuild(
         &self,
         plugin: &str,
         command: &str,
         now: Instant,
+        original: &Submission,
     ) -> Result<Submission, String> {
-        self.disarm(plugin);
-        Arc::new(Arm::new(command, String::new(), now)).submit(now)
+        let nonce =
+            temp_files::nonce().map_err(|_| "Could not secure the app handoff menu click.")?;
+        let mut arms = self.arms.lock().unwrap();
+        if !arms
+            .get(plugin)
+            .is_some_and(|arm| Arc::ptr_eq(arm, &original.0))
+        {
+            return Err(NO_ARMING.into());
+        }
+        original.assert_used()?;
+        let arm = Arc::new(Arm::new(command, nonce, now));
+        let submission = arm.submit(now)?;
+        if let Some(previous) = arms.insert(plugin.into(), arm) {
+            previous.invalidate();
+        }
+        Ok(submission)
+    }
+
+    /// Ends a host-started click once its work is over, unless something already replaced it.
+    pub(super) fn release(&self, plugin: &str, submission: &Submission) {
+        let mut arms = self.arms.lock().unwrap();
+        if arms
+            .get(plugin)
+            .is_some_and(|arm| Arc::ptr_eq(arm, &submission.0))
+        {
+            arms.remove(plugin).unwrap().invalidate();
+        }
     }
 
     pub(super) fn for_call(
@@ -290,8 +321,27 @@ impl Submission {
         self.launch(launch)
     }
 
-    /// A later attempt of the approved retry sequence. The first attempt used this click, so the
-    /// click must still be the live, used one for the same native build choice.
+    /// Every process launch of an approved build goes through its click, checked under the same
+    /// lock as the launch. The first launch uses the click's one allowance (`launch_build`); every
+    /// later one (each later step, each later attempt, and opening the output) needs the same click
+    /// to be still live (`relaunch_build`).
+    pub(super) fn launch_step<T>(
+        &self,
+        build: &ApprovedBuild,
+        first: bool,
+        launch: impl FnOnce() -> T,
+    ) -> Result<T, String> {
+        if first {
+            self.launch_build(build, launch)
+        } else {
+            self.relaunch_build(build, launch)
+        }
+    }
+
+    /// A launch after the first: a later step, a later attempt, or opening the output. The first
+    /// launch used this click, so the click must still be the live, used one for the same native
+    /// build choice. A reload or close of the document window, the plugin's menu command armed
+    /// again, or the plugin's consent cleared invalidates it.
     pub(super) fn relaunch_build<T>(
         &self,
         build: &ApprovedBuild,

@@ -249,7 +249,7 @@ describe("strict app handoff wire shapes", () => {
 describe("app handoff bounded retry (API 0.1.29)", () => {
   const input = { extension: "xyz" as const, text: "1\n\nC 0 0 0\n" };
   const when = { step: "build", label: "Joint twist left", notEqual: 0 };
-  const retry = { inputs: ["1\nb\nC 0 0 0.01\n"], when };
+  const retry = { inputs: ["1\n\nC 0 0 0.01\n"], when };
   const request = { ...runCompanion, input, retry };
   const parse = (value: unknown) => PluginHandoffRunCompanionRequestSchema.safeParse(value);
 
@@ -268,6 +268,7 @@ describe("app handoff bounded retry (API 0.1.29)", () => {
     }
     expect(parse({ ...runCompanion, retry }).error?.issues[0]?.path).toEqual(["retry"]);
     expect(limits.retryInputs).toBe(2);
+    expect(limits.retryDisplacementAngstroms).toBe(0.1);
   });
 
   it("declares the condition as one step, one plain label and one finite number", () => {

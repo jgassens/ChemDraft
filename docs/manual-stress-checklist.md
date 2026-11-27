@@ -1747,10 +1747,16 @@ for processor-specific behavior. Use an eligible official catalog plugin and its
   send again; verify consent is requested again.
 - Bounded retry (API 0.1.29): run a build whose plugin sends two alternative inputs and a retry
   condition, with the companion reporting a poor value for the first input. Verify the build
-  confirmation says up to 3 builds and when it builds again, that no box appears between attempts,
-  that only the final build opens, and that the status names the attempt count. Revoke consent, or
-  replace the companion, while the first attempt runs and verify no second attempt starts. Repeat
-  with a companion that exits nonzero or times out and verify there is no second attempt.
+  confirmation says up to 3 builds, that the next input moves no atom more than 0.1 Å, and when it
+  builds again, that no box appears between attempts, that only the final build opens, and that the
+  status names the attempt count. Revoke consent, or replace the companion, while the first attempt
+  runs and verify no second attempt starts. While a step runs, close the document window (macOS:
+  reopen it from the Dock afterwards), then separately reload it, and separately choose the plugin's
+  menu command again: verify no later step or attempt starts and nothing opens, and that a new build
+  from the menu afterwards runs normally. Repeat the close with a single build (no retry). Have the
+  plugin send an alternative with another comment line, or with one atom moved 0.2 Å, and verify
+  the request fails with `bad-param` before any box. Repeat with a companion that exits nonzero or
+  times out and verify there is no second attempt.
 - Alternate sending a file and running a build with the same app. Each asks for consent once. Revoke one operation and verify the other stays allowed.
 - With a fresh app pick, approve only a pipeline. Remove or change its companion executable while
   leaving the main app intact. Check that app status still reports the app as available and includes

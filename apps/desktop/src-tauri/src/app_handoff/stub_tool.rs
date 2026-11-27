@@ -57,12 +57,13 @@ fn main() {
                 "no-file" => {}
                 _ => fs::write(output, "stub cif").unwrap(),
             }
-            // A retry test variant names its reported value on the XYZ comment line.
+            // A retry test variant moves the second atom along x to choose the reported value:
+            // x = 1 reports 6.000, and each 0.001 further reports one less.
             let twist = text
                 .lines()
-                .nth(1)
-                .and_then(|line| line.strip_prefix("twist="))
-                .unwrap_or("6.000");
+                .nth(3)
+                .and_then(|line| line.split_whitespace().nth(1)?.parse::<f64>().ok())
+                .map_or_else(|| "6.000".into(), |x| format!("{:.3}", (1.006 - x) * 1000.0));
             println!("{{\"ok\":true,\"tables\":[{{\"rows\":[{{\"label\":\"Joint twist left\",\"value\":\"{twist}\"}}]}}]}}");
         }
         "inspect" => {

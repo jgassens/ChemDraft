@@ -33,29 +33,116 @@ pub(super) fn check_request(retry: &Retry, input: Option<&Input>) -> Result<(), 
     Ok(())
 }
 
-/// Every alternative must parse like the first input, keep its atoms and bonds (only coordinates
-/// may differ), and differ from every earlier text. Returns the inputs in attempt order.
+/// The farthest an alternative input may place any atom from the same atom of the first input:
+/// 0.1, in the input's length unit (ångströms for XYZ). The confirmation box, the SDK and
+/// AUTHORING.md state the same bound.
+pub(super) const MAX_DISPLACEMENT: f64 = 0.1;
+/// Decimal coordinates such as 1.1 - 1.0 do not subtract exactly in binary.
+const DISPLACEMENT_ROUNDING: f64 = 1e-9;
+
+const NOT_SAME_LAYOUT: &str = "Each companion retry input must match the first input line for line, with the same atom count line, comment line, elements in the same order, and bond records; only atom coordinates may change.";
+const MOVED_TOO_FAR: &str =
+    "Each companion retry input may move each atom at most 0.1 Å from its position in the first input.";
+const NOT_MOVED: &str =
+    "Each companion retry input must move at least one atom from its position in every earlier input.";
+
+/// One atom record: its element, its coordinates, and whether its line ended in a carriage return.
+struct Atom<'a> {
+    element: &'a str,
+    position: [f64; 3],
+    carriage_return: bool,
+}
+
+/// An atom record with fields separated by spaces or tabs only, so that no reader sees another
+/// line break in it.
+fn atom(line: &str) -> Option<Atom<'_>> {
+    let (body, carriage_return) = match line.strip_suffix('\r') {
+        Some(body) => (body, true),
+        None => (line, false),
+    };
+    if body
+        .bytes()
+        .any(|byte| byte.is_ascii_whitespace() && !matches!(byte, b' ' | b'\t'))
+    {
+        return None;
+    }
+    let mut fields = body.split([' ', '\t']).filter(|field| !field.is_empty());
+    let element = fields.next()?;
+    let mut position = [0.0; 3];
+    for value in &mut position {
+        *value = fields
+            .next()?
+            .parse::<f64>()
+            .ok()
+            .filter(|v| v.is_finite())?;
+    }
+    fields.next().is_none().then_some(Atom {
+        element,
+        position,
+        carriage_return,
+    })
+}
+
+/// The atom positions of `text` when it is `first` with only atom coordinates (and the spaces or
+/// tabs between an atom's fields) changed; every other line, the line breaks included, must be
+/// byte for byte the same.
+fn positions(first: &str, text: &str, atom_count: usize) -> Option<Vec<[f64; 3]>> {
+    let first: Vec<&str> = first.split('\n').collect();
+    let lines: Vec<&str> = text.split('\n').collect();
+    let atoms = 2..2 + atom_count;
+    if lines.len() != first.len() || first.len() < atoms.end {
+        return None;
+    }
+    let mut placed = Vec::with_capacity(atom_count);
+    for (index, (line, expected)) in lines.iter().zip(&first).enumerate() {
+        if !atoms.contains(&index) {
+            if line != expected {
+                return None;
+            }
+            continue;
+        }
+        let (atom, expected) = (atom(line)?, atom(expected)?);
+        if atom.element != expected.element || atom.carriage_return != expected.carriage_return {
+            return None;
+        }
+        placed.push(atom.position);
+    }
+    Some(placed)
+}
+
+fn distance(a: &[f64; 3], b: &[f64; 3]) -> f64 {
+    a.iter()
+        .zip(b)
+        .map(|(a, b)| (a - b) * (a - b))
+        .sum::<f64>()
+        .sqrt()
+}
+
+/// Every alternative must be the first input with only atom coordinates changed (see `positions`),
+/// must move no atom more than `MAX_DISPLACEMENT` from the first input, and must move at least one
+/// atom from where every earlier input has it. Returns the inputs in attempt order.
 pub(super) fn variants(first: &Input, retry: &Retry) -> Result<Vec<Input>, String> {
     let expected = dialogs::composition(first)?;
+    let origin = positions(&first.text, &first.text, expected.atom_count).ok_or(NOT_SAME_LAYOUT)?;
     let mut inputs = vec![first.clone()];
+    let mut placed = vec![origin.clone()];
     for text in &retry.inputs {
         let input = Input {
             extension: first.extension,
             text: text.clone(),
         };
-        let composition = dialogs::composition(&input)?;
-        if composition.graph_digest != expected.graph_digest
-            || composition.formula != expected.formula
-            || composition.atom_count != expected.atom_count
-        {
-            return Err(
-                "Each companion retry input must have the same atoms and bonds as the first input."
-                    .into(),
-            );
+        let atoms =
+            positions(&first.text, &input.text, expected.atom_count).ok_or(NOT_SAME_LAYOUT)?;
+        if atoms.iter().zip(&origin).any(|(atom, start)| {
+            let moved = distance(atom, start);
+            moved.is_nan() || moved > MAX_DISPLACEMENT + DISPLACEMENT_ROUNDING
+        }) {
+            return Err(MOVED_TOO_FAR.into());
         }
-        if inputs.iter().any(|earlier| earlier.text == input.text) {
-            return Err("Each companion retry input must differ from the earlier inputs.".into());
+        if placed.contains(&atoms) {
+            return Err(NOT_MOVED.into());
         }
+        placed.push(atoms);
         inputs.push(input);
     }
     Ok(inputs)
