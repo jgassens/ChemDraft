@@ -14,6 +14,16 @@ Check center anchoring after scrolling, rulers on/off and scrollbar appearance, 
 layouts, old-session restore and display scaling. Molecules, undo history and exported page size
 must stay unchanged. Repeat with native palettes on Windows and both macOS builds.
 
+Zoom on the cell grid: on Main, Zoom Out sits exactly over Selection, the percentage menu exactly
+over Lasso and Eraser (its left edge on Lasso's, its right edge on Eraser's), and Zoom In exactly
+over Text, with the same gaps as the tools; the first divider follows straight after, spanning both
+rows, with no empty cells beside Text. "100%", "400%" and "850%" read in full with the arrow showing;
+note whether a smooth-zoom value such as "156.3%" clips. Pick presets and type a digit with the menu
+focused (type-ahead selects the preset). Customize Toolbar: the zoom shows three dashed boxes (one,
+two and one cells), not one wide box; drag it to a new place, drag it out, re-add it from the
+gallery (four cells again) and Restore Defaults. A layout saved by 1.2.2/RC5 loads with the
+four-cell zoom, and Main still fits its content. Windows and both macOS builds.
+
 Effect color popovers: select art or a molecule, enable Glow/Shadow/Sketch in Color Controls, then
 open Effect. The entire picker must fit in its owned window. Preview, commit, cancel and switch
 between effects, fill and text colors; only the intended target should change. Repeat at mixed
