@@ -28930,6 +28930,7 @@ function displayedGroupSelectionBounds(
 ): { raw?: SelectionBounds; shown?: SelectionBounds } {
   if (!selectionChromeActive || resolvedSelectionObjectIds.length <= 1) return {};
   const raw = visualSelectionBounds(objects, resolvedSelectionObjectIds);
+  if (!raw) return {};
   return { raw, shown: previewedGroupSelectionBounds(raw, resolvedSelectionObjectIds, preview) };
 }
 
