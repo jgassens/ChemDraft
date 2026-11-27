@@ -1601,6 +1601,27 @@ describe("documents in one window", () => {
     expect(drawnText()).toContain("Keep OS edits");
   });
 
+  it.each(["close-tab", "quit"] as const)("says a native drop made while the %s question is open was ignored, and opens nothing", async question => {
+    await paste("Dirty drawing behind the question");
+    if (question === "close-tab") await closeTab();
+    else { saveAskToSaveBeforeQuit(true); await flush(); }
+    expect(pendingPrompt).toBeDefined();
+    native.readFile.mockClear();
+    await act(async () => native.events.get(DOCUMENT_FILE_DROPS_CHANGED_EVENT)!({
+      paths: ["C:\\Drawings\\during.chemdraft"], position: { x: 10, y: 10 }, units: "physical", scaleFactor: 1
+    }));
+    await vi.waitFor(() => expect(container.querySelector('[role="status"]')?.textContent)
+      .toBe(`Drop ignored: answer the ${question} question first.`));
+    // Taken from Rust's queue and not opened, then or after the answer.
+    expect(native.pendingDrops).toHaveLength(0);
+    if (question === "close-tab") await modalButton("Cancel");
+    else await quitButton("Cancel");
+    await act(async () => { await Promise.resolve(); });
+    expect(native.readFile).not.toHaveBeenCalled();
+    expect(tabs()).toHaveLength(1);
+    expect(drawnText()).toContain("Dirty drawing behind the question");
+  });
+
   it("opens every picker selection in selection order using deferred reads", async () => {
     const paths = ["/drawings/first.chemdraft", "/drawings/second.chemdraft", "/drawings/third.chemdraft"];
     native.picker.mockResolvedValueOnce(paths);

@@ -2133,8 +2133,10 @@ lossy and a lossless WebP, an SVG with gradients and `<use href="#id">`, a BMP, 
   A drop is refused, with a reason shown at once (before the file is read), while an in-page dialog
   is open (any dialog drawn inside the document page, which in the web build includes Export), while
   an unanswered close-tab, quit or page-size question is up, or during a text, label or table-cell
-  edit (on the desktop app the native listener ignores a drop entirely while the close-tab or quit
-  prompt is up). On the desktop app a drop while the separate Preferences or Export window is open is
+  edit. While the close-tab or quit question is up, a drop opens and inserts nothing, then or after
+  the answer, and the status says "Drop ignored: answer the close-tab question first." (or "… the
+  quit question first."); drop a PNG and a `.cdxml` with each question up, answer Cancel, and check
+  that nothing arrived. On the desktop app a drop while the separate Preferences or Export window is open is
   accepted (owner-side decision 2026-11-25: those windows are modeless), and Export then exports the
   drawing as it is when Export is pressed. Every refused insertion names each dropped picture,
   quoted, however many.

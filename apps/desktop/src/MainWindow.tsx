@@ -1928,7 +1928,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.26.14.30-opus";
+const CURRENT_BUILD_STAMP = "11.26.19.10-opus";
 
 const NUMERIC_ENTRY_DURING_DRAG_STATUS = "Finish the current drag, then enter a value";
 
@@ -11445,6 +11445,17 @@ export function MainWindow({
     return undefined;
   }, []);
   /**
+   * The status for a drop that comes while the close-tab or quit question is open. Such a drop is
+   * not taken, not held: once the question is answered its tab may be gone, so the files could land
+   * on a document the user never dropped them on. The status says so instead of ignoring it silently.
+   */
+  const promptDropRefusal = useCallback((): string | undefined => {
+    if (closeTabPromptRef.current) return "Drop ignored: answer the close-tab question first.";
+    if (quitCommittedRef.current) return "Drop ignored: ChemDraft is quitting.";
+    if (quitInteractionRef.current) return "Drop ignored: answer the quit question first.";
+    return undefined;
+  }, []);
+  /**
    * The drop point in page units, read when the drop happens. A drop outside the drawable canvas
    * (toolbar, tab strip, rulers, scrollbars) lands at the nearest point of the visible page; a drop without a
    * position (a synthetic event) at the visible centre, as Paste Picture does.
@@ -11566,7 +11577,11 @@ export function MainWindow({
     // each drop whole, with the position made relative to the page (`file_drop.rs`), and this page
     // drains the queue (`pendingDrops.ts`): a drop made before this listener existed is kept.
     const deliver = (drop: DocumentFileDropPayload): Promise<unknown> | undefined => {
-      if (closeTabPromptRef.current || quitInteractionRef.current) return undefined;
+      const refusal = promptDropRefusal();
+      if (refusal) {
+        setTabStatus(activeDocumentTabIdRef.current, refusal);
+        return undefined;
+      }
       // Windows' physical position is divided by the scale Rust read at the drop.
       const client = nativeDropClientPoint(drop, window.devicePixelRatio);
       return dropNativePathsRef.current(drop.paths, client);
@@ -11598,7 +11613,7 @@ export function MainWindow({
         setStatus("Could not check pending dropped files.");
       }
     });
-  }, [setTabStatus]);
+  }, [promptDropRefusal, setTabStatus]);
 
   // The web build: a file dropped anywhere in the document window (the canvas, a toolbar, the tab
   // strip) is taken here. `main.tsx` keeps every other drop from navigating. The desktop webviews
@@ -11610,7 +11625,11 @@ export function MainWindow({
       const files = event.dataTransfer?.files;
       if (!files?.length) return;
       event.preventDefault();
-      if (closeTabPromptRef.current) return;
+      const refusal = promptDropRefusal();
+      if (refusal) {
+        setStatus(refusal);
+        return;
+      }
       if (isBlockedByModalDialog(event.target)) {
         setStatus("Close the open dialog, then drop the files again.");
         return;
@@ -11619,7 +11638,7 @@ export function MainWindow({
     };
     window.addEventListener("drop", onDrop);
     return () => window.removeEventListener("drop", onDrop);
-  }, [dropBrowserFiles]);
+  }, [dropBrowserFiles, promptDropRefusal]);
 
   const openDocumentFromNativePicker = useCallback(async () => {
     if (!isDesktopRuntime()) {
