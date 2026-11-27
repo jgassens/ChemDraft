@@ -1329,16 +1329,21 @@ node scripts/stage-web-plugins.mjs ~/Downloads/my-plugin-1.0.0.zip [more.zip …
 # 2a. Develop against it: Vite serves the staged directory at /web-plugins/.
 pnpm --filter @chemdraft/desktop dev:web:plugins
 
-# 2b. Or build a static site that ships it: dist/ gains web-plugins/.
+# 2b. Or build a static site that ships it: dist/ gains web-plugins/ and a _headers file.
 pnpm --filter @chemdraft/desktop build:web:plugins
 ```
 
 Staging runs the install gates with the install code itself: the `.sha256` sidecar is **required**
 here (an install merely prefers it), then every entry's CRC-32, the size and entry-count limits,
-path-traversal refusal, the manifest schema, the entry file, and `apiVersion` compatibility. If any
-zip fails, nothing is written, and the error names the zip and the gate (`…/x.zip: sha256 gate
+path-traversal refusal, the manifest schema, the entry file, and `apiVersion` compatibility. Staging
+then refuses two entries that would collide on disk (a file `x` beside `x/y`, or paths equal up to
+letter case) and a plugin id equal up to letter case to another one being staged or already staged
+(`org.example.a` and `Org.Example.A` would share one directory on macOS and Windows). If any zip
+fails, nothing is written, and the error names the zip and the gate (`…/x.zip: sha256 gate
 failed: …`). Re-staging a plugin replaces its directory by rename and updates its index entry; other
-staged plugins are kept.
+staged plugins are kept. Staging several zips is all-or-nothing: each is unpacked to a hidden
+temporary directory first, the plugin directories are swapped in, and the index is written last. If
+anything fails on the way, every swapped directory is put back and the index is left as it was.
 
 The `:plugins` scripts set `CHEMDRAFT_WEB_PLUGINS_DIR` to `apps/desktop/.web-plugins`. To use another
 directory, set the variable yourself and run the plain `dev:web` or `build:web`. Without the variable,
@@ -1355,8 +1360,46 @@ Plugin Manager lists preloaded plugins with a **Preloaded** badge. You can turn 
 you cannot uninstall or update them from the app; re-stage a newer release instead. Like every plugin
 in the browser build, a preloaded plugin's `context.storage` lives in memory only.
 
-When you deploy `dist/` to a static host, serve it as is. The dev server adds the installed-plugin
-worker CSP to `/web-plugins/` responses; a static host sends whatever headers you give it.
+**The host must send the worker CSP.** A plugin worker's Content-Security-Policy comes from its own
+script response, not from the page, and that header is what confines the plugin to the network
+access its manifest grants:
+
+```
+Content-Security-Policy: default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self'
+```
+
+The dev server sends it on every `/web-plugins/` response. A static host sends only what it is
+configured to, so before starting each preloaded plugin the browser build fetches its entry script
+and **refuses the plugin** unless the response carries this policy or a stricter one (every fetch
+directive, after CSP's `default-src` fallbacks, allowing no more than the policy above). The status
+line then names the entry script and says whether the header was missing or which directive was too
+loose. Nothing about the plugin runs until the host is fixed.
+
+`build:web:plugins` writes `dist/_headers` with the rule for `/web-plugins/*` (under the build's
+`base`); Netlify and Cloudflare Pages read it as is. If the app already ships a `_headers`, the rule is
+appended. For other hosts, add the header to the `web-plugins/` location yourself:
+
+```nginx
+# nginx: inside the server block that serves dist/
+location /web-plugins/ {
+    add_header Content-Security-Policy "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self'" always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Cache-Control no-cache always;
+}
+```
+
+```apache
+# Apache (mod_headers): in the vhost, or in dist/web-plugins/.htaccess without the <Location> wrapper
+<Location "/web-plugins/">
+    Header always set Content-Security-Policy "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self'"
+    Header always set X-Content-Type-Options nosniff
+    Header always set Cache-Control no-cache
+</Location>
+```
+
+nginx drops inherited `add_header` lines in a block that has its own, so keep any site-wide headers
+you need by repeating them inside `location /web-plugins/`. Check the result with
+`curl -sI https://<host>/web-plugins/<plugin-id>/<entry>.js | grep -i content-security-policy`.
 
 ## Official catalog, installs, and updates
 

@@ -5,13 +5,16 @@
  *
  *  - `vite` (dev) answers `/web-plugins/…` from it, same-origin, with the installed-plugin path refusal
  *    and worker CSP (like the `/installed-plugins/` middleware in vite.config.ts);
- *  - `vite build` copies it to `<outDir>/web-plugins/`.
+ *  - `vite build` copies it to `<outDir>/web-plugins/` and writes `<outDir>/_headers` (Netlify and
+ *    Cloudflare Pages format) giving `/web-plugins/*` the same worker CSP. A host that reads neither
+ *    must be configured by hand (AUTHORING.md lists nginx and Apache); without the header the browser
+ *    build refuses to start the plugin, so a misconfigured host fails closed.
  *
  * Unset (or empty), this returns no plugins: nothing is served and nothing is copied. Inside a Tauri
  * build (`tauri dev` / `tauri build` set `TAURI_ENV_*` for their before-commands) a set variable is an
  * error, so a desktop package can never ship preloaded web plugins.
  */
-import { cpSync, existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
@@ -25,6 +28,8 @@ import {
 export const WEB_PLUGINS_DIR_ENV = "CHEMDRAFT_WEB_PLUGINS_DIR";
 export const WEB_PLUGINS_URL_PREFIX = "/web-plugins/";
 export const WEB_PLUGINS_OUT_SUBDIR = "web-plugins";
+/** Static-host header rules (Netlify and Cloudflare Pages both read `_headers` at the site root). */
+export const STATIC_HOST_HEADERS_FILE = "_headers";
 const INDEX_FILE = "index.json";
 
 type Env = Readonly<Record<string, string | undefined>>;
@@ -37,6 +42,7 @@ type Middleware = (request: IncomingMessage, response: ServerResponse, next: (er
 export interface WebPluginsVitePlugin {
   name: string;
   apply: "serve" | "build";
+  configResolved?: (config: { base: string }) => void;
   configureServer?: (server: { middlewares: { use(handler: Middleware): unknown } }) => void;
   writeBundle?: (options: { dir?: string }) => void;
 }
@@ -96,10 +102,28 @@ export function resolveWebPluginRequest(root: string, url: string): { file: stri
   return { file };
 }
 
+/**
+ * The `_headers` rule for the copied plugins under the build's `base`. Every preloaded plugin response
+ * gets the installed-plugin worker CSP, which is the worker's network boundary.
+ */
+export function webPluginsHeadersRule(base: string = "/"): string {
+  let prefix = base.startsWith("/") ? base : "/";
+  if (!prefix.endsWith("/")) prefix = `${prefix}/`;
+  return [
+    "# ChemDraft preloaded web plugins: the worker CSP is each plugin's network boundary (AUTHORING.md).",
+    `${prefix}${WEB_PLUGINS_OUT_SUBDIR}/*`,
+    `  Content-Security-Policy: ${INSTALLED_PLUGIN_WORKER_CSP}`,
+    "  X-Content-Type-Options: nosniff",
+    "  Cache-Control: no-cache",
+    ""
+  ].join("\n");
+}
+
 /** The Vite plugins for `CHEMDRAFT_WEB_PLUGINS_DIR`; an empty list when it is unset. */
 export function webPluginsVitePlugins(env: Env = process.env, cwd: string = process.cwd()): WebPluginsVitePlugin[] {
   const root = resolveWebPluginsDir(env, cwd);
   if (root === undefined) return [];
+  let base = "/";
   return [
     {
       name: "chemdraft-serve-web-plugins",
@@ -124,6 +148,9 @@ export function webPluginsVitePlugins(env: Env = process.env, cwd: string = proc
     {
       name: "chemdraft-copy-web-plugins",
       apply: "build",
+      configResolved(config) {
+        base = config.base;
+      },
       writeBundle(options) {
         if (!options.dir) return;
         cpSync(root, join(options.dir, WEB_PLUGINS_OUT_SUBDIR), {
@@ -131,6 +158,17 @@ export function webPluginsVitePlugins(env: Env = process.env, cwd: string = proc
           // Leftover staging temp directories (hidden) are not part of the staged set.
           filter: (source) => !relative(root, source).split(/[\\/]/).some((segment) => segment.startsWith("."))
         });
+        // Keep any `_headers` the app itself ships; add the plugin rule after it, once (watch rebuilds).
+        const headersFile = join(options.dir, STATIC_HOST_HEADERS_FILE);
+        const rule = webPluginsHeadersRule(base);
+        if (existsSync(headersFile)) {
+          const existing = readFileSync(headersFile, "utf8");
+          if (!existing.includes(rule)) {
+            appendFileSync(headersFile, `${existing === "" || existing.endsWith("\n") ? "" : "\n"}\n${rule}`);
+          }
+        } else {
+          writeFileSync(headersFile, rule);
+        }
       }
     }
   ];

@@ -7,9 +7,16 @@
  * Each zip must have its `<zip>.sha256` sidecar beside it. Every package runs the same fail-closed
  * gates an install runs, through the same code (`inspectPluginPackage`): sidecar checksum, per-entry
  * CRC-32, size and entry-count limits, path-traversal refusal, manifest schema, entry present,
- * `apiVersion` compatibility. Only when **every** zip passes is anything written, so a bad package never
- * leaves a half-updated staging directory. Then each plugin is unpacked to `<out>/<pluginId>/`
- * (replacing an earlier copy by rename, never in place) and `<out>/index.json` is rewritten atomically.
+ * `apiVersion` compatibility. Staging adds its own preflight: no two entries that would collide on disk
+ * (one path a file and another's directory, or two paths equal up to letter case), and no plugin id equal
+ * up to letter case to another one being staged or already in the index (they would share a directory on
+ * the case-insensitive filesystems of macOS and Windows). Only when **every** zip passes is anything
+ * written.
+ *
+ * Writing is all-or-nothing across the whole set: every plugin is unpacked into a hidden temporary
+ * sibling first, then each `<out>/<pluginId>/` is swapped in by rename (never written in place) and
+ * `<out>/index.json` is rewritten atomically last. If any step fails, every directory already swapped is
+ * put back and the index is left as it was.
  *
  * The default output, `apps/desktop/.web-plugins/`, is gitignored: a preloaded plugin's code and data
  * never enter this repository.
@@ -137,6 +144,26 @@ export async function inspectWebPluginZip(zipPath: string, options: { hostApiVer
     }
     seen.add(key);
   }
+  // A file cannot also be a directory another entry is written beneath ("x" and "x/y", or "X" and
+  // "x/y" on a case-insensitive filesystem). Refused here so the write phase never meets it.
+  const directories = new Map<string, string>();
+  for (const entry of inspection.entries) {
+    const segments = entry.path.split("/");
+    for (let length = 1; length < segments.length; length += 1) {
+      const key = segments.slice(0, length).join("/").toLowerCase();
+      if (!directories.has(key)) directories.set(key, entry.path);
+    }
+  }
+  for (const entry of inspection.entries) {
+    const child = directories.get(entry.path.toLowerCase());
+    if (child !== undefined) {
+      throw new WebPluginStageError(
+        zipPath,
+        "file collision",
+        `"${entry.path}" is a file, but "${child}" needs a directory at the same path.`
+      );
+    }
+  }
   return { zipPath, inspection };
 }
 
@@ -163,47 +190,107 @@ function uniqueSibling(outDir: string, label: string): string {
   return join(outDir, `.${label}-${process.pid}-${randomBytes(4).toString("hex")}`);
 }
 
-/** Write one inspected package to `<outDir>/<id>/`, replacing an earlier copy by rename. */
-function writePluginDirectory(outDir: string, { zipPath, inspection }: InspectedWebPlugin): void {
-  const id = inspection.manifest.id;
-  const target = join(outDir, id);
-  const temp = uniqueSibling(outDir, `staging-${id}`);
-  try {
-    for (const entry of inspection.entries) {
-      const file = join(temp, ...entry.path.split("/"));
-      // Restate the traversal guarantee at the boundary that writes, separator-agnostically.
-      const inside = relative(temp, file);
-      if (!inside || inside.startsWith("..") || isAbsolute(inside)) {
-        throw new WebPluginStageError(zipPath, "path traversal", `refusing to write "${entry.path}" outside the plugin directory.`);
-      }
-      mkdirSync(dirname(file), { recursive: true });
-      writeFileSync(file, entry.bytes);
+/** Unpack one inspected package into `dir`, which must not exist yet. */
+function writePackageFiles(dir: string, { zipPath, inspection }: InspectedWebPlugin): void {
+  mkdirSync(dir);
+  for (const entry of inspection.entries) {
+    const file = join(dir, ...entry.path.split("/"));
+    // Restate the traversal guarantee at the boundary that writes, separator-agnostically.
+    const inside = relative(dir, file);
+    if (!inside || inside.startsWith("..") || isAbsolute(inside)) {
+      throw new WebPluginStageError(zipPath, "path traversal", `refusing to write "${entry.path}" outside the plugin directory.`);
     }
-    if (existsSync(target)) {
-      // Two renames: a directory cannot be renamed over a non-empty one on Windows. The old copy is
-      // moved aside first and restored if the swap fails, so the target is never half-written.
-      const old = uniqueSibling(outDir, `old-${id}`);
-      renameSync(target, old);
-      try {
-        renameSync(temp, target);
-      } catch (cause) {
-        renameSync(old, target);
-        throw cause;
-      }
-      rmSync(old, { recursive: true, force: true });
-    } else {
-      renameSync(temp, target);
-    }
-  } finally {
-    rmSync(temp, { recursive: true, force: true });
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, entry.bytes);
   }
 }
 
 function writeIndex(outDir: string, index: WebPluginIndex): void {
   const indexPath = join(outDir, WEB_PLUGINS_INDEX_FILE);
   const temp = uniqueSibling(outDir, "index");
-  writeFileSync(temp, `${JSON.stringify(index, null, 2)}\n`);
-  renameSync(temp, indexPath);
+  try {
+    writeFileSync(temp, `${JSON.stringify(index, null, 2)}\n`);
+    renameSync(temp, indexPath);
+  } finally {
+    rmSync(temp, { force: true });
+  }
+}
+
+interface PlannedSwap {
+  id: string;
+  target: string;
+  temp: string;
+  /** Where the previous copy was moved aside, once it has been. */
+  old?: string;
+  /** True once the new copy is at `target`. */
+  placed: boolean;
+}
+
+/** Undo every swap, newest first. Returns a description of anything that could not be restored. */
+function rollBack(swaps: readonly PlannedSwap[]): string[] {
+  const stranded: string[] = [];
+  for (const swap of [...swaps].reverse()) {
+    try {
+      if (swap.placed) rmSync(swap.target, { recursive: true, force: true });
+      if (swap.old !== undefined) renameSync(swap.old, swap.target);
+    } catch (cause) {
+      stranded.push(
+        swap.old !== undefined
+          ? `${swap.id}: the previous copy is at ${swap.old} (${messageOf(cause)}); move it back to ${swap.target}`
+          : `${swap.id}: ${swap.target} could not be removed (${messageOf(cause)})`
+      );
+    }
+  }
+  return stranded;
+}
+
+function messageOf(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
+/**
+ * Write every plugin and the index as one unit: unpack all into temporary siblings, swap them in, write
+ * the index. Any failure puts back every directory already swapped and leaves the index untouched.
+ */
+function commitStaging(outDir: string, plugins: readonly InspectedWebPlugin[], index: WebPluginIndex): void {
+  const swaps: PlannedSwap[] = plugins.map((plugin) => {
+    const id = plugin.inspection.manifest.id;
+    return { id, target: join(outDir, id), temp: uniqueSibling(outDir, `staging-${id}`), placed: false };
+  });
+  const moved: PlannedSwap[] = [];
+  let committed = false;
+  try {
+    plugins.forEach((plugin, i) => writePackageFiles(swaps[i].temp, plugin));
+    for (const swap of swaps) {
+      moved.push(swap);
+      // Two renames: a directory cannot be renamed over a non-empty one on Windows.
+      if (existsSync(swap.target)) {
+        const old = uniqueSibling(outDir, `old-${swap.id}`);
+        renameSync(swap.target, old);
+        swap.old = old;
+      }
+      renameSync(swap.temp, swap.target);
+      swap.placed = true;
+    }
+    writeIndex(outDir, index);
+    committed = true;
+  } catch (cause) {
+    const stranded = rollBack(moved);
+    if (stranded.length > 0) {
+      throw new Error(`${messageOf(cause)}. Rolling back also failed, so fix these by hand: ${stranded.join("; ")}.`, { cause });
+    }
+    throw cause;
+  } finally {
+    for (const swap of swaps) {
+      // Best effort: a leftover hidden sibling is never served, copied, or read as a plugin.
+      try {
+        rmSync(swap.temp, { recursive: true, force: true });
+        if (committed && swap.old !== undefined) rmSync(swap.old, { recursive: true, force: true });
+      } catch {
+        // Ignored; see above.
+      }
+    }
+  }
 }
 
 export interface StageWebPluginsResult {
@@ -232,32 +319,61 @@ export async function stageWebPlugins(
       errors.push(gateError(zipPath, cause));
     }
   }
-  const ids = new Map<string, string>();
+  // Plugin ids become directory names, so ids equal up to letter case would share one directory on a
+  // case-insensitive filesystem (macOS, Windows). Compare case-folded, among the incoming set and
+  // against what is already staged.
+  const index = readIndex(outDir);
+  const ids = new Map<string, { id: string; zipPath: string }>();
   for (const { zipPath, inspection } of inspected) {
-    const earlier = ids.get(inspection.manifest.id);
-    if (earlier) {
-      errors.push(new WebPluginStageError(zipPath, "duplicate id", `"${inspection.manifest.id}" is also in ${earlier}.`));
+    const id = inspection.manifest.id;
+    const folded = id.toLowerCase();
+    const earlier = ids.get(folded);
+    if (earlier?.id === id) {
+      errors.push(new WebPluginStageError(zipPath, "duplicate id", `"${id}" is also in ${earlier.zipPath}.`));
+    } else if (earlier) {
+      errors.push(
+        new WebPluginStageError(
+          zipPath,
+          "id case collision",
+          `"${id}" differs only in letter case from "${earlier.id}" in ${earlier.zipPath}; on a case-insensitive ` +
+            "filesystem (macOS, Windows) they would share one directory."
+        )
+      );
+    } else {
+      ids.set(folded, { id, zipPath });
     }
-    ids.set(inspection.manifest.id, zipPath);
+    const existing = index.plugins.find(
+      (entry) => entry.id !== id && (entry.id.toLowerCase() === folded || entry.dir.toLowerCase() === folded)
+    );
+    if (existing) {
+      errors.push(
+        new WebPluginStageError(
+          zipPath,
+          "id case collision",
+          `"${id}" differs only in letter case from the already staged "${existing.id}" (${join(outDir, existing.dir)}); ` +
+            "on a case-insensitive filesystem (macOS, Windows) they would share one directory. Stage it under the " +
+            `same id, or remove "${existing.id}" from ${join(outDir, WEB_PLUGINS_INDEX_FILE)} and its directory first.`
+        )
+      );
+    }
   }
   if (errors.length > 0) {
     throw new AggregateError(errors, errors.map((error) => error.message).join("\n"));
   }
 
-  mkdirSync(outDir, { recursive: true });
-  const index = readIndex(outDir);
-  const staged: WebPluginIndexEntry[] = [];
-  for (const plugin of inspected) {
-    writePluginDirectory(outDir, plugin);
-    const { manifest, sourceChecksum } = plugin.inspection;
-    staged.push({ id: manifest.id, version: manifest.version, dir: manifest.id, sha256: sourceChecksum });
-  }
+  const staged: WebPluginIndexEntry[] = inspected.map(({ inspection: { manifest, sourceChecksum } }) => ({
+    id: manifest.id,
+    version: manifest.version,
+    dir: manifest.id,
+    sha256: sourceChecksum
+  }));
   const stagedIds = new Set(staged.map((entry) => entry.id));
   const next: WebPluginIndex = {
     version: WEB_PLUGINS_INDEX_VERSION,
     plugins: [...index.plugins.filter((entry) => !stagedIds.has(entry.id)), ...staged].sort((a, b) => a.id.localeCompare(b.id))
   };
-  writeIndex(outDir, next);
+  mkdirSync(outDir, { recursive: true });
+  commitStaging(outDir, inspected, next);
   return { outDir, staged, index: next };
 }
 
@@ -317,8 +433,8 @@ export async function main(
       error(`stage-web-plugins: ${failure instanceof Error ? failure.message : String(failure)}`);
     }
     // A refusal happens before anything is written. Any other error came from the filesystem while
-    // writing: each plugin directory is swapped by rename, but earlier plugins in this run may be staged.
-    error(refused ? "Nothing was staged." : "Staging stopped; the index was not updated.");
+    // writing, and the whole set was rolled back (the message says so if rolling back failed too).
+    error(refused ? "Nothing was staged." : "Staging stopped; every staged plugin and the index were left as they were.");
     return 1;
   }
 }

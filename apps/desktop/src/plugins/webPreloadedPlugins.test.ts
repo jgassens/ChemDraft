@@ -13,6 +13,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 import { createPluginRuntime, type DesktopPluginRuntime } from "./createPluginRuntime";
+import { INSTALLED_PLUGIN_WORKER_CSP } from "./installedPluginAssetPath";
 import { loadWebPreloadedPlugins, parseWebPluginsIndex, WebPluginsIndexError } from "./webPreloadedPlugins";
 
 const BASE = "http://127.0.0.1:5173/web-plugins/";
@@ -53,17 +54,29 @@ function manifestDocument(id: string, overrides: Partial<PluginManifest> = {}): 
   };
 }
 
-/** A static server: path -> JSON body (or a status). Records every request. */
-function fakeServer(files: Record<string, unknown | { status: number }>, contentType = "application/json") {
+/**
+ * A static server: path -> JSON body (or a status). Records every request. A plugin's `entry.js` is
+ * served even when unlisted, and every response carries `csp(path)` as its Content-Security-Policy
+ * (the worker policy by default, as the dev server sends it; `null` for none).
+ */
+function fakeServer(
+  files: Record<string, unknown | { status: number }>,
+  contentType = "application/json",
+  csp: (path: string) => string | null = () => INSTALLED_PLUGIN_WORKER_CSP
+) {
   const requests: string[] = [];
   const fetch = vi.fn(async (input: string) => {
-    requests.push(new URL(input).pathname);
-    const body = files[new URL(input).pathname];
+    const path = new URL(input).pathname;
+    requests.push(path);
+    const body = files[path] ?? (path.endsWith("/entry.js") ? "export {};" : undefined);
     const status = body === undefined ? 404 : typeof body === "object" && body !== null && "status" in body ? (body as { status: number }).status : 200;
+    const headers = new Headers({ "content-type": path.endsWith(".js") ? "text/javascript" : contentType });
+    const policy = csp(path);
+    if (policy !== null) headers.set("content-security-policy", policy);
     return {
       ok: status >= 200 && status < 300,
       status,
-      headers: new Headers({ "content-type": contentType }),
+      headers,
       json: async () => body,
       text: async () => JSON.stringify(body)
     } as unknown as Response;
@@ -190,6 +203,55 @@ describe("loadWebPreloadedPlugins", () => {
     expect(result.loaded.map((entry) => entry.record.id)).toEqual(["org.example.good"]);
     expect(runtime.host.getPlugin("org.example.good")).toBeUndefined();
     expect(createWorker).not.toHaveBeenCalled();
+  });
+
+  it("refuses, before creating its worker, a plugin whose entry script has no worker CSP (a bare static host)", async () => {
+    const runtime = createRuntime();
+    const server = fakeServer(
+      {
+        "/web-plugins/index.json": { version: 1, plugins: [record("org.example.bare"), record("org.example.good")] },
+        "/web-plugins/org.example.bare/manifest.json": manifestDocument("org.example.bare"),
+        "/web-plugins/org.example.good/manifest.json": manifestDocument("org.example.good")
+      },
+      "application/json",
+      (path) => (path.startsWith("/web-plugins/org.example.bare/") ? null : INSTALLED_PLUGIN_WORKER_CSP)
+    );
+    const createWorker = vi.fn(() => fakeWorker());
+    const result = await loadWebPreloadedPlugins({ runtime, tauriHost: false, baseUrl: BASE, fetch: server.fetch, createWorker });
+
+    expect(server.requests).toContain("/web-plugins/org.example.bare/entry.js");
+    expect(result.loaded.map((entry) => entry.record.id)).toEqual(["org.example.good"]);
+    expect(createWorker).toHaveBeenCalledTimes(1);
+    expect(runtime.host.getPlugin("org.example.bare")).toBeUndefined();
+    expect(result.failures).toHaveLength(1);
+    expect(result.failures[0].message).toBe(
+      'Preloaded plugin "org.example.bare" could not be loaded: its entry script /web-plugins/org.example.bare/entry.js ' +
+        "has no Content-Security-Policy header, so its worker would not be confined to its network permissions. " +
+        `Configure the host to send "Content-Security-Policy: ${INSTALLED_PLUGIN_WORKER_CSP}" on /web-plugins/* ` +
+        '(see "Running a plugin in the web build" in AUTHORING.md; vite build writes a _headers file for Netlify and Cloudflare Pages).'
+    );
+  });
+
+  it("refuses a plugin whose entry CSP is weaker than the worker policy, a disabled one included", async () => {
+    const runtime = createRuntime();
+    const server = fakeServer(
+      {
+        "/web-plugins/index.json": { version: 1, plugins: [record("org.example.open"), record("org.example.off")] },
+        "/web-plugins/org.example.open/manifest.json": manifestDocument("org.example.open"),
+        "/web-plugins/org.example.off/manifest.json": manifestDocument("org.example.off")
+      },
+      "application/json",
+      () => "default-src 'none'; script-src 'self'; connect-src *"
+    );
+    const createWorker = vi.fn(() => fakeWorker());
+    const result = await loadWebPreloadedPlugins({
+      runtime, tauriHost: false, baseUrl: BASE, fetch: server.fetch, createWorker, disabledIds: new Set(["org.example.off"])
+    });
+    expect(result.loaded).toEqual([]);
+    expect(createWorker).not.toHaveBeenCalled();
+    const byId = Object.fromEntries(result.failures.map((failure) => [failure.id, failure.message]));
+    expect(byId["org.example.open"]).toMatch(/has a Content-Security-Policy weaker than the plugin worker policy \(connect-src allows \*\)/);
+    expect(byId["org.example.off"]).toMatch(/connect-src allows \*/);
   });
 
   it("reports an unreadable index instead of guessing", async () => {

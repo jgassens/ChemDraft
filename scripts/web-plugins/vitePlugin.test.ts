@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { assertNoWebPluginsDir } from "../desktop-tauri.mjs";
-import { resolveWebPluginRequest, resolveWebPluginsDir, webPluginsVitePlugins } from "./vitePlugin";
+import { INSTALLED_PLUGIN_WORKER_CSP } from "../../apps/desktop/src/plugins/installedPluginAssetPath";
+import { evaluateWorkerCsp } from "../../apps/desktop/src/plugins/workerCspPolicy";
+import { resolveWebPluginRequest, resolveWebPluginsDir, webPluginsHeadersRule, webPluginsVitePlugins } from "./vitePlugin";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -70,6 +72,35 @@ describe("webPluginsVitePlugins", () => {
     const next = vi.fn();
     middleware({ url: "/src/main.tsx" }, response, next);
     expect(next).toHaveBeenCalled();
+  });
+});
+
+describe("production headers for static hosts", () => {
+  function build(base: string | undefined, existingHeaders?: string): string {
+    const plugins = webPluginsVitePlugins({ CHEMDRAFT_WEB_PLUGINS_DIR: stagedDir() });
+    const outDir = mkdtempSync(join(tmpdir(), "web-plugins-dist-"));
+    dirs.push(outDir);
+    if (existingHeaders !== undefined) writeFileSync(join(outDir, "_headers"), existingHeaders);
+    if (base !== undefined) plugins[1].configResolved?.({ base });
+    plugins[1].writeBundle?.call({}, { dir: outDir });
+    plugins[1].writeBundle?.call({}, { dir: outDir }); // a watch rebuild must not duplicate the rule
+    return readFileSync(join(outDir, "_headers"), "utf8");
+  }
+
+  it("writes a _headers rule giving /web-plugins/* the worker CSP", () => {
+    const headers = build(undefined);
+    expect(headers).toBe(webPluginsHeadersRule("/"));
+    expect(headers).toContain(`/web-plugins/*\n  Content-Security-Policy: ${INSTALLED_PLUGIN_WORKER_CSP}\n`);
+    // The policy it sends is exactly one the browser build's fail-closed check accepts.
+    const policy = /Content-Security-Policy: (.*)/.exec(headers)?.[1];
+    expect(evaluateWorkerCsp(policy)).toEqual({ ok: true });
+  });
+
+  it("follows the build's base and keeps an app-supplied _headers", () => {
+    expect(build("/chemdraft/")).toContain("\n/chemdraft/web-plugins/*\n");
+    const merged = build("/", "/*\n  X-Frame-Options: DENY");
+    expect(merged.startsWith("/*\n  X-Frame-Options: DENY\n\n# ChemDraft")).toBe(true);
+    expect(merged.match(/web-plugins\/\*/g)).toHaveLength(1);
   });
 });
 

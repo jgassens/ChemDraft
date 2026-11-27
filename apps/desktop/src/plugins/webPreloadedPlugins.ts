@@ -16,6 +16,13 @@
  * the `apiVersion` check, the refusal of desktop-unavailable permissions, and the worker's `ready`
  * handshake. One broken package is reported and skipped; it never blocks startup or the others.
  *
+ * One gate is particular to the web: a worker's CSP comes from its own script response, and that header
+ * ({@link INSTALLED_PLUGIN_WORKER_CSP}) is the plugin's network boundary. The desktop app and the Vite
+ * dev server always send it; a static host sends only what it was configured to. So before a package's
+ * worker is created, its entry script is fetched and the package is refused unless the response carries
+ * a policy at least as strict (`evaluateWorkerCsp`). A host without the header fails closed, with a
+ * message naming the header to add.
+ *
  * A Tauri host never runs this: the desktop app installs packages properly, and the desktop build never
  * contains `/web-plugins/` (the Vite plugin refuses to run inside a Tauri build with the variable set).
  * Plugin storage on the web stays in memory, as it is for every plugin in the browser build.
@@ -25,14 +32,17 @@ import {
   PluginApiVersion,
   isPluginApiVersionCompatible,
   parsePackagedPluginManifest,
+  type PackagedPluginManifest,
   type PluginManifest,
   type PluginWorkerHandle
 } from "@chemdraft/plugin-api";
 
 import { getUnavailableDesktopPluginPermissions, type DesktopPluginRuntime } from "./createPluginRuntime";
-import { loadPackagedPlugin, type PackagedPluginDescriptor } from "./loadPackagedPlugin";
+import { INSTALLED_PLUGIN_WORKER_CSP } from "./installedPluginAssetPath";
+import { loadPackagedPlugin, packagedPluginEntryUrl, type PackagedPluginDescriptor } from "./loadPackagedPlugin";
 import { isTauriHost } from "./pluginStagingFs";
 import type { BundledPluginDescriptor } from "./registerBundledPlugins";
+import { describeWorkerCspFailure, evaluateWorkerCsp } from "./workerCspPolicy";
 
 /** URL path the preloaded packages are served under, relative to the app's base URL. */
 export const WEB_PLUGINS_PATH = "web-plugins/";
@@ -119,7 +129,10 @@ export function parseWebPluginsIndex(candidate: unknown): WebPreloadedPluginReco
   });
 }
 
-type FetchLike = (input: string, init?: RequestInit) => Promise<Pick<Response, "ok" | "status" | "headers" | "json" | "text">>;
+type FetchLike = (
+  input: string,
+  init?: RequestInit
+) => Promise<Pick<Response, "ok" | "status" | "headers" | "json" | "text"> & { body?: ReadableStream<Uint8Array> | null }>;
 
 export interface LoadWebPreloadedPluginsOptions {
   runtime: DesktopPluginRuntime;
@@ -241,12 +254,13 @@ async function loadOne(
     throw new Error(`its manifest.json is not JSON: ${messageOf(cause)}`);
   }
 
-  let manifest: PluginManifest;
+  let packaged: PackagedPluginManifest;
   try {
-    manifest = parsePackagedPluginManifest(document).manifest;
+    packaged = parsePackagedPluginManifest(document);
   } catch (cause) {
     throw new Error(`its manifest.json is not valid: ${messageOf(cause)}`);
   }
+  const { manifest } = packaged;
   if (manifest.id !== record.id) {
     throw new Error(`index.json lists "${record.id}" but its manifest declares "${manifest.id}". Re-stage it.`);
   }
@@ -270,6 +284,11 @@ async function loadOne(
     throw new Error("a plugin with that id is already registered.");
   }
 
+  // Before any worker exists (a disabled plugin included, since enabling it later starts this same
+  // descriptor), prove the host confines it.
+  const entryUrl = packagedPluginEntryUrl({ baseUrl: packageUrl, manifest: document }, packaged);
+  await assertEntryWorkerCsp(entryUrl, baseUrl, fetchImpl, options.signal);
+
   const descriptor = loadPackagedPlugin(
     { baseUrl: packageUrl, manifest: document },
     { hostApiVersion, createWorker: options.createWorker }
@@ -287,5 +306,32 @@ async function loadOne(
   } catch (cause) {
     descriptor.deactivate?.();
     throw cause;
+  }
+}
+
+/**
+ * Fetch the entry script the worker will load and refuse the package unless that response carries a
+ * Content-Security-Policy at least as strict as {@link INSTALLED_PLUGIN_WORKER_CSP}.
+ */
+async function assertEntryWorkerCsp(
+  entryUrl: URL,
+  baseUrl: URL,
+  fetchImpl: FetchLike,
+  signal: AbortSignal | undefined
+): Promise<void> {
+  const response = await fetchImpl(entryUrl.href, { cache: "no-cache", signal });
+  // Only the headers matter; do not download the whole entry twice.
+  void response.body?.cancel().catch(() => undefined);
+  if (!response.ok) {
+    throw new Error(`its entry script was not served (${entryUrl.pathname} answered HTTP ${response.status}). Re-stage it.`);
+  }
+  const verdict = evaluateWorkerCsp(response.headers.get("content-security-policy"));
+  if (!verdict.ok) {
+    throw new Error(
+      `its entry script ${entryUrl.pathname} ${describeWorkerCspFailure(verdict)}, so its worker would not be ` +
+        `confined to its network permissions. Configure the host to send "Content-Security-Policy: ${INSTALLED_PLUGIN_WORKER_CSP}" ` +
+        `on ${baseUrl.pathname}* ` +
+        '(see "Running a plugin in the web build" in AUTHORING.md; vite build writes a _headers file for Netlify and Cloudflare Pages).'
+    );
   }
 }

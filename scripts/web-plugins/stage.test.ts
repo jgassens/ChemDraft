@@ -1,13 +1,27 @@
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+// Pass-through `node:fs` with a hook that can make one rename fail, to drive the rollback paths.
+const fsFaults = vi.hoisted(() => ({ rename: undefined as undefined | ((from: string, to: string) => void) }));
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    renameSync: (from: import("node:fs").PathLike, to: import("node:fs").PathLike) => {
+      fsFaults.rename?.(String(from), String(to));
+      return actual.renameSync(from, to);
+    }
+  };
+});
 
 import { createZipFixture, sidecarFor, type ZipFixtureEntry } from "../../apps/desktop/src/testSupport/zipFixture";
 import { main, stageWebPlugins, WebPluginStageError } from "./stage";
 
 const dirs: string[] = [];
 afterEach(() => {
+  fsFaults.rename = undefined;
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 function tempDir(): string {
@@ -51,8 +65,8 @@ async function writePackage(
   return path;
 }
 
-const goodEntries = (version = "1.0.0", marker = "one"): ZipFixtureEntry[] => [
-  { path: "manifest.json", content: manifest("org.example.staged", version) },
+const goodEntries = (version = "1.0.0", marker = "one", id = "org.example.staged"): ZipFixtureEntry[] => [
+  { path: "manifest.json", content: manifest(id, version) },
   { path: "entry.js", content: `export const marker = "${marker}";` },
   { path: "assets/chunk.js", content: "export const nested = true;", deflate: true },
   { path: "LICENSE", content: "MIT" }
@@ -153,6 +167,127 @@ describe("stageWebPlugins", () => {
     const bad = await writePackage(work, "bad", goodEntries(), { sidecar: false });
     await refusal(stageWebPlugins([good, bad], { outDir: out }));
     expect(existsSync(out)).toBe(false);
+  });
+});
+
+describe("stageWebPlugins is all-or-nothing across the set", () => {
+  /** Stage A and B at 1.0.0, returning a snapshot of everything a later failed run must leave alone. */
+  async function stagedPair(work: string, out: string) {
+    await stageWebPlugins(
+      [
+        await writePackage(work, "a-1", goodEntries("1.0.0", "a-one", "org.example.a")),
+        await writePackage(work, "b-1", goodEntries("1.0.0", "b-one", "org.example.b"))
+      ],
+      { outDir: out }
+    );
+    return snapshot(out);
+  }
+  function snapshot(out: string) {
+    return {
+      listing: readdirSync(out).sort(),
+      index: readFileSync(join(out, "index.json"), "utf8"),
+      a: readFileSync(join(out, "org.example.a", "entry.js"), "utf8"),
+      b: readFileSync(join(out, "org.example.b", "entry.js"), "utf8")
+    };
+  }
+
+  it("refuses a package with a file where another entry needs a directory, before touching any plugin", async () => {
+    const work = tempDir();
+    const out = join(work, "out");
+    const before = await stagedPair(work, out);
+    const a2 = await writePackage(work, "a-2", goodEntries("2.0.0", "a-two", "org.example.a"));
+    const clash = await writePackage(work, "b-2", [
+      ...goodEntries("2.0.0", "b-two", "org.example.b"),
+      { path: "x", content: "file" },
+      { path: "x/y", content: "nested" }
+    ]);
+    const error = await refusal(stageWebPlugins([a2, clash], { outDir: out }));
+    expect(error.gate).toBe("file collision");
+    expect(error.message).toContain(clash);
+    expect(error.message).toMatch(/"x" is a file, but "x\/y" needs a directory at the same path/);
+    expect(snapshot(out)).toEqual(before);
+  });
+
+  it("treats a file and a directory that differ only in case as the same path", async () => {
+    const work = tempDir();
+    const clash = await writePackage(work, "case", [...goodEntries(), { path: "Lib", content: "file" }, { path: "lib/z.js", content: "z" }]);
+    const error = await refusal(stageWebPlugins([clash], { outDir: join(work, "out") }));
+    expect(error.gate).toBe("file collision");
+    expect(existsSync(join(work, "out"))).toBe(false);
+  });
+
+  it("puts back every swapped plugin and leaves the index when a later swap fails", async () => {
+    const work = tempDir();
+    const out = join(work, "out");
+    const before = await stagedPair(work, out);
+    const a2 = await writePackage(work, "a-2", goodEntries("2.0.0", "a-two", "org.example.a"));
+    const b2 = await writePackage(work, "b-2", goodEntries("2.0.0", "b-two", "org.example.b"));
+    fsFaults.rename = (from, to) => {
+      if (from.includes(".staging-org.example.b") && to.endsWith("org.example.b")) throw new Error("EIO: injected swap failure");
+    };
+    await expect(stageWebPlugins([a2, b2], { outDir: out })).rejects.toThrow(/injected swap failure/);
+    expect(snapshot(out)).toEqual(before);
+  });
+
+  it("puts back every swapped plugin when the index cannot be written", async () => {
+    const work = tempDir();
+    const out = join(work, "out");
+    const before = await stagedPair(work, out);
+    const a2 = await writePackage(work, "a-2", goodEntries("2.0.0", "a-two", "org.example.a"));
+    fsFaults.rename = (_from, to) => {
+      if (to.endsWith("index.json")) throw new Error("ENOSPC: injected index failure");
+    };
+    await expect(stageWebPlugins([a2], { outDir: out })).rejects.toThrow(/injected index failure/);
+    expect(snapshot(out)).toEqual(before);
+  });
+
+  it("reports by hand what it could not roll back", async () => {
+    const work = tempDir();
+    const out = join(work, "out");
+    await stagedPair(work, out);
+    const a2 = await writePackage(work, "a-2", goodEntries("2.0.0", "a-two", "org.example.a"));
+    fsFaults.rename = (from, to) => {
+      if (to.endsWith("index.json")) throw new Error("injected index failure");
+      if (from.includes(".old-org.example.a")) throw new Error("injected restore failure");
+    };
+    await expect(stageWebPlugins([a2], { outDir: out })).rejects.toThrow(
+      /injected index failure\. Rolling back also failed, so fix these by hand: org\.example\.a: the previous copy is at .*\.old-org\.example\.a/
+    );
+  });
+});
+
+describe("stageWebPlugins refuses ids equal up to letter case", () => {
+  it("between two incoming packages", async () => {
+    const work = tempDir();
+    const out = join(work, "out");
+    const lower = await writePackage(work, "lower", goodEntries("1.0.0", "l", "org.example.mixed"));
+    const upper = await writePackage(work, "upper", goodEntries("1.0.0", "u", "Org.Example.Mixed"));
+    const error = await refusal(stageWebPlugins([lower, upper], { outDir: out }));
+    expect(error.gate).toBe("id case collision");
+    expect(error.message).toContain(upper);
+    expect(error.message).toMatch(/"Org\.Example\.Mixed" differs only in letter case from "org\.example\.mixed"/);
+    expect(existsSync(out)).toBe(false);
+  });
+
+  it("against an id already in the index, which is left unchanged", async () => {
+    const work = tempDir();
+    const out = join(work, "out");
+    await stageWebPlugins([await writePackage(work, "first", goodEntries())], { outDir: out });
+    const indexBefore = readFileSync(join(out, "index.json"), "utf8");
+    const upper = await writePackage(work, "upper", goodEntries("2.0.0", "u", "ORG.example.staged"));
+    const error = await refusal(stageWebPlugins([upper], { outDir: out }));
+    expect(error.gate).toBe("id case collision");
+    expect(error.message).toMatch(/differs only in letter case from the already staged "org\.example\.staged"/);
+    expect(readFileSync(join(out, "index.json"), "utf8")).toBe(indexBefore);
+    expect(readFileSync(join(out, "org.example.staged", "entry.js"), "utf8")).toContain('"one"');
+    expect(readdirSync(out).sort()).toEqual(["index.json", "org.example.staged"]);
+  });
+
+  it("still re-stages the same exact id", async () => {
+    const work = tempDir();
+    const out = join(work, "out");
+    await stageWebPlugins([await writePackage(work, "v1", goodEntries())], { outDir: out });
+    await expect(stageWebPlugins([await writePackage(work, "v2", goodEntries("1.1.0"))], { outDir: out })).resolves.toBeDefined();
   });
 });
 
