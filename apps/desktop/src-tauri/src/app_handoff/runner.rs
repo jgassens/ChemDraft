@@ -12,7 +12,7 @@ use std::{
     io::{self, Read},
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     thread,
     time::{Duration, Instant},
 };
@@ -288,6 +288,8 @@ struct CaptureLimits<'a> {
     deadline: Instant,
     stopped: &'a AtomicBool,
     exceeded: AtomicBool,
+    /// How many of the two pipe readers have returned, whatever their result.
+    drained: AtomicUsize,
 }
 
 impl CaptureLimits<'_> {
@@ -299,6 +301,12 @@ impl CaptureLimits<'_> {
         } else {
             Ok(())
         }
+    }
+
+    /// Counts a pipe reader that has returned, and passes its result on.
+    fn drained<T>(&self, output: T) -> T {
+        self.drained.fetch_add(1, Ordering::AcqRel);
+        output
     }
 
     fn pause(&self) {
@@ -394,12 +402,25 @@ impl ChildProcess {
         timeout: Duration,
         stopped: &AtomicBool,
     ) -> Result<Captured, CaptureError> {
+        self.capture_polling(timeout, stopped, |child, _| child.try_wait())
+    }
+
+    /// `capture`, with `poll` in place of `Child::try_wait` for seeing the child's exit, so a
+    /// test can order a stop against it. `poll` is also told whether both pipe readers have
+    /// returned, so a test can hold the exit back until they have.
+    pub(super) fn capture_polling(
+        &mut self,
+        timeout: Duration,
+        stopped: &AtomicBool,
+        poll: impl FnMut(&mut Child, bool) -> io::Result<Option<ExitStatus>>,
+    ) -> Result<Captured, CaptureError> {
         let stdout = self.child.stdout.take().expect("piped companion stdout");
         let stderr = self.child.stderr.take().expect("piped companion stderr");
         let limits = CaptureLimits {
             deadline: Instant::now() + timeout,
             stopped,
             exceeded: AtomicBool::new(false),
+            drained: AtomicUsize::new(0),
         };
         #[cfg(unix)]
         if nonblocking_pipe(&stdout)
@@ -410,9 +431,9 @@ impl ChildProcess {
             return Err(CaptureError::Io);
         }
         thread::scope(|scope| {
-            let stdout = scope.spawn(|| drain(stdout, INPUT_BYTES, &limits));
-            let stderr = scope.spawn(|| drain(stderr, STDERR_BYTES, &limits));
-            let status = self.wait(&limits);
+            let stdout = scope.spawn(|| limits.drained(drain(stdout, INPUT_BYTES, &limits)));
+            let stderr = scope.spawn(|| limits.drained(drain(stderr, STDERR_BYTES, &limits)));
+            let status = self.wait(&limits, poll);
             let stdout = stdout.join();
             let stderr = stderr.join();
             let status = status?;
@@ -429,7 +450,11 @@ impl ChildProcess {
         })
     }
 
-    fn wait(&mut self, limits: &CaptureLimits<'_>) -> Result<ExitStatus, CaptureError> {
+    fn wait(
+        &mut self,
+        limits: &CaptureLimits<'_>,
+        mut poll: impl FnMut(&mut Child, bool) -> io::Result<Option<ExitStatus>>,
+    ) -> Result<ExitStatus, CaptureError> {
         loop {
             if let Err(error) = limits.check() {
                 self.terminate();
@@ -447,10 +472,15 @@ impl ChildProcess {
                     return Err(CaptureError::Io);
                 }
             }
-            match self.child.try_wait() {
+            match poll(&mut self.child, limits.drained.load(Ordering::Acquire) == 2) {
                 Ok(Some(status)) => {
                     #[cfg(windows)]
                     self.job.terminate();
+                    // A stop set after the check above wins over an exit seen only now, so a
+                    // quit can never be reported as the step finishing normally.
+                    if limits.stopped.load(Ordering::Acquire) {
+                        return Err(CaptureError::Timeout);
+                    }
                     return Ok(status);
                 }
                 Ok(None) => limits.pause(),

@@ -146,6 +146,41 @@ async function menu(commandId: string) {
   await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } })));
 }
 
+const otherMolecule = { ...aromaticSource, id: "other", x: aromaticSource.x + 200,
+  atoms: aromaticSource.atoms.map(atom => ({ ...atom, id: `other-${atom.id}`, x: atom.x + 200 })),
+  bonds: aromaticSource.bonds.map(bond => ({ ...bond,
+    fromAtomId: `other-${bond.fromAtomId}`, toAtomId: `other-${bond.toAtomId}` })) };
+const otherAtomIds = otherMolecule.atoms.map(atom => atom.id);
+const drawnOther = () => present().pages[0]!.objects.find(object => object.id === otherMolecule.id);
+
+/** Two clicks on the other molecule select it as a whole object; Shift adds it to the selection. */
+async function selectOtherMolecule(shiftKey = false) {
+  const { x, y } = otherMolecule.atoms[0]!;
+  for (let count = 0; count < 2; count++) {
+    // The first click re-renders the molecule; dispatch the second on the current element.
+    const target = container.querySelector(`[data-object-id="${otherMolecule.id}"]`)!;
+    await act(async () => {
+      for (const type of ["pointerdown", "pointerup"]) {
+        target.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 42, button: 0, isPrimary: true, shiftKey,
+          clientX: x, clientY: y, pointerType: "mouse", buttons: type === "pointerdown" ? 1 : 0 }));
+      }
+    });
+  }
+}
+
+/** Marks `anchors` on the source molecule and returns the new marker atom IDs. */
+async function markAnchors(anchors: string[]) {
+  const existing = new Set(drawn().atoms.map(atom => atom.id));
+  await act(async () => {
+    const runtime = register(context => context.documents.addConnectionPoints!({ objectId: source.id, anchors }));
+    await runtime.invokeCommand(commandId);
+  });
+  const markers = drawn().atoms.filter(atom => !existing.has(atom.id)).map(atom => atom.id);
+  expect(markers).toHaveLength(anchors.length);
+  expect(nativeSelection()).toEqual(markers);
+  return markers;
+}
+
 it("captures selected atom IDs at command start and restores the single marking entry exactly", async () => {
   host.native = true;
   const runningVersion = "1.9.99";
@@ -392,25 +427,16 @@ it("preserves an atom selection through an ordinary nudge, undo, and redo", asyn
   expect(nativeSelection()).toEqual(["a"]);
 });
 
-it("clears the mark selection when redoing a later whole-molecule edit", async () => {
-  const other = { ...aromaticSource, id: "other", x: aromaticSource.x + 200,
-    atoms: aromaticSource.atoms.map(atom => ({ ...atom, id: `other-${atom.id}`, x: atom.x + 200 })),
-    bonds: aromaticSource.bonds.map(bond => ({ ...bond,
-      fromAtomId: `other-${bond.fromAtomId}`, toAtomId: `other-${bond.toAtomId}` })) };
-  await render(aromaticSource, undefined, other);
+it("keeps the redone markers selected through redo of a later whole-object edit, as a live atom selection is kept", async () => {
+  await render(aromaticSource, undefined, otherMolecule);
   await selectAtom("a");
-  await act(async () => {
-    const runtime = register(context => context.documents.addConnectionPoints!({ objectId: source.id, anchors: ["a"] }));
-    await runtime.invokeCommand(commandId);
-  });
-  const markerId = drawn().atoms.find(atom => atom.element === "X")!.id;
-  const otherElement = () => container.querySelector('[data-object-id="other"]')!;
-  await click(otherElement(), other.atoms[0]!);
-  await click(otherElement(), other.atoms[0]!);
-  expect(present().selection.objectIds).toEqual([other.id]);
+  const [markerId] = await markAnchors(["a"]);
+  await selectOtherMolecule();
+  expect(present().selection.objectIds).toEqual([otherMolecule.id]);
+  expect(nativeSelection()).toEqual(otherAtomIds);
   await menu("selection.nudge.right.large");
   const after = present();
-  expect(after.pages[0]!.objects.find(object => object.id === other.id)?.x).toBe(other.x + 10);
+  expect(drawnOther()?.x).toBe(otherMolecule.x + 10);
   await menu("edit.undo");
   await menu("edit.undo");
   expect(nativeSelection()).toEqual(["a"]);
@@ -418,10 +444,86 @@ it("clears the mark selection when redoing a later whole-molecule edit", async (
   expect(nativeSelection()).toEqual([markerId]);
   await menu("edit.redo");
   expect(present()).toEqual(after);
-  expect(nativeSelection()).toEqual(other.atoms.map(atom => atom.id));
+  // Redoing an ordinary edit keeps the live parts that still exist (origin/main's behaviour, pinned
+  // without any mark in the next test), so the markers stay selected beside the redone object.
+  expect(nativeSelection()).toEqual([markerId, ...otherAtomIds]);
+  const ring = drawn().atoms.filter(atom => atom.id !== markerId);
+  const other = drawnOther();
   await menu("edit.forwardDeleteHoveredNativeTarget");
-  expect(present().pages[0]!.objects.map(object => object.id)).toEqual([source.id]);
-  expect(drawn().atoms.some(atom => atom.id === markerId)).toBe(true);
+  // Delete acts on the selected marker first (its label), never on the ring.
+  expect(drawn().atoms.filter(atom => atom.id !== markerId)).toEqual(ring);
+  expect(drawn().atoms.find(atom => atom.id === markerId)?.element).not.toBe("X");
+  expect(drawnOther()).toEqual(other);
+});
+
+it("keeps a live atom selection through redo of a whole-object edit with no mark anywhere (origin/main)", async () => {
+  await render(aromaticSource, undefined, otherMolecule);
+  await selectOtherMolecule();
+  await menu("selection.nudge.right.large");
+  const after = present();
+  await menu("edit.undo");
+  await selectAtom("a");
+  await menu("edit.redo");
+  expect(present()).toEqual(after);
+  expect(nativeSelection()).toEqual(["a", ...otherAtomIds]);
+  const other = drawnOther();
+  await menu("edit.forwardDeleteHoveredNativeTarget");
+  expect(drawn().atoms.map(atom => atom.id)).toEqual([..."bcdef"]);
+  expect(drawnOther()).toEqual(other);
+});
+
+it("marks, nudges the marker with another molecule added to the selection, undoes and redoes; Delete acts on the selection only", async () => {
+  await render(aromaticSource, undefined, otherMolecule);
+  await selectAtom("a");
+  const [markerId] = await markAnchors(["a"]);
+  await selectOtherMolecule(true);
+  expect(present().selection.objectIds).toEqual([source.id, otherMolecule.id]);
+  expect(nativeSelection()).toEqual([markerId, ...otherAtomIds]);
+  const ring = drawn().atoms.filter(atom => atom.id !== markerId);
+  const markerX = drawn().atoms.find(atom => atom.id === markerId)!.x;
+  await menu("selection.nudge.right.large");
+  const nudged = present();
+  expect(drawn().atoms.find(atom => atom.id === markerId)!.x).toBe(markerX + 10);
+  expect(drawn().atoms.filter(atom => atom.id !== markerId)).toEqual(ring);
+  expect(drawnOther()?.x).toBe(otherMolecule.x + 10);
+  await menu("edit.undo");
+  expect(drawn().atoms.find(atom => atom.id === markerId)!.x).toBe(markerX);
+  expect(nativeSelection()).toEqual([markerId, ...otherAtomIds]);
+  await menu("edit.redo");
+  expect(present()).toEqual(nudged);
+  expect(present().selection.objectIds).toEqual([source.id, otherMolecule.id]);
+  expect(nativeSelection()).toEqual([markerId, ...otherAtomIds]);
+  const other = drawnOther();
+  await menu("edit.forwardDeleteHoveredNativeTarget");
+  // Delete takes the selected marker's label first; no ring atom changes.
+  expect(drawn().atoms.filter(atom => atom.id !== markerId)).toEqual(ring);
+  expect(drawn().atoms.find(atom => atom.id === markerId)?.element).not.toBe("X");
+  expect(drawnOther()).toEqual(other);
+});
+
+it.each([false, true])("selects an atom, nudges it, undoes and redoes (earlier mark: %s); Delete removes that atom only", async withMark => {
+  await render(aromaticSource);
+  let markers: string[] = [];
+  if (withMark) {
+    await selectAtom("a");
+    markers = await markAnchors(["a"]);
+  }
+  await selectAtom("d");
+  const dX = () => drawn().atoms.find(atom => atom.id === "d")!.x;
+  const originalX = dX();
+  await menu("selection.nudge.right.large");
+  const nudged = present();
+  expect(dX()).toBe(originalX + 10);
+  await menu("edit.undo");
+  expect(dX()).toBe(originalX);
+  expect(nativeSelection()).toEqual(["d"]);
+  await menu("edit.redo");
+  expect(present()).toEqual(nudged);
+  expect(nativeSelection()).toEqual(["d"]);
+  const others = drawn().atoms.filter(atom => atom.id !== "d");
+  await menu("edit.forwardDeleteHoveredNativeTarget");
+  expect(drawn().atoms).toEqual(others);
+  expect(drawn().atoms.map(atom => atom.id)).toEqual([..."abcef", ...markers]);
 });
 
 it("preserves live whole-object selection for a pre-0.1.28 plugin", async () => {
@@ -496,7 +598,7 @@ it("redoes a mark to its markers after a later repeat unit on the same molecule 
   expect(nativeSelection()).toEqual([]);
 });
 
-it("undoes a repeat unit to its toggled atom after a selection-only Select All, and redoes it", async () => {
+it("leaves undo and redo of a later repeat-unit toggle across a selection-only Select All as origin/main does", async () => {
   await render(aromaticSource);
   await selectAtom("a");
   await act(async () => {
@@ -518,8 +620,9 @@ it("undoes a repeat unit to its toggled atom after a selection-only Select All, 
   expect(nativeSelection()).toEqual(["d"]);
   await menu("edit.redo");
   expect(present()).toEqual(selectedAll);
-  // The whole-object selection draws every atom; no toggled or marker part selection is restored.
-  expect(nativeSelection()).toEqual(drawn().atoms.map(atom => atom.id));
+  // Main restores the toggle's recorded selection only on the documents it recorded; redoing to the
+  // Select All replacement keeps the live toggled atom. The mark plays no part in this step.
+  expect(nativeSelection()).toEqual(["d"]);
   await menu("edit.undo");
   expect(present()).toEqual(marked);
   expect(nativeSelection()).toEqual(["d"]);
@@ -544,4 +647,129 @@ it("undoes and redoes a connection-point mark after a selection-only Select All"
   await menu("edit.redo");
   expect(present()).toEqual(marked);
   expect(nativeSelection()).toEqual([markerId]);
+});
+
+it("keeps the live atom selection when undoing and redoing a nudge after a mark on the same molecule", async () => {
+  await render(aromaticSource);
+  await selectAtom("a");
+  await act(async () => {
+    const runtime = register(context => context.documents.addConnectionPoints!({ objectId: source.id, anchors: ["a"] }));
+    await runtime.invokeCommand(commandId);
+  });
+  const marked = present();
+  const markerId = drawn().atoms.find(atom => atom.element === "X")!.id;
+  expect(nativeSelection()).toEqual([markerId]);
+  await selectAtom("d");
+  const dX = () => drawn().atoms.find(atom => atom.id === "d")!.x;
+  const originalX = dX();
+  await menu("selection.nudge.right.large");
+  expect(dX()).toBe(originalX + 10);
+  expect(nativeSelection()).toEqual(["d"]);
+  // The mark's recorded markers belong to redoing the mark, not to undoing a later edit.
+  await menu("edit.undo");
+  expect(dX()).toBe(originalX);
+  expect(nativeSelection()).toEqual(["d"]);
+  await menu("edit.redo");
+  expect(dX()).toBe(originalX + 10);
+  expect(nativeSelection()).toEqual(["d"]);
+  await menu("edit.undo");
+  expect(nativeSelection()).toEqual(["d"]);
+  // Delete acts on the live selection, never on the marker.
+  await menu("edit.forwardDeleteHoveredNativeTarget");
+  expect(drawn().atoms.some(atom => atom.id === "d")).toBe(false);
+  expect(drawn().atoms.some(atom => atom.id === markerId)).toBe(true);
+  await menu("edit.undo");
+  expect(present()).toEqual(marked);
+  // Undoing the mark itself still restores the selection from before it, and redoing it the markers.
+  await menu("edit.undo");
+  expect(nativeSelection()).toEqual(["a"]);
+  await menu("edit.redo");
+  expect(present()).toEqual(marked);
+  expect(nativeSelection()).toEqual([markerId]);
+});
+
+it("keeps a nudged marker selected through undo and redo, so Delete and a nudge act on the marker only", async () => {
+  await render(aromaticSource);
+  await selectAtom("a");
+  const before = present();
+  await act(async () => {
+    const runtime = register(context => context.documents.addConnectionPoints!({ objectId: source.id, anchors: ["a"] }));
+    await runtime.invokeCommand(commandId);
+  });
+  const marked = present();
+  const markerId = drawn().atoms.find(atom => atom.element === "X")!.id;
+  expect(nativeSelection()).toEqual([markerId]);
+  const markerX = () => drawn().atoms.find(atom => atom.id === markerId)!.x;
+  const ringX = () => drawn().atoms.filter(atom => atom.id !== markerId).map(atom => atom.x);
+  const originalMarkerX = markerX();
+  const originalRingX = ringX();
+  await menu("selection.nudge.right.large");
+  expect(markerX()).toBe(originalMarkerX + 10);
+  expect(ringX()).toEqual(originalRingX);
+  const nudged = present();
+  await menu("edit.undo");
+  expect(present()).toEqual(marked);
+  expect(nativeSelection()).toEqual([markerId]);
+  await menu("edit.redo");
+  expect(present()).toEqual(nudged);
+  expect(nativeSelection()).toEqual([markerId]);
+  // Another nudge moves the marker only, never the whole molecule.
+  await menu("selection.nudge.right.large");
+  expect(markerX()).toBe(originalMarkerX + 20);
+  expect(ringX()).toEqual(originalRingX);
+  expect(nativeSelection()).toEqual([markerId]);
+  // Delete with nothing hovered acts on the marker only (its label goes first), never the molecule.
+  const ring = drawn().atoms.filter(atom => atom.id !== markerId);
+  const marker = drawn().atoms.find(atom => atom.id === markerId);
+  await menu("edit.forwardDeleteHoveredNativeTarget");
+  expect(present().pages[0]!.objects.map(object => object.id)).toEqual([source.id]);
+  expect(drawn().atoms.filter(atom => atom.id !== markerId)).toEqual(ring);
+  expect(drawn().atoms.find(atom => atom.id === markerId)).not.toEqual(marker);
+  await menu("edit.undo");
+  await menu("edit.undo");
+  await menu("edit.undo");
+  expect(present()).toEqual(marked);
+  expect(nativeSelection()).toEqual([markerId]);
+  // Undoing and redoing the mark itself still restore its recorded selections.
+  await menu("edit.undo");
+  expect(present()).toEqual(before);
+  expect(nativeSelection()).toEqual(["a"]);
+  await menu("edit.redo");
+  expect(present()).toEqual(marked);
+  expect(nativeSelection()).toEqual([markerId]);
+  await menu("edit.redo");
+  expect(present()).toEqual(nudged);
+  expect(nativeSelection()).toEqual([markerId]);
+});
+
+it("keeps a nudged atom selected through undo and redo after undoing a repeat-unit toggle", async () => {
+  await render(aromaticSource);
+  await selectAtom("d");
+  const before = present();
+  await menu("bracket.repeatUnit.toggle");
+  const repeated = present();
+  expect(repeated.pages[0]!.objects.filter(object => object.type === "bracket")).toHaveLength(2);
+  expect(nativeSelection()).toEqual([]);
+  await menu("edit.undo");
+  expect(present()).toEqual(before);
+  expect(nativeSelection()).toEqual(["d"]);
+  const x = (id: string) => drawn().atoms.find(atom => atom.id === id)!.x;
+  const others = () => drawn().atoms.filter(atom => atom.id !== "d").map(atom => atom.x);
+  const originalX = x("d");
+  const originalOthers = others();
+  await menu("selection.nudge.right.large");
+  expect(x("d")).toBe(originalX + 10);
+  const nudged = present();
+  await menu("edit.undo");
+  expect(present()).toEqual(before);
+  expect(nativeSelection()).toEqual(["d"]);
+  await menu("edit.redo");
+  expect(present()).toEqual(nudged);
+  expect(nativeSelection()).toEqual(["d"]);
+  await menu("selection.nudge.right.large");
+  expect(x("d")).toBe(originalX + 20);
+  expect(others()).toEqual(originalOthers);
+  await menu("edit.forwardDeleteHoveredNativeTarget");
+  expect(present().pages[0]!.objects.map(object => object.id)).toEqual([source.id]);
+  expect(drawn().atoms.map(atom => atom.id)).toEqual([..."abcef"]);
 });

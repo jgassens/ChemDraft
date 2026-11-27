@@ -1854,7 +1854,34 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.27.04.00-opus";
+const CURRENT_BUILD_STAMP = "11.27.12.00-opus";
+
+/** A connection-point mark's history entry and the native part selections on either side of it. */
+interface ConnectionPointMarkHistory {
+  before: ChemDraftDocument;
+  after: ChemDraftDocument;
+  selectionBefore: NativeMoleculeSelectionPart[];
+  markers: NativeMoleculeSelectionPart[];
+}
+
+interface ConnectionPointMarks {
+  byBefore: WeakMap<ChemDraftDocument, ConnectionPointMarkHistory>;
+  byAfter: WeakMap<ChemDraftDocument, ConnectionPointMarkHistory>;
+}
+
+/**
+ * The mark whose own history step `direction` would take from `history`, if any: undo when the
+ * entry below the present is the mark's before-document and the present has the mark's content;
+ * redo when the next entry is its after-document and the present has the content from before it.
+ */
+function connectionPointMarkStep(marks: ConnectionPointMarks, history: DocumentHistory,
+  direction: "undo" | "redo"): ConnectionPointMarkHistory | undefined {
+  const neighbour = direction === "undo" ? history.past.at(-1) : history.future[0];
+  const mark = neighbour && (direction === "undo" ? marks.byBefore : marks.byAfter).get(neighbour);
+  if (!mark) return undefined;
+  const expected = direction === "undo" ? mark.after : mark.before;
+  return assistantDocumentContentUnchanged(expected, history.present, { checkBracketIdentity: true }) ? mark : undefined;
+}
 
 /**
  * The commit funnel's chemistry check (AGENTS.md section 7, `commitChemistryGuard.ts`). `before`
@@ -3049,8 +3076,10 @@ export function MainWindow({
   const historyNavigationCountRef = useRef(0);
   const documentHistoryRef = useRef<DocumentHistory>(documentHistory);
   const documentUndoLabelsRef = useRef(new WeakMap<ChemDraftDocument, string>());
-  const nativePartHistorySelectionsRef = useRef(new WeakMap<ChemDraftDocument, NativeMoleculeSelectionPart[]>());
-  const nativePartUndoSelectionsRef = useRef(new WeakMap<ChemDraftDocument, NativeMoleculeSelectionPart[]>());
+  const repeatUnitHistorySelectionsRef = useRef(new WeakMap<ChemDraftDocument, NativeMoleculeSelectionPart[]>());
+  // Each connection-point mark's history entry, keyed by its before- and after-document (see
+  // restoreDocumentHistory). One document can be both one mark's result and the next mark's start.
+  const connectionPointMarksRef = useRef<ConnectionPointMarks>({ byBefore: new WeakMap(), byAfter: new WeakMap() });
   const fileStateRef = useRef<NativeFileState>(fileState);
   // Successful explicit saves, per tab, including a save completed while its label editor is open.
   const documentSaveRevisionsRef = useRef(new Map<string, number>());
@@ -3744,7 +3773,7 @@ export function MainWindow({
 
   const assistantHistoryWritingRef = useRef(false);
   const assistantHistoryMountedRef = useRef(true);
-  const recordedHistoryAfterRef = useRef(new WeakMap<ChemDraftDocument, ChemDraftDocument>());
+  const assistantRecordedAfterRef = useRef(new WeakMap<ChemDraftDocument, ChemDraftDocument>());
   const assistantUserEditListenersRef = useRef(new Set<(tabId: string) => void>());
   const installDocumentHistory = useCallback((
     update: DocumentHistory | ((current: DocumentHistory) => DocumentHistory),
@@ -3762,28 +3791,18 @@ export function MainWindow({
     const previous = documentHistoryRef.current;
     const history = typeof update === "function" ? update(previous) : update;
     if (history === previous) return;
-    if (!switchingTabs && history.present !== previous.present &&
-      history.past === previous.past && history.future === previous.future) {
-      // A selection-only replacement keeps the part selections undo and redo restore for the
-      // present, as it keeps its undo label; a content change starts without them.
-      const carried = [nativePartUndoSelectionsRef.current, nativePartHistorySelectionsRef.current]
-        .filter(selections => selections.has(previous.present) && !selections.has(history.present));
-      if (carried.length && assistantDocumentContentUnchanged(previous.present, history.present)) {
-        for (const selections of carried) selections.set(history.present, selections.get(previous.present)!);
-      }
-    }
     if (selectionClipboardPasteStateRef.current?.document && history.present !== previous.present) {
       selectionClipboardPasteStateRef.current = undefined;
     }
     if (!switchingTabs && !assistantHistoryWritingRef.current) {
       const navigated = history.past !== previous.past || history.future !== previous.future;
-      const recorded = recordedHistoryAfterRef.current.get(previous.present);
+      const recorded = assistantRecordedAfterRef.current.get(previous.present);
       if (navigated || ((recorded || assistantUserEditListenersRef.current.size > 0) &&
         !assistantDocumentContentUnchanged(previous.present, history.present))) {
         for (const listener of assistantUserEditListenersRef.current) listener(activeDocumentTabIdRef.current);
       } else if (recorded) {
-        // Selection changes after commit must not rewrite the recorded redo selection.
-        recordedHistoryAfterRef.current.set(history.present, recorded);
+        // Selection changes after completion must not rewrite the run's recorded redo selection.
+        assistantRecordedAfterRef.current.set(history.present, recorded);
       }
     }
     // Retained moves never install preview documents. Any install while one is active
@@ -4113,7 +4132,7 @@ export function MainWindow({
     };
     const labelled = (document: ChemDraftDocument, label: string, assertFinalDocument?: (document: ChemDraftDocument) => ChemDraftDocument | void) => {
       const present = prepareDocumentCommit(document, label, assertFinalDocument);
-      recordedHistoryAfterRef.current.set(present, present);
+      assistantRecordedAfterRef.current.set(present, present);
       return present;
     };
     return {
@@ -4151,8 +4170,8 @@ export function MainWindow({
         install(tabId, (history) => {
           const beforeLabel = documentUndoLabelsRef.current.get(history.present);
           if (beforeLabel) documentUndoLabelsRef.current.set(before, beforeLabel);
-          const recorded = recordedHistoryAfterRef.current.get(history.present);
-          if (recorded) recordedHistoryAfterRef.current.set(before, recorded);
+          const recorded = assistantRecordedAfterRef.current.get(history.present);
+          if (recorded) assistantRecordedAfterRef.current.set(before, recorded);
           return { past: boundedHistoryPast([...history.past, before], present), present, future: [] };
         });
       },
@@ -4183,7 +4202,7 @@ export function MainWindow({
         if (!readHistory(tabId)) return false;
         let undone = false;
         install(tabId, (history) => {
-          if ((history.present !== expected && recordedHistoryAfterRef.current.get(history.present) !== expected) ||
+          if ((history.present !== expected && assistantRecordedAfterRef.current.get(history.present) !== expected) ||
             history.past.length === 0) return history;
           for (const listener of assistantUserEditListenersRef.current) listener(tabId);
           undone = true;
@@ -10099,18 +10118,19 @@ export function MainWindow({
     finishActiveNativeTextEdit();
     let nextHistory: DocumentHistory | undefined;
     let undoLabel: string | undefined;
-    let nativePartUndoSelection: NativeMoleculeSelectionPart[] | undefined;
-    let leavingRecordedNativePartSelection = false;
+    let markSelection: NativeMoleculeSelectionPart[] | undefined;
     installDocumentHistory((history) => {
-      const recordedAfter = recordedHistoryAfterRef.current.get(history.present);
+      // Only the step of a connection-point mark itself, found by its recorded documents (a
+      // selection-only change since still counts), moves between exactly those documents and restores
+      // the selection from before the mark (undo) or its new markers (redo). Every other step is untouched.
+      const mark = connectionPointMarkStep(connectionPointMarksRef.current, history, direction);
+      markSelection = mark && (direction === "undo" ? mark.selectionBefore : mark.markers);
+      const recordedAfter = assistantRecordedAfterRef.current.get(history.present);
       const currentHistory = { ...history,
-        present: direction === "undo" && recordedAfter ? recordedAfter : atomLabelHistorySnapshot(history.present) };
+        present: mark ? (direction === "undo" ? mark.after : mark.before)
+          : direction === "undo" && recordedAfter ? recordedAfter : atomLabelHistorySnapshot(history.present) };
       const restored = direction === "undo" ? undoDocumentHistory(currentHistory) : redoDocumentHistory(currentHistory);
       if (restored === currentHistory) return history;
-      if (direction === "undo") nativePartUndoSelection = nativePartUndoSelectionsRef.current.get(currentHistory.present);
-      const recordedSelections = nativePartHistorySelectionsRef.current;
-      leavingRecordedNativePartSelection = recordedSelections.has(history.present) ||
-        (recordedAfter !== undefined && recordedSelections.has(recordedAfter));
       undoLabel = direction === "undo"
         ? documentUndoLabelsRef.current.get(currentHistory.present)
         : documentUndoLabelsRef.current.get(restored.present);
@@ -10122,10 +10142,9 @@ export function MainWindow({
       return;
     }
 
-    const nativePartSelection = nativePartUndoSelection ?? nativePartHistorySelectionsRef.current.get(nextHistory.present);
-    if (nativePartSelection) setSelectedNativeMoleculeParts(nativePartSelection);
-    else if (leavingRecordedNativePartSelection) setSelectedNativeMoleculeParts([]);
-    // Otherwise the document-change effect keeps the current parts that still exist.
+    const repeatUnitSelection = repeatUnitHistorySelectionsRef.current.get(nextHistory.present);
+    if (markSelection) setSelectedNativeMoleculeParts(markSelection);
+    else if (repeatUnitSelection) setSelectedNativeMoleculeParts(repeatUnitSelection);
 
     historyNavigationCountRef.current += 1;
     // Redoing the supplied practice structure returns to the clean starting drawing.
@@ -12375,11 +12394,8 @@ export function MainWindow({
           if (parts.length) {
             const { past, present } = documentHistoryRef.current;
             const before = past.at(-1);
-            // Undo restores the toggled parts; a selection already recorded for the state before
-            // the toggle (a connection-point mark's markers) stays what redoing into it restores.
-            nativePartUndoSelectionsRef.current.set(present, parts);
-            if (before && !nativePartHistorySelectionsRef.current.has(before)) nativePartHistorySelectionsRef.current.set(before, parts);
-            nativePartHistorySelectionsRef.current.set(present, []);
+            if (before) repeatUnitHistorySelectionsRef.current.set(before, parts);
+            repeatUnitHistorySelectionsRef.current.set(present, []);
           }
           setSelectedNativeMoleculeParts([]);
           setStatus(bracketRepeatUnitStatus(committed));
@@ -13417,7 +13433,7 @@ export function MainWindow({
         run: apply => assistantHistoryPort.runWrite!(apply),
         revision: () => {
           const present = document.read();
-          return present && (recordedHistoryAfterRef.current.get(present) ?? present);
+          return present && (assistantRecordedAfterRef.current.get(present) ?? present);
         },
         onEdit: listener => assistantHistoryPort.onUserEdit(id => { if (id === tabId) listener(); }),
         commit: (after, label, amend, guard) => assistantHistoryPort.commitRequest!(tabId, after, label, amend, guard)
@@ -13521,14 +13537,17 @@ export function MainWindow({
           // Both history paths normalize again; check their actual final state, after page fit too.
           if (assistantTxId) assistantTransactions.writeAssistantTransaction(assistantTxId, document, applied.receipt.objectIds, prepared, assertFinalDocument);
           else {
-            const nativeParts = selectedNativeMoleculePartsRef.current;
+            const selectionBefore = selectedNativeMoleculePartsRef.current;
             const changed = commitDocumentChange(document, undoLabel, false, assertFinalDocument, PLUGIN_WRITE);
             if (markedAtoms) {
               if (!changed) throw new Error("The verified connection points could not be committed.");
-              const present = documentHistoryRef.current.present;
-              nativePartUndoSelectionsRef.current.set(present, nativeParts);
-              nativePartHistorySelectionsRef.current.set(present, markedAtoms);
-              recordedHistoryAfterRef.current.set(present, present);
+              const { past, present } = documentHistoryRef.current;
+              const previous = past.at(-1);
+              if (previous) {
+                const mark = { before: previous, after: present, selectionBefore, markers: markedAtoms };
+                connectionPointMarksRef.current.byBefore.set(previous, mark);
+                connectionPointMarksRef.current.byAfter.set(present, mark);
+              }
             }
           }
           cleanup?.record();
