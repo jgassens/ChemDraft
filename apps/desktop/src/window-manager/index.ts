@@ -14,6 +14,7 @@ import { ELECTRON_MARK_EDITING_STORAGE_KEY, loadDirectElectronMarkEditing } from
 import { isKeybindingSettings, KEYBINDING_SCHEME, type KeybindingSettings } from "../keybindingSettings";
 import { migrateLegacyToolsetIds } from "../toolbars/legacyToolsetIds";
 import { listenCurrentWindowEvent, listenTauriEvent, safeTauriWindowListen } from "./tauriEvents";
+import type { ToolbarToolChoiceClaim } from "./toolbarToolChoice";
 import {
   compareToolsetPopoverOpenings, type AcceptedToolsetPopoverOpening, type ToolsetPopoverDismissPayload,
   type ToolsetPopoverOpening, type ToolsetFlyoutClosedNotice
@@ -1005,6 +1006,9 @@ export async function setMenuChecked(commandId: string, checked: boolean): Promi
 interface PaletteCommandOptions {
   preserveInputFocus?: boolean;
   flyoutOpening?: ToolsetFlyoutCommandOpening;
+  /** Which of the sending window's own controls a drawing tool was chosen through. Rust credits it
+   *  to the sender's toolbar and tells the other toolbar windows before the command lands. */
+  toolChoice?: ToolbarToolChoiceClaim;
 }
 
 export async function sendPaletteCommand(commandId: string, options?: PaletteCommandOptions): Promise<void> {

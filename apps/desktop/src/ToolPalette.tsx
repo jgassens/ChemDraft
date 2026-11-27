@@ -161,7 +161,9 @@ import type { ArtInspectorEffectKind } from "./artInspectorModel";
 import { loadSystemFonts, type SystemFontFamily, type SystemFontFace } from "./systemFonts";
 import { isDesktopRuntime, listenForPaletteCommandCancels, type ToolsetArtPaintTarget, type ToolsetFlyoutSnapshot } from "./window-manager";
 import { registerInlinePopover } from "./window-manager/popoverEscape";
-import { announceToolbarToolChoice, listenForToolbarToolChoices, type ToolbarToolChoice } from "./window-manager/toolbarToolChoice";
+import {
+  announceToolbarToolChoiceInWindow, listenForToolbarToolChoices, type ToolbarToolChoice, type ToolbarToolChoiceClaim
+} from "./window-manager/toolbarToolChoice";
 
 export type ToolPaletteMode = "docked" | "floating";
 export type ToolPaletteOrientation = "vertical" | "horizontal";
@@ -246,6 +248,7 @@ export function ToolPalette({
   currentDistributeMode = "centers",
   onRequestFlyout,
   onInvoke,
+  onInvokeToolChoice,
   widgetState,
   customize,
   contentGrip = true,
@@ -262,6 +265,11 @@ export function ToolPalette({
   currentDistributeMode?: ToolPaletteDistributeMode;
   onRequestFlyout?: (request: ToolbarFlyoutRequest) => void;
   onInvoke: (commandId: string) => void;
+  /** Invoke a drawing tool chosen through one of this palette's controls, with the claim saying which
+   *  control. A native palette window sends the claim with the command, so Rust can tell the toolbars
+   *  in other windows; without it the choice is known only in this window. Called instead of
+   *  `onInvoke`, never as well. */
+  onInvokeToolChoice?: (commandId: string, claim: ToolbarToolChoiceClaim) => void;
   /** Live state + callbacks for the widget sections (style controls, inspectors), provided via
    *  context to the widgets declared as manifest `control` items. */
   widgetState?: ToolbarWidgetState;
@@ -273,7 +281,7 @@ export function ToolPalette({
   /** Floating mode only: draw the in-content drag grip. A native palette window passes false because
    *  its shell draws the grip rail (with the close button) itself. */
   contentGrip?: boolean;
-  /** The toolset this palette renders. Native flyout choices name their toolbar by it; without it the
+  /** The toolset this palette renders. Choices Rust delivers name their toolbar by it; without it the
    *  palette only recognises choices made through its own inline controls. */
   toolsetId?: string;
 }) {
@@ -298,25 +306,19 @@ export function ToolPalette({
   const rememberDropdownVariant = useCallback((itemId: string, commandId: string) => {
     setDropdownVariants((current) => current[itemId] === commandId ? current : { ...current, [itemId]: commandId });
   }, []);
-  useEffect(() => {
-    let disposed = false;
-    let stop: (() => void) | undefined;
-    void listenForToolbarToolChoices((choice) => {
-      setToolChoice((current) => current && sameToolbarToolChoice(current, choice) ? current : choice);
-      if (choice.toolsetId !== paletteKey || choice.flyoutId === undefined) return;
-      // A native flyout knows only its flyout id; find the dropdown it belongs to here.
-      const owner = choiceItemsRef.current.find((item) => item.submenu?.id === choice.flyoutId);
-      if (owner && toolbarItemRemembersVariant(owner) && owner.submenu?.items.some((command) => command.id === choice.commandId)) {
-        rememberDropdownVariant(owner.id, choice.commandId);
-      }
-    }).then((cleanup) => {
-      if (disposed) cleanup(); else stop = cleanup;
-    }).catch(() => undefined);
-    return () => {
-      disposed = true;
-      stop?.();
-    };
-  }, [paletteKey, rememberDropdownVariant]);
+  useEffect(() => listenForToolbarToolChoices((choice) => {
+    // This palette applies a choice made through its own controls the moment it is made. Hearing one
+    // back later (an echo) would restore it after a shortcut, the menu bar or the canvas had changed
+    // the tool since, so it is ignored; only a native flyout's choice (no item id) is news here.
+    if (choice.toolsetId === paletteKey && choice.itemId !== undefined) return;
+    setToolChoice((current) => current && sameToolbarToolChoice(current, choice) ? current : choice);
+    if (choice.toolsetId !== paletteKey || choice.flyoutId === undefined) return;
+    // A native flyout knows only its flyout id; find the dropdown it belongs to here.
+    const owner = choiceItemsRef.current.find((item) => item.submenu?.id === choice.flyoutId);
+    if (owner && toolbarItemRemembersVariant(owner) && owner.submenu?.items.some((command) => command.id === choice.commandId)) {
+      rememberDropdownVariant(owner.id, choice.commandId);
+    }
+  }), [paletteKey, rememberDropdownVariant]);
   // A choice only explains the tool it chose. Once another tool is active (a shortcut, the menu bar,
   // the canvas), forget it so a later return to that tool by those routes is not credited to it.
   useEffect(() => {
@@ -328,14 +330,19 @@ export function ToolPalette({
       rememberDropdownVariant(item.id, commandId);
     }
     if (isDrawingToolCommand(commandId)) {
-      const choice: ToolbarToolChoice = viaMenu && item.submenu
-        ? { toolsetId: paletteKey, itemId: item.id, flyoutId: item.submenu.id, commandId }
-        : { toolsetId: paletteKey, itemId: item.id, commandId };
+      const claim: ToolbarToolChoiceClaim = viaMenu && item.submenu
+        ? { itemId: item.id, flyoutId: item.submenu.id }
+        : { itemId: item.id };
+      const choice: ToolbarToolChoice = { toolsetId: paletteKey, commandId, ...claim };
       setToolChoice(choice);
-      void announceToolbarToolChoice(choice).catch(() => undefined);
+      announceToolbarToolChoiceInWindow(choice);
+      if (onInvokeToolChoice) {
+        onInvokeToolChoice(commandId, claim);
+        return;
+      }
     }
     onInvoke(commandId);
-  }, [onInvoke, paletteKey, rememberDropdownVariant]);
+  }, [onInvoke, onInvokeToolChoice, paletteKey, rememberDropdownVariant]);
   const renderPaletteItem = (
     item: ToolbarPaletteItemModel,
     tooltipId: string,

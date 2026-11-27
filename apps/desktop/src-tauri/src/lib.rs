@@ -202,6 +202,9 @@ const LINUX_CLOSE_WINDOW_FILE_MENU_ID: &str = "window.close.fileMenu";
 #[cfg(any(target_os = "linux", test))]
 const WINDOW_ACTION_EVENT: &str = "chemdraft://window-action";
 const DOM_COMMAND_EVENT: &str = "chemdraft:native-command";
+/// Which toolbar control a drawing tool was chosen through, dispatched by Rust into the toolbar
+/// windows (`toolbarToolChoice.ts`). Only Rust can put a DOM event into another webview.
+const TOOLBAR_TOOL_CHOICE_DOM_EVENT: &str = "chemdraft:toolbar-tool-choice";
 #[cfg(target_os = "macos")]
 const PALETTE_POINTER_EVENT: &str = "chemdraft://palette-pointer";
 /// macOS: the pointer poll's leave. Linux: a GTK leave-notify on the palette
@@ -7429,6 +7432,99 @@ enum ToolsetPopoverCommandSource {
     Flyout(ToolsetFlyoutOpening),
 }
 
+/// What a palette window or flyout popover says about the control a drawing tool was chosen
+/// through, sent with the command. It names no toolbar, and any toolset id in the payload is
+/// ignored: the toolbar comes from the sender (`verified_toolbar_tool_choice`).
+#[derive(Debug, Default, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolbarToolChoiceClaim {
+    item_id: Option<String>,
+    flyout_id: Option<String>,
+}
+
+/// A toolbar tool choice as the toolbar windows receive it, credited to the sender's own toolbar.
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolbarToolChoice {
+    toolset_id: String,
+    command_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    item_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    flyout_id: Option<String>,
+}
+
+/// The window a toolbar tool choice came from, as Rust knows it rather than as the page says.
+enum ToolbarToolChoiceSender<'a> {
+    /// A flyout popover dispatching under its current opening, which `show_toolset_popover_window`
+    /// matched to the popover's own label and `route_toolset_command` matched to the request.
+    Flyout(&'a ToolsetFlyoutOpening),
+    /// A palette window, with the toolset id recorded when Rust built it.
+    Palette(&'a str),
+}
+
+/// A window can only speak for its own toolbar: a palette for the toolset it was built for, a
+/// flyout popover for the dropdown its verified opening belongs to.
+fn verified_toolbar_tool_choice(
+    sender: ToolbarToolChoiceSender<'_>,
+    command_id: &str,
+    claim: ToolbarToolChoiceClaim,
+) -> ToolbarToolChoice {
+    match sender {
+        ToolbarToolChoiceSender::Flyout(opening) => ToolbarToolChoice {
+            toolset_id: opening.toolset_id.clone(),
+            command_id: command_id.to_string(),
+            item_id: None,
+            flyout_id: Some(opening.flyout_id.clone()),
+        },
+        ToolbarToolChoiceSender::Palette(toolset_id) => ToolbarToolChoice {
+            toolset_id: toolset_id.to_string(),
+            command_id: command_id.to_string(),
+            item_id: claim.item_id,
+            flyout_id: claim.flyout_id,
+        },
+    }
+}
+
+/// Every window that draws toolbars except the sender, which applied its own choice when it was
+/// made: an echo arriving after the tool changed again would restore a stale choice there.
+fn toolbar_tool_choice_targets<'a>(
+    sender_label: &str,
+    palette_labels: impl IntoIterator<Item = &'a String>,
+) -> Vec<String> {
+    let mut targets = vec![MAIN_WINDOW_LABEL.to_string()];
+    for label in palette_labels {
+        if !targets.contains(label) {
+            targets.push(label.clone());
+        }
+    }
+    targets.retain(|label| label != sender_label);
+    targets
+}
+
+fn deliver_toolbar_tool_choice<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    sender_label: &str,
+    choice: &ToolbarToolChoice,
+) {
+    let palette_labels: Vec<String> = app
+        .state::<ToolsetWindowDirectory>()
+        .labels
+        .lock()
+        .map(|labels| labels.keys().cloned().collect())
+        .unwrap_or_default();
+    for label in toolbar_tool_choice_targets(sender_label, &palette_labels) {
+        if let Some(target) = app.get_webview_window(&label) {
+            // Best effort: a toolbar that misses a choice treats the tool as chosen elsewhere.
+            if let Err(error) =
+                dispatch_dom_toolset_event(&target, choice, TOOLBAR_TOOL_CHOICE_DOM_EVENT)
+            {
+                log::debug!("toolbar tool choice not delivered to {label}: {error}");
+            }
+        }
+    }
+}
+
 fn toolset_popover_command_sources(
 ) -> std::sync::MutexGuard<'static, HashMap<String, ToolsetPopoverCommandSource>> {
     static SOURCES: std::sync::LazyLock<Mutex<HashMap<String, ToolsetPopoverCommandSource>>> =
@@ -8068,6 +8164,7 @@ fn route_toolset_command(
     preserve_input_focus: Option<bool>,
     commit: Option<bool>,
     flyout_opening: Option<ToolsetFlyoutOpening>,
+    tool_choice: Option<ToolbarToolChoiceClaim>,
 ) -> Result<(), String> {
     if utility_windows_suspended() && !commit.unwrap_or(false) {
         return Ok(());
@@ -8097,7 +8194,10 @@ fn route_toolset_command(
         return Ok(());
     }
 
-    if let Some(session_id) = flyout_opening.and_then(|opening| opening.bond_stereo_session_id) {
+    if let Some(session_id) = flyout_opening
+        .as_ref()
+        .and_then(|opening| opening.bond_stereo_session_id.clone())
+    {
         if matches!(command_id, "geometry" | "flipped" | "keep") {
             app.emit_to(
                 MAIN_WINDOW_LABEL,
@@ -8122,6 +8222,32 @@ fn route_toolset_command(
             },
             "chemdraft://palette-command-commit",
         );
+    }
+    // Which control the tool was chosen through reaches the toolbars before the command lands, so
+    // the new active tool is credited to it. The toolbar is the sender's own, never the payload's:
+    // a popover reaching here dispatches under its verified opening; a palette is looked up by the
+    // label Rust recorded when it built the window; any other sender's claim is dropped.
+    if let Some(claim) = tool_choice {
+        let choice = if window.label().starts_with("toolset-popover-") {
+            flyout_opening.as_ref().map(|opening| {
+                verified_toolbar_tool_choice(
+                    ToolbarToolChoiceSender::Flyout(opening),
+                    command_id,
+                    claim,
+                )
+            })
+        } else {
+            toolset_id_for_window_label(&app, window.label()).map(|toolset_id| {
+                verified_toolbar_tool_choice(
+                    ToolbarToolChoiceSender::Palette(&toolset_id),
+                    command_id,
+                    claim,
+                )
+            })
+        };
+        if let Some(choice) = choice {
+            deliver_toolbar_tool_choice(&app, window.label(), &choice);
+        }
     }
     emit_command_to_main(&app, command_id)?;
     // Select changes and clean-number undo update the document while the control
@@ -10078,9 +10204,9 @@ fn dispatch_dom_command_event<R: Runtime>(
     dispatch_dom_toolset_event(main, payload, DOM_COMMAND_EVENT)
 }
 
-fn dispatch_dom_toolset_event<R: Runtime>(
+fn dispatch_dom_toolset_event<R: Runtime, T: serde::Serialize>(
     main: &tauri::WebviewWindow<R>,
-    payload: &ToolsetCommandPayload,
+    payload: &T,
     event_name: &str,
 ) -> Result<(), String> {
     let payload_json = serde_json::to_string(payload).map_err(|error| error.to_string())?;
@@ -17196,6 +17322,88 @@ mod tests {
                  a window capability, so every invoke is denied and the JS silently swallows it"
             );
         }
+    }
+
+    #[test]
+    fn toolbar_tool_choices_are_credited_to_the_sending_windows_own_toolbar() {
+        // A plugin toolbar claiming a core toolbar's control: the toolset in the payload is ignored
+        // and the choice is credited to the toolset Rust recorded for the plugin's window.
+        let forged: ToolbarToolChoiceClaim = serde_json::from_value(serde_json::json!({
+            "toolsetId": "core.structure",
+            "itemId": "tool.bond",
+            "flyoutId": "bond-tools"
+        }))
+        .expect("claim");
+        let choice = verified_toolbar_tool_choice(
+            ToolbarToolChoiceSender::Palette("plugin.fixture"),
+            "tool.dashedBond",
+            forged,
+        );
+        expect_eq("plugin.fixture", choice.toolset_id.as_str());
+        expect_eq(Some("tool.bond"), choice.item_id.as_deref());
+
+        // A popover speaks for the dropdown of its verified opening, whatever the claim says.
+        let opening = ToolsetFlyoutOpening {
+            toolset_id: "plugin.fixture".into(),
+            flyout_id: "fixture-tools".into(),
+            opened_at: 1.0,
+            generation: Some(1),
+            bond_stereo_session_id: None,
+        };
+        let choice = verified_toolbar_tool_choice(
+            ToolbarToolChoiceSender::Flyout(&opening),
+            "tool.wedgeBond",
+            ToolbarToolChoiceClaim {
+                item_id: Some("tool.bond".into()),
+                flyout_id: Some("bond-tools".into()),
+            },
+        );
+        expect_eq(
+            &ToolbarToolChoice {
+                toolset_id: "plugin.fixture".into(),
+                command_id: "tool.wedgeBond".into(),
+                item_id: None,
+                flyout_id: Some("fixture-tools".into()),
+            },
+            &choice,
+        );
+        // The DOM payload the toolbars read: camelCase, no nulls for missing controls.
+        expect_eq(
+            serde_json::json!({
+                "toolsetId": "plugin.fixture",
+                "commandId": "tool.wedgeBond",
+                "flyoutId": "fixture-tools"
+            }),
+            serde_json::to_value(&choice).expect("payload"),
+        );
+    }
+
+    #[test]
+    fn toolbar_tool_choices_reach_every_toolbar_window_but_the_sender() {
+        let palettes = [
+            "toolset-core-main".to_string(),
+            "toolset-core-structure".to_string(),
+            "toolset-plugin-fixture".to_string(),
+        ];
+        // An inline choice is never echoed back to the palette it was made in.
+        expect_eq(
+            vec![
+                MAIN_WINDOW_LABEL.to_string(),
+                "toolset-core-main".to_string(),
+                "toolset-plugin-fixture".to_string(),
+            ],
+            toolbar_tool_choice_targets("toolset-core-structure", &palettes),
+        );
+        // A flyout's choice reaches every palette, its owner included.
+        expect_eq(
+            vec![
+                MAIN_WINDOW_LABEL.to_string(),
+                "toolset-core-main".to_string(),
+                "toolset-core-structure".to_string(),
+                "toolset-plugin-fixture".to_string(),
+            ],
+            toolbar_tool_choice_targets("toolset-popover-core-main", &palettes),
+        );
     }
 
     #[test]

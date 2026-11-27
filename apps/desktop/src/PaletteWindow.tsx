@@ -2,6 +2,7 @@ import { isDrawingToolCommand } from "./drawingTools";
 import { installPopoverEscapeRouting } from "./window-manager/popoverEscape";
 import { isScrollOwnerPress } from "./window-manager/scrollOwnerPress";
 import { listenCurrentWindowEvent } from "./window-manager/tauriEvents";
+import type { ToolbarToolChoiceClaim } from "./window-manager/toolbarToolChoice";
 import type { AnalysisReport } from "@chemdraft/analysis-core";
 import type { DocumentZoomState } from "./documentZoom";
 import { listenForToolsetZoom, requestToolsetZoom } from "./window-manager";
@@ -1015,6 +1016,12 @@ export function PaletteWindow({
     if (isDrawingToolCommand(commandId)) dismissPaletteFlyouts();
     void sendPaletteCommand(commandId).catch(() => undefined);
   };
+  // A drawing tool chosen through one of this palette's controls: the claim rides with the command, and
+  // Rust credits it to this window's own toolset when it tells the other toolbar windows.
+  const invokeToolChoice = (commandId: string, toolChoice: ToolbarToolChoiceClaim) => {
+    if (isDrawingToolCommand(commandId)) dismissPaletteFlyouts();
+    void sendPaletteCommand(commandId, { toolChoice }).catch(() => undefined);
+  };
   const invokeCommandRef = useRef(invokeCommand);
   invokeCommandRef.current = invokeCommand;
   // Right-click (Control-click on macOS) anywhere on the toolbar: the grip, a gap or a button opens
@@ -1385,6 +1392,7 @@ export function PaletteWindow({
         title={toolset.title}
         onRequestFlyout={openFlyoutPopover}
         onInvoke={invokeCommand}
+        onInvokeToolChoice={invokeToolChoice}
         customize={customizeThisPalette ? { groupIds: renderGroups.map((group) => group.id) } : undefined}
         widgetState={{
           commandSpecs: allCommands,

@@ -12,7 +12,16 @@ import type { ToolsetPopoverContentPayload } from "./window-manager";
 
 const native = vi.hoisted(() => ({
   content: undefined as undefined | ((payload: ToolsetPopoverContentPayload) => void),
-  command: vi.fn(async (_commandId: string, _options?: unknown) => {}),
+  /** route_toolset_command as Rust runs it for a popover: a drawing-tool claim is credited to the
+   *  popover's verified flyout opening and dispatched into the toolbar windows before the command. */
+  command: vi.fn(async (commandId: string, options?: {
+    flyoutOpening?: { toolsetId: string; flyoutId: string };
+    toolChoice?: object;
+  }) => {
+    if (!options?.toolChoice || !options.flyoutOpening) return;
+    const { toolsetId, flyoutId } = options.flyoutOpening;
+    window.dispatchEvent(new CustomEvent("chemdraft:toolbar-tool-choice", { detail: { toolsetId, flyoutId, commandId } }));
+  }),
   hide: vi.fn(async () => {}),
   show: vi.fn(async () => true)
 }));
@@ -247,7 +256,8 @@ describe.each(["macos", "windows"] as const)("toolbar dropdowns keep their own v
     const dashed = popover.container.querySelector<HTMLButtonElement>('[role="menu"] [data-command-id="tool.dashedBond"]')!;
     await act(async () => dashed.click());
     expect(native.command).toHaveBeenCalledExactlyOnceWith("tool.dashedBond", expect.objectContaining({
-      flyoutOpening: expect.objectContaining({ toolsetId: "core.main" })
+      flyoutOpening: expect.objectContaining({ toolsetId: "core.main" }),
+      toolChoice: {}
     }));
     expect(main.onInvoke).not.toHaveBeenCalled();
 
