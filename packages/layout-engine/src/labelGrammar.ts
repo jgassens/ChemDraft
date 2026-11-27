@@ -21,6 +21,7 @@ import {
   nativeAtomChargeIsExpressible,
   nativeElementFromAtomLabel,
   nativeElementSymbols,
+  normalizeNativeAtomElementLabel,
   type NativeElementSymbol
 } from "./valence";
 
@@ -262,6 +263,26 @@ export function nativeElementWithChargeLabel(
   const element = nativeElementFromAtomLabel(body);
   if (!element || element !== body) return undefined;
   return nativeAtomChargeIsExpressible(element, formalCharge) ? { element, charge: formalCharge } : undefined;
+}
+
+/**
+ * What relabelling an existing atom with typed label text sets: its element text and formal charge.
+ * Text that is one element symbol with a nonzero charge (`nativeElementWithChargeLabel`: "Zn2+",
+ * "Zn+2", "Fe3+", "Cl-", "Na+", "N+", plain or superscript) sets that element and exactly that charge,
+ * so the atom is the one the same text makes as a free text box. Any other text keeps today's relabel:
+ * the label normalized as before (`normalizeNativeAtomElementLabel`: "n" is N, "Xx" and "OMe" stay as
+ * typed) and the charge the atom had when the edit began (`startCharge`), so "O" typed over an N+
+ * gives O+ as it always has, and a label draft that drops its charge again ("Zn2+" back to "Zn")
+ * returns to that starting charge rather than keep a charge no longer in the text.
+ */
+export function nativeRelabelElementAndCharge(
+  label: string,
+  startCharge: number
+): { element: string; formalCharge: number } {
+  const charged = nativeElementWithChargeLabel(label.trim());
+  return charged && charged.charge !== 0
+    ? { element: charged.element, formalCharge: charged.charge }
+    : { element: normalizeNativeAtomElementLabel(label), formalCharge: startCharge };
 }
 
 /** One-letter halogens, never split off a two-letter symbol to head a composite. */

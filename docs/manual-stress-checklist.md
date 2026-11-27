@@ -2200,3 +2200,19 @@ stays. `H2O`, `CO2`, `hello`, `Xx`, `zn`, `Zn 2+`, two lines, or bold/coloured t
 finished with Esc stays text. Open a saved document holding a text `Zn`, paste a text `Zn`, and
 import a CDXML with a `Zn` caption: none of them turns into an atom, even after opening it for
 editing and clicking away unchanged. Check on Windows and both macOS builds.
+
+## Relabelling an atom with an element and its charge (macOS and Windows, 1.2.3)
+
+Draw a short chain. With the Text tool, click its end carbon and type `Zn2+` key by key, then
+Enter: the atom becomes zinc with charge +2, the charge drawn as on any charged atom, and the
+inspector or a SMILES copy shows `[Zn+2]`, never an element named `Zn2+`. One Undo puts back the
+carbon with no charge; Redo brings the zinc back. Repeat with `Zn+2`, `Fe3+`, `Cl-`, `Na+`, and with
+`Zn²⁺` typed as superscript characters: the same element and charge each time, and the same atom the
+text gives typed in empty canvas. Relabel an N to `N+`: nitrogen with charge +1. Type `Zn2+` on a
+carbon and press Esc: the carbon and its zero charge come back, with nothing to undo. Type `Zn2+`,
+delete back to `Zn`, Enter: zinc with no charge. On an N+ (from `C[N+](C)(C)C`), type `O`: O keeps
+the +1, as before. `NH4+`, `OH-`, `Xx2+` and lower-case `zn2+` behave as they did before this change.
+Finish a Text-tool box reading `Zn2+` on an existing atom: that atom becomes Zn2+, and the box goes.
+A document saved before this change with an atom whose element reads `Zn2+` opens unchanged, and
+clicking that atom with the Text tool, then Esc or Enter with nothing typed, leaves it unchanged;
+typing `Zn2+` there makes it zinc with charge +2. Check on Windows and both macOS builds.

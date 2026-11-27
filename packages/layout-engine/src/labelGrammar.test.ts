@@ -14,6 +14,7 @@ import {
   nativeHoverAtomLabelCompletion,
   nativeLabelGroupAttachment,
   nativeLabelReadingDependsOnBondSide,
+  nativeRelabelElementAndCharge,
   nativeSingleHeavyElementLabelValence,
   parseCondensedLabelFormula
 } from "./index";
@@ -156,6 +157,32 @@ describe("an element symbol with a typed charge (nativeElementWithChargeLabel)",
       const reading = nativeAtomLabelReading(symbol);
       expect(nativeElementWithChargeLabel(symbol), symbol)
         .toEqual(reading.kind === "element" && reading.element === symbol ? { element: symbol, charge: 0 } : undefined);
+    }
+  });
+});
+
+describe("what relabelling an atom with typed text sets (nativeRelabelElementAndCharge)", () => {
+  it.each([
+    ["Zn2+", "Zn", 2], ["Zn+2", "Zn", 2], ["Fe3+", "Fe", 3], ["Cl-", "Cl", -1], ["Na+", "Na", 1],
+    ["N+", "N", 1], ["O-", "O", -1], ["Zn\u00B2\u207A", "Zn", 2], ["Cl\u2212", "Cl", -1], [" Zn2+ ", "Zn", 2]
+  ] as const)("relabels '%s' as %s with exactly charge %d, whatever the atom had", (label, element, charge) => {
+    for (const start of [0, 1, -2]) {
+      expect(nativeRelabelElementAndCharge(label, start)).toEqual({ element, formalCharge: charge });
+    }
+  });
+
+  it.each([
+    ["Zn", "Zn"], ["N", "N"], ["n", "N"], ["cl", "Cl"], ["Xx", "Xx"], ["Xx2+", "Xx2+"], ["OMe", "OMe"],
+    ["NH4+", "NH4+"], ["OH-", "OH-"], ["zn2+", "zn2+"], ["Zn++", "Zn++"], ["C5+", "C5+"], ["Zn2", "Zn2"]
+  ] as const)("keeps today's relabel for '%s' (%s) and the starting charge", (label, element) => {
+    expect(nativeRelabelElementAndCharge(label, 0)).toEqual({ element, formalCharge: 0 });
+    expect(nativeRelabelElementAndCharge(label, 1)).toEqual({ element, formalCharge: 1 });
+  });
+
+  it("reads every charged label the free text box reads, to the same element and charge", () => {
+    for (const label of ["Zn2+", "Zn+2", "Fe3+", "Cl-", "Na+", "N+", "H+", "H-", "O2-", "Zn\u00B2\u207A"]) {
+      const free = nativeElementWithChargeLabel(label)!;
+      expect(nativeRelabelElementAndCharge(label, 0), label).toEqual({ element: free.element, formalCharge: free.charge });
     }
   });
 });

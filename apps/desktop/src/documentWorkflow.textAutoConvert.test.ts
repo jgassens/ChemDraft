@@ -1,9 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { applyPatch, type ChemDraftDocument, type MoleculeObject, type TextSpan } from "@chemdraft/chem-core";
-import { atomDisplayLabel } from "@chemdraft/layout-engine";
+import { atomDisplayLabel, nativeElementWithChargeLabel } from "@chemdraft/layout-engine";
 import {
   canAutoConvertNativeTextObjectToAtom,
-  chargedTextObjectOnAtom,
   commitNativeAtomLabelTarget,
   convertNativeTextObjectToAtom,
   createPhase4Document,
@@ -135,23 +134,26 @@ describe("typed element symbols with a charge (owner report 1.2.3)", () => {
     expect(onlyAtom(convertNativeTextObjectToAtom(document, id)).atom).toMatchObject({ element: "Zn", formalCharge: 2 });
   });
 
-  it("keeps a charged symbol on an existing atom as text instead of relabelling that atom without its charge", () => {
+  it("relabels an existing atom under a charged symbol with that element and charge", () => {
     const base = insertNativeSingleBondMolecule(createPhase4Document("Charged on atom"), { x: 300, y: 300 });
     const molecule = base.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule")!;
     const document = insertNativeTextObject(base, molecule.atoms[0]!, "Zn2+");
     const id = document.selection.objectIds[0]!;
-    expect(chargedTextObjectOnAtom(document, id, molecule.atoms[0]!)).toBe(true);
-    expect(convertNativeTextObjectToAtom(document, id, { placementPoint: molecule.atoms[0]! })).toBe(document);
+    const converted = convertNativeTextObjectToAtom(document, id, { placementPoint: molecule.atoms[0]! });
+    const molecules = converted.pages[0].objects.filter((object): object is MoleculeObject => object.type === "molecule");
+    expect(converted.pages[0].objects.some(object => object.id === id)).toBe(false);
+    expect(molecules).toHaveLength(1);
+    expect(molecules[0]!.atoms).toHaveLength(molecule.atoms.length);
+    expect(molecules[0]!.atoms[0]).toMatchObject({ id: molecule.atoms[0]!.id, element: "Zn", formalCharge: 2, labelLiteral: true });
     // Away from every atom the same text is a new zinc atom of its own.
     const away = insertNativeTextObject(base, { x: 100, y: 100 }, "Zn2+");
     const awayId = away.selection.objectIds[0]!;
-    expect(chargedTextObjectOnAtom(away, awayId, { x: 100, y: 100 })).toBe(false);
-    const converted = convertNativeTextObjectToAtom(away, awayId, { placementPoint: { x: 100, y: 100 } });
-    expect(converted.pages[0].objects.find(object => object.id === molecule.id)).toEqual(molecule);
-    expect(converted.pages[0].objects.filter(object => object.type === "molecule")).toHaveLength(2);
+    const placed = convertNativeTextObjectToAtom(away, awayId, { placementPoint: { x: 100, y: 100 } });
+    expect(placed.pages[0].objects.find(object => object.id === molecule.id)).toEqual(molecule);
+    expect(placed.pages[0].objects.filter(object => object.type === "molecule")).toHaveLength(2);
   });
 
-  it.each(["O", "C", "N", "Zn", "Cl"])("gives '%s' the same atom whether typed as text or typed over an atom", text => {
+  it.each(["O", "C", "N", "Zn", "Cl", "Zn2+", "Zn+2", "Fe3+", "Cl-", "Na+", "N+", "Zn\u00B2\u207A"])("gives '%s' the same atom whether typed as text or typed over an atom", text => {
     const typed = insertNativeTextObject(createPhase4Document("Same atom"), { x: 300, y: 300 }, text);
     const fromText = onlyAtom(convertNativeTextObjectToAtom(typed, typed.selection.objectIds[0]!)).atom;
     const seed = insertNativeTextObject(createPhase4Document("Same atom"), { x: 300, y: 300 }, "Fe");
@@ -165,7 +167,8 @@ describe("typed element symbols with a charge (owner report 1.2.3)", () => {
     const { x: _x2, y: _y2, ...relabelFields } = fromRelabel;
     expect(textFields).toEqual(relabelFields);
     // A typed label is literal: no implicit hydrogens, and the label shows exactly the symbol ("O", not "H2O").
-    expect(atomDisplayLabel(fromText, [], undefined, [fromText])).toBe(text);
+    expect(fromText).toMatchObject({ element: nativeElementWithChargeLabel(text)!.element, formalCharge: nativeElementWithChargeLabel(text)!.charge });
+    if (fromText.formalCharge === 0) expect(atomDisplayLabel(fromText, [], undefined, [fromText])).toBe(text);
     expect(fromText.labelVisible === true).toBe(text === "C");
   });
 });

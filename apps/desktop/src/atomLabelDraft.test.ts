@@ -110,6 +110,26 @@ describe("atom-label draft rollback", () => {
     expectDerivedFromGraph(restored);
   });
 
+  it("cancelling a charged draft (Zn2+) restores the element and the charge exactly", () => {
+    const { document, before, state } = fixture();
+    const preview = draft(document, state, "Zn2+");
+    expect(molecule(preview).atoms[0]).toMatchObject({ element: "Zn", formalCharge: 2, labelLiteral: true });
+    expect(molecule(restoreAtomLabelDraft(preview, state))).toEqual(before);
+    // Several keys, the last with a different charge: still the original back.
+    const second = draft(preview, state, "Fe3+");
+    expect(molecule(second).atoms[0]).toMatchObject({ element: "Fe", formalCharge: 3 });
+    expect(molecule(restoreAtomLabelDraft(second, state))).toEqual(before);
+  });
+
+  it("cancelling a charged draft keeps a charge another edit set meanwhile", () => {
+    const { document, before, state } = fixture();
+    const preview = draft(document, state, "Zn2+");
+    const current = molecule(preview);
+    const edited = { ...current, atoms: current.atoms.map(atom => atom.id === state.atomId ? { ...atom, formalCharge: -1 } : atom) };
+    const restored = molecule(restoreAtomLabelDraft(replaceMolecule(preview, edited), state));
+    expect(restored.atoms[0]).toEqual({ ...before.atoms[0], formalCharge: -1 });
+  });
+
   it("does not adopt an external edit as draft cleanup when more keys follow it", () => {
     const { document, before, state } = fixture();
     let preview = draft(document, state, "O");

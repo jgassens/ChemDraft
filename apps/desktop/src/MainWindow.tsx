@@ -10,7 +10,7 @@ import { electronMarkInteractionFrames } from "./electronMarkInteraction";
 import { installPopoverEscapeRouting } from "./window-manager/popoverEscape";
 import { BracketLabelEditor, type BracketLabelEditorHandle } from "./BracketLabelEditor";
 import { createBracketCommands, selectedBracketPair, toggleBracketRepeatUnit, setBracketRepeatLabel, bracketRepeatUnitStatus, prepareCleanupRepeatUnits } from "./bracketCommands";
-import { bracketLabelPlan, bracketLabelContainsPoint, carriedElectronMarkSvgTransform, inverseTransformPointForObject, lonePairDragDirection, transformPointForObject } from "@chemdraft/layout-engine";
+import { bracketLabelPlan, bracketLabelContainsPoint, carriedElectronMarkSvgTransform, inverseTransformPointForObject, lonePairDragDirection, nativeRelabelElementAndCharge, transformPointForObject } from "@chemdraft/layout-engine";
 import { useCanvasHandwritingFont } from "./canvasHandwritingFont";
 import { nativeTemplateForToolCommand } from "./ringTemplates";
 import { ATOM_MAPS_REMOVED_STATUS, documentDrawingDefaults, stripSmilesAtomMaps } from "@chemdraft/document-workflow-core";
@@ -790,8 +790,6 @@ import {
   updateNativeTextObjectStyleRange,
   convertNativeTextObjectToAtom,
   canAutoConvertNativeTextObjectToAtom,
-  chargedTextObjectOnAtom,
-  nativeTextObjectElementWithCharge,
   atomChargeLabelSuffix,
   convertNativeTextObjectToAtomLabel,
   selectedTextToAtomLabelDisabledReason,
@@ -1605,6 +1603,11 @@ type AtomLabelEditState = AtomLabelDraftState & {
   initialElement: string;
   initialLiteral: boolean;
   /**
+   * The atom's formal charge before the edit. A draft typed with a charge ("Zn2+") sets it; a draft
+   * with none (typed, or with its charge deleted again) puts this one back.
+   */
+  initialFormalCharge: number;
+  /**
    * The label's recorded bond side before the edit. Each keystroke relabels the atom and so drops
    * it; cancelling puts it back with the label, so a cancelled edit changes nothing, even on a
    * molecule turned round since the label was written.
@@ -1646,12 +1649,16 @@ function documentHasAtomLabelDraft(document: ChemDraftDocument, state: AtomLabel
   const object = findDocumentObject(document, state.objectId);
   const atom = object?.type === "molecule" ? object.atoms.find(a => a.id === state.atomId) : undefined;
   // An isotope refusal keeps the original atom as the preview while the editor still owns it.
-  return (atom?.labelLiteral === true && (!state.draft.trim() || atom.element === normalizeNativeAtomElementLabel(state.draft))) ||
+  return (atom?.labelLiteral === true && (!state.draft.trim() || atom.element === normalizeNativeAtomElementLabel(state.draft) ||
+    atom.element === nativeRelabelElementAndCharge(state.draft, state.initialFormalCharge).element)) ||
     (atom?.isotope !== undefined && documentOwnsAtomLabelDraft(document, state));
 }
 
 function atomLabelEditStart(state: AtomLabelEditState) {
-  return { element: state.initialElement, literal: state.initialLiteral, labelBondSide: state.initialLabelBondSide };
+  return {
+    element: state.initialElement, literal: state.initialLiteral, labelBondSide: state.initialLabelBondSide,
+    formalCharge: state.initialFormalCharge
+  };
 }
 
 function atomLabelEditKeepsStartingText(state: AtomLabelEditState): boolean {
@@ -7637,6 +7644,7 @@ export function MainWindow({
         documentSaveRevisionsRef.current.get(activeDocumentTabIdRef.current) ?? 0,
       initialElement: continuing?.initialElement ?? atom.element,
       initialLiteral: continuing ? continuing.initialLiteral : atom.labelLiteral === true,
+      initialFormalCharge: continuing ? continuing.initialFormalCharge : atom.formalCharge,
       ...(continuing
         ? (continuing.initialLabelBondSide ? { initialLabelBondSide: continuing.initialLabelBondSide } : {})
         : (atom.labelBondSide ? { initialLabelBondSide: atom.labelBondSide } : {})),
@@ -7675,7 +7683,7 @@ export function MainWindow({
         kind: "atom",
         atomId: state.atomId,
         distanceToPointer: 0
-      }, draft, { element: state.initialElement, literal: state.initialLiteral, labelBondSide: state.initialLabelBondSide });
+      }, draft, atomLabelEditStart(state));
       const molecule = findDocumentObject(current, state.objectId);
       const preview = findDocumentObject(next, state.objectId);
       if (molecule?.type === "molecule" && preview?.type === "molecule") {
@@ -8787,15 +8795,9 @@ export function MainWindow({
     try {
       const currentDocument = documentRef.current;
       if (!canAutoConvertNativeTextObjectToAtom(currentDocument, objectId)) return;
-      const textObject = findDocumentObject(currentDocument, objectId);
-      const charged = textObject?.type === "text" && (nativeTextObjectElementWithCharge(textObject)?.formalCharge ?? 0) !== 0;
-      // A charged symbol ("Zn2+") is an atom of its own: relabelling an atom cannot carry its charge.
-      if (charged && chargedTextObjectOnAtom(currentDocument, objectId, placement)) {
-        setStatus("Text kept: a charged element typed on an atom stays text; edit that atom's charge instead");
-        return;
-      }
-      const labelResult = charged ? undefined : convertNativeTextObjectToAtomLabel(currentDocument, objectId, undefined, placement);
-      if (labelResult?.target) {
+      // On an atom the text relabels it; a charged symbol ("Zn2+") sets its element and charge.
+      const labelResult = convertNativeTextObjectToAtomLabel(currentDocument, objectId, undefined, placement);
+      if (labelResult.target) {
         if (labelResult.document !== currentDocument) {
           commitDocumentChange(
             labelResult.document,
@@ -8812,7 +8814,7 @@ export function MainWindow({
         if (labelResult.message) setStatus(labelResult.message);
         return;
       }
-      // The paths above already performed the atom hit-test. Only their no-target paths reach
+      // The path above already performed the atom hit-test. Only its no-target path reaches
       // the open-space element conversion, so do not repeat that hit-test here.
       const converted = convertNativeTextObjectToAtom(currentDocument, objectId, { skipAtomLabel: true });
       if (converted !== currentDocument) {

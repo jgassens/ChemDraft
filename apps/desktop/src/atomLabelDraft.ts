@@ -27,9 +27,17 @@ export function createAtomLabelDraftRollback(molecule: MoleculeObject): AtomLabe
   return { preview: molecule, changedAtomIds: new Set(), clearedAtomIds: new Set() };
 }
 
+/**
+ * The label fields on the edited atom: a change to any of them by another writer supersedes the
+ * draft. The charge is written by a draft too ("Zn2+" sets +2), but an outside charge edit during
+ * the draft never superseded it and still does not; cancelling keeps such an edit
+ * (`restoreAtomLabelFields`).
+ */
 const atomLabelFields = new Set<string>([
   "element", "isotope", "labelVisible", "labelLiteral", "labelBondSide", "warningSuppressed", "hydrogenCount"
 ]);
+/** Every field a draft may write on its atom: the label fields and the formal charge. */
+const atomLabelDraftFields = new Set<string>([...atomLabelFields, "formalCharge"]);
 
 function sameOwnFields(first: object, second: object, except: ReadonlySet<string> = new Set()): boolean {
   const keys = Object.keys(first).filter(key => !except.has(key));
@@ -90,7 +98,7 @@ export function atomLabelDraftDocumentUnchanged(
         object.atoms.every((atom, index) => {
           const beforeAtom = before.atoms[index]!;
           return atom === beforeAtom || (atom.id === target.atomId && beforeAtom.id === target.atomId &&
-            sameOwnFields(atom, beforeAtom, atomLabelFields));
+            sameOwnFields(atom, beforeAtom, atomLabelDraftFields));
         });
     });
   });
@@ -148,8 +156,12 @@ function moleculeDraftPayload(molecule: MoleculeObject): string {
     chemistry: undefined, x: undefined, y: undefined, width: undefined, height: undefined });
 }
 
-/** Fields written by nativeAtomWithElement and relabel's import-H cleanup. Charge is unchanged. */
-function restoreAtomLabelFields(atom: MoleculeAtom, before: MoleculeAtom): MoleculeAtom {
+/**
+ * Fields written by nativeAtomWithElement and relabel's import-H cleanup, and the formal charge when
+ * the draft wrote it (a typed "Zn2+" sets +2): cancelling puts back the element and the charge alike.
+ * A charge that differs from the draft's own preview was set by another edit and is kept.
+ */
+function restoreAtomLabelFields(atom: MoleculeAtom, before: MoleculeAtom, draftOwnsCharge: boolean): MoleculeAtom {
   const restored = { ...atom };
   const fields = [
     "element", "isotope", "labelVisible", "labelLiteral", "labelBondSide", "warningSuppressed", "hydrogenCount"
@@ -158,6 +170,7 @@ function restoreAtomLabelFields(atom: MoleculeAtom, before: MoleculeAtom): Molec
     if (Object.hasOwn(before, key)) Object.assign(restored, { [key]: before[key] });
     else delete restored[key];
   }
+  if (draftOwnsCharge) restored.formalCharge = before.formalCharge;
   // Keep the original record (including optional-field ordering) for an exact untouched rollback.
   const keys = Object.keys(restored) as Array<keyof MoleculeAtom>;
   return keys.length === Object.keys(before).length &&
@@ -178,7 +191,10 @@ export function restoreAtomLabelDraft(document: ChemDraftDocument, state: AtomLa
       const currentData = atomData(object);
       const previewData = atomData(rollback.preview);
       const atoms = object.atoms.map(atom => {
-        if (atom.id === state.atomId) return restoreAtomLabelFields(atom, rollback.supersededBefore?.atom ?? state.draftBeforeAtom);
+        if (atom.id === state.atomId) {
+          const draftOwnsCharge = rollback.preview.atoms.find(a => a.id === state.atomId)?.formalCharge === atom.formalCharge;
+          return restoreAtomLabelFields(atom, rollback.supersededBefore?.atom ?? state.draftBeforeAtom, draftOwnsCharge);
+        }
         // Relabel patches can drop orphaned import hints on other atoms. Restore those atoms only
         // if neither an external atom/style edit nor an incident-bond edit superseded the preview.
         return rollback.clearedAtomIds.has(atom.id) && !rollback.changedAtomIds.has(atom.id) &&

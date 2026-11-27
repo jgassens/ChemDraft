@@ -164,6 +164,7 @@ export {
   type NativeLabelGroup,
   type NativeLabelGroupAttachment,
   nativeLabelReadingDependsOnBondSide,
+  nativeRelabelElementAndCharge,
   nativeSingleHeavyElementLabelValence,
   parseCondensedLabelFormula
 } from "./labelGrammar";

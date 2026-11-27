@@ -237,6 +237,7 @@ import {
   nativeBondOrderResolution,
   nativeElementWithChargeLabel,
   nativeGroupLabelDisplay,
+  nativeRelabelElementAndCharge,
   representativeMoleculeBondLength,
   resolvePageAnchorPoint
 } from "@chemdraft/layout-engine";
@@ -4668,6 +4669,11 @@ function nativeTextObjectToAtomLabelDisabledReason(
   const target = candidate.target;
   const atom = target.kind === "atom" ? candidate.molecule.atoms.find(a => a.id === target.atomId) : undefined;
   const label = normalizeNativeAtomElementLabel(candidate.text.text);
+  // A charged element ("Zn2+") always relabels its atom (`commitNativeAtomLabelTarget`).
+  const charged = nativeElementWithChargeLabel(candidate.text.text.trim());
+  if (atom && charged && charged.charge !== 0) {
+    return atomLabelIsotopeRefusal(atom, charged.element, candidate.molecule, true);
+  }
   if (atom && labelOnBondedAtom(label, atom, candidate.molecule).kind !== "substituent") {
     return atomLabelIsotopeRefusal(atom, label, candidate.molecule, true);
   }
@@ -4771,26 +4777,11 @@ export function canAutoConvertNativeTextObjectToAtom(document: ChemDraftDocument
 }
 
 /**
- * Whether a finished text box is a charged element symbol ("Zn2+") sitting on an existing atom.
- * Relabelling cannot carry a charge, so such text is kept as text rather than relabel that atom
- * with the charge dropped or become a second atom on top of it (AGENTS.md §7).
- */
-export function chargedTextObjectOnAtom(
-  document: ChemDraftDocument,
-  objectId: string,
-  placementPoint?: PagePoint
-): boolean {
-  const object = firstPage(document).objects.find((candidate) => candidate.id === objectId);
-  if (object?.type !== "text" || !nativeTextObjectElementWithCharge(object)?.formalCharge) return false;
-  return nativeTextObjectToAtomLabelTarget(document, objectId, nativeAtomHitRadiusPx, placementPoint)?.target !== undefined;
-}
-
-/**
- * Text anchored on an atom uses the literal label editor's path. In open space, an exact element
- * symbol, optionally charged (`nativeTextObjectElementWithCharge`), becomes a one-atom molecule
- * centered on the edited text frame, with that element and formal charge. Other text stays text. A
- * bare covalent-table element is valence-flagged until it gains enough bonds. A charged symbol never
- * relabels an atom: on one it stays text (`chargedTextObjectOnAtom`).
+ * Text anchored on an atom uses the literal label editor's path, which relabels that atom; a charged
+ * symbol ("Zn2+") sets the atom's element and charge there, as the label editor does. In open space,
+ * an exact element symbol, optionally charged (`nativeTextObjectElementWithCharge`), becomes a
+ * one-atom molecule centered on the edited text frame, with that element and formal charge. Other
+ * text stays text. A bare covalent-table element is valence-flagged until it gains enough bonds.
  */
 export function convertNativeTextObjectToAtom(
   document: ChemDraftDocument,
@@ -4800,16 +4791,13 @@ export function convertNativeTextObjectToAtom(
   if (!canAutoConvertNativeTextObjectToAtom(document, objectId)) {
     return document;
   }
-  // Callers that skip the label path have already performed this hit-test themselves.
-  if (!options.skipAtomLabel && chargedTextObjectOnAtom(document, objectId, options.placementPoint)) {
-    return document;
-  }
   const page = firstPage(document);
   const object = page.objects.find((candidate): candidate is TextObject =>
     candidate.id === objectId && candidate.type === "text"
   );
   const typedAtom = object ? nativeTextObjectElementWithCharge(object) : undefined;
-  if (!options.skipAtomLabel && !typedAtom?.formalCharge) {
+  // Callers that skip the label path have already performed this hit-test themselves.
+  if (!options.skipAtomLabel) {
     const labelResult = convertNativeTextObjectToAtomLabel(document, objectId, undefined, options.placementPoint);
     if (labelResult.target) {
       return labelResult.document;
@@ -10312,6 +10300,12 @@ export function applyNativeAtomElementTarget(
      * still the label's one bonded atom (`withNativeLabelBondSides`).
      */
     labelBondSide?: MoleculeAtom["labelBondSide"];
+    /**
+     * The charge a label with no charge of its own gives the atom: a label edit's starting charge,
+     * so a draft that typed a charge and then deleted it ("Zn2+" back to "Zn") puts that charge
+     * back. Default: the atom's present charge, kept as a relabel always kept it.
+     */
+    formalCharge?: number;
   } = {}
 ): ChemDraftDocument {
   if (target.kind !== "atom") {
@@ -10327,7 +10321,10 @@ export function applyNativeAtomElementTarget(
   }
 
   const atom = molecule.atoms.find((candidate) => candidate.id === target.atomId);
-  const normalizedElement = normalizeNativeAtomElementLabel(element);
+  // A typed element with its charge ("Zn2+", "N+") sets that element and exactly that charge, the
+  // atom a free text box of the same text becomes; any other text keeps the charge (AGENTS.md §7).
+  const { element: normalizedElement, formalCharge } =
+    nativeRelabelElementAndCharge(element, options.formalCharge ?? atom?.formalCharge ?? 0);
   const labelVisible = normalizedElement === "C";
   // Only the text tool passes literal: a typed label means exactly what it says. A hotkey
   // relabel omits it and thereby CLEARS the flag — pressing an element key over any atom
@@ -10341,6 +10338,7 @@ export function applyNativeAtomElementTarget(
   const restoredSide = options.labelBondSide;
   if (
     atom.element === normalizedElement &&
+    atom.formalCharge === formalCharge &&
     (atom.labelVisible === true) === labelVisible &&
     (atom.labelLiteral === true) === literal &&
     (restoredSide === undefined || sameLabelBondSide(atom.labelBondSide, restoredSide))
@@ -10350,7 +10348,7 @@ export function applyNativeAtomElementTarget(
 
   const atoms = molecule.atoms.map((candidate) => {
     if (candidate.id !== target.atomId) return candidate;
-    const relabelled = nativeAtomWithElement(candidate, normalizedElement, labelVisible, literal);
+    const relabelled = { ...nativeAtomWithElement(candidate, normalizedElement, labelVisible, literal), formalCharge };
     return restoredSide ? { ...relabelled, labelBondSide: restoredSide } : relabelled;
   });
   const nextMolecule = refreshNativeSingleBondGraph(molecule, atoms, molecule.bonds);
@@ -10370,11 +10368,17 @@ function sameLabelBondSide(
   return first?.side === second?.side && first?.atomId === second?.atomId;
 }
 
-/** A label-edit session's starting label: its text, literal flag and recorded bond side. */
+/** A label-edit session's starting label: its text, literal flag, recorded bond side and charge. */
 export interface NativeAtomLabelEditStart {
   element: string;
   literal: boolean;
   labelBondSide?: MoleculeAtom["labelBondSide"];
+  /**
+   * The atom's formal charge when the session began. A draft with no charge of its own writes it
+   * back, so typing a charge ("Zn2+") and deleting it again leaves the charge the atom started with.
+   * Left out, a draft keeps the atom's present charge.
+   */
+  formalCharge?: number;
 }
 
 /**
@@ -10400,13 +10404,15 @@ export function applyNativeAtomLabelDraft(
   draft: string,
   start: NativeAtomLabelEditStart
 ): ChemDraftDocument {
+  const startCharge = start.formalCharge !== undefined ? { formalCharge: start.formalCharge } : {};
   if (normalizeNativeAtomElementLabel(draft) === start.element && atomLabelEditKeepsStartingLabel(start)) {
     return applyNativeAtomElementTarget(document, target, start.element, {
       literal: start.literal,
-      ...(start.labelBondSide ? { labelBondSide: start.labelBondSide } : {})
+      ...(start.labelBondSide ? { labelBondSide: start.labelBondSide } : {}),
+      ...startCharge
     });
   }
-  return applyNativeAtomElementTarget(document, target, draft, { literal: true });
+  return applyNativeAtomElementTarget(document, target, draft, { literal: true, ...startCharge });
 }
 
 /**
@@ -10432,7 +10438,8 @@ export function finishNativeAtomLabelEdit(
   }
   return applyNativeAtomElementTarget(document, target, initial.element, {
     literal: initial.literal,
-    ...(initial.labelBondSide ? { labelBondSide: initial.labelBondSide } : {})
+    ...(initial.labelBondSide ? { labelBondSide: initial.labelBondSide } : {}),
+    ...(initial.formalCharge !== undefined ? { formalCharge: initial.formalCharge } : {})
   });
 }
 
@@ -10450,10 +10457,16 @@ export function commitNativeAtomLabelTarget(
   const beforeAtom = options.beforeAtom ?? atom;
   const beforeMolecule = options.beforeMolecule ?? molecule;
   const normalized = normalizeNativeAtomElementLabel(label);
-  if (options.literal === true && typedLabelIsDrawnLabel(normalized, beforeAtom, beforeMolecule)) return { document, target };
-  const decision = labelOnBondedAtom(normalized, beforeAtom, beforeMolecule, options.replaceElement);
+  // A typed element with its charge ("Zn2+", "Cl-", "N+") is that one atom, charge included: it
+  // relabels this atom with both (`applyNativeAtomElementTarget`) and is never placed as a neutral
+  // substituent, nor read as the drawn label typed back.
+  const charged = nativeElementWithChargeLabel(label.trim());
+  const chargedElement = charged && charged.charge !== 0 ? charged.element : undefined;
+  if (options.literal === true && !chargedElement && typedLabelIsDrawnLabel(normalized, beforeAtom, beforeMolecule)) return { document, target };
+  const decision: LabelOnBondedAtomDecision | undefined = chargedElement
+    ? undefined : labelOnBondedAtom(normalized, beforeAtom, beforeMolecule, options.replaceElement);
   const relabel = (reason?: string) => {
-    const refusal = atomLabelIsotopeRefusal(beforeAtom, normalized, beforeMolecule, options.literal === true);
+    const refusal = atomLabelIsotopeRefusal(beforeAtom, chargedElement ?? normalized, beforeMolecule, options.literal === true);
     if (refusal) return { document, target, message: refusal, refusal };
     const relabeled = applyNativeAtomElementTarget(document, target, label, options);
     const ringRefusal = typedLabelRingRefusal(normalized, relabeled, document, target, beforeAtom, beforeMolecule, options);
@@ -10463,6 +10476,7 @@ export function commitNativeAtomLabelTarget(
       ...(reason ? { message: `Relabeled ${normalized}: ${reason}` } : {})
     };
   };
+  if (!decision) return relabel();
   if (decision.kind !== "substituent") return relabel(decision.reason === "source-valence"
     ? `the original ${beforeAtom.element} atom cannot take another bond` : undefined);
   const atoms = molecule.atoms.map(a => a.id === atom.id ? { ...beforeAtom, x: a.x, y: a.y } : a);
