@@ -628,15 +628,20 @@ export function previewAcceptedPluginProposal(
 /**
  * Whether `molecule`, whose atom `stated.id` lost the count `stated.hydrogenCount` the proposal stated
  * (the patch engine drops the count of an atom whose bonds or statement change), still has exactly the
- * chemistry that count states: the same formula and the same graph SMILES (written in atom order, so a
- * hydrogen moved to another atom differs) with the count put back. Then the atom derives the stated
- * count itself and the accept loses nothing; otherwise the host refuses it (AGENTS.md section 7). A
- * molecule whose formula or SMILES cannot be derived (an unknown bond) never passes.
+ * chemistry that count states: the same formula, the same unpaired electrons and the same graph SMILES
+ * (written in atom order, so a hydrogen moved to another atom differs) with the count put back. Then
+ * the atom derives the stated count itself and the accept loses nothing; otherwise the host refuses it
+ * (AGENTS.md section 7). The radical count matters because a stated count also decides chem-core's
+ * implied radical (`atomImpliedRadicalCount`): a lone H, D or T stating no count is H•, D• or T•, and
+ * stating 0 is the plain atom, with the same formula and graph SMILES either way. A molecule whose
+ * formula or SMILES cannot be derived (an unknown bond) never passes.
  */
 export function droppedHydrogenCountKeepsChemistry(molecule: MoleculeObject, stated: MoleculeAtom): boolean {
   const asStated = molecule.atoms.map(atom => atom.id === stated.id ? { ...atom, hydrogenCount: stated.hydrogenCount } : atom);
-  const committedFormula = nativeSingleBondGraphMetadata(molecule.atoms, molecule.bonds).formula;
-  if (committedFormula === undefined || committedFormula !== nativeSingleBondGraphMetadata(asStated, molecule.bonds).formula) return false;
+  const committed = nativeSingleBondGraphMetadata(molecule.atoms, molecule.bonds);
+  const statedMetadata = nativeSingleBondGraphMetadata(asStated, molecule.bonds);
+  if (committed.formula === undefined || committed.formula !== statedMetadata.formula) return false;
+  if (committed.radicalCount !== statedMetadata.radicalCount) return false;
   const committedSmiles = tryNativeSingleBondGraphSmiles(molecule.atoms, molecule.bonds);
   const statedSmiles = tryNativeSingleBondGraphSmiles(asStated, molecule.bonds);
   return "smiles" in committedSmiles && "smiles" in statedSmiles && committedSmiles.smiles === statedSmiles.smiles;

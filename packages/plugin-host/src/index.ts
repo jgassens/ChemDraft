@@ -8,7 +8,7 @@ import type { ApplyPatchOptions, DocumentObject, DocumentPatch, DocumentPage, Mo
 import { duplicateIdRefusalMessage, insertionPins, objectInWriteScope, objectIsInWriteScope, objectLocations, pinnedObjectMissingMessage,
   pinObject, pinSelectionPages, resolvePinnedObject, resolvePinnedObjects, resolvePinnedPages, scopedObjectRefs, withoutPins, withPins,
   type PageObjectRef, type PagePin, type PinnedObjectPages, type PluginWriteScopePages } from "./pageObjects";
-import { applyPatch, atomicNumberForElementSymbol, atomIgnoresStatedHydrogenCount, atomWithIgnoredHydrogenCount, hasObjectIdentity, ignoredHydrogenCountAtomKind,
+import { applyPatch, atomicNumberForElementSymbol, atomIgnoresStatedHydrogenCount, atomWithIgnoredHydrogenCount, clearChangedAtomHydrogenHints, hasObjectIdentity, ignoredHydrogenCountAtomKind,
   objectIdentity, planOrphanedRepeatUnitCleanup, pruneReactionObjectReferences, removeOrphanedRepeatUnitBrackets, sameBracketIdentity } from "@chemdraft/chem-core";
 // Bundle the grammar from source in the SDK without a published layout-engine dependency.
 import { parseCondensedLabelFormula } from "../../layout-engine/src/labelGrammar";
@@ -494,8 +494,10 @@ function ignoredHydrogenCountRefusal(moleculeId: string, atom: MoleculeAtom, bon
 }
 
 /** Per molecule, by host identity (chem-core objectIdentity.ts), the atoms given a hydrogen count by
- * the last op in the patch that wrote that molecule's atoms (an addObject of it, or an updateObject
- * supplying `atoms`), as that op wrote them, and the molecule's id for a refusal. Not by id: a
+ * any op in the patch that wrote that molecule's atoms (an addObject of it, or an updateObject
+ * supplying `atoms`), as the latest op stating each count wrote it, for every atom the molecule's
+ * last atoms write still has, and the molecule's id for a refusal. A later op omitting a count keeps
+ * the earlier request; one leaving the atom out drops it. Not by id: a
  * document may repeat an id, and a request must only ever apply to the object the op actually
  * reached. A later removeObject that reaches the molecule forgets it. */
 type RequestedHydrogenCounts = Map<ObjectIdentity, { moleculeId: string; atoms: Map<string, MoleculeAtom> }>;
@@ -529,10 +531,27 @@ function requestedHydrogenCountRecorder(beforeObjectWrite?: ApplyPatchOptions["b
       // Read before chem-core replaces an update's atoms (clearChangedAtomHydrogenHints), after this hook.
       const writesAtoms = previous ? current?.op === "updateObject" && "atoms" in current.changes : current?.op === "addObject";
       if (writesAtoms && next.type === "molecule") {
-        const atoms = new Map<string, MoleculeAtom>();
-        for (const atom of next.atoms) if (typeof atom.hydrogenCount === "number") atoms.set(atom.id, atom);
         // Never mint an identity on `next` of an update: it must inherit `previous`'s.
-        counts.set(objectIdentity(previous ?? next), { moleculeId: next.id, atoms });
+        const identity = objectIdentity(previous ?? next);
+        // Requests accumulate across the whole batch: an op that rewrites the atoms without restating
+        // a count keeps the earlier request (else a second op would launder a count the first dropped),
+        // a restated count replaces that atom's request, and an atom the op leaves out is deleted, so
+        // nothing of it is committed to keep a count.
+        const atoms = new Map(counts.get(identity)?.atoms);
+        const written = new Set(next.atoms.map(atom => atom.id));
+        for (const atomId of atoms.keys()) if (!written.has(atomId)) atoms.delete(atomId);
+        // An op that changes an atom's chemical state without restating a count invalidates the earlier
+        // request, as chem-core invalidates a stated count on such a change: ask chem-core's own rule
+        // (`clearChangedAtomHydrogenHints`) with the requested atom as the previous one. Moves and bond
+        // edits keep it.
+        for (const atom of next.atoms) {
+          const request = atoms.get(atom.id);
+          if (!request || typeof atom.hydrogenCount === "number") continue;
+          const [probe] = clearChangedAtomHydrogenHints({ atoms: [request], bonds: [] }, [{ ...atom, hydrogenCount: request.hydrogenCount }], []);
+          if (probe?.hydrogenCount === undefined) atoms.delete(atom.id);
+        }
+        for (const atom of next.atoms) if (typeof atom.hydrogenCount === "number") atoms.set(atom.id, atom);
+        counts.set(identity, { moleculeId: next.id, atoms });
       }
       beforeObjectWrite?.(pageId, previous, next);
     }

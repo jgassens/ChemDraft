@@ -15,6 +15,7 @@ import { describe, expect, it, vi } from "vitest";
 import { commitRequestPatch } from "./requestWrites";
 import pluginHostPackage from "../package.json";
 import {
+  assertPluginPatchWriteScope,
   CommandRegistry,
   CommandRegistryError,
   PluginHost,
@@ -1143,6 +1144,52 @@ describe("PluginHost", () => {
     expect(check).toHaveBeenCalledWith(expect.objectContaining({ id: "m" }), expect.objectContaining({ id: "a1", hydrogenCount: 3 }));
     const written = updated.pages[0]!.objects[0];
     expect(written?.type === "molecule" && written.bonds.map(bond => bond.id)).toEqual(["b2"]);
+  });
+
+  // The counts a write states are requests the whole batch must keep, on both write paths. A later op that writes
+  // the same molecule's atoms without restating a count keeps the earlier request; it used to replace the record,
+  // so op 1 (a2 states 0, bond redrawn, count dropped: refused alone) passed once op 2 rewrote the atoms, and
+  // ethane (C2H6) was committed where C2H3 was stated.
+  it("keeps a stated hydrogen count requested across a whole batch on both write paths", () => {
+    const atom = (id: string, x: number, hydrogenCount?: number) =>
+      ({ id, element: "C", x, y: 120, formalCharge: 0, ...(hydrogenCount === undefined ? {} : { hydrogenCount }) });
+    const ethane: MoleculeObject = { ...moleculeObject("m"), structure: "", atoms: [atom("a1", 100), atom("a2", 130)],
+      bonds: [{ id: "b1", fromAtomId: "a1", toAtomId: "a2", order: "single" }] };
+    const base = createEmptyDocument({ now: timestamp });
+    const document = applyPatch(base, { op: "addObject", pageId: base.pages[0]!.id, object: ethane }, { now: timestamp });
+    const redraw = { op: "updateObject" as const, objectId: "m", changes: { atoms: [atom("a1", 100), atom("a2", 130, 0)],
+      bonds: [{ id: "b2", fromAtomId: "a1", toAtomId: "a2", order: "single" as const }] } };
+    const batches = {
+      omitted: [redraw, { op: "updateObject" as const, objectId: "m", changes: { atoms: [atom("a1", 101), atom("a2", 131)] } }],
+      restated: [redraw, { op: "updateObject" as const, objectId: "m", changes: { atoms: [atom("a1", 100), atom("a2", 130, 0)] } }],
+      deleted: [redraw, { op: "updateObject" as const, objectId: "m", changes: { atoms: [atom("a1", 100)], bonds: [] } }]
+    };
+    const host = new PluginHost({ now: () => timestamp });
+    host.registerPlugin({ id: "org.chemdraft.patch.demo", name: "Patch Demo", version: "0.0.1", apiVersion: "^1.0.0",
+      entry: "dist/plugin.js", permissions: ["document.proposePatch"] });
+    const refusal = expect.objectContaining({ reason: "hydrogen_count_unrepresentable",
+      details: { moleculeId: "m", atomId: "a2", element: "C", hydrogenCount: 0 } });
+    const applied = (patches: (typeof batches)[keyof typeof batches]) =>
+      assertPluginPatchWriteScope(document,
+        ProposedDocumentPatchSchema.parse({ reason: "stated counts", patch: { op: "batch", patches } }), ["m"]);
+    const accepted = (patches: (typeof batches)[keyof typeof batches]) => {
+      const queued = host.proposePatch("org.chemdraft.patch.demo", { reason: "stated counts", patch: { op: "batch", patches } });
+      try {
+        return host.acceptProposedPatch(queued.id, document, { now: timestamp });
+      } finally {
+        if (host.listProposedPatches("pending").some(pending => pending.id === queued.id)) host.rejectProposedPatch(queued.id);
+      }
+    };
+    const a2 = (written: ReturnType<typeof applied>) => {
+      const molecule = written.pages[0]!.objects[0];
+      return molecule?.type === "molecule" ? molecule.atoms.find(candidate => candidate.id === "a2") : undefined;
+    };
+    for (const write of [applied, accepted]) {
+      expect(() => write(batches.omitted)).toThrow(refusal);
+      // A later op restating the count replaces only that atom's request; one deleting the atom drops it.
+      expect(a2(write(batches.restated))?.hydrogenCount).toBe(0);
+      expect(a2(write(batches.deleted))).toBeUndefined();
+    }
   });
 
   // A hostile plugin can hand the host a self-referencing proposal: the patch interior is

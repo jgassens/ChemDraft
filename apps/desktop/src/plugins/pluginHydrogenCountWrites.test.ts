@@ -1,11 +1,13 @@
 import {
   applyPatch, createEmptyDocument, type ChemDraftDocument, type DocumentPatch, type MoleculeAtom, type MoleculeBond, type MoleculeObject
 } from "@chemdraft/chem-core";
-import { nativeSingleBondGraphMetadata } from "@chemdraft/document-workflow-core";
+import { nativeSingleBondGraphMetadata, tryNativeSingleBondGraphSmiles } from "@chemdraft/document-workflow-core";
 import { PluginHost, rebasePluginPatch } from "@chemdraft/plugin-host";
 import { describe, expect, it } from "vitest";
 import { normalizeCommittedDocument } from "../documentWorkflow";
-import { applyPluginDocumentPatch, previewAcceptedPluginProposal, refreshPluginPatchChemistry } from "./applyPluginDocumentPatch";
+import {
+  applyPluginDocumentPatch, droppedHydrogenCountKeepsChemistry, previewAcceptedPluginProposal, refreshPluginPatchChemistry
+} from "./applyPluginDocumentPatch";
 
 // Stated hydrogen counts through the two ways a plugin's chemistry reaches a document: a plugin's own
 // documents.applyPatch, and the user accepting its documents.proposePatch proposal. Both run here as the
@@ -41,6 +43,11 @@ function committedMolecule(document: ChemDraftDocument, id: string): MoleculeObj
 }
 /** The formula the canvas, export and inspector read from the committed graph. */
 const formulaOf = (object: MoleculeObject) => nativeSingleBondGraphMetadata(object.atoms, object.bonds).formula;
+/** The graph SMILES the app writes for the committed molecule (document-workflow-core, atom order). */
+const smilesOf = (object: MoleculeObject) => {
+  const written = tryNativeSingleBondGraphSmiles(object.atoms, object.bonds);
+  return "smiles" in written ? written.smiles : undefined;
+};
 const countOf = (object: MoleculeObject, atomId: string) => object.atoms.find(candidate => candidate.id === atomId)?.hydrogenCount;
 
 type Outcome = { committed: ChemDraftDocument; refusal?: undefined; pending?: number } |
@@ -255,5 +262,142 @@ describe.each([
     const written = committedMolecule(outcome.committed!, "m3");
     expect({ formula: formulaOf(written), hydrogenCount: countOf(written, "o"), bondId: written.bonds[0]?.id })
       .toEqual({ formula: "CH4O", hydrogenCount: undefined, bondId: "b2" });
+  });
+});
+
+// A stated count is a request the whole batch must keep. The host records, per molecule, the counts each
+// atoms-writing op asked for; it used to replace that record on every such op, so a later op that rewrote the
+// atoms without restating the count erased the first op's request and the dropped count went unchecked.
+describe.each([
+  ["documents.applyPatch", pluginApplyPatch],
+  ["proposal acceptance", acceptedProposal]
+] as const)("a batch stating a hydrogen count on %s", (path, write) => {
+  // Op 1: a2 states 0 H (C2H3 stated) and its bond is redrawn, so the patch engine drops the count. Alone it is refused.
+  const stateZeroAndRedraw: DocumentPatch = { op: "updateObject", objectId: "m", changes: {
+    atoms: [atom("a1", "C", 100), atom("a2", "C", 130, { hydrogenCount: 0 })], bonds: [bond("b2", "a1", "a2")] } };
+  // Op 2: the atoms written again, a2 omitting hydrogenCount (a plugin re-sending positions, say).
+  const rewriteAtoms: DocumentPatch = { op: "updateObject", objectId: "m", changes: {
+    atoms: [atom("a1", "C", 101), atom("a2", "C", 131)] } };
+
+  it("refuses the first op alone (C2H6 would be committed where C2H3 was stated)", async () => {
+    const outcome = await write(ethane(), stateZeroAndRedraw, ["m"]);
+    expect(outcome.refusal).toMatchObject({ reason: "hydrogen_count_unrepresentable",
+      details: { moleculeId: "m", atomId: "a2", element: "C", hydrogenCount: 0 } });
+    if (path === "proposal acceptance") expect(outcome.pending).toBe(1);
+  });
+
+  it("BUG: a later atoms update omitting the count no longer launders it: the batch is refused, nothing committed", async () => {
+    const before = ethane();
+    expect({ formula: formulaOf(committedMolecule(before, "m")), smiles: smilesOf(committedMolecule(before, "m")) })
+      .toEqual({ formula: "C2H6", smiles: "CC" });
+    const outcome = await write(before, { op: "batch", patches: [stateZeroAndRedraw, rewriteAtoms] }, ["m"]);
+    expect(outcome.refusal).toMatchObject({ reason: "hydrogen_count_unrepresentable",
+      details: { moleculeId: "m", atomId: "a2", element: "C", hydrogenCount: 0 } });
+    if (path === "proposal acceptance") expect(outcome.pending).toBe(1);
+  });
+
+  it("guard: a later op restating the count replaces only that atom's request (0 then a kept 0 commits C2H3)", async () => {
+    // Op 2 states a2's 0 again after the bond redraw, so the count lands: [CH3]-[C] as stated.
+    const restate: DocumentPatch = { op: "updateObject", objectId: "m", changes: {
+      atoms: [atom("a1", "C", 100), atom("a2", "C", 130, { hydrogenCount: 0 })] } };
+    const outcome = await write(ethane(), { op: "batch", patches: [stateZeroAndRedraw, restate] }, ["m"]);
+    expect(outcome.refusal).toBeUndefined();
+    const written = committedMolecule(outcome.committed!, "m");
+    expect({ formula: formulaOf(written), a2: countOf(written, "a2"), bonds: written.bonds.map(entry => entry.id) })
+      .toEqual({ formula: "C2H3", a2: 0, bonds: ["b2"] });
+  });
+
+  it("BUG: a later op retyping the atom C to O without a count drops the request (methanol commits CH4O)", async () => {
+    const toOxygen: DocumentPatch = { op: "updateObject", objectId: "m", changes: {
+      atoms: [atom("a1", "C", 100), atom("a2", "O", 130)] } };
+    const outcome = await write(ethane(), { op: "batch", patches: [stateZeroAndRedraw, toOxygen] }, ["m"]);
+    expect(outcome.refusal).toBeUndefined();
+    const written = committedMolecule(outcome.committed!, "m");
+    expect({ formula: formulaOf(written), smiles: smilesOf(written), a2: written.atoms.find(entry => entry.id === "a2")?.element })
+      .toEqual({ formula: "CH4O", smiles: "CO", a2: "O" });
+  });
+
+  it("guard: a later op changing the element AND restating a count uses the new count (O stating 0 is refused as O)", async () => {
+    const toOxygenStating: DocumentPatch = { op: "updateObject", objectId: "m", changes: {
+      atoms: [atom("a1", "C", 100), atom("a2", "O", 130, { hydrogenCount: 0 })] } };
+    const outcome = await write(ethane(), { op: "batch", patches: [stateZeroAndRedraw, toOxygenStating] }, ["m"]);
+    expect(outcome.refusal).toMatchObject({ reason: "hydrogen_count_unrepresentable",
+      details: { moleculeId: "m", atomId: "a2", element: "O", hydrogenCount: 0 } });
+  });
+
+  it("guard: a later bond-only op keeps the request (still refused)", async () => {
+    const bondsOnly: DocumentPatch = { op: "updateObject", objectId: "m", changes: { bonds: [bond("b3", "a1", "a2")] } };
+    const outcome = await write(ethane(), { op: "batch", patches: [stateZeroAndRedraw, bondsOnly] }, ["m"]);
+    expect(outcome.refusal).toMatchObject({ reason: "hydrogen_count_unrepresentable",
+      details: { moleculeId: "m", atomId: "a2", element: "C", hydrogenCount: 0 } });
+  });
+
+  it("guard: a later op moving the atom (position only) keeps the request (still refused)", async () => {
+    const moved: DocumentPatch = { op: "updateObject", objectId: "m", changes: {
+      atoms: [atom("a1", "C", 100), atom("a2", "C", 150)] } };
+    const outcome = await write(ethane(), { op: "batch", patches: [stateZeroAndRedraw, moved] }, ["m"]);
+    expect(outcome.refusal).toMatchObject({ reason: "hydrogen_count_unrepresentable",
+      details: { moleculeId: "m", atomId: "a2", element: "C", hydrogenCount: 0 } });
+  });
+
+  it("guard: a later op deleting the atom drops its request (methane commits CH4)", async () => {
+    const dropA2: DocumentPatch = { op: "updateObject", objectId: "m", changes: { atoms: [atom("a1", "C", 100)], bonds: [] } };
+    const outcome = await write(ethane(), { op: "batch", patches: [stateZeroAndRedraw, dropA2] }, ["m"]);
+    expect(outcome.refusal).toBeUndefined();
+    const written = committedMolecule(outcome.committed!, "m");
+    expect({ formula: formulaOf(written), smiles: smilesOf(written), atoms: written.atoms.map(entry => entry.id) })
+      .toEqual({ formula: "CH4", smiles: "C", atoms: ["a1"] });
+  });
+});
+
+// A lone H, D or T stating no count is a radical (H•, owner decision 2026-11-23); a stated 0 is the plain atom.
+// The accept path lets a dropped count be when the committed molecule derives the same chemistry back, which
+// compared formula and graph SMILES only: both match for H• and H, so the radical was committed silently.
+describe.each([
+  ["documents.applyPatch", pluginApplyPatch],
+  ["proposal acceptance", acceptedProposal]
+] as const)("a dropped count on a hydrogen atom left lone, on %s", (path, write) => {
+  // CH3-H (methane drawn with one explicit H). The write states h is a plain H (0) and breaks its bond, so the patch
+  // engine drops h's count and h becomes a lone H with no count: H•, CH4 + H• (one radical) instead of CH4 + H.
+  const methaneWithH = () => documentWith([molecule("m4", [atom("c", "C", 100), atom("h", "H", 130)], [bond("b1", "c", "h")])]);
+  const breakAndStateZero: DocumentPatch = { op: "updateObject", objectId: "m4", changes: {
+    atoms: [atom("c", "C", 100), atom("h", "H", 130, { hydrogenCount: 0 })], bonds: [] } };
+
+  it("BUG (proposal acceptance committed H•): a plain H stated with 0 is refused on both paths", async () => {
+    const before = methaneWithH();
+    const drawn = committedMolecule(before, "m4");
+    const drawnMetadata = nativeSingleBondGraphMetadata(drawn.atoms, drawn.bonds);
+    expect({ formula: drawnMetadata.formula, radicals: drawnMetadata.radicalCount, smiles: smilesOf(drawn) })
+      .toEqual({ formula: "CH4", radicals: 0, smiles: "C[H]" });
+    const outcome = await write(before, breakAndStateZero, ["m4"]);
+    expect(outcome.refusal).toMatchObject({ reason: "hydrogen_count_unrepresentable",
+      details: { moleculeId: "m4", atomId: "h", element: "H", hydrogenCount: 0 } });
+    expect(outcome.refusal?.message).toMatch(/hydrogenCount 0, which the written molecule would not keep/);
+    if (path === "proposal acceptance") expect(outcome.pending).toBe(1);
+  });
+
+  it("guard: the same break stating nothing commits the lone H as H• (one radical), as drawn", async () => {
+    const outcome = await write(methaneWithH(), { op: "updateObject", objectId: "m4", changes: {
+      atoms: [atom("c", "C", 100), atom("h", "H", 130)], bonds: [] } }, ["m4"]);
+    expect(outcome.refusal).toBeUndefined();
+    const written = committedMolecule(outcome.committed!, "m4");
+    const metadata = nativeSingleBondGraphMetadata(written.atoms, written.bonds);
+    expect({ formula: metadata.formula, radicals: metadata.radicalCount }).toEqual({ formula: "CH5", radicals: 1 });
+  });
+});
+
+describe("the accept path's dropped-count check on a lone hydrogen atom", () => {
+  it("formula and SMILES alone do not tell the radical apart; the radical count does", () => {
+    const lone = [atom("c", "C", 100), atom("h", "H", 130)];
+    const stated = [atom("c", "C", 100), atom("h", "H", 130, { hydrogenCount: 0 })];
+    const read = (atoms: MoleculeAtom[]) => {
+      const metadata = nativeSingleBondGraphMetadata(atoms, []);
+      return { formula: metadata.formula, radicals: metadata.radicalCount };
+    };
+    expect(read(lone)).toEqual({ formula: "CH5", radicals: 1 });
+    // The graph SMILES writes the lone H the same way whether or not it is a radical.
+    expect(tryNativeSingleBondGraphSmiles(lone, [])).toEqual(tryNativeSingleBondGraphSmiles(stated, []));
+    expect(read(stated)).toEqual({ formula: "CH5", radicals: 0 });
+    expect(droppedHydrogenCountKeepsChemistry(molecule("m4", lone, []), stated[1]!)).toBe(false);
   });
 });
