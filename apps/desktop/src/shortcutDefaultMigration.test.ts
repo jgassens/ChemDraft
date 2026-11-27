@@ -2,7 +2,12 @@ import type { ShortcutOverrides, ShortcutPlatform } from "@chemdraft/shortcut-en
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mergeLegacyShortcutOverrides, mergeStoredShortcutOverrides } from "./customKeyboardShortcuts";
 import type { DesktopPreferences } from "./desktopPreferences";
-import { KEYBINDING_STORAGE_KEY, loadKeybindingSettings, type StoredShortcutOverrides } from "./keybindingSettings";
+import {
+  KEYBINDING_STORAGE_KEY,
+  loadKeybindingSettings,
+  UNSAVED_SHORTCUTS_STORAGE_KEY,
+  type StoredShortcutOverrides
+} from "./keybindingSettings";
 import {
   migrateShortcutDefault,
   PENDING_FRESH_INSTALL_KEY,
@@ -378,6 +383,77 @@ describe("keeping every valid custom key when the two stores disagree", () => {
     expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "current" });
     expect(fake.preferences()).toEqual({ shortcutScheme: "chemdraw", shortcutOverrides: { chemdraw: custom } });
     expect(fake.cache()).toEqual({ scheme: "chemdraw", overrides: { chemdraw: custom } });
+  });
+
+  describe("marking custom keys the native file could not save", () => {
+    const cacheOnly: ShortcutOverrides = { commands: { "document.save": ["Mod+F9"], "tool.eraser": ["F6"] } };
+
+    it.each([
+      ["already on the set", { shortcutScheme: "chemdraw", shortcutOverrides: { chemdraw: custom } }],
+      ["named in the cache only", { shortcutOverrides: { chemdraw: custom } }],
+      ["moving from the retired preset", { shortcutScheme: "chemdraft", shortcutOverrides: { chemdraw: custom } }]
+    ] as const)("marks them when %s and the write fails, and clears the mark once a launch saves them", async (_label, preferences) => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const fake = install({
+        preferences: preferences as DesktopPreferences,
+        local: { [KEYBINDING_STORAGE_KEY]: cacheOf({ chemdraw: cacheOnly }) },
+        failNativeWrite: true
+      });
+      await migrateShortcutDefault(fake.host);
+      expect(fake.cache()?.overrides?.chemdraw).toEqual(cacheOnly);
+      expect(fake.storage.getItem(UNSAVED_SHORTCUTS_STORAGE_KEY)).not.toBeNull();
+      fake.heal();
+      // (Moving from the retired preset repeats, since the native file still names it.)
+      await migrateShortcutDefault(fake.host);
+      expect(fake.preferences().shortcutScheme).toBe("chemdraw");
+      expect(fake.preferences().shortcutOverrides?.chemdraw).toEqual(cacheOnly);
+      expect(fake.storage.getItem(UNSAVED_SHORTCUTS_STORAGE_KEY)).toBeNull();
+    });
+
+    it("clears a mark left behind once the stores agree", async () => {
+      const fake = install({
+        preferences: { shortcutScheme: "chemdraw", shortcutOverrides: { chemdraw: custom } },
+        local: { [KEYBINDING_STORAGE_KEY]: cacheOf({ chemdraw: custom }), [UNSAVED_SHORTCUTS_STORAGE_KEY]: "1" }
+      });
+      expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "current" });
+      expect(fake.writePreferences).not.toHaveBeenCalled();
+      expect(fake.storage.getItem(UNSAVED_SHORTCUTS_STORAGE_KEY)).toBeNull();
+    });
+
+    it("does not mark when only the set's id failed to save, since the native file has every key", async () => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const fake = install({
+        preferences: { shortcutScheme: "chemdraft", shortcutOverrides: { chemdraw: custom } },
+        local: { [KEYBINDING_STORAGE_KEY]: cacheOf({ chemdraw: custom }, "chemdraft") },
+        failNativeWrite: true
+      });
+      expect((await migrateShortcutDefault(fake.host)).kind).toBe("migrated");
+      expect(fake.writePreferences).toHaveBeenCalledWith({ shortcutScheme: "chemdraw" });
+      expect(fake.storage.getItem(UNSAVED_SHORTCUTS_STORAGE_KEY)).toBeNull();
+    });
+
+    it("does not mark when the cache could not take the keys either", async () => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const fake = install({
+        preferences: { shortcutScheme: "chemdraw", shortcutOverrides: { chemdraw: custom } },
+        local: { [KEYBINDING_STORAGE_KEY]: cacheOf({ chemdraw: cacheOnly }, "chemdraft") },
+        failNativeWrite: true
+      });
+      // The combined keys reach neither store, so the cache's older copy must not be taken for the user's.
+      const setItem = fake.storage.setItem.bind(fake.storage);
+      vi.spyOn(fake.storage, "setItem").mockImplementation((key, value) => {
+        if (key === KEYBINDING_STORAGE_KEY) throw new Error("QuotaExceededError");
+        setItem(key, value);
+      });
+      await migrateShortcutDefault(fake.host);
+      expect(fake.storage.getItem(UNSAVED_SHORTCUTS_STORAGE_KEY)).toBeNull();
+    });
+
+    it("leaves the browser build, which has no native file, unmarked", async () => {
+      const fake = install({ desktop: false, local: { [KEYBINDING_STORAGE_KEY]: cacheOf({ chemdraw: cacheOnly }) } });
+      expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "current" });
+      expect(fake.storage.getItem(UNSAVED_SHORTCUTS_STORAGE_KEY)).toBeNull();
+    });
   });
 
   it("does not rewrite a native map whose only difference is an empty scope", async () => {

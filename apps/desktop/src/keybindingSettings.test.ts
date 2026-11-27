@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_KEYBINDING_SETTINGS,
+  hasUnsavedShortcuts,
   isKeybindingScheme,
   isKeybindingSettings,
   isSchemeOverrides,
@@ -9,6 +10,8 @@ import {
   LEGACY_KEYBINDING_SCHEME,
   loadKeybindingSettings,
   saveKeybindingSettings,
+  setUnsavedShortcuts,
+  UNSAVED_SHORTCUTS_STORAGE_KEY,
   validSchemeOverrides
 } from "./keybindingSettings";
 // jsdom in this project doesn't expose localStorage, and the module reads
@@ -124,5 +127,31 @@ describe("validSchemeOverrides", () => {
     for (const value of [undefined, null, "nonsense", 3, [], [{ chemdraw: {} }]]) {
       expect(validSchemeOverrides(value)).toBeUndefined();
     }
+  });
+});
+
+describe("the mark for custom keys the native file has not saved", () => {
+  it("is set and cleared in the webview cache, or in a store passed in", () => {
+    expect(hasUnsavedShortcuts()).toBe(false);
+    setUnsavedShortcuts(true);
+    expect(storage.getItem(UNSAVED_SHORTCUTS_STORAGE_KEY)).not.toBeNull();
+    expect(hasUnsavedShortcuts()).toBe(true);
+    setUnsavedShortcuts(false);
+    expect(hasUnsavedShortcuts()).toBe(false);
+
+    const other = new MemoryStorage();
+    setUnsavedShortcuts(true, other);
+    expect(hasUnsavedShortcuts(other)).toBe(true);
+    expect(hasUnsavedShortcuts()).toBe(false);
+  });
+
+  it("never throws on blocked storage, and reads as nothing unsaved", () => {
+    const blocked = new MemoryStorage();
+    for (const method of ["getItem", "setItem", "removeItem"] as const) {
+      vi.spyOn(blocked, method).mockImplementation(() => { throw new Error("SecurityError"); });
+    }
+    expect(() => setUnsavedShortcuts(true, blocked)).not.toThrow();
+    expect(() => setUnsavedShortcuts(false, blocked)).not.toThrow();
+    expect(hasUnsavedShortcuts(blocked)).toBe(false);
   });
 });

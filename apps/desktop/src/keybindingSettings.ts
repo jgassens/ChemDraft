@@ -77,6 +77,37 @@ export function saveKeybindingSettings(settings: KeybindingSettings): void {
   }
 }
 
+/**
+ * Set while the webview cache holds custom keys for the set that the native preferences file has not
+ * saved: the move to the single set (shortcutDefaultMigration.ts) sets it when it combined the two
+ * stores but could not write the result to the native file. While it is set the cache's keys are the
+ * user's, so a window saves them to the native file rather than replacing them with the file's
+ * (useShortcutPreference.ts); a saved edit in Preferences, or a launch whose stores agree, clears it.
+ */
+export const UNSAVED_SHORTCUTS_STORAGE_KEY = "chemdraft.keybindings.unsavedInPreferencesFile";
+
+type FlagStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+
+/** Whether the cache holds custom keys the native file has not saved. False when storage is unreadable. */
+export function hasUnsavedShortcuts(storage?: FlagStorage): boolean {
+  try {
+    return (storage ?? globalThis.localStorage)?.getItem(UNSAVED_SHORTCUTS_STORAGE_KEY) != null;
+  } catch {
+    return false;
+  }
+}
+
+/** Record whether the cache holds custom keys the native file has not saved. Best-effort. */
+export function setUnsavedShortcuts(unsaved: boolean, storage?: FlagStorage): void {
+  try {
+    const target = storage ?? globalThis.localStorage;
+    if (unsaved) target?.setItem(UNSAVED_SHORTCUTS_STORAGE_KEY, "1");
+    else if (target?.getItem(UNSAVED_SHORTCUTS_STORAGE_KEY) != null) target.removeItem(UNSAVED_SHORTCUTS_STORAGE_KEY);
+  } catch {
+    // Persistence is best-effort, as for the settings themselves.
+  }
+}
+
 const SHORTCUT_SCOPES = ["commands", "atom", "bond"] as const;
 
 function objectEntries(object: unknown): [string, unknown][] | undefined {

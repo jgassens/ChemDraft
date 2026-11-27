@@ -21,7 +21,10 @@
  * store's whole map: the native file's entry wins for a command, the cache's other entries are kept
  * unless they collide with a key already in use, and an invalid entry in either store is dropped
  * alone. Where the native file lacks one of the combined keys it is written there too, so neither
- * store is ever overwritten with a map that lost a valid customization.
+ * store is ever overwritten with a map that lost a valid customization. When that write fails, the
+ * cache is marked as holding keys the native file lacks (keybindingSettings.ts
+ * `UNSAVED_SHORTCUTS_STORAGE_KEY`), so a window's first read of the native file saves them there
+ * rather than replacing them with the file's older copy (useShortcutPreference.ts).
  *
  * The set's id in the native file is the "done" marker (preferences.json has no room for a separate
  * flag: lib.rs parses it with deny_unknown_fields), so every later launch takes the first branch.
@@ -46,6 +49,7 @@ import {
   KEYBINDING_SCHEME,
   KEYBINDING_STORAGE_KEY,
   LEGACY_KEYBINDING_SCHEME,
+  setUnsavedShortcuts,
   type KeybindingSettings,
   type StoredKeybindingScheme,
   type StoredShortcutOverrides,
@@ -178,25 +182,21 @@ async function resolveShortcutSet(host: ShortcutDefaultMigrationHost): Promise<S
     sameKeys(keys, rawSetEntry(preferences)) ? {} : { shortcutOverrides: { [KEYBINDING_SCHEME]: keys ?? {} } };
 
   if (nativeScheme === KEYBINDING_SCHEME) {
-    const patch = setKeysPatch(setKeys);
-    if (patch.shortcutOverrides) await writeNative(host, patch);
-    mirrorCache(host.storage, stored(setKeys));
+    await recordSet(host, setKeysPatch(setKeys), stored(setKeys));
     return { kind: "current" };
   }
 
   const previous: StoredKeybindingScheme | undefined = nativeScheme ?? cached.scheme;
   if (previous === KEYBINDING_SCHEME) {
     // Named in the cache only: the set is copied to the native file with the combined custom keys.
-    await writeNative(host, { shortcutScheme: KEYBINDING_SCHEME, ...setKeysPatch(setKeys) });
-    mirrorCache(host.storage, stored(setKeys));
+    await recordSet(host, { shortcutScheme: KEYBINDING_SCHEME, ...setKeysPatch(setKeys) }, stored(setKeys));
     return { kind: "current" };
   }
 
   const movesFromRetiredPreset = previous === LEGACY_KEYBINDING_SCHEME || cached.present ||
     hasChemDraftStorage(host.storage) || Object.keys(preferences).length > 0 || await hasToolbarLayout(host);
   if (!movesFromRetiredPreset) {
-    await writeNative(host, { shortcutScheme: KEYBINDING_SCHEME, ...setKeysPatch(setKeys) });
-    mirrorCache(host.storage, stored(setKeys));
+    await recordSet(host, { shortcutScheme: KEYBINDING_SCHEME, ...setKeysPatch(setKeys) }, stored(setKeys));
     return { kind: "fresh-install" };
   }
 
@@ -204,9 +204,20 @@ async function resolveShortcutSet(host: ShortcutDefaultMigrationHost): Promise<S
     ? (await import("./customKeyboardShortcuts")).mergeLegacyShortcutOverrides(legacy, setKeys, host.platform)
     : { overrides: setKeys, kept: 0, dropped: 0 };
   const movedKeys = withoutEmptyScopes(merged.overrides);
-  await writeNative(host, { shortcutScheme: KEYBINDING_SCHEME, ...setKeysPatch(movedKeys) });
-  mirrorCache(host.storage, stored(movedKeys));
+  await recordSet(host, { shortcutScheme: KEYBINDING_SCHEME, ...setKeysPatch(movedKeys) }, stored(movedKeys));
   return { kind: "migrated", kept: merged.kept, dropped: merged.dropped };
+}
+
+/**
+ * Write the patch (if any) to the native file and the combined custom keys to the cache. When the
+ * native file could not take the custom keys but the cache did, the cache is marked as holding keys the
+ * native file lacks (keybindingSettings.ts `UNSAVED_SHORTCUTS_STORAGE_KEY`), so a window's first read of
+ * the native file saves them there instead of dropping them; otherwise the mark is cleared.
+ */
+async function recordSet(host: ShortcutDefaultMigrationHost, patch: DesktopPreferences, overrides: StoredShortcutOverrides): Promise<void> {
+  const nativeSaved = Object.keys(patch).length === 0 || await writeNative(host, patch);
+  const cached = mirrorCache(host.storage, overrides);
+  if (host.native && host.storage) setUnsavedShortcuts(!nativeSaved && patch.shortcutOverrides !== undefined && cached, host.storage);
 }
 
 /**
@@ -305,13 +316,16 @@ async function defaultHost(): Promise<ShortcutDefaultMigrationHost> {
   };
 }
 
-async function writeNative(host: ShortcutDefaultMigrationHost, patch: DesktopPreferences): Promise<void> {
-  if (!host.native) return;
+/** Whether the native file took the patch (true where there is no native file). Never rejects. */
+async function writeNative(host: ShortcutDefaultMigrationHost, patch: DesktopPreferences): Promise<boolean> {
+  if (!host.native) return true;
   try {
     await host.native.writePreferences(patch);
+    return true;
   } catch (error) {
     // The cache still records the move, and the next launch copies it to the native file.
     console.error("Could not save the shortcut set", error);
+    return false;
   }
 }
 
@@ -344,14 +358,20 @@ function readCache(storage: ShortcutDefaultMigrationHost["storage"]): {
   }
 }
 
-/** Write the single set and its custom keys into the webview cache. Leaves an identical cache untouched. */
-function mirrorCache(storage: ShortcutDefaultMigrationHost["storage"], overrides: StoredShortcutOverrides | undefined): void {
+/**
+ * Write the single set and its custom keys into the webview cache. Leaves an identical cache untouched.
+ * Whether the cache now holds them.
+ */
+function mirrorCache(storage: ShortcutDefaultMigrationHost["storage"], overrides: StoredShortcutOverrides | undefined): boolean {
   const settings: KeybindingSettings = { scheme: KEYBINDING_SCHEME, ...(overrides && Object.keys(overrides).length ? { overrides } : {}) };
   try {
+    if (!storage) return false;
     const value = JSON.stringify(settings);
-    if (storage?.getItem(KEYBINDING_STORAGE_KEY) !== value) storage?.setItem(KEYBINDING_STORAGE_KEY, value);
+    if (storage.getItem(KEYBINDING_STORAGE_KEY) !== value) storage.setItem(KEYBINDING_STORAGE_KEY, value);
+    return true;
   } catch {
     // Best-effort, as in saveKeybindingSettings: every reader resolves the single set anyway.
+    return false;
   }
 }
 
