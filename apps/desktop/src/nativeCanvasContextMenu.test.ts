@@ -2,8 +2,8 @@ import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { popupNativeCanvasMenu } from "./nativeCanvasContextMenu";
-import { pageCanvasMenu } from "./canvasContextMenuModel";
+import { estimateNativeMenuSize, placeNativeCanvasMenu, popupNativeCanvasMenu, type NativeMenuScreen } from "./nativeCanvasContextMenu";
+import { pageCanvasMenu, toNativeCanvasMenu, type CanvasMenuItem } from "./canvasContextMenuModel";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
@@ -43,6 +43,84 @@ describe("native canvas menu transport", () => {
     finish("Stereocenter: R");
     expect(await pending).toBeNull();
     expect(invoke).not.toHaveBeenCalled();
+  });
+});
+
+describe.each(["macos", "windows"] as const)("native canvas menu placement (%s)", platform => {
+  beforeEach(() => vi.clearAllMocks());
+  // A 1440x900 screen with a 25 px menu bar and a 70 px Dock; the window's content starts at (100, 60).
+  const screen: NativeMenuScreen = { origin: { x: 100, y: 60 }, workArea: { left: 0, top: 25, right: 1440, bottom: 830 } };
+  const size = { width: 240, height: 400 };
+  const inside = (placed: { x: number; y: number }, extent = size) => {
+    const left = screen.origin.x + placed.x, top = screen.origin.y + placed.y;
+    expect(left).toBeGreaterThanOrEqual(screen.workArea.left);
+    expect(top).toBeGreaterThanOrEqual(screen.workArea.top);
+    expect(left + extent.width).toBeLessThanOrEqual(screen.workArea.right);
+    expect(top + extent.height).toBeLessThanOrEqual(screen.workArea.bottom);
+  };
+
+  it("opens at the pointer when the whole menu fits", () => {
+    expect(placeNativeCanvasMenu({ x: 300, y: 200 }, size, screen)).toEqual({ x: 300, y: 200 });
+  });
+
+  it("flips above the pointer near the bottom of the screen", () => {
+    // Pointer at screen y 760: 400 px below would end at 1160, past the Dock.
+    const placed = placeNativeCanvasMenu({ x: 300, y: 700 }, size, screen);
+    expect(placed).toEqual({ x: 300, y: 300 });
+    inside(placed);
+  });
+
+  it("flips left of the pointer near the right edge of the screen", () => {
+    const placed = placeNativeCanvasMenu({ x: 1250, y: 200 }, size, screen);
+    expect(placed).toEqual({ x: 1010, y: 200 });
+    inside(placed);
+  });
+
+  it("flips both ways in the bottom-right corner", () => {
+    const placed = placeNativeCanvasMenu({ x: 1300, y: 740 }, size, screen);
+    expect(placed).toEqual({ x: 1060, y: 340 });
+    inside(placed);
+  });
+
+  it("moves a menu that fits neither above nor below in from the bottom edge, never above the top", () => {
+    const tall = { width: 240, height: 700 };
+    const placed = placeNativeCanvasMenu({ x: 300, y: 380 }, tall, screen);
+    expect(screen.origin.y + placed.y + tall.height).toBe(screen.workArea.bottom);
+    inside(placed, tall);
+    const taller = { width: 240, height: 2000 };
+    expect(screen.origin.y + placed.y).toBeGreaterThanOrEqual(screen.workArea.top);
+    expect(screen.origin.y + placeNativeCanvasMenu({ x: 300, y: 380 }, taller, screen).y).toBe(screen.workArea.top);
+  });
+
+  it("estimates every row of the menu, separators included", () => {
+    const route = toNativeCanvasMenu(pageCanvasMenu, "estimate");
+    const estimate = estimateNativeMenuSize(route.items, platform);
+    const rows = route.items.filter(item => item.kind !== "separator").length;
+    expect(estimate.height).toBeGreaterThanOrEqual(rows * 22);
+    expect(estimate.width).toBeGreaterThanOrEqual(180);
+  });
+
+  it("presents a molecule menu opened near the bottom-right corner fully on the screen", async () => {
+    vi.mocked(invoke).mockResolvedValue(null);
+    const molecule: CanvasMenuItem[] = Array.from({ length: 14 }, (_, index) => (
+      { kind: "command", label: `Molecule command ${index}`, commandId: "edit.selectAll", enabled: true }));
+    await popupNativeCanvasMenu(molecule, { x: 1320, y: 750 }, {
+      platform, readScreen: async () => screen, loadStereoReadout: async () => "Stereocenter: R"
+    });
+    const { position, items } = vi.mocked(invoke).mock.calls[0][1] as { position: { x: number; y: number }; items: [] };
+    // The stereo row and its separator are counted: the menu is measured as it opens.
+    expect(items).toHaveLength(16);
+    inside(position, estimateNativeMenuSize(items, platform));
+    expect(position.y).toBeLessThan(750);
+    expect(position.x).toBeLessThan(1320);
+  });
+
+  it("opens at the pointer when the screen cannot be read", async () => {
+    vi.mocked(invoke).mockResolvedValue(null);
+    await popupNativeCanvasMenu(pageCanvasMenu, { x: 1320, y: 750 }, {
+      platform, readScreen: async () => { throw new Error("no monitor"); }
+    });
+    expect(vi.mocked(invoke).mock.calls[0][1]).toMatchObject({ position: { x: 1320, y: 750 } });
   });
 });
 

@@ -262,6 +262,23 @@ describe("stereo readout row", () => {
     }
   });
 
+  it("keeps every row of the HTML menu inside the window near the bottom and right edges", async () => {
+    const rect = (left: number, top: number) => ({ left, top, width: 200, height: 300, right: left + 200, bottom: top + 300, x: left, y: top, toJSON() {} }) as DOMRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      return this.getAttribute("aria-label") === "Object layer options"
+        ? rect(parseFloat(this.style.left), parseFloat(this.style.top)) : rect(0, 0);
+    });
+    try {
+      expect([window.innerWidth, window.innerHeight]).toEqual([1024, 768]);
+      await act(async () => root.render(<CanvasContextMenu items={items} position={{ x: 1000, y: 740 }} label="Object layer options"
+        targetKind="atom" onInvoke={() => {}} onDismiss={() => {}} />));
+      const menu = container.querySelector<HTMLElement>('[aria-label="Object layer options"]')!;
+      expect([menu.style.left, menu.style.top]).toEqual(["816px", "460px"]);
+    } finally {
+      vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockRestore();
+    }
+  });
+
   it("native popup is never presented when the menu unmounts during the readout wait", async () => {
     vi.stubGlobal("__TAURI_INTERNALS__", {});
     const calls: string[] = [];
