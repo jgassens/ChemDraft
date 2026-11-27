@@ -154,8 +154,11 @@ PNG chunk framing (`pngChunkAt`, `pngCrc32`, `buildPngChunk`) lives in `src/png.
 packages share. `apngFirstFrame` returns an animated PNG's first animation frame as a still PNG, for
 exporters that draw one picture (PDF, CLI PNG): the input itself for a still PNG or when the default
 image is frame 0; otherwise IHDR, the colour chunks (PLTE, tRNS, gAMA, cHRM, sRGB, iCCP), frame 0's
-fdAT data as IDAT and IEND, without decoding pixels. An animated PNG out of spec or over its bounds
-(`APNG_MAX_BYTES`, `APNG_MAX_CHUNKS`) comes back unchanged with a warning, so its default image is drawn.
+fdAT data as IDAT and IEND, without decoding pixels. An animated PNG out of spec (a first fcTL not
+numbered 0, or a chunk it relies on or copies failing its CRC, among others) or over its bounds
+(`APNG_MAX_BYTES`, `APNG_MAX_CHUNKS`) comes back as its default image with a warning: the input
+rebuilt without its acTL, fcTL and fdAT chunks, or unchanged only when even that can't be framed
+within the bounds.
 
 The MOL writers require an explicit `kekuleBondOrders` map and return `{ contents, warnings }`.
 Callers resolve orders through layout-engine; this package cannot depend on it. An empty or partial
