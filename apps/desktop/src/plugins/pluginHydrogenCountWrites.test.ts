@@ -307,6 +307,39 @@ describe.each([
       .toEqual({ formula: "C2H3", a2: 0, bonds: ["b2"] });
   });
 
+  it("BUG: a later op retyping the atom C to O without a count drops the request (methanol commits CH4O)", async () => {
+    const toOxygen: DocumentPatch = { op: "updateObject", objectId: "m", changes: {
+      atoms: [atom("a1", "C", 100), atom("a2", "O", 130)] } };
+    const outcome = await write(ethane(), { op: "batch", patches: [stateZeroAndRedraw, toOxygen] }, ["m"]);
+    expect(outcome.refusal).toBeUndefined();
+    const written = committedMolecule(outcome.committed!, "m");
+    expect({ formula: formulaOf(written), smiles: smilesOf(written), a2: written.atoms.find(entry => entry.id === "a2")?.element })
+      .toEqual({ formula: "CH4O", smiles: "CO", a2: "O" });
+  });
+
+  it("guard: a later op changing the element AND restating a count uses the new count (O stating 0 is refused as O)", async () => {
+    const toOxygenStating: DocumentPatch = { op: "updateObject", objectId: "m", changes: {
+      atoms: [atom("a1", "C", 100), atom("a2", "O", 130, { hydrogenCount: 0 })] } };
+    const outcome = await write(ethane(), { op: "batch", patches: [stateZeroAndRedraw, toOxygenStating] }, ["m"]);
+    expect(outcome.refusal).toMatchObject({ reason: "hydrogen_count_unrepresentable",
+      details: { moleculeId: "m", atomId: "a2", element: "O", hydrogenCount: 0 } });
+  });
+
+  it("guard: a later bond-only op keeps the request (still refused)", async () => {
+    const bondsOnly: DocumentPatch = { op: "updateObject", objectId: "m", changes: { bonds: [bond("b3", "a1", "a2")] } };
+    const outcome = await write(ethane(), { op: "batch", patches: [stateZeroAndRedraw, bondsOnly] }, ["m"]);
+    expect(outcome.refusal).toMatchObject({ reason: "hydrogen_count_unrepresentable",
+      details: { moleculeId: "m", atomId: "a2", element: "C", hydrogenCount: 0 } });
+  });
+
+  it("guard: a later op moving the atom (position only) keeps the request (still refused)", async () => {
+    const moved: DocumentPatch = { op: "updateObject", objectId: "m", changes: {
+      atoms: [atom("a1", "C", 100), atom("a2", "C", 150)] } };
+    const outcome = await write(ethane(), { op: "batch", patches: [stateZeroAndRedraw, moved] }, ["m"]);
+    expect(outcome.refusal).toMatchObject({ reason: "hydrogen_count_unrepresentable",
+      details: { moleculeId: "m", atomId: "a2", element: "C", hydrogenCount: 0 } });
+  });
+
   it("guard: a later op deleting the atom drops its request (methane commits CH4)", async () => {
     const dropA2: DocumentPatch = { op: "updateObject", objectId: "m", changes: { atoms: [atom("a1", "C", 100)], bonds: [] } };
     const outcome = await write(ethane(), { op: "batch", patches: [stateZeroAndRedraw, dropA2] }, ["m"]);

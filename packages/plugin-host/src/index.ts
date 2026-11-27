@@ -8,7 +8,7 @@ import type { ApplyPatchOptions, DocumentObject, DocumentPatch, DocumentPage, Mo
 import { duplicateIdRefusalMessage, insertionPins, objectInWriteScope, objectIsInWriteScope, objectLocations, pinnedObjectMissingMessage,
   pinObject, pinSelectionPages, resolvePinnedObject, resolvePinnedObjects, resolvePinnedPages, scopedObjectRefs, withoutPins, withPins,
   type PageObjectRef, type PagePin, type PinnedObjectPages, type PluginWriteScopePages } from "./pageObjects";
-import { applyPatch, atomicNumberForElementSymbol, atomIgnoresStatedHydrogenCount, atomWithIgnoredHydrogenCount, hasObjectIdentity, ignoredHydrogenCountAtomKind,
+import { applyPatch, atomicNumberForElementSymbol, atomIgnoresStatedHydrogenCount, atomWithIgnoredHydrogenCount, clearChangedAtomHydrogenHints, hasObjectIdentity, ignoredHydrogenCountAtomKind,
   objectIdentity, planOrphanedRepeatUnitCleanup, pruneReactionObjectReferences, removeOrphanedRepeatUnitBrackets, sameBracketIdentity } from "@chemdraft/chem-core";
 // Bundle the grammar from source in the SDK without a published layout-engine dependency.
 import { parseCondensedLabelFormula } from "../../layout-engine/src/labelGrammar";
@@ -540,6 +540,16 @@ function requestedHydrogenCountRecorder(beforeObjectWrite?: ApplyPatchOptions["b
         const atoms = new Map(counts.get(identity)?.atoms);
         const written = new Set(next.atoms.map(atom => atom.id));
         for (const atomId of atoms.keys()) if (!written.has(atomId)) atoms.delete(atomId);
+        // An op that changes an atom's chemical state without restating a count invalidates the earlier
+        // request, as chem-core invalidates a stated count on such a change: ask chem-core's own rule
+        // (`clearChangedAtomHydrogenHints`) with the requested atom as the previous one. Moves and bond
+        // edits keep it.
+        for (const atom of next.atoms) {
+          const request = atoms.get(atom.id);
+          if (!request || typeof atom.hydrogenCount === "number") continue;
+          const [probe] = clearChangedAtomHydrogenHints({ atoms: [request], bonds: [] }, [{ ...atom, hydrogenCount: request.hydrogenCount }], []);
+          if (probe?.hydrogenCount === undefined) atoms.delete(atom.id);
+        }
         for (const atom of next.atoms) if (typeof atom.hydrogenCount === "number") atoms.set(atom.id, atom);
         counts.set(identity, { moleculeId: next.id, atoms });
       }
