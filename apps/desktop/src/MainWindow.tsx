@@ -3,7 +3,7 @@ import { interactive3dWorkspaceStatusText, Interactive3dWorkspaceStatus } from "
 import { CanvasContextMenu, NATIVE_CANVAS_MENU_CLOSED_EVENT } from "./CanvasContextMenu";
 import { PLUGIN_CHANGE_REFUSED, RECOGNITION_REFUSED, chemistryRefusalOf, refusalSentence } from "./plugins/requestWrites/chemistryRefusal";
 import { buildObjectCanvasMenu, pageCanvasMenu, SET_DEFAULT_ARROW_STYLE_COMMAND_ID } from "./canvasContextMenuModel";
-import { loadStereoEngine, resolveContextStereo, stereoReadoutRequest } from "./stereoReadout";
+import { CONTEXT_STEREO_DEADLINE_MS, loadStereoEngine, resolveContextStereo, stereoReadoutRequest } from "./stereoReadout";
 import { RequestWriteError } from "@chemdraft/plugin-host";
 import { createRequestHistory } from "./plugins/requestWrites/requestHistory";
 import { electronMarkInteractionFrames } from "./electronMarkInteraction";
@@ -1910,7 +1910,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.27.03.10-sonnet";
+const CURRENT_BUILD_STAMP = "11.27.03.40-opus";
 
 const NUMERIC_ENTRY_DURING_DRAG_STATUS = "Finish the current drag, then enter a value";
 
@@ -22754,17 +22754,26 @@ export function MainWindow({
       return;
     }
     // Wait only when stereo reach can change the target. A new press, Escape, or leaving
-    // the drawing cancels the opening while the descriptor is pending.
+    // the drawing cancels the opening while the descriptor is pending. An engine that has not
+    // answered by the deadline gets the ordinary menu, and its late answer is dropped.
     const request = new AbortController();
     pendingCanvasContextMenu.current = request;
-    void resolveContextStereo(stereoTargets).then(result => {
-      if (request.signal.aborted) return;
+    // The menu targets come from the selection read at the press. A part selection can
+    // change without a new document (closing the Rings toolbar clears a selected ring),
+    // and the menu's commands act on the live selection, so drop the opening then too.
+    const settle = () => {
+      if (request.signal.aborted) return false;
+      request.abort();
       pendingCanvasContextMenu.current = undefined;
-      // The menu targets come from the selection read at the press. A part selection can
-      // change without a new document (closing the Rings toolbar clears a selected ring),
-      // and the menu's commands act on the live selection, so drop the opening then too.
-      if (!pageRef.current || currentDocument !== documentRef.current ||
-        selectedNativeMoleculeParts !== selectedNativeMoleculePartsRef.current) return;
+      return !!pageRef.current && currentDocument === documentRef.current &&
+        selectedNativeMoleculeParts === selectedNativeMoleculePartsRef.current;
+    };
+    const deadline = setTimeout(() => {
+      if (settle()) openFallback();
+    }, CONTEXT_STEREO_DEADLINE_MS);
+    request.signal.addEventListener("abort", () => clearTimeout(deadline), { once: true });
+    void resolveContextStereo(stereoTargets).then(result => {
+      if (!settle()) return;
       const hitObject = result && objects[layers.get(result.hit.objectId)!];
       if (result && hitObject) {
         showObjectContextMenu(hitObject.id, position, point, result.hit,

@@ -109,6 +109,13 @@ export function stereoReadoutLabel(target: StereoReadoutTarget, engine: StereoEn
   return stereoLabelsForMolecule(target.molecule, engine)(target);
 }
 
+/**
+ * How long a right-click whose target stereo reach may change waits for the engine before it opens
+ * the ordinary menu instead. The engine load is cached and keeps going, so a later right-click
+ * uses it once it arrives.
+ */
+export const CONTEXT_STEREO_DEADLINE_MS = 1_500;
+
 /** The first geometric candidate the engine can actually describe. */
 export async function resolveContextStereo(candidates: ReturnType<typeof contextStereoHits>) {
   try {

@@ -12,7 +12,7 @@ import {
   selectDocumentObjects
 } from "./documentWorkflow";
 import { MainWindow } from "./MainWindow";
-import { loadStereoEngine, resetStereoEngineForTests } from "./stereoReadout";
+import { CONTEXT_STEREO_DEADLINE_MS, loadStereoEngine, resetStereoEngineForTests } from "./stereoReadout";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 
@@ -347,6 +347,61 @@ it.each(["pointerleave", "pointerdown", "Escape"] as const)("discards a pending 
     expect(objectMenu()).toBeNull();
     expect(pageMenu()).toBeNull();
   } finally {
+    finishLoading();
+    resetStereoEngineForTests();
+    await loadStereoEngine();
+  }
+});
+
+// Review (1.2.3 RC5): a stereo engine import that never settles must not leave right-click without
+// a menu, and must not keep later right-clicks from using the engine once it does load.
+it.each<ShortcutPlatform>(["macos", "windows"])("opens the ordinary menu when the stereo engine misses its deadline on %s", async platform => {
+  const engine = await loadStereoEngine();
+  let finishLoading!: () => void;
+  const pendingEngine = new Promise<typeof engine>(resolve => { finishLoading = () => resolve(engine); });
+  resetStereoEngineForTests();
+  const press = platform === "macos" ? { button: 0, ctrlKey: true } : {};
+  const escape = () => act(async () => {
+    document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
+  });
+  const advance = (ms: number) => act(async () => { vi.advanceTimersByTime(ms); });
+  try {
+    void loadStereoEngine(() => pendingEngine);
+    const molecule = await mount("C/C=C/C", { zoom: 200, platform });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const point = pointNearDoubleBond(molecule, 10);
+
+    // A cancelled opening stays closed past the deadline.
+    await clickAt(point, press);
+    await escape();
+    await advance(CONTEXT_STEREO_DEADLINE_MS);
+    expect(objectMenu()).toBeNull();
+    expect(pageMenu()).toBeNull();
+
+    await clickAt(point, press);
+    await advance(CONTEXT_STEREO_DEADLINE_MS - 1);
+    expect(objectMenu()).toBeNull();
+    expect(pageMenu()).toBeNull();
+    await advance(1);
+    expect(pageMenu()).not.toBeNull();
+    expect(objectMenu()).toBeNull();
+
+    // The engine's late answer leaves the open menu alone.
+    await act(async () => finishLoading());
+    expect(pageMenu()).not.toBeNull();
+    expect(objectMenu()).toBeNull();
+
+    // The next right-click uses the engine, and its deadline never fires afterwards.
+    await escape();
+    expect(pageMenu()).toBeNull();
+    await clickAt(point, press);
+    expect(objectMenu()?.getAttribute("data-context-target-kind")).toBe("bond");
+    expect(stereoRows()).toEqual(["Double bond: E"]);
+    await advance(CONTEXT_STEREO_DEADLINE_MS);
+    expect(pageMenu()).toBeNull();
+    expect(stereoRows()).toEqual(["Double bond: E"]);
+  } finally {
+    vi.useRealTimers();
     finishLoading();
     resetStereoEngineForTests();
     await loadStereoEngine();
