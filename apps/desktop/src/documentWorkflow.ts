@@ -26,6 +26,7 @@ import { nativeFormattedTextObjectSize, reconcileReactionArrowAttachments } from
 import { withArrowAttachmentIds } from "@chemdraft/layout-engine";
 import { snapRotationDegrees } from "./rotationSnap";
 import { snapPlacementDegrees } from "./placementSnap";
+import { sizeOrbitalToolForBondLength } from "./orbitalSize";
 import { nativeTemplateForToolCommand as sharedTemplateForToolCommand } from "./ringTemplates";
 import { projectedDoubleBondSides } from "./interaction/projectedDoubleBondSides";
 import { buildTableObject, pageConstrainedShift } from "@chemdraft/document-workflow-core";
@@ -717,6 +718,8 @@ export const nativeArtToolDefinitions: readonly NativeArtToolDefinition[] = [
   artArcTool("arc90Dashed", "Dashed Quarter Arc", 90, true),
   // Orbital tools keep their chemistry command ids (tool.lobe, …) but ride the art pipeline:
   // parametric closed paths get pointer placement, transform chrome, and SVG export for free.
+  // Their sizes here are design units only: placement rescales each one from the document's bond
+  // length (ORBITAL_LOBE_LENGTH_IN_BOND_LENGTHS in orbitalSize.ts), keeping these proportions.
   artShapeTool("lobe", "Orbital Lobe", "path", 40, 60, {
     artPathKind: "bezier",
     pathClosed: true,
@@ -1530,10 +1533,15 @@ export function createNativeArtGraphicObject(
   point: PagePoint,
   commandId: string
 ): GraphicObject | undefined {
-  const tool = nativeArtToolForCommand(commandId);
-  if (!tool) {
+  const definition = nativeArtToolForCommand(commandId);
+  if (!definition) {
     return undefined;
   }
+  // Orbitals are sized from the active style's bond length (orbitalSize.ts), so they stay in
+  // proportion to the structures they are drawn on. Only new placements are sized here.
+  const tool = nativeArtToolIsOrbital(definition.commandId)
+    ? sizeOrbitalToolForBondLength(definition, documentDrawingDefaults(document).bondLengthPx)
+    : definition;
 
   const page = firstPage(document);
   const orbitalPlacement = nativeOrbitalPlacementAtPoint(document, point, tool);
