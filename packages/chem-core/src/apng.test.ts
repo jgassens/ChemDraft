@@ -91,6 +91,8 @@ describe("apngFirstFrame", () => {
     ["a first frame that is not the whole canvas", { frame: [fcTLChunk(0, 2, 3), fdATChunk(1, pixelData(2, 3, BLUE))] }, "not the whole 4 x 3 canvas"],
     ["a first frame offset from the corner", { frame: [fcTLChunk(0, 4, 3, 1, 0), fdATChunk(1, pixelData(4, 3, BLUE))] }, "not the whole 4 x 3 canvas"],
     ["frame data out of sequence", { frame: [fcTLChunk(0, 4, 3), fdATChunk(5, pixelData(4, 3, BLUE))] }, "out of sequence"],
+    ["a first frame control numbered 1", { frame: [fcTLChunk(1, 4, 3), fdATChunk(2, pixelData(4, 3, BLUE))] }, "not sequence number 0"],
+    ["a first frame control numbered 5", { frame: [fcTLChunk(5, 4, 3), fdATChunk(6, pixelData(4, 3, BLUE))] }, "not sequence number 0"],
     ["a first frame with no data", { frame: [fcTLChunk(0, 4, 3)] }, "has no data"],
     ["a truncated frame control", { frame: [pngChunk("fcTL", u32(0, 4, 3)), fdATChunk(1, pixelData(4, 3, BLUE))] }, "frame control chunk is malformed"]
   ])("falls back to the default image with a warning for %s", (_name, options, reason) => {
@@ -127,6 +129,15 @@ describe("apngFirstFrame", () => {
     expect(result.warning).toContain("its default image is drawn instead");
     // The existing fallback: the default image alone, its chunks as they were.
     expect(chunks(result.bytes).map((c) => c.type)).toEqual(kept);
+  });
+
+  it("falls back when the default image is frame 0 but its frame control is not sequence number 0", () => {
+    const png = Buffer.concat([PNG_SIGNATURE_BYTES, ihdrChunk(4, 3), pngChunk("acTL", u32(1, 0)), fcTLChunk(3, 4, 3),
+      pngChunk("IDAT", pixelData(4, 3, RED)), pngChunk("IEND")]);
+    const result = apngFirstFrame(png);
+    expect(result.frame).toBe("fallback");
+    expect(result.warning).toContain("not sequence number 0");
+    expect(chunks(result.bytes).map((c) => c.type)).toEqual(["IHDR", "IDAT", "IEND"]);
   });
 
   it("falls back rather than walk more chunks than the bound", () => {

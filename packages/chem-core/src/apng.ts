@@ -95,7 +95,9 @@ export function apngFirstFrame(bytes: Uint8Array): ApngFirstFrameResult {
           controlBeforeImageData = !sawImageData;
           if (chunk.length !== 26) return fallback("its first frame control chunk is malformed");
           if (!crcMatches(bytes, chunk)) return damaged(chunk);
-          nextSequence = u32(chunk.data, 0) + 1;
+          // Sequence numbers run over fcTL and fdAT alike from 0, so the first fcTL is 0 and frame 0's data 1, 2, ...
+          if (u32(chunk.data, 0) !== 0) return fallback("its first frame control chunk is not sequence number 0");
+          nextSequence = 1;
         } else {
           frameDone = true;
         }
