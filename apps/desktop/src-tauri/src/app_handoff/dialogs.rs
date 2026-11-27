@@ -33,6 +33,8 @@ pub(super) enum Snapshot<'a> {
         combinations: &'a BTreeMap<String, BTreeMap<String, String>>,
         #[serde(skip_serializing_if = "<[String]>::is_empty")]
         warnings: &'a [String],
+        #[serde(skip_serializing_if = "Option::is_none")]
+        retry: Option<RetryNotice<'a>>,
     },
     Result {
         title: &'static str,
@@ -49,7 +51,29 @@ pub(super) enum Snapshot<'a> {
     },
 }
 
-fn display_text(value: &str, limit: usize) -> String {
+/// API 0.1.29: what the confirmation box states about a bounded retry, rendered in plain words by
+/// the dialog. `attempts` counts every build, the first included.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct RetryNotice<'a> {
+    pub attempts: usize,
+    pub step: &'a str,
+    pub label: &'a str,
+    pub not_equal: f64,
+}
+
+impl<'a> RetryNotice<'a> {
+    pub(super) fn new(attempts: usize, when: &'a wire::RetryCondition) -> Self {
+        Self {
+            attempts,
+            step: &when.step,
+            label: &when.label,
+            not_equal: when.not_equal,
+        }
+    }
+}
+
+pub(super) fn display_text(value: &str, limit: usize) -> String {
     let mut text = String::new();
     for ch in value.chars().take(limit) {
         match ch {
@@ -125,6 +149,7 @@ pub(super) fn confirmation_snapshot(
     combination: &str,
     composition: Option<&Composition>,
     warnings: &[String],
+    retry: Option<RetryNotice<'_>>,
 ) -> Result<Value, String> {
     let snapshot = wire::encode(Snapshot::Confirm {
         title: "Confirm companion build",
@@ -135,6 +160,7 @@ pub(super) fn confirmation_snapshot(
         suggested_combination: combination,
         combinations: &pipeline.combinations,
         warnings,
+        retry,
     })?;
     crate::dialog_windows::validate_app_handoff_snapshot(&snapshot)?;
     for (from, to) in pipeline

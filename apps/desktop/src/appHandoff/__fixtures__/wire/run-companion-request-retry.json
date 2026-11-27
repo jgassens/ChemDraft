@@ -1,0 +1,21 @@
+{
+  "appId": "0123456789abcdef0123456789abcdef",
+  "combination": "pcu-N16-1x1x1",
+  "input": {
+    "extension": "xyz",
+    "text": "2\n1\nC 0 0 0\nX 1 0 0\n0 1 S\n"
+  },
+  "openOutput": true,
+  "pipeline": "mofBuild",
+  "retry": {
+    "inputs": [
+      "2\n2\nC 0 0 0\nX 1.01 0 0\n0 1 S\n",
+      "2\n3\nC 0 0 0\nX 0.99 0 0\n0 1 S\n"
+    ],
+    "when": {
+      "label": "Joint twist left",
+      "notEqual": 0.0,
+      "step": "build"
+    }
+  }
+}

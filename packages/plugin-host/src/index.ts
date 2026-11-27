@@ -2800,13 +2800,17 @@ export class PluginHost {
     if (!transport) throw new PluginHostError("App handoff requires the desktop app.");
     const manifest = this.requireRegisteredPlugin(pluginId).manifest;
     if (method === "runCompanion") {
-      const { pipeline, combination, input } = parsed.data as PluginHandoffRunCompanionRequest;
+      const { pipeline, combination, input, retry } = parsed.data as PluginHandoffRunCompanionRequest;
       const declared = manifest.companions?.find(row => row.id === pipeline);
       if (!declared || !Object.hasOwn(declared.combinations, combination)) {
         throw new PluginHostError("App handoff requires a pipeline and combination declared by the plugin.");
       }
       if (declared.steps.find(step => step.input)?.input?.extension !== input?.extension) {
         throw new PluginHostError("App handoff requires the input extension declared by the companion pipeline.");
+      }
+      // API 0.1.29: the retry condition names a step of this pipeline. Native code checks the inputs.
+      if (retry && !declared.steps.some(step => step.id === retry.when.step)) {
+        throw new PluginHostError("A companion retry must name a step declared by the companion pipeline.");
       }
     }
     const provider = this.appHandoffProvenance;

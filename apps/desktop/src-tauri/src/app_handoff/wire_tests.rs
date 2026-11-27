@@ -37,6 +37,7 @@ fn crystal_builder_warning_bytes_match_the_documented_dialog_budget() {
             BUILD,
             Some(&composition),
             warnings,
+            None,
         )
     };
     // Ten ASCII lines use 31 bytes of JSON array punctuation plus 2,739 bytes of text.
@@ -75,7 +76,7 @@ fn preflight_rejects_an_oversized_rebuild_even_without_warnings() {
     pipeline.combinations = [("a".into(), parameters), ("b".into(), BTreeMap::new())].into();
     assert!(pipeline.validate().is_ok());
     let confirm =
-        |id| dialogs::confirmation_snapshot(&pipeline, APP_NAME, PLUGIN_NAME, id, None, &[]);
+        |id| dialogs::confirmation_snapshot(&pipeline, APP_NAME, PLUGIN_NAME, id, None, &[], None);
     let snapshot = encode(dialogs::Snapshot::Confirm {
         title: "Confirm companion build",
         app_name: APP_NAME,
@@ -85,6 +86,7 @@ fn preflight_rejects_an_oversized_rebuild_even_without_warnings() {
         suggested_combination: "b",
         combinations: &pipeline.combinations,
         warnings: &[],
+        retry: None,
     })
     .unwrap();
     assert!(crate::dialog_windows::validate_app_handoff_snapshot(&snapshot).is_ok());
@@ -183,6 +185,7 @@ fn app_handoff_wire_fixtures_are_current() {
                 }),
                 open_output: Some(true),
                 warnings: None,
+                retry: None,
             })
             .unwrap(),
         ),
@@ -198,6 +201,7 @@ fn app_handoff_wire_fixtures_are_current() {
                     "2 carboxylic acids cut to connection points (X).".into(),
                     "The chosen node supplies carboxylates 🧪.".into(),
                 ]),
+                retry: None,
             })
             .unwrap(),
         ),
@@ -219,6 +223,7 @@ fn app_handoff_wire_fixtures_are_current() {
                     },
                 ],
                 opened: true,
+                sequence: None,
             })
             .unwrap(),
         ),
@@ -241,10 +246,79 @@ fn app_handoff_wire_fixtures_are_current() {
                 },
             ],
             opened: false,
+            sequence: None,
+        })
+        .unwrap(),
+    );
+    // API 0.1.29 bounded retry: request, a result from the second input, and a later failure.
+    let when = RetryCondition {
+        step: "build".into(),
+        label: "Joint twist left".into(),
+        not_equal: 0.0,
+    };
+    values.insert(
+        "run-companion-request-retry".into(),
+        encode(RunRequest {
+            app_id: id.into(),
+            pipeline: "mofBuild".into(),
+            combination: BUILD.into(),
+            input: Some(Input {
+                extension: Extension::Xyz,
+                text: "2\n1\nC 0 0 0\nX 1 0 0\n0 1 S\n".into(),
+            }),
+            open_output: Some(true),
+            warnings: None,
+            retry: Some(Retry {
+                inputs: vec![
+                    "2\n2\nC 0 0 0\nX 1.01 0 0\n0 1 S\n".into(),
+                    "2\n3\nC 0 0 0\nX 0.99 0 0\n0 1 S\n".into(),
+                ],
+                when: when.clone(),
+            }),
+        })
+        .unwrap(),
+    );
+    values.insert(
+        "run-companion-done-retry".into(),
+        encode(RunResult::Done {
+            steps: vec![StepResult {
+                id: "build".into(),
+                json: json!({"ok": true, "tables": [{"rows": [{"label": "Joint twist left", "value": "0.000"}]}]}),
+            }],
+            opened: true,
+            sequence: Some(Sequence::after(2)),
+        })
+        .unwrap(),
+    );
+    values.insert(
+        "run-companion-timeout-retry".into(),
+        encode(RunResult::Failed {
+            code: RunCode::Timeout,
+            message: "Companion step \"build\" exceeded its time limit or was stopped.".into(),
+            diagnostic: Some(Diagnostic {
+                step: "build".into(),
+                exit_code: None,
+                json: None,
+                stderr_tail: None,
+            }),
+            sequence: Some(Sequence::after(3)),
         })
         .unwrap(),
     );
     let (pipeline, composition) = crystal_builder_choices();
+    values.insert(
+        "dialog-confirm-retry".into(),
+        dialogs::confirmation_snapshot(
+            &pipeline,
+            APP_NAME,
+            PLUGIN_NAME,
+            BUILD,
+            Some(&composition),
+            &[],
+            Some(dialogs::RetryNotice::new(3, &when)),
+        )
+        .unwrap(),
+    );
     let warnings = dialogs::display_warnings(&["ChemDraft verified\u{200b} this build.".into()]);
     values.insert(
         "dialog-confirm".into(),
@@ -255,6 +329,7 @@ fn app_handoff_wire_fixtures_are_current() {
             BUILD,
             Some(&composition),
             &warnings,
+            None,
         )
         .unwrap(),
     );
@@ -280,6 +355,7 @@ fn app_handoff_wire_fixtures_are_current() {
             BUILD,
             Some(&composition),
             &[],
+            None,
         )
         .unwrap(),
     );
@@ -334,6 +410,7 @@ fn app_handoff_wire_fixtures_are_current() {
                 code,
                 message: "The app handoff companion could not complete.".into(),
                 diagnostic,
+                sequence: None,
             })
             .unwrap(),
         );

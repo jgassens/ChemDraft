@@ -9,6 +9,15 @@ use std::{
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
+    // A test holds this process while it runs: it connects to the address in `hold`, names its
+    // step, and goes on only once the test closes the connection.
+    if let Ok(address) = fs::read_to_string("hold") {
+        fs::remove_file("hold").unwrap();
+        let mut test = std::net::TcpStream::connect(address.trim()).unwrap();
+        writeln!(test, "{}", args[0]).unwrap();
+        let mut rest = Vec::new();
+        let _ = test.read_to_end(&mut rest);
+    }
     match args[0].as_str() {
         "capabilities" => {
             #[cfg(windows)]
@@ -57,7 +66,14 @@ fn main() {
                 "no-file" => {}
                 _ => fs::write(output, "stub cif").unwrap(),
             }
-            println!("{{\"ok\":true,\"tables\":[{{\"rows\":[{{\"label\":\"Joint twist left\",\"value\":\"6.000\"}}]}}]}}");
+            // A retry test variant moves the second atom along x to choose the reported value:
+            // x = 1 reports 6.000, and each 0.001 further reports one less.
+            let twist = text
+                .lines()
+                .nth(3)
+                .and_then(|line| line.split_whitespace().nth(1)?.parse::<f64>().ok())
+                .map_or_else(|| "6.000".into(), |x| format!("{:.3}", (1.006 - x) * 1000.0));
+            println!("{{\"ok\":true,\"tables\":[{{\"rows\":[{{\"label\":\"Joint twist left\",\"value\":\"{twist}\"}}]}}]}}");
         }
         "inspect" => {
             assert_eq!(fs::read_to_string(&args[1]).unwrap(), "stub cif");
@@ -75,6 +91,10 @@ fn main() {
         "stdout" => io::stdout()
             .write_all(&vec![b'x'; 1024 * 1024 + 1])
             .unwrap(),
+        // Runs until it is killed.
+        "linger" => loop {
+            thread::park();
+        },
         "tree" => {
             let child = Command::new(env::current_exe().unwrap())
                 .arg("descendant")

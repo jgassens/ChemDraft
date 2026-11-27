@@ -6,6 +6,7 @@ mod dialogs;
 pub(crate) mod endpoint;
 mod identity;
 mod picker;
+mod retry;
 mod runner;
 mod temp_files;
 mod wire;

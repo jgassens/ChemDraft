@@ -11,9 +11,14 @@ in progress rather than a changelog.
 # App handoff host capability
 
 Phase 1 of [Send to Crystal Builder](send-to-crystal-builder.md) adds API 0.1.28 app handoff,
-native consent and companion pipelines, selection connection points, and handoff chemistry.
-Official catalog provenance and a user-started native menu command gate each handoff. The companion
-plugin is a separate Phase 2. Verify the hands-on checklist on macOS and Windows before closeout.
+native consent and companion pipelines, selection connection points, and handoff chemistry, and
+API 0.1.29's bounded companion retry: under the one build confirmation, up to two plugin-supplied
+alternative inputs that differ from the first only in atom coordinates, by at most 0.1 Å per atom,
+tried only after a completed attempt reports the plugin's declared poor result. Official catalog
+provenance and a user-started native menu command gate each handoff; every companion launch after
+the first, and opening the output, needs that click to be still live, so closing or reloading the
+document window or choosing the plugin's command again stops the build. The companion plugin is a
+separate Phase 2. Verify the hands-on checklist on macOS and Windows before closeout.
 
 ---
 

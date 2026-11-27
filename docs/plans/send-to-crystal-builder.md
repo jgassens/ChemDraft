@@ -1,6 +1,7 @@
 # Send to Crystal Builder: plugin plan
 
-API 0.1.28 in this branch must not ship before the change taking API 0.1.27 lands.
+API 0.1.28 in this branch must not ship before the change taking API 0.1.27 lands. API 0.1.29 adds
+the bounded companion retry (see "Owner decision (2026-11-26): automatic bounded retry").
 
 Status: plan approved by the owner 2026-11-10; revised 2026-11-20 for the one-command build and the
 return trip (owner direction below), and again the same afternoon after the hand-built "MOF-5" turned
@@ -48,6 +49,40 @@ Zn₄O–terephthalate pcu framework in Crystal Builder that was later found not
    bring it into ChemDraft as a 3D object that can be moved and rotated on the page. This is Phase 5,
    scheduled after the one-click send ships. It needs a new native object in `chem-core` and touches
    the charter's "3D molecular visualization" non-goal (PLAN.md §5), which the owner lifted for this object on 2026-11-20 (question 7).
+
+## Owner decision (2026-11-26): automatic bounded retry
+
+Crystal Builder's search can end in a poor result ("Joint twist left" above zero) for one input and a
+good one for an input that differs by 0.01 Å. The owner decided that ChemDraft retries automatically,
+in the same consented run, with at most two more input variants, and only after a completed run whose
+own report says the result is poor; never after a crash, timeout, nonzero exit, unreadable report, or
+a declined box. The plugin judges the final result itself and applies the same judgement to every
+variant. This narrows question 11's answer (b): the Rebuild button stays, and reruns only the input
+finally used.
+
+Host shape (API 0.1.29, additive and generic; the host knows nothing about frameworks or twist):
+
+- `runCompanion` takes an optional `retry: { inputs, when }`. `inputs` holds one or two alternative
+  texts, with the first input's extension and 1 MiB limit. Each must be the first input with only atom
+  coordinates changed (same lines, atom count line, comment line, elements and bond records), move no
+  atom more than 0.1 Å from the first input, and move at least one atom from every earlier input; the
+  host refuses anything else with `bad-param` before any box.
+- `when: { step, label, notEqual }` names a declared step, a plain row label of up to 80 characters,
+  and a finite number. The host reads the step's report at `tables[i].rows[j]` only, needs exactly one
+  row whose `label` equals the label, and retries only when its `value` reads as a finite number other
+  than `notEqual`. No regex, code, or path expressions.
+- The build confirmation states up to how many builds, that the next input keeps the atoms, bonds and
+  comment line and moves no atom more than 0.1 Å, and when it builds again. No box between attempts.
+  Every launch rechecks consent, app and companion identity, the plugin install and the menu command.
+  Every launch after the first (each step and attempt, and a rebuild) and the output's open also need
+  the menu click to be still live, checked with the launch: closing or reloading the document window
+  or choosing the plugin's command again stops the build, a single run included. The sequence has a
+  1200-second bound; each attempt keeps its 600-second pipeline bound.
+- Each attempt has its own temporary folder; only the final attempt's output is opened. The result
+  carries `attempts` and `variant`; a later failure is returned as that failure.
+
+For Crystal Builder the plugin sends `when: { step: "build", label: "Joint twist left", notEqual: 0 }`
+with two inputs nudged by 0.01 Å.
 
 ## Kimi plan review (2026-11-21)
 
@@ -816,7 +851,9 @@ For the owner:
    refuse the name. Recommended: (b), because every build stays one user action. The Kimi review
    (2026-11-21) also recommends (b), as a new host-authenticated user action with rule 3 unchanged;
    the plan is now written for (b) (task 1H). **Answered (owner, 2026-11-21 overnight): (b), the
-   Rebuild button,** run by Rust from its result session (rule 16).
+   Rebuild button,** run by Rust from its result session (rule 16). **Extended (owner, 2026-11-26):**
+   before that offer, the host may also retry the same combination with up to two plugin-supplied
+   input variants under the one confirmation (API 0.1.29; see "Owner decision (2026-11-26)").
 12. **Inherent format losses and master condition 3(d) (new, 2026-11-21, from the Kimi review).**
    Layout, labels, colors, implicit hydrogens made explicit, and the vacuum box are lost on every send
    by the nature of a 3D file. Owner question 2 chose a box only for specific losses; condition 3(d)

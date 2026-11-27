@@ -63,17 +63,22 @@ pub(super) struct Completed {
     pub output: Option<PathBuf>,
 }
 
+pub(super) const PIPELINE_LIMIT: Duration = Duration::from_secs(600);
+
+/// Run every declared step once. `deadline` is at most `PIPELINE_LIMIT` from the start; a retry
+/// sequence passes an earlier one when its own total bound ends first.
 pub(super) fn run(
     pipeline: &Pipeline,
     build: &ApprovedBuild,
     files: &TempFiles,
     mut start_step: impl FnMut(&[OsString], &Path, bool, Instant) -> Result<ChildProcess, Failure>,
     stopped: &AtomicBool,
+    deadline: Instant,
 ) -> Result<Completed, Failure> {
     let mut previous = None;
     let mut final_output = None;
     let mut results = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(600);
+    let deadline = deadline.min(Instant::now() + PIPELINE_LIMIT);
     for (index, step) in pipeline.steps.iter().enumerate() {
         let rendered = pipeline
             .render(
@@ -328,26 +333,60 @@ impl ChildProcess {
         Self::spawn_command(isolated_command(program, args, cwd))
     }
 
-    fn spawn_command(mut command: Command) -> io::Result<Self> {
-        #[allow(unused_mut)]
-        let mut child = command.spawn()?;
+    fn spawn_command(command: Command) -> io::Result<Self> {
         #[cfg(windows)]
-        let job = match super::windows_process::WindowsJob::attach(&child).and_then(|job| {
-            super::windows_process::resume_windows_child(&child)?;
-            Ok(job)
-        }) {
-            Ok(job) => job,
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(error);
-            }
-        };
+        let (child, job) = Self::start(
+            command,
+            |child| {
+                // A job that attached to a child that then did not resume is dropped here, and
+                // closing it ends the child.
+                let job = super::windows_process::WindowsJob::attach(child)?;
+                super::windows_process::resume_windows_child(child)?;
+                Ok(job)
+            },
+            Box::new(Child::try_wait),
+        )?;
+        #[cfg(not(windows))]
+        let (child, ()) = Self::start(command, |_| Ok(()), Box::new(Child::try_wait))?;
         Ok(Self {
             child,
             #[cfg(windows)]
             job,
         })
+    }
+
+    #[cfg(test)]
+    pub(super) fn start_isolated<S>(
+        program: &Path,
+        args: &[OsString],
+        cwd: &Path,
+        setup: impl FnOnce(&Child) -> io::Result<S>,
+        poll: ExitPoll,
+    ) -> io::Result<(Child, S)> {
+        Self::start(isolated_command(program, args, cwd), setup, poll)
+    }
+
+    /// Starts `command`, then runs `setup`, which must succeed before the child may run: on Windows
+    /// the child is created suspended, and `setup` attaches its job and resumes it. This runs in
+    /// the click's launch gate, under the consent store lock (and the stage lock on a first
+    /// launch). So when `setup` fails, the child is only asked to end here, never waited for; it
+    /// is reaped outside every lock (`discard`). It is never resumed, and `setup`'s error is
+    /// returned as it is.
+    fn start<S>(
+        mut command: Command,
+        setup: impl FnOnce(&Child) -> io::Result<S>,
+        poll: ExitPoll,
+    ) -> io::Result<(Child, S)> {
+        let mut child = command.spawn()?;
+        match setup(&child) {
+            Ok(ready) => Ok((child, ready)),
+            Err(error) => {
+                // Asking for the end does not wait for it.
+                let _ = child.kill();
+                discard(child, poll);
+                Err(error)
+            }
+        }
     }
 
     pub(super) fn capture(
@@ -432,6 +471,33 @@ impl ChildProcess {
         #[cfg(unix)]
         let _ = platform::sweep_exited_process_group(self.child.id(), true);
         let _ = self.child.wait();
+    }
+}
+
+/// Reports, without waiting, whether a child whose setup failed has ended: `Child::try_wait`, or a
+/// stand-in in tests.
+pub(super) type ExitPoll = Box<dyn FnMut(&mut Child) -> io::Result<Option<ExitStatus>> + Send>;
+
+/// How long a child whose setup failed is given to end after its kill before its handles are
+/// closed without waiting further.
+const REAP_LIMIT: Duration = Duration::from_secs(30);
+
+/// Reaps a child whose setup failed, after its kill was requested, on a thread of its own, so the
+/// launch that started it returns at once. If no thread can be started, the child is dropped here:
+/// its handles close without a wait, and a child the kill did not end stays suspended.
+fn discard(child: Child, poll: ExitPoll) {
+    let _ = thread::Builder::new()
+        .name("companion-reaper".into())
+        .spawn(move || reap(child, poll));
+}
+
+/// Waits a bounded time for `child` to end, asking again for its end while it has not. Dropping
+/// the child closes its handles; a child that never ends stays suspended, never resumed.
+fn reap(mut child: Child, mut poll: ExitPoll) {
+    let limit = Instant::now() + REAP_LIMIT;
+    while matches!(poll(&mut child), Ok(None)) && Instant::now() < limit {
+        let _ = child.kill();
+        thread::sleep(Duration::from_millis(10));
     }
 }
 

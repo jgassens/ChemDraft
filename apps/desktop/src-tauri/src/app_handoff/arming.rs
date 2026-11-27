@@ -1,8 +1,44 @@
-use super::{temp_files, wire::Input};
+//! Native menu clicks ("arms") and the launches each one allows.
+//!
+//! # Launch ordering
+//!
+//! Every launch a click allows (a file send's open, a build's first step, each later step and
+//! attempt, a rebuild's steps, and opening the output) checks that the click is live and starts
+//! its process or open inside the click's launch gate (`Arm::while_live`). Every invalidation
+//! (`Arm::invalidate`: window close or reload, a new arming, finish, release, disarm, consent
+//! revoke, shutdown, and a duplicate request) marks the click ended inside the same gate. So once
+//! an invalidation has returned, no launch of that click starts, and a launch already inside the
+//! gate has started its process or open before the invalidation returns. An arm can only be
+//! dropped once no `Submission` holds it, so dropping one never races a launch.
+//!
+//! The gate holds only the liveness check and starting the process or open (`Command::spawn`, and
+//! on Windows attaching the job and resuming the suspended child). No receipt, output or exit is
+//! waited for inside it: a child whose job or resume fails is killed there without a wait and
+//! reaped on a thread of its own (`runner::ChildProcess::start`). So an invalidating caller, the
+//! main thread included, waits at most for one process to start.
+//!
+//! Locks, outermost first. Each is only taken while holding locks above it, never below:
+//!
+//! 1. the consent store's `LOCK` (`consent.rs`), held by a launch around the grant check, the app
+//!    identity check and the launch; and by revoke and clear, released before they disarm;
+//! 2. `State::arms`, held by every invalidation through `State`; never held by a launch;
+//! 3. an arm's `stage`, held by a first launch around the gate, by `disarm_consent` and a duplicate
+//!    `submit` around their invalidation, and briefly elsewhere;
+//! 4. an arm's `gate`, the innermost: while it is held, no other ChemDraft lock is taken and no
+//!    other ChemDraft thread is waited for; only the new process's start is.
+//!
+//! The consent store lock and `arms` are never held together. Only leaf locks, which take no
+//! further lock, are taken under the gate (the `invalidated` watch channel's own lock), so there
+//! is no cycle, and nothing that holds the gate waits on the main thread.
+
+use super::{
+    temp_files,
+    wire::{Input, RetryCondition},
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, LockResult, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError},
     time::{Duration, Instant},
 };
 use tokio::sync::watch;
@@ -31,6 +67,9 @@ pub(super) struct Arm {
     stage: Mutex<Stage>,
     build: OnceLock<BuildChoice>,
     invalidated: watch::Sender<bool>,
+    /// The launch gate (see the module comment). It guards no data, so a poisoned gate is used as
+    /// it is.
+    gate: Mutex<()>,
 }
 
 #[derive(Default)]
@@ -87,15 +126,46 @@ impl State {
         }
     }
 
-    /// Only the Rust result handler can start this invocation. It is never visible to IPC.
-    pub(super) fn arm_host_event(
+    /// The rebuild a completed build's result box offers. Only the Rust result handler can start
+    /// it, and only while `original`, the click that ran the build, is still the plugin's live,
+    /// used click: checked under the arms lock, so a reload, close or new click either ends the
+    /// original first (and the rebuild is refused) or ends the rebuild's own click after it.
+    /// The rebuild's click takes the original's place, so the same events end it. Its nonce is
+    /// never sent anywhere, so no IPC call can claim or finish it; `release` removes it.
+    pub(super) fn arm_rebuild(
         &self,
         plugin: &str,
         command: &str,
         now: Instant,
+        original: &Submission,
     ) -> Result<Submission, String> {
-        self.disarm(plugin);
-        Arc::new(Arm::new(command, String::new(), now)).submit(now)
+        let nonce =
+            temp_files::nonce().map_err(|_| "Could not secure the app handoff menu click.")?;
+        let mut arms = self.arms.lock().unwrap();
+        if !arms
+            .get(plugin)
+            .is_some_and(|arm| Arc::ptr_eq(arm, &original.0))
+        {
+            return Err(NO_ARMING.into());
+        }
+        original.assert_used()?;
+        let arm = Arc::new(Arm::new(command, nonce, now));
+        let submission = arm.submit(now)?;
+        if let Some(previous) = arms.insert(plugin.into(), arm) {
+            previous.invalidate();
+        }
+        Ok(submission)
+    }
+
+    /// Ends a host-started click once its work is over, unless something already replaced it.
+    pub(super) fn release(&self, plugin: &str, submission: &Submission) {
+        let mut arms = self.arms.lock().unwrap();
+        if arms
+            .get(plugin)
+            .is_some_and(|arm| Arc::ptr_eq(arm, &submission.0))
+        {
+            arms.remove(plugin).unwrap().invalidate();
+        }
     }
 
     pub(super) fn for_call(
@@ -142,10 +212,13 @@ impl State {
         }
     }
 
+    /// Ends the click whose consent box for `id` is pending. A first launch holds the stage lock
+    /// through the gate, so this waits for one already inside the gate; that launch spends the
+    /// click, and from then on the consent store refuses every later launch.
     pub(super) fn disarm_consent(&self, plugin: &str, id: &str) {
         let mut arms = self.arms.lock().unwrap();
         let matches = arms.get(plugin).is_some_and(|arm| {
-            let stage = arm.stage.lock().unwrap();
+            let stage = wait_lock(&arm.stage).unwrap();
             if matches!(&*stage, Stage::Pending { consent_id: Some(current), .. } if current == id)
             {
                 arm.invalidate();
@@ -184,11 +257,22 @@ impl Arm {
             stage: Mutex::default(),
             build: OnceLock::new(),
             invalidated: watch::channel(false).0,
+            gate: Mutex::new(()),
         }
     }
 
+    /// Ends the click. Waits for a launch already inside the gate to start its process or open;
+    /// no launch of this click starts after this returns.
     fn invalidate(&self) {
+        let _gate = wait_lock(&self.gate).unwrap_or_else(PoisonError::into_inner);
         self.invalidated.send_replace(true);
+    }
+
+    /// The launch boundary: runs `launch`, which only starts a process or an open, if and only if
+    /// the click has not been invalidated, ordered against `invalidate` by the gate.
+    fn while_live<T>(&self, launch: impl FnOnce() -> T) -> Option<T> {
+        let _gate = wait_lock(&self.gate).unwrap_or_else(PoisonError::into_inner);
+        (!*self.invalidated.borrow()).then(launch)
     }
 
     pub(super) fn submit(self: &Arc<Self>, now: Instant) -> Result<Submission, String> {
@@ -287,15 +371,62 @@ impl Submission {
         self.launch(launch)
     }
 
+    /// Every process launch of an approved build goes through its click, checked in the click's
+    /// launch gate together with the launch. The first launch uses the click's one allowance
+    /// (`launch_build`); every later one (each later step, each later attempt, and opening the
+    /// output) needs the same click to be still live (`relaunch_build`).
+    pub(super) fn launch_step<T>(
+        &self,
+        build: &ApprovedBuild,
+        first: bool,
+        launch: impl FnOnce() -> T,
+    ) -> Result<T, String> {
+        if first {
+            self.launch_build(build, launch)
+        } else {
+            self.relaunch_build(build, launch)
+        }
+    }
+
+    /// A launch after the first: a later step, a later attempt, or opening the output. The first
+    /// launch used this click, so the click must still be the live, used one for the same native
+    /// build choice. A reload or close of the document window, the plugin's menu command armed
+    /// again, or the plugin's consent cleared invalidates it.
+    pub(super) fn relaunch_build<T>(
+        &self,
+        build: &ApprovedBuild,
+        launch: impl FnOnce() -> T,
+    ) -> Result<T, String> {
+        if self.0.build.get() != Some(&BuildChoice::from(build)) {
+            return Err("The companion launch differs from the native build choice.".into());
+        }
+        // `Used` is final, so only liveness can change between this check and the launch, and
+        // the gate orders that.
+        self.assert_used()?;
+        self.0.while_live(launch).ok_or_else(|| NO_ARMING.into())
+    }
+
+    /// Between attempts: the click has launched and nothing has invalidated it since.
+    pub(super) fn assert_used(&self) -> Result<(), String> {
+        self.assert_used_locked(&self.0.stage.lock().unwrap())
+    }
+
+    fn assert_used_locked(&self, stage: &Stage) -> Result<(), String> {
+        match stage {
+            Stage::Used if !*self.0.invalidated.borrow() => Ok(()),
+            Stage::Rejected => Err(RACE.into()),
+            _ => Err(NO_ARMING.into()),
+        }
+    }
+
     // Recheck under the same lock as submit. A duplicate that arrives before this launch
     // boundary rejects both requests. A duplicate after this boundary has no remaining allowance.
+    // Liveness is checked in the gate, with the launch.
     pub(super) fn launch<T>(&self, launch: impl FnOnce() -> T) -> Result<T, String> {
         let mut stage = self.0.stage.lock().unwrap();
         match *stage {
-            Stage::Pending { shown, .. }
-                if !*self.0.invalidated.borrow() && (shown || Instant::now() < self.0.expires) =>
-            {
-                let output = launch();
+            Stage::Pending { shown, .. } if shown || Instant::now() < self.0.expires => {
+                let output = self.0.while_live(launch).ok_or(NO_ARMING)?;
                 *stage = Stage::Used;
                 Ok(output)
             }
@@ -326,6 +457,36 @@ pub(super) struct ApprovedBuild {
     pub input: Option<Input>,
     pub open_output: bool,
     pub warnings: Vec<String>,
+    /// API 0.1.29: the inputs after `input`, in attempt order, and the declared retry condition.
+    pub retry: Option<ApprovedRetry>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct ApprovedRetry {
+    pub inputs: Vec<Input>,
+    pub when: RetryCondition,
+}
+
+impl ApprovedBuild {
+    pub(super) fn variants(&self) -> usize {
+        1 + self.retry.as_ref().map_or(0, |retry| retry.inputs.len())
+    }
+
+    pub(super) fn variant(&self, index: usize) -> Option<&Input> {
+        match index {
+            0 => self.input.as_ref(),
+            _ => self.retry.as_ref()?.inputs.get(index - 1),
+        }
+    }
+
+    /// The single build a later rebuild repeats: the input finally used, with no further retry.
+    pub(super) fn settle(&mut self, variant: usize) {
+        if let Some(mut retry) = self.retry.take() {
+            if variant > 0 && variant <= retry.inputs.len() {
+                self.input = Some(retry.inputs.swap_remove(variant - 1));
+            }
+        }
+    }
 }
 
 #[derive(PartialEq, Eq)]
@@ -365,5 +526,41 @@ impl<T> ResultSession<T> {
             combination: self.rebuild_as,
             ..self.build
         })
+    }
+}
+
+/// Takes `lock`; a test learns (`lock_wait::on_wait`) when the calling thread has to wait for it.
+pub(super) fn wait_lock<T>(lock: &Mutex<T>) -> LockResult<MutexGuard<'_, T>> {
+    match lock.try_lock() {
+        Ok(guard) => Ok(guard),
+        Err(TryLockError::Poisoned(poisoned)) => Err(poisoned),
+        Err(TryLockError::WouldBlock) => {
+            #[cfg(test)]
+            lock_wait::waiting();
+            lock.lock()
+        }
+    }
+}
+
+/// Lets a race test see that a thread waits at a lock without sleeping to find out.
+#[cfg(test)]
+pub(super) mod lock_wait {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static HOOK: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
+    }
+
+    /// Calls `hook` each time this thread has to wait in `wait_lock`.
+    pub(in crate::app_handoff) fn on_wait(hook: impl Fn() + 'static) {
+        HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+    }
+
+    pub(super) fn waiting() {
+        HOOK.with(|slot| {
+            if let Some(hook) = &*slot.borrow() {
+                hook();
+            }
+        });
     }
 }

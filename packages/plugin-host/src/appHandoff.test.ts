@@ -247,6 +247,37 @@ describe("PluginHost app handoff", () => {
     await host.invokeAppHandoffMenuCommand(invocation);
   });
 
+  it("relays a bounded retry that names a declared step and returns its attempts (API 0.1.29)", async () => {
+    const { host, transport } = setup();
+    const [companion] = manifest.companions;
+    const withInput = { ...manifest, companions: [{ ...companion, steps: [
+      companion.steps[0], { ...companion.steps[1], input: { extension: "xyz" as const } }
+    ] }] };
+    const input = { extension: "xyz" as const, text: "1\n\nC 0 0 0\n" };
+    const retry = { inputs: ["1\nb\nC 0 0 0.01\n"], when: { step: "build", label: "Joint twist left", notEqual: 0 } };
+    const request = { ...run, input, retry };
+    const done = { status: "done", steps: [], opened: true, attempts: 2, variant: 1 };
+    transport.mockImplementation(async () => done);
+    const results: unknown[] = [];
+    host.registerPlugin(withInput, { execution: "worker", commandHandlers: { [commandId]: async ({ apps }) => {
+      if (results.length) return apps!.runCompanion(request);
+      await expect(apps!.runCompanion({ ...request, retry: { ...retry, when: { ...retry.when, step: "inspect" } } }))
+        .rejects.toThrow("step declared by the companion pipeline");
+      await expect(apps!.runCompanion({ ...run, retry } as never)).rejects.toThrow(/^Invalid apps\.runCompanion request at retry\.$/);
+      await expect(apps!.runCompanion({ ...request, retry: { ...retry, inputs: ["a", "b", "c"] } }))
+        .rejects.toThrow(/^Invalid apps\.runCompanion request at retry\.inputs\.$/);
+      expect(transport).not.toHaveBeenCalled();
+      results.push(await apps!.runCompanion(request));
+    } } });
+    await host.invokeAppHandoffMenuCommand(invocation);
+    expect(transport).toHaveBeenCalledWith(invocation, "runCompanion", request);
+    expect(results).toEqual([done]);
+
+    transport.mockImplementation(async () => ({ ...done, variant: 0 }));
+    const second = { ...invocation, nonce: "2".repeat(32) };
+    await expect(host.invokeAppHandoffMenuCommand(second)).rejects.toThrow("invalid apps.runCompanion result");
+  });
+
   it("returns an explicit error on hosts that lack a native handoff transport", async () => {
     const { host, register } = setup({ appHandoffTransport: undefined });
     register(({ apps }) => apps!.sendFile(send));

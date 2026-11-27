@@ -141,7 +141,7 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 ```
 
 `apiVersion` in your manifest declares the SDK contract you target (`PluginApiVersion`, currently
-`0.1.28`). API 0.1.21 adds plugin chemistry properties and plugin assistant tools (#310).
+`0.1.29`). API 0.1.21 adds plugin chemistry properties and plugin assistant tools (#310).
 API 0.1.22 adds optional name-to-structure `source`, `matchedName` and `matchedCas` provenance for the offline name dictionary (#318).
 API 0.1.23 adds native wavy single bonds (#327).
 Set `MoleculeBond.display.bondStyle: "wavy"` only with `order: "single"`; the schema rejects other orders.
@@ -151,6 +151,7 @@ should declare `^0.1.23`.
 API 0.1.24 adds reaction `arrowObjectIds`/`plusObjectIds` for shared scheme arrows and plus signs (#335),
 and binary CDX import/export (#316). API 0.1.25 adds optional bracketUsage, repeatCount and scoped crossingBondIds (#338 bracketed groups).
 API 0.1.28 adds [app handoff](#app-handoff), selection connection points, and handoff chemistry graphs.
+API 0.1.29 adds an optional [bounded companion retry](#bounded-companion-retry) to `runCompanion`.
 API 0.1.26 adds [request-bound plugin tools](#request-bound-plugin-tools), depiction, and document-change notifications.
 API 0.1.20 adds optional `tableStyle.autoColumnMinEm`, the minimum auto column width in em. API 0.1.19 bounds panel reports: strings, collection sizes, aggregate work and UTF-8 JSON
 size are validated before a report is forwarded to the renderer (see [Panel report limits](#panel-report-limits)).
@@ -178,6 +179,7 @@ it declares.
 
 | API version | Additive capability | Permission |
 | --- | --- | --- |
+| 0.1.29 | Optional bounded `retry` on `apps.runCompanion`, with `attempts` and `variant` in its result | No new permission; `apps.handoff` and `native.execute` as for 0.1.28 |
 | 0.1.28 | App handoff and companion pipelines, warnings and success status; host identity; selection connection points and atom IDs; handoff chemistry graphs, graph input to `embed3d`, and connection point writes | `apps.handoff` and `native.execute` for handoff; `selection.read` and `chemistry.compute` for handoff chemistry; `document.write` for connection point writes |
 | 0.1.27 | Reserved for stated hydrogen counts (PR #468) | No new permission |
 | 0.1.26 | Request lifecycle, pinned document reads and patches, session-local tools, chemistry and depiction, and document-change notifications | Existing permissions, listed below |
@@ -290,7 +292,11 @@ file must declare a single XYZ input. The plugin supplies only a declared combin
 placeholders provide file paths and declared combination values; they must occupy an argument or
 follow a fixed `key=` prefix. The host validates the declaration, runs all steps in order, checks
 the app and tool, and refuses untested versions. See `PluginCompanionPipeline` in the SDK for the
-schema; each step is capped at 300 seconds and the pipeline at 600 seconds.
+schema; each step is capped at 300 seconds and the pipeline at 600 seconds. Every launch after the
+first step, and opening the output, also needs the menu click to be still live (hosts with API
+0.1.29): closing or reloading the document window, choosing one of the plugin's menu commands again,
+or clearing the plugin's consents ends the build before its next step with `bad-param`, and the
+output is not opened. A step already running finishes within its time limit; quitting stops it.
 
 The native host asks for consent for the app and, for a companion, its pipeline. Consent is visible
 and revocable in Plugin Manager, and is cleared on uninstall or an update dropping `apps.handoff`.
@@ -301,6 +307,71 @@ optional bounded diagnostic. Handle cancellation and failure explicitly; failure
 changed apps, launch or write failures, and companion version, timeout, exit, or output errors.
 Invalid requests and unauthorized calls can also reject. Do not treat a declined or failed operation
 as success.
+
+### Bounded companion retry
+
+API 0.1.29. Some companion searches end in a poor result for one input and a good one for an input
+that differs very slightly. `runCompanion` accepts an optional `retry` so the host can try again in
+the same consented run, without asking the user again between attempts:
+
+```ts
+const result = await context.apps!.runCompanion({
+  appId, pipeline: "mofBuild", combination: "pcu-N16-1x1x1", openOutput: true,
+  input: { extension: "xyz", text: first },
+  retry: {
+    inputs: [nudgedA, nudgedB],  // one or two alternative texts
+    when: { step: "build", label: "Joint twist left", notEqual: 0 }
+  }
+});
+if (result.status === "done" && result.attempts && result.attempts > 1) {
+  // result.variant 0 is `input`; n is retry.inputs[n - 1].
+}
+```
+
+- **Inputs.** `retry` requires `input`. Supply every alternative up front: one or two texts with the
+  first input's extension and its 1 MiB UTF-8 limit. Each alternative must be the first input with
+  only atom coordinates changed: the same lines in the same order with the same line breaks, and
+  the atom count line, comment line and bond records byte for byte. Each atom record keeps its
+  element; only its three coordinates, and the spaces or tabs between its fields, may differ. No
+  atom may be more than 0.1 Å (`PluginAppHandoffLimits.retryDisplacementAngstroms`) from its
+  position in the first input, and each alternative must move at least one atom from where every
+  earlier input has it. Before anything is shown or run, the host refuses any other request with
+  `bad-param`.
+- **Condition.** `when` is data, not code: a declared step ID, a row label of 1–80 plain characters
+  (no control or invisible format characters, no line breaks, no leading or trailing spaces), and one
+  finite number. The step must belong to the pipeline. After an attempt **completes**, the host looks
+  in that step's JSON report only at `tables[i].rows[j]`: the report must be an object whose `tables`
+  is an array. A table that is not an object with a `rows` array, and a row that is not an object,
+  contributes nothing. A row matches when its `label` string equals the declared label exactly.
+  The condition holds only when exactly one row matches and its `value` is a finite JSON number, or a
+  string whose trimmed text parses as one, and that number is not equal to `notEqual`. A missing
+  step, table or row, a duplicate step or row, or a missing, non-numeric, or non-finite value does
+  not hold, so the host does not retry. Every completed attempt has a JSON report for each step; an
+  attempt that fails has none to judge.
+- **When it retries.** Only after a completed attempt for which the condition holds, and only while an
+  untried input remains: at most three attempts. A crash, timeout, nonzero exit, unreadable or
+  missing output, refused launch, or declined box never leads to another attempt.
+- **One confirmation.** The build confirmation states the maximum number of builds, that the next
+  input keeps the atoms, bonds and comment line and moves no atom more than 0.1 Å, and when the host
+  builds again. No box appears between attempts. The invocation
+  still allows one `runCompanion` call. A later rebuild offer reruns only the input finally used.
+- **Checks on every launch.** Each attempt revalidates consent, the app and companion identity, the
+  plugin install, and the menu command, exactly as each step of a single run does. Every step of
+  every later attempt, and opening the final output, also needs the menu click to be still live:
+  revoking consent, uninstalling or disabling the plugin, a changed app or companion, closing or
+  reloading the document window, quitting, or choosing one of the plugin's menu commands again
+  stops the sequence before its next launch. Each attempt keeps the 600-second pipeline bound,
+  and the whole sequence is bounded by `PluginAppHandoffLimits.retrySequenceSeconds` (1200 seconds).
+- **Output.** Each attempt uses its own temporary folder, removed like a single run's. Only the final
+  attempt's output is opened when `openOutput` is set; earlier outputs are never opened. If every
+  attempt meets the condition, the last one is returned and opened as a single run would be.
+- **Result.** With `retry`, `done`, and a `failed` result once the first attempt has begun, carry
+  `attempts` (attempts begun, 1–3) and `variant` (`attempts - 1`: 0 for `input`, n for `retry.inputs[n - 1]`); the
+  returned steps, output, or failure come from that variant. A failure on a later attempt is
+  returned as that failure, never as an earlier attempt's success. Requests without `retry` return
+  results without these fields, exactly as in 0.1.28.
+
+The plugin judges the final result itself and applies the same judgement to every variant.
 
 ## Request-bound plugin tools
 

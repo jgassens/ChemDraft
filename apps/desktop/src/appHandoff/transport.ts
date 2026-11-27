@@ -44,14 +44,21 @@ export function appHandoffResultStatus(
     const result = PluginHandoffRunCompanionResultSchema.safeParse(reply);
     if (!result.success) return invalid();
     switch (result.data.status) {
-      case "done":
-        if (result.data.opened) return { kind: "confirmed", message: "Build completed and opened in the chosen app." };
+      case "done": {
+        // API 0.1.29: name the attempt count only when the host actually retried.
+        const built = result.data.attempts && result.data.attempts > 1
+          ? `Build completed after ${result.data.attempts} attempts` : "Build completed";
+        if (result.data.opened) return { kind: "confirmed", message: `${built} and opened in the chosen app.` };
         if ("openOutput" in request && request.openOutput) {
-          return { kind: "confirmed", message: "Build completed, but the chosen app could not open it." };
+          return { kind: "confirmed", message: `${built}, but the chosen app could not open it.` };
         }
-        return { kind: "confirmed", message: "Build completed." };
+        return { kind: "confirmed", message: `${built}.` };
+      }
       case "declined": return { kind: "cancelled", message: "Companion build cancelled." };
-      case "failed": return problem(`Companion build failed: ${boundedHandoffText(result.data.message)}`);
+      case "failed": {
+        const attempt = result.data.attempts && result.data.attempts > 1 ? ` on attempt ${result.data.attempts}` : "";
+        return problem(`Companion build failed${attempt}: ${boundedHandoffText(result.data.message)}`);
+      }
     }
   }
   if (method === "chooseApp") {

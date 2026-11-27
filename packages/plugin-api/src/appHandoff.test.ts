@@ -245,3 +245,56 @@ describe("strict app handoff wire shapes", () => {
     }).success).toBe(false);
   });
 });
+
+describe("app handoff bounded retry (API 0.1.29)", () => {
+  const input = { extension: "xyz" as const, text: "1\n\nC 0 0 0\n" };
+  const when = { step: "build", label: "Joint twist left", notEqual: 0 };
+  const retry = { inputs: ["1\n\nC 0 0 0.01\n"], when };
+  const request = { ...runCompanion, input, retry };
+  const parse = (value: unknown) => PluginHandoffRunCompanionRequestSchema.safeParse(value);
+
+  it("leaves requests and results without retry fields unchanged", () => {
+    expect(PluginHandoffRunCompanionRequestSchema.parse({ ...runCompanion, input })).toEqual({ ...runCompanion, input });
+    const done = { status: "done", opened: false, steps: [] };
+    expect(PluginHandoffRunCompanionResultSchema.parse(done)).toEqual(done);
+  });
+
+  it("accepts up to two alternative inputs with the first input's limits", () => {
+    expect(PluginHandoffRunCompanionRequestSchema.parse(request)).toEqual(request);
+    const largest = "é".repeat(limits.inputBytes / 2);
+    expect(parse({ ...request, retry: { ...retry, inputs: [largest, largest] } }).success).toBe(true);
+    for (const inputs of [[], ["a", "b", "c"], [largest + "!"], [0], "a", [null]]) {
+      expect(parse({ ...request, retry: { ...retry, inputs } }).success).toBe(false);
+    }
+    expect(parse({ ...runCompanion, retry }).error?.issues[0]?.path).toEqual(["retry"]);
+    expect(limits.retryInputs).toBe(2);
+    expect(limits.retryDisplacementAngstroms).toBe(0.1);
+  });
+
+  it("declares the condition as one step, one plain label and one finite number", () => {
+    expect(parse({ ...request, retry: { ...retry, when: { ...when, label: "🧪".repeat(limits.retryLabelCharacters), notEqual: -2.5 } } }).success).toBe(true);
+    for (const invalid of [
+      { ...when, step: "../build" }, { ...when, step: "" }, { ...when, label: "" }, { ...when, label: " Joint" },
+      { ...when, label: "Joint\ntwist" }, { ...when, label: "Joint\u200btwist" }, { ...when, label: "x".repeat(81) },
+      { ...when, notEqual: Infinity }, { ...when, notEqual: Number.NaN }, { ...when, notEqual: "0" },
+      { ...when, path: "$.tables[0]" }, { ...when, pattern: ".*" }, { step: "build", label: "Joint twist left" }
+    ]) {
+      expect(parse({ ...request, retry: { ...retry, when: invalid } }).success).toBe(false);
+    }
+    expect(parse({ ...request, retry: { ...retry, extension: "cif" } }).success).toBe(false);
+  });
+
+  it("reports attempts and the variant of the last attempt together", () => {
+    const done = { status: "done", opened: true, steps: [], attempts: 2, variant: 1 };
+    const failed = { status: "failed", code: "timeout", message: "Timed out.", attempts: 3, variant: 2 };
+    expect(PluginHandoffRunCompanionResultSchema.parse(done)).toEqual(done);
+    expect(PluginHandoffRunCompanionResultSchema.parse(failed)).toEqual(failed);
+    for (const invalid of [
+      { ...done, attempts: undefined }, { ...done, variant: undefined }, { ...done, variant: 0 },
+      { ...done, attempts: 4, variant: 3 }, { ...done, attempts: 0, variant: -1 }, { ...failed, variant: 1.5 },
+      { status: "declined", attempts: 1, variant: 0 }
+    ]) {
+      expect(PluginHandoffRunCompanionResultSchema.safeParse(invalid).success).toBe(false);
+    }
+  });
+});
