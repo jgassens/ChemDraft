@@ -42,14 +42,16 @@ export function AppHandoffConsentSection({ consents, pluginNames, catalogKey, di
     setRevoking(row.consentId);
     setRevokeError(undefined);
     try {
-      await consents.revoke(row.pluginId, row.consentId);
+      const removed = new Set(await consents.revoke(row.pluginId, row.consentId));
       listGeneration.current += 1;
       const { activeElement, body } = button.ownerDocument;
       if (activeElement === button || activeElement === body) heading.current?.focus();
       const matches = (item: AppHandoffConsent) => item.pluginId === row.pluginId && item.consentId === row.consentId;
+      // Other consents the revocation also removed must not stay listed as allowed if the refresh fails.
+      const alsoRemoved = (item: AppHandoffConsent) => item.pluginId === row.pluginId && removed.has(item.consentId) && !matches(item);
       setRows(current => row.status === "conflict"
-        ? current?.filter(item => !matches(item))
-        : current?.map(item => matches(item) ? { ...item, status: "revoked" } : item));
+        ? current?.filter(item => !matches(item) && !alsoRemoved(item))
+        : current?.filter(item => !alsoRemoved(item)).map(item => matches(item) ? { ...item, status: "revoked" } : item));
       setRevision(value => value + 1);
     } catch (error) {
       setRevokeError(`Could not revoke app handoff to ${row.appName}: ${errorMessage(error)}`);
