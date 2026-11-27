@@ -43,6 +43,7 @@ import {
 } from "./documentWorkflow";
 import {
   desktopToolsetRegistry,
+  shippedToolsetRegistry,
   getToolsetCommandGroups,
   getToolsetCommandSpecs,
   getToolsetToggleActions,
@@ -2490,7 +2491,7 @@ export const toolbarCustomizationActions: CommandSpec[] = [
 ];
 
 export function allPaletteCommands(
-  registry: DesktopToolsetRegistry = desktopToolsetRegistry
+  registry: DesktopToolsetRegistry = shippedToolsetRegistry
 ): CommandSpec[] {
   return withStandaloneDrawingToolCommands(getToolsetCommandSpecs(registry));
 }

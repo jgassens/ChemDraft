@@ -1545,6 +1545,18 @@ caption must use the atom-label size. Existing structures on the page must not c
 
 - Ask the assistant for a two-step Sharpless-style scheme and run `pnpm -s chemdraft reaction` with `--above`, `--below`, and `--caption`. Check that reagents stack above and conditions below, close to and centered on the arrow, which is only as long as the widest line; CH2Cl2 and Ti(OiPr)4 show subscripts while step numbers, mol%, °C and h do not. Check the caption sits under the scheme and old single-string conditions still work.
 
+## Web game build toolbar (browser)
+
+Run `pnpm --filter @chemdraft/desktop dev:web:game` (stage the game plugin first, or with an empty
+staging directory) in a fresh browser profile. The Main toolbar shows, in order: zoom, Select,
+Lasso, Eraser, a divider, Bond, Wedge, Hashed, Dashed, Bold, Double Bond, Chain, Rings, a divider,
+Charges, Clean Up Structure 2D, and nothing else. Open each flyout (Bond, Double Bond, Chain, Rings,
+Charges): every entry draws with one click, and no button is disabled with nothing on the page.
+No other core toolbar is open; the game plugin's own toolbars and panels appear as usual, and
+every menu still lists its usual items. Open Structure from the View menu and add Text back with
+Customize Toolbars: both work. Then run plain `dev:web:plugins`: the Main toolbar and the open
+toolbars are the standard ones.
+
 ## NMR panel (macOS and Windows)
 
 - Click in the panel and press Cmd+W on macOS or Alt+F4 on Windows: only the panel closes.

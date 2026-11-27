@@ -9,6 +9,7 @@ import { labelFromEnv } from "../../scripts/worktree-identity.mjs";
 import { workerChunksGuard, workerRuntimeChunks } from "../../tools/worker-chunks/workerChunks";
 import { webPluginsVitePlugins } from "../../scripts/web-plugins/vitePlugin";
 import { buildAboutProvenance } from "./src/about/buildProvenance";
+import { parseToolbarProfileName } from "./src/toolbars/toolbarProfileName";
 
 import {
   INSTALLED_PLUGIN_URL_PREFIX,
@@ -18,6 +19,9 @@ import {
 } from "./src/plugins/installedPluginAssetPath";
 
 const { components, licenseTexts } = buildAboutProvenance();
+// Build-time toolbar defaults (`dev:web:game` / `build:web:game`); unset is the standard toolbars.
+// Parsed here so an unknown name fails the build instead of shipping the standard toolbars silently.
+const toolbarProfile = parseToolbarProfileName(process.env.CHEMDRAFT_TOOLBAR_PROFILE);
 
 // fileURLToPath (not URL.pathname) so a checkout path containing spaces — e.g. a git worktree at
 // ".../chemdraw-structure inspector" — decodes to a real filesystem path instead of a "%20" one
@@ -189,6 +193,7 @@ export default defineConfig({
   define: {
     __ABOUT_PROVENANCE__: JSON.stringify({ components, licenseTexts }),
     "import.meta.env.CHEMDRAFT_WKPROFILE": JSON.stringify(process.env.CHEMDRAFT_WKPROFILE === "1" ? "1" : ""),
+    "import.meta.env.CHEMDRAFT_TOOLBAR_PROFILE": JSON.stringify(toolbarProfile ?? ""),
     __BUILD_STAMP__: JSON.stringify(buildStamp()),
     __WORKTREE_LABEL__: JSON.stringify(worktreeLabel())
   },

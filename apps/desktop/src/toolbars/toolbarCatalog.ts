@@ -4,7 +4,7 @@ import {
 } from "@chemdraft/toolset-registry";
 import type { CommandDefinition } from "@chemdraft/plugin-host";
 import { allPaletteCommands, type CommandSpec } from "../commands";
-import { createDesktopToolsetRegistry, desktopToolsets, desktopToolsetRegistry, PLUGIN_COMMAND_WITHOUT_HANDLER, type DesktopToolsetDefinition, type DesktopToolsetRegistry } from "../toolsets";
+import { createDesktopToolsetRegistry, defaultDesktopToolsets, desktopToolsets, shippedToolsetRegistry, PLUGIN_COMMAND_WITHOUT_HANDLER, type DesktopToolsetDefinition, type DesktopToolsetRegistry } from "../toolsets";
 import { SHELL_COMMAND_IDS } from "../shellCommandIds";
 
 /**
@@ -19,7 +19,7 @@ import { SHELL_COMMAND_IDS } from "../shellCommandIds";
  */
 export interface ToolbarCatalog {
   registry(): DesktopToolsetRegistry;
-  /** Core ∪ plugin toolsets BEFORE the user's layout state — what the Customize editor re-applies its
+  /** Core (with this build's toolbar profile) ∪ plugin toolsets BEFORE the user's layout state — what the Customize editor re-applies its
    *  draft on top of. */
   baseToolsets(): readonly DesktopToolsetDefinition[];
   baseCommands(): readonly CommandSpec[];
@@ -31,7 +31,7 @@ export interface ToolbarCatalog {
 
 export function createToolbarCatalog(): ToolbarCatalog {
   let pluginToolsets: readonly DesktopToolsetDefinition[] = [];
-  let baseCommands = allPaletteCommands(desktopToolsetRegistry);
+  let baseCommands = allPaletteCommands(shippedToolsetRegistry);
   let additionalCommandIds = SHELL_COMMAND_IDS;
   let layoutState: unknown;
   let warningList: readonly string[] = [];
@@ -57,7 +57,7 @@ export function createToolbarCatalog(): ToolbarCatalog {
 
   return {
     registry: () => snapshot,
-    baseToolsets: () => [...desktopToolsets, ...pluginToolsets],
+    baseToolsets: () => [...defaultDesktopToolsets, ...pluginToolsets],
     baseCommands: () => baseCommands,
     setPluginToolsets(toolsets, commandsWithHandlers = []) {
       pluginToolsets = [...toolsets];

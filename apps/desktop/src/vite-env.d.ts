@@ -6,6 +6,11 @@ declare const __BUILD_STAMP__: string;
 // so builds from different worktrees are distinguishable. Empty outside a git checkout.
 declare const __WORKTREE_LABEL__: string;
 
+interface ImportMetaEnv {
+  // Build-time toolbar profile name from vite.config.ts `define`; "" when unset (src/toolbars/toolbarProfileName.ts).
+  readonly CHEMDRAFT_TOOLBAR_PROFILE?: string;
+}
+
 declare module "node:fs" {
   export function readFileSync(path: URL | string, encoding: string): string;
 }

@@ -146,6 +146,14 @@ the student draws. Generic: any plugin can use it.
   how the external NMR teaching plugin runs on the web without entering this repository (PLAN.md §5).
   Tests: `webPreloadedPlugins{,.dom}.test.ts`, `scripts/web-plugins/{stage,vitePlugin}.test.ts`.
   Remaining: a hands-on browser pass with a real package; Windows paths in the staging script.
+- **Game build toolbar profile (no API change).** `CHEMDRAFT_TOOLBAR_PROFILE=molecule-drawing`
+  (`dev:web:game` / `build:web:game`, via `--toolbar-profile=` on `scripts/vite-with-web-plugins.mjs`)
+  starts the web build with a Main toolbar of drawing tools only (Chain added from Structure) and
+  every other core toolbar hidden. Defined in `toolbars/toolbarProfile.ts` as layout state applied
+  to the manifest (`defaultDesktopToolsets` in `toolsets.ts`); user layout applies on top; command
+  specs still come from the full manifest (`shippedToolsetRegistry`). Unknown names fail the build
+  in `vite.config.ts`. Tests: `toolbars/toolbarProfile.test.ts`. Remaining: the hands-on check in
+  `docs/manual-stress-checklist.md`.
 - **Review fixes.** A live re-run only runs a command the reporting plugin registered itself
   (`PluginPanelController` drops any other `liveRerun` and records `panel-live-rerun-refused`); a
   queued live re-run is dropped when it reaches the front if its panel closed, its plugin unloaded or

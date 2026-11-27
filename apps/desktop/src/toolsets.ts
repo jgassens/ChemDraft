@@ -28,6 +28,8 @@ import type { CommandSpec } from "./commands";
 import { renamedCommandId } from "./renamedCommands";
 import type { IconName } from "./icons";
 import type { ToolbarAssetName } from "./toolbarAssets";
+import { applyToolbarProfile } from "./toolbars/toolbarProfile";
+import { parseToolbarProfileName } from "./toolbars/toolbarProfileName";
 
 export type DesktopToolsetDefinition = ToolsetDefinition<IconName, ToolbarAssetName>;
 export type DesktopToolsetRegistry = ToolsetRegistry<IconName, ToolbarAssetName>;
@@ -118,7 +120,14 @@ function paletteItemLayout(item: NormalizedToolsetItem): ToolbarPaletteItemModel
   return override ? { ...item.layout, ...override } : item.layout;
 }
 
+/** The shipped manifest, before any build-time toolbar profile. */
 export const desktopToolsets = parseToolsetManifest<IconName, ToolbarAssetName>(manifest);
+/** This build's toolbar profile (`CHEMDRAFT_TOOLBAR_PROFILE`, see vite.config.ts); unset for every desktop build. */
+export const desktopToolbarProfile = parseToolbarProfileName(import.meta.env.CHEMDRAFT_TOOLBAR_PROFILE);
+/** The toolsets this build starts from: the manifest with the profile's defaults applied. User layout goes on top. */
+export const defaultDesktopToolsets = applyToolbarProfile(desktopToolsets, desktopToolbarProfile);
+/** Every shipped command, whatever the profile hides, so menus, shortcuts and the Customize gallery keep them. */
+export const shippedToolsetRegistry = new ToolsetRegistry<IconName, ToolbarAssetName>(desktopToolsets);
 export const desktopToolsetRegistry = createDesktopToolsetRegistry();
 export const defaultVisibleToolsetIds = createDefaultVisibleToolsetIds(desktopToolsetRegistry);
 export const PLUGIN_COMMAND_WITHOUT_HANDLER = "Plugin command has no registered handler";
@@ -166,9 +175,10 @@ export function createDesktopToolsetRegistry(
   // registry can resolve a plugin toolset window (instead of falling back to the Main toolbar). Empty
   // for the core-only case and every existing caller.
   pluginToolsets: readonly DesktopToolsetDefinition[] = [],
-  onWarning: (warning: string) => void = warning => console.warn(warning)
+  onWarning: (warning: string) => void = warning => console.warn(warning),
+  baseToolsets: DesktopToolsetDefinition[] = defaultDesktopToolsets
 ): DesktopToolsetRegistry {
-  const base = pluginToolsets.length > 0 ? [...desktopToolsets, ...pluginToolsets] : desktopToolsets;
+  const base = pluginToolsets.length > 0 ? [...baseToolsets, ...pluginToolsets] : baseToolsets;
   const toolsets = layoutState === undefined || layoutState === null
     ? base
     // Prune (not throw) so persisted customization referencing a since-removed command degrades
@@ -837,7 +847,7 @@ function computePaletteGroupSize(
 }
 
 export function getToolsetCommandSpecs(
-  registry: DesktopToolsetRegistry = desktopToolsetRegistry
+  registry: DesktopToolsetRegistry = shippedToolsetRegistry
 ): CommandSpec[] {
   const primaryCommands: CommandSpec[] = [];
   const submenuCommands: CommandSpec[] = [];

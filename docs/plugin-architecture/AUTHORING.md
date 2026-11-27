@@ -1350,6 +1350,16 @@ directory, set the variable yourself and run the plain `dev:web` or `build:web`.
 nothing is served or copied. The desktop app never uses preloaded plugins: `scripts/desktop-tauri.mjs`
 refuses to run with the variable set, and so does the Vite config inside any Tauri build.
 
+**Game build.** `dev:web:game` and `build:web:game` are the `:plugins` scripts with the build-time
+toolbar profile `molecule-drawing` (`CHEMDRAFT_TOOLBAR_PROFILE`), for a preloaded teaching game. The
+Main toolbar starts with only what drawing a molecule needs: zoom, Select, Lasso, Eraser, the bond
+tools (Bond, Wedge, Hashed, Dashed, Bold, Double/Triple), Chain, Rings, Charges and Clean Up
+Structure 2D, each with its usual flyout. Every other core toolbar starts hidden; plugin toolbars and
+the menus are unchanged, and View and Customize Toolbars still bring any tool back. The profile only
+changes the starting toolbars, through the same layout machinery as a user's customization, so a
+user's own changes apply on top. An unknown profile name fails the build; without the variable
+(every other script, and every desktop build) the toolbars are the standard ones.
+
 At startup the browser build reads `/web-plugins/index.json`. If it is missing, there are no preloaded
 plugins and nothing is reported. Each listed package is loaded from its own same-origin directory
 through `loadPackagedPlugin`, after the same checks as an installed plugin: manifest schema, the
