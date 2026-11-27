@@ -15,6 +15,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
+import { PaletteWindow } from "./PaletteWindow";
 import { ToolPalette } from "./ToolPalette";
 import {
   MAIN_STYLE_CONTROLS_GRID_SPAN,
@@ -27,6 +28,11 @@ import {
 } from "./toolsets";
 import { TOOLBAR_WIDGET_IDS, type ToolbarWidgetState } from "./toolbars/toolbarWidgets";
 import { MAIN_STYLE_ROW_CELLS, mainStyleRowsForVariant, rowCellCost } from "./toolbars/mainStyleWidget";
+import {
+  broadcastToolsetCustomizeMode,
+  TOOLSET_LAYOUT_EDIT_EVENT,
+  type ToolsetLayoutEditPayload
+} from "./window-manager";
 import type { ToolbarSelectionKind, ToolbarStyleVariant } from "./toolbars/toolbarSelectionKind";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -277,6 +283,126 @@ describe.each(PLATFORMS)("Main style widget on the tool grid (%s)", platform => 
     expect(widget.dataset.mainStyleVariant).toBe(kind);
     expect(slot.dataset.toolbarLayoutColSpan).toBe("11");
     expect(rows.map(row => row.reduce((total, part) => total + part.cells, 0))).toEqual([11, 11]);
+  });
+});
+
+/**
+ * The real enter/leave path: the Main palette window, Customize Toolbar turned on by the same
+ * customize-mode broadcast MainWindow sends, left through the Done button (which posts the
+ * exitCustomize edit) followed by MainWindow's broadcast that customize mode is off. Nothing is
+ * unmounted in between, so a rule that only applies to the live toolbar's last child (the style
+ * widget is last live, but followed by a divider in Customize) shows up as a shift between phases.
+ */
+describe.each(PLATFORMS)("Main style widget through Customize Toolbar enter and Done (%s)", platform => {
+  const edits: ToolsetLayoutEditPayload[] = [];
+  const onEdit = (event: Event) => {
+    const detail = (event as CustomEvent<ToolsetLayoutEditPayload>).detail;
+    if (detail) edits.push(detail);
+  };
+
+  beforeEach(() => {
+    edits.length = 0;
+    window.addEventListener(TOOLSET_LAYOUT_EDIT_EVENT, onEdit);
+  });
+  afterEach(() => window.removeEventListener(TOOLSET_LAYOUT_EDIT_EVENT, onEdit));
+
+  /** Where the style widget's controls sit now, and which of its grid cells nothing draws on. */
+  function measure(phase: string) {
+    const rows = registryRows();
+    const group = container.querySelector<HTMLElement>(".tool-palette.horizontal .tool-group")!;
+    expect(group, phase).not.toBeNull();
+    const groupStyle = getComputedStyle(group);
+    const cell = px(groupStyle.getPropertyValue("grid-auto-columns"));
+    const gap = px(groupStyle.getPropertyValue("column-gap"));
+    expect({ cell, gap }, phase).toEqual({ cell: 24, gap: 4 });
+    const slot = group.querySelector<HTMLElement>(`:scope > [data-toolbar-item-id="${STYLE}"]`)!;
+    expect(slot, phase).not.toBeNull();
+    expect(slot.dataset.toolbarLayoutColSpan, phase).toBe("11");
+    expect(slot.dataset.toolbarLayoutRowSpan, phase).toBe("2");
+
+    const { placed } = placement(group, rows);
+    const span = placed.get(STYLE)!;
+    const { widget, rows: styleRows } = visibleParts(slot, cell, gap);
+    // Each control's grid column, from the span's first column and the cells before it in its row.
+    const controls = styleRows.flatMap((row, rowIndex) => {
+      let column = span.column;
+      return row.map(part => {
+        const control = { name: part.name, row: rowIndex, column, cells: part.cells };
+        column += part.cells;
+        return control;
+      });
+    });
+    // A span cell is empty when no control's cells cover it.
+    const covered = new Set(controls.flatMap(control =>
+      Array.from({ length: control.cells }, (_unused, offset) => `${control.column + offset},${control.row}`)));
+    const empty: string[] = [];
+    for (let column = span.column; column < span.column + span.colSpan; column += 1) {
+      for (let row = 0; row < span.rowSpan; row += 1) {
+        if (!covered.has(`${column},${row}`)) empty.push(`${column},${row}`);
+      }
+    }
+    // The widget fills the span exactly, and the live slot starts it at the span's start edge
+    // whether or not it is the group's last child; the Customize slot never pushes it to the end.
+    expect(px(getComputedStyle(widget).width), phase).toBe(span.colSpan * cell + (span.colSpan - 1) * gap);
+    const customizing = container.querySelector(".tool-palette.customizing") !== null;
+    const justify = getComputedStyle(slot).justifyItems;
+    if (customizing) expect(justify, phase).not.toBe("end");
+    else expect(justify, phase).toBe("start");
+    return {
+      controls,
+      empty,
+      column: span.column,
+      slotIsLastChild: slot === group.lastElementChild,
+      customizing
+    };
+  }
+
+  function registryRows() {
+    return desktopToolsetRegistry.require("core.main").gridLayout?.rows ?? 2;
+  }
+
+  it("keeps the style controls on the same grid columns, with no empty cell, before, during and after", async () => {
+    await act(async () => {
+      root.render(createElement(PaletteWindow, { toolsetId: "core.main", platform }));
+    });
+    // Let the async listener-attachment effects settle before "the main window broadcasts".
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const before = measure("before Customize Toolbar");
+    expect(before.customizing).toBe(false);
+    expect(before.slotIsLastChild).toBe(true);
+
+    await act(async () => {
+      await broadcastToolsetCustomizeMode({ toolsetId: "core.main", active: true });
+    });
+    const during = measure("in Customize Toolbar");
+    expect(during.customizing).toBe(true);
+    expect(during.slotIsLastChild).toBe(false);
+
+    const done = Array.from(container.querySelectorAll<HTMLButtonElement>(".customize-main-toolbar-button"))
+      .find(button => button.textContent === "Done");
+    expect(done).toBeDefined();
+    await act(async () => {
+      done!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(edits).toEqual([{ toolsetId: "core.main", edit: { kind: "exitCustomize" } }]);
+    // MainWindow answers exitCustomize by switching customize mode off for the palette.
+    await act(async () => {
+      await broadcastToolsetCustomizeMode({ toolsetId: "core.main", active: false });
+    });
+    const after = measure("after Done");
+    expect(after.customizing).toBe(false);
+    expect(after.slotIsLastChild).toBe(true);
+
+    for (const phase of [before, during, after]) expect(phase.empty).toEqual([]);
+    expect(during.column).toBe(before.column);
+    expect(after.column).toBe(before.column);
+    expect(during.controls).toEqual(before.controls);
+    expect(after.controls).toEqual(before.controls);
+    // Eleven cells a row, two rows: every control accounted for.
+    expect(before.controls.reduce((total, control) => total + control.cells, 0)).toBe(22);
   });
 });
 
