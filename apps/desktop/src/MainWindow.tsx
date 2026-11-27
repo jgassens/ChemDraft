@@ -1938,7 +1938,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.27.14.46-opus";
+const CURRENT_BUILD_STAMP = "11.27.14.47-opus";
 
 const NUMERIC_ENTRY_DURING_DRAG_STATUS = "Finish the current drag, then enter a value";
 
@@ -24076,6 +24076,7 @@ export function MainWindow({
           runtime={pluginRuntime.runtime}
           bundledPlugins={pluginRuntime.bundledPlugins}
           installedPlugins={pluginRuntime.installedPlugins}
+          preloadedPlugins={pluginRuntime.preloadedPlugins}
           onPickPackage={pluginRuntime.pickPackage}
           onInstallPackage={pluginRuntime.installPackage}
           onPrepareOfficialPluginInstall={pluginRuntime.prepareOfficialPluginInstall}

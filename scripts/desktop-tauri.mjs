@@ -82,7 +82,25 @@ export function buildMacosDesktop(args, { env, stable, isPackageBuild }, {
   }
 }
 
+// Preloaded web plugins (CHEMDRAFT_WEB_PLUGINS_DIR) belong to the browser build alone. A Tauri dev or
+// package build with it set would copy staged third-party packages into the desktop bundle, so refuse
+// before anything runs. The Vite plugin refuses too (TAURI_ENV_*), for `tauri` invoked any other way.
+export function assertNoWebPluginsDir(env) {
+  if (env.CHEMDRAFT_WEB_PLUGINS_DIR !== undefined && env.CHEMDRAFT_WEB_PLUGINS_DIR.trim() !== "") {
+    throw new Error(
+      "CHEMDRAFT_WEB_PLUGINS_DIR is set, but preloaded web plugins are for the browser build only " +
+        "(pnpm --filter @chemdraft/desktop build:web:plugins). Unset it to build or run the desktop app."
+    );
+  }
+}
+
 function main() {
+  try {
+    assertNoWebPluginsDir(process.env);
+  } catch (error) {
+    console.error(error.message);
+    process.exit(1);
+  }
   const PACKAGE_BUILD_FLAG = "--package-build";
   const isPackageBuild = process.argv[2] === PACKAGE_BUILD_FLAG;
   const inputArgs = isPackageBuild ? ["build", ...process.argv.slice(3)] : process.argv.slice(2);

@@ -7,6 +7,7 @@ import { defineConfig, type Plugin } from "vite";
 import { appDataRoot, STABLE_BUNDLE_ID } from "../../scripts/app-data-root.mjs";
 import { labelFromEnv } from "../../scripts/worktree-identity.mjs";
 import { workerChunksGuard, workerRuntimeChunks } from "../../tools/worker-chunks/workerChunks";
+import { webPluginsVitePlugins } from "../../scripts/web-plugins/vitePlugin";
 import { buildAboutProvenance } from "./src/about/buildProvenance";
 
 import {
@@ -164,7 +165,9 @@ export default defineConfig({
   } : {}),
   // SWC React plugin (replaces the Babel one): no 500KB code-generator deopt on the large
   // MainWindow.tsx, and much faster transforms in both dev HMR and production builds.
-  plugins: [react(), serveInstalledPluginsInDev()],
+  // `webPluginsVitePlugins()` is empty unless CHEMDRAFT_WEB_PLUGINS_DIR is set (browser build only;
+  // it throws inside a Tauri build): it serves `/web-plugins/` in dev and copies it into `dist/` on build.
+  plugins: [react(), serveInstalledPluginsInDev(), ...webPluginsVitePlugins()],
   // ES-module workers are required now that a plugin's *execution* runs in a per-plugin Web Worker
   // (ADR-0029, M34): such workers may spawn a nested worker or use dynamic import() (mass analysis
   // does the latter for OpenChemLib), and both force code-splitting *inside* the worker bundle —

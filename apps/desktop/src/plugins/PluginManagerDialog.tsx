@@ -33,6 +33,7 @@ import { installedPluginCatalogKey, type TimedPluginUpdateCheckResult } from "./
 import { installSpaceStatement } from "../dialogs/engineInstallText";
 import { RecognitionInstallProgress } from "./RecognitionInstallProgress";
 import { applyEnabledPlugins, type BundledPluginDescriptor } from "./registerBundledPlugins";
+import type { WebPreloadedPluginEntry } from "./webPreloadedPlugins";
 import type { StructureRecognitionInstallRun } from "./StructureRecognitionController";
 import { formatDiskBytes, recognitionInstallErrorMessage } from "./StructureRecognitionInstallDialog";
 import type { StructureRecognitionEngineStatus } from "./structureRecognitionEngine";
@@ -68,6 +69,9 @@ export interface PluginManagerDialogProps {
   bundledPlugins: readonly BundledPluginDescriptor[];
   /** Plugins installed from a package (M36). Empty where installing is unsupported (browser build, tests). */
   installedPlugins?: readonly InstalledPluginCatalogEntry[];
+  /** Browser build only: packages preloaded by whoever serves it. Listed and toggleable, never
+   *  removable or updatable from here. */
+  preloadedPlugins?: readonly WebPreloadedPluginEntry[];
   /** False only while the desktop is still reading its on-disk install catalog. */
   installedPluginCatalogReady?: boolean;
   /** Show the native picker and describe the chosen package. `undefined` means the user cancelled.
@@ -150,6 +154,7 @@ export function PluginManagerDialog({
   runtime,
   bundledPlugins,
   installedPlugins = [],
+  preloadedPlugins = [],
   installedPluginCatalogReady = true,
   onPickPackage,
   onInstallPackage,
@@ -271,13 +276,28 @@ export function PluginManagerDialog({
   // the ordinary case — the **installed copy shadows the bundled one**, matching what the host actually
   // has registered. Listing both would show two rows for one live plugin and let the toggle fight itself.
   const installedIds = new Set(installedPlugins.map((entry) => entry.record.id));
-  const availableOfficialPlugins = OFFICIAL_PLUGIN_CATALOG.filter((entry) => !installedIds.has(entry.pluginId));
+  // A preloaded web package shadows a bundled copy of the same id the same way an install does.
+  // (The browser build never has installs, so the two lists cannot overlap in practice.)
+  const preloadedIds = new Set(
+    preloadedPlugins.map((entry) => entry.record.id).filter((id) => !installedIds.has(id))
+  );
+  const availableOfficialPlugins = OFFICIAL_PLUGIN_CATALOG.filter(
+    (entry) => !installedIds.has(entry.pluginId) && !preloadedIds.has(entry.pluginId)
+  );
   const catalog: readonly BundledPluginDescriptor[] = [
-    ...bundledPlugins.filter((descriptor) => !installedIds.has(descriptor.manifest.id)),
+    ...bundledPlugins.filter(
+      (descriptor) => !installedIds.has(descriptor.manifest.id) && !preloadedIds.has(descriptor.manifest.id)
+    ),
     ...installedPlugins.map(
       (entry): BundledPluginDescriptor =>
         entry.descriptor ?? { manifest: entry.manifest, options: { commandHandlers: {} } }
-    )
+    ),
+    ...preloadedPlugins
+      .filter((entry) => preloadedIds.has(entry.record.id))
+      .map(
+        (entry): BundledPluginDescriptor =>
+          entry.descriptor ?? { manifest: entry.manifest, options: { commandHandlers: {} } }
+      )
   ];
   const enabledIds = new Set(runtime.host.listPlugins().map((manifest) => manifest.id));
   const installSupported = onPickPackage !== undefined && onInstallPackage !== undefined;
@@ -615,9 +635,14 @@ export function PluginManagerDialog({
               const enabled = enabledIds.has(manifest.id);
               const installed = installedIds.has(manifest.id);
               const installedEntry = installedPlugins.find((entry) => entry.record.id === manifest.id);
+              const preloaded = !installed && preloadedIds.has(manifest.id);
+              const preloadedEntry = preloaded
+                ? preloadedPlugins.find((entry) => entry.record.id === manifest.id)
+                : undefined;
               const unavailablePermissions = getUnavailableDesktopPluginPermissions(manifest);
               const unavailable =
-                installed && (installedEntry?.descriptor === undefined || unavailablePermissions.length > 0);
+                (installed && (installedEntry?.descriptor === undefined || unavailablePermissions.length > 0)) ||
+                (preloaded && preloadedEntry?.descriptor === undefined);
               const updateResult = updateResults.get(manifest.id);
               return (
                 <li className="plugin-manager-item" data-plugin-id={manifest.id} key={manifest.id}>
@@ -625,6 +650,9 @@ export function PluginManagerDialog({
                     <div className="plugin-manager-name">
                       {manifest.name} <span>v{manifest.version}</span>
                       {installed ? <span className="plugin-manager-badge">Installed</span> : null}
+                      {preloaded ? (
+                        <span className="plugin-manager-badge" data-testid="plugin-preloaded-badge">Preloaded</span>
+                      ) : null}
                       {updateResult?.status === "available" ? (
                         <span className="plugin-manager-badge is-update">Update available</span>
                       ) : null}
@@ -641,7 +669,7 @@ export function PluginManagerDialog({
                         {EXPERIMENTAL_PLUGIN_NOTICE}
                       </p>
                     ) : null}
-                    {installed ? <PermissionList permissions={manifest.permissions} /> : null}
+                    {installed || preloaded ? <PermissionList permissions={manifest.permissions} /> : null}
                     {installed ? (
                       <ExternalToolConsentRows
                         consents={externalToolConsents}
@@ -650,7 +678,11 @@ export function PluginManagerDialog({
                         onRevoke={revokeExternalToolConsent}
                       />
                     ) : null}
-                    {!installed ? (
+                    {preloaded ? (
+                      <p className="plugin-manager-update-status" data-testid="plugin-preloaded-note">
+                        Preloaded into this web build by whoever serves it — it cannot be removed or updated here.
+                      </p>
+                    ) : !installed ? (
                       <p className="plugin-manager-update-status">Included with ChemDraft — updated with the app.</p>
                     ) : null}
                     {installed && updateResult ? <PluginUpdateStatus result={updateResult} /> : null}

@@ -46,6 +46,7 @@ import {
   type PreparedPluginUpdate
 } from "./pluginUpdates";
 import { registerBundledPlugins, type BundledPluginDescriptor } from "./registerBundledPlugins";
+import { loadWebPreloadedPlugins, type WebPreloadedPluginEntry, type WebPreloadedPluginFailure } from "./webPreloadedPlugins";
 import type { OpenPluginPanel, PluginDiagnostic } from "./types";
 import type { OpenPluginTextPrompt } from "./PluginPromptTextController";
 import type { OpenPluginImageRequest } from "./PluginImageRequestController";
@@ -97,7 +98,8 @@ export interface PluginRuntimeProviders {
   createStorage?: (pluginId: string) => PluginStorage;
   /** Names the source of a successful name conversion in the document status line. */
   onNameResolutionStatus?: (text: string | undefined) => void;
-  /** Quiet update notices use the document window status line. */
+  /** Quiet update notices use the document window status line. In the browser build it also carries
+   *  the reason a preloaded web plugin could not be loaded. */
   onPluginUpdateStatus?: (text: string) => void;
   /** Fired whenever the proposed-patch queue changes (new, accepted, rejected). */
   onProposedPatchesChanged?: () => void;
@@ -116,6 +118,9 @@ export interface PluginRuntimeView {
   /** True once the desktop's on-disk install catalog has finished its startup reload. Non-Tauri builds
    *  have no on-disk catalog and are ready immediately. */
   installedPluginCatalogReady: boolean;
+  /** Browser build only: packages preloaded at `/web-plugins/` by whoever builds or serves it. Never
+   *  removable or updatable from the app, and always empty on a Tauri host. */
+  preloadedPlugins: readonly WebPreloadedPluginEntry[];
   /** Show the native picker and describe the chosen package; `undefined` when this build cannot install. */
   pickPackage: (() => Promise<PickedPluginPackage | undefined>) | undefined;
   installPackage: ((inspection: PluginPackageInspection) => Promise<void>) | undefined;
@@ -348,6 +353,51 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
       }
     };
   }, [bundledPlugins, runtime, stagingFs]);
+
+  // Preloaded web plugins: the browser build's substitute for installing (see webPreloadedPlugins.ts).
+  // Same ownership rules as the installed reload above, for the same StrictMode reason.
+  const [preloadedPlugins, setPreloadedPlugins] = useState<readonly WebPreloadedPluginEntry[]>([]);
+  const preloadOwnerGenerationRef = useRef(0);
+  useEffect(() => {
+    if (isTauriHost()) {
+      return;
+    }
+    const generation = ++preloadOwnerGenerationRef.current;
+    let cancelled = false;
+    const abortController = new AbortController();
+    let loaded: readonly WebPreloadedPluginEntry[] = [];
+    void loadWebPreloadedPlugins({
+      runtime,
+      disabledIds: loadDisabledPluginIds(),
+      replacements: bundledPlugins,
+      signal: abortController.signal
+    }).then(({ loaded: result, failures }) => {
+      loaded = result;
+      if (cancelled) {
+        const superseded = preloadOwnerGenerationRef.current !== generation;
+        for (const entry of result) {
+          if (!superseded && entry.descriptor && runtime.host.getPlugin(entry.record.id)) {
+            runtime.unregisterPlugin(entry.record.id);
+          }
+          entry.descriptor?.deactivate?.();
+        }
+        return;
+      }
+      for (const failure of failures) {
+        runtime.panels.reportDiagnostic("web-preloaded-plugin-load-failed", failure.message);
+      }
+      const status = preloadedFailureStatus(failures);
+      if (status) providersRef.current.onPluginUpdateStatus?.(status);
+      setPreloadedPlugins(result);
+    });
+    return () => {
+      cancelled = true;
+      abortController.abort();
+      for (const entry of loaded) {
+        entry.descriptor?.deactivate?.();
+      }
+    };
+  }, [bundledPlugins, runtime]);
 
   const pickPackage = useCallback(() => pickPluginPackage(), []);
 
@@ -602,6 +652,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     bundledPlugins,
     installedPlugins,
     installedPluginCatalogReady,
+    preloadedPlugins,
     // Absent (not merely inert) where staging is unsupported, so the manager can disable its control
     // rather than offer an install that would fail on click.
     pickPackage: stagingFs ? pickPackage : undefined,
@@ -646,6 +697,13 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     uninstallRecognitionEngine,
     cancelRecognition
   };
+}
+
+/** One status-line message for the preloaded plugins that failed; details stay in plugin diagnostics. */
+export function preloadedFailureStatus(failures: readonly WebPreloadedPluginFailure[]): string | undefined {
+  if (failures.length === 0) return undefined;
+  if (failures.length === 1) return failures[0].message;
+  return `${failures.length} preloaded web plugins could not be loaded. ${failures[0].message} See plugin diagnostics for the others.`;
 }
 
 /** The last value, kept while `same` says the new one carries the same content. */

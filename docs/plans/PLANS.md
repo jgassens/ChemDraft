@@ -137,6 +137,14 @@ the student draws. Generic: any plugin can use it.
   state; the plugin command queue itself is unchanged), AUTHORING.md, AGENTS.md §4.1.
 - **Tests:** `reportLimits.test.ts`, `workerProtocol.test.ts`, plugin-host `index.test.ts`,
   `livePanelRerun.dom.test.ts`, `selectionSnapshot.test.ts`, `plugins/MainWindow.plugins.dom.test.ts`.
+- **Preloaded web plugins (no API change).** The browser build can run released packages that whoever
+  builds or serves it stages with `scripts/stage-web-plugins.mjs` (install gates, `.sha256` required)
+  and serves at `/web-plugins/` (`CHEMDRAFT_WEB_PLUGINS_DIR`, `dev:web:plugins` / `build:web:plugins`;
+  refused in any Tauri build). Loaded by `plugins/webPreloadedPlugins.ts` through `loadPackagedPlugin`
+  with the installed-plugin gates and handshake; listed as Preloaded in the Plugin Manager. This is
+  how the external NMR teaching plugin runs on the web without entering this repository (PLAN.md §5).
+  Tests: `webPreloadedPlugins{,.dom}.test.ts`, `scripts/web-plugins/{stage,vitePlugin}.test.ts`.
+  Remaining: a hands-on browser pass with a real package; Windows paths in the staging script.
 - **Remaining:** request-bound writes (API 0.1.26 request history) are not tagged with their plugin,
   so a live command writing through a request would still re-trigger itself; hands-on pass of a live panel on macOS and Windows; move to `docs/shipped/` on landing.
 

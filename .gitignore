@@ -41,3 +41,6 @@ apps/desktop/src-tauri/resources/ocsr/__pycache__/
 
 # Local structure template render checks (never committed).
 tools/template-layouts/.check/
+
+# Preloaded web plugins staged by scripts/stage-web-plugins.mjs (third-party code; never committed).
+apps/desktop/.web-plugins/

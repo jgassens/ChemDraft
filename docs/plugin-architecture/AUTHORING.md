@@ -1309,6 +1309,52 @@ the `.zip.sha256` beside it: ChemDraft reads it automatically and refuses the in
 present but wrong. Without it the package still installs, unverified by checksum. See
 `docs/architecture/plugin-package-reading.md`.
 
+### Running a plugin in the web build
+
+The browser build (`pnpm dev:web`, `pnpm --filter @chemdraft/desktop build:web`) cannot install
+packages: it has no app-data directory to stage them in. Whoever builds or serves it can **preload**
+released packages instead. The plugin's code and data stay in its own repository and release; nothing
+of it is added to this one.
+
+```bash
+# 1. Stage one or more released packages. Each .zip needs its .zip.sha256 beside it.
+node scripts/stage-web-plugins.mjs ~/Downloads/my-plugin-1.0.0.zip [more.zip …] [--out <dir>]
+#    (or: pnpm --filter @chemdraft/desktop stage:web-plugins -- <zip> …)
+# → apps/desktop/.web-plugins/<plugin-id>/…   the unpacked package (gitignored)
+# → apps/desktop/.web-plugins/index.json      { version: 1, plugins: [{ id, version, dir, sha256 }] }
+
+# 2a. Develop against it: Vite serves the staged directory at /web-plugins/.
+pnpm --filter @chemdraft/desktop dev:web:plugins
+
+# 2b. Or build a static site that ships it: dist/ gains web-plugins/.
+pnpm --filter @chemdraft/desktop build:web:plugins
+```
+
+Staging runs the install gates with the install code itself: the `.sha256` sidecar is **required**
+here (an install merely prefers it), then every entry's CRC-32, the size and entry-count limits,
+path-traversal refusal, the manifest schema, the entry file, and `apiVersion` compatibility. If any
+zip fails, nothing is written, and the error names the zip and the gate (`…/x.zip: sha256 gate
+failed: …`). Re-staging a plugin replaces its directory by rename and updates its index entry; other
+staged plugins are kept.
+
+The `:plugins` scripts set `CHEMDRAFT_WEB_PLUGINS_DIR` to `apps/desktop/.web-plugins`. To use another
+directory, set the variable yourself and run the plain `dev:web` or `build:web`. Without the variable,
+nothing is served or copied. The desktop app never uses preloaded plugins: `scripts/desktop-tauri.mjs`
+refuses to run with the variable set, and so does the Vite config inside any Tauri build.
+
+At startup the browser build reads `/web-plugins/index.json`. If it is missing, there are no preloaded
+plugins and nothing is reported. Each listed package is loaded from its own same-origin directory
+through `loadPackagedPlugin`, after the same checks as an installed plugin: manifest schema, the
+index's id and version against the manifest, `apiVersion`, refusal of permissions this build cannot
+provide (such as `network.fetch`), and the worker's `ready` handshake. A package that fails is named
+in the status line and in plugin diagnostics, and the app and the other plugins still start. The
+Plugin Manager lists preloaded plugins with a **Preloaded** badge. You can turn them on and off, but
+you cannot uninstall or update them from the app; re-stage a newer release instead. Like every plugin
+in the browser build, a preloaded plugin's `context.storage` lives in memory only.
+
+When you deploy `dist/` to a static host, serve it as is. The dev server adds the installed-plugin
+worker CSP to `/web-plugins/` responses; a static host sends whatever headers you give it.
+
 ## Official catalog, installs, and updates
 
 Plugins do not advertise themselves to ChemDraft, self-update, or carry install/update URLs in their

@@ -11,6 +11,9 @@
     "dev:web": "vite --host 127.0.0.1 --strictPort",
     "build": "node ../../scripts/desktop-tauri.mjs --package-build",
     "build:web": "vite build",
+    "dev:web:plugins": "node ../../scripts/vite-with-web-plugins.mjs --host 127.0.0.1 --strictPort",
+    "build:web:plugins": "node ../../scripts/vite-with-web-plugins.mjs build",
+    "stage:web-plugins": "node ../../scripts/stage-web-plugins.mjs",
     "tauri": "node ../../scripts/desktop-tauri.mjs",
     "preview": "vite preview"
   },
