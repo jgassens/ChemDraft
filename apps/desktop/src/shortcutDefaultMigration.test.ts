@@ -7,6 +7,7 @@ import {
   migrateShortcutDefault,
   PENDING_FRESH_INSTALL_KEY,
   resetShortcutDefaultMigrationForTests,
+  SHORTCUT_SET_NOTICE_PENDING_KEY,
   SHORTCUT_SET_NOTICE_SHOWN_KEY,
   SHORTCUT_SET_NOTICE,
   takeShortcutSetNotice,
@@ -211,6 +212,43 @@ describe("moving to the single shortcut set", () => {
     resetShortcutDefaultMigrationForTests();
     expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "migrated", kept: 0, dropped: 0 });
     expect(fake.preferences().shortcutScheme).toBe("chemdraw");
+    expect(takeShortcutSetNotice(fake.storage)).toBeUndefined();
+  });
+
+  it("still shows the message after a launch that exited before the status line showed it", async () => {
+    const fake = install({ preferences: { shortcutScheme: "chemdraft" } });
+    expect((await migrateShortcutDefault(fake.host)).kind).toBe("migrated");
+    // The app quits here: the set is saved, but no window ever showed the message.
+    resetShortcutDefaultMigrationForTests();
+    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "current" });
+    expect(takeShortcutSetNotice(fake.storage)).toBe(SHORTCUT_SET_NOTICE);
+    expect(takeShortcutSetNotice(fake.storage)).toBeUndefined();
+    // Shown once, it never comes back, on this launch or any later one.
+    resetShortcutDefaultMigrationForTests();
+    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "current" });
+    expect(takeShortcutSetNotice(fake.storage)).toBeUndefined();
+  });
+
+  it("keeps the pending message out of the existing-install evidence", async () => {
+    // Only the message's own markers in the cache: nothing else says an install existed.
+    const fake = install({ local: { [SHORTCUT_SET_NOTICE_PENDING_KEY]: "1" } });
+    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "fresh-install" });
+  });
+
+  it("shows the message this launch even when the cache cannot record it", async () => {
+    const fake = install({ preferences: { shortcutScheme: "chemdraft" } });
+    vi.spyOn(fake.storage, "setItem").mockImplementation(() => { throw new Error("QuotaExceededError"); });
+    expect((await migrateShortcutDefault(fake.host)).kind).toBe("migrated");
+    expect(takeShortcutSetNotice(fake.storage)).toBe(SHORTCUT_SET_NOTICE);
+    expect(takeShortcutSetNotice(fake.storage)).toBeUndefined();
+  });
+
+  it("never shows the message twice, even if the pending marker cannot be cleared", async () => {
+    const fake = install({ preferences: { shortcutScheme: "chemdraft" } });
+    expect((await migrateShortcutDefault(fake.host)).kind).toBe("migrated");
+    vi.spyOn(fake.storage, "removeItem").mockImplementation(() => { throw new Error("blocked"); });
+    expect(takeShortcutSetNotice(fake.storage)).toBe(SHORTCUT_SET_NOTICE);
+    resetShortcutDefaultMigrationForTests();
     expect(takeShortcutSetNotice(fake.storage)).toBeUndefined();
   });
 

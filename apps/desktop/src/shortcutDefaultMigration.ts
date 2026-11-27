@@ -13,7 +13,8 @@
  *     existed before 1.2.3, when that preset was the unnamed default: the install moves. Its own
  *     custom keys for the retired preset (`overrides.chemdraft`) are carried into the set when no other
  *     command already uses the key (customKeyboardShortcuts.ts `mergeLegacyShortcutOverrides`); the
- *     others are dropped. A one-time status message tells the user (`takeShortcutSetNotice`);
+ *     others are dropped. A one-time status message tells the user (`takeShortcutSetNotice`). It is
+ *     pending in the cache until the status line shows it, so a launch that quits first still gets it;
  *   - a fresh install records the set and sees no message.
  *
  * On every branch the set's custom keys are taken from both stores entry by entry, never as one
@@ -60,6 +61,12 @@ export const PENDING_FRESH_INSTALL_KEY = "chemdraft.shortcutDefault.pendingFresh
 /** Set once the move's status message has been shown, so a repeated move never shows it again. */
 export const SHORTCUT_SET_NOTICE_SHOWN_KEY = "chemdraft.keybindings.singleSetNoticeShown";
 
+/**
+ * Set when the move is recorded and cleared when the status line shows its message, so a launch that
+ * quits in between still shows it on the next one. Never shown while SHORTCUT_SET_NOTICE_SHOWN_KEY is set.
+ */
+export const SHORTCUT_SET_NOTICE_PENDING_KEY = "chemdraft.keybindings.singleSetNoticePending";
+
 export interface ShortcutDefaultMigrationHost {
   /** The webview's localStorage, or undefined where it is unavailable. */
   storage: Pick<Storage, "getItem" | "setItem" | "removeItem" | "key" | "length"> | undefined;
@@ -81,6 +88,7 @@ export type ShortcutDefaultMigrationOutcome =
   /** Moved from the retired preset: `kept` custom keys carried over, `dropped` ones that conflicted. */
   | { kind: "migrated"; kept: number; dropped: number };
 
+/** This launch's pending message, for a webview whose cache cannot record it. */
 let noticePending = false;
 
 export async function migrateShortcutDefault(host: ShortcutDefaultMigrationHost): Promise<ShortcutDefaultMigrationOutcome> {
@@ -92,7 +100,14 @@ export async function migrateShortcutDefault(host: ShortcutDefaultMigrationHost)
     console.error("Could not move to the single shortcut set", error);
     return { kind: "preferences-unreadable" };
   }
-  if (outcome.kind === "migrated" && !noticeAlreadyShown(host.storage)) noticePending = true;
+  if (outcome.kind === "migrated" && !noticeAlreadyShown(host.storage)) {
+    noticePending = true;
+    try {
+      host.storage?.setItem(SHORTCUT_SET_NOTICE_PENDING_KEY, "1");
+    } catch {
+      // This launch still shows it from memory.
+    }
+  }
   return outcome;
 }
 
@@ -101,20 +116,29 @@ export const SHORTCUT_SET_NOTICE =
   "Keyboard shortcuts now use one standard set. You can change any key in Preferences ▸ Keyboard.";
 
 /**
- * The move's status message, exactly once: after this launch moved the install, the first call
- * returns it and records it as shown; every other call returns undefined.
+ * The move's status message, exactly once, for the status line to show now: the first call after a
+ * move (on the launch that moved the install, or on a later one if that launch quit before showing
+ * it) returns it and records it as shown; every other call returns undefined.
  */
 export function takeShortcutSetNotice(
   storage: ShortcutDefaultMigrationHost["storage"] = defaultStorage()
 ): string | undefined {
-  if (!noticePending) return undefined;
+  const pending = noticePending || readFlag(storage, SHORTCUT_SET_NOTICE_PENDING_KEY);
   noticePending = false;
+  if (!pending) return undefined;
+  // Shown is recorded before pending is cleared, so a marker left behind can never show it twice.
+  const shown = noticeAlreadyShown(storage);
   try {
-    storage?.setItem(SHORTCUT_SET_NOTICE_SHOWN_KEY, "1");
+    if (!shown) storage?.setItem(SHORTCUT_SET_NOTICE_SHOWN_KEY, "1");
   } catch {
-    // Best-effort: the native file already records the move, so it does not repeat.
+    // Best-effort: the pending marker is cleared below, and the native file records the move.
   }
-  return SHORTCUT_SET_NOTICE;
+  try {
+    storage?.removeItem(SHORTCUT_SET_NOTICE_PENDING_KEY);
+  } catch {
+    // The shown marker, when it could be written, keeps a leftover pending marker silent.
+  }
+  return shown ? undefined : SHORTCUT_SET_NOTICE;
 }
 
 /** Tests only: forget a pending notice and the once-per-process run. */
@@ -332,8 +356,12 @@ function mirrorCache(storage: ShortcutDefaultMigrationHost["storage"], overrides
 }
 
 function noticeAlreadyShown(storage: ShortcutDefaultMigrationHost["storage"]): boolean {
+  return readFlag(storage, SHORTCUT_SET_NOTICE_SHOWN_KEY);
+}
+
+function readFlag(storage: ShortcutDefaultMigrationHost["storage"], key: string): boolean {
   try {
-    return storage?.getItem(SHORTCUT_SET_NOTICE_SHOWN_KEY) != null;
+    return storage?.getItem(key) != null;
   } catch {
     return false;
   }
@@ -347,11 +375,14 @@ function clearPendingFreshInstall(storage: ShortcutDefaultMigrationHost["storage
   }
 }
 
+/** The move's own markers: written by the move, so never evidence that an install existed before it. */
+const NOT_INSTALL_EVIDENCE = new Set([PENDING_FRESH_INSTALL_KEY, SHORTCUT_SET_NOTICE_SHOWN_KEY, SHORTCUT_SET_NOTICE_PENDING_KEY]);
+
 function hasChemDraftStorage(storage: ShortcutDefaultMigrationHost["storage"]): boolean {
   try {
     for (let index = 0; index < (storage?.length ?? 0); index += 1) {
       const key = storage?.key(index);
-      if (key?.startsWith("chemdraft.") && key !== PENDING_FRESH_INSTALL_KEY && key !== SHORTCUT_SET_NOTICE_SHOWN_KEY) return true;
+      if (key?.startsWith("chemdraft.") && !NOT_INSTALL_EVIDENCE.has(key)) return true;
     }
   } catch {
     // Unreadable storage is no evidence either way.
