@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal, flushSync } from "react-dom";
 import {
   annotationBondLines,
   annotationLabelBoxesOverlap,
@@ -66,6 +66,140 @@ const STRUCT_W = 340;
 const STRUCT_H = 260;
 const PEAK_LABEL_FONT_SIZE = 13;
 
+/** On-screen text sizes in CSS pixels, held whatever width the panel gives the figure. */
+export const SCREEN_TICK_FONT_PX = 12;
+export const SCREEN_PEAK_LABEL_FONT_PX = 12;
+export const SCREEN_CAPTION_FONT_PX = 11;
+const SCREEN_SIDE_MARGIN_PX = 24;
+const SCREEN_MIN_PLOT_HEIGHT_PX = 150;
+/** Clear space between neighbouring tick numbers; ticks thin out until it fits. */
+const SCREEN_TICK_GAP_PX = 16;
+/** Aim for about one tick per this much plot width, between 3 and 12 ticks. */
+const SCREEN_TICK_PITCH_PX = 60;
+/** Below this the figure is unusable anyway; text stops growing in viewBox units. */
+const SCREEN_MIN_WIDTH_PX = 160;
+
+/**
+ * Everything about the spectrum's layout that depends on text size. The publication geometry is
+ * the fixed 680×240 figure that Copy and Export have always produced; the screen geometry keeps the
+ * same viewBox width (so zoom, pan and hover maths are unchanged) but sizes text, margins and the
+ * plot from the figure's rendered width, so the numbers stay readable in a narrow panel.
+ */
+interface SpectrumGeometry {
+  height: number;
+  margin: { top: number; right: number; bottom: number; left: number };
+  plotW: number;
+  plotH: number;
+  baseY: number;
+  /** viewBox units per CSS pixel on screen; absent for the publication geometry. */
+  unitsPerPx?: number;
+  tickFont: number;
+  tickLength: number;
+  tickLabelY: number;
+  captionFont: number;
+  captionY: number;
+  /** Absent for publication output, where the stylesheet sets the note's size. */
+  noteFont?: number;
+  noteLines: string[];
+  noteY: number;
+  noteLineHeight: number;
+  peakFont: number;
+  peakRows: number[];
+  peakClearance: { x: number; y: number };
+  peakGap: number;
+  topPad: number;
+  hitPad: number;
+}
+
+function publicationSpectrumGeometry(note: string): SpectrumGeometry {
+  return {
+    height: SPECTRUM_H,
+    margin: MARGIN,
+    plotW: PLOT_W,
+    plotH: PLOT_H,
+    baseY: BASE_Y,
+    tickFont: 11,
+    tickLength: 4,
+    tickLabelY: BASE_Y + 12,
+    captionFont: 11,
+    captionY: SPECTRUM_H - 3,
+    noteLines: [note],
+    noteY: 11,
+    noteLineHeight: 0,
+    peakFont: PEAK_LABEL_FONT_SIZE,
+    peakRows: Array.from({ length: 10 }, (_, index) => 18 + index * 18),
+    peakClearance: { x: 2, y: 1 },
+    peakGap: 6,
+    topPad: SPECTRUM_TOP_PAD,
+    hitPad: 6
+  };
+}
+
+/** Screen layout for a figure drawn `cssWidth` CSS pixels wide (see SpectrumGeometry). */
+export function screenSpectrumGeometry(cssWidth: number, note: string): SpectrumGeometry {
+  const k = SPECTRUM_W / Math.max(SCREEN_MIN_WIDTH_PX, cssWidth);
+  const side = Math.max(MARGIN.left, SCREEN_SIDE_MARGIN_PX * k);
+  const noteFont = SCREEN_CAPTION_FONT_PX * k;
+  const noteLineHeight = noteFont * 1.25;
+  const noteLines = wrapText(note, noteFont, SPECTRUM_W - 2 * side);
+  const top = 4 * k + noteLines.length * noteLineHeight + 4 * k;
+  const tickFont = SCREEN_TICK_FONT_PX * k;
+  const captionFont = SCREEN_CAPTION_FONT_PX * k;
+  const peakFont = SCREEN_PEAK_LABEL_FONT_PX * k;
+  const tickLength = 4 * k;
+  const tickLabelOffset = tickLength + 2 * k + tickFont;
+  const captionOffset = tickLabelOffset + 4 * k + captionFont;
+  const bottom = captionOffset + 4 * k;
+  const plotH = Math.max(PLOT_H, SCREEN_MIN_PLOT_HEIGHT_PX * k);
+  const baseY = top + plotH;
+  const labelHeight = peakFont * 1.25;
+  const peakClearance = { x: 2 * k, y: k };
+  // A pitch above label height plus clearance means a label can only collide within its own row.
+  const pitch = labelHeight + 3 * k;
+  const peakRows: number[] = [];
+  for (let y = top; peakRows.length === 0 || y + labelHeight <= baseY - 2 * k; y += pitch) peakRows.push(y);
+  return {
+    height: baseY + bottom,
+    margin: { top, right: side, bottom, left: side },
+    plotW: SPECTRUM_W - 2 * side,
+    plotH,
+    baseY,
+    unitsPerPx: k,
+    tickFont,
+    tickLength,
+    tickLabelY: baseY + tickLabelOffset,
+    captionFont,
+    captionY: baseY + captionOffset,
+    noteFont,
+    noteLines,
+    noteY: 4 * k + noteFont,
+    noteLineHeight,
+    peakFont,
+    peakRows,
+    peakClearance,
+    peakGap: 6 * k,
+    topPad: labelHeight + 11 * k,
+    hitPad: 6 * k
+  };
+}
+
+/** Greedy word wrap against the shared conservative text-width estimate. */
+function wrapText(text: string, fontSize: number, maxWidth: number): string[] {
+  const lines: string[] = [];
+  let line = "";
+  for (const word of text.split(" ")) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (line && estimateAnnotationTextWidth(candidate, fontSize) > maxWidth) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = candidate;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
 interface AtomShiftLabelPart {
   label: string;
   variant: "primary" | "alternative";
@@ -96,6 +230,19 @@ export function LinkedFigureView({
     [spectrum.peaks, effectiveComparisonMode]
   );
   const spectrumIdentity = useMemo(() => spectrumViewportIdentity(spectrum), [spectrum]);
+  const spectrumNote = `Height = predicted equivalent nuclei (not experimental integration)${
+    renderPeaks.some((peak) => peak.estimated) ? " · gray dashed = rule-estimated" : ""
+  }${effectiveComparisonMode === "both" && hasAlternative ? ` · dashed orange = ${comparison.alternativeLabel}` : ""}`;
+  // Rendered CSS width of the spectrum, or undefined before layout and in hosts without layout.
+  const [screenWidth, setScreenWidth] = useState<number | undefined>(undefined);
+  // Copy and Export briefly re-render the publication geometry so their output never depends on the panel.
+  const [publicationLayout, setPublicationLayout] = useState(false);
+  const geometry = useMemo(
+    () => (publicationLayout || screenWidth === undefined
+      ? publicationSpectrumGeometry(spectrumNote)
+      : screenSpectrumGeometry(screenWidth, spectrumNote)),
+    [publicationLayout, screenWidth, spectrumNote]
+  );
 
   const [view, setView] = useState(effectiveDomain);
   const [viewSpectrumIdentity, setViewSpectrumIdentity] = useState(spectrumIdentity);
@@ -171,8 +318,10 @@ export function LinkedFigureView({
 
   const xOf = (ppm: number): number => {
     const frac = (ppm - view.min) / (view.max - view.min || 1);
-    return MARGIN.left + (reversed ? 1 - frac : frac) * PLOT_W;
+    return geometry.margin.left + (reversed ? 1 - frac : frac) * geometry.plotW;
   };
+  const plotLeft = geometry.margin.left;
+  const plotRight = geometry.margin.left + geometry.plotW;
 
   // ---- zoom / pan (viewport is a ppm window; the SVG viewBox is fixed) ------------------------
   const zoomAround = (svgX: number, deltaY: number): void => {
@@ -180,7 +329,7 @@ export function LinkedFigureView({
       const span = prev.max - prev.min;
       const minSpan = Math.max(0.05, domainSpan / 800);
       const nextSpan = clamp(span * Math.exp(deltaY * 0.0015), minSpan, domainSpan);
-      const t = clamp((svgX - MARGIN.left) / PLOT_W, 0, 1);
+      const t = clamp((svgX - geometry.margin.left) / geometry.plotW, 0, 1);
       const cursorPpm = prev.min + (reversed ? 1 - t : t) * span;
       const rel = (cursorPpm - prev.min) / (span || 1);
       const min = cursorPpm - rel * nextSpan;
@@ -189,13 +338,13 @@ export function LinkedFigureView({
   };
 
   const zoomByButton = (direction: "in" | "out"): void =>
-    zoomAround(MARGIN.left + PLOT_W / 2, direction === "in" ? -120 : 120);
+    zoomAround(geometry.margin.left + geometry.plotW / 2, direction === "in" ? -120 : 120);
 
   // Pan the viewport by `dx` pixels (in SPECTRUM_W space); shared by drag and horizontal scroll.
   const panByPixels = (dx: number): void => {
     setView((prev) => {
       const span = prev.max - prev.min;
-      const shift = (span / PLOT_W) * dx * (reversed ? 1 : -1);
+      const shift = (span / geometry.plotW) * dx * (reversed ? 1 : -1);
       return clampWindow(prev.min + shift, prev.max + shift, effectiveDomain);
     });
   };
@@ -243,7 +392,40 @@ export function LinkedFigureView({
     svg.addEventListener("wheel", onWheel, { passive: false });
     return () => svg.removeEventListener("wheel", onWheel);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reversed, domainSpan, effectiveDomain.min, effectiveDomain.max, showFull]);
+  }, [reversed, domainSpan, effectiveDomain.min, effectiveDomain.max, showFull, geometry]);
+
+  // Size text from the figure's rendered width. The portal remounts the SVG for Full size.
+  useLayoutEffect(() => {
+    const svg = spectrumRef.current;
+    if (!svg) return undefined;
+    const measure = (): void => {
+      const width = Math.round(svg.getBoundingClientRect().width);
+      setScreenWidth(width > 0 ? width : undefined);
+    };
+    measure();
+    if (typeof ResizeObserver !== "function") return undefined;
+    const observer = new ResizeObserver(measure);
+    observer.observe(svg);
+    return () => observer.disconnect();
+  }, [showFull]);
+
+  /** Read the live SVG as it looks at the publication geometry, whatever the panel's width. */
+  const publicationSvg = (): string | undefined => {
+    const serialize = (): string | undefined => {
+      const svg = spectrumRef.current;
+      return svg ? standaloneSpectrumSvg(
+        svg, comparison.alternativeLabel, supportsComparison ? comparison.primaryLabel : undefined, spectrum.peaks
+      ) : undefined;
+    };
+    if (geometry.unitsPerPx === undefined) return serialize();
+    flushSync(() => setPublicationLayout(true));
+    try {
+      return serialize();
+    } finally {
+      // Restored in the same task, so the publication layout is never painted.
+      setPublicationLayout(false);
+    }
+  };
 
   const onPointerDown = (event: React.PointerEvent<SVGSVGElement>): void => {
     dragRef.current = event.clientX;
@@ -291,17 +473,10 @@ export function LinkedFigureView({
     exportWasBusyRef.current = exportBusy;
   }, [exportBusy]);
   const onCopy = (): void => {
-    const svg = spectrumRef.current;
-    if (!svg) return;
+    const markup = publicationSvg();
+    if (markup === undefined) return;
     // Copy PNG and SVG image flavors for document and vector editors.
-    void copySpectrumToClipboard(
-      standaloneSpectrumSvg(
-        svg,
-        comparison.alternativeLabel,
-        supportsComparison ? comparison.primaryLabel : undefined,
-        spectrum.peaks
-      )
-    ).then((result) => {
+    void copySpectrumToClipboard(markup).then((result) => {
       if (!mountedRef.current) return;
       if (result !== "none") {
         setCopied(true);
@@ -319,7 +494,7 @@ export function LinkedFigureView({
     setExportBusy(true);
     setExportStatus(null);
     try {
-      const svg = spectrumRef.current;
+      const markup = format === "jdx" ? undefined : publicationSvg();
       const result = format === "jdx"
         ? await saveTextFile(`predicted-${spectrum.nucleus}-nmr.jdx`, spectrumToJcampDx(spectrum, {
             title: `Predicted ${formatNucleus(spectrum.nucleus)} NMR`,
@@ -331,9 +506,7 @@ export function LinkedFigureView({
             extensions: ["jdx", "dx"],
             mimeType: "chemical/x-jcamp-dx"
           })
-        : svg ? await exportSpectrumFigure(format, standaloneSpectrumSvg(
-            svg, comparison.alternativeLabel, supportsComparison ? comparison.primaryLabel : undefined, spectrum.peaks
-          ), spectrum.nucleus) : "failed";
+        : markup !== undefined ? await exportSpectrumFigure(format, markup, spectrum.nucleus) : "failed";
       if (mountedRef.current) setExportStatus(result);
     } catch {
       if (mountedRef.current) setExportStatus("failed");
@@ -498,7 +671,9 @@ export function LinkedFigureView({
     return () => window.removeEventListener("keydown", onKey, true);
   }, [showFull, exportMenuOpen, exportMenuIndex, leaveFullSize]);
 
-  const ticks = useMemo(() => axisTicks(view.min, view.max), [view.min, view.max]);
+  const ticks = useMemo(() => geometry.unitsPerPx === undefined
+    ? axisTicks(view.min, view.max)
+    : readableAxisTicks(view.min, view.max, geometry), [view.min, view.max, geometry]);
   const zoomed = view.max - view.min < domainSpan - 1e-6;
 
   const layout = useMemo(
@@ -507,7 +682,7 @@ export function LinkedFigureView({
   );
 
   // ---- realistic (summed pseudo-Voigt) spectrum -----------------------------------------------
-  const ppmPerPx = (view.max - view.min) / PLOT_W;
+  const ppmPerPx = (view.max - view.min) / geometry.plotW;
   const halfWidthPpm = Math.max(LINE_HALF_WIDTH_HZ / observeMHz, MIN_HALF_WIDTH_PX * ppmPerPx);
   // Oversample finely enough that a peak this sharp is caught (≈3 samples across its half-width), but no
   // finer than 1px so zoomed-in views stay cheap.
@@ -541,25 +716,26 @@ export function LinkedFigureView({
     [renderPeakLayouts]
   );
   const envelope = useMemo(() => createSpectrumEnvelope(spectrumLines, halfWidthPpm), [spectrumLines, halfWidthPpm]);
+  const plot = useMemo(() => ({ left: geometry.margin.left, width: geometry.plotW }), [geometry.margin.left, geometry.plotW]);
   const sampled = useMemo(
-    () => sampleStyledEnvelope(spectrumLines, view, reversed, halfWidthPpm, sampleStep, envelope),
-    [spectrumLines, view.min, view.max, reversed, halfWidthPpm, sampleStep, envelope]
+    () => sampleStyledEnvelope(spectrumLines, view, reversed, halfWidthPpm, sampleStep, envelope, plot),
+    [spectrumLines, view.min, view.max, reversed, halfWidthPpm, sampleStep, envelope, plot]
   );
   const hasVisibleLine = spectrumLines.some((line) => line.ppm >= view.min && line.ppm <= view.max);
   let offscreenScaleReference = 1e-9;
   for (const line of spectrumLines) offscreenScaleReference = Math.max(offscreenScaleReference, line.amp);
   const normalizationMax = hasVisibleLine ? sampled.max : offscreenScaleReference;
-  const heightScale = (PLOT_H - SPECTRUM_TOP_PAD) / normalizationMax;
+  const heightScale = (geometry.plotH - geometry.topPad) / normalizationMax;
   const spectrumCurvePaths = useMemo(
-    () => styledSpectrumPaths(sampled, heightScale),
-    [sampled, heightScale]
+    () => styledSpectrumPaths(sampled, heightScale, geometry.baseY),
+    [sampled, heightScale, geometry.baseY]
   );
   const activeCurvePath = useMemo(() => {
     if (activePeakIds.size === 0) return "";
     const lines = spectrumLines.filter((line) => activePeakIds.has(line.peakId));
-    const s = sampleEnvelope(lines, view, reversed, halfWidthPpm, sampleStep);
-    return spectrumPathFrom(s.xs, s.totals, heightScale);
-  }, [spectrumLines, activePeakIds, view.min, view.max, reversed, halfWidthPpm, sampleStep, heightScale]);
+    const s = sampleEnvelope(lines, view, reversed, halfWidthPpm, sampleStep, plot);
+    return spectrumPathFrom(s.xs, s.totals, heightScale, geometry.baseY);
+  }, [spectrumLines, activePeakIds, view.min, view.max, reversed, halfWidthPpm, sampleStep, heightScale, plot, geometry.baseY]);
   // Label height comes from the true curve value at the peak's center ppm (independent of sampling).
   const apexHeights = new Map<number, number>();
   const apexHeight = (lines: readonly { ppm: number }[]): number => {
@@ -577,16 +753,16 @@ export function LinkedFigureView({
 
   const peakLabels = placePeakLabels(renderPeakLayouts.flatMap(({ peak, lines }) => {
     const x = xOf(peak.ppm);
-    if (x < MARGIN.left - 1 || x > MARGIN.left + PLOT_W + 1) return [];
+    if (x < plotLeft - 1 || x > plotRight + 1) return [];
     return [{
       key: peak.key,
       text: peak.variant === "alternative" ? `${peak.label}${alternativeSuffix}` : peak.label,
       x,
-      apexY: BASE_Y - apexHeight(lines),
+      apexY: geometry.baseY - apexHeight(lines),
       intensity: peak.intensity,
       ppm: peak.ppm
     }];
-  }));
+  }), geometry);
 
   // Per-atom estimation quality uses the same tiers as the table (high→good, low/est→rough).
   const atomQuality = useMemo(() => {
@@ -771,7 +947,7 @@ export function LinkedFigureView({
         <svg
           ref={spectrumRef}
           className="lf-spectrum"
-          viewBox={`0 0 ${SPECTRUM_W} ${SPECTRUM_H}`}
+          viewBox={`0 0 ${SPECTRUM_W} ${geometry.unitsPerPx === undefined ? SPECTRUM_H : round(geometry.height)}`}
           data-observe-frequency-mhz={formatObserveFrequency(observeMHz)}
           role="img"
           aria-label={`Predicted ${formatNucleus(spectrum.nucleus)} spectrum; scroll to zoom, drag to pan`}
@@ -780,21 +956,24 @@ export function LinkedFigureView({
           onPointerUp={endDrag}
           onPointerLeave={endDrag}
         >
-          <line className="lf-axis" x1={MARGIN.left} y1={BASE_Y} x2={MARGIN.left + PLOT_W} y2={BASE_Y} />
-          <text className="lf-spectrum-note" x={MARGIN.left} y={11}>
-            Height = predicted equivalent nuclei (not experimental integration)
-            {renderPeaks.some((peak) => peak.estimated) ? " · gray dashed = rule-estimated" : ""}
-            {effectiveComparisonMode === "both" && hasAlternative
-              ? ` · dashed orange = ${comparison.alternativeLabel}`
-              : ""}
+          <line className="lf-axis" x1={plotLeft} y1={geometry.baseY} x2={plotRight} y2={geometry.baseY} />
+          {/* Keyed so the publication layout gets a fresh node: React would leave an empty style="". */}
+          <text key={geometry.noteFont === undefined ? "publication-note" : "screen-note"}
+            className="lf-spectrum-note" x={plotLeft} y={geometry.noteY}
+            style={geometry.noteFont === undefined ? undefined : { fontSize: geometry.noteFont }}>
+            {geometry.noteLines.length === 1 ? geometry.noteLines[0] : geometry.noteLines.map((line, index) => (
+              <tspan key={index} x={plotLeft} y={geometry.noteY + index * geometry.noteLineHeight}>
+                {index < geometry.noteLines.length - 1 ? `${line} ` : line}
+              </tspan>
+            ))}
           </text>
           {ticks.map((tick) => {
             const x = xOf(tick);
-            if (x < MARGIN.left - 1 || x > MARGIN.left + PLOT_W + 1) return null;
+            if (x < plotLeft - 1 || x > plotRight + 1) return null;
             return (
               <g key={`t${tick}`}>
-                <line className="lf-tick" x1={x} y1={BASE_Y} x2={x} y2={BASE_Y + 4} />
-                <text className="lf-tick-label" x={x} y={BASE_Y + 12} style={{ fontSize: 11 }} textAnchor="middle">
+                <line className="lf-tick" x1={x} y1={geometry.baseY} x2={x} y2={geometry.baseY + geometry.tickLength} />
+                <text className="lf-tick-label" x={x} y={geometry.tickLabelY} style={{ fontSize: geometry.tickFont }} textAnchor="middle">
                   {tick}
                 </text>
               </g>
@@ -808,7 +987,7 @@ export function LinkedFigureView({
           {renderPeakLayouts.map(({ peak, lines }) => {
             const label = peakLabels.get(peak.key);
             if (!label) return null;
-            const apexY = BASE_Y - apexHeight(lines);
+            const apexY = geometry.baseY - apexHeight(lines);
             return <line key={peak.key} className="lf-label-leader"
               x1={xOf(peak.ppm)} y1={apexY} x2={label.x + label.width / 2}
               y2={apexY < label.y ? label.y : label.y + label.height}
@@ -816,7 +995,7 @@ export function LinkedFigureView({
           })}
           {renderPeakLayouts.map(({ peak, lines }) => {
             const centerX = xOf(peak.ppm);
-            if (centerX < MARGIN.left - 1 || centerX > MARGIN.left + PLOT_W + 1) return null;
+            if (centerX < plotLeft - 1 || centerX > plotRight + 1) return null;
             const active = activePeakIds.has(peak.sourceId);
             // Confidence never restyles the spectrum trace; it reads from the structure labels and
             // table instead (user direction, ADR-0025). Rule estimates stay visually distinct.
@@ -852,19 +1031,21 @@ export function LinkedFigureView({
                       width={label.width} height={label.height} fill="#fff" pointerEvents="none" />
                     <text
                       className={labelClass} x={label.x + label.width / 2}
-                      y={label.y + PEAK_LABEL_FONT_SIZE}
-                      style={{ fontSize: PEAK_LABEL_FONT_SIZE }} textAnchor="middle"
+                      y={label.y + geometry.peakFont}
+                      style={{ fontSize: geometry.peakFont }} textAnchor="middle"
                     >
                       {text}
                     </text>
                   </>
                 ) : null}
                 {/* Wider transparent hit area covering the whole multiplet, so it is easy to hover. */}
-                <rect className="lf-hit" x={round(minX - 6)} y={MARGIN.top} width={round(maxX - minX + 12)} height={PLOT_H} />
+                <rect className="lf-hit" x={round(minX - geometry.hitPad)} y={geometry.margin.top}
+                  width={round(maxX - minX + 2 * geometry.hitPad)} height={geometry.plotH} />
               </g>
             );
           })}
-          <text className="lf-axis-caption" x={MARGIN.left + PLOT_W / 2} y={SPECTRUM_H - 3} style={{ fontSize: 11 }} textAnchor="middle">
+          <text className="lf-axis-caption" x={plotLeft + geometry.plotW / 2} y={geometry.captionY}
+            style={{ fontSize: geometry.captionFont }} textAnchor="middle">
             δ (ppm){reversed ? " · high → low" : ""}
           </text>
         </svg>
@@ -1029,24 +1210,28 @@ function layoutStructure(
 /** Keep labels near their ppm and stagger vertically, reserving the honesty note and axis. */
 function placePeakLabels(peaks: {
   key: string; text: string; x: number; apexY: number; intensity: number; ppm: number
-}[]): Map<string, AnnotationLabelBox> {
+}[], geometry: SpectrumGeometry): Map<string, AnnotationLabelBox> {
+  const fontSize = geometry.peakFont;
+  const { x: clearX, y: clearY } = geometry.peakClearance;
   const placed = new Map<string, AnnotationLabelBox>();
   const sorted = [...peaks].sort((a, b) =>
     b.intensity - a.intensity || a.ppm - b.ppm || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)
   );
-  const rows = Array.from({ length: 10 }, (_, index) => 18 + index * 18);
+  const rows = geometry.peakRows;
   const occupiedRows = rows.map(() => [] as AnnotationLabelBox[]);
   for (const peak of sorted) {
-    const width = estimateAnnotationTextWidth(peak.text, PEAK_LABEL_FONT_SIZE);
-    if (width > PLOT_W) continue;
-    const desiredTop = peak.apexY - 6 - PEAK_LABEL_FONT_SIZE;
+    const width = estimateAnnotationTextWidth(peak.text, fontSize);
+    if (width > geometry.plotW) continue;
+    const desiredTop = peak.apexY - geometry.peakGap - fontSize;
     const candidates = [...rows].sort((a, b) => Math.abs(a - desiredTop) - Math.abs(b - desiredTop) || a - b);
     for (const y of candidates) {
       const box = {
-        x: clamp(peak.x - width / 2, MARGIN.left, SPECTRUM_W - MARGIN.right - width),
-        y, width, height: PEAK_LABEL_FONT_SIZE * 1.25
+        x: clamp(peak.x - width / 2, geometry.margin.left, SPECTRUM_W - geometry.margin.right - width),
+        y, width, height: fontSize * 1.25
       };
-      const clearance = { ...box, x: box.x - 2, y: box.y - 1, width: width + 4, height: box.height + 2 };
+      const clearance = {
+        ...box, x: box.x - clearX, y: box.y - clearY, width: width + 2 * clearX, height: box.height + 2 * clearY
+      };
       // Row spacing exceeds the label height plus clearance, so only this row can collide.
       const occupied = occupiedRows[rows.indexOf(y)];
       if (occupied.some((other) => annotationLabelBoxesOverlap(clearance, other))) continue;
@@ -1271,9 +1456,17 @@ function sampleEnvelope(
   view: { min: number; max: number },
   reversed: boolean,
   halfWidthPpm: number,
-  step: number
+  step: number,
+  plot: PlotSpan
 ): { xs: number[]; totals: number[]; max: number } {
-  return sampleStyledEnvelope(lines.map((line) => ({ ...line, peakId: "", style: "trusted" })), view, reversed, halfWidthPpm, step);
+  const styled = lines.map((line): SpectrumLine => ({ ...line, peakId: "", style: "trusted" }));
+  return sampleStyledEnvelope(styled, view, reversed, halfWidthPpm, step, createSpectrumEnvelope(styled, halfWidthPpm), plot);
+}
+
+/** Horizontal extent of the plot area in viewBox units. */
+interface PlotSpan {
+  left: number;
+  width: number;
 }
 
 interface StyledEnvelopeSample {
@@ -1291,7 +1484,8 @@ export function sampleStyledEnvelope(
   reversed: boolean,
   halfWidthPpm: number,
   step: number,
-  envelope = createSpectrumEnvelope(lines, halfWidthPpm)
+  envelope = createSpectrumEnvelope(lines, halfWidthPpm),
+  plot: PlotSpan = { left: MARGIN.left, width: PLOT_W }
 ): StyledEnvelopeSample {
   const xs: number[] = [];
   const totals: number[] = [];
@@ -1303,8 +1497,8 @@ export function sampleStyledEnvelope(
   if (![view.min, view.max, step].every(Number.isFinite) || step <= 0) return { xs, totals, max: 1e-9, byStyle };
   let max = 1e-9;
   const span = view.max - view.min || 1;
-  for (let x = MARGIN.left; x <= MARGIN.left + PLOT_W + step; x += step) {
-    const frac = (x - MARGIN.left) / PLOT_W;
+  for (let x = plot.left; x <= plot.left + plot.width + step; x += step) {
+    const frac = (x - plot.left) / plot.width;
     const ppm = view.min + (reversed ? 1 - frac : frac) * span;
     const { total, byStyle: styleTotals } = envelope(ppm);
     xs.push(x);
@@ -1320,7 +1514,8 @@ export function sampleStyledEnvelope(
  * without turning overlapping peaks into physically incorrect independent envelopes. */
 function styledSpectrumPaths(
   sampled: StyledEnvelopeSample,
-  heightScale: number
+  heightScale: number,
+  baseY: number
 ): { key: string; style: CurveStyle; d: string }[] {
   if (sampled.xs.length === 0) return [];
   const dominantStyleAt = (index: number): CurveStyle => {
@@ -1344,7 +1539,7 @@ function styledSpectrumPaths(
     paths.push({
       key: `${style}-${paths.length}`,
       style,
-      d: spectrumPathFrom(sampled.xs.slice(start, index + 1), sampled.totals.slice(start, index + 1), heightScale)
+      d: spectrumPathFrom(sampled.xs.slice(start, index + 1), sampled.totals.slice(start, index + 1), heightScale, baseY)
     });
     start = index;
     style = nextStyle;
@@ -1352,22 +1547,21 @@ function styledSpectrumPaths(
   paths.push({
     key: `${style}-${paths.length}`,
     style,
-    d: spectrumPathFrom(sampled.xs.slice(start), sampled.totals.slice(start), heightScale)
+    d: spectrumPathFrom(sampled.xs.slice(start), sampled.totals.slice(start), heightScale, baseY)
   });
   return paths;
 }
 
 /** Build an SVG polyline `d` from sampled heights at a given value→pixel `scale`, along the baseline. */
-function spectrumPathFrom(xs: readonly number[], totals: readonly number[], scale: number): string {
+function spectrumPathFrom(xs: readonly number[], totals: readonly number[], scale: number, baseY: number): string {
   let d = "";
   for (let i = 0; i < xs.length; i += 1) {
-    d += `${i === 0 ? "M" : "L"}${round(xs[i])} ${round(BASE_Y - totals[i] * scale)}`;
+    d += `${i === 0 ? "M" : "L"}${round(xs[i])} ${round(baseY - totals[i] * scale)}`;
   }
   return d;
 }
 
-function axisTicks(min: number, max: number): number[] {
-  const step = niceStep((max - min) / 6);
+function axisTicks(min: number, max: number, step = niceStep((max - min) / 6)): number[] {
   const ticks: number[] = [];
   if (![min, max, step].every(Number.isFinite) || step <= 0) return ticks;
   for (let tick = Math.ceil(min / step) * step; tick <= max + 1e-9; tick += step) {
@@ -1376,6 +1570,34 @@ function axisTicks(min: number, max: number): number[] {
     if (tick + step === tick) break;
   }
   return ticks;
+}
+
+/**
+ * Screen ticks: aim for one tick per SCREEN_TICK_PITCH_PX of plot width, then coarsen the nice step
+ * until the numbers, at the screen tick size, keep SCREEN_TICK_GAP_PX clear of their neighbours. A
+ * narrow figure therefore gets fewer ticks and a wide one more. Ticks whose number would run past
+ * the figure's edge are dropped rather than clipped.
+ */
+function readableAxisTicks(min: number, max: number, geometry: SpectrumGeometry): number[] {
+  const span = max - min;
+  if (!Number.isFinite(span) || span <= 0) return axisTicks(min, max);
+  const unitsPerPx = geometry.unitsPerPx ?? 1;
+  const labelWidth = (tick: number): number => estimateAnnotationTextWidth(String(tick), geometry.tickFont);
+  const target = clamp(geometry.plotW / unitsPerPx / SCREEN_TICK_PITCH_PX, 3, 12);
+  let step = niceStep(span / target);
+  let ticks = axisTicks(min, max, step);
+  for (let attempt = 0; attempt < 32 && ticks.length > 1; attempt += 1) {
+    const widest = Math.max(...ticks.map(labelWidth));
+    if ((step / span) * geometry.plotW >= widest + SCREEN_TICK_GAP_PX * unitsPerPx) break;
+    step = niceStep(step * 1.01);
+    ticks = axisTicks(min, max, step);
+  }
+  return ticks.filter((tick) => {
+    const frac = (tick - min) / span;
+    const x = geometry.margin.left + frac * geometry.plotW;
+    const half = labelWidth(tick) / 2;
+    return x - half >= 0 && x + half <= SPECTRUM_W;
+  });
 }
 
 function niceStep(rough: number): number {

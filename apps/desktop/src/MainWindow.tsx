@@ -1944,7 +1944,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.27.14.54-opus";
+const CURRENT_BUILD_STAMP = "11.27.14.55-opus";
 
 /** How a command is invoked. `liveRerunStillWanted` marks a live panel's automatic re-run: a queued
  *  one that reaches the front of its plugin's queue starts only while this still returns true. */
