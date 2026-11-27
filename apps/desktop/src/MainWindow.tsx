@@ -10,7 +10,7 @@ import { electronMarkInteractionFrames } from "./electronMarkInteraction";
 import { installPopoverEscapeRouting } from "./window-manager/popoverEscape";
 import { BracketLabelEditor, type BracketLabelEditorHandle } from "./BracketLabelEditor";
 import { createBracketCommands, selectedBracketPair, toggleBracketRepeatUnit, setBracketRepeatLabel, bracketRepeatUnitStatus, prepareCleanupRepeatUnits } from "./bracketCommands";
-import { bracketLabelPlan, bracketLabelContainsPoint, carriedElectronMarkSvgTransform, inverseTransformPointForObject, lonePairDragDirection, nativeRelabelElementAndCharge, transformPointForObject } from "@chemdraft/layout-engine";
+import { bracketLabelPlan, bracketLabelContainsPoint, carriedElectronMarkSvgTransform, inverseTransformPointForObject, lonePairDragDirection, nativeElementWithChargeLabel, nativeRelabelElementAndCharge, transformPointForObject } from "@chemdraft/layout-engine";
 import { useCanvasHandwritingFont } from "./canvasHandwritingFont";
 import { nativeTemplateForToolCommand } from "./ringTemplates";
 import { ATOM_MAPS_REMOVED_STATUS, documentDrawingDefaults, stripSmilesAtomMaps } from "@chemdraft/document-workflow-core";
@@ -188,7 +188,7 @@ import {
 } from "@chemdraft/chem-core";
 import { tryNativeSingleBondGraphSmiles, setTableCell, formatTableCellFormula, insertTableRows,
   setTableCaption, setTableFootnotes } from "@chemdraft/document-workflow-core";
-import { createAtomLabelDraftRollback, documentOwnsAtomLabelDraft, recordAtomLabelDraftRollback, restoreAtomLabelDraft, type AtomLabelDraftState } from "./atomLabelDraft";
+import { atomLabelDraftChargeChangedOutside, atomLabelDraftChargeChangedStatus, createAtomLabelDraftRollback, documentOwnsAtomLabelDraft, recordAtomLabelDraftRollback, restoreAtomLabelDraft, type AtomLabelDraftState } from "./atomLabelDraft";
 import type { EditorSaveResult } from "@chemdraft/editor-adapter";
 import { sha256Utf8Hex } from "@chemdraft/cdx-compat";
 import {
@@ -539,6 +539,7 @@ import {
   applyImportedPageFitRecommendation,
   applyNativeArtBooleanOperationToSelection,
   applyNativeAtomElementTarget,
+  chargedAtomRelabelRefusal,
   commitNativeAtomLabelTarget,
   normalizeNativeAtomElementLabel,
   atomLabelEditKeepsStartingLabel,
@@ -1648,10 +1649,13 @@ type AtomLabelEditOptions = {
 function documentHasAtomLabelDraft(document: ChemDraftDocument, state: AtomLabelEditState): boolean {
   const object = findDocumentObject(document, state.objectId);
   const atom = object?.type === "molecule" ? object.atoms.find(a => a.id === state.atomId) : undefined;
-  // An isotope refusal keeps the original atom as the preview while the editor still owns it.
+  // An isotope refusal, or a refused charged label (`chargedAtomRelabelRefusal`), keeps the original
+  // atom as the preview while the editor still owns it; its close still reports the refusal.
+  const refusedDraft = atom?.isotope !== undefined ||
+    (atom !== undefined && object?.type === "molecule" && chargedAtomRelabelRefusal(atom, object, state.draft) !== undefined);
   return (atom?.labelLiteral === true && (!state.draft.trim() || atom.element === normalizeNativeAtomElementLabel(state.draft) ||
     atom.element === nativeRelabelElementAndCharge(state.draft, state.initialFormalCharge).element)) ||
-    (atom?.isotope !== undefined && documentOwnsAtomLabelDraft(document, state));
+    (refusedDraft && documentOwnsAtomLabelDraft(document, state));
 }
 
 function atomLabelEditStart(state: AtomLabelEditState) {
@@ -1676,6 +1680,16 @@ function finishedAtomLabelDraft(current: ChemDraftDocument, state: AtomLabelEdit
   }
   // Ordinary labels still go through the typed relabel decision (C/N can become literal).
   const unchanged = !state.draft.trim();
+  // A charged draft ("Zn2+") never writes its charge over one another edit set on the atom since the
+  // draft last wrote it: the close is refused and the atom left as Cancel leaves it, its label as
+  // before the edit and the other edit's charge kept. Uncharged drafts keep the atom's charge anyway.
+  if (!unchanged && (nativeElementWithChargeLabel(state.draft.trim())?.charge ?? 0) !== 0 &&
+    atomLabelDraftChargeChangedOutside(current, state)) {
+    return {
+      baseline, document: baseline, target,
+      message: atomLabelDraftChargeChangedStatus, refusal: atomLabelDraftChargeChangedStatus
+    };
+  }
   return { baseline, ...(unchanged ? { document: baseline, target } : commitNativeAtomLabelTarget(baseline, target, state.draft, {
     literal: true, beforeAtom: state.beforeAtom, beforeMolecule: state.beforeMolecule, replaceElement: true
   })) };
@@ -1920,7 +1934,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.27.10.15-opus";
+const CURRENT_BUILD_STAMP = "11.27.11.00-opus";
 
 const NUMERIC_ENTRY_DURING_DRAG_STATUS = "Finish the current drag, then enter a value";
 

@@ -70,6 +70,22 @@ export function documentOwnsAtomLabelDraft(document: ChemDraftDocument, state: A
   return sameAtomLabelFields(atom, state.draftRollback.preview.atoms.find(atom => atom.id === state.atomId));
 }
 
+/** Why closing a charged label draft wrote nothing: another edit changed the atom's charge first. */
+export const atomLabelDraftChargeChangedStatus = "The charge changed while you were typing; type the label again.";
+
+/**
+ * Whether another edit changed the edited atom's formal charge since the draft last wrote it: the
+ * atom's charge in `document` is not the one the draft's latest write left (`draftRollback.preview`,
+ * the record Cancel uses to tell its own charge from another edit's, `restoreAtomLabelDraft`).
+ * False when the atom is gone. Closing a charged draft then refuses rather than overwrite that edit.
+ */
+export function atomLabelDraftChargeChangedOutside(document: ChemDraftDocument, state: AtomLabelDraftState): boolean {
+  const molecule = document.pages.flatMap(page => page.objects).find(object => object.id === state.objectId);
+  const atom = molecule?.type === "molecule" ? molecule.atoms.find(atom => atom.id === state.atomId) : undefined;
+  const written = state.draftRollback.preview.atoms.find(atom => atom.id === state.atomId);
+  return !!atom && !!written && atom.formalCharge !== written.formalCharge;
+}
+
 /**
  * Compare immutable snapshots in O(objects + atoms/bonds in the edited molecule). Large payloads
  * on other objects are never visited. Shell key order is irrelevant; absent and undefined differ.

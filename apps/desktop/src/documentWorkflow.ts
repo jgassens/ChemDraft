@@ -241,6 +241,7 @@ import {
   representativeMoleculeBondLength,
   resolvePageAnchorPoint
 } from "@chemdraft/layout-engine";
+import { bondedElementLabelMeaning } from "@chemdraft/template-library";
 import {
   extractRxnMolfileBlocks,
   parseMolfileGraph,
@@ -4669,10 +4670,12 @@ function nativeTextObjectToAtomLabelDisabledReason(
   const target = candidate.target;
   const atom = target.kind === "atom" ? candidate.molecule.atoms.find(a => a.id === target.atomId) : undefined;
   const label = normalizeNativeAtomElementLabel(candidate.text.text);
-  // A charged element ("Zn2+") always relabels its atom (`commitNativeAtomLabelTarget`).
+  // A charged element ("Zn2+") always relabels its atom (`commitNativeAtomLabelTarget`), unless
+  // that atom cannot hold it faithfully (`chargedAtomRelabelRefusal`).
   const charged = nativeElementWithChargeLabel(candidate.text.text.trim());
   if (atom && charged && charged.charge !== 0) {
-    return atomLabelIsotopeRefusal(atom, charged.element, candidate.molecule, true);
+    return chargedAtomRelabelRefusal(atom, candidate.molecule, candidate.text.text) ??
+      atomLabelIsotopeRefusal(atom, charged.element, candidate.molecule, true);
   }
   if (atom && labelOnBondedAtom(label, atom, candidate.molecule).kind !== "substituent") {
     return atomLabelIsotopeRefusal(atom, label, candidate.molecule, true);
@@ -10355,6 +10358,7 @@ export function applyNativeAtomElementTarget(
   if (!atom || normalizedElement.length === 0) {
     return document;
   }
+  if (chargedAtomRelabelRefusal(atom, molecule, element)) return document;
   if (atomLabelIsotopeRefusal(atom, normalizedElement, molecule, literal)) return document;
 
   const restoredSide = options.labelBondSide;
@@ -10380,6 +10384,38 @@ export function applyNativeAtomElementTarget(
     { op: "updateObject", objectId: molecule.id, changes: nextMolecule },
     { now: phase4Timestamp }
   );
+}
+
+/** Why a charged label typed over an atom that carries a charge mark is refused. */
+export const chargedLabelOnChargeMarkRefusal = "Remove the charge mark before typing a charged label.";
+
+/**
+ * Why typed label text that is an element with its own charge ("N+", "Zn2+", "Ac+") must not relabel
+ * this atom, or undefined. Text with no charge of its own is never refused here: today's relabel
+ * applies to it unchanged. Two cases are refused, and change nothing, because the atom could not
+ * hold the typed charge faithfully (AGENTS.md §7):
+ * - The atom carries a charge mark (`markCharge` not 0). Its formal charge is the mark's share plus
+ *   its own, so writing the typed total would leave a hidden remainder once the mark is removed:
+ *   "N+" over an atom whose +2 is all mark is a hidden -1 after the mark goes.
+ * - The atom has a bond and the typed symbol is one a typed label on a bonded atom reads as a group,
+ *   not that element (`bondedElementLabelMeaning`, the same list validation and the file writers
+ *   read: "Ac" acetyl, "Pr" n-propyl, "Ts" tosyl, "Ar" aryl). Stored as the element with a charge,
+ *   it would be read back as the group. Unbonded, the symbol is the element and is not refused.
+ */
+export function chargedAtomRelabelRefusal(
+  atom: MoleculeAtom,
+  molecule: MoleculeObject,
+  label: string
+): string | undefined {
+  const typed = label.trim();
+  const charged = nativeElementWithChargeLabel(typed);
+  if (!charged || charged.charge === 0) return undefined;
+  if ((atom.markCharge ?? 0) !== 0) return chargedLabelOnChargeMarkRefusal;
+  const groupName = bondedElementLabelMeaning(charged.element);
+  if (groupName !== undefined && molecule.bonds.some(bond => bond.fromAtomId === atom.id || bond.toAtomId === atom.id)) {
+    return `${typed} on a bonded atom reads as the ${groupName} group; draw the ion unbonded or set the charge separately.`;
+  }
+  return undefined;
 }
 
 /** Two recorded bond sides are the same record: the same side, read against the same neighbour. */
@@ -10484,6 +10520,10 @@ export function commitNativeAtomLabelTarget(
   // substituent, nor read as the drawn label typed back.
   const charged = nativeElementWithChargeLabel(label.trim());
   const chargedElement = charged && charged.charge !== 0 ? charged.element : undefined;
+  // An atom that cannot hold the typed charge faithfully refuses it and changes nothing: one with a
+  // charge mark, or a bonded one whose symbol reads as a group there (`chargedAtomRelabelRefusal`).
+  const chargedRefusal = chargedElement ? chargedAtomRelabelRefusal(atom, molecule, label) : undefined;
+  if (chargedRefusal) return { document, target, message: chargedRefusal, refusal: chargedRefusal };
   if (options.literal === true && !chargedElement && typedLabelIsDrawnLabel(normalized, beforeAtom, beforeMolecule)) return { document, target };
   const decision: LabelOnBondedAtomDecision | undefined = chargedElement
     ? undefined : labelOnBondedAtom(normalized, beforeAtom, beforeMolecule, options.replaceElement);
