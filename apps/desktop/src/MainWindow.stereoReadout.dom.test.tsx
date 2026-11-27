@@ -127,7 +127,7 @@ async function key(value: string, shiftKey = false) {
 const menu = () => container.querySelector<HTMLElement>('[aria-label="Object layer options"]');
 
 type Path = "inline" | "native";
-const READOUT = /^(Stereocentre|Double bond): /;
+const READOUT = /^(Stereocenter|Double bond): /;
 /** The read-only row the menu showed, or undefined when it showed none; the menu is then closed. */
 async function readout(path: Path): Promise<string | undefined> {
   if (path === "native") {
@@ -170,7 +170,7 @@ describe.each<ShortcutPlatform>(["macos", "windows"])("canvas stereo readout in 
     runtime.desktop = path === "native";
 
     await rightClick(ibuprofen, atomPoint(ibuprofen, 10));
-    expect(await readout(path)).toBe("Stereocentre: S");
+    expect(await readout(path)).toBe("Stereocenter: S");
 
     const double = butene.bonds.find(bond => bond.order === "double")!;
     await rightClick(butene, bondPoint(butene, double));
@@ -184,7 +184,7 @@ describe.each<ShortcutPlatform>(["macos", "windows"])("canvas stereo readout in 
     await rightClick(labelled, atomPoint(labelled, 1));
     expect(await readout(path)).toBeUndefined();
     await rightClick(ibuprofen, atomPoint(ibuprofen, 10));
-    expect(await readout(path)).toBe("Stereocentre: S");
+    expect(await readout(path)).toBe("Stereocenter: S");
   });
 
   it.each<Path>(["inline", "native"])("right-clicking a stereocentre inside a kept selection shows its R/S (%s menu)", async path => {
@@ -199,14 +199,14 @@ describe.each<ShortcutPlatform>(["macos", "windows"])("canvas stereo readout in 
     await select(ibuprofen, bondPoint(ibuprofen, incident));
     runtime.desktop = path === "native";
     await rightClick(ibuprofen, atomPoint(ibuprofen, 10));
-    expect(await readout(path)).toBe("Stereocentre: S");
+    expect(await readout(path)).toBe("Stereocenter: S");
 
     // The whole molecule selected: right-clicking the centre still shows its R/S.
     runtime.desktop = false;
     await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "edit.selectAll" } })); });
     runtime.desktop = path === "native";
     await rightClick(ibuprofen, atomPoint(ibuprofen, 10));
-    expect(await readout(path)).toBe("Stereocentre: S");
+    expect(await readout(path)).toBe("Stereocenter: S");
   });
 
   it("the keyboard menu shows the row for one selected atom or bond, and not for a whole object", async () => {
@@ -214,15 +214,15 @@ describe.each<ShortcutPlatform>(["macos", "windows"])("canvas stereo readout in 
     await mount(doc, platform);
     await select(ibuprofen, atomPoint(ibuprofen, 10));
     canvas.focus(); await key("F10", true);
-    expect(await readout("inline")).toBe("Stereocentre: S");
+    expect(await readout("inline")).toBe("Stereocenter: S");
     await select(butene, bondPoint(butene, butene.bonds.find(bond => bond.order === "double")!));
     canvas.focus(); await key("F10", true);
     expect(await readout("inline")).toBe("Double bond: E");
     // After a right-click the atom stays the selected part, so the keyboard menu agrees with it.
     await rightClick(ibuprofen, atomPoint(ibuprofen, 10));
-    expect(await readout("inline")).toBe("Stereocentre: S");
+    expect(await readout("inline")).toBe("Stereocenter: S");
     canvas.focus(); await key("F10", true);
-    expect(await readout("inline")).toBe("Stereocentre: S");
+    expect(await readout("inline")).toBe("Stereocenter: S");
     // Whole objects selected, no single atom or bond: no row.
     await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "edit.selectAll" } })); });
     canvas.focus(); await key("F10", true);

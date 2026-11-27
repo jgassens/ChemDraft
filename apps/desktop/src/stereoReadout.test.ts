@@ -34,10 +34,10 @@ describe("stereo readout from the existing OCL perceiver", () => {
     expect(centre.element).toBe("C");
     expect(s.bonds.some(bond => (bond.fromAtomId === centre.id || bond.toAtomId === centre.id) &&
       (bond.display?.bondStyle === "wedge" || bond.display?.bondStyle === "hashed"))).toBe(true);
-    expect(stereoReadoutLabel({ molecule: s, atomId: centre.id }, engine)).toBe("Stereocentre: S");
-    expect(stereoReadoutLabel({ molecule: mirrored(s), atomId: centre.id }, engine)).toBe("Stereocentre: R");
+    expect(stereoReadoutLabel({ molecule: s, atomId: centre.id }, engine)).toBe("Stereocenter: S");
+    expect(stereoReadoutLabel({ molecule: mirrored(s), atomId: centre.id }, engine)).toBe("Stereocenter: R");
     const r = molecule(R_IBUPROFEN);
-    expect(stereoReadoutLabel({ molecule: r, atomId: r.atoms[STEREOCENTRE_INDEX]!.id }, engine)).toBe("Stereocentre: R");
+    expect(stereoReadoutLabel({ molecule: r, atomId: r.atoms[STEREOCENTRE_INDEX]!.id }, engine)).toBe("Stereocenter: R");
   });
 
   it("shows nothing for a non-stereogenic atom or an undrawn stereocentre", () => {
@@ -72,7 +72,7 @@ describe("stereo readout from the existing OCL perceiver", () => {
       perceiveDoubleBondStereoFromMolfile: vi.fn(() => [])
     };
     // Whatever the engine says is what the row says: the label is the engine's descriptor.
-    expect(stereoReadoutLabel({ molecule: s, atomId: s.atoms[STEREOCENTRE_INDEX]!.id }, fixed)).toBe("Stereocentre: R");
+    expect(stereoReadoutLabel({ molecule: s, atomId: s.atoms[STEREOCENTRE_INDEX]!.id }, fixed)).toBe("Stereocenter: R");
     expect(fixed.perceiveStereoCentersFromMolfile).toHaveBeenCalledOnce();
   });
 });
@@ -98,7 +98,7 @@ describe("molecules with placeholder atoms show no row (AGENTS.md §8)", () => {
   it("declines a centre next to Ph, where the engine's placeholder reading is wrong", () => {
     const expanded = molecule(S_PHENYLETHYLAMINE);
     const centreId = expanded.atoms[1]!.id;
-    expect(stereoReadoutLabel({ molecule: expanded, atomId: centreId }, engine)).toBe("Stereocentre: S");
+    expect(stereoReadoutLabel({ molecule: expanded, atomId: centreId }, engine)).toBe("Stereocenter: S");
     const ph = abbreviate(expanded, 3, 4, "Ph");
     expect(ph.atoms.map(atom => atom.element)).toEqual(["N", "C", "C", "Ph"]);
     // The perceiver alone would answer R here: the "Ph" placeholder does not rank as phenyl.
@@ -119,7 +119,7 @@ describe("molecules with placeholder atoms show no row (AGENTS.md §8)", () => {
   it("still reads R/S and E/Z in plain molecules, including D and T isotope symbols", () => {
     const s = molecule(S_IBUPROFEN);
     expect(stereoReadoutMolfile(s)).toBe(stereoPerceptionMolfile(s));
-    expect(stereoReadoutLabel({ molecule: s, atomId: s.atoms[STEREOCENTRE_INDEX]!.id }, engine)).toBe("Stereocentre: S");
+    expect(stereoReadoutLabel({ molecule: s, atomId: s.atoms[STEREOCENTRE_INDEX]!.id }, engine)).toBe("Stereocenter: S");
     // A drawn "D" or "T" atom is written as that symbol, which is hydrogen, not a placeholder.
     for (const isotope of ["D", "T"]) {
       const labelled = relabel(molecule("C/C=C/CC"), 4, isotope);
@@ -132,8 +132,8 @@ describe("molecules with placeholder atoms show no row (AGENTS.md §8)", () => {
     // Two ibuprofen components in one molecule object, S then R; the second centre is atom 15 + 10.
     const two = molecule(`${S_IBUPROFEN}.${R_IBUPROFEN}`);
     expect(two.atoms).toHaveLength(30);
-    expect(stereoReadoutLabel({ molecule: two, atomId: two.atoms[STEREOCENTRE_INDEX]!.id }, engine)).toBe("Stereocentre: S");
-    expect(stereoReadoutLabel({ molecule: two, atomId: two.atoms[15 + STEREOCENTRE_INDEX]!.id }, engine)).toBe("Stereocentre: R");
+    expect(stereoReadoutLabel({ molecule: two, atomId: two.atoms[STEREOCENTRE_INDEX]!.id }, engine)).toBe("Stereocenter: S");
+    expect(stereoReadoutLabel({ molecule: two, atomId: two.atoms[15 + STEREOCENTRE_INDEX]!.id }, engine)).toBe("Stereocenter: R");
     expect(stereoReadoutLabel({ molecule: two, atomId: two.atoms[15]!.id }, engine)).toBeUndefined();
     // A labelled atom in either component declines the whole molecule object.
     const labelled = relabel(two, 15, "Ph");
@@ -141,7 +141,7 @@ describe("molecules with placeholder atoms show no row (AGENTS.md §8)", () => {
     // A Ph in a different molecule object leaves this one alone.
     const other = abbreviate(molecule(S_PHENYLETHYLAMINE), 3, 4, "Ph");
     expect(stereoReadoutLabel({ molecule: other, atomId: other.atoms[1]!.id }, engine)).toBeUndefined();
-    expect(stereoReadoutLabel({ molecule: two, atomId: two.atoms[15 + STEREOCENTRE_INDEX]!.id }, engine)).toBe("Stereocentre: R");
+    expect(stereoReadoutLabel({ molecule: two, atomId: two.atoms[15 + STEREOCENTRE_INDEX]!.id }, engine)).toBe("Stereocenter: R");
   });
 
   it("reports ring E/Z exactly as the engine does, and nothing where it reports none", () => {
@@ -171,8 +171,8 @@ describe("lazy engine loading", () => {
     const importer = vi.fn(async () => engine);
     const load = () => loadStereoEngine(importer);
     const request = stereoReadoutRequest(s, { kind: "atom", atomId: s.atoms[STEREOCENTRE_INDEX]!.id }, load)!;
-    expect(await request()).toBe("Stereocentre: S");
-    expect(await request()).toBe("Stereocentre: S");
+    expect(await request()).toBe("Stereocenter: S");
+    expect(await request()).toBe("Stereocenter: S");
     expect(importer).toHaveBeenCalledOnce();
   });
 
@@ -181,7 +181,7 @@ describe("lazy engine loading", () => {
     const target = { molecule: s, atomId: s.atoms[STEREOCENTRE_INDEX]!.id };
     const importer = vi.fn().mockRejectedValueOnce(new Error("chunk failed")).mockResolvedValue(engine);
     await expect(resolveStereoReadout(target, () => loadStereoEngine(importer))).resolves.toBeUndefined();
-    await expect(resolveStereoReadout(target, () => loadStereoEngine(importer))).resolves.toBe("Stereocentre: S");
+    await expect(resolveStereoReadout(target, () => loadStereoEngine(importer))).resolves.toBe("Stereocenter: S");
     expect(importer).toHaveBeenCalledTimes(2);
   });
 
@@ -206,10 +206,10 @@ describe("native canvas menu path (macOS and Windows)", () => {
 
   it("puts the readout first as a disabled, unroutable item", async () => {
     tauriInvoke.mockResolvedValue("canvas-context:any:0");
-    const result = await popupNativeCanvasMenu(items, { x: 1, y: 2 }, { loadStereoReadout: async () => "Stereocentre: R" });
+    const result = await popupNativeCanvasMenu(items, { x: 1, y: 2 }, { loadStereoReadout: async () => "Stereocenter: R" });
     const [, args] = tauriInvoke.mock.calls[0]!;
     const sent = (args as { items: Array<Record<string, unknown>> }).items;
-    expect(sent[0]).toMatchObject({ kind: "item", label: "Stereocentre: R", enabled: false });
+    expect(sent[0]).toMatchObject({ kind: "item", label: "Stereocenter: R", enabled: false });
     expect(sent[1]).toEqual({ kind: "separator" });
     expect(sent[2]).toMatchObject({ label: "Cut" });
     // Selecting the readout row (were the OS to report it) invokes nothing.

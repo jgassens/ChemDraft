@@ -7,7 +7,7 @@ import type {
 import type { contextStereoHits } from "./interaction/hitTest";
 
 /**
- * Read-only CIP readout for the canvas context menu ("Stereocentre: R", "Double bond: E").
+ * Read-only CIP readout for the canvas context menu ("Stereocenter: R", "Double bond: E").
  *
  * The descriptor always comes from the same OpenChemLib perceivers the app and the CLI
  * `stereo` command use (`@chemdraft/ocl-adapter`), run on the same `stereoPerceptionMolfile`
@@ -86,7 +86,7 @@ function stereoLabelsForMolecule(molecule: MoleculeObject, engine: StereoEngine)
         // The perceiver reports in the molfile's input order, including disconnected components.
         const center = (centers ??= engine.perceiveStereoCentersFromMolfile(molfile))[index];
         if (center?.isStereoCenter && (center.descriptor === "R" || center.descriptor === "S")) {
-          return `Stereocentre: ${center.descriptor}`;
+          return `Stereocenter: ${center.descriptor}`;
         }
         return undefined;
       }

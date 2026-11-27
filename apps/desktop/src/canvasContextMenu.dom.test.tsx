@@ -183,14 +183,14 @@ describe("stereo readout row", () => {
       targetKind="atom" onInvoke={onInvoke} onDismiss={() => {}} loadStereoReadout={() => readout.promise} />));
     const menu = container.querySelector('[aria-label="Object layer options"]')!;
     expect(menu).not.toBeNull();
-    expect(menu.querySelector(".object-context-menu-title")?.textContent).not.toBe("Stereocentre: R");
+    expect(menu.querySelector(".object-context-menu-title")?.textContent).not.toBe("Stereocenter: R");
     expect(document.activeElement?.getAttribute("data-command-id")).toBe("clipboard.cut");
     await key("ArrowDown");
     expect(document.activeElement?.getAttribute("data-command-id")).toBe("clipboard.copy");
-    await act(async () => readout.resolve("Stereocentre: R"));
+    await act(async () => readout.resolve("Stereocenter: R"));
     const first = menu.firstElementChild!;
     expect(first.className).toBe("object-context-menu-title");
-    expect(first.textContent).toBe("Stereocentre: R");
+    expect(first.textContent).toBe("Stereocenter: R");
     expect(first.tagName).toBe("DIV");
     expect(first.nextElementSibling?.getAttribute("role")).toBe("separator");
     expect(document.activeElement?.getAttribute("data-command-id")).toBe("clipboard.copy");
@@ -202,7 +202,7 @@ describe("stereo readout row", () => {
     const readout = deferred();
     // jsdom has no layout: the root is 100px tall without the row and 140px with it; the Copy As
     // trigger sits 100px below the root's top (plus the row); its flyout is 300px tall.
-    const hasRow = (menu: Element) => menu.firstElementChild?.textContent === "Stereocentre: R";
+    const hasRow = (menu: Element) => menu.firstElementChild?.textContent === "Stereocenter: R";
     const rect = (top: number, height: number) => ({ top, height, bottom: top + height, left: 0, right: 100, width: 100, x: 0, y: top, toJSON() {} }) as DOMRect;
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
       const rootMenu = this.closest<HTMLElement>('[aria-label="Object layer options"]');
@@ -226,7 +226,7 @@ describe("stereo readout row", () => {
       // Trigger top 740: 740 + 300 + 8 - 768 = 280.
       expect(flyout().style.top).toBe("-280px");
       trigger.focus();
-      await act(async () => readout.resolve("Stereocentre: R"));
+      await act(async () => readout.resolve("Stereocenter: R"));
       // The root clamps to 768 - 140 - 8 = 620, the trigger to 760: 760 + 308 - 768 = 300. A stale
       // offset stays -280; one measured before the clamp (trigger at 780) would be -320.
       expect(menu.style.top).toBe("620px");
@@ -248,7 +248,7 @@ describe("stereo readout row", () => {
       await act(async () => root.render(<CanvasContextMenu items={items} position={{ x: 10, y: 10 }} label="Object layer options"
         targetKind="atom" onInvoke={() => {}} onDismiss={() => {}} loadStereoReadout={() => readout.promise} />));
       await act(async () => root.render(<></>));
-      await act(async () => { readout.resolve("Stereocentre: R"); await new Promise(resolve => setTimeout(resolve, 0)); });
+      await act(async () => { readout.resolve("Stereocenter: R"); await new Promise(resolve => setTimeout(resolve, 0)); });
       expect(calls).toEqual([]);
       expect(closed).not.toHaveBeenCalled();
     } finally {
@@ -268,7 +268,7 @@ describe("stereo readout row", () => {
     // Replaces the menu in one commit: its layout effect runs after the menu's deletion is committed,
     // and its passive effect runs in the same flush as the menu's passive cleanup.
     function ResolveDuringCommit() {
-      useLayoutEffect(() => { order.push("commit"); readout.resolve("Stereocentre: R"); }, []);
+      useLayoutEffect(() => { order.push("commit"); readout.resolve("Stereocenter: R"); }, []);
       useEffect(() => { order.push("passive"); }, []);
       return null;
     }

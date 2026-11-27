@@ -40,7 +40,7 @@ describe("native canvas menu transport", () => {
       loadStereoReadout: () => new Promise(resolve => { finish = resolve; }), isActive: () => active
     });
     active = false;
-    finish("Stereocentre: R");
+    finish("Stereocenter: R");
     expect(await pending).toBeNull();
     expect(invoke).not.toHaveBeenCalled();
   });

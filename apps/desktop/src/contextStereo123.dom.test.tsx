@@ -114,7 +114,7 @@ async function clickAt(point: Point, { target = page as Element, button = 2, ctr
 const objectMenu = () => container.querySelector('[aria-label="Object layer options"]');
 const pageMenu = () => container.querySelector('[aria-label="Page options"]');
 const stereoRows = () => [...(objectMenu()?.querySelectorAll(".object-context-menu-title") ?? [])]
-  .map(row => row.textContent).filter(label => /^(Stereocentre|Double bond): /.test(label ?? ""));
+  .map(row => row.textContent).filter(label => /^(Stereocenter|Double bond): /.test(label ?? ""));
 const rotateItem = () => objectMenu()?.querySelector('[data-command-id="layout.rotateMolecule"]');
 
 function selectRingInspector() {
@@ -148,7 +148,7 @@ it.each<ShortcutPlatform>(["macos", "windows"])("shows R/S on an exact right-cli
   const molecule = await mount(IBUPROFEN, { platform });
   const atom = molecule.atoms[10]!;
   await clickAt(atom, { target: atomTarget(molecule, atom.id) });
-  expect(stereoRows()).toEqual(["Stereocentre: S"]);
+  expect(stereoRows()).toEqual(["Stereocenter: S"]);
 });
 
 it.each([50, 100, 200].flatMap(zoom => [5, 10].map(offset => [zoom as Zoom, offset] as const)))(
@@ -158,7 +158,7 @@ it.each([50, 100, 200].flatMap(zoom => [5, 10].map(offset => [zoom as Zoom, offs
     const catcher = atomTarget(molecule, center.id);
     const target = offset / scale <= Number(catcher.getAttribute("r")) ? catcher : page;
     await clickAt({ x: center.x, y: center.y + offset / scale }, { target });
-    expect(stereoRows()).toEqual(["Stereocentre: S"]);
+    expect(stereoRows()).toEqual(["Stereocenter: S"]);
   }
 );
 
@@ -174,21 +174,21 @@ it("shows R/S through the painted stereocenter label", async () => {
   expect(center.y).toBeGreaterThan(box.y);
   expect(center.y).toBeLessThan(box.y + box.height);
   await clickAt({ x, y: center.y }, { target: label });
-  expect(stereoRows()).toEqual([expect.stringMatching(/^Stereocentre: [RS]$/)]);
+  expect(stereoRows()).toEqual([expect.stringMatching(/^Stereocenter: [RS]$/)]);
 });
 
 it("shows R/S over the first part of an incident bond", async () => {
   const molecule = await mount();
   const { point, target } = incidentBondClick(molecule, molecule.atoms[10]!);
   await clickAt(point, { target });
-  expect(stereoRows()).toEqual(["Stereocentre: S"]);
+  expect(stereoRows()).toEqual(["Stereocenter: S"]);
 });
 
 it("keeps Rotate molecule and the R/S row for a selected molecule on Windows", async () => {
   const molecule = await mount(IBUPROFEN, { selected: true });
   const center = molecule.atoms[10]!;
   await clickAt({ x: center.x, y: center.y + 10 });
-  expect(stereoRows()).toEqual(["Stereocentre: S"]);
+  expect(stereoRows()).toEqual(["Stereocenter: S"]);
   expect(rotateItem()?.textContent).toBe("Rotate molecule…");
 });
 
@@ -196,7 +196,7 @@ it("keeps the selected molecule on a macOS Ctrl+click near the stereocenter", as
   const molecule = await mount(IBUPROFEN, { selected: true, platform: "macos" });
   const center = molecule.atoms[10]!;
   await clickAt({ x: center.x, y: center.y + 10 }, { button: 0, ctrlKey: true });
-  expect(stereoRows()).toEqual(["Stereocentre: S"]);
+  expect(stereoRows()).toEqual(["Stereocenter: S"]);
   expect(rotateItem()).not.toBeNull();
 });
 
@@ -207,7 +207,7 @@ it("keeps the selected atom on a macOS Ctrl+click over an incident bond", async 
   expect(renderedMolecule(molecule).getAttribute("data-selected-native-atom-id")).toBe(center.id);
   const { point, target } = incidentBondClick(molecule, center);
   await clickAt(point, { button: 0, ctrlKey: true, target });
-  expect(stereoRows()).toEqual(["Stereocentre: S"]);
+  expect(stereoRows()).toEqual(["Stereocenter: S"]);
   expect(objectMenu()?.getAttribute("data-context-target-kind")).toBe("atom");
 });
 
@@ -372,10 +372,10 @@ it("picks the nearest of two stereocenters within reach", async () => {
   expect(length - 9).toBeLessThan(14);
   await clickAt({ x: left.x + (right.x - left.x) * 9 / length, y: left.y + (right.y - left.y) * 9 / length },
     { target: bondTarget(molecule, connecting.id) });
-  expect(stereoRows()).toEqual(["Stereocentre: S"]);
+  expect(stereoRows()).toEqual(["Stereocenter: S"]);
   await clickAt({ x: right.x + (left.x - right.x) * 9 / length, y: right.y + (left.y - right.y) * 9 / length },
     { target: bondTarget(molecule, connecting.id) });
-  expect(stereoRows()).toEqual(["Stereocentre: R"]);
+  expect(stereoRows()).toEqual(["Stereocenter: R"]);
 });
 
 it("omits stereo near a non-stereogenic atom", async () => {
