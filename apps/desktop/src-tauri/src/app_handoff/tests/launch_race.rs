@@ -19,7 +19,7 @@ use super::super::{
 };
 use super::*;
 use std::{
-    io::{self, BufRead, BufReader},
+    io::{self, BufRead, BufReader, Write},
     net::{TcpListener, TcpStream},
     process::Child,
     sync::{atomic::AtomicBool, mpsc, Arc, Mutex},
@@ -640,13 +640,18 @@ struct Held {
 /// Waiting for the connection and for the step name is bounded by `GUARD`. A runner that ends
 /// without connecting (it connects once more as it returns, so only a panic does) fails the test
 /// with its own panic or result rather than leaving it blocked.
+///
+/// `end` runs on a thread of its own, and is given `GUARD` to return. One that waits for the
+/// process would otherwise wait forever, since the process only exits once `end` has returned: on
+/// the timeout the process is let go, so `end` and the runner can finish, and the test fails
+/// saying so. Joining `end` and the runner is bounded too (`join_within`).
 fn run_holding(
     job: BuildJob,
     proof: &Submission,
     stopped: &AtomicBool,
     process: usize,
     consent: Option<(&Store, Row)>,
-    end: impl FnOnce(),
+    end: impl FnOnce() + Send,
 ) -> Held {
     let dir = TestDir::new();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -698,15 +703,30 @@ fn run_holding(
         BufReader::new(&stream)
             .read_line(&mut held)
             .unwrap_or_else(|error| panic!("the held process did not name its step: {error}"));
-        if !held.is_empty() {
-            // The process runs, and keeps running until `stream` closes.
-            end();
-        }
+        // The process runs, and keeps running until `stream` closes.
+        let ending = (!held.is_empty()).then(|| {
+            let (returned_tx, returned) = mpsc::channel();
+            let ender = scope.spawn(move || {
+                end();
+                let _ = returned_tx.send(());
+            });
+            (ender, returned)
+        });
+        // A panic in `end` also drops the sender; joining it below raises that panic.
+        let blocked = ending
+            .as_ref()
+            .is_some_and(|(_, returned)| returned.recv_timeout(GUARD).is_err());
+        // Lets the process exit, on time or after the timeout.
         drop(stream);
-        let (ended, spawned, opened) = match runner.join() {
-            Ok(outcome) => outcome,
-            Err(panic) => std::panic::resume_unwind(panic),
-        };
+        if let Some((ender, _)) = ending {
+            join_within(ender, "ending the click, once the held process was let go,");
+        }
+        let (ended, spawned, opened) = join_within(runner, "the build");
+        assert!(
+            !blocked,
+            "ending the click did not return within {GUARD:?} while a companion process ran: \
+             an invalidation must not wait for a process"
+        );
         Held {
             ended,
             spawned,
@@ -714,6 +734,28 @@ fn run_holding(
             held: held.trim().into(),
         }
     })
+}
+
+/// Joins `handle` if its thread finishes within `GUARD`. A scoped thread cannot be left behind,
+/// and a panic here would wait for it all the same, so one that does not finish ends the test run
+/// with `what` named instead of hanging it.
+fn join_within<T>(handle: thread::ScopedJoinHandle<'_, T>, what: &str) -> T {
+    let deadline = Instant::now() + GUARD;
+    while !handle.is_finished() {
+        if Instant::now() >= deadline {
+            // Straight to stderr: the test harness's capture of `eprintln!` dies with the abort.
+            let _ = writeln!(
+                io::stderr(),
+                "{what} did not finish within {GUARD:?}: stopping the test run instead of hanging it"
+            );
+            std::process::abort();
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    match handle.join() {
+        Ok(outcome) => outcome,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
 }
 
 /// A companion process is running when the click ends or its consent is revoked. The end returns
@@ -809,4 +851,189 @@ fn ending_a_click_while_its_process_runs_returns_and_launches_nothing_after() {
         assert_eq!(run.spawned.len(), launched);
         assert_eq!(run.opened, 1);
     }
+}
+
+/// What a committing quit does to the handoff endpoint, as the app's `QuitHost` does it
+/// (`end_handoff_clicks` ends the clicks for the quit). Timers wait until a case fires them; the
+/// document always answers and nothing exits.
+#[derive(Clone)]
+struct QuitHandoffHost {
+    state: Arc<Endpoint>,
+    timers: Arc<Mutex<Vec<Timer>>>,
+}
+
+type Timer = Box<dyn FnOnce() + Send>;
+
+impl QuitHandoffHost {
+    fn fire_timers(&self) {
+        let timers = std::mem::take(&mut *self.timers.lock().unwrap());
+        for timer in timers {
+            timer();
+        }
+    }
+}
+
+impl crate::QuitHost for QuitHandoffHost {
+    fn ask_document_to_flush(&self) -> bool {
+        true
+    }
+
+    fn schedule_after(&self, _wait: Duration, task: impl FnOnce() + Send + 'static) {
+        self.timers.lock().unwrap().push(Box::new(task));
+    }
+
+    fn end_handoff_clicks(&self) {
+        self.state.end_for_quit();
+    }
+
+    fn exit(&self) {}
+
+    fn force_exit(&self, _waited: Duration, _reason: crate::QuitReason) {}
+}
+
+/// A quit committed by one of the app's committing paths, after any save prompt it needs is up.
+struct Commit {
+    name: &'static str,
+    prompted: bool,
+    run: fn(&'static crate::QuitFlow, &QuitHandoffHost, Option<u64>),
+}
+
+const COMMITS: [Commit; 7] = [
+    Commit {
+        name: "a menu quit, or the document window closed, with the save prompt off",
+        prompted: false,
+        run: |flow, host, _| crate::request_quit_with(flow, host, false),
+    },
+    Commit {
+        name: "a macOS Dock, AppleScript or logout termination",
+        prompted: false,
+        run: |flow, host, _| {
+            assert!(crate::request_appkit_quit_with(flow, host));
+        },
+    },
+    Commit {
+        name: "the save prompt answered with quit",
+        prompted: true,
+        run: |flow, host, id| {
+            assert!(crate::resume_prompted_quit_with(flow, host, id.unwrap()));
+        },
+    },
+    Commit {
+        name: "the save prompt's grace running out",
+        prompted: true,
+        run: |_, host, _| host.fire_timers(),
+    },
+    Commit {
+        // `quit_now` raises the quit flag only after it ends the clicks.
+        name: "a quit decided with no document window to ask",
+        prompted: false,
+        run: |flow, host, _| crate::quit_now_with(flow, host, crate::QuitReason::NoDocument),
+    },
+    Commit {
+        // `request_document_quit_flush`, after the Windows or Linux session end raised the flag.
+        name: "the operating system's session end",
+        prompted: false,
+        run: |flow, host, _| {
+            flow.quitting
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            host.state.end_for_quit();
+        },
+    },
+    Commit {
+        name: "the exit's shutdown",
+        prompted: false,
+        run: |_, host, _| host.state.shutdown(),
+    },
+];
+
+fn quit_flow() -> &'static crate::QuitFlow {
+    let quitting: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+    Box::leak(Box::new(crate::QuitFlow::new(quitting, GUARD, GUARD)))
+}
+
+/// A menu click checks for a committed quit and only then arms. A quit that commits in between,
+/// by any of the app's committing paths, must not leave that click live: it can then never be
+/// claimed, so nothing it would allow launches during the document flush or after the shutdown.
+/// The click pauses after its check found no quit, and the quit commits on another thread.
+#[test]
+fn a_click_arming_while_a_quit_commits_does_not_survive_it() {
+    for commit in COMMITS {
+        let case = commit.name;
+        let flow = quit_flow();
+        let host = QuitHandoffHost {
+            state: Arc::new(Endpoint::default()),
+            timers: Arc::default(),
+        };
+        let prompt = commit
+            .prompted
+            .then(|| crate::request_prompted_quit_with(flow, &host).unwrap());
+        let state = host.state.clone();
+        let race = race(
+            |pause| {
+                state.arm_click(PLUGIN, COMMAND, Instant::now(), || {
+                    let committed = flow.in_progress();
+                    pause.inside();
+                    committed
+                })
+            },
+            || (commit.run)(flow, &host, prompt),
+        );
+        let now = Instant::now();
+        let invocation = race
+            .result
+            .unwrap_or_else(|error| panic!("{case}: {error}"))
+            .unwrap_or_else(|| panic!("{case}: the click's check already saw the quit"));
+        // An unclaimed click cannot launch anything; claiming it is the only way on.
+        assert!(
+            state.arms.begin(&invocation, now).is_err(),
+            "{case}: a click armed while the quit committed survived it and can still be claimed"
+        );
+        assert!(
+            race.waited,
+            "{case}: the quit did not wait for the click being armed"
+        );
+        assert_eq!(race.events, [Event::Launched, Event::Ended], "{case}");
+        // From then on no click arms at all.
+        assert!(
+            state
+                .arm_click(PLUGIN, COMMAND, now, || flow.in_progress())
+                .unwrap()
+                .is_none(),
+            "{case}: a click armed after the quit"
+        );
+    }
+}
+
+/// A save prompt the user cancels commits nothing: clicks arm and can be claimed before, during
+/// and after it.
+#[test]
+fn a_cancelled_quit_leaves_later_clicks_working() {
+    let flow = quit_flow();
+    let host = QuitHandoffHost {
+        state: Arc::new(Endpoint::default()),
+        timers: Arc::default(),
+    };
+    let state = host.state.clone();
+    let claim = |case: &str| {
+        let now = Instant::now();
+        let invocation = state
+            .arm_click(PLUGIN, COMMAND, now, || flow.in_progress())
+            .unwrap()
+            .unwrap_or_else(|| panic!("{case}: the click did not arm"));
+        state
+            .arms
+            .begin(&invocation, now)
+            .unwrap_or_else(|error| panic!("{case}: {error}"));
+    };
+    let id = crate::request_prompted_quit_with(flow, &host).unwrap();
+    claim("prompt shown");
+    assert_eq!(
+        crate::cancel_quit_with(flow, id),
+        crate::QuitCancelOutcome::Cancelled
+    );
+    claim("prompt cancelled");
+    // The cancelled prompt's grace finds nothing to decide.
+    host.fire_timers();
+    assert!(!flow.in_progress());
+    claim("after the cancelled prompt's grace");
 }

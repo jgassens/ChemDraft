@@ -65,15 +65,46 @@ impl State {
     /// attempt and opens nothing, and no rebuild offer survives. Unlike `shutdown`, a companion
     /// step already running is left to finish within its time limit, and later clicks arm again.
     pub(crate) fn discard_menu_invocations(&self) {
-        self.arms.shutdown();
+        self.arms.discard_all();
+        self.end_results();
+    }
+
+    /// A quit is committed (`QuitHost::end_handoff_clicks`, and the operating system's session
+    /// end through `request_document_quit_flush`). As `discard_menu_invocations` does, every click
+    /// and rebuild offer ends; and since a committed quit is never taken back, no click arms
+    /// again, including one that checked for a quit just before the commit (`arm_click`). A save
+    /// prompt that can still be cancelled does not come here.
+    pub(crate) fn end_for_quit(&self) {
+        self.arms.close();
+        self.end_results();
+    }
+
+    pub(crate) fn shutdown(&self) {
+        self.stopped.store(true, Ordering::Release);
+        self.end_for_quit();
+    }
+
+    fn end_results(&self) {
         for (_, result) in self.results.lock().unwrap().drain() {
             result.replaced.send_replace(true);
         }
     }
 
-    pub(crate) fn shutdown(&self) {
-        self.stopped.store(true, Ordering::Release);
-        self.discard_menu_invocations();
+    /// Arms a menu click for `plugin`, unless the app is shutting down or `quit_committed` says a
+    /// quit is committed. Both are checked under the arms lock, with the insert, so a quit that
+    /// commits meanwhile (`end_for_quit`) or a shutdown ends this click before it returns.
+    /// `quit_committed` runs under that lock and must only read atomic flags (`QuitFlow` does).
+    pub(super) fn arm_click(
+        &self,
+        plugin: &str,
+        command: &str,
+        now: Instant,
+        quit_committed: impl FnOnce() -> bool,
+    ) -> Result<Option<MenuInvocation>, String> {
+        let arm = self.arms.arm_unless(plugin, command, now, || {
+            self.stopped.load(Ordering::Acquire) || quit_committed()
+        })?;
+        Ok(arm.map(|arm| arm.invocation(plugin)))
     }
 
     fn clear_result(&self, plugin_id: &str, consent_id: Option<&str>) {
@@ -165,15 +196,9 @@ pub(crate) fn arm_native_menu(
         return Ok(None);
     }
     let state = app.state::<State>();
-    // A committed quit ended every click already (`QuitHost::end_handoff_clicks`); none arms
-    // again while the document flushes.
-    if state.stopped.load(Ordering::Acquire) || crate::quit_committed() {
-        return Ok(None);
-    }
     for (id, _) in catalog::OFFICIAL_COMPANION_PLUGINS {
         if Plugin::read(app, id).is_ok_and(|plugin| plugin.owns_menu_command(command)) {
-            let arm = state.arms.arm(id, command, Instant::now())?;
-            return Ok(Some(arm.invocation(id)));
+            return state.arm_click(id, command, Instant::now(), crate::quit_committed);
         }
     }
     Ok(None)

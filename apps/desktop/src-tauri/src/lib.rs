@@ -442,7 +442,7 @@ fn request_document_quit_flush<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> tauri::Result<Option<u64>> {
     if let Some(handoff) = app.try_state::<app_handoff::State>() {
-        handoff.discard_menu_invocations();
+        handoff.end_for_quit();
     }
     if app.get_webview_window(MAIN_WINDOW_LABEL).is_none() {
         return Ok(None);
@@ -515,6 +515,7 @@ trait QuitHost: Clone + Send + 'static {
     /// Ends every app handoff menu click, as closing the document window does, once a quit is
     /// committed: running companion work then starts no further step or attempt and opens nothing,
     /// while a step already running finishes within its limit (the exit's `shutdown` stops it).
+    /// No click arms after it, even one that checked for a quit just before the commit.
     fn end_handoff_clicks(&self);
     /// Asks the event loop, on the main thread, to end the app.
     fn exit(&self);
@@ -566,7 +567,7 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
 
     fn end_handoff_clicks(&self) {
         if let Some(handoff) = self.try_state::<app_handoff::State>() {
-            handoff.discard_menu_invocations();
+            handoff.end_for_quit();
         }
     }
 
@@ -647,6 +648,8 @@ fn request_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
 }
 
 /// A quit is committed (a flush requested or the quit decided), so no app handoff click may arm.
+/// The handoff reads it under its arms lock (`app_handoff::State::arm_click`), so it must keep to
+/// atomic flags and take no lock.
 pub(crate) fn quit_committed() -> bool {
     QUIT.in_progress()
 }
@@ -14135,10 +14138,11 @@ mod tests {
     }
 
     /// The operating system's session end asks the document to flush directly, on Windows and
-    /// Linux alike, so the flush request itself ends the handoff clicks; and no click arms while a
-    /// quit is committed.
+    /// Linux alike, so the flush request itself ends the handoff clicks for the quit. That no click
+    /// arms during a quit is a real race test
+    /// (`app_handoff::tests::launch_race::a_click_arming_while_a_quit_commits_does_not_survive_it`).
     #[test]
-    fn the_session_end_flush_ends_handoff_clicks_and_no_click_arms_during_a_quit() {
+    fn the_session_end_flush_ends_handoff_clicks() {
         let lib = include_str!("lib.rs");
         let flush = lib
             .split("fn request_document_quit_flush<R: Runtime>(")
@@ -14159,13 +14163,7 @@ mod tests {
             };
             assert!(source.contains("request_document_quit_flush("), "{file}");
         }
-        let endpoint = include_str!("app_handoff/endpoint.rs");
-        let arm = endpoint
-            .split("pub(crate) fn arm_native_menu(")
-            .nth(1)
-            .and_then(|rest| rest.split("\n}\n").next())
-            .unwrap();
-        assert!(arm.contains("crate::quit_committed()"), "{arm}");
+        assert!(flush.contains("handoff.end_for_quit();"), "{flush}");
     }
 
     fn queue_test_layout_frame(

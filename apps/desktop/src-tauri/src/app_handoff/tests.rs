@@ -3203,7 +3203,7 @@ fn later_attempts_require_the_same_used_and_still_live_menu_click() {
         .is_err());
 
     for stop in [
-        (|state: &State| state.shutdown()) as fn(&State),
+        (|state: &State| state.discard_all()) as fn(&State),
         |state| state.disarm(PLUGIN),
         |state| {
             state.arm(PLUGIN, COMMAND, Instant::now()).unwrap();
@@ -3484,7 +3484,7 @@ fn click_enders() -> Vec<ClickEnder> {
             .unwrap();
     }
     vec![
-        ("reload or close", State::shutdown as fn(&State)),
+        ("reload or close", State::discard_all as fn(&State)),
         ("the same command armed again", rearm),
         ("another command of the plugin armed", arm_other),
         ("plugin consent cleared", |arms| arms.disarm(PLUGIN)),
