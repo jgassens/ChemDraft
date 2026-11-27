@@ -15,6 +15,7 @@ use super::{
 use serde::Serialize;
 use serde_json::Value;
 use std::{
+    cell::Cell,
     collections::HashMap,
     ffi::OsString,
     io,
@@ -38,7 +39,7 @@ fn send_template_digest() -> String {
         Sha256::digest(br#"{"operation":"openSelectedAppWithTemporaryFile"}"#)
     )
 }
-const REBUILD_EXPIRED: &str =
+pub(super) const REBUILD_EXPIRED: &str =
     "The handoff app, pipeline, or consent changed. Start the build again from the menu.";
 /// A launch after the first, or the output's open, found the click no longer live.
 const STOPPED: &str =
@@ -64,15 +65,46 @@ impl State {
     /// attempt and opens nothing, and no rebuild offer survives. Unlike `shutdown`, a companion
     /// step already running is left to finish within its time limit, and later clicks arm again.
     pub(crate) fn discard_menu_invocations(&self) {
-        self.arms.shutdown();
+        self.arms.discard_all();
+        self.end_results();
+    }
+
+    /// A quit is committed (`QuitHost::end_handoff_clicks`, and the operating system's session
+    /// end through `request_document_quit_flush`). As `discard_menu_invocations` does, every click
+    /// and rebuild offer ends; and since a committed quit is never taken back, no click arms
+    /// again, including one that checked for a quit just before the commit (`arm_click`). A save
+    /// prompt that can still be cancelled does not come here.
+    pub(crate) fn end_for_quit(&self) {
+        self.arms.close();
+        self.end_results();
+    }
+
+    pub(crate) fn shutdown(&self) {
+        self.stopped.store(true, Ordering::Release);
+        self.end_for_quit();
+    }
+
+    fn end_results(&self) {
         for (_, result) in self.results.lock().unwrap().drain() {
             result.replaced.send_replace(true);
         }
     }
 
-    pub(crate) fn shutdown(&self) {
-        self.stopped.store(true, Ordering::Release);
-        self.discard_menu_invocations();
+    /// Arms a menu click for `plugin`, unless the app is shutting down or `quit_committed` says a
+    /// quit is committed. Both are checked under the arms lock, with the insert, so a quit that
+    /// commits meanwhile (`end_for_quit`) or a shutdown ends this click before it returns.
+    /// `quit_committed` runs under that lock and must only read atomic flags (`QuitFlow` does).
+    pub(super) fn arm_click(
+        &self,
+        plugin: &str,
+        command: &str,
+        now: Instant,
+        quit_committed: impl FnOnce() -> bool,
+    ) -> Result<Option<MenuInvocation>, String> {
+        let arm = self.arms.arm_unless(plugin, command, now, || {
+            self.stopped.load(Ordering::Acquire) || quit_committed()
+        })?;
+        Ok(arm.map(|arm| arm.invocation(plugin)))
     }
 
     fn clear_result(&self, plugin_id: &str, consent_id: Option<&str>) {
@@ -164,13 +196,9 @@ pub(crate) fn arm_native_menu(
         return Ok(None);
     }
     let state = app.state::<State>();
-    if state.stopped.load(Ordering::Acquire) {
-        return Ok(None);
-    }
     for (id, _) in catalog::OFFICIAL_COMPANION_PLUGINS {
         if Plugin::read(app, id).is_ok_and(|plugin| plugin.owns_menu_command(command)) {
-            let arm = state.arms.arm(id, command, Instant::now())?;
-            return Ok(Some(arm.invocation(id)));
+            return state.arm_click(id, command, Instant::now(), crate::quit_committed);
         }
     }
     Ok(None)
@@ -964,10 +992,14 @@ impl BuildJob {
         let (attempts, outcome) = retry::run_sequence(
             self.build.variants(),
             |index| {
-                if index > 0 {
-                    self.before_retry(host, proof, deadline)?;
+                let launched = Cell::new(false);
+                let outcome = if index > 0 {
+                    self.before_retry(host, proof, deadline)
+                } else {
+                    Ok(())
                 }
-                self.attempt(host, proof, &cache, index, deadline)
+                .and_then(|()| self.attempt(host, proof, &cache, index, deadline, &launched));
+                (launched.get(), outcome)
             },
             |attempt: &Attempt| {
                 retry.is_some_and(|retry| retry::wants_retry(&attempt.completed.steps, &retry.when))
@@ -1029,6 +1061,7 @@ impl BuildJob {
         cache: &Path,
         index: usize,
         deadline: Instant,
+        launched: &Cell<bool>,
     ) -> Result<Attempt, JobError> {
         let failed = |code, message| JobError::failed(runner::Failure::new(code, message));
         let files = TempFiles::new(cache, &self.grant.plugin_id).map_err(|_| {
@@ -1059,7 +1092,11 @@ impl BuildJob {
                     // later step and attempt needs the same click to be still live.
                     let first_launch = index == 0 && first;
                     match proof.launch_step(&self.build, first_launch, start) {
-                        Ok(result) => result,
+                        Ok(result) => {
+                            // The attempt has started once a process of it has.
+                            launched.set(launched.get() || result.is_ok());
+                            result
+                        }
                         Err(_) if !first_launch => Err(stopped()),
                         Err(error) => {
                             refused = Some(error);

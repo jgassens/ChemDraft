@@ -276,12 +276,19 @@ describe("app handoff bounded retry (API 0.1.29)", () => {
     for (const invalid of [
       { ...when, step: "../build" }, { ...when, step: "" }, { ...when, label: "" }, { ...when, label: " Joint" },
       { ...when, label: "Joint\ntwist" }, { ...when, label: "Joint\u200btwist" }, { ...when, label: "x".repeat(81) },
+      // Labels the host's report redaction rewrites could never match a row.
+      { ...when, label: "Width (/ right)" }, { ...when, label: "/twist" }, { ...when, label: "Twist \\ left" },
+      { ...when, label: "file:twist" }, { ...when, label: "C:/twist" }, { ...when, label: "Twist 'D:/x'" },
+      { ...when, label: "[local path removed]" },
       { ...when, notEqual: Infinity }, { ...when, notEqual: Number.NaN }, { ...when, notEqual: "0" },
       { ...when, path: "$.tables[0]" }, { ...when, pattern: ".*" }, { step: "build", label: "Joint twist left" }
     ]) {
       expect(parse({ ...request, retry: { ...retry, when: invalid } }).success).toBe(false);
     }
     expect(parse({ ...request, retry: { ...retry, extension: "cif" } }).success).toBe(false);
+    for (const label of ["P2(1)/c twist", "1/2 occupancy", "Width (right)", "Angle/deg", "a:b", "é:/x"]) {
+      expect(parse({ ...request, retry: { ...retry, when: { ...when, label } } }).success, label).toBe(true);
+    }
   });
 
   it("reports attempts and the variant of the last attempt together", () => {

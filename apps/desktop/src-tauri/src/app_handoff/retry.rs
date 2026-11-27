@@ -1,7 +1,7 @@
 //! API 0.1.29 bounded companion retry. The host knows nothing about what the report means: the
 //! plugin declares one step, one row label and one number, and supplies every input up front.
 use super::{
-    dialogs,
+    dialogs, runner,
     wire::{self, Input, Retry, RetryCondition, StepResult, INPUT_BYTES},
 };
 use serde_json::Value;
@@ -14,8 +14,14 @@ pub(super) const LABEL_CHARACTERS: usize = 80;
 pub(super) const SEQUENCE_LIMIT: Duration = Duration::from_secs(1200);
 
 const BAD_RETRY: &str = "A companion retry needs an input, one or two alternative inputs of up to 1 MiB, a declared step, and a label of up to 80 visible characters.";
+const PATH_LABEL: &str = "A companion retry label cannot look like a file path: no backslash, \"file:\", word starting with \"/\", or drive letter such as \"C:/\".";
 
 /// Request-shape checks made before any box is shown or process started.
+///
+/// The condition is read from the report the plugin receives, after path redaction (see
+/// `runner::path_like`). A label that redaction would rewrite, or its replacement text, could
+/// never name a row the companion wrote, so it is refused here rather than silently never
+/// retrying. Every other label passes redaction unchanged, and so does a row carrying it.
 pub(super) fn check_request(retry: &Retry, input: Option<&Input>) -> Result<(), String> {
     let label = &retry.when.label;
     if input.is_none()
@@ -29,6 +35,9 @@ pub(super) fn check_request(retry: &Retry, input: Option<&Input>) -> Result<(), 
         || !retry.when.not_equal.is_finite()
     {
         return Err(BAD_RETRY.into());
+    }
+    if runner::path_like(label) || label == runner::REDACTED_PATH {
+        return Err(PATH_LABEL.into());
     }
     Ok(())
 }
@@ -188,22 +197,30 @@ pub(super) fn wants_retry(steps: &[StepResult], condition: &RetryCondition) -> b
 
 /// Run attempt 0, then the next variant only while the previous attempt completed and `retry`
 /// holds for it, up to `variants` (never more than three). Earlier completed attempts are dropped
-/// here, so the caller can only open the final one. Returns the number of attempts started and
-/// the final attempt's outcome. An error, including a refusal before a later attempt, ends the
-/// sequence and is returned as is.
+/// here, so the caller can only open the final one. `attempt` returns whether the host started it
+/// (its first companion step launched) along with its outcome. An error, including a refusal before
+/// a later attempt starts, ends the sequence and is returned as is.
+///
+/// Returns the number of attempts started and the final outcome. The first attempt always counts:
+/// it is the one the click approved, and the result names its input. A later attempt that ended
+/// before its first step started is not counted, so the count still names the last input that ran.
 pub(super) fn run_sequence<A, E>(
     variants: usize,
-    mut attempt: impl FnMut(usize) -> Result<A, E>,
+    mut attempt: impl FnMut(usize) -> (bool, Result<A, E>),
     mut retry: impl FnMut(&A) -> bool,
 ) -> (usize, Result<A, E>) {
     let variants = variants.clamp(1, RETRY_INPUTS + 1);
-    let mut index = 0;
+    let mut started = 0;
     loop {
-        let outcome = attempt(index);
-        index += 1;
+        let index = started;
+        let (launched, outcome) = attempt(index);
+        // A completed attempt ran its steps, so it started.
+        if index == 0 || launched || outcome.is_ok() {
+            started += 1;
+        }
         match outcome {
-            Ok(completed) if index < variants && retry(&completed) => drop(completed),
-            outcome => return (index, outcome),
+            Ok(completed) if started < variants && retry(&completed) => drop(completed),
+            outcome => return (started, outcome),
         }
     }
 }

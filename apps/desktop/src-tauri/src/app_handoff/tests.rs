@@ -2781,6 +2781,14 @@ fn retry_request_limits_and_validation_apply_before_any_box() {
         "Joint\u{200b}twist".into(),
         "Joint\u{0}".into(),
         "x".repeat(81),
+        // Labels that companion report redaction rewrites: the row would never match.
+        "Width (/ right)".into(),
+        "/twist".into(),
+        "Twist \\ left".into(),
+        "file:twist".into(),
+        "C:/twist".into(),
+        "Twist 'D:/x'".into(),
+        "[local path removed]".into(),
     ] {
         refused.push(json!({"inputs": [xyz_with("a")], "when": {"step": "build", "label": label, "notEqual": 0}}));
     }
@@ -2788,6 +2796,46 @@ fn retry_request_limits_and_validation_apply_before_any_box() {
         assert!(parse(retry.clone()).is_err(), "{retry}");
     }
     assert!(parse(json!({"inputs": [xyz_with("a")], "when": {"step": "build", "label": "🧪".repeat(80), "notEqual": -2.5e-3}})).is_ok());
+}
+
+/// The condition is read from the report the plugin receives, after path redaction. Every label
+/// `check_request` accepts passes redaction unchanged, so a row it names is found exactly when the
+/// companion wrote it; and no accepted label matches a row whose own label redaction rewrote.
+#[test]
+fn every_accepted_retry_label_survives_report_redaction() {
+    let accepted = |label: &str| {
+        let retry = Retry {
+            inputs: vec![xyz_with("a")],
+            when: RetryCondition {
+                step: "build".into(),
+                label: label.into(),
+                not_equal: 0.0,
+            },
+        };
+        retry::check_request(&retry, build("small").input.as_ref()).is_ok()
+    };
+    for label in [
+        TWIST,
+        "P2(1)/c twist",
+        "1/2 occupancy",
+        "Width (right)",
+        "Angle/deg",
+        "a:b",
+        "🧪 twist",
+    ] {
+        assert!(accepted(label), "{label}");
+        let report = json!({"tables": [{"rows": [{"label": label, "value": "6"}]}]});
+        let redacted = runner::parse_output(report.to_string().as_bytes()).unwrap();
+        assert_eq!(redacted, report, "{label}");
+    }
+    for rewritten in ["Width (/ right)", "/x", "x\\y", "file:x", "C:/x"] {
+        assert!(!accepted(rewritten), "{rewritten}");
+        let report = json!({"tables": [{"rows": [{"label": rewritten, "value": "6"}]}]});
+        let redacted = runner::parse_output(report.to_string().as_bytes()).unwrap();
+        let label = redacted["tables"][0]["rows"][0]["label"].as_str().unwrap();
+        assert_ne!(label, rewritten);
+        assert!(!accepted(label), "{label}");
+    }
 }
 
 #[test]
@@ -2836,7 +2884,9 @@ fn retry_sequence_continues_only_after_a_poor_completed_attempt_and_stops_at_thr
             self.1.borrow_mut().push(self.0);
         }
     }
-    let run = |variants: usize, outcomes: &[Result<bool, RunCode>]| {
+    // Each outcome: a completed attempt and whether it was poor, or a failure and whether the
+    // attempt had started a process before it.
+    let run = |variants: usize, outcomes: &[Result<bool, (RunCode, bool)>]| {
         let dropped = Rc::new(RefCell::new(Vec::new()));
         let started = RefCell::new(Vec::new());
         let (attempts, outcome) = retry::run_sequence(
@@ -2845,7 +2895,10 @@ fn retry_sequence_continues_only_after_a_poor_completed_attempt_and_stops_at_thr
                 // Every earlier completed attempt is gone before the next one starts.
                 assert_eq!(*dropped.borrow(), (0..index).collect::<Vec<_>>());
                 started.borrow_mut().push(index);
-                outcomes[index].map(|poor| (Done(index, dropped.clone()), poor))
+                match outcomes[index] {
+                    Ok(poor) => (true, Ok((Done(index, dropped.clone()), poor))),
+                    Err((code, launched)) => (launched, Err(code)),
+                }
             },
             |(_, poor)| *poor,
         );
@@ -2870,9 +2923,30 @@ fn retry_sequence_continues_only_after_a_poor_completed_attempt_and_stops_at_thr
         RunCode::ExitNonzero,
         RunCode::BadOutput,
         RunCode::ToolMissing,
+        RunCode::BadParam,
     ] {
-        assert_eq!(run(3, &[Err(code)]), (1, Err(code), vec![0]));
-        assert_eq!(run(3, &[Ok(true), Err(code)]), (2, Err(code), vec![0, 1]));
+        // The first attempt always counts, started or not: the result names its input.
+        for launched in [true, false] {
+            assert_eq!(run(3, &[Err((code, launched))]), (1, Err(code), vec![0]));
+        }
+        assert_eq!(
+            run(3, &[Ok(true), Err((code, true))]),
+            (2, Err(code), vec![0, 1])
+        );
+        assert_eq!(
+            run(3, &[Ok(true), Ok(true), Err((code, true))]),
+            (3, Err(code), vec![0, 1, 2])
+        );
+        // A later attempt refused or failed before any process of it started is not counted:
+        // the failure comes with the count and input of the last attempt that ran.
+        assert_eq!(
+            run(3, &[Ok(true), Err((code, false))]),
+            (1, Err(code), vec![0, 1])
+        );
+        assert_eq!(
+            run(3, &[Ok(true), Ok(true), Err((code, false))]),
+            (2, Err(code), vec![0, 1, 2])
+        );
     }
 }
 
@@ -2902,25 +2976,37 @@ fn stub_sequence(
             if index > 0 {
                 between(index);
             }
-            let files = TempFiles::new(cache, PLUGIN).unwrap();
-            roots.push(files.root.clone());
-            let input = approved.variant(index).unwrap();
-            files
-                .write(&files.stem, input.extension, &input.text)
-                .unwrap();
-            let completed = runner::run(
-                pipeline,
-                approved,
-                &files,
-                |args, cwd, _, step_deadline| {
-                    launch(index, &mut || {
-                        ChildProcess::spawn_before(rust_stub(), args, cwd, step_deadline, &stopped)
-                    })
-                },
-                &stopped,
-                deadline,
-            )?;
-            Ok(StubAttempt { files, completed })
+            let launched = Cell::new(false);
+            let outcome = (|| {
+                let files = TempFiles::new(cache, PLUGIN).unwrap();
+                roots.push(files.root.clone());
+                let input = approved.variant(index).unwrap();
+                files
+                    .write(&files.stem, input.extension, &input.text)
+                    .unwrap();
+                let completed = runner::run(
+                    pipeline,
+                    approved,
+                    &files,
+                    |args, cwd, _, step_deadline| {
+                        let child = launch(index, &mut || {
+                            ChildProcess::spawn_before(
+                                rust_stub(),
+                                args,
+                                cwd,
+                                step_deadline,
+                                &stopped,
+                            )
+                        });
+                        launched.set(launched.get() || child.is_ok());
+                        child
+                    },
+                    &stopped,
+                    deadline,
+                )?;
+                Ok(StubAttempt { files, completed })
+            })();
+            (launched.get(), outcome)
         },
         |attempt| {
             approved
@@ -3038,7 +3124,8 @@ fn revocation_between_attempts_stops_the_next_launch() {
             store.revoke(PLUGIN, &grant.consent_id()).unwrap();
         },
     );
-    assert_eq!(attempts, 2);
+    // The second attempt was refused before it started, so only the first counts.
+    assert_eq!(attempts, 1);
     assert_eq!(outcome.err().unwrap().code, RunCode::BadParam);
     assert_eq!(
         launched,
@@ -3074,7 +3161,8 @@ fn a_changed_companion_between_attempts_is_never_launched() {
         },
         |_| fs::write(&tool, b"replacement tool").unwrap(),
     );
-    assert_eq!(attempts, 2);
+    // The second attempt was refused before it started, so only the first counts.
+    assert_eq!(attempts, 1);
     assert_eq!(outcome.err().unwrap().code, RunCode::AppChanged);
     assert_eq!(launched, [0, 0, 0]);
 }
@@ -3115,7 +3203,7 @@ fn later_attempts_require_the_same_used_and_still_live_menu_click() {
         .is_err());
 
     for stop in [
-        (|state: &State| state.shutdown()) as fn(&State),
+        (|state: &State| state.discard_all()) as fn(&State),
         |state| state.disarm(PLUGIN),
         |state| {
             state.arm(PLUGIN, COMMAND, Instant::now()).unwrap();
@@ -3203,7 +3291,10 @@ enum Moment {
 /// companion, and opening only records the file.
 struct StubHost<'a> {
     cache: PathBuf,
-    stopped: AtomicBool,
+    /// The quit flag: `State::stopped` of the endpoint whose click runs the build (see `quit_flag`),
+    /// which `State::shutdown` sets, or else a flag nothing sets. As in the app, a launch-time check
+    /// refuses once it is set, no process starts, and a running process is ended.
+    stopped: &'a AtomicBool,
     checks: Cell<usize>,
     event: RefCell<Box<dyn FnMut(Moment) + 'a>>,
     exited: Cell<Option<Moment>>,
@@ -3222,7 +3313,7 @@ impl<'a> StubHost<'a> {
     fn new(cache: &Path, event: impl FnMut(Moment) + 'a) -> Self {
         Self {
             cache: cache.to_owned(),
-            stopped: AtomicBool::new(false),
+            stopped: &NEVER_QUITS,
             checks: Cell::new(0),
             event: RefCell::new(Box::new(event)),
             exited: Cell::new(None),
@@ -3234,13 +3325,24 @@ impl<'a> StubHost<'a> {
     }
 }
 
+/// The quit flag of a stand-in host built without an endpoint.
+static NEVER_QUITS: AtomicBool = AtomicBool::new(false);
+
+impl<'a> StubHost<'a> {
+    /// Reads the endpoint's quit flag, as the document window does in the app.
+    fn quit_flag(mut self, stopped: &'a AtomicBool) -> Self {
+        self.stopped = stopped;
+        self
+    }
+}
+
 impl BuildHost for StubHost<'_> {
     fn cache(&self) -> Result<PathBuf, String> {
         Ok(self.cache.clone())
     }
 
     fn stopped(&self) -> &AtomicBool {
-        &self.stopped
+        self.stopped
     }
 
     fn authorized<T>(
@@ -3253,6 +3355,13 @@ impl BuildHost for StubHost<'_> {
         }
         self.checks.set(self.checks.get() + 1);
         (self.event.borrow_mut())(Moment::Check(self.checks.get()));
+        // The app refuses every launch-time check once ChemDraft is quitting.
+        if self.stopped.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(runner::Failure::new(
+                RunCode::BadParam,
+                super::endpoint::REBUILD_EXPIRED,
+            ));
+        }
         match &self.consent {
             None => Ok(launch(&job.target)),
             Some((store, grant)) => store
@@ -3275,7 +3384,7 @@ impl BuildHost for StubHost<'_> {
         if let Some((_, address)) = self.hold.filter(|(held, _)| *held == count) {
             fs::write(cwd.join("hold"), address.to_string()).unwrap();
         }
-        let child = ChildProcess::spawn_before(rust_stub(), args, cwd, deadline, &self.stopped)?;
+        let child = ChildProcess::spawn_before(rust_stub(), args, cwd, deadline, self.stopped)?;
         self.spawned
             .borrow_mut()
             .push(args[0].to_string_lossy().into_owned());
@@ -3375,7 +3484,7 @@ fn click_enders() -> Vec<ClickEnder> {
             .unwrap();
     }
     vec![
-        ("reload or close", State::shutdown as fn(&State)),
+        ("reload or close", State::discard_all as fn(&State)),
         ("the same command armed again", rearm),
         ("another command of the plugin armed", arm_other),
         ("plugin consent cleared", |arms| arms.disarm(PLUGIN)),
@@ -3454,10 +3563,12 @@ fn a_retry_stops_before_any_later_step_attempt_or_open_once_its_click_ends() {
     // 8 before attempt 2, 9-11 its steps, 12 the open.
     let poor = || retry_build("small", &[2.0, 3.0]);
     for (case, end) in click_enders() {
+        // An attempt counts once its first process started: ended before that, the result names
+        // only the attempts that ran, and the input of the last one.
         for (moment, launched, attempts) in [
-            (Moment::Exited(3), 3, 2),
-            (Moment::Check(4), 3, 2),
-            (Moment::Check(5), 3, 2),
+            (Moment::Exited(3), 3, 1),
+            (Moment::Check(4), 3, 1),
+            (Moment::Check(5), 3, 1),
             (Moment::Exited(4), 4, 2),
             (Moment::Check(6), 4, 2),
             (Moment::Check(7), 5, 2),

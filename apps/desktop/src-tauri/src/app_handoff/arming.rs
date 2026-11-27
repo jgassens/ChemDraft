@@ -21,7 +21,11 @@
 //!
 //! 1. the consent store's `LOCK` (`consent.rs`), held by a launch around the grant check, the app
 //!    identity check and the launch; and by revoke and clear, released before they disarm;
-//! 2. `State::arms`, held by every invalidation through `State`; never held by a launch;
+//! 2. `State::arms`, held by every invalidation through `State`; never held by a launch. Arming
+//!    a click checks `State::closed` and the caller's quit check (`arm_unless`) and inserts the
+//!    click under it, and `close` sets `closed` and ends every click under it, so a click either
+//!    arms before a committed quit or shutdown closes arming (and is ended by it) or sees it
+//!    closed. The quit check only reads atomic flags, so it takes no lock under `arms`;
 //! 3. an arm's `stage`, held by a first launch around the gate, by `disarm_consent` and a duplicate
 //!    `submit` around their invalidation, and briefly elsewhere;
 //! 4. an arm's `gate`, the innermost: while it is held, no other ChemDraft lock is taken and no
@@ -38,7 +42,10 @@ use super::{
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    sync::{Arc, LockResult, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, LockResult, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError,
+    },
     time::{Duration, Instant},
 };
 use tokio::sync::watch;
@@ -49,6 +56,10 @@ const NO_ARMING: &str = "Start app handoff from the plugin's native menu.";
 #[derive(Default)]
 pub(crate) struct State {
     arms: Mutex<HashMap<String, Arc<Arm>>>,
+    /// Set by `close` (a committed quit, or the exit's shutdown) and never cleared: no click arms
+    /// again. Only read and written while `arms` is held, which orders it; the atomic only lets
+    /// `State` stay shareable.
+    closed: AtomicBool,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -87,20 +98,39 @@ enum Stage {
 pub(super) struct Submission(Arc<Arm>);
 
 impl State {
+    /// Arms a menu click, unless arming is closed or `closing` (a committed quit, or the app
+    /// shutting down) says it should be. Both are checked under the arms lock together with the
+    /// insert, so `close`, which takes the same lock, either ends this click or makes it see the
+    /// closure. `closing` runs under the arms lock: it must only read atomic flags.
+    pub(super) fn arm_unless(
+        &self,
+        plugin: &str,
+        command: &str,
+        now: Instant,
+        closing: impl FnOnce() -> bool,
+    ) -> Result<Option<Arc<Arm>>, String> {
+        let nonce =
+            temp_files::nonce().map_err(|_| "Could not secure the app handoff menu click.")?;
+        let arm = Arc::new(Arm::new(command, nonce, now));
+        let mut arms = wait_lock(&self.arms).unwrap();
+        if self.closed.load(Ordering::Relaxed) || closing() {
+            return Ok(None);
+        }
+        if let Some(previous) = arms.insert(plugin.into(), arm.clone()) {
+            previous.invalidate();
+        }
+        Ok(Some(arm))
+    }
+
+    #[cfg(test)]
     pub(super) fn arm(
         &self,
         plugin: &str,
         command: &str,
         now: Instant,
     ) -> Result<Arc<Arm>, String> {
-        let nonce =
-            temp_files::nonce().map_err(|_| "Could not secure the app handoff menu click.")?;
-        let arm = Arc::new(Arm::new(command, nonce, now));
-        let mut arms = self.arms.lock().unwrap();
-        if let Some(previous) = arms.insert(plugin.into(), arm.clone()) {
-            previous.invalidate();
-        }
-        Ok(arm)
+        self.arm_unless(plugin, command, now, || false)?
+            .ok_or_else(|| NO_ARMING.into())
     }
 
     fn matches(arm: &Arm, invocation: &MenuInvocation) -> bool {
@@ -142,9 +172,12 @@ impl State {
         let nonce =
             temp_files::nonce().map_err(|_| "Could not secure the app handoff menu click.")?;
         let mut arms = self.arms.lock().unwrap();
-        if !arms
-            .get(plugin)
-            .is_some_and(|arm| Arc::ptr_eq(arm, &original.0))
+        // `close` drains the original under this lock too; `closed` is checked as well so the
+        // rule does not rest on that alone.
+        if self.closed.load(Ordering::Relaxed)
+            || !arms
+                .get(plugin)
+                .is_some_and(|arm| Arc::ptr_eq(arm, &original.0))
         {
             return Err(NO_ARMING.into());
         }
@@ -232,8 +265,19 @@ impl State {
         }
     }
 
-    pub(crate) fn shutdown(&self) {
-        for (_, arm) in self.arms.lock().unwrap().drain() {
+    /// Ends every click (the document window closed or reloaded). Later clicks arm again.
+    pub(super) fn discard_all(&self) {
+        for (_, arm) in wait_lock(&self.arms).unwrap().drain() {
+            arm.invalidate();
+        }
+    }
+
+    /// Ends every click and closes arming for good (a committed quit, or the exit's shutdown).
+    /// Waits for a click being armed (`arm_unless`) to be inserted, then ends it with the rest.
+    pub(super) fn close(&self) {
+        let mut arms = wait_lock(&self.arms).unwrap();
+        self.closed.store(true, Ordering::Relaxed);
+        for (_, arm) in arms.drain() {
             arm.invalidate();
         }
     }

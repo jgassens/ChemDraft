@@ -339,7 +339,9 @@ if (result.status === "done" && result.attempts && result.attempts > 1) {
   `bad-param`.
 - **Condition.** `when` is data, not code: a declared step ID, a row label of 1–80 plain characters
   (no control or invisible format characters, no line breaks, no leading or trailing spaces), and one
-  finite number. The step must belong to the pipeline. After an attempt **completes**, the host looks
+  finite number. The host reads the condition from the report the plugin receives, after it removes
+  local paths, so a label that looks like a path is refused with `bad-param`: one containing a
+  backslash or `file:`, a word starting with `/`, or a drive such as `C:/`. The step must belong to the pipeline. After an attempt **completes**, the host looks
   in that step's JSON report only at `tables[i].rows[j]`: the report must be an object whose `tables`
   is an array. A table that is not an object with a `rows` array, and a row that is not an object,
   contributes nothing. A row matches when its `label` string equals the declared label exactly.
@@ -366,9 +368,11 @@ if (result.status === "done" && result.attempts && result.attempts > 1) {
   attempt's output is opened when `openOutput` is set; earlier outputs are never opened. If every
   attempt meets the condition, the last one is returned and opened as a single run would be.
 - **Result.** With `retry`, `done`, and a `failed` result once the first attempt has begun, carry
-  `attempts` (attempts begun, 1–3) and `variant` (`attempts - 1`: 0 for `input`, n for `retry.inputs[n - 1]`); the
-  returned steps, output, or failure come from that variant. A failure on a later attempt is
-  returned as that failure, never as an earlier attempt's success. Requests without `retry` return
+  `attempts` (attempts started, 1–3) and `variant` (`attempts - 1`: 0 for `input`, n for `retry.inputs[n - 1]`); the
+  returned steps, output, or failure come from that variant. A later attempt counts once its first
+  companion step has started: one stopped before that (the time limit, revoked consent, an ended
+  menu click, quitting) is not counted, and its failure carries the counts of the attempts that ran.
+  A failure on a later attempt is returned as that failure, never as an earlier attempt's success. Requests without `retry` return
   results without these fields, exactly as in 0.1.28.
 
 The plugin judges the final result itself and applies the same judgement to every variant.
