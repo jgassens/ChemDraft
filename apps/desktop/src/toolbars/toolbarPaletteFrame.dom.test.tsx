@@ -374,4 +374,32 @@ describe("webFloatingPalettePosition", () => {
     expect(webFloatingPalettePosition(30, { x: -100, y: 154 }, viewport).x).toBe(0);
     expect(webFloatingPalettePosition(30, { x: 2000, y: 154 }, viewport).x).toBe(1024 - 30);
   });
+
+  it("clamps a max-content palette by its rendered width, not the passed one", () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const rendered = 300;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ width: rendered, height: 100, x: 0, y: 0, top: 0, left: 0, right: rendered, bottom: 100, toJSON: () => ({}) });
+    setViewportWidth(1024);
+    const render = (x: number) => {
+      container = document.createElement("div");
+      document.body.append(container);
+      root = createRoot(container);
+      act(() => root!.render(
+        <WebFloatingPaletteSection toolsetId="rings" title="Rings" naturalWidth={32} position={{ x, y: 200 }}
+          onPointerDown={() => {}} onPointerMove={() => {}} onPointerUp={() => {}} onPointerCancel={() => {}}>
+          <div />
+        </WebFloatingPaletteSection>
+      ));
+      const section = container.querySelector<HTMLElement>(".web-floating-palette")!;
+      act(() => root!.unmount());
+      root = undefined;
+      container.remove();
+      return section;
+    };
+    const left = render(-10_000);
+    expect(left.dataset.paletteX).toBe(String(WEB_FLOATING_PALETTE_GRAB_MARGIN_PX - rendered));
+    expect(left.dataset.paletteWidth).toBe(String(rendered));
+    const right = render(10_000);
+    expect(right.dataset.paletteX).toBe(String(1024 - WEB_FLOATING_PALETTE_GRAB_MARGIN_PX));
+  });
 });

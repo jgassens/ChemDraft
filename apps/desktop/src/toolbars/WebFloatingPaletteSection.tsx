@@ -1,4 +1,4 @@
-import { useSyncExternalStore, type CSSProperties, type PointerEventHandler, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type PointerEventHandler, type ReactNode } from "react";
 import { webFloatingPalettePosition } from "./webFloatingPaletteFrame";
 
 function subscribeToViewportSize(onChange: () => void): () => void {
@@ -40,17 +40,33 @@ export function WebFloatingPaletteSection({
 }) {
   const width = useSyncExternalStore(subscribeToViewportSize, viewportWidth, viewportWidth);
   const height = useSyncExternalStore(subscribeToViewportSize, viewportHeight, viewportHeight);
-  const drawn = webFloatingPalettePosition(naturalWidth, position, { width, height });
+  const frameRef = useRef<HTMLElement>(null);
+  // The width the frame is actually drawn at: CSS may size it otherwise than `naturalWidth` (the
+  // Rings inspector is max-content). 0 means no layout yet, so the passed width stands in.
+  const [measured, setMeasured] = useState(0);
+  useLayoutEffect(() => {
+    const frame = frameRef.current;
+    if (!frame) return;
+    const measure = () => setMeasured(frame.getBoundingClientRect().width || frame.offsetWidth || 0);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(frame);
+    return () => observer.disconnect();
+  });
+  const renderedWidth = measured > 0 ? measured : naturalWidth;
+  const drawn = webFloatingPalettePosition(renderedWidth, position, { width, height });
 
   return (
     <section
+      ref={frameRef}
       className="web-floating-palette"
       aria-label={`Floating ${title}`}
       data-floating-palette="web-preview"
       data-toolset-id={toolsetId}
       data-palette-x={drawn.x}
       data-palette-y={drawn.y}
-      data-palette-width={naturalWidth}
+      data-palette-width={renderedWidth}
       style={
         {
           "--palette-x": `${drawn.x}px`,
