@@ -165,6 +165,40 @@ describe("text editor layout model", () => {
     expect(nativeTextEditorParagraphRange("one\ntwo three\nfour", 6)).toEqual({ start: 4, end: 13 });
   });
 
+  it("reports the glyph under a point for word selection, apart from the nearest caret stop (S2)", () => {
+    const text = "alpha beta\ngamma";
+    const layout = planNativeTextEditorLayout(box(text, 230));
+    const [line, last] = [layout.lines[0]!, layout.lines[1]!];
+    const y = (line.top + line.bottom) / 2;
+    const at = (offset: number, fraction: number) => nativeTextEditorOffsetAtPoint(layout,
+      { x: line.stops[offset]! + (line.stops[offset + 1]! - line.stops[offset]!) * fraction, y });
+    // Right half of alpha's last letter: the caret goes after it, the word is still alpha.
+    expect(at(4, 0.75)).toMatchObject({ offset: 5, glyphOffset: 4 });
+    expect(nativeTextEditorWordRange(text, at(4, 0.75).glyphOffset)).toEqual({ start: 0, end: 5 });
+    expect(at(4, 0.25)).toMatchObject({ offset: 4, glyphOffset: 4 });
+    // Either half of the space between the words is the space.
+    expect(at(5, 0.25).glyphOffset).toBe(5);
+    expect(at(5, 0.75)).toMatchObject({ offset: 6, glyphOffset: 5 });
+    // Past either end of a line, the glyph at that end, never the line break.
+    expect(nativeTextEditorOffsetAtPoint(layout, { x: line.stops[10]! + 50, y })).toMatchObject({ offset: 10, glyphOffset: 9 });
+    expect(nativeTextEditorOffsetAtPoint(layout, { x: line.stops[0]! - 50, y }).glyphOffset).toBe(0);
+    const lastY = (last.top + last.bottom) / 2;
+    expect(nativeTextEditorOffsetAtPoint(layout, { x: last.stops.at(-1)! + 50, y: lastY }).glyphOffset).toBe(15);
+    // An empty line has no glyph: its start.
+    const empty = planNativeTextEditorLayout(box("a\n\nb", 230));
+    const emptyLine = empty.lines[1]!;
+    expect(nativeTextEditorOffsetAtPoint(empty, { x: 500, y: (emptyLine.top + emptyLine.bottom) / 2 }).glyphOffset).toBe(2);
+    // A right-to-left run (descending stops): the glyph between the two stops around x.
+    const rtl = planNativeTextEditorLayout(box("שלום", 230), measured =>
+      Array.from({ length: measured.end - measured.start + 1 }, (_, index) => 100 - index * 10));
+    const rtlLine = rtl.lines[0]!;
+    const rtlY = (rtlLine.top + rtlLine.bottom) / 2;
+    expect(nativeTextEditorOffsetAtPoint(rtl, { x: 97, y: rtlY })).toMatchObject({ offset: 0, glyphOffset: 0 });
+    expect(nativeTextEditorOffsetAtPoint(rtl, { x: 83, y: rtlY })).toMatchObject({ offset: 2, glyphOffset: 1 });
+    expect(nativeTextEditorOffsetAtPoint(rtl, { x: 0, y: rtlY }).glyphOffset).toBe(3);
+    expect(nativeTextEditorOffsetAtPoint(rtl, { x: 200, y: rtlY }).glyphOffset).toBe(0);
+  });
+
   it("selects whole graphemes: an emoji alone, an astral letter inside its word (S2)", () => {
     // "ab😀cd": the emoji is offsets 2-3 (a surrogate pair) and is not a letter.
     const emoji = "ab😀cd";

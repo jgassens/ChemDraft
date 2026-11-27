@@ -132,7 +132,10 @@ export function pressTextEditor(editor: HTMLTextAreaElement, session: TextEditor
   session.lastPress = { time: press.time, x: press.clientX, y: press.clientY, count };
   session.goalX = undefined;
   if (count === 2 || count >= 3) {
-    const range = count === 2 ? nativeTextEditorWordRange(editor.value, hit.offset) : nativeTextEditorParagraphRange(editor.value, hit.offset);
+    // A word is chosen by the glyph under the pointer, not the nearest caret stop: on the right
+    // half of a word's last letter the nearest stop is after it, at the following space.
+    const range = count === 2 ? nativeTextEditorWordRange(editor.value, hit.glyphOffset)
+      : nativeTextEditorParagraphRange(editor.value, hit.offset);
     setTextEditorSelection(editor, range.start, range.end);
     session.affinity = "downstream";
     session.drag = undefined;

@@ -89,6 +89,32 @@ describe.each(["macos", "windows"] as const)("text box 1.2.3 (%s)", platform => 
       expect(h.caretBox()).toBeUndefined();
     }, TEXTBOX_TEST_TIMEOUT);
 
+    it("S2: double-click selects the word under the pointer, not the one after the nearest caret stop", async () => {
+      const text = "alpha beta\ngamma";
+      const editor = await h.mount(text, { width: 230, mode });
+      const [first, last] = [h.layout().lines[0]!, h.layout().lines.at(-1)!];
+      expect([first.start, first.end, last.start, last.end]).toEqual([0, 10, 11, 16]);
+      // A point a fraction of the way across the glyph at `offset` (page units from its left stop).
+      const across = (offset: number, fraction: number) =>
+        h.clientAt(offset, "downstream", (first.stops[offset + 1]! - first.stops[offset]!) * fraction);
+      const doubleClick = async (point: { x: number; y: number }) => {
+        await h.click(editor, point, { timeGap: 1000 });
+        await h.click(editor, point, { detail: 2, timeGap: 80 });
+        return [editor.selectionStart, editor.selectionEnd];
+      };
+      // The right half of alpha's last letter is nearest the caret stop after it (at the space).
+      expect(await doubleClick(across(4, 0.75)), "right half of the last letter").toEqual([0, 5]);
+      expect(await doubleClick(across(4, 0.25)), "left half of the last letter").toEqual([0, 5]);
+      // Between the words: either half of the space selects the space.
+      expect(await doubleClick(across(5, 0.25)), "left half of the space").toEqual([5, 6]);
+      expect(await doubleClick(across(5, 0.75)), "right half of the space").toEqual([5, 6]);
+      // The right half of the last letter before a line break, and past the end of that line,
+      // select the line's last word, never the line break.
+      expect(await doubleClick(across(9, 0.75)), "right half of the line's last letter").toEqual([6, 10]);
+      expect(await doubleClick(h.clientAt(10, "downstream", 20)), "past the line end").toEqual([6, 10]);
+      expect(await doubleClick(h.clientAt(16, "downstream", 20)), "past the text end").toEqual([11, 16]);
+    }, TEXTBOX_TEST_TIMEOUT);
+
     it("CRLF: text stored with CRLF opens, hit-tests, highlights and types at the textarea's offsets", async () => {
       // An older file (or a Windows paste in an earlier build) stored "a\r\nb"; the textarea holds "a\nb".
       const editor = await h.mount("a\r\nb", { width: 230, mode, stored: true });

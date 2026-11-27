@@ -209,16 +209,39 @@ function offsetOnLine(line: NativeTextEditorLine, x: number): { offset: number; 
   return { offset, affinity: offset === line.end && line.softWrapAfter ? "upstream" : "downstream" };
 }
 
-/** Caret position for a point over the rendered text (object-relative, unrotated page units). */
+/** The offset of the glyph whose box holds x: between two neighbouring caret stops, in
+ * either direction. Past a visual edge, the glyph at that edge. An empty line has no glyph,
+ * so its start. A surrogate pair's inner offset shares its glyph's start stop, so x lands on
+ * the pair's second half, which the word and paragraph ranges treat as the whole grapheme. */
+function glyphOnLine(line: NativeTextEditorLine, x: number): number {
+  const { stops } = line;
+  if (stops.length < 2) return line.start;
+  const leftmost = Math.min(...stops), rightmost = Math.max(...stops);
+  // The glyph beside an edge stop: after it for a start stop, before it for an end stop.
+  const beside = (stop: number) => line.start + Math.min(stop, stops.length - 2);
+  if (x <= leftmost) return beside(stops.indexOf(leftmost));
+  if (x >= rightmost) return beside(stops.lastIndexOf(rightmost));
+  for (let index = 0; index < stops.length - 1; index++) {
+    const a = stops[index]!, b = stops[index + 1]!;
+    if (Math.min(a, b) <= x && x < Math.max(a, b)) return line.start + index;
+  }
+  return offsetOnLine(line, x).offset;
+}
+
+/** Caret position for a point over the rendered text (object-relative, unrotated page units),
+ * and `glyphOffset`, the start of the glyph under the point. A caret goes to the nearest
+ * boundary; a double- or triple-click selects around the glyph under the pointer, so a click
+ * on the right half of a word's last letter selects that word, not the space after it. */
 export function nativeTextEditorOffsetAtPoint(layout: NativeTextEditorLayout, point: { x: number; y: number }):
-  { offset: number; affinity: NativeTextCaretAffinity } {
+  { offset: number; affinity: NativeTextCaretAffinity; glyphOffset: number } {
   const { lines } = layout;
   let lineIndex = lines.length - 1;
   for (let index = 0; index < lines.length - 1; index++) {
     // Split neighbouring lines halfway between their caret extents.
     if (point.y < (lines[index]!.bottom + lines[index + 1]!.top) / 2) { lineIndex = index; break; }
   }
-  return offsetOnLine(lines[Math.max(0, lineIndex)]!, point.x);
+  const line = lines[Math.max(0, lineIndex)]!;
+  return { ...offsetOnLine(line, point.x), glyphOffset: glyphOnLine(line, point.x) };
 }
 
 /** ArrowUp/ArrowDown over the rendered lines, keeping the goal column. */
