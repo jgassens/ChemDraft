@@ -3920,6 +3920,20 @@ textarea:focus-visible,
 .page-object-stack { z-index: 2; }
 .page-interaction-layer { z-index: 3; }
 
+/* Transform handles (resize corners, rotate and 3D-tilt buttons, group frame) sit beside the
+   page, over its padding box, so `.page`'s `contain: paint` cannot clip them at or past the page
+   edge: a page-filling or enlarged object keeps every handle visible and grabbable. No paint
+   containment here or on the board (see .document-board): each .object-transform-frame keeps its
+   own compositing layer (will-change), and the chrome scrub repaints this layer too. */
+.page-handle-layer {
+  position: relative;
+  z-index: 1;
+  grid-row: 1;
+  grid-column: 1;
+  margin: 1px;
+  pointer-events: none;
+}
+
 .document-object-chrome {
   position: absolute;
   display: block;

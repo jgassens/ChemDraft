@@ -2500,6 +2500,9 @@ export function MainWindow({
   }, []);
   const pageRef = useRef<HTMLDivElement | null>(null);
   const [interactionLayer, setInteractionLayer] = useState<HTMLDivElement | null>(null);
+  // Resize/rotate/tilt handles live beside the page, not inside it: `.page` keeps `contain: paint`
+  // (it clips content at the page edge), which also clipped any handle at or past that edge.
+  const [handleLayer, setHandleLayer] = useState<HTMLDivElement | null>(null);
   // Capture can belong to an object or a handle (even one later unmounted), not just the page.
   const pointerCaptureOwnersRef = useRef(new Map<number, Element>());
   const captureGesturePointer = useCallback((owner: Element | null | undefined, pointerId: number) => {
@@ -15904,7 +15907,9 @@ export function MainWindow({
         }
         retainedObjectMoveRef.current ??= {
           pointerId: preview.pointerId,
-          targets: retainedObjectMoveTargets(pageRef.current, preview.objectIds, preview.arrowPreviewFragments)
+          // The board holds the page and the handle layer beside it; handles must ride along too.
+          targets: retainedObjectMoveTargets(pageRef.current?.closest<HTMLElement>(".document-board") ?? pageRef.current,
+            preview.objectIds, preview.arrowPreviewFragments)
         };
         translateRetainedObjectMoveTargets(retainedObjectMoveRef.current.targets, preview.translateX, preview.translateY);
         if (preview.arrowPreviewFragments) {
@@ -16503,23 +16508,31 @@ export function MainWindow({
   // configurations. Whenever chrome-driving state changes, flip the page background var
   // for one frame; the full-page repaint that forces erases anything stale regardless
   // of which interaction dropped it. The one-frame color delta (#fff → #fffefe) is
-  // imperceptible, and the page repaints on these transitions anyway.
+  // imperceptible, and the page repaints on these transitions anyway. Handles live in the
+  // handle layer beside the page and may overhang the page onto the canvas, so the canvas
+  // background flips too (#cbd3da → #cbd3db), repainting whatever lies around the page.
   const chromeScrubSelectionKey = document.selection.objectIds.join("|");
   useEffect(() => {
     const page = pageRef.current;
     if (!page) {
       return;
     }
+    const canvas = page.closest<HTMLElement>(".canvas-region");
     page.style.setProperty("--cd-bg-page", "#fffefe");
+    canvas?.style.setProperty("--cd-bg-canvas", "#cbd3db");
+    const unscrub = () => {
+      page.style.removeProperty("--cd-bg-page");
+      canvas?.style.removeProperty("--cd-bg-canvas");
+    };
     let scrubFrame: number | undefined = window.requestAnimationFrame(() => {
       scrubFrame = undefined;
-      page.style.removeProperty("--cd-bg-page");
+      unscrub();
     });
     return () => {
       if (scrubFrame !== undefined) {
         window.cancelAnimationFrame(scrubFrame);
       }
-      page.style.removeProperty("--cd-bg-page");
+      unscrub();
     };
   }, [
     chromeScrubSelectionKey,
@@ -18912,9 +18925,17 @@ export function MainWindow({
       return false;
     }
 
-    return commitDocumentHistoryFrom(drag.startDocument, resized, findDocumentObject(drag.startDocument, drag.objectId)?.type === "electron-mark" ? "Resize electron mark" : undefined,
-      undefined, selectionTransformChemistry("resize", independentlyMovedMarkIds));
-  }, [clearObjectTransformPreview, commitDocumentHistoryFrom, objectResizeDocumentFromDrag, replacePresentDocument, showObjectResizeReadout]);
+    const undoLabel = findDocumentObject(drag.startDocument, drag.objectId)?.type === "electron-mark" ? "Resize electron mark" : undefined;
+    const chemistry = selectionTransformChemistry("resize", independentlyMovedMarkIds);
+    // Enlarging past the page edge asks the same Enlarge / Keep Page Size question as pasting or
+    // placing a large structure (owner rule 2026-11-27): the page grows (shifting content when
+    // the object crosses the top or left edge) instead of leaving it clipped. One undo entry.
+    if (planDocumentPageFit(drag.startDocument, resized).growth.length) {
+      commitInsertionHistoryWithPageFit(drag.startDocument, resized, undoLabel, chemistry);
+      return true;
+    }
+    return commitDocumentHistoryFrom(drag.startDocument, resized, undoLabel, undefined, chemistry);
+  }, [clearObjectTransformPreview, commitDocumentHistoryFrom, commitInsertionHistoryWithPageFit, objectResizeDocumentFromDrag, replacePresentDocument, showObjectResizeReadout]);
 
   const nativePartDocumentFromDrag = useCallback((drag: NativePartDragState, point: ClientPoint): ChemDraftDocument => {
     const rawDelta = {
@@ -24666,6 +24687,7 @@ export function MainWindow({
                           : undefined)}
                       layerIndex={layerIndex}
                       interactionLayer={interactionLayer}
+                      handleLayer={handleLayer}
                       pageHeight={activePage.height}
                       pageWidth={activePage.width}
                       // Text, electron-mark targets/handles and the selected corner-radius handle use
@@ -24736,8 +24758,8 @@ export function MainWindow({
                     />
                   );
                 })}
-                <PageInteractionPortal target={interactionLayer}>
                 {groupSelectionBounds ? (
+                  <PageInteractionPortal target={handleLayer ?? interactionLayer}>
                   <GroupSelectionOverlay
                     bounds={groupSelectionBounds}
                     canProjectedPlaneTilt={groupProjectedPlaneTiltObjectIds.length > 1}
@@ -24746,7 +24768,9 @@ export function MainWindow({
                     onRotateStart={handleGroupRotatePointerDown}
                     onResizeStart={handleGroupResizePointerDown}
                   />
+                  </PageInteractionPortal>
                 ) : null}
+                <PageInteractionPortal target={interactionLayer}>
                 {activeSpin3dState ? (() => {
                   const spinObject = activePage.objects.find((object) => object.id === activeSpin3dState.objectId);
                   // The overlay renders with the molecule's OWN drawing style so the
@@ -24804,6 +24828,7 @@ export function MainWindow({
                   />
                 ) : null}
               </div>
+              <div className="page-handle-layer" data-page-handle-layer="true" ref={setHandleLayer} />
             </div>
           </div>
         </section>
@@ -30339,6 +30364,7 @@ function DocumentObjectViewContent({
   object,
   layerIndex,
   interactionLayer,
+  handleLayer = null,
   pageWidth,
   pageHeight,
   pageScale,
@@ -30424,6 +30450,8 @@ function DocumentObjectViewContent({
   object: DocumentObject;
   layerIndex: number;
   interactionLayer: HTMLDivElement | null;
+  /** Unclipped layer beside the page for transform handles; null keeps them in the chrome. */
+  handleLayer?: HTMLDivElement | null;
   pageWidth: number;
   pageHeight: number;
   pageScale?: number;
@@ -30829,6 +30857,21 @@ function DocumentObjectViewContent({
       {children}
     </div>, interactionLayer
   ) : <>{children}</>;
+  // Resize/rotate/tilt frames go to the handle layer beside the page so `.page`'s paint containment
+  // never clips them at the page edge. Same box and transform as the chrome copy; with no handle
+  // layer (static rendering) they stay inside the chrome as before.
+  const inlineHandles = (children: ReactNode) => handleLayer && interactionLayer ? null : children;
+  const handles = (children: ReactNode) => handleLayer && interactionLayer && children ? createPortal(
+    <div
+      className="document-object-chrome document-object-handles"
+      style={{ ...style, zIndex: 1 }}
+      data-object-controls={object.id}
+      data-object-handles="true"
+      onPointerLeave={handleObjectPointerLeave}
+    >
+      {children}
+    </div>, handleLayer
+  ) : null;
   const artObjectTransformFrameStyle = documentObjectSupportsArtTransform(object, directElectronMarkEditing)
     ? documentObjectArtTransformFrameStyle(object, artObjectProjection, objectTransformPreview, pageScale)
     : undefined;
@@ -31087,6 +31130,90 @@ function DocumentObjectViewContent({
           />
         </>
       ) : null;
+      // Transform handles and their typed entry render in the unclipped handle layer.
+      const moleculeHandleChrome = transformFrame || (entryFrame && (rotationInput || resizeInput)) ? <>
+        {transformFrame ? (
+          <div
+            className="object-transform-frame"
+            data-molecule-transform-frame={selectedFragmentBounds ? "fragment" : "whole"}
+            data-has-tilt3d={canProjectedPlaneTilt ? "true" : undefined}
+            style={transformFrameStyle}
+          >
+            <ObjectResizeHandles
+              targetLabel={transformTargetLabel}
+              onResizeDoubleClick={handleObjectResizeDoubleClick}
+              onResizeStart={handleObjectResizePointerDown}
+            />
+            {resizeReadout && !resizeInput ? (
+              <ObjectResizeReadout
+                scaleXPercent={resizeReadout.scaleXPercent}
+                scaleYPercent={resizeReadout.scaleYPercent}
+              />
+            ) : null}
+            {zRotationHandleVisible ? (
+              <button
+                type="button"
+                className="object-rotate-handle"
+                aria-label={`Rotate ${transformTargetLabel}`}
+                data-selection-rotate-handle="true"
+                title={`Rotate ${transformTargetLabel}`}
+                onPointerDown={handleRotatePointerDown}
+                onDoubleClick={handleRotateDoubleClick}
+              >
+                <RotateSelectionIcon />
+                {rotateReadout ? (
+                  <RotateSelectionReadout degrees={rotateReadout.degrees} />
+                ) : null}
+              </button>
+            ) : null}
+            {canProjectedPlaneTilt && projectedPlaneTiltHandleVisible ? (
+              <button
+                type="button"
+                className="object-tilt3d-handle"
+                aria-label={`3D rotate ${transformTargetLabel}`}
+                data-selection-tilt3d-handle="true"
+                title={`3D rotate ${transformTargetLabel}`}
+                onPointerDown={handleProjectedPlaneTiltPointerDown}
+                onDoubleClick={handleProjectedPlaneTiltDoubleClick}
+              >
+                <ProjectedPlaneTiltIcon />
+                {projectedPlaneTiltReadout ? (
+                  <ProjectedPlaneTiltReadout
+                    label={projectedPlaneTiltReadout.label}
+                    limited={projectedPlaneTiltReadout.limited}
+                  />
+                ) : null}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+        {entryFrame && (rotationInput || resizeInput) ? (
+          <div
+            className="object-transform-input-layer"
+            data-has-tilt3d={canProjectedPlaneTilt ? "true" : undefined}
+            style={entryFrameStyle}
+          >
+            {rotationInput ? (
+              <RotationInputPopover
+                input={rotationInput}
+                onKeep={onRotationInputKeep}
+                onHome={onRotationInputHome}
+                onCancel={onRotationInputCancel}
+                onChange={onRotationInputChange}
+              />
+            ) : null}
+            {resizeInput ? (
+              <ObjectResizeInputPopover
+                input={resizeInput}
+                onKeep={onObjectResizeInputKeep}
+                onHome={onObjectResizeInputHome}
+                onCancel={onObjectResizeInputCancel}
+                onChange={onObjectResizeInputChange}
+              />
+            ) : null}
+          </div>
+        ) : null}
+      </> : null;
       return (
         <div
           className={[
@@ -31239,87 +31366,7 @@ function DocumentObjectViewContent({
             <BondStereoBadges molecule={object} onOpen={onBondStereoBadgeOpen} />
           </svg>
           {moleculeGradientHandles}
-          {transformFrame ? (
-            <div
-              className="object-transform-frame"
-              data-molecule-transform-frame={selectedFragmentBounds ? "fragment" : "whole"}
-              data-has-tilt3d={canProjectedPlaneTilt ? "true" : undefined}
-              style={transformFrameStyle}
-            >
-              <ObjectResizeHandles
-                targetLabel={transformTargetLabel}
-                onResizeDoubleClick={handleObjectResizeDoubleClick}
-                onResizeStart={handleObjectResizePointerDown}
-              />
-              {resizeReadout && !resizeInput ? (
-                <ObjectResizeReadout
-                  scaleXPercent={resizeReadout.scaleXPercent}
-                  scaleYPercent={resizeReadout.scaleYPercent}
-                />
-              ) : null}
-              {zRotationHandleVisible ? (
-                <button
-                  type="button"
-                  className="object-rotate-handle"
-                  aria-label={`Rotate ${transformTargetLabel}`}
-                  data-selection-rotate-handle="true"
-                  title={`Rotate ${transformTargetLabel}`}
-                  onPointerDown={handleRotatePointerDown}
-                  onDoubleClick={handleRotateDoubleClick}
-                >
-                  <RotateSelectionIcon />
-                  {rotateReadout ? (
-                    <RotateSelectionReadout degrees={rotateReadout.degrees} />
-                  ) : null}
-                </button>
-              ) : null}
-              {canProjectedPlaneTilt && projectedPlaneTiltHandleVisible ? (
-                <button
-                  type="button"
-                  className="object-tilt3d-handle"
-                  aria-label={`3D rotate ${transformTargetLabel}`}
-                  data-selection-tilt3d-handle="true"
-                  title={`3D rotate ${transformTargetLabel}`}
-                  onPointerDown={handleProjectedPlaneTiltPointerDown}
-                  onDoubleClick={handleProjectedPlaneTiltDoubleClick}
-                >
-                  <ProjectedPlaneTiltIcon />
-                  {projectedPlaneTiltReadout ? (
-                    <ProjectedPlaneTiltReadout
-                      label={projectedPlaneTiltReadout.label}
-                      limited={projectedPlaneTiltReadout.limited}
-                    />
-                  ) : null}
-                </button>
-              ) : null}
-            </div>
-          ) : null}
-          {entryFrame && (rotationInput || resizeInput) ? (
-            <div
-              className="object-transform-input-layer"
-              data-has-tilt3d={canProjectedPlaneTilt ? "true" : undefined}
-              style={entryFrameStyle}
-            >
-              {rotationInput ? (
-                <RotationInputPopover
-                  input={rotationInput}
-                  onKeep={onRotationInputKeep}
-                  onHome={onRotationInputHome}
-                  onCancel={onRotationInputCancel}
-                  onChange={onRotationInputChange}
-                />
-              ) : null}
-              {resizeInput ? (
-                <ObjectResizeInputPopover
-                  input={resizeInput}
-                  onKeep={onObjectResizeInputKeep}
-                  onHome={onObjectResizeInputHome}
-                  onCancel={onObjectResizeInputCancel}
-                  onChange={onObjectResizeInputChange}
-                />
-              ) : null}
-            </div>
-          ) : null}
+          {inlineHandles(moleculeHandleChrome)}
           {editingAtomLabel ? object.atoms
             .filter((atom) => atom.id === (editingAtomLabel.previewAtomId ?? editingAtomLabel.atomId))
             .map((atom) => {
@@ -31369,6 +31416,7 @@ function DocumentObjectViewContent({
               );
             }) : null}
           </>)}
+          {handles(moleculeHandleChrome)}
         </div>
       );
     }
@@ -31848,8 +31896,9 @@ function DocumentObjectViewContent({
             {graphicPathEditHandles}
           </div>
           {graphicEyedropperTargetOverlay}
-          {artObjectTransformFrame}
+          {inlineHandles(artObjectTransformFrame)}
         </>)}
+        {handles(artObjectTransformFrame)}
       </div>
     );
   }
@@ -31866,7 +31915,8 @@ function DocumentObjectViewContent({
       onPointerCancel={handleObjectPointerCancel}
       onPointerLeave={handleObjectPointerLeave}
     >
-      {chrome(artObjectTransformFrame)}
+      {chrome(inlineHandles(artObjectTransformFrame))}
+      {handles(artObjectTransformFrame)}
     </div>
   );
 }

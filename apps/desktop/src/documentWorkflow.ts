@@ -23,7 +23,7 @@ import { nativeMoleculeLayoutQuality } from "./depiction2d/layoutQuality";
 import { planObjectArrangement, moleculeAnchorForArrangement, moleculeVisualBoundsForArrangement, textVisualBoundsForArrangement, type ArrangementLayout, type ArrangementOptions, type ArrangementItem, type LayoutBounds } from "@chemdraft/layout-engine";
 import { combinedLayoutBounds, planObjectAlignment, planObjectDistribution, type ObjectAlignMode, type ObjectDistributeAxis, type ObjectDistributeMode } from "@chemdraft/layout-engine";
 import { nativeFormattedTextObjectSize, reconcileReactionArrowAttachments } from "@chemdraft/document-workflow-core";
-import { withArrowAttachmentIds } from "@chemdraft/layout-engine";
+import { objectFrameBoundsForPageFit, withArrowAttachmentIds } from "@chemdraft/layout-engine";
 import { snapRotationDegrees } from "./rotationSnap";
 import { snapPlacementDegrees } from "./placementSnap";
 import { sizeOrbitalToolForBondLength } from "./orbitalSize";
@@ -14358,7 +14358,8 @@ export function documentObjectInteractionBounds(
 /** Union axis-aligned bounding box (and center) of the selected objects, in page coords. */
 export function selectionBounds(
   objects: readonly DocumentObject[],
-  ids: readonly string[]
+  ids: readonly string[],
+  boundsOf: (object: DocumentObject, objects: readonly DocumentObject[]) => ObjectBounds = documentObjectInteractionBounds
 ): SelectionBounds | undefined {
   // Bounds are order-free, so walk the resolved ids rather than scanning the page for them.
   const objectById = objectByIdIndex(objects);
@@ -14372,7 +14373,7 @@ export function selectionBounds(
     if (!object) {
       continue;
     }
-    const bounds = documentObjectInteractionBounds(object, objects);
+    const bounds = boundsOf(object, objects);
     minX = Math.min(minX, bounds.x);
     minY = Math.min(minY, bounds.y);
     maxX = Math.max(maxX, bounds.x + bounds.width);
@@ -15367,14 +15368,36 @@ function groupMoveTranslatesArrowGeometry(object: DocumentObject, movedIds: Read
   );
 }
 
+/**
+ * The box the page-edge move limits hold on the page. A rotated object (picture, shape, arrow,
+ * bracket, text) is drawn turned about its frame centre, so after Rotate 90° its drawn box no
+ * longer matches its stored frame: limit the rotated frame, or it overhangs the page edge (and is
+ * clipped there) while the arrows already report the page edge. Molecules store rotated atom
+ * coordinates (their rotation stays 0); tables and mechanism arrows keep their own bounds.
+ */
+function documentObjectPageLimitBounds(object: DocumentObject, objects: readonly DocumentObject[]): ObjectBounds {
+  if (!pageLimitUsesRotatedFrame(object)) return documentObjectInteractionBounds(object, objects);
+  // Snap away float noise (cos 90° is 6e-17): an exact quarter turn must reach the edge exactly,
+  // or a nudge against it would move by 1e-13 px instead of reporting the page edge.
+  const snap = (value: number) => Math.round(value * 1e9) / 1e9;
+  const bounds = objectFrameBoundsForPageFit(object);
+  const x = snap(bounds.x), y = snap(bounds.y);
+  return { x, y, width: snap(bounds.x + bounds.width) - x, height: snap(bounds.y + bounds.height) - y };
+}
+
+function pageLimitUsesRotatedFrame(object: DocumentObject): boolean {
+  return object.type !== "molecule" && object.type !== "table" && object.type !== "mechanism-arrow" &&
+    Number.isFinite(object.rotation) && object.rotation % 360 !== 0;
+}
+
 function clampedObjectMovePosition(page: DocumentPage, object: DocumentObject, position: PagePoint): PagePoint {
   const attachedIds = withArrowAttachmentIds(page.objects, [object.id]);
-  if (attachedIds.length > 1) {
-    const bounds = selectionBounds(page.objects, attachedIds);
-    if (bounds) {
-      const delta = clampedSelectionMoveDelta(page, bounds, position.x - object.x, position.y - object.y);
-      return { x: object.x + delta.x, y: object.y + delta.y };
-    }
+  const bounds = attachedIds.length > 1
+    ? selectionBounds(page.objects, attachedIds, documentObjectPageLimitBounds)
+    : pageLimitUsesRotatedFrame(object) ? documentObjectPageLimitBounds(object, page.objects) : undefined;
+  if (bounds) {
+    const delta = clampedSelectionMoveDelta(page, bounds, position.x - object.x, position.y - object.y);
+    return { x: object.x + delta.x, y: object.y + delta.y };
   }
   return {
     x: clamp(position.x, 0, Math.max(0, page.width - object.width)),
@@ -15382,7 +15405,7 @@ function clampedObjectMovePosition(page: DocumentPage, object: DocumentObject, p
   };
 }
 
-function clampedSelectionMoveDelta(page: DocumentPage, bounds: SelectionBounds, dx: number, dy: number): PagePoint {
+function clampedSelectionMoveDelta(page: DocumentPage, bounds: ObjectBounds, dx: number, dy: number): PagePoint {
   return {
     x: clamp(dx, -bounds.x, Math.max(-bounds.x, page.width - (bounds.x + bounds.width))),
     y: clamp(dy, -bounds.y, Math.max(-bounds.y, page.height - (bounds.y + bounds.height)))
@@ -15400,7 +15423,7 @@ export function documentObjectMoveDeltaResolver(
   if (!page) return () => ({ x: 0, y: 0 });
   if (groupObjectIds && groupObjectIds.length > 1) {
     const ids = resolveGroupedDocumentObjectIds(page.objects, groupObjectIds);
-    const bounds = selectionBounds(page.objects, [...expandWithAnchoredMarkIds(page.objects, ids)]);
+    const bounds = selectionBounds(page.objects, [...expandWithAnchoredMarkIds(page.objects, ids)], documentObjectPageLimitBounds);
     return bounds ? (dx, dy) => clampedSelectionMoveDelta(page, bounds, dx, dy) : () => ({ x: 0, y: 0 });
   }
   const object = objectOnPage(page, objectId);
@@ -15423,7 +15446,7 @@ export function moveDocumentObjects(
   if (!page) return document;
   const objectIds = resolveGroupedDocumentObjectIds(page.objects, ids);
   const set = expandWithAnchoredMarkIds(page.objects, objectIds);
-  const bounds = selectionBounds(page.objects, [...set]);
+  const bounds = selectionBounds(page.objects, [...set], documentObjectPageLimitBounds);
   if (!bounds) {
     return document;
   }
