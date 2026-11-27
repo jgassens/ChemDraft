@@ -504,6 +504,10 @@ impl Store {
         let mut document = self.read()?;
         let mut revoked = BTreeSet::new();
         document.remove(plugin, &mut revoked, |row, _| row.plugin_id == plugin);
+        if revoked.is_empty() {
+            // Nothing to remove. Rewriting could still trip the size fallback and drop others.
+            return Ok(());
+        }
         self.write_revocation(document, plugin, None, &mut revoked)
     }
 

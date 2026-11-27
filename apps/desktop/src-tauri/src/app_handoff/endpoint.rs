@@ -1102,18 +1102,19 @@ pub(crate) fn app_handoff_consent_revoke(
     window: WebviewWindow,
     plugin_id: String,
     consent_id: String,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     main_only(&window)?;
     let app = window.app_handle();
     let operation_ids = store(app)?
         .revoke(&plugin_id, &consent_id)
         .map_err(io_error)?;
     let state = app.state::<State>();
-    for id in operation_ids {
-        state.arms.disarm_consent(&plugin_id, &id);
-        state.clear_result(&plugin_id, Some(&id));
+    for id in &operation_ids {
+        state.arms.disarm_consent(&plugin_id, id);
+        state.clear_result(&plugin_id, Some(id));
     }
-    Ok(())
+    // The manager drops the listed rows these IDs name if its refresh fails.
+    Ok(operation_ids)
 }
 
 #[tauri::command]

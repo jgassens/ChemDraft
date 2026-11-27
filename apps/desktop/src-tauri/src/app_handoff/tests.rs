@@ -2056,6 +2056,16 @@ fn revocation_lands_when_the_store_is_at_its_size_limit() {
     );
 }
 
+fn assert_no_listed_consents(store: &Store, plugin: &str) {
+    for entry in store.list().unwrap() {
+        let (ListedConsent::Operation(row) | ListedConsent::Conflict(row)) = entry;
+        assert_ne!(
+            row.plugin_id, plugin,
+            "a cleared plugin still lists {row:?}"
+        );
+    }
+}
+
 #[test]
 fn legacy_store_at_its_size_limit_with_conflicts_still_revokes_and_clears() {
     // Each step returns the grants it is allowed to remove; every other grant must survive.
@@ -2079,12 +2089,14 @@ fn legacy_store_at_its_size_limit_with_conflicts_still_revokes_and_clears() {
                 .clear(PLUGIN)
                 .expect("clearing a plugin must succeed at the size limit");
             assert!(store.for_app(PLUGIN, APP_ID).unwrap().is_empty());
+            assert_no_listed_consents(store, PLUGIN);
             vec![other_app.clone()]
         }),
         ("clear other plugin", |store, _, _, other_plugin| {
             store
                 .clear(&other_plugin.plugin_id)
                 .expect("clearing a plugin must succeed at the size limit");
+            assert_no_listed_consents(store, &other_plugin.plugin_id);
             vec![other_plugin.clone()]
         }),
     ];
@@ -2096,11 +2108,19 @@ fn legacy_store_at_its_size_limit_with_conflicts_still_revokes_and_clears() {
         fill_store_to_limit(&path, document, |count| json!("x".repeat(count)));
         store.list().expect("the filled legacy store must read");
         let gone = step(&store, &send, &other_app, &other_plugin);
+        // A revoked or cleared row is gone or ungranted, not merely quarantined.
+        for row in &gone {
+            assert_eq!(
+                store.with_grant(row, |_| ()).unwrap(),
+                None,
+                "{name}: a revoked grant stayed active or became a conflict"
+            );
+        }
         // Conflicting rows grant nothing before or after, whether or not they were removed.
-        for row in gone.iter().chain([&send, &build]) {
+        for row in [&send, &build] {
             assert!(
                 !matches!(store.with_grant(row, |_| ()), Ok(Some(()))),
-                "{name}: a revoked or conflicting grant stayed active"
+                "{name}: a conflicting grant became active"
             );
         }
         for row in [&other_app, &other_plugin] {
@@ -2169,6 +2189,57 @@ fn revocation_and_clear_land_even_when_rewriting_inflates_unknown_data() {
     }
 }
 
+#[test]
+fn clearing_a_plugin_without_consents_leaves_an_oversized_store_untouched() {
+    let dir = TestDir::new();
+    let store = Store::new(&dir.0);
+    let (send, build) = allow_send_and_build(&store);
+    let other = other_plugin_grant();
+    store.insert(other.clone()).unwrap();
+    let path = dir.0.join("app-handoff").join("consents.json");
+    let mut document: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    // Rewriting this store inflates it past the limit, so any write would remove consents.
+    document["futureField"] = json!([]);
+    let base = document.to_string().len();
+    let count = (MAX_CONSENT - base) / 4;
+    let text = document.to_string().replace(
+        "\"futureField\":[]",
+        &format!("\"futureField\":[{}]", vec!["1e5"; count].join(",")),
+    );
+    assert!(text.len() <= MAX_CONSENT);
+    fs::write(&path, &text).unwrap();
+
+    store
+        .clear("org.chemdraft.handoff.absent")
+        .expect("clearing a plugin with no consents must succeed");
+    assert!(
+        fs::read_to_string(&path).unwrap() == text,
+        "the store was rewritten"
+    );
+    for row in [&send, &build, &other] {
+        assert_eq!(
+            store.with_grant(row, |_| ()).unwrap(),
+            Some(()),
+            "clearing an absent plugin dropped another plugin's grant"
+        );
+    }
+    assert_eq!(
+        store.revoke(PLUGIN, "consent-unknown").unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
+    assert_eq!(
+        store
+            .revoke("org.chemdraft.handoff.absent", &send.consent_id())
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::NotFound
+    );
+    assert!(
+        fs::read_to_string(&path).unwrap() == text,
+        "the store was rewritten"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn consent_store_refuses_existing_group_or_world_accessible_directory_and_file() {
@@ -2180,6 +2251,8 @@ fn consent_store_refuses_existing_group_or_world_accessible_directory_and_file()
     let store = Store::new(&dir.0);
     let set_mode =
         |path, mode| fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+    // Clearing writes only when it removes something, so give it a row to create the file.
+    store.insert(stored_grant()).unwrap();
     store.clear(PLUGIN).unwrap();
     for (unsafe_path, mode, safe_mode) in [(&root, 0o750, 0o700), (&path, 0o604, 0o600)] {
         set_mode(unsafe_path, mode);

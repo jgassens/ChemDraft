@@ -876,7 +876,7 @@ describe("installed app handoff lifecycle", () => {
     const clearPlugin = vi.fn(async (pluginId: string) => { rows.delete(pluginId); });
     const runtime = createPluginRuntime({
       getActiveDocument: () => undefined,
-      appHandoffConsents: { clearPlugin, list: async () => [], revoke: async () => {} }
+      appHandoffConsents: { clearPlugin, list: async () => [], revoke: async () => [] }
     });
     const zip = await createPackage({
       manifest: manifestDocument({ id, permissions: [...permissions] })

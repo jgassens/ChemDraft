@@ -91,7 +91,7 @@ it("lists native app handoff consent separately and keeps revoked rows visible",
     { ...row, consentId: "consent-2", pipeline: null, status: "allowed" },
     { ...row, consentId: "consent-3", appName: "Previous App", status: "inactive" }
   ]);
-  const revoke = vi.fn(async () => { status = "revoked"; });
+  const revoke = vi.fn(async () => { status = "revoked"; return ["consent-1"]; });
   const runtime = createPluginRuntime({
     getActiveDocument: () => undefined,
     appHandoffConsents: { list, revoke, clearPlugin: async () => {} }
@@ -120,6 +120,45 @@ it("lists native app handoff consent separately and keeps revoked rows visible",
   expect(document.activeElement).toBe(section.querySelector("h3"));
 });
 
+it("drops sibling consents the native revoke also removed when the refresh fails", async () => {
+  const entry = installedEntry();
+  const row = {
+    pluginId: entry.record.id, consentId: "consent-1", appName: "Crystal Builder",
+    appPath: "/Applications/Crystal Builder.app", pipeline: "mofBuild", at: "2026-11-23T12:00:00Z"
+  };
+  const list = vi.fn()
+    .mockResolvedValueOnce([
+      { ...row, status: "allowed" },
+      { ...row, consentId: "consent-2", pipeline: null, status: "allowed" },
+      { ...row, consentId: "consent-3", appName: "Previous App", status: "allowed" }
+    ] satisfies AppHandoffConsent[])
+    .mockRejectedValue(new Error("store unavailable"));
+  // The store was full, so revoking also removed the app's other operation.
+  const revoke = vi.fn(async () => ["consent-1", "consent-2"]);
+  const runtime = createPluginRuntime({
+    getActiveDocument: () => undefined,
+    appHandoffConsents: { list, revoke, clearPlugin: async () => {} }
+  });
+  mount(createElement(PluginManagerDialog, {
+    runtime, bundledPlugins: descriptors, installedPlugins: [entry], onClose: () => {}
+  }));
+  await act(async () => {});
+  const button = document.querySelector<HTMLButtonElement>('button[aria-label$="(Pipeline mofBuild)"]')!;
+  const section = button.closest("section")!;
+  expect(section.textContent).toContain("File handoff · Allowed");
+  await act(async () => button.click());
+  expect(revoke).toHaveBeenCalledExactlyOnceWith(entry.record.id, "consent-1");
+  expect(list).toHaveBeenCalledTimes(2);
+  expect(section.textContent).toContain("Could not list app handoff consents: store unavailable");
+  expect(section.textContent).toContain("Crystal Builder");
+  expect(section.textContent).toContain("Pipeline mofBuild · Revoked");
+  expect(section.textContent).not.toContain("File handoff");
+  expect(section.textContent).toContain("Previous App");
+  const remaining = section.querySelectorAll<HTMLButtonElement>("button");
+  expect(remaining).toHaveLength(1);
+  expect(remaining[0]!.getAttribute("aria-label")).toContain("Previous App");
+});
+
 it("ignores a handoff consent read that resolves just after revoke succeeds", async () => {
   const entry = installedEntry();
   const row: AppHandoffConsent = {
@@ -128,7 +167,7 @@ it("ignores a handoff consent read that resolves just after revoke succeeds", as
   };
   const stale = deferred<AppHandoffConsent[]>();
   const refresh = deferred<AppHandoffConsent[]>();
-  const revoke = deferred<void>();
+  const revoke = deferred<readonly string[]>();
   const list = vi.fn()
     .mockResolvedValueOnce([row])
     .mockReturnValueOnce(stale.promise)
@@ -147,7 +186,7 @@ it("ignores a handoff consent read that resolves just after revoke succeeds", as
   const section = button.closest("section")!;
   await act(async () => {
     button.click();
-    revoke.resolve(undefined);
+    revoke.resolve(["consent-1"]);
     stale.resolve([row]);
   });
   expect(section.textContent).toContain("File handoff · Revoked");
@@ -170,7 +209,7 @@ it("shows a conflicted app handoff group and lets the user revoke it", async () 
   const list = vi.fn()
     .mockResolvedValueOnce([row, unrelated])
     .mockImplementation(() => new Promise<AppHandoffConsent[]>((resolve) => { resolveRefresh = resolve; }));
-  const revoke = vi.fn(async () => {});
+  const revoke = vi.fn(async () => [] as const);
   const runtime = createPluginRuntime({
     getActiveDocument: () => undefined,
     appHandoffConsents: { list, revoke, clearPlugin: async () => {} }

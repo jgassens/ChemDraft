@@ -467,3 +467,31 @@ it.each([["A", 1], ["L", 1], ["*", 3]] as const)("refuses a retained CTAB symbol
   });
   expect(present()).toBe(before);
 });
+
+it("redoes a mark to its markers after a later repeat unit on the same molecule is undone", async () => {
+  await render(aromaticSource);
+  await selectAtom("a");
+  await act(async () => {
+    const runtime = register(context => context.documents.addConnectionPoints!({ objectId: source.id, anchors: ["a"] }));
+    await runtime.invokeCommand(commandId);
+  });
+  const marked = present();
+  const markerId = drawn().atoms.find(atom => atom.element === "X")!.id;
+  expect(nativeSelection()).toEqual([markerId]);
+  await selectAtom("d");
+  await menu("bracket.repeatUnit.toggle");
+  const repeated = present();
+  expect(repeated.pages[0]!.objects.filter(object => object.type === "bracket")).toHaveLength(2);
+  expect(nativeSelection()).toEqual([]);
+  await menu("edit.undo");
+  expect(present()).toEqual(marked);
+  expect(nativeSelection()).toEqual(["d"]);
+  await menu("edit.undo");
+  expect(nativeSelection()).toEqual(["a"]);
+  await menu("edit.redo");
+  expect(present()).toEqual(marked);
+  expect(nativeSelection()).toEqual([markerId]);
+  await menu("edit.redo");
+  expect(present()).toEqual(repeated);
+  expect(nativeSelection()).toEqual([]);
+});
