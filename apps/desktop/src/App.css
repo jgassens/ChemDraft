@@ -663,6 +663,8 @@ textarea:focus-visible,
   left: 0;
   z-index: 91;
   min-width: 220px;
+  width: max-content;
+  max-width: calc(100vw - 16px);
   margin: 2px 0 0;
   padding: var(--cd-space-2);
   list-style: none;

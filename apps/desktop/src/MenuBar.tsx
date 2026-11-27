@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import type { AppMenuItem, AppMenuSection } from "./appMenu";
@@ -227,7 +228,7 @@ export function MenuBar({ sections, onInvoke, brand = "ChemDraft" }: MenuBarProp
   );
 
   const renderItems = (items: readonly AppMenuItem[], depth: number, sectionId: string) => (
-    <ul className={depth === 1 ? "menu-dropdown" : "menu-dropdown menu-flyout"} role="menu">
+    <MenuList flyout={depth > 1}>
       {items.map((item) => {
         if (item.kind === "separator") {
           return <li key={item.id} className="menu-dropdown-separator" role="separator" />;
@@ -287,7 +288,7 @@ export function MenuBar({ sections, onInvoke, brand = "ChemDraft" }: MenuBarProp
           </li>
         );
       })}
-    </ul>
+    </MenuList>
   );
 
   return (
@@ -323,6 +324,33 @@ export function MenuBar({ sections, onInvoke, brand = "ChemDraft" }: MenuBarProp
         })}
       </nav>
     </header>
+  );
+}
+
+const VIEWPORT_MARGIN = 8;
+
+/** A dropdown/flyout list that keeps itself inside the viewport once it has been laid out. */
+function MenuList({ flyout, children }: { flyout: boolean; children: ReactNode }) {
+  const ref = useRef<HTMLUListElement | null>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const overflow = rect.right - (window.innerWidth - VIEWPORT_MARGIN);
+    if (overflow <= 0) return;
+    if (flyout) {
+      // Open to the left of the parent item instead.
+      el.style.left = "auto";
+      el.style.right = "100%";
+      el.style.margin = "0 2px 0 0";
+    } else {
+      el.style.left = `${-overflow}px`;
+    }
+  }, [flyout]);
+  return (
+    <ul ref={ref} className={flyout ? "menu-dropdown menu-flyout" : "menu-dropdown"} role="menu">
+      {children}
+    </ul>
   );
 }
 

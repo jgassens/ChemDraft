@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -121,5 +123,33 @@ describe("MenuBar keyboard interaction", () => {
     await key(exportItem, "Escape");
     expect(document.activeElement).toBe(file);
     expect(container!.querySelector("ul[role='menu']")).toBeNull();
+  });
+
+  it("sizes dropdowns to their content and keeps one near the right edge inside the viewport", async () => {
+    const spy = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        const right = this.matches("ul[role='menu']") ? 1100 : 0;
+        return { left: right - 300, right, top: 0, bottom: 0, width: 300, height: 0, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+      });
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1000 });
+    try {
+      mount();
+      const file = container!.querySelector<HTMLButtonElement>('[data-menu-section="file"]')!;
+      await act(async () => {
+        file.click();
+      });
+      const menu = container!.querySelector<HTMLUListElement>("ul[role='menu']")!;
+      expect(menu.className).toBe("menu-dropdown");
+      // 1100 right edge vs 1000 - 8 margin: shift left by 108px.
+      expect(menu.style.left).toBe("-108px");
+      const css = readFileSync(resolve(__dirname, "App.css"), "utf8");
+      const rule = css.match(/\.menu-dropdown \{[^}]*\}/)![0];
+      expect(rule).toContain("width: max-content");
+      expect(rule).toContain("max-width: calc(100vw - 16px)");
+      expect(rule).toContain("min-width: 220px");
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
