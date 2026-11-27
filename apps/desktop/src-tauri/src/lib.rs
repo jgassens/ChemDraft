@@ -17064,6 +17064,7 @@ mod tests {
         let state: PersistedToolsetState =
             serde_json::from_str(r#"{"x":-125.0,"y":275.0,"width":413.0,"height":317.0}"#).unwrap();
         for (id, expected) in [
+            ("core.main", None),
             ("core.layout", None),
             ("core.ringInspector", None),
             ("core.molecularInspector", Some((413.0, 317.0))),
