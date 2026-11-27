@@ -24,6 +24,7 @@ import { createDesktopShortcutRegistry, detectDesktopShortcutPlatform } from "./
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { NATIVE_MENU_COMMAND_IDS, paletteMenuShortcut } from "./paletteMenuShortcuts";
 import { installNativeFlyoutKeyboard } from "./nativeFlyoutKeyboard";
+import { installToolsetContextMenu, toolsetContextMenuItems } from "./nativeToolsetContextMenu";
 import { createPaletteTooltipDismissal, dispatchPaletteTooltipDismiss } from "./paletteTooltipDismissal";
 import { pollPlacementAgainstFit, pollWorkAreaChanges, workAreaPlacementKey } from "./window-manager/workAreaPoll";
 import { disabledControlAtPointer, installPaletteInputFocus, isPaletteInputFocusPending, paletteInputFocusControl, PALETTE_INPUT_FOCUS_COMMIT_EVENT } from "./plugins/pluginPanelInputFocus";
@@ -1015,6 +1016,21 @@ export function PaletteWindow({
     if (isDrawingToolCommand(commandId)) dismissPaletteFlyouts();
     void sendPaletteCommand(commandId).catch(() => undefined);
   };
+  const invokeCommandRef = useRef(invokeCommand);
+  invokeCommandRef.current = invokeCommand;
+  // Right-click (Control-click on macOS) anywhere on the toolbar: the grip, a gap or a button opens
+  // the toolbar's native menu on the document window, and the press never reaches what is under it.
+  // A placeholder for a toolset whose definition has not arrived yet, and customize mode, get no menu.
+  const contextMenuToolsetIdRef = useRef<string | undefined>(undefined);
+  contextMenuToolsetIdRef.current = knownToolset ? toolset.id : undefined;
+  useEffect(() => installToolsetContextMenu(window, {
+    platform,
+    items: () => {
+      const toolsetId = contextMenuToolsetIdRef.current;
+      return toolsetId && !customizeThisPaletteRef.current ? toolsetContextMenuItems(toolsetId) : undefined;
+    },
+    onInvoke: commandId => invokeCommandRef.current(commandId)
+  }), [platform]);
   const previewCommand = (commandId: string) => {
     void sendPaletteCommandPreview(commandId).catch(() => undefined);
   };

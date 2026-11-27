@@ -164,6 +164,23 @@ and close control, no title row, and is dragged by the grip; the inspectors stil
 edges and their content still scrolls. Fixed toolbars are never resizable, scaled, wrapped or given
 a scrollbar (Linux keeps its sideways scroller only when the screen is narrower than Main).
 
+Toolbar right-click menu (macOS, Windows and Linux): right-click the Main toolbar on its grip column,
+on a gap between buttons, and on a tool button (Single Bond, then Undo). Each time a native menu
+appears at the pointer with Customize Toolbar… and Hide Toolbar; it is a system menu, not a box drawn
+inside the toolbar or the document. The button under the pointer does not fire: the tool does not
+change, the button shows no pressed state, Undo undoes nothing, the toolbar does not move,
+no flyout opens, and a tooltip showing for that button hides rather than sitting over the menu. On
+macOS, Control-click does the same as a right-click (no drag, no command). Choose
+Customize Toolbar…: the Main toolbar's customize gallery opens (Done bar and gallery tray), the same
+as View ▸ Customize Main Toolbar…; press Done. Right-click again and choose Hide Toolbar: Main hides
+and View ▸ Toolbars shows it unchecked; bring it back from there. Press Escape or click away
+with the menu open: nothing runs. Repeat on another toolbar (Arrows, Style) and on an inspector
+(Molecular Inspector): the menu has Hide Toolbar only, because the gallery customizes Main only, and
+Hide hides that toolbar, not Main. Afterwards, left-click a tool and drag the grip: both still work,
+and the document keeps the keyboard (M switches tools). On Windows also check that the toolbar never
+takes the taskbar or the keyboard while its menu is open, with the toolbar on a second monitor at a
+different scale: the menu opens at the pointer on that monitor.
+
 Palette first paint (Windows): quit ChemDraft, then cold-launch it. The Main toolbar and the other
 open palettes appear with their content in the palette's light grey, with no black frame and no
 blank light frames first. Press and hold a flyout button and open a color picker: each popover, and

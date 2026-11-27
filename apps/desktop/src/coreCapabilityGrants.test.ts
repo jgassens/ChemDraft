@@ -20,7 +20,7 @@ import { describe, expect, it } from "vitest";
  * requirement, but keeping the feature without the grant fails here.
  */
 describe("core capability grants", () => {
-  it("registers native canvas popups and grants them only to the document window on both platforms", () => {
+  it("registers native canvas popups and grants them only to the document window and its floating toolbars on every platform", () => {
     const directory = new URL("../src-tauri/capabilities/", import.meta.url);
     const grants = readdirSync(directory).filter(name => name.endsWith(".json")).map(name => ({
       name, capability: JSON.parse(readFileSync(new URL(name, directory), "utf8")) as {
@@ -32,7 +32,9 @@ describe("core capability grants", () => {
       (typeof permission === "string" ? permission : permission.identifier) === "allow-popup-canvas-context-menu"));
     expect(owners.map(({ name }) => name)).toEqual(["canvas-context-menu.json"]);
     const owner = owners[0]!.capability;
-    expect(owner.windows).toEqual(["main"]);
+    // Floating toolbars request their right-click menu; the document window presents it (Rust
+    // `popup_anchor`). Popovers, the tooltip, dialogs and plugin panels get none.
+    expect(owner.windows).toEqual(["main", "toolset-core-*", "toolset-plugin-*", "toolset-user-*"]);
     expect(owner.webviews).toBeUndefined();
     expect(owner.platforms).toBeUndefined();
     expect(owner.remote).toBeUndefined();
