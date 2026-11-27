@@ -42,9 +42,10 @@ describe("headless auto-width text box height", () => {
     const tight = { ...styleAt(20), lineHeight: 0.5 };
     expect(nativeTextObjectSizeForText("a\nb", tight).height).toBeGreaterThanOrEqual(34);
     expect(nativeTextObjectSizeForText("a\nb", tight).height).toBe(editorHeight("a\nb", tight));
-    // A 40 px subscript in 12 px text hangs 0.2 * 28.8 + 0.22 * 40 = 14.56 below the 12 px baseline.
+    // The SVG draws a subscript at 0.72 x the parent size (8.64 px, whatever its own 40 px style) and drops
+    // its baseline 0.4 x 12 = 4.8 px, so it hangs 0.2 * 8.64 + 4.8 = 6.528 below the 12 px baseline.
     const spans = [{ text: "H", script: "normal" as const, style: {} }, { text: "2", script: "subscript" as const, style: { fontSizePx: 40 } }];
-    expect(nativeTextObjectSizeForText("H2", styleAt(12), { spans }).height).toBeGreaterThanOrEqual(12 + 14.56);
+    expect(nativeTextObjectSizeForText("H2", styleAt(12), { spans }).height).toBeGreaterThanOrEqual(12 + 0.2 * 8.64 + 0.4 * 12);
   });
 
   it("never caps the content height at maxHeight (H2): the box may reach past the page bottom", () => {
