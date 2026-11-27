@@ -4740,18 +4740,40 @@ export function selectedTextToAtomLabelResult(document: ChemDraftDocument): Text
 }
 
 /**
+ * Whether a text box's whole-object formatting is what a new box in this document gets: the
+ * document's text defaults (`createNativeTextObject` with no style), compared property by property
+ * after resolution, so a box that omits a property matches the default it falls back to. Sizing
+ * mode is layout, not formatting, and is not compared.
+ */
+function nativeTextObjectHasDefaultStyle(
+  style: Record<string, unknown> | undefined,
+  document: ChemDraftDocument | undefined
+): boolean {
+  if (!style) return true;
+  const defaults = textStyleToObjectStyle(document &&
+    (document.styles.drawing !== undefined || document.styles.text !== undefined)
+    ? documentDrawingDefaults(document).textStyle : {});
+  const resolved = textStyleToObjectStyle(nativeTextStyleFromObjectStyle(style));
+  return Object.keys(defaults).every(key => Object.is(resolved[key], defaults[key]));
+}
+
+/**
  * The atom a finished text box stands for when its whole content is one element symbol, in its
  * exact case, with an optional formal charge after it ("Zn", "Zn2+", "Zn+2", "Fe3+", "Cl-"). The
- * text is read by the atom-label grammar (`nativeElementWithChargeLabel`); its runs must be plain:
- * no run styling, the symbol on the baseline, and the charge on the baseline or superscript, so
- * "Zn" with a superscript "2+" reads as Zn2+. Anything else stays text: words, formulas ("H2O"),
- * abbreviations, several lines, an unknown symbol ("Xx"), subscripts, or styled runs.
+ * text is read by the atom-label grammar (`nativeElementWithChargeLabel`); the text must be plain:
+ * the whole box in the document's default text formatting (`document`'s; the app defaults when it
+ * is omitted), no run styling, the symbol on the baseline, and the charge on the baseline or
+ * superscript, so "Zn" with a superscript "2+" reads as Zn2+. Anything else stays text: words,
+ * formulas ("H2O"), abbreviations, several lines, an unknown symbol ("Xx"), subscripts, styled runs,
+ * or a box formatted as a whole (bold, a color, another font or size).
  */
 export function nativeTextObjectElementWithCharge(
-  object: { text: string; spans?: readonly TextSpan[] }
+  object: { text: string; spans?: readonly TextSpan[]; style?: Record<string, unknown> },
+  document?: ChemDraftDocument
 ): { element: string; formalCharge: number } | undefined {
   const reading = nativeElementWithChargeLabel(object.text);
   if (!reading) return undefined;
+  if (!nativeTextObjectHasDefaultStyle(object.style, document)) return undefined;
   const spans = object.spans ?? [];
   if (spans.length > 0) {
     if (spans.map(span => span.text).join("") !== object.text) return undefined;
@@ -4772,7 +4794,7 @@ export function nativeTextObjectElementWithCharge(
 export function canAutoConvertNativeTextObjectToAtom(document: ChemDraftDocument, objectId: string): boolean {
   const object = firstPage(document).objects.find((candidate) => candidate.id === objectId);
   if (object?.type !== "text" || object.text.length === 0 || object.text !== object.text.trim()) return false;
-  return nativeTextObjectElementWithCharge(object) !== undefined ||
+  return nativeTextObjectElementWithCharge(object, document) !== undefined ||
     nativeAtomLabelReading(object.text, { bonded: true }).kind === "group";
 }
 
@@ -4795,7 +4817,7 @@ export function convertNativeTextObjectToAtom(
   const object = page.objects.find((candidate): candidate is TextObject =>
     candidate.id === objectId && candidate.type === "text"
   );
-  const typedAtom = object ? nativeTextObjectElementWithCharge(object) : undefined;
+  const typedAtom = object ? nativeTextObjectElementWithCharge(object, document) : undefined;
   // Callers that skip the label path have already performed this hit-test themselves.
   if (!options.skipAtomLabel) {
     const labelResult = convertNativeTextObjectToAtomLabel(document, objectId, undefined, options.placementPoint);

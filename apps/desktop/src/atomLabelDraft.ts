@@ -21,6 +21,12 @@ export type AtomLabelDraftRollback = {
   supersededBefore?: { molecule: MoleculeObject; atom: MoleculeAtom };
   changedAtomIds: Set<string>;
   clearedAtomIds: Set<string>;
+  /**
+   * The charge Cancel puts back, once another edit changed the atom's charge between two draft
+   * writes: that edit owns the charge from then on, so the draft's later writes are undone to it
+   * rather than to the charge the draft started from.
+   */
+  chargeBefore?: number;
 };
 
 export function createAtomLabelDraftRollback(molecule: MoleculeObject): AtomLabelDraftRollback {
@@ -131,10 +137,17 @@ export function recordAtomLabelDraftRollback(
 ): void {
   const rollback = state.draftRollback;
   const atom = current.atoms.find(atom => atom.id === state.atomId);
-  if (atom && !sameAtomLabelFields(atom, rollback.preview.atoms.find(atom => atom.id === state.atomId))) {
+  const previousAtom = rollback.preview.atoms.find(atom => atom.id === state.atomId);
+  if (atom && !sameAtomLabelFields(atom, previousAtom)) {
     rollback.supersededBefore = { molecule: current, atom };
     rollback.changedAtomIds.clear();
     rollback.clearedAtomIds.clear();
+    // The superseding label's atom, charge included, is the new baseline.
+    delete rollback.chargeBefore;
+  } else if (atom && previousAtom && atom.formalCharge !== previousAtom.formalCharge) {
+    // A charge edit alone does not supersede the label, but the charge is now that edit's: this and
+    // later draft writes are undone to it (`restoreAtomLabelDraft`).
+    rollback.chargeBefore = atom.formalCharge;
   }
   const currentData = atomData(current);
   const previousData = atomData(rollback.preview);
@@ -159,9 +172,15 @@ function moleculeDraftPayload(molecule: MoleculeObject): string {
 /**
  * Fields written by nativeAtomWithElement and relabel's import-H cleanup, and the formal charge when
  * the draft wrote it (a typed "Zn2+" sets +2): cancelling puts back the element and the charge alike.
- * A charge that differs from the draft's own preview was set by another edit and is kept.
+ * A charge that differs from the draft's own preview was set by another edit and is kept
+ * (`chargeBefore` undefined). A charge another edit set between two draft writes is the one the
+ * later writes are undone to (`chargeBefore`, from `AtomLabelDraftRollback.chargeBefore`).
  */
-function restoreAtomLabelFields(atom: MoleculeAtom, before: MoleculeAtom, draftOwnsCharge: boolean): MoleculeAtom {
+function restoreAtomLabelFields(
+  atom: MoleculeAtom,
+  before: MoleculeAtom,
+  chargeBefore: number | undefined
+): MoleculeAtom {
   const restored = { ...atom };
   const fields = [
     "element", "isotope", "labelVisible", "labelLiteral", "labelBondSide", "warningSuppressed", "hydrogenCount"
@@ -170,7 +189,7 @@ function restoreAtomLabelFields(atom: MoleculeAtom, before: MoleculeAtom, draftO
     if (Object.hasOwn(before, key)) Object.assign(restored, { [key]: before[key] });
     else delete restored[key];
   }
-  if (draftOwnsCharge) restored.formalCharge = before.formalCharge;
+  if (chargeBefore !== undefined) restored.formalCharge = chargeBefore;
   // Keep the original record (including optional-field ordering) for an exact untouched rollback.
   const keys = Object.keys(restored) as Array<keyof MoleculeAtom>;
   return keys.length === Object.keys(before).length &&
@@ -192,8 +211,14 @@ export function restoreAtomLabelDraft(document: ChemDraftDocument, state: AtomLa
       const previewData = atomData(rollback.preview);
       const atoms = object.atoms.map(atom => {
         if (atom.id === state.atomId) {
-          const draftOwnsCharge = rollback.preview.atoms.find(a => a.id === state.atomId)?.formalCharge === atom.formalCharge;
-          return restoreAtomLabelFields(atom, rollback.supersededBefore?.atom ?? state.draftBeforeAtom, draftOwnsCharge);
+          // The draft owns the charge only while it is still the one its last write left; it is
+          // then undone to the charge before the draft or, if another edit changed it between
+          // draft writes, to that edit's charge (`recordAtomLabelDraftRollback`).
+          const labelBefore = rollback.supersededBefore?.atom ?? state.draftBeforeAtom;
+          const preview = rollback.preview.atoms.find(a => a.id === state.atomId);
+          const draftOwnsCharge = preview?.formalCharge === atom.formalCharge;
+          return restoreAtomLabelFields(atom, labelBefore,
+            draftOwnsCharge ? rollback.chargeBefore ?? labelBefore.formalCharge : undefined);
         }
         // Relabel patches can drop orphaned import hints on other atoms. Restore those atoms only
         // if neither an external atom/style edit nor an incident-bond edit superseded the preview.

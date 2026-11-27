@@ -236,6 +236,30 @@ describe.each(["macos", "windows"] as const)("typed element symbols become atoms
     expect(texts()[0]).toMatchObject({ text: value });
   });
 
+  it.each([
+    ["bold, after typing", "text.bold", "after", { fontWeight: 700 }],
+    ["red, after typing", "text.color.red", "after", { color: "#b3261e" }],
+    // Formatting chosen with nothing selected sets the Text tool's style, so the next box is placed with it.
+    ["bold, before placing it", "text.bold", "before", { fontWeight: 700 }],
+    ["red, before placing it", "text.color.red", "before", { color: "#b3261e" }]
+  ] as const)("keeps a whole text box formatted %s 'Na+' as text when finished", async (_label, commandId, when, style) => {
+    await mount();
+    if (when === "before") await command(commandId);
+    await click(container.querySelector(".page")!, 200, 300);
+    await typeText("Na+");
+    if (when === "after") await command(commandId);
+    expect(texts()).toHaveLength(1);
+    // Formatted as a whole: the box's own style, not a run's.
+    expect(texts()[0]).toMatchObject({ text: "Na+", style: expect.objectContaining(style) });
+    if (texts()[0]!.type === "text") {
+      for (const run of texts()[0]!.spans) expect(Object.keys(run.style)).toEqual([]);
+    }
+    await click(container.querySelector(".page")!, 600, 520);
+    expect(editor()).toBeNull();
+    expect(molecules()).toHaveLength(0);
+    expect(texts()).toEqual([expect.objectContaining({ text: "Na+", style: expect.objectContaining(style) })]);
+  });
+
   it("leaves a text 'Zn' in an opened document as text, even after it is opened for editing and finished unchanged", async () => {
     const opened = insertNativeTextObject(createPhase4Document("Opened"), { x: 220, y: 200 }, "Zn");
     await mount(selectDocumentObjects(opened, opened.pages[0].id, []), "tool.select");

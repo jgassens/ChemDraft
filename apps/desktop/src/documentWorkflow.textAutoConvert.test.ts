@@ -9,7 +9,8 @@ import {
   insertNativeSingleBondMolecule,
   insertNativeTemplateMolecule,
   insertNativeTextObject,
-  nativeTextObjectElementWithCharge
+  nativeTextObjectElementWithCharge,
+  updateNativeTextObjectStyle
 } from "./documentWorkflow";
 
 describe("finished text auto-conversion", () => {
@@ -170,5 +171,60 @@ describe("typed element symbols with a charge (owner report 1.2.3)", () => {
     expect(fromText).toMatchObject({ element: nativeElementWithChargeLabel(text)!.element, formalCharge: nativeElementWithChargeLabel(text)!.charge });
     if (fromText.formalCharge === 0) expect(atomDisplayLabel(fromText, [], undefined, [fromText])).toBe(text);
     expect(fromText.labelVisible === true).toBe(text === "C");
+  });
+});
+
+describe("typed element symbols in a box formatted as a whole", () => {
+  it.each([
+    ["bold", { fontWeight: 700 }],
+    ["red", { color: "#ff0000" }],
+    ["italic", { fontStyle: "italic" }],
+    ["underlined", { textDecoration: "underline" }],
+    ["in another font", { fontFamily: "Times New Roman" }],
+    ["in another size", { fontSizePx: 30 }]
+  ] as const)("keeps a %s 'Na+' box as text", (_label, style) => {
+    const base = insertNativeTextObject(createPhase4Document("Styled box"), { x: 300, y: 300 }, "Na+");
+    const id = base.selection.objectIds[0]!;
+    const document = updateNativeTextObjectStyle(base, id, style);
+    const object = document.pages[0].objects.find(candidate => candidate.id === id)!;
+    if (object.type !== "text") throw new Error("Expected text");
+    expect(nativeTextObjectElementWithCharge(object, document)).toBeUndefined();
+    expect(canAutoConvertNativeTextObjectToAtom(document, id)).toBe(false);
+    expect(convertNativeTextObjectToAtom(document, id)).toBe(document);
+  });
+
+  it("keeps a bold 'Zn2+' box over an atom as text and leaves the atom alone", () => {
+    const base = insertNativeSingleBondMolecule(createPhase4Document("Styled on atom"), { x: 300, y: 300 });
+    const molecule = base.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule")!;
+    const typed = insertNativeTextObject(base, molecule.atoms[0]!, "Zn2+");
+    const id = typed.selection.objectIds[0]!;
+    const document = updateNativeTextObjectStyle(typed, id, { fontWeight: 700 });
+    expect(canAutoConvertNativeTextObjectToAtom(document, id)).toBe(false);
+    expect(convertNativeTextObjectToAtom(document, id, { placementPoint: molecule.atoms[0]! })).toBe(document);
+  });
+
+  it("still converts a box whose formatting was set back to the document default", () => {
+    const base = insertNativeTextObject(createPhase4Document("Unstyled again"), { x: 300, y: 300 }, "Na+");
+    const id = base.selection.objectIds[0]!;
+    const bold = updateNativeTextObjectStyle(base, id, { fontWeight: 700 });
+    const plain = updateNativeTextObjectStyle(bold, id, { fontWeight: 400 });
+    expect(onlyAtom(convertNativeTextObjectToAtom(plain, id)).atom).toMatchObject({ element: "Na", formalCharge: 1 });
+  });
+
+  it("judges the default against the document's text style, not the app's", () => {
+    const styled = { ...createPhase4Document("Preset text"), styles: { text: { fontFamily: "Times New Roman", fontSizePx: 12 } } } as ChemDraftDocument;
+    const document = insertNativeTextObject(styled, { x: 300, y: 300 }, "Na+");
+    const id = document.selection.objectIds[0]!;
+    const object = document.pages[0].objects.find(candidate => candidate.id === id)!;
+    if (object.type !== "text") throw new Error("Expected text");
+    expect(object.style.fontFamily).toBe("Times New Roman");
+    expect(nativeTextObjectElementWithCharge(object, document)).toEqual({ element: "Na", formalCharge: 1 });
+    expect(onlyAtom(convertNativeTextObjectToAtom(document, id)).atom).toMatchObject({ element: "Na", formalCharge: 1 });
+    // The same box in a document without that text style is formatted, so it stays text.
+    expect(nativeTextObjectElementWithCharge(object, createPhase4Document("App defaults"))).toBeUndefined();
+  });
+
+  it("treats a box without stored formatting as default", () => {
+    expect(nativeTextObjectElementWithCharge({ text: "Na+", spans: [], style: {} })).toEqual({ element: "Na", formalCharge: 1 });
   });
 });
