@@ -3,7 +3,7 @@
 import { type ChemDraftDocument } from "@chemdraft/chem-core";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MainWindow } from "./MainWindow";
 import {
   applyNativeTemplateToolAtPoint,
@@ -264,9 +264,7 @@ describe("document switch pointer capture", () => {
       nativePalette: false
     });
     const dragSurface = paletteDragSurface();
-    // Vertical: in JSDOM's 1024 px viewport the standard Main frame fills the width (clamped, its grid
-    // scrolls), so it has nowhere to move sideways.
-    const initialY = palette().style.getPropertyValue("--palette-y");
+    const initialX = palette().style.getPropertyValue("--palette-x");
     await act(async () => { dispatchPointer(dragSurface, "pointerdown", { x: 100, y: 100 }, 74); });
     expect(captures.get(74)).toBe(dragSurface);
 
@@ -278,10 +276,63 @@ describe("document switch pointer capture", () => {
       dispatchPointer(page(), "pointermove", { x: 160, y: 145 }, 74);
       dispatchPointer(page(), "pointerup", { x: 160, y: 145 }, 74);
     });
-    expect(palette().style.getPropertyValue("--palette-y")).not.toBe(initialY);
+    expect(palette().style.getPropertyValue("--palette-x")).not.toBe(initialX);
     expect(captures.has(74)).toBe(false);
     expect(captureReleases.filter((release) => release.pointerId === 74)).toEqual([{ owner: dragSurface, pointerId: 74 }]);
   });
+
+  for (const viewport of [1024, 1280]) {
+    it(`drags the natural-width standard Main palette past a ${viewport} px viewport's edges, keeping a grab margin inside`, async () => {
+      const width = vi.spyOn(globalThis, "innerWidth", "get").mockReturnValue(viewport);
+      const height = vi.spyOn(globalThis, "innerHeight", "get").mockReturnValue(768);
+      try {
+        await render(createPhase4Document("Palette drag"), { initialPaletteMode: "floating", nativePalette: false });
+        const main = () => {
+          const result = container.querySelector<HTMLElement>('[data-floating-palette="web-preview"][data-toolset-id="core.main"]');
+          if (!result) throw new Error("Expected the floating Main palette.");
+          return result;
+        };
+        const naturalWidth = Number(main().dataset.paletteWidth);
+        expect(naturalWidth).toBeGreaterThan(viewport);
+        expect(main().style.getPropertyValue("--palette-width")).toBe(`${naturalWidth}px`);
+        expect(main().hasAttribute("data-palette-horizontal-scroll")).toBe(false);
+        const surface = main().querySelector<HTMLElement>('[data-web-palette-drag-region="true"]')!;
+        const x = () => Number.parseFloat(main().style.getPropertyValue("--palette-x"));
+        const y = () => Number.parseFloat(main().style.getPropertyValue("--palette-y"));
+
+        // Far left: the palette runs past the left edge; its right end (rightmost button) comes into view.
+        await act(async () => {
+          dispatchPointer(surface, "pointerdown", { x: 100, y: 100 }, 75);
+          dispatchPointer(surface, "pointermove", { x: -5000, y: 100 }, 75);
+        });
+        expect(x()).toBe(48 - naturalWidth);
+        expect(x() + naturalWidth).toBeGreaterThan(0);
+        expect(x() + naturalWidth).toBeLessThanOrEqual(viewport);
+        expect(main().style.getPropertyValue("--palette-width")).toBe(`${naturalWidth}px`);
+
+        // Far right and down: the grab margin and the title bar's height stay inside.
+        await act(async () => {
+          dispatchPointer(surface, "pointermove", { x: 9000, y: 9000 }, 75);
+        });
+        expect(x()).toBe(viewport - 48);
+        expect(y()).toBe(768 - 48);
+        await act(async () => { dispatchPointer(surface, "pointerup", { x: 9000, y: 9000 }, 75); });
+        expect(x()).toBe(viewport - 48);
+
+        // A new drag starts from where the palette is drawn, so it follows the pointer at once.
+        await act(async () => {
+          dispatchPointer(surface, "pointerdown", { x: viewport - 20, y: 740 }, 76);
+          dispatchPointer(surface, "pointermove", { x: viewport - 30, y: 730 }, 76);
+          dispatchPointer(surface, "pointerup", { x: viewport - 30, y: 730 }, 76);
+        });
+        expect(x()).toBe(viewport - 58);
+        expect(y()).toBe(768 - 58);
+      } finally {
+        width.mockRestore();
+        height.mockRestore();
+      }
+    });
+  }
 
   it("releases only the document gesture when a palette drag uses another pointer", async () => {
     const document = insertNativeArtGraphicObject(createPhase4Document("Two captures"), { x: 220, y: 180 }, "tool.art.rect");

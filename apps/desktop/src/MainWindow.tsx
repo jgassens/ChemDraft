@@ -216,6 +216,7 @@ import { createCoreCommandRegistrar } from "./commands/coreCommandRegistrar";
 import { createFixturePluginOptions, fixturePluginManifest, FIXTURE_PLUGIN_ID } from "./plugins/fixturePlugin";
 import { createToolbarCatalog } from "./toolbars/toolbarCatalog";
 import { WebFloatingPaletteSection } from "./toolbars/WebFloatingPaletteSection";
+import { webFloatingPalettePosition } from "./toolbars/webFloatingPaletteFrame";
 import { filterToolbarCustomizationCommands } from "./toolbars/toolbarCustomizationCommands";
 import { classifyToolbarSelection } from "./toolbars/toolbarSelectionKind";
 import { CustomizeToolbarsDialog } from "./toolbars/CustomizeToolbars/CustomizeToolbarsDialog";
@@ -1146,6 +1147,8 @@ type PaletteDragState = {
   originY: number;
   startX: number;
   startY: number;
+  /** The browser palette frame's width (its natural width), for webFloatingPalettePosition. */
+  width?: number;
 };
 type WebKitGestureEvent = Event & {
   clientX?: number;
@@ -1941,7 +1944,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.27.14.52-opus";
+const CURRENT_BUILD_STAMP = "11.27.14.53-opus";
 
 /** How a command is invoked. `liveRerunStillWanted` marks a live panel's automatic re-run: a queued
  *  one that reaches the front of its plugin's queue starts only while this still returns true. */
@@ -17136,17 +17139,20 @@ export function MainWindow({
     }
 
     const stored = webPalettePositions[toolsetId] ?? defaultToolsetPosition(toolsetId, toolsetRegistry);
-    // Drag from where the frame is drawn: a frame clamped into a narrow viewport sits left of its
-    // stored position, and dragging from the stored one would leave a dead zone.
-    const drawnX = Number((event.currentTarget.closest("[data-palette-x]") as HTMLElement | null)?.dataset.paletteX);
-    const position = Number.isFinite(drawnX) ? { x: drawnX, y: stored.y } : stored;
+    // Drag from where the frame is drawn: a frame moved in to keep its grab margin inside a narrow
+    // viewport is not at its stored position, and dragging from the stored one would leave a dead zone.
+    const frame = (event.currentTarget.closest("[data-palette-x]") as HTMLElement | null)?.dataset;
+    const drawnX = Number(frame?.paletteX);
+    const drawnY = Number(frame?.paletteY);
+    const width = Number(frame?.paletteWidth);
     webPaletteDragRef.current = {
       toolsetId,
       pointerId: event.pointerId,
       originX: event.clientX,
       originY: event.clientY,
-      startX: position.x,
-      startY: position.y
+      startX: Number.isFinite(drawnX) ? drawnX : stored.x,
+      startY: Number.isFinite(drawnY) ? drawnY : stored.y,
+      width: Number.isFinite(width) ? width : undefined
     };
     event.preventDefault();
     captureGesturePointer(event.currentTarget, event.pointerId);
@@ -17158,15 +17164,14 @@ export function MainWindow({
       return;
     }
 
-    const maxX = Math.max(8, globalThis.innerWidth - 112);
-    const maxY = Math.max(8, globalThis.innerHeight - 120);
-    setWebPalettePositions((current) => ({
-      ...current,
-      [drag.toolsetId]: {
-        x: clamp(drag.startX + event.clientX - drag.originX, 8, maxX),
-        y: clamp(drag.startY + event.clientY - drag.originY, 44, maxY)
-      }
-    }));
+    // The palette keeps its natural width and may be dragged partly past any edge; only a grab margin
+    // of its title bar has to stay inside the viewport (webFloatingPaletteFrame.ts).
+    const position = webFloatingPalettePosition(
+      drag.width ?? 96,
+      { x: drag.startX + event.clientX - drag.originX, y: drag.startY + event.clientY - drag.originY },
+      { width: globalThis.innerWidth, height: globalThis.innerHeight }
+    );
+    setWebPalettePositions((current) => ({ ...current, [drag.toolsetId]: position }));
   }, []);
 
   const stopWebPaletteDrag = useCallback((event: PointerEvent<HTMLElement>) => {

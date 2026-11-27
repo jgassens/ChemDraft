@@ -16,13 +16,18 @@ import {
 import { MAIN_TOOLBAR_DEFAULTS_REVISION } from "./toolbarLayoutState";
 import { applyToolbarProfile } from "./toolbarProfile";
 import { WebFloatingPaletteSection } from "./WebFloatingPaletteSection";
-import { scrollPaletteGridHorizontally, webFloatingPaletteFrame, WEB_FLOATING_PALETTE_MARGIN_PX } from "./webFloatingPaletteFrame";
+import {
+  webFloatingPalettePosition,
+  WEB_FLOATING_PALETTE_GRAB_MARGIN_PX,
+  WEB_FLOATING_PALETTE_MIN_Y_PX,
+  WEB_FLOATING_PALETTE_TITLE_BAR_PX
+} from "./webFloatingPaletteFrame";
 
 /*
  * The browser floating palette (MainWindow's `.web-floating-palette`, WebFloatingPaletteSection) is as
- * wide as `webFloatingPaletteWidth` says when the viewport holds it, so every item the grid lays out
- * must sit inside that width; in a narrower viewport the frame is clamped into it and the grid
- * scrolls sideways, so every item must sit inside the grid's scrollable extent instead.
+ * exactly as wide as `webFloatingPaletteWidth` says, in every viewport (it is never shrunk, wrapped or
+ * scrolled; a wide one runs past the viewport's edge and is dragged), so every item the grid lays out
+ * must sit inside that width.
  * JSDOM renders the real markup but does no layout, so this lays the rendered items out itself:
  * item order and spans come from the DOM, the metrics from the App.css rules that govern a horizontal
  * floating palette (read from the stylesheet text, since JSDOM cannot resolve var() in shorthands).
@@ -43,7 +48,7 @@ function declaration(selector: string, property: string): string {
 function px(value: string): number {
   const variable = /^var\((--[\w-]+)\)$/.exec(value);
   if (variable) return px(declaration(":root", variable[1]));
-  const match = /^(\d+(?:\.\d+)?)px\b/.exec(value);
+  const match = /^(-?\d+(?:\.\d+)?)px\b/.exec(value);
   if (!match) throw new Error(`Not a pixel length: ${value}`);
   return Number(match[1]);
 }
@@ -80,12 +85,20 @@ let container: HTMLElement | undefined;
 let root: Root | undefined;
 const DEFAULT_POSITION = { x: 88, y: 154 };
 const WIDE_VIEWPORT = 1920;
+const VIEWPORT_HEIGHT = 800;
 
 function setViewportWidth(width: number): void {
   vi.spyOn(globalThis, "innerWidth", "get").mockReturnValue(width);
 }
 
-beforeEach(() => setViewportWidth(WIDE_VIEWPORT));
+function setViewportHeight(height: number): void {
+  vi.spyOn(globalThis, "innerHeight", "get").mockReturnValue(height);
+}
+
+beforeEach(() => {
+  setViewportWidth(WIDE_VIEWPORT);
+  setViewportHeight(VIEWPORT_HEIGHT);
+});
 afterEach(() => {
   if (root) act(() => root!.unmount());
   root = undefined;
@@ -94,7 +107,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function mainPalette(registry: DesktopToolsetRegistry) {
+function mainPalette(registry: DesktopToolsetRegistry, position = DEFAULT_POSITION) {
   const toolset = registry.require("core.main");
   const groups = getToolsetPaletteGroups(toolset.id, registry, new Map(), false).map(group => group.items);
   const naturalWidth = webFloatingPaletteWidth(toolset, groups);
@@ -103,7 +116,7 @@ function mainPalette(registry: DesktopToolsetRegistry) {
       toolsetId={toolset.id}
       title={toolset.title}
       naturalWidth={naturalWidth}
-      position={DEFAULT_POSITION}
+      position={position}
       onPointerDown={() => {}}
       onPointerMove={() => {}}
       onPointerUp={() => {}}
@@ -127,15 +140,13 @@ interface MainLayout {
   /** The frame's drawn width and left edge (viewport pixels). */
   frameWidth: number;
   frameX: number;
-  /** The width the items need: the frame's width, or the grid's scrollable extent when it scrolls. */
-  contentWidth: number;
-  scrolls: boolean;
+  naturalWidth: number;
   items: { id: string; left: number; right: number }[];
 }
 
 /** Render Main as MainWindow renders a browser floating palette; lay out its items (relative to the frame's left edge). */
-function layOutMain(registry: DesktopToolsetRegistry): MainLayout {
-  const { naturalWidth, element } = mainPalette(registry);
+function layOutMain(registry: DesktopToolsetRegistry, position = DEFAULT_POSITION): MainLayout {
+  const { naturalWidth, element } = mainPalette(registry, position);
   container = document.createElement("div");
   container.innerHTML = renderToStaticMarkup(element);
   document.body.append(container);
@@ -145,9 +156,6 @@ function layOutMain(registry: DesktopToolsetRegistry): MainLayout {
   expect(palette.classList.contains("horizontal")).toBe(true);
   const frameWidth = px(section.style.getPropertyValue("--palette-width"));
   const frameX = px(section.style.getPropertyValue("--palette-x"));
-  const scrolls = section.dataset.paletteHorizontalScroll === "true";
-  // A scrolling grid's extent is its natural content width; otherwise the frame must hold it all.
-  const contentWidth = scrolls ? naturalWidth : frameWidth;
   const frameBorder = px(declaration(".web-floating-palette", "border"));
   const [, paddingRight, , paddingLeft = paddingRight] = declaration(PALETTE, "padding").split(/\s+/);
   const flexGap = px(declaration(PALETTE, "gap"));
@@ -184,20 +192,22 @@ function layOutMain(registry: DesktopToolsetRegistry): MainLayout {
   const end = x + (palette.classList.contains("main-style-palette")
     ? px(declaration(".tool-palette.floating.horizontal.main-style-palette", "padding-right"))
     : px(paddingRight)) + frameBorder;
-  expect(end).toBeLessThanOrEqual(contentWidth);
-  return { frameWidth, frameX, contentWidth, scrolls, items };
+  expect(end).toBeLessThanOrEqual(frameWidth);
+  return { frameWidth, frameX, naturalWidth, items };
 }
 
-function expectEveryItemInside({ contentWidth, items }: MainLayout): void {
+function expectEveryItemInside({ frameWidth, items }: MainLayout): void {
   expect(items.length).toBeGreaterThan(0);
   for (const item of items) {
-    expect({ id: item.id, inside: item.left >= 0 && item.right <= contentWidth }).toEqual({ id: item.id, inside: true });
+    expect({ id: item.id, inside: item.left >= 0 && item.right <= frameWidth }).toEqual({ id: item.id, inside: true });
   }
 }
 
-function expectFrameInViewport(layout: MainLayout, viewport: number): void {
-  expect(layout.frameX).toBeGreaterThanOrEqual(0);
-  expect(layout.frameX + layout.frameWidth).toBeLessThanOrEqual(viewport);
+/** The grab margin of the title bar (which spans the frame) lies inside a viewport `viewport` px wide. */
+function expectGrabMarginInViewport(frameX: number, frameWidth: number, viewport: number): void {
+  const grab = Math.min(WEB_FLOATING_PALETTE_GRAB_MARGIN_PX, frameWidth);
+  expect(frameX + frameWidth).toBeGreaterThanOrEqual(grab);
+  expect(frameX + grab).toBeLessThanOrEqual(viewport);
 }
 
 describe("browser floating Main toolbar frame", () => {
@@ -235,37 +245,66 @@ describe("browser floating Main toolbar frame", () => {
 });
 
 describe("browser floating Main toolbar in a viewport narrower than it", () => {
-  const scrollRule = ".web-floating-palette[data-palette-horizontal-scroll] > .tool-palette.floating.horizontal";
-
   it("keeps the standard Main toolbar's natural frame where the viewport holds it", () => {
     const layout = layOutMain(new ToolsetRegistry(desktopToolsets));
-    expect(layout.scrolls).toBe(false);
     expect(layout.frameX).toBe(DEFAULT_POSITION.x);
-    expectFrameInViewport(layout, WIDE_VIEWPORT);
+    expect(layout.frameWidth).toBe(layout.naturalWidth);
+  });
+
+  it("never gives a browser palette a scrollbar or a viewport-clamped width", () => {
+    expect(css).not.toMatch(/data-palette-horizontal-scroll/);
+    for (const [, selectors, body] of css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      if (!selectors.includes(".web-floating-palette")) continue;
+      expect({ selectors: selectors.trim(), scrollsOrClamps: /(?:overflow-x|max-width)\s*:/.test(body) })
+        .toEqual({ selectors: selectors.trim(), scrollsOrClamps: false });
+    }
+    expect(declaration(".web-floating-palette", "width")).toBe("var(--palette-width, 96px)");
+    expect(declaration(".web-floating-palette", "overflow")).toBe("visible");
   });
 
   for (const viewport of [1024, 1280]) {
-    it(`clamps the standard Main frame into a ${viewport} px viewport and scrolls its grid to reach every button`, () => {
+    it(`keeps the standard Main toolbar's natural width at ${viewport} px and lets it be dragged to its rightmost button`, () => {
       setViewportWidth(viewport);
-      const layout = layOutMain(new ToolsetRegistry(desktopToolsets));
-      expect(layout.scrolls).toBe(true);
-      expectFrameInViewport(layout, viewport);
-      expect(layout.frameWidth).toBe(viewport - 2 * WEB_FLOATING_PALETTE_MARGIN_PX);
-      // Every button lies inside the grid's scrollable extent, and that grid scrolls inside the frame.
-      expectEveryItemInside(layout);
-      expect(layout.contentWidth).toBeGreaterThan(layout.frameWidth);
-      expect(declaration(scrollRule, "overflow-x")).toBe("auto");
-      expect(declaration(scrollRule, "scrollbar-width")).not.toBe("none");
-      expect(declaration(scrollRule, "max-width")).toBe("100%");
-      expect(declaration(".web-floating-palette[data-palette-horizontal-scroll]", "grid-template-columns")).toBe("minmax(0, 1fr)");
-      // The title row is a child of the clamped frame, so it stays inside it.
-      const section = container!.querySelector<HTMLElement>(".web-floating-palette")!;
-      expect(section.querySelector(":scope > .palette-title")).not.toBeNull();
-      // No button is taken out of the tab order, so keyboard focus (which scrolls it into view) reaches
-      // each one. (Some are disabled here only because this render has no selection or zoom state.)
-      const buttons = Array.from(section.querySelectorAll<HTMLButtonElement>(".tool-palette button"));
-      expect(buttons.length).toBeGreaterThan(0);
-      expect(buttons.filter(button => button.tabIndex < 0).map(button => button.getAttribute("aria-label"))).toEqual([]);
+      const registry = new ToolsetRegistry(desktopToolsets);
+      const atDefault = layOutMain(registry);
+      // Natural width, wider than the viewport, at the user's position: it runs past the right edge.
+      expect(atDefault.frameWidth).toBe(atDefault.naturalWidth);
+      expect(atDefault.frameWidth).toBeGreaterThan(viewport);
+      expect(atDefault.frameX).toBe(DEFAULT_POSITION.x);
+      expect(container!.querySelector(".web-floating-palette")!.hasAttribute("data-palette-horizontal-scroll")).toBe(false);
+      expectEveryItemInside(atDefault);
+      container!.remove();
+
+      // Dragged as far left as it goes: the rightmost button lies inside the viewport.
+      const farLeft = webFloatingPalettePosition(atDefault.naturalWidth, { x: -10_000, y: DEFAULT_POSITION.y }, { width: viewport, height: VIEWPORT_HEIGHT });
+      const draggedLeft = layOutMain(registry, farLeft);
+      expect(draggedLeft.frameWidth).toBe(draggedLeft.naturalWidth);
+      expect(draggedLeft.frameX).toBe(WEB_FLOATING_PALETTE_GRAB_MARGIN_PX - draggedLeft.naturalWidth);
+      const rightmost = draggedLeft.items.reduce((a, b) => (b.right > a.right ? b : a));
+      expect(draggedLeft.frameX + rightmost.right).toBeGreaterThan(0);
+      expect(draggedLeft.frameX + rightmost.right).toBeLessThanOrEqual(viewport);
+      expectGrabMarginInViewport(draggedLeft.frameX, draggedLeft.frameWidth, viewport);
+      container!.remove();
+
+      // The rightmost item can be dragged wholly into view (on RC6's Main it is the eleven-cell style
+      // widget, wider than the grab margin, so the far-left position shows only its right part).
+      const reach = webFloatingPalettePosition(
+        atDefault.naturalWidth, { x: viewport - 8 - rightmost.right, y: DEFAULT_POSITION.y }, { width: viewport, height: VIEWPORT_HEIGHT }
+      );
+      const reached = layOutMain(registry, reach);
+      const reachedRightmost = reached.items.find(item => item.id === rightmost.id)!;
+      expect(reached.frameX + reachedRightmost.left).toBeGreaterThanOrEqual(0);
+      expect(reached.frameX + reachedRightmost.right).toBeLessThanOrEqual(viewport);
+      expectGrabMarginInViewport(reached.frameX, reached.frameWidth, viewport);
+      container!.remove();
+
+      // A stored position past either edge is drawn with the grab margin back inside.
+      for (const x of [-10_000, 10_000]) {
+        const restored = layOutMain(registry, { x, y: DEFAULT_POSITION.y });
+        expect(restored.frameWidth).toBe(restored.naturalWidth);
+        expectGrabMarginInViewport(restored.frameX, restored.frameWidth, viewport);
+        container!.remove();
+      }
     });
   }
 
@@ -273,71 +312,66 @@ describe("browser floating Main toolbar in a viewport narrower than it", () => {
     setViewportWidth(1024);
     const registry = new ToolsetRegistry(applyToolbarProfile(desktopToolsets, "molecule-drawing"));
     const layout = layOutMain(registry);
-    expect(layout.scrolls).toBe(false);
     expect(layout.frameX).toBe(DEFAULT_POSITION.x);
-    expect(layout.frameWidth).toBe(mainPalette(registry).naturalWidth);
+    expect(layout.frameWidth).toBe(layout.naturalWidth);
     expectEveryItemInside(layout);
   });
 
-  it("re-clamps when the viewport is resized and turns vertical wheel into sideways scrolling", () => {
+  it("moves, never resizes, the frame when the viewport is resized", () => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    const { element } = mainPalette(new ToolsetRegistry(desktopToolsets));
+    const stored = { x: 1100, y: 600 };
+    const { element, naturalWidth } = mainPalette(new ToolsetRegistry(desktopToolsets), stored);
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
     act(() => root!.render(element));
     const section = container.querySelector<HTMLElement>(".web-floating-palette")!;
-    expect(section.dataset.paletteHorizontalScroll).toBeUndefined();
+    expect(section.style.getPropertyValue("--palette-x")).toBe("1100px");
+    expect(section.style.getPropertyValue("--palette-y")).toBe("600px");
+    expect(section.style.getPropertyValue("--palette-width")).toBe(`${naturalWidth}px`);
 
-    setViewportWidth(1280);
+    setViewportWidth(1024);
+    setViewportHeight(400);
     act(() => { globalThis.dispatchEvent(new Event("resize")); });
-    expect(section.dataset.paletteHorizontalScroll).toBe("true");
-    expect(section.style.getPropertyValue("--palette-width")).toBe("1264px");
-    expect(section.style.getPropertyValue("--palette-x")).toBe("8px");
-
-    const scroller = section.querySelector<HTMLElement>(":scope > .tool-palette")!;
-    Object.defineProperty(scroller, "scrollWidth", { configurable: true, value: 1430 });
-    Object.defineProperty(scroller, "clientWidth", { configurable: true, value: 1262 });
-    const wheel = new WheelEvent("wheel", { deltaY: 100, bubbles: true, cancelable: true });
-    scroller.firstElementChild!.dispatchEvent(wheel);
-    expect(scroller.scrollLeft).toBe(100);
-    expect(wheel.defaultPrevented).toBe(true);
+    expect(section.style.getPropertyValue("--palette-x")).toBe(`${1024 - WEB_FLOATING_PALETTE_GRAB_MARGIN_PX}px`);
+    expect(section.style.getPropertyValue("--palette-y")).toBe(`${400 - WEB_FLOATING_PALETTE_GRAB_MARGIN_PX}px`);
+    expect(section.dataset.paletteX).toBe(String(1024 - WEB_FLOATING_PALETTE_GRAB_MARGIN_PX));
+    expect(section.style.getPropertyValue("--palette-width")).toBe(`${naturalWidth}px`);
 
     setViewportWidth(WIDE_VIEWPORT);
+    setViewportHeight(VIEWPORT_HEIGHT);
     act(() => { globalThis.dispatchEvent(new Event("resize")); });
-    expect(section.dataset.paletteHorizontalScroll).toBeUndefined();
-    expect(section.style.getPropertyValue("--palette-x")).toBe(`${DEFAULT_POSITION.x}px`);
+    expect(section.style.getPropertyValue("--palette-x")).toBe("1100px");
+    expect(section.style.getPropertyValue("--palette-y")).toBe("600px");
   });
 });
 
-describe("webFloatingPaletteFrame", () => {
-  it("keeps a palette that fits where the user put it", () => {
-    expect(webFloatingPaletteFrame(312, 88, 1024)).toEqual({ x: 88, width: 312, scrollsHorizontally: false });
+describe("webFloatingPalettePosition", () => {
+  const viewport = { width: 1024, height: 768 };
+
+  it("keeps a position that leaves the grab margin inside", () => {
+    expect(webFloatingPalettePosition(312, { x: 88, y: 154 }, viewport)).toEqual({ x: 88, y: 154 });
   });
 
-  it("moves a fitting palette left so its right edge stays inside", () => {
-    expect(webFloatingPaletteFrame(400, 900, 1024)).toEqual({ x: 616, width: 400, scrollsHorizontally: false });
+  it("lets a narrow palette run partly past the right and left edges", () => {
+    expect(webFloatingPalettePosition(312, { x: 900, y: 154 }, viewport)).toEqual({ x: 900, y: 154 });
+    expect(webFloatingPalettePosition(312, { x: -200, y: 154 }, viewport)).toEqual({ x: -200, y: 154 });
   });
 
-  it("clamps a palette wider than the viewport to its margins and scrolls it", () => {
-    expect(webFloatingPaletteFrame(1431, 88, 1280)).toEqual({ x: 8, width: 1264, scrollsHorizontally: true });
-  });
-});
-
-describe("scrollPaletteGridHorizontally", () => {
-  const scroller = () => ({ scrollWidth: 1430, clientWidth: 1000, scrollLeft: 0 });
-
-  it("scrolls by a vertical wheel and stops at the ends", () => {
-    const element = scroller();
-    expect(scrollPaletteGridHorizontally(element, { deltaX: 0, deltaY: 300, deltaMode: 0 })).toBe(true);
-    expect(element.scrollLeft).toBe(300);
-    expect(scrollPaletteGridHorizontally(element, { deltaX: 0, deltaY: 1000, deltaMode: 0 })).toBe(true);
-    expect(element.scrollLeft).toBe(430);
-    expect(scrollPaletteGridHorizontally(element, { deltaX: 0, deltaY: 50, deltaMode: 0 })).toBe(false);
+  it("keeps a grab margin of the title bar inside the viewport", () => {
+    expect(webFloatingPalettePosition(312, { x: 5000, y: 154 }, viewport).x).toBe(1024 - WEB_FLOATING_PALETTE_GRAB_MARGIN_PX);
+    expect(webFloatingPalettePosition(312, { x: -5000, y: 154 }, viewport).x).toBe(WEB_FLOATING_PALETTE_GRAB_MARGIN_PX - 312);
+    expect(webFloatingPalettePosition(1431, { x: -5000, y: 154 }, viewport).x).toBe(WEB_FLOATING_PALETTE_GRAB_MARGIN_PX - 1431);
   });
 
-  it("leaves horizontal wheels and grids that fit to the browser", () => {
-    expect(scrollPaletteGridHorizontally(scroller(), { deltaX: 40, deltaY: 10, deltaMode: 0 })).toBe(false);
-    expect(scrollPaletteGridHorizontally({ scrollWidth: 300, clientWidth: 300, scrollLeft: 0 }, { deltaX: 0, deltaY: 40, deltaMode: 0 })).toBe(false);
+  it("keeps the whole title bar height inside, below the top strip", () => {
+    expect(webFloatingPalettePosition(312, { x: 88, y: 5000 }, viewport).y).toBe(768 - WEB_FLOATING_PALETTE_GRAB_MARGIN_PX);
+    expect(768 - WEB_FLOATING_PALETTE_GRAB_MARGIN_PX + WEB_FLOATING_PALETTE_TITLE_BAR_PX).toBeLessThanOrEqual(768);
+    expect(webFloatingPalettePosition(312, { x: 88, y: -50 }, viewport).y).toBe(WEB_FLOATING_PALETTE_MIN_Y_PX);
+  });
+
+  it("keeps a palette narrower than the grab margin wholly inside", () => {
+    expect(webFloatingPalettePosition(30, { x: -100, y: 154 }, viewport).x).toBe(0);
+    expect(webFloatingPalettePosition(30, { x: 2000, y: 154 }, viewport).x).toBe(1024 - 30);
   });
 });
