@@ -3,6 +3,7 @@ import { interactive3dWorkspaceStatusText, Interactive3dWorkspaceStatus } from "
 import { CanvasContextMenu, NATIVE_CANVAS_MENU_CLOSED_EVENT } from "./CanvasContextMenu";
 import { PLUGIN_CHANGE_REFUSED, RECOGNITION_REFUSED, chemistryRefusalOf, refusalSentence } from "./plugins/requestWrites/chemistryRefusal";
 import { buildObjectCanvasMenu, pageCanvasMenu, SET_DEFAULT_ARROW_STYLE_COMMAND_ID } from "./canvasContextMenuModel";
+import { editRotationEntryField, rotationEntryKeyAction } from "./rotationEntryKeys";
 import { pendingTypedScriptStatus, toggledPendingTypedScript, typedScriptInsertion, type PendingTypedScript } from "./typedTextScript";
 import { CONTEXT_STEREO_DEADLINE_MS, loadStereoEngine, resolveContextStereo, stereoReadoutRequest } from "./stereoReadout";
 import { RequestWriteError } from "@chemdraft/plugin-host";
@@ -3265,6 +3266,9 @@ export function MainWindow({
   const statusRef = useRef(status);
   const lastExportDirectoryRef = lastExportDirectory;
   const rotationInputRef = useRef<RotationInputState | undefined>(undefined);
+  // The typed-rotation key guard (installed before these callbacks exist) calls them through refs.
+  const handleRotationInputKeepRef = useRef<(input?: RotationInputState) => boolean>(() => false);
+  const handleRotationInputCancelRef = useRef<(input?: RotationInputState) => void>(() => undefined);
   const objectResizeInputRef = useRef<ObjectResizeInputState | undefined>(undefined);
   const interactive3dWorkspaceRef = useRef<Interactive3dWorkspaceState | undefined>(undefined);
   const interactive3dCommandQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -15429,6 +15433,40 @@ export function MainWindow({
     };
   }, [activeTextSelection, document.selection.objectIds, selectedNativeMoleculePart]);
 
+  // While a typed rotation is open, its keys belong to it even if focus was left on the canvas or
+  // the rotate handle: digits, sign and decimal point go into the field, Enter keeps, Esc cancels,
+  // and none of them reaches a canvas shortcut (a hover-key edit included). Keys typed in any other
+  // text field are left alone. A user's keystroke always targets an element (the focused one, or
+  // the body); a key dispatched at the window itself (automation) keeps its canvas meaning.
+  const rotationEntryOpen = rotationInput !== undefined;
+  useEffect(() => {
+    if (!rotationEntryOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      const popover = globalThis.document.querySelector<HTMLFormElement>("[data-rotation-input-popover='true']");
+      const field = popover?.querySelector<HTMLInputElement>("input");
+      if (!popover || !field || !(event.target instanceof Element) || popover.contains(event.target) ||
+          isEditableTarget(event.target) || isBlockedByModalDialog(event.target)) return;
+      const action = rotationEntryKeyAction(event);
+      if (!action) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const input = rotationInputRef.current;
+      if (!input) return;
+      if (action.kind === "keep") { handleRotationInputKeepRef.current(input); return; }
+      if (action.kind === "cancel") { handleRotationInputCancelRef.current(input); return; }
+      // Focus was outside the field: the key acts as on the freshly opened entry, whose angle is
+      // selected, so a typed digit replaces it rather than landing wherever the old caret was.
+      const edit = editRotationEntryField(field.value, 0, field.value.length, action);
+      field.focus({ preventScroll: true });
+      // The field's own change path: React reads the new value from the input event.
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, edit.value);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+      field.setSelectionRange(edit.caret, edit.caret);
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [rotationEntryOpen]);
+
   useEffect(() => {
     if (!rotationInput) {
       return;
@@ -18764,6 +18802,8 @@ export function MainWindow({
       [changed ? "Rotation applied" : "Rotation unchanged", ...new Set(session.warnings ?? [])].join(" "));
     return changed;
   }, [commitLiveInputPreview, updateRotationInput]);
+  handleRotationInputKeepRef.current = handleRotationInputKeep;
+  handleRotationInputCancelRef.current = handleRotationInputCancel;
 
   const showObjectResizeReadout = useCallback((objectId: string, scale: ObjectResizeScale, hold = false) => {
     if (objectResizeReadoutTimeoutRef.current !== undefined) {
@@ -34688,6 +34728,29 @@ function RotationInputPopover({
   onCancel(input: RotationInputState): void;
   onChange(input: RotationInputState): void;
 }) {
+  const formRef = useRef<HTMLFormElement>(null);
+  // Each opening (a new start document) takes focus into its first field with the angle selected,
+  // so typing replaces it. A native context menu closing, or the rotate handle's own press, can
+  // move focus back to the canvas or the handle just after the entry mounts; reclaim it then, but
+  // never from another text field the user moved to.
+  useLayoutEffect(() => {
+    const claim = (opening: boolean) => {
+      const form = formRef.current;
+      const field = form?.querySelector<HTMLInputElement>("input");
+      if (!form || !field) return;
+      const active = form.ownerDocument.activeElement;
+      if (active && form.contains(active)) {
+        if (opening && active === field) field.select();
+        return;
+      }
+      if (active && active !== form.ownerDocument.body && isEditableTarget(active)) return;
+      field.focus({ preventScroll: true });
+      field.select();
+    };
+    claim(true);
+    const timers = [0, 16, 80, 250].map(delay => window.setTimeout(() => claim(false), delay));
+    return () => timers.forEach(timer => window.clearTimeout(timer));
+  }, [input.startDocument]);
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     event.stopPropagation();
@@ -34699,6 +34762,10 @@ function RotationInputPopover({
     if (event.key === "Escape") {
       event.preventDefault();
       onCancel(input);
+    } else if (event.key === "Enter" && !event.nativeEvent.isComposing && event.target instanceof HTMLInputElement) {
+      // Explicit: a form with two fields and no submit button (X/Y) has no implicit submission.
+      event.preventDefault();
+      onKeep(input);
     }
   };
   const stopPointerPropagation = (event: PointerEvent<HTMLFormElement>) => {
@@ -34707,6 +34774,7 @@ function RotationInputPopover({
 
   return (
     <form
+      ref={formRef}
       aria-label={`${input.targetLabel} rotation entry`}
       className="object-rotation-input-popover"
       data-rotation-input-popover="true"
