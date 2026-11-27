@@ -252,6 +252,9 @@ function messageOf(cause: unknown): string {
  * Write every plugin and the index as one unit: unpack all into temporary siblings, swap them in, write
  * the index. Any failure puts back every directory already swapped and leaves the index untouched.
  */
+/** Thrown when staging failed and rolling it back failed too, so files need restoring by hand. */
+class RollbackFailedError extends Error {}
+
 function commitStaging(outDir: string, plugins: readonly InspectedWebPlugin[], index: WebPluginIndex): void {
   const swaps: PlannedSwap[] = plugins.map((plugin) => {
     const id = plugin.inspection.manifest.id;
@@ -277,7 +280,7 @@ function commitStaging(outDir: string, plugins: readonly InspectedWebPlugin[], i
   } catch (cause) {
     const stranded = rollBack(moved);
     if (stranded.length > 0) {
-      throw new Error(`${messageOf(cause)}. Rolling back also failed, so fix these by hand: ${stranded.join("; ")}.`, { cause });
+      throw new RollbackFailedError(`${messageOf(cause)}. Rolling back also failed, so fix these by hand: ${stranded.join("; ")}.`, { cause });
     }
     throw cause;
   } finally {
@@ -434,7 +437,8 @@ export async function main(
     }
     // A refusal happens before anything is written. Any other error came from the filesystem while
     // writing, and the whole set was rolled back (the message says so if rolling back failed too).
-    error(refused ? "Nothing was staged." : "Staging stopped; every staged plugin and the index were left as they were.");
+    if (refused) error("Nothing was staged.");
+    else if (!(cause instanceof RollbackFailedError)) error("Staging stopped; every staged plugin and the index were left as they were.");
     return 1;
   }
 }

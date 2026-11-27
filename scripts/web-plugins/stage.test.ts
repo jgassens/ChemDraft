@@ -254,6 +254,23 @@ describe("stageWebPlugins is all-or-nothing across the set", () => {
       /injected index failure\. Rolling back also failed, so fix these by hand: org\.example\.a: the previous copy is at .*\.old-org\.example\.a/
     );
   });
+
+  it("main does not claim everything was restored when the rollback failed", async () => {
+    const work = tempDir();
+    const out = join(work, "out");
+    await stagedPair(work, out);
+    await writePackage(work, "a-2", goodEntries("2.0.0", "a-two", "org.example.a"));
+    fsFaults.rename = (from, to) => {
+      if (to.endsWith("index.json")) throw new Error("injected index failure");
+      if (from.includes(".old-org.example.a")) throw new Error("injected restore failure");
+    };
+    const errors: string[] = [];
+    const io = { cwd: work, log: () => undefined, error: (line: string) => errors.push(line) };
+    expect(await main(["a-2.zip", "--out", "out"], io)).toBe(1);
+    const text = errors.join("\n");
+    expect(text).not.toContain("were left as they were");
+    expect(text).toMatch(/Rolling back also failed, so fix these by hand: org\.example\.a: the previous copy is at .*\.old-org\.example\.a/);
+  });
 });
 
 describe("stageWebPlugins refuses ids equal up to letter case", () => {
