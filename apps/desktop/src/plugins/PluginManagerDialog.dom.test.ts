@@ -161,7 +161,15 @@ it("shows a conflicted app handoff group and lets the user revoke it", async () 
     appPath: "/Applications/Test App.app", pipeline: null,
     status: "conflict", at: "2026-11-23T12:00:00Z"
   };
-  const list = vi.fn().mockResolvedValueOnce([row]).mockResolvedValue([]);
+  const unrelated: AppHandoffConsent = {
+    pluginId: entry.record.id, consentId: "consent-other", appName: "Other App",
+    appPath: "/Applications/Other App.app", pipeline: null,
+    status: "allowed", at: "2026-11-23T12:00:00Z"
+  };
+  let resolveRefresh!: (rows: AppHandoffConsent[]) => void;
+  const list = vi.fn()
+    .mockResolvedValueOnce([row, unrelated])
+    .mockImplementation(() => new Promise<AppHandoffConsent[]>((resolve) => { resolveRefresh = resolve; }));
   const revoke = vi.fn(async () => {});
   const runtime = createPluginRuntime({
     getActiveDocument: () => undefined,
@@ -174,11 +182,23 @@ it("shows a conflicted app handoff group and lets the user revoke it", async () 
   const button = document.querySelector<HTMLButtonElement>('button[aria-label^="Revoke app handoff from"]')!;
   const section = button.closest("section")!;
   expect(section.textContent).toContain("Conflicting consents");
+  expect(section.textContent).toContain("Other App");
   expect(button.getAttribute("aria-label")).toContain("all operations");
+  expect(button.getAttribute("aria-label")).toContain("Test App");
   await act(async () => button.click());
   expect(revoke).toHaveBeenCalledExactlyOnceWith(entry.record.id, "conflict-1");
-  expect(section.textContent).toContain("No app handoff consents.");
-  expect(section.querySelector("button")).toBeNull();
+  // The refresh after revoking is still pending, so only the component itself can have
+  // removed the conflict row.
+  expect(list).toHaveBeenCalledTimes(2);
+  expect(section.textContent).not.toContain("Conflicting consents");
+  expect(section.textContent).not.toContain("Test App");
+  expect(section.textContent).toContain("Other App");
+  const remaining = section.querySelectorAll<HTMLButtonElement>("button");
+  expect(remaining).toHaveLength(1);
+  expect(remaining[0]!.getAttribute("aria-label")).toContain("Other App");
+  await act(async () => resolveRefresh([unrelated]));
+  expect(section.textContent).not.toContain("Conflicting consents");
+  expect(section.textContent).toContain("Other App");
 });
 
 describe("naming engine catalog ownership", () => {

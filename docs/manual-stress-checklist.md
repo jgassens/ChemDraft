@@ -1749,7 +1749,8 @@ for processor-specific behavior. Use an eligible official catalog plugin and its
 - With a fresh app pick, approve only a pipeline. Remove or change its companion executable while
   leaving the main app intact. Check that app status still reports the app as available and includes
   the companion error. Try a build and verify it is refused. Send a file and verify it asks for
-  separate consent and opens the file after approval.
+  separate consent and opens the file after approval. Restore the original companion executable
+  before continuing, and check that app status no longer reports the companion error.
 - In the development app's consent store, duplicate the rows for one plugin and app using a version 1
   fixture. Verify handoff for that group is refused and a different app or plugin can still hand off.
   In Plugin Manager, verify one "Conflicting consents" entry appears for the affected app. Revoke it,

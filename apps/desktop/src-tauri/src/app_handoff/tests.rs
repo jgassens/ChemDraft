@@ -1963,6 +1963,212 @@ fn oversized_consent_insert_preserves_the_readable_prior_file() {
         .same_grant(&grant));
 }
 
+const MAX_CONSENT: usize = 1024 * 1024;
+const OTHER_PLUGIN: &str = "org.chemdraft.handoff.other";
+
+/// Rewrites the store so the file is exactly at the size the reader still accepts.
+fn fill_store_to_limit(path: &Path, mut document: Value, padding: impl Fn(usize) -> Value) {
+    document["futureField"] = padding(0);
+    let base = document.to_string().len();
+    let mut count = MAX_CONSENT - base;
+    loop {
+        document["futureField"] = padding(count);
+        let len = document.to_string().len();
+        if len <= MAX_CONSENT {
+            break;
+        }
+        count -= len - MAX_CONSENT;
+    }
+    let bytes = document.to_string();
+    assert!(bytes.len() > MAX_CONSENT - 8 && bytes.len() <= MAX_CONSENT);
+    fs::write(path, bytes).unwrap();
+}
+
+fn other_plugin_grant() -> Row {
+    let mut row = stored_grant();
+    row.plugin_id = OTHER_PLUGIN.into();
+    row
+}
+
+fn assert_readable_within_limit(store: &Store, path: &Path) {
+    assert!(fs::read(path).unwrap().len() <= MAX_CONSENT);
+    store.list().expect("the rewritten store must read back");
+}
+
+#[test]
+fn revocation_lands_when_the_store_is_at_its_size_limit() {
+    let dir = TestDir::new();
+    let store = Store::new(&dir.0);
+    let (send, build) = allow_send_and_build(&store);
+    let other = other_plugin_grant();
+    store.insert(other.clone()).unwrap();
+    let stale_send = store.get(PLUGIN, APP_ID, None).unwrap().unwrap();
+    let stale_build = store
+        .get(PLUGIN, APP_ID, build.pipeline.as_deref())
+        .unwrap()
+        .unwrap();
+    let missing = store
+        .get(PLUGIN, APP_ID, Some("otherBuild"))
+        .unwrap()
+        .unwrap();
+    let path = dir.0.join("app-handoff").join("consents.json");
+    let document: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    fill_store_to_limit(&path, document, |count| json!("x".repeat(count)));
+
+    // Flipping a legacy grant widens its timestamp and adds a revision key.
+    let revoked = store
+        .revoke(PLUGIN, &send.consent_id())
+        .expect("revoking must succeed at the size limit");
+    assert!(revoked.contains(&send.consent_id()));
+    assert_eq!(store.with_grant(&send, |_| ()).unwrap(), None);
+    // Only removing the revoked app's whole scope makes room here while keeping open boxes
+    // stale, so its sibling operation goes too and is reported so it is disarmed as well.
+    assert_eq!(store.with_grant(&build, |_| ()).unwrap(), None);
+    assert!(revoked.contains(&build.consent_id()));
+    assert_eq!(
+        store.with_grant(&other, |_| ()).unwrap(),
+        Some(()),
+        "revoking dropped another plugin's grant"
+    );
+    for stale in [&stale_send, &stale_build, &missing] {
+        assert!(
+            store
+                .replace(
+                    stale,
+                    &stored_target(stale.row.pipeline.is_some()),
+                    if stale.row.pipeline.is_some() {
+                        build.template_digest.clone()
+                    } else {
+                        send.template_digest.clone()
+                    },
+                    INSTALL_ID,
+                )
+                .is_err(),
+            "a consent box opened before the revocation granted afterwards"
+        );
+    }
+    assert_eq!(store.with_grant(&send, |_| ()).unwrap(), None);
+    assert_readable_within_limit(&store, &path);
+    let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert!(
+        saved["futureField"].as_str().is_some(),
+        "revoking discarded unknown store data it did not need to"
+    );
+}
+
+#[test]
+fn legacy_store_at_its_size_limit_with_conflicts_still_revokes_and_clears() {
+    // Each step returns the grants it is allowed to remove; every other grant must survive.
+    type Step = fn(&Store, &Row, &Row, &Row) -> Vec<Row>;
+    let steps: [(&str, Step); 4] = [
+        ("revoke operation", |store, _, _, other_plugin| {
+            store
+                .revoke(&other_plugin.plugin_id, &other_plugin.consent_id())
+                .expect("revoking an operation must succeed at the size limit");
+            vec![other_plugin.clone()]
+        }),
+        ("revoke conflict group", |store, send, _, _| {
+            store
+                .revoke(PLUGIN, &send.conflict_id())
+                .expect("revoking a conflict group must succeed at the size limit");
+            assert!(store.for_app(PLUGIN, APP_ID).unwrap().is_empty());
+            vec![]
+        }),
+        ("clear plugin", |store, _, other_app, _| {
+            store
+                .clear(PLUGIN)
+                .expect("clearing a plugin must succeed at the size limit");
+            assert!(store.for_app(PLUGIN, APP_ID).unwrap().is_empty());
+            vec![other_app.clone()]
+        }),
+        ("clear other plugin", |store, _, _, other_plugin| {
+            store
+                .clear(&other_plugin.plugin_id)
+                .expect("clearing a plugin must succeed at the size limit");
+            vec![other_plugin.clone()]
+        }),
+    ];
+    for (name, step) in steps {
+        let dir = TestDir::new();
+        let store = Store::new(&dir.0);
+        let (path, send, build, other_app, other_plugin) = conflicting_legacy_store(&store, &dir);
+        let document: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        fill_store_to_limit(&path, document, |count| json!("x".repeat(count)));
+        store.list().expect("the filled legacy store must read");
+        let gone = step(&store, &send, &other_app, &other_plugin);
+        // Conflicting rows grant nothing before or after, whether or not they were removed.
+        for row in gone.iter().chain([&send, &build]) {
+            assert!(
+                !matches!(store.with_grant(row, |_| ()), Ok(Some(()))),
+                "{name}: a revoked or conflicting grant stayed active"
+            );
+        }
+        for row in [&other_app, &other_plugin] {
+            if !gone.iter().any(|gone| gone.same_grant(row)) {
+                assert_eq!(
+                    store.with_grant(row, |_| ()).unwrap(),
+                    Some(()),
+                    "{name}: an unrelated grant was dropped"
+                );
+            }
+        }
+        assert_readable_within_limit(&store, &path);
+    }
+}
+
+#[test]
+fn revocation_and_clear_land_even_when_rewriting_inflates_unknown_data() {
+    for clear in [false, true] {
+        let dir = TestDir::new();
+        let store = Store::new(&dir.0);
+        let (send, build) = allow_send_and_build(&store);
+        let other = other_plugin_grant();
+        store.insert(other.clone()).unwrap();
+        let stale_build = store
+            .get(PLUGIN, APP_ID, build.pipeline.as_deref())
+            .unwrap()
+            .unwrap();
+        let path = dir.0.join("app-handoff").join("consents.json");
+        let mut document: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        // `1e5` is valid JSON but is written back as `100000.0`.
+        document["futureField"] = json!([]);
+        let base = document.to_string().len();
+        let count = (MAX_CONSENT - base) / 4;
+        let text = document.to_string().replace(
+            "\"futureField\":[]",
+            &format!("\"futureField\":[{}]", vec!["1e5"; count].join(",")),
+        );
+        assert!(text.len() <= MAX_CONSENT);
+        fs::write(&path, &text).unwrap();
+        store.list().expect("the filled store must read");
+
+        if clear {
+            store
+                .clear(PLUGIN)
+                .expect("clear must succeed on any readable store");
+        } else {
+            store
+                .revoke(PLUGIN, &build.consent_id())
+                .expect("revoke must succeed on any readable store");
+        }
+        assert_eq!(store.with_grant(&build, |_| ()).unwrap(), None);
+        if clear {
+            assert_eq!(store.with_grant(&send, |_| ()).unwrap(), None);
+        }
+        assert!(store
+            .replace(
+                &stale_build,
+                &stored_target(true),
+                build.template_digest.clone(),
+                INSTALL_ID
+            )
+            .is_err());
+        // Nothing else could shrink the store, so every consent was removed: fail closed.
+        assert_eq!(store.with_grant(&other, |_| ()).unwrap(), None);
+        assert_readable_within_limit(&store, &path);
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn consent_store_refuses_existing_group_or_world_accessible_directory_and_file() {
