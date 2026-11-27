@@ -6,6 +6,7 @@ import { applyPatches } from "@chemdraft/chem-core";
 import { MainWindow } from "./MainWindow";
 import { createNativeSingleBondMolecule, createPhase4Document, selectDocumentObjects } from "./documentWorkflow";
 import { saveCompoundLayoutSettings } from "./compoundLayoutSettings";
+import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 import { CanvasContextMenu } from "./CanvasContextMenu";
@@ -164,6 +165,30 @@ describe("MainWindow canvas context menu keyboard", () => {
     await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "edit.deleteHoveredNativeTarget" } })));
     expect(container.querySelector('[aria-label="Object layer options"]')).toBeNull();
     expect(document.activeElement).toBe(canvas);
+  });
+});
+
+describe.each<ShortcutPlatform>(["macos", "windows"])("keyboard menu with nothing selected over an atom at the page centre (%s)", platform => {
+  it.each(["F10", "ContextMenu"])("opens the page menu with %s, not the object menu", async value => {
+    let drawing = createPhase4Document("Centre atom");
+    drawing = applyPatches(drawing, [{ op: "addObject", pageId: drawing.pages[0].id,
+      object: createNativeSingleBondMolecule(drawing, { x: 396, y: 306 }) }]);
+    drawing = selectDocumentObjects(drawing, drawing.pages[0].id, []);
+    const molecule = drawing.pages[0].objects[0]!;
+    if (molecule.type !== "molecule") throw new Error("expected a molecule");
+    const atom = molecule.atoms[0]!;
+    await act(async () => root.render(<MainWindow initialDocument={drawing} initialActiveToolCommandId="tool.select"
+      initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} shortcutPlatform={platform} />));
+    // The page centre is exactly on the first atom.
+    const rect = { x: 0, y: 0, left: 0, top: 0, right: atom.x * 2, bottom: atom.y * 2,
+      width: atom.x * 2, height: atom.y * 2, toJSON: () => ({}) } as DOMRect;
+    for (const element of container.querySelectorAll<HTMLElement>(".page, .canvas-region")) element.getBoundingClientRect = () => rect;
+    canvas = container.querySelector<HTMLElement>(".canvas-region")!;
+    canvas.focus(); canvas.blur();
+    expect(document.activeElement).toBe(document.body);
+    await open(value);
+    expect(container.querySelector('[aria-label="Page options"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Object layer options"]')).toBeNull();
   });
 });
 

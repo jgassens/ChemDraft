@@ -1970,7 +1970,8 @@ Run under KDE Plasma (Wayland session, so the app uses XWayland) and on GNOME.
 - Work-area fits are not saved (B9, all three builds; on Linux run under XWayland): open Drawn
   Structure Settings at 1680x1050 and drag it to the right half, top edge about 160 px down.
   Switch the display live to 1024x768. It is pulled onto the smaller screen, and its top edge
-  is below the Main toolbar, never under it: drag it by its grip column to prove it. Without touching it,
+  is below the Main toolbar, never under it: look at the grip column to confirm it is fully visible and
+  clear of Main, but do not drag or click it, because a drag saves a new position. Without touching it,
   switch back to 1680x1050: within about a second it returns to the exact spot and size it had
   before (toolbar-state.json still holds that frame throughout). Repeat, but this time drag it a
   little while at 1024x768: back at 1680x1050 it stays where you dropped it. The same holds for

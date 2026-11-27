@@ -1914,7 +1914,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.27.00.30-opus";
+const CURRENT_BUILD_STAMP = "11.27.01.15-sonnet";
 
 const NUMERIC_ENTRY_DURING_DRAG_STATUS = "Finish the current drag, then enter a value";
 
@@ -24089,9 +24089,13 @@ export function MainWindow({
         loadStereoReadout, ...anchor });
       return;
     }
-    page.dispatchEvent(new MouseEvent("contextmenu", {
-      bubbles: true, cancelable: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2
-    }));
+    // Nothing is selected: open the page menu at the page centre directly. A synthetic
+    // contextmenu would hit-test molecules there and could open an object menu instead.
+    setObjectContextMenu(undefined);
+    selectionClipboardPasteStateRef.current = undefined;
+    const centre = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    lastCanvasPointerClientPointRef.current = centre;
+    setPageContextMenu(centre);
   }, [activePage.objects, cancelPendingCanvasContextMenu]);
 
   useEffect(() => {
