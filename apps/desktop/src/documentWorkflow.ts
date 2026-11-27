@@ -4757,20 +4757,25 @@ const nativeTextCharacterAppearanceKeys = [
 ] as const;
 
 /**
- * Whether a text box's characters look the way a new box's do in this document: the document's
- * text defaults (`createNativeTextObject` with no style), compared on the character-appearance
- * properties (`nativeTextCharacterAppearanceKeys`) after resolution, so a box that omits a
- * property matches the default it falls back to. Layout (alignment, spacing, sizing mode) is not
- * formatting here and is not compared, so a right-aligned box still reads as plain.
+ * Whether a text box's characters look the way they did when the box was created: the document's
+ * text defaults overlaid with `baselineStyle`, the style the box was created with, exactly as
+ * `createNativeTextObject` resolves them (with no `baselineStyle`, the document defaults alone).
+ * Compared on the character-appearance properties (`nativeTextCharacterAppearanceKeys`) after
+ * resolution, so a box that omits a property matches the default it falls back to. Layout
+ * (alignment, spacing, sizing mode) is not formatting here and is not compared, so a right-aligned
+ * box still reads as plain.
  */
 function nativeTextObjectHasDefaultStyle(
   style: Record<string, unknown> | undefined,
-  document: ChemDraftDocument | undefined
+  document: ChemDraftDocument | undefined,
+  baselineStyle?: Partial<NativeTextStyle>
 ): boolean {
   if (!style) return true;
-  const defaults = textStyleToObjectStyle(document &&
-    (document.styles.drawing !== undefined || document.styles.text !== undefined)
-    ? documentDrawingDefaults(document).textStyle : {});
+  const defaults = textStyleToObjectStyle({
+    ...(document && (document.styles.drawing !== undefined || document.styles.text !== undefined)
+      ? documentDrawingDefaults(document).textStyle : {}),
+    ...baselineStyle
+  });
   const resolved = textStyleToObjectStyle(nativeTextStyleFromObjectStyle(style));
   return nativeTextCharacterAppearanceKeys.every(key => Object.is(resolved[key], defaults[key]));
 }
@@ -4779,20 +4784,23 @@ function nativeTextObjectHasDefaultStyle(
  * The atom a finished text box stands for when its whole content is one element symbol, in its
  * exact case, with an optional formal charge after it ("Zn", "Zn2+", "Zn+2", "Fe3+", "Cl-"). The
  * text is read by the atom-label grammar (`nativeElementWithChargeLabel`); the text must be plain:
- * the whole box in the document's default text formatting (`document`'s; the app defaults when it
- * is omitted), no run styling, the symbol on the baseline, and the charge on the baseline or
+ * the whole box in the formatting it was created with (`document`'s text defaults, the app defaults
+ * when it is omitted, overlaid with `baselineStyle`, the style passed when the box was created), no
+ * run styling, the symbol on the baseline, and the charge on the baseline or
  * superscript, so "Zn" with a superscript "2+" reads as Zn2+. Anything else stays text: words,
  * formulas ("H2O"), abbreviations, several lines, an unknown symbol ("Xx"), subscripts, styled runs,
  * or a box whose characters are formatted as a whole (bold, italic, underline, a color, another font
- * or size). Layout alone (a right-aligned or fixed-width box) does not count as formatting.
+ * or size than it was created with). Layout alone (a right-aligned or fixed-width box) does not count
+ * as formatting.
  */
 export function nativeTextObjectElementWithCharge(
   object: { text: string; spans?: readonly TextSpan[]; style?: Record<string, unknown> },
-  document?: ChemDraftDocument
+  document?: ChemDraftDocument,
+  baselineStyle?: Partial<NativeTextStyle>
 ): { element: string; formalCharge: number } | undefined {
   const reading = nativeElementWithChargeLabel(object.text);
   if (!reading) return undefined;
-  if (!nativeTextObjectHasDefaultStyle(object.style, document)) return undefined;
+  if (!nativeTextObjectHasDefaultStyle(object.style, document, baselineStyle)) return undefined;
   const spans = object.spans ?? [];
   if (spans.length > 0) {
     if (spans.map(span => span.text).join("") !== object.text) return undefined;
@@ -4809,11 +4817,19 @@ export function nativeTextObjectElementWithCharge(
   return { element: reading.element, formalCharge: reading.charge };
 }
 
-/** Exact elements (optionally charged) and case-sensitive groups may auto-convert; groups need an atom target. */
-export function canAutoConvertNativeTextObjectToAtom(document: ChemDraftDocument, objectId: string): boolean {
+/**
+ * Exact elements (optionally charged) and case-sensitive groups may auto-convert; groups need an
+ * atom target. `baselineStyle` is the style the box was created with
+ * (`nativeTextObjectElementWithCharge`).
+ */
+export function canAutoConvertNativeTextObjectToAtom(
+  document: ChemDraftDocument,
+  objectId: string,
+  baselineStyle?: Partial<NativeTextStyle>
+): boolean {
   const object = firstPage(document).objects.find((candidate) => candidate.id === objectId);
   if (object?.type !== "text" || object.text.length === 0 || object.text !== object.text.trim()) return false;
-  return nativeTextObjectElementWithCharge(object, document) !== undefined ||
+  return nativeTextObjectElementWithCharge(object, document, baselineStyle) !== undefined ||
     nativeAtomLabelReading(object.text, { bonded: true }).kind === "group";
 }
 
@@ -4823,20 +4839,21 @@ export function canAutoConvertNativeTextObjectToAtom(document: ChemDraftDocument
  * an exact element symbol, optionally charged (`nativeTextObjectElementWithCharge`), becomes a
  * one-atom molecule centered on the edited text frame, with that element and formal charge. Other
  * text stays text. A bare covalent-table element is valence-flagged until it gains enough bonds.
+ * `options.baselineStyle` is the style the box was created with (`nativeTextObjectElementWithCharge`).
  */
 export function convertNativeTextObjectToAtom(
   document: ChemDraftDocument,
   objectId: string,
-  options: { skipAtomLabel?: boolean; placementPoint?: PagePoint } = {}
+  options: { skipAtomLabel?: boolean; placementPoint?: PagePoint; baselineStyle?: Partial<NativeTextStyle> } = {}
 ): ChemDraftDocument {
-  if (!canAutoConvertNativeTextObjectToAtom(document, objectId)) {
+  if (!canAutoConvertNativeTextObjectToAtom(document, objectId, options.baselineStyle)) {
     return document;
   }
   const page = firstPage(document);
   const object = page.objects.find((candidate): candidate is TextObject =>
     candidate.id === objectId && candidate.type === "text"
   );
-  const typedAtom = object ? nativeTextObjectElementWithCharge(object, document) : undefined;
+  const typedAtom = object ? nativeTextObjectElementWithCharge(object, document, options.baselineStyle) : undefined;
   // Callers that skip the label path have already performed this hit-test themselves.
   if (!options.skipAtomLabel) {
     const labelResult = convertNativeTextObjectToAtomLabel(document, objectId, undefined, options.placementPoint);

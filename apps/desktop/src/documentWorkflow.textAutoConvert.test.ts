@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyPatch, type ChemDraftDocument, type MoleculeObject, type TextSpan } from "@chemdraft/chem-core";
+import { applyPatch, DefaultNativeTextStyle, type ChemDraftDocument, type MoleculeObject, type TextSpan } from "@chemdraft/chem-core";
 import { atomDisplayLabel, nativeElementWithChargeLabel } from "@chemdraft/layout-engine";
 import {
   canAutoConvertNativeTextObjectToAtom,
@@ -244,6 +244,42 @@ describe("typed element symbols in a box formatted as a whole", () => {
     expect(nativeTextObjectElementWithCharge(object, document)).toEqual({ element: "Mg", formalCharge: 0 });
     expect(canAutoConvertNativeTextObjectToAtom(document, id)).toBe(true);
     expect(onlyAtom(convertNativeTextObjectToAtom(document, id)).atom).toMatchObject({ element: "Mg", formalCharge: 0 });
+  });
+
+  it("judges a box against the style it was created with when that baseline is given", () => {
+    // The Text tool's style: 24 pt, as `text.size.24` sets it with nothing selected.
+    const toolStyle = { ...DefaultNativeTextStyle, fontSizePx: 32 };
+    const base = insertNativeTextObject(createPhase4Document("Tool style"), { x: 300, y: 300 }, "Mg", toolStyle);
+    const id = base.selection.objectIds[0]!;
+    const object = base.pages[0].objects.find(candidate => candidate.id === id)!;
+    if (object.type !== "text") throw new Error("Expected text");
+    expect(object.style.fontSizePx).toBe(32);
+    // Without a baseline the document default still decides, so the larger box reads as formatted.
+    expect(nativeTextObjectElementWithCharge(object, base)).toBeUndefined();
+    expect(canAutoConvertNativeTextObjectToAtom(base, id)).toBe(false);
+    expect(convertNativeTextObjectToAtom(base, id)).toBe(base);
+    // Against the style it was born with, it is plain and converts.
+    expect(nativeTextObjectElementWithCharge(object, base, toolStyle)).toEqual({ element: "Mg", formalCharge: 0 });
+    expect(canAutoConvertNativeTextObjectToAtom(base, id, toolStyle)).toBe(true);
+    expect(onlyAtom(convertNativeTextObjectToAtom(base, id, { baselineStyle: toolStyle })).atom)
+      .toMatchObject({ element: "Mg", formalCharge: 0 });
+    // Formatting that box after creation still keeps it text, against the same baseline.
+    for (const style of [{ fontWeight: 700 }, { color: "#ff0000" }, { fontSizePx: 18 }] as const) {
+      const styled = updateNativeTextObjectStyle(base, id, style);
+      expect(canAutoConvertNativeTextObjectToAtom(styled, id, toolStyle)).toBe(false);
+      expect(convertNativeTextObjectToAtom(styled, id, { baselineStyle: toolStyle })).toBe(styled);
+    }
+  });
+
+  it("lays a partial baseline over the document's text style, as box creation does", () => {
+    const styled = { ...createPhase4Document("Preset text"), styles: { text: { fontFamily: "Times New Roman", fontSizePx: 12 } } } as ChemDraftDocument;
+    const document = insertNativeTextObject(styled, { x: 300, y: 300 }, "Na+", { fontWeight: 700 });
+    const id = document.selection.objectIds[0]!;
+    const object = document.pages[0].objects.find(candidate => candidate.id === id)!;
+    if (object.type !== "text") throw new Error("Expected text");
+    expect(object.style).toMatchObject({ fontFamily: "Times New Roman", fontWeight: 700 });
+    expect(nativeTextObjectElementWithCharge(object, document, { fontWeight: 700 })).toEqual({ element: "Na", formalCharge: 1 });
+    expect(nativeTextObjectElementWithCharge(object, document)).toBeUndefined();
   });
 
   it("keeps a bold 'Mg' box as text, and a bold right-aligned one too", () => {
