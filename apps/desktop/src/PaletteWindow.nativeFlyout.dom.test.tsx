@@ -148,7 +148,7 @@ describe.each(["macos", "windows"] as const)("standalone palette flyout keyboard
     // WKWebView can synthesize a button click after keyboard activation. The
     // palette's existing hold-open click guard must still suppress its primary.
     await act(async () => button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true })));
-    expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith(choices[1].id, { flyoutOpening });
+    expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith(choices[1].id, { flyoutOpening, toolChoice: {} });
     expect(native.hide).toHaveBeenCalledTimes(1);
     expect(native.focus).not.toHaveBeenCalled();
     expect(document.activeElement).toBe(button);
@@ -159,7 +159,7 @@ describe.each(["macos", "windows"] as const)("standalone palette flyout keyboard
     expect(native.visible).toBe(true);
     const bond = host.querySelector<HTMLButtonElement>('[data-test-owner] [data-command-id="tool.bond"]')!;
     await act(async () => bond.click());
-    expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith("tool.bond");
+    expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith("tool.bond", { toolChoice: { itemId: "tool.bond" } });
     expect(native.visible).toBe(false);
   });
 
@@ -182,7 +182,7 @@ describe.each(["macos", "windows"] as const)("standalone palette flyout keyboard
       bondButton.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, button: 0 }));
       bondButton.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     });
-    expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith("tool.bond");
+    expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith("tool.bond", { toolChoice: { itemId: "tool.bond" } });
   });
 
   it("dismisses an open flyout and invokes primary once when short-clicking the same primary button", async () => {
@@ -200,7 +200,7 @@ describe.each(["macos", "windows"] as const)("standalone palette flyout keyboard
       button.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, button: 0 }));
       button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     });
-    expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith("tool.benzene");
+    expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith("tool.benzene", { toolChoice: { itemId: "tool.benzene" } });
   });
 
   it("dismisses old popover and keeps new flyout open across a long-hold press", async () => {

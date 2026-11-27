@@ -215,7 +215,7 @@ describe.each(["macos", "windows"] as const)("native flyout keyboard routing (%s
     expect((await key("Enter")).defaultPrevented).toBe(true);
     expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith(last.id, { flyoutOpening: {
       toolsetId: opened.toolsetId, flyoutId: opened.flyout.flyoutId, openedAt: opened.openedAt, generation: opened.generation
-    } });
+    }, toolChoice: {} });
     expect(current()).toBe(before);
   });
 
@@ -317,7 +317,7 @@ describe.each(["macos", "windows"] as const)("native flyout keyboard routing (%s
     expect((await key("Enter")).defaultPrevented).toBe(true);
     expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith("tool.benzene", { flyoutOpening: {
       toolsetId: opened.toolsetId, flyoutId: opened.flyout.flyoutId, openedAt: opened.openedAt, generation: opened.generation
-    } });
+    }, toolChoice: {} });
   });
 
   it.each([null, "other-document"])("releases routing when native focus moves away (%s)", async label => {
@@ -437,7 +437,7 @@ describe.each(["macos", "windows"] as const)("native flyout keyboard routing (%s
     expect((await key(activation)).defaultPrevented).toBe(true);
     expect((await key(activation, { repeat: true })).defaultPrevented).toBe(true);
     expect((await key(activation, {}, "keyup")).defaultPrevented).toBe(true);
-    expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith(choices[0].id, { flyoutOpening });
+    expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith(choices[0].id, { flyoutOpening, toolChoice: {} });
     expect(native.hide).toHaveBeenCalledTimes(hidesBeforeActivation + 1);
     expect(current()).toBe(before);
     // A queued IPC activation and stale startup replay cannot invoke or reopen it.
@@ -473,7 +473,7 @@ describe.each(["macos", "windows"] as const)("native flyout keyboard routing (%s
     expect(sendPaletteCommand).not.toHaveBeenCalled();
     await key(" ");
     expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith("tool.cyclopentane", {
-      flyoutOpening: { toolsetId: opened.toolsetId, flyoutId: flyout.flyoutId, ...timing }
+      flyoutOpening: { toolsetId: opened.toolsetId, flyoutId: flyout.flyoutId, ...timing }, toolChoice: {}
     });
     expect(document.activeElement).toBe(canvas);
     expect(native.focus).not.toHaveBeenCalled();

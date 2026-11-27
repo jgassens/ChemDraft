@@ -268,7 +268,7 @@ describe.each(["macos", "windows", "linux"] as const)("floating toolbar right-cl
     const { grip, bond } = await renderPalette(platform);
     await rightClick(bond, platform);
     await leftClick(bond);
-    expect(native.command).toHaveBeenCalledExactlyOnceWith("tool.bond");
+    expect(native.command).toHaveBeenCalledExactlyOnceWith("tool.bond", { toolChoice: { itemId: "tool.bond" } });
 
     await act(async () => { fire(grip, "pointerdown", { button: 0 }, 7); fire(grip, "mousedown", { button: 0 }, 7); });
     await settle();
@@ -307,7 +307,7 @@ describe.each(["macos", "windows", "linux"] as const)("floating toolbar right-cl
       await controlClick(bond, false);
 
       expect(native.popups).toHaveLength(0);
-      expect(native.command).toHaveBeenCalledExactlyOnceWith("tool.bond");
+      expect(native.command).toHaveBeenCalledExactlyOnceWith("tool.bond", { toolChoice: { itemId: "tool.bond" } });
     });
   }
 });
