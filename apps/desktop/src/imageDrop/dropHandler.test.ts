@@ -9,7 +9,7 @@ import {
   formatImageDropStatus, handleDroppedFiles, prepareDroppedImages, splitDrop, type DroppedImageSource
 } from "./dropHandler";
 import { DROP_DOCUMENT_MARGIN_BYTES, savedPictureBytes } from "./dropDocumentBudget";
-import { prepareDroppedImage } from "./prepareDroppedImage";
+import { CONVERTED_PICTURE_MAX_SIDE, prepareDroppedImage } from "./prepareDroppedImage";
 import type { DecodeCheck, DroppedImageDecoders, RasterToPng } from "./rasterDecode";
 import { MAX_OPEN_DOCUMENT_BYTES } from "../documentText";
 import { browserDroppedImageSource, nativeDroppedImageSource } from "./readDroppedFile";
@@ -135,12 +135,13 @@ describe("prepareDroppedImage", () => {
     expect(result.refusals).toEqual([{ name: "d.svg", reason: "reading it took longer than 0.1 seconds." }]);
   });
 
-  it("re-encodes JPEG, GIF and WebP through the injected decoder after a header check", async () => {
+  it("re-encodes GIF, WebP and a JPEG header without image data through the injected decoder after a header check", async () => {
     for (const [name, bytes] of [["a.jpg", jpegHeader(8, 8)], ["a.gif", gifHeader(8, 8)], ["a.webp", webpVp8Header(8, 8)]] as const) {
       const raster = vi.fn(fakeRaster());
       const result = await prepareDroppedImage(name, bytes, decoders(raster));
       expect(result.ok, name).toBe(true);
-      expect(raster).toHaveBeenCalledWith(bytes, expect.stringMatching(/^image\/(jpeg|gif|webp)$/), MAX_IMAGE_OBJECT_BYTES, {});
+      expect(raster).toHaveBeenCalledWith(bytes, expect.stringMatching(/^image\/(jpeg|gif|webp)$/), MAX_IMAGE_OBJECT_BYTES,
+        { maxSide: CONVERTED_PICTURE_MAX_SIDE });
     }
   });
 

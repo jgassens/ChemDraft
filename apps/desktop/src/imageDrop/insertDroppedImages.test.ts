@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createEmptyDocument, type GraphicObject } from "@chemdraft/chem-core";
-import { DROP_CASCADE_OFFSET, insertDroppedImages, placeDroppedImages } from "./insertDroppedImages";
+import { DROP_CASCADE_OFFSET, DROP_FIT_PAGE_FRACTION, insertDroppedImages, placeDroppedImages } from "./insertDroppedImages";
 import type { PreparedDroppedImage } from "./prepareDroppedImage";
 import { PNG_1X1_BASE64, pngWithSize } from "./testFixtures";
 
@@ -12,10 +12,32 @@ describe("placeDroppedImages", () => {
       .toEqual([{ x: 350, y: 275, width: 100, height: 50, scaled: false }]);
   });
 
-  it("scales a picture larger than the page down uniformly, never up", () => {
+  it("scales a picture larger than the page's centred margin box down uniformly into it, never up", () => {
+    expect(DROP_FIT_PAGE_FRACTION).toBe(0.8);
     const [frame] = placeDroppedImages(page, { x: 400, y: 300 }, [{ width: 1600, height: 400 }]);
-    expect(frame).toEqual({ x: 0, y: 200, width: 800, height: 200, scaled: true });
+    // The box is 640 × 480 at (80, 60).
+    expect(frame).toEqual({ x: 80, y: 220, width: 640, height: 160, scaled: true });
     expect(placeDroppedImages(page, { x: 0, y: 0 }, [{ width: 2, height: 2 }])[0]).toMatchObject({ width: 2, height: 2 });
+    // Just over the box in one direction is enough to shrink it.
+    expect(placeDroppedImages(page, { x: 400, y: 300 }, [{ width: 700, height: 100 }])[0])
+      .toEqual({ x: 80, y: 300 - 100 * 640 / 700 / 2, width: 640, height: 100 * 640 / 700, scaled: true });
+  });
+
+  it("lands a page-sized photo with a margin on every side, wherever it is dropped (owner rule, 2026-11-27)", () => {
+    // The hands-on case: a 2448 × 3264 portrait photo on a US Letter page once landed at 792 × 1056, edge to edge.
+    const letter = { width: 816, height: 1056 };
+    for (const point of [{ x: 408, y: 528 }, { x: 0, y: 0 }, { x: 816, y: 1056 }, { x: 10, y: 900 }]) {
+      const [frame] = placeDroppedImages(letter, point, [{ width: 2448, height: 3264 }]);
+      expect(frame!.scaled).toBe(true);
+      expect(frame!.width / frame!.height).toBeCloseTo(2448 / 3264, 9);
+      expect(frame!.height).toBeCloseTo(1056 * 0.8, 9);
+      expect(frame!.y).toBeCloseTo(1056 * 0.1, 9);
+      expect(frame!.x).toBeGreaterThanOrEqual(816 * 0.1 - 1e-9);
+      expect(frame!.x + frame!.width).toBeLessThanOrEqual(816 * 0.9 + 1e-9);
+    }
+    const [centred] = placeDroppedImages(letter, { x: 408, y: 528 }, [{ width: 2448, height: 3264 }]);
+    expect(centred!.x).toBeCloseTo(91.2, 9);
+    expect(centred!.width).toBeCloseTo(633.6, 9);
   });
 
   it("shifts a picture near the edge so it lies wholly on the page", () => {
@@ -45,9 +67,9 @@ describe("placeDroppedImages", () => {
       expect(frame.x + frame.width).toBeLessThanOrEqual(page.width + 1e-9);
       expect(frame.y + frame.height).toBeLessThanOrEqual(page.height + 1e-9);
     }
-    // A picture as large as the page leaves no room: only then do pictures share a position.
+    // A picture as large as the page fills the margin box and leaves no room: only then do pictures share a position.
     const full = placeDroppedImages(page, { x: 400, y: 300 }, [page, page]);
-    expect(full.map(frame => [frame.x, frame.y])).toEqual([[0, 0], [0, 0]]);
+    expect(full.map(frame => [frame.x, frame.y])).toEqual([[80, 60], [80, 60]]);
   });
 
   it("keeps the first of many pictures centred on the drop point, shrinking later steps instead", () => {
@@ -72,7 +94,7 @@ describe("placeDroppedImages with mixed sizes", () => {
   it("gives small pictures their own positions beside one that fills the page", () => {
     const frames = placeDroppedImages(page, { x: 400, y: 300 }, [page, { width: 40, height: 40 }, { width: 40, height: 40 }]);
     expect(frames.map(frame => [frame.x, frame.y])).toEqual([
-      [0, 0],
+      [80, 60],
       [380 + DROP_CASCADE_OFFSET, 280 + DROP_CASCADE_OFFSET],
       [380 + 2 * DROP_CASCADE_OFFSET, 280 + 2 * DROP_CASCADE_OFFSET]
     ]);
@@ -116,9 +138,9 @@ describe("insertDroppedImages", () => {
     const [small, wide] = result.document.pages[0]!.objects as GraphicObject[];
     expect([small!.width, small!.height]).toEqual([30, 20]);
     expect(small!.data.image?.pixelWidth).toBe(1);
-    const pageWidth = result.document.pages[0]!.width;
-    expect(wide!.width).toBeCloseTo(pageWidth);
-    expect(wide!.height).toBeCloseTo(10 * pageWidth / 4000);
+    const boxWidth = result.document.pages[0]!.width * DROP_FIT_PAGE_FRACTION;
+    expect(wide!.width).toBeCloseTo(boxWidth);
+    expect(wide!.height).toBeCloseTo(10 * boxWidth / 4000);
     expect(result.scaledToPage).toEqual(["big.png"]);
   });
 });

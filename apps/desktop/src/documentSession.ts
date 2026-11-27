@@ -11,12 +11,22 @@
  * serialized bytes are NOT comparable across launches (fresh documents get new ids/timestamps),
  * so hash equality can never recognize "this is just an empty canvas".
  *
+ * Size: the file holds each document once. The active tab's top-level compatibility copy stays in
+ * memory but is not written (`buildDocumentTabsSession`), and a tab's document is its native JSON
+ * (`createDocumentSessionSource`), not the saved file's CDXML envelope, which carries that JSON
+ * base64-encoded again. Both once applied to every picture's data: two dropped 1.7 MB photos made a
+ * 49.9 MB session that every later edit rewrote. Sessions written either way still restore.
+ *
  * Everything here is pure so the envelope contract is unit-testable; the effects live in
  * MainWindow.
  */
 
 import type { ViewportState } from "@chemdraft/viewport-engine";
-import { ChemDraftDocumentSchema, type ChemDraftDocument } from "@chemdraft/chem-core";
+import {
+  ChemDraftDocumentSchema, isEngineDocument, parseDocument, prepareNativeDocumentForSerializationWithWarnings,
+  type ChemDraftDocument
+} from "@chemdraft/chem-core";
+import { sha256Utf8Hex } from "@chemdraft/cdx-compat";
 import type { OpenWarningsReport } from "./openWarnings";
 
 export const DOCUMENT_SESSION_VERSION = 1;
@@ -24,11 +34,15 @@ export const DOCUMENT_SESSION_SAVE_DEBOUNCE_MS = 800;
 
 export interface DocumentSessionEnvelope {
   version: typeof DOCUMENT_SESSION_VERSION;
-  /** Full serialized document (the same payload File > Save writes). */
+  /**
+   * The full document, in a form `openNativeDocument` reads: its native JSON
+   * (`createDocumentSessionSource`), or, in sessions written before that, the CDXML envelope File >
+   * Save writes.
+   */
   contents: string;
   /**
-   * SHA-256 of the native document JSON embedded in `contents` (the envelope's native-payload hash),
-   * not of `contents` itself; kept for debugging and future retention policies.
+   * SHA-256 of the native document JSON (`contents` itself, or the JSON a CDXML envelope embeds);
+   * kept for debugging and future retention policies.
    */
   payloadHash: string;
   /** True when the document had no drawable objects on any page at save time. */
@@ -113,19 +127,67 @@ function parseSessionWarnings(raw: unknown): OpenWarningsReport | undefined {
     ...(raw.operation === "save" ? { operation: "save" } : {}) };
 }
 
+/**
+ * The session as it is written (`toJSON`, which the Tauri IPC's `JSON.stringify` honours): each tab
+ * once, with only the outer fields a reader needs to find them. Every release since 1.0.0, and the
+ * native restore (`document_session.rs`), reads `tabs` and never the top-level copy of the active tab.
+ */
+function documentTabsSessionFile(this: DocumentSessionEnvelope) {
+  return {
+    version: this.version,
+    savedAt: this.savedAt,
+    tabs: this.tabs,
+    activeTabIndex: this.activeTabIndex,
+    ...(this.unrestoredTabs !== undefined ? { unrestoredTabs: this.unrestoredTabs } : {})
+  };
+}
+
+/**
+ * The multi-tab session. In memory its top level also describes the active tab, as version-1
+ * readers expect; when serialized it holds each document once (`documentTabsSessionFile`). The
+ * written form reads `unrestoredTabs` when it is serialized, so assigning it afterwards is kept.
+ */
 export function buildDocumentTabsSession(
   tabs: DocumentSessionEnvelope[], activeTabIndex: number
 ): DocumentSessionEnvelope {
   const active = tabs[activeTabIndex];
   if (!active) throw new Error("The active document tab is missing");
-  return { ...active, tabs, activeTabIndex };
+  const session: DocumentSessionEnvelope = { ...active, tabs, activeTabIndex };
+  // Not enumerable: a spread copy (the parsed session) is an ordinary envelope again.
+  Object.defineProperty(session, "toJSON", { value: documentTabsSessionFile });
+  return session;
 }
 
-export interface DocumentSessionSource {
+/** What the session keeps of one document: its contents and the hash of its native JSON. */
+export interface DocumentSessionContents {
   contents: string;
   payloadHash: string;
-  /** The serializer's suggested filename (used when no file is associated). */
-  filename: string;
+}
+
+export interface DocumentSessionSource extends DocumentSessionContents {
+  /** The serializer's suggested filename, when the source is a save payload; the envelope does not use it. */
+  filename?: string;
+}
+
+const sessionContentsCache = new WeakMap<ChemDraftDocument, DocumentSessionContents>();
+
+/**
+ * One tab's document as the session keeps it: its native JSON, which `openNativeDocument` reads like
+ * any ChemDraft JSON file, as every release since 1.0.0 does, and that JSON's SHA-256. It is the very
+ * JSON a saved file embeds, so it restores the same document. Not the saved file's CDXML envelope,
+ * which carries that JSON base64-encoded again: picture data would be encoded twice, a third larger,
+ * and every autosave would also pay for the CDXML writer and the second encoding. An engine document
+ * never changes, so its contents are built once and shared by every later autosave.
+ */
+export function createDocumentSessionSource(document: ChemDraftDocument): DocumentSessionContents {
+  const cached = sessionContentsCache.get(document);
+  if (cached) return cached;
+  const engine = isEngineDocument(document);
+  const validated = engine ? document : parseDocument(document);
+  const contents = JSON.stringify(prepareNativeDocumentForSerializationWithWarnings(validated).value);
+  const source = Object.freeze({ contents, payloadHash: sha256Utf8Hex(contents) });
+  if (engine) sessionContentsCache.set(document, source);
+  return source;
 }
 
 /** No drawable objects on any page. Structural parameter type so this module stays free of the

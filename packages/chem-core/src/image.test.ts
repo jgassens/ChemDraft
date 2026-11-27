@@ -263,4 +263,30 @@ describe("embedded picture graphics", () => {
     expect(deserializeDocument(serializeDocument(document))).toEqual(document);
     expect(document.schema).toBe("chemdraft.document.v1");
   });
+
+  it("frames a dropped JPEG's SVG picture at its upright size, one page unit per pixel", () => {
+    // The form a dropped portrait photo takes (desktop `imageDrop/jpegPicture.ts`): stored 3264 x 2448, turned upright.
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="2448" height="3264" viewBox="0 0 2448 3264">'
+      + '<image width="3264" height="2448" preserveAspectRatio="none" transform="matrix(0 1 -1 0 2448 0)" href="data:image/jpeg;base64,/9j/2wA="/></svg>';
+    const object = createImageGraphicObject({ ...options, mimeType: "image/svg+xml", dataBase64: Buffer.from(svg).toString("base64") });
+    expect([object.width, object.height]).toEqual([2448, 3264]);
+    expect(object.data.image).toMatchObject({ mimeType: "image/svg+xml", pixelWidth: 2448, pixelHeight: 3264 });
+    expect(Buffer.from(object.data.image!.dataBase64, "base64").toString()).toBe(svg);
+  });
+
+  it("decodes the same bytes, and refuses the same data, where the engine has no Uint8Array.fromBase64", () => {
+    const engine = Object.getOwnPropertyDescriptor(Uint8Array, "fromBase64");
+    const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="12" height="8"><text>δ</text></svg>').toString("base64");
+    const withEngine = [createImageGraphicObject(options), createImageGraphicObject({ ...options, mimeType: "image/svg+xml", dataBase64: svg })];
+    Reflect.deleteProperty(Uint8Array, "fromBase64");
+    try {
+      expect((Uint8Array as { fromBase64?: unknown }).fromBase64).toBeUndefined();
+      expect([createImageGraphicObject(options), createImageGraphicObject({ ...options, mimeType: "image/svg+xml", dataBase64: svg })])
+        .toEqual(withEngine);
+      expect(() => createImageGraphicObject({ ...options, dataBase64: "!" })).toThrow("Image object g12 has invalid base64 image data.");
+    } finally {
+      if (engine) Object.defineProperty(Uint8Array, "fromBase64", engine);
+    }
+    expect(() => createImageGraphicObject({ ...options, dataBase64: "AAA*" })).toThrow("Image object g12 has invalid base64 image data.");
+  });
 });

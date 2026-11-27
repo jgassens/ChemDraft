@@ -2079,7 +2079,9 @@ lossy and a lossless WebP, an SVG with gradients and `<use href="#id">`, a BMP, 
 
 - Each format: drag it from Finder / Explorer onto the page. It appears centred under the pointer,
   at its natural size, selected; the status names it. The JPEG stands upright (EXIF honoured); the
-  GIF and WebP show their first frame. A picture larger than the page is shrunk to fit inside it.
+  GIF and WebP show their first frame. A picture larger than 80% of the page in either direction is
+  shrunk to fit the centred 80% of the page, the status says "scaled to fit the page", and all eight
+  selection handles are on the canvas with page margin around them.
 - Drop point: drop a small picture with a sharp centre (a crosshair PNG): the pointer's tip is the
   picture's centre within 1-2 px, horizontally and vertically, never a title bar's height below it.
   Check it in a normal window, in full screen (macOS: no title bar shown, then again with the title
@@ -2148,6 +2150,34 @@ lossy and a lossless WebP, an SVG with gradients and `<use href="#id">`, a BMP, 
   they draw the same, and an SVG embedding a WebP bitmap warns that headless export leaves it out.
 - Mixed sizes: drop a page-sized picture together with two small ones: the small ones sit at their
   own cascaded positions, not on top of each other.
+- Phone photo speed and size (RC5 report: `IMG_0896.JPG`, 1.7 MB, 3264 × 2448, EXIF orientation 6,
+  took 4.2-4.5 s to appear on an Intel iMac and grew the session to 49.9 MB after two drops). Use a
+  portrait phone JPEG of 1.5-3 MB with EXIF orientation 6, and another with orientation 8 or 3. Quit
+  with no document open, note the size of `document-session.json` in the app data folder (macOS
+  `~/Library/Application Support/org.chemdraft.desktop/`, Windows `%APPDATA%\org.chemdraft.desktop\`),
+  relaunch, and record on each machine:
+  - drop to visible: from releasing the mouse to the picture showing, by stopwatch or screen
+    recording; well under 1 s on Apple silicon, and record the Intel and Windows times;
+  - drop to idle: until a 1 px arrow-key nudge of another object moves at once (no beach ball or
+    busy cursor), and peak memory in Activity Monitor / Task Manager;
+  - each later edit: nudge the photo 1 px with an arrow key and resize it by a corner, ten times: each
+    responds at once, with no core pinned after it (Activity Monitor / Task Manager CPU);
+  - after a second drop of the same photo and a one-second pause, `document-session.json` holds each
+    photo once: under 2.5 times the two photos' bytes (under 9 MB for two 1.7 MB photos, about 6 MB
+    once each tab is stored as native JSON), never tens of MB. Open it in a text editor: there is no
+    `contents` field at the top level (only `version`, `savedAt`, `tabs`, `activeTabIndex` and, if
+    any, `unrestoredTabs`).
+  The photo stands upright on the canvas, in File ▸ Export as SVG, PDF, PNG and JPEG, in Copy then
+  Paste into Word or PowerPoint and Preview / Paint, after Save and reopen as `.chemdraft`, and after
+  quit and relaunch from the session. Its status says only "Inserted picture …; scaled to fit the
+  page: …" (no "stored at … pixels" note: the JPEG keeps its own bytes). A GIF or WebP over 4096
+  pixels on a side says "stored at … pixels (from …), the most a picture converted to PNG keeps".
+  Open the exported SVG in a browser: the photo is upright. Record which other SVG viewers (Inkscape,
+  Illustrator, Word) show it, since the photo travels as an SVG picture inside the SVG.
+- Old sessions: with a session written by 1.2.3 RC5 or 1.2.2 that holds a dropped picture (copy
+  `document-session.json` before upgrading), launch the new build: every tab restores with its
+  pictures, and the next autosave rewrites the file in the smaller form. Then relaunch 1.2.2 on that
+  new session file: its tabs restore too.
 - Stalled disk: drop a picture from a network share, then disconnect it mid-read: after 30 seconds
   the status names the file, and a later drop works.
 - Tabs and guards: start a drop of the large JPEG and switch tabs before it appears: it is not
@@ -2177,6 +2207,14 @@ lossy and a lossless WebP, an SVG with gradients and `<use href="#id">`, a BMP, 
   every floating palette, a popover, the Preferences and Export dialogs, and (web build) anywhere
   in the page. The app never replaces itself with the file or URL; text can still be dropped into a
   text field, but a link dropped on a read-only part inside an editable area does not navigate.
+
+Phone photo timings (see "Phone photo speed and size" above), one row per machine:
+
+| Machine | Drop to visible | Drop to idle | Each later edit | Session after two drops | Peak memory |
+| --- | --- | --- | --- | --- | --- |
+| Apple silicon macOS | | | | | |
+| Intel macOS | | | | | |
+| Windows x64 | | | | | |
 
 ## Status line over the rulers (macOS and Windows, 1.2.3)
 
