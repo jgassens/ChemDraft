@@ -346,6 +346,8 @@ interface VisibleExportContext {
   crossingFrontKeysByRefKey: Map<string, { front: number; back: number }>;
   /** Built on the page's first radical-dot check (isStandardAtomRadicalMark), then reused. */
   radicalMarks?: StandardRadicalMarkPageIndex;
+  /** Atom ids of each molecule, built on a molecule's first lone-pair check (moleculeHasAtom). */
+  atomIdSets?: Map<MoleculeObject, Set<string>>;
 }
 
 interface UnknownObjectExportDiagnostics {
@@ -1631,6 +1633,15 @@ function exportReactionSchemes(
   });
 }
 
+/** Whether a molecule has an atom with this id, from a per-molecule id set built once per export
+ * (a scan of `molecule.atoms` per lone pair made a fragment of many lone-pair atoms quadratic). */
+function moleculeHasAtom(molecule: MoleculeObject, atomId: string, context: VisibleExportContext): boolean {
+  const cache = context.atomIdSets ??= new Map();
+  let ids = cache.get(molecule);
+  if (!ids) cache.set(molecule, ids = new Set(molecule.atoms.map(atom => atom.id)));
+  return ids.has(atomId);
+}
+
 function exportLonePair(
   mark: ElectronMarkObject, context: VisibleExportContext, allocator: IdAllocator,
   objects: ReadonlyMap<string, DocumentObject>
@@ -1643,7 +1654,7 @@ function exportLonePair(
   if (mark.anchor.kind === "atom") {
     const { objectId, atomId } = mark.anchor;
     const molecule = objectId && objects.get(objectId);
-    if (!atomId || !molecule || molecule.type !== "molecule" || !molecule.atoms.some(atom => atom.id === atomId)) return undefined;
+    if (!atomId || !molecule || molecule.type !== "molecule" || !moleculeHasAtom(molecule, atomId, context)) return undefined;
     const nodeId = idFor(atomIdsForMolecule(molecule, context, allocator), atomId, allocator);
     attachment = `<represent object="${nodeId}" attribute="Radical"/>`;
   } else if (mark.anchor.kind !== "point") return undefined;
@@ -2209,9 +2220,11 @@ function exportMoleculeObject(
   const labels = hasIsotopes
     ? new Map(planMoleculeAtomLabels(molecule).map((plan) => [plan.atom.id, plan.layout.runs]))
     : undefined;
+  // Read once per molecule: filtering the source id map for every atom made a large fragment quadratic.
+  const sourceAtomIds = preservedCurveAttributes(molecule.compatibility?.unknown.cdxmlAtomIdsByAtomId);
   const atomLines = molecule.atoms.map((atom) => {
     const nodeId = idFor(atomIds, atom.id, allocator);
-    const sourceAtomId = preservedCurveAttributes(molecule.compatibility?.unknown.cdxmlAtomIdsByAtomId)[atom.id];
+    const sourceAtomId = sourceAtomIds[atom.id];
     if (sourceAtomId) context.sourceIds.set(sourceAtomId, nodeId);
     // An element symbol chemists write on bonds — "Ar" (aryl), "Ac", "Pr", "Ts" — typed as a label is
     // not that element on a bonded atom. Writing its atomic number would hand every CDXML reader

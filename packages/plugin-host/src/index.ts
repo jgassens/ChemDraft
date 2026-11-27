@@ -1,15 +1,17 @@
 import { sameDocumentValue } from "./documentValue";
-// `applyPatch` (and its `ApplyPatchOptions`) are the chem-core RUNTIME the host calls; tsup bundles them
+// `applyPatch` (and its `ApplyPatchOptions`) are the chem-core RUNTIME the host calls; the SDK build bundles them
 // into this package's dist so no `@chemdraft/chem-core` dependency ships (ADR-0031). `ChemDraftDocument`,
 // however, is taken from `@chemdraft/plugin-api` so a consumer using both SDK packages sees ONE canonical
 // document type — not a second, structurally-identical copy inlined here.
-import type { ApplyPatchOptions, DocumentObject, DocumentPatch, DocumentPage, MoleculeAtom, MoleculeBond, ObjectIdentity,
+import type { ApplyPatchOptions, DocumentObject, DocumentPatch, DocumentPage, MoleculeAtom, MoleculeBond, MoleculeObject, ObjectIdentity,
   OrphanedRepeatUnit } from "@chemdraft/chem-core";
 import { duplicateIdRefusalMessage, insertionPins, objectInWriteScope, objectIsInWriteScope, objectLocations, pinnedObjectMissingMessage,
   pinObject, pinSelectionPages, resolvePinnedObject, resolvePinnedObjects, resolvePinnedPages, scopedObjectRefs, withoutPins, withPins,
   type PageObjectRef, type PagePin, type PinnedObjectPages, type PluginWriteScopePages } from "./pageObjects";
-import { applyPatch, atomIgnoresStatedHydrogenCount, atomWithIgnoredHydrogenCount, hasObjectIdentity, ignoredHydrogenCountAtomKind,
+import { applyPatch, atomicNumberForElementSymbol, atomIgnoresStatedHydrogenCount, atomWithIgnoredHydrogenCount, hasObjectIdentity, ignoredHydrogenCountAtomKind,
   objectIdentity, planOrphanedRepeatUnitCleanup, pruneReactionObjectReferences, removeOrphanedRepeatUnitBrackets, sameBracketIdentity } from "@chemdraft/chem-core";
+// Bundle the grammar from source in the SDK without a published layout-engine dependency.
+import { parseCondensedLabelFormula } from "../../layout-engine/src/labelGrammar";
 import {
   commitRequestPatch, containsBounds, pageContainsBounds, RequestWriteError, type BoundRequestWrite, type RequestDocument, type RequestHistory,
   type RequestWriteCommit, type RequestObjectRef, type RequestViewport, type RequestPageSpaceProvider
@@ -317,9 +319,10 @@ export function assertPluginPatchWriteScope(
  * hydrogen count other than 0 on an H, D or T atom, on a label naming no element (the unknown atom
  * "*" or a generic label such as A, Q, M, X or R1), or on an abbreviation such as OMe or Ph, or a
  * typed Ac, Pr or Ts on a bond, which the label grammar reads as acetyl, n-propyl or tosyl
- * (`details.element` gives the label), or a nonzero count the write states that the written atom
+ * (`details.element` gives the label), or a count (0 included) the write states that the written atom
  * would not carry (the patch engine drops the count of an atom whose bonds or statement the write
- * changes). */
+ * changes), or a count other than the one a label's own text gives it (a typed "C" stating 3:
+ * `details.element` gives the label, `details.labelHydrogenCount` what its text gives). */
 export const HydrogenCountUnrepresentableReason = "hydrogen_count_unrepresentable";
 
 /**
@@ -334,36 +337,53 @@ export const HydrogenCountUnrepresentableReason = "hydrogen_count_unrepresentabl
  * duplicating and undoing a user's own document, which must never be refused; the atom validator
  * flags it there instead.
  *
- * Two rules, in order:
+ * Three rules, in order (a count a label's own text overrides is refused by rules 1 and 3 alike):
  *
- * 1. Every nonzero count the patch stated (`requested`, keyed by the identity of the object each op
+ * 1. Every count the patch stated, 0 included (`requested`, keyed by the identity of the object each op
  *    reached) must be exactly what the committed atom carries, the same atom of the same object
  *    followed by identity. The patch engine drops the count of an atom whose bonds or statement
  *    change (`clearChangedAtomHydrogenHints`), so an updateObject that bonds an unbonded typed Ac
  *    (actinium, which may carry a count) and states hydrogenCount 2 on it would otherwise commit
- *    acetyl with the stated 2 silently discarded. Nothing exempts a stated count that did not land:
- *    not what the molecule held before, and not a same-id object elsewhere. An object or atom that
- *    cannot be followed to the committed result is refused (fail closed).
+ *    acetyl with the stated 2 silently discarded. A count that did not land is not excused by what
+ *    the molecule held before, nor by a same-id object elsewhere; an object or atom that cannot be
+ *    followed to the committed result is refused (fail closed). A dropped count loses nothing
+ *    when the label spells the requested count, or when it is 0 on an abbreviation or a label
+ *    naming no element. When a user accepts a proposal and the embedder passes
+ *    `droppedHydrogenCountChangesNothing` (`AcceptProposedPatchOptions`), a count the committed
+ *    molecule derives back exactly is also accepted.
  * 2. The committed molecules may not carry an uncounted count this write introduced. A count an
  *    edited molecule already held unchanged, on the same atom, with the same label and already
  *    uncounted, is let be, so an edit elsewhere in an older document's molecule is not blocked. The
  *    molecule it is compared with is the one the edited value continues, by host identity only;
  *    one with no such predecessor (an insertion) has nothing to keep.
+ * 3. Nor a count its label's own text overrides (`labelTextHydrogenCount`): a typed "C" stating 3
+ *    commits a bare carbon, since the label, formula and molfile read the text. A count equal to
+ *    what the text gives is accepted; one already held unchanged is let be, as in rule 2.
  */
 function assertRepresentableHydrogenCounts(before: ChemDraftDocument, after: ChemDraftDocument,
-  requested: RequestedHydrogenCounts = new Map()): void {
+  requested: RequestedHydrogenCounts = new Map(), droppedHydrogenCountChangesNothing?: DroppedHydrogenCountCheck): void {
   const committed = after.pages.flatMap(page => page.objects);
   for (const [identity, { moleculeId, atoms }] of requested) {
     const object = committed.find(candidate => hasObjectIdentity(candidate, identity));
     const molecule = object?.type === "molecule" ? object : undefined;
     for (const [atomId, asked] of atoms) {
-      if (!asked.hydrogenCount) continue;
+      // Every stated count, 0 included: a dropped 0 lets the atom fill its valence with hydrogens.
+      if (typeof asked.hydrogenCount !== "number") continue;
       const atom = molecule?.atoms.find(candidate => candidate.id === atomId);
       if (atom?.hydrogenCount === asked.hydrogenCount) continue;
       const stated = { ...(atom ?? asked), hydrogenCount: asked.hydrogenCount };
       if (molecule && atom && atomIgnoresStatedHydrogenCount(stated, molecule.bonds)) {
         throw ignoredHydrogenCountRefusal(molecule.id, stated, molecule.bonds);
       }
+      // A label whose own text gives its hydrogens (a typed "C") never keeps a different stated count,
+      // whatever the write does to its bonds: say so, not that a later update could state it.
+      const spelled = molecule && atom ? labelTextHydrogenCount(stated, molecule.bonds) : undefined;
+      if (molecule && spelled !== undefined && spelled !== stated.hydrogenCount) throw labelHydrogenCountRefusal(molecule.id, stated, spelled);
+      // These counts are guaranteed by the atom's label even after the field is dropped.
+      if (molecule && atom && atom.hydrogenCount === undefined &&
+        (spelled === stated.hydrogenCount || (stated.hydrogenCount === 0 && countsZeroAnyway(atom, molecule.bonds)))) continue;
+      // A dropped count the embedder's chemistry derives back exactly loses nothing (accept path only).
+      if (molecule && atom && atom.hydrogenCount === undefined && droppedHydrogenCountChangesNothing?.(molecule, stated)) continue;
       throw new PluginHostError(
         `Plugin write refused: atom "${atomId}" of molecule "${molecule?.id ?? moleculeId}" is ${stated.element} with hydrogenCount ` +
         `${stated.hydrogenCount}, which the written molecule would not keep: a change to an atom's bonds, or to what the ` +
@@ -385,7 +405,72 @@ function assertRepresentableHydrogenCounts(before: ChemDraftDocument, after: Che
     const previousMolecule = previous?.type === "molecule" ? previous : undefined;
     const atom = atomWithIgnoredHydrogenCount(object.atoms, previousMolecule?.atoms, object.bonds, previousMolecule?.bonds);
     if (atom) throw ignoredHydrogenCountRefusal(object.id, atom, object.bonds);
+    const overridden = atomWithLabelOverriddenHydrogenCount(object, previousMolecule);
+    if (overridden) throw labelHydrogenCountRefusal(object.id, overridden.atom, overridden.spelled);
   }
+}
+
+/**
+ * The hydrogens an atom's label text gives it, for an atom whose stated count ChemDraft does not
+ * count because its label says its hydrogens itself (chem-core `statedHydrogenCountUse` "label"): a
+ * typed literal label ("C", "CH3", an unbonded typed "Ac", which is actinium), or a label that is not
+ * an element symbol but names one ("NH2"). The label, formula, SMILES and molfile all read such an
+ * atom's hydrogens from the text, so a typed "C" stating hydrogenCount 3 commits a bare carbon.
+ *
+ * Use the label grammar's condensed formula parser to read one heavy atom and its hydrogens in
+ * either order ("NH2", "H2N"). The formula also reads these counts for elements outside the
+ * grammar's valence table, such as a typed "Ac" (0) or "FeH" (1). Plain element atoms and labels
+ * handled by `atomIgnoresStatedHydrogenCount` are checked separately.
+ */
+function labelTextHydrogenCount(atom: MoleculeAtom, bonds: readonly MoleculeBond[]): number | undefined {
+  if (typeof atom.hydrogenCount !== "number") return undefined;
+  if (atomIgnoresStatedHydrogenCount({ ...atom, hydrogenCount: 1 }, bonds)) return undefined;
+  if (atom.labelLiteral !== true && atomicNumberForElementSymbol(atom.element) !== undefined) return undefined;
+  const counts = parseCondensedLabelFormula(atom.element);
+  if (!counts) return undefined;
+  const hydrogens = counts.get("H") ?? 0;
+  counts.delete("H");
+  return counts.size === 1 && counts.values().next().value === 1 ? hydrogens : undefined;
+}
+
+/** The first atom of `molecule` stating a count its label text overrides (`labelTextHydrogenCount`)
+ * that this write sets: not one `previous` already held unchanged, with the same label, literalness
+ * and count, already overridden (an older document's atom, such as a CDXML literal label keeping its
+ * source NumHydrogens, is not refused for edits elsewhere), as `atomWithIgnoredHydrogenCount` does. */
+function atomWithLabelOverriddenHydrogenCount(molecule: MoleculeObject, previous: MoleculeObject | undefined):
+  { atom: MoleculeAtom; spelled: number } | undefined {
+  const before = new Map(previous?.atoms.map(atom => [atom.id, atom]));
+  for (const atom of molecule.atoms) {
+    const spelled = labelTextHydrogenCount(atom, molecule.bonds);
+    if (spelled === undefined || spelled === atom.hydrogenCount) continue;
+    const old = before.get(atom.id);
+    const oldSpelled = old && previous ? labelTextHydrogenCount(old, previous.bonds) : undefined;
+    if (old && old.element === atom.element && old.labelLiteral === atom.labelLiteral && old.hydrogenCount === atom.hydrogenCount &&
+      oldSpelled !== undefined && oldSpelled !== old.hydrogenCount) continue;
+    return { atom, spelled };
+  }
+  return undefined;
+}
+
+/** The hydrogen_count_unrepresentable refusal for `atom` of molecule `moleculeId`, whose label text
+ * gives it `spelled` hydrogens where the write states another count (`labelTextHydrogenCount`). */
+function labelHydrogenCountRefusal(moleculeId: string, atom: MoleculeAtom, spelled: number): PluginHostError {
+  const label = atom.element.trim();
+  return new PluginHostError(
+    `Plugin write refused: atom "${atom.id}" of molecule "${moleculeId}" has label "${label}", which ChemDraft reads as ` +
+    `its own hydrogen count (${spelled} H from the label text), but the write states hydrogenCount ${atom.hydrogenCount}. ` +
+    `Remove the count (or state ${spelled}), or write the element without the literal label. Nothing was changed.`,
+    { reason: HydrogenCountUnrepresentableReason,
+      details: { moleculeId, atomId: atom.id, element: atom.element, hydrogenCount: atom.hydrogenCount!, labelHydrogenCount: spelled } }
+  );
+}
+
+/** Whether `atom` counts no hydrogens of its own whatever it states, so a stated 0 is what it counts
+ * anyway: an abbreviation or a label naming no element (chem-core `statedHydrogenCountUse` "agrees").
+ * Not an H, D or T atom: unbonded and stating nothing, that reads as H•, D• or T•. */
+function countsZeroAnyway(atom: MoleculeAtom, bonds: readonly MoleculeBond[]): boolean {
+  return atomIgnoresStatedHydrogenCount({ ...atom, hydrogenCount: 1 }, bonds) &&
+    ignoredHydrogenCountAtomKind(atom, bonds) !== "a hydrogen atom";
 }
 
 /** The hydrogen_count_unrepresentable refusal for `atom` of molecule `moleculeId`, whose stated
@@ -867,10 +952,21 @@ export interface QueuedProposedPatch extends ProposedPatchReceipt {
   proposal: NormalizedProposedDocumentPatch;
 }
 
+/** Whether `molecule`, as committed, has exactly the chemistry it would have if its atom `stated.id`
+ * carried `stated.hydrogenCount`, a count the proposal stated and the patch engine dropped (the
+ * atom's bonds or statement changed), so the atom derives its hydrogens instead. The host has no
+ * valence model; the embedder decides. */
+export type DroppedHydrogenCountCheck = (molecule: MoleculeObject, stated: MoleculeAtom) => boolean;
+
 /** Options for the USER accepting a queued proposal (never a plugin call; see `acceptProposedPatch`). */
 export interface AcceptProposedPatchOptions extends ApplyPatchOptions {
+  /** Accept a dropped stated hydrogen count when the committed molecule derives the same chemistry
+   *  for that atom. Counts already guaranteed by the atom's label are accepted by both write paths. */
+  droppedHydrogenCountChangesNothing?: DroppedHydrogenCountCheck;
   /** How the accepted proposal reaches the document. Defaults to chem-core `applyPatch`; the desktop
-   *  passes one that also selects what was inserted, so acceptance stays a single undo entry. */
+   *  passes one that also selects what was inserted, so acceptance stays a single undo entry. Pass
+   *  `options` on to the `applyPatch` that applies the proposal: its hooks record the hydrogen counts
+   *  the proposal states, which the host then checks were kept (`previewProposedPatch`). */
   apply?: (
     document: ChemDraftDocument,
     proposal: NormalizedProposedDocumentPatch,
@@ -2547,22 +2643,31 @@ export class PluginHost {
     options: AcceptProposedPatchOptions = {}
   ): ChemDraftDocument {
     const queued = this.requirePendingProposal(proposalId);
-    const { apply, ...applyOptions } = options;
+    const { apply, droppedHydrogenCountChangesNothing, ...applyOptions } = options;
     const baseline = this.proposalOrphans.get(proposalId);
     if (baseline) {
       applyOptions.allowOrphanedRepeatUnitRemoval = unit => baseline.some(original => original.pageId === unit.pageId &&
         unit.brackets.every(bracket => original.brackets.some(candidate => sameBracketIdentity(candidate, bracket))));
     }
-    return apply ? apply(document, queued.proposal, applyOptions) : applyPatch(document, queued.proposal.patch, applyOptions);
+    // The same stated-count check as documents.applyPatch (`assertRepresentableHydrogenCounts`): a
+    // count the proposal states that the applied molecule would not keep, or one nothing would count,
+    // refuses the accept rather than committing a different formula (AGENTS.md section 7). The
+    // recorder sees the ops of whatever applies the proposal through these options.
+    const requested = requestedHydrogenCountRecorder(applyOptions.beforeObjectWrite, applyOptions.beforeObjectTargets);
+    const recorded = { ...applyOptions, beforeObjectWrite: requested.beforeObjectWrite, beforeObjectTargets: requested.beforeObjectTargets };
+    const updated = apply ? apply(document, queued.proposal, recorded) : applyPatch(document, queued.proposal.patch, recorded);
+    assertRepresentableHydrogenCounts(document, updated, requested.counts, droppedHydrogenCountChangesNothing);
+    return updated;
   }
 
   /**
    * The USER accepted a queued proposal. This is the review step a recognition proposal exists for, so
-   * none of `documents.applyPatch`'s refusals apply here: not the recognition rule (the review is what
-   * that rule waits for), not the invocation binding (the command finished long ago), and not the
-   * document key (the user is accepting into the document in front of them). A proposal whose patch
-   * cannot be applied throws and stays pending, so the caller can report it and the user can retry or
-   * reject it.
+   * none of `documents.applyPatch`'s gating refusals apply here: not the recognition rule (the review is
+   * what that rule waits for), not the invocation binding (the command finished long ago), and not the
+   * document key (the user is accepting into the document in front of them). Its chemistry refusal of a
+   * stated hydrogen count does apply (`previewProposedPatch`): accepting never commits a formula other
+   * than the one proposed. A proposal whose patch cannot be applied, or is refused, throws and stays
+   * pending, so the caller can report it and the user can retry or reject it.
    */
   acceptProposedPatch(
     proposalId: string,
