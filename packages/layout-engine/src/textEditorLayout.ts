@@ -2,7 +2,7 @@ import { nativeTextStyleFromObjectStyle, type TextObject, type TextSpan } from "
 import { measureNativeTextSpanLineWidth } from "./textMetrics";
 import { nativeTextLineAdvance, planTextObjectPlacement } from "./textPlacement";
 import {
-  nativeTextObjectLineMetrics, nativeTextSpanMetrics, textObjectSpanLayout, textObjectWrapsAtWidth, type NativeTextLayoutLine
+  nativeTextObjectLineMetrics, nativeTextRenderedSpanMetrics, nativeTextSpanMetrics, textObjectSpanLayout, textObjectWrapsAtWidth, type NativeTextLayoutLine
 } from "./textLayout";
 
 /**
@@ -75,17 +75,22 @@ export type NativeTextEditorStopMeasure = (line: { index: number; start: number;
 type TextBoxLayoutInput = Pick<TextObject, "text" | "spans" | "style"> & Partial<Pick<TextObject, "width" | "arrowAttachment">>;
 
 /** Baseline, ascent and descent of each rendered line, as planTextObjectSvg places them:
- * explicit metrics when the box wraps, else a fixed advance per line. */
+ * explicit metrics when the box wraps, else a fixed advance per line. Each run's band is the
+ * one the text box SVG draws (a script run at the parent's script size and offset); reaction
+ * conditions and pluses are drawn with their own script metrics, so they keep those. */
 function renderedLineBands(object: TextBoxLayoutInput, layout: readonly NativeTextLayoutLine[]) {
   const style = nativeTextStyleFromObjectStyle(object.style);
   const metrics = textObjectWrapsAtWidth(object) ? nativeTextObjectLineMetrics(object) : undefined;
   const lineAdvance = nativeTextLineAdvance(style);
+  const ownScriptMetrics = object.arrowAttachment?.kind === "conditions" ||
+    (object.text === "+" && object.style?.reactionPlus === true);
+  const spanMetrics = ownScriptMetrics ? nativeTextSpanMetrics : nativeTextRenderedSpanMetrics;
   return layout.map((line, index) => {
-    const spanMetrics = line.spans.map(span => nativeTextSpanMetrics(span, object.style));
+    const runs = line.spans.map(span => spanMetrics(span, object.style));
     return {
       baseline: metrics ? metrics.lines[index]!.baseline : style.fontSizePx + index * lineAdvance,
-      ascent: Math.max(style.fontSizePx * 0.8, ...spanMetrics.map(metric => metric.ascent)),
-      descent: Math.max(style.fontSizePx * 0.2, ...spanMetrics.map(metric => metric.descent))
+      ascent: Math.max(style.fontSizePx * 0.8, ...runs.map(metric => metric.ascent)),
+      descent: Math.max(style.fontSizePx * 0.2, ...runs.map(metric => metric.descent))
     };
   });
 }

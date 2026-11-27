@@ -111,15 +111,17 @@ import { textAdvanceEm, measureTextRun, measureNativeTextSpanLineWidth, nativeTe
 import { planTextObjectPlacement } from "./textPlacement";
 import { formatNumber } from "./formatNumber";
 import {
-  nativeTextObjectLineMetrics, nativeTextSpanLayout, nativeTextSpanMetrics, textObjectSpanLayout, textObjectSpanLines,
+  nativeTextObjectLineMetrics, nativeTextSpanLayout, nativeTextRenderedSpanFont, nativeTextRenderedSpanMetrics, nativeTextSpanMetrics,
+  textObjectSpanLayout, textObjectSpanLines,
   textObjectSpansForRendering, textObjectWrapsAtWidth
 } from "./textLayout";
 export {
-  nativeTextObjectLineMetrics, nativeTextSpanLayout, nativeTextSpanMetrics, textObjectSpanLayout, textObjectSpanLines,
+  nativeTextObjectLineMetrics, nativeTextSpanLayout, nativeTextRenderedSpanFont, nativeTextRenderedSpanMetrics, nativeTextSpanMetrics,
+  textObjectSpanLayout, textObjectSpanLines,
   textObjectSpansForRendering, textObjectWrapsAtWidth, type NativeTextLayoutLine
 } from "./textLayout";
 export * from "./textEditorLayout";
-import { nativeTextScriptFontScale, nativeTextSubscriptOffsetEm, nativeTextSuperscriptOffsetEm } from "./textMetrics";
+import { nativeTextScriptFontScale, nativeTextSubscriptOffsetEm } from "./textMetrics";
 import { nativeGroupLabelDisplay, type AtomLabelAnchor } from "./labelGrammar";
 import { moleculeSketchTickPath, type MoleculeSketchTick } from "./sketchTicks";
 
@@ -4295,9 +4297,8 @@ export function textSpanLineFragments(
   let previousScriptOffsetPx = 0;
   return line.map((span, spanIndex) => {
     const fontSizePx = metadataNumber(span.style.fontSizePx);
-    const scriptOffsetEm = span.script === "subscript" ? nativeTextSubscriptOffsetEm
-      : span.script === "superscript" ? -nativeTextSuperscriptOffsetEm : 0;
-    const scriptOffsetPx = parentFontSizePx * scriptOffsetEm;
+    const rendered = nativeTextRenderedSpanFont(span, parentFontSizePx);
+    const scriptOffsetPx = rendered.offsetPx;
     const relativeScriptOffsetPx = scriptOffsetPx - previousScriptOffsetPx;
     previousScriptOffsetPx = scriptOffsetPx;
     return elementFragment("tspan", `text-line-${lineIndex}-${spanIndex}-${span.text}`, {
@@ -4306,8 +4307,7 @@ export function textSpanLineFragments(
       dy: baselineY === undefined
         ? (spanIndex === 0 && lineIndex > 0 ? lineAdvancePx : undefined)
         : (spanIndex === 0 ? undefined : relativeScriptOffsetPx),
-      "font-size": span.script === "normal" ? fontSizePx
-        : `${Number((parentFontSizePx * nativeTextScriptFontScale).toFixed(6))}px`,
+      "font-size": span.script === "normal" ? fontSizePx : `${Number(rendered.fontSizePx.toFixed(6))}px`,
       fill: metadataString(span.style.color),
       "font-family": metadataString(span.style.fontFamily),
       "font-weight": metadataNumber(span.style.fontWeight),
@@ -7130,10 +7130,7 @@ export function textContentFrame(object: TextObject): LayoutBounds {
     left = Math.min(left, x); right = Math.max(right, x + width);
     for (const span of line) {
       if (!span.text) continue;
-      const size = span.script === "normal"
-        ? metadataNumber(span.style.fontSizePx) ?? style.fontSizePx : style.fontSizePx * nativeTextScriptFontScale;
-      const shift = span.script === "subscript" ? style.fontSizePx * nativeTextSubscriptOffsetEm
-        : span.script === "superscript" ? -style.fontSizePx * nativeTextSuperscriptOffsetEm : 0;
+      const { fontSizePx: size, offsetPx: shift } = nativeTextRenderedSpanFont(span, style.fontSizePx);
       const baseline = object.y + (wrappedMetrics?.lines[index]?.baseline ?? style.fontSizePx + index * advance) + shift;
       top = Math.min(top, baseline - size);
       bottom = Math.max(bottom, baseline + size * nativeTextMetrics.descentEm);
@@ -7221,10 +7218,9 @@ function textInkBounds(object: TextObject): LayoutBounds | null {
     for (const span of line) {
       if (!span.text.trim()) continue;
       const metrics = conditions?.scripted ? nativeTextSpanMetrics(span, object.style) : undefined;
-      const size = metrics?.fontSize ?? (span.script === "normal"
-        ? metadataNumber(span.style.fontSizePx) ?? style.fontSizePx : style.fontSizePx * nativeTextScriptFontScale);
-      const shift = metrics?.offset ?? (span.script === "subscript" ? style.fontSizePx * nativeTextSubscriptOffsetEm
-        : span.script === "superscript" ? -style.fontSizePx * nativeTextSuperscriptOffsetEm : 0);
+      const rendered = metrics ? undefined : nativeTextRenderedSpanFont(span, style.fontSizePx);
+      const size = metrics?.fontSize ?? rendered!.fontSizePx;
+      const shift = metrics?.offset ?? rendered!.offsetPx;
       top = Math.min(top, baseline + shift - size);
       bottom = Math.max(bottom, baseline + shift + size * nativeTextMetrics.descentEm);
     }

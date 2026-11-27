@@ -1,5 +1,7 @@
 import { nativeTextStyleFromObjectStyle, type NativeTextStyle, type TextObject, type TextSpan } from "@chemdraft/chem-core";
-import { measureNativeTextSpanLineWidth } from "./textMetrics";
+import {
+  measureNativeTextSpanLineWidth, nativeTextScriptFontScale, nativeTextSubscriptOffsetEm, nativeTextSuperscriptOffsetEm
+} from "./textMetrics";
 
 type Glyph = { text: string; span: TextSpan; offset: number };
 function runs(glyphs: readonly Glyph[]): TextSpan[] {
@@ -73,8 +75,37 @@ export function nativeTextSpanLayout(spans: readonly TextSpan[], style: NativeTe
   return result;
 }
 
+/** @internal How the text box renderer (textSpanLineFragments) draws a run: a script run at
+ * the parent's script scale with its baseline moved by a parent em (positive is down,
+ * nativeTextSubscriptOffsetEm / nativeTextSuperscriptOffsetEm), whatever the run's own size;
+ * a normal run at its own size, else the parent's. The one copy of that math (AGENTS.md 9). */
+export function nativeTextRenderedSpanFont(span: Pick<TextSpan, "script" | "style">, parentFontSizePx: number):
+  { fontSizePx: number; offsetPx: number } {
+  if (span.script === "normal") {
+    const own = span.style.fontSizePx;
+    return { fontSizePx: typeof own === "number" && Number.isFinite(own) ? own : parentFontSizePx, offsetPx: 0 };
+  }
+  return {
+    fontSizePx: parentFontSizePx * nativeTextScriptFontScale,
+    offsetPx: parentFontSizePx * (span.script === "subscript" ? nativeTextSubscriptOffsetEm : -nativeTextSuperscriptOffsetEm)
+  };
+}
+
+/** @internal Size, baseline offset and em-box ascent/descent of a run as the text box SVG draws
+ * it (nativeTextRenderedSpanFont). The text box editor's caret, highlight and height use these.
+ * Reaction conditions and reaction pluses draw their own script metrics (nativeTextSpanMetrics). */
+export function nativeTextRenderedSpanMetrics(span: TextSpan, objectStyle: TextObject['style']):
+  { fontSize: number; offset: number; ascent: number; descent: number } {
+  const { fontSizePx, offsetPx } = nativeTextRenderedSpanFont(span, nativeTextStyleFromObjectStyle(objectStyle).fontSizePx);
+  return { fontSize: fontSizePx, offset: offsetPx, ascent: fontSizePx * .8 - offsetPx, descent: fontSizePx * .2 + offsetPx };
+}
+
 /** Explicit baselines prevent a script run from shifting the following run or line.
- * Reserve each line's actual script ascent/descent before laying out its neighbor. */
+ * Reserve each line's actual script ascent/descent before laying out its neighbor.
+ * These are the reaction-conditions renderer's script metrics (sized from the run's own font
+ * size, a smaller subscript offset than the text box renderer's), and the line spacing of
+ * wrapped text boxes; both are drawn with them and are kept as they are. The text box
+ * editor's bands use nativeTextRenderedSpanMetrics, which matches the text box SVG. */
 export function nativeTextSpanMetrics(span: TextSpan, objectStyle: TextObject['style']): {fontSize:number;offset:number;ascent:number;descent:number} {
   const size=nativeTextStyleFromObjectStyle({...objectStyle,...span.style}).fontSizePx;
   const fontSize=Number((size*(span.script==='normal'?1:.72)).toFixed(6));
