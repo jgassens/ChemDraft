@@ -1,7 +1,9 @@
 /**
  * Paint order for the pictures of one drop. Every picture must keep some area that no picture
  * painted above it covers, so a click can still reach it. Pictures with the same frame are the one
- * exception: neither has an edge to expose, so only the upper one can show.
+ * exception here: neither has an edge to expose, so only the upper one can show. The arrangement
+ * (`arrangeDroppedImages`) moves such a picture off its twin wherever the page leaves room, and the
+ * drop's status names the pictures that must stay stacked.
  */
 
 export interface StackFrame { x: number; y: number; width: number; height: number }

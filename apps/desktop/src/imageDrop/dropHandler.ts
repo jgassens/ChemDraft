@@ -199,6 +199,8 @@ function notInsertedPart({ names, reason }: NotInsertedPictures): string {
 export function formatImageDropStatus(outcome: {
   inserted: readonly PreparedDroppedImage[];
   scaledToPage?: readonly string[];
+  /** Pictures left exactly on top of each other, one list of names per stack. */
+  stackedExactly?: readonly (readonly string[])[];
   refusals: readonly DropRefusalEntry[];
   notInserted?: NotInsertedPictures;
   /**
@@ -218,13 +220,17 @@ export function formatImageDropStatus(outcome: {
       for (const note of image.notes) parts.push(`${image.name}: ${note}`);
     }
     if (outcome.scaledToPage?.length) parts.push(`scaled to fit the page: ${outcome.scaledToPage.join(", ")}`);
+    for (const stack of outcome.stackedExactly ?? []) {
+      const names = `${stack.slice(0, -1).join(", ")} and ${stack[stack.length - 1]}`;
+      parts.push(`${names} are stacked exactly: drag the top one to reach the ${stack.length > 2 ? "others" : "other"}`);
+    }
   }
   for (const part of refusalParts(outcome.refusals)) parts.push(part);
   return joinStatusParts(parts);
 }
 
 export type DroppedImageInsertion =
-  | { ok: true; scaledToPage: readonly string[] }
+  | { ok: true; scaledToPage: readonly string[]; stackedExactly?: readonly (readonly string[])[] }
   | { ok: false; reason: string };
 
 export interface DroppedFilesHandler<T> {
@@ -290,7 +296,7 @@ export async function handleDroppedFiles<T>(files: readonly T[], handler: Droppe
       if (!fit.length) return formatImageDropStatus({ inserted: [], refusals });
       const insertion = handler.insertImages(fit);
       return insertion.ok
-        ? formatImageDropStatus({ inserted: fit, scaledToPage: insertion.scaledToPage, refusals })
+        ? formatImageDropStatus({ inserted: fit, scaledToPage: insertion.scaledToPage, stackedExactly: insertion.stackedExactly, refusals })
         : formatImageDropStatus({ inserted: fit, refusals, notInserted: { names: fit.map(image => image.name), reason: insertion.reason } });
     };
     try {

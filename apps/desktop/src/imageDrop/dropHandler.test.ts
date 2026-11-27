@@ -661,6 +661,17 @@ describe("formatImageDropStatus", () => {
       .toBe("Couldn't drop \"x.url\": r.");
   });
 
+  it("names the pictures left stacked exactly and how to reach the lower ones", () => {
+    const images = ["a.png", "b.png", "c.png", "d.png", "e.png"].map(name => ({ name, mimeType: "image/png" as const, dataBase64: "", notes: [] }));
+    expect(formatImageDropStatus({ inserted: images.slice(0, 2), refusals: [], stackedExactly: [["a.png", "b.png"]] }))
+      .toBe("Inserted 2 pictures (a.png, b.png); a.png and b.png are stacked exactly: drag the top one to reach the other");
+    expect(formatImageDropStatus({ inserted: images, refusals: [], scaledToPage: ["a.png", "b.png", "c.png"],
+      stackedExactly: [["a.png", "b.png", "c.png"], ["d.png", "e.png"]] }))
+      .toBe("Inserted 5 pictures (a.png, b.png, c.png, d.png, e.png); scaled to fit the page: a.png, b.png, c.png; "
+        + "a.png, b.png and c.png are stacked exactly: drag the top one to reach the others; "
+        + "d.png and e.png are stacked exactly: drag the top one to reach the other");
+  });
+
   it("names every picture that was not inserted, quoted, one or several", () => {
     const status = (names: string[]) => formatImageDropStatus({ inserted: [], refusals: [], notInserted: { names, reason: "the reason." } });
     expect(status(["slow.png"])).toBe("\"slow.png\" was not inserted: the reason.");

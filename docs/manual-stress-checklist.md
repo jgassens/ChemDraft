@@ -2120,7 +2120,10 @@ lossy and a lossless WebP, an SVG with gradients and `<use href="#id">`, a BMP, 
   wide together near the bottom-right corner. Each can be clicked on its own: the 760 is painted at
   the back, the 160 above it, the 80 on top. Then drop full-height pictures 20, 780 and 800 wide near
   the left edge: all three share the top-left corner, largest at the back, and each can be clicked.
-  Only pictures with exactly the same frame hide one another.
+  Add a second 20 wide copy to that drop: it sits 24 page pixels to the right of the first, and every
+  picture can be clicked. Drop two copies of a picture larger than the page: both fill the page, one
+  hides the other, and the status says "a.png and b.png are stacked exactly: drag the top one to
+  reach the other". Only such pictures hide one another.
 - Stalled disk: drop a picture from a network share, then disconnect it mid-read: after 30 seconds
   the status names the file, and a later drop works.
 - Tabs and guards: start a drop of the large JPEG and switch tabs before it appears: it is not

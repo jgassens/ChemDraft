@@ -11490,11 +11490,13 @@ export function MainWindow({
       const refusal = imageDropRefusal();
       if (refusal) return { ok: false, reason: refusal };
       let scaledToPage: readonly string[] = [];
+      let stackedExactly: readonly (readonly string[])[] = [];
       let failure: string | undefined;
       const committed = commitDocumentChangeWithPageFit(document => {
         try {
           const inserted = insertDroppedImages(document, images, point);
           scaledToPage = inserted.scaledToPage;
+          stackedExactly = inserted.stackedExactly;
           return inserted.document;
         } catch (error) {
           // The error's own text is logged, never shown: the status gets the plain reason below.
@@ -11507,7 +11509,7 @@ export function MainWindow({
       // undoes the drop rather than a field's text history.
       resetPasteUiState();
       canvasRegionRef.current?.focus({ preventScroll: true });
-      return { ok: true, scaledToPage };
+      return { ok: true, scaledToPage, stackedExactly };
     };
     return handleDroppedFiles(files, {
       ...route, insertImages, decoders: browserImageDecoders, setStatus: setDropStatus, showOutcome,

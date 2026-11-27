@@ -229,6 +229,30 @@ describe("every picture of a drop keeps visible area", () => {
     expect(result.document.selection.objectIds).toEqual(result.objectIds);
   });
 
+  it("moves a copy that would share its twin's frame to where it shows an edge, keeping the rest visible", () => {
+    // No paint order of the cascade works, so every picture takes one corner: the two 20 wide copies
+    // would share a frame. The later copy moves the shortest way that leaves every picture visible.
+    const sizes = [{ width: 20, height: 600 }, { width: 780, height: 600 }, { width: 800, height: 600 }, { width: 20, height: 600 }];
+    expect(visiblePaintOrder(placeDroppedImages({ width: 800, height: 600 }, { x: 5, y: 300 }, sizes))).toBeUndefined();
+    const arranged = arrangeDroppedImages({ width: 800, height: 600 }, { x: 5, y: 300 }, sizes);
+    expect(arranged.stacked).toEqual([]);
+    expect(arranged.frames.map(({ x, y }) => [x, y])).toEqual([[0, 0], [0, 0], [0, 0], [DROP_CASCADE_OFFSET, 0]]);
+    const result = insertDroppedImages(onPage(800, 600), sizes.map(({ width, height }, index) => image(`${index}.png`, width, height)), { x: 5, y: 300 });
+    const painted = pictures(result.document);
+    for (const area of visibleAreas(painted)) expect(area).toBeGreaterThan(0);
+    expect(result.stackedExactly).toEqual([]);
+  });
+
+  it("keeps pictures as large as the page stacked, and names them", () => {
+    const result = insertDroppedImages(onPage(800, 600),
+      [image("a.png", 800, 600), image("small.png", 50, 50), image("b.png", 1600, 1200), image("c.png", 800, 600)], { x: 400, y: 300 });
+    const painted = pictures(result.document);
+    const byName = (name: string) => painted.find(object => object.id === result.objectIds[["a.png", "small.png", "b.png", "c.png"].indexOf(name)])!;
+    for (const name of ["a.png", "b.png", "c.png"]) expect(byName(name)).toMatchObject({ x: 0, y: 0, width: 800, height: 600 });
+    expect(result.stackedExactly).toEqual([["a.png", "b.png", "c.png"]]);
+    expect(visibleAreas(painted).at(-1)).toBeGreaterThan(0);
+  });
+
   it("holds over many mixed sizes, page sizes and drop points, with the selection in drop order", () => {
     // Deterministic: mulberry32.
     let seed = 0x5eed1234;
@@ -242,6 +266,7 @@ describe("every picture of a drop keeps visible area", () => {
     const between = (low: number, high: number) => Math.round(low + random() * (high - low));
     let reordered = 0;
     let sharedCorner = 0;
+    let separated = 0;
     for (let trial = 0; trial < 1500; trial++) {
       const page = pick([{ width: 800, height: 600 }, { width: 612, height: 792 }, { width: between(80, 2000), height: between(80, 2000) }]);
       const count = random() < 0.1 ? between(9, 20) : between(1, 8);
@@ -275,11 +300,20 @@ describe("every picture of a drop keeps visible area", () => {
       const arranged = arrangeDroppedImages(page, point, sizes);
       expect(result.objectIds.map(id => painted.find(object => object.id === id)!))
         .toMatchObject(arranged.frames.map(({ x, y, width, height }) => ({ x, y, width, height })));
-      // Wherever the cascade can be ordered, it is kept as placed.
-      if (order) expect(arranged.frames).toEqual(cascade);
+      // Pictures share a frame only when it fills the page, and the drop names every one of them.
+      const stacked = arranged.frames.flatMap((frame, index) =>
+        arranged.frames.some((other, at) => at !== index && identical(other, frame)) ? [index] : []);
+      expect(arranged.stacked.flat().sort((a, b) => a - b), context).toEqual(stacked);
+      for (const index of stacked) expect(arranged.frames[index], context).toMatchObject({ x: 0, y: 0, width: page.width, height: page.height });
+      expect(result.stackedExactly.flat().sort(), context).toEqual(stacked.map(index => `${index}.png`).sort());
+      // Wherever the cascade can be ordered and no two of its pictures coincide, it is kept as placed.
+      const coincident = cascade.some((frame, index) => cascade.some((other, at) => at !== index && identical(other, frame)));
+      if (order && !coincident) expect(arranged.frames).toEqual(cascade);
+      if (arranged.frames.some((frame, index) => !identical(frame, (order ? cascade : arranged.frames)[index]!)) && stacked.length < count) separated++;
     }
-    // Both repairs are exercised.
+    // Every repair is exercised.
     expect(reordered).toBeGreaterThan(20);
     expect(sharedCorner).toBeGreaterThan(0);
+    expect(separated).toBeGreaterThan(0);
   });
 });
