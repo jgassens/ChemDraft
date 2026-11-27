@@ -22,7 +22,7 @@ import {
 import { detectShortcutPlatform, parseShortcutDisplay, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { isCompoundLayoutCommand, isCompoundLayoutCommandHidden, type CompoundLayoutSettings, loadCompoundLayoutSettings } from "./compoundLayoutSettings";
 import manifest from "./toolsets/desktop-toolsets.json";
-import { isGridWidgetItem, isToolbarWidgetItem, TOOLBAR_WIDGET_GRID_SPANS, TOOLBAR_WIDGET_IDS } from "./toolbars/toolbarWidgets";
+import { DOCUMENT_ZOOM_GRID_SPAN, isGridWidgetItem, isToolbarWidgetItem, TOOLBAR_WIDGET_GRID_SPANS, TOOLBAR_WIDGET_IDS } from "./toolbars/toolbarWidgets";
 import { MAIN_TOOLBAR_DEFAULTS_REVISION, withCurrentMainToolbarDefaults } from "./toolbars/toolbarLayoutState";
 import type { CommandSpec } from "./commands";
 import { renamedCommandId } from "./renamedCommands";
@@ -71,16 +71,17 @@ export interface ToolbarPaletteItemModel {
 }
 
 /**
- * The Document Zoom widget's footprint on the tool grid: exactly four cells wide and one tall —
- * Zoom Out (one cell), the percentage menu (two cells and the gap between them), Zoom In (one
- * cell) — so each part's edges line up with the cells of the row below (App.css lays the parts
- * out with the grid's own cell and gap tokens).
+ * The Document Zoom widget's four-cell span (defined beside the other widget spans in
+ * toolbars/toolbarWidgets.tsx, and declared the same in Main's manifest). Re-exported here because
+ * this module applies it.
  *
- * Main's manifest, the gallery's re-add span and layouts saved by 1.2.2/RC5 carry the earlier
- * six-cell span. The item id is unchanged, so this read-time override is the whole migration: any
- * saved layout holding the zoom item loads in the four-cell form, and nothing needs rewriting.
+ * Layouts saved by 1.2.2/RC5 still carry the earlier six-cell span: an `itemOverrides` layout on
+ * Main, a gallery `itemAdditions` entry, or the item inside a user toolbar. The item id is
+ * unchanged, so the read-time override below (WIDGET_GRID_SPAN_OVERRIDES, applied by
+ * toolsetItemToPaletteItem) is the migration: any saved layout holding the zoom item loads in the
+ * four-cell form, in its saved order, and nothing needs rewriting.
  */
-export const DOCUMENT_ZOOM_GRID_SPAN = { colSpan: 4, rowSpan: 1 } as const;
+export { DOCUMENT_ZOOM_GRID_SPAN };
 
 /**
  * The Main style widget's footprint on the tool grid: eleven cells wide and two tall. Every layout
@@ -90,19 +91,20 @@ export const DOCUMENT_ZOOM_GRID_SPAN = { colSpan: 4, rowSpan: 1 } as const;
  *
  * Main's manifest, the gallery's re-add span and layouts saved by 1.2.2/RC5 carry a twelve-cell
  * span, which left one empty column (a blank cell in each row) beside the controls: after them in
- * Customize Toolbar, before them once Customize closed. As with the zoom widget, the item id is
- * unchanged and this read-time override is the whole migration.
+ * Customize Toolbar, before them once Customize closed. As with the zoom widget's saved layouts, the
+ * item id is unchanged and this read-time override is the whole migration.
  */
 export const MAIN_STYLE_CONTROLS_GRID_SPAN = { colSpan: 11, rowSpan: 2 } as const;
 
-/** Spans that replace whatever a manifest, gallery or saved layout declares for these widgets. */
+/** Spans that replace whatever a manifest, gallery or saved layout declares for these widgets. For
+ *  the zoom widget the manifest and gallery already declare its span; the entry is there for saved
+ *  layouts (see DOCUMENT_ZOOM_GRID_SPAN). */
 const WIDGET_GRID_SPAN_OVERRIDES: Readonly<Record<string, { readonly colSpan: number; readonly rowSpan: number }>> = {
   [TOOLBAR_WIDGET_IDS.documentZoom]: DOCUMENT_ZOOM_GRID_SPAN,
   [TOOLBAR_WIDGET_IDS.mainStyleControls]: MAIN_STYLE_CONTROLS_GRID_SPAN
 };
 
-/** Grid span the customize gallery gives a widget it (re)adds, with the zoom and style widgets'
- *  current spans. */
+/** Grid span the customize gallery gives a widget it (re)adds, with the style widget's current span. */
 export function toolbarWidgetGridSpan(widgetId: string): { colSpan: number; rowSpan: number } | undefined {
   const override = Object.hasOwn(WIDGET_GRID_SPAN_OVERRIDES, widgetId) ? WIDGET_GRID_SPAN_OVERRIDES[widgetId] : undefined;
   return override ? { ...override } : TOOLBAR_WIDGET_GRID_SPANS[widgetId];
