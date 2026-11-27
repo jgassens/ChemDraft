@@ -960,7 +960,7 @@ import {
   enableLastDocumentCloseAction
 } from "./keyboardShortcuts";
 import { installBrowserReloadGuard, wasBrowserReloadPrevented } from "./browserReloadGuard";
-import { assertDocumentSize, decodeNativeDocumentContents, DOCUMENT_OPEN_ACCEPT, documentContentsKey, readBrowserDocumentFile, readNativeDocumentFile, type DocumentContents } from "./documentText";
+import { assertDocumentSize, decodeNativeDocumentContents, DOCUMENT_OPEN_ACCEPT, DocumentOpenError, documentContentsKey, readBrowserDocumentFile, readNativeDocumentFile, type DocumentContents } from "./documentText";
 import { handleDroppedFiles, type DroppedImageInsertion, type DroppedImageSource } from "./imageDrop/dropHandler";
 import { DropReasonError, dropErrorReason } from "./imageDrop/dropReason";
 import { browserDropClientPoint, drawableCanvasRect, dropPagePoint, nativeDropClientPoint, type DocumentFileDropPayload, type DropClientPoint } from "./imageDrop/dropPosition";
@@ -10939,7 +10939,8 @@ export function MainWindow({
     const resolvedOpen = await resolveOpenResultDocument(opened);
     await waitUntilReady();
     if (!resolvedOpen) {
-      throw new Error(formatOpenFailure(opened.warnings));
+      // The import's own account of the file, which a drop's status shows as written.
+      throw new DocumentOpenError(formatOpenFailure(opened.warnings));
     }
     const fitRecommendation = resolvedOpen.source === "external-cdxml"
       ? recommendImportedPageFit(resolvedOpen.document)
@@ -11030,8 +11031,10 @@ export function MainWindow({
 
   // Every open shows the batch summary in status. It also resolves to a drop's outcome: each opened
   // document's own status line, then, if any failed, the count opened and each failure with its own
-  // reason. Only a drop with pictures shows that text; every other open ignores it.
-  const openDocumentBatch = useCallback((requests: readonly DocumentOpenRequest[], announceAlreadyOpen = false): Promise<string | undefined> => {
+  // reason. Only a drop with pictures shows that text; every other open ignores it. A drop
+  // (`fromDrop`) also announces a file that was already open, and words a failure whose text ChemDraft
+  // did not write (the file system's, a webview's) plainly, logging the error itself.
+  const openDocumentBatch = useCallback((requests: readonly DocumentOpenRequest[], fromDrop = false): Promise<string | undefined> => {
     const results = requests.map(({ contents, displayName, path, receipt }) => {
       // Confirm at tab installation, before optional page-fit and compatibility dialogs.
       // A rejected parse or an early return (e.g. unfinished table edit) fails the receipt.
@@ -11044,14 +11047,14 @@ export function MainWindow({
           setStatus(`Could not confirm opening ${displayName}: ${String(error)}`));
       };
       const options: OpenDocumentContentsOptions = {
-        announceAlreadyOpen,
+        announceAlreadyOpen: fromDrop,
         onOpened: () => { opened = true; confirm(true); },
         onRefused: message => { refusal = message; },
         onStatus: message => { status = message; }
       };
       return openDocumentContents(contents, displayName, path, options).then(
         (): DocumentOpenResult => opened ? { displayName, ...(status ? { status } : {}) }
-          : { displayName, error: refusal ?? "Finish or cancel the current edit and try again." },
+          : { displayName, error: new DocumentOpenError(refusal ?? "Finish or cancel the current edit and try again.") },
         (error: unknown): DocumentOpenResult => ({ displayName, error })
       ).finally(() => { if (!opened) confirm(false); });
     });
@@ -11059,12 +11062,12 @@ export function MainWindow({
     // compatibility prompts, so keeping an imported page finishes successfully before we count it.
     const finished = documentOpenQueueRef.current.then(async () => {
       const settled = await Promise.all(results);
-      const summary = formatDocumentOpenBatchStatus(settled);
+      const summary = formatDocumentOpenBatchStatus(settled, fromDrop);
       if (summary) {
         setStatus(summary);
         if (!documentSessionHydratedRef.current) shellOpenFailureRef.current = summary;
       }
-      return formatDocumentOpenDropOutcome(settled);
+      return fromDrop ? formatDocumentOpenDropOutcome(settled) : undefined;
     });
     documentOpenQueueRef.current = finished.catch(() => undefined);
     return finished;
@@ -11421,10 +11424,10 @@ export function MainWindow({
     return true;
   }, []);
 
-  const openDocumentPaths = useCallback((paths: readonly string[], announceAlreadyOpen = false) => {
+  const openDocumentPaths = useCallback((paths: readonly string[], fromDrop = false) => {
     return openDocumentBatch(paths.map(path => ({
       contents: () => readNativeDocumentFile(path), displayName: nativePathBasename(path), path
-    })), announceAlreadyOpen);
+    })), fromDrop);
   }, [openDocumentBatch]);
 
   // Dropped pictures: prepared one drop at a time, so two drops never interleave their commits.

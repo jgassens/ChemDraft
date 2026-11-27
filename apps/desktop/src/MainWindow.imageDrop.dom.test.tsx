@@ -801,12 +801,33 @@ describe("dropping picture files on the document window", { timeout: 3 * DROP_WA
     });
 
     it("names a document that fails, and the one that opened beside it", async () => {
+      // ChemDraft's own account of what is wrong with the file stands in the status as written.
+      const broken = "Could not open broken.cdxml: The file is neither a ChemDraft document nor CDXML: it is not JSON or XML.";
       await mount();
       await browserDrop([dropFile("p.png", pngBytes()), cdxmlFile("broken.cdxml", "not a document")], { x: 100, y: 100 });
-      await eventually(() => expect(status()).toMatch(/^Inserted picture p\.png; Could not open broken\.cdxml: ./));
+      await eventually(() => expect(status()).toBe(`Inserted picture p.png; ${broken}`));
       await browserDrop([dropFile("q.png", pngBytes()), cdxmlFile("good.cdxml"), cdxmlFile("broken.cdxml", "not a document")], { x: 100, y: 100 });
-      await eventually(() => expect(status()).toMatch(
-        new RegExp(`^Inserted picture q\\.png; ${opened("good.cdxml").replaceAll(".", "\\.")}; Opened 1 of 2 files\\. Could not open broken\\.cdxml: .`)));
+      await eventually(() => expect(status()).toBe(`Inserted picture q.png; ${opened("good.cdxml")}; Opened 1 of 2 files. ${broken}`));
+    });
+
+    it("words a document the system refuses to read plainly beside a picture, the system's text logged", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        native.desktop = true;
+        const denied = "Access is denied. (os error 5)";
+        native.files.set("C:\\Drawings\\picture.png", pngBytes());
+        // Tauri's file system rejects with the operating system's own text, as a bare string.
+        native.stat.mockImplementation(async path => {
+          if (path.endsWith("unreadable.cdxml")) throw denied;
+          return { size: native.files.get(path)!.length };
+        });
+        await mount(createPhase4Document("Desktop"), "windows");
+        await eventually(() => expect(listening()).toBe(true));
+        await nativeDrop({ paths: ["C:\\Drawings\\picture.png", "C:\\Drawings\\unreadable.cdxml"], position: { x: 10, y: 10 }, units: "physical" });
+        await eventually(() => expect(status()).toBe("Inserted picture picture.png; Could not open unreadable.cdxml: the file could not be read."));
+        expect(warn).toHaveBeenCalledWith("Could not open the dropped document unreadable.cdxml", denied);
+        expect(tabs()).toHaveLength(1);
+      } finally { warn.mockRestore(); }
     });
 
     it("leaves a drop of documents alone showing what it showed before", async () => {

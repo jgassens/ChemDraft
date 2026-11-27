@@ -2059,7 +2059,12 @@ lossy and a lossless WebP, an SVG with gradients and `<use href="#id">`, a BMP, 
   beyond the kept page. Drop a picture and two
   documents: each document is named. Drop a picture with a document already open in another tab:
   the status says that document was already open. Drop a picture with a document that cannot be
-  opened: the failure is named. Drop only a new `.cdxml` to open it. Switch tabs and drop that
+  opened: the failure is named, in ChemDraft's own words for a file it read and could not import
+  ("Could not open broken.cdxml: The file is neither a ChemDraft document nor CDXML: …"). Drop a
+  picture with a `.cdxml` you have no permission to read (Windows: deny Read in its Security tab;
+  macOS: `chmod 000`): the status ends "Could not open <name>.cdxml: the file could not be read.",
+  never the system's "Access is denied. (os error 5)" or "Permission denied", and the developer
+  console logs the system's error. File > Open of the same file still shows the system's text. Drop only a new `.cdxml` to open it. Switch tabs and drop that
   drawing again to confirm its tab comes forward with the status “<name> was already open”.
 - Mixed drop status on both tabs: drop five pictures, a BMP and a `.cdxml` on a tab holding a
   drawing. The new tab's status names the inserted pictures and the BMP refusal. Switch back to the

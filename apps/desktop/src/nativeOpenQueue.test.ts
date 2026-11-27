@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { DocumentOpenError } from "./documentText";
 import { formatDocumentOpenBatchStatus, formatDocumentOpenDropOutcome, formatDocumentOpenFailure, listenAndDrainNativeOpenQueue } from "./nativeOpenQueue";
 
 function deferred<T>() {
@@ -6,6 +7,8 @@ function deferred<T>() {
   const promise = new Promise<T>(done => { resolve = done; });
   return { promise, resolve };
 }
+
+const notJson = () => new DocumentOpenError("it is not JSON.");
 
 describe("document open status", () => {
   it("leaves empty and all-successful batches unchanged", () => {
@@ -35,25 +38,46 @@ describe("document open status", () => {
       .toBe("Opened a.cdxml as external CDXML subset with 2 warnings");
     expect(formatDocumentOpenDropOutcome([
       { displayName: "/drawings/a.chemdraft", status: "a.chemdraft was already open" },
-      { displayName: "notes.txt", error: "it is not JSON." },
+      { displayName: "notes.txt", error: notJson() },
       { displayName: "C:\\Drawings\\c.cdxml" }
     ])).toBe("a.chemdraft was already open; Opened c.cdxml; Opened 2 of 3 files. Could not open notes.txt: it is not JSON.");
-    expect(formatDocumentOpenDropOutcome([{ displayName: "notes.txt", error: "it is not JSON." }]))
+    expect(formatDocumentOpenDropOutcome([{ displayName: "notes.txt", error: notJson() }]))
       .toBe("Could not open notes.txt: it is not JSON.");
   });
 
   it("names each failed document of a drop with its own reason", () => {
     expect(formatDocumentOpenDropOutcome([
-      { displayName: "/drawings/a.txt", error: "it is not JSON." },
-      { displayName: "C:\\Drawings\\b.cdx", error: new Error("unsupported bond") }
+      { displayName: "/drawings/a.txt", error: notJson() },
+      { displayName: "C:\\Drawings\\b.cdx", error: new DocumentOpenError("unsupported bond") }
     ])).toBe("Opened 0 of 2 files. Could not open a.txt: it is not JSON.; Could not open b.cdx: unsupported bond");
     expect(formatDocumentOpenDropOutcome([
-      { displayName: "a.txt", error: "it is not JSON." },
+      { displayName: "a.txt", error: notJson() },
       { displayName: "c.cdxml" },
-      { displayName: "b.cdx", error: "unsupported bond" }
+      { displayName: "b.cdx", error: new DocumentOpenError("unsupported bond") }
     ])).toBe("Opened c.cdxml; Opened 1 of 3 files. Could not open a.txt: it is not JSON.; Could not open b.cdx: unsupported bond");
-    expect(formatDocumentOpenDropOutcome([{ displayName: "a.txt", error: "it is not JSON." }, { displayName: "c.cdxml" }]))
+    expect(formatDocumentOpenDropOutcome([{ displayName: "a.txt", error: notJson() }, { displayName: "c.cdxml" }]))
       .toBe("Opened c.cdxml; Opened 1 of 2 files. Could not open a.txt: it is not JSON.");
+  });
+
+  it("words a dropped document's system or library error plainly and logs it", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // Tauri's file system rejects with a bare string; a webview read with a DOMException-like Error.
+      const denied = "Access is denied. (os error 5)";
+      const notReadable = new Error("NotReadableError: The requested file could not be read");
+      expect(formatDocumentOpenDropOutcome([{ displayName: "C:\\Drawings\\unreadable.cdxml", error: denied }]))
+        .toBe("Could not open unreadable.cdxml: the file could not be read.");
+      expect(formatDocumentOpenDropOutcome([
+        { displayName: "a.cdxml" }, { displayName: "b.cdxml", error: notReadable }, { displayName: "c.cdxml", error: notJson() }
+      ])).toBe("Opened a.cdxml; Opened 1 of 3 files. Could not open b.cdxml: the file could not be read.; Could not open c.cdxml: it is not JSON.");
+      expect(formatDocumentOpenBatchStatus([{ displayName: "unreadable.cdxml", error: denied }], true))
+        .toBe("Could not open unreadable.cdxml: the file could not be read.");
+      expect(warn).toHaveBeenCalledWith("Could not open the dropped document unreadable.cdxml", denied);
+      expect(warn).toHaveBeenCalledWith("Could not open the dropped document b.cdxml", notReadable);
+      // File > Open and the shell's opens keep the error's own text.
+      expect(formatDocumentOpenBatchStatus([{ displayName: "unreadable.cdxml", error: denied }]))
+        .toBe("Could not open unreadable.cdxml: Access is denied. (os error 5)");
+    } finally { warn.mockRestore(); }
   });
 
   it("lists several failed files on one line with the first reason", () => {

@@ -10,9 +10,17 @@ export const DOCUMENT_OPEN_ACCEPT = [
 
 export const MAX_OPEN_DOCUMENT_BYTES = 64 * 1024 * 1024;
 
+/**
+ * A failure to open a document whose message ChemDraft wrote: the size limit, the import's own
+ * account of what is wrong with the file ("CDXML parse failed: …"). A drop's status shows these
+ * messages; every other error (a file-system refusal, a webview read error) carries text from the
+ * operating system or a library, which a drop's status replaces with plain wording.
+ */
+export class DocumentOpenError extends Error {}
+
 export function assertDocumentSize(size: number): void {
   if (!Number.isSafeInteger(size) || size < 0 || size > MAX_OPEN_DOCUMENT_BYTES) {
-    throw new Error("Document exceeds the 64 MB size limit");
+    throw new DocumentOpenError("Document exceeds the 64 MB size limit");
   }
 }
 
@@ -57,7 +65,7 @@ export function decodeNativeDocumentContents(payload: { contents: string; bytes?
   }
   assertDocumentSize(payload.bytes.length);
   if (!payload.bytes.every(byte => Number.isInteger(byte) && byte >= 0 && byte <= 255)) {
-    throw new Error("Document contains invalid binary bytes");
+    throw new DocumentOpenError("Document contains invalid binary bytes");
   }
   return new Uint8Array(payload.bytes);
 }
