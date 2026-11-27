@@ -306,6 +306,29 @@ describe("LinkedFigureView on-screen text size", () => {
     expectReadableLayout();
   });
 
+  it("keeps every tick label distinct, with no duplicate-key warning, at deep zoom", () => {
+    layoutSpectrumAt(600);
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const labels = (): string[] => [...svg().querySelectorAll(".lf-tick-label")].map((node) => node.textContent!);
+    const tiny: PluginLinkedFigureSpectrum = {
+      nucleus: "1H", domain: { min: 1, max: 1.02 },
+      peaks: [{ id: "t0", ppm: 1.01, intensity: 1, label: "1.01", atomIndices: [0] }]
+    };
+    mount(createElement(LinkedFigureView, { spectrum: tiny, structure }));
+    expect(labels().length).toBeGreaterThan(1);
+    expect(new Set(labels()).size).toBe(labels().length);
+    act(() => root!.unmount());
+    container!.remove();
+    const wide: PluginLinkedFigureSpectrum = { ...tiny, domain: { min: 0, max: 12 } };
+    mount(createElement(LinkedFigureView, { spectrum: wide, structure }));
+    for (let zoom = 0; zoom < 40; zoom += 1) {
+      act(() => svg().dispatchEvent(new WheelEvent("wheel", { deltaY: -200, clientX: 600 * 0.5 * (680 / 600) * 0 + 300, bubbles: true, cancelable: true })));
+      expect(new Set(labels()).size).toBe(labels().length);
+    }
+    expect(labels().length).toBeGreaterThan(1);
+    expect(errors.mock.calls.filter((call) => String(call[0]).includes("same key"))).toEqual([]);
+  });
+
   it("zooms around the cursor and links peaks to atoms on the screen layout", () => {
     layoutSpectrumAt(300);
     mount(createElement(LinkedFigureView, { spectrum: protonSpectrum, structure }));

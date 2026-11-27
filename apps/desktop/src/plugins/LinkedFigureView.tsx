@@ -967,11 +967,11 @@ export function LinkedFigureView({
               </tspan>
             ))}
           </text>
-          {ticks.map((tick) => {
+          {ticks.map((tick, index) => {
             const x = xOf(tick);
             if (x < plotLeft - 1 || x > plotRight + 1) return null;
             return (
-              <g key={`t${tick}`}>
+              <g key={`t${index}-${tick}`}>
                 <line className="lf-tick" x1={x} y1={geometry.baseY} x2={x} y2={geometry.baseY + geometry.tickLength} />
                 <text className="lf-tick-label" x={x} y={geometry.tickLabelY} style={{ fontSize: geometry.tickFont }} textAnchor="middle">
                   {tick}
@@ -1564,8 +1564,9 @@ function spectrumPathFrom(xs: readonly number[], totals: readonly number[], scal
 function axisTicks(min: number, max: number, step = niceStep((max - min) / 6)): number[] {
   const ticks: number[] = [];
   if (![min, max, step].every(Number.isFinite) || step <= 0) return ticks;
+  const scale = Math.pow(10, stepDecimals(step));
   for (let tick = Math.ceil(min / step) * step; tick <= max + 1e-9; tick += step) {
-    const rounded = Math.round(tick * 100) / 100;
+    const rounded = Math.round(tick * scale) / scale;
     if (Number.isFinite(rounded)) ticks.push(rounded);
     if (tick + step === tick) break;
   }
@@ -1598,6 +1599,15 @@ function readableAxisTicks(min: number, max: number, geometry: SpectrumGeometry)
     const half = labelWidth(tick) / 2;
     return x - half >= 0 && x + half <= SPECTRUM_W;
   });
+}
+
+/** Decimals a tick label needs so neighbouring ticks at this step always read differently (max 6). */
+function stepDecimals(step: number): number {
+  for (let d = 0; d < 6; d += 1) {
+    const scaled = step * Math.pow(10, d);
+    if (Math.abs(scaled - Math.round(scaled)) < 1e-9 * Math.max(1, scaled)) return d;
+  }
+  return 6;
 }
 
 function niceStep(rough: number): number {
