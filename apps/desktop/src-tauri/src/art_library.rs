@@ -33,7 +33,12 @@
 //! folder (a link in its place is refused), and it never follows a link. The staging folder's
 //! identity (device and inode on Unix, volume serial and file index on Windows) is recorded when a
 //! copy is staged into it; cleanup reopens it by path and removes nothing when the folder found there
-//! is a different one (an ancestor folder replaced or linked elsewhere).
+//! is a different one (an ancestor folder replaced or linked elsewhere). An identity is only ever
+//! established (by staging or by the first cleanup in a process, the startup sweep included) when
+//! the opened folder's own path, as the operating system reports it for the handle with every link
+//! resolved, IS the staging path, name for name; a folder reached through a link anywhere on the
+//! way (an ancestor replaced with a link before launch, say) is never adopted, and cleanup by path
+//! then removes nothing and logs why.
 //!
 //! Threat model. The path guard defends against untrusted input from the webview naming arbitrary
 //! paths. A local process running as the same user that renames or replaces folders inside app data
@@ -554,23 +559,59 @@ fn dropped_within(entry: &str, age: Duration) -> bool {
         .is_some_and(|dropped| dropped.elapsed() < age)
 }
 
+/// Whether `real`, the path the operating system reports for an open folder (every link
+/// resolved), is the very location `expected` names: the same root and the same names, compared
+/// exactly (only a Windows drive letter or share name ignores case). A path that is not valid text,
+/// not absolute or not plainly written never matches, so an unverifiable folder is never adopted.
+fn is_same_location(real: &Path, expected: &Path, platform: PathPlatform) -> bool {
+    let parse = |path: &Path| {
+        path.to_str()
+            .and_then(|text| parse_lexical(text, platform, true).ok())
+    };
+    let (Some(real), Some(expected)) = (parse(real), parse(expected)) else {
+        return false;
+    };
+    let same_prefix = match platform {
+        PathPlatform::Windows => real.prefix.eq_ignore_ascii_case(&expected.prefix),
+        PathPlatform::Unix => real.prefix == expected.prefix,
+    };
+    same_prefix && real.components == expected.components
+}
+
 /// Opens the staging folder at `path` for cleanup: a real folder (a link in its place is refused)
 /// that is the very folder `expected` names, or, without `expected`, the folder last staged into
-/// at `path` (recorded now if this process has not opened `path` before). A different folder is
-/// refused, so nothing is removed from it.
+/// at `path`. When this process knows no folder for `path` yet (the startup sweep, say), the one
+/// found is adopted only if its own path, asked of the open handle, is `path` itself, so a folder
+/// reached through a link anywhere on the way is refused rather than trusted. A different or
+/// unverifiable folder is refused, so nothing is removed from it.
 fn open_staging_root_for_cleanup(
     path: &Path,
     expected: Option<FolderId>,
 ) -> std::io::Result<(File, PathBuf)> {
     let root = os::open_dir_no_follow(path)?;
     let found = os::folder_id(&root)?;
+    let root_path = os::handle_path(&root)?;
     let known = match expected {
         Some(expected) => expected,
-        None => *known_staging_folders()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .entry(path.to_path_buf())
-            .or_insert(found),
+        None => {
+            let mut known = known_staging_folders()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            match known.get(path) {
+                Some(known) => *known,
+                None if is_same_location(&root_path, path, PathPlatform::current()) => {
+                    known.insert(path.to_path_buf(), found);
+                    found
+                }
+                None => {
+                    return Err(std::io::Error::other(format!(
+                        "\"{}\" leads to \"{}\", not to a staging folder at that path itself (a link on the way?); nothing was removed",
+                        path.display(),
+                        root_path.display()
+                    )));
+                }
+            }
+        }
     };
     if found != known {
         return Err(std::io::Error::other(format!(
@@ -578,7 +619,6 @@ fn open_staging_root_for_cleanup(
             path.display()
         )));
     }
-    let root_path = os::handle_path(&root)?;
     Ok((root, root_path))
 }
 
@@ -713,11 +753,15 @@ pub(crate) fn stage_copy(
             staging_root.to_string_lossy().into_owned(),
         ));
     }
-    // This is now the staging folder at this path; cleanup by path refuses any other.
-    known_staging_folders()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .insert(staging_root.to_path_buf(), root_id);
+    // This is now the staging folder at this path; cleanup by path refuses any other. A folder
+    // reached through a link on the way is not adopted: this copy is still removed by its own
+    // identity, but cleanup by path removes nothing there.
+    if is_same_location(&root_path, staging_root, platform) {
+        known_staging_folders()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(staging_root.to_path_buf(), root_id);
+    }
     for _ in 0..8 {
         let entry = staged_entry_name().map_err(fail)?;
         match os::create_dir_in(&root, &root_path, &entry) {
@@ -2408,6 +2452,118 @@ mod tests {
         assert_eq!(sweep_staging(&staging, None), 0);
         assert!(remove_staged_entry(&staging, None, &staged.entry, Some("a.svg")).is_err());
         assert_eq!(std::fs::read(target.join("a.svg")).unwrap(), b"keep");
+    }
+
+    /// Makes `link` a link to the folder `target`: a symbolic link on Unix, a junction on Windows
+    /// (which needs no privilege; a symbolic link is tried after it). False when the system refuses.
+    fn link_dir(target: &Path, link: &Path) -> bool {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, link).is_ok()
+        }
+        #[cfg(windows)]
+        {
+            let junction = std::process::Command::new("cmd")
+                .arg("/C")
+                .arg("mklink")
+                .arg("/J")
+                .arg(host_path(link))
+                .arg(host_path(target))
+                .output()
+                .is_ok_and(|output| output.status.success());
+            junction || std::os::windows::fs::symlink_dir(target, link).is_ok()
+        }
+    }
+
+    #[test]
+    fn a_fresh_process_never_cleans_a_staging_folder_reached_through_a_linked_ancestor() {
+        let scratch = Scratch::new("fresh-linked-ancestor");
+        let source = DragSource {
+            name: "a.svg".into(),
+            bytes: DRAG_TEST_SVG.as_bytes().to_vec(),
+        };
+        let aged = std::time::SystemTime::now() - DROPPED_COPY_GRACE - Duration::from_secs(60);
+        let entry = "drag-0123456789abcdef";
+        // Before this process ever looked at the staging path, an ancestor of it was replaced with
+        // a link to another folder, which holds an old per-drag folder with a file in it.
+        let elsewhere = scratch.0.join("elsewhere");
+        let target = elsewhere.join(DRAG_STAGING_FOLDER).join(entry);
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("a.svg"), b"keep").unwrap();
+        set_modified_dir(&target, aged);
+        let ancestor = scratch.0.join("local");
+        if !link_dir(&elsewhere, &ancestor) {
+            return;
+        }
+        let staging = ancestor.join(DRAG_STAGING_FOLDER);
+
+        // The first cleanup at that path, whichever it is, removes nothing.
+        assert_eq!(sweep_staging_at_startup(&staging), 0);
+        assert_eq!(sweep_staging(&staging, None), 0);
+        assert!(remove_staged_entry(&staging, None, entry, Some("a.svg")).is_err());
+        assert!(remove_staged_entry(&staging, None, entry, None).is_err());
+        assert_eq!(std::fs::read(target.join("a.svg")).unwrap(), b"keep");
+        // Nor does a drag staging through the link make that folder the staging folder: its own
+        // copy goes by identity, but cleanup by path still removes nothing there.
+        let staged = stage_copy(&staging, &source, PathPlatform::current()).unwrap();
+        assert_eq!(sweep_staging(&staging, None), 0);
+        assert_eq!(std::fs::read(target.join("a.svg")).unwrap(), b"keep");
+        staged.remove();
+        assert!(!staged.root.join(&staged.entry).exists());
+        assert_eq!(std::fs::read(target.join("a.svg")).unwrap(), b"keep");
+
+        // The same leftover at a staging path reached without a link is swept on first sight.
+        let plain = scratch.0.join("plain").join(DRAG_STAGING_FOLDER);
+        let leftover = plain.join(entry);
+        std::fs::create_dir_all(&leftover).unwrap();
+        std::fs::write(leftover.join("a.svg"), b"old").unwrap();
+        set_modified_dir(&leftover, aged);
+        assert_eq!(sweep_staging_at_startup(&plain), 1);
+        assert!(!leftover.exists());
+    }
+
+    #[test]
+    fn staging_locations_compare_by_root_and_exact_names() {
+        let same = |real: &str, expected: &str, platform| {
+            is_same_location(Path::new(real), Path::new(expected), platform)
+        };
+        let staging = "/Users/a/Library/Application Support/x/art-drag-staging";
+        assert!(same(staging, staging, Unix));
+        assert!(same(staging, &format!("{staging}/"), Unix));
+        assert!(!same(
+            "/private/Users/a/Library/Application Support/x/art-drag-staging",
+            staging,
+            Unix
+        ));
+        assert!(!same(&staging.replace("Users", "users"), staging, Unix));
+        assert!(!same(staging, "Users/a/x/art-drag-staging", Unix));
+        assert!(!same(
+            staging,
+            "/Users/a/../a/Library/Application Support/x/art-drag-staging",
+            Unix
+        ));
+        let local = r"C:\Users\a\AppData\Local\x\art-drag-staging";
+        assert!(same(&format!(r"\\?\{local}"), local, Windows));
+        assert!(same(
+            &format!(r"\\?\{local}"),
+            &local.replace("C:", "c:"),
+            Windows
+        ));
+        assert!(!same(
+            &format!(r"\\?\{local}"),
+            &local.replace("Local", "local"),
+            Windows
+        ));
+        assert!(!same(
+            r"\\?\C:\Users\a\AppData\Elsewhere\x\art-drag-staging",
+            local,
+            Windows
+        ));
+        assert!(!same(
+            &format!(r"\\?\{local}"),
+            r"D:\Users\a\AppData\Local\x\art-drag-staging",
+            Windows
+        ));
     }
 
     #[test]

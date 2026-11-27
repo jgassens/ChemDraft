@@ -38,7 +38,10 @@ Nobody has done the hands-on drag yet. This page says how, and what to send back
   Cleanup is never recursive: it deletes the one copied file inside a `drag-<hex>` folder of
   `art-drag-staging`, then that folder if it is empty, and never follows a link (a staging folder
   replaced by a link is left alone). It also removes nothing when the folder now at the staging path
-  is not the one the copy was made in (an enclosing folder moved, replaced or linked elsewhere). The copy is not marked read-only, because Finder and Explorer carry that onto the file
+  is not the one the copy was made in (an enclosing folder moved, replaced or linked elsewhere), and
+  the first cleanup after launch removes nothing unless the folder's own path, as the system reports
+  it, is the staging path itself (an enclosing folder replaced with a link before launch leaves
+  cleanup off until a later launch finds the real folder; the reason is logged). The copy is not marked read-only, because Finder and Explorer carry that onto the file
   they make at the drop target. If the drag library itself fails (its Windows code panics when the shell cannot build a
   data object), the panic is caught and the drag rejects with "Art drag could not start: …" instead
   of the app quitting.
