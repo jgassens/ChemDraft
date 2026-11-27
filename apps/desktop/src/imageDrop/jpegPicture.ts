@@ -32,6 +32,17 @@ export interface KeepableJpeg {
   strippedMetadata: boolean;
 }
 
+/** A JPEG read up to its first scan, and whether its image data from there on is complete. */
+export interface JpegStructure extends KeepableJpeg {
+  /**
+   * Whether every scan's entropy-coded data runs to a marker (restart markers in order), every
+   * segment after it lies inside the file, and the file ends with EOI. A truncated or damaged file
+   * fails this even when a lenient decoder draws something from it (grey or smeared rows): its bytes
+   * must not be kept as they are.
+   */
+  complete: boolean;
+}
+
 const SOI = 0xd8;
 const EOI = 0xd9;
 const SOS = 0xda;
@@ -72,12 +83,25 @@ function exifOrientation(payload: Uint8Array): JpegOrientation | undefined {
 }
 
 /**
- * The JPEG without its metadata segments, with its EXIF orientation, when its structure is complete
- * up to the first scan: a frame header, then a scan. Undefined otherwise (a header without image
- * data, a segment running past the end): such a file is left to the webview's decoder on the PNG
- * conversion route, which says why it fails. Nothing after the scan begins is read or changed.
+ * The JPEG without its metadata segments, with its EXIF orientation, when it can be kept as it is:
+ * its structure is complete up to the first scan (a frame header, then a scan) and its image data is
+ * complete to the end-of-image marker (`JpegStructure.complete`). Undefined otherwise: such a file
+ * takes the PNG conversion route, where the webview's decoder says why it fails.
  */
 export function readKeepableJpeg(bytes: Uint8Array): KeepableJpeg | undefined {
+  const structure = readJpegStructure(bytes);
+  return structure?.complete
+    ? { bytes: structure.bytes, orientation: structure.orientation, strippedMetadata: structure.strippedMetadata }
+    : undefined;
+}
+
+/**
+ * The JPEG without its metadata segments and with its EXIF orientation, when its structure is
+ * complete up to the first scan: a frame header, then a scan. Undefined otherwise (a header without
+ * image data, a segment running past the end). From the first scan on, the file is only checked
+ * (`complete`), never changed.
+ */
+export function readJpegStructure(bytes: Uint8Array): JpegStructure | undefined {
   if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== SOI) return undefined;
   const removed: Array<[number, number]> = [];
   let orientation: JpegOrientation | undefined;
@@ -100,7 +124,10 @@ export function readKeepableJpeg(bytes: Uint8Array): KeepableJpeg | undefined {
     if (SOF.has(marker)) frame = true;
     if (marker === SOS) {
       if (!frame) return undefined;
-      return { bytes: withoutRanges(bytes, removed), orientation: orientation ?? 1, strippedMetadata: removed.length > 0 };
+      return {
+        bytes: withoutRanges(bytes, removed), orientation: orientation ?? 1, strippedMetadata: removed.length > 0,
+        complete: imageDataComplete(bytes, segmentEnd)
+      };
     }
     if (marker === APP1 || marker === APP13) {
       if (marker === APP1 && orientation === undefined) orientation = exifOrientation(bytes.subarray(offset + 2, segmentEnd));
@@ -109,6 +136,50 @@ export function readKeepableJpeg(bytes: Uint8Array): KeepableJpeg | undefined {
     offset = segmentEnd;
   }
   return undefined;
+}
+
+/**
+ * Whether the image data from the end of the first scan header (`offset`) is complete: each scan's
+ * entropy-coded data runs to a marker, where a 0xFF byte is data only when stuffed (0xFF00) and
+ * restart markers RST0-RST7 come in order from RST0 in every scan; every segment between scans
+ * (tables, restart interval, comments, the next scan's header) lies inside the file; and the data
+ * ends at EOI. Bytes after EOI are not image data and are not judged.
+ */
+function imageDataComplete(bytes: Uint8Array, offset: number): boolean {
+  let expectedRestart = 0;
+  // Entropy-coded data: find the marker that ends it.
+  for (;;) {
+    const next = bytes.indexOf(0xff, offset);
+    if (next < 0) return false;
+    let at = next + 1;
+    while (at < bytes.length && bytes[at] === 0xff) at += 1;
+    if (at >= bytes.length) return false;
+    const code = bytes[at]!;
+    offset = at + 1;
+    if (code === 0x00) continue;
+    if (code >= 0xd0 && code <= 0xd7) {
+      if (code - 0xd0 !== expectedRestart) return false;
+      expectedRestart = (expectedRestart + 1) & 7;
+      continue;
+    }
+    // A marker: the end of the image, or segments up to the next scan.
+    let marker = code;
+    for (;;) {
+      if (marker === EOI) return true;
+      if (marker === SOI || marker === TEM || marker === 0x00 || (marker >= 0xd0 && marker <= 0xd7)) return false;
+      if (offset + 2 > bytes.length) return false;
+      const length = (bytes[offset]! << 8) | bytes[offset + 1]!;
+      if (length < 2 || offset + length > bytes.length) return false;
+      offset += length;
+      if (marker === SOS) break;
+      if (offset >= bytes.length || bytes[offset] !== 0xff) return false;
+      while (offset < bytes.length && bytes[offset] === 0xff) offset += 1;
+      if (offset >= bytes.length) return false;
+      marker = bytes[offset]!;
+      offset += 1;
+    }
+    expectedRestart = 0;
+  }
 }
 
 function withoutRanges(bytes: Uint8Array, ranges: ReadonlyArray<[number, number]>): Uint8Array {

@@ -4,7 +4,8 @@ import { Resvg } from "@resvg/resvg-js";
 import { readSvgInfo } from "@chemdraft/chem-core";
 import { sanitizeSvgPicture } from "@chemdraft/export-engine";
 import {
-  jpegOrientationMatrix, jpegPictureSvg, jpegPictureSvgLength, orientedJpegSize, readKeepableJpeg, type JpegOrientation
+  jpegOrientationMatrix, jpegPictureSvg, jpegPictureSvgLength, orientedJpegSize, readJpegStructure, readKeepableJpeg,
+  type JpegOrientation
 } from "./jpegPicture";
 import { bytesToBase64 } from "./prepareDroppedImage";
 import {
@@ -79,6 +80,68 @@ describe("readKeepableJpeg", () => {
     const sos = scanStart(jpeg);
     const noFrame = new Uint8Array([0xff, 0xd8, ...jpeg.subarray(sos)]);
     expect(readKeepableJpeg(noFrame)).toBeUndefined();
+  });
+});
+
+describe("JPEG image data completeness", () => {
+  /** `jpeg` with `inserted` placed `at` bytes into its scan data (which holds no 0xFF of its own). */
+  const intoScan = (jpeg: Uint8Array, at: number, ...inserted: number[]) => {
+    const sos = scanStart(jpeg);
+    const dataStart = sos + 2 + ((jpeg[sos + 2]! << 8) | jpeg[sos + 3]!);
+    return new Uint8Array([...jpeg.subarray(0, dataStart + at), ...inserted, ...jpeg.subarray(dataStart + at)]);
+  };
+
+  it("keeps a JPEG whose scans run to EOI: stuffed bytes, restarts in order, a second scan, bytes after EOI", () => {
+    const jpeg = syntheticJpeg({ width: 16, height: 16, scanBytes: 300 });
+    expect(readJpegStructure(jpeg)!.complete).toBe(true);
+    expect(readKeepableJpeg(intoScan(jpeg, 10, 0xff, 0x00))).toBeDefined();
+    expect(readKeepableJpeg(intoScan(jpeg, 10, 0xff, 0xd0, 0xff, 0xd1, 0xff, 0xff, 0xd2))).toBeDefined();
+    // Restarts count RST0-RST7 then wrap, and start again at RST0 in every scan.
+    const restarts = Array.from({ length: 10 }, (_, index) => [0xff, 0xd0 + (index & 7)]).flat();
+    expect(readKeepableJpeg(intoScan(jpeg, 10, ...restarts))).toBeDefined();
+    // A progressive file: a table segment and a second scan between the first scan and EOI.
+    const dht = [0xff, 0xc4, 0x00, 0x14, 0x10, 0, 1, ...Array.from({ length: 14 }, () => 0), 0];
+    const secondScan = [...dht, 0xff, 0xda, 0x00, 0x08, 0x01, 1, 0x00, 0x00, 0x3f, 0x00, 0x11, 0x22, 0xff, 0xd0, 0x33];
+    expect(readKeepableJpeg(intoScan(jpeg, 300, 0xff, 0xd0, ...secondScan))).toBeDefined();
+    // Data after EOI (a phone's appended preview) is not image data.
+    expect(readKeepableJpeg(new Uint8Array([...jpeg, 0x00, 0x11, 0xff, 0x22]))).toBeDefined();
+  });
+
+  it("refuses to keep a truncated JPEG, reading its structure for the conversion route", () => {
+    const jpeg = syntheticJpeg({ width: 16, height: 16, orientation: 6, xmp: true, scanBytes: 300 });
+    const truncated = jpeg.subarray(0, jpeg.length - 120);
+    expect(readKeepableJpeg(truncated)).toBeUndefined();
+    const structure = readJpegStructure(truncated)!;
+    expect(structure).toMatchObject({ complete: false, orientation: 6, strippedMetadata: true });
+    expect(ascii(structure.bytes)).not.toMatch(/Exif|GPSLatitude/);
+    // The real fixture, cut short halfway through its scan or just before its last byte.
+    const real = quadrantJpeg();
+    expect(readJpegStructure(real)!.complete).toBe(true);
+    expect(readJpegStructure(real.subarray(0, Math.ceil((scanStart(real) + 20 + real.length) / 2)))!.complete).toBe(false);
+    expect(readJpegStructure(real.subarray(0, real.length - 1))!.complete).toBe(false);
+  });
+
+  it("refuses to keep a JPEG without its EOI marker", () => {
+    const jpeg = syntheticJpeg({ width: 16, height: 16, scanBytes: 300 });
+    expect(Array.from(jpeg.subarray(-2))).toEqual([0xff, 0xd9]);
+    const missingEoi = jpeg.subarray(0, jpeg.length - 2);
+    expect(readKeepableJpeg(missingEoi)).toBeUndefined();
+    expect(readJpegStructure(missingEoi)).toMatchObject({ complete: false, bytes: missingEoi });
+    // A lone 0xFF where EOI belongs, and data that ends at a restart marker, are cut short too.
+    expect(readJpegStructure(new Uint8Array([...missingEoi, 0xff]))!.complete).toBe(false);
+    expect(readJpegStructure(new Uint8Array([...missingEoi, 0xff, 0xd0]))!.complete).toBe(false);
+  });
+
+  it("refuses damaged image data: restarts out of order, a stray SOI, a segment past the end", () => {
+    const jpeg = syntheticJpeg({ width: 16, height: 16, scanBytes: 300 });
+    // RST1 where RST0 belongs: a restart interval was lost.
+    expect(readJpegStructure(intoScan(jpeg, 10, 0xff, 0xd1))!.complete).toBe(false);
+    expect(readJpegStructure(intoScan(jpeg, 10, 0xff, 0xd0, 0xff, 0xd0))!.complete).toBe(false);
+    expect(readJpegStructure(intoScan(jpeg, 10, 0xff, 0xd8))!.complete).toBe(false);
+    // A table segment after the scan whose length runs past the end of the file.
+    expect(readJpegStructure(intoScan(jpeg, 300, 0xff, 0xc4, 0x40, 0x00))!.complete).toBe(false);
+    // Junk between segments after the scan.
+    expect(readJpegStructure(intoScan(jpeg, 300, 0xff, 0xfe, 0x00, 0x03, 0x41, 0x42))!.complete).toBe(false);
   });
 });
 

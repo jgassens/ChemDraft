@@ -2186,6 +2186,15 @@ lossy and a lossless WebP, an SVG with gradients and `<use href="#id">`, a BMP, 
   4096 px version would be scaled to on the page, and `document-session.json` grows by about the
   scaled JPEG's size (a few MB), not the original's. A JPEG of exactly 4096 px on its longest side
   is kept as it is, with no note.
+- Damaged JPEG: make two copies of a phone JPEG, one cut to half its length and one with only its
+  last two bytes (the FF D9 end marker) removed (macOS: `head -c <bytes> photo.jpg > cut.jpg`;
+  Windows PowerShell: `$b = [IO.File]::ReadAllBytes("photo.jpg"); [IO.File]::WriteAllBytes("cut.jpg",
+  $b[0..($b.Length / 2)])`). Drop each: the status says "…: its image data is cut short or damaged,
+  so it was converted to PNG as decoded; part of it may be missing", the picture shows what the
+  webview could decode (the cut one grey or smeared at the bottom) and stands upright, and an SVG
+  export of it holds `data:image/png`, never `data:image/jpeg`. A JPEG the webview cannot decode at
+  all is refused by name ("the JPEG could not be converted: …"). The intact photo still drops with no
+  note.
 - Old sessions: with a session written by 1.2.3 RC5 or 1.2.2 that holds a dropped picture (copy
   `document-session.json` before upgrading), launch the new build: every tab restores with its
   pictures, and the next autosave rewrites the file in the smaller form. Then relaunch 1.2.2 on that
@@ -2208,6 +2217,18 @@ lossy and a lossless WebP, an SVG with gradients and `<use href="#id">`, a BMP, 
   moving, rotating and drawing) another object; hold the gesture past the moment the picture would
   appear, then finish it. The picture appears once the gesture ends, the gesture's result is kept,
   and Undo removes the picture first, then the gesture.
+- Handles at the page edge (owner rule: handles are never hidden off canvas): place each of a
+  picture, a rectangle, a molecule, a text box, a reaction arrow, a bracket, a charge mark (with
+  direct electron-mark editing on) and a two-object group flush against each page edge and corner,
+  at 50%, 100% and 400% zoom. Select it: every resize, rotate (hold Shift) and 3D-tilt handle, the
+  text box's four edge bars and the group frame draw in full over the pasteboard past the edge, and
+  each one drags. Enlarge a page-filling picture from a corner and choose Keep Page Size: its handles
+  stay visible and grabbable beyond the page. Content itself is still cut at the page edge. On a
+  small molecule with an unspecified double bond (draw CC=CC; its badge shows), click that bond so
+  the fragment frame's corner handle overlaps the badge: the badge draws above the handle and a click
+  on it opens the bond-stereo popover without starting a resize. Select the whole molecule and
+  double-click a corner for the typed size entry: the entry draws above the badge. Deselect after
+  each: no handle pixels are left on the pasteboard.
 - Resize: drag every corner handle of a picture, with and without Shift, rotated, and inside a
   group: the aspect ratio never changes. Move, Delete, Cut/Paste still work. Double-click a corner
   handle of a picture for the stretch entry: typing in X fills Y with the same value (and the other

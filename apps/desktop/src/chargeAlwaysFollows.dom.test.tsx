@@ -440,7 +440,7 @@ describe.each(["macos", "windows"] as const)("charge always follows its atom (%s
         await command("view.toggleRingInspector");
         for (let index = 0; index < ringCount; index++) await clickRing(charged.moleculeId, rings[index], index > 0);
         expect(status()).toBe(kind === "ring" ? "Selected ring" : "Selected 2 rings");
-        expect(container.querySelector(`[data-object-controls="${charged.moleculeId}"]`)!
+        expect(container.querySelector(`[data-object-chrome="${charged.moleculeId}"]`)!
           .querySelectorAll(".native-molecule-selected-ring")).toHaveLength(ringCount);
         vi.spyOn(Date, "now").mockReturnValue(Date.now());
         const before = snapshot();

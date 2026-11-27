@@ -376,16 +376,22 @@ describe("canvas ring-fill layers", () => {
           : { x: object.x + object.width / 2, y: object.y + object.height / 2 };
         await pointer(target, "pointermove", point, 0);
       }
-      const chrome = container.querySelector<HTMLElement>(kind === "group"
-        ? ".group-selection-frame" : `[data-object-controls='${object.id}']`);
+      // An object's feedback is its edit chrome in the page plus, when it has handles, the copy
+      // holding them beside the page (data-object-controls is on exactly one of the two).
+      const feedback = kind === "group" ? [...container.querySelectorAll(".group-selection-frame")]
+        : [...container.querySelectorAll(`[data-object-chrome='${object.id}'], [data-object-controls='${object.id}']`)];
+      expect(feedback.filter(element => element.matches(`[data-object-controls='${object.id}']`)).length)
+        .toBe(kind === "group" ? 0 : 1);
       if (state === "selected") {
-        expect(chrome).not.toBeNull();
-        expectInteractionAbovePaint(chrome!);
-        expect(paintedIndicators(chrome!).length).toBeGreaterThan(0);
+        expect(feedback.length).toBeGreaterThan(0);
+        // Wherever the feedback draws (the interaction layer, or beside the page with the handles),
+        // it must paint over every object; which element holds it does not matter.
+        for (const element of feedback) expectAboveEveryPageObject(element);
+        expect(feedback.flatMap(paintedIndicators).length).toBeGreaterThan(0);
       } else {
         // 14459a46 has resolver halos on native molecules, but no Select-tool
         // hover chrome or CSS :hover outline on any other selectable type.
-        const indicators = chrome ? paintedIndicators(chrome) : [];
+        const indicators = feedback.flatMap(paintedIndicators);
         const halo = container.querySelector(".native-atom-hover");
         if (kind === "molecule") {
           expect(halo).not.toBeNull();
@@ -1105,7 +1111,7 @@ describe("canvas ring-fill layers", () => {
       await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 0)); });
       expect(objectVisual(fixture.rectangle.id)!.getAttribute("transform")).toContain(`translate(${offset} 10)`);
       expect(objectVisual(fixture.rectangle.id)!.querySelector("image[data-art-transform-drag-preview='image']")).not.toBeNull();
-      expectInteractionAbovePaint(container.querySelector(`[data-object-controls='${fixture.rectangle.id}'] [data-art-transform-drag-preview]`)!);
+      expectInteractionAbovePaint(container.querySelector(`[data-object-chrome='${fixture.rectangle.id}'] [data-art-transform-drag-preview]`)!);
       expect(objectVisual(fixture.text.id)!.getAttribute("transform")).toBeNull();
     }
     expect(plan).not.toHaveBeenCalled();
@@ -1180,6 +1186,66 @@ describe("canvas ring-fill layers", () => {
     }
   }
 
+  // Paint order from the production CSS (CSS 2.1 Appendix E, as far as the canvas uses it): two
+  // elements are compared at the nearest stacking context holding both, each represented there by
+  // its outermost positioned or stacking-context ancestor below it; higher z-index paints on top,
+  // ties go to tree order. Where an element lives in the DOM does not matter, only how it paints.
+  const positioned = (element: Element) => !["", "static"].includes(getComputedStyle(element).position);
+  const zIndex = (element: Element) => {
+    const value = getComputedStyle(element).zIndex;
+    const applies = positioned(element) ||
+      /\b(flex|grid)\b/.test(element.parentElement ? getComputedStyle(element.parentElement).display : "");
+    return applies && !["", "auto"].includes(value) ? Number(value) : undefined;
+  };
+  function createsStackingContext(element: Element): boolean {
+    if (element === document.documentElement) return true;
+    const css = getComputedStyle(element);
+    return zIndex(element) !== undefined || ["fixed", "sticky"].includes(css.position) ||
+      Number(css.opacity || 1) < 1 || !["", "none"].includes(css.transform) || css.isolation === "isolate" ||
+      /\b(layout|paint|strict|content)\b/.test(css.contain) ||
+      /\b(transform|opacity|filter|isolation|contain)\b/.test(css.willChange) ||
+      !["", "none"].includes(css.filter) || !["", "normal"].includes(css.mixBlendMode);
+  }
+  // z-index layer within the parent stacking context; in-flow, non-positioned content paints
+  // below the z-index auto/0 layer.
+  const stackLevel = (element: Element) =>
+    zIndex(element) ?? (positioned(element) || createsStackingContext(element) ? 0 : -0.5);
+  function paintsAbove(top: Element, bottom: Element): boolean {
+    let context = top.parentElement;
+    while (context && !(context.contains(bottom) && createsStackingContext(context))) context = context.parentElement;
+    if (!context || bottom.contains(top)) throw new Error("Expected two separately painted elements.");
+    const representative = (element: Element) => {
+      let found = element;
+      for (let node: Element | null = element; node && node !== context; node = node.parentElement) {
+        if (createsStackingContext(node) || positioned(node)) found = node;
+      }
+      return found;
+    };
+    const [a, b] = [representative(top), representative(bottom)];
+    if (a === b) throw new Error("Expected elements in different stacking layers.");
+    return stackLevel(a) !== stackLevel(b) ? stackLevel(a) > stackLevel(b)
+      : Boolean(b.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING);
+  }
+
+  // The requirement for selection feedback and transform handles: they paint above every page
+  // object (shapes, labels, molecules, both SVG runs), whether they draw in the page's interaction
+  // layer or, for handles, in the unclipped handle layer beside the page. Handles beside the page
+  // also paint above the page's own edit chrome (editors, hover halos) where they overlap it.
+  function expectAboveEveryPageObject(element: Element) {
+    const page = container.querySelector(".page")!;
+    const painted = [...page.querySelectorAll(
+      "[data-page-object-stack], [data-page-svg-visual-layer], .native-molecule-object, .document-object")];
+    expect(painted.length).toBeGreaterThan(1);
+    for (const object of painted) {
+      expect(paintsAbove(element, object), `${element.outerHTML.slice(0, 80)} over ${object.outerHTML.slice(0, 80)}`).toBe(true);
+      expect(paintsAbove(object, element)).toBe(false);
+    }
+    if (!page.contains(element)) {
+      expect(element.closest("[data-page-handle-layer]")?.parentElement).toBe(page.parentElement);
+      expect(paintsAbove(element, page.querySelector("[data-page-interaction-layer]")!)).toBe(true);
+    }
+  }
+
   it("retains arrow hover ownership from paint to marker, endpoint and catcher, then clears outside", async () => {
     const withArrow = insertNativeArtGraphicObject(createPhase4Document("Arrow ownership"),
       { x: 100, y: 100 }, "tool.art.resonanceArrow");
@@ -1213,7 +1279,8 @@ describe("canvas ring-fill layers", () => {
     const objects = front === "shape" ? [fixture.molecule, { ...fixture.rectangle, x: 600, y: 500 }]
       : [...labels.slice(0, 200), fixture.molecule, ...labels.slice(200)];
     await renderDocument(documentWithObjects(fixture.document, objects, [fixture.molecule.id]));
-    expectInteractionAbovePaint(container.querySelector("[data-object-resize-corner]")!);
+    // Handles draw beside the page, outside its paint clip, and still over every later object.
+    expectAboveEveryPageObject(container.querySelector("[data-object-resize-corner]")!);
     // The atom is unobscured, while the same molecule's controls can overhang later objects.
     await pointer(moleculeLayer(fixture.molecule.id), "pointermove", fixture.molecule.atoms[0], 0);
     expectInteractionAbovePaint(container.querySelector(".native-atom-hover")!);

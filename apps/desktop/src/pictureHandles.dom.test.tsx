@@ -8,7 +8,11 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyPatches, createImageGraphicObject, type ChemDraftDocument, type DocumentObject, type GraphicObject } from "@chemdraft/chem-core";
 import { MainWindow } from "./MainWindow";
-import { createPhase4Document, insertNativeArtGraphicObject, selectDocumentObjects } from "./documentWorkflow";
+import {
+  applyChargeToolAtPoint, applyReactionArrowToolAtPoint, createPhase4Document, insertNativeArtGraphicObject,
+  insertNativeBracket, insertNativeTextObject, selectDocumentObjects
+} from "./documentWorkflow";
+import { saveDirectElectronMarkEditing } from "./electronMarkEditingSettings";
 import { getAssistantHistoryPort } from "./assistant/historyPort";
 import { setNativePromptProvider } from "./nativePrompt";
 import { MemoryStorage } from "./testSupport/memoryStorage";
@@ -28,6 +32,19 @@ function rotatedBox(object: { x: number; y: number; width: number; height: numbe
   const width = object.width * cos + object.height * sin, height = object.width * sin + object.height * cos;
   const cx = object.x + object.width / 2, cy = object.y + object.height / 2;
   return { left: cx - width / 2, top: cy - height / 2, right: cx + width / 2, bottom: cy + height / 2 };
+}
+
+/** One object of `kind`, alone on the page, flush with its top-left corner and selected. */
+function pageEdgeDocument(kind: "charge" | "text" | "reaction-arrow" | "bracket"): ChemDraftDocument {
+  const base = createPhase4Document(`${kind} at the page edge`);
+  const drawn = kind === "charge" ? applyChargeToolAtPoint(base, { kind: "charge", charge: 1 }, { x: 200, y: 200 })
+    : kind === "text" ? insertNativeTextObject(base, { x: 200, y: 200 }, "Edge label")
+      : kind === "reaction-arrow" ? applyReactionArrowToolAtPoint(base, { x: 200, y: 200 }, "forward")
+        : insertNativeBracket(base, { x: 200, y: 200 }, "square", { x: 320, y: 300 });
+  // A bracket pair: keep one half, so the selection shows its own handles, not the group frame.
+  const object = drawn.pages[0]!.objects[0]!;
+  const page = { ...drawn.pages[0]!, objects: [{ ...object, x: 0, y: 0 }] };
+  return selectDocumentObjects({ ...drawn, pages: [page] }, page.id, [object.id]);
 }
 
 function pictureDocument(frame: { x: number; y: number; width: number; height: number }): ChemDraftDocument {
@@ -106,6 +123,62 @@ describe.each(["macos", "windows"] as const)("picture and shape handles (%s)", p
     }
     return Object.fromEntries(corners.map(corner => [corner.dataset.objectResizeCorner!, corner]));
   }
+
+  // Charge marks, text boxes, reaction arrows and brackets draw their handles beside the page too:
+  // a handle overhanging the page edge is outside `.page`'s paint clip, and still grabbable.
+  it.each(["charge", "text", "reaction-arrow", "bracket"] as const)(
+    "keeps a %s's handles outside the page clip at the page edge, and drags the overhanging one", async kind => {
+    const prompt = vi.fn(async () => "keep");
+    restorePrompt = setNativePromptProvider(prompt);
+    // Charge marks show a transform frame only with direct electron-mark editing on.
+    if (kind === "charge") saveDirectElectronMarkEditing(true);
+    const initial = pageEdgeDocument(kind);
+    await mount(initial);
+    const before = current();
+    const object = before.pages[0]!.objects[0]!;
+    expect([object.x, object.y]).toEqual([0, 0]);
+
+    // Exactly one element carries the object's controls: the copy holding the handles, on the board
+    // beside the page. The in-page chrome has the same box and no handles.
+    const controls = [...container.querySelectorAll<HTMLElement>(`[data-object-controls="${object.id}"]`)];
+    expect(controls).toHaveLength(1);
+    const [handlesCopy] = controls;
+    expect(handlesCopy!.closest(".page")).toBeNull();
+    expect(handlesCopy!.closest("[data-page-handle-layer]")?.parentElement?.classList.contains("document-board")).toBe(true);
+    const chrome = container.querySelector<HTMLElement>(`[data-object-chrome="${object.id}"]`)!;
+    expect(chrome.closest("[data-page-interaction-layer]")).not.toBeNull();
+    expect(chrome.hasAttribute("data-object-controls")).toBe(false);
+    for (const property of ["left", "top", "width", "height", "transform"] as const) {
+      expect(handlesCopy!.style[property]).toBe(chrome.style[property]);
+    }
+    const handleSelector = kind === "text" ? "[data-text-resize-edge]" : "[data-object-resize-corner]";
+    expect(chrome.querySelector(`${handleSelector}, [data-selection-rotate-handle]`)).toBeNull();
+    const handles = [...handlesCopy!.querySelectorAll<HTMLElement>(handleSelector)];
+    expect(handles.map(handle => handle.dataset.textResizeEdge ?? handle.dataset.objectResizeCorner).sort())
+      .toEqual(kind === "text" ? ["bottom", "left", "right", "top"] : ["bottom-left", "bottom-right", "top-left", "top-right"]);
+    for (const handle of handles) expect(handle.closest(".page")).toBeNull();
+
+    // The handle that overhangs the page's left (and top) edge still takes the press.
+    const grab = handles.find(handle => (handle.dataset.textResizeEdge ?? handle.dataset.objectResizeCorner) ===
+      (kind === "text" ? "left" : "top-left"))!;
+    const from = { x: 0, y: kind === "text" ? object.height / 2 : 0 };
+    await drag(grab, from, kind === "text" ? { x: 20, y: from.y } : { x: -30, y: -30 });
+    const after = objectById(object.id);
+    if (kind === "text") {
+      // The left edge moved in: a narrower box starting further right.
+      expect(after.x).toBeGreaterThan(object.x);
+      expect(after.width).toBeLessThan(object.width);
+    } else {
+      // Centre-anchored, as for pictures: larger, and overhanging the page, so the page-size
+      // question was asked (Keep Page Size) and the handles are still drawn outside the clip.
+      expect(after.width).toBeGreaterThan(object.width);
+      expect(after.height).toBeGreaterThan(object.height);
+      expect(prompt).toHaveBeenCalledOnce();
+      expect(container.querySelector(`[data-object-controls="${object.id}"]`)!.closest("[data-page-handle-layer]")).not.toBeNull();
+    }
+    await command("edit.undo");
+    expect(current().pages).toEqual(before.pages);
+  });
 
   it.each(["enlarge", "keep"] as const)(
     "enlarging a page-filling picture from a corner asks to enlarge the page, keeps handles grabbable, and undoes (%s)", async answer => {

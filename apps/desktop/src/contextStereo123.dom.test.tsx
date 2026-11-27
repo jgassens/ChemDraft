@@ -100,7 +100,8 @@ const bondTarget = (molecule: MoleculeObject, id: string) =>
   renderedMolecule(molecule).querySelector(`[data-bond-id="${id}"][data-hit-target="bond"]`)!;
 
 async function clickAt(point: Point, { target = page as Element, button = 2, ctrlKey = false, shiftKey = false, context = true } = {}) {
-  expect(page.contains(target)).toBe(true);
+  // On the page, or a selection handle drawn beside it (outside its paint clip) on the same board.
+  expect(page.closest(".document-board")!.contains(target)).toBe(true);
   const mouse = { bubbles: true, cancelable: true, clientX: origin.x + point.x * scale,
     clientY: origin.y + point.y * scale, button, ctrlKey, shiftKey };
   await act(async () => {
@@ -542,11 +543,11 @@ describe("right-click inside the drawn group selection frame", () => {
   async function marqueeSelectPair() {
     await marqueeSelect({ x: 120, y: 90 }, { x: 260, y: 250 });
     await marqueeSelect({ x: 360, y: 90 }, { x: 520, y: 250 }, true);
-    expect(page.querySelector('[data-group-selection="true"]')).not.toBeNull();
+    expect(container.querySelector('[data-group-selection="true"]')).not.toBeNull();
   }
 
   const frameBounds = () => {
-    const frame = page.querySelector<HTMLElement>('[data-group-selection="true"]')!;
+    const frame = container.querySelector<HTMLElement>('[data-group-selection="true"]')!;
     expect(frame).not.toBeNull();
     const px = (name: "left" | "top" | "width" | "height") =>
       Number(/^calc\(([-\d.]+)px/.exec(frame.style[name])![1]);
@@ -610,7 +611,7 @@ describe("right-click on a selected molecule's selection handle", () => {
       drawn = selectDocumentObjects(next, drawing.pages[0].id, [molecule.id]);
       return drawn;
     } });
-    const handle = page.querySelector<HTMLElement>(".object-resize-handle.object-resize-top-left")!;
+    const handle = container.querySelector<HTMLElement>(".object-resize-handle.object-resize-top-left")!;
     expect(handle).not.toBeNull();
     const chrome = handle.closest<HTMLElement>(".document-object-chrome")!;
     const frame = handle.closest<HTMLElement>(".object-transform-frame")!;

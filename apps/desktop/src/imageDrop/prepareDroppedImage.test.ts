@@ -2,10 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import { MAX_IMAGE_OBJECT_BYTES, createEmptyDocument, type GraphicObject } from "@chemdraft/chem-core";
 import { MAX_SVG_SOURCE_CHARS } from "@chemdraft/export-engine";
 import { insertDroppedImages } from "./insertDroppedImages";
-import { jpegPictureSvg, readKeepableJpeg } from "./jpegPicture";
+import { jpegPictureSvg, readJpegStructure, readKeepableJpeg } from "./jpegPicture";
 import {
-  CONVERTED_PICTURE_MAX_SIDE, KEPT_JPEG_MAX_SIDE, bytesToBase64, prepareDroppedImage, type PreparedDroppedImage
+  CONVERTED_PICTURE_MAX_SIDE, INCOMPLETE_JPEG_NOTE, KEPT_JPEG_MAX_SIDE, bytesToBase64, prepareDroppedImage, type PreparedDroppedImage
 } from "./prepareDroppedImage";
+import { formatImageDropStatus } from "./dropHandler";
 import type { DecodeCheck, DroppedImageDecoders, RasterToJpeg, RasterToPng } from "./rasterDecode";
 import { scanStart, syntheticJpeg } from "./jpegTestImages";
 import { gifHeader, pngBytes } from "./testFixtures";
@@ -120,6 +121,47 @@ describe("a dropped picture keeps its own encoded bytes", () => {
     const small = await prepared("small.gif", gifHeader(8, 8));
     expect(small.notes).toEqual([]);
     expect(small.naturalSize).toBeUndefined();
+  });
+});
+
+describe("a dropped JPEG whose image data is incomplete", () => {
+  // A lenient decoder (WebKit's) draws these with grey or smeared rows instead of failing, so the
+  // structural check, not the decoder, keeps their bytes out of the document.
+  const photo = () => syntheticJpeg({ width: 640, height: 480, orientation: 6, xmp: true, scanBytes: 4_000 });
+  const cases = [
+    ["truncated in its scan", (jpeg: Uint8Array) => jpeg.subarray(0, jpeg.length - 1_500)],
+    ["without its EOI marker", (jpeg: Uint8Array) => jpeg.subarray(0, jpeg.length - 2)]
+  ] as const;
+
+  it.each(cases)("%s is converted to PNG as decoded, upright and without metadata, and the status says so", async (_, damage) => {
+    const jpeg = damage(photo());
+    expect(readKeepableJpeg(jpeg)).toBeUndefined();
+    const decode = decoders(async () => ({ width: 640, height: 480 }));
+    const image = await prepared("IMG_cut.jpg", jpeg, decode);
+    // Never kept as it is: no SVG picture around the JPEG bytes, no decode check of them as a kept JPEG.
+    expect(decode.decodeCheck).not.toHaveBeenCalled();
+    expect(decode.rasterToJpeg).not.toHaveBeenCalled();
+    expect(decode.rasterToPng).toHaveBeenCalledExactlyOnceWith(readJpegStructure(jpeg)!.bytes, "image/jpeg", MAX_IMAGE_OBJECT_BYTES,
+      { maxSide: CONVERTED_PICTURE_MAX_SIDE, orientation: 6 });
+    expect(new TextDecoder("latin1").decode(decode.rasterToPng.mock.calls[0]![0] as Uint8Array)).not.toMatch(/Exif|GPSLatitude/);
+    expect(image).toEqual({ name: "IMG_cut.jpg", mimeType: "image/png", dataBase64: bytesToBase64(pngBytes()), notes: [INCOMPLETE_JPEG_NOTE] });
+    expect(atob(image.dataBase64)).not.toContain("image/jpeg");
+    expect(formatImageDropStatus({ inserted: [image], refusals: [] }))
+      .toContain(`IMG_cut.jpg: ${INCOMPLETE_JPEG_NOTE}`);
+  });
+
+  it.each(cases)("%s is refused by name when the webview cannot decode it either", async (_, damage) => {
+    const decode = decoders(undefined, async () => { throw new Error("the webview could not decode it."); });
+    expect(await prepareDroppedImage("IMG_cut.jpg", damage(photo()), decode))
+      .toEqual({ ok: false, reason: "the JPEG could not be converted: the webview could not decode it." });
+    expect(decode.decodeCheck).not.toHaveBeenCalled();
+  });
+
+  it("keeps the same photo whole, by contrast, as its own bytes", async () => {
+    const decode = decoders(async () => ({ width: 640, height: 480 }));
+    const image = await prepared("IMG_whole.jpg", photo(), decode);
+    expect(image).toMatchObject({ mimeType: "image/svg+xml", notes: [] });
+    expect(decode.rasterToPng).not.toHaveBeenCalled();
   });
 });
 

@@ -75,7 +75,7 @@ export function textboxHarness(platform: ShortcutPlatform) {
   const object = (): TextObject =>
     window.__CHEMDRAFT_AGENT__!.snapshot().document.pages[0]!.objects.find(candidate => candidate.id === objectId) as TextObject;
   const editor = () => container.querySelector<HTMLTextAreaElement>(".text-object-editor")!;
-  const chrome = () => editor().closest<HTMLElement>("[data-object-controls]")!;
+  const chrome = () => editor().closest<HTMLElement>("[data-object-chrome]")!;
   const scale = () => Number(chrome().style.getPropertyValue("--page-scale")) || 1;
   // Offsets as the textarea counts them: an object stored with CRLF is read with LF breaks.
   const layout = () => {

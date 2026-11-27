@@ -7918,7 +7918,7 @@ export function MainWindow({
 
   const focusTextObjectEditorDom = useCallback((objectId: string) => {
     const editor = pageRef.current?.querySelector<HTMLTextAreaElement>(
-      `:is([data-object-id="${cssEscapeIdentifier(objectId)}"], [data-object-controls="${cssEscapeIdentifier(objectId)}"]) .text-object-editor`
+      `:is([data-object-id="${cssEscapeIdentifier(objectId)}"], [data-object-chrome="${cssEscapeIdentifier(objectId)}"]) .text-object-editor`
     );
     if (!editor) {
       return;
@@ -7932,7 +7932,7 @@ export function MainWindow({
 
   const focusAtomLabelEditorDom = useCallback((objectId: string, atomId: string) => {
     const editor = pageRef.current?.querySelector<HTMLInputElement>(
-      `:is([data-object-id="${cssEscapeIdentifier(objectId)}"], [data-object-controls="${cssEscapeIdentifier(objectId)}"]) [data-atom-label-editor="true"][data-atom-id="${cssEscapeIdentifier(atomId)}"]`
+      `:is([data-object-id="${cssEscapeIdentifier(objectId)}"], [data-object-chrome="${cssEscapeIdentifier(objectId)}"]) [data-atom-label-editor="true"][data-atom-id="${cssEscapeIdentifier(atomId)}"]`
     );
     // Already focused: leave it, so a retry never moves the caret the user is typing at.
     if (!editor || editor.ownerDocument.activeElement === editor) {
@@ -24306,6 +24306,7 @@ export function MainWindow({
             if (event.target === event.currentTarget && event.key === "Tab" && !event.shiftKey) {
               const targets = currentMoleculeInspector.targets.bondTargets;
               if (targets.length === 1) {
+                // Badges draw in the element holding the molecule's controls (with its handles, if any).
                 const badge = event.currentTarget.querySelector<SVGGElement>(
                   `[data-object-controls="${targets[0].objectId}"] [data-unspecified-bond-id="${targets[0].bondId}"]`);
                 if (badge) { event.preventDefault(); event.stopPropagation(); badge.focus(); return; }
@@ -24413,8 +24414,9 @@ export function MainWindow({
             badgePressRef.current = undefined;
             event.preventDefault(); event.stopPropagation();
             if (bondStereoBadgeAtPointer(event.currentTarget, event) !== press.badge) return;
-            const objectId = press.badge.closest("[data-object-controls], [data-object-id]");
-            const ownerId = objectId?.getAttribute("data-object-controls") ?? objectId?.getAttribute("data-object-id");
+            const objectId = press.badge.closest("[data-object-chrome], [data-object-controls], [data-object-id]");
+            const ownerId = objectId?.getAttribute("data-object-chrome") ?? objectId?.getAttribute("data-object-controls") ??
+              objectId?.getAttribute("data-object-id");
             const bondId = press.badge.getAttribute("data-unspecified-bond-id");
             if (ownerId && bondId) openBondStereoPopover({ objectId: ownerId, bondId,
               rect: press.badge.getBoundingClientRect(), keyboard: false });
@@ -25806,12 +25808,14 @@ function retainedObjectMoveTargets(
   const ids = new Set(objectIds);
   // Collect once per gesture, scoped to this page. Descendant bond/atom catchers ride
   // with their paint wrapper; translating them individually would apply the delta twice.
+  // An object's chrome (in the page) and its handle copy (beside it) both ride along.
+  const owner = (element: Element) => element.getAttribute("data-object-controls") ?? element.getAttribute("data-object-chrome");
   return [...page.querySelectorAll<HTMLElement | SVGElement>(
-    ".document-object[data-object-id], [data-object-controls], [data-page-svg-object-visual], [data-group-selection]"
+    ".document-object[data-object-id], [data-object-controls], [data-object-chrome], [data-page-svg-object-visual], [data-group-selection]"
   )].filter(element => !arrowFragments?.has(element.getAttribute("data-page-svg-object-visual") ??
-    element.getAttribute("data-object-controls") ?? element.getAttribute("data-object-id") ?? "") &&
+    owner(element) ?? element.getAttribute("data-object-id") ?? "") &&
     (ids.has(element.getAttribute("data-object-id") ??
-    element.getAttribute("data-object-controls") ?? element.getAttribute("data-page-svg-object-visual") ?? "") ||
+    owner(element) ?? element.getAttribute("data-page-svg-object-visual") ?? "") ||
     (objectIds.length > 1 && element.hasAttribute("data-group-selection"))))
     .map(element => ({ element, svg: element.hasAttribute("data-page-svg-object-visual"),
       transform: element.getAttribute("transform"), translate: element.style.translate }));
@@ -29965,9 +29969,9 @@ function selectionStatusLabel(selection: {
 
 function objectHoverOwner(target: EventTarget | null): string | undefined {
   if (!(target instanceof Element)) return undefined;
-  const owner = target.closest("[data-page-svg-object-visual], [data-object-controls], [data-object-id]");
+  const owner = target.closest("[data-page-svg-object-visual], [data-object-controls], [data-object-chrome], [data-object-id]");
   return owner?.getAttribute("data-page-svg-object-visual") ?? owner?.getAttribute("data-object-controls") ??
-    owner?.getAttribute("data-object-id") ?? undefined;
+    owner?.getAttribute("data-object-chrome") ?? owner?.getAttribute("data-object-id") ?? undefined;
 }
 
 function PageInteractionPortal({ target, children }: { target: HTMLDivElement | null; children: ReactNode }) {
@@ -30837,42 +30841,60 @@ function DocumentObjectViewContent({
   } as CSSProperties;
   // The positioned copy carries only edit/preview chrome. Its own z-index is bounded
   // inside the page's interaction layer, independent of the object's paint index.
-  const chrome = (children: ReactNode, extraStyle?: CSSProperties) => interactionLayer ? createPortal(
-    <div
-      className={["document-object-chrome",
-        selected && object.type !== "graphic" && (object.type !== "molecule" || !isNativeMoleculeGraph(object))
-          ? "selected" : ""].filter(Boolean).join(" ")}
-      style={{ ...style, ...extraStyle, zIndex: 1 }}
-      data-object-controls={object.id}
-      data-object-id={object.type === "text" ? object.id : undefined}
-      onPointerLeave={handleObjectPointerLeave}
-    >
-      {(objectTransformPreview || spinning) && object.type !== "graphic" && nativeMoleculeSvgFragments ? (
-        <svg className="object-transform-preview-visual" viewBox={`0 0 ${object.width} ${object.height}`} aria-hidden="true"
-          data-spin3d-ghost={spinning ? "true" : undefined} style={spinning ? { opacity: 0.1 } : undefined}>
-          <g transform={`translate(${formatSvgNumber(-object.x)} ${formatSvgNumber(-object.y)})`}>
-            {nativeMoleculeSvgFragments.map(renderStaticPageSvgFragment)}
-          </g>
-        </svg>
-      ) : null}
-      {children}
-    </div>, interactionLayer
-  ) : <>{children}</>;
-  // Resize/rotate/tilt frames go to the handle layer beside the page so `.page`'s paint containment
-  // never clips them at the page edge. Same box and transform as the chrome copy; with no handle
-  // layer (static rendering) they stay inside the chrome as before.
+  //
+  // Transform handles (resize/rotate/tilt frames and their typed entry, text resize bars, charge,
+  // arrow and bracket frames) go to the handle layer beside the page instead, so `.page`'s paint
+  // containment never clips them at or past the page edge (owner rule: handles are never hidden
+  // off canvas). They get a second copy of the chrome box, with the same box and transform. Pass
+  // them as `handles`; inside `children`, `inlineHandles` keeps them in the chrome only when there
+  // is no handle layer (static rendering).
+  //
+  // Exactly one element per object carries data-object-controls: the handle copy when handles
+  // are drawn there (it also draws the selection outline, so that is not clipped either), else
+  // the chrome. The chrome always carries data-object-chrome: look there for editors, selection
+  // highlights, badges and previews. A text box's copies also carry data-object-id, as before.
+  const selectionOutline = selected && object.type !== "graphic" &&
+    (object.type !== "molecule" || !isNativeMoleculeGraph(object));
   const inlineHandles = (children: ReactNode) => handleLayer && interactionLayer ? null : children;
-  const handles = (children: ReactNode) => handleLayer && interactionLayer && children ? createPortal(
-    <div
-      className="document-object-chrome document-object-handles"
-      style={{ ...style, zIndex: 1 }}
-      data-object-controls={object.id}
-      data-object-handles="true"
-      onPointerLeave={handleObjectPointerLeave}
-    >
-      {children}
-    </div>, handleLayer
-  ) : null;
+  const handlesDrawnApart = (handles: ReactNode) => Boolean(handleLayer && interactionLayer && handles);
+  const chrome = (children: ReactNode, extraStyle?: CSSProperties, handles?: ReactNode) => {
+    if (!interactionLayer) return <>{children}</>;
+    const handlesApart = handlesDrawnApart(handles);
+    return <>
+      {createPortal(
+        <div
+          className={["document-object-chrome", selectionOutline && !handlesApart ? "selected" : ""].filter(Boolean).join(" ")}
+          style={{ ...style, ...extraStyle, zIndex: 1 }}
+          data-object-controls={handlesApart ? undefined : object.id}
+          data-object-chrome={object.id}
+          data-object-id={object.type === "text" ? object.id : undefined}
+          onPointerLeave={handleObjectPointerLeave}
+        >
+          {(objectTransformPreview || spinning) && object.type !== "graphic" && nativeMoleculeSvgFragments ? (
+            <svg className="object-transform-preview-visual" viewBox={`0 0 ${object.width} ${object.height}`} aria-hidden="true"
+              data-spin3d-ghost={spinning ? "true" : undefined} style={spinning ? { opacity: 0.1 } : undefined}>
+              <g transform={`translate(${formatSvgNumber(-object.x)} ${formatSvgNumber(-object.y)})`}>
+                {nativeMoleculeSvgFragments.map(renderStaticPageSvgFragment)}
+              </g>
+            </svg>
+          ) : null}
+          {children}
+        </div>, interactionLayer
+      )}
+      {handlesApart && handleLayer ? createPortal(
+        <div
+          className={["document-object-chrome", "document-object-handles", selectionOutline ? "selected" : ""].filter(Boolean).join(" ")}
+          style={{ ...style, ...extraStyle, zIndex: 1 }}
+          data-object-controls={object.id}
+          data-object-handles="true"
+          data-object-id={object.type === "text" ? object.id : undefined}
+          onPointerLeave={handleObjectPointerLeave}
+        >
+          {handles}
+        </div>, handleLayer
+      ) : null}
+    </>;
+  };
   const artObjectTransformFrameStyle = documentObjectSupportsArtTransform(object, directElectronMarkEditing)
     ? documentObjectArtTransformFrameStyle(object, artObjectProjection, objectTransformPreview, pageScale)
     : undefined;
@@ -31215,6 +31237,19 @@ function DocumentObjectViewContent({
           </div>
         ) : null}
       </> : null;
+      // Bond-stereo badges stack above the transform frame and below its typed entry (z-index 3 <
+      // 4 < 5, so a badge under a handle stays visible and claims the press). That order holds only
+      // in one stacking context, so the badges go with the handles when those draw beside the page.
+      const bondStereoBadgeLayer = (
+        <svg
+          className="native-molecule-overlay native-bond-stereo-badge-layer"
+          viewBox={`0 0 ${object.width} ${object.height}`}
+          style={spinning ? { opacity: 0.1 } : undefined}
+        >
+          <BondStereoBadges molecule={object} onOpen={onBondStereoBadgeOpen} />
+        </svg>
+      );
+      const moleculeHandles = moleculeHandleChrome ? <>{bondStereoBadgeLayer}{moleculeHandleChrome}</> : null;
       return (
         <div
           className={[
@@ -31359,13 +31394,7 @@ function DocumentObjectViewContent({
               />
             ))}
           </svg>
-          <svg
-            className="native-molecule-overlay native-bond-stereo-badge-layer"
-            viewBox={`0 0 ${object.width} ${object.height}`}
-            style={spinning ? { opacity: 0.1 } : undefined}
-          >
-            <BondStereoBadges molecule={object} onOpen={onBondStereoBadgeOpen} />
-          </svg>
+          {handlesDrawnApart(moleculeHandles) ? null : bondStereoBadgeLayer}
           {moleculeGradientHandles}
           {inlineHandles(moleculeHandleChrome)}
           {editingAtomLabel ? object.atoms
@@ -31416,8 +31445,7 @@ function DocumentObjectViewContent({
                 />
               );
             }) : null}
-          </>)}
-          {handles(moleculeHandleChrome)}
+          </>, undefined, moleculeHandles)}
         </div>
       );
     }
@@ -31496,7 +31524,7 @@ function DocumentObjectViewContent({
         onPointerCancel={handleObjectPointerCancel}
         onPointerLeave={handleObjectPointerLeave}
       >
-        {chrome(artObjectTransformFrame)}
+        {chrome(inlineHandles(artObjectTransformFrame), undefined, artObjectTransformFrame)}
       </div>
     );
   }
@@ -31553,6 +31581,53 @@ function DocumentObjectViewContent({
         paddingBottom: objectTextScript === "superscript" ? `calc(${textStyle.fontSizePx * 0.28}px * var(--page-scale))` : 0
       })
     } as CSSProperties;
+    // Resize bars and the rotate button draw in the handle layer, outside the page's clip, with
+    // the editor frame's box; the editor itself stays in the chrome.
+    const textHandles = (selected && !inGroupSelection) || editingText ? <>
+      <button
+        type="button"
+        className="text-resize-handle text-resize-handle-left"
+        aria-label="Resize text box left"
+        data-text-resize-edge="left"
+        onPointerDown={handleTextResizeStart("left")}
+      />
+      <button
+        type="button"
+        className="text-resize-handle text-resize-handle-right"
+        aria-label="Resize text box right"
+        data-text-resize-edge="right"
+        onPointerDown={handleTextResizeStart("right")}
+      />
+      <button
+        type="button"
+        className="text-resize-handle text-resize-handle-top"
+        aria-label="Resize text box top"
+        data-text-resize-edge="top"
+        onPointerDown={handleTextResizeStart("top")}
+      />
+      <button
+        type="button"
+        className="text-resize-handle text-resize-handle-bottom"
+        aria-label="Resize text box bottom"
+        data-text-resize-edge="bottom"
+        onPointerDown={handleTextResizeStart("bottom")}
+      />
+      {selected && !inGroupSelection && !editingText && zRotationHandleVisible ? (
+        <button
+          type="button"
+          className="object-rotate-handle text-rotate-handle"
+          aria-label="Rotate selected text box"
+          data-selection-rotate-handle="true"
+          title="Rotate selected text box"
+          onPointerDown={handleRotatePointerDown}
+        >
+          <RotateSelectionIcon />
+          {rotateReadout ? (
+            <RotateSelectionReadout degrees={rotateReadout.degrees} />
+          ) : null}
+        </button>
+      ) : null}
+    </> : null;
 
     return (
       <div
@@ -31570,53 +31645,7 @@ function DocumentObjectViewContent({
         onPointerLeave={handleObjectPointerLeave}
       >
         {chrome(<>
-        {(selected && !inGroupSelection) || editingText ? (
-          <>
-            <button
-              type="button"
-              className="text-resize-handle text-resize-handle-left"
-              aria-label="Resize text box left"
-              data-text-resize-edge="left"
-              onPointerDown={handleTextResizeStart("left")}
-            />
-            <button
-              type="button"
-              className="text-resize-handle text-resize-handle-right"
-              aria-label="Resize text box right"
-              data-text-resize-edge="right"
-              onPointerDown={handleTextResizeStart("right")}
-            />
-            <button
-              type="button"
-              className="text-resize-handle text-resize-handle-top"
-              aria-label="Resize text box top"
-              data-text-resize-edge="top"
-              onPointerDown={handleTextResizeStart("top")}
-            />
-            <button
-              type="button"
-              className="text-resize-handle text-resize-handle-bottom"
-              aria-label="Resize text box bottom"
-              data-text-resize-edge="bottom"
-              onPointerDown={handleTextResizeStart("bottom")}
-            />
-          </>
-        ) : null}
-        {selected && !inGroupSelection && !editingText && zRotationHandleVisible ? (
-          <button
-            type="button"
-            className="object-rotate-handle text-rotate-handle"
-            aria-label="Rotate selected text box"
-            data-selection-rotate-handle="true"
-            title="Rotate selected text box"
-            onPointerDown={handleRotatePointerDown}
-          >
-            <RotateSelectionIcon />
-            {rotateReadout ? (
-              <RotateSelectionReadout degrees={rotateReadout.degrees} />
-            ) : null}
-          </button>
-        ) : null}
+        {inlineHandles(textHandles)}
         {editingText ? (
           <>
             <textarea
@@ -31708,7 +31737,7 @@ function DocumentObjectViewContent({
             <div className="text-editor-caret" ref={textCaretRef} aria-hidden="true" style={{ backgroundColor: textStyle.color }} />
           </>
         ) : null}
-        </>, { ...textCss, ...editorFrameCss })}
+        </>, { ...textCss, ...editorFrameCss }, textHandles)}
       </div>
     );
   }
@@ -31770,7 +31799,7 @@ function DocumentObjectViewContent({
             />
           ))}
         </svg>
-        {chrome(artObjectTransformFrame)}
+        {chrome(inlineHandles(artObjectTransformFrame), undefined, artObjectTransformFrame)}
       </div>
     );
   }
@@ -31793,7 +31822,7 @@ function DocumentObjectViewContent({
         onContextMenu={handleObjectContextMenu}
       >
         <BracketGlyph object={object} projection={artObjectProjection} />
-        {chrome(artObjectTransformFrame)}
+        {chrome(inlineHandles(artObjectTransformFrame), undefined, artObjectTransformFrame)}
       </div>
     );
   }
@@ -31898,8 +31927,7 @@ function DocumentObjectViewContent({
           </div>
           {graphicEyedropperTargetOverlay}
           {inlineHandles(artObjectTransformFrame)}
-        </>)}
-        {handles(artObjectTransformFrame)}
+        </>, undefined, artObjectTransformFrame)}
       </div>
     );
   }
@@ -31916,8 +31944,7 @@ function DocumentObjectViewContent({
       onPointerCancel={handleObjectPointerCancel}
       onPointerLeave={handleObjectPointerLeave}
     >
-      {chrome(inlineHandles(artObjectTransformFrame))}
-      {handles(artObjectTransformFrame)}
+      {chrome(inlineHandles(artObjectTransformFrame), undefined, artObjectTransformFrame)}
     </div>
   );
 }

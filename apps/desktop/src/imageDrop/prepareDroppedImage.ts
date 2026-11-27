@@ -6,7 +6,9 @@ import {
   sanitizeSvgPicture, sniffBinaryImageFormat, type EmbeddedSvgBitmap, type SniffedImageFormat
 } from "@chemdraft/export-engine";
 import { formatDropBytes, rewordPictureError } from "./dropFiles";
-import { jpegPictureSvg, jpegPictureSvgLength, readKeepableJpeg, type JpegOrientation, type KeepableJpeg } from "./jpegPicture";
+import {
+  jpegPictureSvg, jpegPictureSvgLength, readJpegStructure, readKeepableJpeg, type JpegOrientation, type KeepableJpeg
+} from "./jpegPicture";
 import { pngImageDataError } from "./pngIntegrity";
 import type { DecodeOptions, DroppedImageDecoders, RasterPngResult } from "./rasterDecode";
 import { decodeSvgBytes, encodeSvgText } from "./svgText";
@@ -70,6 +72,13 @@ export const CONVERTED_PICTURE_MAX_SIDE = 4096;
  */
 export const KEPT_JPEG_MAX_SIDE = 4096;
 export const KEPT_JPEG_QUALITY = 0.9;
+
+/**
+ * The status note for a JPEG whose image data is cut short or damaged (`JpegStructure.complete`):
+ * a lenient decoder still draws it, with grey or smeared rows, so it is converted to PNG as the
+ * webview decodes it rather than kept as it is, and the status says so.
+ */
+export const INCOMPLETE_JPEG_NOTE = "its image data is cut short or damaged, so it was converted to PNG as decoded; part of it may be missing";
 
 /** The status note for a PNG conversion stored smaller than its source, or undefined at full size. */
 function downscaleNote(encoded: RasterPngResult): string | undefined {
@@ -224,17 +233,22 @@ export async function prepareDroppedImage(
     if (limit) return { ok: false, reason: limit };
     let source = bytes;
     let orientation: JpegOrientation | undefined;
+    const notes: string[] = [];
     if (format === "jpeg") {
       // A JPEG that stops before its image data is left to the webview's decoder below, as before.
-      const jpeg = readKeepableJpeg(bytes);
-      if (jpeg) {
+      const jpeg = readJpegStructure(bytes);
+      if (jpeg?.complete) {
         const kept = Math.max(header.width, header.height) > KEPT_JPEG_MAX_SIDE
           ? await scaledJpegPicture(name, jpeg, decoders, options)
           : await keptJpegPicture(name, jpeg, header, decoders, options);
         if (kept) return kept;
-        // Too large to keep whole: converted, with the canvas turning it upright.
+      }
+      if (jpeg) {
+        // Too large to keep whole, or its image data is incomplete (never stored as it is): converted,
+        // with the canvas turning it upright.
         source = jpeg.bytes;
         orientation = jpeg.orientation;
+        if (!jpeg.complete) notes.push(INCOMPLETE_JPEG_NOTE);
       }
     }
     let encoded;
@@ -248,7 +262,6 @@ export async function prepareDroppedImage(
     if (decodedLimit) return { ok: false, reason: decodedLimit };
     const result = validatePngImage(encoded.png);
     if (result.error) return { ok: false, reason: `the converted picture is invalid: ${rewordPictureError(result.error)}` };
-    const notes: string[] = [];
     let naturalSize: PreparedDroppedImage["naturalSize"];
     const note = downscaleNote(encoded);
     if (note) {
