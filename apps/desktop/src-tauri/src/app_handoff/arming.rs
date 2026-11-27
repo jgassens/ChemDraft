@@ -13,8 +13,9 @@
 //!
 //! The gate holds only the liveness check and starting the process or open (`Command::spawn`, and
 //! on Windows attaching the job and resuming the suspended child). No receipt, output or exit is
-//! waited for inside it, so an invalidating caller, the main thread included, waits at most for
-//! one process to start.
+//! waited for inside it: a child whose job or resume fails is killed there without a wait and
+//! reaped on a thread of its own (`runner::ChildProcess::start`). So an invalidating caller, the
+//! main thread included, waits at most for one process to start.
 //!
 //! Locks, outermost first. Each is only taken while holding locks above it, never below:
 //!

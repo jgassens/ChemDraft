@@ -3184,29 +3184,39 @@ fn the_confirmation_states_the_bounded_retry() {
 
 /// When a stand-in event fires during `BuildJob::run`: `Check(n)` at the nth launch-time
 /// authorization (each step, the check before a later attempt, and the open), before the click is
-/// checked; `Running(n)` after the nth companion process started, reported at the next launch-time
-/// authorization, just before `Check`, so outside the launch boundary. `Launching(n)` and `Opening`
+/// checked; `Exited(n)` once the nth companion process has run and exited, reported at the next
+/// launch-time authorization, just before `Check`, so outside the launch boundary. No event fires
+/// while a process runs: the run is on the event's own thread, so `launch_race::run_holding` ends
+/// a click from another thread while a process is held running. `Launching(n)` and `Opening`
 /// fire inside the launch boundary, after the click was found live and before the nth process
 /// starts or the output opens; only a race on another thread may end the click there.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Moment {
     Check(usize),
-    Running(usize),
+    Exited(usize),
     Launching(usize),
     Opening,
 }
 
-/// The document window's part of a build, minus the window: every launch-time check passes, every
-/// process is the stub companion, and opening only records the file.
+/// The document window's part of a build, minus the window: every launch-time check passes (with
+/// `consent`, only while the consent store still holds the grant), every process is the stub
+/// companion, and opening only records the file.
 struct StubHost<'a> {
     cache: PathBuf,
     stopped: AtomicBool,
     checks: Cell<usize>,
     event: RefCell<Box<dyn FnMut(Moment) + 'a>>,
-    running: Cell<Option<Moment>>,
+    exited: Cell<Option<Moment>>,
     spawned: RefCell<Vec<String>>,
     opened: RefCell<Vec<PathBuf>>,
+    /// The nth process waits, while it runs, for the test listening at the address (see `hold` in
+    /// `stub_tool.rs`).
+    hold: Option<(usize, std::net::SocketAddr)>,
+    consent: Option<(&'a Store, Row)>,
 }
+
+/// Why the stand-in host refuses a launch whose consent was revoked.
+const CONSENT_GONE: &str = "The build's consent was revoked.";
 
 impl<'a> StubHost<'a> {
     fn new(cache: &Path, event: impl FnMut(Moment) + 'a) -> Self {
@@ -3215,9 +3225,11 @@ impl<'a> StubHost<'a> {
             stopped: AtomicBool::new(false),
             checks: Cell::new(0),
             event: RefCell::new(Box::new(event)),
-            running: Cell::new(None),
+            exited: Cell::new(None),
             spawned: RefCell::new(Vec::new()),
             opened: RefCell::new(Vec::new()),
+            hold: None,
+            consent: None,
         }
     }
 }
@@ -3236,12 +3248,19 @@ impl BuildHost for StubHost<'_> {
         job: &BuildJob,
         launch: impl FnOnce(&identity::App) -> T,
     ) -> Result<T, runner::Failure> {
-        if let Some(running) = self.running.take() {
-            (self.event.borrow_mut())(running);
+        if let Some(exited) = self.exited.take() {
+            (self.event.borrow_mut())(exited);
         }
         self.checks.set(self.checks.get() + 1);
         (self.event.borrow_mut())(Moment::Check(self.checks.get()));
-        Ok(launch(&job.target))
+        match &self.consent {
+            None => Ok(launch(&job.target)),
+            Some((store, grant)) => store
+                .with_grant(grant, |_| launch(&job.target))
+                .ok()
+                .flatten()
+                .ok_or_else(|| runner::Failure::new(RunCode::BadParam, CONSENT_GONE)),
+        }
     }
 
     fn spawn(
@@ -3253,13 +3272,17 @@ impl BuildHost for StubHost<'_> {
     ) -> Result<ChildProcess, runner::Failure> {
         let count = self.spawned.borrow().len() + 1;
         (self.event.borrow_mut())(Moment::Launching(count));
+        if let Some((_, address)) = self.hold.filter(|(held, _)| *held == count) {
+            fs::write(cwd.join("hold"), address.to_string()).unwrap();
+        }
         let child = ChildProcess::spawn_before(rust_stub(), args, cwd, deadline, &self.stopped)?;
         self.spawned
             .borrow_mut()
             .push(args[0].to_string_lossy().into_owned());
         // This runs inside the launch boundary. Ending the click from here, on the launching
-        // thread, would wait for this very launch, so the event waits until the boundary is left.
-        self.running.set(Some(Moment::Running(count)));
+        // thread, would wait for this very launch, so the event waits for the next launch-time
+        // check, which comes only after this process has exited.
+        self.exited.set(Some(Moment::Exited(count)));
         Ok(child)
     }
 
@@ -3381,11 +3404,13 @@ fn a_single_run_launches_every_step_and_opens_while_its_click_is_live() {
 #[test]
 fn a_single_run_stops_before_any_later_step_or_open_once_its_click_ends() {
     for (case, end) in click_enders() {
-        // Ended while the preflight runs, before the build step, before inspect, before the open.
+        // Ended after the preflight exited, at the check before the build step, after the build
+        // step exited, before inspect, before the open. `launch_race::run_holding` covers ending
+        // the click while a process still runs.
         for (moment, launched) in [
-            (Moment::Running(1), 1),
+            (Moment::Exited(1), 1),
             (Moment::Check(2), 1),
-            (Moment::Running(2), 2),
+            (Moment::Exited(2), 2),
             (Moment::Check(3), 2),
             (Moment::Check(4), 3),
         ] {
@@ -3430,10 +3455,10 @@ fn a_retry_stops_before_any_later_step_attempt_or_open_once_its_click_ends() {
     let poor = || retry_build("small", &[2.0, 3.0]);
     for (case, end) in click_enders() {
         for (moment, launched, attempts) in [
-            (Moment::Running(3), 3, 2),
+            (Moment::Exited(3), 3, 2),
             (Moment::Check(4), 3, 2),
             (Moment::Check(5), 3, 2),
-            (Moment::Running(4), 4, 2),
+            (Moment::Exited(4), 4, 2),
             (Moment::Check(6), 4, 2),
             (Moment::Check(7), 5, 2),
             (Moment::Check(10), 7, 3),
@@ -3488,7 +3513,7 @@ fn closing_the_document_window_stops_running_work_but_not_the_next_click() {
     let proof = approved_click(&state.arms, &approved);
     let offer = state.begin_result(&stored_grant());
     let host = StubHost::new(&dir.0, |now| {
-        if now == Moment::Running(4) {
+        if now == Moment::Exited(4) {
             // What the document window's close request does on every platform.
             state.discard_menu_invocations();
         }
@@ -3504,7 +3529,8 @@ fn closing_the_document_window_stops_running_work_but_not_the_next_click() {
         *offer.borrow(),
         "a pending rebuild offer ends with the window"
     );
-    // Closing is not quitting: the running process was not stopped, and the next click runs.
+    // Closing is not quitting: the quit flag stays clear, so a step still running would be left to
+    // finish (`launch_race::run_holding` holds one running), and the next click runs.
     assert!(!state.stopped.load(std::sync::atomic::Ordering::Acquire));
     let proof = approved_click(&state.arms, &approved);
     let host = StubHost::new(&dir.0, |_| {});

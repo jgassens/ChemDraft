@@ -9,6 +9,15 @@ use std::{
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
+    // A test holds this process while it runs: it connects to the address in `hold`, names its
+    // step, and goes on only once the test closes the connection.
+    if let Ok(address) = fs::read_to_string("hold") {
+        fs::remove_file("hold").unwrap();
+        let mut test = std::net::TcpStream::connect(address.trim()).unwrap();
+        writeln!(test, "{}", args[0]).unwrap();
+        let mut rest = Vec::new();
+        let _ = test.read_to_end(&mut rest);
+    }
     match args[0].as_str() {
         "capabilities" => {
             #[cfg(windows)]
@@ -82,6 +91,10 @@ fn main() {
         "stdout" => io::stdout()
             .write_all(&vec![b'x'; 1024 * 1024 + 1])
             .unwrap(),
+        // Runs until it is killed.
+        "linger" => loop {
+            thread::park();
+        },
         "tree" => {
             let child = Command::new(env::current_exe().unwrap())
                 .arg("descendant")

@@ -4,10 +4,19 @@
 //! the process starts or the file opens, then ends the click on another thread. Ending it must
 //! wait for the paused launch, and no launch may start after the end has returned. A test hook in
 //! `arming` reports when the ending thread waits at a lock, so no race depends on sleeping.
+//!
+//! The other side of the boundary: ending a click while a launched process runs, or while a child
+//! whose start failed is still being cleaned up, returns at once, and nothing launches after it.
 
-use super::super::arming::{lock_wait, Arm};
+use super::super::{
+    arming::{lock_wait, Arm},
+    runner::ExitPoll,
+};
 use super::*;
 use std::{
+    io::{self, BufRead, BufReader},
+    net::{TcpListener, TcpStream},
+    process::Child,
     sync::{mpsc, Arc, Mutex},
     thread,
 };
@@ -431,5 +440,251 @@ fn revoking_or_clearing_consent_waits_for_a_launch_holding_the_grant() {
             .with_grant(&grant, |_| panic!("the grant is gone"))
             .unwrap()
             .is_none());
+    }
+}
+
+/// A way to end a click or its consent while a launch has happened: one of `ENDS`, or a consent
+/// change.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Invalidation {
+    Click(End),
+    /// Revoking the build consent in the consent store.
+    Revoke,
+    /// Clearing the plugin's consents in the store, also done by uninstalling it.
+    ClearConsent,
+    /// Revoking the consent whose box the click had pending.
+    RevokePending,
+}
+
+const INVALIDATIONS: [Invalidation; 10] = [
+    Invalidation::Click(End::WindowClosed),
+    Invalidation::Click(End::Quit),
+    Invalidation::Click(End::Rearmed),
+    Invalidation::Click(End::OtherCommandArmed),
+    Invalidation::Click(End::PluginCleared),
+    Invalidation::Click(End::Finished),
+    Invalidation::Click(End::Released),
+    Invalidation::Revoke,
+    Invalidation::ClearConsent,
+    Invalidation::RevokePending,
+];
+
+impl Invalidation {
+    fn run(self, state: &Endpoint, arm: &Arm, proof: &Submission, store: &Store, grant: &Row) {
+        match self {
+            Self::Click(end) => end.run(state, arm, proof),
+            Self::Revoke => {
+                store.revoke(PLUGIN, &grant.consent_id()).unwrap();
+            }
+            Self::ClearConsent => store.clear(PLUGIN).unwrap(),
+            Self::RevokePending => state.arms.disarm_consent(PLUGIN, CONSENT),
+        }
+    }
+}
+
+/// On Windows a companion is created suspended, attached to a job and resumed, all in the launch
+/// gate under the consent store lock and the stage lock. When attaching or resuming fails, the
+/// child is killed there but reaped outside every lock: here its reaping stalls until the test
+/// lets it go, and every way of ending the click or its consent returns meanwhile. The launch
+/// reports the setup's own error, and the child ends killed.
+#[test]
+fn a_child_whose_start_failed_is_reaped_outside_the_launch_gate_and_every_lock() {
+    rust_stub();
+    for invalidation in INVALIDATIONS {
+        let case = format!("{invalidation:?}");
+        let dir = TestDir::new();
+        let store = Store::new(&dir.0);
+        let (_, grant) = allow_send_and_build(&store);
+        let state = Endpoint::default();
+        let approved = build("small");
+        let (arm, proof) = shown_click(&state, Some(&approved));
+        let (reaping_tx, reaping) = mpsc::channel();
+        let (release_tx, release) = mpsc::channel::<()>();
+        let (reaped_tx, reaped) = mpsc::channel();
+        let mut stalled = false;
+        // Stands in for a termination that does not finish until the test allows it.
+        let poll: ExitPoll = Box::new(move |child: &mut Child| {
+            if !std::mem::replace(&mut stalled, true) {
+                let _ = reaping_tx.send(());
+                let _ = release.recv();
+            }
+            let status = child.try_wait();
+            if let Ok(Some(status)) = &status {
+                let _ = reaped_tx.send(*status);
+            }
+            status
+        });
+        let (returned, pending, launched) = thread::scope(|scope| {
+            let launcher = scope.spawn(|| {
+                store
+                    .with_grant(&grant, |_| {
+                        proof.launch_build(&approved, || {
+                            ChildProcess::start_isolated(
+                                rust_stub(),
+                                &["linger".into()],
+                                &dir.0,
+                                |_| Err::<(), _>(io::Error::other("job attach failed")),
+                                poll,
+                            )
+                        })
+                    })
+                    .unwrap()
+            });
+            reaping
+                .recv_timeout(GUARD)
+                .unwrap_or_else(|_| panic!("{case}: the failed child's reaping did not begin"));
+            let (ended_tx, ended) = mpsc::channel();
+            let (state, arm, proof, store, grant) = (&state, &arm, &proof, &store, &grant);
+            let ender = scope.spawn(move || {
+                invalidation.run(state, arm, proof, store, grant);
+                let _ = ended_tx.send(());
+            });
+            let returned = ended.recv_timeout(GUARD).is_ok();
+            // The child is not reaped yet: its reaping waits for `release`.
+            let pending = reaped.try_recv().is_err();
+            drop(release_tx);
+            let launched = launcher.join().unwrap();
+            ender.join().unwrap();
+            (returned, pending, launched)
+        });
+        assert!(
+            returned,
+            "{case}: ending the click waited for the failed child's cleanup"
+        );
+        assert!(pending, "{case}: the failed child was reaped too early");
+        let error = launched
+            .unwrap_or_else(|| panic!("{case}: no grant"))
+            .unwrap_or_else(|error| panic!("{case}: refused: {error}"))
+            .err()
+            .unwrap_or_else(|| panic!("{case}: the launch succeeded"));
+        assert_eq!(error.to_string(), "job attach failed", "{case}");
+        let status = reaped
+            .recv_timeout(GUARD)
+            .unwrap_or_else(|_| panic!("{case}: the failed child was not reaped"));
+        assert!(!status.success(), "{case}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            assert_eq!(status.signal(), Some(libc::SIGKILL), "{case}");
+        }
+    }
+}
+
+struct Held {
+    ended: Ended,
+    spawned: Vec<String>,
+    opened: usize,
+    /// The step of the process that was running while the click ended; empty if none was.
+    held: String,
+}
+
+/// Runs `job` until its `process`th companion process is running, runs `end` while that process
+/// still runs, and only after `end` has returned lets the process exit. The process connects to
+/// the test once it runs and waits for the test to close the connection, so the order is fixed by
+/// the connection alone. With `consent`, every launch also needs the grant in that store.
+fn run_holding(
+    job: BuildJob,
+    proof: &Submission,
+    process: usize,
+    consent: Option<(&Store, Row)>,
+    end: impl FnOnce(),
+) -> Held {
+    let dir = TestDir::new();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    thread::scope(|scope| {
+        let runner = scope.spawn(|| {
+            let mut host = StubHost::new(&dir.0, |_| {});
+            host.hold = Some((process, address));
+            host.consent = consent;
+            let ended = ended(job.run(&host, proof));
+            // If no process held, end the wait below with a connection that names no step.
+            let _ = TcpStream::connect(address);
+            (ended, host.spawned.take(), host.opened.take().len())
+        });
+        let (stream, _) = listener.accept().unwrap();
+        let mut held = String::new();
+        BufReader::new(&stream).read_line(&mut held).unwrap();
+        if !held.is_empty() {
+            // The process runs, and keeps running until `stream` closes.
+            end();
+        }
+        drop(stream);
+        let (ended, spawned, opened) = runner.join().unwrap();
+        Held {
+            ended,
+            spawned,
+            opened,
+            held: held.trim().into(),
+        }
+    })
+}
+
+/// A companion process is running when the click ends or its consent is revoked. The end returns
+/// while the process still runs; the process then exits normally, and no later step, attempt or
+/// output open launches.
+#[test]
+fn ending_a_click_while_its_process_runs_returns_and_launches_nothing_after() {
+    rust_stub();
+    let retry = || retry_build("small", &[2.0, 3.0]);
+    // (with retry, held process, its step, attempts when stopped). With retry, process 3 ends the
+    // first of three poor attempts, process 4 starts the second, process 9 ends the last.
+    for (retried, process, step, attempts) in [
+        (false, 1, STEPS[0], None),
+        (false, 2, STEPS[1], None),
+        (false, 3, STEPS[2], None),
+        (true, 3, STEPS[2], Some(2)),
+        (true, 4, STEPS[0], Some(2)),
+        (true, 9, STEPS[2], Some(3)),
+    ] {
+        for invalidation in [
+            Invalidation::Click(End::WindowClosed),
+            Invalidation::Click(End::Quit),
+            Invalidation::Click(End::Rearmed),
+            Invalidation::Click(End::OtherCommandArmed),
+            Invalidation::Click(End::PluginCleared),
+            Invalidation::Click(End::Finished),
+            Invalidation::Click(End::Released),
+            Invalidation::Revoke,
+        ] {
+            let case = format!("{invalidation:?} while process {process} runs");
+            let dir = TestDir::new();
+            let store = Store::new(&dir.0);
+            let (_, grant) = allow_send_and_build(&store);
+            let state = Endpoint::default();
+            let approved = if retried { retry() } else { build("small") };
+            let (arm, proof) = shown_click(&state, Some(&approved));
+            let consent = (invalidation == Invalidation::Revoke).then(|| (&store, grant.clone()));
+            let run = run_holding(stub_job(approved), &proof, process, consent, || {
+                invalidation.run(&state, &arm, &proof, &store, &grant)
+            });
+            assert_eq!(run.held, step, "{case}");
+            let expected = if invalidation == Invalidation::Revoke {
+                Ended::Failed(RunCode::BadParam, CONSENT_GONE.into(), attempts)
+            } else {
+                stopped_after(attempts)
+            };
+            // The held process exited normally: a stopped one would end the build as a timeout.
+            assert_eq!(run.ended, expected, "{case}");
+            assert_eq!(run.spawned.len(), process, "{case}");
+            assert_eq!(run.opened, 0, "{case}");
+        }
+    }
+    // Held but never ended, the same runs launch everything and open the output.
+    for (approved, process, attempts, launched) in
+        [(build("small"), 2, None, 3), (retry(), 4, Some(3), 9)]
+    {
+        let state = Endpoint::default();
+        let (_, proof) = shown_click(&state, Some(&approved));
+        let run = run_holding(stub_job(approved), &proof, process, None, || {});
+        assert_eq!(
+            run.ended,
+            Ended::Done {
+                opened: true,
+                attempts
+            }
+        );
+        assert_eq!(run.spawned.len(), launched);
+        assert_eq!(run.opened, 1);
     }
 }
