@@ -1755,12 +1755,14 @@ for processor-specific behavior. Use an eligible official catalog plugin and its
 - With a fresh app pick, approve only a pipeline. Remove or change its companion executable while
   leaving the main app intact. Check that app status still reports the app as available and includes
   the companion error. Try a build and verify it is refused. Send a file and verify it asks for
-  separate consent and opens the file after approval.
+  separate consent and opens the file after approval. Restore the original companion executable
+  before continuing, and check that app status no longer reports the companion error.
 - In the development app's consent store, duplicate the rows for one plugin and app using a version 1
   fixture. Verify handoff for that group is refused and a different app or plugin can still hand off.
   In Plugin Manager, verify one "Conflicting consents" entry appears for the affected app. Revoke it,
   pick the app again, and verify that every operation needs fresh consent. Restore the fixture and
   uninstall the affected plugin to verify its rows are cleared and other grants still work.
+  Uninstall a plugin that never received handoff consent and verify every listed consent remains.
 - Move the chosen app and retry. Check for an `app-changed` or `app-missing` failure, then restore
   the app to its previous location or pick it again before continuing.
 - Send file names with spaces, non-ASCII characters, and a reserved Windows name; check the opened
@@ -1770,6 +1772,8 @@ for processor-specific behavior. Use an eligible official catalog plugin and its
   plugin, and native failure or cancellation takes precedence over success text.
 - Check the plugin sees the running host version. Select individual atoms and mark connection
   points; verify each anchor gains one single-bonded X in one undo entry, and undo/redo restores it.
+  Then select another atom of that molecule, mark it as a repeat unit, undo twice and redo once;
+  verify the X atoms are selected again.
   Check that a whole-object selection and an invalid anchor do not silently mark atoms.
 - Check palette focus behavior and, on Windows, that no console flashes. Quit ChemDraft and verify
   the receiving app remains running.

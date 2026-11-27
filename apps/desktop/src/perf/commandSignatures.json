@@ -29,7 +29,7 @@
     "async": false,
     "generics": "",
     "parameters": "window: WebviewWindow, plugin_id: String, consent_id: String,",
-    "returnType": "Result<(), String>"
+    "returnType": "Result<Vec<String>, String>"
   },
   {
     "file": "app_handoff/endpoint.rs",

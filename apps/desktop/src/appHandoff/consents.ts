@@ -14,7 +14,11 @@ export interface AppHandoffConsent {
 
 export interface AppHandoffConsents {
   list(): Promise<readonly AppHandoffConsent[]>;
-  revoke(pluginId: string, consentId: string): Promise<void>;
+  /**
+   * Resolves to the plugin's consent IDs the revocation removed or revoked. Besides the revoked
+   * operation this can include its sibling operations when the store had to shrink to fit.
+   */
+  revoke(pluginId: string, consentId: string): Promise<readonly string[]>;
   clearPlugin(pluginId: string): Promise<void>;
 }
 
