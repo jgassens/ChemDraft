@@ -1663,6 +1663,45 @@ textarea:focus-visible,
     radial-gradient(circle, var(--cd-text-muted) 1px, transparent 1.5px) 6px 1px / 7px 4px;
 }
 
+/* Native palette windows draw the grip in the shell's rail (PaletteWindow passes contentGrip={false}),
+   so palettes there drop the grid column they reserve for the in-content grip, and plain toolbars
+   keep one uniform 4px margin: no blank band above the rows, beside the rail or after the last tool. */
+.palette-window-shell .tool-palette.floating.horizontal:not(.art-style-palette, .molecule-inspector-palette, .ring-inspector-palette, .molecular-inspector-palette) {
+  padding: 4px;
+}
+
+.palette-window-shell .tool-palette.floating.horizontal .tool-group {
+  padding-top: 0;
+}
+
+.palette-window-shell .tool-palette.floating.horizontal .tool-group:first-child {
+  padding-left: 0;
+}
+
+.palette-window-shell .tool-palette.floating.horizontal .tool-group:last-child {
+  padding-right: 0;
+  border-right: 0;
+}
+
+/* A grid-citizen widget that ends the row (Main's style controls: 11 cells pinned in a 12-cell slot)
+   sits at its slot's end, so the spare cell falls inside the row, not as a gap at the window edge. */
+.palette-window-shell .tool-palette.floating.horizontal .tool-group > .toolbar-widget-grid-slot:last-child {
+  justify-items: end;
+}
+
+.palette-window-shell .tool-palette.floating.horizontal.art-style-palette,
+.palette-window-shell .tool-palette.floating.horizontal.molecule-inspector-palette,
+.palette-window-shell .tool-palette.floating.horizontal.ring-inspector-palette,
+.palette-window-shell .tool-palette.floating.horizontal.molecular-inspector-palette[data-has-added-commands] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.palette-window-shell .tool-palette.floating.horizontal.art-style-palette .art-toolbar-command-band,
+.palette-window-shell .tool-palette.floating.horizontal.art-style-palette .art-toolbar-style-controls,
+.palette-window-shell .molecule-inspector-controls {
+  grid-column: 1;
+}
+
 .main-toolbar-style-controls {
   display: grid;
   grid-template-rows: 24px 24px;
@@ -2603,7 +2642,10 @@ textarea:focus-visible,
 
 .palette-window-shell {
   display: grid;
-  grid-template-rows: 22px minmax(0, auto);
+  /* Undecorated native palette windows: a 14px grip rail (close button on top, grip dots below)
+     beside the content, never a title row above it, so a toolbar is as tall as its rows. */
+  grid-template-columns: 14px minmax(0, auto);
+  grid-template-rows: minmax(0, auto);
   gap: 0;
   align-content: start;
   justify-items: stretch;
@@ -2649,7 +2691,8 @@ textarea:focus-visible,
 .palette-window-shell[data-resizable] {
   width: 100%;
   height: 100vh;
-  grid-template-rows: 22px minmax(0, 1fr);
+  grid-template-columns: 14px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .palette-window-shell[data-resizable] > .palette-window-content {
@@ -2689,8 +2732,48 @@ textarea:focus-visible,
 }
 
 .palette-window-shell > .palette-title {
-  /* The tools determine the shell width. Ellipsize a long title within that width. */
+  /* The grip rail: full height of the content, a fixed 14px wide (13px + the 1px divider), so the
+     tools alone determine the shell size. */
   contain: inline-size;
+  width: 14px;
+  height: auto;
+  min-height: 0;
+  padding: 0;
+  border-bottom: 0;
+  border-right: 1px solid var(--cd-border-subtle);
+}
+
+/* Grip dots below the close button. Paint only: presses land on the rail, which drags. */
+.palette-window-shell > .palette-title::after {
+  content: "";
+  position: absolute;
+  top: 17px;
+  bottom: 4px;
+  left: 3px;
+  width: 8px;
+  background: radial-gradient(circle, var(--cd-text-muted) 1px, transparent 1.5px) 0 0 / 4px 4px;
+  opacity: 0.58;
+  pointer-events: none;
+}
+
+/* The window's name stays in the accessibility tree (beside the shell's aria-label) but takes no
+   space: there is no visible title row. */
+.palette-window-shell > .palette-title .palette-title-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.palette-window-shell > .palette-title .palette-close-button {
+  top: 3px;
+  left: 1px;
+  transform: none;
 }
 
 .palette-title[data-palette-title-drag-surface="true"] {
@@ -2765,6 +2848,20 @@ textarea:focus-visible,
 
 .palette-title[data-platform="windows"] .palette-close-button--end:focus-visible {
   outline-offset: -2px;
+}
+
+/* In the grip rail the Windows "×" is a 13x14 cell at the top of the rail (same spot as the macOS
+   and Linux dot), keeping its red hover and pressed states. */
+.palette-window-shell > .palette-title[data-platform="windows"] {
+  padding: 0;
+}
+
+.palette-window-shell > .palette-title[data-platform="windows"] .palette-close-button--end {
+  inset: 0 0 auto 0;
+  width: auto;
+  height: 14px;
+  min-height: 0;
+  font-size: 12px;
 }
 
 .tool-group {

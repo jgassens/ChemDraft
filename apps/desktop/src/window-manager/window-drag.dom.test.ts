@@ -302,9 +302,12 @@ describe.each(["macos", "windows"] as const)("native title dragging (%s)", platf
     expectOneCompensatedDrag();
   });
 
-  it("routes the palette content grip through that same single path", async () => {
+  // Native palette windows draw no in-content grip (the shell's grip rail replaced it); a press on
+  // the toolbar's blank background reaches the shell's drag path instead.
+  it("routes a blank toolbar press through that same single path", async () => {
     await mount("palette");
-    await press(container.querySelector<HTMLElement>("[data-palette-content-drag-grip]")!);
+    expect(container.querySelector("[data-palette-content-drag-grip]")).toBeNull();
+    await press(container.querySelector<HTMLElement>(".tool-palette")!);
     expectOneCompensatedDrag();
   });
 
@@ -316,7 +319,7 @@ describe.each(["macos", "windows"] as const)("native title dragging (%s)", platf
 
   const dragSurfaces = [
     ["palette", ".palette-title"],
-    ["palette", "[data-palette-content-drag-grip]"],
+    ["palette", ".tool-palette"],
     ["panel", ".palette-title"]
   ] as const;
 

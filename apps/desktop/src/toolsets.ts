@@ -674,10 +674,11 @@ const HORIZONTAL_PALETTE_GROUP_GAP = 6;
 // The Text style section sits beside the tool grid. Its spacing row is the widest:
 // nine 34px buttons with eight 4px gaps. The three 24px rows have two 4px gaps.
 const TEXT_STYLE_SECTION_SIZE = { width: 9 * 34 + 8 * 4, height: 3 * 24 + 2 * 4 };
-// Floating palette chrome in App.css: grip, horizontal padding, and web frame border;
-// title strip and vertical padding.
-const HORIZONTAL_PALETTE_FRAME_WIDTH = 7 + 2 * 6 + 2;
-const HORIZONTAL_PALETTE_FRAME_HEIGHT = 22 + 3 + 4;
+// Native palette window chrome in App.css: the 14px grip rail beside the content and the toolbar's
+// 4px margin on each side; no title row, so only the 4px top and bottom margins add height. (The
+// browser in-window palette's grip, padding and border come to 21px, within a pixel of this.)
+const HORIZONTAL_PALETTE_FRAME_WIDTH = 14 + 2 * 4;
+const HORIZONTAL_PALETTE_FRAME_HEIGHT = 2 * 4;
 
 export function toolsetUsesResizableWindow(id: string): boolean {
   return id === "core.molecularInspector" || id === "core.drawnStructureSettings";

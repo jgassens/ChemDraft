@@ -690,7 +690,9 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain("palette-window-shell");
     expect(markup).toContain("data-palette-drag-surface");
     expect(markup).not.toContain("data-tauri-drag-region");
-    expect(markup).toContain('data-palette-content-drag-grip="true"');
+    // The shell's grip rail (close button on top) replaces the in-content grip and the title row.
+    expect(markup).not.toContain("data-palette-content-drag-grip");
+    expect(markup).toContain('data-palette-window-grip="true"');
     expect(markup).toContain("palette-close-button");
     expect(markup).toContain('aria-label="Hide Main Toolbar"');
     expect(markup).toContain("Main");

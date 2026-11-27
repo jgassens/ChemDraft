@@ -160,13 +160,16 @@ const LINUX_PALETTE_OVERFLOW_TOLERANCE_PX = 1;
  * `fittedWidth` is the width Rust last accepted. The scroller turns on only after Rust has been given
  * this natural width (so a window that has not been fitted yet never flashes a scrollbar) and stays
  * on while the natural width still exceeds the viewport.
+ * `gripWidth` is the window chrome beside the body (the grip rail), so a capped body plus the rail
+ * fills the viewport exactly.
  */
 function fitLinuxPaletteHorizontalOverflow(
   shell: HTMLElement,
   body: HTMLElement,
   measured: DOMRect,
   fittedWidth: number | undefined,
-  viewportWidth: number
+  viewportWidth: number,
+  gripWidth: number
 ): { width: number; height: number } {
   const wasOverflowing = body.dataset.paletteHorizontalOverflow === "true";
   let width = Math.ceil(wasOverflowing ? measured.width + body.scrollWidth - body.clientWidth : measured.width);
@@ -178,7 +181,7 @@ function fitLinuxPaletteHorizontalOverflow(
   }
   const overflow = (wasOverflowing || width === fittedWidth)
     && width - viewportWidth > LINUX_PALETTE_OVERFLOW_TOLERANCE_PX;
-  const maxWidth = overflow ? `${Math.max(0, Math.floor(viewportWidth))}px` : "";
+  const maxWidth = overflow ? `${Math.max(0, Math.floor(viewportWidth - gripWidth))}px` : "";
   let rect = measured;
   if (overflow !== wasOverflowing || body.style.maxWidth !== maxWidth) {
     if (overflow) body.dataset.paletteHorizontalOverflow = "true";
@@ -221,6 +224,7 @@ export function PaletteWindow({
   const dragRef = useRef<PaletteWindowDrag | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
   const bodyRef = useRef<HTMLDivElement | null>(null);
+  const gripRef = useRef<HTMLDivElement | null>(null);
   const settlingBeforeForwardRef = useRef(false);
   const lastLoggedSizeRef = useRef<string>("");
   const sizeAnimationFrameRef = useRef<number | undefined>(undefined);
@@ -587,10 +591,11 @@ export function PaletteWindow({
       try {
         const area = await currentWindowLogicalWorkArea();
         if (disposed) return;
-        // Cap the shared body, not individual inspector sections. Keep the title outside the scroll
-        // area and measure only after applying the monitor-based cap (never a vh feedback loop).
+        // Cap the shared body, not individual inspector sections. The grip rail sits beside the body,
+        // not above it, so the body may use the full work-area height. Measure only after applying
+        // the monitor-based cap (never a vh feedback loop).
         const availableHeight = Math.floor(area.bottom - area.top);
-        if (bodyRef.current) bodyRef.current.style.maxHeight = `${Math.max(0, availableHeight - 22)}px`;
+        if (bodyRef.current) bodyRef.current.style.maxHeight = `${Math.max(0, availableHeight)}px`;
         // Fit the window to the palette's own content in BOTH dimensions. The shell is
         // width/height:max-content (see CSS), so its measured box is the natural content size:
         // the window shrinks when the manifest size is too big (blank gaps) and grows when
@@ -604,7 +609,8 @@ export function PaletteWindow({
         // natural; height gains the scrollbar). macOS and Windows never take this branch.
         if (platform === "linux" && shell && bodyRef.current && rect && contentWidth > 0) {
           ({ width: contentWidth, height: contentHeight } = fitLinuxPaletteHorizontalOverflow(
-            shell, bodyRef.current, rect, fittedPaletteWidthRef.current, viewportWidth));
+            shell, bodyRef.current, rect, fittedPaletteWidthRef.current, viewportWidth,
+            gripRef.current?.getBoundingClientRect().width ?? 0));
         }
         const width = contentWidth || fallbackWidth;
         const height = Math.min(availableHeight,
@@ -1360,6 +1366,7 @@ export function PaletteWindow({
         gridLayout={toolset.gridLayout}
         activeTool={activeTool}
         mode="floating"
+        contentGrip={false}
         orientation={toolset.gridLayout?.orientation ?? "vertical"}
         title={toolset.title}
         onRequestFlyout={openFlyoutPopover}
@@ -1441,10 +1448,16 @@ export function PaletteWindow({
       onMouseDown={startMouseDragFromPaletteSurface}
       onMouseUp={stopPaletteWindowMouseDrag}
     >
+      {/* Undecorated window chrome: a slim grip rail down the left edge, never a title row, so a
+          fixed toolbar is as tall as its rows. It holds the close button at the top and the grip
+          dots below it; a press anywhere on the rail but the button drags the window. The name
+          stays in the DOM, visually hidden, alongside the shell's aria-label. */}
       <div
+        ref={gripRef}
         className="palette-title"
         data-platform={platform}
         data-palette-title-drag-surface="true"
+        data-palette-window-grip="true"
         onPointerDown={startDragFromTitle}
         onPointerUp={stopPaletteWindowDrag}
         onPointerCancel={stopPaletteWindowDrag}
@@ -1453,8 +1466,8 @@ export function PaletteWindow({
         onMouseUp={stopPaletteWindowMouseDrag}
       >
         {platform === "windows" ? (
-          // Windows convention: a visible "×" at the top right that closes on release, so pressing
-          // and dragging off cancels. The press only stops propagation so it never starts a drag.
+          // Windows: a visible "×" (top of the grip rail) that closes on release, so pressing and
+          // dragging off cancels. The press only stops propagation so it never starts a drag.
           <button
             className="palette-close-button palette-close-button--end"
             type="button"

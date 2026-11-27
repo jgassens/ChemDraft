@@ -246,6 +246,7 @@ export function ToolPalette({
   onInvoke,
   widgetState,
   customize,
+  contentGrip = true,
   platform = detectDesktopShortcutPlatform()
 }: {
   groups?: CommandSpec[][];
@@ -266,6 +267,9 @@ export function ToolPalette({
    *  invoke/flyout/tooltip handlers), grouped by these group ids (aligned with the item groups,
    *  BEFORE the widget filter). A DndContext must wrap this component (ToolbarCustomizeController). */
   customize?: { groupIds: readonly (string | undefined)[] };
+  /** Floating mode only: draw the in-content drag grip. A native palette window passes false because
+   *  its shell draws the grip rail (with the close button) itself. */
+  contentGrip?: boolean;
 }) {
   const tooltipState = usePaletteTooltipState();
   const {
@@ -308,6 +312,9 @@ export function ToolPalette({
       // span-less widgets drop out to the appended-section path below.
       items: group.filter((item) => !isToolbarWidgetItem(item) || isGridWidgetItem(item))
     }))
+    // A divider that ends a floating group separates nothing and would leave a blank cell at the
+    // palette's edge. Customize mode keeps it so it can still be moved or removed.
+    .map((group) => mode === "floating" && !customize ? { ...group, items: withoutTrailingSeparators(group.items) } : group)
     .filter((group) => group.items.length > 0);
   const gridItemGroups = gridGroups.map((group) => group.items);
   // Pair each present widget with the id of the group it lives in (from `customize`, aligned to the
@@ -415,7 +422,7 @@ export function ToolPalette({
         onPointerDownCapture={event => { if (!customize) preventPaletteCommandPointerFocus(event, platform); }}
         onMouseDownCapture={event => { if (!customize) preventPaletteCommandPointerFocus(event, platform); }}
       >
-        {mode === "floating" && !customize ? (
+        {mode === "floating" && contentGrip && !customize ? (
           // The palette shell handles this grip through the same drag command as the title.
           // Remove it in customize mode so it cannot hijack a toolbar-item drag.
           <span
@@ -682,6 +689,12 @@ function commandGroupsToPaletteItemGroups(groups: CommandSpec[][]): ToolbarPalet
     disabledReason: command.disabledReason,
     category: command.category
   })));
+}
+
+function withoutTrailingSeparators(items: ToolbarPaletteItemModel[]): ToolbarPaletteItemModel[] {
+  let end = items.length;
+  while (end > 0 && items[end - 1]!.kind === "separator") end -= 1;
+  return end === items.length ? items : items.slice(0, end);
 }
 
 function toolPaletteGridStyle(gridLayout: ToolsetGridLayout | undefined): CSSProperties | undefined {

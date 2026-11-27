@@ -150,7 +150,19 @@ long-press's time, not the later click's (`xev -root` or `xinput test-xi2 --root
 it still opens without an attention state.
 
 Floating Main toolbar fit (macOS, Windows and Linux): on first launch and after relaunch, check
-that the toolbar fits all its buttons, the title is visible, and there is no empty gray space.
+that the toolbar fits all its buttons and there is no empty gray space. It has no title row or
+empty strip above the buttons: it is as tall as its two button rows plus a thin (4 px) margin. On
+its left is a slim grip column (about 14 px) with the close control at its top (the red dot on
+macOS and Linux, a small × on Windows) and grip dots below; there is no wider grip column and no
+gap at the right edge after the last control. Drag the toolbar by the grip column: it moves, and
+pressing a tool button never moves it. Click the close control: the toolbar closes, and View ▸
+Toolbars brings it back the same size. Tab to the close control: it is announced as a button with
+its name, and the toolbar window keeps its name for VoiceOver/Narrator/Orca. Repeat for each other
+floating palette (Structure, Arrows, Annotations, Art, Orbitals, Layout, Style, Text, Rings) and the
+resizable inspectors (Drawn Structure Settings, Molecular Inspector): each has the same grip column
+and close control, no title row, and is dragged by the grip; the inspectors still resize from their
+edges and their content still scrolls. Fixed toolbars are never resizable, scaled, wrapped or given
+a scrollbar (Linux keeps its sideways scroller only when the screen is narrower than Main).
 
 Palette first paint (Windows): quit ChemDraft, then cold-launch it. The Main toolbar and the other
 open palettes appear with their content in the palette's light grey, with no black frame and no
@@ -203,7 +215,7 @@ and a further Escape hands the keyboard back to the document.
 Tab out of the palette and a control finishing with no palette destination, on both platforms.
 Tab/click between palette controls keeps their keyboard lease. Switching apps, clicking another
 palette, or opening a native color/select chooser must never pull focus back to the document.
-Foreground after dragging: on Windows drag the Text toolbar by its title and background, release,
+Foreground after dragging: on Windows drag the Text toolbar by its grip column and background, release,
 then immediately press M. The document receives it and the toolbar stays where dropped. Repeat
 a press with no movement and a drag while a keyboard lease is held: dragging ends any lease,
 and the document has the keyboard afterwards. Switching apps during the gesture must not steal
@@ -211,8 +223,8 @@ focus. On macOS verify dragging still leaves the document key.
 Nested palette scrollbars: in Object Settings, drag the panel's vertical thumb and press its track,
 then on a tall palette that scrolls as a whole on a short display; contents scroll without moving the
 palette. Repeat with pointer and mouse input on Windows/WebView2 and both macOS builds (System
-Settings scroll bars both automatic/overlay and always shown), at mixed display scales. The title,
-content grip and palette background still move the window. The one exception is the own box of an
+Settings scroll bars both automatic/overlay and always shown), at mixed display scales. The grip
+column and palette background still move the window. The one exception is the own box of an
 element that is showing a scrollbar (it scrolls and its content overflows): a press anywhere on it,
 including its blank area beside or below the contents, stays with the webview and does not drag,
 since a macOS overlay scrollbar cannot be told apart from that area. Presses on non-interactive
@@ -1916,7 +1928,7 @@ Run under KDE Plasma (Wayland session, so the app uses XWayland) and on GNOME.
 - 1280-wide screen: set the display to 1280x800 and relaunch. The Main toolbar keeps its natural
   width (two rows of tools, about 1400 px with the zoom widget), stays where it was saved and runs
   off the right edge of the screen. It is not shrunk, does not wrap and shows no scrollbar. Drag it
-  left by its title until the last tool is on screen: it stays where it was dropped, and is still
+  left by its grip column until the last tool is on screen: it stays where it was dropped, and is still
   there after Shift+Ctrl+S then Esc and after quitting and relaunching. At 1680x1050 the Main
   toolbar also keeps its full width and saved position.
 - 1024-wide screen and 150% scale: set the display to 1024x768, relaunch, and repeat at
@@ -1936,13 +1948,13 @@ Run under KDE Plasma (Wayland session, so the app uses XWayland) and on GNOME.
   unchanged by the dialogs).
 - Work-area fits are not saved (B9, all three builds; on Linux run under XWayland): open Drawn
   Structure Settings at 1680x1050 and drag it to the right half, top edge about 160 px down.
-  Switch the display live to 1024x768. It is pulled onto the smaller screen, and its title strip
-  is below the Main toolbar, never under it: drag it by the title to prove it. Without touching it,
+  Switch the display live to 1024x768. It is pulled onto the smaller screen, and its top edge
+  is below the Main toolbar, never under it: drag it by its grip column to prove it. Without touching it,
   switch back to 1680x1050: within about a second it returns to the exact spot and size it had
   before (toolbar-state.json still holds that frame throughout). Repeat, but this time drag it a
   little while at 1024x768: back at 1680x1050 it stays where you dropped it. The same holds for
   the Main toolbar on Linux: at 1024 it keeps its natural width and stays at its saved spot while
-  at least 48 px of its title is still on the screen; only a Main saved farther right than that is
+  at least 48 px of its top edge is still on the screen; only a Main saved farther right than that is
   moved, to the work area's left edge (running off the right edge). Back at 1680 it returns to its
   saved position. Quit at 1024x768 and relaunch at 1680x1050: palettes open at their 1680
   positions, not the squeezed ones.
