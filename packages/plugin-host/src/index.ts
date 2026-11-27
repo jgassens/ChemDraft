@@ -672,6 +672,7 @@ import type {
   PluginPromptTextResult,
   PluginProvidedImage,
   PluginSelectionAPI,
+  PluginSelectedMolecule,
   PluginSelectionSnapshot,
   PluginStorage,
   ProposedDocumentPatch,
@@ -1026,6 +1027,9 @@ export interface PluginHostOptions {
   requestPageSpace?: RequestPageSpaceProvider;
   /** Request tools supply a budget so the provider can stop producing entries at the snapshot cap. */
   getRequestSelection?: (document: ChemDraftDocument, budget?: RequestSnapshotBudget) => PluginSelectionSnapshot;
+  /** API 0.1.30 `documents.getMolecules()`: every molecule on `document`'s active page, in the same
+   *  per-molecule shape a selection snapshot carries. Absent, the method returns an empty list. */
+  getPageMolecules?: (document: ChemDraftDocument) => readonly PluginSelectedMolecule[];
 
   /** In-process worker chemistry: no native.execute or document permissions. The signal aborts
    * when this command ends or the plugin unregisters; retained capability references are refused. */
@@ -1168,6 +1172,7 @@ export class PluginHost {
   private readonly openRequestHistory?: PluginHostOptions["openRequestHistory"];
   private readonly requestPageSpace?: RequestPageSpaceProvider;
   private readonly getRequestSelection?: PluginHostOptions["getRequestSelection"];
+  private readonly getPageMolecules?: PluginHostOptions["getPageMolecules"];
   private readonly getActiveDocument?: PluginHostOptions["getActiveDocument"];
   private readonly getProposalDocument?: PluginHostOptions["getProposalDocument"];
   private readonly getActiveDocumentKey?: PluginHostOptions["getActiveDocumentKey"];
@@ -1230,6 +1235,7 @@ export class PluginHost {
     this.openRequestHistory = options.openRequestHistory;
     this.requestPageSpace = options.requestPageSpace;
     this.getRequestSelection = options.getRequestSelection;
+    this.getPageMolecules = options.getPageMolecules;
     this.createStorage = options.createStorage;
     this.showPanelReport = options.showPanelReport;
     this.promptText = options.promptText;
@@ -2099,6 +2105,15 @@ export class PluginHost {
           // plugins share the host's heap, so returning the provider's value handed them the live
           // document — edits would land without ever passing through propose/review.
           return document === undefined ? undefined : deepFreeze(structuredClone(document));
+        }),
+        getMolecules: () => withCapabilitySlot(async () => {
+          this.requirePermission(pluginId, "document.read");
+          const binding = boundDocument();
+          const document = binding ? binding.read() : await this.getActiveDocument?.();
+          const molecules = document ? this.getPageMolecules?.(document) ?? [] : [];
+          if (requestTool) assertRequestSnapshotSize(molecules);
+          // Same boundary as getSelection: an independent, immutable copy.
+          return deepFreeze(structuredClone([...molecules]));
         }),
         proposePatch: async (proposal) => {
           if (!has("document.proposePatch") || boundDocument()) {

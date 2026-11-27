@@ -45,7 +45,7 @@ const syntheticReport = () => ({
 describe("bounded panel reports (API 0.1.19)", () => {
   it("advertises a patch-compatible API and accepts a synthetic report of realistic size", () => {
     const synthetic = syntheticReport();
-    expect(PluginApiVersion).toBe("0.1.27");
+    expect(PluginApiVersion).toBe("0.1.30");
     expect(isPluginApiVersionCompatible("^0.1.19", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.19", "0.1.18")).toBe(false);
     expect(bytes(synthetic)).toBeGreaterThan(25_448);
@@ -476,5 +476,24 @@ describe("bounded panel reports (API 0.1.19)", () => {
     const afterLimit = vi.fn(Reflect.getOwnPropertyDescriptor);
     rejected(new Proxy({ title: "x".repeat(L.stringLength + 1), sections: [] }, { getOwnPropertyDescriptor: afterLimit }), "title length");
     expect(afterLimit.mock.calls.map(call => call[1])).toEqual(["title"]);
+  });
+});
+
+describe("live panel re-run (API 0.1.30)", () => {
+  const text = { kind: "text", body: "Predicted spectrum" };
+
+  it("accepts liveRerun together with rerunCommandId", () => {
+    const live = { title: "Live", sections: [text], rerunCommandId: "plugin.nmr.predict", liveRerun: true };
+    expect(PluginPanelReportSchema.parse(live)).toEqual(live);
+    const off = { title: "Off", sections: [text], rerunCommandId: "plugin.nmr.predict", liveRerun: false };
+    expect(PluginPanelReportSchema.parse(off)).toEqual(off);
+  });
+
+  it("rejects liveRerun without rerunCommandId, naming the missing field", () => {
+    rejected({ title: "Live", sections: [text], liveRerun: true }, "liveRerun requires rerunCommandId");
+  });
+
+  it("rejects a non-boolean liveRerun", () => {
+    expect(PluginPanelReportSchema.safeParse({ title: "Live", sections: [text], rerunCommandId: "plugin.nmr.predict", liveRerun: "yes" }).success).toBe(false);
   });
 });

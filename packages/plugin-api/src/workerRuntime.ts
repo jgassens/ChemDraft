@@ -247,6 +247,7 @@ export function runPluginWorker(
     const documents: PluginDocumentAPI = {
       ...(requestTools ? bindPluginRequestCapabilities("documents", has, (method, value) => requestCall("documents", method, value)) : {}),
       getActiveDocument: () => call("documents", "getActiveDocument", []) as ReturnType<PluginDocumentAPI["getActiveDocument"]>,
+      getMolecules: () => call("documents", "getMolecules", []) as ReturnType<PluginDocumentAPI["getMolecules"]>,
       proposePatch: (proposal) => call("documents", "proposePatch", [proposal]) as ReturnType<PluginDocumentAPI["proposePatch"]>,
       ...(has("document.write")
         ? {

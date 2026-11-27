@@ -6,7 +6,7 @@ import { unresolvableAromaticRing } from "@chemdraft/layout-engine/testing";
 import { createStructureSourceFingerprint } from "@chemdraft/plugin-api";
 import * as pluginApi from "@chemdraft/plugin-api";
 
-import { buildPluginSelectionSnapshot, computeObjectFingerprint, pluginFacingStructure } from "./selectionSnapshot";
+import { buildPluginPageMolecules, buildPluginSelectionSnapshot, computeObjectFingerprint, pluginFacingStructure } from "./selectionSnapshot";
 
 // Minimal document shape exercised by buildPluginSelectionSnapshot (id, pages[].id, page.objects,
 // object.type/id/structureFormat/structure, selection.objectIds). Cast to the full type for focus.
@@ -123,6 +123,35 @@ describe("buildPluginSelectionSnapshot", () => {
     const edited = documentWith(["m1"]);
     (edited.pages[0].objects[0] as { structure: string }).structure = "CCO";
     expect(buildPluginSelectionSnapshot(edited).molecules[0].sourceFingerprint).not.toBe(before);
+  });
+});
+
+describe("buildPluginPageMolecules (documents.getMolecules, API 0.1.30)", () => {
+  it("returns every molecule on the active page, in page order, with nothing selected", () => {
+    const document = documentWith([]);
+    const molecules = buildPluginPageMolecules(document);
+    expect(molecules.map((molecule) => molecule.objectId)).toEqual(["m1", "m2"]);
+    // Same per-molecule shape as a selection snapshot.
+    const selected = buildPluginSelectionSnapshot(documentWith(["m1", "m2"])).molecules;
+    expect(molecules).toEqual(selected);
+  });
+
+  it("reads the selection's page, not the first page, and an empty page gives none", () => {
+    const document = documentWith([]);
+    const withSecondPage = {
+      ...document,
+      selection: { pageId: "p2", objectIds: [] },
+      pages: [...document.pages, { id: "p2", objects: [{ id: "m3", type: "molecule", structureFormat: "smiles", structure: "CCO" }] }]
+    } as unknown as ChemDraftDocument;
+    expect(buildPluginPageMolecules(withSecondPage).map((molecule) => [molecule.pageId, molecule.objectId])).toEqual([["p2", "m3"]]);
+    const emptyPage = { ...document, pages: [{ id: "p1", objects: [] }] } as unknown as ChemDraftDocument;
+    expect(buildPluginPageMolecules(emptyPage)).toEqual([]);
+  });
+
+  it("writes drawn graphs as molfiles, like getSelection", () => {
+    const document = engineDocumentWith();
+    const [molecule] = buildPluginPageMolecules({ ...document, selection: { ...document.selection, objectIds: [] } });
+    expect(molecule.structureFormat).toBe("molfile-v2000");
   });
 });
 

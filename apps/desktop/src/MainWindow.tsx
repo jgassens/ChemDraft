@@ -954,6 +954,8 @@ import { isTauriHost } from "./plugins/pluginStagingFs";
 import { PluginPanelSurface } from "./plugins/PluginPanelSurface";
 import { PLUGIN_DIAGNOSTICS_COMMAND_ID } from "./plugins/pluginMenuModel";
 import { buildPluginSelectionSnapshot, computeObjectFingerprint } from "./plugins/selectionSnapshot";
+import type { OpenPluginPanel } from "./plugins/types";
+import { liveRerunCommandId, liveRerunCommandIds, pluginCommandQueue, pluginPanelOutOfDate, useLivePanelRerun, withSetMember } from "./plugins/livePanelRerun";
 import { buildMainWindowNativeMenuItems, syncPluginNativeMenuItems } from "./plugins/nativePluginMenu";
 import {
   arrowNudgeOffset,
@@ -1936,7 +1938,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.27.14.45-opus";
+const CURRENT_BUILD_STAMP = "11.27.14.46-opus";
 
 const NUMERIC_ENTRY_DURING_DRAG_STATUS = "Finish the current drag, then enter a value";
 
@@ -14044,6 +14046,11 @@ export function MainWindow({
   // last; ordinary commands remain serialized only with repeats of that same command.
   const pluginCommandQueuesRef = useRef(new Map<string, Promise<void>>());
   const [pendingPluginCommands, setPendingPluginCommands] = useState<ReadonlySet<string>>(() => new Set());
+  // Plugin commands whose latest reported run failed (live panels flag their result out of date).
+  const [failedPluginCommands, setFailedPluginCommands] = useState<ReadonlySet<string>>(() => new Set());
+  // The plugin whose command committed a document (document.write), keyed by the committed document
+  // as `documentUndoLabelsRef` keys its label: a live panel's own writes do not re-run it.
+  const pluginWriteAuthorsRef = useRef(new WeakMap<ChemDraftDocument, string>());
   const pluginCommandGenerationsRef = useRef(new Map<string, number>());
   // Per menu-invoked plugin command: the status of each write it made that carried a warning (a lone-H
   // cache kept as stored), so the command's final status, which reports its selection warnings, keeps it.
@@ -14225,7 +14232,10 @@ export function MainWindow({
           else installed = commitDocumentChange(document, undoLabel, false, assertFinalDocument, PLUGIN_WRITE);
           cleanup?.record();
           // The host grants this write's insertions by the identity of the objects committed here.
-          if (installed) onCommitted?.(committed);
+          if (installed) {
+            pluginWriteAuthorsRef.current.set(committed, plugin.id);
+            onCommitted?.(committed);
+          }
         }, { // Allocate request consent only if page fitting actually needs a question.
           get consent() { return assistantTxId ? assistantTransactions.pageEnlargementConsent(assistantTxId, shortcutPlatform) : consent; }, signal,
           isCurrent });
@@ -14325,12 +14335,40 @@ export function MainWindow({
     void syncPluginNativeMenuItems(nativePluginMenuItems);
   }, [nativePluginMenuItems]);
 
+  // Live panels (API 0.1.30): while a panel whose report asks for it is open, in-app or detached,
+  // each document edit re-runs its rerunCommandId 250 ms after the last edit, through the same
+  // per-plugin queue as Run again. Selection-only and viewport changes do not count, and neither
+  // does a document committed by the same plugin's own command (its document.write).
+  const scheduledLiveReruns = useLivePanelRerun(
+    document,
+    liveRerunCommandIds([pluginRuntime.openPanel, ...pluginRuntime.detachedPanels]),
+    (commandId) => invokeCommandRef.current(commandId),
+    {
+      authorOf: (committed) => pluginWriteAuthorsRef.current.get(committed),
+      ownerOf: (commandId) => pluginCommandQueue(pluginRuntime.plugins, commandId).ownerId
+    }
+  );
+  const pluginPanelIsOutOfDate = (panel: OpenPluginPanel): boolean => {
+    const source = panel.report.source;
+    const sourceStale = source
+      ? computeObjectFingerprint(document, source.objectId) !== source.sourceFingerprint
+      : false;
+    const liveCommandId = liveRerunCommandId(panel);
+    return pluginPanelOutOfDate({
+      sourceStale,
+      live: liveCommandId !== undefined,
+      lastRunFailed: liveCommandId !== undefined && failedPluginCommands.has(liveCommandId),
+      rerunPending: liveCommandId !== undefined && (scheduledLiveReruns.has(liveCommandId) ||
+        pendingPluginCommands.has(pluginCommandQueue(pluginRuntime.plugins, liveCommandId).queueKey))
+    });
+  };
+  const pluginPanelIsOutOfDateRef = useRef(pluginPanelIsOutOfDate);
+  pluginPanelIsOutOfDateRef.current = pluginPanelIsOutOfDate;
+
   // Staleness (D-09): an open panel's report carries the source fingerprint it was computed against;
-  // if the live molecule no longer matches (edited or removed), flag the panel as out of date.
-  const pluginPanelSource = pluginRuntime.openPanel?.report.source;
-  const pluginPanelStale = pluginPanelSource
-    ? computeObjectFingerprint(document, pluginPanelSource.objectId) !== pluginPanelSource.sourceFingerprint
-    : false;
+  // if the live molecule no longer matches (edited or removed), flag the panel as out of date. A live
+  // panel is flagged too when its last run failed, but not while its re-run is scheduled or running.
+  const pluginPanelStale = pluginRuntime.openPanel ? pluginPanelIsOutOfDate(pluginRuntime.openPanel) : false;
 
   // Keep the catalog's plugin toolsets in sync with the runtime, and register the dev-only
   // fixture plugin so the whole contribute-a-toolset pipeline is exercised in development. Also
@@ -14461,10 +14499,7 @@ export function MainWindow({
           );
         });
       }
-      const source = panel.report.source;
-      const stale = source
-        ? computeObjectFingerprint(document, source.objectId) !== source.sourceFingerprint
-        : false;
+      const stale = pluginPanelIsOutOfDateRef.current(panel);
       const sent = pluginPanelStalenessSentRef.current.get(key);
       if (!sent || sent.revision !== payload.revision || sent.stale !== stale) {
         pluginPanelStalenessSentRef.current.set(key, { revision: payload.revision, stale });
@@ -14477,7 +14512,7 @@ export function MainWindow({
           .catch(() => undefined);
       }
     }
-  }, [document, pluginRuntime.detachedPanels, pluginRuntime.runtime]);
+  }, [document, failedPluginCommands, pendingPluginCommands, scheduledLiveReruns, pluginRuntime.detachedPanels, pluginRuntime.runtime]);
 
   // A dismissed window is a real panel close (ADR-0012): the plugin gets its cancellation signal.
   // Closing also drops the replay payload; a later showReport supplies fresh content.
@@ -15052,6 +15087,7 @@ export function MainWindow({
           }
           if (superseded()) return;
           const failure = pluginCommandFailure(result);
+          setFailedPluginCommands(current => withSetMember(current, commandId, !!failure));
           if (failure) {
             setStatus(failedStatus(failure));
             if (analyzerOwned && owner) showAnalyzerNotice(owner.id, owner.name, failure);
@@ -15068,6 +15104,7 @@ export function MainWindow({
         .catch((error: unknown) => {
           if (superseded()) return;
           const message = error instanceof Error ? error.message : String(error);
+          setFailedPluginCommands(current => withSetMember(current, commandId, true));
           setStatus(failedStatus(message));
           if (analyzerOwned && owner) showAnalyzerNotice(owner.id, owner.name, message);
         });

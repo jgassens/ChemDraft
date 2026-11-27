@@ -105,12 +105,12 @@ A plugin imports **only `@chemdraft/plugin-api`** (plus ordinary npm packages), 
 menus, panels, toolbar buttons, inspectors, templates, importers, exporters, analyzers, transformers,
 and recognizers.
 
-`PluginApiVersion` is `0.1.27`. API 0.1.20 added `tableStyle.autoColumnMinEm`; 0.1.21 adds
+`PluginApiVersion` is `0.1.30`. API 0.1.20 added `tableStyle.autoColumnMinEm`; 0.1.21 adds
 plugin chemistry properties and plugin assistant tools; 0.1.22 adds name-to-structure result
 source and dictionary match provenance; 0.1.23 adds native wavy single bonds;
 0.1.24 adds reaction schemes and binary CDX; 0.1.25 adds bracketed groups, 0.1.26 adds
 request-bound tools and depiction, and 0.1.27 adds optional refusal reason and details on plugin
-errors (unrepresentable hydrogen count). For a 0.x version the minor is the compatibility boundary, so additive
+errors (unrepresentable hydrogen count); 0.1.28 and 0.1.29 are reserved for app handoff (PR #466); 0.1.30 adds live panel re-run and documents.getMolecules. For a 0.x version the minor is the compatibility boundary, so additive
 methods bump the patch and a plugin declares the caret version it needs. Record each bump in the
 `plugin-api` header comment and `AUTHORING.md`.
 

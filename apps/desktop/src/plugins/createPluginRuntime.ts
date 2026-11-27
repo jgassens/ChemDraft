@@ -1,4 +1,4 @@
-import { buildPluginSelectionSnapshot } from "./selectionSnapshot";
+import { buildPluginPageMolecules, buildPluginSelectionSnapshot } from "./selectionSnapshot";
 import { computePropertiesForPlugin } from "./pluginProperties";
 import { PluginRequestLimits, PluginStructureToNameRequestSchema } from "@chemdraft/plugin-api";
 import { inspectStructureOffThread } from "../depiction2d/identityClient";
@@ -568,6 +568,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     openRequestHistory: options.openRequestHistory,
     requestPageSpace: options.requestPageSpace,
     getRequestSelection: (document, budget) => buildPluginSelectionSnapshot(document, readingSelectionWarnings, budget),
+    getPageMolecules: document => buildPluginPageMolecules(document, readingSelectionWarnings),
     getSelection: readSelection ? () => readSelection(readingSelectionWarnings) : undefined,
     createStorage: options.createStorage,
     onProposedPatchesChanged: () => {

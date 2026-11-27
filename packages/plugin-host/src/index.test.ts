@@ -2074,6 +2074,47 @@ describe("PluginHost document boundary", () => {
     }).toThrow();
     expect(live.title).not.toBe("hijacked");
   });
+
+  it("serves documents.getMolecules (API 0.1.30) only with document.read, as a frozen copy", async () => {
+    const live = createEmptyDocument({ now: timestamp });
+    live.pages[0].objects.push(moleculeObject());
+    const pageMolecules = [{
+      objectId: "m1", documentId: live.id, pageId: live.pages[0].id,
+      structureFormat: "smiles" as const, structure: "CCO", sourceFingerprint: "0123456789abcdef"
+    }];
+    const seen: unknown[] = [];
+    const host = new PluginHost({
+      now: () => timestamp,
+      getActiveDocument: () => live,
+      getPageMolecules: (document) => { seen.push(document); return pageMolecules; }
+    });
+    const register = (id: string, permissions: PluginPermission[]) => host.registerPlugin({
+      id, name: id, version: "0.0.1", apiVersion: "^0.1.30", entry: "dist/plugin.js", permissions,
+      contributes: { commands: [] }
+    });
+    register("org.test.molreader", ["document.read"]);
+    register("org.test.nomolread", ["selection.read"]);
+
+    await expect(host.createCommandContext("org.test.nomolread").documents.getMolecules())
+      .rejects.toThrow(/document\.read/);
+    expect(seen).toEqual([]);
+
+    const handed = await host.createCommandContext("org.test.molreader").documents.getMolecules();
+    expect(seen).toEqual([live]);
+    expect(handed).toEqual(pageMolecules);
+    expect(handed).not.toBe(pageMolecules);
+    expect(Object.isFrozen(handed)).toBe(true);
+    expect(Object.isFrozen(handed[0])).toBe(true);
+  });
+
+  it("returns no molecules when there is no active document or no provider", async () => {
+    const host = new PluginHost({ now: () => timestamp });
+    host.registerPlugin({
+      id: "org.test.molempty", name: "Empty", version: "0.0.1", apiVersion: "^0.1.30", entry: "dist/plugin.js",
+      permissions: ["document.read"], contributes: { commands: [] }
+    });
+    await expect(host.createCommandContext("org.test.molempty").documents.getMolecules()).resolves.toEqual([]);
+  });
 });
 
 describe("PluginHost recognition, document binding, and queue release", () => {

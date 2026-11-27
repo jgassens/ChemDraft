@@ -77,7 +77,7 @@ export const PLUGIN_WORKER_CAPABILITY_METHODS = {
   selection: ["getSelection"],
   analysis: ["write", "list", "getLatest"],
   storage: ["get", "set", "delete", "listKeys"],
-  documents: ["getActiveDocument", "proposePatch", "applyPatch", "insertTable", ...pluginRequestMethods("documents")],
+  documents: ["getActiveDocument", "getMolecules", "proposePatch", "applyPatch", "insertTable", ...pluginRequestMethods("documents")],
   panels: ["showReport"],
   overlays: ["setStatus", "setTranscript", "setContent", "open"],
   chemistry: ["properties", "isotopeEnvelope", "nameToStructure", "structureFromSmiles", "structureToName", "embed3d", "minimize3d", "flatten3d",
@@ -175,7 +175,7 @@ export const PluginWorkerErrorCodes = {
 
 /** Ordinary worker capabilities that the host can bind to a request's document instance. */
 export function isPinnedRequestToolCapability(namespace: string, method: string): boolean {
-  return (namespace === "documents" && ["getActiveDocument", "applyPatch", "insertTable"].includes(method)) ||
+  return (namespace === "documents" && ["getActiveDocument", "getMolecules", "applyPatch", "insertTable"].includes(method)) ||
     (namespace === "selection" && method === "getSelection");
 }
 

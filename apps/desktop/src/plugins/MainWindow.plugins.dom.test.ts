@@ -220,6 +220,77 @@ function deferredResult(): { promise: Promise<unknown>; resolve(result: unknown)
 }
 
 describe("MainWindow bundled plugin integration", () => {
+  it("re-runs a live panel on another plugin's write but not its own, and flags a failed re-run out of date", async () => {
+    await renderMainWindow();
+    const runtime = bundled.runtime!;
+    const pageId = getAssistantHistoryPort().read("initial")!.pages[0]!.id;
+    const liveId = "plugin.liveTest.run";
+    const otherId = "plugin.otherWriter.write";
+    let inserted = 0;
+    const insert = (context: Parameters<import("@chemdraft/plugin-api").PluginCommandHandler>[0]) => {
+      inserted += 1;
+      const x = 40 + inserted * 60;
+      return context.documents.applyPatch!({ reason: "test write", patch: { op: "addObject", pageId,
+        object: { ...namingMolecule, id: `live_write_${inserted}`, x, y: 40,
+          atoms: namingMolecule.atoms.map(atom => ({ ...atom, x: atom.x + x, y: atom.y + 40 })) } } });
+    };
+    const outcomes: Array<"ok" | "write" | "fail" | "slow"> = ["ok", "write", "fail", "slow"];
+    const slow = deferredResult();
+    let runs = 0;
+    const live = vi.fn(async (context: Parameters<import("@chemdraft/plugin-api").PluginCommandHandler>[0]) => {
+      const outcome = outcomes[runs];
+      runs += 1;
+      // A live command that writes the document: its own write must not schedule it again.
+      if (outcome === "write") await insert(context);
+      if (outcome === "fail") return { ok: false, error: { code: "LIVE_FAILED", message: "Prediction failed." } };
+      if (outcome === "slow") await slow.promise;
+      await context.panels!.showReport("panel.liveTest.result", { title: "Live", sections: [],
+        rerunCommandId: liveId, liveRerun: true });
+      return { ok: true };
+    });
+    await act(async () => {
+      runtime.registerPlugin({ id: "org.test.livePanel", name: "Live test", version: "0.0.1", apiVersion: "^0.1.30",
+        entry: "index.js", permissions: ["document.write", "document.read", "ui.panel"],
+        contributes: { commands: [{ id: liveId, title: "Live run", requiredPermissions: [] }],
+          panels: [{ id: "panel.liveTest.result", title: "Live", commandId: liveId, requiredPermissions: ["ui.panel"] }] } },
+      { commandHandlers: { [liveId]: live } });
+      runtime.registerPlugin({ id: "org.test.otherWriter", name: "Other writer", version: "0.0.1", apiVersion: "^0.1.16",
+        entry: "index.js", permissions: ["document.write"],
+        contributes: { commands: [{ id: otherId, title: "Write", requiredPermissions: [] }] } },
+      { commandHandlers: { [otherId]: context => insert(context) } });
+    });
+    const settle = (ms: number) => act(async () => { await new Promise(resolve => setTimeout(resolve, ms)); });
+    const banner = () => container!.querySelector('[data-testid="plugin-panel-stale"]');
+
+    await act(async () => { await runtime.host.invokeCommand(liveId); });
+    await waitForElement('[data-testid="plugin-panel"]');
+    expect(live).toHaveBeenCalledTimes(1);
+
+    // Another plugin's write re-runs the live command; that run writes, and its own write does not
+    // start another run.
+    await act(async () => { await runtime.host.invokeCommand(otherId); });
+    await vi.waitFor(() => expect(live).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(inserted).toBe(2));
+    await settle(700);
+    expect(live).toHaveBeenCalledTimes(2);
+    expect(banner()).toBeNull();
+
+    // The next re-run fails: the panel keeps its last result and is flagged out of date.
+    await act(async () => { await runtime.host.invokeCommand(otherId); });
+    await vi.waitFor(() => expect(live).toHaveBeenCalledTimes(3));
+    await vi.waitFor(() => expect(banner()).not.toBeNull());
+
+    // A new edit holds the banner back while its re-run is scheduled and while it runs.
+    await act(async () => { await runtime.host.invokeCommand(otherId); });
+    expect(banner()).toBeNull();
+    await vi.waitFor(() => expect(live).toHaveBeenCalledTimes(4));
+    expect(banner()).toBeNull();
+    await act(async () => { slow.resolve(undefined); await Promise.resolve(); });
+    await settle(50);
+    expect(banner()).toBeNull();
+    expect(live).toHaveBeenCalledTimes(4);
+  });
+
   it.each([
     ["MacIntel", true], ["Win32", true], ["MacIntel", false], ["Win32", false]
   ] as const)("preserves in-page batches and places off-page batches with one labelled undo (%s, offPage=%s)", async (platform, offPage) => {

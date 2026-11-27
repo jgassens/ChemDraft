@@ -139,13 +139,15 @@ describe("isPluginApiVersionCompatible", () => {
     expect(isPluginApiVersionCompatible("^0.1.14", "0.1.13")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.15", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.15", "0.1.14")).toBe(false);
-    expect(PluginApiVersion).toBe("0.1.27");
+    expect(PluginApiVersion).toBe("0.1.30");
     expect(isPluginApiVersionCompatible("^0.1.23", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.24", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.24", "0.1.23")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.25", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.25", "0.1.24")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.26", PluginApiVersion)).toBe(true);
+    expect(isPluginApiVersionCompatible("^0.1.30", PluginApiVersion)).toBe(true);
+    expect(isPluginApiVersionCompatible("^0.1.30", "0.1.26")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.26", "0.1.25")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.23", "0.1.22")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.16", PluginApiVersion)).toBe(true);
@@ -168,6 +170,9 @@ describe("isPluginApiVersionCompatible", () => {
 describe("chemistry worker capability allowlist", () => {
   it("includes command-scoped table insertion", () => {
     expect(PLUGIN_WORKER_CAPABILITY_METHODS.documents).toContain("insertTable");
+  });
+  it("includes documents.getMolecules (API 0.1.30)", () => {
+    expect(PLUGIN_WORKER_CAPABILITY_METHODS.documents).toContain("getMolecules");
   });
   it("includes all chemistry methods through API 0.1.26", () => {
     expect(PLUGIN_WORKER_CAPABILITY_METHODS.chemistry).toEqual([
@@ -403,6 +408,27 @@ describe("runPluginWorker", () => {
 
     const settled = endpoint.sent.find((m): m is Extract<WorkerToHostMessage, { kind: "commandSettled" }> => m.kind === "commandSettled");
     expect(settled).toMatchObject({ commandRequestId: 7, ok: true, value: { objectIds: ["x"], molecules: [] } });
+  });
+
+  it("routes documents.getMolecules across the boundary (API 0.1.30)", async () => {
+    const endpoint = new ControlledEndpoint();
+    runPluginWorker(
+      { manifest: manifest(["document.read"]), commandHandlers: { [commandId]: async (context) => context.documents.getMolecules() } },
+      endpoint
+    );
+    endpoint.sent.length = 0;
+
+    endpoint.deliver({ kind: "invokeCommand", commandRequestId: 8, commandId });
+    await flush();
+
+    const request = endpoint.sent.find((m): m is Extract<WorkerToHostMessage, { kind: "capabilityRequest" }> => m.kind === "capabilityRequest");
+    expect(request).toMatchObject({ commandRequestId: 8, namespace: "documents", method: "getMolecules", args: [] });
+    const molecules = [{ objectId: "m1", structureFormat: "smiles", structure: "CCO", sourceFingerprint: "0123456789abcdef" }];
+    endpoint.deliver({ kind: "capabilityResult", requestId: request!.requestId, ok: true, value: molecules });
+    await flush();
+
+    const settled = endpoint.sent.find((m): m is Extract<WorkerToHostMessage, { kind: "commandSettled" }> => m.kind === "commandSettled");
+    expect(settled).toMatchObject({ commandRequestId: 8, ok: true, value: molecules });
   });
 
   it("omits selection and dialogs stubs when the manifest grants neither permission", async () => {

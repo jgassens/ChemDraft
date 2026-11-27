@@ -141,7 +141,7 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 ```
 
 `apiVersion` in your manifest declares the SDK contract you target (`PluginApiVersion`, currently
-`0.1.27`). API 0.1.21 adds plugin chemistry properties and plugin assistant tools (#310).
+`0.1.30`). API 0.1.28 and 0.1.29 are reserved for app handoff (PR #466); 0.1.30 adds [live panel re-run and `documents.getMolecules()`](#live-panels-and-page-molecules-0130). API 0.1.21 adds plugin chemistry properties and plugin assistant tools (#310).
 API 0.1.22 adds optional name-to-structure `source`, `matchedName` and `matchedCas` provenance for the offline name dictionary (#318).
 API 0.1.23 adds native wavy single bonds (#327).
 Set `MoleculeBond.display.bondStyle: "wavy"` only with `order: "single"`; the schema rejects other orders.
@@ -180,6 +180,8 @@ it declares.
 | API version | Additive capability | Permission |
 | --- | --- | --- |
 | 0.1.27 | Optional refusal `reason` and `details` on `PluginWorkerCapabilityError` and request failures (first reason: `hydrogen_count_unrepresentable`) | No new permission |
+| 0.1.28, 0.1.29 | Reserved for app handoff (PR #466) | — |
+| 0.1.30 | Live panel re-run (`liveRerun` with `rerunCommandId` on a panel report) and `documents.getMolecules()` | `ui.panel` for the panel; `document.read` for `getMolecules` |
 | 0.1.26 | Request lifecycle, pinned document reads and patches, session-local tools, chemistry and depiction, and document-change notifications | Existing permissions, listed below |
 | 0.1.25 | Optional bracketUsage, repeatCount and crossingBondIds (scoped objectId/bondId references); legacy repeatUnit remains supported | No new permission |
 | 0.1.24 | Binary CDX import/export (#316) and optional reaction `arrowObjectIds`/`plusObjectIds` (#335); shared scheme arrows and plus signs are referenced by id, never copied | No new permission |
@@ -355,8 +357,46 @@ const runWidget: PluginCommandHandler = async (context) => {
 };
 ```
 
-Report section kinds: `text`, `keyValue`, `table`, `svg`, `chemicalName`, and `linkedFigure` (an interactive
-spectrum/structure figure with a generic primary/alternative method model).
+Report section kinds: `text`, `keyValue`, `table`, `svg`, `chemicalName`, `linkedFigure` (an interactive
+spectrum/structure figure with a generic primary/alternative method model), and the input and media
+kinds `prompt`, `actions` and `image` (API 0.1.10; see [Panel input](#panel-input-and-canvas-overlays-0110014)
+below).
+
+### Live panels and page molecules (0.1.30)
+
+Declare `apiVersion: "^0.1.30"` for either feature.
+
+**Live re-run.** A panel report that sets `liveRerun: true` together with `rerunCommandId` is
+re-run by the host whenever the active document changes while that panel is open, in the app or in
+its own window. The host waits 250 ms after the last change, then invokes `rerunCommandId` through
+the same per-plugin queue as the "Run again" button, so a run never overlaps the previous one and the
+latest edit wins. Selection and viewport changes do not count, and neither does your own panel
+update. Live re-runs stop when the panel closes, the plugin is disabled or removed, or a report
+without `liveRerun` replaces it. Edits your own plugin's commands commit through
+`documents.applyPatch` do not re-run your live panel; edits by the user or other plugins do. A live
+panel hides the "out of date" banner while its re-run is scheduled or running, and shows it when its
+last run failed or its result is out of date with nothing pending. `liveRerun` without
+`rerunCommandId` fails validation. Keep the command fast.
+
+**Every molecule on the page.** `context.documents.getMolecules()` (permission `document.read`)
+returns every molecule on the active page, in page order and regardless of selection, each in the
+shape `selection.getSelection()` returns per molecule (`objectId`, `pageId`, `structureFormat`,
+`structure` — a molfile written from the drawn graph — and `sourceFingerprint`). Without
+`document.read` the call is refused like any other ungranted capability.
+
+```ts
+const livePredict: PluginCommandHandler = async (context) => {
+  const molecules = await context.documents.getMolecules();
+  const drawn = molecules[0];
+  await context.panels?.showReport("panel.nmrgame.live", {
+    title: "Your molecule",
+    sections: [{ kind: "text", body: drawn ? `Predicting for ${drawn.objectId}` : "Draw a molecule to begin." }],
+    rerunCommandId: "plugin.nmrgame.predict",
+    liveRerun: true
+  });
+  return { ok: true };
+};
+```
 
 For rule-based shift estimates, set `linkedFigure.spectrum.peaks[i].estimated: true` on each
 estimated peak (`PluginLinkedFigurePeak` already includes this optional boolean). A report caption

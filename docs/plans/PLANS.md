@@ -115,6 +115,31 @@ current document and selection and place results directly on the page through ty
 
 ---
 
+# Plugin live panels (API 0.1.30)
+
+For an educational plugin that shows a target NMR spectrum beside the live prediction for whatever
+the student draws. Generic: any plugin can use it.
+
+- **Live re-run.** A panel report may set `liveRerun: true` with `rerunCommandId` (schema rejects
+  the flag alone). While such a panel is open, in-app or detached, each change to the active document
+  re-invokes `rerunCommandId` 250 ms after the last change, through MainWindow's per-plugin command
+  queue (the "Run again" path), so runs never overlap. Selection-only and viewport changes, the
+  plugin's own report, and documents committed by the same plugin's own `document.write` (tagged at
+  commit in `applyDocumentPatch`) do not trigger it. It stops when the panel closes, the plugin is
+  unloaded, or a report without the flag replaces it. A live panel hides the "out of date" banner
+  only while its re-run is scheduled or running; it shows it when its last run failed or its result
+  is stale with nothing pending.
+- **`documents.getMolecules()`** (`document.read`): every molecule on the active page, in the
+  `getSelection` per-molecule shape, regardless of selection. In-process and worker plugins.
+- **Files:** `packages/plugin-api/src/{index,workerProtocol,workerRuntime}.ts`,
+  `packages/plugin-host/src/index.ts`, `apps/desktop/src/plugins/{livePanelRerun,selectionSnapshot,createPluginRuntime}.ts`,
+  `apps/desktop/src/MainWindow.tsx` (hook call, banner rule, write-author tagging, failed-command
+  state; the plugin command queue itself is unchanged), AUTHORING.md, AGENTS.md §4.1.
+- **Tests:** `reportLimits.test.ts`, `workerProtocol.test.ts`, plugin-host `index.test.ts`,
+  `livePanelRerun.dom.test.ts`, `selectionSnapshot.test.ts`, `plugins/MainWindow.plugins.dom.test.ts`.
+- **Remaining:** request-bound writes (API 0.1.26 request history) are not tagged with their plugin,
+  so a live command writing through a request would still re-trigger itself; hands-on pass of a live panel on macOS and Windows; move to `docs/shipped/` on landing.
+
 # Parked
 
 These items are not in flight; reopening any item needs a reason recorded here first.

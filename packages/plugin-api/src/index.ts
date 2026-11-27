@@ -48,6 +48,9 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * 0.1.26 adds optional request-bound document access, tool sessions, chemistry and depiction, and document-change events.
  * 0.1.27 adds optional machine-readable refusal fields, `reason` and `details`, on PluginWorkerErrorPayload,
  * PluginWorkerCapabilityError and PluginRequestError (first reason: `hydrogen_count_unrepresentable`).
+ * 0.1.28 and 0.1.29 are reserved for app handoff (PR #466); 0.1.30 adds live panel re-run and
+ * documents.getMolecules: optional panel report `liveRerun` with `rerunCommandId`, and
+ * `documents.getMolecules()` (every molecule on the active page, gated by `document.read`).
  *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
  * the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` — the NMR
@@ -57,7 +60,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * local structure recognition, `^0.1.7` for structure naming, `^0.1.8` for external tools), which this host satisfies and an
  * older one correctly does not.
  */
-export const PluginApiVersion = "0.1.27" as const;
+export const PluginApiVersion = "0.1.30" as const;
 
 export const pluginPermissions = [
   "document.read",
@@ -715,10 +718,23 @@ const PanelReportObjectSchema = z
      * exact variant that produced it (e.g. the ¹H command for a ¹H report) instead of the panel
      * contribution's single default command. When absent, chrome falls back to the panel's commandId.
      */
-    rerunCommandId: ReportNonEmptyStringSchema.optional()
+    rerunCommandId: ReportNonEmptyStringSchema.optional(),
+    /**
+     * API 0.1.30. When true, while this panel is open the host re-invokes `rerunCommandId` after
+     * every change to the active document (debounced 250 ms after the last change, through the same
+     * per-plugin queue as "Run again", so runs never overlap). Selection and viewport changes do not
+     * count. Live re-runs stop when the panel closes or a report without this flag replaces it.
+     * Only meaningful together with `rerunCommandId`.
+     */
+    liveRerun: z.boolean().optional()
   })
   .strict()
   .superRefine((report, ctx) => {
+    if (report.liveRerun === true && report.rerunCommandId === undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["liveRerun"],
+        message: "liveRerun requires rerunCommandId: name the command the host should re-run." });
+      return;
+    }
     // Defaults (for example on prompt/actions sections) also count toward the rendered report.
     const sizeIssue = panelReportLimitIssue(report);
     if (sizeIssue) { ctx.addIssue({ code: z.ZodIssueCode.custom, ...sizeIssue }); return; }
@@ -1059,6 +1075,10 @@ export interface PluginTableSpec {
 
 export interface PluginDocumentAPI extends PluginRequestDocumentAPI {
   getActiveDocument(): Promise<ChemDraftDocument | undefined>;
+  /** API 0.1.30, `document.read`: every molecule on the active page, in page order and regardless of
+   *  selection, each in the same shape `selection.getSelection()` returns per molecule (structure
+   *  written from the drawn graph, plus a source fingerprint). Without `document.read` it rejects. */
+  getMolecules(): Promise<readonly PluginSelectedMolecule[]>;
   proposePatch(proposal: ProposedDocumentPatch): Promise<ProposedPatchReceipt>;
   /** Present only with `document.write`; valid only during one of this plugin's command invocations.
    *  Inserts content or edits/removes objects selected when the command started, plus its insertions.

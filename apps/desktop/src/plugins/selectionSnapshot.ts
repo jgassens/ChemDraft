@@ -218,21 +218,50 @@ export function buildPluginSelectionSnapshot(
     if (!hit) {
       continue;
     }
-    const facing = pluginFacingStructure(hit.molecule, warnings);
-    const molecule = {
-      objectId,
-      documentId: document.id,
-      pageId: hit.pageId,
-      structureFormat: facing.structureFormat,
-      structure: facing.structure,
-      // Retain stereo geometry while keeping pure translations and rotations out of the key.
-      sourceFingerprint: moleculeSourceFingerprint(document, hit.pageId, hit.molecule)
-    };
+    const molecule = pluginSelectedMolecule(document, hit.pageId, hit.molecule, warnings);
     budget?.(molecule, molecules.length > 0 ? 1 : 0); // The empty array was charged with the snapshot header.
     molecules.push(molecule);
   }
 
   return snapshot;
+}
+
+/** One molecule in the shape a plugin receives, shared by selection snapshots and getMolecules. */
+function pluginSelectedMolecule(
+  document: ChemDraftDocument,
+  pageId: string,
+  source: MoleculeObject,
+  warnings: string[]
+): PluginSelectedMolecule {
+  const facing = pluginFacingStructure(source, warnings);
+  return {
+    objectId: source.id,
+    documentId: document.id,
+    pageId,
+    structureFormat: facing.structureFormat,
+    structure: facing.structure,
+    // Retain stereo geometry while keeping pure translations and rotations out of the key.
+    sourceFingerprint: moleculeSourceFingerprint(document, pageId, source)
+  };
+}
+
+/**
+ * API 0.1.30 `documents.getMolecules()`: every molecule on the active page, in page order, in exactly
+ * the shape a selection snapshot carries per molecule — regardless of what is selected. The active
+ * page follows the host's convention (the selection's page, else the first page). The host
+ * deep-copies and freezes the result before handing it to a plugin.
+ */
+export function buildPluginPageMolecules(
+  document: ChemDraftDocument,
+  warnings: string[] = []
+): PluginSelectedMolecule[] {
+  const page = document.pages.find(candidate => candidate.id === document.selection.pageId) ?? document.pages[0];
+  if (!page) return [];
+  const molecules: PluginSelectedMolecule[] = [];
+  for (const object of page.objects) {
+    if (object.type === "molecule") molecules.push(pluginSelectedMolecule(document, page.id, object, warnings));
+  }
+  return molecules;
 }
 
 /**
