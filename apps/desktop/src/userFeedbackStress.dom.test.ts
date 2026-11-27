@@ -868,8 +868,12 @@ describe("user feedback app stress", () => {
         await act(async () => text.blur()); focused.mockRestore();
         expect(current().pages[0].objects.some(o => o.type === "text")).toBe(false);
         const committed = current().pages[0].objects;
+        expect(committed[committed.length - 1]).toMatchObject({ type: "molecule", atoms: [{ element: "N" }] });
+        const placedFrom = committed.slice(0, -1);
+        // One undo removes the typed atom with its placement: no text box is left behind (1.2.3).
         await command("edit.undo");
-        expect(current().pages[0].objects.filter(o => o.type === "text")).toHaveLength(1);
+        expect(current().pages[0].objects.filter(o => o.type === "text")).toHaveLength(0);
+        expect(current().pages[0].objects).toEqual(placedFrom);
         await command("edit.redo"); expect(current().pages[0].objects).toEqual(committed);
       }
     }

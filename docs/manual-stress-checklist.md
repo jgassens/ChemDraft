@@ -2187,3 +2187,16 @@ each sits on a panel-coloured background that reads over the page. Turn rulers o
 back to the window's left margin with no gap. Shrink the window to its narrowest: a long status ends
 in an ellipsis inside the window, still right of the ruler and never over the top ruler. With no
 status, no empty chip shows. Check on Windows and both macOS builds, at 100% and 150% display scale.
+
+## Typed element symbols become atoms (macOS and Windows, 1.2.3)
+
+Beside a drawn ligand, take the Text tool, click empty canvas, type `Zn`, click away: it becomes a
+selectable zinc atom. Repeat with `Zn2+`, `Zn+2`, `Fe3+`, `Cl-`, `Na+`, and with `Zn` followed by a
+superscript `2+` (Superscript Text on the selected `2+`): each becomes one atom of that element with
+that charge, the charge drawn as on any charged atom, and the status reads "Placed naked Zn2+ atom".
+One Undo removes the atom (no text box left behind); Redo brings it back. Draw a bond from the zinc
+to a ligand N with the Bond tool, and another from an N to the zinc: both connect and the charge
+stays. `H2O`, `CO2`, `hello`, `Xx`, `zn`, `Zn 2+`, two lines, or bold/coloured text stay text; a box
+finished with Esc stays text. Open a saved document holding a text `Zn`, paste a text `Zn`, and
+import a CDXML with a `Zn` caption: none of them turns into an atom, even after opening it for
+editing and clicking away unchanged. Check on Windows and both macOS builds.

@@ -158,6 +158,7 @@ export {
   type NativeAtomLabelReading,
   nativeAtomMaxValence,
   nativeAtomValence,
+  nativeElementWithChargeLabel,
   nativeGroupLabelDisplay,
   nativeLabelGroupAttachment,
   type NativeLabelGroup,

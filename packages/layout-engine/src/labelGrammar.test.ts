@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   nativeAtomLabelReading,
+  nativeElementWithChargeLabel,
   nativeHoverAtomLabelCanContinue,
   nativeHoverAtomLabelCompletion,
   nativeLabelGroupAttachment,
@@ -129,5 +130,32 @@ describe("chem-core's abbreviation reading (isTableAbbreviationLabel) is this gr
     // Not vacuous: the table's spellings are abbreviations, elements are not.
     expect(abbreviationSpellings.every(isTableAbbreviationLabel)).toBe(true);
     expect(["Ac", "Pr", "Ts", "C", "O"].some(isTableAbbreviationLabel)).toBe(false);
+  });
+});
+
+describe("an element symbol with a typed charge (nativeElementWithChargeLabel)", () => {
+  it.each([
+    ["Zn", "Zn", 0], ["Zn2+", "Zn", 2], ["Zn+2", "Zn", 2], ["Fe3+", "Fe", 3], ["Fe+3", "Fe", 3],
+    ["Cl-", "Cl", -1], ["Na+", "Na", 1], ["O2-", "O", -2], ["O-2", "O", -2], ["S2-", "S", -2],
+    ["Cu+", "Cu", 1], ["N", "N", 0], ["C", "C", 0], ["O", "O", 0], ["H+", "H", 1], ["H-", "H", -1],
+    ["Zn\u00B2\u207A", "Zn", 2], ["Cl\u207B", "Cl", -1], ["Cl\u2212", "Cl", -1], ["Fe\u207A\u00B3", "Fe", 3]
+  ] as const)("reads '%s' as %s with charge %d", (label, element, charge) => {
+    expect(nativeElementWithChargeLabel(label)).toEqual({ element, charge });
+  });
+
+  it.each([
+    "", "hello", "H2O", "CO2", "CO", "NH", "OH-", "NH4+", "OMe", "Me", "Ph", "R", "Xx", "Xx2+", "zn", "ZN", "zn2+",
+    " Zn", "Zn ", "Zn 2+", "Zn\n", "Zn2+\nZn", "Zn++", "Zn--", "Zn+-", "Zn0+", "Zn+0", "Zn10+", "Zn2", "2+", "+",
+    "Zn2+2", "H2+", "C5+", "N6-", "H+2"
+  ])("keeps '%s' as not an element with a charge", label => {
+    expect(nativeElementWithChargeLabel(label)).toBeUndefined();
+  });
+
+  it("names the same element the grammar's element reading does, for every exact symbol", () => {
+    for (const symbol of nativeElementSymbols) {
+      const reading = nativeAtomLabelReading(symbol);
+      expect(nativeElementWithChargeLabel(symbol), symbol)
+        .toEqual(reading.kind === "element" && reading.element === symbol ? { element: symbol, charge: 0 } : undefined);
+    }
   });
 });

@@ -235,6 +235,7 @@ import {
   hydrogenCountElement,
   mechanismArrowGeometry,
   nativeBondOrderResolution,
+  nativeElementWithChargeLabel,
   nativeGroupLabelDisplay,
   representativeMoleculeBondLength,
   resolvePageAnchorPoint
@@ -4732,18 +4733,64 @@ export function selectedTextToAtomLabelResult(document: ChemDraftDocument): Text
     : result;
 }
 
-/** Exact elements and case-sensitive groups may auto-convert; groups need an atom target. */
+/**
+ * The atom a finished text box stands for when its whole content is one element symbol, in its
+ * exact case, with an optional formal charge after it ("Zn", "Zn2+", "Zn+2", "Fe3+", "Cl-"). The
+ * text is read by the atom-label grammar (`nativeElementWithChargeLabel`); its runs must be plain:
+ * no run styling, the symbol on the baseline, and the charge on the baseline or superscript, so
+ * "Zn" with a superscript "2+" reads as Zn2+. Anything else stays text: words, formulas ("H2O"),
+ * abbreviations, several lines, an unknown symbol ("Xx"), subscripts, or styled runs.
+ */
+export function nativeTextObjectElementWithCharge(
+  object: { text: string; spans?: readonly TextSpan[] }
+): { element: string; formalCharge: number } | undefined {
+  const reading = nativeElementWithChargeLabel(object.text);
+  if (!reading) return undefined;
+  const spans = object.spans ?? [];
+  if (spans.length > 0) {
+    if (spans.map(span => span.text).join("") !== object.text) return undefined;
+    const symbolLength = reading.element.length;
+    let offset = 0;
+    for (const span of spans) {
+      if (Object.keys(span.style ?? {}).length > 0) return undefined;
+      const script = span.script ?? "normal";
+      const touchesSymbol = span.text.length > 0 && offset < symbolLength;
+      if (script === "subscript" || (touchesSymbol && script !== "normal")) return undefined;
+      offset += span.text.length;
+    }
+  }
+  return { element: reading.element, formalCharge: reading.charge };
+}
+
+/** Exact elements (optionally charged) and case-sensitive groups may auto-convert; groups need an atom target. */
 export function canAutoConvertNativeTextObjectToAtom(document: ChemDraftDocument, objectId: string): boolean {
   const object = firstPage(document).objects.find((candidate) => candidate.id === objectId);
   if (object?.type !== "text" || object.text.length === 0 || object.text !== object.text.trim()) return false;
-  return nativeElementFromAtomLabel(object.text) === object.text ||
+  return nativeTextObjectElementWithCharge(object) !== undefined ||
     nativeAtomLabelReading(object.text, { bonded: true }).kind === "group";
 }
 
 /**
- * Text anchored on an atom uses the literal label editor's path. In open space, keep the
- * existing exact-element conversion: a one-atom molecule centered on the edited text frame. Other text
- * stays text. A bare covalent-table element is valence-flagged until it gains enough bonds.
+ * Whether a finished text box is a charged element symbol ("Zn2+") sitting on an existing atom.
+ * Relabelling cannot carry a charge, so such text is kept as text rather than relabel that atom
+ * with the charge dropped or become a second atom on top of it (AGENTS.md §7).
+ */
+export function chargedTextObjectOnAtom(
+  document: ChemDraftDocument,
+  objectId: string,
+  placementPoint?: PagePoint
+): boolean {
+  const object = firstPage(document).objects.find((candidate) => candidate.id === objectId);
+  if (object?.type !== "text" || !nativeTextObjectElementWithCharge(object)?.formalCharge) return false;
+  return nativeTextObjectToAtomLabelTarget(document, objectId, nativeAtomHitRadiusPx, placementPoint)?.target !== undefined;
+}
+
+/**
+ * Text anchored on an atom uses the literal label editor's path. In open space, an exact element
+ * symbol, optionally charged (`nativeTextObjectElementWithCharge`), becomes a one-atom molecule
+ * centered on the edited text frame, with that element and formal charge. Other text stays text. A
+ * bare covalent-table element is valence-flagged until it gains enough bonds. A charged symbol never
+ * relabels an atom: on one it stays text (`chargedTextObjectOnAtom`).
  */
 export function convertNativeTextObjectToAtom(
   document: ChemDraftDocument,
@@ -4753,22 +4800,27 @@ export function convertNativeTextObjectToAtom(
   if (!canAutoConvertNativeTextObjectToAtom(document, objectId)) {
     return document;
   }
-  if (!options.skipAtomLabel) {
-    const labelResult = convertNativeTextObjectToAtomLabel(document, objectId, undefined, options.placementPoint);
-    if (labelResult.target) {
-      return labelResult.document;
-    }
+  // Callers that skip the label path have already performed this hit-test themselves.
+  if (!options.skipAtomLabel && chargedTextObjectOnAtom(document, objectId, options.placementPoint)) {
+    return document;
   }
   const page = firstPage(document);
   const object = page.objects.find((candidate): candidate is TextObject =>
     candidate.id === objectId && candidate.type === "text"
   );
+  const typedAtom = object ? nativeTextObjectElementWithCharge(object) : undefined;
+  if (!options.skipAtomLabel && !typedAtom?.formalCharge) {
+    const labelResult = convertNativeTextObjectToAtomLabel(document, objectId, undefined, options.placementPoint);
+    if (labelResult.target) {
+      return labelResult.document;
+    }
+  }
   // A group belongs on an existing atom; only an exact element can become a naked atom.
-  if (!object || nativeElementFromAtomLabel(object.text) !== object.text) {
+  if (!object || !typedAtom) {
     return document;
   }
 
-  const normalized = object.text;
+  const normalized = typedAtom.element;
 
   const center = { x: object.x + object.width / 2, y: object.y + object.height / 2 };
   const atom: MoleculeAtom = {
@@ -4776,7 +4828,7 @@ export function convertNativeTextObjectToAtom(
     element: normalized,
     x: center.x,
     y: center.y,
-    formalCharge: 0,
+    formalCharge: typedAtom.formalCharge,
     // A typed label is literal: no implicit hydrogens, and the valence badge stays until the
     // atom's bonds actually satisfy it.
     labelLiteral: true,
@@ -23975,7 +24027,7 @@ function reorderMoleculeBonds(
   return reordered;
 }
 
-function atomChargeLabelSuffix(charge: number): string {
+export function atomChargeLabelSuffix(charge: number): string {
   if (charge === 0) {
     return "";
   }

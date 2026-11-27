@@ -790,6 +790,9 @@ import {
   updateNativeTextObjectStyleRange,
   convertNativeTextObjectToAtom,
   canAutoConvertNativeTextObjectToAtom,
+  chargedTextObjectOnAtom,
+  nativeTextObjectElementWithCharge,
+  atomChargeLabelSuffix,
   convertNativeTextObjectToAtomLabel,
   selectedTextToAtomLabelDisabledReason,
   selectedTextToAtomLabelResult,
@@ -8784,8 +8787,15 @@ export function MainWindow({
     try {
       const currentDocument = documentRef.current;
       if (!canAutoConvertNativeTextObjectToAtom(currentDocument, objectId)) return;
-      const labelResult = convertNativeTextObjectToAtomLabel(currentDocument, objectId, undefined, placement);
-      if (labelResult.target) {
+      const textObject = findDocumentObject(currentDocument, objectId);
+      const charged = textObject?.type === "text" && (nativeTextObjectElementWithCharge(textObject)?.formalCharge ?? 0) !== 0;
+      // A charged symbol ("Zn2+") is an atom of its own: relabelling an atom cannot carry its charge.
+      if (charged && chargedTextObjectOnAtom(currentDocument, objectId, placement)) {
+        setStatus("Text kept: a charged element typed on an atom stays text; edit that atom's charge instead");
+        return;
+      }
+      const labelResult = charged ? undefined : convertNativeTextObjectToAtomLabel(currentDocument, objectId, undefined, placement);
+      if (labelResult?.target) {
         if (labelResult.document !== currentDocument) {
           commitDocumentChange(
             labelResult.document,
@@ -8802,16 +8812,26 @@ export function MainWindow({
         if (labelResult.message) setStatus(labelResult.message);
         return;
       }
-      // The label path above already performed the atom hit-test. Only its no-target path reaches
+      // The paths above already performed the atom hit-test. Only their no-target paths reach
       // the open-space element conversion, so do not repeat that hit-test here.
       const converted = convertNativeTextObjectToAtom(currentDocument, objectId, { skipAtomLabel: true });
       if (converted !== currentDocument) {
-        commitDocumentChange(converted, undefined, false, undefined, CHEMISTRY_EDIT);
-        const atomElement = getSelectedMolecule(converted)?.atoms[0]?.element;
-        setStatus(atomElement ? `Placed naked ${atomElement} atom` : "Placed atom");
+        const placedFrom = documentHistoryRef.current.past.at(-1);
+        if (!commitDocumentChange(converted, undefined, false, undefined, CHEMISTRY_EDIT)) return;
+        // The new atom belongs to the box's placement entry, as its typing does: one undo removes
+        // both. Only when that entry is the one right before, the state without the box.
+        installDocumentHistory((history) => {
+          const typed = history.past.at(-1);
+          return placedFrom && history.past.at(-2) === placedFrom && !findDocumentObject(placedFrom, objectId) &&
+            typed !== undefined && findDocumentObject(typed, objectId)?.type === "text"
+            ? { ...history, past: history.past.slice(0, -1) }
+            : history;
+        });
+        const atom = getSelectedMolecule(converted)?.atoms[0];
+        setStatus(atom ? `Placed naked ${atom.element}${atomChargeLabelSuffix(atom.formalCharge)} atom` : "Placed atom");
       }
     } finally { textAutoConversionInProgressRef.current = false; }
-  }, [commitDocumentChange]);
+  }, [commitDocumentChange, installDocumentHistory]);
 
   const finalizeTextEditHistory = useCallback((objectId: string, current = documentRef.current) => {
     const snapshot = textEditHistorySnapshotRef.current;

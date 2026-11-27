@@ -603,11 +603,11 @@ describe.each(["macos", "windows"] as const)("text edit history (%s)", platform 
     expect(container.textContent).toContain("Nothing to undo");
   });
 
-  it("keeps the first edit's atom conversion entry and never converts a reopened text box", async () => {
+  it("folds the first edit's atom conversion into the placement entry and never converts a reopened text box", async () => {
     await command("tool.text"); await pagePress(200, 200); await type("N"); await pagePress();
     expect(texts()).toEqual([]);
     expect(snapshot().document.pages[0].objects[0]).toMatchObject({ type: "molecule", atoms: [{ element: "N" }] });
-    await undo(); expect(texts().map(object => object.text)).toEqual(["N"]);
+    // One undo removes the typed atom, as it removes typed text (owner, 1.2.3).
     await undo(); expect(snapshot().document.pages[0].objects).toEqual([]);
     const alpha = await place("Alpha", 200); await open(alpha); await type("N"); await pagePress();
     expect(texts().map(object => object.text)).toEqual(["N"]);
