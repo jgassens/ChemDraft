@@ -3,6 +3,7 @@ import {
   CSS_PX_PER_INCH,
   decodeImageBase64,
   GraphicObjectSchema,
+  isStillPngBase64,
   validatePngImage,
   type ChemDraftDocument,
   type GraphicObject
@@ -159,6 +160,7 @@ export async function exportSvgToPdf(
       const children = [...svgElement.children];
       const rasterCache = new Map<string, Promise<Uint8Array>>();
       const rasterBudget = { pixels: 0 };
+      const apngFrames = new Map<string, { png?: Uint8Array; warning?: string }>();
       let run: Element[] = [];
       const flush = async () => {
         if (!run.length) return;
@@ -181,11 +183,17 @@ export async function exportSvgToPdf(
           const raster = await rasterizeSvgPicture(picture, options.rasterizeSvgPicture, rasterCache, rasterBudget);
           if ("warning" in raster) { warnings.push(raster.warning); continue; }
           png = raster.png;
-        } else {
-          // An animated PNG is drawn at its first animation frame, not its default image; a still PNG is embedded as it is.
-          const bytes = decodeImageBase64(image.dataBase64, picture.id);
-          const frame = apngFirstFrame(bytes);
-          if (frame.bytes !== bytes) png = frame.bytes;
+        } else if (!isStillPngBase64(image.dataBase64)) {
+          // An animated PNG is drawn at its first animation frame, not its default image. A still PNG is embedded as
+          // it is, told from its leading chunk headers without decoding it here; each animated one is read once.
+          let frame = apngFrames.get(image.dataBase64);
+          if (!frame) {
+            const bytes = decodeImageBase64(image.dataBase64, picture.id);
+            const result = apngFirstFrame(bytes);
+            frame = { ...(result.bytes !== bytes ? { png: result.bytes } : {}), ...(result.warning ? { warning: result.warning } : {}) };
+            apngFrames.set(image.dataBase64, frame);
+          }
+          if (frame.png) png = frame.png;
           if (frame.warning) warnings.push({ code: "export.pdf.apng_default_image", severity: "warning", objectId: picture.id,
             message: `PDF export: picture ${picture.id}: ${frame.warning}` });
         }

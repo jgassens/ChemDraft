@@ -1,6 +1,6 @@
 import { crc32, deflateSync, inflateSync } from "node:zlib";
-import { describe, expect, it } from "vitest";
-import { APNG_MAX_CHUNKS, apngFirstFrame, buildPngChunk, pngChunkAt, pngCrc32, validatePngImage } from "./index";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { APNG_MAX_CHUNKS, apngFirstFrame, buildPngChunk, isStillPngBase64, pngChunkAt, pngCrc32, validatePngImage } from "./index";
 import {
   BLUE, defaultImageFirstFrameApng, fcTLChunk, fdATChunk, ihdrChunk, pixelData, PNG_SIGNATURE_BYTES, pngChunk, rawPixels, RED,
   separateFirstFrameApng, solidTestPng, u32
@@ -160,5 +160,73 @@ describe("apngFirstFrame", () => {
   it("leaves bytes that are not a PNG alone", () => {
     const bytes = new Uint8Array([1, 2, 3]);
     expect(apngFirstFrame(bytes)).toEqual({ bytes, frame: "static" });
+  });
+});
+
+describe("isStillPngBase64", () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+  const base64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64");
+  /** A still PNG of about `size` bytes: one IDAT of filler (never inflated here), after a large text chunk. */
+  const largeStillPng = (size: number) => Buffer.concat([PNG_SIGNATURE_BYTES, ihdrChunk(2048, 2048),
+    pngChunk("tEXt", Buffer.from(`Comment\0${"x".repeat(1 << 20)}`)), pngChunk("IDAT", Buffer.alloc(size - (1 << 20), 7)), pngChunk("IEND")]);
+
+  it("is true exactly where apngFirstFrame passes the input through as a still PNG", () => {
+    const filler = pngChunk("tEXt", Buffer.from("a\0b"));
+    const cases: Uint8Array[] = [
+      solidTestPng(4, 3, RED), apng(), defaultImageFirstFrameApng(4, 3, BLUE, RED), indexedApng(),
+      apng({ extra: [pngChunk("gAMA", u32(45455)), pngChunk("tEXt", Buffer.from("a\0b"))] }),
+      // An acTL after the image data, a truncated chunk, a second header-sized prefix, too many chunks before the acTL.
+      Buffer.concat([PNG_SIGNATURE_BYTES, ihdrChunk(4, 3), pngChunk("IDAT", pixelData(4, 3, RED)), pngChunk("acTL", u32(1, 0)), pngChunk("IEND")]),
+      apng().subarray(0, 50), apng().subarray(0, 33), solidTestPng(4, 3, RED).subarray(0, 20),
+      Buffer.concat([PNG_SIGNATURE_BYTES, ihdrChunk(4, 3), ...Array.from({ length: APNG_MAX_CHUNKS }, () => filler), pngChunk("acTL", u32(1, 0)),
+        pngChunk("IDAT", pixelData(4, 3, RED)), pngChunk("IEND")]),
+      Buffer.concat([PNG_SIGNATURE_BYTES, pngChunk("acTL", u32(1, 0))]), new Uint8Array([1, 2, 3]), new Uint8Array(0)
+    ];
+    for (let length = 0; length <= 40; length++) cases.push(apng().subarray(0, length));
+    for (const png of cases) {
+      const bytes = new Uint8Array(png);
+      const result = apngFirstFrame(bytes);
+      expect(isStillPngBase64(base64(bytes)), `${bytes.length} bytes`).toBe(result.frame === "static" && result.bytes === bytes);
+    }
+  });
+
+  it("tells a ~16.8 MB still PNG without decoding past its first IDAT, and apngFirstFrame returns the same data", () => {
+    const png = new Uint8Array(largeStillPng(16_800_000));
+    const data = base64(png);
+    const atob = vi.spyOn(globalThis, "atob");
+    expect(isStillPngBase64(data)).toBe(true);
+    // Signature and IHDR, then the text chunk's and the IDAT's headers: a few dozen characters of 22 MB.
+    const decoded = atob.mock.calls.reduce((total, [text]) => total + String(text).length, 0);
+    expect(decoded).toBeLessThan(64);
+    atob.mockRestore();
+    // Compared by reference: a deep comparison of 16.8 MB would enumerate every byte.
+    const result = apngFirstFrame(png);
+    expect(result.bytes).toBe(png);
+    expect(Object.keys(result)).toEqual(["bytes", "frame"]);
+    expect(result.frame).toBe("static");
+  });
+
+  it("never reads the data of the chunks it steps over", () => {
+    const png = largeStillPng((1 << 20) + 4096);
+    const text = pngChunkAt(png, 33)!, idat = pngChunkAt(png, text.end)!;
+    expect([text.type, idat.type]).toEqual(["tEXt", "IDAT"]);
+    const data = base64(png).split("");
+    // Every base64 group (3 bytes, 4 characters) lying wholly inside the text chunk's or the IDAT's data is made
+    // characters that aren't base64: none of them is ever decoded.
+    const inData = (start: number, end: number) => [text, idat].some((chunk) => start >= chunk.offset + 8 && end <= chunk.end - 4);
+    let replaced = 0;
+    for (let group = 0; group * 4 < data.length; group++) {
+      if (!inData(group * 3, group * 3 + 3)) continue;
+      data.fill("!", group * 4, group * 4 + 4);
+      replaced += 4;
+    }
+    expect(replaced).toBeGreaterThan(data.length * 0.99);
+    expect(isStillPngBase64(data.join(""))).toBe(true);
+  });
+
+  it("defers to a full decode when a header it reads isn't plain base64", () => {
+    const data = base64(solidTestPng(4, 3, RED));
+    expect(isStillPngBase64(`${data.slice(0, 4)}!${data.slice(5)}`)).toBe(false);
+    expect(isStillPngBase64(`${data.slice(0, 44)}=${data.slice(45)}`)).toBe(false);
   });
 });

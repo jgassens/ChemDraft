@@ -94,16 +94,19 @@ export async function fitRasterPictures(svg: string, pixelsPerUnit: number, warn
   if (parsed.getElementsByTagName("parsererror").length) throw new Error("the exported SVG could not be read to draw its pictures");
   const pictures: { id: string; href: Attr; size: RasterPictureSize }[] = [];
   let changed = false;
+  const frames = new Map<string, ReturnType<typeof apngFirstFrameHref>>();
   for (const image of Array.from(parsed.getElementsByTagNameNS(SVG_NS, "image"))) {
     const hrefs = Array.from(image.attributes).filter((attribute) => attribute.localName === "href");
     if (hrefs.length !== 1 || !PNG_HREF.test(hrefs[0]!.value)) continue;
     const href = hrefs[0]!;
     const id = image.parentElement?.getAttribute("data-object-id") ?? "";
-    const frame = apngFirstFrameHref(href.value);
+    // Each picture's data is read once, however many images draw it.
+    let frame = frames.get(href.value);
+    if (!frame) { frame = apngFirstFrameHref(href.value); frames.set(href.value, frame); }
     if (frame.href) { href.value = frame.href; changed = true; }
     if (frame.warning) warnings.push({ code: "export.png.apng_default_image", severity: "warning", ...(id ? { objectId: id } : {}),
       message: `PNG export: picture${id ? ` ${id}` : ""}: ${frame.warning}` });
-    const info = readPngInfo(new Uint8Array(Buffer.from(href.value.replace(PNG_HREF, ""), "base64")));
+    const info = readPngInfo(frame.bytes ?? new Uint8Array(Buffer.from(href.value.replace(PNG_HREF, ""), "base64")));
     if (!info) continue;
     const drawnWidth = Number(image.getAttribute("width")) * pixelsPerUnit, drawnHeight = Number(image.getAttribute("height")) * pixelsPerUnit;
     pictures.push({ id, href, size: { pixelWidth: info.pixelWidth, pixelHeight: info.pixelHeight,

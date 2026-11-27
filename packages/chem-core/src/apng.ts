@@ -142,6 +142,53 @@ export function apngFirstFrame(bytes: Uint8Array): ApngFirstFrameResult {
   };
 }
 
+/**
+ * Whether the PNG a base64 string encodes is certainly one `apngFirstFrame` returns unchanged as `static` (not a
+ * PNG it reads, or no acTL before the image data), told without decoding the whole string: only the signature,
+ * IHDR and each chunk's length and type up to the first IDAT are decoded, so a still PNG of any size costs a few
+ * small reads. False means it may be animated, or that it can't be told this way (characters outside the
+ * base64 alphabet where it reads), and the caller decodes it and asks `apngFirstFrame`.
+ */
+export function isStillPngBase64(dataBase64: string): boolean {
+  const padding = dataBase64.endsWith("==") ? 2 : dataBase64.endsWith("=") ? 1 : 0;
+  const size = Math.floor((dataBase64.length - padding) * 3 / 4);
+  if (size < 8) return true;
+  const head = base64Bytes(dataBase64, 0, Math.min(size, 16));
+  if (!head) return false;
+  if (!hasPngSignature(head)) return true;
+  // The same framing as apngFirstFrame's own walk to the first IDAT, read through chunk headers alone.
+  const framed = (offset: number, length: number) => offset + 12 <= size && length <= size - offset - 12;
+  if (head.length < 16 || !framed(8, u32(head, 8)) || u32(head, 8) !== 13 || chunkType(head, 12) !== "IHDR") return true;
+  for (let offset = 33, chunks = 1; ;) {
+    if (offset + 12 > size) return true;
+    const header = base64Bytes(dataBase64, offset, 8);
+    if (!header) return false;
+    if (!framed(offset, u32(header, 0))) return true;
+    const type = chunkType(header, 4);
+    if (type === "IDAT" || type === "IEND" || ++chunks > APNG_MAX_CHUNKS) return true;
+    if (type === "acTL") return false;
+    offset += 12 + u32(header, 0);
+  }
+}
+
+const chunkType = (bytes: Uint8Array, offset: number) =>
+  String.fromCharCode(bytes[offset]!, bytes[offset + 1]!, bytes[offset + 2]!, bytes[offset + 3]!);
+
+/** Bytes `start` to `start + length` of what `base64` encodes, decoding only the characters that hold them; undefined when those aren't plain base64. */
+function base64Bytes(base64: string, start: number, length: number): Uint8Array | undefined {
+  const first = Math.floor(start / 3), last = Math.floor((start + length - 1) / 3);
+  const text = base64.slice(first * 4, last * 4 + 4);
+  // Padding only at the very end of the string: anything else is decoded by the caller, as it always was.
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(text) || (text.includes("=") && first * 4 + text.length !== base64.length)) return undefined;
+  let binary: string;
+  try { binary = atob(text); } catch { return undefined; }
+  const skip = start - first * 3;
+  if (binary.length < skip + length) return undefined;
+  const bytes = new Uint8Array(length);
+  for (let index = 0; index < length; index++) bytes[index] = binary.charCodeAt(skip + index);
+  return bytes;
+}
+
 const ANIMATION_CHUNKS = new Set(["acTL", "fcTL", "fdAT"]);
 
 /** The default image alone: every chunk up to IEND but acTL, fcTL and fdAT; undefined when that can't be framed within the bounds. */

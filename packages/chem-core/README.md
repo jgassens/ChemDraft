@@ -158,7 +158,9 @@ fdAT data as IDAT and IEND, without decoding pixels. An animated PNG out of spec
 numbered 0, or a chunk it relies on or copies failing its CRC, among others) or over its bounds
 (`APNG_MAX_BYTES`, `APNG_MAX_CHUNKS`) comes back as its default image with a warning: the input
 rebuilt without its acTL, fcTL and fdAT chunks, or unchanged only when even that can't be framed
-within the bounds.
+within the bounds. `isStillPngBase64` tells from a picture's base64 alone, decoding only the chunk
+headers before the first IDAT, that `apngFirstFrame` would pass it through as a still PNG, so exporters
+never decode or copy a still picture to ask.
 
 The MOL writers require an explicit `kekuleBondOrders` map and return `{ contents, warnings }`.
 Callers resolve orders through layout-engine; this package cannot depend on it. An empty or partial

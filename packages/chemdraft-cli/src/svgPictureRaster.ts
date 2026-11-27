@@ -1,5 +1,5 @@
 import { Resvg, type ResvgRenderOptions } from "@resvg/resvg-js";
-import { apngFirstFrame, readSvgInfo, type ChemDraftDocument } from "@chemdraft/chem-core";
+import { apngFirstFrame, isStillPngBase64, readSvgInfo, type ChemDraftDocument } from "@chemdraft/chem-core";
 import {
   parseSvgLength, pictureSizeLimitError, sanitizeSvgPicture, type ExportWarning, type SanitizedSvg
 } from "@chemdraft/export-engine";
@@ -69,15 +69,16 @@ const PNG_DATA = /^\s*data:image\/png;base64,([A-Za-z0-9+/=\s]*)$/i;
  * The `href` to draw for a PNG data URI, from the shared `apngFirstFrame`: an animated PNG's first animation
  * frame, or the default image alone of one whose first frame can't be read; undefined to keep `href` as it is
  * (a still PNG, a default image that is the first frame, or not a PNG data URI). `warning` says why an
- * animated PNG's default image is drawn instead of its first frame.
+ * animated PNG's default image is drawn instead of its first frame. `bytes` is the decoded PNG `href` (or the
+ * original) holds, when it was decoded: a still PNG is told from its leading chunk headers and not decoded.
  */
-export function apngFirstFrameHref(href: string): { href?: string; warning?: string } {
-  const base64 = PNG_DATA.exec(href)?.[1];
-  if (base64 === undefined) return {};
-  const bytes = new Uint8Array(Buffer.from(base64.replace(/\s+/g, ""), "base64"));
+export function apngFirstFrameHref(href: string): { href?: string; warning?: string; bytes?: Uint8Array } {
+  const base64 = PNG_DATA.exec(href)?.[1]?.replace(/\s+/g, "");
+  if (base64 === undefined || isStillPngBase64(base64)) return {};
+  const bytes = new Uint8Array(Buffer.from(base64, "base64"));
   const frame = apngFirstFrame(bytes);
   return { ...(frame.bytes !== bytes ? { href: `data:image/png;base64,${Buffer.from(frame.bytes).toString("base64")}` } : {}),
-    ...(frame.warning ? { warning: frame.warning } : {}) };
+    ...(frame.warning ? { warning: frame.warning } : {}), bytes: frame.bytes };
 }
 
 /** Why a pixmap of this size is not drawn, or undefined: at most `MAX_RENDER_SIDE` a side and within the shared decoded limit. */

@@ -8,7 +8,7 @@ export { rotatePointAboutCenter } from "./pointRotation";
 export { hasObjectIdentity, objectIdentity, retainObjectIdentity, type ObjectIdentity } from "./objectIdentity";
 export { MAX_IMAGE_OBJECT_BYTES, decodeImageBase64 } from "./imageBytes";
 export { PNG_SIGNATURE, buildPngChunk, concatBytes, hasPngSignature, pngChunkAt, pngCrc32, type PngChunk } from "./png";
-export { APNG_MAX_BYTES, APNG_MAX_CHUNKS, apngFirstFrame, type ApngFirstFrameResult } from "./apng";
+export { APNG_MAX_BYTES, APNG_MAX_CHUNKS, apngFirstFrame, isStillPngBase64, type ApngFirstFrameResult } from "./apng";
 export { MAX_IMAGE_SIDE, MAX_IMAGE_DECODED_BYTES, imagePixelLimitError, validatePngImage, validateSvgImage, isSvgImageSource, createImageGraphicObject, readPngInfo, readSvgInfo, type CreateImageGraphicObjectOptions, type ImagePixelInfo } from "./image";
 
 export {
