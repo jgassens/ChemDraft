@@ -230,7 +230,7 @@ function glyphOnLine(line: NativeTextEditorLine, x: number): number {
 
 /** Caret position for a point over the rendered text (object-relative, unrotated page units),
  * and `glyphOffset`, the start of the glyph under the point. A caret goes to the nearest
- * boundary; a double- or triple-click selects around the glyph under the pointer, so a click
+ * boundary; a double-click selects around the glyph under the pointer, so a click
  * on the right half of a word's last letter selects that word, not the space after it. */
 export function nativeTextEditorOffsetAtPoint(layout: NativeTextEditorLayout, point: { x: number; y: number }):
   { offset: number; affinity: NativeTextCaretAffinity; glyphOffset: number } {

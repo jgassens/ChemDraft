@@ -156,7 +156,10 @@ describe("palette work-area sizing", () => {
     expect(recover).toContain("area.contains_grip_rail(position.x, position.y)");
     expect(recover).not.toContain("contains_title_strip");
     // Inspectors (resizable) still recover by full-frame clamp into the work area.
-    const inspector = nativeSource.split("fn inspector_frame_in_work_area(")[1]!.split("fn toolset_position_in_work_area(")[0]!;
+    const inspector = nativeSource.split("fn inspector_frame_in_work_area(")[1]!.split("fn clamp_toolset_frame<")[0]!;
+    // The slice must isolate just this function: a wrong end marker runs to end of file.
+    expect(inspector.length).toBeGreaterThan(0);
+    expect(inspector.length).toBeLessThan(4000);
     expect(inspector).toContain("position.x.clamp(area.x, area.x + (area.width - width))");
     expect(inspector).toContain("position.y.clamp(area.y, area.y + (area.height - height))");
     const reopen = nativeSource.split("fn clamp_toolset_frame<")[1]!.split("fn toolset_frame_in_work_area")[0]!;
