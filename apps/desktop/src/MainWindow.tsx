@@ -2852,8 +2852,10 @@ export function MainWindow({
   // Only the first committed edit of each box placed by the Text tool may become an atom label.
   // Existing captions always remain text when reopened; the explicit command remains available.
   // Keep the first placement point for each id. A second placement can end an earlier edit
-  // before React observes it.
-  const textPlacementsAwaitingAutoConversionRef = useRef(new Map<string, PagePoint>());
+  // before React observes it. `style` is the text style the box was created with: a typed
+  // element converts unless that box was styled differently afterwards. The current text
+  // defaults are no baseline, since formatting a selected box updates them too.
+  const textPlacementsAwaitingAutoConversionRef = useRef(new Map<string, { point: PagePoint; style: NativeTextStyle }>());
   // Only fresh insertions own a placeholder. Synchronous clearing also protects focus retries.
   const pendingTextPlaceholderObjectIdRef = useRef<string | undefined>(undefined);
   const isTextPlaceholderPending = useCallback((objectId: string) =>
@@ -8008,7 +8010,7 @@ export function MainWindow({
     const inserted = getSelectedTextObject(nextDocument);
     commitDocumentChange(nextDocument);
     if (inserted) {
-      textPlacementsAwaitingAutoConversionRef.current.set(inserted.id, point);
+      textPlacementsAwaitingAutoConversionRef.current.set(inserted.id, { point, style: textStyleDefaults });
     }
     restoreToolAfterTextPlacement();
     setActiveEditorObjectId(undefined);
@@ -8800,15 +8802,16 @@ export function MainWindow({
   }, [reconcileSavedDocumentDirtyState, replacePresentDocument]);
 
   const convertCommittedText = useCallback((objectId: string) => {
-    const placement = textPlacementsAwaitingAutoConversionRef.current.get(objectId);
-    if (!placement) return;
+    const awaiting = textPlacementsAwaitingAutoConversionRef.current.get(objectId);
+    if (!awaiting) return;
+    const { point: placement, style: baselineStyle } = awaiting;
     textPlacementsAwaitingAutoConversionRef.current.delete(objectId);
     // A previous box may convert after a second placement. Its untouched first edit still
     // belongs to that placement, rather than becoming an existing-text edit at conversion.
     textAutoConversionInProgressRef.current = true;
     try {
       const currentDocument = documentRef.current;
-      if (!canAutoConvertNativeTextObjectToAtom(currentDocument, objectId)) return;
+      if (!canAutoConvertNativeTextObjectToAtom(currentDocument, objectId, baselineStyle)) return;
       // On an atom the text relabels it; a charged symbol ("Zn2+") sets its element and charge.
       const labelResult = convertNativeTextObjectToAtomLabel(currentDocument, objectId, undefined, placement);
       if (labelResult.target) {
@@ -8830,7 +8833,7 @@ export function MainWindow({
       }
       // The path above already performed the atom hit-test. Only its no-target path reaches
       // the open-space element conversion, so do not repeat that hit-test here.
-      const converted = convertNativeTextObjectToAtom(currentDocument, objectId, { skipAtomLabel: true });
+      const converted = convertNativeTextObjectToAtom(currentDocument, objectId, { skipAtomLabel: true, baselineStyle });
       if (converted !== currentDocument) {
         const placedFrom = documentHistoryRef.current.past.at(-1);
         if (!commitDocumentChange(converted, undefined, false, undefined, CHEMISTRY_EDIT)) return;

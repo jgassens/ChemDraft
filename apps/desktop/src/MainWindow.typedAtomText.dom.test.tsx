@@ -237,17 +237,13 @@ describe.each(["macos", "windows"] as const)("typed element symbols become atoms
   });
 
   it.each([
-    ["bold, after typing", "text.bold", "after", { fontWeight: 700 }],
-    ["red, after typing", "text.color.red", "after", { color: "#b3261e" }],
-    // Formatting chosen with nothing selected sets the Text tool's style, so the next box is placed with it.
-    ["bold, before placing it", "text.bold", "before", { fontWeight: 700 }],
-    ["red, before placing it", "text.color.red", "before", { color: "#b3261e" }]
-  ] as const)("keeps a whole text box formatted %s 'Na+' as text when finished", async (_label, commandId, when, style) => {
+    ["bold", "text.bold", { fontWeight: 700 }],
+    ["red", "text.color.red", { color: "#b3261e" }]
+  ] as const)("keeps a whole text box formatted %s after it was placed 'Na+' as text when finished", async (_label, commandId, style) => {
     await mount();
-    if (when === "before") await command(commandId);
     await click(container.querySelector(".page")!, 200, 300);
     await typeText("Na+");
-    if (when === "after") await command(commandId);
+    await command(commandId);
     expect(texts()).toHaveLength(1);
     // Formatted as a whole: the box's own style, not a run's.
     expect(texts()[0]).toMatchObject({ text: "Na+", style: expect.objectContaining(style) });
@@ -258,6 +254,42 @@ describe.each(["macos", "windows"] as const)("typed element symbols become atoms
     expect(editor()).toBeNull();
     expect(molecules()).toHaveLength(0);
     expect(texts()).toEqual([expect.objectContaining({ text: "Na+", style: expect.objectContaining(style) })]);
+  });
+
+  // Formatting chosen with nothing selected sets the Text tool's style, so the next box is born with
+  // it. Only formatting that box differently from the style it was created with keeps it text.
+  it.each([
+    ["bold", "text.bold", { fontWeight: 700 }],
+    ["red", "text.color.red", { color: "#b3261e" }]
+  ] as const)("turns 'Na+' typed in a box born %s from the Text tool's style into a sodium atom", async (_label, commandId, style) => {
+    await mount();
+    await command(commandId);
+    await click(container.querySelector(".page")!, 200, 300);
+    await typeText("Na+");
+    expect(texts()).toEqual([expect.objectContaining({ text: "Na+", style: expect.objectContaining(style) })]);
+    await click(container.querySelector(".page")!, 600, 520);
+    expect(editor()).toBeNull();
+    expect(texts()).toHaveLength(0);
+    expect(molecules().map(molecule => molecule.atoms)).toEqual([[expect.objectContaining({ element: "Na", formalCharge: 1 })]]);
+  });
+
+  it("turns 'Mg' typed with the Text tool set to size 24 into an atom, but keeps that box text once made bold", async () => {
+    await mount();
+    // Nothing is selected: the size (24 pt, 32 px) goes to the Text tool's style, not to any box.
+    await command("text.size.24");
+    await typeOnEmptyCanvas("Mg");
+    expect(texts()).toHaveLength(0);
+    expect(molecules().map(molecule => molecule.atoms)).toEqual([[expect.objectContaining({ element: "Mg", formalCharge: 0 })]]);
+
+    await click(container.querySelector(".page")!, 200, 120);
+    await typeText("Mg");
+    expect(texts()).toEqual([expect.objectContaining({ text: "Mg", style: expect.objectContaining({ fontSizePx: 32 }) })]);
+    await command("text.bold");
+    expect(texts()).toEqual([expect.objectContaining({ text: "Mg", style: expect.objectContaining({ fontSizePx: 32, fontWeight: 700 }) })]);
+    await click(container.querySelector(".page")!, 600, 520);
+    expect(editor()).toBeNull();
+    expect(molecules()).toHaveLength(1);
+    expect(texts()).toEqual([expect.objectContaining({ text: "Mg", style: expect.objectContaining({ fontSizePx: 32, fontWeight: 700 }) })]);
   });
 
   it("leaves a text 'Zn' in an opened document as text, even after it is opened for editing and finished unchanged", async () => {
