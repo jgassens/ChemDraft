@@ -36,7 +36,7 @@ function fakeCheck(size = { width: 1, height: 1 }): DecodeCheck & { calls: Array
 }
 
 function decoders(rasterToPng: RasterToPng = fakeRaster(), decodeCheck: DecodeCheck = fakeCheck()): DroppedImageDecoders {
-  return { rasterToPng, decodeCheck };
+  return { rasterToPng, rasterToJpeg: async () => { throw new Error("no JPEG here is over the side cap"); }, decodeCheck };
 }
 
 function memorySource(name: string, bytes: Uint8Array, size = bytes.length): DroppedImageSource & { reads: number } {
@@ -279,6 +279,7 @@ describe("deadlines", () => {
     const sources = [memorySource("slow.jpg", jpegHeader(8, 8)), memorySource("stuck.png", pngBytes()), memorySource("ok.gif", gifHeader(2, 2))];
     let calls = 0;
     const result = await prepareDroppedImages(sources, {
+      ...decoders(),
       rasterToPng: (...args) => (calls++ === 0 ? honours(...args) : fakeRaster()(...args)),
       decodeCheck: hangs
     }, { deadlineMs: 50 });

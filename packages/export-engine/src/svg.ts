@@ -13,6 +13,7 @@ import {
   type PageSvgAttributeValue,
   type PageSvgFragment
 } from "@chemdraft/layout-engine";
+import { jpegPicturePlacement, readJpegPicture } from "./jpegPicture";
 import type { ExportWarning } from "./results";
 import { ensureHandwritingFontLoaded, requireHandwritingFontFaceCss } from "./handwritingFont";
 
@@ -60,6 +61,12 @@ export function documentStyleSvg(svg: string, bounds: { x: number; y: number; wi
     const [x, y, width, height, rotation] = value.split(" ").map(Number);
     if (![x, y, width, height, rotation].every(Number.isFinite)) return tag;
     const frame = physicalPictureFrame({ x, y, width, height }, scale);
+    // A kept JPEG turned a quarter (`jpegPicturePlacement`) draws its stored box, the frame's sides
+    // swapped, through a transform about the frame's centre, which this resize keeps.
+    const turned = /\btransform="matrix\((-?[\d.e+-]+) /.exec(tag);
+    const box = turned && Number(turned[1]) === 0
+      ? { x: frame.x + (frame.width - frame.height) / 2, y: frame.y + (frame.height - frame.width) / 2, width: frame.height, height: frame.width }
+      : frame;
     // A crop computed in native units may be too small after the physical-size correction.
     const radians = rotation * Math.PI / 180;
     const halfWidth = (Math.abs(Math.cos(radians)) * frame.width + Math.abs(Math.sin(radians)) * frame.height) / 2;
@@ -71,7 +78,7 @@ export function documentStyleSvg(svg: string, bounds: { x: number; y: number; wi
     pictureBounds = { x: left, y: top,
       width: Math.max(pictureBounds.x + pictureBounds.width, cx + halfWidth + margin) - left,
       height: Math.max(pictureBounds.y + pictureBounds.height, cy + halfHeight + margin) - top };
-    return Object.entries(frame).reduce((result, [key, dimension]) =>
+    return Object.entries(box).reduce((result, [key, dimension]) =>
       result.replace(new RegExp(`\\b${key}="[^"]*"`), `${key}="${dimension}"`), tag);
   });
   const viewBox = documentStylePointBounds(pictureBounds);
@@ -175,15 +182,21 @@ export function exportDocumentToSvg(document: ChemDraftDocument, options: SvgExp
     // Raster sampling and previews scale the whole page, including picture frames.
     const frame = pixelOutput ? { x: image.x, y: image.y, width: image.width, height: image.height }
       : physicalPictureFrame(image, pointsPerUnit);
+    // A kept JPEG is written as the JPEG itself, turned upright by its own transform: viewers and
+    // renderers that draw no JPEG inside an SVG picture (usvg/resvg, Illustrator, Inkscape) draw this.
+    const jpeg = readJpegPicture(image.data.image);
+    const placement = jpeg ? jpegPicturePlacement(frame, jpeg.orientation) : { box: frame, matrix: undefined };
     const opacity = planNativeArtVisual(image).opacity;
     writer.append("\n");
     serializeSvgFragment(writer, { ...fragment, tag: "g", attrs: {
       ...fragment.attrs, opacity: opacity === 1 ? undefined : opacity
     }, children: [{ kind: "element", key: `image-${image.id}`, tag: "image", attrs: {
-      ...Object.fromEntries(Object.entries(frame).map(([key, value]) => [key, String(value)])),
+      ...Object.fromEntries(Object.entries(placement.box).map(([key, value]) => [key, String(value)])),
+      ...(placement.matrix ? { transform: `matrix(${placement.matrix.map(String).join(" ")})` } : {}),
       // Keep the native frame so later document-style conversion cannot rescale the picture twice.
       "data-chemdraft-picture-frame": `${image.x} ${image.y} ${image.width} ${image.height} ${image.rotation}`,
-      preserveAspectRatio: "none", href: `data:${image.data.image.mimeType};base64,${image.data.image.dataBase64}`
+      preserveAspectRatio: "none",
+      href: jpeg ? `data:image/jpeg;base64,${jpeg.jpegBase64}` : `data:${image.data.image.mimeType};base64,${image.data.image.dataBase64}`
     }, children: [] }] }, 2);
   }
   if (warningMarkup) writer.append(`\n${warningMarkup}`);

@@ -14,7 +14,8 @@ const NS = 'xmlns="http://www.w3.org/2000/svg"';
 const acceptsEverything: DecodeCheck = async () => ({ width: 4, height: 4 });
 const decoders: DroppedImageDecoders = {
   decodeCheck: acceptsEverything,
-  rasterToPng: async () => { throw new Error("not used"); }
+  rasterToPng: async () => { throw new Error("not used"); },
+  rasterToJpeg: async () => { throw new Error("not used"); }
 };
 
 const prepare = (bytes: Uint8Array, name = "picture.png") => prepareDroppedImage(name, bytes, decoders);

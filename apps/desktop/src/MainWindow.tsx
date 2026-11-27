@@ -229,11 +229,13 @@ import {
   DOCUMENT_SESSION_SAVE_DEBOUNCE_MS,
   buildDocumentSessionEnvelope,
   buildDocumentTabsSession,
+  createDocumentSessionSource,
   documentIsBlank,
   documentSessionRestoreCandidates,
   parseDocumentSessionEnvelope,
   restoredDocumentFileState,
   restoredSavePathNotice,
+  restoredSessionTabSourceLabel,
   shouldRestoreDocumentSession,
   strictSessionFlushRefusal,
   unrestoredTabContents,
@@ -3257,7 +3259,7 @@ export function MainWindow({
   const unrestoredSessionTabsRef = useRef<unknown[]>([]);
   const [unrestoredSessionTabCount, setUnrestoredSessionTabCount] = useState(0);
   const unrestoredTabFlowRunningRef = useRef(false);
-  const sessionPayloadCacheRef = useRef(new WeakMap<ChemDraftDocument, ReturnType<typeof createNativeSavePayload>>());
+  const savePayloadCacheRef = useRef(new WeakMap<ChemDraftDocument, ReturnType<typeof createNativeSavePayload>>());
   const statusRef = useRef(status);
   const lastExportDirectoryRef = lastExportDirectory;
   const rotationInputRef = useRef<RotationInputState | undefined>(undefined);
@@ -11506,12 +11508,12 @@ export function MainWindow({
       ...route, insertImages, decoders: browserImageDecoders, setStatus: setDropStatus, showOutcome,
       insertRefusal: imageDropRefusal,
       documentBytes: () => {
-        // The session's cached payload when autosave has built one for this very document.
+        // What File > Save would write for this very document (the session keeps its native JSON instead).
         const current = documentRef.current;
-        let payload = sessionPayloadCacheRef.current.get(current);
+        let payload = savePayloadCacheRef.current.get(current);
         if (!payload) {
           payload = createNativeSavePayload(current);
-          sessionPayloadCacheRef.current.set(current, payload);
+          savePayloadCacheRef.current.set(current, payload);
         }
         return savedDocumentBytes(payload.contents);
       },
@@ -11725,7 +11727,9 @@ export function MainWindow({
                 admitParsedDocument(resolved.document), { preserveElectronMarks: true }
               ));
               const reports = restoreSessionWarningReports(session, {
-                displayName: session.displayName, sourceLabel: openSourceLabel(resolved.source, resolved.statusSourceLabel),
+                displayName: session.displayName,
+                sourceLabel: restoredSessionTabSourceLabel(resolved.source, resolved.statusSourceLabel) ??
+                  openSourceLabel(resolved.source, resolved.statusSourceLabel),
                 warnings: installedWarnings
               });
               restored.push({ session, opened, resolved, history, reports, candidateIndex, id: crypto.randomUUID() });
@@ -11869,13 +11873,10 @@ export function MainWindow({
           warnings: [...(snapshot.warnings?.warnings ?? []).filter(existing =>
             existing.code !== warning.code || existing.sourceObjectId !== warning.sourceObjectId), warning]
         } : snapshot.warnings;
-        let payload = sessionPayloadCacheRef.current.get(tabDocument);
-        if (!payload) {
-          payload = createNativeSavePayload(tabDocument);
-          sessionPayloadCacheRef.current.set(tabDocument, payload);
-        }
+        // Each tab's native JSON, built once per document: not the save payload, whose CDXML envelope
+        // carries that JSON base64-encoded again (every picture's data a second time).
         return {
-          ...buildDocumentSessionEnvelope(payload, file, displayName, documentIsBlank(tabDocument)),
+          ...buildDocumentSessionEnvelope(createDocumentSessionSource(tabDocument), file, displayName, documentIsBlank(tabDocument)),
           pristine: !nonPristineTabsRef.current.has(tab.id),
           view: { viewport: snapshot.viewport, scrollLeft: snapshot.scrollLeft, scrollTop: snapshot.scrollTop },
           openWarnings,

@@ -2163,17 +2163,29 @@ lossy and a lossless WebP, an SVG with gradients and `<use href="#id">`, a BMP, 
   - each later edit: nudge the photo 1 px with an arrow key and resize it by a corner, ten times: each
     responds at once, with no core pinned after it (Activity Monitor / Task Manager CPU);
   - after a second drop of the same photo and a one-second pause, `document-session.json` holds each
-    photo once: under 2.5 times the two photos' bytes (under 9 MB for two 1.7 MB photos, about 6 MB
-    once each tab is stored as native JSON), never tens of MB. Open it in a text editor: there is no
-    `contents` field at the top level (only `version`, `savedAt`, `tabs`, `activeTabIndex` and, if
-    any, `unrestoredTabs`).
+    photo once, as the tab's native JSON: under twice the two photos' bytes (about 6 MB for two
+    1.7 MB photos), never tens of MB. Open it in a text editor: there is no `contents` field at the
+    top level (only `version`, `savedAt`, `tabs`, `activeTabIndex` and, if any, `unrestoredTabs`),
+    and each tab's `contents` starts with `{`, not `<?xml`.
   The photo stands upright on the canvas, in File ▸ Export as SVG, PDF, PNG and JPEG, in Copy then
   Paste into Word or PowerPoint and Preview / Paint, after Save and reopen as `.chemdraft`, and after
   quit and relaunch from the session. Its status says only "Inserted picture …; scaled to fit the
   page: …" (no "stored at … pixels" note: the JPEG keeps its own bytes). A GIF or WebP over 4096
   pixels on a side says "stored at … pixels (from …), the most a picture converted to PNG keeps".
-  Open the exported SVG in a browser: the photo is upright. Record which other SVG viewers (Inkscape,
-  Illustrator, Word) show it, since the photo travels as an SVG picture inside the SVG.
+- The photo in other apps. SVG export writes the JPEG itself (`<image href="data:image/jpeg;base64,…">`
+  with a `transform` that turns it upright), not an SVG picture: open the exported SVG in a browser,
+  Inkscape and Illustrator (and place it in Word / PowerPoint): the photo shows, upright, in each;
+  record any that does not. PDF export carries the JPEG's own bytes: the PDF is about the photo's
+  size (not several times it), and the photo is upright and sharp at 400% in Preview, Acrobat and
+  Edge. Edit ▸ Copy with the photo selected, then paste into Word / PowerPoint, Preview ▸ New from
+  Clipboard (macOS) and Paint (Windows): a visible, upright photo each time. Repeat with an
+  orientation-3 (upside-down) or orientation-8 photo.
+- Camera photo over 4096 px: drop a full-resolution camera JPEG (6000 × 4000 or larger, 5-15 MB,
+  ideally a portrait with EXIF orientation 6). The status says "…: scaled down to 4096 px (from
+  4000 × 6000 pixels)" (the upright size), the picture is upright and drawn at the same size a
+  4096 px version would be scaled to on the page, and `document-session.json` grows by about the
+  scaled JPEG's size (a few MB), not the original's. A JPEG of exactly 4096 px on its longest side
+  is kept as it is, with no note.
 - Old sessions: with a session written by 1.2.3 RC5 or 1.2.2 that holds a dropped picture (copy
   `document-session.json` before upgrading), launch the new build: every tab restores with its
   pictures, and the next autosave rewrites the file in the smaller form. Then relaunch 1.2.2 on that

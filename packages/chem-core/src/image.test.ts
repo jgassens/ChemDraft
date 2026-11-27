@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { decodeImageBase64, imageBase64Error } from "./imageBytes";
 import {
   createEmptyDocument, createImageGraphicObject, deserializeDocument,
   GraphicObjectSchema, isSvgImageSource, MAX_IMAGE_OBJECT_BYTES, readPngInfo, readSvgInfo, serializeDocument, validateDocument
@@ -288,5 +289,35 @@ describe("embedded picture graphics", () => {
       if (engine) Object.defineProperty(Uint8Array, "fromBase64", engine);
     }
     expect(() => createImageGraphicObject({ ...options, dataBase64: "AAA*" })).toThrow("Image object g12 has invalid base64 image data.");
+  });
+
+  it("accepts exactly the base64 atob decodes, without decoding it, and decodes it the same with or without the engine", () => {
+    // Every string of up to five characters over a small alphabet that covers padding and a bad character.
+    const alphabet = ["A", "/", "+", "=", "*", "g"];
+    let strings = [""];
+    const all: string[] = [];
+    for (let length = 1; length <= 5; length += 1) {
+      strings = strings.flatMap(prefix => alphabet.map(character => prefix + character));
+      all.push(...strings);
+    }
+    const atobDecodes = (text: string) => { try { atob(text); return true; } catch { return false; } };
+    const engine = Object.getOwnPropertyDescriptor(Uint8Array, "fromBase64");
+    for (const text of all) {
+      const accepted = imageBase64Error(text, "g1") === undefined;
+      // An empty picture is refused; everything else accepted is what atob takes.
+      if (accepted) expect(atobDecodes(text), text).toBe(true);
+      if (atobDecodes(text) && text.replace(/=+$/, "").length > 0 && !/[^A-Za-z0-9+/=]/.test(text) &&
+        !/=[^=]/.test(text) && (!text.includes("=") || text.length % 4 === 0)) expect(accepted, text).toBe(true);
+      if (!accepted) continue;
+      const expected = Uint8Array.from(Buffer.from(text, "base64"));
+      expect(decodeImageBase64(text, "g1"), text).toEqual(expected);
+      Reflect.deleteProperty(Uint8Array, "fromBase64");
+      try {
+        expect(decodeImageBase64(text, "g1"), text).toEqual(expected);
+      } finally {
+        if (engine) Object.defineProperty(Uint8Array, "fromBase64", engine);
+      }
+    }
+    expect(() => decodeImageBase64("AAA*", "g1")).toThrow("Image object g1 has invalid base64 image data.");
   });
 });

@@ -9,7 +9,8 @@ import { sha256Utf8Hex } from "@chemdraft/cdx-compat";
 import { createNativeSavePayload, moveDocumentObjects, openNativeDocument } from "./documentWorkflow";
 import {
   buildDocumentSessionEnvelope, buildDocumentTabsSession, createDocumentSessionSource, documentSessionRestoreCandidates,
-  parseDocumentSessionEnvelope, shouldRestoreDocumentSession, type DocumentSessionEnvelope
+  parseDocumentSessionEnvelope, restoredSessionTabSourceLabel, SESSION_TAB_SOURCE_LABEL, shouldRestoreDocumentSession,
+  type DocumentSessionEnvelope
 } from "./documentSession";
 import { insertDroppedImages } from "./imageDrop/insertDroppedImages";
 import { syntheticJpeg } from "./imageDrop/jpegTestImages";
@@ -22,6 +23,7 @@ const PHOTO = syntheticJpeg({ width: 3264, height: 2448, orientation: 6, scanByt
 
 const decoders: DroppedImageDecoders = {
   rasterToPng: async () => ({ png: pngBytes(), width: 1, height: 1, sourceWidth: 1, sourceHeight: 1, downscaled: false }),
+  rasterToJpeg: async () => { throw new Error("the photo is under the side cap"); },
   decodeCheck: async () => ({ width: 3264, height: 2448 })
 };
 
@@ -126,6 +128,21 @@ describe("the session after two drops of a 1.7 MB JPEG", () => {
     const next = createDocumentSessionSource(nudged);
     expect(next).not.toBe(source);
     expect(pictures(openNativeDocument(next.contents).document!)).toEqual(pictures(nudged));
+  });
+});
+
+describe("what a restored tab says it was read as", () => {
+  it("a native JSON tab is its own ChemDraft document, not a legacy JSON file; an older tab keeps File > Open's label", async () => {
+    const document = await twoDrops();
+    const native = openNativeDocument(createDocumentSessionSource(document).contents);
+    expect(native.source).toBe("legacy-json");
+    expect(restoredSessionTabSourceLabel(native.source)).toBe(SESSION_TAB_SOURCE_LABEL);
+    expect(SESSION_TAB_SOURCE_LABEL).toBe("ChemDraft document");
+    const envelope = openNativeDocument(createNativeSavePayload(document).contents);
+    expect(restoredSessionTabSourceLabel(envelope.source)).toBeUndefined();
+    // A visible-layer conflict the user resolved keeps the label that choice gives it.
+    expect(restoredSessionTabSourceLabel("external-cdxml", "edited visible CDXML subset")).toBeUndefined();
+    expect(restoredSessionTabSourceLabel("legacy-json", "embedded ChemDraft document")).toBeUndefined();
   });
 });
 

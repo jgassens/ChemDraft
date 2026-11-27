@@ -3,18 +3,21 @@ import { MAX_IMAGE_OBJECT_BYTES, createEmptyDocument, type GraphicObject } from 
 import { MAX_SVG_SOURCE_CHARS } from "@chemdraft/export-engine";
 import { insertDroppedImages } from "./insertDroppedImages";
 import { jpegPictureSvg, readKeepableJpeg } from "./jpegPicture";
-import { CONVERTED_PICTURE_MAX_SIDE, bytesToBase64, prepareDroppedImage, type PreparedDroppedImage } from "./prepareDroppedImage";
-import type { DecodeCheck, DroppedImageDecoders, RasterToPng } from "./rasterDecode";
+import {
+  CONVERTED_PICTURE_MAX_SIDE, KEPT_JPEG_MAX_SIDE, bytesToBase64, prepareDroppedImage, type PreparedDroppedImage
+} from "./prepareDroppedImage";
+import type { DecodeCheck, DroppedImageDecoders, RasterToJpeg, RasterToPng } from "./rasterDecode";
 import { scanStart, syntheticJpeg } from "./jpegTestImages";
 import { gifHeader, pngBytes } from "./testFixtures";
 
 const fromBase64 = (base64: string) => Uint8Array.from(atob(base64), char => char.charCodeAt(0));
 
-function decoders(decodeCheck?: DecodeCheck, rasterToPng?: RasterToPng): DroppedImageDecoders & {
-  rasterToPng: ReturnType<typeof vi.fn>; decodeCheck: ReturnType<typeof vi.fn>;
+function decoders(decodeCheck?: DecodeCheck, rasterToPng?: RasterToPng, rasterToJpeg?: RasterToJpeg): DroppedImageDecoders & {
+  rasterToPng: ReturnType<typeof vi.fn>; rasterToJpeg: ReturnType<typeof vi.fn>; decodeCheck: ReturnType<typeof vi.fn>;
 } {
   return {
     rasterToPng: vi.fn(rasterToPng ?? (async () => ({ png: pngBytes(), width: 1, height: 1, sourceWidth: 1, sourceHeight: 1, downscaled: false }))),
+    rasterToJpeg: vi.fn(rasterToJpeg ?? (async () => { throw new Error("not scaled in this test"); })),
     decodeCheck: vi.fn(decodeCheck ?? (async () => ({ width: 1, height: 1 })))
   };
 }
@@ -87,9 +90,10 @@ describe("a dropped picture keeps its own encoded bytes", () => {
 
   it("converts a JPEG too large to keep whole, without its metadata and turned upright by the canvas, and says if it shrank", async () => {
     const scanBytes = Math.ceil((MAX_SVG_SOURCE_CHARS * 3) / 4) + 10;
-    const jpeg = syntheticJpeg({ width: 6000, height: 4000, orientation: 6, scanBytes });
-    const raster: RasterToPng = async () => ({ png: pngBytes(), width: 2730, height: 4096, sourceWidth: 4000, sourceHeight: 6000,
-      downscaled: true, limitedBy: "side" });
+    // At the side cap, so it is kept, not scaled down: but it is too many bytes for an SVG picture.
+    const jpeg = syntheticJpeg({ width: 4096, height: 3000, orientation: 6, scanBytes });
+    const raster: RasterToPng = async () => ({ png: pngBytes(), width: 2250, height: 3072, sourceWidth: 3000, sourceHeight: 4096,
+      downscaled: true, limitedBy: "bytes" });
     const decode = decoders(undefined, raster);
     const image = await prepared("huge.jpg", jpeg, decode);
     expect(decode.decodeCheck).not.toHaveBeenCalled();
@@ -99,8 +103,9 @@ describe("a dropped picture keeps its own encoded bytes", () => {
     const sent = decode.rasterToPng.mock.calls[0]![0] as Uint8Array;
     expect(Buffer.from(sent).equals(Buffer.from(readKeepableJpeg(jpeg)!.bytes))).toBe(true);
     expect(sent.length).toBeLessThan(jpeg.length);
-    expect(image).toMatchObject({ mimeType: "image/png", naturalSize: { width: 4000, height: 6000 },
-      notes: ["stored at 2730 × 4096 pixels (from 4000 × 6000), the most a picture converted to PNG keeps"] });
+    expect(decode.rasterToJpeg).not.toHaveBeenCalled();
+    expect(image).toMatchObject({ mimeType: "image/png", naturalSize: { width: 3000, height: 4096 } });
+    expect(image.notes).toEqual([expect.stringMatching(/^stored at 2250 × 3072 pixels \(from 3000 × 4096\) to fit the .+ picture limit$/)]);
   });
 
   it("caps a GIF or WebP converted to PNG at the side limit, keeps its drawn size, and says so", async () => {
@@ -115,5 +120,51 @@ describe("a dropped picture keeps its own encoded bytes", () => {
     const small = await prepared("small.gif", gifHeader(8, 8));
     expect(small.notes).toEqual([]);
     expect(small.naturalSize).toBeUndefined();
+  });
+});
+
+describe("a dropped JPEG longer than 4096 px", () => {
+  /** A camera photo: 6000 × 4000 stored, EXIF orientation 6 (4000 × 6000 upright). */
+  const photo = () => syntheticJpeg({ width: 6000, height: 4000, orientation: 6, scanBytes: 20_000 });
+  /** What the webview's encoder returns for it: upright, 2731 × 4096, a JPEG of its own. */
+  const reencoded = syntheticJpeg({ width: 2731, height: 4096, scanBytes: 5_000 });
+  const scale: RasterToJpeg = async () => ({ jpeg: reencoded, width: 2731, height: 4096, sourceWidth: 4000, sourceHeight: 6000 });
+
+  it("is scaled down to 4096 px upright, re-encoded as JPEG in the kept-JPEG SVG picture, drawn at its own size, and says so", async () => {
+    const decode = decoders(undefined, undefined, scale);
+    const jpeg = photo();
+    const image = await prepared("camera.jpg", jpeg, decode);
+    expect(KEPT_JPEG_MAX_SIDE).toBe(4096);
+    expect(decode.rasterToJpeg).toHaveBeenCalledExactlyOnceWith(readKeepableJpeg(jpeg)!.bytes, { maxSide: 4096, quality: 0.9, orientation: 6 });
+    expect(decode.rasterToPng).not.toHaveBeenCalled();
+    expect(decode.decodeCheck).not.toHaveBeenCalled();
+    // The same wrapper a kept JPEG has, upright (no transform), around the encoder's bytes.
+    expect(image).toEqual({
+      name: "camera.jpg", mimeType: "image/svg+xml", dataBase64: btoa(jpegPictureSvg(bytesToBase64(reencoded), 2731, 4096, 1)),
+      naturalSize: { width: 4000, height: 6000 }, notes: ["scaled down to 4096 px (from 4000 × 6000 pixels)"]
+    });
+    expect(embeddedJpeg(image)).toEqual(reencoded);
+    // Inserted, it keeps the photo's upright aspect (the page fit shrinks it further).
+    const [object] = insertDroppedImages(createEmptyDocument({ title: "Photo" }), [image], { x: 300, y: 300 }).document.pages[0]!.objects as GraphicObject[];
+    expect(object!.data.image).toMatchObject({ mimeType: "image/svg+xml", pixelWidth: 2731, pixelHeight: 4096 });
+    expect(object!.height / object!.width).toBeCloseTo(6000 / 4000, 2);
+  });
+
+  it("is kept byte for byte at exactly 4096 px", async () => {
+    const decode = decoders(async () => ({ width: 4096, height: 3000 }), undefined, scale);
+    const jpeg = syntheticJpeg({ width: 4096, height: 3000, scanBytes: 2_000 });
+    const image = await prepared("edge.jpg", jpeg, decode);
+    expect(decode.rasterToJpeg).not.toHaveBeenCalled();
+    expect(embeddedJpeg(image)).toEqual(jpeg);
+    expect(image.notes).toEqual([]);
+  });
+
+  it("is refused by name when the webview cannot scale it, or returns a JPEG of another size", async () => {
+    const failing = decoders(undefined, undefined, async () => { throw new Error("the webview could not decode it."); });
+    expect(await prepareDroppedImage("camera.jpg", photo(), failing))
+      .toEqual({ ok: false, reason: "the JPEG could not be scaled down: the webview could not decode it." });
+    const wrongSize = decoders(undefined, undefined, async () => ({ jpeg: reencoded, width: 4096, height: 2731, sourceWidth: 4000, sourceHeight: 6000 }));
+    expect(await prepareDroppedImage("camera.jpg", photo(), wrongSize))
+      .toEqual({ ok: false, reason: "the JPEG could not be scaled down: the webview's JPEG is not readable." });
   });
 });

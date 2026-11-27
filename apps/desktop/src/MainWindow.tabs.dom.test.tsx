@@ -116,6 +116,20 @@ vi.mock("./documentWorkflow", async (original) => {
   const actual = await original<typeof import("./documentWorkflow")>();
   return { ...actual, createNativeSavePayload: vi.fn(actual.createNativeSavePayload), openNativeDocument: vi.fn(actual.openNativeDocument) };
 });
+/** Tab documents the autosave serialized: `createDocumentSessionSource` built new contents rather than reusing its own. */
+const sessionSerializations = vi.hoisted(() => ({ count: 0 }));
+vi.mock("./documentSession", async (original) => {
+  const actual = await original<typeof import("./documentSession")>();
+  const built = new WeakSet<object>();
+  return { ...actual, createDocumentSessionSource: (document: Parameters<typeof actual.createDocumentSessionSource>[0]) => {
+    const source = actual.createDocumentSessionSource(document);
+    if (!built.has(source)) {
+      built.add(source);
+      sessionSerializations.count += 1;
+    }
+    return source;
+  } };
+});
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("./window-manager", async (original) => ({
   ...await original<typeof import("./window-manager")>(),
@@ -4641,15 +4655,15 @@ describe("documents in one window", () => {
     await open("Background");
     await open("Foreground");
     await autosave();
-    vi.mocked(createNativeSavePayload).mockClear();
+    sessionSerializations.count = 0;
     await command("view.zoomIn");
     const view = bridge().snapshot().viewport;
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 900)); });
-    expect(createNativeSavePayload).not.toHaveBeenCalled();
+    expect(sessionSerializations.count).toBe(0);
     expect(parseDocumentSessionEnvelope(native.session)!.tabs![1]!.view!.viewport).toEqual(view);
     await paste("Changed foreground");
     await autosave();
-    expect(createNativeSavePayload).toHaveBeenCalledTimes(1);
+    expect(sessionSerializations.count).toBe(1);
   });
 
   it.each(["switch", "close"])("cancels a live art drag before tab %s, and ignores its late pointer release", async (action) => {

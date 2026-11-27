@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { browserDecodeCheck, browserRasterToPng, encodeWithDownscale, untilAborted } from "./rasterDecode";
+import { browserDecodeCheck, browserRasterToJpeg, browserRasterToPng, encodeWithDownscale, scaledToSide, untilAborted } from "./rasterDecode";
 
 describe("encodeWithDownscale", () => {
   it("keeps full size when the PNG fits", async () => {
@@ -125,6 +125,30 @@ describe("browser decoding under a deadline", () => {
     context.setTransform.mockClear();
     await browserRasterToPng(new Uint8Array([1]), "image/gif", 1000);
     expect(context.setTransform).not.toHaveBeenCalled();
+  });
+
+  it("scales a large JPEG down to the side cap upright and encodes it as JPEG at the quality asked", async () => {
+    const decoded = bitmap(6000, 4000);
+    vi.stubGlobal("createImageBitmap", vi.fn(async () => decoded));
+    const context = { drawImage: vi.fn(), setTransform: vi.fn(), imageSmoothingEnabled: false, imageSmoothingQuality: "low" };
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(context as unknown as CanvasRenderingContext2D);
+    const encodes: Array<[number, number, string | undefined, unknown]> = [];
+    vi.spyOn(HTMLCanvasElement.prototype, "toBlob").mockImplementation(function (this: HTMLCanvasElement, callback: BlobCallback,
+      type?: string, quality?: unknown) {
+      encodes.push([this.width, this.height, type, quality]);
+      callback(new Blob([new Uint8Array([0xff, 0xd8, 0xff, 0xd9])]));
+    });
+    const result = await browserRasterToJpeg(new Uint8Array([1]), { maxSide: 4096, quality: 0.9, orientation: 6 });
+    // Stored 6000 × 4000, upright 4000 × 6000, scaled so the long side is 4096.
+    expect(encodes).toEqual([[2731, 4096, "image/jpeg", 0.9]]);
+    expect(context.setTransform).toHaveBeenCalledExactlyOnceWith(0, 1, -1, 0, 2731, 0);
+    expect(context.drawImage).toHaveBeenCalledWith(decoded, 0, 0, 4096, 2731);
+    expect(result).toEqual({ jpeg: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]), width: 2731, height: 4096, sourceWidth: 4000, sourceHeight: 6000 });
+    expect(decoded.close).toHaveBeenCalled();
+    // Under the cap the size is kept; an encoder that returns nothing is an error.
+    vi.mocked(HTMLCanvasElement.prototype.toBlob).mockImplementation((callback: BlobCallback) => callback(null));
+    await expect(browserRasterToJpeg(new Uint8Array([1]), { maxSide: 8000, quality: 0.9 })).rejects.toThrow("the webview could not encode it as JPEG.");
+    expect(scaledToSide({ width: 300, height: 200 }, 4096)).toEqual({ width: 300, height: 200 });
   });
 
   it("untilAborted passes a value through when nothing aborts", async () => {

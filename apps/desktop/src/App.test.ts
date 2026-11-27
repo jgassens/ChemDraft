@@ -2625,7 +2625,7 @@ describe("ChemDraft desktop shell", () => {
       /const flushed = committedDraft\?\.tabId === activeDocumentTabIdRef\.current\s*\? committedDraft\.document : documentForFlush\(\);/
     );
     expect(sessionFlushSource).toContain("const tabDocument = draft?.document ?? (tab.id === activeDocumentTabIdRef.current ? flushed : snapshot.history.present);");
-    expect(sessionFlushSource).toContain("createNativeSavePayload(tabDocument)");
+    expect(sessionFlushSource).toContain("createDocumentSessionSource(tabDocument)");
     const quitDraftSource = mainWindowSource.slice(
       mainWindowSource.indexOf("const lockCommittedQuit ="),
       mainWindowSource.indexOf("const writeQuitSession =")

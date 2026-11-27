@@ -15,7 +15,7 @@ import { savedDocumentBytes } from "./dropDocumentBudget";
 import { handleDroppedFiles, type DroppedFilesHandler } from "./dropHandler";
 import { insertDroppedImages } from "./insertDroppedImages";
 import { syntheticJpeg } from "./jpegTestImages";
-import type { DroppedImageDecoders, RasterToPng } from "./rasterDecode";
+import type { DroppedImageDecoders, RasterToJpeg, RasterToPng } from "./rasterDecode";
 import { jpegHeader } from "./testFixtures";
 
 const PHOTO = syntheticJpeg({ width: 3264, height: 2448, orientation: 6, scanBytes: 1_700_000 });
@@ -81,7 +81,7 @@ async function measure(
 
 describe("dropping the tester's 1.7 MB photo", () => {
   it("appears well under a second and leaves later edits light, against the RC5 route", async () => {
-    const kept = { rasterToPng: vi.fn<RasterToPng>(), decodeCheck: vi.fn(async () => ({ width: 3264, height: 2448 })) };
+    const kept = { rasterToPng: vi.fn<RasterToPng>(), rasterToJpeg: vi.fn<RasterToJpeg>(), decodeCheck: vi.fn(async () => ({ width: 3264, height: 2448 })) };
     const now = await measure(PHOTO, kept, document => {
       const tab = buildDocumentSessionEnvelope(createDocumentSessionSource(document), { dirty: true }, "Drop", false);
       return JSON.stringify(buildDocumentTabsSession([tab], 0));
@@ -90,6 +90,7 @@ describe("dropping the tester's 1.7 MB photo", () => {
     const png = largePng(2448, 3264, 7_000_000);
     const converted: DroppedImageDecoders = {
       rasterToPng: async () => ({ png, width: 2448, height: 3264, sourceWidth: 2448, sourceHeight: 3264, downscaled: false }),
+      rasterToJpeg: async () => { throw new Error("RC5 converted every JPEG to PNG"); },
       decodeCheck: async () => ({ width: 1, height: 1 })
     };
     const rc5 = await measure(RC5_PHOTO, converted, document => {

@@ -15,7 +15,11 @@
  * memory but is not written (`buildDocumentTabsSession`), and a tab's document is its native JSON
  * (`createDocumentSessionSource`), not the saved file's CDXML envelope, which carries that JSON
  * base64-encoded again. Both once applied to every picture's data: two dropped 1.7 MB photos made a
- * 49.9 MB session that every later edit rewrote. Sessions written either way still restore.
+ * 49.9 MB session that every later edit rewrote. MainWindow's `writeDocumentSessionNow` writes each
+ * tab that way. Sessions written either way still restore.
+ *
+ * A tab restored from native JSON is labelled as its own document, not a legacy JSON file
+ * (`restoredSessionTabSourceLabel`).
  *
  * Everything here is pure so the envelope contract is unit-testable; the effects live in
  * MainWindow.
@@ -189,6 +193,18 @@ export function createDocumentSessionSource(document: ChemDraftDocument): Docume
   if (engine) sessionContentsCache.set(document, source);
   return source;
 }
+
+/**
+ * What a restored tab's open report says the tab was read as, when the session's own form decides it.
+ * A tab written as native JSON (`createDocumentSessionSource`) reads back as "legacy-json", the source
+ * a JSON file has; it is the tab's own ChemDraft document, not a legacy file. Undefined otherwise: a
+ * session written before (the save payload's CDXML envelope) and a resolved visible-layer conflict
+ * keep the label File > Open gives them.
+ */
+export function restoredSessionTabSourceLabel(source: string, statusSourceLabel?: string): string | undefined {
+  return source === "legacy-json" && statusSourceLabel === undefined ? SESSION_TAB_SOURCE_LABEL : undefined;
+}
+export const SESSION_TAB_SOURCE_LABEL = "ChemDraft document";
 
 /** No drawable objects on any page. Structural parameter type so this module stays free of the
  *  document schema import. */

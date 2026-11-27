@@ -1,10 +1,12 @@
 /**
  * A dropped JPEG kept as its own encoded bytes, never re-encoded.
  *
- * The document stores pictures as PNG or SVG (`ImageObjectData.mimeType`), so the JPEG travels inside
- * a one-element SVG: an SVG picture that embeds a bitmap, which the canvas, SVG and PDF export, raster
- * export and copy already draw (`svgPicture/rasterEmbeddedBitmaps.ts`). The scan data stays byte for
- * byte the camera's: a 1.7 MB photo is stored as about 3 MB, where its PNG re-encode took 9.35 MB.
+ * The document stores pictures as PNG or SVG (`ImageObjectData.mimeType`), and 1.2.2 opens nothing
+ * else, so the JPEG travels inside a one-element SVG (`export-engine/jpegPicture.ts`), which the canvas
+ * draws as it is. SVG and PDF export, raster export and copy draw the JPEG itself, read back out of it.
+ * The scan data stays byte for byte the camera's: a 1.7 MB photo is stored as about 3 MB, where its PNG
+ * re-encode took 9.35 MB. A JPEG longer than 4096 px is scaled down and re-encoded once, on drop
+ * (`prepareDroppedImage.ts`).
  *
  * EXIF orientation is applied by the SVG itself, never by a decoder. The metadata segments (APP1,
  * which holds Exif and XMP, and APP13, Photoshop and IPTC) are removed, so no renderer can rotate the
@@ -14,8 +16,12 @@
  * colour profile, Adobe's colour transform, tables, the frame and the scan) is kept as it is.
  */
 
-/** EXIF orientation: 1 upright; 2-4 mirrored or turned; 5-8 also swap width and height. */
-export type JpegOrientation = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+import type { JpegOrientation } from "@chemdraft/export-engine";
+
+// The SVG form itself (writer, reader, orientation maps) lives in export-engine, which reads it back.
+export {
+  jpegOrientationMatrix, jpegPictureSvg, jpegPictureSvgLength, orientedJpegSize, type JpegOrientation
+} from "@chemdraft/export-engine";
 
 export interface KeepableJpeg {
   /** The file without its metadata segments; the very array it came in when it had none. */
@@ -118,44 +124,4 @@ function withoutRanges(bytes: Uint8Array, ranges: ReadonlyArray<[number, number]
   }
   out.set(bytes.subarray(from), written);
   return out;
-}
-
-/** The upright size of a picture stored at `width` × `height` with `orientation`. */
-export function orientedJpegSize(width: number, height: number, orientation: JpegOrientation): { width: number; height: number } {
-  return orientation >= 5 ? { width: height, height: width } : { width, height };
-}
-
-/**
- * The affine map `[a, b, c, d, e, f]` (SVG `matrix()`, canvas `setTransform`) that draws a picture
- * stored at `width` × `height` upright in its oriented box; undefined for orientation 1.
- */
-export function jpegOrientationMatrix(width: number, height: number, orientation: JpegOrientation): [number, number, number, number, number, number] | undefined {
-  switch (orientation) {
-    case 1: return undefined;
-    case 2: return [-1, 0, 0, 1, width, 0];
-    case 3: return [-1, 0, 0, -1, width, height];
-    case 4: return [1, 0, 0, -1, 0, height];
-    case 5: return [0, 1, 1, 0, 0, 0];
-    case 6: return [0, 1, -1, 0, height, 0];
-    case 7: return [0, -1, -1, 0, height, width];
-    case 8: return [0, -1, 1, 0, 0, width];
-  }
-}
-
-/**
- * The SVG picture that shows `jpegBase64` (stored `width` × `height` pixels) upright, sized one pixel
- * per page unit like any picture without a density. Written in the form the SVG sanitizer leaves
- * unchanged, so storing it needs no sanitizing pass (`jpegPicture.test.ts` holds it to that).
- */
-export function jpegPictureSvg(jpegBase64: string, width: number, height: number, orientation: JpegOrientation): string {
-  const size = orientedJpegSize(width, height, orientation);
-  const matrix = jpegOrientationMatrix(width, height, orientation);
-  const transform = matrix ? ` transform="matrix(${matrix.join(" ")})"` : "";
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size.width}" height="${size.height}" viewBox="0 0 ${size.width} ${size.height}">`
-    + `<image width="${width}" height="${height}" preserveAspectRatio="none"${transform} href="data:image/jpeg;base64,${jpegBase64}"/></svg>`;
-}
-
-/** Characters `jpegPictureSvg` writes for a JPEG of `byteLength` bytes, without building it. */
-export function jpegPictureSvgLength(byteLength: number, width: number, height: number, orientation: JpegOrientation): number {
-  return jpegPictureSvg("", width, height, orientation).length + Math.ceil(byteLength / 3) * 4;
 }

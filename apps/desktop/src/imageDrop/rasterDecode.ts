@@ -5,8 +5,9 @@
  * canvas applies (`RasterToPngOptions.orientation`), so no decoder's own handling of the tag matters.
  * Callers check the header size first: nothing over the pixel caps reaches the decoder, and the
  * decoder's own size is checked again before a canvas is made.
- * PNG, SVG and a kept JPEG, and the bitmaps an SVG embeds, are only decoded (`DecodeCheck`) and their
- * own bytes are kept. A decode that resolves does not prove the pixels: WebKit decodes a PNG whose
+ * A kept JPEG longer than `KEPT_JPEG_MAX_SIDE` on a side is redrawn smaller and re-encoded as JPEG
+ * (`RasterToJpeg`), upright. PNG, SVG and a kept JPEG of a size to keep, and the bitmaps an SVG
+ * embeds, are only decoded (`DecodeCheck`) and their own bytes are kept. A decode that resolves does not prove the pixels: WebKit decodes a PNG whose
  * image data is damaged and draws it blank or partly black, so PNG image data is checked first
  * (`pngIntegrity.ts`). Every wait (decode, encode) ends at the file's deadline (`DecodeOptions`).
  */
@@ -50,6 +51,28 @@ export interface RasterToPngOptions extends DecodeOptions {
 /** Injected so tests (and hosts without a canvas) can supply their own decoder. */
 export type RasterToPng = (bytes: Uint8Array, mimeType: string, maxPngBytes: number, options?: RasterToPngOptions) => Promise<RasterPngResult>;
 
+export interface RasterToJpegOptions extends DecodeOptions {
+  /** The longest side the result may have, in pixels: a larger picture is scaled down to it. */
+  maxSide: number;
+  /** The encoder's quality, 0 to 1. */
+  quality: number;
+  /** EXIF orientation the canvas applies, for a JPEG whose metadata was removed first: the result is upright. */
+  orientation?: JpegOrientation;
+}
+
+export interface RasterJpegResult {
+  jpeg: Uint8Array;
+  /** The result's pixel size, upright. */
+  width: number;
+  height: number;
+  /** The decoded size before scaling, after orientation. */
+  sourceWidth: number;
+  sourceHeight: number;
+}
+
+/** A JPEG redrawn upright at most `maxSide` pixels a side and encoded as JPEG again. */
+export type RasterToJpeg = (bytes: Uint8Array, options: RasterToJpegOptions) => Promise<RasterJpegResult>;
+
 /**
  * Decode without re-encoding, to check the webview can open the picture: resolves to the decoded
  * pixel size (0 × 0 for an SVG without an intrinsic size), rejects when it cannot be decoded. For a
@@ -61,6 +84,7 @@ export type DecodeCheckMimeType = "image/png" | "image/svg+xml" | "image/jpeg" |
 
 export interface DroppedImageDecoders {
   rasterToPng: RasterToPng;
+  rasterToJpeg: RasterToJpeg;
   decodeCheck: DecodeCheck;
 }
 
@@ -105,9 +129,7 @@ export async function encodeWithDownscale(
   maxSide = Number.POSITIVE_INFINITY
 ): Promise<RasterPngResult> {
   const capped = Math.max(source.width, source.height) > maxSide;
-  const cap = capped ? maxSide / Math.max(source.width, source.height) : 1;
-  let width = capped ? Math.max(1, Math.round(source.width * cap)) : source.width;
-  let height = capped ? Math.max(1, Math.round(source.height * cap)) : source.height;
+  let { width, height } = scaledToSide(source, maxSide);
   for (let step = 0; ; step += 1) {
     if (signal?.aborted) throw abortReason(signal);
     const png = await encodeAt(width, height);
@@ -159,9 +181,13 @@ async function decodeBlob(blob: Blob, signal?: AbortSignal): Promise<DecodedSour
   return { width: image.naturalWidth, height: image.naturalHeight, source: image, release };
 }
 
-/** Draws `source` upright into a `width` × `height` canvas (the upright size) and encodes it as PNG. */
-async function drawToPng(
-  source: CanvasImageSource, width: number, height: number, orientation: JpegOrientation, signal?: AbortSignal
+/**
+ * Draws `source` upright into a `width` × `height` canvas (the upright size) and encodes it as PNG,
+ * or as JPEG at `quality`.
+ */
+async function drawUpright(
+  source: CanvasImageSource, width: number, height: number, orientation: JpegOrientation, signal?: AbortSignal,
+  encoding: { type: "image/png" } | { type: "image/jpeg"; quality: number } = { type: "image/png" }
 ): Promise<Uint8Array | undefined> {
   const canvas = document.createElement("canvas");
   canvas.width = width;
@@ -177,7 +203,8 @@ async function drawToPng(
     if (matrix) context.setTransform(...matrix);
     context.drawImage(source, 0, 0, stored.width, stored.height);
     // An encoder that never calls back would hold every later drop: the deadline ends the wait.
-    const blob = await untilAborted(new Promise<Blob | null>(resolve => canvas.toBlob(resolve, "image/png")), signal);
+    const blob = await untilAborted(new Promise<Blob | null>(resolve =>
+      canvas.toBlob(resolve, encoding.type, encoding.type === "image/jpeg" ? encoding.quality : undefined)), signal);
     return blob ? new Uint8Array(await untilAborted(blob.arrayBuffer(), signal)) : undefined;
   } catch (error) {
     // Past the deadline is not "too large": no smaller attempt follows.
@@ -201,11 +228,37 @@ export const browserRasterToPng: RasterToPng = async (bytes, mimeType, maxPngByt
     if (limit) throw new Error(limit);
     const upright = orientedJpegSize(decoded.width, decoded.height, orientation);
     return await encodeWithDownscale(upright, maxPngBytes,
-      (width, height) => drawToPng(decoded.source, width, height, orientation, signal), signal, maxSide);
+      (width, height) => drawUpright(decoded.source, width, height, orientation, signal), signal, maxSide);
   } finally {
     decoded.release();
   }
 };
+
+export const browserRasterToJpeg: RasterToJpeg = async (bytes, options) => {
+  const { signal, maxSide, quality } = options;
+  const orientation = options.orientation ?? 1;
+  const decoded = await decodeBlob(new Blob([bytes as Uint8Array<ArrayBuffer>], { type: "image/jpeg" }), signal);
+  try {
+    if (!(decoded.width > 0 && decoded.height > 0)) throw new Error("the webview could not decode it.");
+    const limit = dropPixelLimitError(decoded.width, decoded.height);
+    if (limit) throw new Error(limit);
+    const upright = orientedJpegSize(decoded.width, decoded.height, orientation);
+    const { width, height } = scaledToSide(upright, maxSide);
+    const jpeg = await drawUpright(decoded.source, width, height, orientation, signal, { type: "image/jpeg", quality });
+    if (!jpeg) throw new Error("the webview could not encode it as JPEG.");
+    return { jpeg, width, height, sourceWidth: upright.width, sourceHeight: upright.height };
+  } finally {
+    decoded.release();
+  }
+};
+
+/** `size` scaled down, keeping its aspect, so its longest side is at most `maxSide`. */
+export function scaledToSide(size: { width: number; height: number }, maxSide: number): { width: number; height: number } {
+  const longest = Math.max(size.width, size.height);
+  if (longest <= maxSide) return { ...size };
+  const scale = maxSide / longest;
+  return { width: Math.max(1, Math.round(size.width * scale)), height: Math.max(1, Math.round(size.height * scale)) };
+}
 
 export const browserDecodeCheck: DecodeCheck = async (bytes, mimeType, options = {}) => {
   const decoded = await decodeBlob(new Blob([bytes as Uint8Array<ArrayBuffer>], { type: mimeType }), options.signal);
@@ -213,4 +266,6 @@ export const browserDecodeCheck: DecodeCheck = async (bytes, mimeType, options =
   return { width: decoded.width, height: decoded.height };
 };
 
-export const browserImageDecoders: DroppedImageDecoders = { rasterToPng: browserRasterToPng, decodeCheck: browserDecodeCheck };
+export const browserImageDecoders: DroppedImageDecoders = {
+  rasterToPng: browserRasterToPng, rasterToJpeg: browserRasterToJpeg, decodeCheck: browserDecodeCheck
+};

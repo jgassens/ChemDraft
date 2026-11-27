@@ -37,6 +37,7 @@ const BITMAP_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="60" height="3
 /** The webview's decoders: the JPEG converter returns a real 1 × 1 PNG, and every check decodes. */
 const decoders: DroppedImageDecoders = {
   rasterToPng: async () => ({ png: pngBytes(), width: 1, height: 1, sourceWidth: 1, sourceHeight: 1, downscaled: false }),
+  rasterToJpeg: async () => { throw new Error("no JPEG here is over the side cap"); },
   decodeCheck: async () => ({ width: 1, height: 1 })
 };
 
