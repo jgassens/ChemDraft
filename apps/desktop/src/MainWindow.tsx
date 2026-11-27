@@ -3296,6 +3296,7 @@ export function MainWindow({
   // exists); the render-body assignment keeps the binding current without a stale closure.
   const rederiveNativeCanvasHoverRef = useRef<(sourceDocument: ChemDraftDocument) => void>(() => undefined);
   const selectedNativeMoleculePartRef = useRef<NativeMoleculeSelectionPart | undefined>(undefined);
+  const displayedGroupSelectionBoundsRef = useRef<SelectionBounds | undefined>(undefined);
   const selectedNativeMoleculePartsRef = useRef<NativeMoleculeSelectionPart[]>([]);
   // Latest visible-toolset set, read synchronously in toggleToolset to decide whether a toggle is
   // closing the Rings toolbar (so we can clear the ring selection deliberately) without depending
@@ -22923,7 +22924,8 @@ export function MainWindow({
           localCandidates.length > 0 ? async () => (await resolveContextStereo(localCandidates))?.label : undefined);
         return;
       }
-      const selection = point && contextMenuSelectionAtPoint(objects, wholeIds, partsByObjectId, point);
+      const selection = point && contextMenuSelectionAtPoint(
+        objects, wholeIds, partsByObjectId, point, displayedGroupSelectionBoundsRef.current);
       if (selection) {
         showObjectContextMenu(selection.objectId, position, point, undefined, selection);
         return;
@@ -24727,19 +24729,14 @@ export function MainWindow({
                     document.pages[0].objects,
                     document.selection.objectIds
                   );
-                  const groupSelectionActive = activeToolState.activeKind === "selection" &&
-                    resolvedSelectionObjectIds.length > 1 &&
-                    !selectedNativeMoleculePart;
-                  const rawGroupSelectionBounds = groupSelectionActive
-                    ? visualSelectionBounds(labelDisplayPage.objects, resolvedSelectionObjectIds)
-                    : undefined;
-                  const groupSelectionBounds = rawGroupSelectionBounds
-                    ? previewedGroupSelectionBounds(
-                        rawGroupSelectionBounds,
-                        resolvedSelectionObjectIds,
-                        objectTransformPreview
-                      )
-                    : undefined;
+                  const { raw: rawGroupSelectionBounds, shown: groupSelectionBounds } = displayedGroupSelectionBounds(
+                    labelDisplayPage.objects,
+                    resolvedSelectionObjectIds,
+                    activeToolState.activeKind === "selection" && !selectedNativeMoleculePart,
+                    objectTransformPreview
+                  );
+                  // The right-click menu reads the frame exactly as it is drawn.
+                  displayedGroupSelectionBoundsRef.current = groupSelectionBounds;
                   const groupProjectedPlaneTiltObjectIds = rawGroupSelectionBounds
                     ? nativeMoleculeObjectIdsForGroupProjectedPlaneTilt(document.pages[0].objects, resolvedSelectionObjectIds)
                     : [];
@@ -28884,7 +28881,8 @@ function contextMenuSelectionAtPoint(
   objects: readonly DocumentObject[],
   selectedIds: ReadonlySet<string>,
   partsByObjectId: ReadonlyMap<string, NativeMoleculeSelectionPart>,
-  point: ClientPoint
+  point: ClientPoint,
+  groupFrame?: SelectionBounds
 ): ContextMenuSelection | undefined {
   if (selectedIds.size === 0 && partsByObjectId.size === 0) return undefined;
   for (let layer = objects.length - 1; layer >= 0; layer--) {
@@ -28914,7 +28912,25 @@ function contextMenuSelectionAtPoint(
       return { objectId: object.id };
     }
   }
+  // Bare paper between whole-selected objects, inside the group frame that is drawn around them.
+  if (groupFrame && pointInRect(point, groupFrame)) {
+    for (let layer = objects.length - 1; layer >= 0; layer--) {
+      if (selectedIds.has(objects[layer]!.id)) return { objectId: objects[layer]!.id };
+    }
+  }
   return undefined;
+}
+
+/** The group frame GroupSelectionOverlay draws, and its pre-preview bounds, for a multi-object selection. */
+function displayedGroupSelectionBounds(
+  objects: readonly DocumentObject[],
+  resolvedSelectionObjectIds: readonly string[],
+  selectionChromeActive: boolean,
+  preview: ObjectTransformPreviewState | undefined
+): { raw?: SelectionBounds; shown?: SelectionBounds } {
+  if (!selectionChromeActive || resolvedSelectionObjectIds.length <= 1) return {};
+  const raw = visualSelectionBounds(objects, resolvedSelectionObjectIds);
+  return { raw, shown: previewedGroupSelectionBounds(raw, resolvedSelectionObjectIds, preview) };
 }
 
 function previewedGroupSelectionBounds(
