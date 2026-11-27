@@ -543,7 +543,7 @@ fn drain(
     Ok(output)
 }
 
-fn parse_output(bytes: &[u8]) -> Option<Value> {
+pub(super) fn parse_output(bytes: &[u8]) -> Option<Value> {
     let mut value = serde_json::from_slice(bytes).ok()?;
     let mut nodes = 0;
     (redact(&mut value, 0, &mut nodes) && serde_json::to_vec(&value).ok()?.len() <= INPUT_BYTES)
@@ -557,7 +557,7 @@ fn redact(value: &mut Value, depth: usize, nodes: &mut usize) -> bool {
     }
     match value {
         Value::String(text) if path_like(text) => {
-            *text = "[local path removed]".into();
+            *text = REDACTED_PATH.into();
             true
         }
         Value::Object(entries) => {
@@ -575,7 +575,10 @@ fn redact(value: &mut Value, depth: usize, nodes: &mut usize) -> bool {
     }
 }
 
-fn path_like(text: &str) -> bool {
+/// What a path-like string in a companion report becomes before ChemDraft returns the report.
+pub(super) const REDACTED_PATH: &str = "[local path removed]";
+
+pub(super) fn path_like(text: &str) -> bool {
     // Do not return toolkit filenames or paths from tool-produced output or traceback text.
     // Keep crystallography strings such as P2(1)/c and ordinary numeric fractions.
     text.contains('\\')

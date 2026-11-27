@@ -15,6 +15,7 @@ use super::{
 use serde::Serialize;
 use serde_json::Value;
 use std::{
+    cell::Cell,
     collections::HashMap,
     ffi::OsString,
     io,
@@ -38,7 +39,7 @@ fn send_template_digest() -> String {
         Sha256::digest(br#"{"operation":"openSelectedAppWithTemporaryFile"}"#)
     )
 }
-const REBUILD_EXPIRED: &str =
+pub(super) const REBUILD_EXPIRED: &str =
     "The handoff app, pipeline, or consent changed. Start the build again from the menu.";
 /// A launch after the first, or the output's open, found the click no longer live.
 const STOPPED: &str =
@@ -164,7 +165,9 @@ pub(crate) fn arm_native_menu(
         return Ok(None);
     }
     let state = app.state::<State>();
-    if state.stopped.load(Ordering::Acquire) {
+    // A committed quit ended every click already (`QuitHost::end_handoff_clicks`); none arms
+    // again while the document flushes.
+    if state.stopped.load(Ordering::Acquire) || crate::quit_committed() {
         return Ok(None);
     }
     for (id, _) in catalog::OFFICIAL_COMPANION_PLUGINS {
@@ -964,10 +967,14 @@ impl BuildJob {
         let (attempts, outcome) = retry::run_sequence(
             self.build.variants(),
             |index| {
-                if index > 0 {
-                    self.before_retry(host, proof, deadline)?;
+                let launched = Cell::new(false);
+                let outcome = if index > 0 {
+                    self.before_retry(host, proof, deadline)
+                } else {
+                    Ok(())
                 }
-                self.attempt(host, proof, &cache, index, deadline)
+                .and_then(|()| self.attempt(host, proof, &cache, index, deadline, &launched));
+                (launched.get(), outcome)
             },
             |attempt: &Attempt| {
                 retry.is_some_and(|retry| retry::wants_retry(&attempt.completed.steps, &retry.when))
@@ -1029,6 +1036,7 @@ impl BuildJob {
         cache: &Path,
         index: usize,
         deadline: Instant,
+        launched: &Cell<bool>,
     ) -> Result<Attempt, JobError> {
         let failed = |code, message| JobError::failed(runner::Failure::new(code, message));
         let files = TempFiles::new(cache, &self.grant.plugin_id).map_err(|_| {
@@ -1059,7 +1067,11 @@ impl BuildJob {
                     // later step and attempt needs the same click to be still live.
                     let first_launch = index == 0 && first;
                     match proof.launch_step(&self.build, first_launch, start) {
-                        Ok(result) => result,
+                        Ok(result) => {
+                            // The attempt has started once a process of it has.
+                            launched.set(launched.get() || result.is_ok());
+                            result
+                        }
                         Err(_) if !first_launch => Err(stopped()),
                         Err(error) => {
                             refused = Some(error);

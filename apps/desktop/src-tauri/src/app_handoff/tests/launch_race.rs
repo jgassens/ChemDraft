@@ -7,6 +7,11 @@
 //!
 //! The other side of the boundary: ending a click while a launched process runs, or while a child
 //! whose start failed is still being cleaned up, returns at once, and nothing launches after it.
+//!
+//! Quitting differs from every other end in one way, as in the app: `State::shutdown` first sets
+//! the quit flag that the stand-in host reads (`StubHost::quit_flag`), and the process start and
+//! the runner read it too, so a paused launch starts no process and a running one is ended.
+//! Closing or reloading the document window leaves a running process to finish.
 
 use super::super::{
     arming::{lock_wait, Arm},
@@ -17,7 +22,7 @@ use std::{
     io::{self, BufRead, BufReader},
     net::{TcpListener, TcpStream},
     process::Child,
-    sync::{mpsc, Arc, Mutex},
+    sync::{atomic::AtomicBool, mpsc, Arc, Mutex},
     thread,
 };
 
@@ -201,8 +206,15 @@ struct Run {
     waited: bool,
 }
 
-/// Runs `job` for `proof`, pausing it at `at` while `end` runs on another thread.
-fn run_paused(job: BuildJob, proof: &Submission, at: Moment, end: impl FnOnce() + Send) -> Run {
+/// Runs `job` for `proof`, pausing it at `at` while `end` runs on another thread. The host reads
+/// `stopped`, the quit flag of the endpoint the click belongs to.
+fn run_paused(
+    job: BuildJob,
+    proof: &Submission,
+    stopped: &AtomicBool,
+    at: Moment,
+    end: impl FnOnce() + Send,
+) -> Run {
     let dir = TestDir::new();
     let race = race(
         |pause| {
@@ -210,7 +222,8 @@ fn run_paused(job: BuildJob, proof: &Submission, at: Moment, end: impl FnOnce() 
                 now if now == at => pause.inside(),
                 Moment::Check(_) => pause.outside(),
                 _ => {}
-            });
+            })
+            .quit_flag(stopped);
             let ended = ended(job.run(&host, proof));
             (ended, host.spawned.take(), host.opened.take().len())
         },
@@ -226,18 +239,34 @@ fn run_paused(job: BuildJob, proof: &Submission, at: Moment, end: impl FnOnce() 
     }
 }
 
-/// The launch at `at` happened before the end returned, the end waited for it, and nothing
-/// launched after: the build stopped with `launched` processes and no open.
+/// What the process start reports when the quit flag is already set.
+const NOT_STARTED: &str = "The companion pipeline ended before its next step.";
+
+/// The launch paused at process `launched` went on before the end returned, the end waited for it,
+/// and nothing launched after: the build stopped with `launched` processes and no open. Quitting
+/// set the quit flag before it waited, so there the paused process itself never started, and its
+/// attempt counts only if it had started earlier (`quit_attempts`).
 fn assert_stopped_after_the_paused_launch(
     run: &Run,
+    end: End,
     attempts: Option<usize>,
+    quit_attempts: Option<usize>,
     launched: usize,
     case: &str,
 ) {
     assert_eq!(run.events, [Event::Launched, Event::Ended], "{case}");
     assert!(run.waited, "{case}: ending the click did not wait");
-    assert_eq!(run.ended, stopped_after(attempts), "{case}");
-    assert_eq!(run.spawned.len(), launched, "{case}");
+    if end == End::Quit {
+        assert_eq!(
+            run.ended,
+            Ended::Failed(RunCode::Timeout, NOT_STARTED.into(), quit_attempts),
+            "{case}"
+        );
+        assert_eq!(run.spawned.len(), launched - 1, "{case}");
+    } else {
+        assert_eq!(run.ended, stopped_after(attempts), "{case}");
+        assert_eq!(run.spawned.len(), launched, "{case}");
+    }
     assert_eq!(run.opened, 0, "{case}");
 }
 
@@ -248,11 +277,15 @@ fn ending_a_click_waits_for_a_first_launch_already_inside_the_boundary() {
         let state = Endpoint::default();
         let approved = build("small");
         let (arm, proof) = shown_click(&state, Some(&approved));
-        let run = run_paused(stub_job(approved), &proof, Moment::Launching(1), || {
-            end.run(&state, &arm, &proof)
-        });
-        assert_stopped_after_the_paused_launch(&run, None, 1, &format!("{end:?}"));
-        assert_eq!(run.spawned, STEPS[..1], "{end:?}");
+        let run = run_paused(
+            stub_job(approved),
+            &proof,
+            &state.stopped,
+            Moment::Launching(1),
+            || end.run(&state, &arm, &proof),
+        );
+        assert_stopped_after_the_paused_launch(&run, end, None, None, 1, &format!("{end:?}"));
+        assert_eq!(run.spawned, STEPS[..run.spawned.len()], "{end:?}");
     }
 }
 
@@ -263,11 +296,15 @@ fn ending_a_click_waits_for_a_later_step_already_inside_the_boundary() {
         let state = Endpoint::default();
         let approved = build("small");
         let (arm, proof) = shown_click(&state, Some(&approved));
-        let run = run_paused(stub_job(approved), &proof, Moment::Launching(2), || {
-            end.run(&state, &arm, &proof)
-        });
-        assert_stopped_after_the_paused_launch(&run, None, 2, &format!("{end:?}"));
-        assert_eq!(run.spawned, STEPS[..2], "{end:?}");
+        let run = run_paused(
+            stub_job(approved),
+            &proof,
+            &state.stopped,
+            Moment::Launching(2),
+            || end.run(&state, &arm, &proof),
+        );
+        assert_stopped_after_the_paused_launch(&run, end, None, None, 2, &format!("{end:?}"));
+        assert_eq!(run.spawned, STEPS[..run.spawned.len()], "{end:?}");
     }
 }
 
@@ -279,10 +316,16 @@ fn ending_a_click_waits_for_a_later_attempt_already_inside_the_boundary() {
         // Three poor attempts: process 4 is the first step of the second attempt.
         let approved = retry_build("small", &[2.0, 3.0]);
         let (arm, proof) = shown_click(&state, Some(&approved));
-        let run = run_paused(stub_job(approved), &proof, Moment::Launching(4), || {
-            end.run(&state, &arm, &proof)
-        });
-        assert_stopped_after_the_paused_launch(&run, Some(2), 4, &format!("{end:?}"));
+        let run = run_paused(
+            stub_job(approved),
+            &proof,
+            &state.stopped,
+            Moment::Launching(4),
+            || end.run(&state, &arm, &proof),
+        );
+        // Quitting, the second attempt never starts, so only the first counts.
+        let case = format!("{end:?}");
+        assert_stopped_after_the_paused_launch(&run, end, Some(2), Some(1), 4, &case);
     }
 }
 
@@ -307,11 +350,12 @@ fn ending_a_rebuild_waits_for_its_launch_already_inside_the_boundary() {
             let run = run_paused(
                 stub_job(approved),
                 &rebuild,
+                &state.stopped,
                 Moment::Launching(launch),
                 || end.run(&state, &arm, &rebuild),
             );
             let case = format!("{end:?} at launch {launch}");
-            assert_stopped_after_the_paused_launch(&run, None, launch, &case);
+            assert_stopped_after_the_paused_launch(&run, end, None, None, launch, &case);
         }
     }
 }
@@ -324,9 +368,14 @@ fn ending_a_click_waits_for_the_output_open_already_inside_the_boundary() {
             let attempts = approved.retry.as_ref().map(|_| 3);
             let state = Endpoint::default();
             let (arm, proof) = shown_click(&state, Some(&approved));
-            let run = run_paused(stub_job(approved), &proof, Moment::Opening, || {
-                end.run(&state, &arm, &proof)
-            });
+            // Opening is not gated by the quit flag: the open that went on is the one it waited for.
+            let run = run_paused(
+                stub_job(approved),
+                &proof,
+                &state.stopped,
+                Moment::Opening,
+                || end.run(&state, &arm, &proof),
+            );
             assert_eq!(run.events, [Event::Launched, Event::Ended], "{end:?}");
             assert!(run.waited, "{end:?}: ending the click did not wait");
             assert_eq!(
@@ -398,9 +447,13 @@ fn revoking_consent_waits_for_a_first_launch_already_inside_the_boundary() {
 
     let approved = build("small");
     let (_, proof) = shown_click(&state, Some(&approved));
-    let run = run_paused(stub_job(approved), &proof, Moment::Launching(1), || {
-        state.arms.disarm_consent(PLUGIN, CONSENT)
-    });
+    let run = run_paused(
+        stub_job(approved),
+        &proof,
+        &state.stopped,
+        Moment::Launching(1),
+        || state.arms.disarm_consent(PLUGIN, CONSENT),
+    );
     assert_eq!(run.events, [Event::Launched, Event::Ended]);
     assert!(run.waited, "revoking did not wait");
     // The stand-in host has no consent store; in the app, `authorized` refuses the next step.
@@ -581,20 +634,30 @@ struct Held {
 /// Runs `job` until its `process`th companion process is running, runs `end` while that process
 /// still runs, and only after `end` has returned lets the process exit. The process connects to
 /// the test once it runs and waits for the test to close the connection, so the order is fixed by
-/// the connection alone. With `consent`, every launch also needs the grant in that store.
+/// the connection alone. With `consent`, every launch also needs the grant in that store; the host
+/// reads `stopped`, the quit flag of the endpoint the click belongs to.
+///
+/// Waiting for the connection and for the step name is bounded by `GUARD`. A runner that ends
+/// without connecting (it connects once more as it returns, so only a panic does) fails the test
+/// with its own panic or result rather than leaving it blocked.
 fn run_holding(
     job: BuildJob,
     proof: &Submission,
+    stopped: &AtomicBool,
     process: usize,
     consent: Option<(&Store, Row)>,
     end: impl FnOnce(),
 ) -> Held {
     let dir = TestDir::new();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
     let address = listener.local_addr().unwrap();
     thread::scope(|scope| {
+        // Owned here, so a failure below closes it before the scope waits for the runner, and a
+        // process still to connect then fails at once instead of waiting.
+        let listener = listener;
         let runner = scope.spawn(|| {
-            let mut host = StubHost::new(&dir.0, |_| {});
+            let mut host = StubHost::new(&dir.0, |_| {}).quit_flag(stopped);
             host.hold = Some((process, address));
             host.consent = consent;
             let ended = ended(job.run(&host, proof));
@@ -602,15 +665,48 @@ fn run_holding(
             let _ = TcpStream::connect(address);
             (ended, host.spawned.take(), host.opened.take().len())
         });
-        let (stream, _) = listener.accept().unwrap();
+        let deadline = Instant::now() + GUARD;
+        let stream = loop {
+            // Read before the accept: a runner that had returned by then had queued its connection.
+            let finished = runner.is_finished();
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                Err(error) => panic!("accepting the held process failed: {error}"),
+            }
+            if finished {
+                match runner.join() {
+                    Ok(outcome) => panic!("the build ended without connecting: {outcome:?}"),
+                    Err(panic) => std::panic::resume_unwind(panic),
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no companion process connected within {GUARD:?}"
+            );
+            thread::sleep(Duration::from_millis(5));
+        };
+        stream.set_nonblocking(false).unwrap();
+        stream
+            .set_read_timeout(Some(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .max(Duration::from_millis(1)),
+            ))
+            .unwrap();
         let mut held = String::new();
-        BufReader::new(&stream).read_line(&mut held).unwrap();
+        BufReader::new(&stream)
+            .read_line(&mut held)
+            .unwrap_or_else(|error| panic!("the held process did not name its step: {error}"));
         if !held.is_empty() {
             // The process runs, and keeps running until `stream` closes.
             end();
         }
         drop(stream);
-        let (ended, spawned, opened) = runner.join().unwrap();
+        let (ended, spawned, opened) = match runner.join() {
+            Ok(outcome) => outcome,
+            Err(panic) => std::panic::resume_unwind(panic),
+        };
         Held {
             ended,
             spawned,
@@ -628,12 +724,13 @@ fn ending_a_click_while_its_process_runs_returns_and_launches_nothing_after() {
     rust_stub();
     let retry = || retry_build("small", &[2.0, 3.0]);
     // (with retry, held process, its step, attempts when stopped). With retry, process 3 ends the
-    // first of three poor attempts, process 4 starts the second, process 9 ends the last.
+    // first of three poor attempts, process 4 starts the second, process 9 ends the last. The
+    // attempt after process 3 never starts, so it does not count.
     for (retried, process, step, attempts) in [
         (false, 1, STEPS[0], None),
         (false, 2, STEPS[1], None),
         (false, 3, STEPS[2], None),
-        (true, 3, STEPS[2], Some(2)),
+        (true, 3, STEPS[2], Some(1)),
         (true, 4, STEPS[0], Some(2)),
         (true, 9, STEPS[2], Some(3)),
     ] {
@@ -655,16 +752,34 @@ fn ending_a_click_while_its_process_runs_returns_and_launches_nothing_after() {
             let approved = if retried { retry() } else { build("small") };
             let (arm, proof) = shown_click(&state, Some(&approved));
             let consent = (invalidation == Invalidation::Revoke).then(|| (&store, grant.clone()));
-            let run = run_holding(stub_job(approved), &proof, process, consent, || {
-                invalidation.run(&state, &arm, &proof, &store, &grant)
-            });
+            let run = run_holding(
+                stub_job(approved),
+                &proof,
+                &state.stopped,
+                process,
+                consent,
+                || invalidation.run(&state, &arm, &proof, &store, &grant),
+            );
             assert_eq!(run.held, step, "{case}");
-            let expected = if invalidation == Invalidation::Revoke {
-                Ended::Failed(RunCode::BadParam, CONSENT_GONE.into(), attempts)
-            } else {
-                stopped_after(attempts)
+            let expected = match invalidation {
+                // Quitting sets the quit flag, and the runner ends the running process: the
+                // build fails as that step's stop, and nothing launches after it.
+                Invalidation::Click(End::Quit) => Ended::Failed(
+                    RunCode::Timeout,
+                    format!(
+                        "Companion step \"{}\" exceeded its time limit or was stopped.",
+                        pipeline().steps[(process - 1) % STEPS.len()].id
+                    ),
+                    attempts,
+                ),
+                Invalidation::Revoke => {
+                    Ended::Failed(RunCode::BadParam, CONSENT_GONE.into(), attempts)
+                }
+                // Every other end, closing the document window among them, leaves the process to
+                // exit normally (a stopped one would end the build as above); the next launch
+                // is then refused.
+                _ => stopped_after(attempts),
             };
-            // The held process exited normally: a stopped one would end the build as a timeout.
             assert_eq!(run.ended, expected, "{case}");
             assert_eq!(run.spawned.len(), process, "{case}");
             assert_eq!(run.opened, 0, "{case}");
@@ -676,7 +791,14 @@ fn ending_a_click_while_its_process_runs_returns_and_launches_nothing_after() {
     {
         let state = Endpoint::default();
         let (_, proof) = shown_click(&state, Some(&approved));
-        let run = run_holding(stub_job(approved), &proof, process, None, || {});
+        let run = run_holding(
+            stub_job(approved),
+            &proof,
+            &state.stopped,
+            process,
+            None,
+            || {},
+        );
         assert_eq!(
             run.ended,
             Ended::Done {

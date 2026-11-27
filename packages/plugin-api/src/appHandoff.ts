@@ -244,19 +244,36 @@ export const PluginHandoffSendFileResultSchema = z.discriminatedUnion("status", 
   z.object({ status: z.literal("failed"), code: PluginHandoffSendFileFailureCodeSchema, message: nonempty }).strict()
 ]);
 
+/** The host removes path-like strings from companion reports before returning them; this is what they become. */
+const redactedPath = "[local path removed]";
+
+/** Mirrors the host's redaction test: a backslash, `file:`, or a word starting with `/` or a drive such as `C:/`. */
+function pathLike(text: string): boolean {
+  return text.includes("\\") || text.includes("file:") ||
+    text.split(/[\s"'=([]/u).some(word => {
+      const bytes = encoder.encode(word);
+      return word.startsWith("/") || (bytes[1] === 0x3a && bytes[2] === 0x2f);
+    });
+}
+
 /**
  * API 0.1.29. Holds when step `step` reported exactly one row labelled `label` at
  * `json.tables[i].rows[j]` (a row object whose `label` string equals `label` exactly), and that row's
  * `value` is a finite JSON number, or a string whose trimmed text parses as one, other than `notEqual`.
  * A missing step, report, table, row or value, a duplicate step or row, or a non-numeric or non-finite
  * value does not hold. Labels are plain text: no control or invisible format characters, no line
- * breaks, and no leading or trailing spaces.
+ * breaks, and no leading or trailing spaces. The condition reads the report the plugin receives,
+ * after path redaction, so a label that looks like a path (a backslash, `file:`, a word starting
+ * with `/`, or a drive such as `C:/`) is refused: it could never match.
  */
 export const PluginCompanionRetryConditionSchema = z.object({
   step: companionId,
   label: z.string().min(1).max(2 * limits.retryLabelCharacters).refine(
     label => boundedHandoffText(label, limits.retryLabelCharacters, false) === label,
     { message: `Expected a plain label of up to ${limits.retryLabelCharacters} characters.` }
+  ).refine(
+    label => !pathLike(label) && label !== redactedPath,
+    { message: "A retry label cannot look like a file path." }
   ),
   notEqual: z.number().finite()
 }).strict();
@@ -311,8 +328,11 @@ export type PluginHandoffDiagnostic = z.infer<typeof PluginHandoffDiagnosticSche
 
 /**
  * API 0.1.29: present only when the request declared `retry`. `attempts` counts the attempts the
- * host started; `variant` is the input behind the returned reports, output or failure: 0 for
- * `input` and n for `retry.inputs[n - 1]`. Attempts run in order, so `variant` is `attempts - 1`.
+ * host started: the first, and each later one whose first companion step started. A later attempt
+ * refused or failed before that (time limit, revoked consent, ended click) is not counted, and the
+ * result carries the counts of the attempts that ran. `variant` is the input of the last attempt
+ * counted, behind the returned reports, output or failure: 0 for `input` and n for
+ * `retry.inputs[n - 1]`. Attempts run in order, so `variant` is `attempts - 1`.
  */
 const retrySequence = {
   attempts: z.number().int().min(1).max(limits.retryInputs + 1).optional(),

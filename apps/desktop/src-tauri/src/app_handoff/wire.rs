@@ -321,7 +321,9 @@ pub(super) struct StepResult {
     pub json: Value,
 }
 
-/// Present only for a request with `retry`. Variant 0 is `input`; variant n is `retry.inputs[n - 1]`.
+/// Present only for a request with `retry`. `attempts` counts the attempts started: the first, and
+/// each later one whose first companion step started. `variant` is the input of the last of them,
+/// behind the returned reports, output or failure: 0 for `input`, n for `retry.inputs[n - 1]`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Sequence {
