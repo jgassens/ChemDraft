@@ -22,6 +22,12 @@ import { MemoryStorage } from "./testSupport/memoryStorage";
 function install(options: {
   desktop?: boolean;
   preferences?: DesktopPreferences | (() => never);
+  /**
+   * A native read that returns this value exactly as given, whatever it is (a string, null, an
+   * array), until the first successful write. `preferences` is copied into a patchable object, so
+   * a malformed value given there never reaches the code under test unchanged.
+   */
+  rawPreferences?: unknown;
   toolbarLayout?: boolean;
   local?: Record<string, string>;
   failNativeWrite?: boolean;
@@ -30,10 +36,12 @@ function install(options: {
   const storage = new MemoryStorage();
   for (const [key, value] of Object.entries(options.local ?? {})) storage.setItem(key, value);
   let preferences: DesktopPreferences = typeof options.preferences === "function" ? {} : { ...options.preferences };
+  let raw = Object.hasOwn(options, "rawPreferences") ? { value: options.rawPreferences } : undefined;
   let failRead = typeof options.preferences === "function";
   let failWrite = options.failNativeWrite === true;
   const writePreferences = vi.fn(async (patch: DesktopPreferences) => {
     if (failWrite) throw new Error("disk full");
+    raw = undefined;
     preferences = {
       ...preferences,
       ...(patch.shortcutScheme ? { shortcutScheme: patch.shortcutScheme } : {}),
@@ -47,7 +55,7 @@ function install(options: {
     native: options.desktop === false ? undefined : {
       readPreferences: async () => {
         if (failRead) throw new Error("expected value at line 1 column 1");
-        return { ...preferences };
+        return raw ? raw.value as DesktopPreferences : { ...preferences };
       },
       writePreferences,
       hasToolbarLayout: async () => options.toolbarLayout === true
@@ -209,12 +217,33 @@ describe("moving to the single shortcut set", () => {
   it.each([
     ["an unknown scheme and malformed keys", { shortcutScheme: "vim", shortcutOverrides: { chemdraft: { commands: { "tool.eraser": "F6" } } } }],
     ["non-object preferences", "nonsense"],
-    ["null preferences", null]
+    ["null preferences", null],
+    ["array preferences", ["chemdraw"]]
   ])("never throws on %s", async (_label, preferences) => {
-    const fake = install({ preferences: preferences as unknown as DesktopPreferences, local: { [KEYBINDING_STORAGE_KEY]: "{not json" } });
+    const fake = install({ rawPreferences: preferences, local: { [KEYBINDING_STORAGE_KEY]: "{not json" } });
+    // The read hands the value over exactly as stored, not a copy the harness reshaped.
+    expect(await fake.host.native?.readPreferences()).toBe(preferences);
     const outcome = await migrateShortcutDefault(fake.host);
-    expect(["migrated", "fresh-install"]).toContain(outcome.kind);
+    // The unreadable cache is still evidence of an earlier install.
+    expect(outcome.kind).toBe("migrated");
+    expect(fake.preferences().shortcutScheme).toBe("chemdraw");
     expect(loadKeybindingSettingsFrom(fake.storage)).toEqual({ scheme: "chemdraw" });
+  });
+
+  it.each([
+    ["a string", "nonsense"],
+    ["null", null],
+    ["an empty array", []],
+    ["an array", ["chemdraw", { shortcutScheme: "chemdraft" }]],
+    ["a number", 7]
+  ])("treats native preferences that are %s as holding nothing", async (_label, preferences) => {
+    const fake = install({ rawPreferences: preferences });
+    expect(await fake.host.native?.readPreferences()).toBe(preferences);
+    // No key of a string or an array is a stored preference, so with nothing else stored this is a fresh install.
+    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "fresh-install" });
+    expect(fake.writePreferences).toHaveBeenCalledWith({ shortcutScheme: "chemdraw" });
+    expect(fake.cache()).toEqual({ scheme: "chemdraw" });
+    expect(takeShortcutSetNotice(fake.storage)).toBeUndefined();
   });
 
   it("removes the 1.2.3 release candidates' leftover marker", async () => {

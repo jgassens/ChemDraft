@@ -128,8 +128,10 @@ async function resolveShortcutSet(host: ShortcutDefaultMigrationHost): Promise<S
   let preferences: DesktopPreferences = {};
   if (host.native) {
     try {
-      const read = await host.native.readPreferences();
-      preferences = read && typeof read === "object" ? read : {};
+      const read: unknown = await host.native.readPreferences();
+      // Only a plain object holds preferences: a string's characters or an array's items are not stored
+      // keys, and must not count as an existing install.
+      preferences = read && typeof read === "object" && !Array.isArray(read) ? read as DesktopPreferences : {};
     } catch (error) {
       console.error("Could not read preferences to move to the single shortcut set", error);
       return { kind: "preferences-unreadable" };
