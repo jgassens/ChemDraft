@@ -9,7 +9,7 @@ use std::{
     collections::BTreeMap,
     fs, io,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -239,7 +239,9 @@ impl App {
         Ok(launch(&current))
     }
 
-    pub(super) fn open(&self, platform: Platform, file: &Path) -> io::Result<()> {
+    /// Starts opening `file` in this app. Only starting it belongs in a click's launch boundary;
+    /// read the receipt with `Opening::accepted` after leaving it.
+    pub(super) fn open(&self, platform: Platform, file: &Path) -> io::Result<Opening> {
         let (program, args) =
             command_line::open_command(platform, &self.path, &self.identity.main.path, file);
         let mut command = Command::new(program);
@@ -259,17 +261,38 @@ impl App {
         if platform == Platform::Mac {
             // open exits after submitting the LaunchServices request. The GUI app has
             // its own lifetime, so checking this receipt does not wait on or own it.
-            return if command.status()?.success() {
-                Ok(())
-            } else {
-                Err(io::Error::other(
-                    "LaunchServices rejected the handoff file.",
-                ))
-            };
+            return command.spawn().map(|open| Opening(Some(open)));
         }
         // On Windows the process is the GUI app itself. Drop the detached process handle.
         command.spawn()?;
-        Ok(())
+        Ok(Opening::started())
+    }
+}
+
+/// An open that has started. On macOS `/usr/bin/open` exits once LaunchServices has taken the
+/// request, so its exit status is the receipt. How long that takes is up to LaunchServices and
+/// the opened app, so the receipt is read outside the launch boundary and every lock. On Windows
+/// the started process is the app itself, and starting it is the receipt.
+#[must_use = "read the receipt with `accepted`, after the launch boundary"]
+pub(super) struct Opening(Option<Child>);
+
+impl Opening {
+    /// An open whose start is its receipt.
+    pub(super) fn started() -> Self {
+        Self(None)
+    }
+
+    pub(super) fn accepted(self) -> io::Result<()> {
+        let Some(mut open) = self.0 else {
+            return Ok(());
+        };
+        if open.wait()?.success() {
+            Ok(())
+        } else {
+            Err(io::Error::other(
+                "LaunchServices rejected the handoff file.",
+            ))
+        }
     }
 }
 

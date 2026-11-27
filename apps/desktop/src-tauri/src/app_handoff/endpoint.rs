@@ -4,7 +4,7 @@ use super::{
     command_line::{Pipeline, Platform},
     consent::{self, Entry, ListedConsent, Row, Store},
     dialogs::{self, Action},
-    identity::{App, Error as IdentityError},
+    identity::{App, Error as IdentityError, Opening},
     picker, retry, runner,
     temp_files::{self, TempFiles},
     wire::{
@@ -17,6 +17,7 @@ use serde_json::Value;
 use std::{
     collections::HashMap,
     ffi::OsString,
+    io,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -471,7 +472,8 @@ impl Context<'_> {
             Ok(launched) => launched?,
             Err(error) => return Ok(send_identity(error)),
         };
-        match launched {
+        // The open started inside the click's launch boundary; its receipt is read out here.
+        match launched.and_then(Opening::accepted) {
             Ok(()) => {
                 files.keep_for_open_app();
                 Ok(SendResult::Sent)
@@ -831,7 +833,8 @@ pub(super) trait BuildHost {
         cwd: &Path,
         deadline: Instant,
     ) -> Result<runner::ChildProcess, runner::Failure>;
-    fn open(&self, current: &App, platform: Platform, file: &Path) -> bool;
+    /// Starts opening `file`; `BuildJob::run` reads the receipt after the launch boundary.
+    fn open(&self, current: &App, platform: Platform, file: &Path) -> io::Result<Opening>;
 }
 
 impl BuildHost for WebviewWindow {
@@ -901,8 +904,8 @@ impl BuildHost for WebviewWindow {
         runner::ChildProcess::spawn_before(tool, args, cwd, deadline, self.stopped())
     }
 
-    fn open(&self, current: &App, platform: Platform, file: &Path) -> bool {
-        current.open(platform, file).is_ok()
+    fn open(&self, current: &App, platform: Platform, file: &Path) -> io::Result<Opening> {
+        current.open(platform, file)
     }
 }
 
@@ -978,16 +981,18 @@ impl BuildJob {
         let mut opened = false;
         if self.build.open_output {
             if let Some(output) = completed.output {
-                // Opening is a launch too: it needs the same live click, under the click's lock.
-                opened = host
+                // Opening is a launch too: it needs the same live click, in the click's launch
+                // boundary. Only starting the open is inside it; the receipt is read after.
+                let opening = host
                     .authorized(self, |current| {
+                        let verified = runner::verified_output(&files.root, &output);
                         proof.relaunch_build(&self.build, || {
-                            runner::verified_output(&files.root, &output)
-                                && host.open(current, self.platform, &output)
+                            verified.then(|| host.open(current, self.platform, &output))
                         })
                     })
                     .map_err(|failure| JobError::Failed(failure, sequence))?
                     .map_err(|_| JobError::Failed(stopped(), sequence))?;
+                opened = opening.is_some_and(|opening| opening.and_then(Opening::accepted).is_ok());
                 if opened {
                     files.keep_for_open_app();
                 }

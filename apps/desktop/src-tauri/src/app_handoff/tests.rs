@@ -25,6 +25,8 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
+mod launch_race;
+
 const PLUGIN: &str = "org.chemdraft.handoff.crystalBuilder";
 const COMMAND: &str = "plugin.crystalBuilder.build";
 const APP_ID: &str = "0123456789abcdef0123456789abcdef";
@@ -3182,11 +3184,16 @@ fn the_confirmation_states_the_bounded_retry() {
 
 /// When a stand-in event fires during `BuildJob::run`: `Check(n)` at the nth launch-time
 /// authorization (each step, the check before a later attempt, and the open), before the click is
-/// checked; `Running(n)` just after the nth companion process started, while it runs.
+/// checked; `Running(n)` after the nth companion process started, reported at the next launch-time
+/// authorization, just before `Check`, so outside the launch boundary. `Launching(n)` and `Opening`
+/// fire inside the launch boundary, after the click was found live and before the nth process
+/// starts or the output opens; only a race on another thread may end the click there.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Moment {
     Check(usize),
     Running(usize),
+    Launching(usize),
+    Opening,
 }
 
 /// The document window's part of a build, minus the window: every launch-time check passes, every
@@ -3196,6 +3203,7 @@ struct StubHost<'a> {
     stopped: AtomicBool,
     checks: Cell<usize>,
     event: RefCell<Box<dyn FnMut(Moment) + 'a>>,
+    running: Cell<Option<Moment>>,
     spawned: RefCell<Vec<String>>,
     opened: RefCell<Vec<PathBuf>>,
 }
@@ -3207,6 +3215,7 @@ impl<'a> StubHost<'a> {
             stopped: AtomicBool::new(false),
             checks: Cell::new(0),
             event: RefCell::new(Box::new(event)),
+            running: Cell::new(None),
             spawned: RefCell::new(Vec::new()),
             opened: RefCell::new(Vec::new()),
         }
@@ -3227,6 +3236,9 @@ impl BuildHost for StubHost<'_> {
         job: &BuildJob,
         launch: impl FnOnce(&identity::App) -> T,
     ) -> Result<T, runner::Failure> {
+        if let Some(running) = self.running.take() {
+            (self.event.borrow_mut())(running);
+        }
         self.checks.set(self.checks.get() + 1);
         (self.event.borrow_mut())(Moment::Check(self.checks.get()));
         Ok(launch(&job.target))
@@ -3239,19 +3251,27 @@ impl BuildHost for StubHost<'_> {
         cwd: &Path,
         deadline: Instant,
     ) -> Result<ChildProcess, runner::Failure> {
+        let count = self.spawned.borrow().len() + 1;
+        (self.event.borrow_mut())(Moment::Launching(count));
         let child = ChildProcess::spawn_before(rust_stub(), args, cwd, deadline, &self.stopped)?;
-        let count = {
-            let mut spawned = self.spawned.borrow_mut();
-            spawned.push(args[0].to_string_lossy().into_owned());
-            spawned.len()
-        };
-        (self.event.borrow_mut())(Moment::Running(count));
+        self.spawned
+            .borrow_mut()
+            .push(args[0].to_string_lossy().into_owned());
+        // This runs inside the launch boundary. Ending the click from here, on the launching
+        // thread, would wait for this very launch, so the event waits until the boundary is left.
+        self.running.set(Some(Moment::Running(count)));
         Ok(child)
     }
 
-    fn open(&self, _: &identity::App, _: Platform, file: &Path) -> bool {
+    fn open(
+        &self,
+        _: &identity::App,
+        _: Platform,
+        file: &Path,
+    ) -> std::io::Result<identity::Opening> {
+        (self.event.borrow_mut())(Moment::Opening);
         self.opened.borrow_mut().push(file.to_owned());
-        true
+        Ok(identity::Opening::started())
     }
 }
 

@@ -470,8 +470,9 @@ impl Store {
         })
     }
 
+    /// Waits for a launch already holding the grant (`with_grant`); none finds it afterwards.
     pub(super) fn revoke(&self, plugin: &str, consent_id: &str) -> io::Result<Vec<String>> {
-        let _lock = LOCK.lock().unwrap();
+        let _lock = super::arming::wait_lock(&LOCK).unwrap();
         let mut document = self.read()?;
         let mut revoked = BTreeSet::new();
         let conflict = document
@@ -504,8 +505,9 @@ impl Store {
         Ok(revoked.into_iter().collect())
     }
 
+    /// Like `revoke`, for every consent of the plugin; uninstalling a plugin clears them.
     pub(super) fn clear(&self, plugin: &str) -> io::Result<()> {
-        let _lock = LOCK.lock().unwrap();
+        let _lock = super::arming::wait_lock(&LOCK).unwrap();
         let mut document = self.read()?;
         let mut revoked = BTreeSet::new();
         document.remove(plugin, &mut revoked, |row, _| row.plugin_id == plugin);
