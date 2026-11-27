@@ -350,6 +350,55 @@ it.each(["pointerleave", "pointerdown", "Escape"] as const)("discards a pending 
   }
 });
 
+// CodeRabbit (1.2.3 RC5): a selection change while the descriptor is pending, with the document
+// unchanged, must not open a menu built from the selection captured at the press.
+it.each([false, true])("opens a pending stereo menu only from the live ring selection (cleared: %s)", async cleared => {
+  const molecule = await mount("C[C@H]1CCCO1");
+  const ring = nativeMoleculeRings(molecule)[0]!;
+  const center = molecule.atoms[1]!;
+  expect(ring.atomIds).toContain(center.id);
+  // Bare paper 11 screen pixels from the stereocenter (past its 8 px atom reach, inside the 14 px
+  // stereo reach), on the side away from its three bonds.
+  const away = molecule.bonds.filter(bond => bond.fromAtomId === center.id || bond.toAtomId === center.id)
+    .map(bond => molecule.atoms.find(atom => atom.id === (bond.fromAtomId === center.id ? bond.toAtomId : bond.fromAtomId))!)
+    .reduce((sum, atom) => {
+      const length = Math.hypot(atom.x - center.x, atom.y - center.y);
+      return { x: sum.x - (atom.x - center.x) / length, y: sum.y - (atom.y - center.y) / length };
+    }, { x: 0, y: 0 });
+  const awayLength = Math.hypot(away.x, away.y);
+  const point = { x: center.x + away.x * 11 / (awayLength * scale), y: center.y + away.y * 11 / (awayLength * scale) };
+
+  await selectRingInspector();
+  await clickAt(ring.center, { button: 0, context: false, target: page.querySelector(`[data-ring-hit-key="${ring.ringKey}"]`)! });
+  expect(renderedMolecule(molecule).getAttribute("data-selected-native-ring-key")).toBe(ring.ringKey);
+
+  const engine = await loadStereoEngine();
+  let finishLoading!: () => void;
+  const pendingEngine = new Promise<typeof engine>(resolve => { finishLoading = () => resolve(engine); });
+  resetStereoEngineForTests();
+  try {
+    void loadStereoEngine(() => pendingEngine);
+    await clickAt(point);
+    expect(objectMenu()).toBeNull();
+    expect(pageMenu()).toBeNull();
+    // Closing the Rings toolbar clears the ring part without touching the document.
+    if (cleared) await selectRingInspector();
+    expect(renderedMolecule(molecule).getAttribute("data-selected-native-ring-key")).toBe(cleared ? null : ring.ringKey);
+    await act(async () => finishLoading());
+    if (cleared) {
+      expect(objectMenu()).toBeNull();
+      expect(renderedMolecule(molecule).getAttribute("data-selected-native-ring-key")).toBeNull();
+    } else {
+      expect(objectMenu()?.getAttribute("data-context-target-kind")).toBe("ring");
+      expect(stereoRows()).toHaveLength(1);
+    }
+  } finally {
+    finishLoading();
+    resetStereoEngineForTests();
+    await loadStereoEngine();
+  }
+});
+
 it.each([false, true])("shows E/Z near the middle of a stereo double bond (bond selected: %s)", async selected => {
   const molecule = await mount("C/C=C/C", { zoom: 200 });
   const bond = molecule.bonds.find(bond => bond.order === "double")!;

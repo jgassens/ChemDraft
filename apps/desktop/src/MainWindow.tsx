@@ -1914,7 +1914,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.26.22.00-opus";
+const CURRENT_BUILD_STAMP = "11.26.22.10-opus";
 
 const NUMERIC_ENTRY_DURING_DRAG_STATUS = "Finish the current drag, then enter a value";
 
@@ -22946,7 +22946,11 @@ export function MainWindow({
     void resolveContextStereo(stereoTargets).then(result => {
       if (request.signal.aborted) return;
       pendingCanvasContextMenu.current = undefined;
-      if (!pageRef.current || currentDocument !== documentRef.current) return;
+      // The menu targets come from the selection read at the press. A part selection can
+      // change without a new document (closing the Rings toolbar clears a selected ring),
+      // and the menu's commands act on the live selection, so drop the opening then too.
+      if (!pageRef.current || currentDocument !== documentRef.current ||
+        selectedNativeMoleculeParts !== selectedNativeMoleculePartsRef.current) return;
       const hitObject = result && objects[layers.get(result.hit.objectId)!];
       if (result && hitObject) {
         showObjectContextMenu(hitObject.id, position, point, result.hit,
