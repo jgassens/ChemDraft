@@ -1004,25 +1004,31 @@ fn companion_watchdog_kills_descendants() {
 }
 
 /// A stop set before the runner sees the companion's exit wins over that exit: quitting while the
-/// last step is ending reports the step stopped, never finished. The poll waits for the exit and
-/// lets both pipe readers reach end of file (they poll every 10 ms), so only the exit path can see
-/// the stop; then it sets the flag and reports the exit. A run with no stop still succeeds.
+/// last step is ending reports the step stopped, never finished. The poll holds the exit back until
+/// both pipe readers have returned at end of file, so they cannot see the stop and only the exit
+/// path can; then it sets the flag and reports the exit. A run with no stop still succeeds.
 #[test]
 fn companion_stop_set_before_its_exit_is_seen_wins_over_the_exit() {
     let dir = TestDir::new();
     for stopping in [false, true] {
         let stop = AtomicBool::new(false);
+        let mut exit_reported = false;
         let mut child = ChildProcess::spawn(rust_stub(), &["capabilities".into()], &dir.0).unwrap();
-        let captured = child.capture_polling(Duration::from_secs(5), &stop, |child| {
+        let captured = child.capture_polling(Duration::from_secs(5), &stop, |child, drained| {
             if !stopping {
                 return child.try_wait();
             }
+            if !drained {
+                return Ok(None);
+            }
             let status = child.wait()?;
-            std::thread::sleep(Duration::from_millis(300));
             stop.store(true, Ordering::Release);
+            exit_reported = true;
             Ok(Some(status))
         });
         if stopping {
+            // The exit path, not the deadline, turned the reported exit into a stop.
+            assert!(exit_reported);
             assert_eq!(captured.unwrap_err(), CaptureError::Timeout);
         } else {
             assert!(captured.unwrap().status.success());

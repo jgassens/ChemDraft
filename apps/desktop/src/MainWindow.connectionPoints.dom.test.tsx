@@ -584,3 +584,89 @@ it("keeps the live atom selection when undoing and redoing a nudge after a mark 
   expect(present()).toEqual(marked);
   expect(nativeSelection()).toEqual([markerId]);
 });
+
+it("keeps a nudged marker selected through undo and redo, so Delete and a nudge act on the marker only", async () => {
+  await render(aromaticSource);
+  await selectAtom("a");
+  const before = present();
+  await act(async () => {
+    const runtime = register(context => context.documents.addConnectionPoints!({ objectId: source.id, anchors: ["a"] }));
+    await runtime.invokeCommand(commandId);
+  });
+  const marked = present();
+  const markerId = drawn().atoms.find(atom => atom.element === "X")!.id;
+  expect(nativeSelection()).toEqual([markerId]);
+  const markerX = () => drawn().atoms.find(atom => atom.id === markerId)!.x;
+  const ringX = () => drawn().atoms.filter(atom => atom.id !== markerId).map(atom => atom.x);
+  const originalMarkerX = markerX();
+  const originalRingX = ringX();
+  await menu("selection.nudge.right.large");
+  expect(markerX()).toBe(originalMarkerX + 10);
+  expect(ringX()).toEqual(originalRingX);
+  const nudged = present();
+  await menu("edit.undo");
+  expect(present()).toEqual(marked);
+  expect(nativeSelection()).toEqual([markerId]);
+  await menu("edit.redo");
+  expect(present()).toEqual(nudged);
+  expect(nativeSelection()).toEqual([markerId]);
+  // Another nudge moves the marker only, never the whole molecule.
+  await menu("selection.nudge.right.large");
+  expect(markerX()).toBe(originalMarkerX + 20);
+  expect(ringX()).toEqual(originalRingX);
+  expect(nativeSelection()).toEqual([markerId]);
+  // Delete with nothing hovered acts on the marker only (its label goes first), never the molecule.
+  const ring = drawn().atoms.filter(atom => atom.id !== markerId);
+  const marker = drawn().atoms.find(atom => atom.id === markerId);
+  await menu("edit.forwardDeleteHoveredNativeTarget");
+  expect(present().pages[0]!.objects.map(object => object.id)).toEqual([source.id]);
+  expect(drawn().atoms.filter(atom => atom.id !== markerId)).toEqual(ring);
+  expect(drawn().atoms.find(atom => atom.id === markerId)).not.toEqual(marker);
+  await menu("edit.undo");
+  await menu("edit.undo");
+  await menu("edit.undo");
+  expect(present()).toEqual(marked);
+  expect(nativeSelection()).toEqual([markerId]);
+  // Undoing and redoing the mark itself still restore its recorded selections.
+  await menu("edit.undo");
+  expect(present()).toEqual(before);
+  expect(nativeSelection()).toEqual(["a"]);
+  await menu("edit.redo");
+  expect(present()).toEqual(marked);
+  expect(nativeSelection()).toEqual([markerId]);
+  await menu("edit.redo");
+  expect(present()).toEqual(nudged);
+  expect(nativeSelection()).toEqual([markerId]);
+});
+
+it("keeps a nudged atom selected through undo and redo after undoing a repeat-unit toggle", async () => {
+  await render(aromaticSource);
+  await selectAtom("d");
+  const before = present();
+  await menu("bracket.repeatUnit.toggle");
+  const repeated = present();
+  expect(repeated.pages[0]!.objects.filter(object => object.type === "bracket")).toHaveLength(2);
+  expect(nativeSelection()).toEqual([]);
+  await menu("edit.undo");
+  expect(present()).toEqual(before);
+  expect(nativeSelection()).toEqual(["d"]);
+  const x = (id: string) => drawn().atoms.find(atom => atom.id === id)!.x;
+  const others = () => drawn().atoms.filter(atom => atom.id !== "d").map(atom => atom.x);
+  const originalX = x("d");
+  const originalOthers = others();
+  await menu("selection.nudge.right.large");
+  expect(x("d")).toBe(originalX + 10);
+  const nudged = present();
+  await menu("edit.undo");
+  expect(present()).toEqual(before);
+  expect(nativeSelection()).toEqual(["d"]);
+  await menu("edit.redo");
+  expect(present()).toEqual(nudged);
+  expect(nativeSelection()).toEqual(["d"]);
+  await menu("selection.nudge.right.large");
+  expect(x("d")).toBe(originalX + 20);
+  expect(others()).toEqual(originalOthers);
+  await menu("edit.forwardDeleteHoveredNativeTarget");
+  expect(present().pages[0]!.objects.map(object => object.id)).toEqual([source.id]);
+  expect(drawn().atoms.map(atom => atom.id)).toEqual([..."abcef"]);
+});

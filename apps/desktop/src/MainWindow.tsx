@@ -1854,7 +1854,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.27.06.00-opus";
+const CURRENT_BUILD_STAMP = "11.27.08.00-opus";
 
 /**
  * The commit funnel's chemistry check (AGENTS.md section 7, `commitChemistryGuard.ts`). `before`
@@ -10101,6 +10101,7 @@ export function MainWindow({
     let undoLabel: string | undefined;
     let nativePartUndoSelection: NativeMoleculeSelectionPart[] | undefined;
     let leftRecordedNativePartSelection: NativeMoleculeSelectionPart[] | undefined;
+    let objectSelectionChanged = false;
     const liveNativeParts = selectedNativeMoleculePartsRef.current;
     installDocumentHistory((history) => {
       const recordedAfter = recordedHistoryAfterRef.current.get(history.present);
@@ -10112,6 +10113,9 @@ export function MainWindow({
       const recordedSelections = nativePartHistorySelectionsRef.current;
       leftRecordedNativePartSelection = recordedSelections.get(history.present) ??
         (recordedAfter !== undefined ? recordedSelections.get(recordedAfter) : undefined);
+      const objectIds = (document: ChemDraftDocument) => [...document.selection.objectIds].sort().join("\n");
+      objectSelectionChanged = history.present.selection.pageId !== restored.present.selection.pageId ||
+        objectIds(history.present) !== objectIds(restored.present);
       undoLabel = direction === "undo"
         ? documentUndoLabelsRef.current.get(currentHistory.present)
         : documentUndoLabelsRef.current.get(restored.present);
@@ -10129,14 +10133,19 @@ export function MainWindow({
     // - Redoing into a state restores the selection recorded after its action
     //   (nativePartHistorySelectionsRef), e.g. the mark's markers. Undo never restores that one:
     //   undoing a later ordinary edit back to the state keeps the live selection.
-    // - Redoing out of a state while its recorded selection is still the live one clears it, so a
-    //   key such as Delete cannot reach the markers in the redone state. A selection made since stays.
+    // - Redoing out of a state while its recorded selection is still the live one clears it only
+    //   when the redone state also restores a different object selection: the user selected
+    //   something else before that later edit, and the recorded parts would otherwise be combined
+    //   with the restored object selection, so a key such as Delete could reach the markers in the
+    //   redone state. A redo that keeps the object selection (an ordinary edit of the selected parts
+    //   themselves, such as nudging a marker) keeps the parts, as for any other ordinary edit:
+    //   clearing them would leave the whole molecule selected. A selection made since also stays.
     // - Otherwise the document-change effect keeps the current parts that still exist.
     const nativePartSelection = direction === "undo"
       ? nativePartUndoSelection
       : nativePartHistorySelectionsRef.current.get(nextHistory.present);
     if (nativePartSelection) setSelectedNativeMoleculeParts(nativePartSelection);
-    else if (direction === "redo" && leftRecordedNativePartSelection &&
+    else if (direction === "redo" && objectSelectionChanged && leftRecordedNativePartSelection &&
       JSON.stringify(leftRecordedNativePartSelection) === JSON.stringify(liveNativeParts)) {
       setSelectedNativeMoleculeParts([]);
     }
