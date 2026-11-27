@@ -129,6 +129,12 @@ the group it stands for. Matching is case-sensitive: "OMe" is methoxy, "Ome" is 
 table, so acetyl is in the table only as "COMe"/"MeCO". Also absent: dialogs (`=`, `/`) and tools
 ChemDraft lacks (TLC plate, orbitals).
 
+## Known limitations
+
+- If an older build left custom keys only in the webview cache while `preferences.json` already names
+  the standard set, and saving to `preferences.json` then fails, those cache-only keys can be lost on
+  the next window read.
+
 ## Compatibility notes
 
 This branch also changed the document schema and two rendering semantics, which matters when a

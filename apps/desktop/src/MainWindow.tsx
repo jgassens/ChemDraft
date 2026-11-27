@@ -1910,7 +1910,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.27.02.50-opus";
+const CURRENT_BUILD_STAMP = "11.27.03.10-sonnet";
 
 const NUMERIC_ENTRY_DURING_DRAG_STATUS = "Finish the current drag, then enter a value";
 
@@ -3781,6 +3781,8 @@ export function MainWindow({
     const notice = peekShortcutSetNotice();
     if (!notice) return;
     const timer = window.setTimeout(() => {
+      // Another window may have confirmed it since the peek above (same stored marker): show only if not.
+      if (!peekShortcutSetNotice()) return;
       setStatus(notice);
       confirmShortcutSetNoticeShown();
     }, 0);

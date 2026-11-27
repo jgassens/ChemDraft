@@ -243,6 +243,21 @@ describe("moving to the single shortcut set", () => {
     expect(takeShortcutSetNotice(fake.storage)).toBeUndefined();
   });
 
+  it("shows the message exactly once when two windows peek before either confirms", async () => {
+    const fake = install({ preferences: { shortcutScheme: "chemdraft" } });
+    expect((await migrateShortcutDefault(fake.host)).kind).toBe("migrated");
+    // Both windows peek before either has confirmed.
+    expect(peekShortcutSetNotice(fake.storage)).toBe(SHORTCUT_SET_NOTICE);
+    expect(peekShortcutSetNotice(fake.storage)).toBe(SHORTCUT_SET_NOTICE);
+    let shown = 0;
+    // Window A's callback: re-check, show, confirm.
+    if (peekShortcutSetNotice(fake.storage)) { shown += 1; confirmShortcutSetNoticeShown(fake.storage); }
+    // Window B has its own module state; only the stored marker is shared.
+    resetShortcutDefaultMigrationForTests();
+    if (peekShortcutSetNotice(fake.storage)) { shown += 1; confirmShortcutSetNoticeShown(fake.storage); }
+    expect(shown).toBe(1);
+  });
+
   it("records the message as shown only once a window confirms it, so a quit before that shows it next launch", async () => {
     const fake = install({ preferences: { shortcutScheme: "chemdraft" } });
     expect((await migrateShortcutDefault(fake.host)).kind).toBe("migrated");

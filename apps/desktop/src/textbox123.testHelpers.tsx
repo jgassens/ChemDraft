@@ -49,7 +49,7 @@ export function textboxHarness(platform: ShortcutPlatform) {
     Object.defineProperty(navigator, "platform", { configurable: true, value: platform === "macos" ? "MacIntel" : "Win32" });
     captureDescriptors = captureMethods.map(name => Object.getOwnPropertyDescriptor(Element.prototype, name));
     for (const name of captureMethods) Object.defineProperty(Element.prototype, name, { configurable: true, value: () => false });
-    saveKeybindingSettings({ scheme: "chemdraft" });
+    saveKeybindingSettings({ scheme: "chemdraw" });
     window.history.replaceState(null, "", "/?agentBridge=1");
     container = document.createElement("div");
     document.body.append(container);
