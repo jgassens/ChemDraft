@@ -22,7 +22,7 @@ import {
 import { detectShortcutPlatform, parseShortcutDisplay, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { isCompoundLayoutCommand, isCompoundLayoutCommandHidden, type CompoundLayoutSettings, loadCompoundLayoutSettings } from "./compoundLayoutSettings";
 import manifest from "./toolsets/desktop-toolsets.json";
-import { isGridWidgetItem, isToolbarWidgetItem, TOOLBAR_WIDGET_IDS } from "./toolbars/toolbarWidgets";
+import { isGridWidgetItem, isToolbarWidgetItem, TOOLBAR_WIDGET_GRID_SPANS, TOOLBAR_WIDGET_IDS } from "./toolbars/toolbarWidgets";
 import { MAIN_TOOLBAR_DEFAULTS_REVISION, withCurrentMainToolbarDefaults } from "./toolbars/toolbarLayoutState";
 import type { CommandSpec } from "./commands";
 import { renamedCommandId } from "./renamedCommands";
@@ -68,6 +68,29 @@ export interface ToolbarPaletteItemModel {
   };
   disabledReason?: string;
   category?: string;
+}
+
+/**
+ * The Document Zoom widget's footprint on the tool grid: exactly four cells wide and one tall —
+ * Zoom Out (one cell), the percentage menu (two cells and the gap between them), Zoom In (one
+ * cell) — so each part's edges line up with the cells of the row below (App.css lays the parts
+ * out with the grid's own cell and gap tokens).
+ *
+ * Main's manifest, the gallery's re-add span and layouts saved by 1.2.2/RC5 carry the earlier
+ * six-cell span. The item id is unchanged, so this read-time override is the whole migration: any
+ * saved layout holding the zoom item loads in the four-cell form, and nothing needs rewriting.
+ */
+export const DOCUMENT_ZOOM_GRID_SPAN = { colSpan: 4, rowSpan: 1 } as const;
+
+/** Grid span the customize gallery gives a widget it (re)adds, with the zoom widget's current span. */
+export function toolbarWidgetGridSpan(widgetId: string): { colSpan: number; rowSpan: number } | undefined {
+  return widgetId === TOOLBAR_WIDGET_IDS.documentZoom ? { ...DOCUMENT_ZOOM_GRID_SPAN } : TOOLBAR_WIDGET_GRID_SPANS[widgetId];
+}
+
+function paletteItemLayout(item: NormalizedToolsetItem): ToolbarPaletteItemModel["layout"] {
+  return item.primary.type === "control" && item.primary.controlId === TOOLBAR_WIDGET_IDS.documentZoom
+    ? { ...item.layout, ...DOCUMENT_ZOOM_GRID_SPAN }
+    : item.layout;
 }
 
 export const desktopToolsets = parseToolsetManifest<IconName, ToolbarAssetName>(manifest);
@@ -889,7 +912,7 @@ export function toolsetItemToPaletteItem(
         ?? formatShortcutLabel(tooltipShortcut ?? undefined)
         ?? null
     },
-    layout: item.layout,
+    layout: paletteItemLayout(item),
     disabledReason: liveCommand ? liveCommand.disabledReason : item.disabledReason,
     category: liveCommand ? liveCommand.category : item.category
   };

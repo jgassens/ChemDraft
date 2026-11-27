@@ -494,7 +494,8 @@ function CustomizeSortableSlot({ item, groupId }: { item: ToolbarPaletteItemMode
         "toolbar-item-grid-slot",
         "customize-slot",
         isBlank ? "customize-slot-blank" : "",
-        isSeparator ? "customize-slot-separator" : ""
+        isSeparator ? "customize-slot-separator" : "",
+        gridWidget?.cellParts ? "customize-slot-cell-parts" : ""
       ]
         .filter(Boolean)
         .join(" ")}
@@ -582,14 +583,22 @@ function CustomizeWidgetSlot({
  */
 const TOOLBAR_WIDGET_REGISTRY: Record<
   string,
-  { gridMode: ToolbarWidgetGridMode; className: string; title: string; render: () => ReactNode }
+  {
+    gridMode: ToolbarWidgetGridMode;
+    className: string;
+    title: string;
+    render: () => ReactNode;
+    /** The widget's parts each sit on whole grid cells, so Customize Toolbar outlines each part
+     *  (as it outlines each tool) rather than one box around the whole span. */
+    cellParts?: boolean;
+  }
 > = {
   ...Object.fromEntries(([1, 2, 3, 4] as const).map(swatch => [`widget.core.customColorSwatch${swatch}`, {
     gridMode: "append" as const, className: "custom-color-palette", title: `Custom Color Swatch ${swatch}`,
     render: () => <CustomColorSwatchWidget swatch={swatch} />
   }])),
   [TOOLBAR_WIDGET_IDS.documentZoom]: {
-    gridMode: "append", className: "document-zoom-palette", title: "Document Zoom",
+    gridMode: "append", className: "document-zoom-palette", title: "Document Zoom", cellParts: true,
     render: () => <DocumentZoomControls />
   },
   [TOOLBAR_WIDGET_IDS.mainStyleControls]: {

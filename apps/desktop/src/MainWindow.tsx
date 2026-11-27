@@ -852,7 +852,6 @@ import { copyAsMolfileForExport as copyAsMolfile, exportStructureListSdf, export
 import { KetcherEditorHost } from "./KetcherEditorHost";
 import { DRAG_THRESHOLDS, initialInteractionState, interactionReducer, type InteractionState } from "./interaction/machine";
 import { APPENDABLE_TOOLBAR_WIDGETS, TOOLBAR_WIDGET_TITLES, ToolPalette } from "./ToolPalette";
-import { TOOLBAR_WIDGET_GRID_SPANS } from "./toolbars/toolbarWidgets";
 import {
   DEFAULT_TOOLSET_ID,
   broadcastToolsetActiveTool,
@@ -922,6 +921,7 @@ import {
   initialToolsetWindowSize,
   isDisabledPlaceholderCommand,
   migrateMainToolbarDefaultsLayoutState,
+  toolbarWidgetGridSpan,
   type DesktopToolsetDefinition,
   type DesktopToolsetRegistry,
   type ToolbarPaletteGroupModel
@@ -1910,7 +1910,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.27.03.40-opus";
+const CURRENT_BUILD_STAMP = "11.27.07.30-opus";
 
 const NUMERIC_ENTRY_DURING_DRAG_STATUS = "Finish the current drag, then enter a value";
 
@@ -16812,7 +16812,7 @@ export function MainWindow({
         commandIcon: (commandId) => commandByIdRef.current.get(commandId)?.icon,
         commandAssetName: (commandId) => commandByIdRef.current.get(commandId)?.assetName,
         widgetTitle: (widgetId) => TOOLBAR_WIDGET_TITLES[widgetId],
-        widgetLayout: (widgetId) => TOOLBAR_WIDGET_GRID_SPANS[widgetId],
+        widgetLayout: toolbarWidgetGridSpan,
         gridRows: registry.get(DEFAULT_TOOLSET_ID)?.gridLayout?.rows
       });
       if (next !== current) {

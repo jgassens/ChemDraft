@@ -744,8 +744,10 @@ describe("palette work-area sizing", () => {
     // Main's shell with the grip-rail chrome (was 1423x85 with the title row): 22px shorter for the
     // removed title row and 3px for the top margin (7px -> 4px); 39px narrower for the left grip
     // column (23px -> 18px to the first tool) and the right edge (the trailing divider cell, its gap
-    // and 10px padding, 38px, -> a 4px margin).
-    const MAIN_FIT = { width: 1384, height: 60 };
+    // and 10px padding, 38px, -> a 4px margin). Then 56px narrower (1384 -> 1328, derived, not
+    // re-measured): Document Zoom spans four cells, not six, so its block before the first divider
+    // loses two 24px columns and their 4px gaps.
+    const MAIN_FIT = { width: 1328, height: 60 };
 
     async function mountMain({
       platform = "macos",
@@ -813,24 +815,25 @@ describe("palette work-area sizing", () => {
 
     it("converges from the shipped Main startup frame and holds its fit when zoom settles at 100%", async () => {
       const initial = initialToolsetWindowSize(main, getToolsetItemGroups(main.id));
-      expect(initial).toEqual({ width: 1254, height: 58 });
+      // One counted column (24px + 2px) fewer than 1254 now that Document Zoom spans four cells.
+      expect(initial).toEqual({ width: 1228, height: 58 });
       const { container, live, settle, unmount } = await mountMain({ initial, shouldApply: attempt => attempt > 1 });
       try {
         const select = container.querySelector<HTMLSelectElement>(".document-zoom-controls select")!;
         expect(select.value).toBe("current");
         expect(container.querySelector(".palette-title-label")?.textContent).toBe("Main");
         expect(container.querySelector('[data-toolbar-item-id="structure.spin3d"]')).not.toBeNull();
-        expect(live()).toEqual({ width: 2508, height: 116 });
+        expect(live()).toEqual({ width: 2456, height: 116 });
         await settle();
         // Twice MAIN_FIT at devicePixelRatio 2 (was 2846x170 with the title row).
-        expect(live()).toEqual({ width: 2768, height: 120 });
+        expect(live()).toEqual({ width: 2656, height: 120 });
         expect(native.resize.mock.calls).toEqual([[MAIN_FIT], [MAIN_FIT]]);
         await act(async () => broadcastToolsetZoom({ scale: 1, minZoom: 0.25, maxZoom: 8.5 }));
         expect(select.selectedOptions[0].textContent).toBe("100%");
         // Model a follow-up layout or resize notification with unchanged intrinsic dimensions.
         window.dispatchEvent(new Event("resize"));
         await settle();
-        expect(live()).toEqual({ width: 2768, height: 120 });
+        expect(live()).toEqual({ width: 2656, height: 120 });
         expect(native.resize).toHaveBeenCalledTimes(2);
       } finally {
         await unmount();
@@ -850,18 +853,18 @@ describe("palette work-area sizing", () => {
       const { container, live, settle, unmount } = await mountMain({
         // 180x60 (was 195x85): no 22px title row, a 4px top margin (was 7px), 5px less to the left of
         // the first tool, and a 4px right margin where the last group's 7px padding, divider and 6px
-        // palette padding were.
-        platform, registry, initial: { width: 860, height: 124 }, measured: { width: 180, height: 60 },
+        // palette padding were. Then 124x60 (derived): the four-cell zoom is two 28px columns narrower.
+        platform, registry, initial: { width: 860, height: 124 }, measured: { width: 124, height: 60 },
         shouldApply: attempt => attempt > 1
       });
       try {
         expect(new Set(Array.from(container.querySelectorAll("[data-toolbar-item-id]"),
           element => element.getAttribute("data-toolbar-item-id")))).toEqual(visibleItems);
         await settle();
-        expect(live()).toEqual({ width: 360, height: 120 });
+        expect(live()).toEqual({ width: 248, height: 120 });
         expect(native.resize.mock.calls).toEqual([
-          [{ width: 180, height: 60 }],
-          [{ width: 180, height: 60 }]
+          [{ width: 124, height: 60 }],
+          [{ width: 124, height: 60 }]
         ]);
       } finally {
         await unmount();
@@ -878,10 +881,10 @@ describe("palette work-area sizing", () => {
         await settle();
         expect(native.resize).toHaveBeenCalledTimes(1);
         // MAIN_FIT at 2x plus the one-pixel rounding (was 2846x171 with the title row).
-        expect(live()).toEqual({ width: 2768, height: 121 });
+        expect(live()).toEqual({ width: 2656, height: 121 });
         overwriteFrame({ width: MAIN_FIT.width, height: 400 });
         await settle();
-        expect(live()).toEqual({ width: 2768, height: 121 });
+        expect(live()).toEqual({ width: 2656, height: 121 });
         expect(native.resize).toHaveBeenCalledTimes(2);
       } finally {
         await unmount();
@@ -898,7 +901,7 @@ describe("palette work-area sizing", () => {
         expect(live()).toEqual({ width: 400, height: 800 });
         expect(native.resize).toHaveBeenCalledTimes(3);
         expect(error).toHaveBeenCalledExactlyOnceWith(
-          "[palette-size] core.main failed to fit after 3 attempts (target 2768x120 physical px, live 400x800 physical px)"
+          "[palette-size] core.main failed to fit after 3 attempts (target 2656x120 physical px, live 400x800 physical px)"
         );
         for (let event = 0; event < 3; event += 1) {
           overwriteFrame({ width: 200, height: 400 });
