@@ -3300,14 +3300,14 @@ fn restore_utility_labels<R: Runtime>(
             buffer_utility_recovery_position(&window);
             let resizable = toolset_is_resizable(&toolset_id);
             // A dialog must not move palettes (B6). A palette the user left partly off-screen keeps
-            // its place; only one whose title can no longer be grabbed is pulled back. Clamping
+            // its place; only one whose grip rail can no longer be grabbed is pulled back. Clamping
             // every palette here made Main jump after any prompt when it overhung the screen edge
             // (GitHub #304). A frame ChemDraft fitted to a smaller work area still recovers, which
             // returns it to the user's frame once there is room (B9). Resizable inspectors
             // (Molecular Inspector, Drawn Structure Settings) keep the full-frame fit they always
-            // had: their whole content must stay usable, not just their title.
+            // had: their whole content must stay usable, not just their grip rail.
             //
-            // The title test uses the frame recorded just before the hide, not the hidden window's.
+            // The rail test uses the frame recorded just before the hide, not the hidden window's.
             let hidden_at = UTILITY_SUSPENSION
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -3315,7 +3315,7 @@ fn restore_utility_labels<R: Runtime>(
             let fitted = toolset_fit::with_memory(|memory| memory.is_fitted(&label));
             let mut title_reachable = None;
             let refit = restore_refits_toolset(resizable, fitted, || {
-                let reachable = toolset_title_reachable(app, &window, hidden_at);
+                let reachable = toolset_grip_rail_reachable(app, &window, hidden_at);
                 title_reachable = Some(reachable);
                 reachable
             });
@@ -6558,24 +6558,29 @@ impl ScreenRect {
         }
     }
 
+    /// Whether a window with a title row across its top (an analysis panel) can be grabbed by
+    /// it: enough of the row's width lies on this work area, and its full height is clear of the
+    /// menu bar, taskbar or Dock.
     fn contains_title_strip(&self, x: f64, y: f64, width: f64, title_height: f64) -> bool {
-        self.contains_title_strip_at_scale(x, y, width, title_height, 1.0)
+        let overlap = (x + width).min(self.x + self.width) - x.max(self.x);
+        overlap >= width.min(48.0) && y >= self.y && y + title_height <= self.y + self.height
     }
 
-    fn contains_title_strip_at_scale(
-        &self,
-        x: f64,
-        y: f64,
-        width: f64,
-        title_height: f64,
-        scale: f64,
-    ) -> bool {
-        // Leave enough horizontal room to grab the title, and keep its full height clear of
-        // the menu bar, taskbar or Dock.
-        let overlap = (x + width).min(self.x + self.width) - x.max(self.x);
-        overlap >= width.min(48.0 * scale)
+    /// Whether a palette whose outer frame starts at (`x`, `y`) can be grabbed and closed by its
+    /// grip rail: the rail's full width on its left edge, from the close control at its top down
+    /// through the first grip dots ([`TOOLSET_GRIP_RAIL_REACH_HEIGHT`]), lies on this work area.
+    /// Palettes have no title row, so how much of the frame's right part is on screen does not
+    /// matter. `scale` converts the rail's point sizes into this rectangle's units (1 for
+    /// logical points, the window's scale for physical pixels).
+    fn contains_grip_rail_at_scale(&self, x: f64, y: f64, scale: f64) -> bool {
+        x >= self.x
+            && x + TOOLSET_GRIP_RAIL_WIDTH * scale <= self.x + self.width
             && y >= self.y
-            && y + title_height <= self.y + self.height
+            && y + TOOLSET_GRIP_RAIL_REACH_HEIGHT * scale <= self.y + self.height
+    }
+
+    fn contains_grip_rail(&self, x: f64, y: f64) -> bool {
+        self.contains_grip_rail_at_scale(x, y, 1.0)
     }
 }
 
@@ -7740,7 +7745,7 @@ fn resize_toolset_window(
         })
         .unwrap_or(origin);
     let mut placement = toolset_content_placement(source, (width, height), scale, area);
-    // The monitor under most of the palette can differ from the one under its title.
+    // The monitor under most of the palette can differ from the one under its grip rail.
     if placement.position != source
         && monitor_query::available_monitors(app)
             .unwrap_or_default()
@@ -7749,20 +7754,17 @@ fn resize_toolset_window(
                 // AppKit reports the outer position in the window's backing scale.
                 #[cfg(target_os = "macos")]
                 {
-                    monitor_logical_work_area(monitor).contains_title_strip(
+                    monitor_logical_work_area(monitor).contains_grip_rail(
                         f64::from(source.0) / scale,
                         f64::from(source.1) / scale,
-                        width,
-                        TOOLSET_TITLE_HEIGHT,
                     )
                 }
-                // Windows uses one virtual desktop in physical pixels. Size the title with
+                // Windows uses one virtual desktop in physical pixels. Size the rail with
                 // the window's DPI before comparing it to another monitor's physical work area.
                 #[cfg(not(target_os = "macos"))]
                 {
-                    toolset_title_in_physical_work_area(
+                    toolset_grip_rail_in_physical_work_area(
                         source,
-                        width,
                         window_scale,
                         monitor.work_area(),
                     )
@@ -7838,9 +7840,11 @@ fn resize_toolset_window(
     Ok(Some(target))
 }
 
-fn toolset_title_in_physical_work_area(
+/// Whether a palette's grip rail lies on a physical work area. The rail is sized with the palette
+/// window's own scale, which can differ from the monitor's (Windows mixes monitor scales in one
+/// virtual desktop).
+fn toolset_grip_rail_in_physical_work_area(
     position: (i32, i32),
-    width: f64,
     window_scale: f64,
     area: &tauri::PhysicalRect<i32, u32>,
 ) -> bool {
@@ -7850,13 +7854,7 @@ fn toolset_title_in_physical_work_area(
         f64::from(area.size.width),
         f64::from(area.size.height),
     )
-    .contains_title_strip_at_scale(
-        f64::from(position.0),
-        f64::from(position.1),
-        width * window_scale,
-        TOOLSET_TITLE_HEIGHT * window_scale,
-        window_scale,
-    )
+    .contains_grip_rail_at_scale(f64::from(position.0), f64::from(position.1), window_scale)
 }
 
 fn toolset_content_placement(
@@ -11830,7 +11828,7 @@ fn ensure_toolset_window<R: Runtime>(
         // Already built — but it may have been created (or dragged) offscreen earlier, or the
         // display it lived on may have been unplugged while it was hidden. Re-clamp on the way in,
         // so re-opening from View ▸ Toolbars is always enough to recover a lost palette. The clamp
-        // moves a toolbar only when its title strip is unreachable.
+        // moves a toolbar only when its grip rail is unreachable.
         let hidden = !window.is_visible().unwrap_or(false);
         // A palette closed while pinned (palette_map_pin) may still sit at the window manager's
         // clamp; it reopens from the position saved at the close, as long as nothing moved it
@@ -12503,6 +12501,13 @@ fn is_routed_menu_command(command_id: &str) -> bool {
 }
 
 const TOOLSET_TITLE_HEIGHT: f64 = 22.0;
+/// Width of a palette's grip rail, the drag surface on its left edge with the close control at its
+/// top (`.palette-window-shell > .palette-title` in App.css). Palettes have no title row.
+const TOOLSET_GRIP_RAIL_WIDTH: f64 = 14.0;
+/// How much of the grip rail, from its top, must lie on a work area for the palette to count as
+/// reachable: the 14 px close control and the first grip dots below it. The same height the old
+/// title row needed, so the top and bottom edges are judged as before.
+const TOOLSET_GRIP_RAIL_REACH_HEIGHT: f64 = 22.0;
 /// The Main toolbar, which stacks above the other palettes (`DEFAULT_TOOLSET_ID` in TypeScript).
 const MAIN_TOOLSET_ID: &str = "core.main";
 /// The smallest a scrolling inspector may be resized to (its builder's `min_inner_size`).
@@ -12593,7 +12598,9 @@ fn toolset_position_in_work_area(
     height: f64,
     area: ScreenRect,
 ) -> ToolsetWindowPosition {
-    if area.contains_title_strip(position.x, position.y, width, TOOLSET_TITLE_HEIGHT) {
+    // A palette the user left partly off-screen keeps its place while its grip rail (and the
+    // close control at its top) can still be grabbed.
+    if area.contains_grip_rail(position.x, position.y) {
         return position;
     }
     // Pin oversized palettes to the top-left of the work area.
@@ -12618,7 +12625,8 @@ fn inspector_frame_in_work_area(
 }
 
 /// Pull a palette back onto an attached monitor. Scrolling inspectors need the full viewport
-/// inside the work area, while a toolbar only needs a reachable title before it fits its content.
+/// inside the work area, while a toolbar only needs a reachable grip rail before it fits its
+/// content.
 ///
 /// Positions are persisted in logical points, so a toolbar last parked on an external display comes
 /// back at coordinates that no longer exist once that display is unplugged. The window is then
@@ -12654,7 +12662,7 @@ fn clamp_toolset_frame<R: Runtime>(
             )
         })
         .collect::<Vec<_>>();
-    let area = toolset_work_area_for_origin(position, width, &areas).unwrap_or_else(|| {
+    let area = toolset_work_area_for_origin(position, &areas).unwrap_or_else(|| {
         let primary = monitor_query::primary_monitor(app).ok().flatten();
         monitor_logical_work_area(primary.as_ref().unwrap_or(&monitors[0]))
     });
@@ -12746,7 +12754,6 @@ fn saved_toolset_state<R: Runtime>(
 #[cfg(any(not(windows), test))]
 fn toolset_work_area_for_origin(
     position: ToolsetWindowPosition,
-    width: f64,
     monitors: &[(ScreenRect, ScreenRect)],
 ) -> Option<ScreenRect> {
     monitors
@@ -12757,9 +12764,9 @@ fn toolset_work_area_for_origin(
                 && (bounds.y..bounds.y + bounds.height).contains(&position.y)
         })
         .or_else(|| {
-            monitors.iter().find(|(_, area)| {
-                area.contains_title_strip(position.x, position.y, width, TOOLSET_TITLE_HEIGHT)
-            })
+            monitors
+                .iter()
+                .find(|(_, area)| area.contains_grip_rail(position.x, position.y))
         })
         .map(|(_, area)| *area)
 }
@@ -12865,7 +12872,7 @@ fn clamp_toolset_frame_in_physical_space_clear_of(
             if resizable {
                 return None;
             }
-            // A partially offscreen toolbar can still have a reachable title.
+            // A partially offscreen toolbar can still have a reachable grip rail.
             monitors.iter().find(|monitor| {
                 let (x, y) = monitor.identity.position;
                 let area = monitor.work_area;
@@ -12876,13 +12883,7 @@ fn clamp_toolset_frame_in_physical_space_clear_of(
                     area.width * scale,
                     area.height * scale,
                 )
-                .contains_title_strip_at_scale(
-                    physical.0,
-                    physical.1,
-                    size.0 * source_scale,
-                    TOOLSET_TITLE_HEIGHT * source_scale,
-                    source_scale,
-                )
+                .contains_grip_rail_at_scale(physical.0, physical.1, source_scale)
             })
         })
         .unwrap_or(primary);
@@ -13042,7 +13043,7 @@ fn recover_offscreen_toolset_window<R: Runtime>(
             position.y,
             size.width,
             size.height,
-            toolset_title_reachable(app, window, None),
+            toolset_grip_rail_reachable(app, window, None),
             source.x,
             source.y,
             clamped.x,
@@ -13162,7 +13163,7 @@ fn recover_offscreen_toolset_window<R: Runtime>(
             palette_frame_log(format_args!(
                 "recover label={label} path={path} read={physical:?} size={live_size:?} \
                  fitted={fitted} title_reachable={} -> {:?} size->{:?} apply={}",
-                toolset_title_reachable(&app, &target, Some(physical)),
+                toolset_grip_rail_reachable(&app, &target, Some(physical)),
                 placement.position,
                 placement.size,
                 plan.apply,
@@ -13240,22 +13241,21 @@ fn visible_toolset_physical_position<R: Runtime>(
 }
 
 /// Whether restoring utilities after a dialog runs the full-frame fit on a toolset window.
-/// Resizable inspectors always do, as they did before palettes got the title-only test; a palette
-/// does only when ChemDraft fitted its frame earlier or its title can no longer be grabbed.
+/// Resizable inspectors always do, as they did before palettes got the grip-rail-only test; a
+/// palette does only when ChemDraft fitted its frame earlier or its grip rail can no longer be
+/// grabbed.
 fn restore_refits_toolset(
     resizable: bool,
     fitted: bool,
-    title_reachable: impl FnOnce() -> bool,
+    grip_rail_reachable: impl FnOnce() -> bool,
 ) -> bool {
-    resizable || fitted || !title_reachable()
+    resizable || fitted || !grip_rail_reachable()
 }
 
 /// What a pinned palette's positions are judged against (palette_map_pin::Layout): its outer frame,
-/// the monitors' work areas as they are now, and what the title test needs.
+/// the monitors' work areas as they are now, and what the grip-rail test needs.
 struct PalettePinFrame {
     size: (i32, i32),
-    /// The outer width in logical pixels, for the title test.
-    width: f64,
     scale: f64,
     monitor_areas: Vec<tauri::PhysicalRect<i32, u32>>,
     work_areas: Vec<palette_map_pin::WorkArea>,
@@ -13285,23 +13285,22 @@ impl PalettePinFrame {
                 i32::try_from(size.width).unwrap_or(i32::MAX),
                 i32::try_from(size.height).unwrap_or(i32::MAX),
             ),
-            width: size.to_logical::<f64>(scale).width,
             scale,
             monitor_areas,
             work_areas,
         })
     }
 
-    /// The restore's title test (toolset_title_reachable) on the monitors as they are now. Pins
-    /// exist only on Linux X11, which reports physical pixels.
-    fn title_reachable(&self, target: (i32, i32)) -> bool {
+    /// The restore's grip-rail test (toolset_grip_rail_reachable) on the monitors as they are now.
+    /// Pins exist only on Linux X11, which reports physical pixels.
+    fn grip_rail_reachable(&self, target: (i32, i32)) -> bool {
         self.monitor_areas
             .iter()
-            .any(|area| toolset_title_in_physical_work_area(target, self.width, self.scale, area))
+            .any(|area| toolset_grip_rail_in_physical_work_area(target, self.scale, area))
     }
 
     fn judge<T>(&self, task: impl FnOnce(&palette_map_pin::Layout<'_>) -> T) -> T {
-        let title_reachable = |target: (i32, i32)| self.title_reachable(target);
+        let title_reachable = |target: (i32, i32)| self.grip_rail_reachable(target);
         task(&palette_map_pin::Layout {
             size: self.size,
             work_areas: &self.work_areas,
@@ -13473,7 +13472,7 @@ fn pin_palette_for_map<R: Runtime>(
                     .ok()
                     .map(|position| (position.x, position.y).into())
             })
-            .filter(|target| toolset_title_reachable(app, window, Some(target.position)))
+            .filter(|target| toolset_grip_rail_reachable(app, window, Some(target.position)))
     };
     palette_frame_log(format_args!(
         "pin label={label} path={path} moved_to={moved_to:?} hidden_at={hidden_at:?} \
@@ -13560,11 +13559,12 @@ fn palette_moved_by_map<R: Runtime>(window: &tauri::Window<R>) -> bool {
     }
 }
 
-/// Whether enough of a palette's title strip lies on a monitor's work area for the user to grab it.
-/// Uses the same per-platform test as the content fit: points on macOS, virtual-desktop pixels
-/// elsewhere (Windows mixes monitor scales; Linux X11 reports pixels). `position` is the physical
-/// outer position to test, such as the one recorded before a hide; `None` reads the window's own.
-fn toolset_title_reachable<R: Runtime>(
+/// Whether enough of a palette's grip rail (the close control at its top and the grip below it)
+/// lies on a monitor's work area for the user to grab it. Uses the same per-platform test as the
+/// content fit: points on macOS, virtual-desktop pixels elsewhere (Windows mixes monitor scales;
+/// Linux X11 reports pixels). `position` is the physical outer position to test, such as the one
+/// recorded before a hide; `None` reads the window's own.
+fn toolset_grip_rail_reachable<R: Runtime>(
     app: &tauri::AppHandle<R>,
     window: &tauri::WebviewWindow<R>,
     position: Option<(i32, i32)>,
@@ -13576,26 +13576,23 @@ fn toolset_title_reachable<R: Runtime>(
             Err(_) => return false,
         },
     };
-    let (Ok(size), Ok(scale)) = (window.outer_size(), window.scale_factor()) else {
+    let Ok(scale) = window.scale_factor() else {
         return false;
     };
-    let width = size.to_logical::<f64>(scale).width;
     monitor_query::available_monitors(app)
         .unwrap_or_default()
         .iter()
         .any(|monitor| {
             #[cfg(target_os = "macos")]
             {
-                monitor_logical_work_area(monitor).contains_title_strip(
+                monitor_logical_work_area(monitor).contains_grip_rail(
                     f64::from(position.0) / scale,
                     f64::from(position.1) / scale,
-                    width,
-                    TOOLSET_TITLE_HEIGHT,
                 )
             }
             #[cfg(not(target_os = "macos"))]
             {
-                toolset_title_in_physical_work_area(position, width, scale, monitor.work_area())
+                toolset_grip_rail_in_physical_work_area(position, scale, monitor.work_area())
             }
         })
 }
@@ -14945,27 +14942,34 @@ mod tests {
     }
 
     #[test]
-    fn palette_content_fit_recovers_the_title_strip_and_keeps_a_reachable_dragged_origin() {
+    fn palette_content_fit_recovers_the_grip_rail_and_keeps_a_reachable_dragged_origin() {
         let area = ScreenRect::new(0.0, 24.0, 950.0, 636.0);
         for scale in [1.0, 1.5, 2.0] {
             let physical = |(x, y): (f64, f64)| ((x * scale) as i32, (y * scale) as i32);
-            // In each case the body may be visible but the title does not have a usable strip.
+            // In each case the body may be visible but the grip rail (close control on top) is
+            // not on the work area.
             for origin in [
                 (286.0, -100.0),
                 (286.0, 0.0),
-                (904.0, 110.0),
+                (-100.0, 110.0),
+                (940.0, 110.0),
                 (310.0, 640.0),
             ] {
                 let fit = toolset_content_placement(physical(origin), (940.0, 200.0), scale, area);
                 assert_ne!(fit.position, physical(origin));
-                assert!(area.contains_title_strip(
+                assert!(area.contains_grip_rail(
                     f64::from(fit.position.0) / scale,
                     f64::from(fit.position.1) / scale,
-                    940.0,
-                    TOOLSET_TITLE_HEIGHT,
                 ));
             }
-            for origin in [(310.0, 110.0), (902.0, 638.0)] {
+            // A palette whose right part runs off the screen keeps its place while the rail is on
+            // it (904: only 46 of 940 points are on screen, all of them the rail and beyond).
+            for origin in [
+                (310.0, 110.0),
+                (902.0, 638.0),
+                (904.0, 110.0),
+                (936.0, 110.0),
+            ] {
                 let dragged = physical(origin);
                 let fit = toolset_content_placement(dragged, (940.0, 660.0), scale, area);
                 assert_eq!(fit.position, dragged);
@@ -14985,7 +14989,6 @@ mod tests {
         };
         let area = toolset_work_area_for_origin(
             origin,
-            500.0,
             &[(primary, primary), (secondary, secondary_work_area)],
         )
         .unwrap();
@@ -15135,32 +15138,215 @@ mod tests {
     }
 
     #[test]
-    fn palette_title_does_not_overlap_a_high_dpi_monitor_across_a_physical_gap() {
-        // The 200% display starts at x = 1920. The 160 px palette on the 100% display starts
-        // 200 physical pixels before that edge, leaving a 40 px gap.
+    fn palette_grip_rail_does_not_overlap_a_high_dpi_monitor_across_a_physical_gap() {
+        // The 200% display starts at x = 1920. A 100% palette's 14 px rail must lie wholly on it.
         let high_dpi_work_area = tauri::PhysicalRect {
             position: tauri::PhysicalPosition::new(1920, 0),
             size: tauri::PhysicalSize::new(3840, 2080),
         };
-        assert!(!toolset_title_in_physical_work_area(
+        // 200 px before the edge: most of a wide palette may be on the display, never the rail.
+        assert!(!toolset_grip_rail_in_physical_work_area(
             (1720, 100),
-            160.0,
             1.0,
             &high_dpi_work_area,
         ));
-        assert!(toolset_title_in_physical_work_area(
-            (1808, 100),
-            160.0,
+        assert!(!toolset_grip_rail_in_physical_work_area(
+            (1919, 100),
             1.0,
             &high_dpi_work_area,
         ));
-        // At 200%, a 22-point title needs 44 physical pixels below the top edge.
-        assert!(!toolset_title_in_physical_work_area(
+        assert!(toolset_grip_rail_in_physical_work_area(
+            (1920, 100),
+            1.0,
+            &high_dpi_work_area,
+        ));
+        // At 200% the rail's reach (close control and first grip dots, 22 points) needs 44
+        // physical pixels above the bottom edge, and its 14 points need 28 before the right edge.
+        assert!(!toolset_grip_rail_in_physical_work_area(
             (1920, 2040),
-            160.0,
             2.0,
             &high_dpi_work_area,
         ));
+        assert!(toolset_grip_rail_in_physical_work_area(
+            (1920, 2036),
+            2.0,
+            &high_dpi_work_area,
+        ));
+        assert!(toolset_grip_rail_in_physical_work_area(
+            (5732, 100),
+            2.0,
+            &high_dpi_work_area,
+        ));
+        assert!(!toolset_grip_rail_in_physical_work_area(
+            (5733, 100),
+            2.0,
+            &high_dpi_work_area,
+        ));
+    }
+
+    #[test]
+    fn a_palette_saved_with_its_grip_rail_off_the_left_edge_moves_on_screen() {
+        let bounds = ScreenRect::new(0.0, 0.0, 1440.0, 900.0);
+        let area = ScreenRect::new(0.0, 24.0, 1440.0, 876.0);
+        let saved = ToolsetWindowPosition {
+            x: -100.0,
+            y: 200.0,
+        };
+        // 200 of the 300 points are on screen, which a title row would have accepted (analysis
+        // panels still use that rule), but the rail and its close control (x -100..-86) are not.
+        assert!(area.contains_title_strip(saved.x, saved.y, 300.0, TOOLSET_TITLE_HEIGHT));
+        assert!(!area.contains_grip_rail(saved.x, saved.y));
+        // No work area can explain the origin, so the caller falls back to the primary.
+        assert_eq!(toolset_work_area_for_origin(saved, &[(bounds, area)]), None);
+        let (position, width, height) =
+            toolset_frame_in_work_area(saved, (300.0, 60.0), false, area);
+        assert_eq!(
+            (position.x, position.y, width, height),
+            (0.0, 200.0, 300.0, 60.0)
+        );
+        assert!(area.contains_grip_rail(position.x, position.y));
+        // The content fit moves it too, at every scale.
+        for scale in [1.0, 1.5, 2.0] {
+            let origin = ((saved.x * scale) as i32, (saved.y * scale) as i32);
+            let fit = toolset_content_placement(origin, (300.0, 60.0), scale, area);
+            assert_eq!(fit.position, (0, (200.0 * scale) as i32));
+        }
+        // And so does the Windows clamp in virtual-desktop pixels.
+        let monitor = ToolsetMonitor {
+            identity: panel_window_frame::MonitorIdentity {
+                name: None,
+                position: (0, 0),
+                size: (1440, 900),
+            },
+            scale: 1.0,
+            work_area: area,
+        };
+        let (placement, adjusted) = clamp_toolset_frame_in_physical_space_clear_of(
+            ToolsetFrameOrigin::Physical((-100, 200), 1.0),
+            (300.0, 60.0),
+            false,
+            std::slice::from_ref(&monitor),
+            &monitor,
+            None,
+        );
+        assert!(adjusted);
+        assert_eq!(placement.position, (0, 200));
+    }
+
+    #[test]
+    fn a_palette_whose_right_part_is_off_screen_keeps_its_place_while_its_rail_is_visible() {
+        let bounds = ScreenRect::new(0.0, 0.0, 1440.0, 900.0);
+        let area = ScreenRect::new(0.0, 24.0, 1440.0, 876.0);
+        // Only the rail and 26 points of tools are on screen; the rest runs past the right edge.
+        for x in [1400.0, 1426.0, 0.0] {
+            let saved = ToolsetWindowPosition { x, y: 200.0 };
+            assert!(area.contains_grip_rail(saved.x, saved.y));
+            assert_eq!(
+                toolset_work_area_for_origin(saved, &[(bounds, area)]),
+                Some(area)
+            );
+            let (position, _, _) = toolset_frame_in_work_area(saved, (300.0, 60.0), false, area);
+            assert_eq!((position.x, position.y), (x, 200.0));
+        }
+        // One point further and the rail's right edge leaves the screen.
+        assert!(!area.contains_grip_rail(1427.0, 200.0));
+        let (position, _, _) = toolset_frame_in_work_area(
+            ToolsetWindowPosition {
+                x: 1427.0,
+                y: 200.0,
+            },
+            (300.0, 60.0),
+            false,
+            area,
+        );
+        assert_eq!((position.x, position.y), (1140.0, 200.0));
+        let monitor = ToolsetMonitor {
+            identity: panel_window_frame::MonitorIdentity {
+                name: None,
+                position: (0, 0),
+                size: (1440, 900),
+            },
+            scale: 1.0,
+            work_area: area,
+        };
+        let (placement, adjusted) = clamp_toolset_frame_in_physical_space_clear_of(
+            ToolsetFrameOrigin::Physical((1400, 200), 1.0),
+            (300.0, 60.0),
+            false,
+            std::slice::from_ref(&monitor),
+            &monitor,
+            None,
+        );
+        assert!(!adjusted);
+        assert_eq!(placement.position, (1400, 200));
+    }
+
+    #[test]
+    fn a_palette_grip_rail_is_judged_at_its_monitor_scale_across_mixed_displays() {
+        // A 100% primary and a 200% secondary to its right (2560x1500 pixels, 1280x750 points
+        // with a 720-point work area).
+        let monitors = [
+            ToolsetMonitor {
+                identity: panel_window_frame::MonitorIdentity {
+                    name: None,
+                    position: (0, 0),
+                    size: (1920, 1080),
+                },
+                scale: 1.0,
+                work_area: ScreenRect::new(0.0, 0.0, 1920.0, 1080.0),
+            },
+            ToolsetMonitor {
+                identity: panel_window_frame::MonitorIdentity {
+                    name: None,
+                    position: (1920, 0),
+                    size: (2560, 1500),
+                },
+                scale: 2.0,
+                work_area: ScreenRect::new(0.0, 0.0, 1280.0, 720.0),
+            },
+        ];
+        let clamp = |origin: (i32, i32), scale: f64| {
+            clamp_toolset_frame_in_physical_space_clear_of(
+                ToolsetFrameOrigin::Physical(origin, scale),
+                (300.0, 60.0),
+                false,
+                &monitors,
+                &monitors[0],
+                None,
+            )
+        };
+        // On the 200% display the rail is 28 pixels: at 1240 points its rail (to 1254) is on
+        // the 1280-point work area while most of the 300-point palette is past the edge.
+        let (placement, adjusted) = clamp((1920 + 2480, 200), 2.0);
+        assert!(!adjusted);
+        assert_eq!(placement.position, (4400, 200));
+        // At 1275 points the rail would end at 1289: moved back so the whole palette fits.
+        let (placement, adjusted) = clamp((1920 + 2550, 200), 2.0);
+        assert!(adjusted);
+        assert_eq!(placement.position, (1920 + 2 * 980, 200));
+        // A 100% palette straddling the seam has its rail on neither display.
+        let physical_area = |monitor: &ToolsetMonitor| tauri::PhysicalRect {
+            position: tauri::PhysicalPosition::new(
+                monitor.identity.position.0 + (monitor.work_area.x * monitor.scale) as i32,
+                monitor.identity.position.1 + (monitor.work_area.y * monitor.scale) as i32,
+            ),
+            size: tauri::PhysicalSize::new(
+                (monitor.work_area.width * monitor.scale) as u32,
+                (monitor.work_area.height * monitor.scale) as u32,
+            ),
+        };
+        let areas = monitors.iter().map(physical_area).collect::<Vec<_>>();
+        let reachable = |position: (i32, i32), scale: f64| {
+            areas
+                .iter()
+                .any(|area| toolset_grip_rail_in_physical_work_area(position, scale, area))
+        };
+        assert!(!reachable((1910, 200), 1.0));
+        assert!(reachable((1906, 200), 1.0));
+        assert!(reachable((1920, 200), 1.0));
+        // A 200% palette's rail needs 28 pixels on the 100% display, a 100% palette's only 14.
+        assert!(!reachable((1900, 200), 2.0));
+        assert!(reachable((1900, 200), 1.0));
     }
 
     #[test]
@@ -18240,7 +18426,8 @@ mod tests {
                 panic!("an inspector's title strip is never measured")
             }));
         }
-        // A palette the user left partly off-screen keeps its place while its title is reachable.
+        // A palette the user left partly off-screen keeps its place while its grip rail is
+        // reachable.
         expect_false(restore_refits_toolset(false, false, || true));
         expect_true(restore_refits_toolset(false, false, || false));
         // A frame ChemDraft fitted earlier still recovers.
@@ -18280,7 +18467,7 @@ mod tests {
         let show = restore
             .find("restore_utility_in_document_group(&window)")
             .unwrap();
-        expect_true(hidden < restore.find("toolset_title_reachable(").unwrap());
+        expect_true(hidden < restore.find("toolset_grip_rail_reachable(").unwrap());
         expect_true(pin < show);
         // A palette shown again at its pin's clamp is moved back without waiting for a Moved event.
         expect_true(
