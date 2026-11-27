@@ -1,13 +1,71 @@
-import { isEngineDocument, moleculeToMolfileV2000, type ChemDraftDocument, type MoleculeAtom, type MoleculeObject } from "@chemdraft/chem-core";
+import {
+  isDativeBond, isEngineDocument, moleculeToMolfileV2000,
+  type ChemDraftDocument, type MoleculeAtom, type MoleculeBond, type MoleculeObject
+} from "@chemdraft/chem-core";
 import { expandNativeMoleculeLabelGroups, nativeSingleHeavyElementLabelValence } from "@chemdraft/document-workflow-core";
-import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
+import { nativeBondOrderResolution, nativeBondOrderValue } from "@chemdraft/layout-engine";
 import {
   createStructureSourceFingerprint,
   type PluginSelectedMolecule,
-  type PluginSelectionSnapshot,
-  type PluginStructureFormat
+  type PluginSelectionSnapshot
 } from "@chemdraft/plugin-api";
-import type { RequestSnapshotBudget } from "@chemdraft/plugin-host";
+import { pinSelectionPages, resolveObjectOnPage, type RequestSnapshotBudget } from "@chemdraft/plugin-host";
+import { toSelectionItemsMulti, type NativeMoleculePartSelection } from "../selection/selectionPolicy";
+
+export function pluginSelectionObjectIds(document: ChemDraftDocument, parts: readonly NativeMoleculePartSelection[]): string[] {
+  return [...new Set([...document.selection.objectIds, ...liveSelectedAtoms(document, parts).keys()])];
+}
+
+function liveSelectedAtoms(document: ChemDraftDocument, parts: readonly NativeMoleculePartSelection[],
+  selectionPages?: ReadonlyMap<string, string>): Map<string, string[]> {
+  const atomIdsByObject = new Map<string, Set<string>>();
+  for (const item of toSelectionItemsMulti([], parts)) {
+    if (item.kind !== "atom") continue;
+    const ids = atomIdsByObject.get(item.objectId) ?? new Set<string>();
+    ids.add(item.atomId);
+    atomIdsByObject.set(item.objectId, ids);
+  }
+  const pages = selectionPages ?? pinSelectionPages(document, [...atomIdsByObject.keys()],
+    document.selection.pageId ?? document.pages[0]?.id).pages;
+  const selected = new Map<string, string[]>();
+  for (const [objectId, ids] of atomIdsByObject) {
+    const pageId = pages.get(objectId);
+    const object = pageId === undefined ? undefined : resolveObjectOnPage(document, pageId, objectId)?.object;
+    if (object?.type !== "molecule") continue;
+    const live = [...ids].filter(id => object.atoms?.some(atom => atom.id === id));
+    if (live.length) selected.set(objectId, live);
+  }
+  return selected;
+}
+
+type PluginFacingStructure = Required<Pick<PluginSelectedMolecule, "structureFormat" | "structure" | "connectionPoints">>;
+
+function connectionPointsFor(molecule: MoleculeObject): PluginFacingStructure["connectionPoints"] {
+  const drawnPoints = molecule.atoms.filter(atom => atom.element === "X");
+  if (drawnPoints.length === 0) return [];
+
+  // Label expansion keeps drawn atom ids and indices, and the molfile writer uses that order.
+  const atomIndices = new Map(molecule.atoms.map((atom, index) => [atom.id, index + 1]));
+  const bondsByPoint = new Map(drawnPoints.map(atom => [atom.id, [] as MoleculeBond[]]));
+  for (const bond of molecule.bonds) {
+    if (!atomIndices.has(bond.fromAtomId) || !atomIndices.has(bond.toAtomId)) continue;
+    bondsByPoint.get(bond.fromAtomId)?.push(bond);
+    bondsByPoint.get(bond.toAtomId)?.push(bond);
+  }
+
+  return drawnPoints.map(({ id }) => {
+    const atom = atomIndices.get(id)!;
+    const incident = bondsByPoint.get(id)!;
+    if (incident.length !== 1) return { atom, anchor: 0, bondOrder: 0 };
+
+    const bond = incident[0]!;
+    const anchor = atomIndices.get(bond.fromAtomId === id ? bond.toAtomId : bond.fromAtomId)!;
+    // Preserve the drawn order here even when V2000 encodes an approximation.
+    const bondOrder = bond.order === "unknown" || isDativeBond(bond) ? 0
+      : bond.order === "aromatic" ? 1.5 : nativeBondOrderValue[bond.order];
+    return { atom, anchor, bondOrder };
+  });
+}
 
 /**
  * The structure a plugin should analyze for `molecule`.
@@ -20,13 +78,13 @@ import type { RequestSnapshotBudget } from "@chemdraft/plugin-host";
  *
  * So whenever a live graph exists we serialize it to a lossless V2000 molfile — a plain connection
  * table (no OCL, no aromaticity/ring perception on our side; the plugin's OCL does that) — and let the
- * plugin parse it. Only when there is no graph (e.g. a molecule imported as SMILES that was never
- * parsed) do we fall back to the object's existing structure string.
+ * plugin parse it. When there is no graph or it cannot be represented in V2000, fall back to the
+ * object's existing structure string without assigning molfile indices.
  */
 export function pluginFacingStructure(
   molecule: MoleculeObject,
   warnings: string[] = []
-): { structureFormat: PluginStructureFormat; structure: string } {
+): PluginFacingStructure {
   if (molecule.atoms && molecule.atoms.length > 0) {
     try {
       // A valid group label ("OMe", "Ph") is handed over as the atoms it stands for, appended after
@@ -49,7 +107,8 @@ export function pluginFacingStructure(
           kekuleBondOrders: nativeBondOrderResolution(expanded.atoms, expanded.bonds).kekuleOrders,
           spellLabel: nativeSingleHeavyElementLabelValence,
           placeholderAtoms
-        }).contents
+        }).contents,
+        connectionPoints: connectionPointsFor(molecule)
       };
     } catch (error) {
       warnings.push(`Molecule ${molecule.id} could not be written from its graph: ${String(error)}; using its stored structure.`);
@@ -57,7 +116,7 @@ export function pluginFacingStructure(
       // rather than dropping the molecule from the selection.
     }
   }
-  return { structureFormat: molecule.structureFormat, structure: molecule.structure };
+  return { structureFormat: molecule.structureFormat, structure: molecule.structure, connectionPoints: [] };
 }
 
 /** Signed orientation, with a relative tolerance for roundoff at collinear points after rotation. */
@@ -189,7 +248,7 @@ function moleculeSourceFingerprint(
 
 /**
  * Build a selection snapshot from the active document: for each selected molecule, its object /
- * page / document identity, structure, and a source fingerprint for staleness detection. Molecules
+ * page / document identity, structure, drawn connection points, and a source fingerprint. Molecules
  * follow the document's selection order. Pure and testable — no React, no refs. The host deep-copies
  * and freezes whatever this returns before handing it to a plugin.
  *
@@ -199,21 +258,26 @@ function moleculeSourceFingerprint(
 export function buildPluginSelectionSnapshot(
   document: ChemDraftDocument,
   warnings: string[] = [],
-  budget?: RequestSnapshotBudget
+  budget?: RequestSnapshotBudget,
+  parts?: readonly NativeMoleculePartSelection[],
+  selectionPages?: ReadonlyMap<string, string>
 ): PluginSelectionSnapshot {
   const molecules: PluginSelectedMolecule[] = [];
-  const snapshot = { objectIds: document.selection.objectIds, molecules };
+  const selectedAtoms = liveSelectedAtoms(document, parts ?? [], selectionPages);
+  const objectIds = [...new Set([...document.selection.objectIds, ...selectedAtoms.keys()])];
+  const snapshot = { objectIds, molecules };
   budget?.(snapshot);
   const located = new Map<string, { pageId: string; molecule: MoleculeObject }>();
   for (const page of document.pages) {
     for (const object of page.objects) {
-      if (object.type === "molecule") {
+      if (object.type === "molecule" && (selectionPages ? selectionPages.get(object.id) === page.id :
+          !located.has(object.id) || page.id === document.selection.pageId)) {
         located.set(object.id, { pageId: page.id, molecule: object });
       }
     }
   }
 
-  for (const objectId of document.selection.objectIds) {
+  for (const objectId of objectIds) {
     const hit = located.get(objectId);
     if (!hit) {
       continue;
@@ -223,8 +287,8 @@ export function buildPluginSelectionSnapshot(
       objectId,
       documentId: document.id,
       pageId: hit.pageId,
-      structureFormat: facing.structureFormat,
-      structure: facing.structure,
+      ...(parts && { selectedAtomIds: selectedAtoms.get(objectId) ?? [] }),
+      ...facing,
       // Retain stereo geometry while keeping pure translations and rotations out of the key.
       sourceFingerprint: moleculeSourceFingerprint(document, hit.pageId, hit.molecule)
     };

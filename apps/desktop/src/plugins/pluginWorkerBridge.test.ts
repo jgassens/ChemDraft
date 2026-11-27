@@ -31,7 +31,7 @@ import {
   type PluginToolCall
 } from "@chemdraft/plugin-api";
 import { createMassRegistration, massAnalyzeCommandId, massFragmentManifest } from "@chemdraft/plugin-mass-fragment";
-import { PluginHost, type RegisterPluginOptions } from "@chemdraft/plugin-host";
+import { PluginHost, type PluginAppHandoffProvenanceProvider, type RegisterPluginOptions } from "@chemdraft/plugin-host";
 import { describe, expect, it, vi } from "vitest";
 import { AssistantCapabilityPermissions } from "@chemdraft/plugin-api";
 
@@ -43,6 +43,8 @@ import { applyPatch, createEmptyDocument, MoleculeObjectSchema } from "@chemdraf
 import { ToolSessionController } from "./toolSessions/ToolSessionController";
 import type { McpBridgeRequest, McpBridgeResponse } from "./toolSessions/transport";
 import { buildPluginTablePatch } from "./buildPluginTablePatch";
+import { buildConnectionPointsPatch } from "./connectionPointEdit";
+import { AssistantTransactions } from "../assistant/assistantTransaction";
 
 type MessageListener = (event: { data: unknown }) => void;
 
@@ -164,6 +166,279 @@ function startWorkerRoutedPlugin(registration: PluginWorkerRegistration): Plugin
   });
 }
 
+const handoffCommand = "plugin.crystalBuilder.buildMof";
+
+it("passes optional application identity and connection-point capability over the Worker boundary", async () => {
+  const commandId = "plugin.connection-points.mark";
+  const manifest = parsePluginManifest({
+    id: "org.test.connection-points", name: "Connection points", version: "1", apiVersion: PluginApiVersion,
+    entry: "worker.js", permissions: ["document.write", "selection.read"],
+    contributes: { commands: [{ id: commandId, title: "Mark" }] }
+  });
+  const request = { objectId: "m1", anchors: ["anchor-1"] };
+  const selection = { ...BENZENE, molecules: [{ ...BENZENE.molecules[0]!, selectedAtomIds: ["anchor-1"],
+    connectionPoints: [{ atom: 7, anchor: 1, bondOrder: 1 }] }] };
+  const bridge = startWorkerRoutedPlugin({
+    manifest, commandHandlers: { [commandId]: async context => {
+      const snapshot = await context.selection!.getSelection();
+      expect(Object.isFrozen(snapshot)).toBe(true);
+      expect(Object.isFrozen(snapshot.objectIds)).toBe(true);
+      expect(Object.isFrozen(snapshot.molecules)).toBe(true);
+      expect(Object.isFrozen(snapshot.molecules[0])).toBe(true);
+      const ids = snapshot.molecules[0]?.selectedAtomIds;
+      if (ids) {
+        expect(Object.isFrozen(ids)).toBe(true);
+        expect(() => (ids as string[]).push("injected")).toThrow(TypeError);
+        expect(Object.isFrozen(snapshot.molecules[0]!.connectionPoints![0])).toBe(true);
+      }
+      return { host: context.host, selection: snapshot, receipt: await context.documents.addConnectionPoints?.(request) };
+    } }
+  });
+  try {
+    const oldHost = new PluginHost({ getSelection: () => BENZENE });
+    oldHost.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+    expect(await oldHost.invokeCommand(commandId)).toEqual({ host: undefined, selection: BENZENE, receipt: undefined });
+    const document = createEmptyDocument({ pageId: "p1" });
+    document.pages[0]!.objects = [MoleculeObjectSchema.parse({
+      id: "m1", type: "molecule", x: 150, y: 150, width: 30, height: 30,
+      structure: "C", structureFormat: "smiles", atoms: [{ id: "anchor-1", element: "C", x: 160, y: 160 }]
+    })];
+    document.selection = { pageId: "p1", objectIds: ["m1"] };
+    const mark = vi.fn().mockResolvedValue({ applied: true, objectIds: [request.objectId] });
+    const host = new PluginHost({ identity: { name: "ChemDraft", version: "1.2.3" }, getSelection: () => selection,
+      getActiveDocument: () => document, buildConnectionPointsPatch, applyDocumentPatch: mark });
+    host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+    expect(await host.invokeCommand(commandId)).toEqual({
+      host: { name: "ChemDraft", version: "1.2.3" }, selection, receipt: { applied: true, objectIds: [request.objectId] }
+    });
+    expect(mark).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      undoLabel: "Mark connection points", writeScopeObjectIds: [request.objectId],
+      connectionPointEdit: expect.objectContaining({ anchors: request.anchors })
+    }));
+  } finally { bridge.terminate(); }
+});
+
+const handoffManifest = parsePluginManifest({
+  id: "org.chemdraft.handoff.crystalBuilder", name: "Crystal Builder", version: "1.0.0",
+  apiVersion: PluginApiVersion, entry: "worker.js",
+  permissions: [...new Set([...AssistantCapabilityPermissions, "apps.handoff", "native.execute"])],
+  contributes: {
+    commands: [{ id: handoffCommand, title: "Build" }],
+    menus: [{ id: "menu.crystalBuilder.buildMof", title: "Build", commandId: handoffCommand }]
+  }
+});
+const handoffProvenance = (): ReturnType<PluginAppHandoffProvenanceProvider["forRegistration"]> => ({
+  source: "catalog", repository: "jgassens/ChemDraft-CrystalBuilder-Plugin", checksumVerified: true
+});
+const invocation = { commandId: handoffCommand, pluginId: handoffManifest.id, nonce: "9".repeat(32) };
+const handoffSend = { appId: "opaque", fileName: "model", extension: "cif" as const, text: "test data" };
+
+describe("Worker app handoff", () => {
+  it.each(["status", "failure", "throw"])("bounds a handoff command's %s before crossing the Worker port", async kind => {
+    const host = new PluginHost({ appHandoffProvenance: { forRegistration: handoffProvenance, forCall: handoffProvenance } });
+    const text = "🧪".repeat(600);
+    const bounded = "🧪".repeat(500) + "…";
+    const bridge = startWorkerRoutedPlugin({
+      manifest: handoffManifest,
+      commandHandlers: { [handoffCommand]: () => {
+        if (kind === "throw") throw new Error(text);
+        if (kind === "failure") return { ok: false, error: { code: "build", message: text } };
+        return { ok: true, data: { status: text } };
+      } }
+    });
+    try {
+      await bridge.whenReady();
+      host.registerPlugin(handoffManifest, createWorkerRoutedOptions(handoffManifest, bridge));
+      const call = host.invokeAppHandoffMenuCommand(invocation);
+      if (kind === "throw") await expect(call).rejects.toMatchObject({ message: bounded });
+      else await expect(call).resolves.toEqual(kind === "failure"
+        ? { ok: false, error: { code: "build", message: bounded } }
+        : { ok: true, data: { status: bounded } });
+    } finally {
+      bridge.terminate();
+    }
+  });
+
+  it("relays a command's handoff, rejects its extra fields and offers no self-invocation dispatcher", async () => {
+    const transport = vi.fn(async () => ({ status: "sent" }));
+    const observed = vi.fn();
+    class ObservedHost extends PluginHost {
+      protected override observeAppHandoffCall(...args: Parameters<PluginHost["observeAppHandoffCall"]>) {
+        observed(...args);
+      }
+    }
+    const host = new ObservedHost({
+      appHandoffProvenance: { forRegistration: handoffProvenance, forCall: handoffProvenance },
+      appHandoffTransport: transport
+    });
+    const bridge = startWorkerRoutedPlugin({
+      manifest: handoffManifest,
+      commandHandlers: { [handoffCommand]: async ctx => {
+        expect(ctx).not.toHaveProperty("commands");
+        expect(ctx).not.toHaveProperty("invokeCommand");
+        const forged = { ...handoffSend, commandId: handoffCommand };
+        await expect(ctx.apps!.sendFile(forged)).rejects.toThrow("Invalid apps.sendFile request");
+        const unreadable = { ...handoffSend, get text(): string { throw new Error("Do not copy this input."); } };
+        await expect(ctx.apps!.sendFile(unreadable)).rejects.toThrow("Could not read the request fields.");
+        expect(transport).not.toHaveBeenCalled();
+        if (ctx.input) throw new Error("Unexpected command input");
+        return ctx.apps!.sendFile(handoffSend);
+      } }
+    });
+    try {
+      await bridge.whenReady();
+      host.registerPlugin(handoffManifest, createWorkerRoutedOptions(handoffManifest, bridge));
+      await expect(host.invokeAppHandoffMenuCommand(invocation)).resolves.toEqual({ status: "sent" });
+      expect(observed.mock.calls.map(([, method, request]) => [method, request])).toEqual([
+        ["sendFile", null], ["sendFile", null], ["sendFile", handoffSend]
+      ]);
+      expect(transport).toHaveBeenCalledExactlyOnceWith(invocation, "sendFile", handoffSend);
+    } finally {
+      bridge.terminate();
+    }
+  });
+
+  it("refuses raw self-invocation and malformed calls from a Worker during a live command", async () => {
+    const { mainSide, workerSide } = linkedEndpoints();
+    const transport = vi.fn();
+    const replies: unknown[] = [];
+    const host = new PluginHost({
+      appHandoffProvenance: { forRegistration: handoffProvenance, forCall: handoffProvenance },
+      appHandoffTransport: transport
+    });
+    runPluginWorker({
+      manifest: handoffManifest,
+      commandHandlers: { [handoffCommand]: async () => { await vi.waitFor(() => expect(replies).toHaveLength(3)); } }
+    }, asEndpoint(workerSide));
+    workerSide.addEventListener("message", ({ data }: { data: HostToWorkerMessage }) => {
+      expect(JSON.stringify(data)).not.toContain(invocation.nonce);
+      if (data.kind === "invokeCommand") {
+        const base = { kind: "capabilityRequest", commandRequestId: data.commandRequestId, args: [handoffSend] };
+        workerSide.postMessage({ ...base, requestId: 101, namespace: "commands", method: "invoke", args: [handoffCommand] });
+        workerSide.postMessage({ ...base, requestId: 102, namespace: "apps", method: "sendFile",
+          args: [handoffSend, { commandId: handoffCommand }] });
+        workerSide.postMessage({ ...base, requestId: 103, namespace: "apps", method: "sendFile",
+          args: [{ ...handoffSend, token: "copied" }] });
+      } else if (data.kind === "capabilityResult") replies.push(data);
+    });
+    const bridge = new PluginWorkerBridge({ pluginId: handoffManifest.id, createWorker: () => asHandle(mainSide) });
+    try {
+      await bridge.whenReady();
+      host.registerPlugin(handoffManifest, createWorkerRoutedOptions(handoffManifest, bridge));
+      await host.invokeAppHandoffMenuCommand(invocation);
+      expect(replies).toEqual(expect.arrayContaining([
+        expect.objectContaining({ requestId: 101, ok: false }),
+        expect.objectContaining({ requestId: 102, ok: false,
+          error: expect.objectContaining({ code: PluginWorkerErrorCodes.MalformedMessage }) }),
+        expect.objectContaining({ requestId: 103, ok: false, error: expect.objectContaining({ message: expect.stringContaining("Invalid apps.sendFile request") }) })
+      ]));
+      expect(transport).not.toHaveBeenCalled();
+    } finally {
+      bridge.terminate();
+    }
+  });
+
+  it("omits apps in legacy assistant and request-bound tools dispatched through MCP", async () => {
+    let listener: ((call: McpBridgeRequest) => void) | undefined;
+    const responded = vi.fn(async (_session: string, _callId: string, _response: McpBridgeResponse) => {});
+    const transport = vi.fn();
+    const document = createEmptyDocument();
+    const transactions = new AssistantTransactions({
+      read: () => document, onUserEdit: () => () => {}, push: () => {}, amend: () => {}, select: () => {}, undo: () => false
+    });
+    const runtime = createPluginRuntime({
+      getActiveDocument: () => document,
+      getActiveDocumentTab: () => ({ id: "tab" }),
+      captureRequestDocument: () => ({ key: "tab", read: () => document }),
+      getAssistantDocument: () => document,
+      assistantTransactions: () => transactions,
+      appHandoffProvenance: { forRegistration: handoffProvenance, forCall: handoffProvenance },
+      appHandoffTransport: transport,
+      assistantMcpEngine: {
+        open: async (_plugin, onMessage) => {
+          listener = onMessage;
+          return { sessionId: "handoff-tools", serverName: "chemdraft" };
+        },
+        respond: responded,
+        close: async () => {},
+        status: async () => ({ listening: true, sessionCount: 1 })
+      }
+    });
+    const legacy = { name: "legacy", description: "Legacy tool", inputSchema: { type: "object" as const } };
+    const request = { name: "request", description: "Request tool", readOnly: true, inputSchema: { type: "object" as const } };
+    const nextSession = deferred<void>();
+    const finish = deferred<void>();
+    const { mainSide, workerSide } = linkedEndpoints();
+    const denied: unknown[] = [];
+    runPluginWorker({
+      manifest: handoffManifest,
+      commandHandlers: { [handoffCommand]: async ctx => {
+        const { requestId } = await ctx.assistant!.beginRequest({ prompt: "Read" });
+        await ctx.assistant!.createToolSession({ requestId, extraTools: [legacy] });
+        await nextSession.promise;
+        await ctx.assistant!.endRequest({ requestId });
+        const bound = await ctx.requests!.begin({ label: "Read" });
+        if (!bound.ok) throw new Error(bound.error.message);
+        const session = await ctx.toolSessions!.open({ requestId: bound.value.requestId, definitions: [request] });
+        if (!session.ok) throw new Error(session.error.message);
+        await finish.promise;
+      } },
+      onAssistantToolCall: async ctx => {
+        await vi.waitFor(() => expect(denied).toHaveLength(1));
+        return { content: [{ type: "text", text: typeof ctx.apps }] };
+      },
+      onToolCall: async ctx => {
+        await vi.waitFor(() => expect(denied).toHaveLength(2));
+        return { ok: true, value: typeof ctx.apps };
+      }
+    }, asEndpoint(workerSide));
+    workerSide.addEventListener("message", ({ data }: { data: HostToWorkerMessage }) => {
+      if (data.kind === "invokeAssistantTool" || data.kind === "invokeTool") {
+        workerSide.postMessage({ kind: "capabilityRequest", commandRequestId: data.commandRequestId,
+          requestId: data.kind === "invokeAssistantTool" ? 101 : 102, namespace: "apps", method: "sendFile", args: [handoffSend] });
+      } else if (data.kind === "capabilityResult" && (data.requestId === 101 || data.requestId === 102)) {
+        denied.push(data);
+      }
+    });
+    const bridge = new PluginWorkerBridge({ pluginId: handoffManifest.id, createWorker: () => asHandle(mainSide) });
+    const call = (name: string) => {
+      const current = listener!;
+      listener = undefined;
+      current({ sessionId: "handoff-tools", requestId: name, method: "tools/call",
+        params: { name, arguments: { source: "native", commandId: handoffCommand } } });
+    };
+    try {
+      await bridge.whenReady();
+      runtime.registerPlugin(handoffManifest, createWorkerRoutedOptions(handoffManifest, bridge));
+      const running = runtime.invokeAppHandoffMenuCommand(invocation);
+      const startup = running.then(() => { throw new Error("The handoff command ended before opening its tool sessions."); });
+      const waitForSession = () => Promise.race([vi.waitFor(() => expect(listener).toBeTypeOf("function")), startup]);
+      await waitForSession();
+      call("legacy");
+      await vi.waitFor(() => expect(responded).toHaveBeenCalledWith("handoff-tools", "legacy", {
+        result: { content: [{ type: "text", text: "undefined" }] }
+      }));
+      nextSession.resolve();
+      await waitForSession();
+      call("request");
+      await vi.waitFor(() => expect(responded).toHaveBeenCalledWith("handoff-tools", "request", {
+        result: { content: [{ type: "text", text: "undefined" }] }
+      }));
+      finish.resolve();
+      await running;
+      expect(denied).toEqual([101, 102].map(requestId => expect.objectContaining({
+        requestId, ok: false, error: expect.objectContaining({ code: PluginWorkerErrorCodes.CapabilityNotGranted })
+      })));
+      expect(transport).not.toHaveBeenCalled();
+    } finally {
+      nextSession.resolve();
+      finish.resolve();
+      bridge.terminate();
+      transactions.dispose();
+    }
+  });
+});
+
 describe("PluginWorkerBridge — M34 isolation boundary", () => {
   it("delivers successful and error capability replies when the logger throws", async () => {
     const commandId = "plugin.throwingLogger.run";
@@ -260,6 +535,36 @@ describe("PluginWorkerBridge — M34 isolation boundary", () => {
       expect(embed3d).toHaveBeenCalledWith({ components: [{ smiles: "C" }], seed: 42 }, expect.any(AbortSignal));
       expect(minimize3d).toHaveBeenCalledOnce();
       expect(flatten3d).toHaveBeenCalledWith({ model: minimized.model, view: "auto" }, expect.any(AbortSignal));
+    } finally { bridge.terminate(); }
+  });
+  it.each([false, true])("requires selection.read for selected handoff chemistry (declared = %s)", async declared => {
+    const commandId = "plugin.graph.run";
+    const manifest = parsePluginManifest({ id: "org.test.handoff-graph", name: "Graph", version: "0", apiVersion: "^0.1.28",
+      entry: "worker.js", permissions: ["chemistry.compute", ...(declared ? ["selection.read"] : [])],
+      contributes: { commands: [{ id: commandId, title: "Graph" }] } });
+    const doc = createEmptyDocument({ id: "test-doc", pageId: "p1" });
+    doc.pages[0]!.objects.push(MoleculeObjectSchema.parse({ id: "m1", type: "molecule", x: 20, y: 20, width: 20, height: 20,
+      structureFormat: "smiles", structure: "C", atoms: [{ id: "a1", element: "C", x: 30, y: 30 }] }));
+    doc.selection = { objectIds: ["m1"], pageId: "p1" };
+    const graph = { objectId: "m1", pageId: "p1", canonicalSmiles: "C", graph: { atoms: [
+      { element: "C", charge: 0, radicalElectrons: 0, hydrogenCount: 4 }], bonds: [] },
+      unspecifiedStereocenters: [], unspecifiedDoubleBonds: [], reactionMembership: [], sourceAtomMaps: [],
+      expandedLabels: [], serializerWarnings: [] };
+    const positions = { points: [{ anchorAtomId: "a1", x: 30, y: 45 }] };
+    const handoffGraph = vi.fn(async () => graph);
+    const suggestConnectionPoints = vi.fn(() => positions);
+    const host = new PluginHost({ handoffGraph, suggestConnectionPoints, getActiveDocument: () => doc });
+    const bridge = startWorkerRoutedPlugin({ manifest, commandHandlers: { [commandId]: async ({ chemistry }) => {
+      if (!declared) return [chemistry?.handoffGraph, chemistry?.suggestConnectionPoints];
+      await expect(chemistry!.handoffGraph!({ objectId: "unselected" })).rejects.toThrow("is not selected");
+      return [await chemistry!.handoffGraph!({ objectId: "m1" }),
+        await chemistry!.suggestConnectionPoints!({ objectId: "m1", anchors: ["a1"] })];
+    } } });
+    host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+    try {
+      await expect(host.invokeCommand(commandId)).resolves.toEqual(declared ? [graph, positions] : [undefined, undefined]);
+      expect(handoffGraph).toHaveBeenCalledTimes(declared ? 1 : 0);
+      expect(suggestConnectionPoints).toHaveBeenCalledTimes(declared ? 1 : 0);
     } finally { bridge.terminate(); }
   });
   it("round-trips overlay input and status through the real worker capability boundary", async () => {

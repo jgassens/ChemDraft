@@ -15,10 +15,12 @@ import { detectDesktopShortcutPlatform } from "../keyboardShortcuts";
 import type { DesktopPluginRuntime } from "./createPluginRuntime";
 import { PluginWorkerBridge, PluginWorkerBridgeError } from "./PluginWorkerBridge";
 import { loadDisabledPluginIds } from "./pluginPreferences";
+import type { InstalledPluginRecord } from "./installedPluginStore";
 
 export interface BundledPluginDescriptor {
   manifest: PluginManifest;
   options: RegisterPluginOptions;
+  installedRecord?: InstalledPluginRecord;
   /** Present when the plugin's *execution* runs in a per-plugin Web Worker (ADR-0029, M34). The
    *  command handlers in `options` delegate to this bridge; `bridge.terminate()` is the full teardown
    *  M36's uninstall will call. Absent when the plugin runs in-process (no Worker, e.g. tests). */
@@ -100,6 +102,7 @@ export function createWorkerRoutedOptions(manifest: PluginManifest, bridge: Plug
     commandHandlers[command.id] = (context) => bridge.invokeCommand(command.id, context);
   }
   return {
+    execution: "worker",
     commandHandlers,
     onPanelClosed: (panelId) => bridge.notifyPanelClosed(panelId),
     get onAssistantToolCall(): PluginAssistantToolHandler | undefined {
@@ -192,7 +195,7 @@ export function applyEnabledPlugins(
       // ui.toolbar gate and whole-plugin rollback no matter how a plugin arrives.
       descriptor.activate?.();
       try {
-        runtime.registerPlugin(descriptor.manifest, descriptor.options);
+        runtime.registerPlugin(descriptor.manifest, descriptor.options, descriptor.installedRecord);
       } catch (error) {
         descriptor.deactivate?.();
         throw error;

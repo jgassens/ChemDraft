@@ -286,10 +286,13 @@ export class PluginWorkerBridge {
       this.pending.set(commandRequestId, { context, resolve, reject, tool: toolType,
         boundRequest: tool?.kind === "invokeTool" ? tool.call.requestId : undefined, aborted: false });
       try {
-        if (tool?.kind === "invokeTool") this.postToWorker({ kind: "invokeTool", commandRequestId, call: tool.call,
+        const host = context.host ? { host: context.host } : {};
+        if (tool?.kind === "invokeTool") this.postToWorker({ kind: "invokeTool", commandRequestId, call: tool.call, ...host,
           ...(!context.hasPermission("document.write") && { readOnly: true as const }) });
-        else if (tool) this.postToWorker({ kind: "invokeAssistantTool", commandRequestId, ...tool.call });
-        else this.postToWorker({ kind: "invokeCommand", commandRequestId, commandId, ...(context.input === undefined ? {} : { input: context.input }) });
+        else if (tool) this.postToWorker({ kind: "invokeAssistantTool", commandRequestId, ...tool.call, ...host });
+        else this.postToWorker({ kind: "invokeCommand", commandRequestId, commandId, ...host,
+          ...(context.input === undefined ? {} : { input: context.input }),
+          ...(context.documents?.addConnectionPoints && { addConnectionPoints: true }) });
       } catch (error) {
         this.pending.delete(commandRequestId);
         reject(this.wrapCrash(error));
@@ -617,7 +620,6 @@ export class PluginWorkerBridge {
       });
       return;
     }
-
     const method = (capability as CapabilityMethods)[message.method];
     if (typeof method !== "function") {
       // The namespace is granted but this method is not: the host builds a method onto the context only
@@ -627,6 +629,15 @@ export class PluginWorkerBridge {
       this.sendCapabilityError(message.requestId, {
         code: PluginWorkerErrorCodes.CapabilityNotGranted,
         message: `Plugin "${this.pluginId}" is not granted the "${message.namespace}.${message.method}" capability.`
+      });
+      return;
+    }
+    if (message.namespace === "apps" && message.args.length !== 1) {
+      // Record the refusal through the capability without forwarding any of the malformed args.
+      void Promise.resolve().then(() => method.call(capability, null)).catch(() => {});
+      this.sendCapabilityError(message.requestId, {
+        code: PluginWorkerErrorCodes.MalformedMessage,
+        message: `apps.${message.method} requires exactly one request object.`
       });
       return;
     }
@@ -773,6 +784,8 @@ export class PluginWorkerBridge {
         return context.recognition;
       case "tools":
         return context.tools;
+      case "apps":
+        return context.apps;
       case "assistant":
         return context.assistant;
       case "requests":

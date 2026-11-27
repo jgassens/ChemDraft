@@ -1,12 +1,14 @@
 import type { PluginEmbed3DRequest, PluginEmbed3DResult, PluginMinimize3DRequest, PluginMinimize3DResult,
-  PluginFlatten3DRequest, PluginFlatten3DResult, Plugin3DMethod } from "@chemdraft/plugin-api";
+  PluginFlatten3DRequest, PluginFlatten3DResult, Plugin3DMethod, PluginHandoffGraphResult } from "@chemdraft/plugin-api";
 import type { Chemistry3dTiming, Chemistry3dTimingSink } from "./timing";
+import type { HandoffGraphWork } from "./handoffAudit";
 
 export type Chemistry3dJob =
   | { method: "embed3d"; request: PluginEmbed3DRequest }
+  | { method: "handoffGraph"; request: HandoffGraphWork }
   | { method: "minimize3d"; request: PluginMinimize3DRequest; provenance: Plugin3DMethod }
   | { method: "flatten3d"; request: PluginFlatten3DRequest; provenance: Plugin3DMethod };
-export type Chemistry3dResult = PluginEmbed3DResult | PluginMinimize3DResult | PluginFlatten3DResult;
+export type Chemistry3dResult = PluginEmbed3DResult | PluginMinimize3DResult | PluginFlatten3DResult | PluginHandoffGraphResult;
 export type Chemistry3dWorkRequest = { kind: "chemistry3d"; id: number; job: Chemistry3dJob; profile?: boolean };
 /** Shared page/worker clock, diagnostic only; never part of a chemistry result. */
 export interface Chemistry3dTransportTrace {
@@ -62,6 +64,7 @@ async function execute(job: Chemistry3dJob, progress?: () => void, timing?: Chem
   ready?.();
   switch (job.method) {
     case "embed3d": return engine.embed3dInWorker(job.request, progress, timing);
+    case "handoffGraph": return (await import("./handoffAudit")).auditHandoffGraph(job.request);
     case "minimize3d": return engine.minimize3dInWorker(job.request, job.provenance, timing);
     case "flatten3d": return engine.flatten3dInWorker(job.request, job.provenance, timing);
   }

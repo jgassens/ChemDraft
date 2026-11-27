@@ -7,7 +7,8 @@ import { flattenNativeMolecule3d, type StereoPerceiver } from "../documentWorkfl
 import { conformerCentroid } from "../interaction/spinOverlay";
 import { projectPoint, quatFromAxisAngle, quatToViewMatrix } from "../interaction/rotation3d";
 import { assertFlattenContacts, readGraph } from "./model";
-import { assertComponentStereo, specifiedCenters, stereoGraph, unspecifiedStereoDoubleBondPairs } from "./stereo";
+import { assertComponentStereo, specifiedCenters, stereoGraph, unspecifiedDoubleBondIndices } from "./stereo";
+import { readSignedComponent } from "./graph";
 import { timeChemistry3d, type Chemistry3dTimingSink } from "./timing";
 
 function canonical(rdkit: RdkitMinimalModule, input: string): string {
@@ -56,15 +57,14 @@ export function flattenPluginModel(request: PluginFlatten3DRequest, method: Plug
   // rather than deleting a wedged H and losing/inverting its centre. add_hs appends atoms,
   // so filtering the signed addedHydrogen flags gives exactly this input atom order.
   const references = timeChemistry3d(timing, "flatten.references", () => model.components.map((component, componentIndex) => {
-    const mol = rdkit.get_mol(component.smiles, JSON.stringify({ removeHs: false }));
-    if (!mol) throw new Error("RDKit could not read the signed component SMILES.");
+    const mol = readSignedComponent(rdkit, component);
     try {
       if (!mol.set_new_coords || !mol.get_molblock) throw new Error("RDKit 2D stereo depiction is unavailable.");
       const expected = canonical(rdkit, component.smiles);
       const intent = stereoGraph(mol);
       const centers = specifiedCenters(intent);
       const openPairs = timeChemistry3d(timing, "flatten.open-double-bonds",
-        () => unspecifiedStereoDoubleBondPairs(rdkit, component.smiles, intent), { component: componentIndex + 1 });
+        () => unspecifiedDoubleBondIndices(rdkit, mol).map(i => intent.bonds[i]!.atoms), { component: componentIndex + 1 });
       // Perception indices name bonds in signed input order. Match endpoint pairs
       // after depiction, never assume molblock bond order (notably at ring closures).
       // Stereo-free references need no 2D depiction: the shared helper replaces

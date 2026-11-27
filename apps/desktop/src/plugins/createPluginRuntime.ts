@@ -14,6 +14,7 @@ import { AssistantToolsController, type AssistantToolsControllerOptions } from "
 import { TauriAssistantMcpEngine, UnsupportedAssistantMcpEngine, type AssistantMcpEngine } from "../assistant/assistantMcpEngine";
 import { getAssistantHistoryPort } from "../assistant/historyPort";
 import { buildPluginTablePatch } from "./buildPluginTablePatch";
+import { buildConnectionPointsPatch } from "./connectionPointEdit";
 import { rasterizeSvgNative } from "../nativeRasterExport";
 import { nameStructureForPlugin } from "./pluginStructureNaming";
 import { StructureNamingController } from "./StructureNamingController";
@@ -46,6 +47,8 @@ import {
   type CommandDefinition,
   type CommandRegistry,
   type PluginPatchApplicationRequest,
+  type AppHandoffMenuInvocation,
+  type PluginAppHandoffTransport,
   type PluginHostOptions,
   type RegisterPluginOptions
 } from "@chemdraft/plugin-host";
@@ -66,6 +69,9 @@ import {
 } from "./structureRecognitionEngine";
 import { preparePluginStructureRecognition, type RecognitionStructureValidator } from "./pluginStructureRecognition";
 import { isTauriHost } from "./pluginStagingFs";
+import { appHandoffRefusal, appHandoffResultStatus, createTauriAppHandoffTransport, type AppHandoffTransportStatus } from "../appHandoff/transport";
+import { nativeAppHandoffConsents, type AppHandoffConsents } from "../appHandoff/consents";
+import type { InstalledPluginRecord } from "./installedPluginStore";
 import { ExternalToolsController } from "../externalTools/ExternalToolsController";
 import { TauriExternalToolsEngine, UnsupportedExternalToolsEngine, type ExternalToolsEngine } from "../externalTools/externalToolsEngine";
 import {
@@ -75,6 +81,7 @@ import {
   structureFromSmilesForPlugin
 } from "./pluginChemistry";
 import { chemistry3dReplyLogRequestedFromWindow } from "../chemistry3d/client";
+import { handoffGraphForPlugin, suggestConnectionPointsForPlugin } from "./handoffGraph";
 import { configureChemistry3dReplyLogger } from "./PluginWorkerBridge";
 
 /** Serves an isotope envelope to a plugin holding `chemistry.compute`. */
@@ -92,6 +99,18 @@ export type DesktopStructureFromSmilesProvider = (
   request: PluginStructureFromSmilesRequest
 ) => Promise<PluginStructureFromSmilesResult>;
 
+export interface AppHandoffMenuFeedback {
+  pending: number;
+  confirmed?: string;
+  problems: Map<Parameters<PluginAppHandoffTransport>[1], Exclude<AppHandoffTransportStatus, { kind: "success" | "confirmed" }>>;
+}
+
+export function appHandoffFeedbackMessages(feedback: AppHandoffMenuFeedback): string[] {
+  const messages = Array.from(feedback.problems.values(), ({ message }) => message);
+  if (feedback.confirmed) messages.unshift(feedback.confirmed);
+  return messages;
+}
+
 function freezeOverlayContent(sections: CanvasOverlayContentSection[]): readonly CanvasOverlayContentSection[] {
   const snapshot = structuredClone(sections);
   const freeze = (value: unknown): void => {
@@ -104,6 +123,11 @@ function freezeOverlayContent(sections: CanvasOverlayContentSection[]): readonly
 }
 
 export interface DesktopPluginRuntimeOptions {
+  appHandoffProvenance?: PluginHostOptions["appHandoffProvenance"];
+  appHandoffTransport?: PluginHostOptions["appHandoffTransport"];
+  appHandoffConsents?: AppHandoffConsents;
+  readAppHandoffRecord?: (pluginId: string, version: string) => Promise<InstalledPluginRecord | undefined>;
+  onAppHandoffStatus?: (message: string, feedback?: AppHandoffMenuFeedback, replaceOwnStatus?: boolean) => void;
   /** Optional injection seam; default providers use the existing in-process conformer worker. */
   chemistry3d?: import("../chemistry3d/client").Chemistry3dProviders;
   /** Reads the current active document. Called on demand; must reflect the latest state. */
@@ -131,6 +155,10 @@ export interface DesktopPluginRuntimeOptions {
    * undefined for a read made outside one, which should stay silent.
    */
   getSelection?: (warnings?: string[]) => PluginSelectionSnapshot | undefined;
+  captureSelection?: (document: ChemDraftDocument) => {
+    objectIds: readonly string[];
+    read: (live: ChemDraftDocument, pages: ReadonlyMap<string, string>, warnings?: string[]) => PluginSelectionSnapshot;
+  };
   /**
    * The app's stable CommandRegistry (see commands/coreCommandRegistrar). When supplied, plugin
    * commands register into the SAME registry core commands live in, so one `host.invokeCommand`
@@ -225,6 +253,7 @@ export interface DesktopPluginRuntime {
   recognition: StructureRecognitionController;
   naming: StructureNamingController;
   externalTools: ExternalToolsController;
+  appHandoffConsents?: AppHandoffConsents;
   assistant: AssistantToolsController;
   notifyActiveDocumentChanged(documentKey: string | null): void;
   proposalDocumentTab(proposalId: string): ProposalDocumentTab | undefined;
@@ -236,9 +265,9 @@ export interface DesktopPluginRuntime {
    * unregisters the whole plugin so half-registered state can never leak into the catalog.
    * Provenance is tracked by explicit maps, never by sniffing id prefixes.
    */
-  registerPlugin(candidate: unknown, options?: RegisterPluginOptions): PluginManifest;
+  registerPlugin(candidate: unknown, options?: RegisterPluginOptions, record?: InstalledPluginRecord): PluginManifest;
   /** Replace one registration transactionally; if the new contribution fails, restore the prior one. */
-  replacePlugin(pluginId: string, candidate: unknown, options?: RegisterPluginOptions): PluginManifest;
+  replacePlugin(pluginId: string, candidate: unknown, options?: RegisterPluginOptions, record?: InstalledPluginRecord): PluginManifest;
   unregisterPlugin(pluginId: string): void;
   /**
    * Invoke a command through the host. `selectionWarnings` collects what the snapshot could not carry
@@ -247,6 +276,7 @@ export interface DesktopPluginRuntime {
    * neither add to it nor take from it.
    */
   invokeCommand(commandId: string, options?: { selectionWarnings?: string[]; input?: PluginCommandInput }): Promise<unknown>;
+  invokeAppHandoffMenuCommand(invocation: AppHandoffMenuInvocation, selectionWarnings?: string[], feedback?: AppHandoffMenuFeedback): Promise<unknown>;
   listCanvasOverlays(): RegisteredCanvasOverlay[];
   getCanvasOverlayStatuses(): ReadonlyMap<string, string>;
   /** Subscribe to status-only overlay updates without invalidating plugin contributions/toolsets. */
@@ -374,7 +404,6 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   const commandInvocations = new Map<symbol, { pluginId: string; stop: AbortController }>();
   let commandFrame: symbol[] | undefined;
   let armedSelectionWarnings: string[] | undefined;
-  let readingSelectionWarnings: string[] | undefined;
   const proposalTabs = new Map<string, string>();
   const closedTabTitles = new Map<string, string>();
   const runningTabCommands = new Map<string, number>();
@@ -385,9 +414,31 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     }
   };
   let proposingTabId: string | undefined;
+  const commandDocument = () => ({
+    tabId: options.getActiveDocumentTab?.().id,
+    key: options.getActiveDocumentKey?.() ?? documentIdentityKey(options.getActiveDocument())
+  });
+  let nativeIdentity: PluginCommandContext["host"];
+  let nativeIdentityReady = isTauriHost() ? new Promise<void>(resolve => {
+    const timer = setTimeout(resolve, 250);
+    void import("@tauri-apps/api/app").then(({ getVersion }) => getVersion())
+      .then(version => {
+        if (version) nativeIdentity = Object.freeze({ name: "ChemDraft", version });
+      }, () => undefined)
+      .finally(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+  }).then(() => {
+    nativeIdentityReady = undefined;
+  }) : undefined;
   class DesktopPluginHost extends PluginHost {
     override async invokeCommand<Result = unknown>(commandId: string, invokeOptions?: Parameters<PluginHost["invokeCommand"]>[1]): Promise<Result> {
       return this.withInvocationFrame(() => super.invokeCommand<Result>(commandId, invokeOptions));
+    }
+
+    override async invokeAppHandoffMenuCommand<Result = unknown>(invocation: AppHandoffMenuInvocation): Promise<Result> {
+      return this.withInvocationFrame(() => super.invokeAppHandoffMenuCommand<Result>(invocation));
     }
 
     override async invokeAssistantTool(...args: Parameters<PluginHost["invokeAssistantTool"]>) {
@@ -429,12 +480,25 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       super.unregisterPlugin(pluginId);
     }
 
-    override createCommandContext(pluginId: string, invocationToken?: symbol, input?: PluginCommandInput): PluginCommandContext {
-      const context = super.createCommandContext(pluginId, invocationToken, input);
-      if (invocationToken && commandFrame) {
-        commandFrame.push(invocationToken);
-        commandInvocations.set(invocationToken, { pluginId, stop: new AbortController() });
-      }
+    protected override captureCommandContext() {
+      const collector = armedSelectionWarnings;
+      armedSelectionWarnings = undefined;
+      const frame = commandFrame;
+      const document = commandDocument();
+      return (pluginId: string, token: symbol, input?: PluginCommandInput) => {
+        if (frame) {
+          frame.push(token);
+          commandInvocations.set(token, { pluginId, stop: new AbortController() });
+        }
+        const build = () => this.createCommandContext(pluginId, token, input, collector, document);
+        return nativeIdentityReady ? nativeIdentityReady.then(build) : build();
+      };
+    }
+
+    override createCommandContext(pluginId: string, invocationToken?: symbol, input?: PluginCommandInput,
+      selectionWarnings?: string[], document = commandDocument()): PluginCommandContext {
+      const context = super.createCommandContext(pluginId, invocationToken, input, selectionWarnings);
+      if (nativeIdentity) context.host = nativeIdentity;
       const commandSignal = invocationToken ? commandInvocations.get(invocationToken)?.stop.signal : undefined;
       // The host validates permissions and parses synchronously before calling the provider.
       // Arm only that synchronous span, so concurrent commands retain independent signals.
@@ -449,14 +513,13 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       }
       const permissions = ["chemistry.compute", "native.execute", "selection.read"] as const;
       if (context.chemistry && (isTauriHost() || options.structureNamingEngine) && permissions.every(permission => this.hasPermission(pluginId, permission))) {
-        const documentKey = options.getActiveDocumentKey?.() ?? documentIdentityKey(options.getActiveDocument());
         context.chemistry.structureToName = async request => {
           for (const permission of permissions) this.requirePermission(pluginId, permission);
           const invocation = invocationToken ? commandInvocations.get(invocationToken) : undefined;
           if (!invocation || invocation.pluginId !== pluginId || invocation.stop.signal.aborted) throw new Error("Structure naming is available only during this plugin command invocation.");
           const parsed = PluginStructureToNameRequestSchema.parse(request);
           const bound = this.commandRequestDocument(pluginId, invocationToken);
-          if (!bound && documentKey !== (options.getActiveDocumentKey?.() ?? documentIdentityKey(options.getActiveDocument()))) throw new Error("The active document changed during the naming command.");
+          if (!bound && document.key !== commandDocument().key) throw new Error("The active document changed during the naming command.");
           const pinned = bound?.read();
           const molecule = scopedNamingMolecule(bound ? pinned : options.getActiveDocument(),
             bound ? pinned && buildPluginSelectionSnapshot(pinned) : options.getSelection?.(), parsed.objectId);
@@ -464,36 +527,52 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
           return naming.name(manifest, molecule, invocation.stop.signal);
         };
       }
-      const tabId = options.getActiveDocumentTab?.().id;
       const proposePatch = context.documents.proposePatch;
       context.documents.proposePatch = (proposal) => {
         // The host enqueues synchronously before returning its promise. Scope the queue notification
         // to this context, so concurrent commands and late results retain their own source tab.
         const previous = proposingTabId;
-        proposingTabId = tabId;
+        proposingTabId = document.tabId;
         try {
           return proposePatch(proposal);
         } finally {
           proposingTabId = previous;
         }
       };
-      const collector = armedSelectionWarnings;
-      armedSelectionWarnings = undefined;
-      const selection = context.selection;
-      if (!selection || !collector) return context;
-      return {
-        ...context,
-        selection: {
-          getSelection: () => {
-            readingSelectionWarnings = collector;
-            try {
-              return selection.getSelection();
-            } finally {
-              readingSelectionWarnings = undefined;
-            }
+      return context;
+    }
+
+    protected override observeAppHandoffCall(
+      invocation: AppHandoffMenuInvocation, method: Parameters<PluginAppHandoffTransport>[1],
+      request: Parameters<PluginAppHandoffTransport>[2], result: Promise<unknown>
+    ): void {
+      const feedback = handoffFeedback.get(invocation);
+      const previousProblem = feedback?.problems.get(method);
+      if (feedback) feedback.pending++;
+      const report = (status?: AppHandoffTransportStatus) => {
+        if (feedback) feedback.pending--;
+        if (handoffFeedback.get(invocation) !== feedback) return;
+        if (!status) return;
+        let clearedRefusal = false;
+        if (status.kind === "success" || status.kind === "confirmed") {
+          if (feedback && status.kind === "confirmed") feedback.confirmed = status.message;
+          // A retry must have started after the refusal it clears.
+          if (previousProblem?.kind === "refused" && feedback?.problems.get(method) === previousProblem) {
+            clearedRefusal = feedback.problems.delete(method);
           }
+        } else {
+          feedback?.problems.set(method, status);
+        }
+        if (feedback && (status.message || clearedRefusal)) {
+          options.onAppHandoffStatus?.(appHandoffFeedbackMessages(feedback).join("\n"), feedback,
+            clearedRefusal && !status.message);
+        } else if (status.message) {
+          options.onAppHandoffStatus?.(status.message);
         }
       };
+      void result.then(value => report(appHandoffResultStatus(method, request, value)),
+        (error: unknown) => report(appHandoffRefusal(error)))
+        .catch(() => { /* Feedback must not affect the capability's settlement. */ });
     }
   }
   const canvasOverlayStatuses = new Map<string, string>();
@@ -512,9 +591,23 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   const notify = () => listeners.forEach((listener) => listener());
   const notifyCanvasOverlayStatus = () => canvasOverlayStatusListeners.forEach((listener) => listener());
   const readSelection = options.getSelection;
+  let registeringRecord: InstalledPluginRecord | undefined;
+  const handoffTransport = options.appHandoffTransport ?? (isTauriHost() ? createTauriAppHandoffTransport() : undefined);
+  const handoffFeedback = new WeakMap<AppHandoffMenuInvocation, AppHandoffMenuFeedback>();
   const host = new DesktopPluginHost({
     ...chemistry3d,
+    handoffGraph: handoffGraphForPlugin,
+    suggestConnectionPoints: suggestConnectionPointsForPlugin,
     commandRegistry: options.commandRegistry,
+    appHandoffAllowSideload: isTauriHost() &&
+      (window as Window & { readonly __CHEMDRAFT_HANDOFF_SIDELOAD_ALLOWED__?: boolean })
+        .__CHEMDRAFT_HANDOFF_SIDELOAD_ALLOWED__ === true,
+    appHandoffProvenance: options.appHandoffProvenance ?? {
+      forRegistration: (id, version) => registeringRecord?.id === id && registeringRecord.version === version
+        ? registeringRecord : undefined,
+      forCall: (id, version) => options.readAppHandoffRecord?.(id, version)
+    },
+    appHandoffTransport: handoffTransport,
     overlays: {
       setContent: (pluginId, overlayId, sections, prompt) => {
         const declared = host.getPlugin(pluginId)!.manifest.contributes.canvasOverlays!.find(overlay => overlay.id === overlayId)!.prompt;
@@ -567,8 +660,13 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     captureRequestDocument: options.captureRequestDocument,
     openRequestHistory: options.openRequestHistory,
     requestPageSpace: options.requestPageSpace,
-    getRequestSelection: (document, budget) => buildPluginSelectionSnapshot(document, readingSelectionWarnings, budget),
-    getSelection: readSelection ? () => readSelection(readingSelectionWarnings) : undefined,
+    getRequestSelection: (document, budget, warnings) => buildPluginSelectionSnapshot(document, warnings, budget),
+    getSelection: readSelection,
+    captureSelection: options.captureSelection && (() => {
+      const document = options.getActiveDocument();
+      if (!document) return { objectIds: [], read: () => ({ objectIds: [], molecules: [] }) };
+      return options.captureSelection!(document);
+    }),
     createStorage: options.createStorage,
     onProposedPatchesChanged: () => {
       const pending = host.listProposedPatches("pending");
@@ -586,6 +684,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       options.onProposedPatchesChanged?.();
     },
     applyDocumentPatch: options.applyDocumentPatch,
+    buildConnectionPointsPatch,
     buildTablePatch: (spec, document, selection, pinnedViewport, bound) => {
       if (bound) return buildPluginTablePatch(spec, document, selection, pinnedViewport);
       const tabId = options.getActiveDocumentTab?.().id;
@@ -615,6 +714,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   interface Registration {
     manifest: PluginManifest;
     options: RegisterPluginOptions;
+    record?: InstalledPluginRecord;
     deliveredSequence?: number;
     sending?: PluginActiveDocumentChanged;
     queued: PluginActiveDocumentChanged[];
@@ -677,6 +777,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     recognition,
     naming,
     externalTools,
+    appHandoffConsents: options.appHandoffConsents ?? (isTauriHost() ? nativeAppHandoffConsents : undefined),
     assistant,
     proposalDocumentTab(proposalId) {
       const id = proposalTabs.get(proposalId);
@@ -689,13 +790,20 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       closedTabTitles.set(tabId, title);
       pruneClosedTabTitles();
     },
-    registerPlugin(candidate, registerOptions = {}) {
+    registerPlugin(candidate, registerOptions = {}, record) {
       // Validate before touching the shared command registry, then apply the desktop capability policy.
       // This keeps `hasPermission()` honest: an unavailable permission can never reach a registered
       // plugin and momentarily appear granted.
       const validated = validateTrustedPluginManifest(candidate);
       assertDesktopPluginPermissionsAvailable(validated);
-      const { manifest } = host.registerPlugin(validated, registerOptions);
+      const previousRecord = registeringRecord;
+      registeringRecord = record;
+      let manifest: PluginManifest;
+      try {
+        ({ manifest } = host.registerPlugin(validated, registerOptions));
+      } finally {
+        registeringRecord = previousRecord;
+      }
       try {
         const contributed = manifest.contributes.toolsets;
         if (contributed.length > 0) {
@@ -715,7 +823,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
         host.unregisterPlugin(manifest.id);
         throw error;
       }
-      const registration: Registration = { manifest, options: registerOptions, queued: [] };
+      const registration: Registration = { manifest, options: registerOptions, record, queued: [] };
       registrations.set(manifest.id, registration);
       registration.unsubscribeDocumentReady = registerOptions.onDocumentChangeReady?.(() => {
         registration.deliveredSequence = undefined;
@@ -727,17 +835,17 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       notify();
       return manifest;
     },
-    replacePlugin(pluginId, candidate, registerOptions = {}) {
+    replacePlugin(pluginId, candidate, registerOptions = {}, record) {
       const previous = registrations.get(pluginId);
       if (!host.getPlugin(pluginId)) {
-        return runtime.registerPlugin(candidate, registerOptions);
+        return runtime.registerPlugin(candidate, registerOptions, record);
       }
       runtime.unregisterPlugin(pluginId);
       try {
-        return runtime.registerPlugin(candidate, registerOptions);
+        return runtime.registerPlugin(candidate, registerOptions, record);
       } catch (error) {
         if (previous) {
-          runtime.registerPlugin(previous.manifest, previous.options);
+          runtime.registerPlugin(previous.manifest, previous.options, previous.record);
         }
         throw error;
       }
@@ -790,6 +898,15 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
           : host.invokeCommand(commandId, { input: invokeOptions.input });
       } finally {
         // Unclaimed when the command is not a plugin's or failed before its context was built.
+        armedSelectionWarnings = undefined;
+      }
+    },
+    invokeAppHandoffMenuCommand(invocation, selectionWarnings, feedback) {
+      if (feedback) handoffFeedback.set(invocation, feedback);
+      armedSelectionWarnings = selectionWarnings;
+      try {
+        return host.invokeAppHandoffMenuCommand(invocation).finally(() => handoffFeedback.delete(invocation));
+      } finally {
         armedSelectionWarnings = undefined;
       }
     },

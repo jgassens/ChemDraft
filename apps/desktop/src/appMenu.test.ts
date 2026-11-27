@@ -123,8 +123,18 @@ describe("app menu model", () => {
     const routing = source.split("fn is_core_routed_dynamic_menu_command")[1]?.split("fn plugin_menu_items_in")[0];
     expect(routing).toContain("item.core_routed && item.id == command_id");
     const click = source.split(".on_menu_event(")[1]?.split(".on_window_event(")[0];
-    expect(click).toContain("is_core_routed_dynamic_menu_command(command_id, &current_plugin_menu_items(app))");
-    expect(click).toContain("emit_menu_command(app, command_id)");
+    expect(click).toContain([
+      "|| is_core_routed_dynamic_menu_command(command_id, &current_plugin_menu_items(app))",
+      "            {",
+      "                let handoff = app_handoff::arm_native_menu(app, command_id);",
+      "                if let Err(error) = handoff.and_then(|invocation| emit_menu_command(app, command_id, invocation)) {"
+    ].join("\n"));
+    const endpoint = readFileSync("apps/desktop/src-tauri/src/app_handoff/endpoint.rs", "utf8");
+    const arming = endpoint.split("fn arm_native_menu")[1]?.split("fn store")[0];
+    expect(arming).toMatch(/if !command\.starts_with\("plugin\."\)[^{]*\{\s*return Ok\(None\);/);
+    expect([PLUGIN_MANAGER_COMMAND_ID, PLUGIN_UPDATES_COMMAND_ID].some(id => id.startsWith("plugin."))).toBe(false);
+    const emit = source.split("fn emit_menu_command")[1]?.split("fn emit_command_to_main")[0];
+    expect(emit).toContain("if target_label == MAIN_WINDOW_LABEL {\n        return emit_command_to_main(app, command_id);");
     const main = readFileSync("apps/desktop/src/MainWindow.tsx", "utf8");
     expect(main).toContain("for (const commandId of [PLUGIN_MANAGER_COMMAND_ID, PLUGIN_UPDATES_COMMAND_ID]) register(");
     expect(main).not.toContain("plugin.runtime.showUpdates");

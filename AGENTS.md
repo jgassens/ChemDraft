@@ -109,16 +109,16 @@ A plugin imports **only `@chemdraft/plugin-api`** (plus ordinary npm packages), 
 menus, panels, toolbar buttons, inspectors, templates, importers, exporters, analyzers, transformers,
 and recognizers.
 
-`PluginApiVersion` is `0.1.26`. API 0.1.20 added `tableStyle.autoColumnMinEm`; 0.1.21 adds
+`PluginApiVersion` is `0.1.29`. API 0.1.20 added `tableStyle.autoColumnMinEm`; 0.1.21 adds
 plugin chemistry properties and plugin assistant tools; 0.1.22 adds name-to-structure result
 source and dictionary match provenance; 0.1.23 adds native wavy single bonds;
 0.1.24 adds reaction schemes and binary CDX; 0.1.25 adds bracketed groups, and 0.1.26 adds
-request-bound tools and depiction. For a 0.x version the minor is the compatibility boundary, so additive
+request-bound tools and depiction; 0.1.28 adds app handoff, connection points, and handoff graphs; 0.1.29 adds a bounded companion retry. For a 0.x version the minor is the compatibility boundary, so additive
 methods bump the patch and a plugin declares the caret version it needs. Record each bump in the
 `plugin-api` header comment and `AUTHORING.md`.
 
 Permission names are defined in `plugin-api`. The dangerous ones are `filesystem.write`,
-`network.fetch`, `native.execute`, `model.load`, `model.download`, `clipboard.read`, `document.write`,
+`network.fetch`, `native.execute`, `apps.handoff`, `model.load`, `model.download`, `clipboard.read`, `document.write`,
 and `image.read` beyond a user-chosen image. A plugin never receives a capability it did not declare,
 and any capability that spawns a process also requires `native.execute` (OPSIN name→structure needs
 it beside `chemistry.compute`).

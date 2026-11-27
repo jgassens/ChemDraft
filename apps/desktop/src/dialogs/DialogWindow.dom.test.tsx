@@ -16,6 +16,18 @@ import type { DialogTransport } from "./dialogTransport";
 import { exportFixture } from "./exportTestFixtures";
 import { toolInstallFixture } from "./toolInstallTestFixtures";
 const snapshot: Extract<DialogMessage, { type: "snapshot" }> = { protocolVersion: 1, ownerWindowId: "main", documentTabId: "tab", dialogKind: "pageSize", sessionId: "session", requestId: "request", snapshotRevision: 1, type: "snapshot", data: { title: "Drawing A", width: 8.5, height: 11, unit: "inch" } };
+const buildWarnings = ["ChemDraft verified this build.", "<b>Review the build input.</b>", ...Array<string>(18).fill("Warning".repeat(15))];
+const handoffSnapshot: Extract<DialogMessage, { type: "snapshot"; dialogKind: "appHandoff" }> = {
+  ...snapshot, dialogKind: "appHandoff", documentTabId: "app-handoff", sessionId: "native-handoff", data: {
+    mode: "confirm", title: "Confirm companion build", appName: "Crystal Builder", pipeline: "mofBuild",
+    composition: { formula: "C8H4O4X2", atomCount: 18 }, suggestedCombination: "pcu-2x2x2",
+    pluginName: "ChemDraft", warnings: buildWarnings,
+    combinations: {
+      "pcu-1x1x1": { topology: "pcu", node: "N16", repeat: "1x1x1", rebuildAs: "pcu-2x2x2" },
+      "pcu-2x2x2": { topology: "pcu", node: "N16", repeat: "2x2x2" }
+    }
+  }
+};
 let root: Root; let container: HTMLDivElement; let stopEditRouting: () => void;
 beforeEach(async () => {
   vi.stubGlobal("localStorage", new MemoryStorage());
@@ -27,6 +39,70 @@ beforeEach(async () => {
   await act(async () => host.receive!(snapshot));
 });
 afterEach(() => { stopEditRouting(); act(() => root.unmount()); container.remove(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+it.each(["macos", "windows"] as const)("answers the Rust-owned build confirmation using one declared choice on %s", async platform => {
+  vi.stubGlobal("navigator", { platform: platform === "macos" ? "MacIntel" : "Win32" });
+  act(() => root.unmount()); root = createRoot(container);
+  host.send.mockClear();
+  await act(async () => root.render(<DialogWindow hostId="native-confirm" />));
+  await act(async () => host.receive!(handoffSnapshot));
+  const select = container.querySelector("select")!;
+  expect(container.textContent).toContain("Plugin (ChemDraft) warnings");
+  const list = container.querySelector("ul[aria-labelledby]")!;
+  expect(Array.from(list.children, item => item.textContent)).toEqual(buildWarnings);
+  expect(list.querySelector("b")).toBeNull();
+  expect(list.closest(".cd-dialog-fit-body")).not.toBeNull();
+  expect(host.send.mock.calls.filter(([, message]) => message.type === "action")).toEqual([]);
+  expect(select.value).toBe("pcu-2x2x2");
+  expect(container.textContent).toContain("C8H4O4X2 · 18 atoms");
+  expect(Array.from(select.options, option => option.value)).toEqual(["pcu-1x1x1", "pcu-2x2x2"]);
+  await act(async () => {
+    select.value = "pcu-1x1x1";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  const build = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Build")!;
+  expect(build.closest(".cd-dialog-fit-footer")).not.toBeNull();
+  await act(async () => { build.click(); build.click(); });
+  const actions = host.send.mock.calls.filter(([, message]) => message.type === "action");
+  expect(actions).toEqual([["native-confirm", expect.objectContaining({
+    dialogKind: "appHandoff", sessionId: "native-handoff", data: { action: "confirm", combinationId: "pcu-1x1x1" }
+  })]]);
+});
+
+it.each(["macos", "windows"] as const)("cancels the build confirmation with Escape on %s", async platform => {
+  vi.stubGlobal("navigator", { platform: platform === "macos" ? "MacIntel" : "Win32" });
+  act(() => root.unmount()); root = createRoot(container);
+  await act(async () => root.render(<DialogWindow hostId="native-confirm" />));
+  await act(async () => host.receive!(handoffSnapshot));
+  await act(async () => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    window.dispatchEvent(new KeyboardEvent("keyup", { key: "Escape" }));
+  });
+  expect(host.send).toHaveBeenLastCalledWith("native-confirm", expect.objectContaining({
+    type: "action", data: { action: "cancel" }
+  }));
+});
+
+it("sends a bare Rebuild action to the Rust-owned result session", async () => {
+  act(() => root.unmount()); root = createRoot(container);
+  await act(async () => root.render(<DialogWindow hostId="native-result" />));
+  await act(async () => host.receive!({ ...handoffSnapshot, sessionId: "result", data: {
+    mode: "result", title: "Companion build result", appName: "Crystal Builder",
+    combination: "square", rebuildCombination: "hex", rebuildLabel: "Rebuild at 2×2×2",
+    rebuildChanges: { topology: "hex" }, twist: 6, pluginName: "ChemDraft", warnings: buildWarnings
+  } }));
+  expect(container.textContent).toContain("Joint twist left 6.000");
+  expect(container.textContent).toContain("Rebuild with hex · net hex");
+  expect(container.textContent).toContain("Plugin (ChemDraft) warnings");
+  const list = container.querySelector("ul[aria-labelledby]")!;
+  expect(Array.from(list.children, item => item.textContent)).toEqual(buildWarnings);
+  expect(list.querySelector("b")).toBeNull();
+  const rebuild = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Rebuild at 2×2×2")!;
+  await act(async () => rebuild.click());
+  expect(host.send).toHaveBeenLastCalledWith("native-result", expect.objectContaining({
+    type: "action", sessionId: "result", data: { action: "rebuild" }
+  }));
+});
 it.each(["macos", "windows"] as const)("requests a new content fit after Choose → Cancel on %s, then disconnects on close", async platform => {
   vi.stubGlobal("navigator", { platform: platform === "macos" ? "MacIntel" : "Win32" });
   const disconnect = vi.fn();

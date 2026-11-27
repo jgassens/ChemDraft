@@ -1,0 +1,19 @@
+{
+  "opened": false,
+  "status": "done",
+  "steps": [
+    {
+      "id": "build",
+      "json": {
+        "ok": true
+      }
+    },
+    {
+      "id": "inspect",
+      "json": {
+        "formula": "C6H4X2",
+        "n_atoms": 12
+      }
+    }
+  ]
+}

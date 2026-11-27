@@ -2,6 +2,7 @@
 
 import { setNativePromptProvider, type NativePromptOptions } from "../nativePrompt";
 import type { PluginManifest } from "@chemdraft/plugin-api";
+import type { AppHandoffConsent } from "../appHandoff/consents";
 import { act, createElement, Fragment, useEffect, useReducer, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
@@ -76,6 +77,203 @@ const descriptors: readonly BundledPluginDescriptor[] = [
     options: { commandHandlers: { [commandId]: async () => ({ ok: true }) } }
   }
 ];
+
+it("lists native app handoff consent separately and keeps revoked rows visible", async () => {
+  const entry = installedEntry();
+  let status: AppHandoffConsent["status"] = "allowed";
+  const appPath = "/Applications/Crystal Builder.app";
+  const row = {
+    pluginId: entry.record.id, consentId: "consent-1", appName: "Crystal Builder", appPath,
+    pipeline: "mofBuild", at: "2026-11-23T12:00:00Z"
+  };
+  const list = vi.fn(async (): Promise<AppHandoffConsent[]> => [
+    { ...row, status },
+    { ...row, consentId: "consent-2", pipeline: null, status: "allowed" },
+    { ...row, consentId: "consent-3", appName: "Previous App", status: "inactive" }
+  ]);
+  const revoke = vi.fn(async () => { status = "revoked"; return ["consent-1"]; });
+  const runtime = createPluginRuntime({
+    getActiveDocument: () => undefined,
+    appHandoffConsents: { list, revoke, clearPlugin: async () => {} }
+  });
+  mount(createElement(PluginManagerDialog, {
+    runtime, bundledPlugins: descriptors, installedPlugins: [entry], onClose: () => {}
+  }));
+  await act(async () => {});
+  const button = document.querySelector<HTMLButtonElement>('button[aria-label^="Revoke app handoff from"]')!;
+  const section = button.closest("section")!;
+  expect(section.querySelector("h3")?.textContent).toBe("App handoff consents");
+  expect(section.textContent).toContain(entry.record.name);
+  expect(section.textContent).toContain(appPath);
+  expect(section.textContent).toContain("Pipeline mofBuild · Allowed");
+  expect(section.textContent).toContain("File handoff · Allowed");
+  expect(section.textContent).toContain("Pipeline mofBuild · Inactive");
+  expect(button.getAttribute("aria-label")).toContain("(Pipeline mofBuild)");
+  button.focus();
+  expect(document.activeElement).toBe(button);
+  await act(async () => button.click());
+  expect(revoke).toHaveBeenCalledExactlyOnceWith(entry.record.id, "consent-1");
+  expect(section.textContent).toContain("Pipeline mofBuild · Revoked");
+  expect(section.textContent).toContain("File handoff · Allowed");
+  expect(section.querySelector('button[aria-label$="(File handoff)"]')).not.toBeNull();
+  expect(button.isConnected).toBe(false);
+  expect(document.activeElement).toBe(section.querySelector("h3"));
+});
+
+it("drops sibling consents the native revoke also removed when the refresh fails", async () => {
+  const entry = installedEntry();
+  const row = {
+    pluginId: entry.record.id, consentId: "consent-1", appName: "Crystal Builder",
+    appPath: "/Applications/Crystal Builder.app", pipeline: "mofBuild", at: "2026-11-23T12:00:00Z"
+  };
+  const list = vi.fn()
+    .mockResolvedValueOnce([
+      { ...row, status: "allowed" },
+      { ...row, consentId: "consent-2", pipeline: null, status: "allowed" },
+      { ...row, consentId: "consent-3", appName: "Previous App", status: "allowed" }
+    ] satisfies AppHandoffConsent[])
+    .mockRejectedValue(new Error("store unavailable"));
+  // The store was full, so revoking also removed the app's other operation.
+  const revoke = vi.fn(async () => ["consent-1", "consent-2"]);
+  const runtime = createPluginRuntime({
+    getActiveDocument: () => undefined,
+    appHandoffConsents: { list, revoke, clearPlugin: async () => {} }
+  });
+  mount(createElement(PluginManagerDialog, {
+    runtime, bundledPlugins: descriptors, installedPlugins: [entry], onClose: () => {}
+  }));
+  await act(async () => {});
+  const button = document.querySelector<HTMLButtonElement>('button[aria-label$="(Pipeline mofBuild)"]')!;
+  const section = button.closest("section")!;
+  expect(section.textContent).toContain("File handoff · Allowed");
+  await act(async () => button.click());
+  expect(revoke).toHaveBeenCalledExactlyOnceWith(entry.record.id, "consent-1");
+  expect(list).toHaveBeenCalledTimes(2);
+  expect(section.textContent).toContain("Could not list app handoff consents: store unavailable");
+  expect(section.textContent).toContain("Crystal Builder");
+  expect(section.textContent).toContain("Pipeline mofBuild · Revoked");
+  expect(section.textContent).not.toContain("File handoff");
+  expect(section.textContent).toContain("Previous App");
+  const remaining = section.querySelectorAll<HTMLButtonElement>("button");
+  expect(remaining).toHaveLength(1);
+  expect(remaining[0]!.getAttribute("aria-label")).toContain("Previous App");
+});
+
+it("drops a conflict group the native revoke removed to fit the store when the refresh fails", async () => {
+  const entry = installedEntry();
+  const allowed: AppHandoffConsent = {
+    pluginId: entry.record.id, consentId: "consent-1", appName: "Crystal Builder",
+    appPath: "/Applications/Crystal Builder.app", pipeline: null, status: "allowed", at: "2026-11-23T12:00:00Z"
+  };
+  const conflict: AppHandoffConsent = {
+    ...allowed, consentId: "conflict-1", appName: "Test App", appPath: "/Applications/Test App.app", status: "conflict"
+  };
+  const list = vi.fn()
+    .mockResolvedValueOnce([allowed, conflict])
+    .mockRejectedValue(new Error("store unavailable"));
+  // The store was full, so revoking also removed the plugin's conflict group, listed by its conflict ID.
+  const revoke = vi.fn(async () => ["consent-1", "consent-a", "consent-b", "conflict-1"]);
+  const runtime = createPluginRuntime({
+    getActiveDocument: () => undefined,
+    appHandoffConsents: { list, revoke, clearPlugin: async () => {} }
+  });
+  mount(createElement(PluginManagerDialog, {
+    runtime, bundledPlugins: descriptors, installedPlugins: [entry], onClose: () => {}
+  }));
+  await act(async () => {});
+  const button = document.querySelector<HTMLButtonElement>('button[aria-label*="Crystal Builder"]')!;
+  const section = button.closest("section")!;
+  expect(section.textContent).toContain("Conflicting consents");
+  await act(async () => button.click());
+  expect(revoke).toHaveBeenCalledExactlyOnceWith(entry.record.id, "consent-1");
+  expect(list).toHaveBeenCalledTimes(2);
+  expect(section.textContent).toContain("Could not list app handoff consents: store unavailable");
+  expect(section.textContent).toContain("File handoff · Revoked");
+  expect(section.textContent).not.toContain("Conflicting consents");
+  expect(section.textContent).not.toContain("Test App");
+  expect(section.querySelectorAll("button")).toHaveLength(0);
+});
+
+it("ignores a handoff consent read that resolves just after revoke succeeds", async () => {
+  const entry = installedEntry();
+  const row: AppHandoffConsent = {
+    pluginId: entry.record.id, consentId: "consent-1", appName: "Crystal Builder",
+    appPath: "/Applications/Crystal Builder.app", pipeline: null, status: "allowed", at: "2026-11-23T12:00:00Z"
+  };
+  const stale = deferred<AppHandoffConsent[]>();
+  const refresh = deferred<AppHandoffConsent[]>();
+  const revoke = deferred<readonly string[]>();
+  const list = vi.fn()
+    .mockResolvedValueOnce([row])
+    .mockReturnValueOnce(stale.promise)
+    .mockReturnValue(refresh.promise);
+  const runtime = createPluginRuntime({
+    getActiveDocument: () => undefined,
+    appHandoffConsents: { list, revoke: () => revoke.promise, clearPlugin: async () => {} }
+  });
+  mount(createElement(PluginManagerDialog, {
+    runtime, bundledPlugins: descriptors, installedPlugins: [entry], onClose: () => {}
+  }));
+  await act(async () => {});
+  await act(async () => window.dispatchEvent(new Event("focus")));
+  expect(list).toHaveBeenCalledTimes(2);
+  const button = document.querySelector<HTMLButtonElement>('button[aria-label^="Revoke app handoff from"]')!;
+  const section = button.closest("section")!;
+  await act(async () => {
+    button.click();
+    revoke.resolve(["consent-1"]);
+    stale.resolve([row]);
+  });
+  expect(section.textContent).toContain("File handoff · Revoked");
+  expect(section.querySelector("button")).toBeNull();
+});
+
+it("shows a conflicted app handoff group and lets the user revoke it", async () => {
+  const entry = installedEntry();
+  const row: AppHandoffConsent = {
+    pluginId: entry.record.id, consentId: "conflict-1", appName: "Test App",
+    appPath: "/Applications/Test App.app", pipeline: null,
+    status: "conflict", at: "2026-11-23T12:00:00Z"
+  };
+  const unrelated: AppHandoffConsent = {
+    pluginId: entry.record.id, consentId: "consent-other", appName: "Other App",
+    appPath: "/Applications/Other App.app", pipeline: null,
+    status: "allowed", at: "2026-11-23T12:00:00Z"
+  };
+  let resolveRefresh!: (rows: AppHandoffConsent[]) => void;
+  const list = vi.fn()
+    .mockResolvedValueOnce([row, unrelated])
+    .mockImplementation(() => new Promise<AppHandoffConsent[]>((resolve) => { resolveRefresh = resolve; }));
+  const revoke = vi.fn(async () => [] as const);
+  const runtime = createPluginRuntime({
+    getActiveDocument: () => undefined,
+    appHandoffConsents: { list, revoke, clearPlugin: async () => {} }
+  });
+  mount(createElement(PluginManagerDialog, {
+    runtime, bundledPlugins: descriptors, installedPlugins: [entry], onClose: () => {}
+  }));
+  await act(async () => {});
+  const button = document.querySelector<HTMLButtonElement>('button[aria-label^="Revoke app handoff from"]')!;
+  const section = button.closest("section")!;
+  expect(section.textContent).toContain("Conflicting consents");
+  expect(section.textContent).toContain("Other App");
+  expect(button.getAttribute("aria-label")).toContain("all operations");
+  expect(button.getAttribute("aria-label")).toContain("Test App");
+  await act(async () => button.click());
+  expect(revoke).toHaveBeenCalledExactlyOnceWith(entry.record.id, "conflict-1");
+  // The refresh after revoking is still pending, so only the component itself can have
+  // removed the conflict row.
+  expect(list).toHaveBeenCalledTimes(2);
+  expect(section.textContent).not.toContain("Conflicting consents");
+  expect(section.textContent).not.toContain("Test App");
+  expect(section.textContent).toContain("Other App");
+  const remaining = section.querySelectorAll<HTMLButtonElement>("button");
+  expect(remaining).toHaveLength(1);
+  expect(remaining[0]!.getAttribute("aria-label")).toContain("Other App");
+  await act(async () => resolveRefresh([unrelated]));
+  expect(section.textContent).not.toContain("Conflicting consents");
+  expect(section.textContent).toContain("Other App");
+});
 
 describe("naming engine catalog ownership", () => {
   it("shows the fallback release selection reason before a catalog install is confirmed", async () => {

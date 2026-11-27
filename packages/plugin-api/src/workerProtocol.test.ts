@@ -10,6 +10,7 @@ import {
   PLUGIN_WORKER_CAPABILITY_METHODS,
   PLUGIN_WORKER_PROTOCOL_VERSION,
   PluginWorkerErrorCodes,
+  asHostToWorkerMessage,
   checkWorkerHandshake,
   isPluginApiVersionCompatible,
   supportsPluginTableInsertion,
@@ -18,6 +19,16 @@ import {
   type WorkerToHostMessage
 } from "./workerProtocol";
 import { runPluginWorker } from "./workerRuntime";
+
+describe("forward-compatible host identity", () => {
+  it("keeps invocations and removes invalid host identities", () => {
+    const base = { kind: "invokeCommand", commandRequestId: 1, commandId: "plugin.runtime.run" };
+    expect(asHostToWorkerMessage({ ...base, host: { name: "ChemDraft", version: "1", future: true } })).toEqual({ ...base, host: { name: "ChemDraft", version: "1" } });
+    expect(asHostToWorkerMessage({ ...base, host: { name: "Other", version: "1" } })).toEqual(base);
+    expect(asHostToWorkerMessage({ ...base, host: 42 })).toEqual(base);
+    expect(asHostToWorkerMessage({ ...base, host: Object.assign([], { name: "ChemDraft", version: "1" }) })).toEqual(base);
+  });
+});
 
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 const commandId = "plugin.runtime.run";
@@ -136,7 +147,7 @@ describe("isPluginApiVersionCompatible", () => {
     expect(isPluginApiVersionCompatible("^0.1.14", "0.1.13")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.15", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.15", "0.1.14")).toBe(false);
-    expect(PluginApiVersion).toBe("0.1.26");
+    expect(PluginApiVersion).toBe("0.1.29");
     expect(isPluginApiVersionCompatible("^0.1.23", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.24", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.24", "0.1.23")).toBe(false);
@@ -144,6 +155,10 @@ describe("isPluginApiVersionCompatible", () => {
     expect(isPluginApiVersionCompatible("^0.1.25", "0.1.24")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.26", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.26", "0.1.25")).toBe(false);
+    expect(isPluginApiVersionCompatible("^0.1.28", PluginApiVersion)).toBe(true);
+    expect(isPluginApiVersionCompatible("^0.1.29", PluginApiVersion)).toBe(true);
+    expect(isPluginApiVersionCompatible("^0.1.29", "0.1.28")).toBe(false);
+    expect(isPluginApiVersionCompatible("^0.1.28", "0.1.27")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.23", "0.1.22")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.16", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.16", "0.1.15")).toBe(false);
@@ -166,10 +181,10 @@ describe("chemistry worker capability allowlist", () => {
   it("includes command-scoped table insertion", () => {
     expect(PLUGIN_WORKER_CAPABILITY_METHODS.documents).toContain("insertTable");
   });
-  it("includes all chemistry methods through API 0.1.26", () => {
+  it("includes all chemistry methods through API 0.1.28", () => {
     expect(PLUGIN_WORKER_CAPABILITY_METHODS.chemistry).toEqual([
       "properties", "isotopeEnvelope", "nameToStructure", "structureFromSmiles", "structureToName", "embed3d", "minimize3d", "flatten3d",
-      "inspectStructure", "rings"
+      "handoffGraph", "suggestConnectionPoints", "inspectStructure", "rings"
     ]);
   });
   it("includes structureToName", () => {
@@ -202,6 +217,118 @@ describe("checkWorkerHandshake", () => {
 });
 
 describe("runPluginWorker", () => {
+  it("runs a command when host identity is unknown or extended", async () => {
+    const endpoint = new ControlledEndpoint();
+    runPluginWorker({ manifest: manifest([]), commandHandlers: { [commandId]: context => context.host ?? null } }, endpoint);
+    endpoint.deliverRaw({ kind: "invokeCommand", commandRequestId: 1, commandId, host: { name: "Other", version: "1" } });
+    await flush();
+    expect(endpoint.sent.at(-1)).toMatchObject({ kind: "commandSettled", ok: true, value: null });
+    endpoint.deliverRaw({ kind: "invokeCommand", commandRequestId: 2, commandId, host: { name: "ChemDraft", version: "1", future: true } });
+    await flush();
+    expect(endpoint.sent.at(-1)).toMatchObject({ kind: "commandSettled", ok: true, value: { name: "ChemDraft", version: "1" } });
+  });
+  it.each([
+    { permissions: [], allowed: false },
+    { permissions: ["apps.handoff"], allowed: false },
+    { permissions: ["native.execute"], allowed: false },
+    { permissions: ["apps.handoff", "native.execute"], allowed: true }
+  ] satisfies { permissions: PluginManifest["permissions"]; allowed: boolean }[])(
+    "exposes apps only with both permissions ($permissions)",
+    async ({ permissions, allowed }) => {
+      const endpoint = new ControlledEndpoint();
+      runPluginWorker({
+        manifest: { ...manifest([]), permissions },
+        commandHandlers: { [commandId]: context => context.apps ? Object.keys(context.apps) : null }
+      }, endpoint);
+      endpoint.deliver({ kind: "invokeCommand", commandRequestId: 1, commandId });
+      await flush();
+      const methods = ["chooseApp", "status", "sendFile", "runCompanion"];
+      expect(PLUGIN_WORKER_CAPABILITY_METHODS.apps).toEqual(methods);
+      expect(endpoint.sent.at(-1)).toMatchObject({ kind: "commandSettled", ok: true, value: allowed ? methods : null });
+    }
+  );
+
+  it("keeps apps absent from both tool invocation paths", async () => {
+    const endpoint = new ControlledEndpoint();
+    const seen: boolean[] = [];
+    runPluginWorker({
+      manifest: { ...manifest(["apps.handoff", "native.execute"]), apiVersion: "^0.1.28" },
+      commandHandlers: {},
+      onAssistantToolCall: context => {
+        seen.push("apps" in context);
+        return { content: [] };
+      },
+      onToolCall: context => {
+        seen.push("apps" in context);
+        return { ok: true, value: null };
+      }
+    }, endpoint);
+    endpoint.deliver({ kind: "invokeAssistantTool", commandRequestId: 1, sessionId: "s", name: "find", input: {} });
+    endpoint.deliver({ kind: "invokeTool", commandRequestId: 2, call: { requestId: "r", sessionId: "s", name: "find", input: {} } });
+    await flush();
+    expect(seen).toEqual([false, false]);
+  });
+
+  it("relays a bounded companion retry and its attempts through the Worker (API 0.1.29)", async () => {
+    const endpoint = new ControlledEndpoint();
+    const request = {
+      appId: "opaque", pipeline: "mofBuild", combination: "pcu", input: { extension: "xyz" as const, text: "1\n\nC 0 0 0\n" },
+      retry: { inputs: ["1\nb\nC 0 0 0.01\n"], when: { step: "build", label: "Joint twist left", notEqual: 0 } }
+    };
+    runPluginWorker({
+      manifest: { ...manifest(["apps.handoff", "native.execute"]), apiVersion: "^0.1.29" },
+      commandHandlers: { [commandId]: async context => {
+        const tooMany = { ...request, retry: { ...request.retry, inputs: ["a", "b", "c"] } };
+        await expect(context.apps!.runCompanion(tooMany)).rejects.toMatchObject({ code: PluginWorkerErrorCodes.MalformedMessage });
+        return context.apps!.runCompanion(request);
+      } }
+    }, endpoint);
+    endpoint.deliver({ kind: "invokeCommand", commandRequestId: 1, commandId });
+    await flush();
+    endpoint.deliver({ kind: "capabilityResult", requestId: 1, ok: false, error: {
+      code: "PluginHostError", message: "Invalid apps.runCompanion request."
+    } });
+    await flush();
+    expect(endpoint.sent.at(-1)).toEqual({
+      kind: "capabilityRequest", requestId: 2, commandRequestId: 1, namespace: "apps", method: "runCompanion", args: [request]
+    });
+    const done = { status: "done", steps: [], opened: true, attempts: 3, variant: 2 };
+    endpoint.deliver({ kind: "capabilityResult", requestId: 2, ok: true, value: done });
+    await flush();
+    expect(endpoint.sent.at(-1)).toMatchObject({ kind: "commandSettled", ok: true, value: done });
+  });
+
+  it("forwards strict apps payloads without a credential and rejects extra request or result fields", async () => {
+    const endpoint = new ControlledEndpoint();
+    const requests = { purpose: "Send the structure" };
+    runPluginWorker({
+      manifest: { ...manifest(["apps.handoff", "native.execute"]), apiVersion: "^0.1.28" },
+      commandHandlers: { [commandId]: async context => {
+        const spoofed = { ...requests, token: "proof" };
+        await expect(context.apps!.chooseApp(spoofed)).rejects.toMatchObject({ code: PluginWorkerErrorCodes.MalformedMessage });
+        return context.apps!.chooseApp(requests);
+      } }
+    }, endpoint);
+    endpoint.deliver({ kind: "invokeCommand", commandRequestId: 1, commandId });
+    await flush();
+    expect(endpoint.sent.filter(message => message.kind === "capabilityRequest")).toEqual([{
+      kind: "capabilityRequest", requestId: 1, commandRequestId: 1, namespace: "apps", method: "chooseApp", args: [null]
+    }]);
+    endpoint.deliver({ kind: "capabilityResult", requestId: 1, ok: false, error: {
+      code: "PluginHostError", message: "Invalid apps.chooseApp request."
+    } });
+    await flush();
+    expect(endpoint.sent.at(-1)).toEqual({
+      kind: "capabilityRequest", requestId: 2, commandRequestId: 1, namespace: "apps", method: "chooseApp", args: [requests]
+    });
+    endpoint.deliver({ kind: "capabilityResult", requestId: 2, ok: true, value: {
+      status: "chosen", app: { appId: "opaque", displayName: "Crystal Builder", path: "/host/app" }
+    } });
+    await flush();
+    expect(endpoint.sent.at(-1)).toMatchObject({ kind: "commandSettled", ok: false,
+      error: { code: PluginWorkerErrorCodes.MalformedMessage } });
+  });
+
   it("correlates concurrent 3D replies by id even when the second command finishes first", async () => {
     const endpoint = new ControlledEndpoint();
     runPluginWorker({ manifest: manifest(["chemistry.compute"]), commandHandlers: {

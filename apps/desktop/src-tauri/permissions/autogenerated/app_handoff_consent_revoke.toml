@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-app-handoff-consent-revoke"
+description = "Enables the app_handoff_consent_revoke command without any pre-configured scope."
+commands.allow = ["app_handoff_consent_revoke"]
+
+[[permission]]
+identifier = "deny-app-handoff-consent-revoke"
+description = "Denies the app_handoff_consent_revoke command without any pre-configured scope."
+commands.deny = ["app_handoff_consent_revoke"]

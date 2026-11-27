@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { structureTemplates } from "@chemdraft/template-library";
 import { engineInstallFixture } from "./engineInstallTestFixtures";
 import { toolInstallFixture } from "./toolInstallTestFixtures";
 import { DIALOG_PREVIEW_MAX_BYTES, DIALOG_MAX_BYTES, parseDialogMessage, validateDialogDelivery, type DialogMessage } from "./dialogProtocol";
+import { AppHandoffDialogSnapshotSchema } from "../appHandoff/dialogTypes";
 
 export const snapshot = (): Extract<DialogMessage, { type: "snapshot" }> => ({ protocolVersion: 1, ownerWindowId: "main", documentTabId: "tab-1", dialogKind: "pageSize", sessionId: "session-1", requestId: "request-1", snapshotRevision: 1, type: "snapshot", data: { title: "Drawing", width: 8.5, height: 11, unit: "inch" } });
 describe("dialog contract", () => {
@@ -175,7 +177,7 @@ describe("ready from a content-fit window", () => {
   // Every kind whose window reports its measured size (fit_content in dialog_windows.rs, a form that
   // hands DialogWindow its root). About and Structure Templates send an empty ready and are not here.
   const measuring = ["pageSize", "pageEnlargement", "arrangementSpacing", "reactionConditions", "export", "engineInstall", "toolInstall",
-    "customColor", "insertTable", "atomProblem", "vibeCodeGuide", "guidedTour"] as const;
+    "customColor", "insertTable", "atomProblem", "vibeCodeGuide", "guidedTour", "appHandoff"] as const;
   const ready = (dialogKind: string, data: unknown) => ({ ...snapshot(), dialogKind, type: "ready", data });
   it.each(measuring)("%s accepts an empty ready or a valid measurement, and nothing else", dialogKind => {
     expect(parseDialogMessage(ready(dialogKind, {}))).toBeDefined();
@@ -187,4 +189,72 @@ describe("ready from a content-fit window", () => {
       expect(parseDialogMessage(ready(dialogKind, data)), JSON.stringify(data)).toBeUndefined();
     }
   });
+});
+
+it("accepts only the bounded Rust-owned handoff snapshot and typed choices", () => {
+  const data = { mode: "confirm", title: "Confirm companion build", appName: "Crystal Builder", pipeline: "mofBuild",
+    composition: { formula: "C8H4O4X2", atomCount: 18 }, suggestedCombination: "small",
+    combinations: { small: { node: "N16", repeat: "1x1x1", rebuildAs: "large" }, large: { node: "N16", repeat: "2x2x2" } }
+  };
+  const s = { ...snapshot(), dialogKind: "appHandoff", data };
+  expect(parseDialogMessage(s)).toEqual(s);
+  const result = { mode: "result", title: "Companion build result", appName: "Crystal Builder",
+    combination: "small", rebuildCombination: "large", rebuildLabel: "Rebuild at 2×2×2",
+    rebuildChanges: { topology: "hex", node: null }, twist: 6 };
+  expect(parseDialogMessage({ ...s, data: result })).toBeDefined();
+  for (const snapshotData of [data, result]) {
+    const warnings = ["🧪".repeat(300), "<b>Bond order changed.</b>"];
+    const withWarnings = { ...s, data: { ...snapshotData, warnings } };
+    expect(parseDialogMessage(withWarnings)).toEqual(withWarnings);
+    for (const invalid of [Array(21).fill("warning"), Array(20).fill(warnings[0]), [warnings[0] + "!"], ["bad\u202e"], ["bad\u200b"], ["bad\n"], [123], null]) {
+      expect(parseDialogMessage({ ...s, data: { ...snapshotData, warnings: invalid } })).toBeUndefined();
+    }
+    for (const pluginName of ["\u200dChemDraft", "ChemDraft\u007f", "🧪".repeat(81)]) {
+      expect(parseDialogMessage({ ...s, data: { ...snapshotData, warnings, pluginName } })).toBeUndefined();
+    }
+  }
+  for (const update of [
+    { suggestedCombination: "missing" }, { suggestedCombination: "toString" },
+    { composition: { ...data.composition, input: "file contents" } }, { composition: { ...data.composition, atomCount: 0 } },
+    { appPath: "/private" }, { appName: "x".repeat(3400) },
+    { combinations: { small: { repeat: "../other" } } }, { combinations: { small: { rebuildAs: "missing" } } }
+  ]) expect(parseDialogMessage({ ...s, data: { ...data, ...update } })).toBeUndefined();
+  expect(parseDialogMessage({ ...s, data: { ...result, twist: -1 } })).toBeUndefined();
+  expect(parseDialogMessage({ ...s, data: { ...result, rebuildChanges: { topology: "../../app" } } })).toBeUndefined();
+  const action = (choice: unknown) => parseDialogMessage({ ...s, type: "action", data: choice });
+  for (const choice of [{ action: "confirm", combinationId: "large" }, { action: "cancel" }, { action: "rebuild" }]) {
+    expect(action(choice)).toBeDefined();
+  }
+  for (const choice of [{ action: "confirm", combinationId: "../private" }, { action: "confirm", combinationId: "large", appId: "app" },
+    { action: "rebuild", combinationId: "large" }, { action: "cancel", token: "opaque" }, { action: "build" }]) {
+    expect(action(choice)).toBeUndefined();
+  }
+  expect(parseDialogMessage({ ...s, type: "result", data: { status: "accepted" } })).toBeUndefined();
+});
+
+it.each(["dialog-confirm", "dialog-rebuild", "dialog-confirm-unwarned", "dialog-rebuild-unwarned"])(
+  "validates Rust's %s with the production schema", fixture => {
+  const data: unknown = JSON.parse(readFileSync(new URL(`../appHandoff/__fixtures__/wire/${fixture}.json`, import.meta.url), "utf8"));
+  const parsed = AppHandoffDialogSnapshotSchema.parse(data);
+  expect(parsed).toEqual(data);
+  expect(parsed.pluginName).toBe("Send to Crystal Builder");
+  expect(parsed.warnings).toEqual(fixture.endsWith("-unwarned") ? undefined : ["ChemDraft verified this build."]);
+  const message = { ...snapshot(), dialogKind: "appHandoff", data };
+  expect(parseDialogMessage(message)).toEqual(message);
+});
+
+it("rejects the oversized result envelope of a valid warning-free confirmation", () => {
+  const wire = (name: string) => JSON.parse(readFileSync(new URL(`../appHandoff/__fixtures__/wire/${name}.json`, import.meta.url), "utf8"));
+  const { composition: _composition, ...confirmation } = wire("dialog-confirm-unwarned");
+  const parameters = Array.from({ length: 257 }, (_, i) => `p${i}`);
+  const frame = { ...snapshot(), documentTabId: "app-handoff", dialogKind: "appHandoff",
+    sessionId: "0".repeat(32), requestId: "open" };
+  const confirm = { ...confirmation, suggestedCombination: "b",
+    combinations: { a: { ...Object.fromEntries(parameters.map(key => [key, "x"])), rebuildAs: "b" }, b: {} } };
+  expect(parseDialogMessage({ ...frame, data: confirm })).toBeDefined();
+  const result = { ...wire("dialog-rebuild-unwarned"), combination: "a", rebuildCombination: "b",
+    rebuildLabel: "Rebuild", rebuildChanges: Object.fromEntries(parameters.map(key => [key, null])),
+    twist: Number.MAX_VALUE };
+  expect(AppHandoffDialogSnapshotSchema.safeParse(result).success).toBe(true);
+  expect(parseDialogMessage({ ...frame, data: result })).toBeUndefined();
 });

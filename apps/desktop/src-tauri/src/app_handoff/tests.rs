@@ -1,0 +1,3864 @@
+#[cfg(any(target_os = "macos", windows))]
+use super::identity::App;
+use super::{
+    arming::{ApprovedBuild, ApprovedRetry, ResultSession, State, Submission, RACE},
+    catalog,
+    command_line::{open_command, Pipeline, Platform},
+    consent::{ListedConsent, Row, Store},
+    dialogs::{self, Action},
+    endpoint::{BuildHost, BuildJob, JobError, State as Endpoint},
+    identity, retry,
+    runner::{self, CaptureError, ChildProcess},
+    temp_files::{self, TempFiles},
+    wire::{
+        Call, Extension, Input, Request, Retry, RetryCondition, RunCode, RunResult, StepResult,
+    },
+};
+use serde_json::{json, Value};
+use std::{
+    cell::{Cell, RefCell},
+    ffi::{OsStr, OsString},
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        OnceLock,
+    },
+    time::{Duration, Instant, SystemTime},
+};
+
+mod launch_race;
+
+const PLUGIN: &str = "org.chemdraft.handoff.crystalBuilder";
+const COMMAND: &str = "plugin.crystalBuilder.build";
+const APP_ID: &str = "0123456789abcdef0123456789abcdef";
+const INSTALL_ID: &str = "first-install";
+const XYZ: &str = "3\n1 2\nC 0 0 0\nX 1 0 0\nX -1 0 0\n0 1 S\n0 2 S\n";
+
+struct TestDir(PathBuf);
+impl TestDir {
+    fn new() -> Self {
+        let root = std::env::temp_dir().join(format!(
+            "chemdraft-handoff-{}",
+            temp_files::nonce().unwrap()
+        ));
+        fs::create_dir(&root).unwrap();
+        Self(root)
+    }
+}
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn template() -> Value {
+    json!({
+        "id":"mofBuild", "tool":{"macos":"Contents/MacOS/xtal", "windows":"bin\\XTAL~1.exe"},
+        "testedVersions":["1.1.1"],
+        "steps":[
+            {"id":"preflight","args":["capabilities","--json"],"timeoutSeconds":5},
+            {"id":"build","args":["run","mof.build","-p","repeat={combination.repeat}",
+                "-p","edges={inputStem}","-p","bb_dir={inputDir}","-o","{outputFile:cif}","--json"],
+                "input":{"extension":"xyz"},"timeoutSeconds":5},
+            {"id":"inspect","args":["inspect","{previousOutput}","--json"],"timeoutSeconds":5}
+        ],
+        "combinations":{
+            "small":{"repeat":"1x1x1","rebuildAs":"large"},
+            "large":{"repeat":"2x2x2"},
+            "exit":{"repeat":"exit"},
+            "bad-json":{"repeat":"bad-json"},
+            "no-file":{"repeat":"no-file"}
+        }
+    })
+}
+
+fn pipeline() -> Pipeline {
+    serde_json::from_value(template()).unwrap()
+}
+
+#[test]
+fn shared_companion_pipeline_fixtures_match_sdk_validation() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../../../packages/plugin-api/src/__fixtures__/companion-pipelines.json"
+    ))
+    .unwrap();
+    for case in fixture["cases"].as_array().unwrap() {
+        let mut pipeline = fixture["base"].as_object().unwrap().clone();
+        pipeline.extend(case["overrides"].as_object().unwrap().clone());
+        let validated = serde_json::from_value::<Pipeline>(Value::Object(pipeline))
+            .map_err(|error| error.to_string())
+            .and_then(|pipeline| pipeline.validate());
+        assert_eq!(
+            validated.is_ok(),
+            case["valid"].as_bool().unwrap(),
+            "{}: {validated:?}",
+            case["name"]
+        );
+    }
+}
+
+fn build(combination: &str) -> ApprovedBuild {
+    ApprovedBuild {
+        app_id: APP_ID.into(),
+        pipeline: "mofBuild".into(),
+        combination: combination.into(),
+        input: Some(Input {
+            extension: Extension::Xyz,
+            text: XYZ.into(),
+        }),
+        open_output: true,
+        warnings: vec!["The node supplies these carboxylates.".into()],
+        retry: None,
+    }
+}
+
+#[test]
+fn both_platform_command_lines_preserve_one_argument_per_template_slot() {
+    let pipeline = pipeline();
+    pipeline.validate().unwrap();
+    assert_eq!(
+        pipeline.tool_path(Platform::Mac).unwrap(),
+        Path::new("Contents").join("MacOS").join("xtal")
+    );
+    assert_eq!(
+        pipeline.tool_path(Platform::Windows).unwrap(),
+        Path::new("bin").join("XTAL~1.exe")
+    );
+    for (platform, directory) in [
+        (Platform::Mac, Path::new("/tmp/A β")),
+        (Platform::Windows, Path::new(r"C:\Users\DEVNAM~1\A β")),
+    ] {
+        let args = pipeline
+            .render(&pipeline.steps[1], "small", directory, "cdx_example", None)
+            .unwrap();
+        let output = directory.join("output-build.cif");
+        assert_eq!(args.output.as_deref(), Some(output.as_path()));
+        assert!(args.args.iter().any(|arg| arg == "repeat=1x1x1"));
+        let mut input = OsString::from("bb_dir=");
+        input.push(directory);
+        assert!(args.args.contains(&input));
+        let inspect = pipeline
+            .render(
+                &pipeline.steps[2],
+                "small",
+                directory,
+                "cdx_example",
+                Some(&output),
+            )
+            .unwrap();
+        assert_eq!(
+            inspect.args,
+            [
+                "inspect".into(),
+                output.as_os_str().to_owned(),
+                "--json".into()
+            ]
+        );
+        let (program, args) = open_command(
+            platform,
+            Path::new("Mol.app"),
+            Path::new("Mol.exe"),
+            &output,
+        );
+        match platform {
+            Platform::Mac => {
+                assert_eq!(program, Path::new("/usr/bin/open"));
+                assert_eq!(
+                    args,
+                    [
+                        "-a".into(),
+                        "Mol.app".into(),
+                        "--".into(),
+                        output.into_os_string()
+                    ]
+                );
+            }
+            Platform::Windows => {
+                assert_eq!(program, Path::new("Mol.exe"));
+                assert_eq!(args, [output.into_os_string()]);
+            }
+        }
+    }
+}
+
+#[test]
+fn invalid_pipelines_refuse_traversal_arguments_and_unbound_inspection() {
+    for (key, path) in [
+        ("macos", "Contents/../xtal"),
+        ("macos", "/usr/bin/xtal"),
+        ("windows", "C:\\tools\\tool.exe"),
+        ("windows", "tools\\.\\tool.exe"),
+        ("windows", "tools\\.. \\tool.exe"),
+        ("windows", "tools\\tool.cmd"),
+        ("windows", "tools\\LPT².exe"),
+        ("windows", "tools\\tool.exe:alternate"),
+    ] {
+        let mut raw = template();
+        raw["tool"][key] = json!(path);
+        assert!(
+            serde_json::from_value::<Pipeline>(raw)
+                .unwrap()
+                .validate()
+                .is_err(),
+            "{path}"
+        );
+    }
+    for parameter in [
+        "--help",
+        "@response",
+        "a..b",
+        "a b",
+        "a|b",
+        "a&b",
+        "a=b",
+        "a\\b",
+        "a/b",
+    ] {
+        let mut raw = template();
+        raw["combinations"]["small"]["repeat"] = json!(parameter);
+        assert!(
+            serde_json::from_value::<Pipeline>(raw)
+                .unwrap()
+                .validate()
+                .is_err(),
+            "{parameter}"
+        );
+    }
+    let mut raw = template();
+    raw["steps"][2]["args"] = json!(["inspect", "/elsewhere.cif", "--json"]);
+    assert!(serde_json::from_value::<Pipeline>(raw)
+        .unwrap()
+        .validate()
+        .is_err());
+    let mut raw = template();
+    raw["steps"][0]["args"] = json!(["run", "--json"]);
+    assert!(serde_json::from_value::<Pipeline>(raw)
+        .unwrap()
+        .validate()
+        .is_err());
+}
+
+#[test]
+fn rendered_inspect_requires_the_immediately_preceding_build_output() {
+    let mut raw = template();
+    for (id, row) in raw["combinations"].as_object_mut().unwrap() {
+        row["action"] = json!(if id == "small" { "inspect" } else { "check" });
+    }
+    raw["steps"][2]["args"][0] = json!("{combination.action}");
+    let validate = |template| {
+        serde_json::from_value::<Pipeline>(template)
+            .unwrap()
+            .validate()
+    };
+    assert!(validate(raw.clone()).is_ok());
+    let mut wrong_previous = raw.clone();
+    wrong_previous["steps"][1]["id"] = json!("generate");
+    assert!(validate(wrong_previous)
+        .unwrap_err()
+        .contains("preceding build"));
+    raw["steps"][2]["args"] = json!(["{combination.action}", "literal.cif", "{previousOutput}"]);
+    assert!(validate(raw).unwrap_err().contains("preceding build"));
+}
+
+#[test]
+fn live_menu_invocation_authenticates_each_method_before_any_side_effect() {
+    let state = State::default();
+    let now = Instant::now();
+    let stale = state.arm(PLUGIN, COMMAND, now).unwrap().invocation(PLUGIN);
+    state.begin(&stale, now).unwrap();
+    let current = state.arm(PLUGIN, COMMAND, now).unwrap().invocation(PLUGIN);
+    assert_ne!(current.nonce, stale.nonce);
+    assert!(
+        state.for_call(&current, now, true).is_err(),
+        "must start the invocation first"
+    );
+    assert!(state.begin(&stale, now).is_err());
+    state.finish(&stale);
+    state.begin(&current, now).unwrap();
+    assert!(state.begin(&current, now).is_err(), "cannot dispatch twice");
+    let mut effects = Vec::new();
+    let send = json!({"appId":APP_ID,"extension":"cif","fileName":"test","text":"x"});
+    let mut relay = |invocation: Value, method: &str, request: Value| -> Result<(), String> {
+        let call = super::endpoint::authorize_call(
+            &state,
+            json!({"invocation":invocation,"method":method,"request":request}),
+            now,
+        )?;
+        if let Some(submission) = call.submission {
+            submission.show_box()?;
+            effects.push("box");
+            effects.push("write");
+            submission.launch(|| effects.push("launch"))?;
+        } else if matches!(call.request, super::wire::Request::Choose(_)) {
+            effects.push("picker");
+        }
+        Ok(())
+    };
+    for invalid in [
+        json!({"pluginId": PLUGIN, "commandId": COMMAND}),
+        json!({"pluginId": PLUGIN, "commandId": COMMAND, "nonce": ""}),
+        json!(stale),
+        json!({"pluginId": "other", "commandId": COMMAND, "nonce": current.nonce}),
+        json!({"pluginId": PLUGIN, "commandId": "other", "nonce": current.nonce}),
+    ] {
+        for (method, request) in [
+            ("chooseApp", json!({"purpose":"Open"})),
+            ("status", json!({"appId": APP_ID})),
+            ("sendFile", send.clone()),
+            (
+                "runCompanion",
+                json!({"appId":APP_ID,"pipeline":"mofBuild","combination":"large"}),
+            ),
+        ] {
+            assert!(relay(invalid.clone(), method, request).is_err());
+        }
+    }
+    relay(json!(current), "status", json!({"appId":APP_ID})).unwrap();
+    relay(json!(current), "chooseApp", json!({"purpose":"Open"})).unwrap();
+    relay(json!(current), "sendFile", send.clone()).unwrap();
+    assert!(relay(json!(current), "sendFile", send).is_err());
+    assert_eq!(effects, ["picker", "box", "write", "launch"]);
+    state.finish(&current);
+    assert!(state.for_call(&current, now, true).is_err());
+}
+
+#[test]
+fn refuses_stale_calls_during_pending_submission_and_after_expiry_or_unused_finish() {
+    let state = State::default();
+    let now = Instant::now();
+    let stale = state.arm(PLUGIN, COMMAND, now).unwrap().invocation(PLUGIN);
+    assert!(state.begin(&stale, now + Duration::from_secs(60)).is_err());
+    let active = state.arm(PLUGIN, COMMAND, now).unwrap().invocation(PLUGIN);
+    state.begin(&active, now).unwrap();
+    let pending = state
+        .for_call(&active, now, true)
+        .unwrap()
+        .submit(now)
+        .unwrap();
+    assert!(state.for_call(&stale, now, true).is_err());
+    state.finish(&stale);
+    pending.assert_pending().unwrap();
+    drop(pending);
+    assert!(state
+        .for_call(&active, now + Duration::from_secs(60), false)
+        .is_err());
+    state.finish(&active);
+    assert!(state.for_call(&active, now, true).is_err());
+}
+
+#[test]
+fn wire_refuses_fields_outside_the_authenticated_envelope() {
+    let invocation = json!({"pluginId": PLUGIN,"commandId": COMMAND,"nonce": APP_ID});
+    let payload = json!({"invocation":invocation,"method":"sendFile","request":{"appId":APP_ID,"extension":"cif","fileName":"test","text":"x"}});
+    assert!(Call::parse(payload.clone()).is_ok());
+    for key in [
+        "token",
+        "arming",
+        "armingId",
+        "invocationId",
+        "commandId",
+        "combination",
+        "nativeEvent",
+        "nonce",
+    ] {
+        let mut extra = payload.clone();
+        extra[key] = json!(COMMAND);
+        assert!(Call::parse(extra).is_err());
+        let mut extra = payload.clone();
+        extra["request"][key] = json!(COMMAND);
+        assert!(Call::parse(extra).is_err());
+    }
+    for (method, request) in [
+        ("chooseApp", json!({"purpose":"Open a file"})),
+        ("status", json!({"appId":APP_ID})),
+        (
+            "runCompanion",
+            json!({"appId":APP_ID,"pipeline":"mofBuild","combination":"large"}),
+        ),
+    ] {
+        let mut payload = json!({"invocation":invocation,"method":method,"request":request});
+        assert!(Call::parse(payload.clone()).is_ok());
+        payload["request"]["commandId"] = json!(COMMAND);
+        assert!(Call::parse(payload).is_err());
+    }
+}
+
+#[test]
+fn wire_refuses_non_xyz_companion_input() {
+    let arm = State::default()
+        .arm(PLUGIN, COMMAND, Instant::now())
+        .unwrap();
+    let request = |extension| {
+        json!({
+            "invocation": arm.invocation(PLUGIN),
+            "method": "runCompanion",
+            "request": { "appId": APP_ID, "pipeline": "mofBuild", "combination": "small",
+                "input": { "extension": extension, "text": XYZ } }
+        })
+    };
+    assert!(Call::parse(request("xyz")).is_ok());
+    assert!(Call::parse(request("cif")).is_err());
+}
+
+#[test]
+fn duplicate_submissions_refuse_both_before_any_launch() {
+    let state = State::default();
+    let now = Instant::now();
+    let arm = state.arm(PLUGIN, COMMAND, now).unwrap();
+    let first = arm.submit(now).unwrap();
+    first.show_box().unwrap();
+    let cancel = first.invalidated();
+    let duplicate = std::thread::spawn(move || arm.submit(now).err().unwrap())
+        .join()
+        .unwrap();
+    assert_eq!(duplicate, RACE);
+    assert!(*cancel.borrow());
+    assert_eq!(
+        first
+            .launch(|| panic!("neither request may launch"))
+            .unwrap_err(),
+        RACE
+    );
+}
+
+#[test]
+fn refusal_before_a_box_releases_the_allowance_cancel_after_a_box_consumes_it() {
+    let state = State::default();
+    let now = Instant::now();
+    let arm = state.arm(PLUGIN, COMMAND, now).unwrap();
+    drop(arm.submit(now).unwrap());
+    let shown = arm.submit(now).unwrap();
+    shown.show_box().unwrap();
+    drop(shown);
+    assert!(arm.submit(now).is_err());
+    // A rebuild needs the click that ran the build to have launched and still be live.
+    let original = state.arm(PLUGIN, COMMAND, now).unwrap();
+    let ran = original.submit(now).unwrap();
+    assert!(state.arm_rebuild(PLUGIN, COMMAND, now, &ran).is_err());
+    ran.launch(|| ()).unwrap();
+    let rebuild = state.arm_rebuild(PLUGIN, COMMAND, now, &ran).unwrap();
+    assert!(ran.assert_used().is_err(), "the rebuild replaces the click");
+    assert!(state.live(PLUGIN, now).is_err());
+    assert!(
+        state.arm_rebuild(PLUGIN, COMMAND, now, &ran).is_err(),
+        "one rebuild per click"
+    );
+    assert_eq!(
+        rebuild.launch(|| "Rust callback only").unwrap(),
+        "Rust callback only"
+    );
+    assert!(rebuild.assert_used().is_ok());
+    state.release(PLUGIN, &rebuild);
+    assert!(rebuild.assert_used().is_err());
+}
+
+#[test]
+fn build_dialog_open_failure_preserves_the_allowance() {
+    let state = State::default();
+    let now = Instant::now();
+    let arm = state.arm(PLUGIN, COMMAND, now).unwrap();
+    let submission = arm.submit(now).unwrap();
+    let error = tauri::async_runtime::block_on(submission.open_box(
+        std::future::ready(Err::<(), _>("window creation failed".into())),
+        |()| panic!("there is no window to close"),
+    ));
+    assert_eq!(error.unwrap_err(), "window creation failed");
+    drop(submission);
+    let retry = arm.submit(now).unwrap();
+    tauri::async_runtime::block_on(retry.open_box(std::future::ready(Ok(())), |()| {
+        panic!("the window should stay open")
+    }))
+    .unwrap();
+    drop(retry);
+    assert!(arm.submit(now).is_err());
+}
+
+#[test]
+fn native_handoff_commands_expose_no_arming_endpoint() {
+    let host = include_str!("endpoint.rs");
+    let names: Vec<&str> = host
+        .split("#[tauri::command]")
+        .skip(1)
+        .map(|section| {
+            section
+                .split_once("fn ")
+                .unwrap()
+                .1
+                .split_once('(')
+                .unwrap()
+                .0
+        })
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "app_handoff_menu_invocation",
+            "app_handoff_call",
+            "app_handoff_consent_list",
+            "app_handoff_consent_revoke",
+            "app_handoff_consent_clear_plugin",
+        ]
+    );
+    let capability: Value =
+        serde_json::from_str(include_str!("../../capabilities/app-handoff.json")).unwrap();
+    assert_eq!(capability["windows"], json!(["main"]));
+    let native_menu = include_str!("../lib.rs")
+        .split(".on_menu_event(|app, event| {")
+        .nth(1)
+        .unwrap()
+        .split(".on_window_event")
+        .next()
+        .unwrap();
+    assert!(
+        native_menu.find("arm_native_menu").unwrap()
+            < native_menu.find("emit_menu_command").unwrap()
+    );
+    let delivery = include_str!("../lib.rs")
+        .split_once("if let Some(invocation) = handoff {")
+        .unwrap()
+        .1
+        .split_once("if target_label == MAIN_WINDOW_LABEL")
+        .unwrap()
+        .0;
+    assert!(delivery.contains("__CHEMDRAFT_NATIVE_HANDOFF__"));
+    assert!(!delivery.contains("dispatch_dom") && !delivery.contains(".emit("));
+    assert!(!include_str!("../lib.rs").contains("chemdraft:native-handoff-command"));
+    assert_eq!(
+        include_str!("../lib.rs")
+            .matches("app_handoff::arm_native_menu")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn dialog_choice_is_bound_to_declared_combination_and_rebuild_keeps_original_input() {
+    let input = build("small");
+    let digest = dialogs::composition(input.input.as_ref().unwrap()).unwrap();
+    assert_eq!((digest.formula.as_str(), digest.atom_count), ("CX2", 3));
+    let confirm: Action =
+        serde_json::from_value(json!({"action":"confirm","combinationId":"large"})).unwrap();
+    let snapshot = json!({"mode":"confirm","combinations":template()["combinations"]});
+    assert!(confirm.valid_for(&snapshot));
+    assert!(!confirm.valid_for(&json!({"mode":"result"})));
+    let unknown: Action =
+        serde_json::from_value(json!({"action":"confirm","combinationId":"undeclared"})).unwrap();
+    assert!(!unknown.valid_for(&snapshot));
+    assert!(
+        serde_json::from_value::<Action>(json!({"action":"rebuild","input":"new selection"}))
+            .is_err()
+    );
+
+    let now = Instant::now();
+    let session = || ResultSession {
+        build: input.clone(),
+        template_digest: pipeline().digest(),
+        handoff_graph_digest: Some(digest.graph_digest.clone()),
+        consent: (),
+        rebuild_as: "large".into(),
+        expires: now + Duration::from_secs(600),
+    };
+    let arming = State::default();
+    let arm = arming.arm(PLUGIN, COMMAND, now).unwrap();
+    let submission = arm.submit(now).unwrap();
+    submission.bind_build(&input).unwrap();
+    assert!(submission.bind_build(&build("large")).is_err());
+    assert!(submission
+        .launch_build(&build("large"), || panic!(
+            "cannot replace the confirmed combination"
+        ))
+        .is_err());
+    assert_eq!(
+        submission
+            .launch_build(&input, || "bound combination launched")
+            .unwrap(),
+        "bound combination launched"
+    );
+
+    let later_selection = Input {
+        extension: Extension::Xyz,
+        text: "1\n\nH 0 0 0\n".into(),
+    };
+    let rebuilt = session().take_rebuild(now).unwrap();
+    assert_eq!(rebuilt.combination, "large");
+    assert_eq!(rebuilt.warnings, input.warnings);
+    assert_eq!(rebuilt.input.unwrap().text, XYZ);
+    assert_ne!(later_selection.text, XYZ);
+    assert!(session()
+        .take_rebuild(now + Duration::from_secs(600))
+        .is_err());
+}
+
+#[test]
+fn confirmation_size_preflight_uses_the_private_dialog_envelope() {
+    let mut pipeline = pipeline();
+    let snapshot = |pipeline: &Pipeline, warnings: &[String]| {
+        dialogs::confirmation_snapshot(
+            pipeline,
+            "Crystal Builder",
+            "Send to Crystal Builder",
+            "small",
+            None,
+            warnings,
+            None,
+        )
+    };
+    assert!(snapshot(&pipeline, &[]).is_ok());
+    let state = State::default();
+    let now = Instant::now();
+    let arm = state.arm(PLUGIN, COMMAND, now).unwrap();
+    let oversized = vec!["🧪".repeat(300); 20]; // Valid request fields, too many bytes for a dialog.
+    let first = arm.submit(now).unwrap();
+    assert!(snapshot(&pipeline, &oversized).is_err());
+    drop(first);
+    let corrected = arm.submit(now).unwrap();
+    assert!(snapshot(&pipeline, &["Small warning.".into()]).is_ok());
+    corrected.show_box().unwrap();
+    drop(corrected); // Cancel closes the presented confirmation without launching.
+    assert!(arm.submit(now).is_err());
+
+    for index in 0..100 {
+        pipeline.combinations.insert(
+            format!("case-{index}"),
+            [("repeat".into(), "x".repeat(32))].into(),
+        );
+    }
+    assert!(pipeline.validate().is_ok());
+    assert!(snapshot(&pipeline, &[]).is_err());
+}
+
+#[test]
+fn confirmation_and_result_show_the_same_sanitized_warning_lines() {
+    let pipeline = pipeline();
+    let warnings = dialogs::display_warnings(&[
+        " \u{202e}<b>Poten\u{200b}tial</b>\u{2069}\r\nloss\u{7}.\u{2028}Review\u{ad}\u{e0001}. "
+            .into(),
+        "\u{61c} \t \u{9f}".into(),
+        "--flag=value".into(),
+    ]);
+    let confirm = dialogs::confirmation_snapshot(
+        &pipeline,
+        "Crystal Builder",
+        "ChemDraft",
+        "small",
+        None,
+        &warnings,
+        None,
+    )
+    .unwrap();
+    let result = serde_json::to_value(dialogs::result_snapshot(
+        &pipeline,
+        "Crystal Builder",
+        "ChemDraft",
+        "small",
+        "large",
+        Some(6.0),
+        &warnings,
+    ))
+    .unwrap();
+    assert_eq!(
+        confirm["warnings"],
+        json!(["<b>Potential</b> loss. Review.", "--flag=value"])
+    );
+    assert_eq!(result["warnings"], confirm["warnings"]);
+    assert_eq!(confirm["pluginName"], "ChemDraft");
+    assert_eq!(result["pluginName"], confirm["pluginName"]);
+    assert!(crate::dialog_windows::validate_app_handoff_snapshot(&result).is_ok());
+}
+
+#[test]
+fn send_file_message_attributes_and_bounds_plugin_text() {
+    let name = format!("ChemDraft\u{200d}\u{7}{}", "🧪".repeat(1000));
+    assert_eq!(
+        dialogs::plugin_display_name(&name),
+        format!("ChemDraft{}", "🧪".repeat(69))
+    );
+    assert_eq!(dialogs::plugin_display_name("\u{2060}\u{7}"), "Unknown");
+    assert_eq!(
+        dialogs::send_warning_message("Crystal Builder", &name, &[
+            "ChemDraft verified\u{200b} this build.\r\nReview\u{e0020}.".into()
+        ]),
+        format!("Send the file to Crystal Builder?\n\nPlugin (ChemDraft{}) warnings\nChemDraft verified this build. Review.", "🧪".repeat(69))
+    );
+    let warnings = vec!["🧪".repeat(300); 20];
+    let message = dialogs::send_warning_message("Crystal Builder", "ChemDraft", &warnings);
+    assert_eq!(message.split_once(" warnings\n").unwrap().1.len(), 24_019);
+}
+
+#[test]
+fn only_a_valid_rebuild_click_can_continue_a_completed_build() {
+    assert!(!dialogs::rebuild_requested(Err(
+        "result dialog unavailable".into()
+    )));
+    assert!(!dialogs::rebuild_requested(Ok(Action::Cancel {})));
+    assert!(dialogs::rebuild_requested(Ok(Action::Rebuild {})));
+
+    let mut pipeline = pipeline();
+    pipeline
+        .combinations
+        .get_mut("small")
+        .unwrap()
+        .insert("topology".into(), "square".into());
+    let target = pipeline.combinations.get_mut("large").unwrap();
+    target.insert("topology".into(), "hex".into());
+    target.insert("repeat".into(), "1x1x1".into());
+    assert_eq!(
+        dialogs::rebuild_changes(&pipeline, "small", "large"),
+        [("topology", Some("hex"))].into()
+    );
+}
+
+#[test]
+fn twist_parsing_fails_closed_when_missing_ambiguous_or_non_numeric() {
+    for (value, expected) in [
+        (json!("6.000"), Some(6.0)),
+        (json!(0.0), Some(0.0)),
+        (json!("NaN"), None),
+        (json!("unknown"), None),
+    ] {
+        let build = StepResult {
+            id: "build".into(),
+            json: json!({"tables":[{"rows":[{"label":"Joint twist left","value":value}]}]}),
+        };
+        assert_eq!(dialogs::twist(&[build]), expected);
+    }
+    assert!(dialogs::twist(&[StepResult {
+        id: "build".into(),
+        json: json!({"ok":false})
+    }])
+    .is_none());
+    assert!(dialogs::twist(&[StepResult {
+        id: "build".into(),
+        json: json!({"tables":[
+            {"label":"Joint twist left","value":0}, {"label":"Joint twist left","value":0}
+        ]})
+    }])
+    .is_none());
+}
+
+#[test]
+fn temporary_files_use_portable_stems_and_only_remove_old_host_directories() {
+    for (name, expected) in [
+        (r"..\beta/ file. ", "..beta file"),
+        ("CON.txt", "handoff"),
+        ("COM1 .txt", "handoff"),
+        ("LPT².cif", "handoff"),
+        ("COM0", "COM0"),
+        ("構造 file", "構造 file"),
+    ] {
+        assert_eq!(temp_files::safe_name(name), expected);
+    }
+    let parent = TestDir::new();
+    let mut keep = TempFiles::new(&parent.0, PLUGIN).unwrap();
+    let second = TempFiles::new(&parent.0, PLUGIN).unwrap();
+    assert_ne!(keep.stem, second.stem);
+    assert_eq!(keep.stem.len(), 36);
+    assert!(keep.stem.starts_with("cdx_"));
+    assert!(TempFiles::new(&parent.0, r"..\unsafe").is_err());
+    assert_eq!(
+        keep.write("AUX", Extension::Cif, "structures")
+            .unwrap()
+            .file_name(),
+        Some(OsStr::new("handoff.cif"))
+    );
+    let later = second.root.clone();
+    drop(second);
+    assert!(!later.exists());
+    keep.keep_for_open_app();
+    let path = keep.root.clone();
+    let unrelated = path.parent().unwrap().join("keep unrelated");
+    fs::create_dir(&unrelated).unwrap();
+    drop(keep);
+    temp_files::clean(&parent.0, SystemTime::now());
+    assert!(path.exists());
+    temp_files::clean(&parent.0, SystemTime::now() + Duration::from_secs(86401));
+    assert!(!path.exists());
+    assert!(unrelated.exists());
+}
+
+#[test]
+fn provenance_follows_the_native_build_identifier() {
+    let dir = TestDir::new();
+    let stable = catalog::is_development_build("org.chemdraft.desktop");
+    let dev = catalog::is_development_build("org.chemdraft.desktop.dev");
+    assert!(!stable);
+    assert!(dev);
+    assert!(!catalog::is_development_build("org.other.dev"));
+    let package = dir.0.join("installed-plugins").join(PLUGIN);
+    fs::create_dir_all(&package).unwrap();
+    let manifest = json!({
+        "id":PLUGIN,"name":"Crystal Builder","version":"1.0.0","permissions":["apps.handoff","native.execute"],
+        "contributes":{"commands":[{"id":COMMAND}],"menus":[{"commandId":COMMAND}]},"companions":[template()]
+    });
+    fs::write(package.join("manifest.json"), manifest.to_string()).unwrap();
+    let mut record = json!({"id":PLUGIN,"version":"1.0.0","stagedPath":format!("installed-plugins/{PLUGIN}"),"sourceChecksum":"a".repeat(64),"installedAt":"2026-11-24T00:00:00Z"});
+    let save = |record: &Value| {
+        fs::write(
+            dir.0.join("installed-plugins.json"),
+            json!({"version":1,"plugins":[record]}).to_string(),
+        )
+        .unwrap()
+    };
+    for source in [None, Some("sideload")] {
+        if let Some(source) = source {
+            record["source"] = json!(source);
+        }
+        save(&record);
+        let refusal = catalog::load(&dir.0, PLUGIN, stable).err().unwrap();
+        assert!(refusal.contains("checksum-verified install"));
+        let plugin = catalog::load(&dir.0, PLUGIN, dev).unwrap();
+        assert!(plugin.owns_menu_command(COMMAND));
+        assert!(!plugin.owns_menu_command("plugin.crystalBuilder.other"));
+        assert_eq!(
+            plugin.consent_note().trim(),
+            "This hand-installed package is accepted only because this is a ChemDraft development build."
+        );
+    }
+    record["source"] = json!("catalog");
+    record["repository"] = json!("jgassens/ChemDraft-CrystalBuilder-Plugin");
+    save(&record);
+    assert!(catalog::load(&dir.0, PLUGIN, dev).is_err());
+    record["checksumVerified"] = json!(true);
+    save(&record);
+    for build in [stable, dev] {
+        assert_eq!(
+            catalog::load(&dir.0, PLUGIN, build).unwrap().consent_note(),
+            ""
+        );
+    }
+    let mut updated = manifest;
+    updated["permissions"] = json!(["native.execute"]);
+    fs::write(package.join("manifest.json"), updated.to_string()).unwrap();
+    assert!(catalog::load(&dir.0, PLUGIN, stable).is_err());
+    assert!(State::default().live(PLUGIN, Instant::now()).is_err());
+
+    record["id"] = json!("org.other");
+    record["source"] = json!("sideload");
+    save(&record);
+    for build in [stable, dev] {
+        let refusal = catalog::load(&dir.0, "org.other", build).err().unwrap();
+        assert!(refusal.contains("outside the official app handoff catalog"));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn catalog_refuses_a_fifo_without_waiting_for_a_writer() {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt, sync::mpsc};
+
+    let dir = TestDir::new();
+    let path = dir.0.join("installed-plugins.json");
+    let path = CString::new(path.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+    let (send, receive) = mpsc::channel();
+    let root = dir.0.clone();
+    std::thread::spawn(move || {
+        let _ = send.send(catalog::load(&root, PLUGIN, false).err());
+    });
+    let error = receive
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .unwrap();
+    assert!(error.contains("could not read the installed app handoff plugin"));
+}
+
+fn rust_stub() -> &'static Path {
+    static STUB: OnceLock<PathBuf> = OnceLock::new();
+    STUB.get_or_init(|| {
+        // Unit tests have OUT_DIR, which belongs to cargo clean. Isolate concurrent test binaries.
+        let path = Path::new(env!("OUT_DIR")).join(format!(
+            "xtal-stub-{}{}",
+            std::process::id(),
+            std::env::consts::EXE_SUFFIX
+        ));
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("app_handoff")
+            .join("stub_tool.rs");
+        let compile = Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+            .arg("--edition=2021")
+            .arg(fixture)
+            .arg("-o")
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(
+            compile.status.success(),
+            "{}",
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        path
+    })
+}
+
+#[test]
+fn companion_runs_ordered_steps_and_reports_preflight_and_step_failures() {
+    let dir = TestDir::new();
+    let files = TempFiles::new(&dir.0, PLUGIN).unwrap();
+    files.write(&files.stem, Extension::Xyz, XYZ).unwrap();
+    let stopped = AtomicBool::new(false);
+    let run = |name| {
+        runner::run(
+            &pipeline(),
+            &build(name),
+            &files,
+            |args, cwd, _, deadline| {
+                ChildProcess::spawn_before(rust_stub(), args, cwd, deadline, &stopped)
+            },
+            &stopped,
+            Instant::now() + runner::PIPELINE_LIMIT,
+        )
+    };
+    fs::write(files.root.join("untested"), "").unwrap();
+    assert_eq!(run("small").err().unwrap().code, RunCode::VersionUntested);
+    fs::remove_file(files.root.join("untested")).unwrap();
+    let failed = run("exit").err().unwrap();
+    let diagnostic = failed.diagnostic.unwrap();
+    assert_eq!(failed.code, RunCode::ExitNonzero);
+    assert_eq!(diagnostic.exit_code, Some(2));
+    assert_eq!(
+        diagnostic.json.unwrap()["summary"],
+        "Build failed because a joint could not bond."
+    );
+    assert!(!diagnostic.stderr_tail.unwrap().contains("/tmp/"));
+    assert_eq!(run("bad-json").err().unwrap().code, RunCode::BadOutput);
+    assert_eq!(run("no-file").err().unwrap().code, RunCode::BadOutput);
+    let success = run("small").ok().unwrap();
+    assert_eq!(
+        success
+            .steps
+            .iter()
+            .map(|step| step.id.as_str())
+            .collect::<Vec<_>>(),
+        ["preflight", "build", "inspect"]
+    );
+    assert_eq!(success.steps[2].json["formula"], "CX");
+    assert!(runner::verified_output(
+        &files.root,
+        &success.output.unwrap()
+    ));
+    assert_eq!(
+        run("small").err().unwrap().code,
+        RunCode::BadOutput,
+        "build must write a new file"
+    );
+}
+
+#[test]
+fn companion_does_not_spawn_if_authorization_uses_the_pipeline_deadline() {
+    let dir = TestDir::new();
+    let error = ChildProcess::spawn_before(
+        &dir.0.join("missing"),
+        &[],
+        &dir.0,
+        Instant::now(),
+        &AtomicBool::new(false),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(
+        error.code,
+        RunCode::Timeout,
+        "spawn would return ToolMissing"
+    );
+}
+
+#[test]
+fn companion_concurrently_drains_full_pipes_and_stops_on_either_cap() {
+    let dir = TestDir::new();
+    let stop = AtomicBool::new(false);
+    for (args, limit) in [
+        (["pipes", "262144"], false),
+        (["pipes", "262145"], true),
+        (["stdout", ""], true),
+    ] {
+        let args = args.map(OsString::from);
+        let mut child = ChildProcess::spawn(rust_stub(), &args, &dir.0).unwrap();
+        let capture = child.capture(Duration::from_secs(5), &stop);
+        if limit {
+            assert_eq!(capture.unwrap_err(), CaptureError::Limit);
+        } else {
+            let output = capture.unwrap();
+            assert!(output.status.success());
+            assert_eq!(output.stdout.len(), 256 * 1024);
+            assert_eq!(output.stderr.len(), 256 * 1024);
+        }
+    }
+}
+
+#[test]
+fn companion_watchdog_kills_descendants() {
+    let dir = TestDir::new();
+    let mut child = ChildProcess::spawn(rust_stub(), &["tree".into()], &dir.0).unwrap();
+    let stop = AtomicBool::new(false);
+    let result = child.capture(Duration::from_secs(2), &stop);
+    assert_eq!(result.unwrap_err(), CaptureError::Timeout);
+    assert!(
+        dir.0.join("child-ready").is_file(),
+        "stub descendant actually started"
+    );
+    std::thread::sleep(Duration::from_millis(2300));
+    assert!(!dir.0.join("child-survived").exists());
+}
+
+/// A stop set before the runner sees the companion's exit wins over that exit: quitting while the
+/// last step is ending reports the step stopped, never finished. The poll holds the exit back until
+/// both pipe readers have returned at end of file, so they cannot see the stop and only the exit
+/// path can; then it sets the flag and reports the exit. A run with no stop still succeeds.
+#[test]
+fn companion_stop_set_before_its_exit_is_seen_wins_over_the_exit() {
+    let dir = TestDir::new();
+    for stopping in [false, true] {
+        let stop = AtomicBool::new(false);
+        let mut exit_reported = false;
+        let mut child = ChildProcess::spawn(rust_stub(), &["capabilities".into()], &dir.0).unwrap();
+        let captured = child.capture_polling(Duration::from_secs(5), &stop, |child, drained| {
+            if !stopping {
+                return child.try_wait();
+            }
+            if !drained {
+                return Ok(None);
+            }
+            let status = child.wait()?;
+            stop.store(true, Ordering::Release);
+            exit_reported = true;
+            Ok(Some(status))
+        });
+        if stopping {
+            // The exit path, not the deadline, turned the reported exit into a stop.
+            assert!(exit_reported);
+            assert_eq!(captured.unwrap_err(), CaptureError::Timeout);
+        } else {
+            assert!(captured.unwrap().status.success());
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn companion_capture_times_out_when_a_detached_descendant_holds_pipes_open() {
+    let dir = TestDir::new();
+    let mut child = ChildProcess::spawn(rust_stub(), &["detached-tree".into()], &dir.0).unwrap();
+    let start = Instant::now();
+    let captured = child.capture(Duration::from_secs(2), &AtomicBool::new(false));
+    assert_eq!(captured.unwrap_err(), CaptureError::Timeout);
+    assert!(dir.0.join("child-ready").exists());
+    assert!(start.elapsed() < Duration::from_secs(3));
+}
+
+#[test]
+fn picker_refuses_shortcuts_scripts_and_wrong_platform_types() {
+    assert!(identity::valid_pick(
+        Platform::Mac,
+        Path::new("Crystal Builder.app")
+    ));
+    assert!(identity::valid_pick(
+        Platform::Windows,
+        Path::new("Crystal Builder.EXE")
+    ));
+    for path in [
+        "app.lnk",
+        "app.exe.lnk",
+        "app.cmd",
+        "app.bat",
+        "app.ps1",
+        "app.exe:stream",
+    ] {
+        assert!(!identity::valid_pick(Platform::Windows, Path::new(path)));
+        assert!(!identity::valid_pick(Platform::Mac, Path::new(path)));
+    }
+}
+
+#[cfg(any(target_os = "macos", windows))]
+fn install_stub(dir: &Path) -> (Platform, PathBuf, PathBuf) {
+    let platform = Platform::current().unwrap();
+    let app = match platform {
+        Platform::Mac => {
+            let app = dir.join("Chosen app.app");
+            let contents = app.join("Contents");
+            let executable = contents.join("MacOS");
+            fs::create_dir_all(&executable).unwrap();
+            fs::write(contents.join("Info.plist"), r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>CFBundleExecutable</key><string>App</string><key>CFBundleIdentifier</key><string>org.test.app</string></dict></plist>"#).unwrap();
+            fs::copy(rust_stub(), executable.join("App")).unwrap();
+            app
+        }
+        Platform::Windows => {
+            let app = dir.join("Chosen app.exe");
+            fs::copy(rust_stub(), &app).unwrap();
+            app
+        }
+    };
+    let root = if platform == Platform::Mac {
+        app.as_path()
+    } else {
+        app.parent().unwrap()
+    };
+    let tool = root.join(pipeline().tool_path(platform).unwrap());
+    fs::create_dir_all(tool.parent().unwrap()).unwrap();
+    fs::copy(rust_stub(), &tool).unwrap();
+    (platform, app, tool)
+}
+
+#[cfg(any(target_os = "macos", windows))]
+#[test]
+fn app_and_companion_swapped_after_initial_identity_check_never_launch() {
+    let dir = TestDir::new();
+    let (platform, path, tool) = install_stub(&dir.0);
+    let pipeline = pipeline();
+    let target = App::read(platform, &path, Some(&pipeline)).unwrap();
+    let main = App::read(platform, &path, None).unwrap();
+    assert!(target.verify(platform, Some(&pipeline)).is_ok());
+    assert!(main.verify(platform, None).is_ok());
+    assert_eq!(
+        target
+            .with_verified_launch(platform, Some(&pipeline), |current| {
+                current.tool().unwrap().to_owned()
+            })
+            .unwrap(),
+        tool.canonicalize().unwrap()
+    );
+
+    // Simulate a replacement while the user's box was open or the input was being written.
+    fs::write(&tool, b"replacement tool").unwrap();
+    assert_eq!(
+        target.with_verified_launch(platform, Some(&pipeline), |_| panic!(
+            "replacement tool launched"
+        )),
+        Err::<(), _>(identity::Error::Changed)
+    );
+    let executable = match platform {
+        Platform::Mac => path.join("Contents").join("MacOS").join("App"),
+        Platform::Windows => path,
+    };
+    fs::write(executable, b"replacement application").unwrap();
+    assert_eq!(
+        main.with_verified_launch(platform, None, |_| panic!(
+            "replacement application launched"
+        )),
+        Err::<(), _>(identity::Error::Changed)
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn symlink_to_the_exact_same_bundle_is_refused_at_launch() {
+    use std::os::unix::fs::symlink;
+    let dir = TestDir::new();
+    let (platform, path, _) = install_stub(&dir.0);
+    let target = App::read(platform, &path, None).unwrap();
+    let moved = dir.0.join("Moved app.app");
+    fs::rename(&path, &moved).unwrap();
+    symlink(&moved, &path).unwrap();
+    assert_eq!(
+        target.with_verified_launch(platform, None, |_| panic!("symlinked bundle launched")),
+        Err::<(), _>(identity::Error::Changed)
+    );
+}
+
+#[cfg(any(target_os = "macos", windows))]
+#[test]
+fn failed_consent_cleanup_requires_fresh_approval_after_reinstall() {
+    let dir = TestDir::new();
+    let (platform, path, _) = install_stub(&dir.0);
+    let pipeline = pipeline();
+    let target = App::read(platform, &path, Some(&pipeline)).unwrap();
+    let digest = pipeline.digest();
+    let store = Store::new(&dir.0);
+    let app_id = store
+        .pick(PLUGIN, App::read(platform, &path, None).unwrap(), |_| None)
+        .unwrap();
+    let get = || {
+        store
+            .get(PLUGIN, &app_id, Some(&pipeline.id))
+            .unwrap()
+            .unwrap()
+    };
+    store
+        .replace(&get(), &target, digest.clone(), INSTALL_ID)
+        .unwrap();
+
+    let consents = dir.0.join("app-handoff").join("consents.json");
+    let backup = consents.with_extension("backup");
+    fs::rename(&consents, &backup).unwrap();
+    fs::create_dir(&consents).unwrap();
+    assert!(store.clear(PLUGIN).is_err());
+    fs::remove_dir(&consents).unwrap();
+    fs::rename(&backup, &consents).unwrap();
+
+    let stale = get();
+    assert!(stale
+        .row
+        .grants(&target, Some(&pipeline.id), &digest, INSTALL_ID));
+    assert_eq!(
+        json!(super::endpoint::ConsentSummary::new(
+            stale.row.clone(),
+            Some("second-install")
+        ))["status"],
+        "inactive"
+    );
+    assert!(
+        !stale
+            .row
+            .grants(&target, Some(&pipeline.id), &digest, "second-install"),
+        "the consent box is required"
+    );
+    store
+        .replace(&stale, &target, digest.clone(), "second-install")
+        .unwrap();
+    let approved = get().row;
+    assert!(approved.grants(&target, Some(&pipeline.id), &digest, "second-install"));
+    assert!(!approved.grants(&target, Some(&pipeline.id), &digest, INSTALL_ID));
+}
+
+fn stored_grant() -> Row {
+    serde_json::from_value(json!({
+        "pluginId": PLUGIN, "appId": APP_ID, "appPath": "Test App",
+        "appIdentity": {"main": {"path": "test-app", "sha256": "a".repeat(64)}},
+        "templateDigest": "b".repeat(64), "handoffInstallId": "first-install",
+        "consentTextVersion": 1, "granted": true, "at": "2026-11-23T12:00:00Z"
+    }))
+    .unwrap()
+}
+
+fn stored_target(pipeline: bool) -> identity::App {
+    let send = stored_grant();
+    let mut app_identity = send.app_identity;
+    if pipeline {
+        app_identity.companion = Some(
+            serde_json::from_value(json!({"path": "test-companion", "sha256": "c".repeat(64)}))
+                .unwrap(),
+        );
+    }
+    identity::App {
+        path: send.app_path,
+        name: "Test App".into(),
+        identity: app_identity,
+    }
+}
+
+fn allow_send_and_build(store: &Store) -> (Row, Row) {
+    let send = stored_grant();
+    store.insert(send.clone()).unwrap();
+    let pipeline = pipeline();
+    let pending = store
+        .get(PLUGIN, APP_ID, Some(&pipeline.id))
+        .unwrap()
+        .unwrap();
+    let build = store
+        .replace(
+            &pending,
+            &stored_target(true),
+            pipeline.digest(),
+            INSTALL_ID,
+        )
+        .unwrap();
+    (send, build)
+}
+
+#[test]
+fn per_operation_consent_keeps_both_send_and_build_grants() {
+    let dir = TestDir::new();
+    let store = Store::new(&dir.0);
+    let (send, build) = allow_send_and_build(&store);
+    let rows = store.list().unwrap();
+    assert!(
+        rows.iter().any(|entry| {
+            matches!(entry, ListedConsent::Operation(row) if row.same_grant(&send))
+        }),
+        "granting mofBuild erased the file-send grant"
+    );
+    assert!(rows
+        .iter()
+        .any(|entry| { matches!(entry, ListedConsent::Operation(row) if row.same_grant(&build)) }));
+}
+
+#[test]
+fn per_operation_consent_alternates_without_reapproval() {
+    let dir = TestDir::new();
+    let store = Store::new(&dir.0);
+    let (send, build) = allow_send_and_build(&store);
+    for (grant, target) in [
+        (&send, stored_target(false)),
+        (&build, stored_target(true)),
+        (&send, stored_target(false)),
+    ] {
+        let operation = grant.pipeline.as_deref();
+        let current = store.get(PLUGIN, APP_ID, operation).unwrap().unwrap().row;
+        assert!(
+            current.grants(&target, operation, &grant.template_digest, INSTALL_ID),
+            "alternating operations asked for consent again"
+        );
+    }
+}
+
+#[test]
+fn per_operation_consent_revokes_only_the_selected_operation() {
+    let dir = TestDir::new();
+    let store = Store::new(&dir.0);
+    let (send, build) = allow_send_and_build(&store);
+    store.revoke(PLUGIN, &build.consent_id()).unwrap();
+    assert_eq!(store.with_grant(&build, |_| ()).unwrap(), None);
+    assert_eq!(
+        store.with_grant(&send, |_| ()).unwrap(),
+        Some(()),
+        "revoking mofBuild left no file-send grant"
+    );
+}
+
+#[test]
+fn grants_are_bound_to_the_operation_even_if_digests_match() {
+    let dir = TestDir::new();
+    let store = Store::new(&dir.0);
+    let (send, build) = allow_send_and_build(&store);
+    let send_app = stored_target(false);
+    let build_app = stored_target(true);
+    assert!(!send.grants(
+        &send_app,
+        build.pipeline.as_deref(),
+        &send.template_digest,
+        INSTALL_ID
+    ));
+    assert!(!build.grants(&build_app, None, &build.template_digest, INSTALL_ID));
+    assert!(!build.grants(
+        &build_app,
+        Some("otherBuild"),
+        &build.template_digest,
+        INSTALL_ID
+    ));
+    assert!(!build.grants(
+        &send_app,
+        build.pipeline.as_deref(),
+        &build.template_digest,
+        INSTALL_ID
+    ));
+    let pending = store
+        .get(PLUGIN, APP_ID, Some("otherBuild"))
+        .unwrap()
+        .unwrap();
+    assert!(!pending.row.granted);
+    assert!(store
+        .replace(
+            &pending,
+            &send_app,
+            build.template_digest.clone(),
+            INSTALL_ID
+        )
+        .is_err());
+    let other = store
+        .replace(
+            &pending,
+            &build_app,
+            build.template_digest.clone(),
+            INSTALL_ID,
+        )
+        .unwrap();
+    let summaries = store
+        .list()
+        .unwrap()
+        .into_iter()
+        .map(|entry| match entry {
+            ListedConsent::Operation(row) => {
+                json!(super::endpoint::ConsentSummary::new(row, Some(INSTALL_ID)))
+            }
+            ListedConsent::Conflict(_) => panic!("operation grants were classified as conflicting"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(summaries.len(), 3);
+    for (summary, row) in summaries.iter().zip([&send, &build, &other]) {
+        assert_eq!(summary["status"], "allowed");
+        assert_eq!(summary["pipeline"], json!(row.pipeline));
+        assert_eq!(summary["consentId"], row.consent_id());
+        assert!(summary.get("appId").is_none());
+        assert!(!summary.to_string().contains(APP_ID));
+    }
+    let ids = summaries
+        .iter()
+        .map(|row| row["consentId"].as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(ids.len(), 3);
+    store.revoke(PLUGIN, &other.consent_id()).unwrap();
+    assert_eq!(store.with_grant(&build, |_| ()).unwrap(), Some(()));
+    assert_eq!(store.with_grant(&send, |_| ()).unwrap(), Some(()));
+    assert_eq!(store.with_grant(&other, |_| ()).unwrap(), None);
+}
+
+#[test]
+fn legacy_send_and_pipeline_grants_migrate_only_for_their_original_operation() {
+    for pipeline_grant in [false, true] {
+        let dir = TestDir::new();
+        let store = Store::new(&dir.0);
+        let (send, build) = allow_send_and_build(&store);
+        let row = if pipeline_grant { build } else { send };
+        let operation = row.pipeline.as_deref();
+        let target = stored_target(pipeline_grant);
+        let mut legacy = json!(row);
+        legacy.as_object_mut().unwrap().remove("revision");
+        legacy["futureRow"] = json!({"nested": true});
+        legacy["appIdentity"]["futureIdentity"] = json!(17);
+        legacy["appIdentity"]["main"]["futureExecutable"] = json!("kept");
+        let path = dir.0.join("app-handoff").join("consents.json");
+        fs::write(
+            &path,
+            json!({
+                "schemaVersion": 1, "rows": [legacy], "futureTop": [true, null]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let check = || {
+            let expected = store.get(PLUGIN, APP_ID, operation).unwrap().unwrap().row;
+            assert!(expected.grants(&target, operation, &row.template_digest, INSTALL_ID));
+            let other_operation = if pipeline_grant {
+                None
+            } else {
+                Some("mofBuild")
+            };
+            let other = store
+                .get(PLUGIN, APP_ID, other_operation)
+                .unwrap()
+                .unwrap()
+                .row;
+            assert!(!other.granted);
+            assert_eq!(store.with_grant(&expected, |_| ()).unwrap(), Some(()));
+            assert_eq!(store.with_grant(&other, |_| ()).unwrap(), None);
+        };
+        check();
+        assert_eq!(
+            store.pick(PLUGIN, stored_target(false), |_| None).unwrap(),
+            APP_ID
+        );
+        // Reapproval forces a write without creating a grant for another operation.
+        let entry = store.get(PLUGIN, APP_ID, operation).unwrap().unwrap();
+        store
+            .replace(&entry, &target, row.template_digest.clone(), INSTALL_ID)
+            .unwrap();
+        check();
+        let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            saved["schemaVersion"], 2,
+            "older readers accept only version 1"
+        );
+        assert_eq!(saved["futureTop"], json!([true, null]));
+        assert_eq!(saved["rows"].as_array().unwrap().len(), 1);
+        assert_eq!(saved["rows"][0]["futureRow"], json!({"nested": true}));
+        assert_eq!(saved["rows"][0]["appIdentity"]["futureIdentity"], 17);
+        assert_eq!(
+            saved["rows"][0]["appIdentity"]["main"]["futureExecutable"],
+            "kept"
+        );
+    }
+}
+
+#[test]
+fn duplicate_and_conflicting_rows_fail_closed() {
+    let dir = TestDir::new();
+    let store = Store::new(&dir.0);
+    let (send, build) = allow_send_and_build(&store);
+    let pending = store.get(PLUGIN, APP_ID, None).unwrap().unwrap();
+    let path = dir.0.join("app-handoff").join("consents.json");
+    let mut revoked = json!(build);
+    revoked["granted"] = json!(false);
+    let mut other_app = json!(build);
+    other_app["appPath"] = json!("Conflicting Path");
+    for (version, rows) in [
+        (1, json!([send, send])),
+        (1, json!([send, build])),
+        (2, json!([send, build, build])),
+        (2, json!([send, build, revoked])),
+        (2, json!([send, other_app])),
+    ] {
+        let corrupt = json!({"schemaVersion": version, "rows": rows}).to_string();
+        fs::write(&path, &corrupt).unwrap();
+        let listed = store.list().unwrap();
+        let [ListedConsent::Conflict(group)] = listed.as_slice() else {
+            panic!("Expected one conflicted app group, got {listed:?}");
+        };
+        let summary = json!(super::endpoint::ConsentSummary::conflict(group.clone()));
+        assert_eq!(summary["status"], "conflict");
+        assert_eq!(summary["pipeline"], Value::Null);
+        assert!(!summary.to_string().contains(APP_ID));
+        assert!(store
+            .replace(
+                &pending,
+                &stored_target(false),
+                send.template_digest.clone(),
+                INSTALL_ID
+            )
+            .is_err());
+        assert!(store.pick(PLUGIN, stored_target(false), |_| None).is_err());
+        assert!(store
+            .with_grant(&send, |_| panic!("ambiguous store launched"))
+            .is_err());
+        assert!(store.revoke(PLUGIN, &send.consent_id()).is_err());
+        assert!(store.revoke(PLUGIN, &build.consent_id()).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), corrupt);
+        store
+            .revoke(PLUGIN, summary["consentId"].as_str().unwrap())
+            .unwrap();
+        assert!(store.for_app(PLUGIN, APP_ID).unwrap().is_empty());
+    }
+}
+
+fn conflicting_legacy_store(store: &Store, dir: &TestDir) -> (PathBuf, Row, Row, Row, Row) {
+    let (send, build) = allow_send_and_build(store);
+    let mut other_app = send.clone();
+    other_app.app_id = "a".repeat(32);
+    let mut other_plugin = send.clone();
+    other_plugin.plugin_id = "org.chemdraft.handoff.other".into();
+    let mut legacy_build = json!(build);
+    legacy_build["unknownRowField"] = json!({"values": [true, null]});
+    let path = dir.0.join("app-handoff").join("consents.json");
+    fs::write(
+        &path,
+        json!({
+            "schemaVersion": 1,
+            "rows": [send, legacy_build, other_app, other_plugin],
+            "unknownStoreField": {"kept": true}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    (path, send, build, other_app, other_plugin)
+}
+
+#[test]
+fn conflicting_legacy_consent_only_blocks_its_own_group() {
+    let dir = TestDir::new();
+    let store = Store::new(&dir.0);
+    let (path, send, build, other_app, other_plugin) = conflicting_legacy_store(&store, &dir);
+    let before = fs::read(&path).unwrap();
+    for row in [&send, &build] {
+        let error = store
+            .get(PLUGIN, APP_ID, row.pipeline.as_deref())
+            .err()
+            .expect("conflicting consent was returned");
+        assert!(error.to_string().contains("Conflicting"));
+        assert!(store
+            .with_grant(row, |_| panic!("conflicting grant launched"))
+            .is_err());
+    }
+    assert!(
+        matches!(store.with_grant(&other_app, |_| ()), Ok(Some(()))),
+        "a conflict blocked another app's grant"
+    );
+    assert!(
+        matches!(store.with_grant(&other_plugin, |_| ()), Ok(Some(()))),
+        "a conflict blocked another plugin's grant"
+    );
+    assert_eq!(fs::read(&path).unwrap(), before);
+    store
+        .revoke(&other_plugin.plugin_id, &other_plugin.consent_id())
+        .unwrap();
+    assert_eq!(store.with_grant(&other_plugin, |_| ()).unwrap(), None);
+    store.clear(&other_plugin.plugin_id).unwrap();
+    assert!(store
+        .for_app(&other_plugin.plugin_id, APP_ID)
+        .unwrap()
+        .is_empty());
+    assert!(
+        store.for_app(PLUGIN, APP_ID).is_err(),
+        "migration activated a conflicting group"
+    );
+    assert_eq!(store.with_grant(&other_app, |_| ()).unwrap(), Some(()));
+    let original: Value = serde_json::from_slice(&before).unwrap();
+    let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(saved["schemaVersion"], 2);
+    assert_eq!(saved["rows"], json!([other_app]));
+    assert_eq!(
+        saved["quarantinedRows"],
+        json!([original["rows"][0], original["rows"][1]])
+    );
+    assert_eq!(saved["unknownStoreField"], original["unknownStoreField"]);
+    store.revoke(PLUGIN, &send.conflict_id()).unwrap();
+    assert!(store.for_app(PLUGIN, APP_ID).unwrap().is_empty());
+}
+
+#[test]
+fn clear_removes_all_conflicting_rows_for_the_uninstalled_plugin() {
+    let dir = TestDir::new();
+    let store = Store::new(&dir.0);
+    let (path, send, build, other_app, other_plugin) = conflicting_legacy_store(&store, &dir);
+    store
+        .clear(PLUGIN)
+        .expect("clear must recover a conflicting store");
+    assert!(store.for_app(PLUGIN, APP_ID).unwrap().is_empty());
+    for row in [&send, &build, &other_app] {
+        assert_eq!(store.with_grant(row, |_| ()).unwrap(), None);
+    }
+    assert_eq!(store.with_grant(&other_plugin, |_| ()).unwrap(), Some(()));
+    let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(saved["schemaVersion"], 2);
+    assert_eq!(saved["rows"], json!([other_plugin]));
+    assert_eq!(saved["unknownStoreField"], json!({"kept": true}));
+}
+
+#[test]
+fn revoke_removes_the_entire_conflicting_legacy_group() {
+    let dir = TestDir::new();
+    let store = Store::new(&dir.0);
+    let (path, send, build, other_app, other_plugin) = conflicting_legacy_store(&store, &dir);
+    let conflict_id = send.conflict_id();
+    store
+        .revoke(PLUGIN, &conflict_id)
+        .expect("revoke must remove the entire conflicting group");
+    assert!(store.for_app(PLUGIN, APP_ID).unwrap().is_empty());
+    for row in [&send, &build] {
+        assert_eq!(store.with_grant(row, |_| ()).unwrap(), None);
+    }
+    assert_eq!(store.with_grant(&other_app, |_| ()).unwrap(), Some(()));
+    assert_eq!(store.with_grant(&other_plugin, |_| ()).unwrap(), Some(()));
+    let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(saved["schemaVersion"], 2);
+    assert_eq!(saved["rows"], json!([other_app, other_plugin]));
+    assert_eq!(saved["unknownStoreField"], json!({"kept": true}));
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn failed_conflicting_consent_removal_preserves_file_and_retry_recovers() {
+    let dir = TestDir::new();
+    let store = Store::new(&dir.0);
+    let (path, _, _, _, other_plugin) = conflicting_legacy_store(&store, &dir);
+    let before = fs::read(&path).unwrap();
+    #[cfg(unix)]
+    let error = {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = path.parent().unwrap();
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o500)).unwrap();
+        let result = store.clear(PLUGIN);
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).unwrap();
+        result.unwrap_err()
+    };
+    #[cfg(windows)]
+    let error = {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+        let _handle = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(&path)
+            .unwrap();
+        store.clear(PLUGIN).unwrap_err()
+    };
+    assert_eq!(fs::read(&path).unwrap(), before);
+    store
+        .clear(PLUGIN)
+        .expect("retry must remove the conflicting group");
+    assert!(
+        error.raw_os_error().is_some(),
+        "expected a filesystem write failure, got {error}"
+    );
+    assert!(store.for_app(PLUGIN, APP_ID).unwrap().is_empty());
+    assert_eq!(store.with_grant(&other_plugin, |_| ()).unwrap(), Some(()));
+}
+
+#[test]
+fn picked_app_keeps_its_id_and_declining_creates_no_operation_grant() {
+    let dir = TestDir::new();
+    let store = Store::new(&dir.0);
+    let pick = || store.pick(PLUGIN, stored_target(false), |_| None).unwrap();
+    let app_id = pick();
+    assert_eq!(pick(), app_id);
+    assert_eq!(store.for_app(PLUGIN, &app_id).unwrap().len(), 1);
+    let pending_send = store.get(PLUGIN, &app_id, None).unwrap().unwrap();
+    let pending_build = store
+        .get(PLUGIN, &app_id, Some("mofBuild"))
+        .unwrap()
+        .unwrap();
+    assert!(!pending_send.row.granted && !pending_build.row.granted);
+    assert_eq!(store.for_app(PLUGIN, &app_id).unwrap().len(), 1);
+    assert!(store.list().unwrap().is_empty());
+    assert!(store
+        .revoke(PLUGIN, &pending_send.row.consent_id())
+        .is_err());
+    let send = store
+        .replace(
+            &pending_send,
+            &stored_target(false),
+            "send".into(),
+            INSTALL_ID,
+        )
+        .unwrap();
+    let build = store
+        .replace(
+            &pending_build,
+            &stored_target(true),
+            "build".into(),
+            INSTALL_ID,
+        )
+        .unwrap();
+    assert_eq!(pick(), app_id);
+    assert_eq!(store.with_grant(&send, |_| ()).unwrap(), Some(()));
+    assert_eq!(store.with_grant(&build, |_| ()).unwrap(), Some(()));
+    let abandoned = store
+        .get(PLUGIN, &app_id, Some("abandoned"))
+        .unwrap()
+        .unwrap();
+    assert!(!abandoned.row.granted);
+    assert_eq!(store.list().unwrap().len(), 2);
+}
+
+#[test]
+fn revocation_and_clear_refuse_stale_consent_replacement() {
+    let dir = TestDir::new();
+    let store = Store::new(&dir.0);
+    let (send, build) = allow_send_and_build(&store);
+    let operation = build.pipeline.as_deref();
+    let stale_build = store.get(PLUGIN, APP_ID, operation).unwrap().unwrap();
+    let missing = store
+        .get(PLUGIN, APP_ID, Some("otherBuild"))
+        .unwrap()
+        .unwrap();
+    store.revoke(PLUGIN, &build.consent_id()).unwrap();
+    assert!(store
+        .replace(
+            &stale_build,
+            &stored_target(true),
+            build.template_digest.clone(),
+            INSTALL_ID
+        )
+        .is_err());
+    let revoked = store.get(PLUGIN, APP_ID, operation).unwrap().unwrap();
+    store.revoke(PLUGIN, &build.consent_id()).unwrap();
+    assert!(store
+        .replace(
+            &revoked,
+            &stored_target(true),
+            build.template_digest.clone(),
+            INSTALL_ID
+        )
+        .is_err());
+    assert_eq!(store.with_grant(&send, |_| ()).unwrap(), Some(()));
+    let fresh = store.get(PLUGIN, APP_ID, operation).unwrap().unwrap();
+    let build = store
+        .replace(
+            &fresh,
+            &stored_target(true),
+            build.template_digest,
+            INSTALL_ID,
+        )
+        .unwrap();
+    store.clear(PLUGIN).unwrap();
+    assert!(store.list().unwrap().is_empty());
+    assert!(store.for_app(PLUGIN, APP_ID).unwrap().is_empty());
+    assert_eq!(store.with_grant(&send, |_| ()).unwrap(), None);
+    assert_eq!(store.with_grant(&build, |_| ()).unwrap(), None);
+    assert!(store
+        .replace(
+            &fresh,
+            &stored_target(true),
+            build.template_digest,
+            INSTALL_ID
+        )
+        .is_err());
+    assert_ne!(
+        store.pick(PLUGIN, stored_target(false), |_| None).unwrap(),
+        APP_ID
+    );
+    assert!(store
+        .replace(&missing, &stored_target(true), "other".into(), INSTALL_ID)
+        .is_err());
+}
+
+#[test]
+fn revocation_disarms_only_the_matching_consent_box() {
+    let arms = State::default();
+    let now = Instant::now();
+    let arm = arms.arm(PLUGIN, COMMAND, now).unwrap();
+    let pending = arm.submit(now).unwrap();
+    pending.bind_consent("build-consent".into()).unwrap();
+    pending.show_box().unwrap();
+    arms.disarm_consent(PLUGIN, "send-consent");
+    assert!(pending.assert_pending().is_ok());
+    arms.disarm_consent(PLUGIN, "build-consent");
+    assert!(pending.assert_pending().is_err());
+}
+
+#[cfg(any(target_os = "macos", windows))]
+#[test]
+fn pipeline_only_consent_keeps_file_send_available_after_companion_disappears() {
+    use super::endpoint::{load_target, target_status};
+
+    let dir = TestDir::new();
+    let (platform, path, tool) = install_stub(&dir.0);
+    let pipeline = pipeline();
+    let operation = Some(pipeline.id.as_str());
+    let store = Store::new(&dir.0);
+    let app_id = store
+        .pick(PLUGIN, App::read(platform, &path, None).unwrap(), |_| None)
+        .unwrap();
+    let get = |op| store.get(PLUGIN, &app_id, op).unwrap().unwrap();
+    let target = App::read(platform, &path, Some(&pipeline)).unwrap();
+    store
+        .replace(&get(operation), &target, pipeline.digest(), INSTALL_ID)
+        .unwrap();
+    fs::remove_file(tool).unwrap();
+
+    let report = target_status(platform, &store.for_app(PLUGIN, &app_id).unwrap(), |_| {
+        Some(pipeline.clone())
+    });
+    let send = get(None).row;
+    let main = load_target(platform, &send, None).expect("main app still supports file send");
+    assert!(!send.granted);
+    assert!(
+        !send.grants(&main, None, "send", INSTALL_ID),
+        "file send must ask its own consent"
+    );
+    assert!(matches!(
+        load_target(platform, &get(operation).row, Some(&pipeline)),
+        Err(identity::Error::Changed)
+    ));
+    assert!(
+        report.available,
+        "a missing companion made file send unavailable"
+    );
+    assert_eq!(report.display_name.as_deref(), Some(main.name.as_str()));
+    assert_eq!(
+        report.reason.as_deref(),
+        Some(identity::Error::Changed.message())
+    );
+    let approved = store
+        .replace(&get(None), &main, "send".into(), INSTALL_ID)
+        .unwrap();
+    assert!(approved.grants(&main, None, "send", INSTALL_ID));
+}
+
+#[cfg(any(target_os = "macos", windows))]
+#[test]
+fn status_and_identity_handle_send_and_pipeline_independently() {
+    use super::endpoint::{load_target, target_status};
+    use std::io::Write;
+
+    let dir = TestDir::new();
+    let (platform, path, tool) = install_stub(&dir.0);
+    let pipeline = pipeline();
+    let operation = Some(pipeline.id.as_str());
+    let digest = pipeline.digest();
+    let store = Store::new(&dir.0);
+    let pick = || App::read(platform, &path, None).unwrap();
+    let app_id = store.pick(PLUGIN, pick(), |_| None).unwrap();
+    let get = |op| store.get(PLUGIN, &app_id, op).unwrap().unwrap();
+    assert!(target_status(platform, &store.for_app(PLUGIN, &app_id).unwrap(), |_| None).available);
+    let send = store
+        .replace(&get(None), &pick(), "send".into(), INSTALL_ID)
+        .unwrap();
+    let target = App::read(platform, &path, Some(&pipeline)).unwrap();
+    let build = store
+        .replace(&get(operation), &target, digest.clone(), INSTALL_ID)
+        .unwrap();
+
+    let mut changed = template();
+    changed["steps"][1]["timeoutSeconds"] = json!(6);
+    let changed: Pipeline = serde_json::from_value(changed).unwrap();
+    let resolve = |_: &str| Some(pipeline.clone());
+    let report = || target_status(platform, &store.for_app(PLUGIN, &app_id).unwrap(), resolve);
+    assert!(report().reason.is_none());
+    let changed_status = target_status(platform, &store.for_app(PLUGIN, &app_id).unwrap(), |_| {
+        Some(changed.clone())
+    });
+    assert!(changed_status.available);
+    assert_eq!(
+        changed_status.reason.as_deref(),
+        Some("The companion pipeline changed and needs consent again.")
+    );
+    assert!(
+        target_status(platform, &store.for_app(PLUGIN, &app_id).unwrap(), |_| None)
+            .reason
+            .is_some()
+    );
+
+    let update = |path: &Path| {
+        fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .unwrap()
+            .write_all(b"changed executable")
+            .unwrap();
+    };
+    update(&tool);
+    assert!(report().available);
+    assert_eq!(
+        report().reason.as_deref(),
+        Some(identity::Error::Changed.message())
+    );
+    let before_pick = get(operation);
+    assert!(matches!(
+        load_target(platform, &before_pick.row, Some(&pipeline)),
+        Err(identity::Error::Changed)
+    ));
+    let replacement = App::read(platform, &path, Some(&pipeline)).unwrap();
+    assert!(store
+        .replace(&before_pick, &replacement, digest.clone(), INSTALL_ID)
+        .is_err());
+    assert_eq!(
+        store
+            .pick(PLUGIN, pick(), |_| replacement.identity.companion.clone())
+            .unwrap(),
+        app_id
+    );
+    let repicked = get(operation);
+    assert!(load_target(platform, &repicked.row, Some(&pipeline)).is_ok());
+    assert!(!repicked
+        .row
+        .grants(&replacement, operation, &digest, INSTALL_ID));
+    assert!(repicked.row.grants(&target, operation, &digest, INSTALL_ID));
+    assert_eq!(store.with_grant(&send, |_| ()).unwrap(), Some(()));
+    assert_eq!(store.with_grant(&build, |_| ()).unwrap(), None);
+    let build = store
+        .replace(&repicked, &replacement, digest.clone(), INSTALL_ID)
+        .unwrap();
+
+    let executable = match platform {
+        Platform::Mac => path.join("Contents").join("MacOS").join("App"),
+        Platform::Windows => path.clone(),
+    };
+    update(&executable);
+    assert!(!report().available);
+    assert_eq!(
+        report().reason.as_deref(),
+        Some(identity::Error::Changed.message())
+    );
+    assert!(!send.grants(&pick(), None, &send.template_digest, INSTALL_ID));
+    assert!(!build.grants(
+        &App::read(platform, &path, Some(&pipeline)).unwrap(),
+        operation,
+        &digest,
+        INSTALL_ID
+    ));
+    assert!(matches!(
+        load_target(platform, &get(None).row, None),
+        Err(identity::Error::Changed)
+    ));
+    assert!(matches!(
+        load_target(platform, &get(operation).row, Some(&pipeline)),
+        Err(identity::Error::Changed)
+    ));
+    fs::rename(&path, dir.0.join("Moved app")).unwrap();
+    assert!(!report().available);
+    assert_eq!(
+        report().reason.as_deref(),
+        Some(identity::Error::Missing.message())
+    );
+}
+
+#[test]
+fn acknowledged_revocation_prevents_the_next_step_spawn() {
+    let dir = TestDir::new();
+    let store = Store::new(&dir.0);
+    let grant = stored_grant();
+    let consent_id = grant.consent_id();
+    store.insert(grant.clone()).unwrap();
+    std::thread::scope(|scope| {
+        use std::sync::mpsc;
+
+        let (entered, verified) = mpsc::channel();
+        let (allow_spawn, ready) = mpsc::channel();
+        let (revoking, started) = mpsc::channel();
+        let (revoked, acknowledged) = mpsc::channel();
+        let (store, grant) = (&store, &grant);
+        let launch = scope.spawn(move || {
+            store
+                .with_grant(grant, |_| {
+                    entered.send(()).unwrap();
+                    ready.recv().unwrap();
+                    "spawned"
+                })
+                .unwrap()
+        });
+        verified.recv().unwrap();
+        scope.spawn(move || {
+            revoking.send(()).unwrap();
+            store.revoke(PLUGIN, &consent_id).unwrap();
+            revoked.send(()).unwrap();
+        });
+        started.recv().unwrap();
+        let early_ack = acknowledged.recv_timeout(Duration::from_millis(100));
+        allow_spawn.send(()).unwrap();
+        assert_eq!(early_ack, Err(mpsc::RecvTimeoutError::Timeout));
+        assert_eq!(launch.join().unwrap(), Some("spawned"));
+        acknowledged.recv().unwrap();
+        assert_eq!(
+            store
+                .with_grant(grant, |_| panic!("revoked step spawned"))
+                .unwrap(),
+            None::<()>
+        );
+    });
+}
+
+#[test]
+fn oversized_consent_insert_preserves_the_readable_prior_file() {
+    const MAX: usize = 1024 * 1024;
+    let dir = TestDir::new();
+    let store = Store::new(&dir.0);
+    let grant = stored_grant();
+    store.insert(grant.clone()).unwrap();
+    let path = dir.0.join("app-handoff").join("consents.json");
+    let mut document: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    document["futureField"] = json!("");
+    let len = document.to_string().len();
+    document["futureField"] = json!("x".repeat(MAX - len));
+    let before = document.to_string();
+    assert_eq!(before.len(), MAX);
+    fs::write(&path, &before).unwrap();
+
+    let mut extra = grant.clone();
+    extra.app_id = "f".repeat(32);
+    assert!(store
+        .insert(extra)
+        .unwrap_err()
+        .to_string()
+        .contains("1 MiB"));
+    assert_eq!(fs::read(&path).unwrap(), before.as_bytes());
+    assert!(store
+        .get(PLUGIN, APP_ID, None)
+        .unwrap()
+        .unwrap()
+        .row
+        .same_grant(&grant));
+}
+
+const MAX_CONSENT: usize = 1024 * 1024;
+const OTHER_PLUGIN: &str = "org.chemdraft.handoff.other";
+
+/// Rewrites the store so the file is exactly at the size the reader still accepts.
+fn fill_store_to_limit(path: &Path, mut document: Value, padding: impl Fn(usize) -> Value) {
+    document["futureField"] = padding(0);
+    let base = document.to_string().len();
+    let mut count = MAX_CONSENT - base;
+    loop {
+        document["futureField"] = padding(count);
+        let len = document.to_string().len();
+        if len <= MAX_CONSENT {
+            break;
+        }
+        count -= len - MAX_CONSENT;
+    }
+    let bytes = document.to_string();
+    assert!(bytes.len() > MAX_CONSENT - 8 && bytes.len() <= MAX_CONSENT);
+    fs::write(path, bytes).unwrap();
+}
+
+fn other_plugin_grant() -> Row {
+    let mut row = stored_grant();
+    row.plugin_id = OTHER_PLUGIN.into();
+    row
+}
+
+fn assert_readable_within_limit(store: &Store, path: &Path) {
+    assert!(fs::read(path).unwrap().len() <= MAX_CONSENT);
+    store.list().expect("the rewritten store must read back");
+}
+
+#[test]
+fn revocation_lands_when_the_store_is_at_its_size_limit() {
+    let dir = TestDir::new();
+    let store = Store::new(&dir.0);
+    let (send, build) = allow_send_and_build(&store);
+    let other = other_plugin_grant();
+    store.insert(other.clone()).unwrap();
+    let stale_send = store.get(PLUGIN, APP_ID, None).unwrap().unwrap();
+    let stale_build = store
+        .get(PLUGIN, APP_ID, build.pipeline.as_deref())
+        .unwrap()
+        .unwrap();
+    let missing = store
+        .get(PLUGIN, APP_ID, Some("otherBuild"))
+        .unwrap()
+        .unwrap();
+    let path = dir.0.join("app-handoff").join("consents.json");
+    let document: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    fill_store_to_limit(&path, document, |count| json!("x".repeat(count)));
+
+    // Flipping a legacy grant widens its timestamp and adds a revision key.
+    let revoked = store
+        .revoke(PLUGIN, &send.consent_id())
+        .expect("revoking must succeed at the size limit");
+    assert!(revoked.contains(&send.consent_id()));
+    assert_eq!(store.with_grant(&send, |_| ()).unwrap(), None);
+    // Only removing the revoked app's whole scope makes room here while keeping open boxes
+    // stale, so its sibling operation goes too and is reported so it is disarmed as well.
+    assert_eq!(store.with_grant(&build, |_| ()).unwrap(), None);
+    assert!(revoked.contains(&build.consent_id()));
+    assert_eq!(
+        store.with_grant(&other, |_| ()).unwrap(),
+        Some(()),
+        "revoking dropped another plugin's grant"
+    );
+    for stale in [&stale_send, &stale_build, &missing] {
+        assert!(
+            store
+                .replace(
+                    stale,
+                    &stored_target(stale.row.pipeline.is_some()),
+                    if stale.row.pipeline.is_some() {
+                        build.template_digest.clone()
+                    } else {
+                        send.template_digest.clone()
+                    },
+                    INSTALL_ID,
+                )
+                .is_err(),
+            "a consent box opened before the revocation granted afterwards"
+        );
+    }
+    assert_eq!(store.with_grant(&send, |_| ()).unwrap(), None);
+    assert_readable_within_limit(&store, &path);
+    let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert!(
+        saved["futureField"].as_str().is_some(),
+        "revoking discarded unknown store data it did not need to"
+    );
+}
+
+fn assert_no_listed_consents(store: &Store, plugin: &str) {
+    for entry in store.list().unwrap() {
+        let (ListedConsent::Operation(row) | ListedConsent::Conflict(row)) = entry;
+        assert_ne!(
+            row.plugin_id, plugin,
+            "a cleared plugin still lists {row:?}"
+        );
+    }
+}
+
+#[test]
+fn legacy_store_at_its_size_limit_with_conflicts_still_revokes_and_clears() {
+    // Each step returns the grants it is allowed to remove; every other grant must survive.
+    type Step = fn(&Store, &Row, &Row, &Row) -> Vec<Row>;
+    let steps: [(&str, Step); 4] = [
+        ("revoke operation", |store, _, _, other_plugin| {
+            store
+                .revoke(&other_plugin.plugin_id, &other_plugin.consent_id())
+                .expect("revoking an operation must succeed at the size limit");
+            vec![other_plugin.clone()]
+        }),
+        ("revoke conflict group", |store, send, _, _| {
+            store
+                .revoke(PLUGIN, &send.conflict_id())
+                .expect("revoking a conflict group must succeed at the size limit");
+            assert!(store.for_app(PLUGIN, APP_ID).unwrap().is_empty());
+            vec![]
+        }),
+        ("clear plugin", |store, _, other_app, _| {
+            store
+                .clear(PLUGIN)
+                .expect("clearing a plugin must succeed at the size limit");
+            assert!(store.for_app(PLUGIN, APP_ID).unwrap().is_empty());
+            assert_no_listed_consents(store, PLUGIN);
+            vec![other_app.clone()]
+        }),
+        ("clear other plugin", |store, _, _, other_plugin| {
+            store
+                .clear(&other_plugin.plugin_id)
+                .expect("clearing a plugin must succeed at the size limit");
+            assert_no_listed_consents(store, &other_plugin.plugin_id);
+            vec![other_plugin.clone()]
+        }),
+    ];
+    for (name, step) in steps {
+        let dir = TestDir::new();
+        let store = Store::new(&dir.0);
+        let (path, send, build, other_app, other_plugin) = conflicting_legacy_store(&store, &dir);
+        let document: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        fill_store_to_limit(&path, document, |count| json!("x".repeat(count)));
+        store.list().expect("the filled legacy store must read");
+        let gone = step(&store, &send, &other_app, &other_plugin);
+        // A revoked or cleared row is gone or ungranted, not merely quarantined.
+        for row in &gone {
+            assert_eq!(
+                store.with_grant(row, |_| ()).unwrap(),
+                None,
+                "{name}: a revoked grant stayed active or became a conflict"
+            );
+        }
+        // Conflicting rows grant nothing before or after, whether or not they were removed.
+        for row in [&send, &build] {
+            assert!(
+                !matches!(store.with_grant(row, |_| ()), Ok(Some(()))),
+                "{name}: a conflicting grant became active"
+            );
+        }
+        for row in [&other_app, &other_plugin] {
+            if !gone.iter().any(|gone| gone.same_grant(row)) {
+                assert_eq!(
+                    store.with_grant(row, |_| ()).unwrap(),
+                    Some(()),
+                    "{name}: an unrelated grant was dropped"
+                );
+            }
+        }
+        assert_readable_within_limit(&store, &path);
+    }
+}
+
+#[test]
+fn size_fallback_returns_the_conflict_id_of_a_removed_conflict_group() {
+    // The Plugin Manager lists a conflict group under its conflict ID, so the removed group's row
+    // disappears even if the manager's refresh fails.
+    let dir = TestDir::new();
+    let store = Store::new(&dir.0);
+    let (path, send, build, other_app, _) = conflicting_legacy_store(&store, &dir);
+    let document: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    fill_store_to_limit(&path, document, |count| json!("x".repeat(count)));
+    let revoked = store
+        .revoke(PLUGIN, &other_app.consent_id())
+        .expect("revoking must succeed at the size limit");
+    assert!(revoked.contains(&other_app.consent_id()));
+    assert!(
+        revoked.contains(&send.conflict_id()),
+        "the removed conflict group's listed ID was not returned: {revoked:?}"
+    );
+    assert!(revoked.contains(&send.consent_id()) && revoked.contains(&build.consent_id()));
+    assert!(!store
+        .list()
+        .unwrap()
+        .iter()
+        .any(|entry| matches!(entry, ListedConsent::Conflict(row) if row.plugin_id == PLUGIN)));
+    assert_readable_within_limit(&store, &path);
+}
+
+#[test]
+fn revocation_and_clear_land_even_when_rewriting_inflates_unknown_data() {
+    for clear in [false, true] {
+        let dir = TestDir::new();
+        let store = Store::new(&dir.0);
+        let (send, build) = allow_send_and_build(&store);
+        let other = other_plugin_grant();
+        store.insert(other.clone()).unwrap();
+        let stale_build = store
+            .get(PLUGIN, APP_ID, build.pipeline.as_deref())
+            .unwrap()
+            .unwrap();
+        let path = dir.0.join("app-handoff").join("consents.json");
+        let mut document: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        // `1e5` is valid JSON but is written back as `100000.0`.
+        document["futureField"] = json!([]);
+        let base = document.to_string().len();
+        let count = (MAX_CONSENT - base) / 4;
+        let text = document.to_string().replace(
+            "\"futureField\":[]",
+            &format!("\"futureField\":[{}]", vec!["1e5"; count].join(",")),
+        );
+        assert!(text.len() <= MAX_CONSENT);
+        fs::write(&path, &text).unwrap();
+        store.list().expect("the filled store must read");
+
+        if clear {
+            store
+                .clear(PLUGIN)
+                .expect("clear must succeed on any readable store");
+        } else {
+            store
+                .revoke(PLUGIN, &build.consent_id())
+                .expect("revoke must succeed on any readable store");
+        }
+        assert_eq!(store.with_grant(&build, |_| ()).unwrap(), None);
+        if clear {
+            assert_eq!(store.with_grant(&send, |_| ()).unwrap(), None);
+        }
+        assert!(store
+            .replace(
+                &stale_build,
+                &stored_target(true),
+                build.template_digest.clone(),
+                INSTALL_ID
+            )
+            .is_err());
+        // Nothing else could shrink the store, so every consent was removed: fail closed.
+        assert_eq!(store.with_grant(&other, |_| ()).unwrap(), None);
+        assert_readable_within_limit(&store, &path);
+    }
+}
+
+#[test]
+fn clearing_a_plugin_without_consents_leaves_an_oversized_store_untouched() {
+    let dir = TestDir::new();
+    let store = Store::new(&dir.0);
+    let (send, build) = allow_send_and_build(&store);
+    let other = other_plugin_grant();
+    store.insert(other.clone()).unwrap();
+    let path = dir.0.join("app-handoff").join("consents.json");
+    let mut document: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    // Rewriting this store inflates it past the limit, so any write would remove consents.
+    document["futureField"] = json!([]);
+    let base = document.to_string().len();
+    let count = (MAX_CONSENT - base) / 4;
+    let text = document.to_string().replace(
+        "\"futureField\":[]",
+        &format!("\"futureField\":[{}]", vec!["1e5"; count].join(",")),
+    );
+    assert!(text.len() <= MAX_CONSENT);
+    fs::write(&path, &text).unwrap();
+
+    store
+        .clear("org.chemdraft.handoff.absent")
+        .expect("clearing a plugin with no consents must succeed");
+    assert!(
+        fs::read_to_string(&path).unwrap() == text,
+        "the store was rewritten"
+    );
+    for row in [&send, &build, &other] {
+        assert_eq!(
+            store.with_grant(row, |_| ()).unwrap(),
+            Some(()),
+            "clearing an absent plugin dropped another plugin's grant"
+        );
+    }
+    assert_eq!(
+        store.revoke(PLUGIN, "consent-unknown").unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
+    assert_eq!(
+        store
+            .revoke("org.chemdraft.handoff.absent", &send.consent_id())
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::NotFound
+    );
+    assert!(
+        fs::read_to_string(&path).unwrap() == text,
+        "the store was rewritten"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn consent_store_refuses_existing_group_or_world_accessible_directory_and_file() {
+    use std::{io, os::unix::fs::PermissionsExt};
+
+    let dir = TestDir::new();
+    let root = dir.0.join("app-handoff");
+    let path = root.join("consents.json");
+    let store = Store::new(&dir.0);
+    let set_mode =
+        |path, mode| fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+    // Clearing writes only when it removes something, so give it a row to create the file.
+    store.insert(stored_grant()).unwrap();
+    store.clear(PLUGIN).unwrap();
+    for (unsafe_path, mode, safe_mode) in [(&root, 0o750, 0o700), (&path, 0o604, 0o600)] {
+        set_mode(unsafe_path, mode);
+        assert_eq!(
+            store.list().unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(
+            store.clear(PLUGIN).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        set_mode(unsafe_path, safe_mode);
+        assert!(store.list().unwrap().is_empty());
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn consent_store_refuses_an_existing_file_with_inherited_acl() {
+    use std::io;
+
+    let dir = TestDir::new();
+    let root = dir.0.join("app-handoff");
+    fs::create_dir(&root).unwrap();
+    fs::write(
+        root.join("consents.json"),
+        br#"{"schemaVersion":1,"rows":[]}"#,
+    )
+    .unwrap();
+    let store = Store::new(&dir.0);
+    assert_eq!(
+        store.list().unwrap_err().kind(),
+        io::ErrorKind::PermissionDenied
+    );
+    assert_eq!(
+        store.clear(PLUGIN).unwrap_err().kind(),
+        io::ErrorKind::PermissionDenied
+    );
+}
+
+#[test]
+#[cfg(any(target_os = "macos", windows))]
+fn consent_survives_disable_but_changed_template_app_revoke_and_uninstall_refuse() {
+    let dir = TestDir::new();
+    let (platform, app, tool) = install_stub(&dir.0);
+    let pipeline = pipeline();
+    let app =
+        App::read(platform, &app, Some(&pipeline)).unwrap_or_else(|error| panic!("{error:?}"));
+    let digest = pipeline.digest();
+    let store = Store::new(&dir.0);
+    let app_id = store
+        .pick(
+            PLUGIN,
+            App::read(platform, &app.path, None).unwrap(),
+            |_| None,
+        )
+        .unwrap();
+    let operation = Some(pipeline.id.as_str());
+    let get = || store.get(PLUGIN, &app_id, operation).unwrap().unwrap();
+    let allowed = store
+        .replace(&get(), &app, digest.clone(), INSTALL_ID)
+        .unwrap();
+    assert!(allowed.grants(&app, operation, &digest, INSTALL_ID));
+    // Disabling or re-enabling a plugin touches the native menu, not its persisted consent.
+    let state = State::default();
+    state.arm(PLUGIN, COMMAND, Instant::now()).unwrap();
+    state.disarm(PLUGIN);
+    assert!(state.live(PLUGIN, Instant::now()).is_err());
+    let before_revoke = get();
+    assert!(before_revoke
+        .row
+        .grants(&app, operation, &digest, INSTALL_ID));
+    let mut changed = template();
+    changed["steps"][1]["timeoutSeconds"] = json!(6);
+    assert!(!allowed.grants(
+        &app,
+        operation,
+        &serde_json::from_value::<Pipeline>(changed)
+            .unwrap()
+            .digest(),
+        INSTALL_ID
+    ));
+
+    fs::remove_file(tool).unwrap();
+    assert!(matches!(
+        app.verify(platform, Some(&pipeline)),
+        Err(identity::Error::Changed)
+    ));
+
+    let path = dir.0.join("app-handoff").join("consents.json");
+    let mut document: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    document["futureTop"] = json!(true);
+    document["rows"][1]["futureRow"] = json!("kept");
+    fs::write(&path, document.to_string()).unwrap();
+    let summary = json!(super::endpoint::ConsentSummary::new(
+        allowed.clone(),
+        Some(INSTALL_ID)
+    ));
+    assert_eq!(summary["status"], "allowed");
+    assert_eq!(summary["consentId"], allowed.consent_id());
+    assert!(summary.get("appId").is_none());
+    assert!(!summary.to_string().contains(&app_id));
+    assert!(store.revoke(PLUGIN, &app_id).is_err());
+    assert!(store
+        .get(PLUGIN, &allowed.consent_id(), operation)
+        .unwrap()
+        .is_none());
+    store.revoke(PLUGIN, &allowed.consent_id()).unwrap();
+    let revoked = get().row;
+    assert!(!revoked.grants(&app, operation, &digest, INSTALL_ID));
+    assert_eq!(
+        json!(super::endpoint::ConsentSummary::new(revoked, None))["status"],
+        "revoked"
+    );
+    assert!(
+        store
+            .replace(&before_revoke, &app, digest.clone(), INSTALL_ID)
+            .is_err(),
+        "revoked consent must not be restored by a stale box"
+    );
+    let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(saved["futureTop"], true);
+    assert_eq!(saved["rows"][1]["futureRow"], "kept");
+    assert_private_consent(&path);
+    store.clear(PLUGIN).unwrap();
+    assert!(store.list().unwrap().is_empty());
+}
+
+#[cfg(target_os = "macos")]
+fn assert_private_consent(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(
+        fs::metadata(path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        fs::metadata(path.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
+}
+
+#[cfg(windows)]
+fn assert_private_consent(path: &Path) {
+    use std::{os::windows::ffi::OsStrExt, ptr};
+    use windows_sys::Win32::{
+        Foundation::LocalFree,
+        Security::{
+            Authorization::{
+                ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW,
+                SE_FILE_OBJECT,
+            },
+            DACL_SECURITY_INFORMATION,
+        },
+    };
+    let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut descriptor = ptr::null_mut();
+    unsafe {
+        assert_eq!(
+            GetNamedSecurityInfoW(
+                name.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                &mut descriptor
+            ),
+            0
+        );
+        let mut sddl = ptr::null_mut();
+        let mut len = 0;
+        assert_ne!(
+            ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                descriptor,
+                1,
+                DACL_SECURITY_INFORMATION,
+                &mut sddl,
+                &mut len
+            ),
+            0
+        );
+        let value = String::from_utf16_lossy(std::slice::from_raw_parts(sddl, len as usize));
+        LocalFree(sddl.cast());
+        LocalFree(descriptor.cast());
+        assert_eq!(value.trim_end_matches('\0'), "D:P(A;;FA;;;OW)");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn companion_path_and_output_refuse_symlinks_and_escape() {
+    use std::os::unix::fs::symlink;
+    let folder = TestDir::new();
+    let root = folder.0.canonicalize().unwrap();
+    let outside = TestDir::new();
+    let script = outside.0.join("tool");
+    fs::write(&script, "test").unwrap();
+    symlink(&outside.0, root.join("escape")).unwrap();
+    symlink(&script, root.join("out.cif")).unwrap();
+    assert!(
+        temp_files::plain_path(&root, Path::new("escape").join("tool").as_path(), false).is_err()
+    );
+    assert!(!runner::verified_output(&root, &root.join("out.cif")));
+}
+
+#[cfg(windows)]
+#[test]
+fn companion_path_and_output_refuse_windows_junctions() {
+    let folder = TestDir::new();
+    let root = folder.0.canonicalize().unwrap();
+    let outside = TestDir::new();
+    fs::write(outside.0.join("tool.exe"), "test").unwrap();
+    fs::write(outside.0.join("output.cif"), "test").unwrap();
+    crate::local_engine::handoff_test_junction(
+        &outside.0.canonicalize().unwrap(),
+        &root.join("escape"),
+    )
+    .unwrap();
+    let escape = Path::new("escape").join("tool.exe");
+    assert!(temp_files::plain_path(&root, &escape, false).is_err());
+    assert!(!runner::verified_output(
+        &root,
+        &root.join("escape").join("output.cif")
+    ));
+}
+
+#[test]
+fn companion_clears_parent_overrides_and_uses_null_stdin() {
+    const MARKER: &str = "CHEMDRAFT_HANDOFF_STUB_ENV_TEST";
+    if std::env::var_os(MARKER).is_none() {
+        let parent = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "app_handoff::tests::companion_clears_parent_overrides_and_uses_null_stdin",
+            ])
+            .env(MARKER, "1")
+            .envs(
+                ["XTAL_", "PYTHON", "DYLD_", "LD_"]
+                    .map(|prefix| (format!("{prefix}CHEMDRAFT_HANDOFF"), "present in parent")),
+            )
+            .output()
+            .unwrap();
+        assert!(
+            parent.status.success(),
+            "{}",
+            String::from_utf8_lossy(&parent.stdout)
+        );
+        return;
+    }
+    assert_eq!(
+        std::env::var("XTAL_CHEMDRAFT_HANDOFF").as_deref(),
+        Ok("present in parent")
+    );
+    let dir = TestDir::new();
+    let mut child = ChildProcess::spawn(rust_stub(), &["capabilities".into()], &dir.0).unwrap();
+    let result = child
+        .capture(Duration::from_secs(5), &AtomicBool::new(false))
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+// API 0.1.29 bounded retry.
+
+const TWIST: &str = "Joint twist left";
+
+fn twist_condition() -> RetryCondition {
+    RetryCondition {
+        step: "build".into(),
+        label: TWIST.into(),
+        not_equal: 0.0,
+    }
+}
+
+fn report(id: &str, json: Value) -> StepResult {
+    StepResult {
+        id: id.into(),
+        json,
+    }
+}
+
+fn twist_report(value: Value) -> Vec<StepResult> {
+    vec![
+        report("preflight", json!({"version": "1.1.1"})),
+        report(
+            "build",
+            json!({"ok": true, "tables": [{"rows": [{"label": TWIST, "value": value}]}]}),
+        ),
+    ]
+}
+
+/// The test XYZ with another comment line.
+fn xyz_with(comment: &str) -> String {
+    XYZ.replacen("1 2", comment, 1)
+}
+
+/// The test XYZ with its second atom moved along x (by at most 0.006 A for 0 to 12) so the stub
+/// companion reports `twist`. The unmoved test XYZ reports 6.
+fn xyz_twist(twist: f64) -> String {
+    XYZ.replacen("X 1 0 0", &format!("X {} 0 0", 1.006 - twist / 1000.0), 1)
+}
+
+fn retry_build(combination: &str, twists: &[f64]) -> ApprovedBuild {
+    let mut approved = build(combination);
+    approved.retry = Some(ApprovedRetry {
+        inputs: twists
+            .iter()
+            .map(|twist| Input {
+                extension: Extension::Xyz,
+                text: xyz_twist(*twist),
+            })
+            .collect(),
+        when: twist_condition(),
+    });
+    approved
+}
+
+#[test]
+fn retry_reads_exactly_one_labelled_row_in_the_named_step_tables() {
+    let when = twist_condition();
+    let read = |steps: &[StepResult]| retry::reading(steps, &when);
+    assert_eq!(read(&twist_report(json!("6.000"))), Some(6.0));
+    assert_eq!(read(&twist_report(json!(" 0.25 "))), Some(0.25));
+    assert_eq!(read(&twist_report(json!(-1.5))), Some(-1.5));
+    assert!(retry::wants_retry(&twist_report(json!("6.000")), &when));
+    assert!(retry::wants_retry(&twist_report(json!(0.01)), &when));
+    // Equal to the declared number, including signed zero, ends the sequence.
+    for good in [json!("0.000"), json!(0), json!("-0"), json!(0.0)] {
+        assert!(!retry::wants_retry(&twist_report(good), &when));
+    }
+    // A missing, duplicate, malformed or non-finite value never triggers a retry.
+    for unreadable in [
+        json!("NaN"),
+        json!("inf"),
+        json!("-infinity"),
+        json!("1e400"),
+        json!("6 degrees"),
+        json!(""),
+        Value::Null,
+        json!(true),
+        json!([6]),
+        json!({"value": 6}),
+    ] {
+        let steps = twist_report(unreadable.clone());
+        assert_eq!(read(&steps), None, "{unreadable}");
+        assert!(!retry::wants_retry(&steps, &when), "{unreadable}");
+    }
+    let build_json = |json: Value| vec![report("build", json)];
+    let row = json!({"label": TWIST, "value": "6"});
+    for (case, steps) in [
+        (
+            "no such step",
+            vec![report("inspect", json!({"tables": [{"rows": [row]}]}))],
+        ),
+        ("no steps", vec![]),
+        (
+            "duplicate step",
+            vec![
+                report("build", json!({"tables": [{"rows": [row]}]})),
+                report("build", json!({"tables": [{"rows": [row]}]})),
+            ],
+        ),
+        (
+            "duplicate row in one table",
+            build_json(json!({"tables": [{"rows": [row, row]}]})),
+        ),
+        (
+            "duplicate row across tables",
+            build_json(json!({"tables": [{"rows": [row]}, {"rows": [row]}]})),
+        ),
+        ("no tables", build_json(json!({"rows": [row]}))),
+        (
+            "tables not an array",
+            build_json(json!({"tables": {"rows": [row]}})),
+        ),
+        ("report not an object", build_json(json!([{"rows": [row]}]))),
+        (
+            "nested deeper",
+            build_json(json!({"tables": [{"groups": [{"rows": [row]}]}]})),
+        ),
+        (
+            "label differs in case",
+            build_json(
+                json!({"tables": [{"rows": [{"label": "joint twist left", "value": "6"}]}]}),
+            ),
+        ),
+        (
+            "label padded",
+            build_json(
+                json!({"tables": [{"rows": [{"label": " Joint twist left", "value": "6"}]}]}),
+            ),
+        ),
+        (
+            "value missing",
+            build_json(json!({"tables": [{"rows": [{"label": TWIST}]}]})),
+        ),
+    ] {
+        assert_eq!(read(&steps), None, "{case}");
+    }
+    // Rows that are not objects and tables without rows contribute nothing.
+    assert_eq!(
+        read(&build_json(
+            json!({"tables": [{"header": ["a"]}, {"rows": [1, "x", row]}]})
+        )),
+        Some(6.0)
+    );
+}
+
+fn run_request(retry: Option<Value>, input: bool) -> Value {
+    let mut request = json!({"appId": APP_ID, "pipeline": "mofBuild", "combination": "small"});
+    if input {
+        request["input"] = json!({"extension": "xyz", "text": XYZ});
+    }
+    if let Some(retry) = retry {
+        request["retry"] = retry;
+    }
+    json!({
+        "invocation": {"pluginId": PLUGIN, "commandId": COMMAND, "nonce": "0".repeat(32)},
+        "method": "runCompanion", "request": request
+    })
+}
+
+#[test]
+fn retry_request_limits_and_validation_apply_before_any_box() {
+    let parse = |retry: Value| Call::parse(run_request(Some(retry), true));
+    let when = json!({"step": "build", "label": TWIST, "notEqual": 0});
+    let valid = json!({"inputs": [xyz_twist(1.0)], "when": when});
+    let Ok((_, Request::Run(request))) = parse(valid.clone()) else {
+        panic!("a bounded retry is valid");
+    };
+    let retry = request.retry.unwrap();
+    assert_eq!(retry.inputs.len(), 1);
+    assert_eq!(retry.when, twist_condition());
+    // Without the new field the request decodes exactly as before.
+    let Ok((_, Request::Run(plain))) = Call::parse(run_request(None, true)) else {
+        panic!("a request without retry is valid");
+    };
+    assert!(plain.retry.is_none());
+    assert!(
+        Call::parse(run_request(Some(valid.clone()), false)).is_err(),
+        "retry needs an input"
+    );
+    let two = json!({"inputs": [xyz_with("a"), xyz_with("b")], "when": when});
+    assert!(parse(two).is_ok());
+    let exact = "x".repeat(super::wire::INPUT_BYTES);
+    assert!(parse(json!({"inputs": [exact.clone()], "when": when})).is_ok());
+    let mut refused = vec![
+        json!({"inputs": [], "when": when}),
+        json!({"inputs": [xyz_with("a"), xyz_with("b"), xyz_with("c")], "when": when}),
+        json!({"inputs": [exact + "x"], "when": when}),
+        json!({"inputs": [0], "when": when}),
+        json!({"inputs": xyz_with("a"), "when": when}),
+        json!({"inputs": [xyz_with("a")]}),
+        json!({"inputs": [xyz_with("a")], "when": when, "extension": "cif"}),
+        json!({"inputs": [xyz_with("a")], "when": {"step": "build", "label": TWIST, "notEqual": 0, "path": "$.x"}}),
+        json!({"inputs": [xyz_with("a")], "when": {"step": "build", "label": TWIST, "notEqual": "0"}}),
+        json!({"inputs": [xyz_with("a")], "when": {"step": "build", "label": TWIST}}),
+        Value::Null,
+        json!([]),
+    ];
+    for step in ["", "../build", "build step", "-build"] {
+        refused.push(json!({"inputs": [xyz_with("a")], "when": {"step": step, "label": TWIST, "notEqual": 0}}));
+    }
+    for label in [
+        String::new(),
+        " Joint".into(),
+        "Joint ".into(),
+        "Joint\ntwist".into(),
+        "Joint\u{200b}twist".into(),
+        "Joint\u{0}".into(),
+        "x".repeat(81),
+        // Labels that companion report redaction rewrites: the row would never match.
+        "Width (/ right)".into(),
+        "/twist".into(),
+        "Twist \\ left".into(),
+        "file:twist".into(),
+        "C:/twist".into(),
+        "Twist 'D:/x'".into(),
+        "[local path removed]".into(),
+    ] {
+        refused.push(json!({"inputs": [xyz_with("a")], "when": {"step": "build", "label": label, "notEqual": 0}}));
+    }
+    for retry in refused {
+        assert!(parse(retry.clone()).is_err(), "{retry}");
+    }
+    assert!(parse(json!({"inputs": [xyz_with("a")], "when": {"step": "build", "label": "🧪".repeat(80), "notEqual": -2.5e-3}})).is_ok());
+}
+
+/// The condition is read from the report the plugin receives, after path redaction. Every label
+/// `check_request` accepts passes redaction unchanged, so a row it names is found exactly when the
+/// companion wrote it; and no accepted label matches a row whose own label redaction rewrote.
+#[test]
+fn every_accepted_retry_label_survives_report_redaction() {
+    let accepted = |label: &str| {
+        let retry = Retry {
+            inputs: vec![xyz_with("a")],
+            when: RetryCondition {
+                step: "build".into(),
+                label: label.into(),
+                not_equal: 0.0,
+            },
+        };
+        retry::check_request(&retry, build("small").input.as_ref()).is_ok()
+    };
+    for label in [
+        TWIST,
+        "P2(1)/c twist",
+        "1/2 occupancy",
+        "Width (right)",
+        "Angle/deg",
+        "a:b",
+        "🧪 twist",
+    ] {
+        assert!(accepted(label), "{label}");
+        let report = json!({"tables": [{"rows": [{"label": label, "value": "6"}]}]});
+        let redacted = runner::parse_output(report.to_string().as_bytes()).unwrap();
+        assert_eq!(redacted, report, "{label}");
+    }
+    for rewritten in ["Width (/ right)", "/x", "x\\y", "file:x", "C:/x"] {
+        assert!(!accepted(rewritten), "{rewritten}");
+        let report = json!({"tables": [{"rows": [{"label": rewritten, "value": "6"}]}]});
+        let redacted = runner::parse_output(report.to_string().as_bytes()).unwrap();
+        let label = redacted["tables"][0]["rows"][0]["label"].as_str().unwrap();
+        assert_ne!(label, rewritten);
+        assert!(!accepted(label), "{label}");
+    }
+}
+
+#[test]
+fn retry_inputs_keep_atoms_and_bonds_and_differ_from_earlier_inputs() {
+    let first = build("small").input.unwrap();
+    let retry = |inputs: &[String]| Retry {
+        inputs: inputs.to_vec(),
+        when: twist_condition(),
+    };
+    let nudged = XYZ.replace("X 1 0 0", "X 1.01 0 0");
+    let other = XYZ.replace("X -1 0 0", "X -1 0.01 0");
+    let variants = retry::variants(&first, &retry(&[nudged.clone(), other.clone()])).unwrap();
+    assert_eq!(
+        variants
+            .iter()
+            .map(|input| input.text.as_str())
+            .collect::<Vec<_>>(),
+        [XYZ, nudged.as_str(), other.as_str()]
+    );
+    assert!(variants
+        .iter()
+        .all(|input| input.extension == Extension::Xyz));
+    for (case, text) in [
+        ("identical", XYZ.to_owned()),
+        ("other comment", xyz_with("comment")),
+        ("other element", XYZ.replace("X 1 0 0", "Y 1 0 0")),
+        ("other bond", XYZ.replace("0 2 S", "0 2 D")),
+        ("missing bond", XYZ.replace("0 2 S\n", "")),
+        ("malformed", "3\n\nC 0 0\n".into()),
+        ("not xyz", "data_cif".into()),
+    ] {
+        assert!(retry::variants(&first, &retry(&[text])).is_err(), "{case}");
+    }
+    assert!(
+        retry::variants(&first, &retry(&[nudged.clone(), nudged])).is_err(),
+        "alternatives must differ from each other"
+    );
+}
+
+#[test]
+fn retry_sequence_continues_only_after_a_poor_completed_attempt_and_stops_at_three() {
+    use std::{cell::RefCell, rc::Rc};
+    struct Done(usize, Rc<RefCell<Vec<usize>>>);
+    impl Drop for Done {
+        fn drop(&mut self) {
+            self.1.borrow_mut().push(self.0);
+        }
+    }
+    // Each outcome: a completed attempt and whether it was poor, or a failure and whether the
+    // attempt had started a process before it.
+    let run = |variants: usize, outcomes: &[Result<bool, (RunCode, bool)>]| {
+        let dropped = Rc::new(RefCell::new(Vec::new()));
+        let started = RefCell::new(Vec::new());
+        let (attempts, outcome) = retry::run_sequence(
+            variants,
+            |index| {
+                // Every earlier completed attempt is gone before the next one starts.
+                assert_eq!(*dropped.borrow(), (0..index).collect::<Vec<_>>());
+                started.borrow_mut().push(index);
+                match outcomes[index] {
+                    Ok(poor) => (true, Ok((Done(index, dropped.clone()), poor))),
+                    Err((code, launched)) => (launched, Err(code)),
+                }
+            },
+            |(_, poor)| *poor,
+        );
+        let returned = outcome.map(|(done, _)| done.0);
+        (attempts, returned, started.into_inner())
+    };
+    // No retry fields: one attempt whatever the report says.
+    assert_eq!(run(1, &[Ok(true)]), (1, Ok(0), vec![0]));
+    assert_eq!(run(3, &[Ok(false)]), (1, Ok(0), vec![0]));
+    assert_eq!(run(3, &[Ok(true), Ok(false)]), (2, Ok(1), vec![0, 1]));
+    // Every attempt poor: the last one is returned as a single run would be.
+    assert_eq!(
+        run(3, &[Ok(true), Ok(true), Ok(true)]),
+        (3, Ok(2), vec![0, 1, 2])
+    );
+    assert_eq!(run(2, &[Ok(true), Ok(true)]), (2, Ok(1), vec![0, 1]));
+    // Never more than three, whatever the caller passes.
+    assert_eq!(run(10, &[Ok(true); 10]), (3, Ok(2), vec![0, 1, 2]));
+    // A failure never retries, and a later failure is reported as that failure.
+    for code in [
+        RunCode::Timeout,
+        RunCode::ExitNonzero,
+        RunCode::BadOutput,
+        RunCode::ToolMissing,
+        RunCode::BadParam,
+    ] {
+        // The first attempt always counts, started or not: the result names its input.
+        for launched in [true, false] {
+            assert_eq!(run(3, &[Err((code, launched))]), (1, Err(code), vec![0]));
+        }
+        assert_eq!(
+            run(3, &[Ok(true), Err((code, true))]),
+            (2, Err(code), vec![0, 1])
+        );
+        assert_eq!(
+            run(3, &[Ok(true), Ok(true), Err((code, true))]),
+            (3, Err(code), vec![0, 1, 2])
+        );
+        // A later attempt refused or failed before any process of it started is not counted:
+        // the failure comes with the count and input of the last attempt that ran.
+        assert_eq!(
+            run(3, &[Ok(true), Err((code, false))]),
+            (1, Err(code), vec![0, 1])
+        );
+        assert_eq!(
+            run(3, &[Ok(true), Ok(true), Err((code, false))]),
+            (2, Err(code), vec![0, 1, 2])
+        );
+    }
+}
+
+/// One attempt as `BuildJob::attempt` makes it: a fresh handoff folder, the variant's input, and
+/// every launch gated by consent and the companion identity.
+struct StubAttempt {
+    files: TempFiles,
+    completed: runner::Completed,
+}
+
+fn stub_sequence(
+    approved: &ApprovedBuild,
+    pipeline: &Pipeline,
+    cache: &Path,
+    mut launch: impl FnMut(
+        usize,
+        &mut dyn FnMut() -> Result<ChildProcess, runner::Failure>,
+    ) -> Result<ChildProcess, runner::Failure>,
+    mut between: impl FnMut(usize),
+) -> (usize, Result<StubAttempt, runner::Failure>, Vec<PathBuf>) {
+    let stopped = AtomicBool::new(false);
+    let deadline = Instant::now() + retry::SEQUENCE_LIMIT;
+    let mut roots = Vec::new();
+    let (attempts, outcome) = retry::run_sequence(
+        approved.variants(),
+        |index| {
+            if index > 0 {
+                between(index);
+            }
+            let launched = Cell::new(false);
+            let outcome = (|| {
+                let files = TempFiles::new(cache, PLUGIN).unwrap();
+                roots.push(files.root.clone());
+                let input = approved.variant(index).unwrap();
+                files
+                    .write(&files.stem, input.extension, &input.text)
+                    .unwrap();
+                let completed = runner::run(
+                    pipeline,
+                    approved,
+                    &files,
+                    |args, cwd, _, step_deadline| {
+                        let child = launch(index, &mut || {
+                            ChildProcess::spawn_before(
+                                rust_stub(),
+                                args,
+                                cwd,
+                                step_deadline,
+                                &stopped,
+                            )
+                        });
+                        launched.set(launched.get() || child.is_ok());
+                        child
+                    },
+                    &stopped,
+                    deadline,
+                )?;
+                Ok(StubAttempt { files, completed })
+            })();
+            (launched.get(), outcome)
+        },
+        |attempt| {
+            approved
+                .retry
+                .as_ref()
+                .is_some_and(|retry| retry::wants_retry(&attempt.completed.steps, &retry.when))
+        },
+    );
+    (attempts, outcome, roots)
+}
+
+#[test]
+fn retry_runs_real_attempts_and_keeps_only_the_final_output() {
+    let dir = TestDir::new();
+    let pipeline = pipeline();
+    // Launch every step unconditionally; the gating tests below wrap this.
+    let open = |_: usize, start: &mut dyn FnMut() -> _| start();
+    let twist =
+        |attempt: &StubAttempt| retry::reading(&attempt.completed.steps, &twist_condition());
+
+    // Poor, poor, good: three attempts, the third returned.
+    let mut approved = retry_build("small", &[3.5, 0.0]);
+    approved.input = Some(Input {
+        extension: Extension::Xyz,
+        text: xyz_twist(6.0),
+    });
+    let (attempts, outcome, roots) = stub_sequence(&approved, &pipeline, &dir.0, open, |_| {});
+    let last = outcome.unwrap();
+    assert_eq!(attempts, 3);
+    assert_eq!(twist(&last), Some(0.0));
+    assert_eq!(roots.len(), 3);
+    assert!(
+        !roots[0].exists() && !roots[1].exists(),
+        "earlier attempts are cleaned up"
+    );
+    assert!(runner::verified_output(
+        &last.files.root,
+        last.completed.output.as_ref().unwrap()
+    ));
+    assert_eq!(roots[2], last.files.root);
+    drop(last);
+    assert!(!roots[2].exists());
+
+    // Good on the second attempt: the third input never runs.
+    let approved = retry_build("small", &[0.0, 9.0]);
+    let (attempts, outcome, roots) = stub_sequence(&approved, &pipeline, &dir.0, open, |_| {});
+    assert_eq!((attempts, twist(&outcome.unwrap())), (2, Some(0.0)));
+    assert_eq!(roots.len(), 2);
+
+    // Every attempt poor: the last attempt is returned.
+    let approved = retry_build("small", &[5.0, 4.0]);
+    let (attempts, outcome, _) = stub_sequence(&approved, &pipeline, &dir.0, open, |_| {});
+    assert_eq!((attempts, twist(&outcome.unwrap())), (3, Some(4.0)));
+
+    // A good first result runs once.
+    let mut approved = retry_build("small", &[5.0]);
+    approved.input = Some(Input {
+        extension: Extension::Xyz,
+        text: xyz_twist(0.0),
+    });
+    let (attempts, outcome, _) = stub_sequence(&approved, &pipeline, &dir.0, open, |_| {});
+    assert_eq!((attempts, twist(&outcome.unwrap())), (1, Some(0.0)));
+
+    // No retry after a nonzero exit, unreadable output, or a missing output file.
+    for (combination, code) in [
+        ("exit", RunCode::ExitNonzero),
+        ("bad-json", RunCode::BadOutput),
+        ("no-file", RunCode::BadOutput),
+    ] {
+        let approved = retry_build(combination, &[1.0, 2.0]);
+        let (attempts, outcome, _) = stub_sequence(&approved, &pipeline, &dir.0, open, |_| {});
+        assert_eq!(
+            (attempts, outcome.err().unwrap().code),
+            (1, code),
+            "{combination}"
+        );
+    }
+
+    // No retry after a timeout.
+    let mut slow: Value = template();
+    slow["steps"][1]["args"] = json!(["tree", "{inputDir}"]);
+    slow["steps"][1]["timeoutSeconds"] = json!(1);
+    slow["steps"].as_array_mut().unwrap().truncate(2);
+    let slow: Pipeline = serde_json::from_value(slow).unwrap();
+    let approved = retry_build("small", &[1.0]);
+    let (attempts, outcome, _) = stub_sequence(&approved, &slow, &dir.0, open, |_| {});
+    assert_eq!(
+        (attempts, outcome.err().unwrap().code),
+        (1, RunCode::Timeout)
+    );
+}
+
+#[test]
+fn revocation_between_attempts_stops_the_next_launch() {
+    let dir = TestDir::new();
+    let store = Store::new(&dir.0.join("consent"));
+    let grant = stored_grant();
+    store.insert(grant.clone()).unwrap();
+    let approved = retry_build("small", &[2.0, 3.0]);
+    let mut launched = Vec::new();
+    let (attempts, outcome, _) = stub_sequence(
+        &approved,
+        &pipeline(),
+        &dir.0,
+        |index, start| {
+            store
+                .with_grant(&grant, |_| {
+                    launched.push(index);
+                    start()
+                })
+                .unwrap()
+                .unwrap_or_else(|| Err(runner::Failure::new(RunCode::BadParam, "consent changed")))
+        },
+        |_| {
+            store.revoke(PLUGIN, &grant.consent_id()).unwrap();
+        },
+    );
+    // The second attempt was refused before it started, so only the first counts.
+    assert_eq!(attempts, 1);
+    assert_eq!(outcome.err().unwrap().code, RunCode::BadParam);
+    assert_eq!(
+        launched,
+        [0, 0, 0],
+        "only the first attempt's three steps ran"
+    );
+}
+
+#[cfg(any(target_os = "macos", windows))]
+#[test]
+fn a_changed_companion_between_attempts_is_never_launched() {
+    let dir = TestDir::new();
+    let (platform, path, tool) = install_stub(&dir.0);
+    let pipeline = pipeline();
+    let target = App::read(platform, &path, Some(&pipeline)).unwrap();
+    let approved = retry_build("small", &[2.0]);
+    let mut launched = Vec::new();
+    let cache = dir.0.join("cache");
+    fs::create_dir(&cache).unwrap();
+    let (attempts, outcome, _) = stub_sequence(
+        &approved,
+        &pipeline,
+        &cache,
+        |index, start| {
+            target
+                .with_verified_launch(platform, Some(&pipeline), |_| {
+                    launched.push(index);
+                    start()
+                })
+                .unwrap_or_else(|error| {
+                    Err(runner::Failure::new(RunCode::AppChanged, error.message()))
+                })
+        },
+        |_| fs::write(&tool, b"replacement tool").unwrap(),
+    );
+    // The second attempt was refused before it started, so only the first counts.
+    assert_eq!(attempts, 1);
+    assert_eq!(outcome.err().unwrap().code, RunCode::AppChanged);
+    assert_eq!(launched, [0, 0, 0]);
+}
+
+#[test]
+fn later_attempts_require_the_same_used_and_still_live_menu_click() {
+    let now = Instant::now();
+    let approved = retry_build("small", &[2.0]);
+    let used = |state: &State| {
+        let arm = state.arm(PLUGIN, COMMAND, now).unwrap();
+        state.begin(&arm.invocation(PLUGIN), now).unwrap();
+        let submission = arm.submit(now).unwrap();
+        submission.show_box().unwrap();
+        submission.bind_build(&approved).unwrap();
+        (arm, submission)
+    };
+    let state = State::default();
+    let (arm, submission) = used(&state);
+    assert!(
+        submission.relaunch_build(&approved, || ()).is_err(),
+        "a later attempt cannot stand in for the first launch"
+    );
+    assert!(submission.assert_used().is_err());
+    submission.launch_build(&approved, || ()).unwrap();
+    assert!(submission.assert_used().is_ok());
+    assert_eq!(
+        submission.relaunch_build(&approved, || "second").unwrap(),
+        "second"
+    );
+    assert!(submission
+        .relaunch_build(&build("large"), || panic!("other combination"))
+        .is_err());
+    // The command finished, or the window reloaded: no further attempt.
+    state.finish(&arm.invocation(PLUGIN));
+    assert!(submission.assert_used().is_err());
+    assert!(submission
+        .relaunch_build(&approved, || panic!("finished"))
+        .is_err());
+
+    for stop in [
+        (|state: &State| state.discard_all()) as fn(&State),
+        |state| state.disarm(PLUGIN),
+        |state| {
+            state.arm(PLUGIN, COMMAND, Instant::now()).unwrap();
+        },
+    ] {
+        let state = State::default();
+        let (_, submission) = used(&state);
+        submission.launch_build(&approved, || ()).unwrap();
+        stop(&state);
+        assert!(submission
+            .relaunch_build(&approved, || panic!("stopped"))
+            .is_err());
+    }
+}
+
+#[test]
+fn a_rebuild_after_retries_repeats_only_the_input_finally_used() {
+    let mut approved = retry_build("small", &[2.0, 3.0]);
+    assert_eq!(approved.variants(), 3);
+    assert_eq!(approved.variant(2).unwrap().text, xyz_twist(3.0));
+    assert!(approved.variant(3).is_none());
+    approved.settle(1);
+    assert!(approved.retry.is_none());
+    assert_eq!(approved.input.as_ref().unwrap().text, xyz_twist(2.0));
+    assert_eq!(approved.variants(), 1);
+    let mut first = retry_build("small", &[2.0]);
+    first.settle(0);
+    assert_eq!(
+        (first.input.unwrap().text, first.retry.is_none()),
+        (XYZ.into(), true)
+    );
+}
+
+#[test]
+fn the_confirmation_states_the_bounded_retry() {
+    let pipeline = pipeline();
+    let when = twist_condition();
+    let snapshot = dialogs::confirmation_snapshot(
+        &pipeline,
+        "Crystal Builder",
+        "ChemDraft",
+        "small",
+        None,
+        &[],
+        Some(dialogs::RetryNotice::new(3, &when)),
+    )
+    .unwrap();
+    assert_eq!(
+        snapshot["retry"],
+        json!({"attempts": 3, "step": "build", "label": TWIST, "notEqual": 0.0})
+    );
+    let plain = dialogs::confirmation_snapshot(
+        &pipeline,
+        "Crystal Builder",
+        "ChemDraft",
+        "small",
+        None,
+        &[],
+        None,
+    )
+    .unwrap();
+    assert!(plain.get("retry").is_none());
+}
+
+// Review of the bounded retry: every launch after the first, and the final open, needs the click.
+
+/// When a stand-in event fires during `BuildJob::run`: `Check(n)` at the nth launch-time
+/// authorization (each step, the check before a later attempt, and the open), before the click is
+/// checked; `Exited(n)` once the nth companion process has run and exited, reported at the next
+/// launch-time authorization, just before `Check`, so outside the launch boundary. No event fires
+/// while a process runs: the run is on the event's own thread, so `launch_race::run_holding` ends
+/// a click from another thread while a process is held running. `Launching(n)` and `Opening`
+/// fire inside the launch boundary, after the click was found live and before the nth process
+/// starts or the output opens; only a race on another thread may end the click there.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Moment {
+    Check(usize),
+    Exited(usize),
+    Launching(usize),
+    Opening,
+}
+
+/// The document window's part of a build, minus the window: every launch-time check passes (with
+/// `consent`, only while the consent store still holds the grant), every process is the stub
+/// companion, and opening only records the file.
+struct StubHost<'a> {
+    cache: PathBuf,
+    /// The quit flag: `State::stopped` of the endpoint whose click runs the build (see `quit_flag`),
+    /// which `State::shutdown` sets, or else a flag nothing sets. As in the app, a launch-time check
+    /// refuses once it is set, no process starts, and a running process is ended.
+    stopped: &'a AtomicBool,
+    checks: Cell<usize>,
+    event: RefCell<Box<dyn FnMut(Moment) + 'a>>,
+    exited: Cell<Option<Moment>>,
+    spawned: RefCell<Vec<String>>,
+    opened: RefCell<Vec<PathBuf>>,
+    /// The nth process waits, while it runs, for the test listening at the address (see `hold` in
+    /// `stub_tool.rs`).
+    hold: Option<(usize, std::net::SocketAddr)>,
+    consent: Option<(&'a Store, Row)>,
+}
+
+/// Why the stand-in host refuses a launch whose consent was revoked.
+const CONSENT_GONE: &str = "The build's consent was revoked.";
+
+impl<'a> StubHost<'a> {
+    fn new(cache: &Path, event: impl FnMut(Moment) + 'a) -> Self {
+        Self {
+            cache: cache.to_owned(),
+            stopped: &NEVER_QUITS,
+            checks: Cell::new(0),
+            event: RefCell::new(Box::new(event)),
+            exited: Cell::new(None),
+            spawned: RefCell::new(Vec::new()),
+            opened: RefCell::new(Vec::new()),
+            hold: None,
+            consent: None,
+        }
+    }
+}
+
+/// The quit flag of a stand-in host built without an endpoint.
+static NEVER_QUITS: AtomicBool = AtomicBool::new(false);
+
+impl<'a> StubHost<'a> {
+    /// Reads the endpoint's quit flag, as the document window does in the app.
+    fn quit_flag(mut self, stopped: &'a AtomicBool) -> Self {
+        self.stopped = stopped;
+        self
+    }
+}
+
+impl BuildHost for StubHost<'_> {
+    fn cache(&self) -> Result<PathBuf, String> {
+        Ok(self.cache.clone())
+    }
+
+    fn stopped(&self) -> &AtomicBool {
+        self.stopped
+    }
+
+    fn authorized<T>(
+        &self,
+        job: &BuildJob,
+        launch: impl FnOnce(&identity::App) -> T,
+    ) -> Result<T, runner::Failure> {
+        if let Some(exited) = self.exited.take() {
+            (self.event.borrow_mut())(exited);
+        }
+        self.checks.set(self.checks.get() + 1);
+        (self.event.borrow_mut())(Moment::Check(self.checks.get()));
+        // The app refuses every launch-time check once ChemDraft is quitting.
+        if self.stopped.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(runner::Failure::new(
+                RunCode::BadParam,
+                super::endpoint::REBUILD_EXPIRED,
+            ));
+        }
+        match &self.consent {
+            None => Ok(launch(&job.target)),
+            Some((store, grant)) => store
+                .with_grant(grant, |_| launch(&job.target))
+                .ok()
+                .flatten()
+                .ok_or_else(|| runner::Failure::new(RunCode::BadParam, CONSENT_GONE)),
+        }
+    }
+
+    fn spawn(
+        &self,
+        _: &identity::App,
+        args: &[OsString],
+        cwd: &Path,
+        deadline: Instant,
+    ) -> Result<ChildProcess, runner::Failure> {
+        let count = self.spawned.borrow().len() + 1;
+        (self.event.borrow_mut())(Moment::Launching(count));
+        if let Some((_, address)) = self.hold.filter(|(held, _)| *held == count) {
+            fs::write(cwd.join("hold"), address.to_string()).unwrap();
+        }
+        let child = ChildProcess::spawn_before(rust_stub(), args, cwd, deadline, self.stopped)?;
+        self.spawned
+            .borrow_mut()
+            .push(args[0].to_string_lossy().into_owned());
+        // This runs inside the launch boundary. Ending the click from here, on the launching
+        // thread, would wait for this very launch, so the event waits for the next launch-time
+        // check, which comes only after this process has exited.
+        self.exited.set(Some(Moment::Exited(count)));
+        Ok(child)
+    }
+
+    fn open(
+        &self,
+        _: &identity::App,
+        _: Platform,
+        file: &Path,
+    ) -> std::io::Result<identity::Opening> {
+        (self.event.borrow_mut())(Moment::Opening);
+        self.opened.borrow_mut().push(file.to_owned());
+        Ok(identity::Opening::started())
+    }
+}
+
+fn stub_job(build: ApprovedBuild) -> BuildJob {
+    BuildJob {
+        pipeline: pipeline(),
+        target: stored_target(true),
+        grant: stored_grant(),
+        build,
+        platform: Platform::Mac,
+        command: COMMAND.into(),
+    }
+}
+
+/// A click whose confirmation was shown and approved for `build`, ready for its first launch.
+fn approved_click(arms: &State, build: &ApprovedBuild) -> Submission {
+    let now = Instant::now();
+    let arm = arms.arm(PLUGIN, COMMAND, now).unwrap();
+    arms.begin(&arm.invocation(PLUGIN), now).unwrap();
+    let submission = arm.submit(now).unwrap();
+    submission.show_box().unwrap();
+    submission.bind_build(build).unwrap();
+    submission
+}
+
+#[derive(Debug, PartialEq)]
+enum Ended {
+    Done {
+        opened: bool,
+        attempts: Option<usize>,
+    },
+    Failed(RunCode, String, Option<usize>),
+    Refused(String),
+}
+
+fn ended(result: Result<RunResult, JobError>) -> Ended {
+    match result {
+        Ok(RunResult::Done {
+            opened, sequence, ..
+        }) => Ended::Done {
+            opened,
+            attempts: sequence.map(|sequence| sequence.attempts),
+        },
+        Ok(RunResult::Failed {
+            code,
+            message,
+            sequence,
+            ..
+        }) => Ended::Failed(code, message, sequence.map(|sequence| sequence.attempts)),
+        Ok(RunResult::Declined) => panic!("a build job never declines"),
+        Err(JobError::Refused(message)) => Ended::Refused(message),
+        Err(JobError::Failed(failure, sequence)) => Ended::Failed(
+            failure.code,
+            failure.message,
+            sequence.map(|sequence| sequence.attempts),
+        ),
+    }
+}
+
+const STEPS: [&str; 3] = ["capabilities", "run", "inspect"];
+
+fn stopped_after(attempts: Option<usize>) -> Ended {
+    Ended::Failed(RunCode::BadParam, STOPPED_MESSAGE.into(), attempts)
+}
+
+const STOPPED_MESSAGE: &str = "ChemDraft stopped the companion build because the menu command that started it ended or was replaced, or its document window closed or reloaded.";
+
+/// The ways a click stops being live while its build runs, other than quitting.
+/// A named way to end a click.
+type ClickEnder = (&'static str, fn(&State));
+
+fn click_enders() -> Vec<ClickEnder> {
+    fn rearm(arms: &State) {
+        arms.arm(PLUGIN, COMMAND, Instant::now()).unwrap();
+    }
+    fn arm_other(arms: &State) {
+        arms.arm(PLUGIN, "plugin.crystalBuilder.other", Instant::now())
+            .unwrap();
+    }
+    vec![
+        ("reload or close", State::discard_all as fn(&State)),
+        ("the same command armed again", rearm),
+        ("another command of the plugin armed", arm_other),
+        ("plugin consent cleared", |arms| arms.disarm(PLUGIN)),
+    ]
+}
+
+#[test]
+fn a_single_run_launches_every_step_and_opens_while_its_click_is_live() {
+    let dir = TestDir::new();
+    let arms = State::default();
+    let approved = build("small");
+    let proof = approved_click(&arms, &approved);
+    let host = StubHost::new(&dir.0, |_| {});
+    let result = stub_job(approved).run(&host, &proof);
+    assert_eq!(
+        ended(result),
+        Ended::Done {
+            opened: true,
+            attempts: None
+        }
+    );
+    assert_eq!(*host.spawned.borrow(), STEPS);
+    assert_eq!(host.opened.borrow().len(), 1);
+}
+
+#[test]
+fn a_single_run_stops_before_any_later_step_or_open_once_its_click_ends() {
+    for (case, end) in click_enders() {
+        // Ended after the preflight exited, at the check before the build step, after the build
+        // step exited, before inspect, before the open. `launch_race::run_holding` covers ending
+        // the click while a process still runs.
+        for (moment, launched) in [
+            (Moment::Exited(1), 1),
+            (Moment::Check(2), 1),
+            (Moment::Exited(2), 2),
+            (Moment::Check(3), 2),
+            (Moment::Check(4), 3),
+        ] {
+            let dir = TestDir::new();
+            let arms = State::default();
+            let approved = build("small");
+            let proof = approved_click(&arms, &approved);
+            let host = StubHost::new(&dir.0, |now| {
+                if now == moment {
+                    end(&arms);
+                }
+            });
+            let result = ended(stub_job(approved).run(&host, &proof));
+            assert_eq!(result, stopped_after(None), "{case} at {moment:?}");
+            assert_eq!(
+                *host.spawned.borrow(),
+                STEPS[..launched],
+                "{case} at {moment:?}"
+            );
+            assert!(host.opened.borrow().is_empty(), "{case} at {moment:?}");
+        }
+        // Ended after the confirmation, just before the first launch: refused, as before.
+        let dir = TestDir::new();
+        let arms = State::default();
+        let approved = build("small");
+        let proof = approved_click(&arms, &approved);
+        let host = StubHost::new(&dir.0, |now| {
+            if now == Moment::Check(1) {
+                end(&arms);
+            }
+        });
+        let result = ended(stub_job(approved).run(&host, &proof));
+        assert!(matches!(result, Ended::Refused(_)), "{case}: {result:?}");
+        assert!(host.spawned.borrow().is_empty(), "{case}");
+    }
+}
+
+#[test]
+fn a_retry_stops_before_any_later_step_attempt_or_open_once_its_click_ends() {
+    // Three poor attempts: checks 1-3 are attempt 0, 4 is before attempt 1, 5-7 its steps,
+    // 8 before attempt 2, 9-11 its steps, 12 the open.
+    let poor = || retry_build("small", &[2.0, 3.0]);
+    for (case, end) in click_enders() {
+        // An attempt counts once its first process started: ended before that, the result names
+        // only the attempts that ran, and the input of the last one.
+        for (moment, launched, attempts) in [
+            (Moment::Exited(3), 3, 1),
+            (Moment::Check(4), 3, 1),
+            (Moment::Check(5), 3, 1),
+            (Moment::Exited(4), 4, 2),
+            (Moment::Check(6), 4, 2),
+            (Moment::Check(7), 5, 2),
+            (Moment::Check(10), 7, 3),
+            (Moment::Check(12), 9, 3),
+        ] {
+            let dir = TestDir::new();
+            let arms = State::default();
+            let approved = poor();
+            let proof = approved_click(&arms, &approved);
+            let host = StubHost::new(&dir.0, |now| {
+                if now == moment {
+                    end(&arms);
+                }
+            });
+            let result = ended(stub_job(approved).run(&host, &proof));
+            assert_eq!(
+                result,
+                stopped_after(Some(attempts)),
+                "{case} at {moment:?}"
+            );
+            assert_eq!(
+                host.spawned.borrow().len(),
+                launched,
+                "{case} at {moment:?}"
+            );
+            assert!(host.opened.borrow().is_empty(), "{case} at {moment:?}");
+        }
+    }
+    // Untouched, the same sequence runs three attempts and opens only the last.
+    let dir = TestDir::new();
+    let arms = State::default();
+    let approved = poor();
+    let proof = approved_click(&arms, &approved);
+    let host = StubHost::new(&dir.0, |_| {});
+    let result = ended(stub_job(approved).run(&host, &proof));
+    assert_eq!(
+        result,
+        Ended::Done {
+            opened: true,
+            attempts: Some(3)
+        }
+    );
+    assert_eq!(host.spawned.borrow().len(), 9);
+    assert_eq!(host.opened.borrow().len(), 1);
+}
+
+#[test]
+fn closing_the_document_window_stops_running_work_but_not_the_next_click() {
+    let dir = TestDir::new();
+    let state = Endpoint::default();
+    let approved = retry_build("small", &[2.0, 3.0]);
+    let proof = approved_click(&state.arms, &approved);
+    let offer = state.begin_result(&stored_grant());
+    let host = StubHost::new(&dir.0, |now| {
+        if now == Moment::Exited(4) {
+            // What the document window's close request does on every platform.
+            state.discard_menu_invocations();
+        }
+    });
+    let result = ended(stub_job(approved.clone()).run(&host, &proof));
+    assert_eq!(result, stopped_after(Some(2)));
+    assert_eq!(
+        *host.spawned.borrow(),
+        [STEPS.as_slice(), &STEPS[..1]].concat()
+    );
+    assert!(host.opened.borrow().is_empty());
+    assert!(
+        *offer.borrow(),
+        "a pending rebuild offer ends with the window"
+    );
+    // Closing is not quitting: the quit flag stays clear, so a step still running would be left to
+    // finish (`launch_race::run_holding` holds one running), and the next click runs.
+    assert!(!state.stopped.load(std::sync::atomic::Ordering::Acquire));
+    let proof = approved_click(&state.arms, &approved);
+    let host = StubHost::new(&dir.0, |_| {});
+    let result = ended(stub_job(approved).run(&host, &proof));
+    assert_eq!(
+        result,
+        Ended::Done {
+            opened: true,
+            attempts: Some(3)
+        }
+    );
+    assert_eq!(host.opened.borrow().len(), 1);
+}
+
+#[test]
+fn the_document_window_close_request_stops_handoff_work_on_every_platform() {
+    let lib = include_str!("../lib.rs");
+    let blocks: Vec<&str> = lib
+        .split("WindowEvent::CloseRequested { api, .. } => {")
+        .skip(1)
+        .filter_map(|block| block.split("WindowEvent::Destroyed => {").next())
+        .filter(|block| block.contains("api.prevent_close();"))
+        .take(2)
+        .collect();
+    assert_eq!(blocks.len(), 2, "the macOS and the other main-window arms");
+    for block in blocks {
+        assert!(
+            block.contains("window.state::<app_handoff::State>().discard_menu_invocations();"),
+            "{block}"
+        );
+    }
+}
+
+#[test]
+fn a_rebuild_stops_before_any_later_step_once_the_click_ends() {
+    for (case, end) in click_enders() {
+        // Ended while the result box was open: no rebuild at all.
+        let arms = State::default();
+        let first = approved_click(&arms, &build("small"));
+        first.launch_build(&build("small"), || ()).unwrap();
+        end(&arms);
+        assert!(
+            arms.arm_rebuild(PLUGIN, COMMAND, Instant::now(), &first)
+                .is_err(),
+            "{case}"
+        );
+    }
+    for (case, end) in click_enders() {
+        let dir = TestDir::new();
+        let arms = State::default();
+        let mut approved = build("small");
+        approved.combination = "large".into();
+        let first = approved_click(&arms, &build("small"));
+        first.launch_build(&build("small"), || ()).unwrap();
+        let rebuild = arms
+            .arm_rebuild(PLUGIN, COMMAND, Instant::now(), &first)
+            .unwrap();
+        rebuild.bind_build(&approved).unwrap();
+        let host = StubHost::new(&dir.0, |now| {
+            if now == Moment::Check(2) {
+                end(&arms);
+            }
+        });
+        let result = ended(stub_job(approved).run(&host, &rebuild));
+        assert_eq!(result, stopped_after(None), "{case}");
+        assert_eq!(*host.spawned.borrow(), STEPS[..1], "{case}");
+        assert!(host.opened.borrow().is_empty(), "{case}");
+    }
+}
+
+#[test]
+fn retry_alternatives_differ_from_the_first_input_only_in_slightly_moved_coordinates() {
+    let first = build("small").input.unwrap();
+    let check = |inputs: &[&str]| {
+        retry::variants(
+            &first,
+            &Retry {
+                inputs: inputs.iter().map(|text| (*text).to_owned()).collect(),
+                when: twist_condition(),
+            },
+        )
+    };
+    let moved = |line: &str| XYZ.replacen("X 1 0 0", line, 1);
+    // The plugin's own variants move two atoms by 0.005 A.
+    let two_atoms =
+        XYZ.replacen("X 1 0 0", "X 1.005 0 0", 1)
+            .replacen("X -1 0 0", "X -1 0.005 0", 1);
+    for (case, text) in [
+        ("two atoms by 0.005 A", two_atoms),
+        ("one atom by exactly 0.1 A", moved("X 1.1 0 0")),
+        (
+            "0.1 A diagonally",
+            moved("X 1.0577350269 0.0577350269 0.0577350269"),
+        ),
+        ("other spacing in a moved atom", moved("X\t1.005   0  0")),
+        ("negative zero", moved("X 1 -0 0.001")),
+    ] {
+        assert!(check(&[&text]).is_ok(), "{case}");
+    }
+    let crlf = XYZ.replace('\n', "\r\n");
+    let crlf_first = Input {
+        extension: Extension::Xyz,
+        text: crlf.clone(),
+    };
+    assert!(retry::variants(
+        &crlf_first,
+        &Retry {
+            inputs: vec![crlf.replacen("X 1 0 0", "X 1.01 0 0", 1)],
+            when: twist_condition()
+        }
+    )
+    .is_ok());
+    for (case, text) in [
+        ("0.1001 A", moved("X 1.1001 0 0")),
+        ("0.104 A diagonally", moved("X 1.06 0.06 0.06")),
+        ("far away", moved("X 1000 0 0")),
+        (
+            "overflowing",
+            moved("X 1e308 0 0").replacen("X -1 0 0", "X -1e308 0 0", 1),
+        ),
+        ("comment line", xyz_with("1 3")),
+        (
+            "comment spacing",
+            xyz_with("1  2").replacen("X 1 0 0", "X 1.01 0 0", 1),
+        ),
+        (
+            "count spacing",
+            XYZ.replacen("3\n", "3 \n", 1)
+                .replacen("X 1 0 0", "X 1.01 0 0", 1),
+        ),
+        ("trailing blank line", moved("X 1.01 0 0") + "\n"),
+        (
+            "no final newline",
+            moved("X 1.01 0 0").trim_end().to_owned(),
+        ),
+        (
+            "bond spacing",
+            moved("X 1.01 0 0").replacen("0 1 S", "0  1 S", 1),
+        ),
+        (
+            "bond direction",
+            moved("X 1.01 0 0").replacen("0 1 S", "1 0 S", 1),
+        ),
+        (
+            "atom order",
+            XYZ.replacen("X 1 0 0\nX -1 0 0", "X -1 0 0\nX 1.01 0 0", 1),
+        ),
+        ("carriage return", moved("X 1.01 0 0\r")),
+        ("line break inside an atom", moved("X 1.01\r0 0")),
+        ("form feed inside an atom", moved("X 1.01\u{c}0 0")),
+        ("no atom moved", moved("X 1.0 0 0")),
+        ("other element", moved("Y 1.01 0 0")),
+    ] {
+        let refused = check(&[&text]);
+        assert!(refused.is_err(), "{case}");
+    }
+    let once = moved("X 1.01 0 0");
+    assert!(
+        check(&[&once, &moved("X 1.010 0 0")]).is_err(),
+        "an alternative must not repeat an earlier alternative's positions"
+    );
+}
+
+#[test]
+fn the_host_displacement_bound_is_the_sdk_limit_the_box_states() {
+    let sdk = include_str!("../../../../../packages/plugin-api/src/appHandoff.ts");
+    assert!(sdk.contains(&format!(
+        "retryDisplacementAngstroms: {}\n",
+        retry::MAX_DISPLACEMENT
+    )));
+    let first = build("small").input.unwrap();
+    let error = retry::variants(
+        &first,
+        &Retry {
+            inputs: vec![XYZ.replacen("X 1 0 0", "X 2 0 0", 1)],
+            when: twist_condition(),
+        },
+    )
+    .unwrap_err();
+    assert!(
+        error.contains(&format!("{} Å", retry::MAX_DISPLACEMENT)),
+        "{error}"
+    );
+}

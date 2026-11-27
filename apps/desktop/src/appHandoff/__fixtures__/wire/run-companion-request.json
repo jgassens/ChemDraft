@@ -1,0 +1,10 @@
+{
+  "appId": "0123456789abcdef0123456789abcdef",
+  "combination": "pcu-N16-2x2x2",
+  "input": {
+    "extension": "xyz",
+    "text": "2\n1\nC 0 0 0\nX 1 0 0\n0 1 S\n"
+  },
+  "openOutput": true,
+  "pipeline": "mofBuild"
+}

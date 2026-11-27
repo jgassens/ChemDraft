@@ -1,7 +1,9 @@
 import type { ChemDraftDocument, DocumentPatch } from "@chemdraft/chem-core";
 import { z } from "zod";
 import { panelReportLimitIssue, PluginPanelReportLimits, snapshotPanelReport } from "./reportLimits";
+import { PluginCompanionPipelineSchema, type PluginAppsAPI } from "./appHandoff";
 export { PluginPanelReportLimits, snapshotPanelReport } from "./reportLimits";
+export * from "./appHandoff";
 export * from "./chemistry3d";
 export * from "./requestSchemas";
 export * from "./requestCapabilities";
@@ -10,7 +12,8 @@ export { PluginToolDefinitionSchema, type PluginToolDefinition, type PluginToolI
 import type { PluginDepictionAPI, PluginRequestChemistryAPI, PluginRequestDocumentAPI, PluginRequestsAPI,
   PluginToolSessionsAPI } from "./requestCapabilities";
 import type { PluginEmbed3DRequest, PluginEmbed3DResult, PluginMinimize3DRequest, PluginMinimize3DResult,
-  PluginFlatten3DRequest, PluginFlatten3DResult } from "./chemistry3d";
+  PluginFlatten3DRequest, PluginFlatten3DResult, PluginHandoffGraphRequest, PluginHandoffGraphResult,
+  PluginSuggestConnectionPointsRequest, PluginSuggestConnectionPointsResult } from "./chemistry3d";
 
 // Re-export the chem-core types the SDK's own signatures reference (e.g. `getActiveDocument()` returns
 // a `ChemDraftDocument`, document patch methods take a `DocumentPatch`). Surfacing them here keeps the plugin
@@ -20,6 +23,8 @@ export type { ChemDraftDocument, DocumentObject, DocumentPatch, MoleculeBond, Mo
 import type { DocumentObject } from "@chemdraft/chem-core";
 
 /**
+ * API 0.1.28 must not ship before the change reserving API 0.1.27 lands.
+ *
  * 0.1.1 adds `PluginChemistryAPI.nameToStructure`; 0.1.2 adds `structureFromSmiles`; 0.1.3 adds
  * `PluginDialogsAPI.promptText`; 0.1.4 adds command-scoped `PluginDocumentAPI.applyPatch`; 0.1.5
  * adds command-scoped, host-owned `PluginImagesAPI.requestImage`; 0.1.6 adds host-owned local
@@ -46,6 +51,15 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * 0.1.24 adds binary CDX import/export (#316) and optional reaction arrowObjectIds/plusObjectIds (#335); shared scheme arrows and plus signs are referenced by id, never copied.
  * 0.1.25 adds optional native bracketUsage, repeatCount and scoped crossingBondIds (#338 bracketed groups).
  * 0.1.26 adds optional request-bound document access, tool sessions, chemistry and depiction, and document-change events.
+ * 0.1.27 is reserved for stated hydrogen counts (PR #468).
+ * 0.1.28 adds native app handoff and manifest-declared companion pipelines, gated by `apps.handoff` and `native.execute`.
+ * 0.1.28 adds drawn X connection points to selection snapshots.
+ * 0.1.28 adds the selected-molecule handoff graph and bond growth suggestions, and graph input to embed3d.
+ * 0.1.28 adds companion warnings, host identity, selected atom IDs, connection point writes, and handoff success status.
+ * 0.1.29 adds an optional bounded `retry` to `apps.runCompanion`: up to two alternative inputs under one
+ *   confirmation, differing from the first only in atom coordinates and by at most 0.1 Å per atom, tried
+ *   only after a completed attempt whose declared report row is a finite number other than the declared
+ *   one, with `attempts` and `variant` in the result.
  *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
  * the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` — the NMR
@@ -55,7 +69,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * local structure recognition, `^0.1.7` for structure naming, `^0.1.8` for external tools), which this host satisfies and an
  * older one correctly does not.
  */
-export const PluginApiVersion = "0.1.26" as const;
+export const PluginApiVersion = "0.1.29" as const;
 
 export const pluginPermissions = [
   "document.read",
@@ -80,6 +94,7 @@ export const pluginPermissions = [
   "network.fetch",
   "native.execute",
   "assistant.run",
+  "apps.handoff",
   "plugin.storage"
 ] as const;
 
@@ -92,7 +107,8 @@ export const dangerousPluginPermissions = [
   "clipboard.read",
   "document.write",
   "image.read",
-  "assistant.run"
+  "assistant.run",
+  "apps.handoff"
 ] as const satisfies readonly PluginPermission[];
 
 export const PluginPermissionSchema = z.enum(pluginPermissions);
@@ -371,6 +387,7 @@ export const PluginManifestSchema = z
     description: z.string().optional(),
     author: z.string().optional(),
     license: z.string().optional(),
+    companions: z.array(PluginCompanionPipelineSchema).optional(),
     contributes: PluginContributionsSchema
   })
   .strict()
@@ -387,6 +404,19 @@ export const PluginManifestSchema = z
         path: ["permissions"],
         message: `Plugin "${manifest.id}" declares "assistant.run" without "native.execute". External tools spawn processes; declare both permissions.`
       });
+    }
+    if (declaredPermissions.has("apps.handoff") && !declaredPermissions.has("native.execute")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["permissions"],
+        message: `Plugin "${manifest.id}" declares "apps.handoff" without "native.execute". App handoff can start processes. Declare both permissions.`
+      });
+    }
+    if (manifest.companions?.length) {
+      if (!declaredPermissions.has("apps.handoff")) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["companions"], message: "Companion pipelines require apps.handoff." });
+      }
+      addDuplicateIssue(manifest.companions.map(pipeline => pipeline.id), ["companions"], "companion pipeline id", ctx);
     }
     for (const { path, permissions } of collectContributionPermissions(manifest.contributes)) {
       for (const permission of permissions) {
@@ -1068,6 +1098,9 @@ export interface PluginDocumentAPI extends PluginRequestDocumentAPI {
    * One "Insert table" undo entry; the table stays selected and is editable by this invocation.
    * Invalid input rejects with validation errors identifying the offending row/cell. */
   insertTable?(spec: PluginTableSpec): Promise<AppliedPatchReceipt>;
+  /** Adds one single-bonded X to each named anchor in a molecule selected at command start.
+   * Requires document.write and an active command. A refused anchor leaves the drawing unchanged. */
+  addConnectionPoints?(request: import("./chemistry3d").PluginAddConnectionPointsRequest): Promise<AppliedPatchReceipt>;
 }
 
 export const PluginStructureFormatSchema = z.enum(["smiles", "molfile-v2000", "molfile-v3000", "unknown"]);
@@ -1078,11 +1111,26 @@ export type PluginStructureFormat = z.infer<typeof PluginStructureFormatSchema>;
 
 export interface PluginSelectedMolecule {
   objectId: string;
+  /** Drawn atom IDs as returned by handoffGraph. Empty for whole-object, bond-only, and ring selections. */
+  selectedAtomIds?: readonly string[];
   /** ChemDraft document/page identity, when the provider has page context. */
   documentId?: string;
   pageId?: string;
   structureFormat: PluginStructureFormat;
   structure: string;
+  /**
+   * Drawn `X` markers, in atom order. Desktop snapshots provide an empty list when no markers
+   * can be indexed, including when the stored structure is used as a fallback. Older providers
+   * may omit this field.
+   */
+  connectionPoints?: readonly {
+    /** The marker's 1-based atom index in the V2000 molfile. */
+    atom: number;
+    /** The sole neighbor's 1-based molfile index, or 0 when there is no unique attachment. */
+    anchor: number;
+    /** Drawn covalent order (1, 2, 3, or aromatic 1.5), or 0 if absent, unknown or dative. */
+    bondOrder: number;
+  }[];
   /**
    * Change detector for the source payload — NOT a canonical chemical identity or molecular hash.
    * A redraw or reserialization of an equivalent molecule may change it (safe over-invalidation).
@@ -1483,6 +1531,10 @@ export interface PluginChemistryAPI extends PluginRequestChemistryAPI {
   /** API 0.1.15: chemistry.compute only, during this plugin's own command. Explicit Hs;
    * independently embedded components start side by side. Only model.coords may be edited. */
   embed3d?(request: PluginEmbed3DRequest): Promise<PluginEmbed3DResult>;
+  /** Audit one selected molecule in the plugin's command. Requires chemistry.compute and selection.read. */
+  handoffGraph?(request: PluginHandoffGraphRequest): Promise<PluginHandoffGraphResult>;
+  /** Suggest new X positions in anchor order. Requires chemistry.compute and selection.read. */
+  suggestConnectionPoints?(request: PluginSuggestConnectionPointsRequest): Promise<PluginSuggestConnectionPointsResult>;
   minimize3d?(request: PluginMinimize3DRequest): Promise<PluginMinimize3DResult>;
   /** Returns native objects only; insert through documents.applyPatch. Never changes the document. */
   flatten3d?(request: PluginFlatten3DRequest): Promise<PluginFlatten3DResult>;
@@ -1809,7 +1861,12 @@ export interface PluginRuntimeIdentity {
   permissions: readonly PluginPermission[];
 }
 
+export const PluginHostIdentitySchema = z.object({ name: z.literal("ChemDraft"), version: z.string().min(1) }).strict();
+export type PluginHostIdentity = Readonly<z.infer<typeof PluginHostIdentitySchema>>;
+
 export interface PluginCommandContext {
+  /** The running application. Older hosts may omit this field. */
+  host?: PluginHostIdentity;
   /** Validated input from a host-rendered panel or canvas control. */
   input?: PluginCommandInput;
   plugin: PluginRuntimeIdentity;
@@ -1834,6 +1891,8 @@ export interface PluginCommandContext {
   recognition?: PluginRecognitionAPI;
   /** Present only when the plugin declares both "assistant.run" and "native.execute". */
   tools?: PluginToolsAPI;
+  /** Present only for Worker commands when the plugin declares both "apps.handoff" and "native.execute". */
+  apps?: PluginAppsAPI;
   assistant?: PluginAssistantAPI;
   /** Request lifecycle and page-space decisions (API 0.1.26). */
   requests?: PluginRequestsAPI;
@@ -1862,6 +1921,12 @@ export type PluginCommandResult<Result = unknown> =
       };
       warnings?: RecognitionWarning[];
     };
+
+/** A native handoff menu command can return plain-text status in its successful result data.
+ * ChemDraft attributes it to the plugin and shows up to 500 Unicode code points on one line,
+ * followed by an ellipsis if truncated. Native failures and cancellations take precedence.
+ */
+export type PluginHandoffCommandResult = PluginCommandResult<{ status: string }>;
 
 export interface PluginManifestValidationResult {
   ok: boolean;
@@ -1995,6 +2060,7 @@ export {
   isPluginApiVersionCompatible,
   supportsPluginTableInsertion,
   supportsPluginRequestTools,
+  supportsPluginHandoffSelection,
   isPinnedRequestToolCapability,
   checkWorkerHandshake,
   type PluginWorkerCapabilityNamespace,

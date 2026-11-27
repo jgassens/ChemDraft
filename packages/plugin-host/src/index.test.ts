@@ -1336,6 +1336,38 @@ function minimalManifest(id: string): PluginManifest {
   };
 }
 
+describe("PluginHost captured command selection", () => {
+  it.each(["before", "during"] as const)("refuses when the active document switches %s the provider read", async switchTime => {
+    const first = createEmptyDocument({ id: "first", pageId: "page" });
+    const second = createEmptyDocument({ id: "second", pageId: "page" });
+    let active = first;
+    let finishRead: (() => void) | undefined;
+    const readDocument = vi.fn<() => ChemDraftDocument | Promise<ChemDraftDocument>>(() => active).mockImplementationOnce(() => first)
+      .mockImplementationOnce(() => {
+        const captured = active;
+        return new Promise<typeof first>(resolve => { finishRead = () => resolve(captured); });
+      });
+    const readSelection = vi.fn(() => ({ objectIds: [], molecules: [] }));
+    const host = new PluginHost({ getActiveDocument: readDocument, getActiveDocumentKey: () => active.id,
+      captureSelection: () => ({ objectIds: [], read: readSelection }) });
+    const commandId = "plugin.selection.read";
+    const manifest = minimalManifest("org.test.selection");
+    manifest.apiVersion = `^${PluginApiVersion}`;
+    manifest.permissions = ["selection.read"];
+    manifest.contributes.commands = [{ id: commandId, title: "Read selection", enabled: true, requiredPermissions: [] }];
+    host.registerPlugin(manifest, { commandHandlers: { [commandId]: async context => {
+      if (switchTime === "before") active = second;
+      const selection = context.selection!.getSelection();
+      active = switchTime === "before" ? first : second;
+      finishRead?.();
+      return selection;
+    } } });
+    await expect(host.invokeCommand(commandId)).rejects.toThrow("The active document changed while reading the command's selection.");
+    expect(readDocument).toHaveBeenCalledTimes(switchTime === "before" ? 1 : 2);
+    expect(readSelection).not.toHaveBeenCalled();
+  });
+});
+
 describe("PluginHost request tool document capabilities", () => {
   it("routes all depiction providers through the pinned request and refuses foreign or ended invocations", async () => {
     const pinned = createEmptyDocument({ title: "Pinned depiction" });

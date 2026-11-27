@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-app-handoff-menu-invocation"
+description = "Enables the app_handoff_menu_invocation command without any pre-configured scope."
+commands.allow = ["app_handoff_menu_invocation"]
+
+[[permission]]
+identifier = "deny-app-handoff-menu-invocation"
+description = "Denies the app_handoff_menu_invocation command without any pre-configured scope."
+commands.deny = ["app_handoff_menu_invocation"]

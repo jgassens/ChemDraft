@@ -501,6 +501,23 @@ describe("layout-engine molecule growth planning", () => {
     expect(plan!.newAtomPoint.y).toBeCloseTo(300, 6);
   });
 
+  it("finds another bond-growth position when the caller needs a new atom", () => {
+    const input = {
+      ...edgeEthyne,
+      atoms: [...edgeEthyne.atoms, { id: "existing", x: 856, y: 300 }],
+      pageBounds: { x: 0, y: 0, width: 1000, height: 1056 },
+      clickPoint: { x: 816, y: 300 },
+      preferredAtomId: "c2",
+      bondLength: 40,
+      hitRadius: 10
+    };
+    expect(planBondExtension(input)?.targetAtomId).toBe("existing");
+    const plan = planBondExtension({ ...input, allowExistingTarget: false });
+    expect(plan).toBeDefined();
+    expect(plan!.targetAtomId).toBeUndefined();
+    expect(turnFromParent(plan!.newAtomPoint)).toBeCloseTo(120, 6);
+  });
+
   it("declines rather than grow a bond with no visible length anywhere on the page", () => {
     // A 1 px page: every direction clamps back onto the source.
     expect(planBondExtension({

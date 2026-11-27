@@ -1,0 +1,26 @@
+{
+  "opened": true,
+  "status": "done",
+  "steps": [
+    {
+      "id": "preflight",
+      "json": {
+        "version": "1.1.1"
+      }
+    },
+    {
+      "id": "build",
+      "json": {
+        "ok": true,
+        "tables": []
+      }
+    },
+    {
+      "id": "inspect",
+      "json": {
+        "formula": "C8H4",
+        "n_atoms": 12
+      }
+    }
+  ]
+}

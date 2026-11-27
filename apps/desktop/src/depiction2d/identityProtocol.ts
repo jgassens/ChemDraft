@@ -1,6 +1,7 @@
 import type { StructureInspection } from "../plugins/requestWrites/structureIdentity";
 
-export type StructureInspectionDetails = "stereochemistry" | "topology" | "graphSize" | "writeIdentity";
+export type StructureInspectionDetails = "stereochemistry" | "topology" | "graphSize" | "writeIdentity" |
+  { connectionPointAtomIndices: readonly number[] };
 
 export type StructureInspector = (
   format: "smiles" | "molfile", value: string, stereoReference?: string, signal?: AbortSignal,

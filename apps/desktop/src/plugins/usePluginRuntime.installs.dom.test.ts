@@ -1,18 +1,31 @@
 // @vitest-environment jsdom
 
-import type { PluginManifest } from "@chemdraft/plugin-api";
+import type { ListenForAppHandoff } from "../appHandoff/nativeMenu";
+import type { PluginCommandContext, PluginHandoffCommandResult, PluginManifest } from "@chemdraft/plugin-api";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MemoryStorage } from "../testSupport/memoryStorage";
+import { deferred } from "../testSupport/deferred";
+import appConfig from "../../src-tauri/tauri.conf.json";
+import sent from "../appHandoff/__fixtures__/wire/send-file-sent.json";
+import doneUnopened from "../appHandoff/__fixtures__/wire/run-companion-done-unopened.json";
 
 const hookMocks = vi.hoisted(() => ({
-  stagingFs: {},
+  stagingFs: { readTextFile: vi.fn() },
+  handoffTransport: vi.fn(),
+  getVersion: vi.fn(),
   loadInstalledPlugins: vi.fn(),
   installPluginPackage: vi.fn(),
   uninstallPlugin: vi.fn(),
   updateInstalledPluginPackage: vi.fn()
+}));
+vi.mock("@tauri-apps/api/app", () => ({ getVersion: hookMocks.getVersion }));
+
+vi.mock("../appHandoff/transport", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../appHandoff/transport")>(),
+  createTauriAppHandoffTransport: () => hookMocks.handoffTransport
 }));
 
 vi.mock("./pluginStagingFs", async (importOriginal) => {
@@ -123,6 +136,9 @@ let container: HTMLElement | undefined;
 let root: Root | undefined;
 
 beforeEach(() => {
+  hookMocks.stagingFs.readTextFile.mockReset();
+  hookMocks.handoffTransport.mockReset();
+  hookMocks.getVersion.mockReset().mockResolvedValue("1.9.99");
   hookMocks.loadInstalledPlugins.mockReset();
   hookMocks.installPluginPackage.mockReset();
   hookMocks.uninstallPlugin.mockReset();
@@ -141,6 +157,222 @@ afterEach(() => {
 });
 
 describe("usePluginRuntime installed catalog readiness", () => {
+  it.each(["catalog", "sideload"] as const)("dispatches native menu events and rechecks %s provenance", async source => {
+    const id = "org.chemdraft.handoff.crystalBuilder";
+    const commandId = "plugin.crystalBuilder.sendMolecule";
+    const entry = catalogEntry("1.0.0", "a".repeat(64));
+    const record = { ...entry.record, id, source, checksumVerified: true,
+      repository: "jgassens/ChemDraft-CrystalBuilder-Plugin" };
+    vi.stubGlobal("__CHEMDRAFT_HANDOFF_SIDELOAD_ALLOWED__", source === "sideload");
+    const handoffManifest = { ...entry.manifest, id, name: "Send to Crystal Builder",
+      permissions: ["apps.handoff", "native.execute", "selection.read"] as const,
+      companions: [{ id: "mofBuild", tool: { macos: "Contents/MacOS/xtal", windows: "xtal.exe" },
+        testedVersions: ["1.1.1"], combinations: { small: { repeat: "1x1x1" } }, steps: [
+          { id: "preflight", args: ["capabilities", "--json"], timeoutSeconds: 30 },
+          { id: "build", args: ["-o", "{outputFile:cif}", "--json"], timeoutSeconds: 30 }
+        ] }],
+      contributes: { ...entry.manifest.contributes, commands: [{ id: commandId, title: "Send" }],
+        menus: [{ id: "menu.crystalBuilder.sendMolecule", commandId, title: "Send" }] } };
+    hookMocks.loadInstalledPlugins.mockResolvedValue({ installed: [], failures: [] });
+    hookMocks.handoffTransport.mockResolvedValue(sent);
+    hookMocks.stagingFs.readTextFile.mockResolvedValue(JSON.stringify({ version: 1, plugins: [record] }));
+    const status = vi.fn();
+    const runningVersion = deferred<string>();
+    hookMocks.getVersion.mockReturnValue(runningVersion.promise);
+    const identities: (PluginCommandContext["host"])[] = [];
+    let view: PluginRuntimeView | undefined;
+    const invocation = { pluginId: id, commandId, nonce: "2".repeat(32) };
+    let click: () => Promise<void>;
+    const listenForAppHandoff: ListenForAppHandoff = dispatch => {
+      click = () => dispatch(invocation);
+      return () => {};
+    };
+    function Probe() {
+      view = usePluginRuntime({
+        listenForAppHandoff,
+        getActiveDocument: () => undefined,
+        getSelection: warnings => {
+          warnings?.push("Selection contains unsupported labels.");
+          return { objectIds: [], molecules: [] };
+        },
+        onAppHandoffStatus: message => status(message)
+      });
+      return null;
+    }
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => root!.render(createElement(Probe)));
+    const request = { appId: "chosen", fileName: "model", extension: "cif" as const, text: "test data" };
+    let attempt: (apps: NonNullable<PluginCommandContext["apps"]>) => Promise<unknown> = apps => apps.sendFile(request);
+    let pluginStatus: string | undefined = "  File\r\n\u202eopened.\u2069 ";
+    await act(async () => {
+      view!.runtime.registerPlugin(handoffManifest, { execution: "worker",
+        commandHandlers: { [commandId]: async (context): Promise<PluginHandoffCommandResult | undefined> => {
+          await context.selection!.getSelection();
+          identities.push(context.host);
+          const result = await attempt(context.apps!).catch(() => undefined);
+          if (result && typeof result === "object" && "status" in result && result.status === "failed") {
+            const message = "diagnostic" in result
+              ? (result.diagnostic as { json: { message: string } }).json.message
+              : "ChemDraft verified\u200b this build. " + "🧪".repeat(600);
+            return { ok: false, error: { code: "plugin-error", message } };
+          }
+          if (pluginStatus !== undefined) return { ok: true, data: { status: pluginStatus } };
+        } } }, record);
+    });
+    await act(async () => {
+      const first = click();
+      expect(identities).toEqual([]);
+      runningVersion.resolve("1.9.99");
+      await first;
+    });
+    expect(hookMocks.handoffTransport).toHaveBeenCalledExactlyOnceWith(invocation, "sendFile", request);
+    expect(status.mock.calls).toEqual([
+      ["Opened the handoff file in the chosen app."],
+      ["Opened the handoff file in the chosen app.\nPlugin (Send to Crystal Builder): File opened.\nSelection warning: Selection contains unsupported labels."]
+    ]);
+    expect(identities).toEqual([{ name: "ChemDraft", version: "1.9.99" }]);
+    expect("1.9.99").not.toBe(appConfig.version);
+    hookMocks.handoffTransport.mockResolvedValueOnce({ status: "declined" });
+    await act(async () => { await click(); });
+    expect(status.mock.calls.slice(-2)).toEqual([
+      ["App handoff cancelled."], ["App handoff cancelled.\nSelection warning: Selection contains unsupported labels."]
+    ]);
+    hookMocks.handoffTransport.mockResolvedValueOnce({ status: "failed", code: "launch-failed", message: "The app refused to open the file." });
+    await act(async () => { await click(); });
+    expect(status.mock.calls.slice(-2)).toEqual([
+      ["App handoff failed: The app refused to open the file."],
+      [`App handoff failed: The app refused to open the file.\nPlugin (Send to Crystal Builder): ChemDraft verified this build. ${"🧪".repeat(468)}…\nSelection warning: Selection contains unsupported labels.`]
+    ]);
+    hookMocks.handoffTransport.mockRejectedValueOnce(new Error("The native endpoint refused the handoff."));
+    await act(async () => { await click(); });
+    expect(status).toHaveBeenLastCalledWith("The native endpoint refused the handoff.\nSelection warning: Selection contains unsupported labels.");
+    hookMocks.stagingFs.readTextFile.mockResolvedValue(JSON.stringify({ version: 1, plugins: [{ ...record, version: "2.0.0" }] }));
+    await act(async () => { await click(); });
+    expect(status).toHaveBeenLastCalledWith(expect.stringContaining("checksum-verified install"));
+    expect(hookMocks.handoffTransport).toHaveBeenCalledTimes(4);
+    expect(hookMocks.stagingFs.readTextFile).toHaveBeenCalledTimes(5);
+    expect(identities.slice(1)).toEqual(Array(4).fill({ name: "ChemDraft", version: "1.9.99" }));
+    expect(hookMocks.getVersion).toHaveBeenCalledOnce();
+
+    hookMocks.stagingFs.readTextFile.mockResolvedValue(JSON.stringify({ version: 1, plugins: [record] }));
+    attempt = apps => apps.sendFile({ ...request, appId: "" });
+    await act(async () => { await click(); });
+    expect(status).toHaveBeenLastCalledWith(expect.stringContaining("Invalid apps.sendFile request"));
+    expect(hookMocks.handoffTransport).toHaveBeenCalledTimes(4);
+
+    attempt = async apps => {
+      await apps.sendFile({ ...request, appId: "" }).catch(() => undefined);
+      return apps.sendFile(request);
+    };
+    await act(async () => { await click(); });
+    expect(status).toHaveBeenLastCalledWith("Opened the handoff file in the chosen app.\nPlugin (Send to Crystal Builder): File opened.\nSelection warning: Selection contains unsupported labels.");
+
+    const undeclared = { appId: request.appId, pipeline: "undeclared", combination: "small" };
+    attempt = async apps => {
+      await apps.runCompanion(undeclared).catch(() => undefined);
+      return apps.sendFile(request);
+    };
+    await act(async () => { await click(); });
+    expect(status.mock.lastCall![0].split("\n")).toEqual([
+      "Opened the handoff file in the chosen app.",
+      expect.stringContaining("declared by the plugin"),
+      "Plugin (Send to Crystal Builder): File opened.",
+      "Selection warning: Selection contains unsupported labels."
+    ]);
+
+    // A picker or availability check cannot turn a refused submission into a success.
+    attempt = async apps => {
+      await apps.sendFile({ ...request, appId: "" }).catch(() => undefined);
+      return apps.status({ appId: request.appId });
+    };
+    hookMocks.handoffTransport.mockResolvedValueOnce({ available: true });
+    await act(async () => { await click(); });
+    expect(status).toHaveBeenLastCalledWith(
+      "Invalid apps.sendFile request at appId.\nSelection warning: Selection contains unsupported labels."
+    );
+
+    status.mockClear();
+    attempt = async apps => {
+      const pendingSend = apps.sendFile(request);
+      await apps.sendFile({ ...request, appId: "" }).catch(() => undefined);
+      return pendingSend;
+    };
+    await act(async () => { await click(); });
+    expect(status.mock.lastCall![0].split("\n")).toEqual([
+      "Opened the handoff file in the chosen app.",
+      "Invalid apps.sendFile request at appId.",
+      "Plugin (Send to Crystal Builder): File opened.",
+      "Selection warning: Selection contains unsupported labels."
+    ]);
+    expect(status.mock.calls[1]?.[0]).toBe(
+      "Opened the handoff file in the chosen app.\nInvalid apps.sendFile request at appId."
+    );
+
+    status.mockClear();
+    hookMocks.handoffTransport.mockClear();
+    attempt = async apps => {
+      await apps.sendFile(request);
+      return apps.sendFile(request);
+    };
+    await act(async () => { await click(); });
+    expect(hookMocks.handoffTransport).toHaveBeenCalledExactlyOnceWith(invocation, "sendFile", request);
+    expect(status.mock.lastCall![0].split("\n")).toEqual([
+      "Opened the handoff file in the chosen app.",
+      expect.stringContaining("one file or run one companion pipeline"),
+      "Plugin (Send to Crystal Builder): File opened.",
+      "Selection warning: Selection contains unsupported labels."
+    ]);
+    expect(status.mock.calls[1]?.[0]).toBe(
+      "Opened the handoff file in the chosen app.\nA plugin may send one file or run one companion pipeline per command invocation."
+    );
+
+    pluginStatus = undefined;
+    attempt = apps => apps.sendFile(request);
+    await act(async () => { await click(); });
+    expect(status).toHaveBeenLastCalledWith(
+      "Opened the handoff file in the chosen app.\nSelection warning: Selection contains unsupported labels."
+    );
+
+    const waiting = deferred<void>();
+    hookMocks.stagingFs.readTextFile.mockImplementationOnce(() => waiting.promise);
+    attempt = async apps => { void apps.sendFile(request).catch(() => undefined); };
+    await act(async () => { await click(); });
+    expect(status).toHaveBeenLastCalledWith(expect.stringContaining("before app handoff completed"));
+    await act(async () => { waiting.resolve(); });
+
+    attempt = apps => apps.runCompanion({ appId: request.appId, pipeline: "mofBuild", combination: "small", openOutput: true });
+    hookMocks.handoffTransport.mockResolvedValueOnce({
+      status: "failed", code: "exit-nonzero", message: "The build step exited unsuccessfully.",
+      diagnostic: { step: "build", exitCode: 2, json: { message: "The linker has three connection points." } }
+    });
+    await act(async () => { await click(); });
+    expect(status).toHaveBeenLastCalledWith(
+      "Companion build failed: The build step exited unsuccessfully.\nPlugin (Send to Crystal Builder): The linker has three connection points.\nSelection warning: Selection contains unsupported labels."
+    );
+
+    pluginStatus = "C6H4X2 build completed.";
+    hookMocks.handoffTransport.mockResolvedValueOnce(doneUnopened);
+    await act(async () => { await click(); });
+    expect(status).toHaveBeenLastCalledWith(
+      "Build completed, but the chosen app could not open it.\nPlugin (Send to Crystal Builder): C6H4X2 build completed.\nSelection warning: Selection contains unsupported labels."
+    );
+
+    attempt = async apps => {
+      await apps.status({ appId: "" }).catch(() => undefined);
+      return apps.runCompanion({ appId: request.appId, pipeline: "mofBuild", combination: "small", openOutput: true });
+    };
+    hookMocks.handoffTransport.mockResolvedValueOnce(doneUnopened);
+    await act(async () => { await click(); });
+    expect(status.mock.lastCall![0].split("\n")).toEqual([
+      "Build completed, but the chosen app could not open it.",
+      "Invalid apps.status request at appId.",
+      "Plugin (Send to Crystal Builder): C6H4X2 build completed.",
+      "Selection warning: Selection contains unsupported labels."
+    ]);
+  });
+
   it("removes the UI entry and disabled flag before surfacing a post-uninstall storage deletion error", async () => {
     const initial = catalogEntry("1.0.0", "a".repeat(64));
     hookMocks.loadInstalledPlugins.mockResolvedValue({ installed: [initial], failures: [] });

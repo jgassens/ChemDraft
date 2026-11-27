@@ -1,0 +1,9 @@
+{
+  "appId": "0123456789abcdef0123456789abcdef",
+  "extension": "cif",
+  "fileName": "linker name",
+  "text": "data_linker\n",
+  "warnings": [
+    "Isotopes are omitted."
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "attempts": 2,
+  "opened": true,
+  "status": "done",
+  "steps": [
+    {
+      "id": "build",
+      "json": {
+        "ok": true,
+        "tables": [
+          {
+            "rows": [
+              {
+                "label": "Joint twist left",
+                "value": "0.000"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "variant": 1
+}

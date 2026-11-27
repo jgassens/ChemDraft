@@ -1,4 +1,4 @@
-import { parseMolfileGraph, type ParsedMolfileGraph } from "@chemdraft/clipboard-adapter";
+import { joinV3000ContinuationLines, parseMolfileGraph, type ParsedMolfileGraph } from "@chemdraft/clipboard-adapter";
 import { ChemistryRefusal } from "./chemistryRefusal";
 import type { MoleculeObject } from "@chemdraft/chem-core";
 import type { StereoTags } from "./structureIdentity";
@@ -21,9 +21,14 @@ function hasAtomParity(molfile: string, format: ParsedMolfileGraph["format"]) {
     const atomCount = Number(lines[3]!.slice(0, 3));
     return lines.slice(4, 4 + atomCount).some(line => Number(line.slice(39, 42)) !== 0);
   }
-  const start = lines.findIndex(line => /^M  V30 BEGIN ATOM\s*$/.test(line));
-  const end = lines.findIndex(line => /^M  V30 END ATOM\s*$/.test(line));
-  return lines.slice(start + 1, end).some(line => /\bCFG=(?!0\b)\d+/.test(line));
+  return v3000AtomRecords(lines).some(line => /\bCFG=(?!0\b)\d+/.test(line));
+}
+
+function v3000AtomRecords(lines: readonly string[]) {
+  const joined = joinV3000ContinuationLines(lines);
+  const start = joined.indexOf("BEGIN ATOM");
+  const end = joined.indexOf("END ATOM", start + 1);
+  return joined.slice(start + 1, end);
 }
 
 const unmapped = () => new ChemistryRefusal("its stereo annotations can't be matched to the drawn structure", "Cannot uniquely map the stored stereo annotations to the editable graph.");
@@ -35,14 +40,12 @@ function writerIds(graph: ParsedMolfileGraph, atomIds: readonly string[]) {
   return ids;
 }
 
-function atomMapNumbers(molfile: string, graph: ParsedMolfileGraph) {
+export function atomMapNumbers(molfile: string, graph: ParsedMolfileGraph) {
   const lines = molfile.split(/\r?\n/);
   if (graph.format === "molfile-v2000") {
     return lines.slice(4, 4 + graph.atoms.length).map(line => Number(line.slice(60, 63)));
   }
-  const start = lines.findIndex(line => line.trimEnd() === "M  V30 BEGIN ATOM");
-  const end = lines.findIndex(line => line.trimEnd() === "M  V30 END ATOM");
-  return lines.slice(start + 1, end).map(line => Number(line.trim().split(/\s+/)[7]));
+  return v3000AtomRecords(lines).map(line => Number(line.split(/\s+/)[5]));
 }
 
 function coordinateFrame({ atoms }: ParsedMolfileGraph) {

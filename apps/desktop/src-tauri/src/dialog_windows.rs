@@ -32,6 +32,15 @@ struct DialogKindSpec {
 }
 fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
     match kind {
+        super::app_handoff::DIALOG_KIND => Ok(DialogKindSpec {
+            maximizable: false,
+            resizable: true,
+            title: "App handoff",
+            size: (480.0, 360.0),
+            min_size: (340.0, 160.0),
+            fit_content: true,
+            preserve_user_frame: false,
+        }),
         "preferences" => Ok(DialogKindSpec {
             maximizable: false,
             resizable: true,
@@ -193,6 +202,7 @@ fn native_window_title(kind: &str, spec_title: &str, snapshot_title: &str) -> St
             | "about"
             | "pageEnlargement"
             | "pluginTextPrompt"
+            | super::app_handoff::DIALOG_KIND
     ) {
         snapshot_title.to_string()
     } else {
@@ -1205,6 +1215,15 @@ impl Message {
             return Err("Invalid dialog envelope or payload limit exceeded".into());
         }
         let valid = match self.message_type.as_str() {
+            "snapshot" if self.dialog_kind == super::app_handoff::DIALOG_KIND => {
+                self.data["title"].as_str().is_some_and(valid_title)
+                    && matches!(self.data["mode"].as_str(), Some("confirm" | "result"))
+                    && serde_json::to_vec(self).is_ok_and(|bytes| bytes.len() <= 3400)
+            }
+            "action" if self.dialog_kind == super::app_handoff::DIALOG_KIND => {
+                serde_json::from_value::<super::app_handoff::DialogAction>(self.data.clone())
+                    .is_ok()
+            }
             "snapshot" if self.dialog_kind == "pageEnlargement" => {
                 serde_json::from_value::<TitleSnapshot>(self.data.clone())
                     .is_ok_and(|s| s.title == "Enlarge Page")
@@ -1507,7 +1526,14 @@ impl Message {
             "ready" if self.dialog_kind == "about" => {
                 self.data.as_object().is_some_and(|d| d.is_empty())
             }
-            "result" if self.dialog_kind == "about" => false,
+            "result"
+                if matches!(
+                    self.dialog_kind.as_str(),
+                    "about" | super::app_handoff::DIALOG_KIND
+                ) =>
+            {
+                false
+            }
             "request" => self.data.as_object().is_some_and(|d| d.is_empty()),
             "ready" => {
                 self.data.as_object().is_some_and(|d| d.is_empty())
@@ -1550,6 +1576,7 @@ struct Session {
     snapshot: Message,
     ready: bool,
     owner_channel: Option<Channel<Value>>,
+    native_handoff: Option<tokio::sync::oneshot::Sender<super::app_handoff::DialogAction>>,
     host_channel: Option<Channel<Value>>,
     terminal_request: Option<String>,
     // Request IDs are scoped to a session and bounded; a sender cannot grow this without limit.
@@ -1911,13 +1938,12 @@ fn register(
         return Err("Too many dialog windows are open".into());
     }
     // Independent questions must never share consent, even for the same drawing.
-    if !matches!(
-        message.dialog_kind.as_str(),
-        "pageEnlargement" | "pluginTextPrompt"
-    ) && registry.sessions.values().any(|s| {
-        s.snapshot.document_tab_id == message.document_tab_id
-            && s.snapshot.dialog_kind == message.dialog_kind
-    }) {
+    if !is_question_kind(&message.dialog_kind)
+        && registry.sessions.values().any(|s| {
+            s.snapshot.document_tab_id == message.document_tab_id
+                && s.snapshot.dialog_kind == message.dialog_kind
+        })
+    {
         return Err("A dialog for this drawing is already open".into());
     }
     registry.next_slot += 1;
@@ -1932,6 +1958,7 @@ fn register(
             snapshot: message,
             ready: false,
             owner_channel: None,
+            native_handoff: None,
             host_channel: None,
             terminal_request: None,
             actions: HashMap::new(),
@@ -1982,6 +2009,67 @@ pub(crate) async fn dialog_open(
     message: Message,
     channel: Channel<Value>,
 ) -> Result<Registration, String> {
+    if message.dialog_kind == super::app_handoff::DIALOG_KIND {
+        return Err("Only Rust can open the app handoff dialog.".into());
+    }
+    open_dialog(app, window, message, Some(channel), None).await
+}
+
+pub(crate) async fn open_app_handoff(
+    owner: tauri::WebviewWindow,
+    data: Value,
+) -> Result<
+    (
+        String,
+        tokio::sync::oneshot::Receiver<super::app_handoff::DialogAction>,
+    ),
+    String,
+> {
+    let mut random = [0u8; 16];
+    getrandom::fill(&mut random).map_err(|_| "Could not allocate an app handoff dialog.")?;
+    let session_id: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+    let (answer, receive) = tokio::sync::oneshot::channel();
+    let registration = open_dialog(
+        owner.app_handle().clone(),
+        owner,
+        app_handoff_snapshot(session_id, data),
+        None,
+        Some(answer),
+    )
+    .await?;
+    Ok((registration.host_id, receive))
+}
+
+pub(crate) fn validate_app_handoff_snapshot(data: &Value) -> Result<(), String> {
+    // A real session ID is always 32 hexadecimal characters, so the envelope has the same size.
+    app_handoff_snapshot("0".repeat(32), data.clone()).validate()
+}
+
+fn app_handoff_snapshot(session_id: String, data: Value) -> Message {
+    Message {
+        protocol_version: 1,
+        owner_window_id: super::MAIN_WINDOW_LABEL.into(),
+        document_tab_id: "app-handoff".into(),
+        dialog_kind: super::app_handoff::DIALOG_KIND.into(),
+        session_id,
+        request_id: "open".into(),
+        snapshot_revision: 1,
+        message_type: "snapshot".into(),
+        data,
+    }
+}
+
+pub(crate) fn close_app_handoff(app: &tauri::AppHandle, host_id: &str) {
+    close_session(app, host_id, "close");
+}
+
+async fn open_dialog(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    message: Message,
+    channel: Option<Channel<Value>>,
+    native_handoff: Option<tokio::sync::oneshot::Sender<super::app_handoff::DialogAction>>,
+) -> Result<Registration, String> {
     if window.label() != super::MAIN_WINDOW_LABEL
         || app.get_webview_window(super::MAIN_WINDOW_LABEL).is_none()
     {
@@ -2025,7 +2113,8 @@ pub(crate) async fn dialog_open(
             .sessions
             .get_mut(&registration.host_id)
             .ok_or("Unknown dialog host")?;
-        session.owner_channel = Some(channel);
+        session.owner_channel = channel;
+        session.native_handoff = native_handoff;
         session.ready
             && (session.snapshot.dialog_kind == "engineInstall"
                 || session.snapshot.dialog_kind == "atomProblem"
@@ -2176,6 +2265,9 @@ pub(crate) fn dialog_request(
     // This channel belongs to the actual calling dialog, not to a payload label.
     session.host_channel = Some(channel);
     send_host(session, &session.snapshot)?;
+    if session.snapshot.dialog_kind == super::app_handoff::DIALOG_KIND {
+        return Ok(());
+    }
     let mut request = session.snapshot.clone();
     request.message_type = "request".into();
     request.request_id = request_id;
@@ -2212,6 +2304,21 @@ pub(crate) async fn dialog_send(
         if message.message_type == "action" {
             if !session.ready {
                 return Err("Dialog is not ready".into());
+            }
+            if message.dialog_kind == super::app_handoff::DIALOG_KIND {
+                let choice: super::app_handoff::DialogAction = serde_json::from_value(message.data)
+                    .map_err(|_| "Invalid app handoff choice")?;
+                if !choice.valid_for(&session.snapshot.data) {
+                    return Err("Choose a declared app handoff action.".into());
+                }
+                let sender = session
+                    .native_handoff
+                    .take()
+                    .ok_or("The app handoff choice was already answered.")?;
+                drop(registry);
+                drop(creation);
+                let _ = sender.send(choice);
+                return Ok(());
             }
             if message.dialog_kind == "about" && message.data["action"] == "copyVersion" {
                 // Copy only these fields from the trusted owner snapshot. No host-supplied text
@@ -2270,7 +2377,7 @@ pub(crate) async fn dialog_send(
         // Only this Rust-validated path can write the owner's private channel.
         // Later fit reports are host-local; replaying ready to an install owner would republish
         // its snapshot and create a content/ready feedback loop.
-        if !refit {
+        if !refit && message.dialog_kind != super::app_handoff::DIALOG_KIND {
             send_owner(session, window.label(), &message)?;
         }
         let automatic_tour = session.snapshot.dialog_kind == "guidedTour"
@@ -2351,6 +2458,9 @@ pub(crate) fn dialog_publish(
         .get_mut(&host_id)
         .ok_or("Unknown dialog host")?;
     authorize(session, window.label(), true, Some(&message))?;
+    if session.snapshot.dialog_kind == super::app_handoff::DIALOG_KIND {
+        return Err("Only Rust can update the app handoff dialog.".into());
+    }
     if message.message_type == "result"
         && message.dialog_kind == "export"
         && message.data["status"] == "frame"
@@ -2405,6 +2515,9 @@ pub(crate) async fn dialog_close(
         let registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(session) = registry.sessions.get(&host_id) {
             authorize(session, window.label(), true, None)?;
+            if session.snapshot.dialog_kind == super::app_handoff::DIALOG_KIND {
+                return Err("Only Rust can close the app handoff dialog.".into());
+            }
         } else if window.label() != super::MAIN_WINDOW_LABEL {
             return Err("Unknown dialog owner".into());
         }
@@ -2454,7 +2567,10 @@ fn close_session<R: Runtime>(app: &tauri::AppHandle<R>, host_id: &str, reason: &
 }
 /// Request-bound questions: closing one returns focus to the document when it held focus.
 fn is_question_kind(kind: &str) -> bool {
-    matches!(kind, "pageEnlargement" | "pluginTextPrompt")
+    matches!(
+        kind,
+        "pageEnlargement" | "pluginTextPrompt" | super::app_handoff::DIALOG_KIND
+    )
 }
 fn close_page_enlargement_on_main<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
@@ -4741,7 +4857,8 @@ pub(crate) fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &Win
         }
         WindowEvent::CloseRequested { api, .. }
             if window.label().starts_with("dialog-main-pageEnlargement-")
-                || window.label().starts_with("dialog-main-pluginTextPrompt-") =>
+                || window.label().starts_with("dialog-main-pluginTextPrompt-")
+                || window.label().starts_with("dialog-main-appHandoff-") =>
         {
             let host_id = REGISTRY
                 .lock()
@@ -10272,6 +10389,33 @@ mod tests {
             message.data = data;
             assert!(message.validate().is_err());
         }
+        message.message_type = "result".into();
+        message.data = json!({"status": "accepted"});
+        assert!(message.validate().is_err());
+    }
+
+    #[test]
+    fn app_handoff_registers_independent_rust_owned_questions() {
+        let mut message = snapshot();
+        message.dialog_kind = super::super::app_handoff::DIALOG_KIND.into();
+        message.document_tab_id = "app-handoff".into();
+        message.data = json!({
+            "mode": "confirm", "title": "Confirm companion build",
+            "appName": "Crystal Builder", "pipeline": "mofBuild",
+            "suggestedCombination": "small", "combinations": {"small": {"repeat": "1x1x1"}}
+        });
+        let mut registry = Registry::default();
+        let (first, _) = register(&mut registry, message.clone(), false).unwrap();
+        message.session_id = "next-handoff".into();
+        let (second, _) = register(&mut registry, message.clone(), false).unwrap();
+        assert!(is_dialog_label(&first.window_label));
+        assert_ne!(first.window_label, second.window_label);
+
+        message.message_type = "action".into();
+        message.data = json!({"action": "confirm", "combinationId": "small"});
+        assert!(message.validate().is_ok());
+        message.data["path"] = json!("private");
+        assert!(message.validate().is_err());
         message.message_type = "result".into();
         message.data = json!({"status": "accepted"});
         assert!(message.validate().is_err());

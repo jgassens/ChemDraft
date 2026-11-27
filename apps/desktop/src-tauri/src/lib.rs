@@ -1,3 +1,4 @@
+mod app_handoff;
 #[cfg(target_os = "linux")]
 mod appimage_dialogs;
 #[cfg(target_os = "linux")]
@@ -435,9 +436,14 @@ impl QuitFlow {
     }
 }
 
+/// Every committed flush comes here, the Windows and Linux session ends included, so the handoff
+/// menu clicks end here too (`QuitHost::end_handoff_clicks`), before the document is asked.
 fn request_document_quit_flush<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> tauri::Result<Option<u64>> {
+    if let Some(handoff) = app.try_state::<app_handoff::State>() {
+        handoff.end_for_quit();
+    }
     if app.get_webview_window(MAIN_WINDOW_LABEL).is_none() {
         return Ok(None);
     }
@@ -506,6 +512,11 @@ trait QuitHost: Clone + Send + 'static {
         thread::spawn(task);
     }
     fn drain_pending_position_writes(&self) {}
+    /// Ends every app handoff menu click, as closing the document window does, once a quit is
+    /// committed: running companion work then starts no further step or attempt and opens nothing,
+    /// while a step already running finishes within its limit (the exit's `shutdown` stops it).
+    /// No click arms after it, even one that checked for a quit just before the commit.
+    fn end_handoff_clicks(&self);
     /// Asks the event loop, on the main thread, to end the app.
     fn exit(&self);
     /// Completes the pending AppKit termination handshake on the main thread.
@@ -552,6 +563,12 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
             && self
                 .emit_to(MAIN_WINDOW_LABEL, QUIT_PROMPT_REQUEST_EVENT, request_id)
                 .is_ok()
+    }
+
+    fn end_handoff_clicks(&self) {
+        if let Some(handoff) = self.try_state::<app_handoff::State>() {
+            handoff.end_for_quit();
+        }
     }
 
     fn exit(&self) {
@@ -630,6 +647,13 @@ fn request_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
     }
 }
 
+/// A quit is committed (a flush requested or the quit decided), so no app handoff click may arm.
+/// The handoff reads it under its arms lock (`app_handoff::State::arm_click`), so it must keep to
+/// atomic flags and take no lock.
+pub(crate) fn quit_committed() -> bool {
+    QUIT.in_progress()
+}
+
 fn prompt_waits_for_user(flow: &QuitFlow) -> bool {
     matches!(
         flow.prompt.lock().unwrap().1,
@@ -645,6 +669,8 @@ fn request_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, force_repea
         }
         return;
     }
+    // The quit is committed: as a window close does, end the handoff clicks before the flush.
+    host.end_handoff_clicks();
     arm_quit_flush_grace(flow, host);
     if !host.ask_document_to_flush() {
         quit_now_with(flow, host, QuitReason::NoDocument);
@@ -771,6 +797,8 @@ fn resume_prompted_quit_with<H: QuitHost>(
     prompt.1 = QuitPromptPhase::Flushing;
     flow.requested.store(true, Ordering::SeqCst);
     drop(prompt);
+    // The prompt was answered with quit: the quit is committed from here.
+    host.end_handoff_clicks();
     arm_prompt_grace(flow, host, request_id, QuitPromptPhase::Flushing);
     true
 }
@@ -782,6 +810,8 @@ fn quit_now_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, reason: QuitRea
         // The committed system shutdown owns the flush and the exit deadline.
         return;
     }
+    // A prompt whose grace ran out decides the quit here without a flush request.
+    host.end_handoff_clicks();
     #[cfg(any(target_os = "macos", test))]
     {
         let mut reply = flow.appkit_reply.lock().unwrap();
@@ -1433,6 +1463,9 @@ pub fn run() {
         builder
     };
     let builder = builder
+        .plugin(app_handoff::registration_policy(
+            &context.config().identifier,
+        ))
         .manage(perf_log)
         .manage(PendingOpenDocument::default())
         .manage(canvas_context_menu::PopupState::default())
@@ -1441,6 +1474,7 @@ pub fn run() {
         .manage(Engine3dSidecarSessions::default())
         .manage(ocsr_engine::OcsrEngineState::default())
         .manage(external_tools::ExternalToolsState::default())
+        .manage(app_handoff::State::default())
         .manage(naming_engine::NamingEngineState::default())
         .manage(ToolsetWindowDirectory::default())
         .manage(PluginNativeMenuItems::default())
@@ -1527,6 +1561,9 @@ pub fn run() {
                     }
                 }
             }
+            if webview.label() == MAIN_WINDOW_LABEL && matches!(payload.event(), PageLoadEvent::Started) {
+                webview.state::<app_handoff::State>().discard_menu_invocations();
+            }
             if is_input_focus_window_label(webview.label())
                 && matches!(payload.event(), PageLoadEvent::Started)
             {
@@ -1574,7 +1611,8 @@ pub fn run() {
                     && custom_menu_shortcut(app, command_id).is_some()))
                 || is_core_routed_dynamic_menu_command(command_id, &current_plugin_menu_items(app))
             {
-                if let Err(error) = emit_menu_command(app, command_id) {
+                let handoff = app_handoff::arm_native_menu(app, command_id);
+                if let Err(error) = handoff.and_then(|invocation| emit_menu_command(app, command_id, invocation)) {
                     eprintln!("Could not route ChemDraft menu command {command_id}: {error}");
                 }
             }
@@ -1605,6 +1643,9 @@ pub fn run() {
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
                         if !prompt_waits_for_user(&QUIT) {
+                            // Hiding keeps the app alive, so end the window's menu clicks here:
+                            // running companion work launches and opens nothing more.
+                            window.state::<app_handoff::State>().discard_menu_invocations();
                             dialog_windows::dismiss_owned(window.app_handle(), "ownerClose");
                             if let Err(error) = window.hide() {
                                 eprintln!("Could not hide ChemDraft main window: {error}");
@@ -1617,6 +1658,8 @@ pub fn run() {
                     #[cfg(not(target_os = "macos"))]
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
+                        // Quitting waits for the document's flush; launch nothing meanwhile.
+                        window.state::<app_handoff::State>().discard_menu_invocations();
                         request_quit(window.app_handle());
                     }
                     WindowEvent::Destroyed => {
@@ -1629,6 +1672,7 @@ pub fn run() {
                         dialog_windows::dismiss_owned(window.app_handle(), "quit");
                         window.state::<ocsr_engine::OcsrEngineState>().shutdown();
                         external_tools::shutdown(window.app_handle());
+                        window.state::<app_handoff::State>().shutdown();
                         assistant_mcp::shutdown();
                         window
                             .state::<naming_engine::NamingEngineState>()
@@ -1821,6 +1865,11 @@ pub fn run() {
             assistant_mcp::assistant_mcp_session_close,
             assistant_mcp::assistant_mcp_respond,
             assistant_mcp::assistant_mcp_status,
+            app_handoff::endpoint::app_handoff_menu_invocation,
+            app_handoff::endpoint::app_handoff_call,
+            app_handoff::endpoint::app_handoff_consent_list,
+            app_handoff::endpoint::app_handoff_consent_revoke,
+            app_handoff::endpoint::app_handoff_consent_clear_plugin,
             external_tools::external_tool_status,
             external_tools::external_tool_install,
             external_tools::external_tool_cancel_install,
@@ -1979,6 +2028,7 @@ pub fn run() {
                     panel_full_size::restore_all(app);
                     app.state::<ocsr_engine::OcsrEngineState>().shutdown();
                     external_tools::shutdown(app);
+                    app.state::<app_handoff::State>().shutdown();
                     assistant_mcp::shutdown();
                     app.state::<naming_engine::NamingEngineState>().shutdown();
                 }
@@ -1991,6 +2041,7 @@ pub fn run() {
                 panel_full_size::restore_all(app);
                 app.state::<ocsr_engine::OcsrEngineState>().shutdown();
                 external_tools::shutdown(app);
+                app.state::<app_handoff::State>().shutdown();
                 assistant_mcp::shutdown();
                 app.state::<naming_engine::NamingEngineState>().shutdown();
             }
@@ -2056,6 +2107,7 @@ fn setup_primary_app(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::E
     ocsr.start_idle_reaper();
     ocsr.remove_stale_staging(app);
     external_tools::setup(app);
+    app_handoff::cleanup(app);
     let naming = app.state::<naming_engine::NamingEngineState>();
     naming.start_idle_reaper();
     naming.remove_stale_staging(app);
@@ -9263,6 +9315,7 @@ fn menu_command_target_label<'a>(command_id: &str, focused_label: Option<&'a str
 fn emit_menu_command<R: Runtime>(
     app: &tauri::AppHandle<R>,
     command_id: &str,
+    handoff: Option<app_handoff::MenuInvocation>,
 ) -> Result<(), String> {
     let focused_label = app
         .webview_windows()
@@ -9293,6 +9346,30 @@ fn emit_menu_command<R: Runtime>(
         // Match the normal AppKit edit menus and dispatch to the key window's first responder.
         unsafe { application.sendAction_to_from(action, None, None) };
         return Ok(());
+    }
+    if let Some(invocation) = handoff {
+        let target = app
+            .get_webview_window(MAIN_WINDOW_LABEL)
+            .ok_or("Main document window is not available.")?;
+        let payload = serde_json::to_string(&invocation).map_err(|error| error.to_string())?;
+        // Only the first-party document bootstrap installs this non-replaceable receiver.
+        // Check inside the evaluated script so navigation between the menu event and delivery
+        // cannot pass the nonce to a different page (including same-origin installed assets).
+        let origin = if tauri::is_dev() {
+            app.config()
+                .build
+                .dev_url
+                .as_ref()
+                .map(|url| url.origin().ascii_serialization())
+        } else {
+            None
+        }
+        .unwrap_or_else(|| installed_plugins::APP_ORIGIN.into());
+        let origin = serde_json::to_string(&origin).map_err(|e| e.to_string())?;
+        return target.eval(format!(
+            "if (location.protocol + '//' + location.host === {origin} && (location.pathname === '/' || location.pathname === '/index.html')) void window.__CHEMDRAFT_NATIVE_HANDOFF__?.({payload})"
+        ))
+            .map_err(|error| error.to_string());
     }
     if target_label == MAIN_WINDOW_LABEL {
         return emit_command_to_main(app, command_id);
@@ -13819,6 +13896,9 @@ mod tests {
         );
     }
 
+    /// How often a quit ended the app handoff clicks, and the quit calls made before it first did.
+    type EndedClicks = (usize, Vec<&'static str>);
+
     /// The quit flow's host, where the event loop never manages to end the app (a stuck main
     /// thread): `exit` is recorded and nothing else happens, so the watchdog is what ends it.
     #[derive(Clone)]
@@ -13830,6 +13910,8 @@ mod tests {
         main_thread: Option<std::sync::Arc<Mutex<()>>>,
         /// The reason the watchdog was given, once it has fired.
         forced_reason: std::sync::Arc<Mutex<Option<QuitReason>>>,
+        /// How often the app handoff menu clicks were ended, and the calls made before the first.
+        ended_clicks: std::sync::Arc<Mutex<Option<EndedClicks>>>,
     }
 
     impl StuckAppHost {
@@ -13839,7 +13921,13 @@ mod tests {
                 calls: std::sync::Arc::new(Mutex::new(Vec::new())),
                 main_thread: None,
                 forced_reason: std::sync::Arc::new(Mutex::new(None)),
+                ended_clicks: std::sync::Arc::new(Mutex::new(None)),
             }
+        }
+
+        /// How often the handoff clicks were ended, and the calls made before they first were.
+        fn ended_clicks(&self) -> Option<EndedClicks> {
+            self.ended_clicks.lock().unwrap().clone()
         }
 
         fn needing_main_thread(main_thread: std::sync::Arc<Mutex<()>>) -> Self {
@@ -13871,6 +13959,14 @@ mod tests {
         fn ask_document_to_flush(&self) -> bool {
             self.calls.lock().unwrap().push("ask to flush");
             self.has_document
+        }
+
+        fn end_handoff_clicks(&self) {
+            // Kept apart from `calls`, so the quit-order tests below keep their exact lists.
+            let calls = self.calls();
+            let mut ended = self.ended_clicks.lock().unwrap();
+            let (count, _) = ended.get_or_insert((0, calls));
+            *count += 1;
         }
 
         fn exit(&self) {
@@ -13978,6 +14074,10 @@ mod tests {
             (self.drain)();
         }
 
+        fn end_handoff_clicks(&self) {
+            self.app.end_handoff_clicks();
+        }
+
         fn exit(&self) {
             self.app.exit();
         }
@@ -13989,6 +14089,81 @@ mod tests {
         fn force_exit(&self, waited: Duration, reason: QuitReason) {
             self.app.force_exit(waited, reason);
         }
+    }
+
+    /// File > Exit, Cmd+Q, the Dock and system termination all commit a quit without closing the
+    /// document window, and the document flush runs before the exit's `shutdown`. Each committed
+    /// quit ends the handoff menu clicks first, as the window close does; a save prompt still
+    /// waiting for its answer does not, since it can be cancelled.
+    #[test]
+    fn a_committed_quit_ends_handoff_clicks_before_the_document_flush() {
+        let grace = Duration::from_secs(3);
+        let watchdog = Duration::from_secs(10);
+
+        // Menu quit with the save prompt off, the Windows and Linux window close among them.
+        let flow = test_quit_flow(grace, watchdog);
+        let host = ControlledQuitHost::new();
+        request_quit_with(flow, &host, false);
+        assert_eq!(host.app.ended_clicks(), Some((1, vec![])));
+        host.emit_flush_request();
+        assert_eq!(host.app.calls(), ["timer armed", "ask to flush"]);
+
+        // macOS Dock, AppleScript or logout termination.
+        let flow = test_quit_flow(grace, watchdog);
+        let host = ControlledQuitHost::new();
+        assert!(request_appkit_quit_with(flow, &host));
+        assert_eq!(host.app.ended_clicks(), Some((1, vec![])));
+
+        // Save prompt: shown, nothing ends; answered with quit, the clicks end before the flush.
+        let flow = test_quit_flow(grace, watchdog);
+        let host = ControlledQuitHost::new();
+        let id = request_prompted_quit_with(flow, &host).unwrap();
+        assert_eq!(host.app.ended_clicks(), None);
+        assert!(resume_prompted_quit_with(flow, &host, id));
+        assert_eq!(
+            host.app.ended_clicks(),
+            Some((1, vec!["prompt", "timer armed"]))
+        );
+
+        // A prompt the window never answers: its grace decides the quit.
+        let flow = test_quit_flow(grace, watchdog);
+        let host = ControlledQuitHost::new();
+        request_prompted_quit_with(flow, &host).unwrap();
+        host.fire_timer();
+        assert_eq!(
+            host.app.ended_clicks(),
+            Some((1, vec!["prompt", "timer armed"]))
+        );
+        assert!(host.app.calls().contains(&"exit"));
+    }
+
+    /// The operating system's session end asks the document to flush directly, on Windows and
+    /// Linux alike, so the flush request itself ends the handoff clicks for the quit. That no click
+    /// arms during a quit is a real race test
+    /// (`app_handoff::tests::launch_race::a_click_arming_while_a_quit_commits_does_not_survive_it`).
+    #[test]
+    fn the_session_end_flush_ends_handoff_clicks() {
+        let lib = include_str!("lib.rs");
+        let flush = lib
+            .split("fn request_document_quit_flush<R: Runtime>(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .unwrap();
+        let discard = flush
+            .find("app_handoff::State>()")
+            .expect("the session-end flush ends the handoff clicks");
+        assert!(
+            discard < flush.find("get_webview_window").unwrap(),
+            "{flush}"
+        );
+        for file in ["windows_session_end.rs", "linux_session_end.rs"] {
+            let source = match file {
+                "windows_session_end.rs" => include_str!("windows_session_end.rs"),
+                _ => include_str!("linux_session_end.rs"),
+            };
+            assert!(source.contains("request_document_quit_flush("), "{file}");
+        }
+        assert!(flush.contains("handoff.end_for_quit();"), "{flush}");
     }
 
     fn queue_test_layout_frame(

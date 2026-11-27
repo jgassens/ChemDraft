@@ -1,5 +1,45 @@
 [
   {
+    "file": "app_handoff/endpoint.rs",
+    "name": "app_handoff_menu_invocation",
+    "async": false,
+    "generics": "",
+    "parameters": "window: WebviewWindow, invocation: MenuInvocation, phase: InvocationPhase,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "app_handoff/endpoint.rs",
+    "name": "app_handoff_call",
+    "async": true,
+    "generics": "",
+    "parameters": "window: WebviewWindow, ipc: IpcRequest<'_>,",
+    "returnType": "Result<Value, String>"
+  },
+  {
+    "file": "app_handoff/endpoint.rs",
+    "name": "app_handoff_consent_list",
+    "async": false,
+    "generics": "",
+    "parameters": "window: WebviewWindow,",
+    "returnType": "Result<Vec<ConsentSummary>, String>"
+  },
+  {
+    "file": "app_handoff/endpoint.rs",
+    "name": "app_handoff_consent_revoke",
+    "async": false,
+    "generics": "",
+    "parameters": "window: WebviewWindow, plugin_id: String, consent_id: String,",
+    "returnType": "Result<Vec<String>, String>"
+  },
+  {
+    "file": "app_handoff/endpoint.rs",
+    "name": "app_handoff_consent_clear_plugin",
+    "async": false,
+    "generics": "",
+    "parameters": "window: WebviewWindow, plugin_id: String,",
+    "returnType": "Result<(), String>"
+  },
+  {
     "file": "appimage_dialogs.rs",
     "name": "open",
     "async": true,

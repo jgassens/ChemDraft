@@ -1,6 +1,7 @@
 import type { PluginHostOptions } from "@chemdraft/plugin-host";
 import { nameToStructureForPlugin } from "./pluginChemistry";
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
+import { boundedHandoffText } from "@chemdraft/plugin-api";
 import type {
   AppliedPatchReceipt,
   PluginCommandInput,
@@ -20,10 +21,10 @@ import {
   createPluginUpdateChecker, hasOfficialInstalledPlugin, installedPluginCatalogKey,
   schedulePluginUpdateAutoCheck, type CachedPluginUpdateResults, type TimedPluginUpdateCheckResult
 } from "./pluginUpdateAutoCheck";
-import { createPluginRuntime, type DesktopPluginRuntime, type DesktopPluginRuntimeOptions, type ProposalDocumentTab } from "./createPluginRuntime";
+import { appHandoffFeedbackMessages, createPluginRuntime, type AppHandoffMenuFeedback, type DesktopPluginRuntime, type DesktopPluginRuntimeOptions, type ProposalDocumentTab } from "./createPluginRuntime";
 import {
-  PluginInstallError,
-  PluginInstallErrorCodes,
+  type PluginInstallError,
+  isCommittedUninstallError,
   installPluginPackage,
   loadInstalledPlugins,
   uninstallPlugin,
@@ -38,6 +39,7 @@ import { loadDisabledPluginIds, saveDisabledPluginIds } from "./pluginPreference
 import { createTauriPluginStagingFs, isTauriHost, type PluginStagingFs } from "./pluginStagingFs";
 import {
   checkForPluginUpdates,
+  installedPackageProvenance,
   prepareOfficialPluginInstall,
   preparePluginUpdate,
   type PreparedOfficialPluginInstall,
@@ -45,6 +47,7 @@ import {
   type PluginUpdateOffer,
   type PreparedPluginUpdate
 } from "./pluginUpdates";
+import { readInstalledPluginCatalog } from "./installedPluginStore";
 import { registerBundledPlugins, type BundledPluginDescriptor } from "./registerBundledPlugins";
 import type { OpenPluginPanel, PluginDiagnostic } from "./types";
 import type { OpenPluginTextPrompt } from "./PluginPromptTextController";
@@ -59,6 +62,8 @@ import { recognitionInstallProgressStore } from "./structureRecognitionInstallPr
 import { mountStructureNamingHost } from "./StructureNamingInstallDialog";
 import { presentExternalToolInstall } from "../externalTools/presentExternalToolInstall";
 import type { DialogCoordinator } from "../dialogs/DialogCoordinator";
+import type { ListenForAppHandoff } from "../appHandoff/nativeMenu";
+import { appHandoffCommandStatus, attributedHandoffText } from "../appHandoff/transport";
 
 /**
  * Extract a user-facing message from a resolved plugin-command value that is a `{ ok: false }`
@@ -73,7 +78,9 @@ export function pluginCommandFailure(result: unknown): string | undefined {
 }
 
 export interface PluginRuntimeProviders {
+  listenForAppHandoff?: ListenForAppHandoff;
   assistantMcpEngine?: import("../assistant/assistantMcpEngine").AssistantMcpEngine;
+  appHandoffProvenance?: PluginHostOptions["appHandoffProvenance"];
   getActiveDocument: () => ChemDraftDocument | undefined;
   /** Identifies the working document for a plugin's `documents.applyPatch` (see
    *  `DesktopPluginRuntimeOptions.getActiveDocumentKey`). Without one, two documents created by
@@ -89,6 +96,7 @@ export interface PluginRuntimeProviders {
   getDocumentTabTitle?: (tabId: string) => string | undefined;
   /** `warnings`: the asking invocation's collector, or undefined for a read that should stay silent. */
   getSelection: (warnings?: string[]) => PluginSelectionSnapshot;
+  captureSelection?: DesktopPluginRuntimeOptions["captureSelection"];
   /** The app's stable CommandRegistry: plugin commands register into the SAME registry core commands
    *  use (commands/coreCommandRegistrar), so one dispatch serves both. Must be referentially stable
    *  for the component's lifetime — the runtime is created exactly once from the first render. */
@@ -97,8 +105,9 @@ export interface PluginRuntimeProviders {
   createStorage?: (pluginId: string) => PluginStorage;
   /** Names the source of a successful name conversion in the document status line. */
   onNameResolutionStatus?: (text: string | undefined) => void;
-  /** Quiet update notices use the document window status line. */
   onPluginUpdateStatus?: (text: string) => void;
+  /** Native relay results and menu refusals use the document window status line. */
+  onAppHandoffStatus?: DesktopPluginRuntimeOptions["onAppHandoffStatus"];
   /** Fired whenever the proposed-patch queue changes (new, accepted, rejected). */
   onProposedPatchesChanged?: () => void;
   /** Commits a command-scoped `document.write` patch through the desktop document/history path. */
@@ -170,6 +179,10 @@ export interface PluginRuntimeView {
 export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRuntimeView {
   const providersRef = useRef(providers);
   providersRef.current = providers;
+  const stagingFs = useMemo<PluginStagingFs | undefined>(
+    () => (isTauriHost() ? createTauriPluginStagingFs() : undefined),
+    []
+  );
 
   const ownerRef = useRef<{
     runtime: DesktopPluginRuntime;
@@ -201,6 +214,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
       getDocumentTabTitle: (tabId) => providersRef.current.getDocumentTabTitle?.(tabId),
       getDocumentForTab: (tabId) => providersRef.current.getDocumentForTab?.(tabId),
       getSelection: (warnings) => providersRef.current.getSelection(warnings),
+      captureSelection: providers.captureSelection && (document => providersRef.current.captureSelection!(document)),
       // Read once at creation: the registry (and the other integration options) must be stable —
       // MainWindow creates the registry in a one-time memo, matching the runtime's lifetime.
       commandRegistry: providers.commandRegistry,
@@ -214,7 +228,15 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
         return apply(request);
       },
       defaultPanelSurface: isTauriHost() ? "window" : "inApp",
-      assistantMcpEngine: providers.assistantMcpEngine
+      assistantMcpEngine: providers.assistantMcpEngine,
+      appHandoffProvenance: providers.appHandoffProvenance,
+      readAppHandoffRecord: stagingFs ? async (pluginId, version) => {
+        const catalog = await readInstalledPluginCatalog(stagingFs);
+        if (catalog.status !== "loaded") return undefined;
+        const matches = catalog.records.filter(record => record.id === pluginId);
+        return matches.length === 1 && matches[0].version === version ? matches[0] : undefined;
+      } : undefined,
+      onAppHandoffStatus: (...args) => providersRef.current.onAppHandoffStatus?.(...args)
     });
     const bundledPlugins = registerBundledPlugins(runtime);
     ownerRef.current = { runtime, bundledPlugins };
@@ -222,6 +244,39 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
   const { runtime, bundledPlugins } = ownerRef.current;
 
   const [version, bumpVersion] = useReducer((value: number) => value + 1, 0);
+  const { listenForAppHandoff } = providers;
+  useEffect(() => {
+    if (!listenForAppHandoff) return;
+    let active = true;
+    const unlisten = listenForAppHandoff(invocation => {
+      const warnings: string[] = [];
+      const feedback: AppHandoffMenuFeedback = { pending: 0, problems: new Map() };
+      const name = runtime.host.getPlugin(invocation.pluginId)?.manifest.name ?? invocation.pluginId;
+      const report = (result: unknown, failure?: unknown) => {
+        if (!active) return;
+        const messages = appHandoffFeedbackMessages(feedback);
+        if (feedback.pending) messages.push("The plugin command ended before app handoff completed.");
+        const detail = failure !== undefined
+          ? attributedHandoffText(failure, name) ?? attributedHandoffText("Command failed.", name)
+          : feedback.confirmed || (!feedback.pending && !feedback.problems.size)
+            ? appHandoffCommandStatus(result, name) : undefined;
+        if (detail) messages.push(detail);
+        const selection = boundedHandoffText(Array.from(new Set(warnings)).join(" "));
+        if (selection) messages.push(`Selection warning: ${selection}`);
+        const text = messages.join("\n");
+        if (text) providersRef.current.onAppHandoffStatus?.(text, feedback);
+      };
+      return runtime.invokeAppHandoffMenuCommand(invocation, warnings, feedback).then(
+        result => report(result, pluginCommandFailure(result)),
+        (error: unknown) => report(undefined, error instanceof Error ? error.message :
+          typeof error === "string" ? error : "Command failed.")
+      );
+    });
+    return () => {
+      active = false;
+      unlisten();
+    };
+  }, [runtime, listenForAppHandoff]);
   useEffect(() => mountStructureNamingHost(runtime.naming, {
     coordinator: () => providersRef.current.getDialogCoordinator?.(),
     documentTabId: () => providersRef.current.getActiveDocumentTab?.().id
@@ -270,10 +325,6 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
   // Installed plugins (M36). Staging is only reachable inside the Tauri webview, so a non-Tauri host
   // (the browser build, tests) simply has no staging filesystem and no install actions — which is what
   // leaves the manager's package control honestly disabled rather than failing when pressed.
-  const stagingFs = useMemo<PluginStagingFs | undefined>(
-    () => (isTauriHost() ? createTauriPluginStagingFs() : undefined),
-    []
-  );
   const [installedPlugins, setInstalledPlugins] = useState<readonly InstalledPluginCatalogEntry[]>([]);
   const [installedPluginCatalogReady, setInstalledPluginCatalogReady] = useState(stagingFs === undefined);
   /** Which effect invocation currently owns the installed-plugin registrations in the shared host.
@@ -358,6 +409,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
         runtime,
         fs: stagingFs,
         inspection,
+        provenance: installedPackageProvenance(inspection),
         replaces: bundledPlugins.find((candidate) => candidate.manifest.id === inspection.manifest.id)
       });
       // A fresh install (from the catalog or a package) is the user asking for this plugin, so it must
@@ -396,7 +448,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
           disabledIds: loadDisabledPluginIds()
         });
       } catch (error) {
-        if (!(error instanceof PluginInstallError) || error.code !== PluginInstallErrorCodes.UninstallStorageDeleteFailed) {
+        if (!isCommittedUninstallError(error)) {
           throw error;
         }
         // The runtime and disk catalog are already uninstalled; finish the UI cleanup as well.
@@ -497,6 +549,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
         fs: stagingFs,
         current,
         inspection: prepared.inspection,
+        provenance: installedPackageProvenance(prepared.inspection),
         disabled: loadDisabledPluginIds().has(current.record.id),
         replaces: bundledPlugins.find((candidate) => candidate.manifest.id === current.record.id)
       });

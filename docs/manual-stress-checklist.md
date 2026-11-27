@@ -1738,6 +1738,52 @@ whole-molecule cleanup with the existing behavior, and check save/reopen and exp
   selection, before and after changing their shortcuts. Check that Windows utility windows
   stay menu-free and the macOS app menu restores its shortcuts if Preferences loses focus mid-recording.
 
+## App handoff (macOS and Windows)
+
+Run on the owner's MacBook for macOS UI and on a Windows CI-built installer; use the Intel iMac
+for processor-specific behavior. Use an eligible official catalog plugin and its native menu command.
+
+- Pick an app, decline consent, then accept and send a file. Revoke consent in Plugin Manager and
+  send again; verify consent is requested again.
+- Bounded retry (API 0.1.29): run a build whose plugin sends two alternative inputs and a retry
+  condition, with the companion reporting a poor value for the first input. Verify the build
+  confirmation says up to 3 builds, that the next input moves no atom more than 0.1 Å, and when it
+  builds again, that no box appears between attempts, that only the final build opens, and that the
+  status names the attempt count. Revoke consent, or replace the companion, while the first attempt
+  runs and verify no second attempt starts. While a step runs, close the document window (macOS:
+  reopen it from the Dock afterwards), then separately reload it, and separately choose the plugin's
+  menu command again: verify no later step or attempt starts and nothing opens, and that a new build
+  from the menu afterwards runs normally. Repeat the close with a single build (no retry). Have the
+  plugin send an alternative with another comment line, or with one atom moved 0.2 Å, and verify
+  the request fails with `bad-param` before any box. Repeat with a companion that exits nonzero or
+  times out and verify there is no second attempt.
+- Alternate sending a file and running a build with the same app. Each asks for consent once. Revoke one operation and verify the other stays allowed.
+- With a fresh app pick, approve only a pipeline. Remove or change its companion executable while
+  leaving the main app intact. Check that app status still reports the app as available and includes
+  the companion error. Try a build and verify it is refused. Send a file and verify it asks for
+  separate consent and opens the file after approval. Restore the original companion executable
+  before continuing, and check that app status no longer reports the companion error.
+- In the development app's consent store, duplicate the rows for one plugin and app using a version 1
+  fixture. Verify handoff for that group is refused and a different app or plugin can still hand off.
+  In Plugin Manager, verify one "Conflicting consents" entry appears for the affected app. Revoke it,
+  pick the app again, and verify that every operation needs fresh consent. Restore the fixture and
+  uninstall the affected plugin to verify its rows are cleared and other grants still work.
+  Uninstall a plugin that never received handoff consent and verify every listed consent remains.
+- Move the chosen app and retry. Check for an `app-changed` or `app-missing` failure, then restore
+  the app to its previous location or pick it again before continuing.
+- Send file names with spaces, non-ASCII characters, and a reserved Windows name; check the opened
+  file and sanitized name.
+- Run a companion build with warnings and verify the confirmation shows them before launch. Cancel
+  and verify no build starts; repeat and accept. Check the success status is attributed to the
+  plugin, and native failure or cancellation takes precedence over success text.
+- Check the plugin sees the running host version. Select individual atoms and mark connection
+  points; verify each anchor gains one single-bonded X in one undo entry, and undo/redo restores it.
+  Then select another atom of that molecule, mark it as a repeat unit, undo twice and redo once;
+  verify the X atoms are selected again.
+  Check that a whole-object selection and an invalid anchor do not silently mark atoms.
+- Check palette focus behavior and, on Windows, that no console flashes. Quit ChemDraft and verify
+  the receiving app remains running.
+
 ## Linux startup and session end
 
 - Disable “Start with a fresh document”, make an unsaved edit, and log out before the autosave

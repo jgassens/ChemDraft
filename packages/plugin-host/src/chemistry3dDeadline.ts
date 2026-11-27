@@ -16,6 +16,6 @@ export function registerChemistry3dStartupPause(signal: AbortSignal, pause: () =
 }
 
 /** One work budget including both the per-plugin and app-wide worker queues. */
-export function chemistry3dTimeoutMs(method: "embed3d" | "minimize3d" | "flatten3d", components = 1): number {
+export function chemistry3dTimeoutMs(method: "embed3d" | "minimize3d" | "flatten3d" | "handoffGraph", components = 1): number {
   return method === "embed3d" ? 15000 * components : method === "minimize3d" ? 60000 : 5000;
 }

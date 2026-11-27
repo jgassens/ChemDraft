@@ -4,7 +4,12 @@ import { App } from "./App";
 import { perfProbeRequestedFromWindow } from "./perf/gate";
 import { perfHook } from "./perf/runtime";
 import { installContextMenuGuard } from "./contextMenuGuard";
+import { installNativeAppHandoffReceiver } from "./appHandoff/nativeMenu";
 import "./App.css";
+
+const listenForAppHandoff = "__TAURI_INTERNALS__" in window && window === window.top &&
+  !new URLSearchParams(window.location.search).has("window")
+  ? installNativeAppHandoffReceiver(window) : undefined;
 
 // The document window owns its canvas context menu; all other app windows share this guard.
 if (new URLSearchParams(window.location.search).has("window")) installContextMenuGuard();
@@ -12,7 +17,7 @@ if (new URLSearchParams(window.location.search).has("window")) installContextMen
 function mount() {
   createRoot(document.getElementById("root") as HTMLElement).render(
     <StrictMode>
-      <App />
+      <App listenForAppHandoff={listenForAppHandoff} />
     </StrictMode>
   );
 }

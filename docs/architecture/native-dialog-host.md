@@ -697,3 +697,22 @@ and sends only normalized RGB hex on OK. The owner persists the slot without app
 drawing, and Clear invokes the slot's registered clear command. Changing slots replaces the
 previous draft; reopening the same slot retains it. Settings notifications and storage events
 refresh every palette webview. No plugin API or dialog-owner permission is broadened.
+
+## App handoff
+
+Rust opens the document-owned `appHandoff` window through the shared dialog host. It uses
+the standard opaque dialog route, per-kind frame persistence, and platform ownership and
+focus behavior. Confirmation shows the input formula and atom count calculated by Rust,
+with the suggested combination preselected among the declared combinations. The dialog sends
+the selected combination ID or Cancel. Rust checks the action against the session snapshot
+and settles it over a one-shot channel. Title-bar close settles as Cancel.
+
+The result uses a separate session. When Rust offers a rebuild, the box shows the completed
+combination, the reported joint twist score when available, and the repeat offered for Rebuild.
+The Rebuild action carries no parameters. Rust reruns the held input with its bound rebuild
+combination and returns the outcome through the original handoff call. The dialog snapshot
+fits the 3400-byte private transport budget and contains display data and choices only.
+Plugin Manager displays app locations and a separate consent row for file handoff and each
+approved pipeline. Each operation can be revoked independently. A conflicting app group has one
+entry covering all its operations. Revoking that entry removes the whole group. Worker replies carry
+path-free results.

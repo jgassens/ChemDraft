@@ -7,6 +7,7 @@ import { PluginInspectStructureResultSchema, PluginRingsResultSchema } from "@ch
 import { ensureRdkit, generateSmiles2DMolfile, resetRdkitForTesting } from "@chemdraft/rdkit-adapter";
 import { installRealRdkitModuleLoader } from "@chemdraft/rdkit-adapter/testing";
 import type { RequestDepictionBinding } from "@chemdraft/plugin-host";
+import { inspectStructureOffThread } from "../../depiction2d/identityClient";
 import { inspectStructureInWorker } from "../../depiction2d/identityInspect";
 import { IdentityWorkerUnavailableError } from "../../depiction2d/identityWorkerClient";
 import { createStructureInspection } from "./structureInspection";
@@ -17,6 +18,12 @@ const signal = new AbortController().signal;
 
 beforeAll(() => installRealRdkitModuleLoader());
 afterAll(() => resetRdkitForTesting());
+
+it.each([{ indices: [] }, { indices: [0] }])("refuses SMILES in connection-point write inspection with indices $indices", async ({ indices }) => {
+  const module = await ensureRdkit();
+  expect(inspectStructureInWorker(module, "CC", undefined, { connectionPointAtomIndices: indices }))
+    .toMatchObject({ valid: false, code: "unsupported" });
+});
 
 function bindingFor(molecule: MoleculeObject): RequestDepictionBinding {
   const document = createEmptyDocument();
@@ -173,6 +180,8 @@ describe("request structure inspection", () => {
       kind: "serialized", source: { format: "smiles", structure: "CCO" }
     }, signal);
     expect(result).toMatchObject({ ok: true, value: { formula: "C2H6O", heavyAtoms: 3, stereochemistry: [] } });
+    await expect(inspectStructureOffThread("smiles", "CC", undefined, signal, { connectionPointAtomIndices: [] }))
+      .resolves.toMatchObject({ valid: false, code: "unsupported" });
   });
 
   it.each([

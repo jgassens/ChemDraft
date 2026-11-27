@@ -21,9 +21,10 @@
 
 import { INSTALLED_PLUGINS_RECORD_FILE, installedPluginStagingDir } from "./installedPluginPaths";
 import type { PluginStagingFs } from "./pluginStagingFs";
+import type { PluginAppHandoffProvenance } from "@chemdraft/plugin-host";
 
 /** What was installed, and where its bytes went. */
-export interface InstalledPluginRecord {
+export interface InstalledPluginRecord extends PluginAppHandoffProvenance {
   /** Manifest id. Also the staging directory name and the URL segment it is served from. */
   id: string;
   /** Manifest version at install time — the installed bytes' version, not the latest available. */
@@ -37,6 +38,8 @@ export interface InstalledPluginRecord {
   sourceChecksum: string;
   /** ISO-8601 install time. */
   installedAt: string;
+  /** Changes on reinstall and stays stable across updates retaining app handoff. */
+  handoffInstallId?: string;
 }
 
 interface RecordsDocument {
@@ -83,8 +86,8 @@ export async function readInstalledPluginCatalog(fs: PluginStagingFs): Promise<I
     if (parsed === null || typeof parsed !== "object") {
       return { status: "unreadable", records: [] };
     }
-    const plugins = (parsed as Partial<RecordsDocument>).plugins;
-    if (!Array.isArray(plugins)) {
+    const { version, plugins } = parsed as Partial<RecordsDocument>;
+    if (version !== RECORDS_VERSION || !Array.isArray(plugins)) {
       return { status: "unreadable", records: [] };
     }
     const records = plugins.filter(isInstalledPluginRecord);
@@ -164,6 +167,8 @@ export function createInstalledPluginRecord(options: {
   sourceChecksum: string;
   stagedPath?: string;
   installedAt?: Date;
+  provenance?: PluginAppHandoffProvenance;
+  handoffInstallId?: string;
 }): InstalledPluginRecord {
   return {
     id: options.id,
@@ -171,7 +176,9 @@ export function createInstalledPluginRecord(options: {
     name: options.name,
     stagedPath: options.stagedPath ?? installedPluginStagingDir(options.id),
     sourceChecksum: options.sourceChecksum,
-    installedAt: (options.installedAt ?? new Date()).toISOString()
+    installedAt: (options.installedAt ?? new Date()).toISOString(),
+    ...options.provenance,
+    handoffInstallId: options.handoffInstallId
   };
 }
 
@@ -186,7 +193,11 @@ function isInstalledPluginRecord(candidate: unknown): candidate is InstalledPlug
     isNonEmptyString(record.name) &&
     isNonEmptyString(record.stagedPath) &&
     isNonEmptyString(record.sourceChecksum) &&
-    isNonEmptyString(record.installedAt)
+    isNonEmptyString(record.installedAt) &&
+    (record.handoffInstallId === undefined || isNonEmptyString(record.handoffInstallId)) &&
+    (record.source === undefined || record.source === "catalog" || record.source === "sideload") &&
+    (record.repository === undefined || typeof record.repository === "string") &&
+    (record.checksumVerified === undefined || typeof record.checksumVerified === "boolean")
   );
 }
 

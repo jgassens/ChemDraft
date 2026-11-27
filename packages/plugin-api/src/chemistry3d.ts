@@ -1,6 +1,105 @@
 import type { DocumentObject } from "@chemdraft/chem-core";
 import { z } from "zod";
 
+const graphIndex = z.number().int().nonnegative();
+const graphId = z.string().min(1).max(256);
+const graphBondOrder = z.union([z.literal(1), z.literal(2), z.literal(3), z.literal("aromatic")]);
+const graphAtom = z.object({
+  element: z.string().regex(/^(?:[A-Z][a-z]?|\*)$/),
+  charge: z.number().int().min(-127).max(127),
+  isotope: z.number().int().positive().max(999).optional(),
+  radicalElectrons: z.number().int().min(0).max(255),
+  /** Attached Hs counted on this atom. Separate H atom rows are excluded. */
+  hydrogenCount: z.number().int().min(0).max(255),
+  /** Drawn H atom neighbors plus Hs explicitly stated by the drawn label or source hint. */
+  explicitHydrogenCount: z.number().int().nonnegative().optional(),
+  /** Tetrahedral parity relative to the incident bonds in graph order. */
+  stereo: z.enum(["cw", "ccw"]).optional(),
+  atomId: graphId.optional(),
+  drawnLabel: z.string().min(1).max(8192).optional(),
+  isConnectionPoint: z.boolean().optional()
+}).strict();
+const graphBond = z.object({
+  a: graphIndex, b: graphIndex, order: graphBondOrder,
+  /** An RDKit Kekulé order for aromatic edges, used when reconstructing the graph. */
+  kekuleOrder: z.union([z.literal(1), z.literal(2)]).optional(),
+  stereo: z.enum(["cis", "trans", "either"]).optional(),
+  /** Stereo reference ligand on each endpoint, in a/b order. */
+  stereoAtoms: z.tuple([graphIndex, graphIndex]).optional(),
+  drawnStereo: z.object({ style: z.enum(["wedge", "hashed", "wavy"]), from: graphIndex }).strict().optional()
+}).strict();
+
+/** Atom and bond indices are zero-based. Graph embedding keeps all input atoms in this order. */
+export const PluginHandoffStructureGraphSchema = z.object({
+  atoms: z.array(graphAtom).min(1).max(4096),
+  bonds: z.array(graphBond).max(8192)
+}).strict().superRefine(({ atoms, bonds }, ctx) => {
+  const seen = new Set<string>();
+  const key = (a: number, b: number) => a < b ? `${a}:${b}` : `${b}:${a}`;
+  bonds.forEach(({ a, b }, index) => {
+    const edge = key(a, b);
+    if (a === b || !atoms[a] || !atoms[b] || seen.has(edge)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["bonds", index], message: "Bonds must join distinct atoms with no duplicate edges." });
+    }
+    seen.add(edge);
+  });
+  bonds.forEach(({ a, b, order, kekuleOrder, stereo, stereoAtoms, drawnStereo }, index) => {
+    const issue = (message: string) => ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["bonds", index], message });
+    if ((order === "aromatic") !== (kekuleOrder !== undefined)) issue("Aromatic bonds require a Kekulé order (1 or 2).");
+    if (stereo && order !== 2) issue("Double-bond stereo requires bond order 2.");
+    if (stereo === "cis" || stereo === "trans") {
+      if (!stereoAtoms || stereoAtoms[0] === b || stereoAtoms[1] === a ||
+          !seen.has(key(a, stereoAtoms[0])) || !seen.has(key(b, stereoAtoms[1]))) {
+        issue("Cis/trans stereo requires a bonded reference ligand at each endpoint.");
+      }
+    } else if (stereoAtoms) issue("Stereo reference ligands require cis/trans stereo.");
+    if (drawnStereo && (order !== 1 || (drawnStereo.from !== a && drawnStereo.from !== b))) {
+      issue("Drawn wedge, hash, and wave flags require a single bond and one of its endpoints.");
+    }
+  });
+});
+export type PluginHandoffStructureGraph = z.infer<typeof PluginHandoffStructureGraphSchema>;
+
+export const PluginHandoffGraphRequestSchema = z.object({ objectId: graphId }).strict();
+export type PluginHandoffGraphRequest = z.infer<typeof PluginHandoffGraphRequestSchema>;
+export const PluginHandoffGraphResultSchema = z.object({
+  objectId: graphId, pageId: graphId,
+  graph: PluginHandoffStructureGraphSchema,
+  canonicalSmiles: z.string().min(1).max(32768),
+  unspecifiedStereocenters: z.array(graphIndex).max(999),
+  unspecifiedDoubleBonds: z.array(graphIndex).max(999),
+  reactionMembership: z.array(z.object({
+    reactionId: graphId, role: z.enum(["reactant", "agent", "product"]),
+    mappingState: z.enum(["absent", "partial", "complete", "unknown"]),
+    /** Source reaction maps are retained as opaque CDXML attributes. */
+    atomMaps: z.array(z.object({
+      attribute: z.enum(["ReactionStepAtomMap", "ReactionStepAtomMapManual", "ReactionStepAtomMapAuto"]),
+      value: z.string().min(1).max(32768)
+    }).strict()).max(3)
+  }).strict()).max(999),
+  /** Atom-map numbers in the retained CTAB, indexed in that source's own one-based order. */
+  sourceAtomMaps: z.array(z.object({ atom: z.number().int().positive(), map: z.number().int().positive() }).strict()).max(999),
+  expandedLabels: z.array(z.object({ atomId: graphId, label: z.string().min(1).max(8192) }).strict()).max(999),
+  serializerWarnings: z.array(z.string().max(32768)).max(999)
+}).strict();
+export type PluginHandoffGraphResult = z.infer<typeof PluginHandoffGraphResultSchema>;
+
+export const PluginAddConnectionPointsRequestSchema = z.object({
+  objectId: graphId,
+  anchors: z.array(graphId).min(1).max(999)
+}).strict();
+export type PluginAddConnectionPointsRequest = z.infer<typeof PluginAddConnectionPointsRequestSchema>;
+export const PluginSuggestConnectionPointsRequestSchema = PluginAddConnectionPointsRequestSchema.extend({
+  anchors: PluginAddConnectionPointsRequestSchema.shape.anchors.refine(ids =>
+    new Set(ids).size === ids.length, "Anchor atom IDs must be distinct.")
+});
+export type PluginSuggestConnectionPointsRequest = z.infer<typeof PluginSuggestConnectionPointsRequestSchema>;
+/** Positions use the same coordinate frame as the molecule's editable atoms. */
+export const PluginSuggestConnectionPointsResultSchema = z.object({
+  points: z.array(z.object({ anchorAtomId: graphId, x: z.number().finite(), y: z.number().finite() }).strict()).max(999)
+}).strict();
+export type PluginSuggestConnectionPointsResult = z.infer<typeof PluginSuggestConnectionPointsResultSchema>;
+
 /** Plain, engine-independent data. Coordinates are in Angstrom, in a right-handed y-up frame.
  * Only coords may be edited: the session-bound modelToken authenticates the entire chemical graph.
  * Atom/bond order and component ranges are stable across minimization. */
@@ -16,14 +115,16 @@ export const Plugin3DModelSchema = z.object({
   bonds: z.array(z.object({
     a: z.number().int().nonnegative(),
     b: z.number().int().nonnegative(),
-    order: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal("aromatic")])
+    order: graphBondOrder
   }).strict()).max(8192),
   coords: z.array(z.number({ invalid_type_error: "3D model coordinates must all be finite numbers." })
     .finite("3D model coordinates must all be finite numbers.")).max(12288),
   components: z.array(z.object({
     smiles: z.string().min(1).max(5000),
     atomStart: z.number().int().nonnegative(),
-    atomCount: z.number().int().positive()
+    atomCount: z.number().int().positive(),
+    /** Graph input in its original atom order, authenticated by the host's model token. */
+    graph: PluginHandoffStructureGraphSchema.optional()
   }).strict()).min(1).max(8),
   modelToken: z.string().min(1).max(256)
 }).strict().superRefine((model, ctx) => {
@@ -44,7 +145,10 @@ export const Plugin3DModelSchema = z.object({
 export type Plugin3DModel = z.infer<typeof Plugin3DModelSchema>;
 
 export const PluginEmbed3DRequestSchema = z.object({
-  components: z.array(z.object({ smiles: z.string().min(1).max(5000) }).strict()).min(1).max(8),
+  components: z.array(z.union([
+    z.object({ smiles: z.string().min(1).max(5000) }).strict(),
+    z.object({ graph: PluginHandoffStructureGraphSchema }).strict()
+  ])).min(1).max(8),
   seed: z.number().int().min(0).max(2147483647).optional()
 }).strict();
 export type PluginEmbed3DRequest = z.infer<typeof PluginEmbed3DRequestSchema>;

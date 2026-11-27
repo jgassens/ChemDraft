@@ -210,6 +210,8 @@ export interface BondExtensionPlanningInput {
   pageBounds: LayoutBounds;
   objectBounds?: LayoutBounds;
   preferredAtomId?: string;
+  /** Set false when the caller must place a new atom instead of closing onto an existing atom. */
+  allowExistingTarget?: boolean;
   /** @deprecated Drawing accepts any degree; retained for source compatibility and ignored. */
   maxBondsPerAtom?: number;
   targetBondAngleDegrees?: number;
@@ -401,7 +403,7 @@ export function planBondExtension(input: BondExtensionPlanningInput): BondExtens
       x: source.atom.x + candidate.direction.x * input.bondLength,
       y: source.atom.y + candidate.direction.y * input.bondLength
     }, input.pageBounds);
-    const targetAtom = guidedBondTargetAtom({
+    const targetAtom = input.allowExistingTarget === false ? undefined : guidedBondTargetAtom({
       atoms: input.atoms,
       bonds: input.bonds,
       sourceAtom: source.atom,
@@ -435,6 +437,28 @@ export function planBondExtension(input: BondExtensionPlanningInput): BondExtens
   }
   // No direction leaves a visible bond inside the page: decline rather than draw one.
   return undefined;
+}
+
+/** New-atom placement for a click centered on an existing atom, using the bond tool's planner. */
+export function planNativeNewBondForAtom(
+  molecule: MoleculeObject,
+  atomId: string,
+  pageBounds: LayoutBounds
+): BondExtensionPlan | undefined {
+  const atom = molecule.atoms.find(candidate => candidate.id === atomId);
+  if (!atom) return undefined;
+  const style = nativeDrawingStyleFromObjectStyle(molecule.style);
+  return planBondExtension({
+    atoms: molecule.atoms,
+    bonds: molecule.bonds,
+    clickPoint: atom,
+    preferredAtomId: atomId,
+    allowExistingTarget: false,
+    bondLength: style.bondLengthPx,
+    targetBondAngleDegrees: style.chainAngleDegrees,
+    hitRadius: nativeAtomHitRadiusPx,
+    pageBounds
+  });
 }
 
 /** Rotation step of the ring-attachment search, in degrees. */

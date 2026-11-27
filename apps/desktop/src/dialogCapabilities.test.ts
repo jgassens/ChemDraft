@@ -40,14 +40,35 @@ describe("dialog capabilities", () => {
   });
   it("gives draft windows only validated channel transport with no generic event permissions", () => {
     const host = capabilities.find(({ name }) => name === "dialog-host.json")!.capability;
-    // Each native dialog kind gets only the same validated request/send transport.
-    expect(host.windows).toEqual(["dialog-main-reactionConditions-*", "dialog-main-pageSize-*", "dialog-main-pageEnlargement-*", "dialog-main-pluginTextPrompt-*", "dialog-main-arrangementSpacing-*", "dialog-main-insertTable-*", "dialog-main-customColor-*", "dialog-main-export-*", "dialog-main-engineInstall-*", "dialog-main-toolInstall-*", "dialog-main-structureTemplates-*", "dialog-main-atomProblem-*", "dialog-main-vibeCodeGuide-*", "dialog-main-guidedTour-*", "dialog-main-about-*"]);
+    // The Rust-owned handoff dialog uses the same validated transport for its snapshot and choice.
+    expect(host.windows).toEqual([
+      "dialog-main-reactionConditions-*", "dialog-main-pageSize-*", "dialog-main-pageEnlargement-*",
+      "dialog-main-pluginTextPrompt-*", "dialog-main-arrangementSpacing-*", "dialog-main-insertTable-*",
+      "dialog-main-customColor-*", "dialog-main-export-*", "dialog-main-engineInstall-*",
+      "dialog-main-toolInstall-*", "dialog-main-structureTemplates-*", "dialog-main-atomProblem-*",
+      "dialog-main-vibeCodeGuide-*", "dialog-main-guidedTour-*", "dialog-main-about-*",
+      "dialog-main-appHandoff-*"
+    ]);
     expect(host.permissions.slice().sort()).toEqual([
       "allow-dialog-request", "allow-dialog-send"
     ]);
     const owner = capabilities.find(({ name }) => name === "dialog-owner.json")!.capability;
     expect(owner.windows).toEqual(["main"]);
     expect(owner.permissions.slice().sort()).toEqual(["allow-dialog-close", "allow-dialog-open", "allow-dialog-publish"]);
+  });
+  it("grants app handoff commands to the document window alone", () => {
+    const granted = capabilities.filter(({ capability }) => permissionIdentifiers(capability)
+      .some(identifier => identifier.startsWith("allow-app-handoff-")));
+    expect(granted.map(({ name }) => name)).toEqual(["app-handoff.json"]);
+    const { capability } = granted[0]!;
+    expect(capability.windows).toEqual(["main"]);
+    expect(capability.webviews).toBeUndefined();
+    expect((capability as { remote?: unknown }).remote).toBeUndefined();
+    expect((capability as { platforms?: unknown }).platforms).toBeUndefined();
+    expect(permissionIdentifiers(capability).sort()).toEqual([
+      "allow-app-handoff-call", "allow-app-handoff-consent-clear-plugin",
+      "allow-app-handoff-consent-list", "allow-app-handoff-consent-revoke", "allow-app-handoff-menu-invocation"
+    ]);
   });
   it("grant dialog permissions, aliases included, to the document window alone", () => {
     const granted = capabilities.filter(({ capability }) => dialogPermissions(capability).length > 0);
