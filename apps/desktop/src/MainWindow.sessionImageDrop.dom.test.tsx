@@ -225,7 +225,9 @@ describe("the session MainWindow writes after two drops of a 1.7 MB photo", { ti
     expect(snapshot().selection.objectIds).toEqual(before.map(picture => picture.id));
     expect(before.map(picture => picture.data.image!.mimeType)).toEqual(["image/svg+xml", "image/png"]);
     const atob = vi.spyOn(globalThis, "atob");
-    const fromBase64 = vi.spyOn(Uint8Array as unknown as { fromBase64: (value: string) => Uint8Array }, "fromBase64");
+    // Uint8Array.fromBase64 is Node 25 and later; on Node 24 (CI) decoding falls back to atob alone.
+    const fromBase64 = "fromBase64" in Uint8Array
+      ? vi.spyOn(Uint8Array as unknown as { fromBase64: (value: string) => Uint8Array }, "fromBase64") : undefined;
     const event = new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true });
     await act(async () => canvas.dispatchEvent(event));
     expect(event.defaultPrevented).toBe(true);
@@ -234,7 +236,7 @@ describe("the session MainWindow writes after two drops of a 1.7 MB photo", { ti
     expect(after.map(picture => picture.data.image!.dataBase64)).toEqual(before.map(picture => picture.data.image!.dataBase64));
     // Nothing the nudge ran (the patch, its validation, the commit, the redraw) decoded either picture.
     const large = (calls: unknown[][]) => calls.filter(([value]) => typeof value === "string" && value.length > 10_000).length;
-    expect(large(atob.mock.calls) + large(fromBase64.mock.calls)).toBe(0);
+    expect(large(atob.mock.calls) + (fromBase64 ? large(fromBase64.mock.calls) : 0)).toBe(0);
   });
 
   it("restores a session RC5 wrote (CDXML envelope, active tab copied to the top level) and writes it back once", async () => {

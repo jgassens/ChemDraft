@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { MAX_IMAGE_OBJECT_BYTES, createEmptyDocument, type GraphicObject } from "@chemdraft/chem-core";
-import { MAX_SVG_SOURCE_CHARS } from "@chemdraft/export-engine";
+import { MAX_SVG_SOURCE_CHARS, pdfEmbeddableJpegFrame } from "@chemdraft/export-engine";
 import { insertDroppedImages } from "./insertDroppedImages";
 import { jpegPictureSvg, readJpegStructure, readKeepableJpeg } from "./jpegPicture";
 import {
@@ -87,6 +87,22 @@ describe("a dropped picture keeps its own encoded bytes", () => {
     const blank = decoders(async () => ({ width: 0, height: 0 }));
     expect(await prepareDroppedImage("blank.jpg", syntheticJpeg({ width: 8, height: 8 }), blank))
       .toEqual({ ok: false, reason: "the JPEG could not be decoded: the webview could not decode it." });
+  });
+
+  it("converts a CMYK JPEG to PNG, which every PDF export embeds, rather than keeping JPEG bytes PDF export cannot", async () => {
+    const jpeg = syntheticJpeg({ width: 640, height: 480, orientation: 6, xmp: true, cmyk: true, scanBytes: 2_000 });
+    expect(readKeepableJpeg(jpeg)).toBeDefined();
+    expect(pdfEmbeddableJpegFrame(readKeepableJpeg(jpeg)!.bytes)).toBeUndefined();
+    // The same photo in YCbCr is kept, and PDF export embeds its bytes.
+    const ycc = await prepared("photo.jpg", syntheticJpeg({ width: 640, height: 480, orientation: 6, xmp: true, scanBytes: 2_000 }));
+    expect(ycc.mimeType).toBe("image/svg+xml");
+    expect(pdfEmbeddableJpegFrame(embeddedJpeg(ycc))).toEqual({ width: 640, height: 480 });
+    const decode = decoders();
+    const image = await prepared("print.jpg", jpeg, decode);
+    expect(image).toMatchObject({ mimeType: "image/png", notes: [] });
+    expect(decode.decodeCheck).not.toHaveBeenCalled();
+    expect(decode.rasterToPng).toHaveBeenCalledExactlyOnceWith(readKeepableJpeg(jpeg)!.bytes, "image/jpeg", MAX_IMAGE_OBJECT_BYTES,
+      { maxSide: 4096, orientation: 6 });
   });
 
   it("converts a JPEG too large to keep whole, without its metadata and turned upright by the canvas, and says if it shrank", async () => {

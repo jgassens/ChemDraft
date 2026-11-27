@@ -64,6 +64,8 @@ export interface SyntheticJpegOptions {
   scanBytes?: number;
   xmp?: boolean;
   icc?: boolean;
+  /** Four components (CMYK, as Photoshop writes for print) instead of three. */
+  cmyk?: boolean;
 }
 
 /**
@@ -75,9 +77,11 @@ export function syntheticJpeg(options: SyntheticJpegOptions): Uint8Array {
   const { width, height } = options;
   const app0 = segment(0xe0, [0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x48, 0x00, 0x48, 0x00, 0x00]);
   const dqt = segment(0xdb, [0x00, ...Array.from({ length: 64 }, () => 1)]);
-  const sof = segment(0xc0, [0x08, height >> 8, height & 0xff, width >> 8, width & 0xff, 0x03, 1, 0x22, 0, 2, 0x11, 0, 3, 0x11, 0]);
+  const components = options.cmyk ? 4 : 3;
+  const sof = segment(0xc0, [0x08, height >> 8, height & 0xff, width >> 8, width & 0xff, components, 1, 0x22, 0,
+    ...Array.from({ length: components - 1 }, (_, index) => [index + 2, 0x11, 0]).flat()]);
   const dht = segment(0xc4, [0x00, 0, 1, ...Array.from({ length: 14 }, () => 0), 0]);
-  const sos = segment(0xda, [0x03, 1, 0x00, 2, 0x00, 3, 0x00, 0x00, 0x3f, 0x00]);
+  const sos = segment(0xda, [components, ...Array.from({ length: components }, (_, index) => [index + 1, 0x00]).flat(), 0x00, 0x3f, 0x00]);
   const head = [0xff, 0xd8, ...app0,
     ...(options.orientation !== undefined ? exifSegment(options.orientation, options.byteOrder) : []),
     ...(options.xmp ? xmpSegment() : []), ...(options.icc ? iccSegment() : []), ...dqt, ...sof, ...dht, ...sos];

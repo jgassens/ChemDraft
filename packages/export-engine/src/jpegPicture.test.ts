@@ -174,6 +174,39 @@ describe("PDF export of a kept JPEG", () => {
     expect(Buffer.from(pdf.bytes).toString("latin1")).not.toContain("DCTDecode");
   });
 
+  it("embeds each of two JPEGs alike in their first half as its own image", async () => {
+    // jsPDF's own image alias hashes only the first half of the bytes: these two would share one image.
+    const base = jpeg({ width: 30, height: 20 });
+    const withScan = (tail: number) => new Uint8Array([...base.subarray(0, -2), ...Array.from({ length: 200 }, (_, index) =>
+      index < 100 ? 0x11 : tail), 0xff, 0xd9]);
+    const first = withScan(0x22), second = withScan(0x33);
+    expect(first.subarray(0, first.length / 2)).toEqual(second.subarray(0, second.length / 2));
+    expect(first).not.toEqual(second);
+    const document = createEmptyDocument();
+    document.pages[0]!.objects = [first, second].map((bytes, index) => createImageGraphicObject({
+      id: `photo-${index}`, mimeType: "image/svg+xml",
+      dataBase64: Buffer.from(jpegPictureSvg(base64(bytes), 30, 20, 1)).toString("base64"), center: { x: 100 + 200 * index, y: 300 }
+    }));
+    const pdf = await exportDocumentToPdf(document, { compress: false, rasterizeSvgPicture: vi.fn() });
+    expect(pdf.warnings).toEqual([]);
+    const text = Buffer.from(pdf.bytes).toString("latin1");
+    expect(text.match(/\/Filter\s*\/DCTDecode/g)).toHaveLength(2);
+    expect(text).toContain(Buffer.from(first).toString("latin1"));
+    expect(text).toContain(Buffer.from(second).toString("latin1"));
+  });
+
+  it("rasterises the SVG, not rejecting the export, when the kept JPEG's own base64 is malformed", async () => {
+    const document = createEmptyDocument();
+    const picture = createImageGraphicObject({ id: "photo", mimeType: "image/svg+xml",
+      dataBase64: Buffer.from(jpegPictureSvg("A", 1, 1, 1)).toString("base64"), center: { x: 300, y: 300 } });
+    document.pages[0]!.objects = [picture];
+    expect(readJpegPicture(picture.data.image!)).toBeDefined();
+    const rasterize = vi.fn(async () => { throw new Error("no rasteriser in this test"); });
+    const pdf = await exportDocumentToPdf(document, { compress: false, rasterizeSvgPicture: rasterize });
+    expect(rasterize).toHaveBeenCalledTimes(1);
+    expect(pdf.warnings.map(warning => warning.code)).toEqual(["export.pdf.svg_picture_not_drawn"]);
+  });
+
   it("embeds baseline and progressive greyscale and colour JPEGs", () => {
     for (const shape of [{ width: 30, height: 20 }, { width: 7, height: 9, components: 1 }, { width: 30, height: 20, frame: 0xc2 },
       { width: 30, height: 20, frame: 0xc1 }]) {

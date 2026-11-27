@@ -107,6 +107,31 @@ describe("JPEG image data completeness", () => {
     expect(readKeepableJpeg(new Uint8Array([...jpeg, 0x00, 0x11, 0xff, 0x22]))).toBeDefined();
   });
 
+  it("removes metadata between the scans of a progressive JPEG and anything after EOI, keeping the scans and ICC", () => {
+    const jpeg = syntheticJpeg({ width: 16, height: 16, icc: true, scanBytes: 300 });
+    const dht = [0xff, 0xc4, 0x00, 0x14, 0x10, 0, 1, ...Array.from({ length: 14 }, () => 0), 0];
+    const secondScan = [0xff, 0xda, 0x00, 0x08, 0x01, 1, 0x00, 0x00, 0x3f, 0x00, 0x11, 0x22, 0xff, 0xd0, 0x33];
+    // Exif (with its GPS pointer) and XMP location, Photoshop/IPTC, and an ICC profile between the scans,
+    // the Exif behind fill bytes; then a phone's appended trailer after EOI.
+    const between = [...dht, 0xff, ...exifSegment(3), ...xmpSegment(), ...photoshopSegment(), ...iccSegment()];
+    const trailer = [...new TextEncoder().encode("GPSLatitude trailer"), 0xff, 0xd8, 0xff, 0xe1, 0x00, 0x04, 0x45, 0x78];
+    const progressive = new Uint8Array([...intoScan(jpeg, 300, ...between, ...secondScan), ...trailer]);
+    const kept = readKeepableJpeg(progressive)!;
+    expect(kept).toBeDefined();
+    expect(kept.strippedMetadata).toBe(true);
+    // Orientation is read only from the segments before the first scan, as decoders do.
+    expect(kept.orientation).toBe(1);
+    expect(ascii(kept.bytes)).not.toMatch(/Exif|xap|GPSLatitude|Phone|Photoshop|trailer/);
+    const expected = new Uint8Array([...intoScan(jpeg, 300, ...dht, ...iccSegment(), ...secondScan)]);
+    expect(Array.from(kept.bytes)).toEqual(Array.from(expected));
+    expect(Array.from(kept.bytes.subarray(-2))).toEqual([0xff, 0xd9]);
+    expect(readJpegStructure(kept.bytes)!.complete).toBe(true);
+    // Only bytes after EOI: dropped, and that alone counts as stripped.
+    const trailing = readKeepableJpeg(new Uint8Array([...jpeg, ...trailer]))!;
+    expect(Array.from(trailing.bytes)).toEqual(Array.from(jpeg));
+    expect(trailing.strippedMetadata).toBe(true);
+  });
+
   it("refuses to keep a truncated JPEG, reading its structure for the conversion route", () => {
     const jpeg = syntheticJpeg({ width: 16, height: 16, orientation: 6, xmp: true, scanBytes: 300 });
     const truncated = jpeg.subarray(0, jpeg.length - 120);

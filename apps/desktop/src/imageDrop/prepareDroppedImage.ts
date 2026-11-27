@@ -2,8 +2,8 @@ import {
   MAX_IMAGE_OBJECT_BYTES, isSvgImageSource, readPngInfo, validatePngImage, validateSvgImage, type ImageObjectData
 } from "@chemdraft/chem-core";
 import {
-  MAX_SVG_SOURCE_CHARS, SVG_PICTURE_FORMAT_LABEL, pictureSizeLimitError as dropPixelLimitError, readRasterHeaderSize,
-  sanitizeSvgPicture, sniffBinaryImageFormat, type EmbeddedSvgBitmap, type SniffedImageFormat
+  MAX_SVG_SOURCE_CHARS, SVG_PICTURE_FORMAT_LABEL, pdfEmbeddableJpegFrame, pictureSizeLimitError as dropPixelLimitError,
+  readRasterHeaderSize, sanitizeSvgPicture, sniffBinaryImageFormat, type EmbeddedSvgBitmap, type SniffedImageFormat
 } from "@chemdraft/export-engine";
 import { formatDropBytes, rewordPictureError } from "./dropFiles";
 import {
@@ -50,6 +50,16 @@ export function bytesToBase64(bytes: Uint8Array): string {
 }
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
+
+/**
+ * Whether PDF export can embed these JPEG bytes as they are (`pdfEmbeddableJpegFrame`), at `size`.
+ * A kept JPEG it cannot embed (CMYK, arithmetic or 12-bit, a frame jsPDF's walk misses) would need its
+ * SVG rasterised, which the headless CLI cannot do: such a JPEG is converted to PNG instead.
+ */
+function pdfEmbeddable(bytes: Uint8Array, size: { width: number; height: number }): boolean {
+  const frame = pdfEmbeddableJpegFrame(bytes);
+  return frame !== undefined && frame.width === size.width && frame.height === size.height;
+}
 
 function payloadSizeError(bytes: number): string | undefined {
   return bytes > MAX_IMAGE_OBJECT_BYTES
@@ -146,6 +156,8 @@ async function scaledJpegPicture(
     Math.max(size.width, size.height) > KEPT_JPEG_MAX_SIDE) {
     return { ok: false, reason: "the JPEG could not be scaled down: the webview's JPEG is not readable." };
   }
+  // A webview JPEG PDF export could not embed as it is: the PNG conversion route takes the original.
+  if (!pdfEmbeddable(scaled.bytes, size)) return undefined;
   const svgLength = jpegPictureSvgLength(scaled.bytes.length, size.width, size.height, 1);
   if (svgLength > MAX_SVG_SOURCE_CHARS || svgLength > MAX_IMAGE_OBJECT_BYTES) return undefined;
   const svg = jpegPictureSvg(bytesToBase64(scaled.bytes), size.width, size.height, 1);
@@ -186,9 +198,9 @@ async function embeddedBitmapDecodeError(bitmap: EmbeddedSvgBitmap, decoders: Dr
  * Recognise a dropped picture by its bytes and turn it into PNG or sanitized SVG. A PNG is kept byte
  * for byte once its image data has been checked (`pngIntegrity.ts`) and the webview has decoded it;
  * a JPEG keeps its own encoded bytes inside an SVG picture that applies its EXIF orientation
- * (`jpegPicture.ts`), or past `KEPT_JPEG_MAX_SIDE` is scaled down and re-encoded inside it; GIF and
- * WebP are converted to PNG; an SVG is kept once the webview has drawn
- * the sanitized text.
+ * (`jpegPicture.ts`), or past `KEPT_JPEG_MAX_SIDE` is scaled down and re-encoded inside it; a JPEG
+ * PDF export could not embed as it is (CMYK), GIF and WebP are converted to PNG; an SVG is kept once
+ * the webview has drawn the sanitized text.
  * Every decoder call carries `options.signal`, the file's deadline. Every refusal is a reason without
  * the file name; the caller names the file.
  */
@@ -238,14 +250,16 @@ export async function prepareDroppedImage(
       // A JPEG that stops before its image data is left to the webview's decoder below, as before.
       const jpeg = readJpegStructure(bytes);
       if (jpeg?.complete) {
+        // Kept only when every export, the headless PDF one included, can draw it (`pdfEmbeddable`); a
+        // JPEG scaled down is re-encoded by the webview, so its source may be CMYK.
         const kept = Math.max(header.width, header.height) > KEPT_JPEG_MAX_SIDE
           ? await scaledJpegPicture(name, jpeg, decoders, options)
-          : await keptJpegPicture(name, jpeg, header, decoders, options);
+          : pdfEmbeddable(jpeg.bytes, header) ? await keptJpegPicture(name, jpeg, header, decoders, options) : undefined;
         if (kept) return kept;
       }
       if (jpeg) {
-        // Too large to keep whole, or its image data is incomplete (never stored as it is): converted,
-        // with the canvas turning it upright.
+        // Too large to keep whole, not embeddable in PDF as it is (CMYK), or its image data is
+        // incomplete (never stored as it is): converted, with the canvas turning it upright.
         source = jpeg.bytes;
         orientation = jpeg.orientation;
         if (!jpeg.complete) notes.push(INCOMPLETE_JPEG_NOTE);

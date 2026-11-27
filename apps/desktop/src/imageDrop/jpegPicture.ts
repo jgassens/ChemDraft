@@ -9,9 +9,10 @@
  * (`prepareDroppedImage.ts`).
  *
  * EXIF orientation is applied by the SVG itself, never by a decoder. The metadata segments (APP1,
- * which holds Exif and XMP, and APP13, Photoshop and IPTC) are removed, so no renderer can rotate the
- * picture a second time or ignore the tag, and the `<image>` carries the matching transform: a portrait
- * phone photo is upright everywhere it is drawn. Removing them also keeps the photo's location and
+ * which holds Exif and XMP, and APP13, Photoshop and IPTC) are removed wherever they are, between the
+ * scans of a progressive file too, and so is anything after the end-of-image marker (an appended
+ * preview or trailer), so no renderer can rotate the picture a second time or ignore the tag, and the
+ * `<image>` carries the matching transform: a portrait phone photo is upright everywhere it is drawn. Removing them also keeps the photo's location and
  * camera details out of the document, as the PNG re-encode did. Every other segment (JFIF, the ICC
  * colour profile, Adobe's colour transform, tables, the frame and the scan) is kept as it is.
  */
@@ -24,11 +25,14 @@ export {
 } from "@chemdraft/export-engine";
 
 export interface KeepableJpeg {
-  /** The file without its metadata segments; the very array it came in when it had none. */
+  /**
+   * The file without its metadata segments and, when complete, without any bytes after its EOI; the
+   * very array it came in when there was nothing to remove.
+   */
   bytes: Uint8Array;
   /** From the first Exif segment, or 1 when there is none. */
   orientation: JpegOrientation;
-  /** Whether any metadata segment was removed. */
+  /** Whether any metadata segment, or anything after EOI, was removed. */
   strippedMetadata: boolean;
 }
 
@@ -98,8 +102,9 @@ export function readKeepableJpeg(bytes: Uint8Array): KeepableJpeg | undefined {
 /**
  * The JPEG without its metadata segments and with its EXIF orientation, when its structure is
  * complete up to the first scan: a frame header, then a scan. Undefined otherwise (a header without
- * image data, a segment running past the end). From the first scan on, the file is only checked
- * (`complete`), never changed.
+ * image data, a segment running past the end). From the first scan on, the file is checked
+ * (`complete`), and only its metadata segments between scans and anything after EOI are removed: the
+ * entropy-coded data and every other segment stay byte for byte.
  */
 export function readJpegStructure(bytes: Uint8Array): JpegStructure | undefined {
   if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== SOI) return undefined;
@@ -124,9 +129,12 @@ export function readJpegStructure(bytes: Uint8Array): JpegStructure | undefined 
     if (SOF.has(marker)) frame = true;
     if (marker === SOS) {
       if (!frame) return undefined;
+      const end = imageDataEnd(bytes, segmentEnd, removed);
+      const kept = end === undefined || end === bytes.length ? bytes : bytes.subarray(0, end);
       return {
-        bytes: withoutRanges(bytes, removed), orientation: orientation ?? 1, strippedMetadata: removed.length > 0,
-        complete: imageDataComplete(bytes, segmentEnd)
+        bytes: withoutRanges(kept, removed), orientation: orientation ?? 1,
+        strippedMetadata: removed.length > 0 || kept.length < bytes.length,
+        complete: end !== undefined
       };
     }
     if (marker === APP1 || marker === APP13) {
@@ -139,42 +147,46 @@ export function readJpegStructure(bytes: Uint8Array): JpegStructure | undefined 
 }
 
 /**
- * Whether the image data from the end of the first scan header (`offset`) is complete: each scan's
- * entropy-coded data runs to a marker, where a 0xFF byte is data only when stuffed (0xFF00) and
- * restart markers RST0-RST7 come in order from RST0 in every scan; every segment between scans
- * (tables, restart interval, comments, the next scan's header) lies inside the file; and the data
- * ends at EOI. Bytes after EOI are not image data and are not judged.
+ * The offset just past EOI when the image data from the end of the first scan header (`offset`) is
+ * complete, or undefined: each scan's entropy-coded data runs to a marker, where a 0xFF byte is data
+ * only when stuffed (0xFF00) and restart markers RST0-RST7 come in order from RST0 in every scan;
+ * every segment between scans (tables, restart interval, comments, metadata, the next scan's header)
+ * lies inside the file; and the data ends at EOI. Bytes after EOI are not image data and are not
+ * judged. Each APP1 or APP13 segment found between scans is added to `removed` (fill bytes included).
  */
-function imageDataComplete(bytes: Uint8Array, offset: number): boolean {
+function imageDataEnd(bytes: Uint8Array, offset: number, removed: Array<[number, number]>): number | undefined {
   let expectedRestart = 0;
   // Entropy-coded data: find the marker that ends it.
   for (;;) {
     const next = bytes.indexOf(0xff, offset);
-    if (next < 0) return false;
+    if (next < 0) return undefined;
     let at = next + 1;
     while (at < bytes.length && bytes[at] === 0xff) at += 1;
-    if (at >= bytes.length) return false;
+    if (at >= bytes.length) return undefined;
     const code = bytes[at]!;
     offset = at + 1;
     if (code === 0x00) continue;
     if (code >= 0xd0 && code <= 0xd7) {
-      if (code - 0xd0 !== expectedRestart) return false;
+      if (code - 0xd0 !== expectedRestart) return undefined;
       expectedRestart = (expectedRestart + 1) & 7;
       continue;
     }
     // A marker: the end of the image, or segments up to the next scan.
     let marker = code;
+    let segmentStart = next;
     for (;;) {
-      if (marker === EOI) return true;
-      if (marker === SOI || marker === TEM || marker === 0x00 || (marker >= 0xd0 && marker <= 0xd7)) return false;
-      if (offset + 2 > bytes.length) return false;
+      if (marker === EOI) return offset;
+      if (marker === SOI || marker === TEM || marker === 0x00 || (marker >= 0xd0 && marker <= 0xd7)) return undefined;
+      if (offset + 2 > bytes.length) return undefined;
       const length = (bytes[offset]! << 8) | bytes[offset + 1]!;
-      if (length < 2 || offset + length > bytes.length) return false;
+      if (length < 2 || offset + length > bytes.length) return undefined;
       offset += length;
+      if (marker === APP1 || marker === APP13) removed.push([segmentStart, offset]);
       if (marker === SOS) break;
-      if (offset >= bytes.length || bytes[offset] !== 0xff) return false;
+      if (offset >= bytes.length || bytes[offset] !== 0xff) return undefined;
+      segmentStart = offset;
       while (offset < bytes.length && bytes[offset] === 0xff) offset += 1;
-      if (offset >= bytes.length) return false;
+      if (offset >= bytes.length) return undefined;
       marker = bytes[offset]!;
       offset += 1;
     }

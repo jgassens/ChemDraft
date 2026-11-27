@@ -12,10 +12,12 @@ import * as svg2pdfModule from "svg2pdf.js";
 import { getExportFormatDescriptor } from "./formats";
 import type { BinaryExportResult, ExportWarning } from "./results";
 import { ensureSvgFontsLoaded, exportDocumentToSvg } from "./svg";
-import { jpegPicturePlacement, readJpegPicture, type JpegOrientation } from "./jpegPicture";
+import { jpegPicturePlacement, pdfEmbeddableJpegFrame, readJpegPicture, type JpegOrientation } from "./jpegPicture";
 import { preparePdfFonts } from "./pdfFonts";
 import { preparePdfHaloPaint } from "./pdfHaloPaint";
 import { ensureHandwritingFontLoaded, handwritingFontFaceCss } from "./handwritingFont";
+
+export { pdfEmbeddableJpegFrame } from "./jpegPicture";
 
 const svg2pdf = resolveSvg2pdf(svg2pdfModule);
 const SVG_MARKUP_LIMIT_BYTES = 256 * 1024 * 1024;
@@ -167,7 +169,7 @@ export async function exportSvgToPdf(
         await render(part);
         run = [];
       };
-      for (const child of children) {
+      for (const [childIndex, child] of children.entries()) {
         const picture = pictures.get(child.getAttribute("data-object-id") ?? "");
         if (!picture || picture.type !== "graphic" || !picture.data.image) {
           if (child.tagName !== "defs") run.push(child);
@@ -203,7 +205,10 @@ export async function exportSvgToPdf(
             // The same placement SVG export writes: the stored box, turned about the frame's centre.
             const placement = jpegPicturePlacement(frame, jpeg.orientation);
             if (placement.matrix) pdf.setCurrentTransformationMatrix(pdf.Matrix(...placement.matrix));
-            pdf.addImage(jpeg.bytes, "JPEG", placement.box.x, placement.box.y, placement.box.width, placement.box.height);
+            // An explicit alias, by position: jsPDF's own alias hashes only the first half of the bytes,
+            // so two JPEGs alike in that half would otherwise share one image.
+            pdf.addImage(jpeg.bytes, "JPEG", placement.box.x, placement.box.y, placement.box.width, placement.box.height,
+              `chemdraft-jpeg-${childIndex}`);
           } else {
             pdf.addImage(png, "PNG", frame.x, frame.y, frame.width, frame.height);
           }
@@ -232,45 +237,19 @@ type SvgPictureRaster = { png: Uint8Array } | { warning: ExportWarning };
 
 /**
  * A kept JPEG picture (`jpegPicture.ts`) whose bytes the PDF can carry as they are, or undefined:
- * such a picture is then rasterised like any other SVG picture.
+ * such a picture (a malformed inner payload included) is then rasterised like any other SVG picture.
  */
 function pdfJpegPicture(image: { mimeType: string; dataBase64: string }): { bytes: Uint8Array; orientation: JpegOrientation } | undefined {
   const jpeg = readJpegPicture(image);
   if (!jpeg) return undefined;
-  const bytes = decodeBase64Bytes(jpeg.jpegBase64);
+  let bytes: Uint8Array;
+  try {
+    bytes = decodeBase64Bytes(jpeg.jpegBase64);
+  } catch {
+    return undefined;
+  }
   const frame = pdfEmbeddableJpegFrame(bytes);
   return frame && frame.width === jpeg.width && frame.height === jpeg.height ? { bytes, orientation: jpeg.orientation } : undefined;
-}
-
-/**
- * The size of a JPEG jsPDF embeds as it is (DCTDecode) and every PDF reader decodes: a baseline,
- * extended or progressive Huffman frame of 8-bit greyscale or YCbCr samples. jsPDF finds the frame
- * by its own walk (from the second segment, taking the first marker from C0 to C7, a DHT included,
- * as the frame), so the frame must be what that walk reaches: no fill bytes, no DHT before it, and
- * not the first segment. Undefined otherwise; CMYK too, whose Adobe inversion needs a Decode array
- * jsPDF does not write, and arithmetic, lossless and 12-bit frames, which readers may not decode.
- */
-export function pdfEmbeddableJpegFrame(bytes: Uint8Array): { width: number; height: number } | undefined {
-  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return undefined;
-  for (let offset = 2; offset + 4 <= bytes.length;) {
-    const marker = bytes[offset + 1]!;
-    // Fill bytes, a second image, the scan or a restart before the frame: not jsPDF's walk.
-    if (bytes[offset] !== 0xff || marker === 0xff || marker === 0xd8 || marker === 0xd9 || marker === 0xda || marker === 0x01 ||
-      (marker >= 0xd0 && marker <= 0xd7)) return undefined;
-    const length = (bytes[offset + 2]! << 8) | bytes[offset + 3]!;
-    if (length < 2 || offset + 2 + length > bytes.length) return undefined;
-    if (marker >= 0xc0 && marker <= 0xc7) {
-      if (offset === 2 || marker > 0xc2 || length < 8) return undefined;
-      const height = (bytes[offset + 5]! << 8) | bytes[offset + 6]!;
-      const width = (bytes[offset + 7]! << 8) | bytes[offset + 8]!;
-      const components = bytes[offset + 9];
-      return bytes[offset + 4] === 8 && (components === 1 || components === 3) && width > 0 && height > 0 ? { width, height } : undefined;
-    }
-    // Arithmetic-coded frames (C9-CB, CD-CF); C8 is reserved and CC defines arithmetic conditioning.
-    if (marker >= 0xc9 && marker <= 0xcf && marker !== 0xcc) return undefined;
-    offset += 2 + length;
-  }
-  return undefined;
 }
 
 function svgPictureNotDrawn(id: string, reason: string): ExportWarning {
