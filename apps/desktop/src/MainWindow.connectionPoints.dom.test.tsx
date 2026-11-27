@@ -545,3 +545,42 @@ it("undoes and redoes a connection-point mark after a selection-only Select All"
   expect(present()).toEqual(marked);
   expect(nativeSelection()).toEqual([markerId]);
 });
+
+it("keeps the live atom selection when undoing and redoing a nudge after a mark on the same molecule", async () => {
+  await render(aromaticSource);
+  await selectAtom("a");
+  await act(async () => {
+    const runtime = register(context => context.documents.addConnectionPoints!({ objectId: source.id, anchors: ["a"] }));
+    await runtime.invokeCommand(commandId);
+  });
+  const marked = present();
+  const markerId = drawn().atoms.find(atom => atom.element === "X")!.id;
+  expect(nativeSelection()).toEqual([markerId]);
+  await selectAtom("d");
+  const dX = () => drawn().atoms.find(atom => atom.id === "d")!.x;
+  const originalX = dX();
+  await menu("selection.nudge.right.large");
+  expect(dX()).toBe(originalX + 10);
+  expect(nativeSelection()).toEqual(["d"]);
+  // The mark's recorded markers belong to redoing the mark, not to undoing a later edit.
+  await menu("edit.undo");
+  expect(dX()).toBe(originalX);
+  expect(nativeSelection()).toEqual(["d"]);
+  await menu("edit.redo");
+  expect(dX()).toBe(originalX + 10);
+  expect(nativeSelection()).toEqual(["d"]);
+  await menu("edit.undo");
+  expect(nativeSelection()).toEqual(["d"]);
+  // Delete acts on the live selection, never on the marker.
+  await menu("edit.forwardDeleteHoveredNativeTarget");
+  expect(drawn().atoms.some(atom => atom.id === "d")).toBe(false);
+  expect(drawn().atoms.some(atom => atom.id === markerId)).toBe(true);
+  await menu("edit.undo");
+  expect(present()).toEqual(marked);
+  // Undoing the mark itself still restores the selection from before it, and redoing it the markers.
+  await menu("edit.undo");
+  expect(nativeSelection()).toEqual(["a"]);
+  await menu("edit.redo");
+  expect(present()).toEqual(marked);
+  expect(nativeSelection()).toEqual([markerId]);
+});

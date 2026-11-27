@@ -21,7 +21,10 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
-    sync::{atomic::AtomicBool, OnceLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        OnceLock,
+    },
     time::{Duration, Instant, SystemTime},
 };
 
@@ -998,6 +1001,33 @@ fn companion_watchdog_kills_descendants() {
     );
     std::thread::sleep(Duration::from_millis(2300));
     assert!(!dir.0.join("child-survived").exists());
+}
+
+/// A stop set before the runner sees the companion's exit wins over that exit: quitting while the
+/// last step is ending reports the step stopped, never finished. The poll waits for the exit and
+/// lets both pipe readers reach end of file (they poll every 10 ms), so only the exit path can see
+/// the stop; then it sets the flag and reports the exit. A run with no stop still succeeds.
+#[test]
+fn companion_stop_set_before_its_exit_is_seen_wins_over_the_exit() {
+    let dir = TestDir::new();
+    for stopping in [false, true] {
+        let stop = AtomicBool::new(false);
+        let mut child = ChildProcess::spawn(rust_stub(), &["capabilities".into()], &dir.0).unwrap();
+        let captured = child.capture_polling(Duration::from_secs(5), &stop, |child| {
+            if !stopping {
+                return child.try_wait();
+            }
+            let status = child.wait()?;
+            std::thread::sleep(Duration::from_millis(300));
+            stop.store(true, Ordering::Release);
+            Ok(Some(status))
+        });
+        if stopping {
+            assert_eq!(captured.unwrap_err(), CaptureError::Timeout);
+        } else {
+            assert!(captured.unwrap().status.success());
+        }
+    }
 }
 
 #[cfg(unix)]

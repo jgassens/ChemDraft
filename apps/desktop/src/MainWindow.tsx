@@ -1854,7 +1854,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.27.04.00-opus";
+const CURRENT_BUILD_STAMP = "11.27.06.00-opus";
 
 /**
  * The commit funnel's chemistry check (AGENTS.md section 7, `commitChemistryGuard.ts`). `before`
@@ -10100,7 +10100,8 @@ export function MainWindow({
     let nextHistory: DocumentHistory | undefined;
     let undoLabel: string | undefined;
     let nativePartUndoSelection: NativeMoleculeSelectionPart[] | undefined;
-    let leavingRecordedNativePartSelection = false;
+    let leftRecordedNativePartSelection: NativeMoleculeSelectionPart[] | undefined;
+    const liveNativeParts = selectedNativeMoleculePartsRef.current;
     installDocumentHistory((history) => {
       const recordedAfter = recordedHistoryAfterRef.current.get(history.present);
       const currentHistory = { ...history,
@@ -10109,8 +10110,8 @@ export function MainWindow({
       if (restored === currentHistory) return history;
       if (direction === "undo") nativePartUndoSelection = nativePartUndoSelectionsRef.current.get(currentHistory.present);
       const recordedSelections = nativePartHistorySelectionsRef.current;
-      leavingRecordedNativePartSelection = recordedSelections.has(history.present) ||
-        (recordedAfter !== undefined && recordedSelections.has(recordedAfter));
+      leftRecordedNativePartSelection = recordedSelections.get(history.present) ??
+        (recordedAfter !== undefined ? recordedSelections.get(recordedAfter) : undefined);
       undoLabel = direction === "undo"
         ? documentUndoLabelsRef.current.get(currentHistory.present)
         : documentUndoLabelsRef.current.get(restored.present);
@@ -10122,10 +10123,23 @@ export function MainWindow({
       return;
     }
 
-    const nativePartSelection = nativePartUndoSelection ?? nativePartHistorySelectionsRef.current.get(nextHistory.present);
+    // Native part selection across history (recorded by a connection-point mark and a repeat-unit
+    // toggle; a selection-only replacement carries both records to its document):
+    // - Undoing such an action restores the selection from before it (nativePartUndoSelectionsRef).
+    // - Redoing into a state restores the selection recorded after its action
+    //   (nativePartHistorySelectionsRef), e.g. the mark's markers. Undo never restores that one:
+    //   undoing a later ordinary edit back to the state keeps the live selection.
+    // - Redoing out of a state while its recorded selection is still the live one clears it, so a
+    //   key such as Delete cannot reach the markers in the redone state. A selection made since stays.
+    // - Otherwise the document-change effect keeps the current parts that still exist.
+    const nativePartSelection = direction === "undo"
+      ? nativePartUndoSelection
+      : nativePartHistorySelectionsRef.current.get(nextHistory.present);
     if (nativePartSelection) setSelectedNativeMoleculeParts(nativePartSelection);
-    else if (leavingRecordedNativePartSelection) setSelectedNativeMoleculeParts([]);
-    // Otherwise the document-change effect keeps the current parts that still exist.
+    else if (direction === "redo" && leftRecordedNativePartSelection &&
+      JSON.stringify(leftRecordedNativePartSelection) === JSON.stringify(liveNativeParts)) {
+      setSelectedNativeMoleculeParts([]);
+    }
 
     historyNavigationCountRef.current += 1;
     // Redoing the supplied practice structure returns to the clean starting drawing.
