@@ -2075,7 +2075,7 @@ describe("PluginHost document boundary", () => {
     expect(live.title).not.toBe("hijacked");
   });
 
-  it("serves documents.getMolecules (API 0.1.30) only with document.read, as a frozen copy", async () => {
+  it("serves documents.getMolecules (API 0.1.28) only with document.read, as a frozen copy", async () => {
     const live = createEmptyDocument({ now: timestamp });
     live.pages[0].objects.push(moleculeObject());
     const pageMolecules = [{
@@ -2089,7 +2089,7 @@ describe("PluginHost document boundary", () => {
       getPageMolecules: (document) => { seen.push(document); return pageMolecules; }
     });
     const register = (id: string, permissions: PluginPermission[]) => host.registerPlugin({
-      id, name: id, version: "0.0.1", apiVersion: "^0.1.30", entry: "dist/plugin.js", permissions,
+      id, name: id, version: "0.0.1", apiVersion: "^0.1.28", entry: "dist/plugin.js", permissions,
       contributes: { commands: [] }
     });
     register("org.test.molreader", ["document.read"]);
@@ -2110,7 +2110,7 @@ describe("PluginHost document boundary", () => {
   it("returns no molecules when there is no active document or no provider", async () => {
     const host = new PluginHost({ now: () => timestamp });
     host.registerPlugin({
-      id: "org.test.molempty", name: "Empty", version: "0.0.1", apiVersion: "^0.1.30", entry: "dist/plugin.js",
+      id: "org.test.molempty", name: "Empty", version: "0.0.1", apiVersion: "^0.1.28", entry: "dist/plugin.js",
       permissions: ["document.read"], contributes: { commands: [] }
     });
     await expect(host.createCommandContext("org.test.molempty").documents.getMolecules()).resolves.toEqual([]);

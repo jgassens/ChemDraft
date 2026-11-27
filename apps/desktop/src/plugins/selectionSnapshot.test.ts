@@ -126,7 +126,7 @@ describe("buildPluginSelectionSnapshot", () => {
   });
 });
 
-describe("buildPluginPageMolecules (documents.getMolecules, API 0.1.30)", () => {
+describe("buildPluginPageMolecules (documents.getMolecules, API 0.1.28)", () => {
   it("returns every molecule on the active page, in page order, with nothing selected", () => {
     const document = documentWith([]);
     const molecules = buildPluginPageMolecules(document);

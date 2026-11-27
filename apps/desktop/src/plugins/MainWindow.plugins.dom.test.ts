@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { DocumentObjectSchema } from "@chemdraft/chem-core";
 import { massAnalyzeCommandId, massFragmentManifest } from "@chemdraft/plugin-mass-fragment";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -20,6 +21,7 @@ import type { DesktopPluginRuntime } from "./createPluginRuntime";
 import { namingInstalled, namingManifest, namingMolecule } from "./structureNamingTestFixtures";
 import { getAssistantHistoryPort } from "../assistant/historyPort";
 import { selectionBounds } from "../documentWorkflow";
+import { DOM_COMMAND_EVENT } from "../window-manager";
 
 // No recognizer ships with the app, so a test that needs a panel-opening Analyze contribution opts in
 // to the test-only recognition fixture, standing in for an installed plugin.
@@ -219,6 +221,177 @@ function deferredResult(): { promise: Promise<unknown>; resolve(result: unknown)
   return { promise, resolve };
 }
 
+type LiveContext = Parameters<import("@chemdraft/plugin-api").PluginCommandHandler>[0];
+
+/** A live panel plugin and a second plugin that writes, as the live-panel review tests use them. */
+async function registerLivePanelPlugins(live: (context: LiveContext) => unknown, options: {
+  rerunCommandId?: string; permissions?: string[];
+} = {}) {
+  const runtime = bundled.runtime!;
+  const pageId = getAssistantHistoryPort().read("initial")!.pages[0]!.id;
+  const liveId = "plugin.liveTest.run";
+  const otherId = "plugin.otherWriter.write";
+  let inserted = 0;
+  const molecule = () => {
+    inserted += 1;
+    const x = 40 + inserted * 60;
+    return { ...namingMolecule, id: `live_write_${inserted}`, x, y: 40,
+      atoms: namingMolecule.atoms.map(atom => ({ ...atom, x: atom.x + x, y: atom.y + 40 })) };
+  };
+  const insert = (context: LiveContext) =>
+    context.documents.applyPatch!({ reason: "test write", patch: { op: "addObject", pageId, object: molecule() } });
+  const insertThroughRequest = async (context: LiveContext) => {
+    const started = await context.requests!.begin({ label: "Live request write" });
+    if (!started.ok) throw new Error(started.error.message);
+    const { requestId } = started.value;
+    inserted += 1;
+    const object = DocumentObjectSchema.parse({ id: `live_plus_${inserted}`, type: "plus", x: 40 + inserted * 30, y: 200, width: 10, height: 10 });
+    const written = await context.documents.applyRequestPatch!({ requestId, patch: { op: "addObject", pageId, object } });
+    await context.requests!.end({ requestId });
+    if (!written.ok) throw new Error(written.error.message);
+  };
+  const showLive = (context: LiveContext, title = "Live") => context.panels!.showReport("panel.liveTest.result", {
+    title, sections: [], rerunCommandId: options.rerunCommandId ?? liveId, liveRerun: true });
+  const register = (handler: (context: LiveContext) => unknown) => runtime.registerPlugin({
+    id: "org.test.livePanel", name: "Live test", version: "0.0.1", apiVersion: "^0.1.28", entry: "index.js",
+    permissions: (options.permissions ?? ["document.write", "document.read", "ui.panel"]) as never,
+    contributes: { commands: [{ id: liveId, title: "Live run", requiredPermissions: [] }],
+      panels: [{ id: "panel.liveTest.result", title: "Live", commandId: liveId, requiredPermissions: ["ui.panel"] }] } },
+  { commandHandlers: { [liveId]: handler as never } });
+  await act(async () => {
+    register(live);
+    runtime.registerPlugin({ id: "org.test.otherWriter", name: "Other writer", version: "0.0.1", apiVersion: "^0.1.16",
+      entry: "index.js", permissions: ["document.write"],
+      contributes: { commands: [{ id: otherId, title: "Write", requiredPermissions: [] }] } },
+    { commandHandlers: { [otherId]: context => insert(context) } });
+  });
+  const otherWrite = () => act(async () => { await runtime.host.invokeCommand(otherId); });
+  return { runtime, liveId, insert, insertThroughRequest, showLive, register, otherWrite, written: () => inserted };
+}
+
+const settleFor = (ms: number) => act(async () => { await new Promise(resolve => setTimeout(resolve, ms)); });
+
+describe("MainWindow live plugin panels (review fixes)", () => {
+  it("never live re-runs a command the reporting plugin does not own, such as edit.undo", async () => {
+    await renderMainWindow();
+    const live = vi.fn(async (context: LiveContext) => {
+      await context.panels!.showReport("panel.liveTest.result", { title: "Live", sections: [],
+        rerunCommandId: "edit.undo", liveRerun: true });
+      return { ok: true };
+    });
+    const { runtime, liveId, otherWrite } = await registerLivePanelPlugins(live, { rerunCommandId: "edit.undo" });
+    await act(async () => { await runtime.host.invokeCommand(liveId); });
+    await waitForElement('[data-testid="plugin-panel"]');
+    await otherWrite();
+    const written = getAssistantHistoryPort().read("initial")!;
+    expect(written.pages[0]!.objects.some(object => object.id === "live_write_1")).toBe(true);
+    await settleFor(700);
+    // Before the fix, the live re-run undid the write 250 ms later.
+    expect(getAssistantHistoryPort().read("initial")).toBe(written);
+    expect(runtime.panels.getDiagnostics().some(diagnostic => diagnostic.code === "panel-live-rerun-refused")).toBe(true);
+  });
+
+  it("drops a queued live re-run whose panel closed while it waited behind a slow run", async () => {
+    await renderMainWindow();
+    const slow = deferredResult();
+    let runs = 0;
+    const live = vi.fn(async (context: LiveContext) => {
+      runs += 1;
+      if (runs === 2) { await slow.promise; return { ok: true }; }
+      // The first run opens the panel; a third run would reopen it.
+      await context.panels!.showReport("panel.liveTest.result", { title: `Live ${runs}`, sections: [],
+        rerunCommandId: "plugin.liveTest.run", liveRerun: true });
+      return { ok: true };
+    });
+    const { runtime, liveId, otherWrite } = await registerLivePanelPlugins(live);
+    await act(async () => { await runtime.host.invokeCommand(liveId); });
+    await waitForElement('[data-testid="plugin-panel"]');
+    // Edit 1 starts slow run A; edit 2 queues run B behind it.
+    await otherWrite();
+    await vi.waitFor(() => expect(live).toHaveBeenCalledTimes(2));
+    await otherWrite();
+    await settleFor(400);
+    expect(live).toHaveBeenCalledTimes(2);
+    await act(async () => { runtime.panels.closePanel(); });
+    expect(container!.querySelector('[data-testid="plugin-panel"]')).toBeNull();
+    await act(async () => { slow.resolve(undefined); await Promise.resolve(); });
+    await settleFor(300);
+    expect(live).toHaveBeenCalledTimes(2);
+    expect(container!.querySelector('[data-testid="plugin-panel"]')).toBeNull();
+    expect(runtime.panels.getOpenPanel()).toBeUndefined();
+  });
+
+  it("does not re-run a live command for its own writes through a request", async () => {
+    await renderMainWindow();
+    let context!: Awaited<ReturnType<typeof registerLivePanelPlugins>>;
+    const live = vi.fn(async (ctx: LiveContext) => {
+      await context.showLive(ctx);
+      await context.insertThroughRequest(ctx);
+      return { ok: true };
+    });
+    context = await registerLivePanelPlugins(live, {
+      permissions: ["document.read", "selection.read", "document.write", "chemistry.compute", "ui.panel"] });
+    await act(async () => { await context.runtime.host.invokeCommand(context.liveId); });
+    expect(context.written()).toBe(1);
+    await settleFor(700);
+    // Before the fix, its own request commit re-ran it, and every run wrote again.
+    expect(live).toHaveBeenCalledTimes(1);
+    // Another plugin's edit re-runs it once; that run's own request write does not start another.
+    await context.otherWrite();
+    await vi.waitFor(() => expect(live).toHaveBeenCalledTimes(2));
+    await settleFor(700);
+    expect(live).toHaveBeenCalledTimes(2);
+    expect(context.written()).toBe(3);
+  });
+
+  it("re-runs once when undo returns to a snapshot the live plugin wrote", async () => {
+    await renderMainWindow();
+    let context!: Awaited<ReturnType<typeof registerLivePanelPlugins>>;
+    const live = vi.fn(async (ctx: LiveContext) => {
+      await context.showLive(ctx);
+      if (live.mock.calls.length === 1) await context.insert(ctx); // D1, the plugin's own write
+      return { ok: true };
+    });
+    context = await registerLivePanelPlugins(live);
+    await act(async () => { await context.runtime.host.invokeCommand(context.liveId); });
+    const d1 = getAssistantHistoryPort().read("initial")!;
+    await settleFor(700);
+    expect(live).toHaveBeenCalledTimes(1);
+    await context.otherWrite(); // D2
+    await vi.waitFor(() => expect(live).toHaveBeenCalledTimes(2));
+    await settleFor(400);
+    await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "edit.undo" } })); });
+    expect(getAssistantHistoryPort().read("initial")).toBe(d1);
+    await vi.waitFor(() => expect(live).toHaveBeenCalledTimes(3));
+    await settleFor(700);
+    expect(live).toHaveBeenCalledTimes(3);
+  });
+
+  it("forgets a command's failed run when its plugin unregisters, so a re-registered command starts clean", async () => {
+    await renderMainWindow();
+    let context!: Awaited<ReturnType<typeof registerLivePanelPlugins>>;
+    const live = vi.fn(async (ctx: LiveContext) => {
+      if (live.mock.calls.length === 2) return { ok: false, error: { code: "LIVE_FAILED", message: "Prediction failed." } };
+      await context.showLive(ctx);
+      return { ok: true };
+    });
+    context = await registerLivePanelPlugins(live);
+    const banner = () => container!.querySelector('[data-testid="plugin-panel-stale"]');
+    await act(async () => { await context.runtime.host.invokeCommand(context.liveId); });
+    await waitForElement('[data-testid="plugin-panel"]');
+    await context.otherWrite();
+    await vi.waitFor(() => expect(banner()).not.toBeNull());
+    await act(async () => { context.runtime.unregisterPlugin("org.test.livePanel"); });
+    expect(container!.querySelector('[data-testid="plugin-panel"]')).toBeNull();
+    await act(async () => {
+      context.register(async ctx => { await context.showLive(ctx, "Fresh"); return { ok: true }; });
+      await context.runtime.host.invokeCommand(context.liveId);
+    });
+    await waitForElement('[data-testid="plugin-panel"]');
+    expect(banner()).toBeNull();
+  });
+});
+
 describe("MainWindow bundled plugin integration", () => {
   it("re-runs a live panel on another plugin's write but not its own, and flags a failed re-run out of date", async () => {
     await renderMainWindow();
@@ -249,7 +422,7 @@ describe("MainWindow bundled plugin integration", () => {
       return { ok: true };
     });
     await act(async () => {
-      runtime.registerPlugin({ id: "org.test.livePanel", name: "Live test", version: "0.0.1", apiVersion: "^0.1.30",
+      runtime.registerPlugin({ id: "org.test.livePanel", name: "Live test", version: "0.0.1", apiVersion: "^0.1.28",
         entry: "index.js", permissions: ["document.write", "document.read", "ui.panel"],
         contributes: { commands: [{ id: liveId, title: "Live run", requiredPermissions: [] }],
           panels: [{ id: "panel.liveTest.result", title: "Live", commandId: liveId, requiredPermissions: ["ui.panel"] }] } },

@@ -115,7 +115,7 @@ current document and selection and place results directly on the page through ty
 
 ---
 
-# Plugin live panels (API 0.1.30)
+# Plugin live panels (API 0.1.28)
 
 For an educational plugin that shows a target NMR spectrum beside the live prediction for whatever
 the student draws. Generic: any plugin can use it.
@@ -125,18 +125,19 @@ the student draws. Generic: any plugin can use it.
   re-invokes `rerunCommandId` 250 ms after the last change, through MainWindow's per-plugin command
   queue (the "Run again" path), so runs never overlap. Selection-only and viewport changes, the
   plugin's own report, and documents committed by the same plugin's own `document.write` (tagged at
-  commit in `applyDocumentPatch`) do not trigger it. It stops when the panel closes, the plugin is
-  unloaded, or a report without the flag replaces it. A live panel hides the "out of date" banner
+  commit in `applyDocumentPatch` and in request-history commits) do not trigger it. It stops when
+  the panel closes, the plugin is unloaded, or a report without the flag replaces it. A live panel hides the "out of date" banner
   only while its re-run is scheduled or running; it shows it when its last run failed or its result
   is stale with nothing pending.
 - **`documents.getMolecules()`** (`document.read`): every molecule on the active page, in the
   `getSelection` per-molecule shape, regardless of selection. In-process and worker plugins.
 - **Files:** `packages/plugin-api/src/{index,workerProtocol,workerRuntime}.ts`,
-  `packages/plugin-host/src/index.ts`, `apps/desktop/src/plugins/{livePanelRerun,selectionSnapshot,createPluginRuntime}.ts`,
+  `packages/plugin-host/src/index.ts`, `apps/desktop/src/plugins/{livePanelRerun,selectionSnapshot,createPluginRuntime,PluginPanelController}.ts`,
   `apps/desktop/src/MainWindow.tsx` (hook call, banner rule, write-author tagging, failed-command
-  state; the plugin command queue itself is unchanged), AUTHORING.md, AGENTS.md §4.1.
+  state; the plugin command queue only gains the queued live re-run check), AUTHORING.md, AGENTS.md §4.1.
 - **Tests:** `reportLimits.test.ts`, `workerProtocol.test.ts`, plugin-host `index.test.ts`,
-  `livePanelRerun.dom.test.ts`, `selectionSnapshot.test.ts`, `plugins/MainWindow.plugins.dom.test.ts`.
+  `livePanelRerun.dom.test.ts`, `selectionSnapshot.test.ts`, `PluginPanelController.test.ts`,
+  `pluginRuntime.test.ts`, `plugins/MainWindow.plugins.dom.test.ts`.
 - **Preloaded web plugins (no API change).** The browser build can run released packages that whoever
   builds or serves it stages with `scripts/stage-web-plugins.mjs` (install gates, `.sha256` required)
   and serves at `/web-plugins/` (`CHEMDRAFT_WEB_PLUGINS_DIR`, `dev:web:plugins` / `build:web:plugins`;
@@ -145,8 +146,16 @@ the student draws. Generic: any plugin can use it.
   how the external NMR teaching plugin runs on the web without entering this repository (PLAN.md §5).
   Tests: `webPreloadedPlugins{,.dom}.test.ts`, `scripts/web-plugins/{stage,vitePlugin}.test.ts`.
   Remaining: a hands-on browser pass with a real package; Windows paths in the staging script.
-- **Remaining:** request-bound writes (API 0.1.26 request history) are not tagged with their plugin,
-  so a live command writing through a request would still re-trigger itself; hands-on pass of a live panel on macOS and Windows; move to `docs/shipped/` on landing.
+- **Review fixes.** A live re-run only runs a command the reporting plugin registered itself
+  (`PluginPanelController` drops any other `liveRerun` and records `panel-live-rerun-refused`); a
+  queued live re-run is dropped when it reaches the front if its panel closed, its plugin unloaded or
+  its report stopped being live; request-history commits are attributed to their plugin like direct
+  writes; authorship counts only for the change that first brings a document in, so undo or redo to
+  a plugin-written snapshot re-runs; page crossings compare by value; a selection-only change leaves
+  a pending timer alone; `getMolecules` conversion warnings reach the command's status line; and a
+  plugin's failed-run marks go when it unregisters.
+- **Version.** Unmerged PR #466 (app handoff) also claims 0.1.28-0.1.29; whichever lands second renumbers.
+- **Remaining:** hands-on pass of a live panel on macOS and Windows; move to `docs/shipped/` on landing.
 
 # Parked
 

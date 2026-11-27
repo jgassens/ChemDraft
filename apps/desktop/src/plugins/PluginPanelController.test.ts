@@ -20,7 +20,12 @@ function hostWithPanels() {
   ]);
   const notifyPanelClosed = vi.fn();
   const listeners = new Set<() => void>();
+  // Registered commands and their owning plugin (core commands have none).
+  const commandOwners = new Map<string, string | undefined>([
+    ["cmd.a", "plugin.a"], ["cmd.proton", "plugin.a"], ["cmd.b", "plugin.b"], ["edit.undo", undefined], ["document.closeTab", undefined]
+  ]);
   const host = {
+    commands: { get: (commandId: string) => commandOwners.has(commandId) ? { id: commandId, pluginId: commandOwners.get(commandId) } : undefined },
     getPlugin: (pluginId: string) => {
       const contributedPanels = panels.get(pluginId);
       return contributedPanels ? { manifest: { contributes: { panels: contributedPanels } } } : undefined;
@@ -83,6 +88,24 @@ describe("PluginPanelController", () => {
         expect(panel?.commandId, rerunCommandId).toBe("cmd.a");
       }
     }
+  });
+
+  it.each(["inApp", "window"] as const)("drops liveRerun (%s) unless it names the reporting plugin's own command, and records why", surface => {
+    const { host } = hostWithPanels();
+    const controller = new PluginPanelController(host, () => "t", surface);
+    const current = () => surface === "window" ? controller.getDetachedPanels()[0] : controller.getOpenPanel();
+    controller.showReport("plugin.a", "panel.a", { title: "Own", sections: [], rerunCommandId: "cmd.proton", liveRerun: true });
+    expect(current()?.report.liveRerun).toBe(true);
+    expect(controller.getDiagnostics()).toEqual([]);
+    for (const rerunCommandId of ["edit.undo", "document.closeTab", "cmd.b", "cmd.unregistered"]) {
+      controller.showReport("plugin.a", "panel.a", { title: rerunCommandId, sections: [], rerunCommandId, liveRerun: true });
+      // The report itself is still shown, without the live flag.
+      expect(current()?.report.title).toBe(rerunCommandId);
+      expect(current()?.report.liveRerun, rerunCommandId).toBeUndefined();
+    }
+    const refusals = controller.getDiagnostics().filter(diagnostic => diagnostic.code === "panel-live-rerun-refused");
+    expect(refusals).toHaveLength(4);
+    expect(refusals[0]!.message).toContain('"edit.undo" is not a command this plugin registered');
   });
 
   it("treats pending and result reports for the same panel as updates without a false close", () => {

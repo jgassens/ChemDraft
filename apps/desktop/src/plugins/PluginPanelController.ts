@@ -2,6 +2,7 @@ import type { PluginPanelReport } from "@chemdraft/plugin-api";
 import type { PluginHost } from "@chemdraft/plugin-host";
 
 import { isDocumentWindowCommandId } from "../windowCommands";
+import { liveRerunAllowed } from "./livePanelRerun";
 import { pluginPanelIdentityKey } from "./panelBridge";
 import type { OpenPluginPanel, PluginDiagnostic } from "./types";
 
@@ -40,7 +41,7 @@ export class PluginPanelController {
   }
 
   /** Entry point wired to `PluginHostOptions.showPanelReport`. Also safe to call from desktop code. */
-  showReport(pluginId: string, panelId: string, report: PluginPanelReport): void {
+  showReport(pluginId: string, panelId: string, incoming: PluginPanelReport): void {
     const plugin = this.host.getPlugin(pluginId);
     const panel = plugin?.manifest.contributes.panels.find((candidate) => candidate.id === panelId);
     if (!panel) {
@@ -50,6 +51,7 @@ export class PluginPanelController {
       );
       return;
     }
+    const report = this.withPermittedLiveRerun(pluginId, panelId, incoming);
 
     // A panel the user popped out into its own window (ADR-0030) is updated in place, per owner:
     // detached panels are outside the single in-app slot, so a report for one neither replaces nor
@@ -193,6 +195,26 @@ export class PluginPanelController {
     return () => {
       this.listeners.delete(listener);
     };
+  }
+
+  /**
+   * A live re-run runs a command on every edit with no click behind it, so a report may ask for one
+   * only with a command its own plugin registered, never a core command (undo, close tab) or another
+   * plugin's. Any other `liveRerun` is dropped here, where the report is accepted, and the reason is
+   * recorded; the rest of the report is shown as sent.
+   */
+  private withPermittedLiveRerun(pluginId: string, panelId: string, report: PluginPanelReport): PluginPanelReport {
+    if (report.liveRerun !== true) return report;
+    const commandId = report.rerunCommandId;
+    if (commandId !== undefined && liveRerunAllowed(pluginId, commandId, (id) => this.host.commands.get(id)?.pluginId)) {
+      return report;
+    }
+    this.recordDiagnostic(
+      "panel-live-rerun-refused",
+      `Ignored liveRerun on panel "${panelId}" from plugin "${pluginId}": "${commandId ?? "(none)"}" is not a command this plugin registered.`
+    );
+    const { liveRerun: _ignored, ...rest } = report;
+    return rest;
   }
 
   private recordDiagnostic(code: string, message: string): void {

@@ -246,7 +246,7 @@ function pluginSelectedMolecule(
 }
 
 /**
- * API 0.1.30 `documents.getMolecules()`: every molecule on the active page, in page order, in exactly
+ * API 0.1.28 `documents.getMolecules()`: every molecule on the active page, in page order, in exactly
  * the shape a selection snapshot carries per molecule — regardless of what is selected. The active
  * page follows the host's convention (the selection's page, else the first page). The host
  * deep-copies and freezes the result before handing it to a plugin.

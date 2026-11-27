@@ -479,19 +479,26 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       };
       const collector = armedSelectionWarnings;
       armedSelectionWarnings = undefined;
+      if (!collector) return context;
+      // Both readers turn drawn structures into plugin-facing molfiles, and their conversion
+      // warnings go to the command's collector (and so its status line). The host calls each
+      // provider synchronously within the call, which is the only span the collector is armed.
+      const reading = <T,>(read: () => T): T => {
+        readingSelectionWarnings = collector;
+        try {
+          return read();
+        } finally {
+          readingSelectionWarnings = undefined;
+        }
+      };
+      const getMolecules = context.documents.getMolecules;
+      if (getMolecules) context.documents.getMolecules = () => reading(() => getMolecules());
       const selection = context.selection;
-      if (!selection || !collector) return context;
+      if (!selection) return context;
       return {
         ...context,
         selection: {
-          getSelection: () => {
-            readingSelectionWarnings = collector;
-            try {
-              return selection.getSelection();
-            } finally {
-              readingSelectionWarnings = undefined;
-            }
-          }
+          getSelection: () => reading(() => selection.getSelection())
         }
       };
     }

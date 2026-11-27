@@ -198,7 +198,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
         ? () => providersRef.current.getActiveDocumentTab!()
         : undefined,
       captureRequestDocument: providers.captureRequestDocument && (() => providersRef.current.captureRequestDocument?.()),
-      openRequestHistory: providers.openRequestHistory && ((document, label) => providersRef.current.openRequestHistory!(document, label)),
+      openRequestHistory: providers.openRequestHistory && ((document, label, pluginId) => providersRef.current.openRequestHistory!(document, label, pluginId)),
       requestPageSpace: providers.requestPageSpace && {
         plan: (...args) => providersRef.current.requestPageSpace!.plan(...args),
         confirm: (signal, documentKey) => providersRef.current.requestPageSpace!.confirm(signal, documentKey)

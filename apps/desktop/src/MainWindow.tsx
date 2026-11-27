@@ -1938,7 +1938,11 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.27.14.47-opus";
+const CURRENT_BUILD_STAMP = "11.27.14.48-opus";
+
+/** How a command is invoked. `liveRerunStillWanted` marks a live panel's automatic re-run: a queued
+ *  one that reaches the front of its plugin's queue starts only while this still returns true. */
+type CommandInvokeOptions = { input?: PluginCommandInput; liveRerunStillWanted?: () => boolean };
 
 const NUMERIC_ENTRY_DURING_DRAG_STATUS = "Finish the current drag, then enter a value";
 
@@ -3203,7 +3207,7 @@ export function MainWindow({
   moleculeStyleOverridePromptRef.current = moleculeStyleOverridePrompt;
   const [interactive3dWorkspace, setInteractive3dWorkspace] = useState<Interactive3dWorkspaceState | undefined>();
   const [, setLastAnalysis] = useState<StructureAnalysisResult | null>(null);
-  const invokeCommandRef = useRef<(commandId: string, options?: { input?: PluginCommandInput }) => void | Promise<void>>(() => undefined);
+  const invokeCommandRef = useRef<(commandId: string, options?: CommandInvokeOptions) => void | Promise<void>>(() => undefined);
   const documentRef = useRef(document);
   // Identifies the working document for a plugin's `documents.applyPatch` (see
   // `DesktopPluginRuntimeOptions.getActiveDocumentKey`). Bumped only in `resetDocumentHistory` — the
@@ -14047,9 +14051,21 @@ export function MainWindow({
   const pluginCommandQueuesRef = useRef(new Map<string, Promise<void>>());
   const [pendingPluginCommands, setPendingPluginCommands] = useState<ReadonlySet<string>>(() => new Set());
   // Plugin commands whose latest reported run failed (live panels flag their result out of date).
-  const [failedPluginCommands, setFailedPluginCommands] = useState<ReadonlySet<string>>(() => new Set());
-  // The plugin whose command committed a document (document.write), keyed by the committed document
-  // as `documentUndoLabelsRef` keys its label: a live panel's own writes do not re-run it.
+  // The ref is the current value, kept in step eagerly so a plugin unregistering between renders
+  // prunes exactly what is recorded (see the host subscription below).
+  const [failedPluginCommands, setFailedPluginCommandsState] = useState<ReadonlySet<string>>(() => new Set());
+  const failedPluginCommandsRef = useRef<ReadonlySet<string>>(failedPluginCommands);
+  const setPluginCommandFailed = useCallback((commandIds: readonly string[], failed: boolean) => {
+    let next = failedPluginCommandsRef.current;
+    for (const commandId of commandIds) next = withSetMember(next, commandId, failed);
+    if (next === failedPluginCommandsRef.current) return;
+    failedPluginCommandsRef.current = next;
+    setFailedPluginCommandsState(next);
+  }, []);
+  // The plugin whose command committed a document (document.write, or a request commit), keyed by
+  // the committed document as `documentUndoLabelsRef` keys its label: a live panel's own writes do
+  // not re-run it. `useLivePanelRerun` counts the entry only for the change that first brings the
+  // document in, so undo or redo back to the same snapshot is not the plugin's edit.
   const pluginWriteAuthorsRef = useRef(new WeakMap<ChemDraftDocument, string>());
   const pluginCommandGenerationsRef = useRef(new Map<string, number>());
   // Per menu-invoked plugin command: the status of each write it made that carried a warning (a lone-H
@@ -14131,7 +14147,7 @@ export function MainWindow({
         return signal?.aborted ? "keep" : "unanswered";
       }
     },
-    openRequestHistory: (document, label) => {
+    openRequestHistory: (document, label, pluginId) => {
       const tabId = [...requestDocumentKeysRef.current].find(([, key]) => key === document.key)?.[0];
       if (!tabId) throw new RequestWriteError("stale", "The request document was closed or replaced.");
       const release = assistantTransactions.reserveRequestHistory(tabId);
@@ -14142,7 +14158,14 @@ export function MainWindow({
           return present && (assistantRecordedAfterRef.current.get(present) ?? present);
         },
         onEdit: listener => assistantHistoryPort.onUserEdit(id => { if (id === tabId) listener(); }),
-        commit: (after, label, amend, guard) => assistantHistoryPort.commitRequest!(tabId, after, label, amend, guard)
+        commit: (after, label, amend, guard) => {
+          const before = assistantHistoryPort.read(tabId);
+          assistantHistoryPort.commitRequest!(tabId, after, label, amend, guard);
+          // Attributed like a direct document.write: a live panel's command that writes through a
+          // request must not re-run itself on its own commit.
+          const committed = assistantHistoryPort.read(tabId);
+          if (committed && committed !== before) pluginWriteAuthorsRef.current.set(committed, pluginId);
+        }
       }, label);
       return { ...history, close: () => { history.close?.(); release(); } };
     },
@@ -14335,14 +14358,29 @@ export function MainWindow({
     void syncPluginNativeMenuItems(nativePluginMenuItems);
   }, [nativePluginMenuItems]);
 
-  // Live panels (API 0.1.30): while a panel whose report asks for it is open, in-app or detached,
+  // Live panels (API 0.1.28): while a panel whose report asks for it is open, in-app or detached,
   // each document edit re-runs its rerunCommandId 250 ms after the last edit, through the same
   // per-plugin queue as Run again. Selection-only and viewport changes do not count, and neither
   // does a document committed by the same plugin's own command (its document.write).
+  // A live re-run only ever runs a command the panel's own plugin registered (as panel controls).
+  const registeredCommandOwner = (commandId: string) => pluginRuntime.runtime.host.commands.get(commandId)?.pluginId;
+  // Checked again when a queued live re-run reaches the front of its plugin's queue: it starts only
+  // while a panel still asks for it (open, plugin loaded, report still live). Reads the controller,
+  // not this render, so a panel closed a moment ago already counts as closed.
+  const liveRerunStillWanted = (commandId: string): boolean => {
+    const runtime = pluginRuntimeRef.current;
+    if (!runtime || !mountedRef.current) return false;
+    const owner = (id: string) => runtime.host.commands.get(id)?.pluginId;
+    return liveRerunCommandIds([runtime.panels.getOpenPanel(), ...runtime.panels.getDetachedPanels()], owner).includes(commandId);
+  };
+  const liveRerunStillWantedRef = useRef(liveRerunStillWanted);
+  liveRerunStillWantedRef.current = liveRerunStillWanted;
   const scheduledLiveReruns = useLivePanelRerun(
     document,
-    liveRerunCommandIds([pluginRuntime.openPanel, ...pluginRuntime.detachedPanels]),
-    (commandId) => invokeCommandRef.current(commandId),
+    liveRerunCommandIds([pluginRuntime.openPanel, ...pluginRuntime.detachedPanels], registeredCommandOwner),
+    (commandId) => invokeCommandRef.current(commandId, {
+      liveRerunStillWanted: () => liveRerunStillWantedRef.current(commandId)
+    }),
     {
       authorOf: (committed) => pluginWriteAuthorsRef.current.get(committed),
       ownerOf: (commandId) => pluginCommandQueue(pluginRuntime.plugins, commandId).ownerId
@@ -14353,7 +14391,7 @@ export function MainWindow({
     const sourceStale = source
       ? computeObjectFingerprint(document, source.objectId) !== source.sourceFingerprint
       : false;
-    const liveCommandId = liveRerunCommandId(panel);
+    const liveCommandId = liveRerunCommandId(panel, registeredCommandOwner);
     return pluginPanelOutOfDate({
       sourceStale,
       live: liveCommandId !== undefined,
@@ -14362,6 +14400,16 @@ export function MainWindow({
         pendingPluginCommands.has(pluginCommandQueue(pluginRuntime.plugins, liveCommandId).queueKey))
     });
   };
+  // A plugin that is unregistered (removed, disabled or unloaded) takes its failed-run marks with it,
+  // so a command registered again under the same id starts clean. Pruned in the host's own
+  // notification, before any re-registration can make the id look current again.
+  useEffect(() => {
+    const host = pluginRuntime.runtime.host;
+    return host.subscribe(() => {
+      const gone = [...failedPluginCommandsRef.current].filter(commandId => host.commands.get(commandId)?.pluginId === undefined);
+      if (gone.length > 0) setPluginCommandFailed(gone, false);
+    });
+  }, [pluginRuntime.runtime, setPluginCommandFailed]);
   const pluginPanelIsOutOfDateRef = useRef(pluginPanelIsOutOfDate);
   pluginPanelIsOutOfDateRef.current = pluginPanelIsOutOfDate;
 
@@ -14900,7 +14948,7 @@ export function MainWindow({
     []
   );
 
-  const invokeUnmeasured = useCallback(async (commandId: string, options?: { input?: PluginCommandInput }) => {
+  const invokeUnmeasured = useCallback(async (commandId: string, options?: CommandInvokeOptions) => {
     if (!isSelectionNudgeCommand(commandId)) arrowNudgeBurstRef.current = undefined;
     if (commandId === "arrow.conditions" && !isDesktopRuntime()) { arrowCommandTargetRef.current = undefined; return; }
     const featureDisabled = compoundLayoutCommandDisabledReason(commandId, compoundLayoutSettingsRef.current);
@@ -15074,6 +15122,10 @@ export function MainWindow({
       const run = previous
         .catch(() => undefined)
         .then(async () => {
+          // A live panel's automatic re-run that waited behind a slow run is dropped if its panel
+          // closed, its plugin unloaded or its report stopped asking for live re-runs meanwhile.
+          // User-initiated runs carry no such check.
+          if (options?.liveRerunStillWanted && !options.liveRerunStillWanted()) return;
           // Collected per invocation: only this command's own selection reads can add to it.
           const selectionWarnings: string[] = [];
           pluginWriteWarningStatusesRef.current.set(commandId, writeWarningStatuses);
@@ -15087,7 +15139,7 @@ export function MainWindow({
           }
           if (superseded()) return;
           const failure = pluginCommandFailure(result);
-          setFailedPluginCommands(current => withSetMember(current, commandId, !!failure));
+          setPluginCommandFailed([commandId], !!failure);
           if (failure) {
             setStatus(failedStatus(failure));
             if (analyzerOwned && owner) showAnalyzerNotice(owner.id, owner.name, failure);
@@ -15104,7 +15156,7 @@ export function MainWindow({
         .catch((error: unknown) => {
           if (superseded()) return;
           const message = error instanceof Error ? error.message : String(error);
-          setFailedPluginCommands(current => withSetMember(current, commandId, true));
+          setPluginCommandFailed([commandId], true);
           setStatus(failedStatus(message));
           if (analyzerOwned && owner) showAnalyzerNotice(owner.id, owner.name, message);
         });
@@ -15136,6 +15188,7 @@ export function MainWindow({
     applyObjectStyleCommand,
     applyTextStyleCommand,
     clearAnalyzerNoticeFor,
+    setPluginCommandFailed,
     exportMoleculeInspectorTemplate,
     importMoleculeInspectorTemplate,
     invokePluginCommand,
@@ -15149,7 +15202,7 @@ export function MainWindow({
 
   // Preserve the action's promise itself. Diagnostics never add an await or alter its outcome.
   const invoke = useMemo(() => {
-    return (commandId: string, options?: { input?: PluginCommandInput }) => {
+    return (commandId: string, options?: CommandInvokeOptions) => {
       if (!perfProbe) return invokeUnmeasured(commandId, options);
       const span = perfHook(() => perfProbe?.command(isForcedDocumentHistoryCommandId(commandId) ? stripForcedDocumentHistorySuffix(commandId) : commandId));
       if (pluginCommandExists(commandId)) perfHook(() => perfProbe?.registryExpected(span));

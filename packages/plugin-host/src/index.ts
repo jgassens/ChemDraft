@@ -1023,11 +1023,13 @@ export interface PluginHostOptions {
   toolSessions?: PluginHostToolSessions;
   requestDepiction?: RequestDepictionProviders;
   captureRequestDocument?: () => RequestDocument | undefined;
-  openRequestHistory?: (document: RequestDocument, label: string) => RequestHistory;
+  /** Opened once per request on its first write. `pluginId` is the plugin whose request writes
+   *  through it, so the host can attribute those commits to it like its direct document writes. */
+  openRequestHistory?: (document: RequestDocument, label: string, pluginId: string) => RequestHistory;
   requestPageSpace?: RequestPageSpaceProvider;
   /** Request tools supply a budget so the provider can stop producing entries at the snapshot cap. */
   getRequestSelection?: (document: ChemDraftDocument, budget?: RequestSnapshotBudget) => PluginSelectionSnapshot;
-  /** API 0.1.30 `documents.getMolecules()`: every molecule on `document`'s active page, in the same
+  /** API 0.1.28 `documents.getMolecules()`: every molecule on `document`'s active page, in the same
    *  per-molecule shape a selection snapshot carries. Absent, the method returns an empty list. */
   getPageMolecules?: (document: ChemDraftDocument) => readonly PluginSelectedMolecule[];
 
@@ -2109,7 +2111,11 @@ export class PluginHost {
         getMolecules: () => withCapabilitySlot(async () => {
           this.requirePermission(pluginId, "document.read");
           const binding = boundDocument();
-          const document = binding ? binding.read() : await this.getActiveDocument?.();
+          // A synchronous active document is read, and the provider called, in the same synchronous
+          // span as the call itself (as getSelection's provider is), so a host can attribute the
+          // structure-conversion warnings it collects to the calling command.
+          const active = binding ? binding.read() : this.getActiveDocument?.();
+          const document = active instanceof Promise ? await active : active;
           const molecules = document ? this.getPageMolecules?.(document) ?? [] : [];
           if (requestTool) assertRequestSnapshotSize(molecules);
           // Same boundary as getSelection: an independent, immutable copy.
@@ -2339,7 +2345,7 @@ export class PluginHost {
       let growthAnswer = decision?.answer;
       const binding: BoundRequestWrite = {
         document: state.document,
-        history: state.history ??= this.openRequestHistory(state.document, state.label),
+        history: state.history ??= this.openRequestHistory(state.document, state.label, pluginId),
         selection: [...state.selection, ...state.inserted.values()],
         selectionPins: requestPins(state),
         // A dispatched tool's writeStop follows both the request and that call's cancellation.

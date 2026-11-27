@@ -27,7 +27,7 @@ function manifest(id: string, version: string, overrides: Record<string, unknown
     contributes: {},
     chemdraftPackage: {
       sdk: "@chemdraft/plugin-api",
-      sdkVersion: "0.1.30",
+      sdkVersion: "0.1.28",
       sourceCommit: "0fd3eceec674f207fe2651fe7a19f6438a55fb17",
       sourceTree: "clean",
       licenseFile: "LICENSE",

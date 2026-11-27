@@ -139,15 +139,18 @@ describe("isPluginApiVersionCompatible", () => {
     expect(isPluginApiVersionCompatible("^0.1.14", "0.1.13")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.15", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.15", "0.1.14")).toBe(false);
-    expect(PluginApiVersion).toBe("0.1.30");
+    expect(PluginApiVersion).toBe("0.1.28");
     expect(isPluginApiVersionCompatible("^0.1.23", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.24", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.24", "0.1.23")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.25", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.25", "0.1.24")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.26", PluginApiVersion)).toBe(true);
-    expect(isPluginApiVersionCompatible("^0.1.30", PluginApiVersion)).toBe(true);
-    expect(isPluginApiVersionCompatible("^0.1.30", "0.1.26")).toBe(false);
+    expect(isPluginApiVersionCompatible("^0.1.28", PluginApiVersion)).toBe(true);
+    expect(isPluginApiVersionCompatible("^0.1.28", "0.1.26")).toBe(false);
+    // No reserved gap: a plugin asking for an API this host has not shipped is refused.
+    expect(isPluginApiVersionCompatible("^0.1.29", PluginApiVersion)).toBe(false);
+    expect(isPluginApiVersionCompatible("^0.1.30", PluginApiVersion)).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.26", "0.1.25")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.23", "0.1.22")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.16", PluginApiVersion)).toBe(true);
@@ -171,7 +174,7 @@ describe("chemistry worker capability allowlist", () => {
   it("includes command-scoped table insertion", () => {
     expect(PLUGIN_WORKER_CAPABILITY_METHODS.documents).toContain("insertTable");
   });
-  it("includes documents.getMolecules (API 0.1.30)", () => {
+  it("includes documents.getMolecules (API 0.1.28)", () => {
     expect(PLUGIN_WORKER_CAPABILITY_METHODS.documents).toContain("getMolecules");
   });
   it("includes all chemistry methods through API 0.1.26", () => {
@@ -410,7 +413,7 @@ describe("runPluginWorker", () => {
     expect(settled).toMatchObject({ commandRequestId: 7, ok: true, value: { objectIds: ["x"], molecules: [] } });
   });
 
-  it("routes documents.getMolecules across the boundary (API 0.1.30)", async () => {
+  it("routes documents.getMolecules across the boundary (API 0.1.28)", async () => {
     const endpoint = new ControlledEndpoint();
     runPluginWorker(
       { manifest: manifest(["document.read"]), commandHandlers: { [commandId]: async (context) => context.documents.getMolecules() } },
@@ -679,7 +682,7 @@ describe("refusal reason and details (API 0.1.27)", () => {
     expect(PluginRequestErrorSchema.safeParse({ code: "invalid", message: "Refused.", reason: "hydrogen_count_unrepresentable", details }).success).toBe(true);
     expect(PluginRequestErrorSchema.safeParse({ code: "invalid", message: "Refused.", reason: "Bad Reason" }).success).toBe(false);
     expect(PluginRequestErrorSchema.safeParse({ code: "invalid", message: "Refused.", details: { atom: { id: "h" } } }).success).toBe(false);
-    expect(["^0.1.27", "~0.1.27", "0.1.30", "^0.1.26", "^0.1.0", "bogus"].map(supportsPluginRefusalFields))
+    expect(["^0.1.27", "~0.1.27", "0.1.28", "^0.1.26", "^0.1.0", "bogus"].map(supportsPluginRefusalFields))
       .toEqual([true, true, true, false, false, false]);
   });
 });

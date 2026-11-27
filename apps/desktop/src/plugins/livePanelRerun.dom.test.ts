@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { applyPatch, createEmptyDocument, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { applyPatch, createEmptyDocument, type ChemDraftDocument, type CrossingOverride, type MoleculeObject } from "@chemdraft/chem-core";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   LIVE_PANEL_RERUN_DELAY_MS,
   documentContentChanged,
+  liveRerunCommandId,
   liveRerunCommandIds,
   pluginPanelOutOfDate,
   useLivePanelRerun
@@ -47,15 +48,20 @@ function panel(report: Partial<OpenPluginPanel["report"]> = {}): OpenPluginPanel
   };
 }
 
-const OWNERS: Record<string, string> = { [RERUN]: "org.test.nmrgame", "plugin.other.live": "org.test.other" };
+const OWNERS: Record<string, string> = {
+  [RERUN]: "org.test.nmrgame",
+  "plugin.nmrgame.target": "org.test.nmrgame",
+  "plugin.other.live": "org.test.other"
+};
+const ownerOf = (commandId: string): string | undefined => OWNERS[commandId];
 // Documents a plugin command committed, by plugin id (MainWindow keys its write authors the same way).
 const authors = new WeakMap<ChemDraftDocument, string>();
 let scheduled: ReadonlySet<string> = new Set();
 
 function Harness(props: { document: ChemDraftDocument; panels: readonly (OpenPluginPanel | undefined)[]; invoke: (id: string) => void }) {
-  scheduled = useLivePanelRerun(props.document, liveRerunCommandIds(props.panels), props.invoke, {
+  scheduled = useLivePanelRerun(props.document, liveRerunCommandIds(props.panels, ownerOf), props.invoke, {
     authorOf: document => authors.get(document),
-    ownerOf: commandId => OWNERS[commandId]
+    ownerOf
   });
   return null;
 }
@@ -195,7 +201,7 @@ describe("useLivePanelRerun", () => {
 
   it("does not re-run a live command for a document its own plugin committed, but does for others' and the user's", () => {
     const invoke = vi.fn();
-    const other = panel({ rerunCommandId: "plugin.other.live" });
+    const other = { ...panel({ rerunCommandId: "plugin.other.live" }), pluginId: "org.test.other" };
     let document = baseDocument();
     render(document, [panel(), other], invoke);
 
@@ -247,6 +253,89 @@ describe("useLivePanelRerun", () => {
   });
 });
 
+describe("useLivePanelRerun review fixes", () => {
+  it("leaves a pending re-run's timer alone on a selection-only change", () => {
+    const invoke = vi.fn();
+    let document = baseDocument();
+    render(document, [panel()], invoke);
+    document = edit(document);
+    render(document, [panel()], invoke);
+    advance(100);
+    document = applyPatch(document, { op: "setSelection", objectIds: ["m0"] });
+    render(document, [panel()], invoke);
+    advance(LIVE_PANEL_RERUN_DELAY_MS - 100);
+    // Still 250 ms after the edit, not 250 ms after the selection change.
+    expect(invoke).toHaveBeenCalledTimes(1);
+    advance(1000);
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it("still restarts the debounce on another content edit", () => {
+    const invoke = vi.fn();
+    let document = baseDocument();
+    render(document, [panel()], invoke);
+    document = edit(document);
+    render(document, [panel()], invoke);
+    advance(100);
+    document = edit(document);
+    render(document, [panel()], invoke);
+    advance(LIVE_PANEL_RERUN_DELAY_MS - 1);
+    expect(invoke).not.toHaveBeenCalled();
+    advance(1);
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it("counts a plugin's authorship for its commit only: undo back to its snapshot re-runs exactly once", () => {
+    const invoke = vi.fn();
+    const d0 = baseDocument();
+    render(d0, [panel()], invoke);
+    // The live plugin writes D1: no re-run.
+    const d1 = edit(d0);
+    authors.set(d1, "org.test.nmrgame");
+    render(d1, [panel()], invoke);
+    advance(1000);
+    expect(invoke).not.toHaveBeenCalled();
+    // The user edits to D2: one re-run.
+    const d2 = edit(d1);
+    render(d2, [panel()], invoke);
+    advance(1000);
+    expect(invoke).toHaveBeenCalledTimes(1);
+    // The user undoes to D1, the plugin-written snapshot itself: exactly one more re-run.
+    render(d1, [panel()], invoke);
+    advance(1000);
+    expect(invoke).toHaveBeenCalledTimes(2);
+    // Redo to D2 and undo again each re-run too.
+    render(d2, [panel()], invoke);
+    advance(1000);
+    render(d1, [panel()], invoke);
+    advance(1000);
+    expect(invoke).toHaveBeenCalledTimes(4);
+  });
+
+  it("never schedules a live re-run for a command the panel's plugin does not own", () => {
+    const invoke = vi.fn();
+    const panels = [panel({ rerunCommandId: "edit.undo" }), panel({ rerunCommandId: "plugin.other.live" }),
+      panel({ rerunCommandId: "document.closeTab" })];
+    let document = baseDocument();
+    render(document, panels, invoke);
+    document = edit(document);
+    render(document, panels, invoke);
+    advance(1000);
+    expect(invoke).not.toHaveBeenCalled();
+  });
+});
+
+describe("liveRerunCommandId", () => {
+  it("names only the panel plugin's own registered, non-window command", () => {
+    expect(liveRerunCommandId(panel(), ownerOf)).toBe(RERUN);
+    expect(liveRerunCommandId(panel({ rerunCommandId: "plugin.other.live" }), ownerOf)).toBeUndefined();
+    expect(liveRerunCommandId(panel({ rerunCommandId: "edit.undo" }), () => undefined)).toBeUndefined();
+    // Even a window command that somehow resolved to the plugin is refused.
+    expect(liveRerunCommandId(panel({ rerunCommandId: "document.closeTab" }), () => "org.test.nmrgame")).toBeUndefined();
+    expect(liveRerunCommandId(panel({ liveRerun: undefined }), ownerOf)).toBeUndefined();
+  });
+});
+
 describe("pluginPanelOutOfDate", () => {
   it("flags a non-live panel by its source fingerprint only", () => {
     expect(pluginPanelOutOfDate({ sourceStale: true, live: false, lastRunFailed: false, rerunPending: true })).toBe(true);
@@ -273,6 +362,30 @@ describe("documentContentChanged", () => {
     expect(documentContentChanged(document, document)).toBe(false);
     expect(documentContentChanged(selected, edit(selected))).toBe(true);
     expect(documentContentChanged(document, applyPatch(document, { op: "removeObject", objectId: "m0" }))).toBe(true);
+  });
+
+  it("is false for selection-only patches on a page with crossing overrides, and true when they change", () => {
+    const ring = {
+      ...molecule("x1"),
+      atoms: [0, 1, 2, 3].map(index => ({ id: `x1a${index}`, element: "C", x: index * 10, y: index % 2 ? 10 : 0, formalCharge: 0 })),
+      bonds: [
+        { id: "x1b1", fromAtomId: "x1a0", toAtomId: "x1a2", order: "single" },
+        { id: "x1b2", fromAtomId: "x1a1", toAtomId: "x1a3", order: "single" }
+      ]
+    } as unknown as MoleculeObject;
+    const crossing: CrossingOverride = { bonds: [{ objectId: "x1", bondId: "x1b1" }, { objectId: "x1", bondId: "x1b2" }],
+      front: { objectId: "x1", bondId: "x1b1" } };
+    const withRing = applyPatch(baseDocument(), { op: "addObject", pageId: "p1", object: ring });
+    const crossed = applyPatch(withRing, { op: "setCrossingOverride", pageId: "p1", crossing });
+    const selected = applyPatch(crossed, { op: "setSelection", objectIds: ["m0"] });
+    expect(selected.pages[0]!.crossings).toHaveLength(1);
+    // chem-core re-parses the page shell, so the crossing is an equal copy, not the same object.
+    expect(selected.pages[0]!.crossings![0]).not.toBe(crossed.pages[0]!.crossings![0]);
+    expect(documentContentChanged(crossed, selected)).toBe(false);
+    expect(documentContentChanged(selected, applyPatch(selected, { op: "setSelection", objectIds: [] }))).toBe(false);
+    const flipped = applyPatch(selected, { op: "setCrossingOverride", pageId: "p1",
+      crossing: { ...crossing, front: { objectId: "x1", bondId: "x1b2" } } });
+    expect(documentContentChanged(selected, flipped)).toBe(true);
   });
 
   it("treats a different document as changed", () => {

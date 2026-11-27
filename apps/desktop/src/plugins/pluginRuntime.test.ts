@@ -1,5 +1,6 @@
 import { massAnalyzeCommandId, massFragmentManifest } from "@chemdraft/plugin-mass-fragment";
-import { MoleculeObjectSchema } from "@chemdraft/chem-core";
+import { MoleculeObjectSchema, type ChemDraftDocument } from "@chemdraft/chem-core";
+import { unresolvableAromaticRing } from "@chemdraft/layout-engine/testing";
 import {
   PluginApiVersion,
   parsePluginManifest,
@@ -748,6 +749,27 @@ describe("selection warnings are scoped to the command invocation that read the 
     await runtime.invokeCommand("plugin.patcher.run", { selectionWarnings: warnings });
     expect(runtime.host.listProposedPatches("pending")).toHaveLength(1);
     expect(warnings).toEqual(["read of A (patched).chemdraft"]);
+  });
+
+  it("routes documents.getMolecules' structure warnings to the reading command's collector", async () => {
+    // One molecule whose aromatic ring cannot be kekulized: converting it for a plugin warns.
+    const active = {
+      id: "doc_ring", selection: { pageId: "p1", objectIds: [] },
+      pages: [{ id: "p1", objects: [{ id: "m1", type: "molecule", structureFormat: "smiles", structure: "", ...unresolvableAromaticRing() }] }]
+    } as unknown as ChemDraftDocument;
+    const runtime = makeRuntime({ getActiveDocument: () => active });
+    let molecules: readonly unknown[] = [];
+    runtime.registerPlugin(reader("plugin.page.read", "page", ["document.read"]), {
+      commandHandlers: { "plugin.page.read": async (context) => { molecules = await context.documents.getMolecules(); } }
+    });
+    const warnings: string[] = [];
+    await runtime.invokeCommand("plugin.page.read", { selectionWarnings: warnings });
+    expect(molecules).toHaveLength(1);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("preserved as type 4");
+    // A read with no collector (a background or panel-driven run) stays silent, as getSelection does.
+    await runtime.host.invokeCommand("plugin.page.read");
+    expect(warnings).toHaveLength(1);
   });
 
   it("an armed collector that no invocation claims is never handed to a later one", async () => {
