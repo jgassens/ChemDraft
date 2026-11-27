@@ -32,8 +32,10 @@ export interface RasterPictureSize {
  * The pixel size each picture is drawn from so all of them together stay within `budgetPixels`: its own
  * size when everything fits. Otherwise a cap on pixels per picture is lowered until the total fits, so
  * the largest pictures shrink first; no picture goes below what covers its drawn size unless even those
- * sizes do not fit together, and then the cap applies to every picture alike. A shrunk picture keeps its
- * aspect, is at most `maxSide` on a side and at least one pixel.
+ * sizes do not fit together, and then the cap applies to every picture alike. The cap is the largest whole
+ * number of pixels whose sized total fits. A shrunk picture keeps its aspect (to whole pixels), is the
+ * largest such size within its cap, at most `maxSide` on a side and at least one pixel; when even one pixel
+ * each does not fit, every picture is one pixel.
  */
 export function rasterPictureBudget(pictures: readonly RasterPictureSize[], budgetPixels = RASTER_PICTURE_MAX_PIXELS,
   maxSide = RASTER_PICTURE_MAX_SIDE): { pixelWidth: number; pixelHeight: number }[] {
@@ -44,22 +46,36 @@ export function rasterPictureBudget(pictures: readonly RasterPictureSize[], budg
     const cover = Math.min(1, Math.max(picture.drawnWidth / picture.pixelWidth, picture.drawnHeight / picture.pixelHeight));
     return Number.isFinite(cover) && cover > 0 ? picture.pixelWidth * picture.pixelHeight * cover * cover : 0;
   });
+  // A picture with its longer side `long` pixels, the shorter one in proportion (whole pixels, at least one).
+  const withLongSide = (picture: RasterPictureSize, long: number) => {
+    const wide = picture.pixelWidth >= picture.pixelHeight;
+    const short = Math.max(1, Math.floor((wide ? picture.pixelHeight : picture.pixelWidth) * long / (wide ? picture.pixelWidth : picture.pixelHeight)));
+    return wide ? { pixelWidth: long, pixelHeight: short } : { pixelWidth: short, pixelHeight: long };
+  };
   const sized = (cap: number, keepFloors: boolean) => pictures.map((picture, index) => {
     const pixels = picture.pixelWidth * picture.pixelHeight;
     const allowed = Math.min(pixels, Math.max(cap, keepFloors ? floors[index]! : 0));
     if (allowed >= pixels) return own[index]!;
-    const scale = Math.min(Math.sqrt(allowed / pixels), maxSide / Math.max(picture.pixelWidth, picture.pixelHeight));
-    return { pixelWidth: Math.max(1, Math.floor(picture.pixelWidth * scale)), pixelHeight: Math.max(1, Math.floor(picture.pixelHeight * scale)) };
+    // The longest longer side, at least one pixel, whose size stays within `allowed`; the size only grows with it.
+    let low = 1, high = Math.max(1, Math.min(Math.max(picture.pixelWidth, picture.pixelHeight), maxSide));
+    while (low < high) {
+      const middle = low + Math.ceil((high - low) / 2);
+      const size = withLongSide(picture, middle);
+      if (size.pixelWidth * size.pixelHeight <= allowed) low = middle;
+      else high = middle - 1;
+    }
+    return withLongSide(picture, low);
   });
   const total = (sizes: readonly { pixelWidth: number; pixelHeight: number }[]) =>
     sizes.reduce((sum, size) => sum + size.pixelWidth * size.pixelHeight, 0);
   const keepFloors = total(sized(0, true)) <= budgetPixels;
-  // The largest cap that fits; the total only grows with the cap.
+  // The largest whole-pixel cap that fits; the total only grows with the cap, and at the largest picture's own
+  // pixels it is every picture's own size, which does not fit.
   let low = 0, high = Math.max(...pictures.map((picture) => picture.pixelWidth * picture.pixelHeight));
-  for (let step = 0; step < 64 && high - low > 0.5; step++) {
-    const middle = (low + high) / 2;
+  while (low < high) {
+    const middle = low + Math.ceil((high - low) / 2);
     if (total(sized(middle, keepFloors)) <= budgetPixels) low = middle;
-    else high = middle;
+    else high = middle - 1;
   }
   return sized(low, keepFloors);
 }

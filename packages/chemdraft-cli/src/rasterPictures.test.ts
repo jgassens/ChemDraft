@@ -64,6 +64,24 @@ describe("rasterPictureBudget", () => {
     expect(sizes.reduce((total, size) => total + size.pixelWidth * size.pixelHeight, 0)).toBeLessThanOrEqual(200 * 200);
     expect(sizes[0]).toEqual(sizes[1]);
     expect(sizes[0]!.pixelWidth).toBeGreaterThan(130);
+    // Exact: 141 x 141 twice is 39 762 pixels; 142 x 142 twice, 40 328, would not fit.
+    expect(sizes).toEqual([{ pixelWidth: 141, pixelHeight: 141 }, { pixelWidth: 141, pixelHeight: 141 }]);
+  });
+
+  it("finds the widest whole-pixel size that fits, not a needlessly tiny one", () => {
+    // Each picture's cap is 50 pixels: 50 x 1 at the picture's aspect (to whole pixels), 100 in all.
+    const strip = (pixelWidth: number, pixelHeight: number) => ({ pixelWidth, pixelHeight, drawnWidth: 10, drawnHeight: 10 });
+    expect(rasterPictureBudget([strip(16384, 1), strip(16384, 1)], 100))
+      .toEqual([{ pixelWidth: 50, pixelHeight: 1 }, { pixelWidth: 50, pixelHeight: 1 }]);
+    expect(rasterPictureBudget([strip(16384, 1), strip(1, 16384)], 100))
+      .toEqual([{ pixelWidth: 50, pixelHeight: 1 }, { pixelWidth: 1, pixelHeight: 50 }]);
+    expect(rasterPictureBudget([strip(16384, 1), strip(16384, 1)], 101).reduce((total, size) => total + size.pixelWidth * size.pixelHeight, 0))
+      .toBeLessThanOrEqual(101);
+  });
+
+  it("gives every picture one pixel, never none, when even that does not fit", () => {
+    expect(rasterPictureBudget([picture(10), picture(20), picture(30)], 2))
+      .toEqual([{ pixelWidth: 1, pixelHeight: 1 }, { pixelWidth: 1, pixelHeight: 1 }, { pixelWidth: 1, pixelHeight: 1 }]);
   });
 });
 
