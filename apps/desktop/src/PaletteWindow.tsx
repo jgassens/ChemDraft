@@ -626,9 +626,12 @@ export function PaletteWindow({
           return;
         }
         const sizeKey = `${width}x${height}`;
+        const placedKey = `${sizeKey}:${placementKey}`;
         // A Linux cap depends on the monitor's work area and scale.
-        const key = platform === "linux" ? `${sizeKey}:${placementKey}` : sizeKey;
-        if (key === failedKey) return;
+        const key = platform === "linux" ? placedKey : sizeKey;
+        // An exhausted fit stops only for its own placement: a new monitor, scale or work area
+        // gets fresh attempts on every platform.
+        if (placedKey === failedKey) return;
         if (verifiedFit?.key === key) {
           const capChanged = platform === "linux"
             && viewportWidth !== verifiedFit.viewportWidth && viewportWidth !== fittedPaletteWidthRef.current;
@@ -664,7 +667,7 @@ export function PaletteWindow({
             return;
           }
         }
-        failedKey = key;
+        failedKey = placedKey;
         handledPlacementKey = placementKey;
         const targetSize = target ? `${target.width}x${target.height} physical px` : `${width}x${height} CSS px`;
         const liveSize = live ? `${live.width}x${live.height} physical px` : `${window.innerWidth}x${window.innerHeight} CSS px (webview)`;

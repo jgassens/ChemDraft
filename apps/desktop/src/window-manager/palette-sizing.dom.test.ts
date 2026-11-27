@@ -888,6 +888,44 @@ describe("palette work-area sizing", () => {
         await unmount();
       }
     });
+
+    it.each(["macos", "windows", "linux"] as const)(
+      "gives an exhausted fit three fresh attempts after a scale or work-area change on %s", async platform => {
+        const error = vi.spyOn(console, "error").mockImplementation(() => {});
+        let apply = false;
+        const { live, settle, unmount } = await mountMain({
+          platform, initial: { width: 200, height: 400 }, shouldApply: () => apply
+        });
+        try {
+          await settle();
+          expect(native.resize).toHaveBeenCalledTimes(3);
+          expect(error).toHaveBeenCalledTimes(1);
+          // Same content size, same monitor and scale: still no fourth attempt.
+          native.workAreaEvents.get("tauri://resize")?.();
+          window.dispatchEvent(new Event("resize"));
+          await settle(1000);
+          expect(native.resize).toHaveBeenCalledTimes(3);
+          // A new display scale with the same natural content size gets three fresh attempts.
+          vi.stubGlobal("devicePixelRatio", 3);
+          native.workAreaEvents.get("tauri://scale-change")?.();
+          await settle(1000);
+          expect(native.resize).toHaveBeenCalledTimes(6);
+          expect(error).toHaveBeenCalledTimes(2);
+          native.workAreaEvents.get("tauri://scale-change")?.();
+          await settle(1000);
+          expect(native.resize).toHaveBeenCalledTimes(6);
+          // Moving to another monitor (a new work area) tries again, and this time the frame takes.
+          apply = true;
+          native.workArea.mockResolvedValue({ left: 2560, top: 0, right: 4480, bottom: 1080 });
+          native.workAreaEvents.get("tauri://move")?.();
+          await settle(1000);
+          expect(native.resize).toHaveBeenCalledTimes(7);
+          expect(live()).toEqual({ width: 1423 * 3, height: 85 * 3 });
+          expect(error).toHaveBeenCalledTimes(2);
+        } finally {
+          await unmount();
+        }
+      });
   });
 
   it("reports a skipped native resize so the caller can retry the same measurement", async () => {
