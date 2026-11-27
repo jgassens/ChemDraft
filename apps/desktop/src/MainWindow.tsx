@@ -914,6 +914,7 @@ import {
 import {
   createDefaultVisibleToolsetIds,
   defaultVisibleToolsetIds,
+  desktopToolbarProfileVisibility,
   desktopToolsetRegistry,
   compoundLayoutRegistry,
   sessionAvailableRegistry,
@@ -923,6 +924,7 @@ import {
   getToolsetPaletteGroups,
   getToolsetToggleActions,
   initialToolsetWindowSize,
+  webFloatingPaletteWidth,
   isDisabledPlaceholderCommand,
   migrateMainToolbarDefaultsLayoutState,
   toolbarWidgetGridSpan,
@@ -1938,7 +1940,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.27.14.50-opus";
+const CURRENT_BUILD_STAMP = "11.27.14.51-opus";
 
 /** How a command is invoked. `liveRerunStillWanted` marks a live panel's automatic re-run: a queued
  *  one that reaches the front of its plugin's queue starts only while this still returns true. */
@@ -4696,7 +4698,11 @@ export function MainWindow({
       .listToolsets()
       .map((toolset) => toolset.id)
       .filter((id) => resolvedToolsetIdsRef.current.has(id));
-    const nextState = mergeVisibilityIntoLayoutState(layoutStateRef.current, resolvedToolsetIds, visibleToolsetIds);
+    // The profile's visibility defaults are never written (they are re-applied underneath on load), so
+    // only the user's own show/hide reaches the saved layout.
+    const nextState = mergeVisibilityIntoLayoutState(
+      layoutStateRef.current, resolvedToolsetIds, visibleToolsetIds, desktopToolbarProfileVisibility
+    );
     layoutStateRef.current = nextState;
     // Chain the writes so their completion order matches the order the states were produced. Surface a
     // save failure on the status line (it used to be swallowed, so a lost write looked successful) and
@@ -24260,7 +24266,7 @@ export function MainWindow({
                   {
                     "--palette-x": `${position.x}px`,
                     "--palette-y": `${position.y}px`,
-                    "--palette-width": `${initialToolsetWindowSize(toolset, paletteGroups.map(group => group.items)).width}px`
+                    "--palette-width": `${webFloatingPaletteWidth(toolset, paletteGroups.map(group => group.items))}px`
                   } as CSSProperties
                 }
                 onPointerDown={(event) => startWebPaletteDrag(toolset.id, event)}

@@ -10,6 +10,7 @@ import {
   migrateLegacyMainToolbarLayoutState,
   migrateRenamedCommandIdsInLayoutState,
   migrateBracketToolbarOrder,
+  placePaletteGridItems,
   type DesktopToolsetRegistry,
   commandShortcutDisplay,
   compactMacShortcutLabel,
@@ -394,6 +395,20 @@ describe("desktop toolset mapping", () => {
     );
 
     expect(size).toEqual({ width: 32, height: 58 });
+  });
+
+  it("counts the cells a spanning item leaves empty, as the browser's sparse auto-placement does", () => {
+    const item = (colSpan: number, rowSpan: number) => ({ layout: { colSpan, rowSpan } });
+    // A 3x1 widget, two buttons under it, then a full-height divider: the divider cannot start under
+    // the widget, so the third cell of the second row stays empty and the divider takes column 4.
+    const items = [item(3, 1), item(1, 1), item(1, 1), item(1, 2), item(1, 1)];
+    expect(placePaletteGridItems("column", 2, items).map(({ column, row }) => [column, row])).toEqual([
+      [0, 0], [0, 1], [1, 1], [3, 0], [4, 0]
+    ]);
+    // Row flow over two columns: a 2-wide item after a single one starts a new row, and the cell it
+    // skipped is never back-filled (no `dense`), so the next item starts a third row.
+    expect(placePaletteGridItems("row", 2, [item(1, 1), item(2, 1), item(1, 1)]).map(({ column, row }) => [column, row]))
+      .toEqual([[0, 0], [0, 1], [0, 2]]);
   });
 });
 

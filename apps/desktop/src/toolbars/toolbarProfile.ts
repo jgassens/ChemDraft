@@ -49,6 +49,20 @@ export function toolbarProfileLayoutState<TIcon extends string, TAssetName exten
 }
 
 /**
+ * The toolset visibility the profile sets, by toolset id (empty without a profile). These are defaults:
+ * a saved layout must never record them as the user's choice (see `mergeVisibilityIntoLayoutState`).
+ */
+export function toolbarProfileVisibility<TIcon extends string, TAssetName extends string>(
+  profile: ToolbarProfileName | undefined,
+  toolsets: readonly ToolsetDefinition<TIcon, TAssetName>[]
+): ReadonlyMap<string, boolean> {
+  if (profile === undefined) return new Map();
+  return new Map(toolbarProfileLayoutState(profile, toolsets).toolsetOverrides
+    .filter((override): override is UserToolsetOverride & { visible: boolean } => override.visible !== undefined)
+    .map(override => [override.toolsetId, override.visible]));
+}
+
+/**
  * The toolsets a build starts from: `toolsets` itself without a profile, else the profile applied
  * through the same layout machinery as user customization. A user's saved layout applies on top.
  */

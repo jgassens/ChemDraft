@@ -1554,8 +1554,12 @@ Charges, Clean Up Structure 2D, and nothing else. Open each flyout (Bond, Double
 Charges): every entry draws with one click, and no button is disabled with nothing on the page.
 No other core toolbar is open; the game plugin's own toolbars and panels appear as usual, and
 every menu still lists its usual items. Open Structure from the View menu and add Text back with
-Customize Toolbars: both work. Then run plain `dev:web:plugins`: the Main toolbar and the open
-toolbars are the standard ones.
+Customize Toolbars: both work. Every Main toolbar button, the last column (Charges, Clean Up
+Structure 2D) included, sits inside the toolbar's frame, and the title bar is no wider than the frame;
+check again after hiding and re-adding a button. Then run plain `dev:web:plugins`: the Main toolbar
+and the open toolbars are the standard ones, also inside their frames. Finally,
+`CHEMDRAFT_TOOLBAR_PROFILE=molecule-drawing pnpm --filter @chemdraft/desktop build` must refuse to
+start (macOS and Windows).
 
 ## NMR panel (macOS and Windows)
 

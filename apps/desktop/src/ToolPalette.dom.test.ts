@@ -23,7 +23,7 @@ import {
   moleculeStructureBondLengthCommandId,
   type CommandSpec
 } from "./commands";
-import { computePaletteGridSize, getToolsetCommandGroups, getToolsetItemGroups, initialToolsetWindowSize, type DesktopToolsetDefinition, type ToolbarPaletteGroupModel, type ToolbarPaletteItemModel } from "./toolsets";
+import { computePaletteGridSize, getToolsetCommandGroups, getToolsetItemGroups, initialToolsetWindowSize, webFloatingPaletteWidth, type DesktopToolsetDefinition, type ToolbarPaletteGroupModel, type ToolbarPaletteItemModel } from "./toolsets";
 import { ToolbarCustomizeController } from "./toolbars/CustomizeMainToolbar/ToolbarCustomizeController";
 import { createToolbarCatalog } from "./toolbars/toolbarCatalog";
 import { filterToolbarCustomizationCommands } from "./toolbars/toolbarCustomizationCommands";
@@ -141,7 +141,13 @@ it("sizes horizontal toolbar windows from the Art clone's grid or the plugin gri
     groups: [{ items: [{ commandId: "plugin.sizing.run" }] }]
   };
   const registry = new ToolsetRegistry([plugin]);
-  expect(initialToolsetWindowSize(plugin, getToolsetItemGroups(plugin.id, registry))).toEqual({ width: 172, height: 32 });
+  const pluginGroups = getToolsetItemGroups(plugin.id, registry);
+  // A native window starts at the grid and then fits its content.
+  expect(initialToolsetWindowSize(plugin, pluginGroups)).toEqual({ width: 172, height: 32 });
+  // The browser frame is drawn at its width, so it counts the frame, not just the grid: 1px borders,
+  // 6px padding each side, the 7px grip and its 6px gap, then the group's 4px lead, six 24px columns
+  // with 4px gaps, 7px trailing padding and its hairline.
+  expect(webFloatingPaletteWidth(plugin, pluginGroups)).toBe(203);
 });
 
 it("fits the stock Text toolbar's style controls in its initial window width", () => {
@@ -166,6 +172,9 @@ it.each(["user", "plugin"] as const)("sizes a horizontal %s toolbar for two side
   };
   const itemGroups = getToolsetItemGroups(toolset.id, new ToolsetRegistry([toolset]));
   expect(initialToolsetWindowSize(toolset, itemGroups)).toEqual({ width: 350, height: 32 });
+  // In the browser: two 176px groups with a 6px gap between them, inside the same 27px of frame as a
+  // single group.
+  expect(webFloatingPaletteWidth(toolset, itemGroups)).toBe(385);
 });
 
 it.each(["macos", "windows"] as const)("disables the original and copied plugin buttons after their handler is removed on %s", platform => {

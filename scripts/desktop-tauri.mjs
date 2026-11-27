@@ -94,9 +94,23 @@ export function assertNoWebPluginsDir(env) {
   }
 }
 
+// A toolbar profile (CHEMDRAFT_TOOLBAR_PROFILE) is for the browser game build alone. Inherited by a
+// desktop dev or package build, it would ship the game's toolbars in the desktop app, so refuse before
+// anything builds, signs or packages, on every platform. vite.config.ts refuses it too (TAURI_ENV_*),
+// for `tauri` invoked any other way. Unset or empty is the standard toolbars and stays allowed.
+export function assertNoToolbarProfile(env) {
+  if (env.CHEMDRAFT_TOOLBAR_PROFILE !== undefined && env.CHEMDRAFT_TOOLBAR_PROFILE.trim() !== "") {
+    throw new Error(
+      `CHEMDRAFT_TOOLBAR_PROFILE=${env.CHEMDRAFT_TOOLBAR_PROFILE} is set, but toolbar profiles are for the browser build only ` +
+        "(pnpm --filter @chemdraft/desktop build:web:game). Unset it to build or run the desktop app."
+    );
+  }
+}
+
 function main() {
   try {
     assertNoWebPluginsDir(process.env);
+    assertNoToolbarProfile(process.env);
   } catch (error) {
     console.error(error.message);
     process.exit(1);

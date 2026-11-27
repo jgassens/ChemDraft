@@ -92,3 +92,30 @@ describe("branch build identity", () => {
     expect(env.CHEMDRAFT_WORKTREE_LABEL).toBe("checkout [release/test]");
   });
 });
+
+describe("toolbar profile refusal", () => {
+  it.each(["darwin", "win32"])("refuses an inherited CHEMDRAFT_TOOLBAR_PROFILE on %s before building, signing or packaging", async (platform) => {
+    vi.spyOn(process, "platform", "get").mockReturnValue(platform as NodeJS.Platform);
+    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "desktop-tauri.mjs", "--package-build", "--bundles", platform === "darwin" ? "dmg" : "nsis"]);
+    const exit = vi.spyOn(process, "exit").mockImplementation(() => { throw new Error("test exit"); });
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.stubEnv("CHEMDRAFT_TOOLBAR_PROFILE", "molecule-drawing");
+    await expect(import("./desktop-tauri.mjs")).rejects.toThrow("test exit");
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(error).toHaveBeenCalledWith(expect.stringMatching(/CHEMDRAFT_TOOLBAR_PROFILE=molecule-drawing is set.*browser build only/));
+    // Nothing ran: no Sparkle staging, OPSIN signing, Tauri build or installer packaging.
+    expect(vi.mocked(spawnSync)).not.toHaveBeenCalled();
+  });
+
+  it("allows an unset or empty profile, and the build goes ahead", async () => {
+    const { assertNoToolbarProfile } = await import("./desktop-tauri.mjs");
+    expect(() => assertNoToolbarProfile({})).not.toThrow();
+    expect(() => assertNoToolbarProfile({ CHEMDRAFT_TOOLBAR_PROFILE: "" })).not.toThrow();
+    expect(() => assertNoToolbarProfile({ CHEMDRAFT_TOOLBAR_PROFILE: "  " })).not.toThrow();
+    expect(() => assertNoToolbarProfile({ CHEMDRAFT_TOOLBAR_PROFILE: "molecule-drawing" })).toThrow(/browser build only/);
+    vi.resetModules();
+    vi.stubEnv("CHEMDRAFT_TOOLBAR_PROFILE", "");
+    const { args } = await build("win32", true);
+    expect(args).toContain("build");
+  });
+});

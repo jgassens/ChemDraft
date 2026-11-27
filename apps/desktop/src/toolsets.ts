@@ -28,7 +28,7 @@ import type { CommandSpec } from "./commands";
 import { renamedCommandId } from "./renamedCommands";
 import type { IconName } from "./icons";
 import type { ToolbarAssetName } from "./toolbarAssets";
-import { applyToolbarProfile } from "./toolbars/toolbarProfile";
+import { applyToolbarProfile, toolbarProfileVisibility } from "./toolbars/toolbarProfile";
 import { parseToolbarProfileName } from "./toolbars/toolbarProfileName";
 
 export type DesktopToolsetDefinition = ToolsetDefinition<IconName, ToolbarAssetName>;
@@ -126,6 +126,8 @@ export const desktopToolsets = parseToolsetManifest<IconName, ToolbarAssetName>(
 export const desktopToolbarProfile = parseToolbarProfileName(import.meta.env.CHEMDRAFT_TOOLBAR_PROFILE);
 /** The toolsets this build starts from: the manifest with the profile's defaults applied. User layout goes on top. */
 export const defaultDesktopToolsets = applyToolbarProfile(desktopToolsets, desktopToolbarProfile);
+/** The toolset visibility this build's profile sets; a default, so the saved layout never records it. */
+export const desktopToolbarProfileVisibility = toolbarProfileVisibility(desktopToolbarProfile, desktopToolsets);
 /** Every shipped command, whatever the profile hides, so menus, shortcuts and the Customize gallery keep them. */
 export const shippedToolsetRegistry = new ToolsetRegistry<IconName, ToolbarAssetName>(desktopToolsets);
 export const desktopToolsetRegistry = createDesktopToolsetRegistry();
@@ -770,6 +772,139 @@ export function initialToolsetWindowSize(
     };
   }
   return gridSize ?? fallbackSize ?? { width: 96, height: 420 };
+}
+
+/**
+ * The width of the browser's floating palette frame (MainWindow's `.web-floating-palette`), which,
+ * unlike a native palette window, is not fitted to its measured content afterwards: the frame is drawn
+ * at this width. A plain horizontal grid palette (no section widget beside or instead of the grid) is
+ * as wide as the browser lays out the items actually shown, chrome included, so none draws past it;
+ * every other palette uses `initialToolsetWindowSize`. Native windows keep `initialToolsetWindowSize`
+ * as their first frame and then fit to their content.
+ */
+export function webFloatingPaletteWidth(
+  toolset: DesktopToolsetDefinition,
+  itemGroups: readonly (readonly ToolbarPaletteItemModel[])[]
+): number {
+  const size = initialToolsetWindowSize(toolset, itemGroups);
+  if (toolsetUsesResizableWindow(toolset.id) || toolset.gridLayout?.orientation !== "horizontal") return size.width;
+  const gridLayout = toolset.gridLayout.columns ? toolset.gridLayout : { rows: 2, ...toolset.gridLayout };
+  if (!computePaletteGridSize(gridLayout, itemGroups)) return size.width;
+  return horizontalGridPaletteWidth(gridLayout, itemGroups) ?? size.width;
+}
+
+/** One placed palette item, in zero-based grid cells. */
+export interface PaletteGridPlacement {
+  column: number;
+  row: number;
+  colSpan: number;
+  rowSpan: number;
+}
+
+/**
+ * Where the browser puts each item of a `.tool-group-grid`: CSS grid auto-placement, sparse (ToolPalette
+ * never sets `dense`). `flow: "column"` fills `tracks` rows column by column (horizontal palettes'
+ * `grid-auto-flow: column`); `"row"` fills `tracks` columns row by row. Items with both a row and a
+ * column are placed there first. A spanning item that does not fit at the cursor leaves the cells it
+ * skipped empty, so a grid can need more tracks than its cell count suggests: on the molecule-drawing
+ * Main toolbar a 1x2 divider after an odd number of cells leaves the cell above it empty.
+ */
+export function placePaletteGridItems(
+  flow: "row" | "column",
+  tracks: number,
+  items: readonly Pick<ToolbarPaletteItemModel, "layout">[]
+): PaletteGridPlacement[] {
+  const occupied = new Set<string>();
+  const key = (column: number, row: number) => `${column},${row}`;
+  const fits = (column: number, row: number, colSpan: number, rowSpan: number) => {
+    for (let c = column; c < column + colSpan; c += 1) {
+      for (let r = row; r < row + rowSpan; r += 1) {
+        if (occupied.has(key(c, r))) return false;
+      }
+    }
+    return true;
+  };
+  const occupy = (placement: PaletteGridPlacement) => {
+    for (let c = placement.column; c < placement.column + placement.colSpan; c += 1) {
+      for (let r = placement.row; r < placement.row + placement.rowSpan; r += 1) occupied.add(key(c, r));
+    }
+  };
+  const placements: (PaletteGridPlacement | undefined)[] = items.map(({ layout }) => {
+    if (layout.column === undefined || layout.row === undefined) return undefined;
+    const placement = { column: layout.column, row: layout.row, colSpan: layout.colSpan, rowSpan: layout.rowSpan };
+    occupy(placement);
+    return placement;
+  });
+  // The cross axis has `tracks` lines, or more when an item spans further (the implicit grid grows).
+  const crossTracks = Math.max(1, tracks, ...items.map(({ layout }) => flow === "column" ? layout.rowSpan : layout.colSpan));
+  let major = 0;
+  let minor = 0;
+  return items.map(({ layout }, index) => {
+    const fixed = placements[index];
+    if (fixed) return fixed;
+    const minorSpan = flow === "column" ? layout.rowSpan : layout.colSpan;
+    for (;;) {
+      if (minor + minorSpan <= crossTracks) {
+        const column = flow === "column" ? major : minor;
+        const row = flow === "column" ? minor : major;
+        if (fits(column, row, layout.colSpan, layout.rowSpan)) {
+          const placement = { column, row, colSpan: layout.colSpan, rowSpan: layout.rowSpan };
+          occupy(placement);
+          return placement;
+        }
+        minor += 1;
+      } else {
+        major += 1;
+        minor = 0;
+      }
+    }
+  });
+}
+
+// Horizontal floating palettes in App.css (`.tool-palette.horizontal .tool-group`): two 24px rows,
+// auto columns 24px wide, --cd-space-2 between cells, 7px trailing padding and a 1px hairline after
+// each group (none on a main-style palette's last group).
+const HORIZONTAL_GRID_ROWS = 2;
+const HORIZONTAL_GRID_AUTO_COLUMN_WIDTH = 24;
+const HORIZONTAL_GRID_GAP = 4;
+const HORIZONTAL_GROUP_TRAILING = 7 + 1;
+// The web frame's 1px borders, the palette's 6px side padding (10px at the end of a main-style
+// palette), and the 7px grip with the --cd-space-3 gap after it.
+const HORIZONTAL_PALETTE_LEADING = 1 + 6 + 7 + HORIZONTAL_PALETTE_GROUP_GAP;
+const HORIZONTAL_PALETTE_TRAILING = 6 + 1;
+const MAIN_STYLE_PALETTE_TRAILING = 10 + 1;
+
+/**
+ * The frame width of a plain horizontal grid palette, from the items actually shown, laid out as App.css
+ * lays them out. `undefined` when a section widget renders beside or instead of the grid (Text, Art,
+ * the inspectors), whose width this cannot derive from cells.
+ */
+function horizontalGridPaletteWidth(
+  gridLayout: NonNullable<DesktopToolsetDefinition["gridLayout"]>,
+  itemGroups: readonly (readonly ToolbarPaletteItemModel[])[]
+): number | undefined {
+  const items = itemGroups.flat();
+  if (items.some(item => isToolbarWidgetItem(item) && !isGridWidgetItem(item))) return undefined;
+  const groups = itemGroups.filter(group => group.length > 0);
+  if (groups.length === 0) return undefined;
+  const mainStyle = items.some(item =>
+    item.primary.type === "control" && item.primary.controlId === TOOLBAR_WIDGET_IDS.mainStyleControls
+  );
+  const padding = gridLayout.padding ?? PALETTE_GRID_METRIC_DEFAULTS.padding;
+  const explicitColumns = gridLayout.columns ?? 0;
+  const cellWidth = gridLayout.cellWidth ?? PALETTE_GRID_METRIC_DEFAULTS.cellWidth;
+  const groupWidths = groups.map((group, index) => {
+    const placements = placePaletteGridItems("column", HORIZONTAL_GRID_ROWS, group);
+    const columns = Math.max(explicitColumns, ...placements.map(placement => placement.column + placement.colSpan));
+    const explicit = Math.min(columns, explicitColumns);
+    const trackWidth = explicit * cellWidth + (columns - explicit) * HORIZONTAL_GRID_AUTO_COLUMN_WIDTH;
+    const trailing = mainStyle && index === groups.length - 1 ? 0 : HORIZONTAL_GROUP_TRAILING;
+    return padding + trackWidth + Math.max(0, columns - 1) * HORIZONTAL_GRID_GAP + trailing;
+  });
+  return HORIZONTAL_PALETTE_LEADING
+    + groupWidths.reduce((total, width) => total + width, 0)
+    + (groupWidths.length - 1) * HORIZONTAL_PALETTE_GROUP_GAP
+    + (mainStyle ? MAIN_STYLE_PALETTE_TRAILING : HORIZONTAL_PALETTE_TRAILING);
 }
 
 export function computePaletteGridSize(

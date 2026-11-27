@@ -152,8 +152,12 @@ the student draws. Generic: any plugin can use it.
   every other core toolbar hidden. Defined in `toolbars/toolbarProfile.ts` as layout state applied
   to the manifest (`defaultDesktopToolsets` in `toolsets.ts`); user layout applies on top; command
   specs still come from the full manifest (`shippedToolsetRegistry`). Unknown names fail the build
-  in `vite.config.ts`. Tests: `toolbars/toolbarProfile.test.ts`. Remaining: the hands-on check in
-  `docs/manual-stress-checklist.md`.
+  in `vite.config.ts`; any value fails a desktop build (`desktop-tauri.mjs`, and `vite.config.ts`
+  under `TAURI_ENV_*`). The saved layout records only the user's changes, never the profile's
+  visibility defaults. Horizontal palette frames are sized from the items shown, placed as CSS grid
+  places them (`placePaletteGridItems`), chrome included. Tests: `toolbars/toolbarProfile.test.ts`,
+  `toolbars/toolbarPaletteFrame.dom.test.tsx`, `scripts/desktop-tauri.test.ts`. Remaining: the
+  hands-on check in `docs/manual-stress-checklist.md`, and native palette windows on macOS and Windows.
 - **Review fixes.** A live re-run only runs a command the reporting plugin registered itself
   (`PluginPanelController` drops any other `liveRerun` and records `panel-live-rerun-refused`); a
   queued live re-run is dropped when it reaches the front if its panel closed, its plugin unloaded or

@@ -11,7 +11,7 @@ import {
 } from "../toolsets";
 import { MAIN_TOOLBAR_DEFAULTS_REVISION } from "./toolbarLayoutState";
 import { applyToolbarProfile, MOLECULE_DRAWING_MAIN_ITEM_IDS } from "./toolbarProfile";
-import { parseToolbarProfileName, TOOLBAR_PROFILE_NAMES } from "./toolbarProfileName";
+import { parseToolbarProfileName, TOOLBAR_PROFILE_NAMES, toolbarProfileForBuild } from "./toolbarProfileName";
 
 const OTHER_CORE_TOOLSETS = [
   "core.structure", "core.arrows", "core.annotations", "core.art", "core.orbitals", "core.layout",
@@ -46,6 +46,35 @@ describe("toolbar profile name", () => {
   });
 });
 
+describe("toolbar profile in a desktop (Tauri) build", () => {
+  afterAll(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it("is refused for any non-empty value inside a Tauri build, and allowed unset or empty", () => {
+    expect(() => toolbarProfileForBuild("molecule-drawing", true)).toThrow(
+      /CHEMDRAFT_TOOLBAR_PROFILE="molecule-drawing" is set inside a Tauri build.*browser build only/
+    );
+    // Even a name no profile has is refused as a desktop profile first, not as a typo.
+    expect(() => toolbarProfileForBuild("molecule-draw", true)).toThrow(/inside a Tauri build/);
+    expect(toolbarProfileForBuild(undefined, true)).toBeUndefined();
+    expect(toolbarProfileForBuild("", true)).toBeUndefined();
+    expect(toolbarProfileForBuild("  ", true)).toBeUndefined();
+    expect(toolbarProfileForBuild("molecule-drawing", false)).toBe("molecule-drawing");
+  });
+
+  it("fails vite.config.ts itself when tauri runs Vite with a profile inherited", async () => {
+    vi.stubEnv("TAURI_ENV_PLATFORM", "darwin");
+    vi.stubEnv("CHEMDRAFT_TOOLBAR_PROFILE", "molecule-drawing");
+    vi.resetModules();
+    await expect(import("../../vite.config")).rejects.toThrow(/inside a Tauri build/);
+    vi.stubEnv("CHEMDRAFT_TOOLBAR_PROFILE", "");
+    vi.resetModules();
+    await expect(import("../../vite.config")).resolves.toBeDefined();
+  }, 30_000);
+});
+
 describe("no toolbar profile (every desktop build and the normal web build)", () => {
   it("starts from the shipped manifest itself", () => {
     expect(desktopToolbarProfile).toBeUndefined();
@@ -71,20 +100,30 @@ describe("molecule-drawing toolbar profile", () => {
   // The game build: the app modules evaluated with CHEMDRAFT_TOOLBAR_PROFILE set, as vite.config.ts defines it.
   let game: typeof import("../toolsets");
   let gameCommands: typeof import("../commands");
+  let gameShell: typeof import("../shellCommandIds");
+  let gameLayout: typeof import("./toolbarLayoutState");
+  let gameDrawingTools: typeof import("../drawingTools");
+  let gameShortcuts: typeof import("../keyboardShortcuts");
   beforeAll(async () => {
     vi.stubEnv("CHEMDRAFT_TOOLBAR_PROFILE", "molecule-drawing");
     Object.assign(import.meta.env, { CHEMDRAFT_TOOLBAR_PROFILE: "molecule-drawing" });
     vi.resetModules();
     game = await import("../toolsets");
     gameCommands = await import("../commands");
+    gameShell = await import("../shellCommandIds");
+    gameLayout = await import("./toolbarLayoutState");
+    gameDrawingTools = await import("../drawingTools");
+    gameShortcuts = await import("../keyboardShortcuts");
   });
   afterAll(() => {
     vi.unstubAllEnvs();
     Reflect.deleteProperty(import.meta.env, "CHEMDRAFT_TOOLBAR_PROFILE");
     vi.resetModules();
   });
+  // As toolbarCatalog.ts builds the live registry: the production shell command ids, so a saved layout
+  // naming a shell command is pruned (or kept) exactly as the app does.
   const gameRegistry = (layoutState?: unknown, plugins: readonly DesktopToolsetDefinition[] = []) =>
-    game.createDesktopToolsetRegistry(layoutState, undefined, plugins, () => undefined);
+    game.createDesktopToolsetRegistry(layoutState, gameShell.SHELL_COMMAND_IDS, plugins, () => undefined);
   const gameMainItemIds = (registry: ReturnType<typeof gameRegistry>) => mainItemIds(registry, game.getToolsetPaletteGroups);
 
   it("is read from the build-time variable and applied to the default toolsets", () => {
@@ -151,12 +190,79 @@ describe("molecule-drawing toolbar profile", () => {
     expect(textItem.customAddition).toBe(true);
   });
 
-  it("keeps every shipped command available to menus, shortcuts and the Customize gallery", () => {
+  it("keeps every shipped command available to menus and the Customize gallery", () => {
     const commandIds = new Set(game.getToolsetCommandSpecs().map(command => command.id));
     const paletteIds = new Set(gameCommands.allPaletteCommands().map(command => command.id));
     for (const id of ["tool.text", "tool.art.reactionArrow", "layout.alignLeft", "structure.spin3d"]) {
       expect(commandIds).toContain(id);
       expect(paletteIds).toContain(id);
     }
+  });
+
+  it("keeps the shortcut of an item the profile hides, through the path MainWindow binds keys with", () => {
+    // MainWindow: toolCommandSpecs from the LIVE registry -> createMainWindowShortcutCommands ->
+    // createDesktopShortcutRegistry, whose resolve() handles every key press.
+    const liveShortcuts = (registry: ReturnType<typeof gameRegistry> | ReturnType<typeof createDesktopToolsetRegistry>) => {
+      const toolCommandSpecs = gameDrawingTools.withStandaloneDrawingToolCommands(game.getToolsetCommandSpecs(registry));
+      const commands = gameShortcuts.createMainWindowShortcutCommands(
+        { quickActions: [], layerActions: [], toolCommandSpecs }, undefined, "macos"
+      );
+      return gameShortcuts.createDesktopShortcutRegistry(commands, { platform: "macos" });
+    };
+    const registry = gameRegistry();
+    expect(gameMainItemIds(registry)).not.toContain("tool.text");
+    const shortcuts = liveShortcuts(registry);
+    expect(shortcuts.resolve({ key: "t" })).toBe("tool.text");
+    // Every key the standard toolbars bind is still bound with the profile.
+    const standard = liveShortcuts(createDesktopToolsetRegistry(undefined, gameShell.SHELL_COMMAND_IDS, [], () => undefined, desktopToolsets));
+    const bound = (list: ReturnType<typeof liveShortcuts>) => new Set(list.list().map(shortcut => shortcut.commandId));
+    expect([...bound(standard)].filter(id => !bound(shortcuts).has(id))).toEqual([]);
+  });
+
+  describe("saved layout", () => {
+    const allIds = (registry: ReturnType<typeof gameRegistry>) => registry.listToolsets().map(toolset => toolset.id);
+    // What MainWindow's visibility effect writes (`mergeVisibilityIntoLayoutState` with the build's profile).
+    const save = (existing: ToolsetLayoutState | undefined, registry: ReturnType<typeof gameRegistry>, visible: ReadonlySet<string>) =>
+      gameLayout.mergeVisibilityIntoLayoutState(existing, allIds(registry), visible, game.desktopToolbarProfileVisibility);
+
+    it("never records the profile's defaults", () => {
+      expect(game.desktopToolbarProfileVisibility).toEqual(new Map(OTHER_CORE_TOOLSETS.map(id => [id, false])));
+      const registry = gameRegistry();
+      const saved = save(undefined, registry, game.createDefaultVisibleToolsetIds(registry));
+      // Nothing about the toolsets the profile hides, and no Main customization (that lives in the profile).
+      expect(saved.toolsetOverrides).toEqual([{ toolsetId: "core.main", visible: true }]);
+      // A later build without the profile, on the same saved layout, gets the standard toolbars.
+      const standard = createDesktopToolsetRegistry(saved, gameShell.SHELL_COMMAND_IDS, [], () => undefined, desktopToolsets);
+      expect(createDefaultVisibleToolsetIds(standard)).toEqual(createDefaultVisibleToolsetIds(new ToolsetRegistry(desktopToolsets)));
+      expect(mainItemIds(standard)).toContain("tool.text");
+    });
+
+    it("records only the toolbar the user shows, and re-applies the profile underneath on load", () => {
+      const registry = gameRegistry();
+      const first = save(undefined, registry, game.createDefaultVisibleToolsetIds(registry));
+      const shown = save(first, registry, new Set([...game.createDefaultVisibleToolsetIds(registry), "core.structure"]));
+      expect(shown.toolsetOverrides).toEqual([
+        { toolsetId: "core.main", visible: true },
+        { toolsetId: "core.structure", visible: true }
+      ]);
+      const reloaded = gameRegistry(shown);
+      expect(game.createDefaultVisibleToolsetIds(reloaded)).toEqual(new Set(["core.main", "core.structure"]));
+      expect(gameMainItemIds(reloaded)).toEqual([...MOLECULE_DRAWING_MAIN_ITEM_IDS]);
+      // Hiding it again is the user's own choice too, so it stays recorded.
+      const hidden = save(shown, reloaded, new Set(["core.main"]));
+      expect(hidden.toolsetOverrides).toContainEqual({ toolsetId: "core.structure", visible: false });
+    });
+
+    it("keeps the user's other customization of a toolset the profile hides", () => {
+      const registry = gameRegistry();
+      const existing: ToolsetLayoutState = {
+        version: 1,
+        toolsetOverrides: [{ toolsetId: "core.art", title: "My Art" }],
+        userToolsets: []
+      };
+      const saved = save(existing, registry, game.createDefaultVisibleToolsetIds(registry));
+      expect(saved.toolsetOverrides).toContainEqual({ toolsetId: "core.art", title: "My Art" });
+      expect(saved.toolsetOverrides.filter(override => override.toolsetId !== "core.main" && override.visible !== undefined)).toEqual([]);
+    });
   });
 });

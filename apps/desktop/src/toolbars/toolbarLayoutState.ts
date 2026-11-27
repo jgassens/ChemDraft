@@ -14,21 +14,31 @@ const EMPTY_LAYOUT_STATE: ToolsetLayoutState = { version: 1, toolsetOverrides: [
  * layout state so opening/closing a palette doesn't clobber other customization (order, user
  * toolsets) that a later phase will store in the same file. Overrides for toolsets that aren't
  * currently known (e.g. a plugin toolset that isn't loaded right now) are preserved untouched.
+ *
+ * `profileVisibility` is the visibility a build-time toolbar profile gives toolsets (empty without a
+ * profile). A profile is a default, never a user's choice, so it is never written: a toolset it covers
+ * is recorded only once the user's visibility differs from the profile's, or when the saved layout
+ * already holds the user's own value for it. The profile is re-applied underneath on every load.
  */
 export function mergeVisibilityIntoLayoutState(
   existing: ToolsetLayoutState | undefined,
   allToolsetIds: readonly string[],
-  visibleToolsetIds: ReadonlySet<string>
+  visibleToolsetIds: ReadonlySet<string>,
+  profileVisibility: ReadonlyMap<string, boolean> = new Map()
 ): ToolsetLayoutState {
   const base = existing ?? EMPTY_LAYOUT_STATE;
   const known = new Set(allToolsetIds);
   const overridesById = new Map(base.toolsetOverrides.map((override) => [override.toolsetId, override]));
 
-  const updated = allToolsetIds.map((toolsetId) => ({
-    ...overridesById.get(toolsetId),
-    toolsetId,
-    visible: visibleToolsetIds.has(toolsetId)
-  }));
+  const updated = allToolsetIds.flatMap((toolsetId) => {
+    const saved = overridesById.get(toolsetId);
+    const visible = visibleToolsetIds.has(toolsetId);
+    if (profileVisibility.get(toolsetId) === visible && saved?.visible === undefined) {
+      // Still the profile's default: keep whatever else the user customized, but no visibility.
+      return saved ? [saved] : [];
+    }
+    return [{ ...saved, toolsetId, visible }];
+  });
   const preserved = base.toolsetOverrides.filter((override) => !known.has(override.toolsetId));
 
   // Copy userToolsets rather than spread `base` by reference: when `existing` is undefined, `base`

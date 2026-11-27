@@ -7,9 +7,9 @@ import { defineConfig, type Plugin } from "vite";
 import { appDataRoot, STABLE_BUNDLE_ID } from "../../scripts/app-data-root.mjs";
 import { labelFromEnv } from "../../scripts/worktree-identity.mjs";
 import { workerChunksGuard, workerRuntimeChunks } from "../../tools/worker-chunks/workerChunks";
-import { webPluginsVitePlugins } from "../../scripts/web-plugins/vitePlugin";
+import { isTauriBuildEnv, webPluginsVitePlugins } from "../../scripts/web-plugins/vitePlugin";
 import { buildAboutProvenance } from "./src/about/buildProvenance";
-import { parseToolbarProfileName } from "./src/toolbars/toolbarProfileName";
+import { toolbarProfileForBuild } from "./src/toolbars/toolbarProfileName";
 
 import {
   INSTALLED_PLUGIN_URL_PREFIX,
@@ -20,8 +20,9 @@ import {
 
 const { components, licenseTexts } = buildAboutProvenance();
 // Build-time toolbar defaults (`dev:web:game` / `build:web:game`); unset is the standard toolbars.
-// Parsed here so an unknown name fails the build instead of shipping the standard toolbars silently.
-const toolbarProfile = parseToolbarProfileName(process.env.CHEMDRAFT_TOOLBAR_PROFILE);
+// Parsed here so an unknown name fails the build instead of shipping the standard toolbars silently,
+// and refused inside a Tauri build so the desktop app never ships a profile.
+const toolbarProfile = toolbarProfileForBuild(process.env.CHEMDRAFT_TOOLBAR_PROFILE, isTauriBuildEnv(process.env));
 
 // fileURLToPath (not URL.pathname) so a checkout path containing spaces — e.g. a git worktree at
 // ".../chemdraw-structure inspector" — decodes to a real filesystem path instead of a "%20" one

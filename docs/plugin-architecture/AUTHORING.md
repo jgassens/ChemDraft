@@ -1357,8 +1357,12 @@ tools (Bond, Wedge, Hashed, Dashed, Bold, Double/Triple), Chain, Rings, Charges 
 Structure 2D, each with its usual flyout. Every other core toolbar starts hidden; plugin toolbars and
 the menus are unchanged, and View and Customize Toolbars still bring any tool back. The profile only
 changes the starting toolbars, through the same layout machinery as a user's customization, so a
-user's own changes apply on top. An unknown profile name fails the build; without the variable
-(every other script, and every desktop build) the toolbars are the standard ones.
+user's own changes apply on top, and only those changes are ever saved (the profile's defaults are
+re-applied underneath on each load, so another build on the same origin never inherits them). An
+unknown profile name fails the build; without the variable (every other script) the toolbars are the
+standard ones. A desktop build refuses the variable outright: `scripts/desktop-tauri.mjs` exits before
+building, signing or packaging on macOS and Windows, and `vite.config.ts` throws inside any Tauri
+build, so an inherited `CHEMDRAFT_TOOLBAR_PROFILE` can never ship the game toolbars in the app.
 
 At startup the browser build reads `/web-plugins/index.json`. If it is missing, there are no preloaded
 plugins and nothing is reported. Each listed package is loaded from its own same-origin directory
