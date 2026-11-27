@@ -82,15 +82,37 @@ export interface ToolbarPaletteItemModel {
  */
 export const DOCUMENT_ZOOM_GRID_SPAN = { colSpan: 4, rowSpan: 1 } as const;
 
-/** Grid span the customize gallery gives a widget it (re)adds, with the zoom widget's current span. */
+/**
+ * The Main style widget's footprint on the tool grid: eleven cells wide and two tall. Every layout
+ * of the widget (text, molecule, shape, arrow) draws exactly eleven cells per row
+ * (`MAIN_STYLE_ROW_CELLS` in toolbars/mainStyleWidget/cells.tsx, asserted equal in tests), so the
+ * span is exactly the cells its controls cover.
+ *
+ * Main's manifest, the gallery's re-add span and layouts saved by 1.2.2/RC5 carry a twelve-cell
+ * span, which left one empty column (a blank cell in each row) beside the controls: after them in
+ * Customize Toolbar, before them once Customize closed. As with the zoom widget, the item id is
+ * unchanged and this read-time override is the whole migration.
+ */
+export const MAIN_STYLE_CONTROLS_GRID_SPAN = { colSpan: 11, rowSpan: 2 } as const;
+
+/** Spans that replace whatever a manifest, gallery or saved layout declares for these widgets. */
+const WIDGET_GRID_SPAN_OVERRIDES: Readonly<Record<string, { readonly colSpan: number; readonly rowSpan: number }>> = {
+  [TOOLBAR_WIDGET_IDS.documentZoom]: DOCUMENT_ZOOM_GRID_SPAN,
+  [TOOLBAR_WIDGET_IDS.mainStyleControls]: MAIN_STYLE_CONTROLS_GRID_SPAN
+};
+
+/** Grid span the customize gallery gives a widget it (re)adds, with the zoom and style widgets'
+ *  current spans. */
 export function toolbarWidgetGridSpan(widgetId: string): { colSpan: number; rowSpan: number } | undefined {
-  return widgetId === TOOLBAR_WIDGET_IDS.documentZoom ? { ...DOCUMENT_ZOOM_GRID_SPAN } : TOOLBAR_WIDGET_GRID_SPANS[widgetId];
+  const override = Object.hasOwn(WIDGET_GRID_SPAN_OVERRIDES, widgetId) ? WIDGET_GRID_SPAN_OVERRIDES[widgetId] : undefined;
+  return override ? { ...override } : TOOLBAR_WIDGET_GRID_SPANS[widgetId];
 }
 
 function paletteItemLayout(item: NormalizedToolsetItem): ToolbarPaletteItemModel["layout"] {
-  return item.primary.type === "control" && item.primary.controlId === TOOLBAR_WIDGET_IDS.documentZoom
-    ? { ...item.layout, ...DOCUMENT_ZOOM_GRID_SPAN }
-    : item.layout;
+  const override = item.primary.type === "control" && Object.hasOwn(WIDGET_GRID_SPAN_OVERRIDES, item.primary.controlId)
+    ? WIDGET_GRID_SPAN_OVERRIDES[item.primary.controlId]
+    : undefined;
+  return override ? { ...item.layout, ...override } : item.layout;
 }
 
 export const desktopToolsets = parseToolsetManifest<IconName, ToolbarAssetName>(manifest);

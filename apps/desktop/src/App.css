@@ -1685,12 +1685,6 @@ textarea:focus-visible,
   border-right: 0;
 }
 
-/* A grid-citizen widget that ends the row (Main's style controls: 11 cells pinned in a 12-cell slot)
-   sits at its slot's end, so the spare cell falls inside the row, not as a gap at the window edge. */
-.palette-window-shell .tool-palette.floating.horizontal .tool-group > .toolbar-widget-grid-slot:last-child {
-  justify-items: end;
-}
-
 .palette-window-shell .tool-palette.floating.horizontal.art-style-palette,
 .palette-window-shell .tool-palette.floating.horizontal.molecule-inspector-palette,
 .palette-window-shell .tool-palette.floating.horizontal.ring-inspector-palette,
@@ -1711,14 +1705,14 @@ textarea:focus-visible,
   justify-items: start;
   justify-content: start;
   /* The footprint is pinned by construction: every variant's rows budget exactly 11 cells
-     (11×24px + 10×4px gaps = 304px), plus the 4px lead-in padding under the global border-box
-     sizing — so the widget can never resize or slide as the selection changes variants (the
-     11-cell budget itself is asserted in mainStyleWidget.test.ts). Overflow stays visible — like
-     every tooltip-bearing palette container — so the cells' .tool-tooltip spans can hang below
-     the toolbar. */
-  width: calc(var(--cd-control-height) * 11 + var(--cd-space-2) * 11);
+     (11×24px + 10×4px gaps = 304px), the same 11×2 cells the item spans on the tool grid
+     (MAIN_STYLE_CONTROLS_GRID_SPAN in toolsets.ts) — so the widget fills its slot with no spare
+     cell, and can never resize or slide as the selection changes variants (the 11-cell budget is
+     asserted in mainStyleWidget.test.ts). No lead-in padding: the grid's own column gap separates
+     it from the tools before it. Overflow stays visible — like every tooltip-bearing palette
+     container — so the cells' .tool-tooltip spans can hang below the toolbar. */
+  width: calc(var(--cd-control-height) * 11 + var(--cd-space-2) * 10);
   gap: var(--cd-space-2);
-  padding-left: var(--cd-space-2);
 }
 
 .toolbar-style-row {
@@ -3227,13 +3221,12 @@ textarea:focus-visible,
   min-width: 1px;
 }
 
-/* A grid-citizen widget's slot: the live widget renders inside its colSpan×rowSpan span, centered so
-   the sub-cell remainder splits into symmetric breathing room instead of piling up on one edge. */
+/* A grid-citizen widget's slot: the live widget renders inside its colSpan×rowSpan span. */
 .toolbar-widget-grid-slot {
   display: grid;
   align-items: center;
-  /* Start-aligned, not centered: the style widget's width is pinned (11 cells in a 12-cell slot),
-     and centering would slide every control sideways if the two ever disagreed. */
+  /* Start-aligned, the same as the customize slot's block content, so a widget sits on the same
+     cells live and in Customize Toolbar. The style and zoom widgets fill their spans exactly. */
   justify-items: start;
 }
 
@@ -3248,6 +3241,17 @@ textarea:focus-visible,
 .customize-slot .customize-widget-grid-content {
   display: block;
   pointer-events: none;
+}
+
+/* A whole-widget customize slot (the style controls) draws its dashed frame as an outline on the
+   slot's edge instead of a 1px border inside it, so the widget keeps its full span and every
+   control sits on the same cells in Customize Toolbar as on the live toolbar. */
+.customize-slot.customize-slot-widget {
+  border: 0;
+  outline-width: 1px;
+  outline-style: dashed;
+  outline-color: var(--cd-border-control, #b5b5b5);
+  outline-offset: 0;
 }
 
 /* Deterministic monogram fallback for commands without a distinctive icon: a boxed 1–2 letter glyph

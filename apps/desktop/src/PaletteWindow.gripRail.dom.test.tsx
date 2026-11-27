@@ -121,7 +121,10 @@ describe.each(["macos", "windows", "linux"] as const)("floating Main toolbar chr
     expect(shell.querySelector("[data-palette-content-drag-grip]")).toBeNull();
     const group = shell.querySelector<HTMLElement>(".tool-palette .tool-group")!;
     expect(group.lastElementChild?.classList.contains("toolbar-widget-grid-slot")).toBe(true);
-    expect(getComputedStyle(group.lastElementChild!).justifyItems).toBe("end");
+    // The style widget fills its 11-cell span exactly, so it starts at its slot's start, as it does
+    // in Customize Toolbar (no spare cell to push to either side).
+    expect(group.lastElementChild?.getAttribute("data-toolbar-layout-col-span")).toBe("11");
+    expect(getComputedStyle(group.lastElementChild!).justifyItems).toBe("start");
     expect(shell.querySelector('[data-toolbar-item-id="core.main.divider.7"]')).toBeNull();
     // A thin uniform margin around the rows.
     expect(getComputedStyle(shell.querySelector(".tool-palette")!).padding).toBe("4px");

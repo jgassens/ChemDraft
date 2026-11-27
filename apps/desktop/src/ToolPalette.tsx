@@ -495,7 +495,8 @@ function CustomizeSortableSlot({ item, groupId }: { item: ToolbarPaletteItemMode
         "customize-slot",
         isBlank ? "customize-slot-blank" : "",
         isSeparator ? "customize-slot-separator" : "",
-        gridWidget?.cellParts ? "customize-slot-cell-parts" : ""
+        gridWidget?.cellParts ? "customize-slot-cell-parts" : "",
+        gridWidget && !gridWidget.cellParts ? "customize-slot-widget" : ""
       ]
         .filter(Boolean)
         .join(" ")}

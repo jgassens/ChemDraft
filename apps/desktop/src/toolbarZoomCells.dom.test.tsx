@@ -252,9 +252,9 @@ describe("Document Zoom grid span", () => {
   it("is four cells for the shipped Main, the gallery's re-add, and every palette item", () => {
     expect(DOCUMENT_ZOOM_GRID_SPAN).toEqual({ colSpan: 4, rowSpan: 1 });
     expect(toolbarWidgetGridSpan(ZOOM)).toEqual({ colSpan: 4, rowSpan: 1 });
-    // Other widgets keep their declared spans.
-    expect(toolbarWidgetGridSpan(TOOLBAR_WIDGET_IDS.mainStyleControls))
-      .toEqual(TOOLBAR_WIDGET_GRID_SPANS[TOOLBAR_WIDGET_IDS.mainStyleControls]);
+    // Widgets without an override keep their declared spans.
+    expect(toolbarWidgetGridSpan(TOOLBAR_WIDGET_IDS.customColorSwatch1))
+      .toEqual(TOOLBAR_WIDGET_GRID_SPANS[TOOLBAR_WIDGET_IDS.customColorSwatch1]);
     expect(getToolsetItemGroups("core.main").flat().find(item => item.id === ZOOM)?.layout)
       .toMatchObject({ colSpan: 4, rowSpan: 1 });
   });
