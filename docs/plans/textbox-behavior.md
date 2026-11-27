@@ -28,7 +28,7 @@ hit-testing never goes through it.
 
 | ID | Behavior |
 |---|---|
-| H1 | The stored height changes only when the number of wrapped lines changes. Typing that keeps the line count never changes the height, in either wrap mode. |
+| H1 | The stored height changes only when the content's extent changes: the number of wrapped lines, or the bottom of the lowest drawn line (H2). Ordinary typing, which keeps the line count and the fonts, scripts and sizes in use, never changes the height, in either wrap mode. A larger run or a subscript that reaches below the lines' nominal height can grow the box without adding a line, and removing it shrinks the box back. |
 | H2 | The height never shrinks below its content, in either wrap mode: it is at least the height of the rendered lines, and at least the bottom of the lowest drawn line (a small line height, a large run or a subscript can reach below the nominal line height). This holds at the page edges too: the page never caps the height, and the box is neither moved nor given a smaller font. Near the bottom, the box reaches past the bottom of the page. |
 | H3 | Auto width never wraps: its lines are only the typed paragraphs, even when the width is capped at the page edge. Its height counts only those lines and never claims a wrap that the SVG does not draw. |
 | C1 | The drawn caret is where the next character will go: on the rendered line that will receive it, at the boundary between the rendered glyphs. This holds at the end of wrapped text, mid-line, and after a soft wrap. |
@@ -40,7 +40,7 @@ hit-testing never goes through it.
 | K3 | ArrowUp and ArrowDown move to the line above or below on the rendered lines, keeping the column. Home/End (Windows) and Cmd+Left/Right (macOS) go to the start or end of the rendered line. Shift extends the selection. |
 | R1 | Resizing the box narrower or wider rewraps the text and keeps the caret and selection offsets. The caret is redrawn on the new lines. |
 | U1 | One finished edit gesture is one undo entry ("Edit Text"). Undo restores the text, and Redo reapplies it. Inside an open edit, Cmd/Ctrl+Z stays the platform's native text undo, and the drawn caret and selection follow the textarea's restored selection. |
-| I1 | IME composition: while composing, the caret is drawn at the composition, and the box height changes only if the line count does. Composing over a selection replaces exactly the selection. |
+| I1 | IME composition: while composing, the caret is drawn at the composition, and the box height changes only as it does for typing (H1). Composing over a selection replaces exactly the selection. |
 | P1 | Pasting plain text or rich text (HTML plus plain) replaces only the selection, and the caret ends after the pasted text. |
 | N1 | Line breaks are stored as LF. CRLF and a lone CR become LF wherever text enters a box: a paste into the editor (a Windows clipboard sends CRLF), a new box from any path (canvas paste, CLI, MCP, assistant), every edit commit, range formatting, and formatting the whole box (style and script). A box from an older file that still stores CR is shown with LF breaks, so its offsets match the textarea's; its first edit stores LF. |
 | W1 | Fixed-width boxes wrap at the box width, and auto-width boxes grow along their single lines. Both modes follow every line above. |
