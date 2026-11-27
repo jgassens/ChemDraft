@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyPatches, type MoleculeObject } from "@chemdraft/chem-core";
 import { moleculeLayoutLabelBoxes, nativeMoleculeRings } from "@chemdraft/layout-engine";
 import { depictSmiles2D, ensureOclResources } from "@chemdraft/ocl-adapter";
@@ -392,4 +392,96 @@ it.each([17, 100])("keeps the canvas menu %s screen pixels away", async offset =
   expect(pageMenu()).not.toBeNull();
   expect(pageMenu()?.querySelector('[data-command-id="edit.selectAll"]')).not.toBeNull();
   expect(objectMenu()).toBeNull();
+});
+
+// CodeRabbit on PR #529: bare paper between two whole-selected objects, inside the group
+// selection frame that is drawn around them, must keep the selection's menu.
+describe("right-click inside the drawn group selection frame", () => {
+  const FIRST = { x: 200, y: 170 };
+  const SECOND = { x: 420, y: 170 };
+  const GAP = { x: 310, y: 170 };
+  let first: MoleculeObject;
+  let second: MoleculeObject;
+  let middle: MoleculeObject | undefined;
+
+  async function mountPair(withMiddle = false, platform: ShortcutPlatform = "windows") {
+    middle = undefined;
+    first = await mount("O", { platform, overlay: (drawing, firstMolecule) => {
+      let next = insertSmilesMolecule(drawing, SECOND, depictSmiles2D("O"), "O");
+      second = getSelectedMolecule(next)!;
+      if (withMiddle) {
+        next = insertSmilesMolecule(next, GAP, depictSmiles2D("O"), "O");
+        middle = getSelectedMolecule(next)!;
+      }
+      return selectDocumentObjects(next, drawing.pages[0].id, []);
+    } });
+    expect(first.atoms[0]!.x).toBeLessThan(second.atoms[0]!.x);
+  }
+
+  async function marqueeSelect(from: Point, to: Point, shiftKey = false) {
+    const fire = (type: string, point: Point) => act(async () => {
+      page.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, button: 0, shiftKey,
+        buttons: type === "pointerup" ? 0 : 1, pointerId: 21, pointerType: "mouse", isPrimary: true,
+        clientX: origin.x + point.x * scale, clientY: origin.y + point.y * scale }));
+    });
+    await fire("pointerdown", from);
+    await fire("pointermove", { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 });
+    await fire("pointermove", to);
+    await fire("pointerup", to);
+  }
+
+  // Both molecules whole-selected, one marquee at a time: a click on a native molecule selects
+  // an atom or bond part, not the object, so a Shift-click cannot build a whole-object pair.
+  async function marqueeSelectPair() {
+    await marqueeSelect({ x: 120, y: 90 }, { x: 260, y: 250 });
+    await marqueeSelect({ x: 360, y: 90 }, { x: 520, y: 250 }, true);
+    expect(page.querySelector('[data-group-selection="true"]')).not.toBeNull();
+  }
+
+  const frameBounds = () => {
+    const frame = page.querySelector<HTMLElement>('[data-group-selection="true"]')!;
+    expect(frame).not.toBeNull();
+    const px = (name: "left" | "top" | "width" | "height") =>
+      Number(/^calc\(([-\d.]+)px/.exec(frame.style[name])![1]);
+    return { x: px("left"), y: px("top"), width: px("width"), height: px("height") };
+  };
+
+  it.each(
+    (["macos", "windows"] as const).flatMap(platform => (["one marquee", "shift marquee"] as const).map(how => [platform, how] as const))
+  )("keeps the selection menu on bare paper inside the group frame (%s, %s)", async (platform, how) => {
+    await mountPair(false, platform);
+    if (how === "one marquee") await marqueeSelect({ x: 120, y: 90 }, { x: 520, y: 250 });
+    else await marqueeSelectPair();
+    const frame = frameBounds();
+    expect(GAP.x).toBeGreaterThan(frame.x);
+    expect(GAP.x).toBeLessThan(frame.x + frame.width);
+    expect(GAP.y).toBeGreaterThan(frame.y);
+    expect(GAP.y).toBeLessThan(frame.y + frame.height);
+    await clickAt(GAP, platform === "macos" ? { button: 0, ctrlKey: true } : {});
+    expect(pageMenu()).toBeNull();
+    expect(objectMenu()).not.toBeNull();
+    expect([first.id, second.id]).toContain(objectMenu()!.getAttribute("data-context-object-id"));
+    expect(objectMenu()!.querySelector('[data-command-id="clipboard.copy"]')).not.toBeNull();
+    expect(frameBounds()).toEqual(frame);
+  });
+
+  it("opens the page menu on bare paper outside the group frame", async () => {
+    await mountPair();
+    await marqueeSelectPair();
+    const frame = frameBounds();
+    await clickAt({ x: GAP.x, y: frame.y + frame.height + 40 });
+    expect(objectMenu()).toBeNull();
+    expect(pageMenu()).not.toBeNull();
+  });
+
+  it("lets an unselected object inside the group frame win the right-click", async () => {
+    await mountPair(true);
+    await marqueeSelectPair();
+    const frame = frameBounds();
+    const atom = middle!.atoms[0]!;
+    expect(atom.x).toBeGreaterThan(frame.x);
+    expect(atom.x).toBeLessThan(frame.x + frame.width);
+    await clickAt(atom, { target: atomTarget(middle!, atom.id) });
+    expect(objectMenu()?.getAttribute("data-context-object-id")).toBe(middle!.id);
+  });
 });
