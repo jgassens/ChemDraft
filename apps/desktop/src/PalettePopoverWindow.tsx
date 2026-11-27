@@ -9,6 +9,7 @@ import { detectDesktopShortcutPlatform } from "./keyboardShortcuts";
 import { preventPaletteCommandPointerFocus } from "./paletteCommandPointerFocus";
 import { observePaletteHitBoxes } from "./commandHitBoxes";
 import { listenCurrentWindowEvent } from "./window-manager/tauriEvents";
+import { announceToolbarToolChoice } from "./window-manager/toolbarToolChoice";
 import {
   acceptFlyoutOpening, closeFlyoutOpening, currentFlyoutOpening, dismissFlyoutOpenings,
   matchesToolsetPopoverOpening, newFlyoutOpeningState, resolveFlyoutOpening, wasFlyoutOpeningDismissed
@@ -593,7 +594,13 @@ export function PalettePopoverWindow({
       if (current.flyout.variant === "bondStereo") {
         const action = command.id === "keep" ? "keep" : command.id === "molecule.bondStereo:flipped" ? "flipped" : "geometry";
         if (current.flyout.id) await sendBondStereoPopoverAction({ sessionId: current.flyout.id, action }, opening);
-      } else await sendPaletteCommand(command.id, { flyoutOpening: opening });
+      } else {
+        // Credit the choice to the dropdown it was made from before the command lands, so the owning
+        // toolbar updates that dropdown's variant and highlight, and no other control's.
+        await announceToolbarToolChoice({ toolsetId, flyoutId: current.flyout.flyoutId, commandId: command.id })
+          .catch(() => undefined);
+        await sendPaletteCommand(command.id, { flyoutOpening: opening });
+      }
     } catch {
       // A failed dispatch still dismisses the chosen opening.
     } finally {

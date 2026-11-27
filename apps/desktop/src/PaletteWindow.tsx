@@ -1378,6 +1378,7 @@ export function PaletteWindow({
         itemGroups={renderItemGroups}
         gridLayout={toolset.gridLayout}
         activeTool={activeTool}
+        toolsetId={toolset.id}
         mode="floating"
         contentGrip={false}
         orientation={toolset.gridLayout?.orientation ?? "vertical"}

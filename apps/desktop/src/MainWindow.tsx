@@ -1910,7 +1910,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.27.08.00-opus";
+const CURRENT_BUILD_STAMP = "11.27.08.30-opus";
 
 const NUMERIC_ENTRY_DURING_DRAG_STATUS = "Finish the current drag, then enter a value";
 
@@ -24064,6 +24064,7 @@ export function MainWindow({
                 itemGroups={renderGroups.map((group) => group.items)}
                 gridLayout={toolset.gridLayout}
                 activeTool={activeTool}
+                toolsetId={toolset.id}
                 currentDistributeMode={distributeMode}
                 mode="floating"
                 orientation={toolset.gridLayout?.orientation ?? "vertical"}

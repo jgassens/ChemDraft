@@ -1320,8 +1320,10 @@ describe("ToolPalette arrange flyouts", () => {
       }));
     });
     const owner = container.querySelector<HTMLButtonElement>('[data-command-flyout-button="ring-templates"]')!;
+    // Cyclooctane became active some other way: the ring dropdown still shows and draws benzene, so it
+    // is not the control showing the active tool.
     expect(owner.getAttribute("data-toolbar-asset")).toBe("Custom_Benzene");
-    expect(owner.getAttribute("aria-pressed")).toBe("true");
+    expect(owner.getAttribute("aria-pressed")).toBeNull();
     act(() => owner.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     expect(onInvoke).toHaveBeenCalledExactlyOnceWith("tool.benzene");
     const menu = container.querySelector<HTMLElement>('[data-command-flyout-menu="ring-templates"]')!;
@@ -1334,6 +1336,9 @@ describe("ToolPalette arrange flyouts", () => {
       act(() => choice.dispatchEvent(new MouseEvent("click", { bubbles: true })));
       expect(onInvoke).toHaveBeenCalledExactlyOnceWith(choice.dataset.commandId);
       expect(menu.hidden).toBe(true);
+      // The dropdown now shows and performs the ring chosen from its own menu.
+      expect(owner.getAttribute("data-command-id")).toBe(choice.dataset.commandId);
+      expect(owner.getAttribute("aria-pressed")).toBe(choice.dataset.commandId === "tool.cyclooctane" ? "true" : null);
     }
   });
 
@@ -1513,7 +1518,14 @@ describe("ToolPalette arrange flyouts", () => {
     render("tool.select");
     expect(container.querySelector(".symbol-tool-glyph")?.textContent).toBe("\u00b0");
     expect(container.querySelector("button")?.getAttribute("data-tooltip")).toContain(item.tooltip.description);
+    // A symbol made active some other way never changes the group's face.
+    render("tool.symbol.delta");
+    expect(container.querySelector(".symbol-tool-glyph")?.textContent).toBe("\u00b0");
     for (const [name, glyph] of symbols) {
+      const face = container.querySelector<HTMLButtonElement>("[data-command-flyout-button]")!;
+      act(() => face.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+      const entry = container.querySelector<HTMLButtonElement>(`[role="menuitem"][data-command-id="tool.symbol.${name}"]`)!;
+      act(() => entry.dispatchEvent(new MouseEvent("click", { bubbles: true })));
       render(`tool.symbol.${name}`);
       expect(container.querySelector(".symbol-tool-glyph")?.textContent).toBe(glyph);
       render("tool.select");
@@ -1536,6 +1548,10 @@ describe("ToolPalette arrange flyouts", () => {
     });
     render("tool.select");
     expect(container.querySelector("button")?.getAttribute("data-tooltip")).toBe(`${item.tooltip.title}; hold for choices`);
+    const face = container.querySelector<HTMLButtonElement>("[data-command-flyout-button]")!;
+    act(() => face.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    const entry = container.querySelector<HTMLButtonElement>('[role="menuitem"][data-command-id="tool.plus"]')!;
+    act(() => entry.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     render("tool.plus");
     render("tool.select");
     const button = container.querySelector<HTMLButtonElement>('button[data-command-id="tool.plus"]');
@@ -1622,8 +1638,10 @@ describe("ToolPalette arrange flyouts", () => {
     }
     expect(shapeButton.getAttribute("data-toolbar-asset")).toBe("Art_Shapes");
     expect(shapeButton.getAttribute("data-command-flyout-ids")).toBe("tool.art.rect tool.art.roundedRect tool.art.circle tool.art.ellipse");
-    expect(shapeButton.getAttribute("data-active")).toBe("true");
-    expect(shapeButton.getAttribute("aria-pressed")).toBe("true");
+    // The circle was made active elsewhere; the shapes dropdown still shows its rectangle.
+    expect(shapeButton.getAttribute("data-command-id")).toBe("tool.art.rect");
+    expect(shapeButton.getAttribute("data-active")).toBeNull();
+    expect(shapeButton.getAttribute("aria-pressed")).toBeNull();
 
     const shapeMenu = container.querySelector<HTMLElement>('[data-command-flyout-menu="shapes"]');
     expect(shapeMenu?.hidden).toBe(true);
@@ -1643,6 +1661,17 @@ describe("ToolPalette arrange flyouts", () => {
 
     expect(onInvoke).toHaveBeenCalledWith("tool.art.ellipse");
     expect(shapeMenu?.hidden).toBe(true);
+    expect(shapeButton.getAttribute("data-command-id")).toBe("tool.art.ellipse");
+    act(() => {
+      root.render(createElement(ToolPalette, {
+        groups: getToolsetCommandGroups("core.art"),
+        itemGroups: getToolsetItemGroups("core.art"),
+        activeTool: "tool.art.ellipse",
+        orientation: "horizontal",
+        onInvoke
+      }));
+    });
+    expect(shapeButton.getAttribute("data-active")).toBe("true");
   });
 });
 

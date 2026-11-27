@@ -9,6 +9,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useId,
   useRef,
   useState,
   type CSSProperties,
@@ -160,6 +161,7 @@ import type { ArtInspectorEffectKind } from "./artInspectorModel";
 import { loadSystemFonts, type SystemFontFamily, type SystemFontFace } from "./systemFonts";
 import { isDesktopRuntime, listenForPaletteCommandCancels, type ToolsetArtPaintTarget, type ToolsetFlyoutSnapshot } from "./window-manager";
 import { registerInlinePopover } from "./window-manager/popoverEscape";
+import { announceToolbarToolChoice, listenForToolbarToolChoices, type ToolbarToolChoice } from "./window-manager/toolbarToolChoice";
 
 export type ToolPaletteMode = "docked" | "floating";
 export type ToolPaletteOrientation = "vertical" | "horizontal";
@@ -247,6 +249,7 @@ export function ToolPalette({
   widgetState,
   customize,
   contentGrip = true,
+  toolsetId,
   platform = detectDesktopShortcutPlatform()
 }: {
   groups?: CommandSpec[][];
@@ -270,6 +273,9 @@ export function ToolPalette({
   /** Floating mode only: draw the in-content drag grip. A native palette window passes false because
    *  its shell draws the grip rail (with the close button) itself. */
   contentGrip?: boolean;
+  /** The toolset this palette renders. Native flyout choices name their toolbar by it; without it the
+   *  palette only recognises choices made through its own inline controls. */
+  toolsetId?: string;
 }) {
   const tooltipState = usePaletteTooltipState();
   const {
@@ -277,8 +283,59 @@ export function ToolPalette({
     requestTooltip,
     clearTooltip
   } = tooltipState;
+  const instanceId = useId();
+  const paletteKey = toolsetId ?? `palette-instance:${instanceId}`;
 
   const effectiveItemGroups = itemGroups ?? commandGroupsToPaletteItemGroups(groups ?? []);
+  const choiceItems = effectiveItemGroups.flat().filter((item) => item.primary.type === "command");
+  const choiceItemsRef = useRef(choiceItems);
+  choiceItemsRef.current = choiceItems;
+  // Each dropdown's own variant, chosen from its own menu only (item id -> command id). Choosing the
+  // same tool through any other control never touches it.
+  const [dropdownVariants, setDropdownVariants] = useState<Readonly<Record<string, string>>>({});
+  // The control the current tool was chosen through, on any toolbar (see toolbarHighlightedItemId).
+  const [toolChoice, setToolChoice] = useState<ToolbarToolChoice>();
+  const rememberDropdownVariant = useCallback((itemId: string, commandId: string) => {
+    setDropdownVariants((current) => current[itemId] === commandId ? current : { ...current, [itemId]: commandId });
+  }, []);
+  useEffect(() => {
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void listenForToolbarToolChoices((choice) => {
+      setToolChoice((current) => current && sameToolbarToolChoice(current, choice) ? current : choice);
+      if (choice.toolsetId !== paletteKey || choice.flyoutId === undefined) return;
+      // A native flyout knows only its flyout id; find the dropdown it belongs to here.
+      const owner = choiceItemsRef.current.find((item) => item.submenu?.id === choice.flyoutId);
+      if (owner && toolbarItemRemembersVariant(owner) && owner.submenu?.items.some((command) => command.id === choice.commandId)) {
+        rememberDropdownVariant(owner.id, choice.commandId);
+      }
+    }).then((cleanup) => {
+      if (disposed) cleanup(); else stop = cleanup;
+    }).catch(() => undefined);
+    return () => {
+      disposed = true;
+      stop?.();
+    };
+  }, [paletteKey, rememberDropdownVariant]);
+  // A choice only explains the tool it chose. Once another tool is active (a shortcut, the menu bar,
+  // the canvas), forget it so a later return to that tool by those routes is not credited to it.
+  useEffect(() => {
+    setToolChoice((current) => current && current.commandId !== activeTool ? undefined : current);
+  }, [activeTool]);
+  const highlightedItemId = toolbarHighlightedItemId(choiceItems, dropdownVariants, activeTool, toolChoice, paletteKey);
+  const chooseFromItem = useCallback((item: ToolbarPaletteItemModel, commandId: string, viaMenu: boolean) => {
+    if (viaMenu && toolbarItemRemembersVariant(item)) {
+      rememberDropdownVariant(item.id, commandId);
+    }
+    if (isDrawingToolCommand(commandId)) {
+      const choice: ToolbarToolChoice = viaMenu && item.submenu
+        ? { toolsetId: paletteKey, itemId: item.id, flyoutId: item.submenu.id, commandId }
+        : { toolsetId: paletteKey, itemId: item.id, commandId };
+      setToolChoice(choice);
+      void announceToolbarToolChoice(choice).catch(() => undefined);
+    }
+    onInvoke(commandId);
+  }, [onInvoke, paletteKey, rememberDropdownVariant]);
   const renderPaletteItem = (
     item: ToolbarPaletteItemModel,
     tooltipId: string,
@@ -288,6 +345,9 @@ export function ToolPalette({
       key={key}
       item={item}
       activeTool={activeTool}
+      variantCommandId={dropdownVariants[item.id]}
+      highlighted={highlightedItemId === item.id}
+      onChoose={chooseFromItem}
       tooltipId={tooltipId}
       tooltipVisible={visibleTooltipId === tooltipId}
       distributeMode={currentDistributeMode}
@@ -3957,9 +4017,74 @@ function closestParagraphSpacingCommandId(paragraphSpacingPx: number | undefined
   ), textParagraphSpacingCommands[0]).id;
 }
 
+/** Dropdowns whose face always previews their command, even the default one. */
+const COMMAND_PREVIEW_DROPDOWN_IDS = new Set(["tool.symbol", "tool.charge", "tool.doubleBond", "tool.bond"]);
+
+function sameToolbarToolChoice(a: ToolbarToolChoice, b: ToolbarToolChoice): boolean {
+  return a.toolsetId === b.toolsetId && a.commandId === b.commandId && a.itemId === b.itemId && a.flyoutId === b.flyoutId;
+}
+
+/**
+ * A drawing-tool dropdown (bonds, rings, arrows, shapes, chains, charges, symbols) remembers the
+ * variant last chosen from its own menu and shows and performs it. Action dropdowns (align, arrange,
+ * group, order, flip) keep their declared face.
+ */
+export function toolbarItemRemembersVariant(item: ToolbarPaletteItemModel): boolean {
+  if (item.primary.type !== "command" || !item.submenu || item.submenu.items.length === 0) return false;
+  const primaryId = item.primary.command.id;
+  return COMMAND_PREVIEW_DROPDOWN_IDS.has(primaryId) || isDrawingToolCommand(primaryId);
+}
+
+/** The command an item's face shows and performs: its own remembered variant, else its declared primary. */
+export function toolbarItemPresentedCommand(
+  item: ToolbarPaletteItemModel,
+  variantCommandId: string | undefined
+): CommandSpec | undefined {
+  const declared = item.primary.type === "command" ? item.primary.command : undefined;
+  if (variantCommandId === undefined || !toolbarItemRemembersVariant(item)) return declared;
+  return item.submenu?.items.find((command) => command.id === variantCommandId) ?? declared;
+}
+
+/**
+ * Which control of one toolbar shows the active tool. At most one per toolbar, and only ever one
+ * across toolbars when the tool was chosen on a toolbar:
+ *
+ * 1. Chosen through a toolbar control (a standalone button, a dropdown's face, or a dropdown's menu):
+ *    only that control is highlighted, and only while it still shows that tool. Every other control
+ *    carrying the same command, here or on another toolbar, stays plain.
+ * 2. Chosen any other way (shortcut, menu bar, canvas, startup): the first standalone button for the
+ *    tool, else the first dropdown whose face currently shows it. A dropdown whose face shows
+ *    something else is never highlighted, even if the tool is in its menu.
+ */
+export function toolbarHighlightedItemId(
+  items: readonly ToolbarPaletteItemModel[],
+  variants: Readonly<Record<string, string>>,
+  activeTool: string | undefined,
+  choice: ToolbarToolChoice | undefined,
+  paletteKey: string
+): string | undefined {
+  if (!activeTool) return undefined;
+  const presents = (item: ToolbarPaletteItemModel) => {
+    const command = toolbarItemPresentedCommand(item, variants[item.id]);
+    return command?.id === activeTool && command.enabled !== false;
+  };
+  if (choice && choice.commandId === activeTool) {
+    if (choice.toolsetId !== paletteKey) return undefined;
+    const owner = (choice.itemId !== undefined ? items.find((item) => item.id === choice.itemId) : undefined)
+      ?? (choice.flyoutId !== undefined ? items.find((item) => item.submenu?.id === choice.flyoutId) : undefined);
+    return owner && presents(owner) ? owner.id : undefined;
+  }
+  const hasMenu = (item: ToolbarPaletteItemModel) => Boolean(item.submenu && item.submenu.items.length > 0);
+  return items.find((item) => !hasMenu(item) && presents(item))?.id
+    ?? items.find((item) => hasMenu(item) && presents(item))?.id;
+}
+
 function ToolbarPaletteItem({
   item,
   activeTool,
+  variantCommandId,
+  highlighted,
+  onChoose,
   tooltipId,
   tooltipVisible,
   distributeMode,
@@ -3971,6 +4096,12 @@ function ToolbarPaletteItem({
 }: {
   item: ToolbarPaletteItemModel;
   activeTool?: string;
+  /** This dropdown's own remembered variant (chosen from its own menu); undefined = its default. */
+  variantCommandId?: string;
+  /** Whether this control is the one showing the active tool (toolbarHighlightedItemId). */
+  highlighted: boolean;
+  /** Invoke `commandId` through this control; `viaMenu` when it came from this item's own menu. */
+  onChoose: (item: ToolbarPaletteItemModel, commandId: string, viaMenu: boolean) => void;
   tooltipId?: string;
   tooltipVisible?: boolean;
   distributeMode: ToolPaletteDistributeMode;
@@ -3981,24 +4112,14 @@ function ToolbarPaletteItem({
   allowNativeNoActivateCommands?: boolean;
 }) {
   const defaultPrimaryCommand = item.primary.type === "command" ? item.primary.command : undefined;
-  const [selectedFlyoutCommandId, setSelectedFlyoutCommandId] = useState<string>();
-  const followsSelectedTool = defaultPrimaryCommand?.id === "tool.symbol"
-    || defaultPrimaryCommand?.id === "tool.charge"
-    || defaultPrimaryCommand?.id === "tool.doubleBond"
-    || defaultPrimaryCommand?.id === "tool.bond";
-  const activeFlyoutCommand = followsSelectedTool
-    ? item.submenu?.items.find((command) => command.id === activeTool)
-    : undefined;
-  useEffect(() => {
-    if (activeFlyoutCommand) {
-      setSelectedFlyoutCommandId(activeFlyoutCommand.id);
-    }
-  }, [activeFlyoutCommand?.id]);
-  const primaryCommand = followsSelectedTool
-    ? activeFlyoutCommand
-      ?? item.submenu?.items.find((command) => command.id === selectedFlyoutCommandId)
-      ?? defaultPrimaryCommand
-    : defaultPrimaryCommand;
+  // A dropdown shows and performs only what was last chosen from its own menu (or its default);
+  // the active tool, however it was chosen, never changes it.
+  const followsSelectedTool = toolbarItemRemembersVariant(item);
+  const primaryCommand = toolbarItemPresentedCommand(item, variantCommandId);
+  // Previewing a chosen variant's own icon; the four legacy dropdowns always preview their command.
+  const previewsCommand = followsSelectedTool && (
+    COMMAND_PREVIEW_DROPDOWN_IDS.has(defaultPrimaryCommand?.id ?? "") || primaryCommand?.id !== defaultPrimaryCommand?.id
+  );
   const [menuOpen, setMenuOpen] = useState(false);
   const shellRef = useRef<HTMLSpanElement | null>(null);
   useNativeFloatingTooltip(shellRef, Boolean(tooltipVisible) && !menuOpen);
@@ -4012,10 +4133,7 @@ function ToolbarPaletteItem({
   const primaryDisabled = primaryCommand ? primaryCommand.enabled === false : true;
   const buttonDisabled = primaryDisabled && (!hasSubmenu || !hasEnabledSubmenuCommand);
   const usesNativeFlyout = hasSubmenu && Boolean(onRequestFlyout);
-  const activeState = primaryCommand?.enabled !== false && (
-    primaryCommand?.id === activeTool
-    || submenuCommands.some((command) => command.enabled !== false && command.id === activeTool)
-  );
+  const activeState = highlighted && primaryCommand?.enabled !== false;
   const selectedDescription = primaryCommand?.description
     ?? (primaryCommand ? getDrawingToolDefinition(primaryCommand.id)?.usageHint?.action : undefined);
   const tooltipItem = followsSelectedTool && primaryCommand && primaryCommand.id !== defaultPrimaryCommand?.id
@@ -4091,18 +4209,18 @@ function ToolbarPaletteItem({
     if (!primaryCommand || primaryCommand.enabled === false) {
       return;
     }
-    onInvoke(primaryCommand.id);
+    onChoose(item, primaryCommand.id, false);
     onTooltipLeave?.();
-  }, [onInvoke, onTooltipLeave, primaryCommand]);
+  }, [item, onChoose, onTooltipLeave, primaryCommand]);
 
   const chooseCommand = useCallback((command: CommandSpec) => {
     if (command.enabled === false) {
       return;
     }
-    onInvoke(command.id);
+    onChoose(item, command.id, true);
     setMenuOpen(false);
     onTooltipLeave?.();
-  }, [onInvoke, onTooltipLeave]);
+  }, [item, onChoose, onTooltipLeave]);
 
   useEffect(() => () => {
     clearHoldTimer();
@@ -4312,7 +4430,7 @@ function ToolbarPaletteItem({
         data-disabled={primaryDisabled ? "true" : undefined}
         data-distribute-mode={primaryCommand && isDistributeCommandId(primaryCommand.id) ? distributeMode : undefined}
         data-shortcut-label={item.tooltip.shortcutLabel ?? item.tooltip.shortcut ?? "No shortcut"}
-        data-toolbar-asset={followsSelectedTool ? primaryCommand?.assetName : item.assetName ?? primaryCommand?.assetName}
+        data-toolbar-asset={previewsCommand ? primaryCommand?.assetName : item.assetName ?? primaryCommand?.assetName}
         data-tooltip={tooltipText}
         onPointerDown={(event) => {
           event.stopPropagation();
@@ -4378,7 +4496,7 @@ function ToolbarPaletteItem({
           }
         }}
       >
-        <ToolbarItemIcon item={item} command={primaryCommand} />
+        <ToolbarItemIcon item={item} command={primaryCommand} previewCommand={previewsCommand} />
         {hasSubmenu ? <span className="command-flyout-indicator" aria-hidden="true" /> : null}
         <ToolbarItemTooltip
           disabledReason={primaryDisabled ? primaryCommand?.disabledReason ?? "unavailable" : undefined}
@@ -4478,17 +4596,20 @@ function ToolbarItemTooltip({
 
 export function ToolbarItemIcon({
   item,
-  command
+  command,
+  previewCommand
 }: {
   item: ToolbarPaletteItemModel;
   command?: CommandSpec;
+  /** Show `command`'s own icon instead of the item's shared asset (a dropdown showing its variant). */
+  previewCommand?: boolean;
 }) {
   if (item.iconDataUri) {
     return <img className="tool-icon-image" src={item.iconDataUri} alt="" aria-hidden="true" />;
   }
   // Groups that remember their selected tool preview that command instead of their shared asset.
   const primaryId = item.primary.type === "command" ? item.primary.command.id : undefined;
-  if (command && (primaryId === "tool.symbol" || primaryId === "tool.charge" || primaryId === "tool.doubleBond" || primaryId === "tool.bond")) {
+  if (command && (previewCommand || COMMAND_PREVIEW_DROPDOWN_IDS.has(primaryId ?? ""))) {
     return <ToolbarCommandIcon command={command} />;
   }
   // toolbarAsset() returns undefined for an unknown key (e.g. a plugin's unregistered assetName);
