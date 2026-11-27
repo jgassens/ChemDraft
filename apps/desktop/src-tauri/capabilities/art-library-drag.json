@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "art-library-drag",
+  "description": "Only the floating dialog that shows art tiles (for now the Templates dialog) may start an operating-system file drag of one allow-listed SVG (art_library.rs checks the path, and the window label again). The dev-only drag-test command returns nothing in a stable build. macOS and Windows only: Linux has no drag yet.",
+  "windows": ["dialog-main-structureTemplates-*"],
+  "platforms": ["macOS", "windows"],
+  "permissions": ["allow-art-library-start-drag", "allow-art-library-dev-drag-test-prepare"]
+}

@@ -24,6 +24,22 @@
     "returnType": "tauri_plugin_dialog::Result<Option<FilePath>>"
   },
   {
+    "file": "art_library.rs",
+    "name": "art_library_start_drag",
+    "async": true,
+    "generics": "<R: Runtime>",
+    "parameters": "app: AppHandle<R>, window: WebviewWindow<R>, path: String, on_end: Channel<DragEnded>,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "art_library.rs",
+    "name": "art_library_dev_drag_test_prepare",
+    "async": true,
+    "generics": "<R: Runtime>",
+    "parameters": "app: AppHandle<R>, window: WebviewWindow<R>,",
+    "returnType": "Result<Option<String>, String>"
+  },
+  {
     "file": "assistant_mcp/mod.rs",
     "name": "assistant_mcp_session_open",
     "async": true,

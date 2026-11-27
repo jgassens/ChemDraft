@@ -6,7 +6,7 @@ use tauri::utils::{
     platform::Target,
 };
 
-fn assert_shipped_access(label: &str, commands: &[&str], allowed: bool) {
+pub(crate) fn assert_shipped_access(label: &str, commands: &[&str], allowed: bool) {
     // These are the build.rs outputs consumed by generate_context!(), including every app
     // capability and the locked core/plugin manifests. Resolve them exactly as Tauri does,
     // without a display or a second generate_context!() (which duplicates macOS plist symbols).

@@ -2,6 +2,7 @@
 mod appimage_dialogs;
 #[cfg(target_os = "linux")]
 mod appimage_single_instance;
+mod art_library;
 mod assistant_mcp;
 mod canvas_context_menu;
 mod canvas_occlusion;
@@ -1930,6 +1931,8 @@ pub fn run() {
             dialog_windows::dialog_send,
             dialog_windows::dialog_publish,
             dialog_windows::dialog_close,
+            art_library::art_library_start_drag,
+            art_library::art_library_dev_drag_test_prepare,
             problem_reports::open_problem_report_email,
             structure_search::open_structure_search,
             structure_search::set_structure_search_enabled,
@@ -2145,6 +2148,7 @@ fn setup_primary_app(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::E
     let ocsr = app.state::<ocsr_engine::OcsrEngineState>();
     ocsr.start_idle_reaper();
     ocsr.remove_stale_staging(app);
+    art_library::clean_drag_staging_at_startup(app);
     external_tools::setup(app);
     let naming = app.state::<naming_engine::NamingEngineState>();
     naming.start_idle_reaper();

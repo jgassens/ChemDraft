@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="249" height="166" viewBox="0 0 747 498">
+<title>Permeable cell culture insert — Molecular Minimalism</title>
+<defs>
+<linearGradient id="clear" x1="0" y1="0" x2=".15" y2="1"><stop stop-color="#e7eef8" stop-opacity=".7"/><stop offset="1" stop-color="#f1f6fb" stop-opacity=".4"/></linearGradient>
+<linearGradient id="insert" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#dce7f2" stop-opacity=".76"/><stop offset=".5" stop-color="#edf3fa" stop-opacity=".78"/><stop offset="1" stop-color="#dce6f1" stop-opacity=".75"/></linearGradient>
+<linearGradient id="flange" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#f5f8fc"/><stop offset="1" stop-color="#d9e4ef"/></linearGradient>
+<pattern id="pores" width="9.2" height="7.4" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1.65" fill="#a8bed2" opacity=".83"/><circle cx="6.6" cy="5.6" r="1.55" fill="#a7bed2" opacity=".76"/></pattern>
+</defs>
+<g stroke-linecap="round" stroke-linejoin="round">
+<path d="M119 116 C125 58 236 22 367 22 C503 22 614 60 615 117 L609 380 C608 431 508 466 369 468 C234 467 128 430 125 382Z" fill="url(#clear)" stroke="#244259" stroke-width="6.1"/>
+<path d="M129 120 L134 382 C135 425 237 457 369 458 C503 458 600 424 600 381 L606 119" fill="none" stroke="#cbdce8" stroke-width="3.6"/>
+
+<path d="M133 301 C135 249 239 212 369 212 C499 212 600 252 600 302 L600 379 C599 420 495 454 369 456 C239 456 135 420 135 380Z" fill="#eab4cb" stroke="#c3739a" stroke-width="3.5"/>
+<ellipse cx="368" cy="301" rx="233" ry="89" fill="#efc4d6" stroke="#cf80a5" stroke-width="3.8"/>
+<path d="M135 303 C141 347 241 388 369 390 C499 390 598 347 600 302" fill="none" stroke="#ce7da3" stroke-width="4"/>
+<path d="M137 383 C144 424 243 451 369 453 C496 453 594 421 598 382" fill="none" stroke="#f8dbe7" stroke-width="3.6"/>
+
+<path d="M169 103 C181 52 267 27 366 27 C469 27 555 55 570 102 L545 317 C541 350 467 376 368 378 C271 377 199 349 193 318Z" fill="url(#insert)" stroke="#7894ab" stroke-width="4.2"/>
+<path d="M185 96 L218 315 M556 99 L519 315" fill="none" stroke="#abc0d1" stroke-width="3.7"/>
+<path d="M193 317 C201 351 269 377 369 378 C469 377 540 351 545 317" fill="none" stroke="#35556d" stroke-width="5.1"/>
+<ellipse cx="369" cy="319" rx="169" ry="55" fill="#f0f5f9" stroke="#7896ad" stroke-width="4.4"/>
+<ellipse cx="369" cy="319" rx="164" ry="50" fill="url(#pores)"/>
+<path d="M203 322 C214 350 279 372 369 373 C461 373 528 350 535 322" fill="none" stroke="#f6f9fb" stroke-width="3.2"/>
+
+<path d="M160 61 C213 34 286 20 368 20 C449 20 525 35 576 60 L569 79 C519 54 447 44 368 44 C292 44 221 55 172 79Z" fill="url(#flange)" stroke="#25465f" stroke-width="5"/>
+<path d="M172 79 C221 55 292 44 368 44 C447 44 519 54 569 79" stroke="#98adc0" stroke-width="4.5" fill="none"/>
+<path d="M166 65 C220 38 288 29 368 29 C449 29 522 42 572 67" fill="none" stroke="#c3d4e3" stroke-width="3.4"/>
+<path d="M181 105 C175 80 156 53 130 53 L52 53 C31 53 12 65 12 78 C12 94 33 101 55 101 L84 101 C101 101 113 109 121 121 C137 147 153 153 181 163 L190 145 C185 130 182 116 181 105Z" fill="url(#flange)" fill-opacity=".82" stroke="#2a4961" stroke-width="5.5"/>
+<path d="M563 105 C571 79 587 53 618 53 L682 53 C708 53 726 65 726 79 C725 94 707 101 684 101 L654 101 C638 101 626 109 619 122 C604 145 590 153 561 162 L551 145 C556 130 559 115 563 105Z" fill="url(#flange)" fill-opacity=".82" stroke="#2a4961" stroke-width="5.5"/>
+<path d="M17 77 C17 65 34 59 52 59 L126 59 C150 60 165 73 176 95 M721 77 C720 65 702 59 681 59 L621 59 C598 60 583 74 571 95" fill="none" stroke="#f7fafc" stroke-width="4"/>
+<path d="M122 113 C117 86 137 65 154 66 C181 70 187 101 193 139 L199 164 M619 112 C625 87 607 66 589 66 C566 71 555 103 549 141 L545 164" fill="none" stroke="#a9bfd2" stroke-width="4"/>
+<path d="M133 111 C135 94 144 81 153 80 M608 111 C605 94 598 82 589 80 M135 114 L161 87 M605 114 L581 87" fill="none" stroke="#7895ad" stroke-width="3.1"/>
+<path d="M185 116 L192 157 M557 116 L550 157" stroke="#a7bacd" stroke-width="4.5" fill="none"/>
+<path d="M117 118 C133 156 234 187 369 189 C501 189 604 157 620 119 L615 135 C598 173 500 207 369 208 C237 207 137 174 121 136Z" fill="url(#flange)" stroke="#7795ad" stroke-width="4.1"/>
+<path d="M123 123 C141 159 242 190 369 192 C501 192 600 160 615 124" fill="none" stroke="#fafcfd" stroke-width="3.9"/>
+<path d="M125 383 C128 430 234 467 369 468 C505 467 607 431 609 380" fill="none" stroke="#244259" stroke-width="6.1"/>
+<path d="M131 382 C134 427 239 461 369 461 C500 461 601 426 603 381" fill="none" stroke="#f8fafc" stroke-width="3.8"/>
+</g></svg>

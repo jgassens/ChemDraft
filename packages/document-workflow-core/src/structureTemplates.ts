@@ -1,3 +1,4 @@
+import { normalizeArtSearch as normalizeStructureTemplateName } from "@chemdraft/art-library";
 import {
   nativeDrawingStyleFromObjectStyle,
   type ChemDraftDocument,
@@ -9,18 +10,8 @@ import { documentDrawingDefaults } from "./drawingDefaults";
 import type { PagePoint } from "./shared";
 import type { StructureNameDeps } from "./structureName";
 
-/**
- * NFKC, lowercase, then spell out α/ɑ, β, γ, δ (including Greek capitals after folding).
- * Remove whitespace, Unicode Dash characters, ()[]{}, commas, straight/curly/modifier
- * apostrophes and prime marks. Keep every digit in order, periods and all other characters.
- * This is an exact spelling key, never a fuzzy or chemistry-dependent match.
- */
-export function normalizeStructureTemplateName(text: string): string {
-  const greek: Record<string, string> = { α: "alpha", ɑ: "alpha", β: "beta", γ: "gamma", δ: "delta" };
-  return text.normalize("NFKC").toLowerCase()
-    .replace(/[αɑβγδ]/gu, (letter) => greek[letter]!)
-    .replace(/[\s\p{White_Space}\p{Dash}()[\]{},'\u2018-\u201B\u02B9-\u02BC\u2032-\u2037]/gu, "");
-}
+/** Exact spelling normalization shared with art search. */
+export { normalizeStructureTemplateName };
 
 const templatesByName = new Map(structureTemplates.flatMap((template) =>
   [template.name, ...template.synonyms].map((name) => [normalizeStructureTemplateName(name), template] as const)

@@ -395,6 +395,10 @@ centres 1.2.1 (centres.jar)
 Data under separate terms
 --------------------------------------------------------------------------------
 
+ChemDraft BioArt: original artwork created for the ChemDraft project, licensed under
+Creative Commons Attribution 4.0 International (CC BY 4.0), separately from the
+Apache-2.0 code. Attribution: ChemDraft BioArt. https://creativecommons.org/licenses/by/4.0/
+
 Bundled datasets are NOT covered by the licence above. A component that ships data
 under different terms states them separately in its own package metadata — see
 AGENTS.md section 8c. Most notably, the NMR predictor plugin's shift database is

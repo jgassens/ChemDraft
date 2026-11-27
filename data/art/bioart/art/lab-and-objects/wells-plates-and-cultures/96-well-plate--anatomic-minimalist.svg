@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="254" height="200" viewBox="0 0 762 600">
+<title>96-well plate — Anatomic Minimalist</title>
+<defs>
+<linearGradient id="plate" x1="0" y1="0" x2="0.2" y2="1"><stop stop-color="#cdd7e5"/><stop offset=".48" stop-color="#d4deea"/><stop offset="1" stop-color="#d6dfea"/></linearGradient>
+<linearGradient id="front" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#dbe7f2"/><stop offset=".52" stop-color="#a9bbd0"/><stop offset=".72" stop-color="#c1d0e0"/><stop offset="1" stop-color="#879db5"/></linearGradient>
+<linearGradient id="well" x1="0" y1="0" x2=".2" y2="1"><stop stop-color="#9eb0c7"/><stop offset=".42" stop-color="#c8d4e3"/><stop offset="1" stop-color="#b8becf"/></linearGradient>
+<linearGradient id="medium" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#bd8896"/><stop offset=".54" stop-color="#e4b1b8"/><stop offset="1" stop-color="#ebc2c4"/></linearGradient>
+<g id="wellGeometry" stroke-linecap="round" stroke-linejoin="round">
+<ellipse rx="22.8" ry="23.7" fill="#dbe6ef" stroke="#edf3f9" stroke-width="4.6"/>
+<ellipse rx="19.2" ry="20.2" fill="url(#well)" stroke="#8095ad" stroke-width="4.4"/>
+<path d="M-15 7 C-9 -3 8 -4 16 5 C14 14 8 19 0 20 C-8 20 -13 16 -15 7Z" fill="url(#medium)" stroke="#b68c9a" stroke-width="2.1"/>
+<path d="M-12 7 C-6 0 7 -1 13 5" fill="none" stroke="#f2c9cb" stroke-width="1.8"/>
+<path d="M-17 1 C-18 -10 -9 -18 0 -18 C10 -18 17 -10 17 0" fill="none" stroke="#eaf1f8" stroke-width="2.2" opacity=".8"/>
+<path d="M-20 3 C-18 16 -10 21 0 21 C11 21 18 14 20 3" fill="none" stroke="#a7b6c8" stroke-width="2.1"/>
+</g></defs>
+<g stroke-linejoin="round" stroke-linecap="round">
+<path d="M33 64 Q36 44 72 24 L662 23 Q679 23 690 35 L729 69 Q741 82 741 99 L742 536 Q742 564 718 580 L51 581 Q30 580 20 554 L11 521Z" fill="url(#front)" stroke="#738ca5" stroke-width="5.8"/>
+<path d="M12 516 L32 63 Q35 45 73 24 L664 23 Q677 23 688 33 L728 69 Q740 81 739 98 L740 519 Q737 543 715 547 L44 547 Q21 544 12 516Z" fill="#d9e5f1" stroke="#8fa7bf" stroke-width="4.5"/>
+<path d="M28 514 L48 65 Q49 54 80 38 L665 37 L721 89 L725 513 Q724 534 708 534 L46 534 Q32 534 28 514Z" fill="url(#plate)" stroke="#859ab1" stroke-width="4.7"/>
+<path d="M48 513 L65 75 L84 52 L662 51 L709 94 L712 513" stroke="#a8b9cd" stroke-width="4" fill="none"/>
+<path d="M46 71 L76 40 L664 38 L719 85 M30 516 L49 538 L709 538 L728 519" fill="none" stroke="#f0f5fa" stroke-width="5"/>
+<path d="M62 79 L83 57 L661 57 L708 100 M67 51 L66 74 M159 40 L159 51 M214 40 L214 51 M307 40 L307 51 M319 40 L319 51 M464 40 L464 51 M514 40 L514 51 M527 40 L527 51" fill="none" stroke="#9fb2c9" stroke-width="3" opacity=".77"/>
+<use id="well-A01" xlink:href="#wellGeometry" transform="translate(114.00 91) rotate(-15.0) scale(0.979 0.983)"/>
+<use id="well-A02" xlink:href="#wellGeometry" transform="translate(164.45 91) rotate(-13.6) scale(0.979 0.983)"/>
+<use id="well-A03" xlink:href="#wellGeometry" transform="translate(214.91 91) rotate(-12.2) scale(0.979 0.983)"/>
+<use id="well-A04" xlink:href="#wellGeometry" transform="translate(265.36 91) rotate(-10.8) scale(0.979 0.983)"/>
+<use id="well-A05" xlink:href="#wellGeometry" transform="translate(315.82 91) rotate(-9.4) scale(0.979 0.983)"/>
+<use id="well-A06" xlink:href="#wellGeometry" transform="translate(366.27 91) rotate(-8.0) scale(0.979 0.983)"/>
+<use id="well-A07" xlink:href="#wellGeometry" transform="translate(416.73 91) rotate(-6.6) scale(0.979 0.983)"/>
+<use id="well-A08" xlink:href="#wellGeometry" transform="translate(467.18 91) rotate(-5.2) scale(0.979 0.983)"/>
+<use id="well-A09" xlink:href="#wellGeometry" transform="translate(517.64 91) rotate(-3.8) scale(0.979 0.983)"/>
+<use id="well-A10" xlink:href="#wellGeometry" transform="translate(568.09 91) rotate(-2.4) scale(0.979 0.983)"/>
+<use id="well-A11" xlink:href="#wellGeometry" transform="translate(618.55 91) rotate(-1.0) scale(0.979 0.983)"/>
+<use id="well-A12" xlink:href="#wellGeometry" transform="translate(669.00 91) rotate(0.4) scale(0.979 0.983)"/>
+<use id="well-B01" xlink:href="#wellGeometry" transform="translate(112.00 146) rotate(-15.0) scale(0.985 0.988)"/>
+<use id="well-B02" xlink:href="#wellGeometry" transform="translate(162.64 146) rotate(-13.6) scale(0.985 0.988)"/>
+<use id="well-B03" xlink:href="#wellGeometry" transform="translate(213.27 146) rotate(-12.2) scale(0.985 0.988)"/>
+<use id="well-B04" xlink:href="#wellGeometry" transform="translate(263.91 146) rotate(-10.8) scale(0.985 0.988)"/>
+<use id="well-B05" xlink:href="#wellGeometry" transform="translate(314.55 146) rotate(-9.4) scale(0.985 0.988)"/>
+<use id="well-B06" xlink:href="#wellGeometry" transform="translate(365.18 146) rotate(-8.0) scale(0.985 0.988)"/>
+<use id="well-B07" xlink:href="#wellGeometry" transform="translate(415.82 146) rotate(-6.6) scale(0.985 0.988)"/>
+<use id="well-B08" xlink:href="#wellGeometry" transform="translate(466.45 146) rotate(-5.2) scale(0.985 0.988)"/>
+<use id="well-B09" xlink:href="#wellGeometry" transform="translate(517.09 146) rotate(-3.8) scale(0.985 0.988)"/>
+<use id="well-B10" xlink:href="#wellGeometry" transform="translate(567.73 146) rotate(-2.4) scale(0.985 0.988)"/>
+<use id="well-B11" xlink:href="#wellGeometry" transform="translate(618.36 146) rotate(-1.0) scale(0.985 0.988)"/>
+<use id="well-B12" xlink:href="#wellGeometry" transform="translate(669.00 146) rotate(0.4) scale(0.985 0.988)"/>
+<use id="well-C01" xlink:href="#wellGeometry" transform="translate(109.00 201) rotate(-15.0) scale(0.991 0.993)"/>
+<use id="well-C02" xlink:href="#wellGeometry" transform="translate(159.91 201) rotate(-13.6) scale(0.991 0.993)"/>
+<use id="well-C03" xlink:href="#wellGeometry" transform="translate(210.82 201) rotate(-12.2) scale(0.991 0.993)"/>
+<use id="well-C04" xlink:href="#wellGeometry" transform="translate(261.73 201) rotate(-10.8) scale(0.991 0.993)"/>
+<use id="well-C05" xlink:href="#wellGeometry" transform="translate(312.64 201) rotate(-9.4) scale(0.991 0.993)"/>
+<use id="well-C06" xlink:href="#wellGeometry" transform="translate(363.55 201) rotate(-8.0) scale(0.991 0.993)"/>
+<use id="well-C07" xlink:href="#wellGeometry" transform="translate(414.45 201) rotate(-6.6) scale(0.991 0.993)"/>
+<use id="well-C08" xlink:href="#wellGeometry" transform="translate(465.36 201) rotate(-5.2) scale(0.991 0.993)"/>
+<use id="well-C09" xlink:href="#wellGeometry" transform="translate(516.27 201) rotate(-3.8) scale(0.991 0.993)"/>
+<use id="well-C10" xlink:href="#wellGeometry" transform="translate(567.18 201) rotate(-2.4) scale(0.991 0.993)"/>
+<use id="well-C11" xlink:href="#wellGeometry" transform="translate(618.09 201) rotate(-1.0) scale(0.991 0.993)"/>
+<use id="well-C12" xlink:href="#wellGeometry" transform="translate(669.00 201) rotate(0.4) scale(0.991 0.993)"/>
+<use id="well-D01" xlink:href="#wellGeometry" transform="translate(106.00 257) rotate(-15.0) scale(0.997 0.998)"/>
+<use id="well-D02" xlink:href="#wellGeometry" transform="translate(157.18 257) rotate(-13.6) scale(0.997 0.998)"/>
+<use id="well-D03" xlink:href="#wellGeometry" transform="translate(208.36 257) rotate(-12.2) scale(0.997 0.998)"/>
+<use id="well-D04" xlink:href="#wellGeometry" transform="translate(259.55 257) rotate(-10.8) scale(0.997 0.998)"/>
+<use id="well-D05" xlink:href="#wellGeometry" transform="translate(310.73 257) rotate(-9.4) scale(0.997 0.998)"/>
+<use id="well-D06" xlink:href="#wellGeometry" transform="translate(361.91 257) rotate(-8.0) scale(0.997 0.998)"/>
+<use id="well-D07" xlink:href="#wellGeometry" transform="translate(413.09 257) rotate(-6.6) scale(0.997 0.998)"/>
+<use id="well-D08" xlink:href="#wellGeometry" transform="translate(464.27 257) rotate(-5.2) scale(0.997 0.998)"/>
+<use id="well-D09" xlink:href="#wellGeometry" transform="translate(515.45 257) rotate(-3.8) scale(0.997 0.998)"/>
+<use id="well-D10" xlink:href="#wellGeometry" transform="translate(566.64 257) rotate(-2.4) scale(0.997 0.998)"/>
+<use id="well-D11" xlink:href="#wellGeometry" transform="translate(617.82 257) rotate(-1.0) scale(0.997 0.998)"/>
+<use id="well-D12" xlink:href="#wellGeometry" transform="translate(669.00 257) rotate(0.4) scale(0.997 0.998)"/>
+<use id="well-E01" xlink:href="#wellGeometry" transform="translate(103.00 313) rotate(-15.0) scale(1.003 1.002)"/>
+<use id="well-E02" xlink:href="#wellGeometry" transform="translate(154.45 313) rotate(-13.6) scale(1.003 1.002)"/>
+<use id="well-E03" xlink:href="#wellGeometry" transform="translate(205.91 313) rotate(-12.2) scale(1.003 1.002)"/>
+<use id="well-E04" xlink:href="#wellGeometry" transform="translate(257.36 313) rotate(-10.8) scale(1.003 1.002)"/>
+<use id="well-E05" xlink:href="#wellGeometry" transform="translate(308.82 313) rotate(-9.4) scale(1.003 1.002)"/>
+<use id="well-E06" xlink:href="#wellGeometry" transform="translate(360.27 313) rotate(-8.0) scale(1.003 1.002)"/>
+<use id="well-E07" xlink:href="#wellGeometry" transform="translate(411.73 313) rotate(-6.6) scale(1.003 1.002)"/>
+<use id="well-E08" xlink:href="#wellGeometry" transform="translate(463.18 313) rotate(-5.2) scale(1.003 1.002)"/>
+<use id="well-E09" xlink:href="#wellGeometry" transform="translate(514.64 313) rotate(-3.8) scale(1.003 1.002)"/>
+<use id="well-E10" xlink:href="#wellGeometry" transform="translate(566.09 313) rotate(-2.4) scale(1.003 1.002)"/>
+<use id="well-E11" xlink:href="#wellGeometry" transform="translate(617.55 313) rotate(-1.0) scale(1.003 1.002)"/>
+<use id="well-E12" xlink:href="#wellGeometry" transform="translate(669.00 313) rotate(0.4) scale(1.003 1.002)"/>
+<use id="well-F01" xlink:href="#wellGeometry" transform="translate(100.00 369) rotate(-15.0) scale(1.009 1.008)"/>
+<use id="well-F02" xlink:href="#wellGeometry" transform="translate(151.73 369) rotate(-13.6) scale(1.009 1.008)"/>
+<use id="well-F03" xlink:href="#wellGeometry" transform="translate(203.45 369) rotate(-12.2) scale(1.009 1.008)"/>
+<use id="well-F04" xlink:href="#wellGeometry" transform="translate(255.18 369) rotate(-10.8) scale(1.009 1.008)"/>
+<use id="well-F05" xlink:href="#wellGeometry" transform="translate(306.91 369) rotate(-9.4) scale(1.009 1.008)"/>
+<use id="well-F06" xlink:href="#wellGeometry" transform="translate(358.64 369) rotate(-8.0) scale(1.009 1.008)"/>
+<use id="well-F07" xlink:href="#wellGeometry" transform="translate(410.36 369) rotate(-6.6) scale(1.009 1.008)"/>
+<use id="well-F08" xlink:href="#wellGeometry" transform="translate(462.09 369) rotate(-5.2) scale(1.009 1.008)"/>
+<use id="well-F09" xlink:href="#wellGeometry" transform="translate(513.82 369) rotate(-3.8) scale(1.009 1.008)"/>
+<use id="well-F10" xlink:href="#wellGeometry" transform="translate(565.55 369) rotate(-2.4) scale(1.009 1.008)"/>
+<use id="well-F11" xlink:href="#wellGeometry" transform="translate(617.27 369) rotate(-1.0) scale(1.009 1.008)"/>
+<use id="well-F12" xlink:href="#wellGeometry" transform="translate(669.00 369) rotate(0.4) scale(1.009 1.008)"/>
+<use id="well-G01" xlink:href="#wellGeometry" transform="translate(97.00 425) rotate(-15.0) scale(1.015 1.012)"/>
+<use id="well-G02" xlink:href="#wellGeometry" transform="translate(149.00 425) rotate(-13.6) scale(1.015 1.012)"/>
+<use id="well-G03" xlink:href="#wellGeometry" transform="translate(201.00 425) rotate(-12.2) scale(1.015 1.012)"/>
+<use id="well-G04" xlink:href="#wellGeometry" transform="translate(253.00 425) rotate(-10.8) scale(1.015 1.012)"/>
+<use id="well-G05" xlink:href="#wellGeometry" transform="translate(305.00 425) rotate(-9.4) scale(1.015 1.012)"/>
+<use id="well-G06" xlink:href="#wellGeometry" transform="translate(357.00 425) rotate(-8.0) scale(1.015 1.012)"/>
+<use id="well-G07" xlink:href="#wellGeometry" transform="translate(409.00 425) rotate(-6.6) scale(1.015 1.012)"/>
+<use id="well-G08" xlink:href="#wellGeometry" transform="translate(461.00 425) rotate(-5.2) scale(1.015 1.012)"/>
+<use id="well-G09" xlink:href="#wellGeometry" transform="translate(513.00 425) rotate(-3.8) scale(1.015 1.012)"/>
+<use id="well-G10" xlink:href="#wellGeometry" transform="translate(565.00 425) rotate(-2.4) scale(1.015 1.012)"/>
+<use id="well-G11" xlink:href="#wellGeometry" transform="translate(617.00 425) rotate(-1.0) scale(1.015 1.012)"/>
+<use id="well-G12" xlink:href="#wellGeometry" transform="translate(669.00 425) rotate(0.4) scale(1.015 1.012)"/>
+<use id="well-H01" xlink:href="#wellGeometry" transform="translate(94.00 480) rotate(-15.0) scale(1.021 1.018)"/>
+<use id="well-H02" xlink:href="#wellGeometry" transform="translate(146.36 480) rotate(-13.6) scale(1.021 1.018)"/>
+<use id="well-H03" xlink:href="#wellGeometry" transform="translate(198.73 480) rotate(-12.2) scale(1.021 1.018)"/>
+<use id="well-H04" xlink:href="#wellGeometry" transform="translate(251.09 480) rotate(-10.8) scale(1.021 1.018)"/>
+<use id="well-H05" xlink:href="#wellGeometry" transform="translate(303.45 480) rotate(-9.4) scale(1.021 1.018)"/>
+<use id="well-H06" xlink:href="#wellGeometry" transform="translate(355.82 480) rotate(-8.0) scale(1.021 1.018)"/>
+<use id="well-H07" xlink:href="#wellGeometry" transform="translate(408.18 480) rotate(-6.6) scale(1.021 1.018)"/>
+<use id="well-H08" xlink:href="#wellGeometry" transform="translate(460.55 480) rotate(-5.2) scale(1.021 1.018)"/>
+<use id="well-H09" xlink:href="#wellGeometry" transform="translate(512.91 480) rotate(-3.8) scale(1.021 1.018)"/>
+<use id="well-H10" xlink:href="#wellGeometry" transform="translate(565.27 480) rotate(-2.4) scale(1.021 1.018)"/>
+<use id="well-H11" xlink:href="#wellGeometry" transform="translate(617.64 480) rotate(-1.0) scale(1.021 1.018)"/>
+<use id="well-H12" xlink:href="#wellGeometry" transform="translate(670.00 480) rotate(0.4) scale(1.021 1.018)"/><path d="M16 528 Q30 549 47 550 L716 551 Q732 546 741 531 L740 550 Q735 567 716 573 L48 574 Q32 571 23 551Z" fill="url(#front)" stroke="#8ea3b8" stroke-width="3.6"/>
+<path d="M32 548 L49 558 L714 558 L732 548 M42 570 L716 570" fill="none" stroke="#d7e3ef" stroke-width="3.4"/>
+<path d="M50 547 L51 578 M132 551 L141 566 L160 566 L171 552 M297 551 L308 567 L318 572 L326 551 M499 551 L505 570 L517 570 L521 551 M641 550 L648 565 L656 565 L662 550 M712 550 L711 578" fill="none" stroke="#9caec3" stroke-width="3.4"/>
+<path d="M67 144 l5 -4 1 9 -6 2 M64 198 l5 -4 1 9 -6 2 M61 255 l5 -4 1 9 -6 2 M58 311 l5 -4 1 9 -6 2 M55 366 l5 -4 1 9 -6 2 M52 424 l5 -4 1 9 -6 2 M50 478 l5 -4 1 9 -6 2" fill="#e5eef5" opacity=".85"/>
+<path d="M94 517 L95 532 M300 517 L301 532 M307 517 L308 532 M496 517 L496 532 M510 517 L510 532 M616 517 L615 532" stroke="#aebfd0" stroke-width="2.3" opacity=".7"/>
+</g></svg>

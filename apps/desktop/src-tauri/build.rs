@@ -50,6 +50,8 @@ fn main() {
             "dialog_send",
             "dialog_publish",
             "dialog_close",
+            "art_library_start_drag",
+            "art_library_dev_drag_test_prepare",
             "document_canvas_occlusion",
             "open_toolset_window",
             "close_toolset_window",

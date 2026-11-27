@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="251" height="289" viewBox="0 0 753 867">
+<title>Cell culture incubator — Anatomic Minimalist</title>
+<defs>
+<linearGradient id="casefront" x1="0" y1="0" x2=".15" y2="1"><stop stop-color="#dce3ed"/><stop offset=".13" stop-color="#bac7d6"/><stop offset=".21" stop-color="#d6dee7"/><stop offset=".87" stop-color="#bfcbd9"/><stop offset="1" stop-color="#d0d9e4"/></linearGradient>
+<linearGradient id="casetop" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#c6d2de"/><stop offset="1" stop-color="#e3e9f0"/></linearGradient>
+<linearGradient id="caseside" x1="0" y1="0" x2="1" y2=".15"><stop stop-color="#a0b0c2"/><stop offset=".35" stop-color="#adb9c8"/><stop offset="1" stop-color="#8f9fb2"/></linearGradient>
+<linearGradient id="gasket" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#656b72"/><stop offset=".13" stop-color="#f0f0f0"/><stop offset=".22" stop-color="#7d8186"/><stop offset=".66" stop-color="#5c6065"/><stop offset=".86" stop-color="#d8dadd"/><stop offset="1" stop-color="#6d747a"/></linearGradient>
+<radialGradient id="back" cx=".48" cy="0" r=".84" gradientTransform="translate(0 .02) scale(1 1.1)"><stop stop-color="#ebebed"/><stop offset=".23" stop-color="#bdbdc0"/><stop offset=".6" stop-color="#909195"/><stop offset="1" stop-color="#70747a"/></radialGradient>
+<linearGradient id="leftwall" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#62686d"/><stop offset=".35" stop-color="#a9acb1"/><stop offset=".66" stop-color="#747a80"/><stop offset="1" stop-color="#a7a9ad"/></linearGradient>
+<linearGradient id="floor" x1="0" y1="0" x2=".2" y2="1"><stop stop-color="#777c81"/><stop offset="1" stop-color="#a5a8ad"/></linearGradient>
+<linearGradient id="shelfTop" x1="0" y1="0" x2=".1" y2="1"><stop stop-color="#a1a5aa"/><stop offset=".52" stop-color="#d7d9dc"/><stop offset="1" stop-color="#b9bec3"/></linearGradient>
+<linearGradient id="shelfEdge" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#edf0f3"/><stop offset=".47" stop-color="#d0d2d5"/><stop offset="1" stop-color="#999da3"/></linearGradient>
+<pattern id="shelfHoles" width="24" height="16" patternUnits="userSpaceOnUse" patternTransform="skewX(-24)"><ellipse cx="5" cy="4" rx="3.2" ry="1.9" fill="#60676e" opacity=".84"/><path d="M2.2 5.3 Q5 7.7 7.8 5.2" fill="none" stroke="#f3f4f5" stroke-width="1" opacity=".7"/><ellipse cx="17" cy="12" rx="2.8" ry="1.7" fill="#626a71" opacity=".82"/></pattern>
+<linearGradient id="outerdoor" x1="0" y1="0" x2="1" y2=".05"><stop stop-color="#b6c4d5"/><stop offset=".15" stop-color="#e2e9f1"/><stop offset=".28" stop-color="#9cacc0"/><stop offset="1" stop-color="#a4b4c5"/></linearGradient>
+<radialGradient id="doorPanel" cx=".75" cy=".1" r=".92" gradientTransform="translate(0 .02) scale(1 1.1)"><stop stop-color="#dbe5ee"/><stop offset=".25" stop-color="#b9ccdc"/><stop offset=".66" stop-color="#aec4d5"/><stop offset="1" stop-color="#a1b7c9"/></radialGradient>
+<linearGradient id="glassdoor" x1="0" y1="0" x2="1" y2=".15"><stop stop-color="#c3dbea" stop-opacity=".21"/><stop offset=".22" stop-color="#ecf5fa" stop-opacity=".39"/><stop offset=".37" stop-color="#a0b5c5" stop-opacity=".21"/><stop offset=".76" stop-color="#a6bdcf" stop-opacity=".23"/><stop offset="1" stop-color="#dceaf5" stop-opacity=".3"/></linearGradient>
+<linearGradient id="glassrim" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#edf6fc"/><stop offset=".37" stop-color="#9bb8cb"/><stop offset=".72" stop-color="#c7dce7"/><stop offset="1" stop-color="#6f8fa5"/></linearGradient>
+<linearGradient id="handle" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#d2dbe4"/><stop offset=".25" stop-color="#f3f6fa"/><stop offset=".4" stop-color="#b1bfce"/><stop offset=".85" stop-color="#8295a8"/><stop offset="1" stop-color="#647b91"/></linearGradient>
+<linearGradient id="tray" x1="0" y1="0" x2="1" y2=".12"><stop stop-color="#a6a9ae"/><stop offset=".24" stop-color="#e5e6e8"/><stop offset=".58" stop-color="#c9cbce"/><stop offset=".82" stop-color="#e6e7e8"/><stop offset="1" stop-color="#85898e"/></linearGradient>
+<linearGradient id="display" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#6cc5e6"/><stop offset="1" stop-color="#48a7d7"/></linearGradient>
+<linearGradient id="flaskCap" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#b9a9d8"/><stop offset="1" stop-color="#7964ad"/></linearGradient>
+<g id="smallFlask" stroke-linejoin="round" stroke-linecap="round">
+<path d="M92 11 L104 5 Q113 3 119 12 Q124 22 117 31 L101 35Z" fill="url(#flaskCap)" stroke="#8c7db2" stroke-width="2.5"/>
+<path d="M101 8 Q112 14 112 25 M106 6 Q117 13 117 24" stroke="#aa99d0" stroke-width="1.8" fill="none"/>
+<path d="M5 35 L39 12 L93 9 L105 26 L102 52 L64 70 L5 65Z" fill="#b6cce1" fill-opacity=".78" stroke="#819bb3" stroke-width="3"/>
+<path d="M8 46 L39 40 L99 37 L100 51 L64 65 L8 62Z" fill="#d895a2" stroke="#c58998" stroke-width="2"/>
+<path d="M8 46 L64 46 L99 37 L100 44 L65 55 L8 53Z" fill="#efbcc3"/>
+<path d="M5 35 L64 36 L105 26 M64 36 L64 69 M39 13 L39 40" stroke="#e5f0f8" stroke-width="2.7" fill="none"/>
+<path d="M9 63 L63 66 L99 51" stroke="#b4c5d5" stroke-width="2.2" fill="none"/>
+</g>
+<clipPath id="chamberClip"><rect x="266" y="183" width="375" height="553" rx="37"/></clipPath>
+</defs>
+<g stroke-linecap="round" stroke-linejoin="round">
+
+<path d="M215 767 L271 770 L270 781 Q268 791 253 790 L230 789 Q219 789 218 782Z" fill="#626e7a" stroke="#566470" stroke-width="3.5"/>
+<path d="M619 779 L670 782 L668 795 Q666 804 651 803 L633 801 Q622 801 620 794Z" fill="#62717e" stroke="#556675" stroke-width="3.5"/>
+<path d="M202 79 Q202 69 212 63 L276 29 Q284 25 300 25 L711 31 Q725 32 725 48 L725 708 L679 779 Q674 790 660 790 L220 776 Q204 776 204 759Z" fill="url(#casefront)" stroke="#879bad" stroke-width="4.5"/>
+<path d="M204 78 L276 29 Q284 25 300 25 L711 31 Q719 31 723 39 L674 84 Q670 76 658 76 L220 72 Q211 72 204 78Z" fill="url(#casetop)" stroke="#adbdcd" stroke-width="3"/>
+<path d="M674 83 L723 39 Q725 43 725 53 L725 708 L679 779 Q675 789 666 790 L674 759Z" fill="url(#caseside)" stroke="#91a3b5" stroke-width="3.2"/>
+<path d="M205 86 Q205 73 222 72 L658 77 Q671 78 672 89 L674 146 L208 141Z" fill="#d4dce6" stroke="#a8b8c7" stroke-width="2.7"/>
+<path d="M214 80 L659 83 Q668 83 668 96 L668 138" fill="none" stroke="#f2f6fa" stroke-width="4"/>
+<path d="M243 144 L674 148 L671 165 L247 160Z" fill="#9baab9" opacity=".66"/>
+
+<rect x="416" y="83" width="207" height="49" rx="7" fill="#8da5bb" stroke="#aebdcc" stroke-width="2.3"/>
+<rect x="419" y="85" width="111" height="45" rx="5" fill="#4d719b" stroke="#6584a4" stroke-width="3"/>
+<rect x="438" y="93" width="72" height="29" rx="2" fill="#325d8b"/>
+<rect x="445" y="97" width="61" height="22" rx="1" fill="url(#display)"/>
+<path d="M447 98 H505" stroke="#95d2eb" stroke-width="2" opacity=".65"/>
+<g stroke="#7195b1" stroke-width="3"><circle cx="558" cy="108" r="12" fill="#e4f3fa"/><circle cx="599" cy="108" r="12" fill="#e4f3fa"/></g>
+<circle cx="558" cy="108" r="7.3" fill="#f7fbfd"/><circle cx="599" cy="108" r="7.3" fill="#f7fbfd"/>
+
+<rect x="252" y="169" width="401" height="576" rx="49" fill="#a1a9b1" stroke="#dce3eb" stroke-width="8"/>
+<rect x="261" y="178" width="384" height="559" rx="40" fill="url(#gasket)" stroke="#656c73" stroke-width="4.8"/>
+<rect x="270" y="187" width="367" height="542" rx="35" fill="url(#back)" stroke="#dadcde" stroke-width="3.8"/>
+<g clip-path="url(#chamberClip)">
+<path d="M272 219 Q299 188 345 189 L380 190 L379 637 L340 674 L273 717Z" fill="url(#leftwall)" stroke="#747a80" stroke-width="3"/>
+<path d="M382 190 L380 636 Q388 648 408 652 L637 651" fill="none" stroke="#b9bdc0" stroke-width="4"/>
+<path d="M275 714 L380 638 L637 650 L637 730 L288 730Z" fill="url(#floor)" stroke="#9da2a7" stroke-width="3"/>
+<path d="M279 708 L380 641 L634 654" fill="none" stroke="#c7c9cc" stroke-width="3.4"/>
+
+<path d="M341 202 L352 198 L353 654 L340 665Z" fill="#90969c" stroke="#686e75" stroke-width="2.7"/>
+<path d="M349 207 L349 646" stroke="#bdc2c8" stroke-width="2.4"/>
+<g stroke="#646c73" stroke-width="2.3" fill="none"><path d="M344 221 l5 -3 M344 241 l5 -3 M344 261 l5 -3 M344 281 l5 -3 M344 302 l5 -3 M344 322 l5 -3 M344 342 l5 -3 M344 362 l5 -3 M344 382 l5 -3 M344 402 l5 -3 M344 422 l5 -3 M344 442 l5 -3 M344 462 l5 -3 M344 482 l5 -3 M344 502 l5 -3 M344 522 l5 -3 M344 542 l5 -3 M344 562 l5 -3 M344 582 l5 -3 M344 602 l5 -3 M344 622 l5 -3 M344 642 l5 -3"/></g>
+<path d="M308 211 L311 666" fill="none" stroke="#c2c8ce" stroke-width="3" opacity=".75"/>
+
+<g stroke="#a8adb2" stroke-width="2.5">
+<path d="M302 330 L378 296 L638 296 L638 334 L302 339Z" fill="url(#shelfTop)"/><path d="M302 330 L378 296 L638 296 L638 334 L302 339Z" fill="url(#shelfHoles)" stroke="none"/><path d="M302 330 L638 332 L638 344 L302 341Z" fill="url(#shelfEdge)"/>
+<path d="M302 461 L378 422 L638 422 L638 462 L302 469Z" fill="url(#shelfTop)"/><path d="M302 461 L378 422 L638 422 L638 462 L302 469Z" fill="url(#shelfHoles)" stroke="none"/><path d="M302 461 L638 463 L638 476 L302 473Z" fill="url(#shelfEdge)"/>
+<path d="M302 590 L378 542 L638 542 L638 592 L302 598Z" fill="url(#shelfTop)"/><path d="M302 590 L378 542 L638 542 L638 592 L302 598Z" fill="url(#shelfHoles)" stroke="none"/><path d="M302 590 L638 592 L638 605 L302 602Z" fill="url(#shelfEdge)"/>
+</g>
+<path d="M303 344 L636 347 M303 476 L636 478 M303 605 L636 608" fill="none" stroke="#646970" stroke-width="4.5" opacity=".65"/>
+<path d="M304 333 L636 335 M304 464 L636 466 M304 593 L636 595" fill="none" stroke="#f0f2f4" stroke-width="3.4"/>
+
+<ellipse cx="432" cy="450" rx="63" ry="7" fill="#727981" opacity=".35"/><ellipse cx="560" cy="450" rx="63" ry="7" fill="#727981" opacity=".35"/>
+<use xlink:href="#smallFlask" transform="translate(369 382) scale(.99 1)"/>
+<use xlink:href="#smallFlask" transform="translate(498 383) scale(.99 1)"/>
+
+<path d="M380 664 L408 642 Q414 639 424 639 L590 642 Q603 643 601 651 L587 693 Q581 710 566 714 L405 714 Q391 712 388 697Z" fill="url(#tray)" stroke="#62696f" stroke-width="3.8"/>
+<path d="M381 663 L408 643 Q414 639 425 640 L590 642 Q602 642 600 650 L579 670 Q574 675 563 674 L394 673 Q380 671 381 663Z" fill="#b8bec4" stroke="#e5e6e8" stroke-width="2.6"/>
+<path d="M394 662 L417 648 L586 650 L572 663 L397 667Z" fill="#89949c" stroke="#737d84" stroke-width="2.4"/>
+<path d="M418 649 L418 657 L575 659" fill="none" stroke="#c2cbd1" stroke-width="3"/>
+<path d="M394 679 L399 700 Q401 707 409 709 L558 710 Q572 708 577 699 L583 680" stroke="#e1e3e6" stroke-width="2.6" fill="none"/>
+</g>
+<rect x="270" y="187" width="367" height="542" rx="35" fill="none" stroke="#747b81" stroke-width="4"/>
+<rect x="256" y="173" width="392" height="570" rx="45" fill="none" stroke="#6d747a" stroke-width="6"/>
+<rect x="263" y="180" width="378" height="556" rx="39" fill="none" stroke="url(#gasket)" stroke-width="9"/>
+<rect x="270" y="187" width="366" height="542" rx="34" fill="none" stroke="#62676d" stroke-width="4"/>
+<path d="M258 219 Q258 176 303 175 L599 176 Q646 177 646 220" fill="none" stroke="#e4e7e9" stroke-width="3.8"/>
+<path d="M257 699 Q258 740 299 742 L604 744 Q647 740 647 698" fill="none" stroke="#e4e7e9" stroke-width="3.5"/>
+
+<path d="M36 152 Q35 141 48 134 L80 120 Q87 116 101 118 L217 135 Q238 137 240 159 L240 743 Q239 758 225 770 L101 837 Q90 843 79 841 L52 840 Q36 839 36 822Z" fill="url(#outerdoor)" stroke="#8296aa" stroke-width="4.5"/>
+<path d="M36 152 L78 155 L79 840 L52 840 Q36 839 36 823Z" fill="url(#casefront)" stroke="#a0b1c1" stroke-width="2.6"/>
+<path d="M39 151 Q45 140 82 121 L101 119 L216 136 L80 155Z" fill="url(#casetop)" stroke="#a9b8c8" stroke-width="2.5"/>
+<path d="M79 155 Q83 143 100 141 L217 153 Q229 153 229 166 L229 734 Q229 747 218 755 L99 825 Q83 832 81 816Z" fill="#8da0b3" stroke="#617589" stroke-width="4.2"/>
+<path d="M101 161 Q103 155 113 155 L217 166 Q222 166 222 176 L221 728 Q221 738 211 743 L110 807 Q100 811 100 800Z" fill="#74889a" stroke="#a7b8c8" stroke-width="2.8"/>
+<path d="M110 169 L212 177 L213 727 L111 790Z" fill="url(#doorPanel)" stroke="#61778c" stroke-width="4.4"/>
+<path d="M117 177 L205 184 L206 724 L117 779Z" fill="none" stroke="#d7e4ed" stroke-width="3.6" opacity=".64"/>
+<path d="M110 797 L219 735 M108 159 L218 168 M84 159 L83 813" fill="none" stroke="#c3d0dc" stroke-width="3.3"/>
+<path d="M39 160 L39 819 Q39 833 53 834 L76 835" fill="none" stroke="#f1f5f9" stroke-width="4"/>
+
+<path d="M30 396 Q30 389 40 384 L55 382 Q64 383 65 395 L65 575 Q65 586 53 586 L40 583 Q30 582 30 573Z" fill="url(#handle)" stroke="#778da2" stroke-width="4"/>
+<path d="M39 396 L48 392 L48 577 L39 573Z" fill="#c8d4e0" stroke="#95a7b9" stroke-width="2"/>
+<path d="M39 395 L39 572" stroke="#f1f5f8" stroke-width="3"/>
+
+<path d="M230 249 Q230 237 241 228 L312 198 Q329 192 331 211 L331 675 Q331 683 323 689 L246 727 Q229 732 229 716Z" fill="url(#glassdoor)" stroke="#6a8aa1" stroke-width="5.2"/>
+<path d="M237 249 Q237 241 245 235 L315 205 Q322 202 323 213 L323 673 Q323 680 316 683 L246 718 Q237 721 237 711Z" fill="none" stroke="url(#glassrim)" stroke-width="6.4"/>
+<path d="M242 252 L243 712 M327 213 L327 673" stroke="#9ab5c8" stroke-width="3.4" opacity=".72" fill="none"/>
+<path d="M247 244 L247 711 M315 211 L315 672" stroke="#d8eaf3" stroke-width="3.8" opacity=".65" fill="none"/>
+<path d="M239 461 C245 450 257 449 265 457 C271 465 268 483 262 491 C253 500 240 492 239 482Z" fill="#8396a7" stroke="#53697b" stroke-width="3.3"/>
+<ellipse cx="252" cy="472" rx="9.5" ry="18.2" fill="url(#handle)" stroke="#637586" stroke-width="2.5"/>
+<path d="M251 457 Q246 472 251 487" fill="none" stroke="#e0e9ef" stroke-width="2.3"/>
+</g></svg>
