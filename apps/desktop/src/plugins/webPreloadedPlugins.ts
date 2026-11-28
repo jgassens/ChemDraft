@@ -25,7 +25,7 @@
  *
  * A Tauri host never runs this: the desktop app installs packages properly, and the desktop build never
  * contains `/web-plugins/` (the Vite plugin refuses to run inside a Tauri build with the variable set).
- * Plugin storage on the web stays in memory, as it is for every plugin in the browser build.
+ * Plugin storage on the web persists in the browser's localStorage, falling back to memory when storage is blocked.
  */
 
 import {
