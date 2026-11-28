@@ -955,6 +955,7 @@ import { StructureRecognitionInstallDialog } from "./plugins/StructureRecognitio
 import { RecognitionProgressIndicator } from "./plugins/RecognitionProgressIndicator";
 import { usePluginRuntime, pluginCommandFailure } from "./plugins/usePluginRuntime";
 import { isTauriHost } from "./plugins/pluginStagingFs";
+import { tourModeForStartupCommand, useWebStartupCommand, WEB_STARTUP_COMMAND_DIAGNOSTIC, webStartupCommandId } from "./plugins/webStartupCommand";
 import { PluginPanelSurface } from "./plugins/PluginPanelSurface";
 import { PLUGIN_DIAGNOSTICS_COMMAND_ID } from "./plugins/pluginMenuModel";
 import { buildPluginSelectionSnapshot, computeObjectFingerprint } from "./plugins/selectionSnapshot";
@@ -1944,7 +1945,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.27.14.59-sonnet";
+const CURRENT_BUILD_STAMP = "11.27.15.00-opus";
 
 /** How a command is invoked. `liveRerunStillWanted` marks a live panel's automatic re-run: a queued
  *  one that reaches the front of its plugin's queue starts only while this still returns true. */
@@ -2236,6 +2237,9 @@ export interface MainWindowProps {
   initialActiveToolCommandId?: string;
   shortcutPlatform?: ShortcutPlatform;
   tourMode?: TourMode;
+  /** Browser build: a preloaded plugin's command to run once its plugins have loaded. Defaults to the
+   *  build's `CHEMDRAFT_WEB_STARTUP_COMMAND` (unset everywhere but the game build); see webStartupCommand.ts. */
+  webStartupCommand?: string;
   /**
    * Floating native palette windows instead of in-window palettes. Defaults to on only in the desktop
    * runtime (`shouldDefaultToNativePalettes`), and nothing in the app turns it on elsewhere. Forcing it
@@ -2303,6 +2307,7 @@ export function MainWindow({
   initialActiveToolCommandId,
   shortcutPlatform,
   tourMode,
+  webStartupCommand = webStartupCommandId,
   nativePalette = shouldDefaultToNativePalettes()
 }: MainWindowProps) {
   useEffect(() => installBrowserReloadGuard(shortcutPlatform), [shortcutPlatform]);
@@ -12882,7 +12887,7 @@ export function MainWindow({
     shortcutOverrides: shortcutSettings.overrides,
     platform: shortcutPlatform,
     plugins: () => tourPluginCommandsRef.current,
-    mode: tourMode,
+    mode: tourModeForStartupCommand(tourMode, webStartupCommand),
     setStatus
   });
   deferTourRef.current = tour.deferred;
@@ -15223,6 +15228,20 @@ export function MainWindow({
   }, [invokeUnmeasured, pluginCommandExists]);
 
   invokeCommandRef.current = invoke;
+
+  // The game build's startup command: once, after the preloaded web plugins have loaded, through the
+  // same path a menu item takes. Only a preloaded plugin's command runs; anything else is reported.
+  useWebStartupCommand({
+    commandId: webStartupCommand,
+    enabled: !isTauriHost(),
+    preloadedLoad: pluginRuntime.preloadedPluginsLoad,
+    getCommand: commandId => registry.get(commandId),
+    invoke: commandId => invokeCommandRef.current(commandId),
+    report: message => {
+      console.warn(message);
+      pluginRuntime.runtime.panels.reportDiagnostic(WEB_STARTUP_COMMAND_DIAGNOSTIC, message);
+    }
+  });
 
   // Both surfaces accept control data only, then enqueue through the same per-command dispatcher.
   const acceptPluginInput = async (commandId: string, input: PluginCommandInput): Promise<PluginPanelActionResult> => {

@@ -109,6 +109,11 @@ export interface PluginRuntimeProviders {
   ) => AppliedPatchReceipt | Promise<AppliedPatchReceipt>;
 }
 
+export interface PreloadedPluginsLoad {
+  loaded: readonly WebPreloadedPluginEntry[];
+  failures: readonly WebPreloadedPluginFailure[];
+}
+
 export interface PluginRuntimeView {
   runtime: DesktopPluginRuntime;
   bundledPlugins: readonly BundledPluginDescriptor[];
@@ -121,6 +126,9 @@ export interface PluginRuntimeView {
   /** Browser build only: packages preloaded at `/web-plugins/` by whoever builds or serves it. Never
    *  removable or updatable from the app, and always empty on a Tauri host. */
   preloadedPlugins: readonly WebPreloadedPluginEntry[];
+  /** Browser build only: `undefined` until the preloaded-plugin load has finished (and always on a Tauri
+   *  host); then what loaded and what failed. The startup command waits for it (webStartupCommand.ts). */
+  preloadedPluginsLoad: PreloadedPluginsLoad | undefined;
   /** Show the native picker and describe the chosen package; `undefined` when this build cannot install. */
   pickPackage: (() => Promise<PickedPluginPackage | undefined>) | undefined;
   installPackage: ((inspection: PluginPackageInspection) => Promise<void>) | undefined;
@@ -357,6 +365,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
   // Preloaded web plugins: the browser build's substitute for installing (see webPreloadedPlugins.ts).
   // Same ownership rules as the installed reload above, for the same StrictMode reason.
   const [preloadedPlugins, setPreloadedPlugins] = useState<readonly WebPreloadedPluginEntry[]>([]);
+  const [preloadedPluginsLoad, setPreloadedPluginsLoad] = useState<PreloadedPluginsLoad>();
   const preloadOwnerGenerationRef = useRef(0);
   useEffect(() => {
     if (isTauriHost()) {
@@ -389,6 +398,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
       const status = preloadedFailureStatus(failures);
       if (status) providersRef.current.onPluginUpdateStatus?.(status);
       setPreloadedPlugins(result);
+      setPreloadedPluginsLoad({ loaded: result, failures });
     });
     return () => {
       cancelled = true;
@@ -653,6 +663,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     installedPlugins,
     installedPluginCatalogReady,
     preloadedPlugins,
+    preloadedPluginsLoad,
     // Absent (not merely inert) where staging is unsupported, so the manager can disable its control
     // rather than offer an install that would fail on click.
     pickPackage: stagingFs ? pickPackage : undefined,

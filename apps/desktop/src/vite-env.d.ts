@@ -9,6 +9,8 @@ declare const __WORKTREE_LABEL__: string;
 interface ImportMetaEnv {
   // Build-time toolbar profile name from vite.config.ts `define`; "" when unset (src/toolbars/toolbarProfileName.ts).
   readonly CHEMDRAFT_TOOLBAR_PROFILE?: string;
+  // Build-time startup command from vite.config.ts `define`; "" when unset (src/plugins/webStartupCommandName.ts).
+  readonly CHEMDRAFT_WEB_STARTUP_COMMAND?: string;
 }
 
 declare module "node:fs" {

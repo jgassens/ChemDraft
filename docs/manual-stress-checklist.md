@@ -1561,6 +1561,12 @@ and the open toolbars are the standard ones, also inside their frames. Finally,
 `CHEMDRAFT_TOOLBAR_PROFILE=molecule-drawing pnpm --filter @chemdraft/desktop build` must refuse to
 start (macOS and Windows).
 
+- Game build start: with the Spectrum Match plugin staged, a fresh profile on `dev:web:game` (and a
+  served `build:web:game`) opens with the board on starter puzzle 1 and no welcome tour; Help > Take the
+  Tour still opens it. Reload: the board opens once, not twice. Plain `dev:web:plugins` opens no board and
+  shows the tour as usual. `CHEMDRAFT_WEB_STARTUP_COMMAND=plugin.nmrGame.nextPuzzle pnpm --filter
+  @chemdraft/desktop build` must refuse to start (macOS and Windows).
+
 ## NMR panel (macOS and Windows)
 
 - Click in the panel and press Cmd+W on macOS or Alt+F4 on Windows: only the panel closes.

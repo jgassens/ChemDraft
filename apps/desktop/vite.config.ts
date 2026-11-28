@@ -10,6 +10,7 @@ import { workerChunksGuard, workerRuntimeChunks } from "../../tools/worker-chunk
 import { isTauriBuildEnv, webPluginsVitePlugins } from "../../scripts/web-plugins/vitePlugin";
 import { buildAboutProvenance } from "./src/about/buildProvenance";
 import { toolbarProfileForBuild } from "./src/toolbars/toolbarProfileName";
+import { webStartupCommandForBuild } from "./src/plugins/webStartupCommandName";
 
 import {
   INSTALLED_PLUGIN_URL_PREFIX,
@@ -23,6 +24,9 @@ const { components, licenseTexts } = buildAboutProvenance();
 // Parsed here so an unknown name fails the build instead of shipping the standard toolbars silently,
 // and refused inside a Tauri build so the desktop app never ships a profile.
 const toolbarProfile = toolbarProfileForBuild(process.env.CHEMDRAFT_TOOLBAR_PROFILE, isTauriBuildEnv(process.env));
+// Build-time startup command (`dev:web:game` / `build:web:game`): a preloaded plugin's command the browser
+// build runs once its plugins have loaded. Unset is no startup command; refused inside a Tauri build.
+const webStartupCommand = webStartupCommandForBuild(process.env.CHEMDRAFT_WEB_STARTUP_COMMAND, isTauriBuildEnv(process.env));
 
 // fileURLToPath (not URL.pathname) so a checkout path containing spaces — e.g. a git worktree at
 // ".../chemdraw-structure inspector" — decodes to a real filesystem path instead of a "%20" one
@@ -195,6 +199,7 @@ export default defineConfig({
     __ABOUT_PROVENANCE__: JSON.stringify({ components, licenseTexts }),
     "import.meta.env.CHEMDRAFT_WKPROFILE": JSON.stringify(process.env.CHEMDRAFT_WKPROFILE === "1" ? "1" : ""),
     "import.meta.env.CHEMDRAFT_TOOLBAR_PROFILE": JSON.stringify(toolbarProfile ?? ""),
+    "import.meta.env.CHEMDRAFT_WEB_STARTUP_COMMAND": JSON.stringify(webStartupCommand ?? ""),
     __BUILD_STAMP__: JSON.stringify(buildStamp()),
     __WORKTREE_LABEL__: JSON.stringify(worktreeLabel())
   },

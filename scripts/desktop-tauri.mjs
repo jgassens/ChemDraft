@@ -107,10 +107,24 @@ export function assertNoToolbarProfile(env) {
   }
 }
 
+// A startup command (CHEMDRAFT_WEB_STARTUP_COMMAND) is for the browser game build alone. Inherited by a
+// desktop dev or package build, it would make the desktop app run a command on launch, so refuse before
+// anything builds, signs or packages, on every platform. vite.config.ts refuses it too (TAURI_ENV_*).
+// Unset or empty is no startup command and stays allowed.
+export function assertNoWebStartupCommand(env) {
+  if (env.CHEMDRAFT_WEB_STARTUP_COMMAND !== undefined && env.CHEMDRAFT_WEB_STARTUP_COMMAND.trim() !== "") {
+    throw new Error(
+      `CHEMDRAFT_WEB_STARTUP_COMMAND=${env.CHEMDRAFT_WEB_STARTUP_COMMAND} is set, but a startup command is for the browser build only ` +
+        "(pnpm --filter @chemdraft/desktop build:web:game). Unset it to build or run the desktop app."
+    );
+  }
+}
+
 function main() {
   try {
     assertNoWebPluginsDir(process.env);
     assertNoToolbarProfile(process.env);
+    assertNoWebStartupCommand(process.env);
   } catch (error) {
     console.error(error.message);
     process.exit(1);

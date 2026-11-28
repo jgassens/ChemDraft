@@ -158,6 +158,12 @@ the student draws. Generic: any plugin can use it.
   places them (`placePaletteGridItems`), chrome included. Tests: `toolbars/toolbarProfile.test.ts`,
   `toolbars/toolbarPaletteFrame.dom.test.tsx`, `scripts/desktop-tauri.test.ts`. Remaining: the
   hands-on check in `docs/manual-stress-checklist.md`, and native palette windows on macOS and Windows.
+- **Game build startup command (no API change).** `CHEMDRAFT_WEB_STARTUP_COMMAND` (`--startup-command=`;
+  the game scripts set `plugin.nmrGame.nextPuzzle`) runs one preloaded plugin's command once after the
+  preloaded plugins load, through MainWindow's ordinary `invoke`, and suppresses the automatic first-run
+  tour. Core, bundled-plugin, unknown and malformed ids are refused with a diagnostic; refused in any
+  Tauri build. `plugins/webStartupCommand{,Name}.ts`. Tests: `plugins/webStartupCommand{.dom,Name}.test.ts`,
+  `scripts/desktop-tauri.test.ts`, `scripts/vite-with-web-plugins.test.ts`. Remaining: the hands-on check.
 - **Review fixes.** A live re-run only runs a command the reporting plugin registered itself
   (`PluginPanelController` drops any other `liveRerun` and records `panel-live-rerun-refused`); a
   queued live re-run is dropped when it reaches the front if its panel closed, its plugin unloaded or

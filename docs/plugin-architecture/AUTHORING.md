@@ -1364,6 +1364,18 @@ standard ones. A desktop build refuses the variable outright: `scripts/desktop-t
 building, signing or packaging on macOS and Windows, and `vite.config.ts` throws inside any Tauri
 build, so an inherited `CHEMDRAFT_TOOLBAR_PROFILE` can never ship the game toolbars in the app.
 
+The game scripts also set a build-time **startup command**, `CHEMDRAFT_WEB_STARTUP_COMMAND` (via
+`--startup-command=` on `scripts/vite-with-web-plugins.mjs`), to `plugin.nmrGame.nextPuzzle`, so the
+page opens with the Spectrum Match board showing. Once the preloaded plugins have finished loading, the
+browser build invokes that command once, through the same command path a menu item uses (permissions,
+the plugin's command queue and the status line all apply). It runs only if a *preloaded* plugin
+registered it: a core command, a bundled plugin's command, an unknown id or a malformed one is not run,
+and a diagnostic names the reason (plugin diagnostics and the console). If the preloaded plugin failed
+to load, its load failure is the only message. It never runs twice in a page load, and with a startup
+command set the first-run tour does not open on its own (Help > Take the Tour still opens it). Unset
+(every other script) changes nothing. Like the toolbar profile, a desktop build refuses the variable in
+`scripts/desktop-tauri.mjs` and in `vite.config.ts` inside any Tauri build.
+
 At startup the browser build reads `/web-plugins/index.json`. If it is missing, there are no preloaded
 plugins and nothing is reported. Each listed package is loaded from its own same-origin directory
 through `loadPackagedPlugin`, after the same checks as an installed plugin: manifest schema, the
