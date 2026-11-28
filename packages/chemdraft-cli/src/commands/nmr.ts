@@ -475,13 +475,6 @@ function orderedResonances(result: PluginPredictionResult, nuclei: readonly NmrN
   );
 }
 
-/** Add the stick-height caveat to the plugin's spectrum SVG: height is equivalent-nuclei count, not integration. */
-function addStickHeightNote(svg: string): string {
-  const note =
-    `<text x="22" y="11" font-size="9" fill="#475569">Stick height = predicted equivalent nuclei, not integration</text>`;
-  return svg.replace(/<\/svg>\s*$/, `${note}</svg>`);
-}
-
 function spectrumPath(base: string, nucleus: NmrNucleus, withSuffix: boolean, format: SpectrumFormat): string {
   if (!withSuffix) return base;
   const extension = extname(base);
@@ -504,7 +497,7 @@ async function writeSpectra(
     // The renderer draws one nucleus per figure and reads the axis from the first resonance.
     if (resonances.length === 0) continue;
     const file = spectrumPath(base, nucleus, withSuffix, format);
-    const svg = addStickHeightNote(plugin.renderStickSpectrumSvg({ ...result, resonances }));
+    const svg = plugin.renderStickSpectrumSvg({ ...result, resonances });
     await mkdir(dirname(file), { recursive: true });
     await writeFile(file, format === "png" ? svgToPng(svg, width) : svg);
     files.push(file);

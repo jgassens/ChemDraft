@@ -273,9 +273,9 @@ describe("chemdraft nmr with the CI fixture plugin", () => {
     ]));
     expect(lines[0]!.spectrum).toEqual([spectrum]);
     const svg = await readFile(spectrum, "utf8");
-    // The plugin's own caption passes through unchanged; the CLI only adds the stick-height note.
+    // The plugin's own caption passes through unchanged.
     expect(svg).toContain("1H δ (ppm) — synthetic fixture");
-    expect(svg).toContain("not integration");
+    expect(svg).not.toContain("not integration");
   });
 
   it("passes grouped toluene 13C resonances through unchanged", async () => {
@@ -378,7 +378,7 @@ describe.skipIf(!pluginPresent)("chemdraft nmr with the predictor plugin", () =>
       const svg = await readFile(join(outputDirectory, `ethanol-${nucleus}.svg`), "utf8");
       expect(svg.startsWith("<svg")).toBe(true);
       expect(svg).toContain("δ (ppm) — predicted");
-      expect(svg.match(/Stick height = predicted equivalent nuclei, not integration/g)).toHaveLength(1);
+      expect(svg).not.toContain("Stick height");
     }
   }, 60_000);
 

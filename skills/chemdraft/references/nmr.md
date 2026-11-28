@@ -59,8 +59,7 @@ pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft nmr --smiles 'C
 - ¹H multiplicity and J couplings are first-order estimates from bond
   topology, labeled `estimated: true`; they are not measured values.
   J is a coupling in hertz; shift is in parts per million (`shiftPpm`).
-- `nEquivalent` and spectrum stick height mean predicted equivalent nuclei,
-  not integration. Line shape and field, where shown in plugin simulations,
+- `nEquivalent` means predicted equivalent nuclei, not integration. Line shape and field, where shown in plugin simulations,
   are simulation parameters. The CLI exposes stick spectra, with no line
   shape or field controls.
 - No shift is invented for an unmatched environment. Omitted environments

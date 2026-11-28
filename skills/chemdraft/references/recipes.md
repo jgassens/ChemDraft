@@ -139,8 +139,7 @@ pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft nmr --smiles 'C
 ```
 
 Two files per command get nucleus suffixes. Caption **Predicted ¹H/¹³C
-shifts; multiplicities/J are first-order estimates; stick height is
-equivalent nuclei, not integration; labile protons omitted.** Keep rule
+shifts; multiplicities/J are first-order estimates; labile protons omitted.** Keep rule
 estimates and thin-match/partial warnings visible, with database attribution.
 Compare per environment beside an experimental spectrum; never shift the
 predictions to fit it. Read [NMR](nmr.md) for all honesty constraints.
