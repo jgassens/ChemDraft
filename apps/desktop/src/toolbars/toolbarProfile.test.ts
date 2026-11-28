@@ -7,6 +7,7 @@ import {
   desktopToolbarProfile,
   desktopToolsets,
   getToolsetPaletteGroups,
+  placePaletteGridItems,
   type DesktopToolsetDefinition
 } from "../toolsets";
 import { MAIN_TOOLBAR_DEFAULTS_REVISION } from "./toolbarLayoutState";
@@ -135,6 +136,45 @@ describe("molecule-drawing toolbar profile", () => {
 
   it("keeps exactly the drawing tools on Main, in order", () => {
     expect(gameMainItemIds(gameRegistry())).toEqual([...MOLECULE_DRAWING_MAIN_ITEM_IDS]);
+  });
+
+  it("lays Main out with no empty grid cell: four cells under the zoom widget, then full columns", () => {
+    const main = game.desktopToolsetRegistry.require("core.main");
+    const rows = main.gridLayout?.rows ?? 2;
+    expect(main.gridLayout?.orientation).toBe("horizontal");
+    expect(rows).toBe(2);
+    const items = game.getToolsetPaletteGroups("core.main", gameRegistry(), new Map(), false).flatMap(group => group.items);
+    // Main is one group, so one grid; placed as the browser places it (column flow over two rows).
+    expect(game.getToolsetPaletteGroups("core.main", gameRegistry(), new Map(), false)).toHaveLength(1);
+    const placements = placePaletteGridItems("column", rows, items);
+    const at = (id: string) => placements[items.findIndex(item => item.id === id)];
+
+    // RC6's four-cell zoom widget on the first row, and the four cells under it all taken.
+    expect(at("widget.core.documentZoom")).toEqual({ column: 0, row: 0, colSpan: 4, rowSpan: 1 });
+    expect(["tool.select", "tool.lasso", "tool.eraser", "tool.charge"].map(id => at(id))).toEqual(
+      [0, 1, 2, 3].map(column => ({ column, row: 1, colSpan: 1, rowSpan: 1 }))
+    );
+    // Then the divider, the full height of the toolbar, right after the zoom group.
+    expect(at("core.main.divider.1")).toMatchObject({ column: 4, row: 0, rowSpan: 2 });
+
+    // No empty cell anywhere before the last column.
+    const columns = Math.max(...placements.map(placement => placement.column + placement.colSpan));
+    const occupied = new Set<string>();
+    for (const placement of placements) {
+      for (let column = placement.column; column < placement.column + placement.colSpan; column += 1) {
+        for (let row = placement.row; row < placement.row + placement.rowSpan; row += 1) {
+          const cell = `${column},${row}`;
+          expect(occupied.has(cell)).toBe(false);
+          occupied.add(cell);
+        }
+      }
+    }
+    const empty: string[] = [];
+    for (let column = 0; column < columns - 1; column += 1) {
+      for (let row = 0; row < rows; row += 1) if (!occupied.has(`${column},${row}`)) empty.push(`${column},${row}`);
+    }
+    expect(empty).toEqual([]);
+    expect(columns).toBe(10);
   });
 
   it("keeps the flyouts of Bond, Double Bond, Chain, Rings and Charge", () => {

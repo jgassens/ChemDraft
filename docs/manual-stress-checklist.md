@@ -1549,13 +1549,15 @@ caption must use the atom-label size. Existing structures on the page must not c
 
 Run `pnpm --filter @chemdraft/desktop dev:web:game` (stage the game plugin first, or with an empty
 staging directory) in a fresh browser profile. The Main toolbar shows, in order: zoom, Select,
-Lasso, Eraser, a divider, Bond, Wedge, Hashed, Dashed, Bold, Double Bond, Chain, Rings, a divider,
-Charges, Clean Up Structure 2D, and nothing else. Open each flyout (Bond, Double Bond, Chain, Rings,
+Lasso, Eraser, Charges, a divider, Bond, Wedge, Hashed, Dashed, Bold, Double Bond, Chain, Rings,
+Clean Up Structure 2D, and nothing else. The zoom group is four buttons wide: Zoom Out, the
+percentage menu and Zoom In sit exactly over Select, Lasso, Eraser and Charges, with no gray cell
+beside or below Zoom In, and no empty cell anywhere before the last column. Open each flyout (Bond, Double Bond, Chain, Rings,
 Charges): every entry draws with one click, and no button is disabled with nothing on the page.
 No other core toolbar is open; the game plugin's own toolbars and panels appear as usual, and
 every menu still lists its usual items. Open Structure from the View menu and add Text back with
-Customize Toolbars: both work. Every Main toolbar button, the last column (Charges, Clean Up
-Structure 2D) included, sits inside the toolbar's frame, and the title bar is no wider than the frame;
+Customize Toolbars: both work. Every Main toolbar button, the last column (Clean Up Structure 2D)
+included, sits inside the toolbar's frame, and the title bar is no wider than the frame;
 check again after hiding and re-adding a button. Then run plain `dev:web:plugins`: the Main toolbar
 and the open toolbars are the standard ones, also inside their frames. Finally,
 `CHEMDRAFT_TOOLBAR_PROFILE=molecule-drawing pnpm --filter @chemdraft/desktop build` must refuse to

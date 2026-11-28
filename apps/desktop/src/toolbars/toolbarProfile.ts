@@ -10,12 +10,19 @@ import type { ToolbarProfileName } from "./toolbarProfileName";
 const MAIN_TOOLSET_ID = "core.main";
 const MAIN_ITEMS_GROUP_ID = "core.main.items";
 
-/** The Main toolbar of the `molecule-drawing` profile, in display order. Everything else on Main is hidden. */
+/**
+ * The Main toolbar of the `molecule-drawing` profile, in display order. Everything else on Main is hidden.
+ * The Document Zoom widget is four cells wide on the first row (Zoom Out, the two-cell percentage menu,
+ * Zoom In); the four cells under it hold Select, Lasso, Eraser and Charges, so the zoom group is four
+ * buttons wide with no empty cell beside or below Zoom In. Then one divider and the drawing tools, which
+ * fill both rows column by column (only the last column may end with an empty cell).
+ */
 export const MOLECULE_DRAWING_MAIN_ITEM_IDS = [
   "widget.core.documentZoom",
   "tool.select",
   "tool.lasso",
   "tool.eraser",
+  "tool.charge",
   "core.main.divider.1",
   "tool.bond",
   "tool.wedgeBond",
@@ -25,8 +32,6 @@ export const MOLECULE_DRAWING_MAIN_ITEM_IDS = [
   "tool.doubleBond",
   "tool.chain",
   "tool.benzene",
-  "core.main.divider.2",
-  "tool.charge",
   "structure.cleanup2d"
 ] as const;
 

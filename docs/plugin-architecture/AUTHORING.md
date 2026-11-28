@@ -1363,9 +1363,10 @@ refuses to run with the variable set, and so does the Vite config inside any Tau
 
 **Game build.** `dev:web:game` and `build:web:game` are the `:plugins` scripts with the build-time
 toolbar profile `molecule-drawing` (`CHEMDRAFT_TOOLBAR_PROFILE`), for a preloaded teaching game. The
-Main toolbar starts with only what drawing a molecule needs: zoom, Select, Lasso, Eraser, the bond
-tools (Bond, Wedge, Hashed, Dashed, Bold, Double/Triple), Chain, Rings, Charges and Clean Up
-Structure 2D, each with its usual flyout. Every other core toolbar starts hidden; plugin toolbars and
+Main toolbar starts with only what drawing a molecule needs: zoom over Select, Lasso, Eraser and
+Charges (the four cells under the four-cell zoom control), then the bond tools (Bond, Wedge, Hashed,
+Dashed, Bold, Double/Triple), Chain, Rings and Clean Up Structure 2D, each with its usual flyout,
+with no empty toolbar cell before the last column. Every other core toolbar starts hidden; plugin toolbars and
 the menus are unchanged, and View and Customize Toolbars still bring any tool back. The profile only
 changes the starting toolbars, through the same layout machinery as a user's customization, so a
 user's own changes apply on top, and only those changes are ever saved (the profile's defaults are
