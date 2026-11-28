@@ -430,6 +430,26 @@ describe("issue #424: malformed input fails safely", () => {
     expect(opened.warnings.filter(w => w.code === "cdxml.bond_alias_id_ambiguous")).toHaveLength(2);
   });
 
+  // Audit B3 (1.2.3 RC8): two ordinary nodes sharing an id. A bond naming it was joined to the last
+  // node carrying it; the file cannot say which it meant, so it joins none, with a warning naming the id.
+  it("skips, with a warning naming the id, a bond naming an id two ordinary nodes share", () => {
+    const { molecule, bonds, opened } = moleculeOf('<n id="7" p="100 100"/><n id="7" p="120 100" Element="8"/>' +
+      '<n id="9" p="140 100" Element="7"/><b id="4" B="7" E="9"/>');
+    expect(molecule.atoms.map(atom => atom.element)).toEqual(["C", "O", "N"]);
+    expect(bonds).toEqual([]);
+    expect(opened.warnings.filter(w => w.code === "cdxml.bond_node_id_duplicated").map(w => w.message)).toEqual([
+      "CDXML bond 4 names node 7, an id carried by 2 nodes of its fragment; it was not joined to any of them and was skipped."
+    ]);
+    expect(codes(opened.warnings)).not.toContain("cdxml.bond_alias_id_ambiguous");
+  });
+
+  it("still joins bonds between uniquely named nodes beside a duplicated id", () => {
+    const { bonds, opened } = moleculeOf('<n id="7" p="100 100"/><n id="7" p="120 100" Element="8"/>' +
+      '<n id="9" p="140 100" Element="7"/><n id="10" p="160 100" Element="16"/><b id="4" B="9" E="10"/>');
+    expect(bonds).toEqual(["N-S"]);
+    expect(codes(opened.warnings)).not.toContain("cdxml.bond_node_id_duplicated");
+  });
+
   it("says that an atom with neither p nor a usable xyz has lost its position", () => {
     const opened = openChemDraftPayload('<CDXML><page><fragment id="1"><n id="2" xyz="NaN 5 1" Element="8"/>' +
       '<n id="3" p="120 100"/><b id="4" B="2" E="3"/></fragment></page></CDXML>');
