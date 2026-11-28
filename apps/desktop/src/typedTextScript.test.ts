@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createPhase4Document, insertNativeTextObject, textScriptForTypingAt, updateNativeTextObjectText } from "./documentWorkflow";
-import { toggledPendingTypedScript, typedScriptInsertion } from "./typedTextScript";
+import { pendingTypedScriptSurvivesSelection, toggledPendingTypedScript, typedScriptInsertion } from "./typedTextScript";
 import type { TextObject } from "@chemdraft/chem-core";
 
 describe("script toggled at a collapsed caret", () => {
@@ -30,6 +30,26 @@ describe("script toggled at a collapsed caret", () => {
     expect(typedScriptInsertion(pending, "t", "HO", "H")).toBeUndefined();
     expect(typedScriptInsertion(pending, "other", "HO", "H2O")).toBeUndefined();
     expect(typedScriptInsertion(undefined, "t", "HO", "H2O")).toBeUndefined();
+  });
+
+  it("uses the caret after the change to place an ambiguous repeated-letter insertion", () => {
+    const pending = { objectId: "t", caret: 1, script: "subscript" as const };
+    // HO to HOO: the text alone fits an O typed at offset 1, but the caret says offset 2.
+    expect(typedScriptInsertion(pending, "t", "HO", "HOO")?.range).toEqual({ start: 1, end: 2 });
+    expect(typedScriptInsertion(pending, "t", "HO", "HOO", 3)).toBeUndefined();
+    expect(typedScriptInsertion(pending, "t", "HO", "HOO", 2)).toEqual({
+      range: { start: 1, end: 2 }, next: { objectId: "t", caret: 2, script: "subscript" }
+    });
+    expect(typedScriptInsertion(pending, "t", "HO", "H23O", 3)?.range).toEqual({ start: 1, end: 3 });
+  });
+
+  it("keeps a pending script only while the caret stays at the toggled offset", () => {
+    const pending = { objectId: "t", caret: 1, script: "subscript" as const };
+    expect(pendingTypedScriptSurvivesSelection(pending, "t", { start: 1, end: 1 })).toBe(true);
+    expect(pendingTypedScriptSurvivesSelection(pending, "t", { start: 2, end: 2 })).toBe(false);
+    expect(pendingTypedScriptSurvivesSelection(pending, "t", { start: 1, end: 2 })).toBe(false);
+    expect(pendingTypedScriptSurvivesSelection(pending, "other", { start: 1, end: 1 })).toBe(false);
+    expect(pendingTypedScriptSurvivesSelection(undefined, "t", { start: 1, end: 1 })).toBe(false);
   });
 
   it("gives typed characters the script and sizes the box with it", () => {

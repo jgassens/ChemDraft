@@ -4,7 +4,7 @@ import { CanvasContextMenu, NATIVE_CANVAS_MENU_CLOSED_EVENT } from "./CanvasCont
 import { PLUGIN_CHANGE_REFUSED, RECOGNITION_REFUSED, chemistryRefusalOf, refusalSentence } from "./plugins/requestWrites/chemistryRefusal";
 import { buildObjectCanvasMenu, pageCanvasMenu, SET_DEFAULT_ARROW_STYLE_COMMAND_ID } from "./canvasContextMenuModel";
 import { editRotationEntryField, rotationEntryKeyAction } from "./rotationEntryKeys";
-import { pendingTypedScriptStatus, toggledPendingTypedScript, typedScriptInsertion, type PendingTypedScript } from "./typedTextScript";
+import { pendingTypedScriptStatus, pendingTypedScriptSurvivesSelection, toggledPendingTypedScript, typedScriptInsertion, type PendingTypedScript } from "./typedTextScript";
 import { CONTEXT_STEREO_DEADLINE_MS, loadStereoEngine, resolveContextStereo, stereoReadoutRequest } from "./stereoReadout";
 import { RequestWriteError } from "@chemdraft/plugin-host";
 import { createRequestHistory } from "./plugins/requestWrites/requestHistory";
@@ -1135,6 +1135,13 @@ export { nativeMoleculeCanvasHoverTarget };
 type PaletteMode = "floating" | "hidden";
 type PalettePosition = { x: number; y: number };
 type ClientPoint = { x: number; y: number };
+/** What the inline text editor knows about a change besides the new text. */
+type NativeTextEditorChange = {
+  /** The collapsed caret once the change landed; undefined while a range stays selected. */
+  caret?: number;
+  /** The browser's InputEvent.inputType ("insertText", "historyUndo", ...), when it has one. */
+  inputType?: string;
+};
 type ObjectPointerEvent = PointerEvent<Element>;
 type ObjectMouseEvent = ReactMouseEvent<Element>;
 type PaletteDragState = {
@@ -7962,8 +7969,10 @@ export function MainWindow({
 
   const recordTextSelection = useCallback((objectId: string, range: NativeTextSelectionRange) => {
     const nextSelection = { objectId, range };
-    // A range selection means the next keystroke replaces text, not types at the toggled caret.
-    if (range.start !== range.end || pendingTypedScriptRef.current?.objectId !== objectId) {
+    // The script toggled at a caret is for typing at that caret. A range selection (the next
+    // keystroke replaces text) or a caret moved anywhere else (End, an arrow, a click) drops it.
+    // A text change advances the pending caret before the editor reports where the caret went.
+    if (!pendingTypedScriptSurvivesSelection(pendingTypedScriptRef.current, objectId, range)) {
       pendingTypedScriptRef.current = undefined;
     }
     activeTextSelectionRef.current = nextSelection;
@@ -8813,14 +8822,15 @@ export function MainWindow({
       : "Couldn't paste: the clipboard contains no supported drawing or text content.");
   }, [applyDetectedClipboardPayload, applySelectionClipboardPayload, applyTableClipboardResult, captureClipboardPasteAnchor]);
 
-  const updateTextObjectContent = useCallback((objectId: string, text: string) => {
+  const updateTextObjectContent = useCallback((objectId: string, text: string, change?: NativeTextEditorChange) => {
     const edit = textEditHistorySnapshotRef.current;
     const original = edit?.objectId === objectId && edit.documentIdentity === documentIdentityRef.current
       ? findDocumentObject(edit.document, objectId) : undefined;
     const originalFrame = original?.type === "text" && original.text === text ? original : undefined;
     const previous = findDocumentObject(documentRef.current, objectId);
     const insertion = previous?.type === "text"
-      ? typedScriptInsertion(pendingTypedScriptRef.current, objectId, normalizeTextLineBreaks(previous.text), normalizeTextLineBreaks(text))
+      ? typedScriptInsertion(pendingTypedScriptRef.current, objectId, normalizeTextLineBreaks(previous.text),
+        normalizeTextLineBreaks(text), change?.caret)
       : undefined;
     // Any other change (a deletion, typing elsewhere) leaves the toggled caret behind.
     pendingTypedScriptRef.current = insertion?.next;
@@ -30593,7 +30603,7 @@ function DocumentObjectViewContent({
   onObjectResizeInputHome(input: ObjectResizeInputState): void;
   onObjectResizeInputCancel(input: ObjectResizeInputState): void;
   onContextMenu(objectId: string, event: ObjectMouseEvent): void;
-  onTextChange(objectId: string, text: string): void;
+  onTextChange(objectId: string, text: string, change?: NativeTextEditorChange): void;
   onTextEditFinish(objectId?: string, reason?: "commit" | "escape"): void;
   onTextSelectionChange(objectId: string, range: NativeTextSelectionRange): void;
   isTextPlaceholderPending(objectId: string): boolean;
@@ -30782,8 +30792,14 @@ function DocumentObjectViewContent({
     textEditorSessionRef.current.affinity = "downstream";
     textEditorSessionRef.current.goalX = undefined;
     onTextPlaceholderClear(object.id);
-    recordTextEditorSelection(event.currentTarget);
-    onTextChange(object.id, event.currentTarget.value);
+    const editor = event.currentTarget;
+    // The change first, so a script pending at the caret follows the typed text; then the caret,
+    // which by then sits where the pending script expects it.
+    onTextChange(object.id, editor.value, {
+      caret: editor.selectionStart === editor.selectionEnd ? editor.selectionEnd : undefined,
+      inputType: (event.nativeEvent as InputEvent).inputType
+    });
+    recordTextEditorSelection(editor);
   };
   const recordTextEditorSelection = (editor: HTMLTextAreaElement) => {
     onTextSelectionChange(object.id, {
@@ -30805,7 +30821,7 @@ function DocumentObjectViewContent({
     // Placed by the next commit's layout effect, once the textarea holds the new text: no
     // frame shows the caret at the end, and a later key cannot race a deferred move.
     textEditorSessionRef.current.pendingSelection = { start: cursor, end: cursor, text: nextValue };
-    onTextChange(object.id, nextValue);
+    onTextChange(object.id, nextValue, { caret: cursor, inputType: "insertFromPaste" });
   };
   const handleTextPaste = (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
     if (inlineEditorReadOnly) { event.preventDefault(); event.stopPropagation(); return; }

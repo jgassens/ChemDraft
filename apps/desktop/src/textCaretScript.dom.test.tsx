@@ -61,6 +61,57 @@ describe.each(["macos", "windows"] as const)("script toggled at a collapsed care
     expect(runs()).toEqual([["H2O", "normal"]]);
   }, TEXTBOX_TYPING_TEST_TIMEOUT);
 
+  const caretTo = async (offset: number, key: string, report = true) => {
+    await act(async () => {
+      const editor = h.editor();
+      editor.setSelectionRange(offset, offset);
+      if (report) editor.dispatchEvent(new KeyboardEvent("keyup", { key, bubbles: true }));
+    });
+  };
+
+  it("drops a toggled script when End moves the caret, even past a repeated letter", async () => {
+    // RC7 review: HO, caret after H, x2, End, O gave HOO with the original O subscripted.
+    await h.mount("HO", { width: 200, mode: "auto" });
+    await caretTo(1, "ArrowLeft");
+    await command("text.script.subscript");
+    await caretTo(2, "End");
+    await h.type("O");
+    expect(h.object().text).toBe("HOO");
+    expect(runs()).toEqual([["HOO", "normal"]]);
+  }, TEXTBOX_TYPING_TEST_TIMEOUT);
+
+  it("keeps the toggled script dropped after the caret moves away and back", async () => {
+    await h.mount("HO", { width: 200, mode: "auto" });
+    await caretTo(1, "ArrowLeft");
+    await command("text.script.subscript");
+    await caretTo(2, "ArrowRight");
+    await caretTo(1, "ArrowLeft");
+    await h.type("2");
+    expect(h.object().text).toBe("H2O");
+    expect(runs()).toEqual([["H2O", "normal"]]);
+  }, TEXTBOX_TYPING_TEST_TIMEOUT);
+
+  it("styles the character typed at the real caret when the edit is ambiguous", async () => {
+    // The caret move is not reported before the input arrives: the caret the input lands at,
+    // not a guess from the text, says the O was typed at the end, away from the toggled caret.
+    await h.mount("HO", { width: 200, mode: "auto" });
+    await caretTo(1, "ArrowLeft");
+    await command("text.script.subscript");
+    await caretTo(2, "End", false);
+    await h.type("O");
+    expect(h.object().text).toBe("HOO");
+    expect(runs()).toEqual([["HOO", "normal"]]);
+  }, TEXTBOX_TYPING_TEST_TIMEOUT);
+
+  it("gives a repeated letter typed at the toggled caret the script there, not elsewhere", async () => {
+    await h.mount("HH", { width: 200, mode: "auto" });
+    await caretTo(1, "ArrowLeft");
+    await command("text.script.subscript");
+    await h.type("H");
+    expect(h.object().text).toBe("HHH");
+    expect(runs()).toEqual([["H", "normal"], ["H", "subscript"], ["H", "normal"]]);
+  }, TEXTBOX_TYPING_TEST_TIMEOUT);
+
   it("still changes the script of selected text, and turns it off again", async () => {
     await h.mount("H2O", { width: 200, mode: "auto" });
     await act(async () => {

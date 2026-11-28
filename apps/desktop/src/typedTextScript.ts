@@ -36,23 +36,43 @@ export function toggledPendingTypedScript(
  * Where a text change inserted characters at the pending caret, and the pending script that
  * follows the caret afterwards. Undefined when the change was not a plain insertion at that caret
  * (a deletion, a replacement, typing somewhere else), so the pending script should be dropped.
+ *
+ * `caretAfter` is the editor's caret once the change landed. When given, it decides where the
+ * new characters are: a text diff alone cannot tell which of two repeated letters was typed
+ * ("HO" to "HOO" may be an O typed at offset 1 or at offset 2), so the insertion counts only if
+ * it ends at that caret and starts at the pending one.
  */
 export function typedScriptInsertion(
   pending: PendingTypedScript | undefined,
   objectId: string,
   previousText: string,
-  nextText: string
+  nextText: string,
+  caretAfter?: number
 ): { range: { start: number; end: number }; next: PendingTypedScript } | undefined {
   if (!pending || pending.objectId !== objectId) return undefined;
   const inserted = nextText.length - previousText.length;
   const { caret } = pending;
   if (inserted <= 0 || caret < 0 || caret > previousText.length) return undefined;
+  if (caretAfter !== undefined && caretAfter - inserted !== caret) return undefined;
   if (nextText.slice(0, caret) !== previousText.slice(0, caret)) return undefined;
   if (nextText.slice(caret + inserted) !== previousText.slice(caret)) return undefined;
   return {
     range: { start: caret, end: caret + inserted },
     next: { ...pending, caret: caret + inserted }
   };
+}
+
+/**
+ * Whether a selection reported by the editor keeps a pending script alive: only a collapsed caret
+ * still at the toggled offset, in the same text box. Any move away drops it for good, so moving
+ * back to the old offset afterwards types normal text again.
+ */
+export function pendingTypedScriptSurvivesSelection(
+  pending: PendingTypedScript | undefined,
+  objectId: string,
+  range: { start: number; end: number }
+): boolean {
+  return !!pending && pending.objectId === objectId && range.start === range.end && range.start === pending.caret;
 }
 
 /** The status line for a script toggled at a collapsed caret. */
