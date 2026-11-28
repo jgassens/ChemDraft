@@ -5,11 +5,16 @@
  * app's ordinary command path — the one a menu item uses — so the plugin's permissions, its command
  * queue and the status line all apply exactly as if the user had chosen it. Only a command registered
  * by a *preloaded* plugin may run this way: core commands and bundled-plugin commands are refused, as is
- * an id that is not a well-formed command id, each with a specific diagnostic. When a preloaded plugin
- * failed to load, its failure is already on the status line and nothing more is said. A Tauri host never
- * runs it (the desktop build refuses the variable outright).
+ * an id that is not a well-formed command id, each with a specific diagnostic. A preloaded plugin that
+ * declares any dangerous permission (`dangerousPluginPermissions`) is refused too: nothing dangerous runs
+ * without explicit user action (AGENTS.md §3.2), and a build-time variable is not one. When the command
+ * is unknown and a preloaded plugin that could have registered it failed to load, that failure is already
+ * on the status line and nothing more is said; an unrelated failure does not hide an unknown id. It runs
+ * at most once per page load, so a dev-server hot reload that remounts the app does not run it again. A
+ * Tauri host never runs it (the desktop build refuses the variable outright).
  */
 
+import { dangerousPluginPermissions } from "@chemdraft/plugin-api";
 import type { CommandDefinition } from "@chemdraft/plugin-host";
 import { isValidToolsetCommandId } from "@chemdraft/toolset-registry";
 import { useEffect, useRef } from "react";
@@ -25,7 +30,8 @@ export const WEB_STARTUP_COMMAND_DIAGNOSTIC = "web-startup-command-refused";
 
 export type WebStartupCommandDecision =
   | { kind: "run"; commandId: string; pluginId: string }
-  /** A preloaded plugin failed to load; its failure status already explains why nothing opened. */
+  /** A preloaded plugin that could have registered the command failed to load; its failure status
+   *  already explains why nothing opened. */
   | { kind: "skip" }
   | { kind: "refuse"; message: string };
 
@@ -45,7 +51,8 @@ export function decideWebStartupCommand({ commandId, preloaded, failures, getCom
   }
   const definition = getCommand(commandId);
   if (!definition) {
-    if (failures.length > 0) return { kind: "skip" };
+    const failedOwnerPossible = failures.some(failure => failure.commandIds === undefined || failure.commandIds.includes(commandId));
+    if (failedOwnerPossible) return { kind: "skip" };
     return { kind: "refuse", message: `${prefix} no preloaded plugin registers that command.` };
   }
   const owner = definition.source === "plugin" && definition.pluginId !== undefined
@@ -57,7 +64,34 @@ export function decideWebStartupCommand({ commandId, preloaded, failures, getCom
       : "ChemDraft itself";
     return { kind: "refuse", message: `${prefix} it is registered by ${registeredBy}; only a preloaded plugin's command may run at startup.` };
   }
+  const dangerous = new Set<string>(dangerousPluginPermissions);
+  const declaredDangerous = owner.manifest.permissions.filter(permission => dangerous.has(permission));
+  if (declaredDangerous.length > 0) {
+    return {
+      kind: "refuse",
+      message: `${prefix} its plugin "${owner.manifest.id}" declares the dangerous permission${declaredDangerous.length === 1 ? "" : "s"} ` +
+        `${declaredDangerous.join(", ")}, so its commands run only when you choose them.`
+    };
+  }
   return { kind: "run", commandId, pluginId: owner.manifest.id };
+}
+
+/** Survives a remount of the app within one page (a dev-server hot reload that does not preserve
+ *  state) and resets on a real page load, which builds a fresh global object. */
+const PAGE_GUARD_KEY = Symbol.for("chemdraft.webStartupCommand.claimed");
+type GuardedGlobal = typeof globalThis & { [PAGE_GUARD_KEY]?: boolean };
+
+/** True the first time it is called in this page, false after. */
+export function claimWebStartupCommandForPage(target: object = globalThis): boolean {
+  const guarded = target as GuardedGlobal;
+  if (guarded[PAGE_GUARD_KEY]) return false;
+  guarded[PAGE_GUARD_KEY] = true;
+  return true;
+}
+
+/** Tests only: forget that this page already ran its startup command. */
+export function resetWebStartupCommandPageGuard(target: object = globalThis): void {
+  delete (target as GuardedGlobal)[PAGE_GUARD_KEY];
 }
 
 /** With a startup command configured the first-run tour does not open on its own (Help > Take the Tour
@@ -79,8 +113,9 @@ export interface UseWebStartupCommandOptions {
   report: (message: string) => void;
 }
 
-/** Runs the startup command once per mount, after the preloaded plugins have loaded. A ref guards it, so
- *  StrictMode's repeated effects and any later change of the plugin list never run it again. */
+/** Runs the startup command once per page load, after the preloaded plugins have loaded. A ref guards the
+ *  mount, so StrictMode's repeated effects and any later change of the plugin list never run it again,
+ *  and a page-wide flag guards a remount (a dev-server hot reload that does not preserve state). */
 export function useWebStartupCommand(options: UseWebStartupCommandOptions): void {
   const current = useRef(options);
   current.current = options;
@@ -89,6 +124,7 @@ export function useWebStartupCommand(options: UseWebStartupCommandOptions): void
   useEffect(() => {
     if (settledRef.current || !commandId || !enabled || !preloadedLoad) return;
     settledRef.current = true;
+    if (!claimWebStartupCommandForPage()) return;
     const { getCommand, invoke, report } = current.current;
     const decision = decideWebStartupCommand({ commandId, preloaded: preloadedLoad.loaded, failures: preloadedLoad.failures, getCommand });
     if (decision.kind === "refuse") {

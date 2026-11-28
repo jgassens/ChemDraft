@@ -158,6 +158,8 @@ describe("loadWebPreloadedPlugins", () => {
     expect(result.failures).toHaveLength(1);
     expect(result.failures[0].id).toBe("org.example.broken");
     expect(result.failures[0].message).toMatch(/Preloaded plugin "org\.example\.broken" could not be loaded: its manifest\.json is not valid/);
+    // Its manifest never parsed, so nothing says which commands it would have registered.
+    expect(result.failures[0]).not.toHaveProperty("commandIds");
     expect(runtime.host.getPlugin("org.example.broken")).toBeUndefined();
   });
 
@@ -188,6 +190,26 @@ describe("loadWebPreloadedPlugins", () => {
     // The worker's own handshake is the authority even when the manifest looked compatible.
     expect(byId["org.example.silent"]).toBeDefined();
     for (const id of Object.keys(byId)) expect(runtime.host.getPlugin(id)).toBeUndefined();
+    // Each manifest was read, so each failure names the commands it would have registered.
+    const commandsById = Object.fromEntries(result.failures.map((failure) => [failure.id, failure.commandIds]));
+    expect(commandsById).toEqual({
+      "org.example.future": ["plugin.future.run"],
+      "org.example.net": ["plugin.net.run"],
+      "org.example.liar": ["plugin.other.run"],
+      "org.example.silent": ["plugin.silent.run"]
+    });
+  });
+
+  it("marks a duplicate listing as registering nothing, since only its first copy loads", async () => {
+    const server = fakeServer({
+      "/web-plugins/index.json": { version: 1, plugins: [record("org.example.good"), record("org.example.good")] },
+      "/web-plugins/org.example.good/manifest.json": manifestDocument("org.example.good")
+    });
+    const result = await loadWebPreloadedPlugins({
+      runtime: createRuntime(), tauriHost: false, baseUrl: BASE, fetch: server.fetch, createWorker: () => fakeWorker()
+    });
+    expect(result.loaded.map((entry) => entry.record.id)).toEqual(["org.example.good"]);
+    expect(result.failures).toEqual([expect.objectContaining({ id: "org.example.good", commandIds: [] })]);
   });
 
   it("lists a disabled plugin without registering or starting it", async () => {

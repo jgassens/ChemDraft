@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import type { PluginManifest } from "@chemdraft/plugin-api";
+import { dangerousPluginPermissions, type PluginManifest, type PluginPermission } from "@chemdraft/plugin-api";
 import { CommandRegistry } from "@chemdraft/plugin-host";
 import { act, createElement, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -23,7 +23,9 @@ import { isTauriHost } from "./pluginStagingFs";
 import { usePluginRuntime, type PluginRuntimeView } from "./usePluginRuntime";
 import type { WebPreloadedPluginEntry } from "./webPreloadedPlugins";
 import {
+  claimWebStartupCommandForPage,
   decideWebStartupCommand,
+  resetWebStartupCommandPageGuard,
   tourModeForStartupCommand,
   useWebStartupCommand,
   webStartupCommandId
@@ -70,6 +72,7 @@ let root: Root | undefined;
 beforeEach(() => {
   mocks.loadWebPreloadedPlugins.mockReset();
   boardHandler.mockClear();
+  resetWebStartupCommandPageGuard();
   vi.stubGlobal("localStorage", new MemoryStorage());
 });
 
@@ -158,10 +161,57 @@ describe("decideWebStartupCommand", () => {
     expect(decide("plugin.nobody.here")).toEqual({ kind: "refuse", message: expect.stringMatching(/no preloaded plugin registers/) });
   });
 
-  it("says nothing more when a preloaded plugin failed to load", () => {
+  it("says nothing more when a preloaded plugin that could have registered the command failed to load", () => {
+    const decide = (failure: { id: string; message: string; commandIds?: string[] }) =>
+      decideWebStartupCommand({ commandId: BOARD_COMMAND, preloaded: [], failures: [failure], getCommand: () => undefined });
+    // Its manifest was never read, so it could have registered anything.
+    expect(decide({ id: PRELOADED_ID, message: "boom" })).toEqual({ kind: "skip" });
+    // Its manifest was read and declares the command.
+    expect(decide({ id: PRELOADED_ID, message: "boom", commandIds: [BOARD_COMMAND] })).toEqual({ kind: "skip" });
+  });
+
+  it("still reports an unknown command when only unrelated preloaded plugins failed", () => {
     expect(decideWebStartupCommand({
-      commandId: BOARD_COMMAND, preloaded: [], failures: [{ id: PRELOADED_ID, message: "boom" }], getCommand: () => undefined
-    })).toEqual({ kind: "skip" });
+      commandId: "plugin.nmrGame.missing",
+      preloaded: [entry],
+      failures: [
+        { id: "org.example.other", message: "boom", commandIds: ["plugin.other.run"] },
+        { id: PRELOADED_ID, message: "listed twice", commandIds: [] }
+      ],
+      getCommand: () => undefined
+    })).toEqual({ kind: "refuse", message: expect.stringMatching(/"plugin\.nmrGame\.missing" was not run: no preloaded plugin registers that command/) });
+  });
+
+  it("refuses a preloaded plugin that declares any dangerous permission, naming them", () => {
+    const lookup = (id: string) => id === BOARD_COMMAND ? { id, title: id, source: "plugin" as const, pluginId: PRELOADED_ID } : undefined;
+    const withPermissions = (permissions: PluginPermission[]): WebPreloadedPluginEntry => ({ ...entry, manifest: { ...manifest, permissions } });
+    for (const permission of dangerousPluginPermissions) {
+      expect(decideWebStartupCommand({ commandId: BOARD_COMMAND, preloaded: [withPermissions(["ui.panel", permission])], failures: [], getCommand: lookup }))
+        .toEqual({ kind: "refuse", message: `Startup command "${BOARD_COMMAND}" was not run: its plugin "${PRELOADED_ID}" declares the dangerous permission ${permission}, so its commands run only when you choose them.` });
+    }
+    expect(decideWebStartupCommand({
+      commandId: BOARD_COMMAND, preloaded: [withPermissions(["document.write", "network.fetch"])], failures: [], getCommand: lookup
+    })).toEqual({ kind: "refuse", message: expect.stringMatching(/declares the dangerous permissions document\.write, network\.fetch,/) });
+  });
+
+  it("runs a plugin with Spectrum Match's exact permission set, none of which is dangerous", () => {
+    const spectrumMatch: PluginPermission[] = ["document.read", "selection.read", "chemistry.compute", "ui.menu", "ui.panel", "plugin.storage"];
+    for (const permission of spectrumMatch) expect(dangerousPluginPermissions as readonly string[]).not.toContain(permission);
+    expect(decideWebStartupCommand({
+      commandId: BOARD_COMMAND,
+      preloaded: [{ ...entry, manifest: { ...manifest, permissions: spectrumMatch } }],
+      failures: [],
+      getCommand: id => id === BOARD_COMMAND ? { id, title: id, source: "plugin", pluginId: PRELOADED_ID } : undefined
+    })).toEqual({ kind: "run", commandId: BOARD_COMMAND, pluginId: PRELOADED_ID });
+  });
+});
+
+describe("claimWebStartupCommandForPage", () => {
+  it("is true once per page global and false after", () => {
+    const page = {};
+    expect(claimWebStartupCommandForPage(page)).toBe(true);
+    expect(claimWebStartupCommandForPage(page)).toBe(false);
+    expect(claimWebStartupCommandForPage({})).toBe(true);
   });
 });
 
@@ -177,6 +227,7 @@ describe("useWebStartupCommand with the plugin runtime", () => {
   it("invokes a preloaded plugin's command exactly once, after it registered, under StrictMode too", async () => {
     for (const strict of [false, true]) {
       boardHandler.mockClear();
+      resetWebStartupCommandPageGuard();
       let resolveLoad!: () => void;
       mocks.loadWebPreloadedPlugins.mockImplementation(({ runtime, signal }) => new Promise(resolve => {
         resolveLoad = () => {
@@ -237,6 +288,43 @@ describe("useWebStartupCommand with the plugin runtime", () => {
     preloadRegisters();
     const { invoke, report } = await renderApp({ commandId: "plugin.nmrGame.missing" });
     expect(invoke).not.toHaveBeenCalled();
+    expect(report.mock.calls[0][0]).toMatch(/no preloaded plugin registers that command/);
+  });
+
+  it("refuses a preloaded plugin that declares a dangerous permission and does not invoke it", async () => {
+    const dangerousManifest: PluginManifest = { ...manifest, permissions: ["ui.panel", "document.write"] };
+    mocks.loadWebPreloadedPlugins.mockImplementation(async ({ runtime }) => {
+      runtime.registerPlugin(dangerousManifest, entry.descriptor!.options);
+      return { loaded: [{ ...entry, manifest: dangerousManifest }], failures: [] };
+    });
+    const { invoke, report } = await renderApp({ commandId: BOARD_COMMAND });
+    expect(invoke).not.toHaveBeenCalled();
+    expect(boardHandler).not.toHaveBeenCalled();
+    expect(report).toHaveBeenCalledTimes(1);
+    expect(report.mock.calls[0][0]).toMatch(/declares the dangerous permission document\.write/);
+  });
+
+  it("runs once per page load, not again when a hot reload remounts the app", async () => {
+    preloadRegisters();
+    const first = await renderApp({ commandId: BOARD_COMMAND });
+    expect(first.invoke).toHaveBeenCalledTimes(1);
+    act(() => root?.unmount());
+    container?.remove();
+    root = undefined;
+    const second = await renderApp({ commandId: BOARD_COMMAND });
+    expect(second.invoke).not.toHaveBeenCalled();
+    expect(second.report).not.toHaveBeenCalled();
+    expect(boardHandler).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports an unknown command when only an unrelated preloaded plugin failed", async () => {
+    mocks.loadWebPreloadedPlugins.mockImplementation(async ({ runtime }) => {
+      runtime.registerPlugin(manifest, entry.descriptor!.options);
+      return { loaded: [entry], failures: [{ id: "org.example.other", message: "boom", commandIds: ["plugin.other.run"] }] };
+    });
+    const { invoke, report } = await renderApp({ commandId: "plugin.nmrGame.missing" });
+    expect(invoke).not.toHaveBeenCalled();
+    expect(report).toHaveBeenCalledTimes(1);
     expect(report.mock.calls[0][0]).toMatch(/no preloaded plugin registers that command/);
   });
 

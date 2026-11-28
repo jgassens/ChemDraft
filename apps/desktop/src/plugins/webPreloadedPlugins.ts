@@ -82,6 +82,10 @@ export interface WebPreloadedPluginFailure {
   /** The plugin id from the index, or the index itself when the whole file is unusable. */
   id: string;
   message: string;
+  /** The command ids its manifest declares, when the manifest was read before the load failed; absent
+   *  when it was not (or for the index itself), so the plugin could have registered any command. A
+   *  duplicate listing carries `[]`: only its first copy ever registers. */
+  commandIds?: readonly string[];
 }
 
 export interface WebPreloadedPluginsResult {
@@ -213,13 +217,14 @@ export async function loadWebPreloadedPlugins(options: LoadWebPreloadedPluginsOp
   for (const record of records) {
     if (options.signal?.aborted) break;
     if (seen.has(record.id)) {
-      failures.push({ id: record.id, message: `Preloaded plugin "${record.id}" is listed twice in index.json; only the first was loaded.` });
+      failures.push({ id: record.id, message: `Preloaded plugin "${record.id}" is listed twice in index.json; only the first was loaded.`, commandIds: [] });
       continue;
     }
     seen.add(record.id);
     let descriptor: PackagedPluginDescriptor | undefined;
+    const declared: DeclaredCommands = {};
     try {
-      const result = await loadOne(record, baseUrl, fetchImpl, options);
+      const result = await loadOne(record, baseUrl, fetchImpl, options, declared);
       descriptor = result.descriptor;
       if (options.signal?.aborted) {
         descriptor?.deactivate?.();
@@ -228,17 +233,27 @@ export async function loadWebPreloadedPlugins(options: LoadWebPreloadedPluginsOp
       loaded.push(result);
     } catch (cause) {
       descriptor?.deactivate?.();
-      failures.push({ id: record.id, message: `Preloaded plugin "${record.id}" could not be loaded: ${messageOf(cause)}` });
+      failures.push({
+        id: record.id,
+        message: `Preloaded plugin "${record.id}" could not be loaded: ${messageOf(cause)}`,
+        ...(declared.commandIds ? { commandIds: declared.commandIds } : {})
+      });
     }
   }
   return { loaded, failures };
+}
+
+/** Filled by `loadOne` once the manifest has parsed, so a later failure can say what it would have registered. */
+interface DeclaredCommands {
+  commandIds?: readonly string[];
 }
 
 async function loadOne(
   record: WebPreloadedPluginRecord,
   baseUrl: URL,
   fetchImpl: FetchLike,
-  options: LoadWebPreloadedPluginsOptions
+  options: LoadWebPreloadedPluginsOptions,
+  declared: DeclaredCommands
 ): Promise<WebPreloadedPluginEntry> {
   const { runtime, hostApiVersion = PluginApiVersion } = options;
   const packageUrl = new URL(`${record.dir}/`, baseUrl);
@@ -261,6 +276,7 @@ async function loadOne(
     throw new Error(`its manifest.json is not valid: ${messageOf(cause)}`);
   }
   const { manifest } = packaged;
+  declared.commandIds = manifest.contributes.commands.map((command) => command.id);
   if (manifest.id !== record.id) {
     throw new Error(`index.json lists "${record.id}" but its manifest declares "${manifest.id}". Re-stage it.`);
   }

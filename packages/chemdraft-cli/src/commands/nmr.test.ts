@@ -248,7 +248,7 @@ describe("chemdraft nmr without the plugin", () => {
 });
 
 describe("chemdraft nmr with the CI fixture plugin", () => {
-  it("formats resonances, warns on atom-order drift, and adds the stick-height note", async () => {
+  it("formats resonances, warns on atom-order drift, and keeps the plugin's own spectrum caption", async () => {
     const spectrum = join(outputDirectory, "fixture-spectrum.svg");
     const { code, lines } = await withPluginDir(fixturePluginDir, () => run([
       "--smiles", "CCO",
@@ -369,7 +369,7 @@ describe.skipIf(!pluginPresent)("chemdraft nmr with the predictor plugin", () =>
     expect(lines[0]!.error).toContain('"C1CC("');
   });
 
-  it("writes one stick spectrum per nucleus with the stick-height note", async () => {
+  it("writes one stick spectrum per nucleus with a predicted-shift axis and no stick-height note", async () => {
     const base = join(outputDirectory, "ethanol.svg");
     const { code, lines } = await run(["--smiles", "CCO", "--spectrum", base]);
     expect(code).toBe(0);
