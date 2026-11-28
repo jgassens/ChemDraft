@@ -2,7 +2,9 @@ import { open } from "node:fs/promises";
 import { win32 } from "node:path";
 import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
-import { readNativeDocumentContents } from "@chemdraft/document-workflow-core";
+import {
+  impliedRadicalCacheNotRefreshedWarnings, readNativeDocumentContents, withImpliedRadicalChemistryRederived
+} from "@chemdraft/document-workflow-core";
 import { validateBatchName, isWindowsDeviceName, CliUsageError } from "./output";
 import { decodeUserText } from "./textInput";
 
@@ -46,7 +48,14 @@ export async function loadAgentDocument(file: string) {
         "Expected native document JSON or a ChemDraft envelope.");
     }
     validateAgentDocument(opened.document);
-    return opened;
+    // The desktop's open migration, from the same shared code: a lone H's cache saved by an earlier
+    // reading is re-derived, and one it keeps as stored is named, as the desktop's open report names it.
+    const notRefreshed = impliedRadicalCacheNotRefreshedWarnings(opened.document);
+    return {
+      ...opened,
+      document: withImpliedRadicalChemistryRederived(opened.document),
+      warnings: notRefreshed.length ? [...opened.warnings, ...notRefreshed] : opened.warnings
+    };
   } catch (error) {
     throw new CliUsageError(`Could not load document "${file}": ${error instanceof Error ? error.message : String(error)}`);
   }

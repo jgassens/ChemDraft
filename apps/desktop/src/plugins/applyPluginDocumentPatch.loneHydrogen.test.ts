@@ -18,9 +18,11 @@ const calls = vi.hoisted(() => ({
 }));
 
 // A recompute that throws, for the fail-safe: the native metadata derivation throws for any graph
-// holding the atom id "poison-h". Every other graph is derived by the real implementation.
-vi.mock("@chemdraft/document-workflow-core", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@chemdraft/document-workflow-core")>();
+// holding the atom id "poison-h". Every other graph is derived by the real implementation. Mocked at
+// its own module, so the lone-H refresh inside document-workflow-core (which imports it from there)
+// sees the mock as well as every caller of the package.
+vi.mock("../../../../packages/document-workflow-core/src/atoms", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../../packages/document-workflow-core/src/atoms")>();
   return {
     ...actual,
     nativeSingleBondGraphMetadata: (...args: Parameters<typeof actual.nativeSingleBondGraphMetadata>) => {
