@@ -161,6 +161,9 @@ export async function exportSvgToPdf(
       const children = [...svgElement.children];
       const rasterCache = new Map<string, Promise<Uint8Array>>();
       const rasterBudget = { pixels: 0 };
+      // One PDF image per distinct raster, named by its cache key: jsPDF's own alias hashes only the
+      // first half of the PNG bytes, so two different rasters alike in that half would share one image.
+      const rasterAliases = new Map<string, string>();
       let run: Element[] = [];
       const flush = async () => {
         if (!run.length) return;
@@ -179,10 +182,13 @@ export async function exportSvgToPdf(
         // A kept JPEG is embedded as its own bytes (DCTDecode), turned upright by the placement below.
         const jpeg = pdfJpegPicture(picture.data.image);
         let png: Uint8Array | string = `data:image/png;base64,${picture.data.image.dataBase64}`;
+        let pngAlias: string | undefined;
         if (!jpeg && picture.data.image.mimeType === "image/svg+xml") {
           const raster = await rasterizeSvgPicture(picture, options.rasterizeSvgPicture, rasterCache, rasterBudget);
           if ("warning" in raster) { warnings.push(raster.warning); continue; }
           png = raster.png;
+          pngAlias = rasterAliases.get(raster.key);
+          if (!pngAlias) rasterAliases.set(raster.key, pngAlias = `chemdraft-svg-raster-${rasterAliases.size}`);
         }
         const scale = Math.min(widthPt / page.width, heightPt / page.height);
         const offsetX = (widthPt - page.width * scale) / 2;
@@ -210,7 +216,7 @@ export async function exportSvgToPdf(
             pdf.addImage(jpeg.bytes, "JPEG", placement.box.x, placement.box.y, placement.box.width, placement.box.height,
               `chemdraft-jpeg-${childIndex}`);
           } else {
-            pdf.addImage(png, "PNG", frame.x, frame.y, frame.width, frame.height);
+            pdf.addImage(png, "PNG", frame.x, frame.y, frame.width, frame.height, pngAlias);
           }
         } catch (error) {
           // A PNG jsPDF cannot embed (a bad rasteriser result, or a native PNG with a corrupt data chunk)
@@ -233,7 +239,7 @@ export async function exportSvgToPdf(
   return { bytes: new Uint8Array(pdf.output("arraybuffer")), warnings };
 }
 
-type SvgPictureRaster = { png: Uint8Array } | { warning: ExportWarning };
+type SvgPictureRaster = { png: Uint8Array; key: string } | { warning: ExportWarning };
 
 /**
  * A kept JPEG picture (`jpegPicture.ts`) whose bytes the PDF can carry as they are, or undefined:
@@ -326,7 +332,7 @@ async function rasterizeSvgPicture(
     cache.set(key, pending);
   }
   try {
-    return { png: await pending };
+    return { png: await pending, key };
   } catch (error) {
     return { warning: svgPictureNotDrawn(picture.id, errorReason(error)) };
   }
