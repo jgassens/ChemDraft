@@ -56,6 +56,7 @@ import {
   KEYBINDING_STORAGE_KEY,
   LEGACY_KEYBINDING_SCHEME,
   setUnsavedShortcuts,
+  UNSAVED_SHORTCUTS_STORAGE_KEY,
   type KeybindingSettings,
   type StoredKeybindingScheme,
   type StoredShortcutOverrides,
@@ -415,8 +416,17 @@ function clearPendingFreshInstall(storage: ShortcutDefaultMigrationHost["storage
   }
 }
 
-/** The move's own markers: written by the move, so never evidence that an install existed before it. */
-const NOT_INSTALL_EVIDENCE = new Set([PENDING_FRESH_INSTALL_KEY, SHORTCUT_SET_NOTICE_SHOWN_KEY, SHORTCUT_SET_NOTICE_PENDING_KEY]);
+/**
+ * The move's own markers: written by the move, so never evidence that an install existed before it. The
+ * unsaved-shortcuts record is one of them: a fresh install whose native write failed sets it, and the
+ * next launch must still see a fresh install.
+ */
+const NOT_INSTALL_EVIDENCE = new Set([
+  PENDING_FRESH_INSTALL_KEY,
+  SHORTCUT_SET_NOTICE_SHOWN_KEY,
+  SHORTCUT_SET_NOTICE_PENDING_KEY,
+  UNSAVED_SHORTCUTS_STORAGE_KEY
+]);
 
 function hasChemDraftStorage(storage: ShortcutDefaultMigrationHost["storage"]): boolean {
   try {

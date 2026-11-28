@@ -284,6 +284,24 @@ describe("moving to the single shortcut set", () => {
     expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "fresh-install" });
   });
 
+  it("still treats a fresh install as fresh on the launch after its native write failed", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const fake = install({ failNativeWrite: true });
+    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "fresh-install" });
+    expect(takeShortcutSetNotice(fake.storage)).toBeUndefined();
+    // The failed write leaves the unsaved-shortcuts record behind; it is the move's own marker.
+    expect(fake.storage.getItem(UNSAVED_SHORTCUTS_STORAGE_KEY)).not.toBeNull();
+    resetShortcutDefaultMigrationForTests();
+    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "fresh-install" });
+    expect(takeShortcutSetNotice(fake.storage)).toBeUndefined();
+    fake.heal();
+    resetShortcutDefaultMigrationForTests();
+    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "fresh-install" });
+    expect(takeShortcutSetNotice(fake.storage)).toBeUndefined();
+    expect(fake.preferences().shortcutScheme).toBe("chemdraw");
+    expect(fake.storage.getItem(UNSAVED_SHORTCUTS_STORAGE_KEY)).toBeNull();
+  });
+
   it("shows the message this launch even when the cache cannot record it", async () => {
     const fake = install({ preferences: { shortcutScheme: "chemdraft" } });
     vi.spyOn(fake.storage, "setItem").mockImplementation(() => { throw new Error("QuotaExceededError"); });
