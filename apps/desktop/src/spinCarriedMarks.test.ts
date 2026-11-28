@@ -233,7 +233,8 @@ function flattenAt(session: Session, quat: Quaternion, coords3d: ArrayLike<numbe
 }
 
 /** What SpinOverlay paints each frame: the projected atoms, and the placement of the mark for them that
- * MainWindow's overlay asks for (`spinOverlayCarriedMarkPlacements`, the frame flatten commits in). */
+ * MainWindow's overlay asks for (`spinOverlayCarriedMarkPlacements`: flatten's rule, in the unturned
+ * frame the overlay draws in, which is flatten's own frame for a molecule not turned on the page). */
 function liveOverlay(session: Pick<Session, "document" | "molecule" | "mark" | "bondPairs" | "placement" | "coords3d">,
   quat: Quaternion, coords3d: ArrayLike<number> = session.coords3d) {
   const projection = projectSpin(coords3d, session.bondPairs, quat, session.placement);
@@ -575,8 +576,31 @@ function pageAtoms(molecule: MoleculeObject) {
   return molecule.atoms.map(atom => ({ ...atom, ...transformPointForObject(molecule, atom) }));
 }
 
-describe("a molecule turned on the page: the overlay paints each mark exactly where release stores it", () => {
-  it.each(markKinds)("a %s on a molecule turned 37° and 90°: same page position in the overlay and after flatten", async (_kind, spec) => {
+// Audit B6 (1.2.3 RC8): the overlay draws a turned molecule's projection unturned (its bonds at rotation
+// 0, its labels at the projected points), and painted the marks in the turned frame release commits:
+// at 90° the '-' was drawn 61 px from its oxygen, not 22. The live mark belongs beside its live atom.
+describe("a molecule turned on the page: the overlay paints each mark beside its own live atom", () => {
+  it.each(markKinds)("a %s on a molecule turned 37° and 90°: beside the projected atom the overlay draws", async (_kind, spec) => {
+    const crowdedBefore = crowdedViews.length;
+    for (const conformer of [esterRepro, dragRepro]) {
+      for (const degrees of [37, 90]) {
+        const session = turnedOnPage(await aspirinWithMark(spec, conformer), degrees);
+        for (const [view, quat] of [["opening", session.open], ["drag -90,-40", dragged(session, -90, -40)]] as const) {
+          const name = `${label(conformer)} turned ${degrees}° ${view} live`;
+          const live = liveOverlay(session, quat);
+          // The overlay's own frame: the atoms where it draws them and their labels, unturned.
+          expectBeside(live.atoms, session.molecule.bonds, live.placement, session.acidOxygen.id, session.drawnDistance, name);
+        }
+      }
+    }
+    expect(crowdedViews.slice(crowdedBefore)).toEqual([]);
+  });
+});
+
+// The overlay draws a turned molecule unturned and release turns it, so the live and committed page
+// positions of a mark differ by that turn; each is beside its own atom where it is drawn.
+describe("a molecule turned on the page: release stores each mark beside its atom, the turn kept", () => {
+  it.each(markKinds)("a %s on a molecule turned 37° and 90°: the same atom in the overlay and after flatten", async (_kind, spec) => {
     const crowdedBefore = crowdedViews.length;
     for (const conformer of [esterRepro, dragRepro]) {
       for (const degrees of [37, 90]) {
@@ -586,10 +610,7 @@ describe("a molecule turned on the page: the overlay paints each mark exactly wh
           const live = liveOverlay(session, quat);
           const committed = flattenAt(session, quat);
           const mark = markOf(committed);
-          // Absolute page coordinates, not just the offset from the atom.
-          expect(mark.x, `${name}: x`).toBeCloseTo(live.placement.x, 6);
-          expect(mark.y, `${name}: y`).toBeCloseTo(live.placement.y, 6);
-          expect(mark.rotation, `${name}: rotation`).toBeCloseTo(live.placement.rotation, 6);
+          expect(live.placement.atomId, `${name}: the overlay's atom`).toBe(session.acidOxygen.id);
           // The commit keeps the molecule's turn, and the mark beside its atom where the page draws it.
           const molecule = moleculeOf(committed);
           expect(molecule.rotation).toBe(degrees);

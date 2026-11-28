@@ -19,7 +19,7 @@ export interface ObjectCanvasMenuInput {
   bondDepthContext?: { relevantCrossings: readonly unknown[]; targetBondRefs: readonly unknown[]; hasOverrides: boolean };
   atomWarning?: { suppressed: boolean; count: number; problemCommandId?: string };
   arrowStyleSource?: { title: string };
-  /** Engine-reported CIP readout ("Stereocentre: R", "Double bond: E"); read-only, shown first. */
+  /** Engine-reported CIP readout ("Stereocenter: R", "Double bond: E"); read-only, shown first. */
   stereoReadout?: string;
 }
 

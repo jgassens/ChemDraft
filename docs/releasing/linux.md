@@ -337,7 +337,12 @@ repository on GitHub Pages, or a Flathub listing.
   than showing it disabled; Spin 3D does not use the sidecar and always stays.
 - Clipboard: `linux_clipboard.rs`, GTK's clipboard (X11 and Wayland). Targets are MIME types, so
   the editor's payload types are written unchanged; plain text is also offered as `UTF8_STRING`,
-  `STRING` and `TEXT` for older X11 applications.
+  `STRING` and `TEXT` for older X11 applications. When reading, the plain-text entry is read
+  ahead of the other text flavors just before it in its pass, never past an advertised chemistry
+  type, so it keeps the `text/plain` name when an owner offers the same text twice. LibreOffice offers
+  `text/plain;charset=utf-16` ahead of its UTF-8 copy; read first, that copy left no `text/plain`
+  item and Writer text pasted as RTF source (#304). The repeat is still read when the UTF-8 copy
+  cannot be.
 - Local tools (OCSR engine installer) report themselves unsupported on Linux for now.
 - Building locally: `sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev
   libayatana-appindicator3-dev libsoup-3.0-dev libssl-dev libxdo-dev patchelf`, then

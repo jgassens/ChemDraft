@@ -3,7 +3,7 @@ import { applyPatches, createDocumentHistory, moleculeToMolfileV2000, type ChemD
 import { atomDisplayLabel } from "@chemdraft/layout-engine";
 import { testMoleculeFromSmiles } from "@chemdraft/layout-engine/testing";
 import { nativeBondOrderResolution, nativeSingleBondGraphMetadata, normalizeNativeMoleculeGeometry, tryNativeSingleBondGraphSmiles } from "@chemdraft/document-workflow-core";
-import { atomLabelDraftDocumentUnchanged, createAtomLabelDraftRollback, recordAtomLabelDraftRollback, restoreAtomLabelDraft, type AtomLabelDraftState } from "./atomLabelDraft";
+import { atomLabelDraftChargeChangedOutside, atomLabelDraftDocumentUnchanged, createAtomLabelDraftRollback, recordAtomLabelDraftRollback, restoreAtomLabelDraft, type AtomLabelDraftState } from "./atomLabelDraft";
 import { applyColorToNativeMoleculePart, applyNativeAtomElementTarget, commitNativeAtomLabelTarget, convertNativeTextObjectToAtomLabel, createPhase4Document, insertNativeTemplateMolecule, insertNativeTextObject, moveNativeMoleculeParts, nativeMoleculeInvalidAtomStates } from "./documentWorkflow";
 
 function molecule(document: ChemDraftDocument): MoleculeObject {
@@ -108,6 +108,74 @@ describe("atom-label draft rollback", () => {
     expect(restored.atoms[0]).toEqual({ ...before.atoms[0], x: edited.atoms[0]!.x, y: edited.atoms[0]!.y,
       formalCharge: 1, labelOffset: { x: 10, y: 20 } });
     expectDerivedFromGraph(restored);
+  });
+
+  it("cancelling a charged draft (Zn2+) restores the element and the charge exactly", () => {
+    const { document, before, state } = fixture();
+    const preview = draft(document, state, "Zn2+");
+    expect(molecule(preview).atoms[0]).toMatchObject({ element: "Zn", formalCharge: 2, labelLiteral: true });
+    expect(molecule(restoreAtomLabelDraft(preview, state))).toEqual(before);
+    // Several keys, the last with a different charge: still the original back.
+    const second = draft(preview, state, "Fe3+");
+    expect(molecule(second).atoms[0]).toMatchObject({ element: "Fe", formalCharge: 3 });
+    expect(molecule(restoreAtomLabelDraft(second, state))).toEqual(before);
+  });
+
+  it("cancelling a charged draft keeps a charge another edit set meanwhile", () => {
+    const { document, before, state } = fixture();
+    const preview = draft(document, state, "Zn2+");
+    const current = molecule(preview);
+    const edited = { ...current, atoms: current.atoms.map(atom => atom.id === state.atomId ? { ...atom, formalCharge: -1 } : atom) };
+    const restored = molecule(restoreAtomLabelDraft(replaceMolecule(preview, edited), state));
+    expect(restored.atoms[0]).toEqual({ ...before.atoms[0], formalCharge: -1 });
+  });
+
+  it("cancelling after C -> Zn2+ -> another edit sets -1 -> Fe3+ restores C with the other edit's -1", () => {
+    const { document, before, state } = fixture();
+    expect(before.atoms[0]).toMatchObject({ element: "C", formalCharge: 0 });
+    const zinc = draft(document, state, "Zn2+");
+    const current = molecule(zinc);
+    // Another command changes the charge while the label editor is still open.
+    const external = replaceMolecule(zinc, { ...current, atoms: current.atoms.map(atom => atom.id === state.atomId
+      ? { ...atom, formalCharge: -1 } : atom) });
+    const iron = draft(external, state, "Fe3+");
+    expect(molecule(iron).atoms[0]).toMatchObject({ element: "Fe", formalCharge: 3 });
+    const restored = molecule(restoreAtomLabelDraft(iron, state));
+    expect(restored.atoms[0]).toEqual({ ...before.atoms[0], formalCharge: -1 });
+    expectDerivedFromGraph(restored);
+    // A later key with no charge of its own still cancels back to the other edit's charge.
+    const plain = draft(iron, state, "Fe");
+    expect(molecule(restoreAtomLabelDraft(plain, state)).atoms[0]).toEqual({ ...before.atoms[0], formalCharge: -1 });
+  });
+
+  it("tells a charge another edit set since the draft's last write from the draft's own", () => {
+    const { document, state } = fixture();
+    expect(atomLabelDraftChargeChangedOutside(document, state)).toBe(false);
+    const zinc = draft(document, state, "Zn2+");
+    // The draft's own +2 is its own charge, not another edit's.
+    expect(atomLabelDraftChargeChangedOutside(zinc, state)).toBe(false);
+    const current = molecule(zinc);
+    const external = replaceMolecule(zinc, { ...current, atoms: current.atoms.map(atom => atom.id === state.atomId
+      ? { ...atom, formalCharge: -1 } : atom) });
+    expect(atomLabelDraftChargeChangedOutside(external, state)).toBe(true);
+    // A move or another atom's charge is not this atom's charge.
+    const moved = replaceMolecule(zinc, { ...current, atoms: current.atoms.map((atom, index) => atom.id === state.atomId
+      ? { ...atom, x: atom.x + 40 } : index === 2 ? { ...atom, formalCharge: 1 } : atom) });
+    expect(atomLabelDraftChargeChangedOutside(moved, state)).toBe(false);
+    // A later draft write makes the charge the draft's again.
+    const iron = draft(external, state, "Fe3+");
+    expect(atomLabelDraftChargeChangedOutside(iron, state)).toBe(false);
+    // An atom that is gone is no outside charge.
+    const removed = replaceMolecule(iron, { ...molecule(iron), atoms: molecule(iron).atoms.filter(atom => atom.id !== state.atomId) });
+    expect(atomLabelDraftChargeChangedOutside(removed, state)).toBe(false);
+  });
+
+  it("cancelling after C -> Zn2+ -> Fe3+ with no other edit restores C with its original charge", () => {
+    const { document, before, state } = fixture();
+    const iron = draft(draft(document, state, "Zn2+"), state, "Fe3+");
+    expect(molecule(iron).atoms[0]).toMatchObject({ element: "Fe", formalCharge: 3 });
+    expect(state.draftRollback.chargeBefore).toBeUndefined();
+    expect(molecule(restoreAtomLabelDraft(iron, state))).toEqual(before);
   });
 
   it("does not adopt an external edit as draft cleanup when more keys follow it", () => {

@@ -268,12 +268,11 @@ export function parseDialogMessage(value: unknown): DialogMessage | undefined {
           // Plugin commands the menus offered when the tour opened: known tour plugin commands, each once.
           (d.plugins === undefined || Array.isArray(d.plugins) && new Set(d.plugins).size === d.plugins.length &&
             d.plugins.every(command => TOUR_PLUGIN_COMMANDS.some(known => known === command))) &&
-          // The drawing lesson's hover key per scheme: one character, or null when the user cleared it.
+          // The drawing lesson's hover key, keyed by the set's id: one character, or null when the user cleared it.
           (d.bondKeys === undefined || typeof d.bondKeys === "object" && d.bondKeys !== null && !Array.isArray(d.bondKeys) &&
             Object.entries(d.bondKeys).every(([scheme, key]) => isKeybindingScheme(scheme) &&
               (key === null || typeof key === "string" && [...key].length === 1))); break;
         case "action": valid = d.action === "cancel" || d.action === "finish" ? keys(d, ["action"])
-          : d.action === "chooseShortcuts" ? keys(d, ["action", "scheme"]) && isKeybindingScheme(d.scheme)
           // The plugins card's link, sent by the tour window to the native host, which opens it only when
           // `url` is exactly its one allowed address (`open_guided_tour_guide`) and never relays it to the owner.
           : d.action === "openGuide" ? keys(d, ["action", "url"]) && typeof d.url === "string" && d.url.length > 0 && d.url.length <= 2048

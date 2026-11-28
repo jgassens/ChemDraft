@@ -17,7 +17,13 @@ import {
   type AbbreviationDefinition
 } from "@chemdraft/template-library";
 
-import { nativeElementFromAtomLabel, nativeElementSymbols, type NativeElementSymbol } from "./valence";
+import {
+  nativeAtomChargeIsExpressible,
+  nativeElementFromAtomLabel,
+  nativeElementSymbols,
+  normalizeNativeAtomElementLabel,
+  type NativeElementSymbol
+} from "./valence";
 
 export const nativeAtomValence: Partial<Record<NativeElementSymbol, number>> = {
   H: 1,
@@ -216,6 +222,67 @@ export function nativeAtomLabelReading(label: string, context: NativeAtomLabelCo
   }
   const suggestion = abbreviationSpellingSuggestion(trimmed);
   return { kind: "unrecognized", ...(suggestion ? { suggestion } : {}) };
+}
+
+/** Superscript digits, superscript signs and the minus sign, read as the plain characters they show. */
+const plainChargeCharacters: Readonly<Record<string, string>> = {
+  "\u2070": "0", "\u00B9": "1", "\u00B2": "2", "\u00B3": "3", "\u2074": "4",
+  "\u2075": "5", "\u2076": "6", "\u2077": "7", "\u2078": "8", "\u2079": "9",
+  "\u207A": "+", "\u207B": "-", "\u2212": "-"
+};
+
+/**
+ * A label that is exactly one element symbol, in its exact case, with an optional formal charge
+ * written after it: "Zn", "Zn2+", "Zn+2", "Fe3+", "Cl-", "Na+", or the same with superscript
+ * characters ("Zn²⁺") or a minus sign ("Cl−"). The charge is a sign with at most one digit, 1 to 9,
+ * on either side of it; a missing digit means 1. Anything else is undefined: words, formulas
+ * ("H2O", "OH-", "NH4+"), abbreviations ("OMe"), a lower-case symbol ("zn"), an unknown symbol
+ * ("Xx"), a doubled or zero charge ("Zn++", "Zn0+"), surrounding or inner whitespace, and a charge
+ * the element's octet cannot hold ("C5+", "H2+"; `nativeAtomChargeIsExpressible`).
+ *
+ * The element part is the same exact-case test a finished text box has always passed to become an
+ * atom (`nativeElementFromAtomLabel(label) === label`), so a lone "Zn" reads the same with or
+ * without this. As in the drawn label's charge split, a digit after "H" is a hydrogen count, never
+ * a charge, so "H2+" is not hydrogen with charge 2+.
+ */
+export function nativeElementWithChargeLabel(
+  label: string
+): { element: NativeElementSymbol; charge: number } | undefined {
+  if (label.length === 0 || /\s/.test(label)) return undefined;
+  const plain = Array.from(label, character => plainChargeCharacters[character] ?? character).join("");
+  const charge = /^(.*?)(?:([1-9])([+-])|([+-])([1-9])?)$/.exec(plain);
+  let body = plain;
+  let formalCharge = 0;
+  if (charge) {
+    const digitFirst = charge[2] !== undefined;
+    const sign = (digitFirst ? charge[3] : charge[4]) === "-" ? -1 : 1;
+    formalCharge = sign * Number((digitFirst ? charge[2] : charge[5]) ?? 1);
+    body = charge[1]!;
+    if (digitFirst && body.endsWith("H")) return undefined;
+  }
+  const element = nativeElementFromAtomLabel(body);
+  if (!element || element !== body) return undefined;
+  return nativeAtomChargeIsExpressible(element, formalCharge) ? { element, charge: formalCharge } : undefined;
+}
+
+/**
+ * What relabelling an existing atom with typed label text sets: its element text and formal charge.
+ * Text that is one element symbol with a nonzero charge (`nativeElementWithChargeLabel`: "Zn2+",
+ * "Zn+2", "Fe3+", "Cl-", "Na+", "N+", plain or superscript) sets that element and exactly that charge,
+ * so the atom is the one the same text makes as a free text box. Any other text keeps today's relabel:
+ * the label normalized as before (`normalizeNativeAtomElementLabel`: "n" is N, "Xx" and "OMe" stay as
+ * typed) and the charge the atom had when the edit began (`startCharge`), so "O" typed over an N+
+ * gives O+ as it always has, and a label draft that drops its charge again ("Zn2+" back to "Zn")
+ * returns to that starting charge rather than keep a charge no longer in the text.
+ */
+export function nativeRelabelElementAndCharge(
+  label: string,
+  startCharge: number
+): { element: string; formalCharge: number } {
+  const charged = nativeElementWithChargeLabel(label.trim());
+  return charged && charged.charge !== 0
+    ? { element: charged.element, formalCharge: charged.charge }
+    : { element: normalizeNativeAtomElementLabel(label), formalCharge: startCharge };
 }
 
 /** One-letter halogens, never split off a two-letter symbol to head a composite. */

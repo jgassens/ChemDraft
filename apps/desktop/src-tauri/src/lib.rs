@@ -202,6 +202,9 @@ const LINUX_CLOSE_WINDOW_FILE_MENU_ID: &str = "window.close.fileMenu";
 #[cfg(any(target_os = "linux", test))]
 const WINDOW_ACTION_EVENT: &str = "chemdraft://window-action";
 const DOM_COMMAND_EVENT: &str = "chemdraft:native-command";
+/// Which toolbar control a drawing tool was chosen through, dispatched by Rust into the toolbar
+/// windows (`toolbarToolChoice.ts`). Only Rust can put a DOM event into another webview.
+const TOOLBAR_TOOL_CHOICE_DOM_EVENT: &str = "chemdraft:toolbar-tool-choice";
 #[cfg(target_os = "macos")]
 const PALETTE_POINTER_EVENT: &str = "chemdraft://palette-pointer";
 /// macOS: the pointer poll's leave. Linux: a GTK leave-notify on the palette
@@ -1107,9 +1110,9 @@ struct ToolbarsMenuModel(std::sync::Mutex<(Vec<ToolbarMenuEntry>, ViewMenuState)
 #[derive(Default)]
 struct NativeMenuNeedsRebuild(AtomicBool);
 
-/// Which keyboard-shortcut scheme the app runs under (mirrors the webview's persisted setting; JS
-/// pushes it on startup and on change via `set_keybinding_scheme`). Read at menu-build time so the
-/// few native accelerators that differ between the schemes stay in step with the webview registry.
+/// ChemDraft's one built-in keyboard-shortcut set (owner decision, 2026-11-26). Its id, "chemdraw",
+/// is a storage and protocol id only and is never shown. The native menu's default accelerators come
+/// from it; the user's custom keys arrive from the webview as `MenuAcceleratorOverrides`.
 #[derive(
     Clone,
     Copy,
@@ -1124,15 +1127,9 @@ struct NativeMenuNeedsRebuild(AtomicBool);
 )]
 #[serde(rename_all = "lowercase")]
 enum KeybindingScheme {
-    ChemDraft,
-    /// The industry-standard scheme, the default for new installs since 1.2.3. The native menu is
-    /// built with it until the document window pushes the stored scheme (`set_keybinding_scheme`).
     #[default]
     ChemDraw,
 }
-
-#[derive(Default)]
-struct KeybindingSchemeState(std::sync::Mutex<KeybindingScheme>);
 
 type MenuAccelerators = std::collections::BTreeMap<String, Option<String>>;
 
@@ -1150,12 +1147,6 @@ fn native_menu_shortcut<R: Runtime>(
 fn custom_menu_shortcut<R: Runtime>(app: &tauri::AppHandle<R>, id: &str) -> Option<Option<String>> {
     app.try_state::<MenuAcceleratorOverrides>()
         .and_then(|state| state.0.lock().unwrap().get(id).cloned())
-}
-
-fn current_keybinding_scheme<R: Runtime>(app: &tauri::AppHandle<R>) -> KeybindingScheme {
-    app.try_state::<KeybindingSchemeState>()
-        .and_then(|state| state.0.lock().ok().map(|guard| *guard))
-        .unwrap_or_default()
 }
 
 #[derive(Clone, Copy, Debug, serde::Serialize)]
@@ -1471,7 +1462,6 @@ pub fn run() {
         .manage(PluginNativeMenuItems::default())
         .manage(ToolbarsMenuModel::default())
         .manage(NativeMenuNeedsRebuild::default())
-        .manage(KeybindingSchemeState::default())
         .manage(MenuAcceleratorOverrides::default())
         // Take over the app's OWN `tauri://` origin so one handler serves both the document and any
         // staged plugin package (ADR-0029 §6 as amended; M36). This *replaces* Tauri's built-in
@@ -1898,6 +1888,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             first_paint::window_first_paint,
             canvas_context_menu::popup_canvas_context_menu,
+            canvas_context_menu::popup_toolbar_context_menu,
             file_warnings_window::file_warnings_open,
             file_warnings_window::file_warnings_request,
             file_warnings_window::file_warnings_publish,
@@ -3312,14 +3303,14 @@ fn restore_utility_labels<R: Runtime>(
             buffer_utility_recovery_position(&window);
             let resizable = toolset_is_resizable(&toolset_id);
             // A dialog must not move palettes (B6). A palette the user left partly off-screen keeps
-            // its place; only one whose title can no longer be grabbed is pulled back. Clamping
+            // its place; only one whose grip rail can no longer be grabbed is pulled back. Clamping
             // every palette here made Main jump after any prompt when it overhung the screen edge
             // (GitHub #304). A frame ChemDraft fitted to a smaller work area still recovers, which
             // returns it to the user's frame once there is room (B9). Resizable inspectors
             // (Molecular Inspector, Drawn Structure Settings) keep the full-frame fit they always
-            // had: their whole content must stay usable, not just their title.
+            // had: their whole content must stay usable, not just their grip rail.
             //
-            // The title test uses the frame recorded just before the hide, not the hidden window's.
+            // The rail test uses the frame recorded just before the hide, not the hidden window's.
             let hidden_at = UTILITY_SUSPENSION
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -3327,7 +3318,7 @@ fn restore_utility_labels<R: Runtime>(
             let fitted = toolset_fit::with_memory(|memory| memory.is_fitted(&label));
             let mut title_reachable = None;
             let refit = restore_refits_toolset(resizable, fitted, || {
-                let reachable = toolset_title_reachable(app, &window, hidden_at);
+                let reachable = toolset_grip_rail_reachable(app, &window, hidden_at);
                 title_reachable = Some(reachable);
                 reachable
             });
@@ -4718,7 +4709,7 @@ fn set_toolbars_menu(
                     &entries,
                     view_state,
                     &current_plugin_menu_items(&app),
-                    current_keybinding_scheme(&app),
+                    KeybindingScheme::ChemDraw,
                 )
             },
         )?;
@@ -6570,24 +6561,29 @@ impl ScreenRect {
         }
     }
 
+    /// Whether a window with a title row across its top (an analysis panel) can be grabbed by
+    /// it: enough of the row's width lies on this work area, and its full height is clear of the
+    /// menu bar, taskbar or Dock.
     fn contains_title_strip(&self, x: f64, y: f64, width: f64, title_height: f64) -> bool {
-        self.contains_title_strip_at_scale(x, y, width, title_height, 1.0)
+        let overlap = (x + width).min(self.x + self.width) - x.max(self.x);
+        overlap >= width.min(48.0) && y >= self.y && y + title_height <= self.y + self.height
     }
 
-    fn contains_title_strip_at_scale(
-        &self,
-        x: f64,
-        y: f64,
-        width: f64,
-        title_height: f64,
-        scale: f64,
-    ) -> bool {
-        // Leave enough horizontal room to grab the title, and keep its full height clear of
-        // the menu bar, taskbar or Dock.
-        let overlap = (x + width).min(self.x + self.width) - x.max(self.x);
-        overlap >= width.min(48.0 * scale)
+    /// Whether a palette whose outer frame starts at (`x`, `y`) can be grabbed and closed by its
+    /// grip rail: the rail's full width on its left edge, from the close control at its top down
+    /// through the first grip dots ([`TOOLSET_GRIP_RAIL_REACH_HEIGHT`]), lies on this work area.
+    /// Palettes have no title row, so how much of the frame's right part is on screen does not
+    /// matter. `scale` converts the rail's point sizes into this rectangle's units (1 for
+    /// logical points, the window's scale for physical pixels).
+    fn contains_grip_rail_at_scale(&self, x: f64, y: f64, scale: f64) -> bool {
+        x >= self.x
+            && x + TOOLSET_GRIP_RAIL_WIDTH * scale <= self.x + self.width
             && y >= self.y
-            && y + title_height <= self.y + self.height
+            && y + TOOLSET_GRIP_RAIL_REACH_HEIGHT * scale <= self.y + self.height
+    }
+
+    fn contains_grip_rail(&self, x: f64, y: f64) -> bool {
+        self.contains_grip_rail_at_scale(x, y, 1.0)
     }
 }
 
@@ -7436,6 +7432,99 @@ enum ToolsetPopoverCommandSource {
     Flyout(ToolsetFlyoutOpening),
 }
 
+/// What a palette window or flyout popover says about the control a drawing tool was chosen
+/// through, sent with the command. It names no toolbar, and any toolset id in the payload is
+/// ignored: the toolbar comes from the sender (`verified_toolbar_tool_choice`).
+#[derive(Debug, Default, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolbarToolChoiceClaim {
+    item_id: Option<String>,
+    flyout_id: Option<String>,
+}
+
+/// A toolbar tool choice as the toolbar windows receive it, credited to the sender's own toolbar.
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolbarToolChoice {
+    toolset_id: String,
+    command_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    item_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    flyout_id: Option<String>,
+}
+
+/// The window a toolbar tool choice came from, as Rust knows it rather than as the page says.
+enum ToolbarToolChoiceSender<'a> {
+    /// A flyout popover dispatching under its current opening, which `show_toolset_popover_window`
+    /// matched to the popover's own label and `route_toolset_command` matched to the request.
+    Flyout(&'a ToolsetFlyoutOpening),
+    /// A palette window, with the toolset id recorded when Rust built it.
+    Palette(&'a str),
+}
+
+/// A window can only speak for its own toolbar: a palette for the toolset it was built for, a
+/// flyout popover for the dropdown its verified opening belongs to.
+fn verified_toolbar_tool_choice(
+    sender: ToolbarToolChoiceSender<'_>,
+    command_id: &str,
+    claim: ToolbarToolChoiceClaim,
+) -> ToolbarToolChoice {
+    match sender {
+        ToolbarToolChoiceSender::Flyout(opening) => ToolbarToolChoice {
+            toolset_id: opening.toolset_id.clone(),
+            command_id: command_id.to_string(),
+            item_id: None,
+            flyout_id: Some(opening.flyout_id.clone()),
+        },
+        ToolbarToolChoiceSender::Palette(toolset_id) => ToolbarToolChoice {
+            toolset_id: toolset_id.to_string(),
+            command_id: command_id.to_string(),
+            item_id: claim.item_id,
+            flyout_id: claim.flyout_id,
+        },
+    }
+}
+
+/// Every window that draws toolbars except the sender, which applied its own choice when it was
+/// made: an echo arriving after the tool changed again would restore a stale choice there.
+fn toolbar_tool_choice_targets<'a>(
+    sender_label: &str,
+    palette_labels: impl IntoIterator<Item = &'a String>,
+) -> Vec<String> {
+    let mut targets = vec![MAIN_WINDOW_LABEL.to_string()];
+    for label in palette_labels {
+        if !targets.contains(label) {
+            targets.push(label.clone());
+        }
+    }
+    targets.retain(|label| label != sender_label);
+    targets
+}
+
+fn deliver_toolbar_tool_choice<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    sender_label: &str,
+    choice: &ToolbarToolChoice,
+) {
+    let palette_labels: Vec<String> = app
+        .state::<ToolsetWindowDirectory>()
+        .labels
+        .lock()
+        .map(|labels| labels.keys().cloned().collect())
+        .unwrap_or_default();
+    for label in toolbar_tool_choice_targets(sender_label, &palette_labels) {
+        if let Some(target) = app.get_webview_window(&label) {
+            // Best effort: a toolbar that misses a choice treats the tool as chosen elsewhere.
+            if let Err(error) =
+                dispatch_dom_toolset_event(&target, choice, TOOLBAR_TOOL_CHOICE_DOM_EVENT)
+            {
+                log::debug!("toolbar tool choice not delivered to {label}: {error}");
+            }
+        }
+    }
+}
+
 fn toolset_popover_command_sources(
 ) -> std::sync::MutexGuard<'static, HashMap<String, ToolsetPopoverCommandSource>> {
     static SOURCES: std::sync::LazyLock<Mutex<HashMap<String, ToolsetPopoverCommandSource>>> =
@@ -7690,13 +7779,13 @@ fn clamp_current_inspector_frame(window: tauri::WebviewWindow) {
     }
 }
 
-/// Resize to measured content, keeping the native top-left that is current when the resize runs.
+/// Request a content resize and return its physical client-size target for settled readback.
 #[tauri::command]
 fn resize_toolset_window(
     window: tauri::WebviewWindow,
     width: f64,
     height: f64,
-) -> Result<bool, String> {
+) -> Result<Option<tauri::PhysicalSize<u32>>, String> {
     let app = window.app_handle();
     let toolset_id = toolset_id_for_window_label(app, window.label());
     if toolset_id.is_none_or(|id| toolset_is_resizable(&id)) {
@@ -7713,7 +7802,7 @@ fn resize_toolset_window(
     let webview: &tauri::Webview = window.as_ref();
     let window = webview.window();
     if toolset_frame_is_transient(app, &window) {
-        return Ok(false);
+        return Ok(None);
     }
     let monitor = monitor_query::current_monitor(&window)
         .map_err(|error| error.to_string())?
@@ -7723,13 +7812,10 @@ fn resize_toolset_window(
     // Only Linux builds use native Wayland (uses_native_wayland is false elsewhere). The compositor
     // places the window, so cap both sides to the work area and leave the position alone.
     if utility_window::uses_native_wayland(app)? {
-        window
-            .set_size(tauri::LogicalSize::new(
-                width.min(area.width),
-                height.min(area.height),
-            ))
-            .map_err(|error| error.to_string())?;
-        return Ok(true);
+        let size = tauri::LogicalSize::new(width.min(area.width), height.min(area.height));
+        let scale = window.scale_factor().map_err(|error| error.to_string())?;
+        window.set_size(size).map_err(|error| error.to_string())?;
+        return Ok(Some(size.to_physical(scale)));
     }
     let scale = monitor.scale_factor();
     #[cfg(not(target_os = "macos"))]
@@ -7755,7 +7841,7 @@ fn resize_toolset_window(
         })
         .unwrap_or(origin);
     let mut placement = toolset_content_placement(source, (width, height), scale, area);
-    // The monitor under most of the palette can differ from the one under its title.
+    // The monitor under most of the palette can differ from the one under its grip rail.
     if placement.position != source
         && monitor_query::available_monitors(app)
             .unwrap_or_default()
@@ -7764,20 +7850,17 @@ fn resize_toolset_window(
                 // AppKit reports the outer position in the window's backing scale.
                 #[cfg(target_os = "macos")]
                 {
-                    monitor_logical_work_area(monitor).contains_title_strip(
+                    monitor_logical_work_area(monitor).contains_grip_rail(
                         f64::from(source.0) / scale,
                         f64::from(source.1) / scale,
-                        width,
-                        TOOLSET_TITLE_HEIGHT,
                     )
                 }
-                // Windows uses one virtual desktop in physical pixels. Size the title with
+                // Windows uses one virtual desktop in physical pixels. Size the rail with
                 // the window's DPI before comparing it to another monitor's physical work area.
                 #[cfg(not(target_os = "macos"))]
                 {
-                    toolset_title_in_physical_work_area(
+                    toolset_grip_rail_in_physical_work_area(
                         source,
-                        width,
                         window_scale,
                         monitor.work_area(),
                     )
@@ -7807,6 +7890,7 @@ fn resize_toolset_window(
             },
         ),
     });
+    let target = tauri::PhysicalSize::new(placement.size.0, placement.size.1);
     // A palette pinned through a map (palette_map_pin) is held where this fit puts it, with the
     // outer frame the fit gives it. A fit in place keeps the pin's target but still records the
     // new frame, so a later retarget archives the target with the size it really had.
@@ -7839,27 +7923,24 @@ fn resize_toolset_window(
     // X11/XWayland: pin the GtkWindow to the new size before resizing it. GTK clamps a resize to
     // the window's current hints, which still hold the previous content size.
     #[cfg(target_os = "linux")]
-    utility_window::pin_content_fit_frame(
-        &window,
-        tauri::PhysicalSize::new(placement.size.0, placement.size.1).into(),
-    )?;
+    utility_window::pin_content_fit_frame(&window, target.into())?;
     #[cfg(not(target_os = "macos"))]
     if placement.position == origin {
         windows_activation_log::frame_set(window.label(), "toolbar content fit", "pixels", || {
             (placement.position, placement.size)
         });
-        window
-            .set_size(tauri::PhysicalSize::new(placement.size.0, placement.size.1))
-            .map_err(|error| error.to_string())?;
-        return Ok(true);
+        window.set_size(target).map_err(|error| error.to_string())?;
+        return Ok(Some(target));
     }
     panel_full_size::apply(&window, placement, "toolbar content fit")?;
-    Ok(true)
+    Ok(Some(target))
 }
 
-fn toolset_title_in_physical_work_area(
+/// Whether a palette's grip rail lies on a physical work area. The rail is sized with the palette
+/// window's own scale, which can differ from the monitor's (Windows mixes monitor scales in one
+/// virtual desktop).
+fn toolset_grip_rail_in_physical_work_area(
     position: (i32, i32),
-    width: f64,
     window_scale: f64,
     area: &tauri::PhysicalRect<i32, u32>,
 ) -> bool {
@@ -7869,13 +7950,7 @@ fn toolset_title_in_physical_work_area(
         f64::from(area.size.width),
         f64::from(area.size.height),
     )
-    .contains_title_strip_at_scale(
-        f64::from(position.0),
-        f64::from(position.1),
-        width * window_scale,
-        TOOLSET_TITLE_HEIGHT * window_scale,
-        window_scale,
-    )
+    .contains_grip_rail_at_scale(f64::from(position.0), f64::from(position.1), window_scale)
 }
 
 fn toolset_content_placement(
@@ -8089,6 +8164,7 @@ fn route_toolset_command(
     preserve_input_focus: Option<bool>,
     commit: Option<bool>,
     flyout_opening: Option<ToolsetFlyoutOpening>,
+    tool_choice: Option<ToolbarToolChoiceClaim>,
 ) -> Result<(), String> {
     if utility_windows_suspended() && !commit.unwrap_or(false) {
         return Ok(());
@@ -8118,7 +8194,10 @@ fn route_toolset_command(
         return Ok(());
     }
 
-    if let Some(session_id) = flyout_opening.and_then(|opening| opening.bond_stereo_session_id) {
+    if let Some(session_id) = flyout_opening
+        .as_ref()
+        .and_then(|opening| opening.bond_stereo_session_id.clone())
+    {
         if matches!(command_id, "geometry" | "flipped" | "keep") {
             app.emit_to(
                 MAIN_WINDOW_LABEL,
@@ -8143,6 +8222,32 @@ fn route_toolset_command(
             },
             "chemdraft://palette-command-commit",
         );
+    }
+    // Which control the tool was chosen through reaches the toolbars before the command lands, so
+    // the new active tool is credited to it. The toolbar is the sender's own, never the payload's:
+    // a popover reaching here dispatches under its verified opening; a palette is looked up by the
+    // label Rust recorded when it built the window; any other sender's claim is dropped.
+    if let Some(claim) = tool_choice {
+        let choice = if window.label().starts_with("toolset-popover-") {
+            flyout_opening.as_ref().map(|opening| {
+                verified_toolbar_tool_choice(
+                    ToolbarToolChoiceSender::Flyout(opening),
+                    command_id,
+                    claim,
+                )
+            })
+        } else {
+            toolset_id_for_window_label(&app, window.label()).map(|toolset_id| {
+                verified_toolbar_tool_choice(
+                    ToolbarToolChoiceSender::Palette(&toolset_id),
+                    command_id,
+                    claim,
+                )
+            })
+        };
+        if let Some(choice) = choice {
+            deliver_toolbar_tool_choice(&app, window.label(), &choice);
+        }
     }
     emit_command_to_main(&app, command_id)?;
     // Select changes and clean-number undo update the document while the control
@@ -10099,9 +10204,9 @@ fn dispatch_dom_command_event<R: Runtime>(
     dispatch_dom_toolset_event(main, payload, DOM_COMMAND_EVENT)
 }
 
-fn dispatch_dom_toolset_event<R: Runtime>(
+fn dispatch_dom_toolset_event<R: Runtime, T: serde::Serialize>(
     main: &tauri::WebviewWindow<R>,
-    payload: &ToolsetCommandPayload,
+    payload: &T,
     event_name: &str,
 ) -> Result<(), String> {
     let payload_json = serde_json::to_string(payload).map_err(|error| error.to_string())?;
@@ -10443,7 +10548,7 @@ fn sync_plugin_menu_items(
             |previous, next| update_installed_plugin_menu(&app, previous, next),
             |next| {
                 let (entries, view) = current_toolbars_menu_model(&app);
-                reinstall_app_menu(&app, &entries, view, next, current_keybinding_scheme(&app))
+                reinstall_app_menu(&app, &entries, view, next, KeybindingScheme::ChemDraw)
             },
         )
     })?
@@ -10653,7 +10758,6 @@ fn classify_toolbars_menu_update(
 impl KeybindingScheme {
     fn export(self) -> &'static str {
         match self {
-            Self::ChemDraft => "CmdOrCtrl+Shift+E",
             Self::ChemDraw if cfg!(target_os = "macos") => "Ctrl+Command+E",
             Self::ChemDraw => "CmdOrCtrl+E",
         }
@@ -10661,27 +10765,34 @@ impl KeybindingScheme {
 
     fn rulers(self) -> &'static str {
         match self {
-            Self::ChemDraft => "CmdOrCtrl+R",
             Self::ChemDraw => "CmdOrCtrl+;",
         }
     }
 
     fn crosshairs(self) -> &'static str {
         match self {
-            Self::ChemDraft => "CmdOrCtrl+Shift+R",
             Self::ChemDraw => "Alt+CmdOrCtrl+X",
         }
     }
 }
 
+/// A shortcut-set id exactly as preferences.json stores it. The native side has one set
+/// (`KeybindingScheme`) and never reads this: the menu always runs on that set. The id is kept
+/// verbatim, whatever an older version wrote, because the webview's one-time move to the single set
+/// (`shortcutDefaultMigration.ts`) reads it, and the custom keys an older version stored under it, to
+/// map the install onto the single set. So an old value still loads and never fails startup.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize, serde::Serialize)]
+#[serde(transparent)]
+struct StoredShortcutSetId(String);
+
 #[derive(Default, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DesktopPreferences {
     #[serde(skip_serializing_if = "Option::is_none")]
-    shortcut_scheme: Option<KeybindingScheme>,
+    shortcut_scheme: Option<StoredShortcutSetId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     shortcut_overrides:
-        Option<std::collections::BTreeMap<KeybindingScheme, ShortcutScopeOverrides>>,
+        Option<std::collections::BTreeMap<StoredShortcutSetId, ShortcutScopeOverrides>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     guided_tour_seen: Option<bool>,
 }
@@ -10699,7 +10810,9 @@ struct ShortcutScopeOverrides {
 
 impl DesktopPreferences {
     fn apply_patch(&mut self, patch: Self) {
-        self.shortcut_scheme = patch.shortcut_scheme.or(self.shortcut_scheme);
+        if patch.shortcut_scheme.is_some() {
+            self.shortcut_scheme = patch.shortcut_scheme;
+        }
         if let Some(overrides) = patch.shortcut_overrides {
             self.shortcut_overrides
                 .get_or_insert_with(Default::default)
@@ -10775,13 +10888,12 @@ fn set_keybinding_scheme(
     if window.label() != MAIN_WINDOW_LABEL {
         return Err("Only the document window can update menu shortcuts.".into());
     }
+    // There is one set; the webview names it, and nothing else is accepted.
     let parsed = match scheme.as_deref() {
-        Some("chemdraft") => KeybindingScheme::ChemDraft,
         Some("chemdraw") => KeybindingScheme::ChemDraw,
         _ => return Err("Unknown keybinding scheme.".into()),
     };
     run_on_main_thread_blocking(&app.clone(), move || {
-        let changed = current_keybinding_scheme(&app) != parsed;
         let overrides = app.state::<MenuAcceleratorOverrides>();
         let old_accelerators = {
             let mut live = overrides.0.lock().unwrap();
@@ -10789,33 +10901,16 @@ fn set_keybinding_scheme(
                 .filter(|next| *live != *next)
                 .map(|next| std::mem::replace(&mut *live, next))
         };
-        let update = if old_accelerators.is_some() || (changed && cfg!(windows)) {
+        // The set never changes, so only new custom keys change the menu.
+        let update = if old_accelerators.is_some() {
             MenuUpdate::Rebuild
-        } else if changed {
-            MenuUpdate::Properties
         } else {
             MenuUpdate::Unchanged
         };
         let result = apply_menu_update(
             &app.state::<NativeMenuNeedsRebuild>().0,
             update,
-            || {
-                let menu = installed_app_menu(&app)?;
-                for (id, default) in [
-                    ("export.open", parsed.export()),
-                    ("view.toggleRulers", parsed.rulers()),
-                    ("view.toggleCrosshairs", parsed.crosshairs()),
-                ] {
-                    let accelerator = native_menu_shortcut(&app, id, default);
-                    match required_menu_item(&menu, id)? {
-                        MenuItemKind::MenuItem(item) => item.set_accelerator(accelerator),
-                        MenuItemKind::Check(item) => item.set_accelerator(accelerator),
-                        _ => return Err(format!("Expected an accelerator menu item for {id}")),
-                    }
-                    .map_err(|e| e.to_string())?;
-                }
-                Ok(())
-            },
+            || Ok(()),
             || {
                 let (entries, view) = current_toolbars_menu_model(&app);
                 reinstall_app_menu(
@@ -10833,7 +10928,6 @@ fn set_keybinding_scheme(
             }
             return Err(error);
         }
-        *app.state::<KeybindingSchemeState>().0.lock().unwrap() = parsed;
         Ok(())
     })?
 }
@@ -10960,7 +11054,7 @@ fn create_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<
         &[],
         ViewMenuState::default(),
         &plugin_items,
-        current_keybinding_scheme(app),
+        KeybindingScheme::ChemDraw,
     )
 }
 
@@ -11860,7 +11954,7 @@ fn ensure_toolset_window<R: Runtime>(
         // Already built — but it may have been created (or dragged) offscreen earlier, or the
         // display it lived on may have been unplugged while it was hidden. Re-clamp on the way in,
         // so re-opening from View ▸ Toolbars is always enough to recover a lost palette. The clamp
-        // moves a toolbar only when its title strip is unreachable.
+        // moves a toolbar only when its grip rail is unreachable.
         let hidden = !window.is_visible().unwrap_or(false);
         // A palette closed while pinned (palette_map_pin) may still sit at the window manager's
         // clamp; it reopens from the position saved at the close, as long as nothing moved it
@@ -12533,6 +12627,13 @@ fn is_routed_menu_command(command_id: &str) -> bool {
 }
 
 const TOOLSET_TITLE_HEIGHT: f64 = 22.0;
+/// Width of a palette's grip rail, the drag surface on its left edge with the close control at its
+/// top (`.palette-window-shell > .palette-title` in App.css). Palettes have no title row.
+const TOOLSET_GRIP_RAIL_WIDTH: f64 = 14.0;
+/// How much of the grip rail, from its top, must lie on a work area for the palette to count as
+/// reachable: the 14 px close control and the first grip dots below it. The same height the old
+/// title row needed, so the top and bottom edges are judged as before.
+const TOOLSET_GRIP_RAIL_REACH_HEIGHT: f64 = 22.0;
 /// The Main toolbar, which stacks above the other palettes (`DEFAULT_TOOLSET_ID` in TypeScript).
 const MAIN_TOOLSET_ID: &str = "core.main";
 /// The smallest a scrolling inspector may be resized to (its builder's `min_inner_size`).
@@ -12623,7 +12724,9 @@ fn toolset_position_in_work_area(
     height: f64,
     area: ScreenRect,
 ) -> ToolsetWindowPosition {
-    if area.contains_title_strip(position.x, position.y, width, TOOLSET_TITLE_HEIGHT) {
+    // A palette the user left partly off-screen keeps its place while its grip rail (and the
+    // close control at its top) can still be grabbed.
+    if area.contains_grip_rail(position.x, position.y) {
         return position;
     }
     // Pin oversized palettes to the top-left of the work area.
@@ -12648,7 +12751,8 @@ fn inspector_frame_in_work_area(
 }
 
 /// Pull a palette back onto an attached monitor. Scrolling inspectors need the full viewport
-/// inside the work area, while a toolbar only needs a reachable title before it fits its content.
+/// inside the work area, while a toolbar only needs a reachable grip rail before it fits its
+/// content.
 ///
 /// Positions are persisted in logical points, so a toolbar last parked on an external display comes
 /// back at coordinates that no longer exist once that display is unplugged. The window is then
@@ -12684,7 +12788,7 @@ fn clamp_toolset_frame<R: Runtime>(
             )
         })
         .collect::<Vec<_>>();
-    let area = toolset_work_area_for_origin(position, width, &areas).unwrap_or_else(|| {
+    let area = toolset_work_area_for_origin(position, &areas).unwrap_or_else(|| {
         let primary = monitor_query::primary_monitor(app).ok().flatten();
         monitor_logical_work_area(primary.as_ref().unwrap_or(&monitors[0]))
     });
@@ -12776,7 +12880,6 @@ fn saved_toolset_state<R: Runtime>(
 #[cfg(any(not(windows), test))]
 fn toolset_work_area_for_origin(
     position: ToolsetWindowPosition,
-    width: f64,
     monitors: &[(ScreenRect, ScreenRect)],
 ) -> Option<ScreenRect> {
     monitors
@@ -12787,9 +12890,9 @@ fn toolset_work_area_for_origin(
                 && (bounds.y..bounds.y + bounds.height).contains(&position.y)
         })
         .or_else(|| {
-            monitors.iter().find(|(_, area)| {
-                area.contains_title_strip(position.x, position.y, width, TOOLSET_TITLE_HEIGHT)
-            })
+            monitors
+                .iter()
+                .find(|(_, area)| area.contains_grip_rail(position.x, position.y))
         })
         .map(|(_, area)| *area)
 }
@@ -12895,7 +12998,7 @@ fn clamp_toolset_frame_in_physical_space_clear_of(
             if resizable {
                 return None;
             }
-            // A partially offscreen toolbar can still have a reachable title.
+            // A partially offscreen toolbar can still have a reachable grip rail.
             monitors.iter().find(|monitor| {
                 let (x, y) = monitor.identity.position;
                 let area = monitor.work_area;
@@ -12906,13 +13009,7 @@ fn clamp_toolset_frame_in_physical_space_clear_of(
                     area.width * scale,
                     area.height * scale,
                 )
-                .contains_title_strip_at_scale(
-                    physical.0,
-                    physical.1,
-                    size.0 * source_scale,
-                    TOOLSET_TITLE_HEIGHT * source_scale,
-                    source_scale,
-                )
+                .contains_grip_rail_at_scale(physical.0, physical.1, source_scale)
             })
         })
         .unwrap_or(primary);
@@ -13072,7 +13169,7 @@ fn recover_offscreen_toolset_window<R: Runtime>(
             position.y,
             size.width,
             size.height,
-            toolset_title_reachable(app, window, None),
+            toolset_grip_rail_reachable(app, window, None),
             source.x,
             source.y,
             clamped.x,
@@ -13192,7 +13289,7 @@ fn recover_offscreen_toolset_window<R: Runtime>(
             palette_frame_log(format_args!(
                 "recover label={label} path={path} read={physical:?} size={live_size:?} \
                  fitted={fitted} title_reachable={} -> {:?} size->{:?} apply={}",
-                toolset_title_reachable(&app, &target, Some(physical)),
+                toolset_grip_rail_reachable(&app, &target, Some(physical)),
                 placement.position,
                 placement.size,
                 plan.apply,
@@ -13270,22 +13367,21 @@ fn visible_toolset_physical_position<R: Runtime>(
 }
 
 /// Whether restoring utilities after a dialog runs the full-frame fit on a toolset window.
-/// Resizable inspectors always do, as they did before palettes got the title-only test; a palette
-/// does only when ChemDraft fitted its frame earlier or its title can no longer be grabbed.
+/// Resizable inspectors always do, as they did before palettes got the grip-rail-only test; a
+/// palette does only when ChemDraft fitted its frame earlier or its grip rail can no longer be
+/// grabbed.
 fn restore_refits_toolset(
     resizable: bool,
     fitted: bool,
-    title_reachable: impl FnOnce() -> bool,
+    grip_rail_reachable: impl FnOnce() -> bool,
 ) -> bool {
-    resizable || fitted || !title_reachable()
+    resizable || fitted || !grip_rail_reachable()
 }
 
 /// What a pinned palette's positions are judged against (palette_map_pin::Layout): its outer frame,
-/// the monitors' work areas as they are now, and what the title test needs.
+/// the monitors' work areas as they are now, and what the grip-rail test needs.
 struct PalettePinFrame {
     size: (i32, i32),
-    /// The outer width in logical pixels, for the title test.
-    width: f64,
     scale: f64,
     monitor_areas: Vec<tauri::PhysicalRect<i32, u32>>,
     work_areas: Vec<palette_map_pin::WorkArea>,
@@ -13315,23 +13411,22 @@ impl PalettePinFrame {
                 i32::try_from(size.width).unwrap_or(i32::MAX),
                 i32::try_from(size.height).unwrap_or(i32::MAX),
             ),
-            width: size.to_logical::<f64>(scale).width,
             scale,
             monitor_areas,
             work_areas,
         })
     }
 
-    /// The restore's title test (toolset_title_reachable) on the monitors as they are now. Pins
-    /// exist only on Linux X11, which reports physical pixels.
-    fn title_reachable(&self, target: (i32, i32)) -> bool {
+    /// The restore's grip-rail test (toolset_grip_rail_reachable) on the monitors as they are now.
+    /// Pins exist only on Linux X11, which reports physical pixels.
+    fn grip_rail_reachable(&self, target: (i32, i32)) -> bool {
         self.monitor_areas
             .iter()
-            .any(|area| toolset_title_in_physical_work_area(target, self.width, self.scale, area))
+            .any(|area| toolset_grip_rail_in_physical_work_area(target, self.scale, area))
     }
 
     fn judge<T>(&self, task: impl FnOnce(&palette_map_pin::Layout<'_>) -> T) -> T {
-        let title_reachable = |target: (i32, i32)| self.title_reachable(target);
+        let title_reachable = |target: (i32, i32)| self.grip_rail_reachable(target);
         task(&palette_map_pin::Layout {
             size: self.size,
             work_areas: &self.work_areas,
@@ -13503,7 +13598,7 @@ fn pin_palette_for_map<R: Runtime>(
                     .ok()
                     .map(|position| (position.x, position.y).into())
             })
-            .filter(|target| toolset_title_reachable(app, window, Some(target.position)))
+            .filter(|target| toolset_grip_rail_reachable(app, window, Some(target.position)))
     };
     palette_frame_log(format_args!(
         "pin label={label} path={path} moved_to={moved_to:?} hidden_at={hidden_at:?} \
@@ -13590,11 +13685,12 @@ fn palette_moved_by_map<R: Runtime>(window: &tauri::Window<R>) -> bool {
     }
 }
 
-/// Whether enough of a palette's title strip lies on a monitor's work area for the user to grab it.
-/// Uses the same per-platform test as the content fit: points on macOS, virtual-desktop pixels
-/// elsewhere (Windows mixes monitor scales; Linux X11 reports pixels). `position` is the physical
-/// outer position to test, such as the one recorded before a hide; `None` reads the window's own.
-fn toolset_title_reachable<R: Runtime>(
+/// Whether enough of a palette's grip rail (the close control at its top and the grip below it)
+/// lies on a monitor's work area for the user to grab it. Uses the same per-platform test as the
+/// content fit: points on macOS, virtual-desktop pixels elsewhere (Windows mixes monitor scales;
+/// Linux X11 reports pixels). `position` is the physical outer position to test, such as the one
+/// recorded before a hide; `None` reads the window's own.
+fn toolset_grip_rail_reachable<R: Runtime>(
     app: &tauri::AppHandle<R>,
     window: &tauri::WebviewWindow<R>,
     position: Option<(i32, i32)>,
@@ -13606,26 +13702,23 @@ fn toolset_title_reachable<R: Runtime>(
             Err(_) => return false,
         },
     };
-    let (Ok(size), Ok(scale)) = (window.outer_size(), window.scale_factor()) else {
+    let Ok(scale) = window.scale_factor() else {
         return false;
     };
-    let width = size.to_logical::<f64>(scale).width;
     monitor_query::available_monitors(app)
         .unwrap_or_default()
         .iter()
         .any(|monitor| {
             #[cfg(target_os = "macos")]
             {
-                monitor_logical_work_area(monitor).contains_title_strip(
+                monitor_logical_work_area(monitor).contains_grip_rail(
                     f64::from(position.0) / scale,
                     f64::from(position.1) / scale,
-                    width,
-                    TOOLSET_TITLE_HEIGHT,
                 )
             }
             #[cfg(not(target_os = "macos"))]
             {
-                toolset_title_in_physical_work_area(position, width, scale, monitor.work_area())
+                toolset_grip_rail_in_physical_work_area(position, scale, monitor.work_area())
             }
         })
 }
@@ -14221,15 +14314,47 @@ mod tests {
     use super::*;
 
     #[test]
-    fn keybinding_scheme_defaults_to_the_industry_standard_scheme() {
+    fn the_native_menu_has_one_shortcut_set() {
         assert_eq!(KeybindingScheme::default(), KeybindingScheme::ChemDraw);
-        let state = KeybindingSchemeState::default();
-        assert_eq!(*state.0.lock().unwrap(), KeybindingScheme::ChemDraw);
-        assert_eq!(KeybindingScheme::default().rulers(), "CmdOrCtrl+;");
-        // An explicit scheme in the preferences file still wins, and none stored stays None.
-        let stored: DesktopPreferences =
-            serde_json::from_value(serde_json::json!({ "shortcutScheme": "chemdraft" })).unwrap();
-        assert_eq!(stored.shortcut_scheme, Some(KeybindingScheme::ChemDraft));
+        assert_eq!(KeybindingScheme::ChemDraw.rulers(), "CmdOrCtrl+;");
+        assert_eq!(KeybindingScheme::ChemDraw.crosshairs(), "Alt+CmdOrCtrl+X");
+        #[cfg(target_os = "macos")]
+        assert_eq!(KeybindingScheme::ChemDraw.export(), "Ctrl+Command+E");
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(KeybindingScheme::ChemDraw.export(), "CmdOrCtrl+E");
+        // The set's id is the only one the webview's menu push and the tour protocol accept.
+        assert_eq!(
+            serde_json::to_value(KeybindingScheme::ChemDraw).unwrap(),
+            serde_json::json!("chemdraw")
+        );
+        assert!(
+            serde_json::from_value::<KeybindingScheme>(serde_json::json!("chemdraft")).is_err()
+        );
+    }
+
+    #[test]
+    fn desktop_preferences_load_any_stored_shortcut_set_id_unchanged() {
+        // A retired preset's id, an unknown id and the set's own id all load, so an old
+        // preferences.json never fails startup, and the webview's one-time move still sees the old
+        // id and the custom keys stored under it.
+        for id in ["chemdraft", "chemdraw", "vim"] {
+            let stored: DesktopPreferences = serde_json::from_value(serde_json::json!({
+                "shortcutScheme": id,
+                "shortcutOverrides": { id: { "commands": { "document.save": ["Mod+F9"] } } }
+            }))
+            .unwrap();
+            assert_eq!(
+                stored.shortcut_scheme,
+                Some(StoredShortcutSetId(id.to_owned()))
+            );
+            assert_eq!(
+                serde_json::to_value(&stored).unwrap(),
+                serde_json::json!({
+                    "shortcutScheme": id,
+                    "shortcutOverrides": { id: { "commands": { "document.save": ["Mod+F9"] } } }
+                })
+            );
+        }
         let empty: DesktopPreferences = serde_json::from_value(serde_json::json!({})).unwrap();
         assert_eq!(empty.shortcut_scheme, None);
     }
@@ -14943,27 +15068,34 @@ mod tests {
     }
 
     #[test]
-    fn palette_content_fit_recovers_the_title_strip_and_keeps_a_reachable_dragged_origin() {
+    fn palette_content_fit_recovers_the_grip_rail_and_keeps_a_reachable_dragged_origin() {
         let area = ScreenRect::new(0.0, 24.0, 950.0, 636.0);
         for scale in [1.0, 1.5, 2.0] {
             let physical = |(x, y): (f64, f64)| ((x * scale) as i32, (y * scale) as i32);
-            // In each case the body may be visible but the title does not have a usable strip.
+            // In each case the body may be visible but the grip rail (close control on top) is
+            // not on the work area.
             for origin in [
                 (286.0, -100.0),
                 (286.0, 0.0),
-                (904.0, 110.0),
+                (-100.0, 110.0),
+                (940.0, 110.0),
                 (310.0, 640.0),
             ] {
                 let fit = toolset_content_placement(physical(origin), (940.0, 200.0), scale, area);
                 assert_ne!(fit.position, physical(origin));
-                assert!(area.contains_title_strip(
+                assert!(area.contains_grip_rail(
                     f64::from(fit.position.0) / scale,
                     f64::from(fit.position.1) / scale,
-                    940.0,
-                    TOOLSET_TITLE_HEIGHT,
                 ));
             }
-            for origin in [(310.0, 110.0), (902.0, 638.0)] {
+            // A palette whose right part runs off the screen keeps its place while the rail is on
+            // it (904: only 46 of 940 points are on screen, all of them the rail and beyond).
+            for origin in [
+                (310.0, 110.0),
+                (902.0, 638.0),
+                (904.0, 110.0),
+                (936.0, 110.0),
+            ] {
                 let dragged = physical(origin);
                 let fit = toolset_content_placement(dragged, (940.0, 660.0), scale, area);
                 assert_eq!(fit.position, dragged);
@@ -14983,7 +15115,6 @@ mod tests {
         };
         let area = toolset_work_area_for_origin(
             origin,
-            500.0,
             &[(primary, primary), (secondary, secondary_work_area)],
         )
         .unwrap();
@@ -15133,32 +15264,215 @@ mod tests {
     }
 
     #[test]
-    fn palette_title_does_not_overlap_a_high_dpi_monitor_across_a_physical_gap() {
-        // The 200% display starts at x = 1920. The 160 px palette on the 100% display starts
-        // 200 physical pixels before that edge, leaving a 40 px gap.
+    fn palette_grip_rail_does_not_overlap_a_high_dpi_monitor_across_a_physical_gap() {
+        // The 200% display starts at x = 1920. A 100% palette's 14 px rail must lie wholly on it.
         let high_dpi_work_area = tauri::PhysicalRect {
             position: tauri::PhysicalPosition::new(1920, 0),
             size: tauri::PhysicalSize::new(3840, 2080),
         };
-        assert!(!toolset_title_in_physical_work_area(
+        // 200 px before the edge: most of a wide palette may be on the display, never the rail.
+        assert!(!toolset_grip_rail_in_physical_work_area(
             (1720, 100),
-            160.0,
             1.0,
             &high_dpi_work_area,
         ));
-        assert!(toolset_title_in_physical_work_area(
-            (1808, 100),
-            160.0,
+        assert!(!toolset_grip_rail_in_physical_work_area(
+            (1919, 100),
             1.0,
             &high_dpi_work_area,
         ));
-        // At 200%, a 22-point title needs 44 physical pixels below the top edge.
-        assert!(!toolset_title_in_physical_work_area(
+        assert!(toolset_grip_rail_in_physical_work_area(
+            (1920, 100),
+            1.0,
+            &high_dpi_work_area,
+        ));
+        // At 200% the rail's reach (close control and first grip dots, 22 points) needs 44
+        // physical pixels above the bottom edge, and its 14 points need 28 before the right edge.
+        assert!(!toolset_grip_rail_in_physical_work_area(
             (1920, 2040),
-            160.0,
             2.0,
             &high_dpi_work_area,
         ));
+        assert!(toolset_grip_rail_in_physical_work_area(
+            (1920, 2036),
+            2.0,
+            &high_dpi_work_area,
+        ));
+        assert!(toolset_grip_rail_in_physical_work_area(
+            (5732, 100),
+            2.0,
+            &high_dpi_work_area,
+        ));
+        assert!(!toolset_grip_rail_in_physical_work_area(
+            (5733, 100),
+            2.0,
+            &high_dpi_work_area,
+        ));
+    }
+
+    #[test]
+    fn a_palette_saved_with_its_grip_rail_off_the_left_edge_moves_on_screen() {
+        let bounds = ScreenRect::new(0.0, 0.0, 1440.0, 900.0);
+        let area = ScreenRect::new(0.0, 24.0, 1440.0, 876.0);
+        let saved = ToolsetWindowPosition {
+            x: -100.0,
+            y: 200.0,
+        };
+        // 200 of the 300 points are on screen, which a title row would have accepted (analysis
+        // panels still use that rule), but the rail and its close control (x -100..-86) are not.
+        assert!(area.contains_title_strip(saved.x, saved.y, 300.0, TOOLSET_TITLE_HEIGHT));
+        assert!(!area.contains_grip_rail(saved.x, saved.y));
+        // No work area can explain the origin, so the caller falls back to the primary.
+        assert_eq!(toolset_work_area_for_origin(saved, &[(bounds, area)]), None);
+        let (position, width, height) =
+            toolset_frame_in_work_area(saved, (300.0, 60.0), false, area);
+        assert_eq!(
+            (position.x, position.y, width, height),
+            (0.0, 200.0, 300.0, 60.0)
+        );
+        assert!(area.contains_grip_rail(position.x, position.y));
+        // The content fit moves it too, at every scale.
+        for scale in [1.0, 1.5, 2.0] {
+            let origin = ((saved.x * scale) as i32, (saved.y * scale) as i32);
+            let fit = toolset_content_placement(origin, (300.0, 60.0), scale, area);
+            assert_eq!(fit.position, (0, (200.0 * scale) as i32));
+        }
+        // And so does the Windows clamp in virtual-desktop pixels.
+        let monitor = ToolsetMonitor {
+            identity: panel_window_frame::MonitorIdentity {
+                name: None,
+                position: (0, 0),
+                size: (1440, 900),
+            },
+            scale: 1.0,
+            work_area: area,
+        };
+        let (placement, adjusted) = clamp_toolset_frame_in_physical_space_clear_of(
+            ToolsetFrameOrigin::Physical((-100, 200), 1.0),
+            (300.0, 60.0),
+            false,
+            std::slice::from_ref(&monitor),
+            &monitor,
+            None,
+        );
+        assert!(adjusted);
+        assert_eq!(placement.position, (0, 200));
+    }
+
+    #[test]
+    fn a_palette_whose_right_part_is_off_screen_keeps_its_place_while_its_rail_is_visible() {
+        let bounds = ScreenRect::new(0.0, 0.0, 1440.0, 900.0);
+        let area = ScreenRect::new(0.0, 24.0, 1440.0, 876.0);
+        // Only the rail and 26 points of tools are on screen; the rest runs past the right edge.
+        for x in [1400.0, 1426.0, 0.0] {
+            let saved = ToolsetWindowPosition { x, y: 200.0 };
+            assert!(area.contains_grip_rail(saved.x, saved.y));
+            assert_eq!(
+                toolset_work_area_for_origin(saved, &[(bounds, area)]),
+                Some(area)
+            );
+            let (position, _, _) = toolset_frame_in_work_area(saved, (300.0, 60.0), false, area);
+            assert_eq!((position.x, position.y), (x, 200.0));
+        }
+        // One point further and the rail's right edge leaves the screen.
+        assert!(!area.contains_grip_rail(1427.0, 200.0));
+        let (position, _, _) = toolset_frame_in_work_area(
+            ToolsetWindowPosition {
+                x: 1427.0,
+                y: 200.0,
+            },
+            (300.0, 60.0),
+            false,
+            area,
+        );
+        assert_eq!((position.x, position.y), (1140.0, 200.0));
+        let monitor = ToolsetMonitor {
+            identity: panel_window_frame::MonitorIdentity {
+                name: None,
+                position: (0, 0),
+                size: (1440, 900),
+            },
+            scale: 1.0,
+            work_area: area,
+        };
+        let (placement, adjusted) = clamp_toolset_frame_in_physical_space_clear_of(
+            ToolsetFrameOrigin::Physical((1400, 200), 1.0),
+            (300.0, 60.0),
+            false,
+            std::slice::from_ref(&monitor),
+            &monitor,
+            None,
+        );
+        assert!(!adjusted);
+        assert_eq!(placement.position, (1400, 200));
+    }
+
+    #[test]
+    fn a_palette_grip_rail_is_judged_at_its_monitor_scale_across_mixed_displays() {
+        // A 100% primary and a 200% secondary to its right (2560x1500 pixels, 1280x750 points
+        // with a 720-point work area).
+        let monitors = [
+            ToolsetMonitor {
+                identity: panel_window_frame::MonitorIdentity {
+                    name: None,
+                    position: (0, 0),
+                    size: (1920, 1080),
+                },
+                scale: 1.0,
+                work_area: ScreenRect::new(0.0, 0.0, 1920.0, 1080.0),
+            },
+            ToolsetMonitor {
+                identity: panel_window_frame::MonitorIdentity {
+                    name: None,
+                    position: (1920, 0),
+                    size: (2560, 1500),
+                },
+                scale: 2.0,
+                work_area: ScreenRect::new(0.0, 0.0, 1280.0, 720.0),
+            },
+        ];
+        let clamp = |origin: (i32, i32), scale: f64| {
+            clamp_toolset_frame_in_physical_space_clear_of(
+                ToolsetFrameOrigin::Physical(origin, scale),
+                (300.0, 60.0),
+                false,
+                &monitors,
+                &monitors[0],
+                None,
+            )
+        };
+        // On the 200% display the rail is 28 pixels: at 1240 points its rail (to 1254) is on
+        // the 1280-point work area while most of the 300-point palette is past the edge.
+        let (placement, adjusted) = clamp((1920 + 2480, 200), 2.0);
+        assert!(!adjusted);
+        assert_eq!(placement.position, (4400, 200));
+        // At 1275 points the rail would end at 1289: moved back so the whole palette fits.
+        let (placement, adjusted) = clamp((1920 + 2550, 200), 2.0);
+        assert!(adjusted);
+        assert_eq!(placement.position, (1920 + 2 * 980, 200));
+        // A 100% palette straddling the seam has its rail on neither display.
+        let physical_area = |monitor: &ToolsetMonitor| tauri::PhysicalRect {
+            position: tauri::PhysicalPosition::new(
+                monitor.identity.position.0 + (monitor.work_area.x * monitor.scale) as i32,
+                monitor.identity.position.1 + (monitor.work_area.y * monitor.scale) as i32,
+            ),
+            size: tauri::PhysicalSize::new(
+                (monitor.work_area.width * monitor.scale) as u32,
+                (monitor.work_area.height * monitor.scale) as u32,
+            ),
+        };
+        let areas = monitors.iter().map(physical_area).collect::<Vec<_>>();
+        let reachable = |position: (i32, i32), scale: f64| {
+            areas
+                .iter()
+                .any(|area| toolset_grip_rail_in_physical_work_area(position, scale, area))
+        };
+        assert!(!reachable((1910, 200), 1.0));
+        assert!(reachable((1906, 200), 1.0));
+        assert!(reachable((1920, 200), 1.0));
+        // A 200% palette's rail needs 28 pixels on the 100% display, a 100% palette's only 14.
+        assert!(!reachable((1900, 200), 2.0));
+        assert!(reachable((1900, 200), 1.0));
     }
 
     #[test]
@@ -17011,6 +17325,88 @@ mod tests {
     }
 
     #[test]
+    fn toolbar_tool_choices_are_credited_to_the_sending_windows_own_toolbar() {
+        // A plugin toolbar claiming a core toolbar's control: the toolset in the payload is ignored
+        // and the choice is credited to the toolset Rust recorded for the plugin's window.
+        let forged: ToolbarToolChoiceClaim = serde_json::from_value(serde_json::json!({
+            "toolsetId": "core.structure",
+            "itemId": "tool.bond",
+            "flyoutId": "bond-tools"
+        }))
+        .expect("claim");
+        let choice = verified_toolbar_tool_choice(
+            ToolbarToolChoiceSender::Palette("plugin.fixture"),
+            "tool.dashedBond",
+            forged,
+        );
+        expect_eq("plugin.fixture", choice.toolset_id.as_str());
+        expect_eq(Some("tool.bond"), choice.item_id.as_deref());
+
+        // A popover speaks for the dropdown of its verified opening, whatever the claim says.
+        let opening = ToolsetFlyoutOpening {
+            toolset_id: "plugin.fixture".into(),
+            flyout_id: "fixture-tools".into(),
+            opened_at: 1.0,
+            generation: Some(1),
+            bond_stereo_session_id: None,
+        };
+        let choice = verified_toolbar_tool_choice(
+            ToolbarToolChoiceSender::Flyout(&opening),
+            "tool.wedgeBond",
+            ToolbarToolChoiceClaim {
+                item_id: Some("tool.bond".into()),
+                flyout_id: Some("bond-tools".into()),
+            },
+        );
+        expect_eq(
+            &ToolbarToolChoice {
+                toolset_id: "plugin.fixture".into(),
+                command_id: "tool.wedgeBond".into(),
+                item_id: None,
+                flyout_id: Some("fixture-tools".into()),
+            },
+            &choice,
+        );
+        // The DOM payload the toolbars read: camelCase, no nulls for missing controls.
+        expect_eq(
+            serde_json::json!({
+                "toolsetId": "plugin.fixture",
+                "commandId": "tool.wedgeBond",
+                "flyoutId": "fixture-tools"
+            }),
+            serde_json::to_value(&choice).expect("payload"),
+        );
+    }
+
+    #[test]
+    fn toolbar_tool_choices_reach_every_toolbar_window_but_the_sender() {
+        let palettes = [
+            "toolset-core-main".to_string(),
+            "toolset-core-structure".to_string(),
+            "toolset-plugin-fixture".to_string(),
+        ];
+        // An inline choice is never echoed back to the palette it was made in.
+        expect_eq(
+            vec![
+                MAIN_WINDOW_LABEL.to_string(),
+                "toolset-core-main".to_string(),
+                "toolset-plugin-fixture".to_string(),
+            ],
+            toolbar_tool_choice_targets("toolset-core-structure", &palettes),
+        );
+        // A flyout's choice reaches every palette, its owner included.
+        expect_eq(
+            vec![
+                MAIN_WINDOW_LABEL.to_string(),
+                "toolset-core-main".to_string(),
+                "toolset-core-structure".to_string(),
+                "toolset-plugin-fixture".to_string(),
+            ],
+            toolbar_tool_choice_targets("toolset-popover-core-main", &palettes),
+        );
+    }
+
+    #[test]
     fn toolset_window_labels_are_stable_and_sanitized() {
         expect_eq("toolset-core-main", &toolset_window_label("core.main"));
         expect_eq(
@@ -17071,6 +17467,7 @@ mod tests {
         let state: PersistedToolsetState =
             serde_json::from_str(r#"{"x":-125.0,"y":275.0,"width":413.0,"height":317.0}"#).unwrap();
         for (id, expected) in [
+            ("core.main", None),
             ("core.layout", None),
             ("core.ringInspector", None),
             ("core.molecularInspector", Some((413.0, 317.0))),
@@ -18237,7 +18634,8 @@ mod tests {
                 panic!("an inspector's title strip is never measured")
             }));
         }
-        // A palette the user left partly off-screen keeps its place while its title is reachable.
+        // A palette the user left partly off-screen keeps its place while its grip rail is
+        // reachable.
         expect_false(restore_refits_toolset(false, false, || true));
         expect_true(restore_refits_toolset(false, false, || false));
         // A frame ChemDraft fitted earlier still recovers.
@@ -18277,7 +18675,7 @@ mod tests {
         let show = restore
             .find("restore_utility_in_document_group(&window)")
             .unwrap();
-        expect_true(hidden < restore.find("toolset_title_reachable(").unwrap());
+        expect_true(hidden < restore.find("toolset_grip_rail_reachable(").unwrap());
         expect_true(pin < show);
         // A palette shown again at its pin's clamp is moved back without waiting for a Moved event.
         expect_true(

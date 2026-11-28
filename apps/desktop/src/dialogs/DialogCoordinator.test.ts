@@ -30,12 +30,14 @@ describe("DialogCoordinator", () => {
     const randomUUID = vi.spyOn(crypto, "randomUUID")
       .mockReturnValueOnce("00000000-0000-4000-8000-000000000001")
       .mockReturnValueOnce("00000000-0000-4000-8000-000000000002");
+    // The retired preset's custom keys are ignored: only the one set's key reaches the snapshot.
     const bondKeys = tourBondKeys({
       chemdraft: { atom: { "atom.addSingleBondToHoveredAtom": [] } },
       chemdraw: { atom: { "atom.addSingleBondToHoveredAtom": ["j"] } }
     });
+    expect(bondKeys).toEqual({ chemdraw: "j" });
     try {
-      await h.coordinator.openGuidedTour("chemdraft", false, [TOUR_NAME_COMMAND], bondKeys);
+      await h.coordinator.openGuidedTour(false, [TOUR_NAME_COMMAND], bondKeys);
       expect(h.transport.open).toHaveBeenCalledOnce();
       const [[snapshot]] = vi.mocked(h.transport.open).mock.calls;
       await expect(JSON.stringify(snapshot, null, 2) + "\n")

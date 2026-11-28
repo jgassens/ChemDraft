@@ -4,8 +4,8 @@ import { DOCUMENT_ZOOM_PRESETS, documentZoomActions, documentZoomCommandId, docu
   isDocumentZoomState, normalizeDocumentZoomRange, documentZoomClientCenter, documentZoomStepScale } from "./documentZoom";
 import { allShellCommands } from "./commands";
 import { createPhase4Document } from "./documentWorkflow";
-import { getToolsetItemGroups } from "./toolsets";
-import { TOOLBAR_WIDGET_GRID_SPANS, TOOLBAR_WIDGET_IDS } from "./toolbars/toolbarWidgets";
+import { getToolsetItemGroups, toolbarWidgetGridSpan } from "./toolsets";
+import { TOOLBAR_WIDGET_IDS } from "./toolbars/toolbarWidgets";
 
 describe("document zoom controls", () => {
   it("walks the agreed button steps in both directions and stays at the limits", () => {
@@ -50,8 +50,8 @@ describe("document zoom controls", () => {
   it("ships a customizable grid widget on Main only", () => {
     expect(getToolsetItemGroups("core.main")[0][0].id).toBe(TOOLBAR_WIDGET_IDS.documentZoom);
     expect(getToolsetItemGroups("core.main").flat().find(item => item.id === TOOLBAR_WIDGET_IDS.documentZoom))
-      .toMatchObject({ kind: "control", layout: { colSpan: 6, rowSpan: 1 } });
+      .toMatchObject({ kind: "control", layout: { colSpan: 4, rowSpan: 1 } });
     expect(getToolsetItemGroups("core.art").flat().some(item => item.id === TOOLBAR_WIDGET_IDS.documentZoom)).toBe(false);
-    expect(TOOLBAR_WIDGET_GRID_SPANS[TOOLBAR_WIDGET_IDS.documentZoom]).toEqual({ colSpan: 6, rowSpan: 1 });
+    expect(toolbarWidgetGridSpan(TOOLBAR_WIDGET_IDS.documentZoom)).toEqual({ colSpan: 4, rowSpan: 1 });
   });
 });

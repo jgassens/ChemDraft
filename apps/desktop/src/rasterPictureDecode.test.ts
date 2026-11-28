@@ -11,6 +11,8 @@ import {
   rasterPicturePlaceholderHref,
   readPngSize
 } from "./rasterPictureDecode";
+import { readRasterHeaderSize } from "@chemdraft/export-engine";
+import { jpegHeader } from "./imageDrop/testFixtures";
 import { picturePngBase64 } from "./testSupport/imageFixture";
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
@@ -55,7 +57,7 @@ describe("raster picture decoding", () => {
     const svg = page(
       pngImage(picturePngBase64, 'data-chemdraft-picture-frame="1 2 30 40 0"'),
       '<image width="5" height="5" href="data:image/svg+xml;base64,PHN2Zy8+"/>',
-      '<image width="5" height="5" href="data:image/jpeg;base64,/9j/4AAQ"/>',
+      '<image width="5" height="5" href="data:image/gif;base64,R0lGODlhAQABAAAAACw="/>',
       `<image width="5" height="5" xlink:href="data:image/png;base64,${pngHeader(2, 1)}"/>`
     );
     const prepared = await prepareRasterPictures(svg, { decode });
@@ -68,7 +70,7 @@ describe("raster picture decoding", () => {
     expect([...pixels.subarray(-4)]).toEqual([10, 20, 30, 255]);
     expect(prepared.svg).not.toContain(picturePngBase64);
 
-    const [picture, svgPicture, jpegPicture, xlinkPicture] = images(prepared.svg);
+    const [picture, svgPicture, gifPicture, xlinkPicture] = images(prepared.svg);
     expect(picture.getAttribute("id")).toBe("chemdraft-raster-picture-0");
     expect(picture.getAttribute("href")).toBe(rasterPicturePlaceholderHref(144, 72, "chemdraft-raster-picture-0"));
     for (const name of ["x", "y", "width", "height", "preserveAspectRatio", "data-chemdraft-picture-frame"]) {
@@ -76,9 +78,40 @@ describe("raster picture decoding", () => {
     }
     // SVG pictures already draw natively; other bitmaps keep Rust's omitted-picture warning.
     expect(svgPicture.outerHTML).toBe(images(svg)[1].outerHTML);
-    expect(jpegPicture.outerHTML).toBe(images(svg)[2].outerHTML);
+    expect(gifPicture.outerHTML).toBe(images(svg)[2].outerHTML);
     expect(xlinkPicture.getAttributeNS("http://www.w3.org/1999/xlink", "href"))
       .toBe(rasterPicturePlaceholderHref(2, 1, "chemdraft-raster-picture-1"));
+  });
+
+  it("decodes a JPEG picture (a kept photo, as SVG export writes it) like a PNG, transform and all", async () => {
+    const jpeg = bytesToBase64(jpegHeader(6, 4));
+    const decode = vi.fn(async (bytes: Uint8Array<ArrayBuffer>, mimeType: string) => {
+      const size = readRasterHeaderSize(mimeType === "image/jpeg" ? "jpeg" : "png", bytes)!;
+      return { width: size.width, height: size.height, rgba: new Uint8ClampedArray(size.width * size.height * 4).fill(9) };
+    });
+    const svg = page(`<image x="1" y="2" width="6" height="4" transform="matrix(0 1 -1 0 8 1)" preserveAspectRatio="none" href="data:image/jpeg;base64,${jpeg}"/>`,
+      '<image width="5" height="5" href="data:image/jpeg;base64,/9j/4AAQ"/>');
+    const prepared = await prepareRasterPictures(svg, { decode });
+    expect(decode).toHaveBeenCalledExactlyOnceWith(bytesOf(jpeg), "image/jpeg");
+    expect(prepared.pictures).toEqual([
+      { id: "chemdraft-raster-picture-0", width: 6, height: 4, rgbaBase64: bytesToBase64(new Uint8Array(6 * 4 * 4).fill(9)) },
+      // A JPEG whose frame header cannot be read is not decoded; Rust names it as not drawn.
+      { id: "chemdraft-raster-picture-1", refused: "decodeFailed" }
+    ]);
+    const [photo] = images(prepared.svg);
+    expect(photo.getAttribute("href")).toBe(rasterPicturePlaceholderHref(6, 4, "chemdraft-raster-picture-0"));
+    expect(photo.getAttribute("transform")).toBe("matrix(0 1 -1 0 8 1)");
+  });
+
+  it("accepts a JPEG the decoder turned by its own EXIF orientation, and nothing else of another size", async () => {
+    const jpeg = bytesToBase64(jpegHeader(6, 4));
+    const svg = page(`<image width="6" height="4" href="data:image/jpeg;base64,${jpeg}"/>`);
+    const sized = (width: number, height: number) => vi.fn(async () => ({ width, height, rgba: new Uint8ClampedArray(width * height * 4) }));
+    expect((await prepareRasterPictures(svg, { decode: sized(4, 6) })).pictures[0]).toMatchObject({ width: 4, height: 6 });
+    expect((await prepareRasterPictures(svg, { decode: sized(5, 4) })).pictures[0]).toEqual({ id: "chemdraft-raster-picture-0", refused: "decodeFailed" });
+    // A PNG's own size is never swapped.
+    const png = page(pngImage(pngHeader(6, 4)));
+    expect((await prepareRasterPictures(png, { decode: sized(4, 6) })).pictures[0]).toEqual({ id: "chemdraft-raster-picture-0", refused: "decodeFailed" });
   });
 
   it("refuses a picture over 16384 px a side before decoding it", async () => {

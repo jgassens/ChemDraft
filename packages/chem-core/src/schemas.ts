@@ -3,7 +3,7 @@ import { NativeFieldPatternSchema } from "./nativeFieldPatterns";
 import { isNativeRecord, NativeExtensionsSchema, NativeVersionSchema, ownNativeValue } from "./nativeCompatibilityState";
 import { normalizeAtomIsotope } from "./isotopes";
 import { atomicNumberForElementSymbol } from "./elements";
-import { decodeImageBase64, imageBase64Error } from "./imageBytes";
+import { decodeBase64Bytes, imageBase64Error } from "./imageBytes";
 import { imagePixelLimitError, validatePngImage } from "./imageInfo";
 import { compileObjectReferenceCheck, objectReferenceField, type ObjectLink } from "./objectReferenceFields";
 import {
@@ -727,8 +727,40 @@ const GraphicObjectShapeSchema = BaseObjectSchema.extend({
   data: GraphicObjectDataSchema.default({})
 }).strict();
 
+/**
+ * Picture data already checked by `validateGraphicImage` (it is in a document) or by its builder,
+ * while `parseWithValidatedImage` runs. A parse of an object carrying this very data skips the
+ * decode and the scan: a move or resize leaves a picture's data alone, and decoding a large picture
+ * on every nudge kept the app busy for most of a second.
+ */
+let validatedImage: ImageObjectData | undefined;
+
+/** Whether `image` is `validatedImage`'s data: the same text (the same string, normally), type and pixel size. */
+function isValidatedImage(image: ImageObjectData): boolean {
+  const trusted = validatedImage;
+  return trusted !== undefined && (image === trusted || (image.dataBase64 === trusted.dataBase64 &&
+    image.mimeType === trusted.mimeType && image.pixelWidth === trusted.pixelWidth && image.pixelHeight === trusted.pixelHeight));
+}
+
+/**
+ * Run `parse` (synchronous) with `image` trusted: `image` must already have passed this module's
+ * picture checks, as the data of an object in a validated document has. Everything else, the
+ * image's own fields included, is still validated.
+ */
+export function parseWithValidatedImage<T>(image: ImageObjectData | undefined, parse: () => T): T {
+  if (!image) return parse();
+  const previous = validatedImage;
+  validatedImage = image;
+  try {
+    return parse();
+  } finally {
+    validatedImage = previous;
+  }
+}
+
 function validateGraphicImage(object: z.infer<typeof GraphicObjectShapeSchema>, context: z.RefinementCtx) {
   if (object.data.image) {
+    if (isValidatedImage(object.data.image)) return;
     const message = imageBase64Error(object.data.image.dataBase64, object.id);
     if (message) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["data", "image", "dataBase64"], message });
@@ -737,7 +769,7 @@ function validateGraphicImage(object: z.infer<typeof GraphicObjectShapeSchema>, 
     const image = object.data.image;
     // Existing SVG payloads are preserved on load; completeness is checked when pasting.
     if (image.mimeType !== "image/png") return;
-    const bytes = decodeImageBase64(image.dataBase64, object.id);
+    const bytes = decodeBase64Bytes(image.dataBase64);
     const result = validatePngImage(bytes);
     const error = result.error ?? imagePixelLimitError(image.pixelWidth, image.pixelHeight);
     if (error) context.addIssue({ code: z.ZodIssueCode.custom,

@@ -9,13 +9,12 @@
   "type": "snapshot",
   "data": {
     "title": "Take the Tour",
-    "scheme": "chemdraft",
+    "scheme": "chemdraw",
     "automatic": false,
     "plugins": [
       "plugin.opsinNameToStructure.convert"
     ],
     "bondKeys": {
-      "chemdraft": null,
       "chemdraw": "j"
     }
   }

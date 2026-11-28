@@ -56,7 +56,7 @@ describe("canvas clipboard menu and copy guard", () => {
 
   beforeEach(() => {
     vi.mocked(depictSmilesForPaste).mockReset();
-    saveKeybindingSettings({ scheme: "chemdraft" });
+    saveKeybindingSettings({ scheme: "chemdraw" });
     originalResizeObserver = globalThis.ResizeObserver;
     globalThis.ResizeObserver = TestResizeObserver as unknown as typeof ResizeObserver;
     HTMLElement.prototype.setPointerCapture = () => {};
@@ -73,7 +73,7 @@ describe("canvas clipboard menu and copy guard", () => {
       root.unmount();
     });
     container.remove();
-    saveKeybindingSettings({ scheme: "chemdraft" });
+    saveKeybindingSettings({ scheme: "chemdraw" });
     if (originalResizeObserver) {
       globalThis.ResizeObserver = originalResizeObserver;
     } else {

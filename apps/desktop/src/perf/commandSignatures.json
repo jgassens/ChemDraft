@@ -64,6 +64,14 @@
     "returnType": "Result<Option<String>, String>"
   },
   {
+    "file": "canvas_context_menu.rs",
+    "name": "popup_toolbar_context_menu",
+    "async": true,
+    "generics": "<R: Runtime>",
+    "parameters": "app: AppHandle<R>, window: WebviewWindow<R>, toolset_id: String,",
+    "returnType": "Result<Option<ToolbarMenuChoice>, String>"
+  },
+  {
     "file": "canvas_occlusion.rs",
     "name": "document_canvas_occlusion",
     "async": false,
@@ -637,7 +645,7 @@
     "async": false,
     "generics": "",
     "parameters": "window: tauri::WebviewWindow, width: f64, height: f64,",
-    "returnType": "Result<bool, String>"
+    "returnType": "Result<Option<tauri::PhysicalSize<u32>>, String>"
   },
   {
     "file": "lib.rs",
@@ -652,7 +660,7 @@
     "name": "route_toolset_command",
     "async": false,
     "generics": "",
-    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, command_id: String, preserve_input_focus: Option<bool>, commit: Option<bool>, flyout_opening: Option<ToolsetFlyoutOpening>,",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, command_id: String, preserve_input_focus: Option<bool>, commit: Option<bool>, flyout_opening: Option<ToolsetFlyoutOpening>, tool_choice: Option<ToolbarToolChoiceClaim>,",
     "returnType": "Result<(), String>"
   },
   {
@@ -844,8 +852,8 @@
     "name": "monitor_logical_bounds_at",
     "async": false,
     "generics": "",
-    "parameters": "window: tauri::WebviewWindow, x: f64, y: f64,",
-    "returnType": "Option<LogicalBounds>"
+    "parameters": "window: tauri::WebviewWindow, x: f64, y: f64, window_space: Option<bool>,",
+    "returnType": "Option<MonitorLogicalArea>"
   },
   {
     "file": "naming_engine/mod.rs",

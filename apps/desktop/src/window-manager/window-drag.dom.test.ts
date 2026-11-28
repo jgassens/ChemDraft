@@ -19,7 +19,10 @@ const native = vi.hoisted(() => ({
   resize: vi.fn()
 }));
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ startDragging: native.drag, setPosition: native.move, setSize: native.resize }),
+  getCurrentWindow: () => ({
+    startDragging: native.drag, setPosition: native.move, setSize: native.resize,
+    innerSize: () => native.invoke("plugin:window|inner_size")
+  }),
   LogicalSize: class {
     constructor(public width: number, public height: number) {}
   }
@@ -89,10 +92,19 @@ describe.each(["macos", "windows"] as const)("native title dragging (%s)", platf
   }
 
   it("retries the same content measurement after a skipped resize", async () => {
-    const outcomes = [false, true];
-    native.invoke.mockImplementation(async (command) => {
+    let skipped = false;
+    let live: unknown;
+    native.invoke.mockImplementation(async (command, args) => {
       if (command === "current_window_logical_work_area") return { left: 0, top: 24, right: 1920, bottom: 1040 };
-      if (command === "resize_toolset_window") return outcomes.shift();
+      if (command === "resize_toolset_window") {
+        if (!skipped) {
+          skipped = true;
+          return null;
+        }
+        live = args;
+        return args;
+      }
+      if (command === "plugin:window|inner_size") return live;
     });
     const requests = () => native.invoke.mock.calls.filter(([command]) => command === "resize_toolset_window");
     const workAreaReads = () => native.invoke.mock.calls.filter(([command]) => command === "current_window_logical_work_area").length;
@@ -120,7 +132,14 @@ describe.each(["macos", "windows"] as const)("native title dragging (%s)", platf
         ? new DOMRect(0, 0, contentWidth, contentHeight)
         : new DOMRect();
     });
-    native.invoke.mockImplementation(async (command) => command === "resize_toolset_window" ? true : undefined);
+    let live: unknown;
+    native.invoke.mockImplementation(async (command, args) => {
+      if (command === "resize_toolset_window") {
+        live = args;
+        return args;
+      }
+      if (command === "plugin:window|inner_size") return live;
+    });
     const registry = createDesktopToolsetRegistry({
       version: 1,
       toolsetOverrides: [{ toolsetId: "core.layout", preferredWindowSize: { width: 413, height: 317 } }]
@@ -283,9 +302,12 @@ describe.each(["macos", "windows"] as const)("native title dragging (%s)", platf
     expectOneCompensatedDrag();
   });
 
-  it("routes the palette content grip through that same single path", async () => {
+  // Native palette windows draw no in-content grip (the shell's grip rail replaced it); a press on
+  // the toolbar's blank background reaches the shell's drag path instead.
+  it("routes a blank toolbar press through that same single path", async () => {
     await mount("palette");
-    await press(container.querySelector<HTMLElement>("[data-palette-content-drag-grip]")!);
+    expect(container.querySelector("[data-palette-content-drag-grip]")).toBeNull();
+    await press(container.querySelector<HTMLElement>(".tool-palette")!);
     expectOneCompensatedDrag();
   });
 
@@ -297,7 +319,7 @@ describe.each(["macos", "windows"] as const)("native title dragging (%s)", platf
 
   const dragSurfaces = [
     ["palette", ".palette-title"],
-    ["palette", "[data-palette-content-drag-grip]"],
+    ["palette", ".tool-palette"],
     ["panel", ".palette-title"]
   ] as const;
 

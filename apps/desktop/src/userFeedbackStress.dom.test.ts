@@ -81,7 +81,7 @@ describe("user feedback app stress", () => {
     for (const name of captureMethods) Object.defineProperty(HTMLElement.prototype, name, {
       configurable: true, value: name === "hasPointerCapture" ? () => false : () => {}
     });
-    saveKeybindingSettings({ scheme: "chemdraft" });
+    saveKeybindingSettings({ scheme: "chemdraw" });
     window.history.replaceState(null, "", "/?agentBridge=1");
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   });
@@ -826,13 +826,14 @@ describe("user feedback app stress", () => {
     report("C ring valence", started, `clicks=40 atomClicks=${counts.atoms} bondClicks=${counts.bonds} refusedSeparate=${counts.refused} fused=${counts.fused} closures=${counts.closures} spiro=${counts.spiro} molecules=${molecules(current()).length} overValent=${overValent(current()).length}`);
   }, 120000);
 
-  it.each(["macos", "windows"] as const)("D: 30 rapid label characters and continuation Backspace/Delete never delete objects (%s)", async p => {
+  it.each(["macos", "windows"] as const)("D: 30 rapid label characters and editor Backspace/Delete never delete objects (%s)", async p => {
     platform(p); const doc = insertNativeTemplateMolecule(createPhase4Document("Typing"), { x: 300, y: 300 }, "cyclohexane");
-    await mount(selectDocumentObjects(doc, doc.pages[0].id, []), "tool.bond");
+    await mount(selectDocumentObjects(doc, doc.pages[0].id, []), "tool.atom");
     const before = molecules(current())[0], started = performance.now();
+    // The Atom Label tool opens the label editor on the clicked atom.
     await pointer("pointermove", before.atoms[0]);
-    // Keep all 30 characters within the known formula grammar: exhausted hover text now hands
-    // the next key back to canvas shortcuts instead of accepting arbitrary label text.
+    await pointer("pointerdown", before.atoms[0], container.querySelector(`[data-object-id="${before.id}"]`)!);
+    expect(editor()).not.toBeNull();
     const label = "O" + "CH".repeat(14) + "N";
     for (const char of label) await key(char);
     expect(editor()?.value).toBe(label);
@@ -842,26 +843,9 @@ describe("user feedback app stress", () => {
     expect(editor()?.value).toBe(finalLabel); await key("Enter");
     expect(molecules(current())[0].atoms[0].element).toBe(finalLabel);
     expect(molecules(current())[0].bonds).toEqual(before.bonds);
-    expect(current().pages[0].objects).toHaveLength(1); expect(snapshot().activeToolCommandId).toBe("tool.bond");
-    report(`D continuation ${p}`, started, "characters=30 deletionKeys=2 deletedObjects=0");
+    expect(current().pages[0].objects).toHaveLength(1); expect(snapshot().activeToolCommandId).toBe("tool.atom");
+    report(`D label editor ${p}`, started, "characters=30 deletionKeys=2 deletedObjects=0");
   }, 120000);
-
-  // The pointer drifting off the atom onto its own bond mid-label used to fall through to tool
-  // shortcuts (M = Single Bond, e = Eraser). The label now continues on the atom.
-  it.each(["macos", "windows"] as const)("D: O → bond drift → M → e continues OMe rather than arming the Eraser (%s)", async p => {
-    platform(p); const doc = insertNativeTemplateMolecule(createPhase4Document("Drift"), { x: 300, y: 300 }, "cyclohexane");
-    await mount(selectDocumentObjects(doc, doc.pages[0].id, []), "tool.bond");
-    const mol = molecules(current())[0], a = mol.atoms[0], b = mol.atoms[1], started = performance.now();
-    await pointer("pointermove", a); await key("O");
-    await pointer("pointermove", { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
-    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond" });
-    await key("M"); await key("e");
-    const deleted = doc.pages[0].objects.length - current().pages[0].objects.length;
-    console.info(`[stress D drift ${p}] keys=3 editor=${editor()?.value} tool=${snapshot().activeToolCommandId} deletedObjects=${deleted} ms=${(performance.now() - started).toFixed(1)}`);
-    expect(editor()?.value).toBe("OMe");
-    expect(snapshot().activeToolCommandId).toBe("tool.bond");
-    expect(deleted).toBe(0);
-  });
 
   it.each(["macos", "windows"] as const)("F: 50 rapid Text placements/commits have atomic conversion or label undo and leave no stray text (%s)", async p => {
     platform(p); const doc = insertNativeSingleBondMolecule(createPhase4Document("Text stress"), { x: 300, y: 300 });
@@ -884,8 +868,12 @@ describe("user feedback app stress", () => {
         await act(async () => text.blur()); focused.mockRestore();
         expect(current().pages[0].objects.some(o => o.type === "text")).toBe(false);
         const committed = current().pages[0].objects;
+        expect(committed[committed.length - 1]).toMatchObject({ type: "molecule", atoms: [{ element: "N" }] });
+        const placedFrom = committed.slice(0, -1);
+        // One undo removes the typed atom with its placement: no text box is left behind (1.2.3).
         await command("edit.undo");
-        expect(current().pages[0].objects.filter(o => o.type === "text")).toHaveLength(1);
+        expect(current().pages[0].objects.filter(o => o.type === "text")).toHaveLength(0);
+        expect(current().pages[0].objects).toEqual(placedFrom);
         await command("edit.redo"); expect(current().pages[0].objects).toEqual(committed);
       }
     }

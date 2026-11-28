@@ -15,7 +15,7 @@ export interface CanvasContextMenuProps {
   onInvoke(commandId: string): void;
   onDismiss(): void;
   onFocusReturn?(): void;
-  /** Read-only stereo row ("Stereocentre: R"), resolved lazily; must not reject. The menu opens
+  /** Read-only stereo row ("Stereocenter: R"), resolved lazily; must not reject. The menu opens
    * without waiting for it and omits the row when it resolves to undefined. */
   loadStereoReadout?: () => Promise<string | undefined>;
 }

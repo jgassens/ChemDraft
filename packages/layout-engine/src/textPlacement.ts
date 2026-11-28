@@ -12,6 +12,11 @@ export function cssTextFirstBaseline(lineHeightPx: number, metrics: NativeTextCs
   return metrics.ascentPx + (lineHeightPx - metrics.ascentPx - metrics.descentPx) / 2;
 }
 
+/** The fixed baseline step between unwrapped lines (every unwrapped line break is a paragraph). */
+export function nativeTextLineAdvance(style: Pick<ReturnType<typeof nativeTextStyleFromObjectStyle>, "fontSizePx" | "lineHeight" | "paragraphSpacingPx">): number {
+  return style.fontSizePx * style.lineHeight + style.paragraphSpacingPx;
+}
+
 /** The baseline and alignment anchor used by both SVG and the live editor. Page units. */
 export function planTextObjectPlacement(object: TextObject) {
   const style = nativeTextStyleFromObjectStyle(object.style);
@@ -22,7 +27,7 @@ export function planTextObjectPlacement(object: TextObject) {
     x: object.x + alignment * object.width,
     y: object.y + style.fontSizePx,
     textAnchor: alignment === 0.5 ? "middle" : alignment === 1 ? "end" : "start",
-    lineAdvance: style.fontSizePx * style.lineHeight + style.paragraphSpacingPx
+    lineAdvance: nativeTextLineAdvance(style)
   } as const;
 }
 

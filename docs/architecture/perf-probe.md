@@ -159,7 +159,7 @@ Toolbar-local rows retain `doneSignal: "forwarded"`, `extra.nonCompleting: true`
 completion/frame latency. Count one interaction by its IDs; do not sum its rows.
 Additional surface/startup rows are not inputs. Canvas pointerdown remains pending across preview frames until the document commits.
 The main window gives the probe the **same live shortcut registry instance** used by its keydown
-handler. Resolution honors the active binding scheme, platform alternates (including Windows Ctrl+Y),
+handler. Resolution honors the shortcut set and the user's custom keys, platform alternates (including Windows Ctrl+Y),
 disabled commands, and text-field filtering. This also identifies clipboard shortcuts which are
 left to native clipboard events rather than dispatched through `invoke`. Dispatch instrumentation
 can refine the command ID; internal forced-document-history wrappers are stripped from Undo/Redo.

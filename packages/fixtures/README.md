@@ -32,6 +32,16 @@ proprietary document. `bactvue-visible-subset.cdxml` combines the same
 classes of visible marks observed in the BactVue reference file without copying
 that proprietary scheme.
 
+## Linux clipboard
+
+`clipboard-linux/libreoffice-26.8/` holds what ChemDraft's Linux clipboard reader
+(`apps/desktop/src-tauri/src/linux_clipboard.rs`) returned for copies made in LibreOffice 26.8.3
+on X11 (Debian sid): bold "Hello benzene" and the SMILES `c1ccc(O)cc1` in Writer, two
+tab-separated Writer lines, three Writer lines of prose with one tab, and the Calc cells A1:B2.
+The text was typed for these fixtures. The raw bytes of the Writer and Calc copies, and the
+targets KWin offered X11 clients for a copy from LibreOffice's Qt 6 front end, are in
+`apps/desktop/src-tauri/tests/fixtures/linux-clipboard/`.
+
 ## OCSR
 
 The `ocsr/` directory holds public-domain structure images with known answers for the opt-in

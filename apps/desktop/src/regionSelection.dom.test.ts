@@ -36,7 +36,7 @@ describe.each<ShortcutPlatform>(["macos", "windows"])("region selection starting
   const snapshot = () => window.__CHEMDRAFT_AGENT__!.snapshot().document;
   const status = () => container.querySelector('[role="status"]')?.textContent;
   const chrome = (object: MoleculeObject) => container.querySelector<HTMLElement>(
-    `.document-object-chrome[data-object-controls="${object.id}"]`
+    `.document-object-chrome[data-object-chrome="${object.id}"]`
   )!;
   const atomIds = (object: MoleculeObject) => [...chrome(object).querySelectorAll("[data-selected-atom-id]")]
     .map(element => element.getAttribute("data-selected-atom-id"));

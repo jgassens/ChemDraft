@@ -11,9 +11,10 @@ import { isSpin3dSettings, type Spin3dSettings } from "../spin3dSettings";
 import { isCompoundLayoutSettings, COMPOUND_LAYOUT_STORAGE_KEY, loadCompoundLayoutSettings, type CompoundLayoutSettings } from "../compoundLayoutSettings";
 import { isDrawingSettings, DRAWING_SETTINGS_STORAGE_KEY, loadDrawingSettings, type DrawingSettings } from "../drawingSettings";
 import { ELECTRON_MARK_EDITING_STORAGE_KEY, loadDirectElectronMarkEditing } from "../electronMarkEditingSettings";
-import { isKeybindingSettings, type KeybindingScheme, type KeybindingSettings } from "../keybindingSettings";
+import { isKeybindingSettings, KEYBINDING_SCHEME, type KeybindingSettings } from "../keybindingSettings";
 import { migrateLegacyToolsetIds } from "../toolbars/legacyToolsetIds";
 import { listenCurrentWindowEvent, listenTauriEvent, safeTauriWindowListen } from "./tauriEvents";
+import type { ToolbarToolChoiceClaim } from "./toolbarToolChoice";
 import {
   compareToolsetPopoverOpenings, type AcceptedToolsetPopoverOpening, type ToolsetPopoverDismissPayload,
   type ToolsetPopoverOpening, type ToolsetFlyoutClosedNotice
@@ -785,14 +786,14 @@ export async function listenForKeybindingSettings(
   };
 }
 
-/** Keep native menu accelerators in step with the shortcut scheme. */
-export async function pushKeybindingSchemeToNativeMenu(scheme: KeybindingScheme, accelerators: Record<string, string | null> = {}): Promise<void> {
+/** Keep native menu accelerators in step with the shortcut set and the user's custom keys. */
+export async function pushKeybindingSchemeToNativeMenu(accelerators: Record<string, string | null> = {}): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
 
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("set_keybinding_scheme", { scheme, accelerators }).catch(error => console.error("Could not update menu shortcuts", error));
+  await invoke("set_keybinding_scheme", { scheme: KEYBINDING_SCHEME, accelerators }).catch(error => console.error("Could not update menu shortcuts", error));
 }
 
 export async function listToolsetWindowStates(): Promise<ToolsetWindowState[]> {
@@ -1005,6 +1006,9 @@ export async function setMenuChecked(commandId: string, checked: boolean): Promi
 interface PaletteCommandOptions {
   preserveInputFocus?: boolean;
   flyoutOpening?: ToolsetFlyoutCommandOpening;
+  /** Which of the sending window's own controls a drawing tool was chosen through. Rust credits it
+   *  to the sender's toolbar and tells the other toolbar windows before the command lands. */
+  toolChoice?: ToolbarToolChoiceClaim;
 }
 
 export async function sendPaletteCommand(commandId: string, options?: PaletteCommandOptions): Promise<void> {
@@ -1210,11 +1214,14 @@ export async function currentWindowLogicalWorkArea(): Promise<MonitorLogicalBoun
 }
 
 /** Re-evaluate the cap after moving to another display or changing display scale/resolution. */
-export async function listenForCurrentWindowWorkAreaChanges(handler: () => void): Promise<Unlisten> {
+export async function listenForCurrentWindowWorkAreaChanges(
+  handler: () => void, includeNativeResize = false
+): Promise<Unlisten> {
   window.addEventListener("resize", handler);
   const listeners = await Promise.allSettled([
     listenCurrentWindowEvent("tauri://move", handler),
-    listenCurrentWindowEvent("tauri://scale-change", handler)
+    listenCurrentWindowEvent("tauri://scale-change", handler),
+    ...(includeNativeResize ? [listenCurrentWindowEvent("tauri://resize", handler)] : [])
   ]);
   return () => {
     window.removeEventListener("resize", handler);
@@ -1231,13 +1238,19 @@ export async function clampCurrentInspectorFrame(): Promise<void> {
   await invoke("clamp_current_inspector_frame");
 }
 
-/** Fit to content and return whether the native resize was applied. */
-export async function fitCurrentPaletteWindow(size: ToolsetWindowSize, area: MonitorLogicalBounds): Promise<boolean> {
-  if (isDesktopRuntime()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<boolean>("resize_toolset_window", { width: size.width, height: Math.min(size.height, area.bottom - area.top) });
-  }
-  return true;
+/** Request a fit and get the physical client size to verify, or null if the window is minimized. */
+export async function fitCurrentPaletteWindow(size: ToolsetWindowSize, area: MonitorLogicalBounds): Promise<ToolsetWindowSize | null> {
+  if (!isDesktopRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<ToolsetWindowSize | null>("resize_toolset_window", {
+    width: size.width, height: Math.min(size.height, area.bottom - area.top)
+  });
+}
+
+/** Read the live native client size in physical pixels. */
+export async function currentPaletteWindowSize(): Promise<ToolsetWindowSize> {
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  return getCurrentWindow().innerSize();
 }
 
 /**
@@ -1742,10 +1755,64 @@ export async function monitorLogicalBoundsAt(
   if (!isDesktopRuntime()) {
     return undefined;
   }
+  const area = await monitorLogicalAreaAt(x, y);
+  return area && logicalBounds(area);
+}
+
+/** The work area (Dock, menu bar and taskbar excluded) of the attached monitor containing the
+ *  given global-logical point, or undefined when no monitor contains it (or outside the desktop
+ *  runtime). The monitor is found by its whole bounds, so a point over the Dock still has one. */
+export async function monitorLogicalWorkAreaAt(
+  x: number,
+  y: number
+): Promise<MonitorLogicalBounds | undefined> {
+  if (!isDesktopRuntime()) {
+    return undefined;
+  }
+  const area = await monitorLogicalAreaAt(x, y);
+  if (!area) return undefined;
+  // An older native side reports only the whole monitor; that is still better than nothing.
+  return isLogicalBounds(area.workArea) ? logicalBounds(area.workArea) : logicalBounds(area);
+}
+
+/** The work area of the monitor under a point given in the calling window's own logical space
+ *  (`currentWindowLogicalPosition` plus client coordinates), reported in that same space, and how
+ *  many units of it one logical pixel on that monitor spans. Unlike the global logical space, this
+ *  one stays one-to-one with the desktop on Windows when the monitors' scales differ. Undefined
+ *  when no monitor contains the point (or outside the desktop runtime). */
+export async function monitorWorkAreaInWindowSpaceAt(
+  x: number,
+  y: number
+): Promise<{ workArea: MonitorLogicalBounds; unitsPerLogicalPixel: number } | undefined> {
+  if (!isDesktopRuntime()) {
+    return undefined;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  const area = await invoke<MonitorLogicalArea | null>("monitor_logical_bounds_at", { x, y, windowSpace: true })
+    .catch(() => null);
+  if (!isLogicalBounds(area)) return undefined;
+  const units = area.unitsPerLogicalPixel;
+  return {
+    workArea: isLogicalBounds(area.workArea) ? logicalBounds(area.workArea) : logicalBounds(area),
+    unitsPerLogicalPixel: typeof units === "number" && Number.isFinite(units) && units > 0 ? units : 1
+  };
+}
+
+/** What `monitor_logical_bounds_at` returns: the whole monitor, plus its work area. */
+type MonitorLogicalArea = MonitorLogicalBounds & { workArea?: MonitorLogicalBounds; unitsPerLogicalPixel?: number };
+
+const logicalBounds = ({ left, top, right, bottom }: MonitorLogicalBounds): MonitorLogicalBounds =>
+  ({ left, top, right, bottom });
+
+const isLogicalBounds = (value: unknown): value is MonitorLogicalBounds =>
+  typeof value === "object" && value !== null &&
+  (["left", "top", "right", "bottom"] as const).every(key => typeof (value as Record<string, unknown>)[key] === "number");
+
+async function monitorLogicalAreaAt(x: number, y: number): Promise<MonitorLogicalArea | undefined> {
   // Native command, not `availableMonitors()`: see currentWindowLogicalWorkArea.
   const { invoke } = await import("@tauri-apps/api/core");
-  const bounds = await invoke<MonitorLogicalBounds | null>("monitor_logical_bounds_at", { x, y }).catch(() => null);
-  return bounds ?? undefined;
+  const area = await invoke<MonitorLogicalArea | null>("monitor_logical_bounds_at", { x, y }).catch(() => null);
+  return isLogicalBounds(area) ? area : undefined;
 }
 
 export async function hidePaletteFloatingTooltip(): Promise<void> {

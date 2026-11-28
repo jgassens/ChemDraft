@@ -1,303 +1,582 @@
-import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
+import type { ShortcutOverrides, ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { keyboardShortcutActions } from "./customKeyboardShortcuts";
+import { mergeLegacyShortcutOverrides, mergeStoredShortcutOverrides } from "./customKeyboardShortcuts";
 import type { DesktopPreferences } from "./desktopPreferences";
+import { KEYBINDING_STORAGE_KEY, loadKeybindingSettings, UNSAVED_SHORTCUTS_STORAGE_KEY, type StoredShortcutOverrides } from "./keybindingSettings";
 import {
-  KEYBINDING_STORAGE_KEY,
-  loadKeybindingSettings,
-  setLaunchKeybindingScheme,
-  type KeybindingScheme
-} from "./keybindingSettings";
-import {
+  confirmShortcutSetNoticeShown,
   migrateShortcutDefault,
   PENDING_FRESH_INSTALL_KEY,
+  resetShortcutDefaultMigrationForTests,
+  SHORTCUT_SET_NOTICE_PENDING_KEY,
+  SHORTCUT_SET_NOTICE_SHOWN_KEY,
+  SHORTCUT_SET_NOTICE,
+  peekShortcutSetNotice,
   type ShortcutDefaultMigrationHost
 } from "./shortcutDefaultMigration";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 
 /**
  * A fake install: the webview's localStorage plus, on the desktop runtime, the native
- * preferences.json (patched the way lib.rs `apply_patch` does) and the toolbar layout file that
- * every desktop launch writes to the app data folder.
+ * preferences.json (patched the way lib.rs `apply_patch` does: the scheme is replaced, custom keys
+ * are merged per set id) and the toolbar layout file every desktop launch writes.
  */
 function install(options: {
   desktop?: boolean;
-  preferences?: DesktopPreferences;
-  toolbarLayout?: boolean | "unreadable";
+  preferences?: DesktopPreferences | (() => never);
+  /**
+   * A native read that returns this value exactly as given, whatever it is (a string, null, an
+   * array), until the first successful write. `preferences` is copied into a patchable object, so
+   * a malformed value given there never reaches the code under test unchanged.
+   */
+  rawPreferences?: unknown;
+  toolbarLayout?: boolean;
   local?: Record<string, string>;
   failNativeWrite?: boolean;
+  platform?: ShortcutPlatform;
 } = {}) {
   const storage = new MemoryStorage();
   for (const [key, value] of Object.entries(options.local ?? {})) storage.setItem(key, value);
-  let preferences: DesktopPreferences = { ...options.preferences };
-  let toolbarLayout = options.toolbarLayout;
-  const writeScheme = vi.fn(async (scheme: KeybindingScheme) => {
-    if (options.failNativeWrite) throw new Error("disk full");
-    preferences = { ...preferences, shortcutScheme: scheme };
+  let preferences: DesktopPreferences = typeof options.preferences === "function" ? {} : { ...options.preferences };
+  let raw = Object.hasOwn(options, "rawPreferences") ? { value: options.rawPreferences } : undefined;
+  let failRead = typeof options.preferences === "function";
+  let failWrite = options.failNativeWrite === true;
+  const writePreferences = vi.fn(async (patch: DesktopPreferences) => {
+    if (failWrite) throw new Error("disk full");
+    raw = undefined;
+    preferences = {
+      ...preferences,
+      ...(patch.shortcutScheme ? { shortcutScheme: patch.shortcutScheme } : {}),
+      ...(patch.shortcutOverrides ? { shortcutOverrides: { ...preferences.shortcutOverrides, ...patch.shortcutOverrides } } : {})
+    };
     return { ...preferences };
   });
   const host: ShortcutDefaultMigrationHost = {
     storage,
+    platform: options.platform ?? "macos",
     native: options.desktop === false ? undefined : {
-      readPreferences: async () => ({ ...preferences }),
-      writeScheme,
-      hasToolbarLayout: async () => {
-        if (toolbarLayout === "unreadable") throw new Error("Toolbar layout is invalid");
-        return toolbarLayout === true;
-      }
+      readPreferences: async () => {
+        if (failRead) throw new Error("expected value at line 1 column 1");
+        return raw ? raw.value as DesktopPreferences : { ...preferences };
+      },
+      writePreferences,
+      hasToolbarLayout: async () => options.toolbarLayout === true
     }
   };
   return {
     host,
     storage,
-    writeScheme,
+    writePreferences,
     preferences: () => preferences,
-    /**
-     * What a launch writes once the document window has mounted: MainWindow's startup layout save
-     * (toolbar-state.json), and settings the user changes along the way (the tour's "seen" flag in
-     * the native file, a webview setting). Shortcut settings are left alone.
-     */
-    runLaunch: () => {
-      toolbarLayout = true;
-      preferences = { ...preferences, guidedTourSeen: true };
-      storage.setItem("chemdraft.quit.ask-to-save.v1", "false");
-    },
-    cachedScheme: () => {
-      const raw = storage.getItem(KEYBINDING_STORAGE_KEY);
-      return raw ? (JSON.parse(raw) as { scheme?: unknown }).scheme : undefined;
-    }
+    cache: () => JSON.parse(storage.getItem(KEYBINDING_STORAGE_KEY) ?? "null") as { scheme: string; overrides?: StoredShortcutOverrides } | null,
+    heal: () => { failRead = false; failWrite = false; }
   };
 }
 
-/** The key the bond tool answers to under a scheme, as the Keyboard preferences list shows it. */
-function bondToolKey(scheme: KeybindingScheme, platform: ShortcutPlatform): string | undefined {
-  return keyboardShortcutActions(scheme, platform).find(action => action.id === "tool.bond")?.defaults[0];
+/** What a window does with the message: show it if there is one, then record it as shown. */
+function takeShortcutSetNotice(storage: Storage): string | undefined {
+  const notice = peekShortcutSetNotice(storage);
+  if (notice) confirmShortcutSetNoticeShown(storage);
+  return notice;
 }
 
-/** The scheme the document window's first render reads (useShortcutPreference's initial state). */
-function firstRenderScheme(storage: MemoryStorage): KeybindingScheme {
-  vi.stubGlobal("localStorage", storage);
-  try {
-    return loadKeybindingSettings().scheme;
-  } finally {
-    vi.unstubAllGlobals();
-  }
+/** Every webview cache entry, to compare a store before and after a launch. */
+function snapshot(storage: Storage): Record<string, string | null> {
+  return Object.fromEntries(Array.from({ length: storage.length }, (_, index) => storage.key(index)!).map(key => [key, storage.getItem(key)]));
 }
-
-/** preferences.json read failures as lib.rs reports them (the rejection is its error string). */
-const IO_ERROR = "Permission denied (os error 13)";
-const PARSE_ERROR = "expected value at line 1 column 1";
 
 afterEach(() => {
-  setLaunchKeybindingScheme(undefined);
+  resetShortcutDefaultMigrationForTests();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
-describe.each(["macos", "windows"] as const)("shortcut default migration (%s)", platform => {
-  it("gives a fresh install the industry-standard scheme and writes it", async () => {
+describe("moving to the single shortcut set", () => {
+  it("records the set for a fresh install, with no message", async () => {
     const fake = install();
-    const outcome = await migrateShortcutDefault(fake.host);
-    expect(outcome).toEqual({ kind: "fresh-install", scheme: "chemdraw" });
+    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "fresh-install" });
     expect(fake.preferences().shortcutScheme).toBe("chemdraw");
-    expect(fake.cachedScheme()).toBe("chemdraw");
-    expect(bondToolKey(outcome.scheme!, platform)).toBe("X");
+    expect(fake.cache()).toEqual({ scheme: "chemdraw" });
+    expect(takeShortcutSetNotice(fake.storage)).toBeUndefined();
   });
 
-  it("keeps ChemDraft's scheme for an upgrade that never chose one, and writes it explicitly", async () => {
-    const fake = install({ toolbarLayout: true });
-    const outcome = await migrateShortcutDefault(fake.host);
-    expect(outcome).toEqual({ kind: "existing-install", scheme: "chemdraft" });
-    expect(fake.preferences().shortcutScheme).toBe("chemdraft");
-    expect(fake.cachedScheme()).toBe("chemdraft");
-    expect(bondToolKey(outcome.scheme!, platform)).not.toBe("X");
+  it("leaves an install already on the set alone and mirrors its custom keys", async () => {
+    const overrides = { chemdraw: { commands: { "document.save": ["Mod+F9"] } } };
+    const fake = install({ preferences: { shortcutScheme: "chemdraw", shortcutOverrides: overrides } });
+    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "current" });
+    expect(fake.writePreferences).not.toHaveBeenCalled();
+    expect(fake.cache()).toEqual({ scheme: "chemdraw", overrides });
+    expect(takeShortcutSetNotice(fake.storage)).toBeUndefined();
   });
 
-  it.each([
-    ["an unreadable toolbar layout", { toolbarLayout: "unreadable" as const }],
-    ["native preferences without a scheme", { preferences: { guidedTourSeen: true as const } }],
-    ["custom shortcuts without a scheme", { preferences: { shortcutOverrides: { chemdraft: { commands: { "file.save": ["Mod+F9"] } } } } }],
-    ["other ChemDraft settings in the webview", { local: { "chemdraft.drawing-settings.v1": "{}" } }]
-  ])("treats %s as an existing install", async (_label, options) => {
-    const fake = install(options);
-    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "existing-install", scheme: "chemdraft" });
-    expect(fake.preferences().shortcutScheme).toBe("chemdraft");
-  });
-
-  it.each(["chemdraft", "chemdraw"] as const)("never overwrites an explicit %s choice", async scheme => {
-    const fake = install({ toolbarLayout: true, preferences: { shortcutScheme: scheme } });
-    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "already-set", scheme });
-    expect(fake.writeScheme).not.toHaveBeenCalled();
-    expect(fake.preferences().shortcutScheme).toBe(scheme);
-    // The native choice is mirrored into the webview cache, so the first render already uses it.
-    expect(fake.storage.length).toBe(1);
-    expect(fake.cachedScheme()).toBe(scheme);
-  });
-
-  it.each(["chemdraft", "chemdraw"] as const)("mirrors an explicit native %s choice over a stale or cleared cache before the first render", async scheme => {
-    const other: KeybindingScheme = scheme === "chemdraft" ? "chemdraw" : "chemdraft";
-    const overrides = { [scheme]: { commands: { "file.save": ["Mod+F9"] } } };
-    const caches: Record<string, string>[] = [{}, { [KEYBINDING_STORAGE_KEY]: JSON.stringify({ scheme: other }) }];
-    for (const local of caches) {
-      const fake = install({ toolbarLayout: true, preferences: { shortcutScheme: scheme, shortcutOverrides: overrides }, local });
-      expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "already-set", scheme });
-      expect(fake.writeScheme).not.toHaveBeenCalled();
-      expect(JSON.parse(fake.storage.getItem(KEYBINDING_STORAGE_KEY)!)).toEqual({ scheme, overrides });
-      expect(firstRenderScheme(fake.storage)).toBe(scheme);
-    }
-  });
-
-  it.each(["chemdraft", "chemdraw"] as const)("keeps a %s choice stored only in the webview by an older version", async scheme => {
-    const overrides = { [scheme]: { commands: { "file.save": ["Mod+F9"] } } };
-    const fake = install({ toolbarLayout: true, local: { [KEYBINDING_STORAGE_KEY]: JSON.stringify({ scheme, overrides }) } });
-    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "kept-stored-choice", scheme });
-    expect(fake.preferences().shortcutScheme).toBe(scheme);
-    expect(JSON.parse(fake.storage.getItem(KEYBINDING_STORAGE_KEY)!)).toEqual({ scheme, overrides });
-  });
-
-  it.each([
-    ["fresh install", {}, "chemdraw"],
-    ["upgrade", { toolbarLayout: true }, "chemdraft"]
-  ] as const)("changes nothing when run twice (%s)", async (_label, options, scheme) => {
-    const fake = install(options);
-    await migrateShortcutDefault(fake.host);
-    const preferences = fake.preferences();
-    const cache = fake.storage.getItem(KEYBINDING_STORAGE_KEY);
-    fake.writeScheme.mockClear();
-    // The second launch: the layout file now exists even on the fresh install.
-    const again = install({ ...options, toolbarLayout: true, preferences, local: { [KEYBINDING_STORAGE_KEY]: cache! } });
-    expect(await migrateShortcutDefault(again.host)).toEqual({ kind: "already-set", scheme });
-    expect(again.writeScheme).not.toHaveBeenCalled();
-    expect(again.preferences()).toEqual(preferences);
-    expect(again.storage.getItem(KEYBINDING_STORAGE_KEY)).toBe(cache);
-  });
-
-  it("keeps the chosen scheme in the webview when the native write fails, so the next launch finishes the job", async () => {
-    const fake = install({ toolbarLayout: true, failNativeWrite: true });
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
-    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "existing-install", scheme: "chemdraft" });
-    expect(fake.cachedScheme()).toBe("chemdraft");
-    vi.restoreAllMocks();
-  });
-
-  // An unreadable preferences file can never prove a new install, so it never gets the new default.
-  // Nothing is written to the native file: lib.rs reads it before patching, and a write must never
-  // replace a file whose other settings could not be read.
-  it.each([
-    ["the toolbar layout", { toolbarLayout: true }],
-    ["an unreadable toolbar layout", { toolbarLayout: "unreadable" as const }],
-    ["other ChemDraft settings in the webview", { local: { "chemdraft.drawing-settings.v1": "{}" } }]
-  ])("keeps an existing install (%s) on ChemDraft's scheme when the preferences read fails", async (_label, options) => {
-    const fake = install(options);
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
-    fake.host.native!.readPreferences = async () => { throw IO_ERROR; };
-    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "preferences-unreadable", scheme: "chemdraft" });
-    expect(fake.writeScheme).not.toHaveBeenCalled();
-    expect(fake.cachedScheme()).toBe("chemdraft");
-    expect(firstRenderScheme(fake.storage)).toBe("chemdraft");
-    expect(bondToolKey(firstRenderScheme(fake.storage), platform)).not.toBe("X");
-  });
-
-  it("treats a preferences file that exists but cannot be parsed as an existing install, on every launch", async () => {
-    const fake = install();
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
-    fake.host.native!.readPreferences = async () => { throw PARSE_ERROR; };
-    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "preferences-unreadable", scheme: "chemdraft" });
-    expect(fake.writeScheme).not.toHaveBeenCalled();
-    expect(fake.cachedScheme()).toBe("chemdraft");
-    expect(firstRenderScheme(fake.storage)).toBe("chemdraft");
-    // The file stays corrupt: the next launch keeps the same scheme.
-    setLaunchKeybindingScheme(undefined);
-    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "preferences-unreadable", scheme: "chemdraft" });
-    expect(firstRenderScheme(fake.storage)).toBe("chemdraft");
-  });
-
-  it("uses the scheme mirrored in the webview cache when the preferences read fails", async () => {
-    const fake = install({ toolbarLayout: true, local: { [KEYBINDING_STORAGE_KEY]: JSON.stringify({ scheme: "chemdraw" }) } });
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
-    fake.host.native!.readPreferences = async () => { throw IO_ERROR; };
-    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "preferences-unreadable", scheme: "chemdraw" });
-    expect(fake.writeScheme).not.toHaveBeenCalled();
-    expect(fake.cachedScheme()).toBe("chemdraw");
-  });
-
-  // Decision: a read failure with no other evidence cannot prove a new install, so this launch runs
-  // the legacy scheme, in memory only (no native write, no scheme in the webview cache). The launch
-  // still runs the app, which writes toolbar-state.json at startup and whatever settings the user
-  // changes; a marker in the webview cache keeps those from reading as an existing install, so the
-  // next launch that can read the file classifies the install as the new one it is.
-  it("gives a seemingly fresh install ChemDraft's scheme for this launch only when the preferences read fails", async () => {
-    const fake = install();
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const read = fake.host.native!.readPreferences;
-    fake.host.native!.readPreferences = async () => { throw new Error(IO_ERROR); };
-    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "preferences-unreadable", scheme: "chemdraft" });
-    expect(fake.writeScheme).not.toHaveBeenCalled();
-    expect(fake.cachedScheme()).toBeUndefined();
-    expect(fake.storage.getItem(PENDING_FRESH_INSTALL_KEY)).not.toBeNull();
-    expect(firstRenderScheme(fake.storage)).toBe("chemdraft");
-    // The document window mounts and the launch runs, writing what every launch writes.
-    fake.runLaunch();
-    // A later launch (a new process) reads the file: what the fallback launch wrote is no evidence.
-    setLaunchKeybindingScheme(undefined);
-    fake.host.native!.readPreferences = read;
-    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "fresh-install", scheme: "chemdraw" });
-    expect(fake.preferences()).toEqual({ guidedTourSeen: true, shortcutScheme: "chemdraw" });
-    expect(fake.cachedScheme()).toBe("chemdraw");
-    expect(fake.storage.getItem(PENDING_FRESH_INSTALL_KEY)).toBeNull();
-    expect(firstRenderScheme(fake.storage)).toBe("chemdraw");
-    // From then on the written scheme decides.
-    setLaunchKeybindingScheme(undefined);
-    fake.runLaunch();
-    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "already-set", scheme: "chemdraw" });
-  });
-
-  it("keeps a fresh install pending across several launches that cannot read the preferences", async () => {
-    const fake = install();
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const read = fake.host.native!.readPreferences;
-    fake.host.native!.readPreferences = async () => { throw new Error(IO_ERROR); };
-    for (let launch = 0; launch < 2; launch += 1) {
-      setLaunchKeybindingScheme(undefined);
-      expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "preferences-unreadable", scheme: "chemdraft" });
-      expect(fake.cachedScheme()).toBeUndefined();
-      expect(firstRenderScheme(fake.storage)).toBe("chemdraft");
-      fake.runLaunch();
-    }
-    expect(fake.writeScheme).not.toHaveBeenCalled();
-    setLaunchKeybindingScheme(undefined);
-    fake.host.native!.readPreferences = read;
-    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "fresh-install", scheme: "chemdraw" });
+  it("moves a retired-preset install, keeps its non-conflicting custom keys, and says so once", async () => {
+    const legacy: ShortcutOverrides = {
+      commands: { "tool.eraser": ["F6"], "view.toggleCrosshairs": ["Mod+F8"] },
+      atom: { "atom.setHoveredElement.Br": ["D"] }
+    };
+    const fake = install({ preferences: { shortcutScheme: "chemdraft", shortcutOverrides: { chemdraft: legacy } } });
+    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "migrated", kept: 3, dropped: 0 });
     expect(fake.preferences().shortcutScheme).toBe("chemdraw");
+    expect(fake.preferences().shortcutOverrides?.chemdraw).toEqual(legacy);
+    // The retired preset's entry is left in place, unread.
+    expect(fake.preferences().shortcutOverrides?.chemdraft).toEqual(legacy);
+    expect(fake.cache()?.scheme).toBe("chemdraw");
+    expect(fake.cache()?.overrides?.chemdraw).toEqual(legacy);
+
+    const message = "Keyboard shortcuts now use one standard set. You can change any key in Preferences ▸ Keyboard.";
+    expect(takeShortcutSetNotice(fake.storage)).toBe(message);
+    expect(takeShortcutSetNotice(fake.storage)).toBeUndefined();
+    expect(fake.storage.getItem(SHORTCUT_SET_NOTICE_SHOWN_KEY)).not.toBeNull();
+
+    // The next launch finds the set recorded: nothing moves and nothing is said.
+    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "current" });
+    expect(takeShortcutSetNotice(fake.storage)).toBeUndefined();
   });
 
-  it("keeps a scheme chosen during a fallback launch", async () => {
-    const fake = install();
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const read = fake.host.native!.readPreferences;
-    fake.host.native!.readPreferences = async () => { throw new Error(IO_ERROR); };
-    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "preferences-unreadable", scheme: "chemdraft" });
-    fake.runLaunch();
-    // updateShortcutPreference: the native write fails with the read, the webview cache keeps it.
-    fake.storage.setItem(KEYBINDING_STORAGE_KEY, JSON.stringify({ scheme: "chemdraft" }));
-    setLaunchKeybindingScheme(undefined);
-    fake.host.native!.readPreferences = read;
-    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "kept-stored-choice", scheme: "chemdraft" });
-    expect(fake.preferences().shortcutScheme).toBe("chemdraft");
+  it("drops custom keys another command in the set already uses, and keeps the rest", async () => {
+    const legacy: ShortcutOverrides = {
+      commands: {
+        // E is the arrow tool in the set: dropped. F6 is free: kept.
+        "tool.eraser": ["E", "F6"],
+        // Mod+O is Open in the set: dropped, so Save keeps its own key.
+        "document.save": ["Mod+O"],
+        // F5 is reserved so it can never reload the webview: dropped.
+        "view.toggleRulers": ["F5"],
+        // A cleared key removed one of the retired preset's own keys; the set has no such key.
+        "tool.lasso": []
+      },
+      // Over an atom, q is oxygen in the set: dropped.
+      atom: { "atom.setHoveredElement.F": ["q"] }
+    };
+    const fake = install({ preferences: { shortcutScheme: "chemdraft", shortcutOverrides: { chemdraft: legacy } } });
+    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "migrated", kept: 1, dropped: 4 });
+    expect(fake.preferences().shortcutOverrides?.chemdraw).toEqual({ commands: { "tool.eraser": ["F6"] } });
+    const settings = loadKeybindingSettingsFrom(fake.storage);
+    expect(settings.overrides?.chemdraw).toEqual({ commands: { "tool.eraser": ["F6"] } });
+    expect(takeShortcutSetNotice(fake.storage)).toBe(SHORTCUT_SET_NOTICE);
+  });
+
+  it("decides conflicts for the platform it runs on", () => {
+    // Ctrl+E is Export off macOS (the set's Ctrl+Cmd+E collapses to one Ctrl); on macOS it is free.
+    const legacy: ShortcutOverrides = { commands: { "tool.eraser": ["Ctrl+E"] } };
+    expect(mergeLegacyShortcutOverrides(legacy, undefined, "macos")).toEqual({
+      overrides: { commands: { "tool.eraser": ["Ctrl+E"] } }, kept: 1, dropped: 0
+    });
+    expect(mergeLegacyShortcutOverrides(legacy, undefined, "windows")).toEqual({ overrides: {}, kept: 0, dropped: 1 });
+  });
+
+  it("keeps a customization the user already made in the set over the retired preset's", () => {
+    const merged = mergeLegacyShortcutOverrides(
+      { commands: { "tool.eraser": ["F6"], "document.save": ["Mod+F9"] }, atom: { "atom.setHoveredElement.Br": ["D"] } },
+      { commands: { "tool.eraser": ["F10"] } },
+      "windows"
+    );
+    expect(merged.overrides).toEqual({
+      commands: { "tool.eraser": ["F10"], "document.save": ["Mod+F9"] },
+      atom: { "atom.setHoveredElement.Br": ["D"] }
+    });
+    // Save's and Br's keys carried over; the eraser's was not counted, as the user had already set it.
+    expect(merged.kept).toBe(2);
+  });
+
+  it("drops keys for hover actions the set has no table entry for", () => {
+    // The retired preset had element keys for every one-letter element; the set has no K.
+    const merged = mergeLegacyShortcutOverrides({ atom: { "atom.setHoveredElement.K": ["F"] } }, undefined, "macos");
+    expect(merged).toEqual({ overrides: {}, kept: 0, dropped: 1 });
+  });
+
+  it("moves an install from before 1.2.3 that never named a preset, since the retired one was its default", async () => {
+    const fake = install({ preferences: { guidedTourSeen: true }, toolbarLayout: true });
+    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "migrated", kept: 0, dropped: 0 });
+    expect(fake.preferences().shortcutScheme).toBe("chemdraw");
+    expect(takeShortcutSetNotice(fake.storage)).toBe(SHORTCUT_SET_NOTICE);
+  });
+
+  it("moves the browser build from its cache alone", async () => {
+    const legacy: ShortcutOverrides = { commands: { "tool.eraser": ["F6"] } };
+    const fake = install({ desktop: false, local: { [KEYBINDING_STORAGE_KEY]: JSON.stringify({ scheme: "chemdraft", overrides: { chemdraft: legacy } }) } });
+    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "migrated", kept: 1, dropped: 0 });
+    expect(fake.cache()).toEqual({ scheme: "chemdraw", overrides: { chemdraft: legacy, chemdraw: legacy } });
+    expect(takeShortcutSetNotice(fake.storage)).toBeDefined();
+    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "current" });
+  });
+
+  it("writes nothing while the native preferences cannot be read, then moves on the next launch", async () => {
+    const fake = install({ preferences: () => { throw new Error("unreachable"); }, local: { [KEYBINDING_STORAGE_KEY]: JSON.stringify({ scheme: "chemdraft" }) } });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "preferences-unreadable" });
+    expect(fake.writePreferences).not.toHaveBeenCalled();
+    expect(takeShortcutSetNotice(fake.storage)).toBeUndefined();
+    // Every window still runs on the one set meanwhile.
+    expect(loadKeybindingSettingsFrom(fake.storage).scheme).toBe("chemdraw");
+    fake.heal();
+    expect((await migrateShortcutDefault(fake.host)).kind).toBe("migrated");
+    expect(takeShortcutSetNotice(fake.storage)).toBeDefined();
+  });
+
+  it("shows the message once even when the native write failed and the move repeats", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const fake = install({ preferences: { shortcutScheme: "chemdraft" }, failNativeWrite: true });
+    expect((await migrateShortcutDefault(fake.host)).kind).toBe("migrated");
+    expect(takeShortcutSetNotice(fake.storage)).toBeDefined();
+    // Neither store records the set; the next launch moves the install again, without a message.
+    expect(fake.cache()).toBeNull();
+    expect(fake.preferences()).toEqual({ shortcutScheme: "chemdraft" });
+    fake.heal();
+    resetShortcutDefaultMigrationForTests();
+    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "migrated", kept: 0, dropped: 0 });
+    expect(fake.preferences().shortcutScheme).toBe("chemdraw");
+    expect(takeShortcutSetNotice(fake.storage)).toBeUndefined();
+  });
+
+  it("still shows the message after a launch that exited before the status line showed it", async () => {
+    const fake = install({ preferences: { shortcutScheme: "chemdraft" } });
+    expect((await migrateShortcutDefault(fake.host)).kind).toBe("migrated");
+    // The app quits here: the set is saved, but no window ever showed the message.
+    resetShortcutDefaultMigrationForTests();
+    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "current" });
+    expect(takeShortcutSetNotice(fake.storage)).toBe(SHORTCUT_SET_NOTICE);
+    expect(takeShortcutSetNotice(fake.storage)).toBeUndefined();
+    // Shown once, it never comes back, on this launch or any later one.
+    resetShortcutDefaultMigrationForTests();
+    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "current" });
+    expect(takeShortcutSetNotice(fake.storage)).toBeUndefined();
+  });
+
+  it("shows the message exactly once when two windows peek before either confirms", async () => {
+    const fake = install({ preferences: { shortcutScheme: "chemdraft" } });
+    expect((await migrateShortcutDefault(fake.host)).kind).toBe("migrated");
+    // Both windows peek before either has confirmed.
+    expect(peekShortcutSetNotice(fake.storage)).toBe(SHORTCUT_SET_NOTICE);
+    expect(peekShortcutSetNotice(fake.storage)).toBe(SHORTCUT_SET_NOTICE);
+    let shown = 0;
+    // Window A's callback: re-check, show, confirm.
+    if (peekShortcutSetNotice(fake.storage)) { shown += 1; confirmShortcutSetNoticeShown(fake.storage); }
+    // Window B has its own module state; only the stored marker is shared.
+    resetShortcutDefaultMigrationForTests();
+    if (peekShortcutSetNotice(fake.storage)) { shown += 1; confirmShortcutSetNoticeShown(fake.storage); }
+    expect(shown).toBe(1);
+  });
+
+  it("records the message as shown only once a window confirms it, so a quit before that shows it next launch", async () => {
+    const fake = install({ preferences: { shortcutScheme: "chemdraft" } });
+    expect((await migrateShortcutDefault(fake.host)).kind).toBe("migrated");
+    // A window reads the message but the app quits before the status line shows it.
+    expect(peekShortcutSetNotice(fake.storage)).toBe(SHORTCUT_SET_NOTICE);
+    expect(peekShortcutSetNotice(fake.storage)).toBe(SHORTCUT_SET_NOTICE);
+    expect(fake.storage.getItem(SHORTCUT_SET_NOTICE_SHOWN_KEY)).toBeNull();
+    expect(fake.storage.getItem(SHORTCUT_SET_NOTICE_PENDING_KEY)).not.toBeNull();
+
+    resetShortcutDefaultMigrationForTests();
+    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "current" });
+    expect(peekShortcutSetNotice(fake.storage)).toBe(SHORTCUT_SET_NOTICE);
+    confirmShortcutSetNoticeShown(fake.storage);
+    expect(fake.storage.getItem(SHORTCUT_SET_NOTICE_SHOWN_KEY)).not.toBeNull();
+    expect(fake.storage.getItem(SHORTCUT_SET_NOTICE_PENDING_KEY)).toBeNull();
+    expect(peekShortcutSetNotice(fake.storage)).toBeUndefined();
+    resetShortcutDefaultMigrationForTests();
+    expect(peekShortcutSetNotice(fake.storage)).toBeUndefined();
+  });
+
+  it("keeps the pending message out of the existing-install evidence", async () => {
+    // Only the message's own markers in the cache: nothing else says an install existed.
+    const fake = install({ local: { [SHORTCUT_SET_NOTICE_PENDING_KEY]: "1" } });
+    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "fresh-install" });
+  });
+
+  it("still treats a fresh install as fresh on the launch after its native write failed", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const fake = install({ failNativeWrite: true });
+    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "fresh-install" });
+    expect(takeShortcutSetNotice(fake.storage)).toBeUndefined();
+    // The failed write leaves the unsaved-shortcuts record behind; it is the move's own marker.
+    expect(fake.storage.getItem(UNSAVED_SHORTCUTS_STORAGE_KEY)).not.toBeNull();
+    resetShortcutDefaultMigrationForTests();
+    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "fresh-install" });
+    expect(takeShortcutSetNotice(fake.storage)).toBeUndefined();
+    fake.heal();
+    resetShortcutDefaultMigrationForTests();
+    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "fresh-install" });
+    expect(takeShortcutSetNotice(fake.storage)).toBeUndefined();
+    expect(fake.preferences().shortcutScheme).toBe("chemdraw");
+    expect(fake.storage.getItem(UNSAVED_SHORTCUTS_STORAGE_KEY)).toBeNull();
+  });
+
+  it("shows the message this launch even when the cache cannot record it", async () => {
+    const fake = install({ preferences: { shortcutScheme: "chemdraft" } });
+    vi.spyOn(fake.storage, "setItem").mockImplementation(() => { throw new Error("QuotaExceededError"); });
+    expect((await migrateShortcutDefault(fake.host)).kind).toBe("migrated");
+    expect(takeShortcutSetNotice(fake.storage)).toBe(SHORTCUT_SET_NOTICE);
+    expect(takeShortcutSetNotice(fake.storage)).toBeUndefined();
+  });
+
+  it("never shows the message twice, even if the pending marker cannot be cleared", async () => {
+    const fake = install({ preferences: { shortcutScheme: "chemdraft" } });
+    expect((await migrateShortcutDefault(fake.host)).kind).toBe("migrated");
+    vi.spyOn(fake.storage, "removeItem").mockImplementation(() => { throw new Error("blocked"); });
+    expect(takeShortcutSetNotice(fake.storage)).toBe(SHORTCUT_SET_NOTICE);
+    resetShortcutDefaultMigrationForTests();
+    expect(takeShortcutSetNotice(fake.storage)).toBeUndefined();
+  });
+
+  it.each([
+    ["an unknown scheme and malformed keys", { shortcutScheme: "vim", shortcutOverrides: { chemdraft: { commands: { "tool.eraser": "F6" } } } }],
+    ["non-object preferences", "nonsense"],
+    ["null preferences", null],
+    ["array preferences", ["chemdraw"]]
+  ])("never throws on %s", async (_label, preferences) => {
+    const fake = install({ rawPreferences: preferences, local: { [KEYBINDING_STORAGE_KEY]: "{not json" } });
+    // The read hands the value over exactly as stored, not a copy the harness reshaped.
+    expect(await fake.host.native?.readPreferences()).toBe(preferences);
+    const outcome = await migrateShortcutDefault(fake.host);
+    // The unreadable cache is still evidence of an earlier install.
+    expect(outcome.kind).toBe("migrated");
+    expect(fake.preferences().shortcutScheme).toBe("chemdraw");
+    expect(loadKeybindingSettingsFrom(fake.storage)).toEqual({ scheme: "chemdraw" });
+  });
+
+  it.each([
+    ["a string", "nonsense"],
+    ["null", null],
+    ["an empty array", []],
+    ["an array", ["chemdraw", { shortcutScheme: "chemdraft" }]],
+    ["a number", 7]
+  ])("treats native preferences that are %s as holding nothing", async (_label, preferences) => {
+    const fake = install({ rawPreferences: preferences });
+    expect(await fake.host.native?.readPreferences()).toBe(preferences);
+    // No key of a string or an array is a stored preference, so with nothing else stored this is a fresh install.
+    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "fresh-install" });
+    expect(fake.writePreferences).toHaveBeenCalledWith({ shortcutScheme: "chemdraw" });
+    expect(fake.cache()).toEqual({ scheme: "chemdraw" });
+    expect(takeShortcutSetNotice(fake.storage)).toBeUndefined();
+  });
+
+  it("removes the 1.2.3 release candidates' leftover marker", async () => {
+    const fake = install({ local: { [PENDING_FRESH_INSTALL_KEY]: "1" } });
+    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "fresh-install" });
     expect(fake.storage.getItem(PENDING_FRESH_INSTALL_KEY)).toBeNull();
   });
-});
 
-describe("shortcut default migration in the browser build", () => {
-  it("gives a new visitor the industry-standard scheme", async () => {
-    const fake = install({ desktop: false });
-    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "fresh-install", scheme: "chemdraw" });
-    expect(fake.cachedScheme()).toBe("chemdraw");
-  });
-
-  it("keeps ChemDraft's scheme for a returning visitor, once", async () => {
-    const fake = install({ desktop: false, local: { "chemdraft.quit.ask-to-save.v1": "true" } });
-    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "existing-install", scheme: "chemdraft" });
-    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "already-set", scheme: "chemdraft" });
-    expect(fake.cachedScheme()).toBe("chemdraft");
+  it("words the message exactly as the owner asked, the same on every platform", () => {
+    expect(SHORTCUT_SET_NOTICE).toBe("Keyboard shortcuts now use one standard set. You can change any key in Preferences ▸ Keyboard.");
+    expect(SHORTCUT_SET_NOTICE).not.toMatch(/chemdraw|classic|preset/i);
   });
 });
+
+describe("keeping every valid custom key when the two stores disagree", () => {
+  const custom: ShortcutOverrides = { commands: { "document.save": ["Mod+F9"] } };
+  const cacheOf = (overrides: unknown, scheme = "chemdraw") => JSON.stringify({ scheme, overrides });
+  const cases: {
+    name: string;
+    native: unknown;
+    cache: string;
+    current: ShortcutOverrides;
+    retired?: ShortcutOverrides;
+  }[] = [
+    { name: "the native map is empty and the cache has a custom key", native: {}, cache: cacheOf({ chemdraw: custom }), current: custom },
+    {
+      name: "the native map holds only retired-preset keys and the cache has a custom key",
+      native: { chemdraft: { commands: { "tool.eraser": ["F6"] } } },
+      cache: cacheOf({ chemdraw: custom }),
+      current: custom,
+      // Moving from the retired preset also carries its free key into the set.
+      retired: { commands: { "document.save": ["Mod+F9"], "tool.eraser": ["F6"] } }
+    },
+    {
+      name: "both stores have custom keys and one cached entry collides",
+      native: { chemdraw: custom },
+      // Save is the native file's (Mod+F9) and stays; Rulers' Mod+F9 would collide with it; F6 is free.
+      cache: cacheOf({ chemdraw: { commands: { "document.save": ["Mod+F10"], "view.toggleRulers": ["Mod+F9"], "tool.eraser": ["F6"] } } }),
+      current: { commands: { "document.save": ["Mod+F9"], "tool.eraser": ["F6"] } }
+    },
+    {
+      name: "the native map has corrupt entries",
+      native: { chemdraw: { commands: { "document.save": "F6", "not a command": ["F8"], "tool.eraser": ["F7"] }, other: {} } },
+      cache: cacheOf({ chemdraw: custom }),
+      current: { commands: { "document.save": ["Mod+F9"], "tool.eraser": ["F7"] } }
+    },
+    { name: "the native map is not a map", native: "nonsense", cache: cacheOf({ chemdraw: custom }), current: custom },
+    { name: "the cache is not JSON", native: { chemdraw: custom }, cache: "{not json", current: custom },
+    {
+      name: "the cache has corrupt entries",
+      native: {},
+      cache: cacheOf({ chemdraw: { commands: { "document.save": ["Mod+F9"], "tool.eraser": "F6" }, atom: [] }, vim: {} }),
+      current: custom
+    }
+  ];
+
+  describe.each([
+    ["already on the set", "chemdraw", "current"],
+    ["moving from the retired preset", "chemdraft", "migrated"]
+  ] as const)("%s", (_path, shortcutScheme, kind) => {
+    it.each(cases)("$name", async ({ native, cache, current, retired }) => {
+      const expected = kind === "migrated" ? retired ?? current : current;
+      const fake = install({
+        preferences: { shortcutScheme, shortcutOverrides: native } as unknown as DesktopPreferences,
+        local: { [KEYBINDING_STORAGE_KEY]: cache }
+      });
+      expect((await migrateShortcutDefault(fake.host)).kind).toBe(kind);
+      // Both stores end with every valid customization, and the webview applies it.
+      expect(fake.preferences().shortcutScheme).toBe("chemdraw");
+      expect(fake.preferences().shortcutOverrides?.chemdraw).toEqual(expected);
+      expect(fake.cache()?.overrides?.chemdraw).toEqual(expected);
+      expect(loadKeybindingSettingsFrom(fake.storage).overrides?.chemdraw).toEqual(expected);
+      // A second launch finds both stores agreeing and writes nothing.
+      fake.writePreferences.mockClear();
+      expect((await migrateShortcutDefault(fake.host)).kind).toBe("current");
+      expect(fake.writePreferences).not.toHaveBeenCalled();
+      expect(fake.cache()?.overrides?.chemdraw).toEqual(expected);
+    });
+  });
+
+  it("keeps the retired preset's stored keys in both stores, unread", async () => {
+    const legacy = { commands: { "tool.eraser": ["F6"] } };
+    const fake = install({
+      preferences: { shortcutScheme: "chemdraw", shortcutOverrides: { chemdraft: legacy } },
+      local: { [KEYBINDING_STORAGE_KEY]: cacheOf({ chemdraw: custom }) }
+    });
+    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "current" });
+    expect(fake.preferences().shortcutOverrides).toEqual({ chemdraft: legacy, chemdraw: custom });
+    expect(fake.cache()).toEqual({ scheme: "chemdraw", overrides: { chemdraft: legacy, chemdraw: custom } });
+  });
+
+  it("copies the cache's custom keys with the set when only the cache names it", async () => {
+    const fake = install({ preferences: { shortcutOverrides: {} }, local: { [KEYBINDING_STORAGE_KEY]: cacheOf({ chemdraw: custom }) } });
+    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "current" });
+    expect(fake.preferences()).toEqual({ shortcutScheme: "chemdraw", shortcutOverrides: { chemdraw: custom } });
+    expect(fake.cache()).toEqual({ scheme: "chemdraw", overrides: { chemdraw: custom } });
+  });
+
+  describe("a native write that fails", () => {
+    const nativeKeys: ShortcutOverrides = { commands: { "document.save": ["Mod+F9"] } };
+    /** A custom key only the webview cache holds. */
+    const cacheOnly: ShortcutOverrides = { commands: { "tool.eraser": ["F6"] } };
+    const legacy: ShortcutOverrides = { commands: { "view.toggleCrosshairs": ["Mod+F8"] } };
+    const branches = [
+      ["already on the set", { shortcutScheme: "chemdraw", shortcutOverrides: { chemdraw: nativeKeys } }, "chemdraw", "current"],
+      ["named in the cache only", { shortcutOverrides: { chemdraw: nativeKeys } }, "chemdraw", "current"],
+      [
+        "moving from the retired preset",
+        { shortcutScheme: "chemdraft", shortcutOverrides: { chemdraft: legacy, chemdraw: nativeKeys } },
+        "chemdraft",
+        "migrated"
+      ]
+    ] as const;
+
+    it.each(branches)("leaves both stores as they were when %s, and the next launch combines them the same way", async (
+      _label, preferences, cachedScheme, kind
+    ) => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      const inputs = {
+        preferences: JSON.parse(JSON.stringify(preferences)) as DesktopPreferences,
+        local: { [KEYBINDING_STORAGE_KEY]: cacheOf({ chemdraw: cacheOnly }, cachedScheme) }
+      };
+      const fake = install({ ...inputs, failNativeWrite: true });
+      const cacheBefore = snapshot(fake.storage);
+      expect((await migrateShortcutDefault(fake.host)).kind).toBe(kind);
+      expect(fake.writePreferences).toHaveBeenCalled();
+      expect(error).toHaveBeenCalled();
+      expect(fake.preferences()).toEqual(preferences);
+      // Only the message's own marker and the record of unsaved custom keys may be added; the custom
+      // keys and the set's id are untouched.
+      const { [SHORTCUT_SET_NOTICE_PENDING_KEY]: _notice, [UNSAVED_SHORTCUTS_STORAGE_KEY]: unsaved, ...cacheAfter } = snapshot(fake.storage);
+      expect(cacheAfter).toEqual(cacheBefore);
+      expect(unsaved, "the cache's keys are recorded as not saved in the native file").toBeDefined();
+
+      // The next launch can write: it ends exactly where a launch that never failed would have.
+      fake.heal();
+      resetShortcutDefaultMigrationForTests();
+      expect((await migrateShortcutDefault(fake.host)).kind).toBe(kind);
+      const control = install(inputs);
+      expect((await migrateShortcutDefault(control.host)).kind).toBe(kind);
+      expect(fake.preferences()).toEqual(control.preferences());
+      expect(fake.cache()).toEqual(control.cache());
+      // No key was lost: the native file's, the cache-only one, and (when moving) the retired preset's.
+      expect(fake.preferences().shortcutOverrides?.chemdraw).toEqual({
+        commands: { ...nativeKeys.commands, ...cacheOnly.commands, ...(kind === "migrated" ? legacy.commands : {}) }
+      });
+      expect(fake.cache()?.overrides?.chemdraw).toEqual(fake.preferences().shortcutOverrides?.chemdraw);
+      expect(fake.storage.getItem(UNSAVED_SHORTCUTS_STORAGE_KEY)).toBeNull();
+    });
+
+    it("keeps leaving both stores alone for as long as the write keeps failing", async () => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const fake = install({
+        preferences: { shortcutScheme: "chemdraft", shortcutOverrides: { chemdraft: legacy, chemdraw: nativeKeys } },
+        local: { [KEYBINDING_STORAGE_KEY]: cacheOf({ chemdraw: cacheOnly }, "chemdraft") },
+        failNativeWrite: true
+      });
+      const before = { preferences: { ...fake.preferences() }, cache: fake.storage.getItem(KEYBINDING_STORAGE_KEY) };
+      for (let launch = 0; launch < 3; launch += 1) {
+        resetShortcutDefaultMigrationForTests();
+        expect((await migrateShortcutDefault(fake.host)).kind).toBe("migrated");
+        expect(fake.preferences()).toEqual(before.preferences);
+        expect(fake.storage.getItem(KEYBINDING_STORAGE_KEY)).toBe(before.cache);
+      }
+    });
+
+    it("still writes the cache in the browser build, which has no native file", async () => {
+      const fake = install({ desktop: false, local: { [KEYBINDING_STORAGE_KEY]: cacheOf({ chemdraw: cacheOnly }, "chemdraft") } });
+      expect((await migrateShortcutDefault(fake.host)).kind).toBe("migrated");
+      expect(fake.cache()).toEqual({ scheme: "chemdraw", overrides: { chemdraw: cacheOnly } });
+    });
+  });
+
+  it("does not rewrite a native map whose only difference is an empty scope", async () => {
+    const fake = install({
+      preferences: { shortcutScheme: "chemdraw", shortcutOverrides: { chemdraw: { ...custom, atom: {} } } },
+      local: { [KEYBINDING_STORAGE_KEY]: cacheOf({ chemdraw: custom }) }
+    });
+    expect(await migrateShortcutDefault(fake.host)).toEqual({ kind: "current" });
+    expect(fake.writePreferences).not.toHaveBeenCalled();
+  });
+
+  it("combines entries without depending on their order, and drops only colliding ones", () => {
+    const merged = mergeStoredShortcutOverrides(
+      { commands: { "tool.eraser": ["F6"] } },
+      {
+        commands: {
+          // Save takes Open's key because Open moved off it: both are kept.
+          "document.save": ["Mod+O"],
+          "document.open": ["Mod+Shift+F9"],
+          // A cleared key never collides.
+          "tool.lasso": [],
+          // F6 is the native file's eraser key: dropped.
+          "view.toggleRulers": ["F6"],
+          // A locked system action: dropped.
+          "app.quit": ["Mod+F11"],
+          // A command this platform does not list: kept as stored.
+          "plugin.example.run": ["Mod+F12"]
+        }
+      },
+      "macos"
+    );
+    expect(merged.overrides).toEqual({
+      commands: {
+        "tool.eraser": ["F6"],
+        "document.save": ["Mod+O"],
+        "document.open": ["Mod+Shift+F9"],
+        "tool.lasso": [],
+        "plugin.example.run": ["Mod+F12"]
+      }
+    });
+    expect(merged.dropped).toBe(2);
+  });
+
+  it("drops a kept entry whose key a dropped entry gives back to its command", () => {
+    // Open's cached Mod+F9 collides with the native Save; dropping it gives Open its Mod+O back, so the
+    // cached Rulers entry that took Mod+O can no longer stay either.
+    const merged = mergeStoredShortcutOverrides(
+      { commands: { "document.save": ["Mod+F9"] } },
+      { commands: { "view.toggleRulers": ["Mod+O"], "document.open": ["Mod+F9"] } },
+      "macos"
+    );
+    expect(merged).toEqual({ overrides: { commands: { "document.save": ["Mod+F9"] } }, dropped: 2 });
+  });
+});
+
+/** loadKeybindingSettings reads globalThis.localStorage; point it at a fake install's storage. */
+function loadKeybindingSettingsFrom(storage: Storage) {
+  vi.stubGlobal("localStorage", storage);
+  return loadKeybindingSettings();
+}

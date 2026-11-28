@@ -5,7 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MoleculeObject } from "@chemdraft/chem-core";
 import { MainWindow } from "./MainWindow";
-import { createPhase4Document, insertNativeSingleBondMolecule, insertNativeTemplateMolecule, selectDocumentObjects } from "./documentWorkflow";
+import { createPhase4Document, insertNativeSingleBondMolecule, selectDocumentObjects } from "./documentWorkflow";
 import { saveKeybindingSettings } from "./keybindingSettings";
 import { coreDrawingToolDefinitions } from "./drawingTools";
 import { canonicalCommandId } from "./renamedCommands";
@@ -29,7 +29,7 @@ describe.each(["windows", "macos"] as const)("hover re-hit (%s shortcuts)", plat
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     vi.stubGlobal("ResizeObserver", TestResizeObserver);
     vi.stubGlobal("localStorage", new MemoryStorage());
-    saveKeybindingSettings({ scheme: "chemdraft" });
+    saveKeybindingSettings({ scheme: "chemdraw" });
     originalPlatform = Object.getOwnPropertyDescriptor(navigator, "platform");
     Object.defineProperty(navigator, "platform", { configurable: true, value: platform === "windows" ? "Win32" : "MacIntel" });
     window.history.replaceState(null, "", "/?agentBridge=1");
@@ -112,23 +112,6 @@ describe.each(["windows", "macos"] as const)("hover re-hit (%s shortcuts)", plat
     });
   }
 
-  async function typeKey(key: string) {
-    const target = document.activeElement ?? document.body;
-    const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
-    await act(async () => { target.dispatchEvent(event); });
-    // Supply only the text default that jsdom lacks; routing and focus use the real DOM events.
-    if (!event.defaultPrevented && target instanceof HTMLInputElement && key.length === 1) {
-      const start = target.selectionStart ?? target.value.length;
-      const end = target.selectionEnd ?? start;
-      const value = target.value.slice(0, start) + key + target.value.slice(end);
-      await act(async () => {
-        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(target, value);
-        target.dispatchEvent(new Event("input", { bubbles: true }));
-        target.setSelectionRange(start + key.length, start + key.length);
-      });
-    }
-  }
-
   async function hoverBond() {
     const current = molecule();
     const bond = current.bonds[0]!;
@@ -182,147 +165,6 @@ describe.each(["windows", "macos"] as const)("hover re-hit (%s shortcuts)", plat
     expect(molecule().atoms[0]?.element).toBe("C");
     await press("D", false, true);
     expect(molecule().atoms[0]?.element).toBe("Br");
-  });
-
-  it.each([
-    { name: "a literal +", init: { key: "+", code: "Equal", shiftKey: true } },
-    { name: "Shift+= reported as \"=\"", init: { key: "=", code: "Equal", shiftKey: true } }
-  ])("routes $name bound to an atom label over a bond to the nearer atom", async ({ init }) => {
-    saveKeybindingSettings({ scheme: "chemdraft", overrides: { chemdraft: { atom: {
-      "atom.setHoveredElement.F": ["+"], "atom.addPositiveChargeToHoveredAtom": []
-    } } } });
-    await mount();
-    const bond = molecule().bonds[0]!;
-    const from = molecule().atoms.find(atom => atom.id === bond.fromAtomId)!;
-    const to = molecule().atoms.find(atom => atom.id === bond.toAtomId)!;
-    await pointer("pointermove", { x: from.x + (to.x - from.x) * 0.56, y: from.y + (to.y - from.y) * 0.56 });
-    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond", bondId: bond.id });
-    await act(async () => {
-      (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent("keydown", { ...init, bubbles: true, cancelable: true }));
-    });
-    expect(molecule().atoms.find(atom => atom.id === to.id)?.element).toBe("F");
-    expect(molecule().atoms.find(atom => atom.id === from.id)?.element).toBe("C");
-    expect(snapshot().activeToolCommandId).toBe("tool.bond");
-  });
-
-  it("keeps default-preset element-key label continuation on the same atom", async () => {
-    await mount();
-    const atom = molecule().atoms[0]!;
-    await pointer("pointermove", atom);
-    await press("n");
-    await press("o");
-    expect(container.querySelector<HTMLInputElement>('[data-atom-label-editor="true"]')?.value).toBe("No");
-    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom", atomId: atom.id });
-  });
-
-  it("refuses n,o as an element and Escape keeps the committed N and its undo entry", async () => {
-    await mount();
-    const before = molecule();
-    await pointer("pointermove", before.atoms[0]!);
-    await typeKey("n");
-    const committed = molecule();
-    expect(committed.atoms[0]!.element).toBe("N");
-    await typeKey("o");
-    const editor = container.querySelector<HTMLInputElement>('[data-atom-label-editor="true"]')!;
-    expect(editor.value).toBe("No");
-    await typeKey("Enter");
-    expect(document.activeElement).toBe(editor);
-    expect(editor.getAttribute("aria-invalid")).toBe("true");
-    expect(container.querySelector(`[data-invalid-atom-id="${before.atoms[0]!.id}"]`)).not.toBeNull();
-    expect(container.querySelector('[role="status"]')?.textContent).toContain("Incomplete or unrecognized atom label");
-    await typeKey("Escape");
-    expect(molecule()).toEqual(committed);
-    await press("z", true);
-    expect(molecule()).toEqual(before);
-    await press("z", true, true);
-    expect(molecule()).toEqual(committed);
-  });
-
-  it.each([["no2", "NO2"], ["ome", "OMe"], ["obn", "OBn"], ["co2me", "CO2Me"]])(
-    "commits lowercase hover typing %s as %s", async (typed, label) => {
-      await mount();
-      const before = molecule();
-      await pointer("pointermove", before.atoms[0]!);
-      for (const key of typed) await typeKey(key);
-      expect(container.querySelector<HTMLInputElement>('[data-atom-label-editor="true"]')?.value).toBe(label);
-      await typeKey("Enter");
-      expect(container.querySelector('[data-atom-label-editor="true"]')).toBeNull();
-      expect(molecule().atoms).toEqual([{ ...before.atoms[0], element: label, labelLiteral: true }, before.atoms[1]]);
-      expect(molecule().bonds).toEqual(before.bonds);
-      const after = molecule();
-      await press("z", true);
-      expect(molecule()).toEqual(before);
-      await press("z", true, true);
-      expect(molecule()).toEqual(after);
-    }
-  );
-
-  it("commits lowercase hover typing otbdps on a terminal atom without moving the pointer", async () => {
-    await mount();
-    const before = molecule();
-    const atom = before.atoms[0]!;
-    expect(before.bonds.filter(bond => bond.fromAtomId === atom.id || bond.toAtomId === atom.id)).toHaveLength(1);
-    expect(container.querySelector('[data-atom-label-editor="true"]')).toBeNull();
-    await pointer("pointermove", atom);
-    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom", atomId: atom.id });
-    for (const key of ["o", "t", "b", "d", "p", "s"]) await typeKey(key);
-    const editor = container.querySelector<HTMLInputElement>('[data-atom-label-editor="true"]');
-    expect(editor?.value).toBe("OTBDPS");
-    expect(document.activeElement).toBe(editor);
-    await typeKey("Enter");
-    expect(container.querySelector('[data-atom-label-editor="true"]')).toBeNull();
-    expect(molecule().atoms).toEqual([{ ...atom, element: "OTBDPS", labelLiteral: true }, before.atoms[1]]);
-    expect(molecule().bonds).toEqual(before.bonds);
-  });
-
-  it.each([["no2", "NO2"], ["ome", "OMe"], ["obn", "OBn"]])(
-    "attaches lowercase hover typing %s as a %s substituent on a ring", async (typed, label) => {
-      await mount(insertNativeTemplateMolecule(createPhase4Document("Hover substituent"), { x: 300, y: 300 }, "benzene"));
-      const before = molecule();
-      await pointer("pointermove", before.atoms[0]!);
-      for (const key of typed) await typeKey(key);
-      await typeKey("Enter");
-      expect(container.querySelector('[data-atom-label-editor="true"]')).toBeNull();
-      expect(molecule().atoms.slice(0, 6)).toEqual(before.atoms);
-      expect(molecule().bonds.slice(0, 6)).toEqual(before.bonds);
-      expect(molecule().atoms).toHaveLength(7);
-      expect(molecule().atoms[6]).toMatchObject({ element: label, labelLiteral: true });
-      expect(molecule().bonds).toHaveLength(7);
-      const attachment = molecule().bonds[6]!;
-      expect([attachment.fromAtomId, attachment.toAtomId]).toContain(before.atoms[0]!.id);
-      expect([attachment.fromAtomId, attachment.toAtomId]).toContain(molecule().atoms[6]!.id);
-      expect(attachment.order).toBe("single");
-      const after = molecule();
-      await press("z", true);
-      expect(molecule()).toEqual(before);
-      await press("z", true, true);
-      expect(molecule()).toEqual(after);
-    }
-  );
-
-  it("restores N when focus leaves the incomplete n,o continuation", async () => {
-    await mount();
-    await pointer("pointermove", molecule().atoms[0]!);
-    await typeKey("n");
-    const committed = molecule();
-    await typeKey("o");
-    vi.spyOn(document, "hasFocus").mockReturnValue(true);
-    await act(async () => { container.querySelector<HTMLInputElement>('[data-atom-label-editor="true"]')!.blur(); });
-    expect(container.querySelector('[data-atom-label-editor="true"]')).toBeNull();
-    expect(molecule()).toEqual(committed);
-  });
-
-  it("routes the next key as a fresh hover action after an exhausted continuation", async () => {
-    await mount();
-    const atom = molecule().atoms[0]!;
-    await pointer("pointermove", atom);
-    for (const key of "nq") await typeKey(key);
-    expect(container.querySelector<HTMLInputElement>('[data-atom-label-editor="true"]')?.value).toBe("Nq");
-    await typeKey("o");
-    expect(container.querySelector('[data-atom-label-editor="true"]')).toBeNull();
-    expect(molecule().atoms[0]).toMatchObject({ id: atom.id, element: "O" });
-    await typeKey("Escape");
-    expect(molecule().atoms[0]!.element).toBe("O");
   });
 
   it("reacquires a drawn bond under the Bond tool after 2, then off/on, then 3", async () => {
@@ -423,18 +265,6 @@ describe.each(["windows", "macos"] as const)("hover re-hit (%s shortcuts)", plat
     expect(molecule().bonds[0]!.order).toBe("single");
   });
 
-  it("restores the pointer's bond after undoing a hover-label assignment", async () => {
-    await mount();
-    const bond = await hoverBond();
-    await press("n");
-    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom" });
-    await press("z", true);
-    expect(molecule().atoms.every(atom => atom.element === "C")).toBe(true);
-    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond", bondId: bond.id });
-    await press("2");
-    expect(molecule().bonds[0]!.order).toBe("double");
-  });
-
   it("clears the hover when deleting the bond leaves empty canvas under the pointer", async () => {
     await mount();
     const bond = await hoverBond();
@@ -443,23 +273,6 @@ describe.each(["windows", "macos"] as const)("hover re-hit (%s shortcuts)", plat
     expect(molecule().bonds.some(candidate => candidate.id === bond.id)).toBe(false);
     expect(snapshot().hoveredNativeTarget).toBeUndefined();
     expect(resolve).toHaveBeenCalled();
-  });
-
-  it("does not re-hit while the hover-label editor owns typing", async () => {
-    await mount();
-    await pointer("pointermove", molecule().atoms[0]!);
-    await press("n");
-    await press("o");
-    const editor = container.querySelector<HTMLInputElement>('[data-atom-label-editor="true"]')!;
-    expect(editor.value).toBe("No");
-    const before = molecule();
-    const target = snapshot().hoveredNativeTarget;
-    const resolve = vi.spyOn(hitTest, "nativeMoleculeCanvasHoverTarget");
-    await press("2");
-    expect(document.activeElement).toBe(editor);
-    expect(molecule()).toEqual(before);
-    expect(snapshot().hoveredNativeTarget).toEqual(target);
-    expect(resolve).not.toHaveBeenCalled();
   });
 
   it("does not re-hit the old canvas position after the pointer leaves the canvas", async () => {

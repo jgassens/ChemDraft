@@ -32,8 +32,11 @@ vi.mock("./imageDrop/rasterDecode", async (original) => {
   const browserRasterToPng = vi.fn(async () => ({ png: png(), width: 1, height: 1, sourceWidth: 1, sourceHeight: 1, downscaled: false }));
   // The PNG and SVG decode checks: jsdom cannot decode, so every picture decodes.
   const browserDecodeCheck = vi.fn(async () => ({ width: 1, height: 1 }));
+  // No picture dropped here is longer than the side cap a kept JPEG has.
+  const browserRasterToJpeg = vi.fn(async () => { throw new Error("jsdom has no canvas to scale a JPEG on."); });
   return { ...await original<typeof import("./imageDrop/rasterDecode")>(),
-    browserRasterToPng, browserDecodeCheck, browserImageDecoders: { rasterToPng: browserRasterToPng, decodeCheck: browserDecodeCheck } };
+    browserRasterToPng, browserDecodeCheck, browserRasterToJpeg,
+    browserImageDecoders: { rasterToPng: browserRasterToPng, rasterToJpeg: browserRasterToJpeg, decodeCheck: browserDecodeCheck } };
 });
 vi.mock("./window-manager", async (original) => ({
   ...await original<typeof import("./window-manager")>(),

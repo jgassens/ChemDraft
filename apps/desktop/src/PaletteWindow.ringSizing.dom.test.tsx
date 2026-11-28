@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
-import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
+import { clearMocks, mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { act, type CSSProperties } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -67,7 +67,6 @@ it.each(["macos", "windows"] as const)(
     const toolsetId = "core.ringInspector";
     const legacySize = { width: 780, height: 620 };
     const content = { width: 338.5, bodyHeight: 178.5 };
-    const titleHeight = 22;
     let frame = legacySize;
     let workAreaHeight = 560;
     const invoke = vi.fn((command: string, payload: unknown) => {
@@ -76,18 +75,21 @@ it.each(["macos", "windows"] as const)(
       }
       if (command === "resize_toolset_window") {
         frame = payload as typeof legacySize;
-        return true;
+        return frame;
       }
+      if (command === "plugin:window|inner_size") return frame;
     });
+    mockWindows("toolset-core-ringInspector");
     mockIPC(invoke);
     vi.spyOn(window, "innerWidth", "get").mockImplementation(() => frame.width);
     vi.spyOn(window, "innerHeight", "get").mockImplementation(() => frame.height);
     // JSDOM cannot lay out the shell. Model the intrinsic size with the body cap the effect applies.
+    // The grip rail sits beside the body (no title row above it), so the shell is as tall as the body.
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
       const body = this.querySelector<HTMLElement>(".palette-window-content");
       if (!body) return new DOMRect();
       const cap = parseFloat(body.style.maxHeight);
-      return new DOMRect(0, 0, content.width, titleHeight + Math.min(content.bodyHeight, cap));
+      return new DOMRect(0, 0, content.width, Math.min(content.bodyHeight, cap));
     });
 
     const open = async (expectedHeight: number) => {
@@ -111,7 +113,7 @@ it.each(["macos", "windows"] as const)(
         const controls = body.querySelector<HTMLElement>(".ring-inspector-controls")!;
         expect(getComputedStyle(controls).maxHeight).toBe("none");
         expect(getComputedStyle(body).overflowY).toBe("auto");
-        expect(body.style.maxHeight).toBe(`${workAreaHeight - titleHeight}px`);
+        expect(body.style.maxHeight).toBe(`${workAreaHeight}px`);
         expect(invoke).toHaveBeenCalledWith("resize_toolset_window", { width: 339, height: expectedHeight });
         expect([window.innerWidth, window.innerHeight]).toEqual([339, expectedHeight]);
       } finally {
@@ -120,8 +122,9 @@ it.each(["macos", "windows"] as const)(
       }
     };
 
-    await open(201);
-    await open(201);
+    // 179 = ceil(178.5): the body alone, now that no 22px title row sits above it (was 201).
+    await open(179);
+    await open(179);
     workAreaHeight = 130;
     await open(130);
   }

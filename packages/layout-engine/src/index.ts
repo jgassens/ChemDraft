@@ -110,9 +110,18 @@ import { planTableObjectSvg, tableVisualBoundsForArrangement } from "./table";
 import { textAdvanceEm, measureTextRun, measureNativeTextSpanLineWidth, nativeTextMetrics, isPatrickHandFont, patrickHandTextAdvanceEm, patrickHandTextInkBoundsEm } from "./textMetrics";
 import { planTextObjectPlacement } from "./textPlacement";
 import { formatNumber } from "./formatNumber";
-import { nativeTextSpanLayout } from "./textLayout";
-export { nativeTextSpanLayout } from "./textLayout";
-import { nativeTextScriptFontScale, nativeTextSubscriptOffsetEm, nativeTextSuperscriptOffsetEm } from "./textMetrics";
+import {
+  nativeTextObjectLineMetrics, nativeTextSpanLayout, nativeTextRenderedSpanFont, nativeTextRenderedSpanMetrics, nativeTextSpanMetrics,
+  textObjectSpanLayout, textObjectSpanLines,
+  textObjectSpansForRendering, textObjectWrapsAtWidth
+} from "./textLayout";
+export {
+  nativeTextObjectLineMetrics, nativeTextSpanLayout, nativeTextRenderedSpanFont, nativeTextRenderedSpanMetrics, nativeTextSpanMetrics,
+  textObjectSpanLayout, textObjectSpanLines,
+  textObjectSpansForRendering, textObjectWrapsAtWidth, type NativeTextLayoutLine
+} from "./textLayout";
+export * from "./textEditorLayout";
+import { nativeTextScriptFontScale, nativeTextSubscriptOffsetEm } from "./textMetrics";
 import { nativeGroupLabelDisplay, type AtomLabelAnchor } from "./labelGrammar";
 import { moleculeSketchTickPath, type MoleculeSketchTick } from "./sketchTicks";
 
@@ -149,11 +158,13 @@ export {
   type NativeAtomLabelReading,
   nativeAtomMaxValence,
   nativeAtomValence,
+  nativeElementWithChargeLabel,
   nativeGroupLabelDisplay,
   nativeLabelGroupAttachment,
   type NativeLabelGroup,
   type NativeLabelGroupAttachment,
   nativeLabelReadingDependsOnBondSide,
+  nativeRelabelElementAndCharge,
   nativeSingleHeavyElementLabelValence,
   parseCondensedLabelFormula
 } from "./labelGrammar";
@@ -1183,7 +1194,7 @@ export function distance(left: LayoutPoint, right: LayoutPoint): number {
   return Math.hypot(left.x - right.x, left.y - right.y);
 }
 
-function distanceToSegment(point: LayoutPoint, start: LayoutPoint, end: LayoutPoint): number {
+export function distanceToSegment(point: LayoutPoint, start: LayoutPoint, end: LayoutPoint): number {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
   const lengthSquared = dx * dx + dy * dy;
@@ -4239,7 +4250,7 @@ export function planTextObjectSvg(object: TextObject, layerIndex: number): PageS
   const { style: textStyle, textAnchor, x, y, lineAdvance } = planTextObjectPlacement(object);
   const layout = textObjectSpanLayout(object);
   const lines = layout.map(line => line.spans);
-  const wrapped = isFixedWidthTextObject(object);
+  const wrapped = textObjectWrapsAtWidth(object);
   const metrics = wrapped ? nativeTextObjectLineMetrics(object) : undefined;
   // Preserve the established markup for wholly unscripted text. With scripts, reset each
   // line's baseline, then move relatively within it to keep one text-anchor chunk per line.
@@ -4288,9 +4299,8 @@ export function textSpanLineFragments(
   let previousScriptOffsetPx = 0;
   return line.map((span, spanIndex) => {
     const fontSizePx = metadataNumber(span.style.fontSizePx);
-    const scriptOffsetEm = span.script === "subscript" ? nativeTextSubscriptOffsetEm
-      : span.script === "superscript" ? -nativeTextSuperscriptOffsetEm : 0;
-    const scriptOffsetPx = parentFontSizePx * scriptOffsetEm;
+    const rendered = nativeTextRenderedSpanFont(span, parentFontSizePx);
+    const scriptOffsetPx = rendered.offsetPx;
     const relativeScriptOffsetPx = scriptOffsetPx - previousScriptOffsetPx;
     previousScriptOffsetPx = scriptOffsetPx;
     return elementFragment("tspan", `text-line-${lineIndex}-${spanIndex}-${span.text}`, {
@@ -4299,8 +4309,7 @@ export function textSpanLineFragments(
       dy: baselineY === undefined
         ? (spanIndex === 0 && lineIndex > 0 ? lineAdvancePx : undefined)
         : (spanIndex === 0 ? undefined : relativeScriptOffsetPx),
-      "font-size": span.script === "normal" ? fontSizePx
-        : `${Number((parentFontSizePx * nativeTextScriptFontScale).toFixed(6))}px`,
+      "font-size": span.script === "normal" ? fontSizePx : `${Number(rendered.fontSizePx.toFixed(6))}px`,
       fill: metadataString(span.style.color),
       "font-family": metadataString(span.style.fontFamily),
       "font-weight": metadataNumber(span.style.fontWeight),
@@ -4309,55 +4318,6 @@ export function textSpanLineFragments(
       "letter-spacing": metadataNumber(span.style.letterSpacingPx)
     }, [textFragment(`text-line-${lineIndex}-${spanIndex}-text`, span.text)]);
   });
-}
-
-/** Explicit baselines prevent a script run from shifting the following run or line.
- * Reserve each line's actual script ascent/descent before laying out its neighbor. */
-export function nativeTextSpanMetrics(span: TextSpan, objectStyle: TextObject['style']): {fontSize:number;offset:number;ascent:number;descent:number} {
-  const size=nativeTextStyleFromObjectStyle({...objectStyle,...span.style}).fontSizePx;
-  const fontSize=Number((size*(span.script==='normal'?1:.72)).toFixed(6));
-  const offset=Number((span.script==='subscript'?size*.22:span.script==='superscript'?-size*.4:0).toFixed(6));
-  return {fontSize,offset,ascent:fontSize*.8-offset,descent:fontSize*.2+offset};
-}
-export function nativeTextObjectLineMetrics(object: Pick<TextObject,'text'|'spans'|'style'> & Partial<Pick<TextObject,'width'|'arrowAttachment'>>): {
-  lines:{spans:TextSpan[];baseline:number;ascent:number;descent:number}[];height:number
-} {
-  const style=nativeTextStyleFromObjectStyle(object.style),layout=textObjectSpanLayout(object);
-  let previousBaseline=0,previousDescent=0;
-  const measured=layout.map(({spans,paragraphIndex},index)=>{
-    const metrics=spans.map(span=>nativeTextSpanMetrics(span,object.style));
-    const ascent=Math.max(style.fontSizePx*.8,...metrics.map(m=>m.ascent));
-    const descent=Math.max(style.fontSizePx*.2,...metrics.map(m=>m.descent));
-    const baseline=index===0?Math.max(style.fontSizePx,ascent+2):previousBaseline+
-      Math.max(style.fontSizePx*style.lineHeight,previousDescent+ascent+style.fontSizePx*.18)+
-        (paragraphIndex!==layout[index-1]!.paragraphIndex?style.paragraphSpacingPx:0);
-    previousBaseline=baseline;previousDescent=descent;
-    return {spans,baseline,ascent,descent};
-  });
-  return {lines:measured,height:previousBaseline+previousDescent+2};
-}
-
-type TextLayoutObject = Pick<TextObject, "text" | "spans"> & Partial<Pick<TextObject, "style" | "width" | "arrowAttachment">>;
-function isFixedWidthTextObject(object: TextLayoutObject): boolean {
-  return typeof object.width === "number" &&
-    (object.style?.textBoxSizingMode === "fixed-width" || object.style?.textBoxSizingMode === "fixed-size") &&
-    object.arrowAttachment?.kind !== "conditions" && !(object.text === "+" && object.style?.reactionPlus === true);
-}
-function textObjectSpanLayout(object: TextLayoutObject) {
-  return nativeTextSpanLayout(textObjectSpansForRendering(object), nativeTextStyleFromObjectStyle(object.style ?? {}),
-    isFixedWidthTextObject(object) ? Math.max(1, object.width! - 6) : undefined);
-}
-export function textObjectSpanLines(object: TextLayoutObject): TextSpan[][] {
-  return textObjectSpanLayout(object).map(line => line.spans);
-}
-
-export function textObjectSpansForRendering(object: Pick<TextObject, "text" | "spans">): TextSpan[] {
-  const spans = object.spans.filter((span) => span.text.length > 0);
-  if (spans.length > 0 && spans.map((span) => span.text).join("") === object.text) {
-    return spans;
-  }
-
-  return [{ text: object.text, script: "normal", style: {} }];
 }
 
 interface FrameHalfExtents { halfWidth: number; halfHeight: number }
@@ -7066,6 +7026,176 @@ export function electronMarkCentreClearOfAtomLabel(
   return transformPointForObject(molecule, { x: atom.x + direction.x * reach, y: atom.y + direction.y * reach });
 }
 
+/** Radius of the atom-problem badge's ring (`AtomProblemMarker`), in page px. */
+export const atomProblemBadgeRadiusPx = 6;
+/** How far the ring's stroke reaches past its radius, in screen px: half its 1.5 px width. The stroke
+ * is non-scaling (`vector-effect: non-scaling-stroke` on `.native-atom-invalid-ring`), so in page px it
+ * reaches 0.75 / zoom: 3 page px at the 25% minimum zoom, 0.1875 at 400%. */
+export const atomProblemBadgeStrokeOverhangScreenPx = 0.75;
+/** Room kept between the outer edge of the ring's stroke and the ink it must not cover, in page px.
+ * With the stroke at 100% this is the historical 2 page px past the radius. */
+export const atomProblemBadgeClearancePx = 1.25;
+/** Lowest zoom the placement is computed for: the smallest document zoom (`documentZoom.ts`). */
+const atomProblemBadgeMinimumZoom = 0.25;
+
+/** How far from a badge's centre the ink it must not cover has to stay, in page px, at `zoom`
+ * (screen px per page px): the ring's radius, its non-scaling stroke's overhang at that zoom, and the
+ * clearance. A zoom that is not a positive number is read as 100%. */
+export function atomProblemBadgeKeepOutPx(
+  zoom = 1,
+  options: { radius?: number; clearancePx?: number } = {}
+): number {
+  const scale = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
+  return (options.radius ?? atomProblemBadgeRadiusPx) + atomProblemBadgeStrokeOverhangScreenPx / scale +
+    (options.clearancePx ?? atomProblemBadgeClearancePx);
+}
+
+/**
+ * The zoom a canvas should place its badges for when the view is at `scale`. Zooming changes only the
+ * stroke's page-px overhang, so the placement is computed for the next zoom down among 25%, 50% and
+ * 100% (100% for anything above): a conservative clearance at every zoom between them, and one that
+ * changes only when the view crosses one of those, so a memoized molecule view re-renders a handful of
+ * times across the zoom range rather than on every pinch frame. Below 25% the scale is used as given.
+ */
+export function atomProblemBadgePlacementZoom(scale: number): number {
+  if (!Number.isFinite(scale) || scale <= 0) return 1;
+  if (scale >= 1) return 1;
+  if (scale >= 0.5) return 0.5;
+  if (scale >= atomProblemBadgeMinimumZoom) return atomProblemBadgeMinimumZoom;
+  return scale;
+}
+/** The badge's distance from an unlabelled atom (the historical 9 px right, 9 px up). */
+const atomProblemBadgeMinimumDistancePx = Math.hypot(9, 9);
+/** The direction the badge prefers when every side is equally free: upper right, as it always sat. */
+const atomProblemBadgePreferredRadians = -Math.PI / 4;
+
+/**
+ * An electron mark as the atom-problem badge keeps clear of it: its stored page frame, and, when
+ * `markKind` is given, what its drawn ink depends on (`electronMarkInkRadius`), since some marks draw
+ * past their frame (a radical 2+ puts its dot outside it).
+ */
+export type AtomProblemBadgeMark = ElectronMarkLabelClearanceFrame &
+  Partial<Pick<ElectronMarkObject, "id" | "markKind" | "charge" | "chargeStyle" | "radical" | "style">>;
+
+/** How far a mark's drawn ink reaches from its frame centre, or 0 for a bare frame. The renderer turns
+ * a mark about that centre, so the reach holds at any angle. */
+function atomProblemBadgeMarkInkRadius(mark: AtomProblemBadgeMark): number {
+  if (!mark.markKind) return 0;
+  const { rotation: _rotation, style, ...shape } = mark;
+  return electronMarkInkRadius({ id: mark.id ?? "", ...shape, markKind: mark.markKind,
+    ...(style ? { style } : {}) });
+}
+
+export interface AtomProblemBadgeOptions {
+  /** The page's electron marks (charges, radical dots, lone pairs) as stored page frames. Any near
+   * the atom is kept clear like the label: a charge drawn by a floating mark is still the atom's charge.
+   * Each keeps its frame clear and, given its `markKind`, all of its drawn ink too. */
+  marks?: readonly AtomProblemBadgeMark[];
+  /** Boxes `moleculeLayoutLabelBoxes` already measured for this molecule. */
+  labelBoxes?: readonly LayoutLabelBox[];
+  radius?: number;
+  /** Room past the outer edge of the ring's stroke, in page px (`atomProblemBadgeClearancePx`). */
+  clearancePx?: number;
+  /** The view's zoom, screen px per page px (1 = 100%); the ring's non-scaling stroke reaches
+   * farther past its radius in page px the lower it is. Defaults to 100%. */
+  zoom?: number;
+}
+
+function circleBoxDistance(centre: LayoutPoint, box: LayoutBounds): number {
+  const dx = Math.max(box.x - centre.x, 0, centre.x - (box.x + box.width));
+  const dy = Math.max(box.y - centre.y, 0, centre.y - (box.y + box.height));
+  return Math.hypot(dx, dy);
+}
+
+/** Something the badge must keep clear of: a box, or a disc (a mark's ink) in the same frame. */
+type AtomProblemBadgeObstacle = LayoutBounds | { cx: number; cy: number; r: number };
+
+function badgeObstacleDistance(centre: LayoutPoint, obstacle: AtomProblemBadgeObstacle): number {
+  return "r" in obstacle ? Math.max(0, Math.hypot(centre.x - obstacle.cx, centre.y - obstacle.cy) - obstacle.r)
+    : circleBoxDistance(centre, obstacle);
+}
+
+/** How far the farthest point of an obstacle lies from `point`. */
+function badgeObstacleFarthest(point: LayoutPoint, obstacle: AtomProblemBadgeObstacle): number {
+  if ("r" in obstacle) return Math.hypot(obstacle.cx - point.x, obstacle.cy - point.y) + obstacle.r;
+  return Math.max(
+    Math.hypot(obstacle.x - point.x, obstacle.y - point.y), Math.hypot(obstacle.x + obstacle.width - point.x, obstacle.y - point.y),
+    Math.hypot(obstacle.x - point.x, obstacle.y + obstacle.height - point.y),
+    Math.hypot(obstacle.x + obstacle.width - point.x, obstacle.y + obstacle.height - point.y));
+}
+
+/**
+ * Where an atom's problem badge (the red "!" ring) is centred, in the molecule's unrotated frame (the
+ * frame `atom.x`/`atom.y` use); undefined for an atom the molecule does not have. The badge never
+ * covers the atom's label — its full glyph box from `moleculeLayoutLabelBoxes`, so a superscript
+ * charge, an isotope prefix, a hydrogen count and its subscript are all inside — nor an electron
+ * mark (`options.marks`) beside the atom, such as the floating ⊕ on a carbocation or a radical dot —
+ * its frame and, for a mark that says its kind, all its drawn ink, which can reach past the frame.
+ * Among the sides that clear those, it takes one free of bonds and of other atoms' labels where there
+ * is one, then the nearest, then the one closest to upper right, so an unlabelled atom with room
+ * there keeps the badge where it always sat. Everything is kept `atomProblemBadgeKeepOutPx(options.zoom)`
+ * from the centre, so the ring's stroke, which does not scale with the view, clears it at that zoom.
+ * The badge is canvas chrome: no export draws it.
+ */
+export function atomProblemBadgeCentre(
+  molecule: MoleculeObject,
+  atomId: string,
+  options: AtomProblemBadgeOptions = {}
+): LayoutPoint | undefined {
+  const atomIndex = molecule.atoms.findIndex(atom => atom.id === atomId);
+  if (atomIndex < 0) return undefined;
+  const atom = molecule.atoms[atomIndex];
+  const keepOut = atomProblemBadgeKeepOutPx(options.zoom, options);
+  const labelBoxes = options.labelBoxes ?? moleculeLayoutLabelBoxes(molecule);
+  const ownLabel = labelBoxes.find(box => box.atom === atomIndex);
+  // Hard obstacles: the atom's own label (or, unlabelled, its vertex) and the marks near it.
+  const reach = keepOut * 2 + atomProblemBadgeMinimumDistancePx +
+    (ownLabel ? Math.max(Math.abs(ownLabel.x - atom.x), Math.abs(ownLabel.x + ownLabel.width - atom.x),
+      Math.abs(ownLabel.y - atom.y), Math.abs(ownLabel.y + ownLabel.height - atom.y)) : 0);
+  const hard: AtomProblemBadgeObstacle[] = [ownLabel ?? { x: atom.x, y: atom.y, width: 0, height: 0 }];
+  for (const mark of options.marks ?? []) {
+    const centre = inverseTransformPointForObject(molecule, { x: mark.x + mark.width / 2, y: mark.y + mark.height / 2 });
+    const { halfWidth, halfHeight } = rotatedFrameHalfExtents(mark.width, mark.height,
+      degreesToRadians((mark.rotation ?? 0) - molecule.rotation));
+    const box = { x: centre.x - halfWidth, y: centre.y - halfHeight, width: halfWidth * 2, height: halfHeight * 2 };
+    // The frame, and the disc the mark's ink reaches: whichever is larger in a direction decides there.
+    const inkRadius = atomProblemBadgeMarkInkRadius(mark);
+    const ink = inkRadius > 0 ? { cx: centre.x, cy: centre.y, r: inkRadius } : undefined;
+    if (circleBoxDistance(atom, box) <= reach || (ink && badgeObstacleDistance(atom, ink) <= reach)) {
+      hard.push(box);
+      if (ink) hard.push(ink);
+    }
+  }
+  const farthest = Math.max(...hard.map(obstacle => badgeObstacleFarthest(atom, obstacle)));
+  const maximumDistance = Math.max(atomProblemBadgeMinimumDistancePx, farthest + keepOut) + 1;
+  // Soft obstacles: bonds and other atoms' labels; covering one is allowed only where every side does.
+  const atomById = new Map(molecule.atoms.map(candidate => [candidate.id, candidate]));
+  const segments = molecule.bonds.flatMap(bond => {
+    const from = atomById.get(bond.fromAtomId), to = atomById.get(bond.toAtomId);
+    return from && to ? [[from, to] as const] : [];
+  });
+  const otherLabels = labelBoxes.filter(box => box.atom !== atomIndex);
+  const directions = 24;
+  let best: { centre: LayoutPoint; score: number } | undefined;
+  for (let index = 0; index < directions; index += 1) {
+    const angle = atomProblemBadgePreferredRadians + (index * 2 * Math.PI) / directions;
+    const ux = Math.cos(angle), uy = Math.sin(angle);
+    let distanceAlong = atomProblemBadgeMinimumDistancePx;
+    let centre = { x: atom.x + ux * distanceAlong, y: atom.y + uy * distanceAlong };
+    while (distanceAlong < maximumDistance && hard.some(obstacle => badgeObstacleDistance(centre, obstacle) < keepOut)) {
+      distanceAlong += 0.25;
+      centre = { x: atom.x + ux * distanceAlong, y: atom.y + uy * distanceAlong };
+    }
+    if (hard.some(obstacle => badgeObstacleDistance(centre, obstacle) < keepOut)) continue;
+    const covered = segments.filter(([from, to]) => distanceToSegment(centre, from, to) < keepOut).length +
+      otherLabels.filter(box => circleBoxDistance(centre, box) < keepOut).length;
+    const turn = Math.abs(Math.atan2(Math.sin(angle - atomProblemBadgePreferredRadians), Math.cos(angle - atomProblemBadgePreferredRadians)));
+    const score = covered * 1000 + distanceAlong + turn * 4;
+    if (!best || score < best.score - 1e-9) best = { centre, score };
+  }
+  return best?.centre ?? { x: atom.x + 9, y: atom.y - 9 };
+}
+
 /** Selection frames are unrotated page coordinates, like the atoms. Handwriting labels
  * can overhang the stored atom frame; reserve their measured boxes before drawing chrome.
  * Other fonts retain their established selection geometry. */
@@ -7091,10 +7221,16 @@ export function textVisualBoundsForArrangement(object: TextObject): LayoutBounds
   return objectFrameBoundsForPageFit(object);
 }
 
-/** Frame size allowed by the page while keeping the rotated alignment anchor fixed. */
+/** Frame width allowed by the page while keeping the rotated alignment anchor fixed. The height
+ * is never limited: a box keeps its lowest drawn line even past the page bottom
+ * (docs/plans/textbox-behavior.md H2). An edge along the writing direction (left or right, at a
+ * small rotation) caps the width with the box's content height, so a rotated frame stays on the
+ * page there. An edge the height faces (the bottom) caps it with the minimum height, as before:
+ * the box crosses that edge only by its height, and its width never collapses there. */
 export function textAutoSizePageLimits(
-  object: TextObject, page: { width: number; height: number }, minimumHeight: number
-): { maxWidth: number; maxHeight: (width: number) => number } {
+  object: TextObject, page: { width: number; height: number }, minimumHeight: number,
+  contentHeight = minimumHeight
+): { maxWidth: number } {
   const { x, alignment } = planTextObjectPlacement(object);
   // The aligned point on the top edge stays fixed with the baseline. The frame extends
   // to either side of it along the rotated writing direction and down along the rotated normal.
@@ -7115,8 +7251,8 @@ export function textAutoSizePageLimits(
   // Round inward to the stored frame's hundredth-of-a-pixel precision.
   const inward = (size: number) => Math.floor((size + 1e-9) * 100) / 100;
   return {
-    maxWidth: inward(Math.min(...edges.map(edge => limit(edge.room - minimumHeight * edge.height, edge.width)))),
-    maxHeight: width => inward(Math.min(...edges.map(edge => limit(edge.room - width * edge.width, edge.height))))
+    maxWidth: inward(Math.min(...edges.map(edge =>
+      limit(edge.room - (edge.width >= edge.height ? contentHeight : minimumHeight) * edge.height, edge.width))))
   };
 }
 
@@ -7158,7 +7294,7 @@ export function textContentFrame(object: TextObject): LayoutBounds {
   let left = object.x, right = object.x + object.width;
   let top = object.y, bottom = object.y + object.height;
   const advance = style.fontSizePx * style.lineHeight + style.paragraphSpacingPx;
-  const wrappedMetrics = isFixedWidthTextObject(object) ? nativeTextObjectLineMetrics(object) : undefined;
+  const wrappedMetrics = textObjectWrapsAtWidth(object) ? nativeTextObjectLineMetrics(object) : undefined;
   lines.forEach((line, index) => {
     const width = measureNativeTextSpanLineWidth(line, style);
     const x = style.textAlign === "center" ? anchor - width / 2
@@ -7166,10 +7302,7 @@ export function textContentFrame(object: TextObject): LayoutBounds {
     left = Math.min(left, x); right = Math.max(right, x + width);
     for (const span of line) {
       if (!span.text) continue;
-      const size = span.script === "normal"
-        ? metadataNumber(span.style.fontSizePx) ?? style.fontSizePx : style.fontSizePx * nativeTextScriptFontScale;
-      const shift = span.script === "subscript" ? style.fontSizePx * nativeTextSubscriptOffsetEm
-        : span.script === "superscript" ? -style.fontSizePx * nativeTextSuperscriptOffsetEm : 0;
+      const { fontSizePx: size, offsetPx: shift } = nativeTextRenderedSpanFont(span, style.fontSizePx);
       const baseline = object.y + (wrappedMetrics?.lines[index]?.baseline ?? style.fontSizePx + index * advance) + shift;
       top = Math.min(top, baseline - size);
       bottom = Math.max(bottom, baseline + size * nativeTextMetrics.descentEm);
@@ -7246,7 +7379,7 @@ function rotateInkBounds(object: DocumentObject, box: LayoutBounds): LayoutBound
 function textInkBounds(object: TextObject): LayoutBounds | null {
   const conditions = object.arrowAttachment?.kind === "conditions" ? conditionsTextPlacement(object) : undefined;
   const { x, y, style, alignment, lineAdvance } = conditions ?? planTextObjectPlacement(object);
-  const wrappedMetrics = isFixedWidthTextObject(object) ? nativeTextObjectLineMetrics(object) : undefined;
+  const wrappedMetrics = textObjectWrapsAtWidth(object) ? nativeTextObjectLineMetrics(object) : undefined;
   const boxes = textObjectSpanLines(object).flatMap((line, index) => {
     if (!line.some(span => span.text.trim())) return [];
     const width = measureNativeTextSpanLineWidth(line, style,
@@ -7257,10 +7390,9 @@ function textInkBounds(object: TextObject): LayoutBounds | null {
     for (const span of line) {
       if (!span.text.trim()) continue;
       const metrics = conditions?.scripted ? nativeTextSpanMetrics(span, object.style) : undefined;
-      const size = metrics?.fontSize ?? (span.script === "normal"
-        ? metadataNumber(span.style.fontSizePx) ?? style.fontSizePx : style.fontSizePx * nativeTextScriptFontScale);
-      const shift = metrics?.offset ?? (span.script === "subscript" ? style.fontSizePx * nativeTextSubscriptOffsetEm
-        : span.script === "superscript" ? -style.fontSizePx * nativeTextSuperscriptOffsetEm : 0);
+      const rendered = metrics ? undefined : nativeTextRenderedSpanFont(span, style.fontSizePx);
+      const size = metrics?.fontSize ?? rendered!.fontSizePx;
+      const shift = metrics?.offset ?? rendered!.offsetPx;
       top = Math.min(top, baseline + shift - size);
       bottom = Math.max(bottom, baseline + shift + size * nativeTextMetrics.descentEm);
     }
@@ -10233,8 +10365,11 @@ export interface ElectronMarkCarryPlacement {
 /**
  * The ONE placement rule for the marks a molecule carries when it is redrawn with new atom positions
  * (same atom ids): the Spin 3D live overlay and its flatten (and so a reopened model, a typed or
- * dragged X/Y rotation, and an Interactive 3D tug), and 3D clean-up. The overlay paints each mark
- * exactly where the commit stores it because both call this with the atoms they draw.
+ * dragged X/Y rotation, and an Interactive 3D tug), and 3D clean-up. Both call this with the atoms
+ * they draw, so each mark sits beside its displayed atom. For a molecule not turned on the page the
+ * overlay paints each mark exactly where the commit stores it; for a turned one the overlay draws
+ * unturned (rotation 0) and the commit in the turned frame, so the live and committed page positions
+ * differ, each beside its displayed atom.
  *
  * Each mark keeps the page offset from its atom it had in `before`, read in `after`'s frame, unless
  * that spot lands on another atom, a bond, or an atom label's letters (`after`'s labels, as it will

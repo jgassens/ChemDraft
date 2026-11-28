@@ -6,6 +6,7 @@ import { applyPatches } from "@chemdraft/chem-core";
 import { MainWindow } from "./MainWindow";
 import { createNativeSingleBondMolecule, createPhase4Document, selectDocumentObjects } from "./documentWorkflow";
 import { saveCompoundLayoutSettings } from "./compoundLayoutSettings";
+import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 import { CanvasContextMenu } from "./CanvasContextMenu";
@@ -167,6 +168,30 @@ describe("MainWindow canvas context menu keyboard", () => {
   });
 });
 
+describe.each<ShortcutPlatform>(["macos", "windows"])("keyboard menu with nothing selected over an atom at the page centre (%s)", platform => {
+  it.each(["F10", "ContextMenu"])("opens the page menu with %s, not the object menu", async value => {
+    let drawing = createPhase4Document("Centre atom");
+    drawing = applyPatches(drawing, [{ op: "addObject", pageId: drawing.pages[0].id,
+      object: createNativeSingleBondMolecule(drawing, { x: 396, y: 306 }) }]);
+    drawing = selectDocumentObjects(drawing, drawing.pages[0].id, []);
+    const molecule = drawing.pages[0].objects[0]!;
+    if (molecule.type !== "molecule") throw new Error("expected a molecule");
+    const atom = molecule.atoms[0]!;
+    await act(async () => root.render(<MainWindow initialDocument={drawing} initialActiveToolCommandId="tool.select"
+      initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} shortcutPlatform={platform} />));
+    // The page centre is exactly on the first atom.
+    const rect = { x: 0, y: 0, left: 0, top: 0, right: atom.x * 2, bottom: atom.y * 2,
+      width: atom.x * 2, height: atom.y * 2, toJSON: () => ({}) } as DOMRect;
+    for (const element of container.querySelectorAll<HTMLElement>(".page, .canvas-region")) element.getBoundingClientRect = () => rect;
+    canvas = container.querySelector<HTMLElement>(".canvas-region")!;
+    canvas.focus(); canvas.blur();
+    expect(document.activeElement).toBe(document.body);
+    await open(value);
+    expect(container.querySelector('[aria-label="Page options"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Object layer options"]')).toBeNull();
+  });
+});
+
 describe("stereo readout row", () => {
   const items = buildObjectCanvasMenu({ objectIndex: 0, objectCount: 1, targetKind: "atom" });
   const deferred = () => {
@@ -183,14 +208,14 @@ describe("stereo readout row", () => {
       targetKind="atom" onInvoke={onInvoke} onDismiss={() => {}} loadStereoReadout={() => readout.promise} />));
     const menu = container.querySelector('[aria-label="Object layer options"]')!;
     expect(menu).not.toBeNull();
-    expect(menu.querySelector(".object-context-menu-title")?.textContent).not.toBe("Stereocentre: R");
+    expect(menu.querySelector(".object-context-menu-title")?.textContent).not.toBe("Stereocenter: R");
     expect(document.activeElement?.getAttribute("data-command-id")).toBe("clipboard.cut");
     await key("ArrowDown");
     expect(document.activeElement?.getAttribute("data-command-id")).toBe("clipboard.copy");
-    await act(async () => readout.resolve("Stereocentre: R"));
+    await act(async () => readout.resolve("Stereocenter: R"));
     const first = menu.firstElementChild!;
     expect(first.className).toBe("object-context-menu-title");
-    expect(first.textContent).toBe("Stereocentre: R");
+    expect(first.textContent).toBe("Stereocenter: R");
     expect(first.tagName).toBe("DIV");
     expect(first.nextElementSibling?.getAttribute("role")).toBe("separator");
     expect(document.activeElement?.getAttribute("data-command-id")).toBe("clipboard.copy");
@@ -202,7 +227,7 @@ describe("stereo readout row", () => {
     const readout = deferred();
     // jsdom has no layout: the root is 100px tall without the row and 140px with it; the Copy As
     // trigger sits 100px below the root's top (plus the row); its flyout is 300px tall.
-    const hasRow = (menu: Element) => menu.firstElementChild?.textContent === "Stereocentre: R";
+    const hasRow = (menu: Element) => menu.firstElementChild?.textContent === "Stereocenter: R";
     const rect = (top: number, height: number) => ({ top, height, bottom: top + height, left: 0, right: 100, width: 100, x: 0, y: top, toJSON() {} }) as DOMRect;
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
       const rootMenu = this.closest<HTMLElement>('[aria-label="Object layer options"]');
@@ -226,12 +251,29 @@ describe("stereo readout row", () => {
       // Trigger top 740: 740 + 300 + 8 - 768 = 280.
       expect(flyout().style.top).toBe("-280px");
       trigger.focus();
-      await act(async () => readout.resolve("Stereocentre: R"));
+      await act(async () => readout.resolve("Stereocenter: R"));
       // The root clamps to 768 - 140 - 8 = 620, the trigger to 760: 760 + 308 - 768 = 300. A stale
       // offset stays -280; one measured before the clamp (trigger at 780) would be -320.
       expect(menu.style.top).toBe("620px");
       expect(flyout().style.top).toBe("-300px");
       expect(document.activeElement).toBe(trigger);
+    } finally {
+      vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockRestore();
+    }
+  });
+
+  it("keeps every row of the HTML menu inside the window near the bottom and right edges", async () => {
+    const rect = (left: number, top: number) => ({ left, top, width: 200, height: 300, right: left + 200, bottom: top + 300, x: left, y: top, toJSON() {} }) as DOMRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      return this.getAttribute("aria-label") === "Object layer options"
+        ? rect(parseFloat(this.style.left), parseFloat(this.style.top)) : rect(0, 0);
+    });
+    try {
+      expect([window.innerWidth, window.innerHeight]).toEqual([1024, 768]);
+      await act(async () => root.render(<CanvasContextMenu items={items} position={{ x: 1000, y: 740 }} label="Object layer options"
+        targetKind="atom" onInvoke={() => {}} onDismiss={() => {}} />));
+      const menu = container.querySelector<HTMLElement>('[aria-label="Object layer options"]')!;
+      expect([menu.style.left, menu.style.top]).toEqual(["816px", "460px"]);
     } finally {
       vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockRestore();
     }
@@ -248,7 +290,7 @@ describe("stereo readout row", () => {
       await act(async () => root.render(<CanvasContextMenu items={items} position={{ x: 10, y: 10 }} label="Object layer options"
         targetKind="atom" onInvoke={() => {}} onDismiss={() => {}} loadStereoReadout={() => readout.promise} />));
       await act(async () => root.render(<></>));
-      await act(async () => { readout.resolve("Stereocentre: R"); await new Promise(resolve => setTimeout(resolve, 0)); });
+      await act(async () => { readout.resolve("Stereocenter: R"); await new Promise(resolve => setTimeout(resolve, 0)); });
       expect(calls).toEqual([]);
       expect(closed).not.toHaveBeenCalled();
     } finally {
@@ -268,7 +310,7 @@ describe("stereo readout row", () => {
     // Replaces the menu in one commit: its layout effect runs after the menu's deletion is committed,
     // and its passive effect runs in the same flush as the menu's passive cleanup.
     function ResolveDuringCommit() {
-      useLayoutEffect(() => { order.push("commit"); readout.resolve("Stereocentre: R"); }, []);
+      useLayoutEffect(() => { order.push("commit"); readout.resolve("Stereocenter: R"); }, []);
       useEffect(() => { order.push("passive"); }, []);
       return null;
     }

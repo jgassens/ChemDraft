@@ -28,6 +28,11 @@ export type { PdfExportOptions } from "./pdf";
 export { ensureHandwritingFontLoaded, HandwritingFontNotLoadedError } from "./handwritingFont";
 export { SvgByteLimitError, ensureSvgFontsLoaded, documentStyleSvg, exportDocumentToSvg, type SvgExportOptions, type SvgExportResult } from "./svg";
 export {
+  jpegOrientationMatrix, jpegPicturePlacement, jpegPictureSvg, jpegPictureSvgLength, orientedJpegSize, pdfEmbeddableJpegFrame,
+  readJpegPicture, readJpegPictureSvg,
+  type JpegOrientation, type JpegPicture, type PictureBox
+} from "./jpegPicture";
+export {
   exportTableClipboardPayloads,
   exportTableToHtml,
   exportTableToRtf,

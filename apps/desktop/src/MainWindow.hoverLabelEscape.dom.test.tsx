@@ -35,7 +35,7 @@ describe.each(["macos", "windows"] as const)("hover label Escape (%s shortcuts)"
     vi.stubGlobal("ResizeObserver", TestResizeObserver);
     vi.stubGlobal("CSS", { escape: (value: string) => value });
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
-    saveKeybindingSettings({ scheme: "chemdraft" });
+    saveKeybindingSettings({ scheme: "chemdraw" });
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
     const initial = insertNativeSingleBondMolecule(createPhase4Document("Hover label Escape"), { x: 300, y: 300 });
     const object = initial.pages[0].objects[0];
@@ -90,50 +90,6 @@ describe.each(["macos", "windows"] as const)("hover label Escape (%s shortcuts)"
     expect(molecule().dataset.deleteHoverBondId).toBe(bondId);
   }
 
-  it("routes o over the own bond near C2 as with no pending label, keeping C1 OH without opening Oo", async () => {
-    const before = chemistry();
-    await hover(carbon);
-    await key("o");
-    expect(label()).toBe("OH");
-    // Escape clears the continuation, giving the ordinary bond-key dispatch as a baseline.
-    await key("Escape");
-    await hoverBondNearNeighbour();
-    await key("o");
-    expect(editor()).toBeNull();
-    expect([...container.querySelectorAll("[data-atom-label]")].map(node => node.getAttribute("data-atom-label"))).toEqual(["HO", "OH"]);
-    const freshDispatch = chemistry();
-    const undo = { metaKey: platform === "macos", ctrlKey: platform === "windows" };
-    await key("z", undo);
-    await key("z", undo);
-    expect(chemistry()).toEqual(before);
-
-    await hover(carbon);
-    await key("o");
-    expect(label()).toBe("OH");
-    await hoverBondNearNeighbour();
-    await key("o");
-    expect(editor()).toBeNull();
-    expect(chemistry()).toEqual(freshDispatch);
-    expect([...container.querySelectorAll("[data-atom-label]")].map(node => node.getAttribute("data-atom-label"))).toEqual(["HO", "OH"]);
-  });
-
-  it("continues OMe on C1 after drifting onto the own bond near C2", async () => {
-    const before = chemistry();
-    await hover(carbon);
-    await key("O");
-    await hoverBondNearNeighbour();
-    await key("M");
-    expect(editor()?.value).toBe("OM");
-    expect(editor()?.dataset.atomId).toBe(carbon.id);
-    await key("e");
-    expect(editor()?.value).toBe("OMe");
-    await key("Enter");
-    expect(editor()).toBeNull();
-    expect(label()).toBe("OMe");
-    expect(chemistry()).toMatchObject({ atoms: before.atoms, bonds: before.bonds, orders: before.orders });
-    expect(chemistry().structure).not.toBe(before.structure);
-  });
-
   it("preserves the committed OH when an empty-canvas key is followed by Escape, with exactly one undo step", async () => {
     const before = chemistry();
     await hover(carbon);
@@ -163,44 +119,5 @@ describe.each(["macos", "windows"] as const)("hover label Escape (%s shortcuts)"
     expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("false");
     await key("z", { shiftKey: true, metaKey: platform === "macos", ctrlKey: platform === "windows" });
     expect(chemistry()).toEqual(committed);
-  });
-
-  it("cancels a text continuation after pointer drift against the committed OH, without removing its undo entry", async () => {
-    const before = chemistry();
-    await hover(carbon);
-    await key("o");
-    const committed = chemistry();
-    await hover({ x: 650, y: 450 });
-    await key("M");
-    expect(editor()?.value).toBe("OM");
-    await key("Escape");
-    expect(editor()).toBeNull();
-    expect(chemistry()).toEqual(committed);
-    expect(label()).toBe("OH");
-    expect(container.querySelector('[role="status"]')?.textContent).toBe("Atom label unchanged");
-    await key("z", { metaKey: platform === "macos", ctrlKey: platform === "windows" });
-    expect(chemistry()).toEqual(before);
-    expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("false");
-  });
-
-  it("coalesces a committed text continuation after pointer drift with the hover edit", async () => {
-    const before = chemistry();
-    await hover(carbon);
-    await key("o");
-    const committed = chemistry();
-    await hover({ x: 650, y: 450 });
-    await key("M");
-    expect(editor()?.value).toBe("OM");
-    await key("e");
-    expect(editor()?.value).toBe("OMe");
-    await key("Enter");
-    const continued = chemistry();
-    expect(continued).not.toEqual(committed);
-    expect(label()).toBe("OMe");
-    await key("z", { metaKey: platform === "macos", ctrlKey: platform === "windows" });
-    expect(chemistry()).toEqual(before);
-    expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("false");
-    await key("z", { shiftKey: true, metaKey: platform === "macos", ctrlKey: platform === "windows" });
-    expect(chemistry()).toEqual(continued);
   });
 });

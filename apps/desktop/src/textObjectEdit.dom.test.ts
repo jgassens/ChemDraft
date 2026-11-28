@@ -27,7 +27,7 @@ describe.each(["macos", "windows"] as const)("existing text editing (%s)", platf
     for (const name of captureMethods) {
       Object.defineProperty(Element.prototype, name, { configurable: true, value: () => false });
     }
-    saveKeybindingSettings({ scheme: "chemdraft" });
+    saveKeybindingSettings({ scheme: "chemdraw" });
     window.history.replaceState(null, "", "/?agentBridge=1");
     container = document.createElement("div");
     document.body.append(container);
@@ -222,6 +222,13 @@ describe.each(["macos", "windows"] as const)("existing text editing (%s)", platf
     await mouse(firstEditor!, "mouseup", 2);
     expect(editor()).toBe(firstEditor);
     await mouse(firstEditor!, "dblclick", 2);
+    // The second press lands on the open editor, which puts the caret where it was pressed, on
+    // the rendered line (docs/plans/textbox-behavior.md C2). Before 1.2.3 jsdom left it at the
+    // end only because it has no native textarea hit-testing; a browser moved it too.
+    const caretOffset = firstEditor!.selectionStart;
+    expect(caretOffset).toBeLessThan("Reaction conditions".length);
+    expect(firstEditor!.selectionEnd).toBe(caretOffset);
+    await act(async () => firstEditor!.setSelectionRange(19, 19));
     expectEditing();
   });
 

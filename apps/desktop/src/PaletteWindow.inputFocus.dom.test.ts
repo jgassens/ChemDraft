@@ -150,9 +150,9 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     windowListeners = vi.spyOn(window, "addEventListener");
     native.platform = platform;
     native.failPointerSubscription = false;
-    // The chords and tool hotkeys below are ChemDraft's scheme; pin it rather than rely on the default.
+    // The chords and tool hotkeys below are the built-in shortcut set's.
     vi.stubGlobal("localStorage", new MemoryStorage());
-    saveKeybindingSettings({ scheme: "chemdraft" });
+    saveKeybindingSettings({ scheme: "chemdraw" });
     native.invoke.mockReset().mockImplementation(async (command: string, args?: { editing: boolean }) =>
       command === "register_plugin_panel_input_focus" ? "palette-page" : args?.editing);
     vi.mocked(sendPaletteCommand).mockClear();
@@ -475,11 +475,12 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
       expect(sendPaletteCommand, key).not.toHaveBeenCalled();
       expect(sendPaletteCommandCommit, key).not.toHaveBeenCalled();
     }
-    for (const [key, shiftKey, command] of [
+    // Export is Ctrl+Cmd+E on macOS, which collapses to Ctrl+E elsewhere.
+    for (const [key, shiftKey, command, ctrlKey] of [
       ["s", false, "document.save"], ["s", true, "document.saveAs"], ["o", false, "document.open"],
       ["n", false, "document.new"], ["w", false, "document.closeTab"],
-      ["e", true, "export.open"], [",", false, "view.togglePreferences"],
-      ["-", false, "view.zoomOut"], ["r", false, "view.toggleRulers"]
+      ["e", false, "export.open", true], [",", false, "view.togglePreferences"],
+      ["<", true, "view.zoomOut"], [";", false, "view.toggleRulers"]
     ] as const) {
       // A new draft for each command; an acknowledged prior value must not mask this edit.
       await snapshot(31);
@@ -487,7 +488,7 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
       await type(input, "31");
       vi.mocked(sendPaletteCommand).mockClear();
       vi.mocked(sendPaletteCommandCommit).mockClear();
-      const event = await press(input, key, { ...modifier, shiftKey });
+      const event = await press(input, key, { ...modifier, shiftKey, ...(ctrlKey ? { ctrlKey } : {}) });
       expect(event.defaultPrevented, command).toBe(true);
       expect(sendPaletteCommandCommit).toHaveBeenCalledExactlyOnceWith(moleculeStructureBondLengthCommandId(31), { settleBeforeForward: true });
       expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith(command, { preserveInputFocus: true });
@@ -526,7 +527,7 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     const control = await nonTextControl(kind);
     await clickControl(control);
     for (const [key, modifiers, command] of [
-      ["=", { metaKey: platform === "macos", ctrlKey: platform === "windows" }, "view.zoomIn"],
+      [">", { metaKey: platform === "macos", ctrlKey: platform === "windows", shiftKey: true }, "view.zoomIn"],
       ["Tab", { ctrlKey: true }, "document.nextTab"],
       ["Tab", { ctrlKey: true, shiftKey: true }, "document.previousTab"],
       ["w", { metaKey: platform === "macos", ctrlKey: platform === "windows" }, "document.closeTab"]
@@ -545,7 +546,7 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
 
   it("forwards without preserveInputFocus when no lease exists", async () => {
     await mountSettings();
-    const event = await press(document.body, "=", { metaKey: platform === "macos", ctrlKey: platform === "windows" });
+    const event = await press(document.body, ">", { metaKey: platform === "macos", ctrlKey: platform === "windows", shiftKey: true });
     expect(event.defaultPrevented).toBe(true);
     expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith("view.zoomIn");
   });
@@ -767,7 +768,7 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     await clickControl(button);
     expect(leases().filter(([, args]) => args.editing)).toHaveLength(0);
     const shell = container.querySelector<HTMLElement>(".palette-window-shell")!;
-    const hotkey = await press(shell, "m");
+    const hotkey = await press(shell, "x");
     expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith("tool.bond");
     expect(hotkey.defaultPrevented).toBe(true);
     // jsdom does not hit-test CSS: assert the pass-through rule excludes buttons.
@@ -1103,7 +1104,7 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     expect(document.activeElement).toBe(control);
     vi.mocked(sendPaletteCommand).mockClear();
     native.resolved.mockClear();
-    const event = new KeyboardEvent("keydown", { key: "m", bubbles: true, cancelable: true });
+    const event = new KeyboardEvent("keydown", { key: "x", bubbles: true, cancelable: true });
     await act(async () => control.dispatchEvent(event));
     expect(native.resolved).toHaveBeenCalledTimes(kind === "select" ? 0 : 1);
     if (kind === "select") expect(sendPaletteCommand).not.toHaveBeenCalled();
@@ -1143,7 +1144,7 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
       expect(event.defaultPrevented, key).toBe(false);
       expect(document.activeElement, key).toBe(control);
     }
-    const hotkey = new KeyboardEvent("keydown", { key: "m", bubbles: true, cancelable: true });
+    const hotkey = new KeyboardEvent("keydown", { key: "x", bubbles: true, cancelable: true });
     await act(async () => control.dispatchEvent(hotkey));
     expect(native.resolved).toHaveBeenCalledTimes(kind === "select" ? 0 : 1);
     if (kind === "select") expect(sendPaletteCommand).not.toHaveBeenCalled();

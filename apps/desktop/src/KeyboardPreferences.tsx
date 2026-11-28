@@ -5,7 +5,6 @@ import {
   type ShortcutOverrides, type ShortcutPlatform
 } from "@chemdraft/shortcut-engine";
 import { capturedShortcut, keyboardShortcutActions } from "./customKeyboardShortcuts";
-import type { KeybindingScheme } from "./keybindingSettings";
 import { detectDesktopShortcutPlatform } from "./keyboardShortcuts";
 import { formatShortcutLabel } from "./toolsets";
 import { isDesktopRuntime } from "./window-manager";
@@ -19,9 +18,8 @@ async function suspendNativeMenuShortcuts(recording: boolean, platform: Shortcut
 const scopeLabels = { commands: "Command", atom: "Over an atom", bond: "Over a bond" };
 
 export function KeyboardPreferences({
-  scheme, overrides, onUpdate, platform = detectDesktopShortcutPlatform()
+  overrides, onUpdate, platform = detectDesktopShortcutPlatform()
 }: {
-  scheme: KeybindingScheme;
   overrides?: ShortcutOverrides;
   onUpdate: (overrides: ShortcutOverrides) => Promise<void>;
   platform?: ShortcutPlatform;
@@ -35,7 +33,7 @@ export function KeyboardPreferences({
   const [conflict, setConflict] = useState<{ action: ShortcutAction; edit: ShortcutEdit; actions: readonly ShortcutAction[] }>();
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
-  const actions = useMemo(() => keyboardShortcutActions(scheme, platform), [scheme, platform]);
+  const actions = useMemo(() => keyboardShortcutActions(platform), [platform]);
   const reportError = (error: unknown) => setMessage(error instanceof Error ? error.message : String(error));
   const commit = (next: ShortcutOverrides) => {
     setConflict(undefined);
@@ -101,7 +99,7 @@ export function KeyboardPreferences({
         void suspendNativeMenuShortcuts(false, platform).catch(error => console.error("Could not restore menu shortcuts", error));
       }
     };
-  }, [platform, recorder.cancelRecording, scheme]);
+  }, [platform, recorder.cancelRecording]);
 
   useEffect(() => {
     const showKeyboard = () => {
@@ -148,7 +146,7 @@ export function KeyboardPreferences({
           onFocus={() => { if (current.current) recorder.cancelRecording(); }}
           onChange={event => setQuery(event.currentTarget.value)} />
         <button type="button" disabled={editing || Boolean(recording)} onClick={() => { setMessage(""); commit({}); }}>
-          Reset all to scheme defaults
+          Reset all to defaults
         </button>
       </div>
       <p className="preferences-section-hint">Click a shortcut and press a new key, or press Escape to cancel. Hold Shift for uppercase hover letters.</p>

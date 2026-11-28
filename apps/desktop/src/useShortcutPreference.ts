@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import type { ShortcutOverrides } from "@chemdraft/shortcut-engine";
 import { desktopPreferences } from "./desktopPreferences";
 import {
-  isKeybindingScheme, isSchemeOverrides, KEYBINDING_STORAGE_KEY, loadKeybindingSettings,
-  saveKeybindingSettings, type KeybindingScheme, type KeybindingSettings
+  hasUnsavedShortcuts, isSchemeOverrides, KEYBINDING_SCHEME, KEYBINDING_STORAGE_KEY, loadKeybindingSettings,
+  saveKeybindingSettings, setUnsavedShortcuts, type KeybindingSettings
 } from "./keybindingSettings";
 import { broadcastKeybindingSettings, listenForKeybindingSettings } from "./window-manager";
 
@@ -29,12 +29,16 @@ export function useShortcutPreference(): KeybindingSettings {
       if (disposed) { stop(); return; }
       unlisten = stop;
       const saved = await desktopPreferences();
-      if (!disposed && !changed && saved && (isKeybindingScheme(saved.shortcutScheme) || isSchemeOverrides(saved.shortcutOverrides))) {
-        const cache = loadKeybindingSettings();
-        receive({
-          scheme: saved.shortcutScheme ?? cache.scheme,
-          overrides: isSchemeOverrides(saved.shortcutOverrides) ? saved.shortcutOverrides : cache.overrides
-        });
+      // There is one shortcut set, so only the custom keys can differ from the cache. They are taken
+      // from the native file only once it names the set: until then the move to the single set
+      // (shortcutDefaultMigration.ts) has not saved the cache's keys there, and the next launch combines
+      // the two stores, so the cache is kept as it is. The same holds while the cache has custom keys
+      // the native file could not save (`hasUnsavedShortcuts`: the move's write failed): the file's
+      // older map would drop them. A read never writes, and an edit or a change from another window
+      // that arrives first wins over it.
+      if (!disposed && !changed && !hasUnsavedShortcuts() && saved?.shortcutScheme === KEYBINDING_SCHEME &&
+          isSchemeOverrides(saved.shortcutOverrides)) {
+        receive({ scheme: KEYBINDING_SCHEME, overrides: saved.shortcutOverrides });
       }
     }).catch(error => console.error("Could not load keyboard shortcuts", error));
     return () => { disposed = true; unlisten?.(); window.removeEventListener("storage", onStorage); };
@@ -42,14 +46,17 @@ export function useShortcutPreference(): KeybindingSettings {
   return settings;
 }
 
-export async function updateShortcutPreference(scheme: KeybindingScheme, overrides?: ShortcutOverrides): Promise<void> {
+/** Save the user's custom keys for the shortcut set, then tell every window. */
+export async function updateShortcutPreference(overrides: ShortcutOverrides): Promise<void> {
   const cache = loadKeybindingSettings();
-  const shortcutOverrides = overrides === undefined ? undefined : { [scheme]: overrides };
-  const saved = await desktopPreferences(overrides === undefined ? { shortcutScheme: scheme } : { shortcutOverrides });
-  const settings = {
-    scheme: saved?.shortcutScheme ?? (overrides === undefined ? scheme : cache.scheme),
-    overrides: saved?.shortcutOverrides ?? (shortcutOverrides ? { ...cache.overrides, ...shortcutOverrides } : cache.overrides)
+  const shortcutOverrides = { [KEYBINDING_SCHEME]: overrides };
+  const saved = await desktopPreferences({ shortcutOverrides });
+  const settings: KeybindingSettings = {
+    scheme: KEYBINDING_SCHEME,
+    overrides: isSchemeOverrides(saved?.shortcutOverrides) ? saved.shortcutOverrides : { ...cache.overrides, ...shortcutOverrides }
   };
   saveKeybindingSettings(settings);
+  // The native file now holds the set's whole map, as the cache does.
+  setUnsavedShortcuts(false);
   await broadcastKeybindingSettings(settings);
 }

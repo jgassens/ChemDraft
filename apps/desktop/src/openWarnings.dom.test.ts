@@ -41,7 +41,7 @@ describe("open warnings list", () => {
   let captured: Element | undefined;
 
   beforeEach(() => {
-    saveKeybindingSettings({ scheme: "chemdraft" });
+    saveKeybindingSettings({ scheme: "chemdraw" });
     originalResizeObserver = globalThis.ResizeObserver;
     globalThis.ResizeObserver = TestResizeObserver as unknown as typeof ResizeObserver;
     originalCapture = {
@@ -253,12 +253,12 @@ describe("open warnings list", () => {
     expect(list()?.contains(document.activeElement)).toBe(false);
     // Shortcuts reach the canvas while the list is open: it is not modal.
     await press("e");
-    expect(bridge().snapshot().activeToolCommandId).toBe("tool.eraser");
+    expect(bridge().snapshot().activeToolCommandId).toBe("tool.art.reactionArrow");
 
     expect(await click(row("cdxml.atom_element_unknown").querySelector("[data-open-warning-show]")!)).toBe(true);
     expect(list()?.contains(document.activeElement)).toBe(false);
-    await press("e");
-    expect(bridge().snapshot().activeToolCommandId).toBe("tool.eraser");
+    await press("j");
+    expect(bridge().snapshot().activeToolCommandId).toBe("tool.benzene");
 
     expect(await click(container.querySelector(".open-warnings-close")!)).toBe(true);
     expect(list()).toBeNull();
@@ -278,30 +278,39 @@ describe("open warnings list", () => {
     expect(document.activeElement).toBe(button());
     // A focused button passes letter shortcuts on.
     await press("e");
-    expect(bridge().snapshot().activeToolCommandId).toBe("tool.eraser");
+    expect(bridge().snapshot().activeToolCommandId).toBe("tool.art.reactionArrow");
   });
 
   it("Esc goes to a label being typed first; the list closes on the next one", async () => {
-    await mountWithFile(invalidElement, "invalid-element.cdxml");
-    await click(button()!);
-    expect(list()).not.toBeNull();
+    await mountWithFile(invalidElement, "invalid-element.cdxml", "tool.atom");
 
-    // Hover-typing over the * atom: the first letter assigns at once, the second opens the label editor.
+    // The Atom Label tool opens the label editor on the * atom.
     const star = molecules()[0].atoms.find((atom) => atom.element === "*")!;
     await hoverAtom(star);
     expect(bridge().snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom", atomId: star.id });
+    await act(async () => {
+      const client = bridge().resolvePoint({ page: star }).client;
+      const event = new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 0, buttons: 1, clientX: client.x, clientY: client.y });
+      Object.defineProperties(event, { pointerId: { value: 7 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
+      container.querySelector(`[data-object-id="${molecules()[0].id}"]`)!.dispatchEvent(event);
+    });
+    const editor = () => document.querySelector<HTMLInputElement>('[data-atom-label-editor="true"]');
+    expect(editor()).not.toBeNull();
     await type("O");
     await type("M");
-    const editor = () => container.querySelector<HTMLInputElement>('[data-atom-label-editor="true"]');
+    // Opened by command (a shortcut, say) while the label is being typed: a click would end the edit.
+    await act(async () => {
+      await bridge().command(TOGGLE_OPEN_WARNINGS_COMMAND_ID);
+    });
+    expect(list()).not.toBeNull();
     expect(editor()?.value).toBe("OM");
     expect(document.activeElement).toBe(editor());
 
     await press("Escape");
     expect(editor()).toBeNull();
-    // Escape cancels the pending continuation and keeps the committed first letter.
-    expect(molecules()[0].atoms.find((atom) => atom.id === star.id)?.element).toBe("O");
+    // Escape cancels the edit; the atom keeps its element and the list stays open.
+    expect(molecules()[0].atoms.find((atom) => atom.id === star.id)?.element).toBe("*");
     expect(list()).not.toBeNull();
-    expect(row("cdxml.atom_element_unknown").querySelector("[data-open-warning-target]")?.textContent).toBe(`Atom O in Molecule (CDXML fragment ${molecules()[0].compatibility?.originalId})`);
 
     await press("Escape");
     expect(list()).toBeNull();

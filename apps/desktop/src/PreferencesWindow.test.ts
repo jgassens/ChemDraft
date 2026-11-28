@@ -74,63 +74,56 @@ describe("PreferencesWindow", () => {
     markup = renderToStaticMarkup(createElement(PreferencesWindow));
     expect(checkboxLabel(markup, "Ask to save unsaved changes before quitting")).toMatch(/type="checkbox"[^>]*checked/);
   });
-  it("renders the keybinding, refinement, engine, and force-field sections with their options", () => {
+  it("renders the keyboard, refinement, engine, and force-field sections with their options", () => {
     const markup = renderToStaticMarkup(createElement(PreferencesWindow));
     expect(markup).toContain('<h2 id="preferences-keyboard">Keyboard</h2>');
-    expect(markup).toContain('<h2 id="pref-keybinding-scheme">Shortcut scheme</h2>');
     expect(markup).toMatch(/<input[^>]*type="search"[^>]*aria-label="Search shortcuts"/);
     for (const heading of ["3D refinement", "Embedding engine", "Force field"]) {
       expect(markup).toContain(heading);
     }
-    for (const title of ["ChemDraft", "Classic desktop-compatible", "Fast", "Balanced", "Quality", "Automatic", "RDKit ETKDG", "OpenChemLib (legacy)", "MMFF94s", "MMFF94", "UFF"]) {
+    for (const title of ["Fast", "Balanced", "Quality", "Automatic", "RDKit ETKDG", "OpenChemLib (legacy)", "MMFF94s", "MMFF94", "UFF"]) {
       expect(markup).toContain(title);
     }
     expect(markup).toContain("Requires the RDKit engine");
-    // The classic scheme description quotes ambiguous key names (React SSR escapes them as
-    // &quot;) and calls out case sensitivity.
-    expect(markup).toContain("&quot;l&quot; for Cl");
-    expect(markup).toContain("Case matters for element keys: B = boron, b = Br");
   });
 
   it("reflects persisted settings as one selected option per group", () => {
     saveDrawingSettings({ defaultDoubleBond: "centred" });
     storage.setItem(STORAGE_KEY, JSON.stringify({ refinementMode: "balanced", enginePreference: "openchemlib", forceField: "uff" }));
-    storage.setItem(KEYBINDINGS_STORAGE_KEY, JSON.stringify({ scheme: "chemdraw" }));
     const markup = renderToStaticMarkup(createElement(PreferencesWindow));
-    // One selection per radio group (five groups total).
-    expect(markup.match(/data-selected="true"/g)).toHaveLength(5);
+    // One selection per radio group (four groups total).
+    expect(markup.match(/data-selected="true"/g)).toHaveLength(4);
     expect(markup).toMatch(selected("default-double-bond", "centred"));
-    expect(markup).toMatch(selected("keybinding-scheme", "chemdraw"));
-    expect(checkboxLabel(markup, "Classic desktop-compatible")).toMatch(selected("keybinding-scheme", "chemdraw"));
     expect(markup).toMatch(selected("spin3d-refinement-mode", "balanced"));
     expect(markup).toMatch(selected("spin3d-engine", "openchemlib"));
     expect(markup).toMatch(selected("spin3d-force-field", "uff"));
   });
 
-  it("keeps shortcut scheme titles and descriptions neutral", () => {
+  // One built-in shortcut set: the Keyboard page customizes it and offers no preset to choose,
+  // whatever an older version stored, and names no other product.
+  it.each([
+    ["nothing stored", undefined],
+    ["the retired preset stored", JSON.stringify({ scheme: "chemdraft" })],
+    ["the set stored", JSON.stringify({ scheme: "chemdraw" })],
+    ["malformed settings", "{not json"]
+  ])("renders no shortcut preset chooser with %s", (_label, stored) => {
+    if (stored !== undefined) storage.setItem(KEYBINDINGS_STORAGE_KEY, stored);
     const markup = renderToStaticMarkup(createElement(PreferencesWindow));
-    const section = markup.match(/<section[^>]*aria-labelledby="pref-keybinding-scheme"[\s\S]*?<\/section>/)?.[0];
-    expect(section).toBeDefined();
-    const visibleText = section!.replace(/<[^>]*>/g, " ");
-    expect(visibleText).not.toMatch(/chemdraw/i);
+    expect(markup).not.toMatch(/name="keybinding-scheme"/);
+    expect(markup).not.toContain("Shortcut scheme");
+    const keyboard = markup.match(/<section[^>]*id="keyboard"[\s\S]*?<\/section>\s*<\/section>/)?.[0];
+    expect(keyboard).toBeDefined();
+    const visibleText = keyboard!.replace(/<[^>]*>/g, " ");
+    expect(visibleText).not.toMatch(/chemdraw|classic|desktop-compatible|preset|scheme/i);
+    expect(visibleText).toContain("Reset all to defaults");
   });
 
-  it("defaults to the industry-standard scheme / quality / auto / mmff94s when nothing is stored", () => {
+  it("defaults to quality / auto / mmff94s when nothing is stored", () => {
     const markup = renderToStaticMarkup(createElement(PreferencesWindow));
-    expect(markup.match(/data-selected="true"/g)).toHaveLength(5);
+    expect(markup.match(/data-selected="true"/g)).toHaveLength(4);
     expect(markup).toMatch(selected("default-double-bond", "offset"));
-    expect(markup).toMatch(selected("keybinding-scheme", "chemdraw"));
     expect(markup).toMatch(selected("spin3d-refinement-mode", "quality"));
     expect(markup).toMatch(selected("spin3d-engine", "auto"));
     expect(markup).toMatch(selected("spin3d-force-field", "mmff94s"));
-  });
-
-  it("keeps ChemDraft's scheme selected for an existing install that has it stored", () => {
-    // shortcutDefaultMigration.ts writes this on an existing install's first launch of 1.2.3.
-    storage.setItem(KEYBINDINGS_STORAGE_KEY, JSON.stringify({ scheme: "chemdraft" }));
-    const markup = renderToStaticMarkup(createElement(PreferencesWindow));
-    expect(markup.match(/data-selected="true"/g)).toHaveLength(5);
-    expect(markup).toMatch(selected("keybinding-scheme", "chemdraft"));
-    expect(markup).not.toMatch(selected("keybinding-scheme", "chemdraw"));
   });
 });

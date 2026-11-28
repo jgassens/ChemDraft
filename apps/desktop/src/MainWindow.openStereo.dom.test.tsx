@@ -86,7 +86,10 @@ describe("editor open E/Z", () => {
     await mount(doc);
     const badge = container.querySelector(".native-bond-stereo-marker")!;
     expect(badge).not.toBeNull();
-    expect(badge.closest(".page-interaction-layer")).not.toBeNull();
+    // Editor chrome, never page paint: in the page's interaction layer, or (the molecule is selected)
+    // with its handles in the handle layer beside the page, inside the molecule's controls.
+    expect(badge.closest(".page-interaction-layer, .page-handle-layer")).not.toBeNull();
+    expect(badge.closest("[data-object-controls]")?.getAttribute("data-object-controls")).toBe(molecule().id);
     expect(badge.querySelector("text")?.textContent).toBe("!");
     expect(badge.querySelector("title")?.textContent).toBe(OPEN_DOUBLE_BOND_TOOLTIP);
     const mol = molecule(), bond = mol.bonds.find(b => b.stereo === "either")!;

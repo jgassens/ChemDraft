@@ -2,7 +2,10 @@
  * Where the electron marks a molecule owns (charges, radical dots, lone pairs, radical ions) land
  * when the molecule is redrawn with new atom positions: the Spin 3D live overlay, its flatten, a
  * typed or dragged X/Y rotation of a stored 3D model, and 3D clean-up. One rule for all of them,
- * so the overlay paints each mark exactly where the commit puts it.
+ * so each mark sits beside its displayed atom. For a molecule not turned on the page the overlay
+ * paints each mark exactly where the commit puts it; for a turned one the overlay draws unturned and
+ * the commit uses the turned frame, so the live and committed page positions differ, each beside its
+ * displayed atom.
  *
  * A mark keeps its 2D offset from its atom. When that spot would land on another atom (one nearer
  * the mark than its own atom, so the mark would read as that atom's), on a bond, or on an atom label's

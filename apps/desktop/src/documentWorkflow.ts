@@ -14,18 +14,25 @@ export {
 } from "@chemdraft/document-workflow-core";
 import { loadDirectElectronMarkEditing } from "./electronMarkEditingSettings";
 import { identifiersWithMolfileStereo, sourceCoordinateWarnings } from "./documentWorkflow.molfileStereo";
-import { IMPLIED_RADICAL_CACHE_NOT_REFRESHED_CODE } from "./openWarnings";
-/** The open report's code for a molecule whose lone-H (H•) cache the refresh declined to change. */
-export { IMPLIED_RADICAL_CACHE_NOT_REFRESHED_CODE } from "./openWarnings";
-import { bracketVisualBounds } from "@chemdraft/layout-engine";
+import {
+  IMPLIED_RADICAL_CACHE_NOT_REFRESHED_CODE, impliedRadicalCacheNotRefreshedWarnings, refreshNativeSingleBondGraph, withImpliedRadicalChemistryRederived
+} from "@chemdraft/document-workflow-core";
+// The lone-H (H•) cache migration lives in document-workflow-core, shared with the CLI and MCP.
+export {
+  IMPLIED_RADICAL_CACHE_NOT_REFRESHED_CODE, impliedRadicalCacheDeclinedLine, impliedRadicalCacheNotRefreshedText,
+  impliedRadicalCacheNotRefreshedWarnings, rederiveImpliedRadicalChemistryOf, refreshNativeSingleBondGraph,
+  withImpliedRadicalChemistryRederived, type ImpliedRadicalCacheDecline, type ImpliedRadicalRefreshTarget
+} from "@chemdraft/document-workflow-core";
+import { bracketVisualBounds, normalizeTextLineBreaks, textObjectWithNormalizedLineBreaks } from "@chemdraft/layout-engine";
 import { repeatUnits, repeatUnitExportWarnings, repeatUnitMolfileGroups } from "@chemdraft/export-engine";
 import { nativeMoleculeLayoutQuality } from "./depiction2d/layoutQuality";
 import { planObjectArrangement, moleculeAnchorForArrangement, moleculeVisualBoundsForArrangement, textVisualBoundsForArrangement, type ArrangementLayout, type ArrangementOptions, type ArrangementItem, type LayoutBounds } from "@chemdraft/layout-engine";
 import { combinedLayoutBounds, planObjectAlignment, planObjectDistribution, type ObjectAlignMode, type ObjectDistributeAxis, type ObjectDistributeMode } from "@chemdraft/layout-engine";
 import { nativeFormattedTextObjectSize, reconcileReactionArrowAttachments } from "@chemdraft/document-workflow-core";
-import { withArrowAttachmentIds } from "@chemdraft/layout-engine";
+import { objectFrameBoundsForPageFit, withArrowAttachmentIds } from "@chemdraft/layout-engine";
 import { snapRotationDegrees } from "./rotationSnap";
 import { snapPlacementDegrees } from "./placementSnap";
+import { sizeOrbitalToolForBondLength } from "./orbitalSize";
 import { nativeTemplateForToolCommand as sharedTemplateForToolCommand } from "./ringTemplates";
 import { projectedDoubleBondSides } from "./interaction/projectedDoubleBondSides";
 import { buildTableObject, pageConstrainedShift } from "@chemdraft/document-workflow-core";
@@ -111,10 +118,6 @@ import {
   DEFAULT_MIN_PROJECTED_BOND_LENGTH_FRACTION,
   pageLayoutSourceUnit,
   flattenPerspectiveFrom3D,
-  atomImpliedRadicalCount,
-  atomicNumberForElementSymbol,
-  atomStatedHydrogenCount,
-  ignoredHydrogenCountAtomKind,
   isDativeBond,
   isEngineDocument,
   isMetalSymbol,
@@ -129,7 +132,6 @@ import {
   nativeDrawingStyleFromObjectStyle,
   nativeTextStyleFromObjectStyle,
   textStyleToObjectStyle,
-  withBracketChemistryWarnings,
   type Anchor,
   type ArrowObject,
   type BracketObject,
@@ -231,13 +233,15 @@ import {
   reconcileRingDoubleBondSides,
   smallestRingAtomIdsByBondId,
   defaultMechanismArrowControls,
-  hydrogenCountElement,
   mechanismArrowGeometry,
   nativeBondOrderResolution,
+  nativeElementWithChargeLabel,
   nativeGroupLabelDisplay,
+  nativeRelabelElementAndCharge,
   representativeMoleculeBondLength,
   resolvePageAnchorPoint
 } from "@chemdraft/layout-engine";
+import { bondedElementLabelMeaning } from "@chemdraft/template-library";
 import {
   extractRxnMolfileBlocks,
   parseMolfileGraph,
@@ -304,8 +308,7 @@ import {
   phase4Timestamp,
   scaleParsedMolfileAtoms,
   SMILES_PASTE_SOURCE,
-  stereoPerceptionMolfile,
-  tryNativeSingleBondGraphSmiles
+  stereoPerceptionMolfile
 } from "@chemdraft/document-workflow-core";
 
 // The pure document-building helpers live in @chemdraft/document-workflow-core, so the
@@ -717,6 +720,8 @@ export const nativeArtToolDefinitions: readonly NativeArtToolDefinition[] = [
   artArcTool("arc90Dashed", "Dashed Quarter Arc", 90, true),
   // Orbital tools keep their chemistry command ids (tool.lobe, …) but ride the art pipeline:
   // parametric closed paths get pointer placement, transform chrome, and SVG export for free.
+  // Their sizes here are design units only: placement rescales each one from the document's bond
+  // length (ORBITAL_LOBE_LENGTH_IN_BOND_LENGTHS in orbitalSize.ts), keeping these proportions.
   artShapeTool("lobe", "Orbital Lobe", "path", 40, 60, {
     artPathKind: "bezier",
     pathClosed: true,
@@ -1530,10 +1535,15 @@ export function createNativeArtGraphicObject(
   point: PagePoint,
   commandId: string
 ): GraphicObject | undefined {
-  const tool = nativeArtToolForCommand(commandId);
-  if (!tool) {
+  const definition = nativeArtToolForCommand(commandId);
+  if (!definition) {
     return undefined;
   }
+  // Orbitals are sized from the active style's bond length (orbitalSize.ts), so they stay in
+  // proportion to the structures they are drawn on. Only new placements are sized here.
+  const tool = nativeArtToolIsOrbital(definition.commandId)
+    ? sizeOrbitalToolForBondLength(definition, documentDrawingDefaults(document).bondLengthPx)
+    : definition;
 
   const page = firstPage(document);
   const orbitalPlacement = nativeOrbitalPlacementAtPoint(document, point, tool);
@@ -4659,6 +4669,13 @@ function nativeTextObjectToAtomLabelDisabledReason(
   const target = candidate.target;
   const atom = target.kind === "atom" ? candidate.molecule.atoms.find(a => a.id === target.atomId) : undefined;
   const label = normalizeNativeAtomElementLabel(candidate.text.text);
+  // A charged element ("Zn2+") always relabels its atom (`commitNativeAtomLabelTarget`), unless
+  // that atom cannot hold it faithfully (`chargedAtomRelabelRefusal`).
+  const charged = nativeElementWithChargeLabel(candidate.text.text.trim());
+  if (atom && charged && charged.charge !== 0) {
+    return chargedAtomRelabelRefusal(atom, candidate.molecule, candidate.text.text) ??
+      atomLabelIsotopeRefusal(atom, charged.element, candidate.molecule, true);
+  }
   if (atom && labelOnBondedAtom(label, atom, candidate.molecule).kind !== "substituent") {
     return atomLabelIsotopeRefusal(atom, label, candidate.molecule, true);
   }
@@ -4724,43 +4741,131 @@ export function selectedTextToAtomLabelResult(document: ChemDraftDocument): Text
     : result;
 }
 
-/** Exact elements and case-sensitive groups may auto-convert; groups need an atom target. */
-export function canAutoConvertNativeTextObjectToAtom(document: ChemDraftDocument, objectId: string): boolean {
+/**
+ * The whole-object text properties that change how the characters themselves look. Only these keep
+ * a typed element symbol as text; layout properties (alignment, line height, paragraph and letter
+ * spacing, box sizing mode, width, wrapping, rotation) say nothing about the glyphs and are ignored.
+ */
+const nativeTextCharacterAppearanceKeys = [
+  "fontFamily",
+  "fontSizePx",
+  "color",
+  "fontWeight",
+  "fontStyle",
+  "textDecoration"
+] as const;
+
+/**
+ * Whether a text box's characters look the way they did when the box was created: the document's
+ * text defaults overlaid with `baselineStyle`, the style the box was created with, exactly as
+ * `createNativeTextObject` resolves them (with no `baselineStyle`, the document defaults alone).
+ * Compared on the character-appearance properties (`nativeTextCharacterAppearanceKeys`) after
+ * resolution, so a box that omits a property matches the default it falls back to. Layout
+ * (alignment, spacing, sizing mode) is not formatting here and is not compared, so a right-aligned
+ * box still reads as plain.
+ */
+function nativeTextObjectHasDefaultStyle(
+  style: Record<string, unknown> | undefined,
+  document: ChemDraftDocument | undefined,
+  baselineStyle?: Partial<NativeTextStyle>
+): boolean {
+  if (!style) return true;
+  const defaults = textStyleToObjectStyle({
+    ...(document && (document.styles.drawing !== undefined || document.styles.text !== undefined)
+      ? documentDrawingDefaults(document).textStyle : {}),
+    ...baselineStyle
+  });
+  const resolved = textStyleToObjectStyle(nativeTextStyleFromObjectStyle(style));
+  return nativeTextCharacterAppearanceKeys.every(key => Object.is(resolved[key], defaults[key]));
+}
+
+/**
+ * The atom a finished text box stands for when its whole content is one element symbol, in its
+ * exact case, with an optional formal charge after it ("Zn", "Zn2+", "Zn+2", "Fe3+", "Cl-"). The
+ * text is read by the atom-label grammar (`nativeElementWithChargeLabel`); the text must be plain:
+ * the whole box in the formatting it was created with (`document`'s text defaults, the app defaults
+ * when it is omitted, overlaid with `baselineStyle`, the style passed when the box was created), no
+ * run styling, the symbol on the baseline, and the charge on the baseline or
+ * superscript, so "Zn" with a superscript "2+" reads as Zn2+. Anything else stays text: words,
+ * formulas ("H2O"), abbreviations, several lines, an unknown symbol ("Xx"), subscripts, styled runs,
+ * or a box whose characters are formatted as a whole (bold, italic, underline, a color, another font
+ * or size than it was created with). Layout alone (a right-aligned or fixed-width box) does not count
+ * as formatting.
+ */
+export function nativeTextObjectElementWithCharge(
+  object: { text: string; spans?: readonly TextSpan[]; style?: Record<string, unknown> },
+  document?: ChemDraftDocument,
+  baselineStyle?: Partial<NativeTextStyle>
+): { element: string; formalCharge: number } | undefined {
+  const reading = nativeElementWithChargeLabel(object.text);
+  if (!reading) return undefined;
+  if (!nativeTextObjectHasDefaultStyle(object.style, document, baselineStyle)) return undefined;
+  const spans = object.spans ?? [];
+  if (spans.length > 0) {
+    if (spans.map(span => span.text).join("") !== object.text) return undefined;
+    const symbolLength = reading.element.length;
+    let offset = 0;
+    for (const span of spans) {
+      if (Object.keys(span.style ?? {}).length > 0) return undefined;
+      const script = span.script ?? "normal";
+      const touchesSymbol = span.text.length > 0 && offset < symbolLength;
+      if (script === "subscript" || (touchesSymbol && script !== "normal")) return undefined;
+      offset += span.text.length;
+    }
+  }
+  return { element: reading.element, formalCharge: reading.charge };
+}
+
+/**
+ * Exact elements (optionally charged) and case-sensitive groups may auto-convert; groups need an
+ * atom target. `baselineStyle` is the style the box was created with
+ * (`nativeTextObjectElementWithCharge`).
+ */
+export function canAutoConvertNativeTextObjectToAtom(
+  document: ChemDraftDocument,
+  objectId: string,
+  baselineStyle?: Partial<NativeTextStyle>
+): boolean {
   const object = firstPage(document).objects.find((candidate) => candidate.id === objectId);
   if (object?.type !== "text" || object.text.length === 0 || object.text !== object.text.trim()) return false;
-  return nativeElementFromAtomLabel(object.text) === object.text ||
+  return nativeTextObjectElementWithCharge(object, document, baselineStyle) !== undefined ||
     nativeAtomLabelReading(object.text, { bonded: true }).kind === "group";
 }
 
 /**
- * Text anchored on an atom uses the literal label editor's path. In open space, keep the
- * existing exact-element conversion: a one-atom molecule centered on the edited text frame. Other text
- * stays text. A bare covalent-table element is valence-flagged until it gains enough bonds.
+ * Text anchored on an atom uses the literal label editor's path, which relabels that atom; a charged
+ * symbol ("Zn2+") sets the atom's element and charge there, as the label editor does. In open space,
+ * an exact element symbol, optionally charged (`nativeTextObjectElementWithCharge`), becomes a
+ * one-atom molecule centered on the edited text frame, with that element and formal charge. Other
+ * text stays text. A bare covalent-table element is valence-flagged until it gains enough bonds.
+ * `options.baselineStyle` is the style the box was created with (`nativeTextObjectElementWithCharge`).
  */
 export function convertNativeTextObjectToAtom(
   document: ChemDraftDocument,
   objectId: string,
-  options: { skipAtomLabel?: boolean; placementPoint?: PagePoint } = {}
+  options: { skipAtomLabel?: boolean; placementPoint?: PagePoint; baselineStyle?: Partial<NativeTextStyle> } = {}
 ): ChemDraftDocument {
-  if (!canAutoConvertNativeTextObjectToAtom(document, objectId)) {
+  if (!canAutoConvertNativeTextObjectToAtom(document, objectId, options.baselineStyle)) {
     return document;
   }
+  const page = firstPage(document);
+  const object = page.objects.find((candidate): candidate is TextObject =>
+    candidate.id === objectId && candidate.type === "text"
+  );
+  const typedAtom = object ? nativeTextObjectElementWithCharge(object, document, options.baselineStyle) : undefined;
+  // Callers that skip the label path have already performed this hit-test themselves.
   if (!options.skipAtomLabel) {
     const labelResult = convertNativeTextObjectToAtomLabel(document, objectId, undefined, options.placementPoint);
     if (labelResult.target) {
       return labelResult.document;
     }
   }
-  const page = firstPage(document);
-  const object = page.objects.find((candidate): candidate is TextObject =>
-    candidate.id === objectId && candidate.type === "text"
-  );
   // A group belongs on an existing atom; only an exact element can become a naked atom.
-  if (!object || nativeElementFromAtomLabel(object.text) !== object.text) {
+  if (!object || !typedAtom) {
     return document;
   }
 
-  const normalized = object.text;
+  const normalized = typedAtom.element;
 
   const center = { x: object.x + object.width / 2, y: object.y + object.height / 2 };
   const atom: MoleculeAtom = {
@@ -4768,7 +4873,7 @@ export function convertNativeTextObjectToAtom(
     element: normalized,
     x: center.x,
     y: center.y,
-    formalCharge: 0,
+    formalCharge: typedAtom.formalCharge,
     // A typed label is literal: no implicit hydrogens, and the valence badge stays until the
     // atom's bonds actually satisfy it.
     labelLiteral: true,
@@ -5375,29 +5480,55 @@ export function getSelectedTextObject(document: ChemDraftDocument): TextObject |
 export function updateNativeTextObjectText(
   document: ChemDraftDocument,
   objectId: string,
-  text: string,
-  originalFrame?: Pick<TextObject, "x" | "y" | "width" | "height">
+  editedText: string,
+  originalFrame?: Pick<TextObject, "x" | "y" | "width" | "height">,
+  /** Characters just typed after a script toggle at a collapsed caret take that script. */
+  typedScript?: { range: NativeTextSelectionRange; script: TextSpan["script"] },
+  /**
+   * The exact runs to give the edited text, as a native undo or redo inside the editor returns to
+   * an earlier state. Ignored unless they spell `editedText` exactly.
+   */
+  restoredSpans?: readonly TextSpan[]
 ): ChemDraftDocument {
   const location = findTextObjectLocation(document, objectId);
   if (!location) {
     return document;
   }
   const { object, page } = location;
-  const spans = textObjectSpansForTextChange(object, text);
+  // Text box text holds LF only (docs/plans/textbox-behavior.md). Compare against the stored
+  // runs with their line breaks normalized too, so an older CRLF object keeps its formatting.
+  const text = normalizeTextLineBreaks(editedText);
+  const restored = restoredSpans && restoredSpans.map((span) => span.text).join("") === text
+    ? normalizeTextSpans(restoredSpans.map((span) => ({ ...span, style: { ...span.style } })))
+    : undefined;
+  const normalizedObject = textObjectWithNormalizedLineBreaks(object);
+  // A caret-toggled script knows exactly where the characters went in, so splice the runs there:
+  // a prefix/suffix diff would place a repeated letter ("HH" to "HHH") after the run it matched.
+  const insertedSpans = typedScript && !restored
+    ? textObjectSpansForInsertionAt(normalizedObject, text, typedScript.range)
+    : undefined;
+  const changedSpans = restored ?? insertedSpans ?? textObjectSpansForTextChange(normalizedObject, text);
+  // Applied before sizing, so the box is measured with the smaller script glyphs.
+  const spans = typedScript && !restored
+    ? updateTextObjectSpansInRange({ ...object, text, spans: changedSpans }, typedScript.range,
+      (span) => ({ ...span, script: typedScript.script }))
+    : changedSpans;
   const fixedWidth = object.style.textBoxSizingMode === "fixed-width" || object.style.textBoxSizingMode === "fixed-size";
   const fixedSize = object.style.textBoxSizingMode === "fixed-size";
   const frame = { ...object, x: 0, y: 0 };
   const placement = planTextObjectPlacement(frame);
   const minimumHeight = nativeTextObjectMinimumDimensions.height;
-  const limits = fixedWidth ? undefined : textAutoSizePageLimits(object, page, minimumHeight);
+  // The height is never capped at the page bottom (H2): the box reaches past it instead. Auto
+  // width never wraps (H3), so its height does not depend on the width the page leaves it.
+  const limits = fixedWidth ? undefined : textAutoSizePageLimits(object, page, minimumHeight,
+    nativeTextObjectSizeForText(text, object.style, { spans }).height);
   const size = nativeTextObjectSizeForText(text, object.style, {
     spans,
     width: fixedWidth ? object.width : undefined,
     height: fixedSize ? object.height : undefined,
     maxWidth: limits?.maxWidth ?? page.width - object.x,
-    maxHeight: fixedWidth ? Math.max(minimumHeight, page.height - object.y) : undefined
+    maxHeight: fixedSize ? Math.max(minimumHeight, page.height - object.y) : undefined
   });
-  if (limits) size.height = Math.min(size.height, Math.max(minimumHeight, limits.maxHeight(size.width)));
 
   let { x, y } = object;
   if (!fixedWidth) {
@@ -5487,7 +5618,9 @@ export function updateNativeTextObjectStyle(
   if (!location) {
     return document;
   }
-  const { object, page } = location;
+  const { page } = location;
+  // An older CRLF object is stored with LF, its runs on the same characters (N1).
+  const object = textObjectWithNormalizedLineBreaks(location.object);
   const nextStyle = nativeTextStyleFromObjectStyle({
     ...nativeTextStyleFromObjectStyle(object.style),
     ...style
@@ -5510,7 +5643,6 @@ export function updateNativeTextObjectStyle(
     maxWidth: Math.max(nativeTextObjectMinimumDimensions.width, page.width - object.x),
     maxHeight: Math.max(nativeTextObjectMinimumDimensions.height, page.height - object.y)
   });
-
   return applyPatch(
     document,
     {
@@ -5523,7 +5655,8 @@ export function updateNativeTextObjectStyle(
           ...object.style,
           ...textStyleToObjectStyle(nextStyle)
         },
-        ...(spans ? { spans } : {})
+        ...(object === location.object ? {} : { text: object.text }),
+        ...(spans || object !== location.object ? { spans: spans ?? object.spans } : {})
       }
     },
     { now: phase4Timestamp }
@@ -5539,7 +5672,8 @@ export function updateNativeTextObjectScript(
   if (!location) {
     return document;
   }
-  const { object } = location;
+  // An older CRLF object is stored with LF, its runs on the same characters (N1).
+  const object = textObjectWithNormalizedLineBreaks(location.object);
   const spans = textObjectSpansForWorkflow(object);
 
   return applyPatch(
@@ -5548,6 +5682,7 @@ export function updateNativeTextObjectScript(
       op: "updateObject",
       objectId,
       changes: {
+        ...(object === location.object ? {} : { text: object.text }),
         spans: spans.length > 0
           ? normalizeTextSpans(spans.map(span => ({ ...span, script })))
           : [{ text: object.text, script, style: {} }]
@@ -5555,6 +5690,26 @@ export function updateNativeTextObjectScript(
     },
     { now: phase4Timestamp }
   );
+}
+
+/**
+ * A copy of the formatting runs of a text object (LF line breaks), whole and exact, for putting
+ * back with `updateNativeTextObjectText(..., restoredSpans)`.
+ */
+export function textObjectFormattingRuns(stored: TextObject): TextSpan[] {
+  return textObjectSpansForWorkflow(textObjectWithNormalizedLineBreaks(stored))
+    .map((span) => ({ ...span, style: { ...span.style } }));
+}
+
+/**
+ * The script a character typed at `offset` would take: the run it lands in, else the run before
+ * it, else the object's own script (the same choice a text change makes for inserted text).
+ */
+export function textScriptForTypingAt(stored: TextObject, offset: number): TextSpan["script"] {
+  const object = textObjectWithNormalizedLineBreaks(stored);
+  const spans = textObjectSpansForWorkflow(object);
+  return (textSpanAtOffset(spans, offset) ?? textSpanAtOffset(spans, Math.max(0, offset - 1)))?.script
+    ?? textObjectUniformScript(object);
 }
 
 export function updateNativeTextObjectScriptRange(
@@ -5568,7 +5723,9 @@ export function updateNativeTextObjectScriptRange(
     return document;
   }
 
-  const spans = updateTextObjectSpansInRange(location.object, range, (span) => ({
+  // The range is the editor's (LF line breaks); an older CRLF object is normalized with it.
+  const object = textObjectWithNormalizedLineBreaks(location.object);
+  const spans = updateTextObjectSpansInRange(object, range, (span) => ({
     ...span,
     script
   }));
@@ -5578,7 +5735,7 @@ export function updateNativeTextObjectScriptRange(
     {
       op: "updateObject",
       objectId,
-      changes: { spans }
+      changes: object === location.object ? { spans } : { text: object.text, spans }
     },
     { now: phase4Timestamp }
   );
@@ -5595,7 +5752,9 @@ export function updateNativeTextObjectStyleRange(
     return document;
   }
 
-  const spans = updateTextObjectSpansInRange(location.object, range, (span) => ({
+  // The range is the editor's (LF line breaks); an older CRLF object is normalized with it.
+  const object = textObjectWithNormalizedLineBreaks(location.object);
+  const spans = updateTextObjectSpansInRange(object, range, (span) => ({
     ...span,
     style: {
       ...span.style,
@@ -5608,7 +5767,7 @@ export function updateNativeTextObjectStyleRange(
     {
       op: "updateObject",
       objectId,
-      changes: { spans }
+      changes: object === location.object ? { spans } : { text: object.text, spans }
     },
     { now: phase4Timestamp }
   );
@@ -8350,607 +8509,6 @@ export function normalizeCommittedDocument(
 }
 
 /**
- * Re-derives the cached chemistry (structure, formula, masses, radicalCount) of each molecule holding
- * a lone hydrogen atom's implied radical (`atomImpliedRadicalCount`; H•, owner decision 2026-11-23),
- * through the path every graph edit takes (`refreshNativeSingleBondGraph`). Documents saved before
- * that reading cache an earlier reading of the lone H (H2: "[HH]", formula H2; or the bare atom with
- * no radical), which would disagree with the H• the canvas draws. Only those molecules are touched;
- * atoms, bonds and geometry stay as stored, and every other molecule keeps its stored chemistry.
- *
- * A stored cache is replaced only when it is provably ChemDraft's own stale output for this very
- * drawing (`impliedRadicalCacheRefresh`): every field the refresh would write equals, string for
- * string, the complete record ChemDraft held for the drawing under ONE earlier lone-H reading
- * (`earlierLoneHydrogenReadings`), its diagnostics and the page's own annotations included
- * (`annotatedOnPage`). Nothing stored is parsed. The native derivation is neither isomeric nor
- * stereo-perceiving, so a stored record carrying stereo, a molfile, other chemistry, or anything else
- * the native writer would not have written fails that comparison, and so does a record of a reading
- * this cannot rebuild exactly. Such a molecule keeps its whole stored cache, and the refresh says so:
- * a console warning naming the molecule, one line per molecule naming it in `warningsOut`
- * (`impliedRadicalCacheDeclinedLine`; paste shows them in the status line, as a plugin write shows
- * its own), and, on open and restore, the open report (`impliedRadicalCacheNotRefreshedWarnings`,
- * added by `openNativeDocument`).
- *
- * The ONE implementation for every way a stored molecule object enters an open document:
- * - open and session restore, through `normalizeCommittedDocument` (every molecule);
- * - a native ChemDraft clipboard paste (`pasteSelectionClipboardPayload`, the pasted molecules);
- * - a plugin `documents.applyPatch` insert or an accepted proposal (`applyPluginDocumentPatch`,
- *   the inserted molecules; a batch can name them all at once with `rederiveImpliedRadicalChemistryOf`).
- * `only` limits it to the objects that operation brought in; `occasion` names it in the log.
- *
- * Fail safe: this is a refresh of a cache, never a reason to refuse a document or an insertion. If
- * the recompute throws on an unusual molecule, that molecule stays exactly as stored (no chemistry
- * is changed), the error is logged with the molecule id, and the rest proceeds.
- */
-export function withImpliedRadicalChemistryRederived(
-  document: ChemDraftDocument,
-  options: { only?: (pageId: string, objectId: string) => boolean; occasion?: string; warningsOut?: string[] } = {}
-): ChemDraftDocument {
-  const { only, warningsOut } = options;
-  // One line per kept molecule, naming it: two kept molecules are two lines, never one anonymous
-  // sentence twice, and a molecule is named once.
-  const named = new Set<string>();
-  return rederiveImpliedRadicalCaches(
-    document,
-    (pageId) => only ? (objectId) => only(pageId, objectId) : () => true,
-    options.occasion ?? "on open",
-    (_pageId, objectId, text) => {
-      const line = impliedRadicalCacheDeclinedLine(objectId, text);
-      if (named.has(line)) return;
-      named.add(line);
-      warningsOut?.push(line);
-    }
-  );
-}
-
-/** A molecule an operation brought into a document: the page it is on and its object id. */
-export interface ImpliedRadicalRefreshTarget {
-  pageId: string;
-  objectId: string;
-}
-
-/** A molecule whose lone-H cache the refresh kept as stored, and what the user is told about it. */
-export interface ImpliedRadicalCacheDecline {
-  pageId: string;
-  objectId: string;
-  /** `impliedRadicalCacheNotRefreshedText`: what was not refreshed and why. */
-  text: string;
-}
-
-/**
- * `withImpliedRadicalChemistryRederived` for the named molecules only, in one pass: a plugin batch
- * that inserts N molecules names them all here instead of walking the whole document once per
- * insertion. Pages no target names are not visited; each named page is visited once. Every target
- * the refresh declines is returned with its page, id and text (in page order, then object order), so
- * the caller can attribute each warning to its molecule; each is also logged, like every refresh.
- * A target that is not a molecule, or not on that page, is ignored. The document comes back as the
- * same instance when nothing was refreshed.
- *
- * `storedCtabVerified`: the caller verifies each target's stored CTAB against its drawing before it
- * commits (a plugin insert: `refreshPluginPatchChemistry`), so a CTAB that is ChemDraft's own writing
- * of the drawing (each lone H as H•), beside a chemistry record that already states today's reading,
- * is left to that check, with no warning (`statesTodaysReading`).
- */
-export function rederiveImpliedRadicalChemistryOf(
-  document: ChemDraftDocument,
-  targets: Iterable<ImpliedRadicalRefreshTarget>,
-  options: { occasion?: string; storedCtabVerified?: boolean } = {}
-): { document: ChemDraftDocument; declined: ImpliedRadicalCacheDecline[] } {
-  const idsByPage = new Map<string, Set<string>>();
-  for (const { pageId, objectId } of targets) {
-    const ids = idsByPage.get(pageId) ?? new Set<string>();
-    idsByPage.set(pageId, ids);
-    ids.add(objectId);
-  }
-  const declined: ImpliedRadicalCacheDecline[] = [];
-  if (idsByPage.size === 0) return { document, declined };
-  const refreshed = rederiveImpliedRadicalCaches(
-    document,
-    (pageId) => {
-      const ids = idsByPage.get(pageId);
-      return ids ? (objectId) => ids.has(objectId) : undefined;
-    },
-    options.occasion ?? "on plugin insert",
-    (pageId, objectId, text) => { declined.push({ pageId, objectId, text }); },
-    options.storedCtabVerified === true
-  );
-  return { document: refreshed, declined };
-}
-
-/**
- * The refresh itself. `select(pageId)` names which objects of that page to consider (undefined: skip
- * the page unvisited); `onDeclined` hears each molecule kept as stored, after its console warning.
- * `storedCtabVerified` as in `rederiveImpliedRadicalChemistryOf`.
- */
-function rederiveImpliedRadicalCaches(
-  document: ChemDraftDocument,
-  select: (pageId: string) => ((objectId: string) => boolean) | undefined,
-  occasion: string,
-  onDeclined: (pageId: string, objectId: string, text: string) => void,
-  storedCtabVerified = false
-): ChemDraftDocument {
-  let changed = false;
-  const pages = document.pages.map((page) => {
-    const selected = select(page.id);
-    if (!selected) return page;
-    let pageChanged = false;
-    // One context per page and pass, so the page's bracket notes are computed once (`annotatedOnPage`).
-    const context: LoneHydrogenPageContext = { document, page };
-    const objects = page.objects.map((object) => {
-      if (object.type !== "molecule" || !selected(object.id)) return object;
-      try {
-        const refresh = impliedRadicalCacheRefresh(object, context, storedCtabVerified);
-        if (refresh.kind === "unchanged") return object;
-        if (refresh.kind === "declined") {
-          // Kept exactly as stored, and said so: never a partly refreshed, contradictory cache.
-          const text = impliedRadicalCacheNotRefreshedText();
-          console.warn(`Kept the stored chemistry of molecule ${object.id} ${occasion}: ${text}`);
-          onDeclined(page.id, object.id, text);
-          return object;
-        }
-        // Only the cached chemistry is replaced: atoms, bonds and geometry stay as stored.
-        const refreshed = { ...object, ...refresh.cache };
-        pageChanged = true;
-        return refreshed;
-      } catch (error) {
-        console.error(`Could not re-derive the cached chemistry of molecule ${object.id} ${occasion}; keeping it as stored`, error);
-        return object;
-      }
-    });
-    if (!pageChanged) return page;
-    changed = true;
-    return { ...page, objects };
-  });
-  return changed ? adoptDerivedDocument(document, { ...document, pages }) : document;
-}
-
-/**
- * What a declined refresh tells the user: that the molecule's lone-H cache was not refreshed, why (its
- * stored chemistry is not ChemDraft's own earlier output for the drawing, so refreshing could lose
- * what it holds), and that it is kept exactly as saved.
- */
-export function impliedRadicalCacheNotRefreshedText(): string {
-  return "The cached chemistry of a molecule with a lone H (H•) was not refreshed, because its stored chemistry " +
-    "is not ChemDraft's own earlier output for this drawing (it may hold stereochemistry or other chemistry), and " +
-    "refreshing would overwrite it. Its stored structure, formula and stereochemistry are kept exactly as saved, " +
-    "so they may still read the lone H as H2.";
-}
-
-/**
- * The line a paste's status shows for a molecule whose lone-H cache was kept as stored: the molecule
- * named, then the open report's text (`impliedRadicalCacheNotRefreshedText`). A plugin write names
- * its kept molecules in the same words (`applyPluginDocumentPatch`).
- */
-export function impliedRadicalCacheDeclinedLine(objectId: string, text = impliedRadicalCacheNotRefreshedText()): string {
-  return `Kept the stored chemistry of molecule "${objectId}": ${text}`;
-}
-
-/** The cached fields the lone-H refresh compares with an earlier reading and writes. */
-type LoneHydrogenCache = Pick<MoleculeObject, "structureFormat" | "structure" | "chemistry">;
-
-/**
- * Where a molecule the lone-H refresh reads sits: its document, and the page of it holding the
- * molecule. One context serves every molecule of the page in one pass (`rederiveImpliedRadicalCaches`,
- * `impliedRadicalCacheNotRefreshedWarnings`), so the page's bracket notes are computed once.
- */
-interface LoneHydrogenPageContext {
-  document: ChemDraftDocument;
-  page: DocumentPage;
-  /** Filled on first use (`pageBracketNotes`): chem-core's bracket notes for each molecule of the page. */
-  bracketNotes?: ReadonlyMap<DocumentObject, readonly CompatibilityWarning[]>;
-}
-
-/** The code of chem-core's page note on a molecule inside a repeat-unit or multiple-group bracket pair. */
-const BRACKET_MULTIPLIER_NOTE_CODE = "chemistry.bracket_multiplier";
-
-type ImpliedRadicalCacheRefresh =
-  | { kind: "unchanged" }
-  | { kind: "refreshed"; cache: Pick<MoleculeObject, "structure" | "structureFormat" | "chemistry" | "compatibility"> }
-  | { kind: "declined" };
-
-/**
- * What re-deriving `object`'s lone-H cache does. Nothing stored is parsed; stored values are only
- * compared, string for string, with complete records ChemDraft writes, each annotated as ChemDraft
- * annotates a record on `object`'s page (`annotatedOnPage`), so a stored record, which has been
- * through that annotation, is compared with records that have too:
- * 1. no lone H (`atomImpliedRadicalCount`), or a cache today's record (`today`: the native
- *    derivation, annotated) already reproduces (structure, format, chemistry record, compared as
- *    release/1.2.3 compares them, and a cached SMILES copy `compatibility.unknown.smiles`, absent,
- *    empty or today's structure): unchanged;
- * 2. a cache that is ChemDraft's own output for this drawing under ONE earlier lone-H reading
- *    (`earlierLoneHydrogenReadings`: that era's complete record, each reading applied to every
- *    hydrogen atom it read differently, and offered only where it can be rebuilt exactly;
- *    `storedCacheIs`: every field the refresh would write equals that reading's, a field absent in
- *    storage counting as equal): refreshed to today's structure, format and annotated chemistry
- *    record, and a cached SMILES copy to its structure. The stored record was the native writer's own
- *    non-isomeric output, so nothing is lost;
- * 3. a cache that already states today's reading (`statesTodaysReading`): unchanged, kept as stored
- *    with no warning. With `storedCtabVerified` (a plugin insert, whose verifier checks a stored
- *    CTAB against the drawing before it commits) that includes a stored CTAB beside a record stating
- *    today's reading, where the CTAB is ChemDraft's own writing of the drawing, every lone H as H•;
- * 4. anything else (stereo, other chemistry, a mix of readings, a record the native writer would not
- *    have written): declined, so the molecule keeps its whole stored cache and the caller warns.
- * May throw (the derivation).
- */
-function impliedRadicalCacheRefresh(
-  object: MoleculeObject, context: LoneHydrogenPageContext, storedCtabVerified = false
-): ImpliedRadicalCacheRefresh {
-  if (!object.atoms.some((atom) => atomImpliedRadicalCount(atom, object.bonds) > 0)) return { kind: "unchanged" };
-  const derived = refreshNativeSingleBondGraph(object, object.atoms, object.bonds);
-  const today = annotatedOnPage(context, object,
-    { structureFormat: derived.structureFormat, structure: derived.structure, chemistry: derived.chemistry });
-  const copy: unknown = object.compatibility?.unknown.smiles;
-  if (today.structure === object.structure && today.structureFormat === object.structureFormat &&
-      JSON.stringify(today.chemistry) === JSON.stringify(object.chemistry) &&
-      (copy === undefined || copy === "" || copy === today.structure)) return { kind: "unchanged" };
-  const readings = earlierLoneHydrogenReadings(derived).map((reading) => annotatedOnPage(context, object, reading));
-  if (!readings.some((reading) => storedCacheIs(object, reading))) {
-    return statesTodaysReading(object, today, storedCtabVerified) ? { kind: "unchanged" } : { kind: "declined" };
-  }
-  const cache = { structureFormat: today.structureFormat, structure: today.structure, chemistry: today.chemistry };
-  const compatibility = object.compatibility;
-  // `storedCacheIs` proved a present copy to be the earlier reading's structure: it takes today's.
-  if (!compatibility || typeof copy !== "string" || copy === "" || copy === today.structure) return { kind: "refreshed", cache };
-  return { kind: "refreshed", cache: { ...cache, compatibility: { ...compatibility, unknown: { ...compatibility.unknown, smiles: today.structure } } } };
-}
-
-/**
- * `cache` as ChemDraft holds it for `object` on its page: the record after chem-core's own page
- * annotation of molecule records (`withBracketChemistryWarnings`), run by that very function on that
- * very page. Every patch and every document read runs it, so a stored record the refresh reads has
- * been through it; today it adds the note of a molecule inside a repeat-unit or multiple-group
- * bracket pair (`chemistry.bracket_multiplier`). A read drops every such note a file stores and adds
- * the page's own, so whatever an era's writer stored there, a genuine record of that era carries at
- * the refresh exactly the note this adds; the note follows the page and the drawing, never how a
- * lone H is read. The refresh writes today's record annotated in the same way, as the next commit
- * would leave it. A record with no chemistry is returned as it is (nothing is annotated).
- *
- * The notes themselves are chem-core's, computed once per page and pass (`pageBracketNotes`); they
- * depend on the page's brackets and on the molecule's id and atoms, never on its cached record, so
- * every molecule and every candidate record of the page reuses them. Each record then takes them as
- * that function takes them: its own bracket notes dropped, the page's appended, and the record left
- * as it is when that changes nothing.
- */
-function annotatedOnPage(context: LoneHydrogenPageContext, object: MoleculeObject, cache: LoneHydrogenCache): LoneHydrogenCache {
-  if (!cache.chemistry) return cache;
-  context.bracketNotes ??= pageBracketNotes(context.document, context.page);
-  const notes = context.bracketNotes.get(object);
-  if (!notes) return cache;
-  const previous = cache.chemistry.warnings;
-  if (notes.length === 0 && !previous.some((warning) => warning.code === BRACKET_MULTIPLIER_NOTE_CODE)) return cache;
-  const warnings = [...previous.filter((warning) => warning.code !== BRACKET_MULTIPLIER_NOTE_CODE), ...notes];
-  if (JSON.stringify(previous) === JSON.stringify(warnings)) return cache;
-  return { ...cache, chemistry: { ...cache.chemistry, warnings } };
-}
-
-/**
- * chem-core's bracket notes (`chemistry.bracket_multiplier`) for each molecule of `page`, keyed by the
- * page's own molecule object: `withBracketChemistryWarnings`, run once on `page` of `document` with
- * every molecule's record emptied of warnings (a molecule with no record given an empty one, so it is
- * annotated too), so whatever it leaves on a record is exactly the page's notes for that molecule.
- * Bracket membership reads the page's brackets and each molecule's id, atoms and bonds (a stored
- * structure only for a molecule with no atoms, which holds no lone H), never a cached record, so the
- * notes hold for any record the refresh compares or writes.
- */
-function pageBracketNotes(document: ChemDraftDocument, page: DocumentPage): Map<DocumentObject, readonly CompatibilityWarning[]> {
-  const emptied = page.objects.map((object): DocumentObject => object.type !== "molecule" ? object : {
-    ...object,
-    chemistry: { isotopeLabels: [], stereochemistry: [], ...object.chemistry, warnings: [] }
-  });
-  const annotated = withBracketChemistryWarnings({ ...document, pages: [{ ...page, objects: emptied }] }).pages[0]?.objects ?? [];
-  const notes = new Map<DocumentObject, readonly CompatibilityWarning[]>();
-  page.objects.forEach((object, index) => {
-    const result = annotated[index];
-    if (object.type === "molecule" && result?.type === "molecule") notes.set(object, result.chemistry?.warnings ?? []);
-  });
-  return notes;
-}
-
-/**
- * Step 3 of `impliedRadicalCacheRefresh`: whether `object`'s stored cache already states today's
- * reading of its drawing, so there is nothing to refresh and nothing to warn about: every stored
- * field the refresh compares equals today's record (`today`: the derivation, annotated on the page;
- * `storedCacheIs`: an empty structure or copy and an absent record field count as equal). Nothing
- * stored is parsed.
- *
- * A stored CTAB (molfile V2000 or V3000) is not the native writer's (it writes SMILES only), so the
- * refresh never wrote that CTAB and never replaces it. It states today's reading only where this
- * code confirms it does without parsing it (`storedCtabIsOwnWriting`: it is, string for string,
- * ChemDraft's own CTAB writing of the drawing, which writes each lone H, D or T as H•), and is then
- * left as stored only where the caller also verifies it against the drawing before committing
- * (`storedCtabVerified`: a plugin insert, whose verifier reads it with RDKit), beside a chemistry
- * record that states the radical count, so the record itself reads the lone H as H•. The verifier
- * does not compare radicals, so a CTAB this cannot confirm (a lone H written with no radical, which a
- * reader takes as H2; any other writer's CTAB) is declined, and so is every CTAB anywhere else (open,
- * restore, paste: nothing verifies it), so the user is told its cache was kept.
- */
-function statesTodaysReading(object: MoleculeObject, today: LoneHydrogenCache, storedCtabVerified: boolean): boolean {
-  const ctab = object.structure !== "" && (object.structureFormat === "molfile-v2000" || object.structureFormat === "molfile-v3000");
-  if (ctab && (!storedCtabVerified || object.chemistry?.radicalCount === undefined || !storedCtabIsOwnWriting(object))) return false;
-  return storedCacheIs(ctab ? { ...object, structure: "" } : object, today);
-}
-
-/**
- * Whether `object`'s stored CTAB is exactly what ChemDraft's own CTAB writer writes for its drawing
- * in the stored format (`moleculeToMolfileV2000` / `moleculeToMolfileV3000`, with the drawing's
- * Kekulé orders), with nothing the writer reports as lost. That writer writes each lone H, D or T
- * (`atomImpliedRadicalCount`) at the zero-valence sentinel (V2000 valence 15, V3000 VAL=-1), which a
- * reader takes as one atom carrying one radical electron, so an equal CTAB states every lone H as
- * today's H•. Nothing stored is parsed: the stored text is only compared with the writer's. A CTAB
- * the writer cannot write, or writes only with a loss, is not confirmed.
- */
-function storedCtabIsOwnWriting(object: MoleculeObject): boolean {
-  try {
-    const options = { kekuleBondOrders: nativeBondOrderResolution(object.atoms, object.bonds).kekuleOrders };
-    const written = object.structureFormat === "molfile-v2000"
-      ? moleculeToMolfileV2000(object, options)
-      : moleculeToMolfileV3000(object, options);
-    return written.warnings.length === 0 && written.contents === object.structure;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Whether `object` stores exactly `reading` in every field the lone-H refresh writes: its structure
- * with its format, the cached SMILES copy `compatibility.unknown.smiles`, and each field of its
- * chemistry record (formula, masses, counts, charge, radicals, isotope labels, stereochemistry,
- * warnings, and any other). Values are compared as strings (JSON for records and lists). A field
- * absent in storage (an empty structure or copy, no chemistry record, an undefined record field)
- * counts as equal; a stored field the reading does not have does not.
- */
-function storedCacheIs(object: MoleculeObject, reading: LoneHydrogenCache): boolean {
-  if (object.structure !== "" &&
-      (object.structure !== reading.structure || object.structureFormat !== reading.structureFormat)) return false;
-  const copy: unknown = object.compatibility?.unknown.smiles;
-  if (copy !== undefined && copy !== "" && copy !== reading.structure) return false;
-  const stored = object.chemistry;
-  if (!stored) return true;
-  const expected: Record<string, unknown> = reading.chemistry ?? {};
-  return Object.entries(stored).every(([key, value]) =>
-    value === undefined || JSON.stringify(value) === JSON.stringify(expected[key]));
-}
-
-/**
- * The complete caches ChemDraft's native derivation wrote for this drawing under the earlier
- * readings of a hydrogen atom, each the whole record ONE earlier writer wrote (structure, format, and
- * every field of the chemistry record, its diagnostics included; `impliedRadicalCacheRefresh` then
- * adds the page's annotations through chem-core's own function), computed by today's writer from
- * `derived` (`refreshNativeSingleBondGraph`'s result: its atoms are the ones the derivation read, its
- * structure and chemistry today's H• reading). Each reading is applied to EVERY hydrogen atom it read
- * differently from today, all at once, so a stored cache matches a reading only when it is one era's
- * output throughout; a mix of eras matches none. Each record holds only the diagnostics that writer
- * wrote (`eraDiagnostics`), so a record carrying a diagnostic only a later writer wrote matches no
- * earlier one. A reading whose record today's writer cannot rebuild exactly, in every field, is not
- * offered at all, so it never matches in part:
- * - H2 (863c8f229 until e7ef3bc68): each H, D or T atom with no covalent bond (a lone one, or one
- *   bonded only datively, a dative bond costing it nothing) carried one hydrogen of its own, as RDKit
- *   read the molfile's H without a valence field (`h2ReadingHydrogenCarrier`): SMILES [HH], [2HH],
- *   [3HH] (a dative Fe–D beside a lone H: [2HH][Fe].[HH], H3DFe); no radical (`h2ReadingCache`);
- * - the bare atom with no radical: today's structure and record, with the radicals counting no lone
- *   hydrogen atom. A datively bonded H, D or T read then as it does today (the single atom, no
- *   radical), so only the lone ones differ, and in the radical count alone. Two writers wrote it, with
- *   different diagnostics, so each is its own record:
- *   - e7ef3bc68 until 95783e713 (`"bare"`): it derived no hydrogen for a hydrogen atom, as today's
- *     does, so its diagnostics about one (a stated count it does not count: "... SMILES count 0.")
- *     are today's, word for word; it wrote none about an abbreviation's stated count;
- *   - release 1.2.2 (`"release-1.2.2"`, and an earlier release where its record is the same): it read
- *     no stated hydrogen count at all, so it wrote no diagnostic about one, and its formula, masses and
- *     SMILES never counted one. Where today's writer counts a stated count (`atomStatedHydrogenCount`)
- *     its record is not release 1.2.2's, so that reading is not offered.
- * Every other part of the cache is today's derivation's: no reading is isomeric, and none ever wrote
- * stereo.
- */
-function earlierLoneHydrogenReadings(derived: MoleculeObject): LoneHydrogenCache[] {
-  const { atoms, bonds, chemistry } = derived;
-  const readings: LoneHydrogenCache[] = [];
-  const carriers = atoms.filter((atom) => h2ReadingHydrogenCarrier(atom, bonds));
-  const h2 = h2ReadingCache(derived, new Set(carriers.map((atom) => atom.id)));
-  if (h2) readings.push(h2);
-  const lone = atoms.filter((atom) => atomImpliedRadicalCount(atom, bonds) > 0);
-  const bare = (era: "bare" | "release-1.2.2"): LoneHydrogenCache | undefined => {
-    const cache = { structureFormat: derived.structureFormat, structure: derived.structure };
-    if (!chemistry) return { ...cache, chemistry };
-    const warnings = eraDiagnostics(era, chemistry.warnings, atoms, bonds);
-    return warnings && { ...cache, chemistry: { ...chemistry, radicalCount: (chemistry.radicalCount ?? 0) - lone.length, warnings } };
-  };
-  const developed = bare("bare");
-  if (developed) readings.push(developed);
-  if (!atoms.some((atom) => atomStatedHydrogenCount(atom, bonds) !== undefined)) {
-    const released = bare("release-1.2.2");
-    if (released && JSON.stringify(released) !== JSON.stringify(developed)) readings.push(released);
-  }
-  return readings;
-}
-
-/**
- * The diagnostics (`chemistry.warnings`) the earlier writer `era` wrote for a drawing, from the ones
- * today's validator writes for it read as that era read it (`warnings`, written for `atoms` and
- * `bonds`), or undefined when that writer wrote one this cannot rebuild word for word (the reading is
- * then not offered). Each diagnostic is told by the rule that wrote it (document-workflow-core's
- * `nativeAtomValidationState` for the atom it names), and kept, dropped (that writer had no such
- * rule, and wrote nothing in its place) or declined (that writer wrote it in other words), from the
- * history of the validator (document-workflow-core's atoms.ts, chem-core's hydrogenHints.ts,
- * layout-engine's `atomDerivedHydrogenCount`):
- * - about no atom (an unknown bond order, an isotope with no mass): unchanged since release 1.2.2, kept;
- * - an atom's valence, aromaticity or label (not about a stated count): unchanged since release 1.2.2,
- *   kept, but for e7ef3bc68's judging of an H atom stating 0 as a typed H. "bare" wrote that too;
- *   release 1.2.2 did not, but a stated 0 on an H atom is a count today's writer counts, so release
- *   1.2.2's reading is not offered there. 863c8f229 derived one hydrogen for every neutral H, D or T
- *   atom with no covalent bond and no radical mark, and judged a stated 0 on one as a count to check,
- *   so for "h2" no diagnostic about an H, D or T atom is rebuilt (nor one about a hydrogen that
- *   reading added);
- * - a stated count that disagrees with the derived one (9ffa39a38): written in the same words by
- *   "h2" and "bare", kept; release 1.2.2 read no stated count, and its reading is not offered where
- *   today's writer counts one (`earlierLoneHydrogenReadings`), so none reaches it here: declined;
- * - a stated count nothing counts, on a hydrogen atom, the unknown atom or a label naming no element
- *   (f5ab763ac, 937c15fed, e866c62a5): written in the same words by "h2" and "bare", kept; release
- *   1.2.2 wrote none, dropped;
- * - such a count on an abbreviation (OMe, Ph; a typed Ac, Pr or Ts on a bond: 94e7e2d1e, 043a85dd4),
- *   after every earlier writer. Release 1.2.2 wrote none, dropped. "h2" and "bare" read an
- *   abbreviation's label as their label grammar's when an element symbol begins it (OMe, Ph, CF3, a
- *   typed Ac), writing nothing, dropped; one no element symbol begins (Me, Et) they read as a label
- *   naming no element, and wrote that diagnostic in those words, declined.
- * A diagnostic about an atom its validator finds valid is no such writer's, declined.
- */
-function eraDiagnostics(
-  era: "h2" | "bare" | "release-1.2.2",
-  warnings: readonly CompatibilityWarning[],
-  atoms: readonly MoleculeAtom[],
-  bonds: readonly MoleculeBond[]
-): CompatibilityWarning[] | undefined {
-  if (warnings.length === 0) return [];
-  const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
-  let resolution: ReturnType<typeof nativeBondOrderResolution> | undefined;
-  const kept: CompatibilityWarning[] = [];
-  for (const warning of warnings) {
-    const atom = warning.objectId === undefined ? undefined : atomById.get(warning.objectId);
-    if (!atom) {
-      kept.push(warning);
-      continue;
-    }
-    if (era === "h2" && hydrogenCountElement(atom) === "H") return undefined;
-    resolution ??= nativeBondOrderResolution(atoms, bonds);
-    const state = nativeAtomValidationState(atom, bonds, atom.formalCharge, atoms, resolution);
-    if (state.valid) return undefined;
-    if (state.hydrogenCountNotCounted !== true) {
-      if (state.statedHydrogens !== undefined && era === "release-1.2.2") return undefined;
-      kept.push(warning);
-      continue;
-    }
-    if (era === "release-1.2.2") continue;
-    if (ignoredHydrogenCountAtomKind(atom, bonds) !== "an abbreviation") {
-      kept.push(warning);
-      continue;
-    }
-    const label = atom.element.trim();
-    const elementBegins = atomicNumberForElementSymbol(label.slice(0, 2)) !== undefined ||
-      atomicNumberForElementSymbol(label.slice(0, 1)) !== undefined;
-    if (!elementBegins) return undefined;
-  }
-  return kept;
-}
-
-/**
- * Whether the H2 reading (863c8f229 until e7ef3bc68) gave `atom` a hydrogen of its own: a hydrogen
- * atom as that era's writer told one, by layout-engine's `hydrogenCountElement` (H for any label the
- * writer's element normalization folds to H, a stored "h" included, and for D and T), that is not a
- * typed literal, neutral, carries no radical mark and states no count of its own
- * (`atomStatedHydrogenCount`), with no covalent bond: its bonds, if any, are all dative, which cost
- * it no valence (layout-engine's `nativeBondValenceContribution`). Its derived count was then
- * hydrogen's valence of 1. Every lone hydrogen atom (`atomImpliedRadicalCount`) is one.
- */
-function h2ReadingHydrogenCarrier(atom: MoleculeAtom, bonds: readonly MoleculeBond[]): boolean {
-  if (hydrogenCountElement(atom) !== "H") return false;
-  if (atom.labelLiteral === true || atom.formalCharge !== 0 || (atom.markRadicals ?? 0) !== 0) return false;
-  if (atomStatedHydrogenCount(atom, bonds) !== undefined) return false;
-  return bonds.every((bond) => (bond.fromAtomId !== atom.id && bond.toAtomId !== atom.id) || isDativeBond(bond));
-}
-
-/**
- * The H2 reading's complete cache (`earlierLoneHydrogenReadings`) for `derived`'s hydrogen atoms that
- * reading gave a hydrogen of their own (`loneIds`: `h2ReadingHydrogenCarrier`, lone and dative-only
- * alike), or undefined when it cannot be written exactly, in every field. Computed by today's native
- * writer from the drawing alone:
- * - the chemistry record from the drawing with each such atom bonded to a hydrogen atom of its own,
- *   listed right after it, so the formula and masses count that hydrogen where the H2 reading
- *   counted it and the atom carries no radical; the atom and bond counts are the drawing's. The H2
- *   writer's record had the same fields in the same order (only its radical count differed from
- *   today's: radical marks alone, which is what such atoms bonded to a hydrogen leave);
- * - its diagnostics (`warnings`), which that era's validator wrote reading each such atom as holding
- *   one hydrogen (its derived count 1, which a diagnostic about it states: a stated count it does not
- *   count ends "... SMILES count 1."). Today's validator never derives a hydrogen for a hydrogen atom
- *   (layout-engine's `atomDerivedHydrogenCount`), bonded or not, so a diagnostic about such an atom,
- *   or any other hydrogen atom, or its added hydrogen, cannot be rebuilt as that era wrote it: then
- *   there is no H2 reading (`eraDiagnostics`, which also leaves out the diagnostics only later writers
- *   wrote). Every other atom's diagnostics must not depend on how such an atom is read: only when the
- *   drawing as read today (`derived`) and as partnered here give the same list is that list taken as
- *   that era's; when they differ there is no H2 reading either;
- * - the structure from the drawing with each such atom written as a hydrogen atom of an isotope no
- *   atom of the molecule has, a token the writer writes for nothing else, which then becomes the H2
- *   reading's token for that atom. Components and their order follow the bonds, which are the
- *   drawing's, so every other character is today's writer's.
- */
-function h2ReadingCache(derived: MoleculeObject, loneIds: ReadonlySet<string>): LoneHydrogenCache | undefined {
-  const { atoms, bonds } = derived;
-  if (loneIds.size === 0) return undefined;
-  const takenIds = new Set([...atoms.map((atom) => atom.id), ...bonds.map((bond) => bond.id)]);
-  const partneredAtoms: MoleculeAtom[] = [];
-  const partnerBonds: MoleculeBond[] = [];
-  for (const atom of atoms) {
-    partneredAtoms.push(atom);
-    if (!loneIds.has(atom.id)) continue;
-    const id = `${atom.id}\u0000h2`;
-    if (takenIds.has(id)) return undefined;
-    partneredAtoms.push({ id, element: "H", x: atom.x, y: atom.y, formalCharge: 0 });
-    partnerBonds.push({ id, fromAtomId: atom.id, toAtomId: id, order: "single" });
-  }
-  const partneredBonds = [...bonds, ...partnerBonds];
-  const metadata = nativeSingleBondGraphMetadata(partneredAtoms, partneredBonds);
-  // The H2 writer's diagnostics, where they can be rebuilt (see above): the same whichever way those
-  // atoms are read, none about a hydrogen atom, and only those that era's writer wrote.
-  if (JSON.stringify(metadata.warnings) !== JSON.stringify(derived.chemistry?.warnings ?? [])) return undefined;
-  const warnings = eraDiagnostics("h2", metadata.warnings, partneredAtoms, partneredBonds);
-  if (!warnings) return undefined;
-  const chemistry = { ...metadata, atomCount: atoms.length, bondCount: bonds.length, warnings };
-
-  const takenIsotopes = new Set(atoms.map((atom) => atom.isotope));
-  let isotope = 900_000;
-  const tokens: [sentinel: string, token: string][] = [];
-  const marked = atoms.map((atom): MoleculeAtom => {
-    if (!loneIds.has(atom.id)) return atom;
-    do {
-      isotope += 1;
-    } while (takenIsotopes.has(isotope));
-    // The H2 reading's token: the atom's own isotope prefix and one hydrogen ([HH], [2HH], [3HH]).
-    const prefix = atom.element === "D" ? "2" : atom.element === "T" ? "3" : String(atom.isotope ?? "");
-    tokens.push([`[${isotope}H]`, `[${prefix}HH]`]);
-    return { id: atom.id, element: "H", isotope, x: atom.x, y: atom.y, formalCharge: 0 };
-  });
-  const written = tryNativeSingleBondGraphSmiles(marked, bonds);
-  let structure = "smiles" in written ? written.smiles : "";
-  if (structure !== "") {
-    for (const [sentinel, token] of tokens) {
-      const parts = structure.split(sentinel);
-      // Each such atom is written once.
-      if (parts.length !== 2) return undefined;
-      structure = parts.join(token);
-    }
-  }
-  return { structureFormat: "smiles", structure, chemistry };
-}
-
-/**
- * One open warning per molecule of `document` whose lone-H cache the open refresh
- * (`withImpliedRadicalChemistryRederived`, run when the read document is committed) will decline
- * to change, naming why. `openNativeDocument` adds them to the open report, so File > Open and
- * session restore show what was kept stale. `source` begins each message: which document it is
- * about, when an open offers two. A molecule whose recompute throws is left to the refresh, which
- * logs it.
- */
-export function impliedRadicalCacheNotRefreshedWarnings(
-  document: ChemDraftDocument,
-  source = "ChemDraft document"
-): { code: string; message: string; sourceObjectId: string }[] {
-  return document.pages.flatMap((page) => {
-    // One context per page, as the refresh keeps one (`annotatedOnPage`).
-    const context: LoneHydrogenPageContext = { document, page };
-    return page.objects.flatMap((object) => {
-      if (object.type !== "molecule") return [];
-      try {
-        const refresh = impliedRadicalCacheRefresh(object, context);
-        return refresh.kind === "declined" ? [{
-          code: IMPLIED_RADICAL_CACHE_NOT_REFRESHED_CODE,
-          message: `${source}: ${impliedRadicalCacheNotRefreshedText()}`,
-          sourceObjectId: object.id
-        }] : [];
-      } catch {
-        return [];
-      }
-    });
-  });
-}
-
-/**
  * What commit normalization makes of `document`, without normalizing again a document it already
  * produced (every committed present). The commit funnel's chemistry guard (`commitChemistryGuard.ts`)
  * judges an operation against this form of the document it started from, so a present opened with
@@ -10239,6 +9797,12 @@ export function applyNativeAtomElementTarget(
      * still the label's one bonded atom (`withNativeLabelBondSides`).
      */
     labelBondSide?: MoleculeAtom["labelBondSide"];
+    /**
+     * The charge a label with no charge of its own gives the atom: a label edit's starting charge,
+     * so a draft that typed a charge and then deleted it ("Zn2+" back to "Zn") puts that charge
+     * back. Default: the atom's present charge, kept as a relabel always kept it.
+     */
+    formalCharge?: number;
   } = {}
 ): ChemDraftDocument {
   if (target.kind !== "atom") {
@@ -10254,7 +9818,10 @@ export function applyNativeAtomElementTarget(
   }
 
   const atom = molecule.atoms.find((candidate) => candidate.id === target.atomId);
-  const normalizedElement = normalizeNativeAtomElementLabel(element);
+  // A typed element with its charge ("Zn2+", "N+") sets that element and exactly that charge, the
+  // atom a free text box of the same text becomes; any other text keeps the charge (AGENTS.md §7).
+  const { element: normalizedElement, formalCharge } =
+    nativeRelabelElementAndCharge(element, options.formalCharge ?? atom?.formalCharge ?? 0);
   const labelVisible = normalizedElement === "C";
   // Only the text tool passes literal: a typed label means exactly what it says. A hotkey
   // relabel omits it and thereby CLEARS the flag — pressing an element key over any atom
@@ -10263,11 +9830,13 @@ export function applyNativeAtomElementTarget(
   if (!atom || normalizedElement.length === 0) {
     return document;
   }
+  if (chargedAtomRelabelRefusal(atom, molecule, element)) return document;
   if (atomLabelIsotopeRefusal(atom, normalizedElement, molecule, literal)) return document;
 
   const restoredSide = options.labelBondSide;
   if (
     atom.element === normalizedElement &&
+    atom.formalCharge === formalCharge &&
     (atom.labelVisible === true) === labelVisible &&
     (atom.labelLiteral === true) === literal &&
     (restoredSide === undefined || sameLabelBondSide(atom.labelBondSide, restoredSide))
@@ -10277,7 +9846,7 @@ export function applyNativeAtomElementTarget(
 
   const atoms = molecule.atoms.map((candidate) => {
     if (candidate.id !== target.atomId) return candidate;
-    const relabelled = nativeAtomWithElement(candidate, normalizedElement, labelVisible, literal);
+    const relabelled = { ...nativeAtomWithElement(candidate, normalizedElement, labelVisible, literal), formalCharge };
     return restoredSide ? { ...relabelled, labelBondSide: restoredSide } : relabelled;
   });
   const nextMolecule = refreshNativeSingleBondGraph(molecule, atoms, molecule.bonds);
@@ -10289,6 +9858,38 @@ export function applyNativeAtomElementTarget(
   );
 }
 
+/** Why a charged label typed over an atom that carries a charge mark is refused. */
+export const chargedLabelOnChargeMarkRefusal = "Remove the charge mark before typing a charged label.";
+
+/**
+ * Why typed label text that is an element with its own charge ("N+", "Zn2+", "Ac+") must not relabel
+ * this atom, or undefined. Text with no charge of its own is never refused here: today's relabel
+ * applies to it unchanged. Two cases are refused, and change nothing, because the atom could not
+ * hold the typed charge faithfully (AGENTS.md §7):
+ * - The atom carries a charge mark (`markCharge` not 0). Its formal charge is the mark's share plus
+ *   its own, so writing the typed total would leave a hidden remainder once the mark is removed:
+ *   "N+" over an atom whose +2 is all mark is a hidden -1 after the mark goes.
+ * - The atom has a bond and the typed symbol is one a typed label on a bonded atom reads as a group,
+ *   not that element (`bondedElementLabelMeaning`, the same list validation and the file writers
+ *   read: "Ac" acetyl, "Pr" n-propyl, "Ts" tosyl, "Ar" aryl). Stored as the element with a charge,
+ *   it would be read back as the group. Unbonded, the symbol is the element and is not refused.
+ */
+export function chargedAtomRelabelRefusal(
+  atom: MoleculeAtom,
+  molecule: MoleculeObject,
+  label: string
+): string | undefined {
+  const typed = label.trim();
+  const charged = nativeElementWithChargeLabel(typed);
+  if (!charged || charged.charge === 0) return undefined;
+  if ((atom.markCharge ?? 0) !== 0) return chargedLabelOnChargeMarkRefusal;
+  const groupName = bondedElementLabelMeaning(charged.element);
+  if (groupName !== undefined && molecule.bonds.some(bond => bond.fromAtomId === atom.id || bond.toAtomId === atom.id)) {
+    return `${typed} on a bonded atom reads as the ${groupName} group; draw the ion unbonded or set the charge separately.`;
+  }
+  return undefined;
+}
+
 /** Two recorded bond sides are the same record: the same side, read against the same neighbour. */
 function sameLabelBondSide(
   first: MoleculeAtom["labelBondSide"],
@@ -10297,11 +9898,17 @@ function sameLabelBondSide(
   return first?.side === second?.side && first?.atomId === second?.atomId;
 }
 
-/** A label-edit session's starting label: its text, literal flag and recorded bond side. */
+/** A label-edit session's starting label: its text, literal flag, recorded bond side and charge. */
 export interface NativeAtomLabelEditStart {
   element: string;
   literal: boolean;
   labelBondSide?: MoleculeAtom["labelBondSide"];
+  /**
+   * The atom's formal charge when the session began. A draft with no charge of its own writes it
+   * back, so typing a charge ("Zn2+") and deleting it again leaves the charge the atom started with.
+   * Left out, a draft keeps the atom's present charge.
+   */
+  formalCharge?: number;
 }
 
 /**
@@ -10327,13 +9934,15 @@ export function applyNativeAtomLabelDraft(
   draft: string,
   start: NativeAtomLabelEditStart
 ): ChemDraftDocument {
+  const startCharge = start.formalCharge !== undefined ? { formalCharge: start.formalCharge } : {};
   if (normalizeNativeAtomElementLabel(draft) === start.element && atomLabelEditKeepsStartingLabel(start)) {
     return applyNativeAtomElementTarget(document, target, start.element, {
       literal: start.literal,
-      ...(start.labelBondSide ? { labelBondSide: start.labelBondSide } : {})
+      ...(start.labelBondSide ? { labelBondSide: start.labelBondSide } : {}),
+      ...startCharge
     });
   }
-  return applyNativeAtomElementTarget(document, target, draft, { literal: true });
+  return applyNativeAtomElementTarget(document, target, draft, { literal: true, ...startCharge });
 }
 
 /**
@@ -10359,7 +9968,8 @@ export function finishNativeAtomLabelEdit(
   }
   return applyNativeAtomElementTarget(document, target, initial.element, {
     literal: initial.literal,
-    ...(initial.labelBondSide ? { labelBondSide: initial.labelBondSide } : {})
+    ...(initial.labelBondSide ? { labelBondSide: initial.labelBondSide } : {}),
+    ...(initial.formalCharge !== undefined ? { formalCharge: initial.formalCharge } : {})
   });
 }
 
@@ -10377,10 +9987,20 @@ export function commitNativeAtomLabelTarget(
   const beforeAtom = options.beforeAtom ?? atom;
   const beforeMolecule = options.beforeMolecule ?? molecule;
   const normalized = normalizeNativeAtomElementLabel(label);
-  if (options.literal === true && typedLabelIsDrawnLabel(normalized, beforeAtom, beforeMolecule)) return { document, target };
-  const decision = labelOnBondedAtom(normalized, beforeAtom, beforeMolecule, options.replaceElement);
+  // A typed element with its charge ("Zn2+", "Cl-", "N+") is that one atom, charge included: it
+  // relabels this atom with both (`applyNativeAtomElementTarget`) and is never placed as a neutral
+  // substituent, nor read as the drawn label typed back.
+  const charged = nativeElementWithChargeLabel(label.trim());
+  const chargedElement = charged && charged.charge !== 0 ? charged.element : undefined;
+  // An atom that cannot hold the typed charge faithfully refuses it and changes nothing: one with a
+  // charge mark, or a bonded one whose symbol reads as a group there (`chargedAtomRelabelRefusal`).
+  const chargedRefusal = chargedElement ? chargedAtomRelabelRefusal(atom, molecule, label) : undefined;
+  if (chargedRefusal) return { document, target, message: chargedRefusal, refusal: chargedRefusal };
+  if (options.literal === true && !chargedElement && typedLabelIsDrawnLabel(normalized, beforeAtom, beforeMolecule)) return { document, target };
+  const decision: LabelOnBondedAtomDecision | undefined = chargedElement
+    ? undefined : labelOnBondedAtom(normalized, beforeAtom, beforeMolecule, options.replaceElement);
   const relabel = (reason?: string) => {
-    const refusal = atomLabelIsotopeRefusal(beforeAtom, normalized, beforeMolecule, options.literal === true);
+    const refusal = atomLabelIsotopeRefusal(beforeAtom, chargedElement ?? normalized, beforeMolecule, options.literal === true);
     if (refusal) return { document, target, message: refusal, refusal };
     const relabeled = applyNativeAtomElementTarget(document, target, label, options);
     const ringRefusal = typedLabelRingRefusal(normalized, relabeled, document, target, beforeAtom, beforeMolecule, options);
@@ -10390,6 +10010,7 @@ export function commitNativeAtomLabelTarget(
       ...(reason ? { message: `Relabeled ${normalized}: ${reason}` } : {})
     };
   };
+  if (!decision) return relabel();
   if (decision.kind !== "substituent") return relabel(decision.reason === "source-valence"
     ? `the original ${beforeAtom.element} atom cannot take another bond` : undefined);
   const atoms = molecule.atoms.map(a => a.id === atom.id ? { ...beforeAtom, x: a.x, y: a.y } : a);
@@ -10909,6 +10530,37 @@ function textObjectSpansForTextChange(object: TextObject, nextText: string): Tex
       ? [{ text: insertedText, script: insertionSpan.script, style: { ...insertionSpan.style } }]
       : []),
     ...textSpansForRange(currentSpans, object.text.length - suffixLength, object.text.length)
+  ]);
+}
+
+/**
+ * The runs for `nextText` when it is `object.text` with characters inserted exactly at `range`,
+ * keeping every existing run on both sides of the insertion; undefined for any other change.
+ * The new characters take the formatting the diff path would give them, at the same offset.
+ */
+function textObjectSpansForInsertionAt(
+  object: TextObject,
+  nextText: string,
+  range: NativeTextSelectionRange
+): TextSpan[] | undefined {
+  const { start, end } = range;
+  const insertedLength = end - start;
+  if (start < 0 || insertedLength <= 0 || start > object.text.length ||
+      nextText.length !== object.text.length + insertedLength ||
+      nextText.slice(0, start) !== object.text.slice(0, start) ||
+      nextText.slice(end) !== object.text.slice(start)) {
+    return undefined;
+  }
+
+  const currentSpans = textObjectSpansForWorkflow(object);
+  const insertionSpan = textSpanAtOffset(currentSpans, start)
+    ?? textSpanAtOffset(currentSpans, Math.max(0, start - 1))
+    ?? { text: "", script: textObjectUniformScript(object), style: {} };
+
+  return normalizeTextSpans([
+    ...textSpansForRange(currentSpans, 0, start),
+    { text: nextText.slice(start, end), script: insertionSpan.script, style: { ...insertionSpan.style } },
+    ...textSpansForRange(currentSpans, start, object.text.length)
   ]);
 }
 
@@ -14176,7 +13828,8 @@ export function documentObjectInteractionBounds(
 /** Union axis-aligned bounding box (and center) of the selected objects, in page coords. */
 export function selectionBounds(
   objects: readonly DocumentObject[],
-  ids: readonly string[]
+  ids: readonly string[],
+  boundsOf: (object: DocumentObject, objects: readonly DocumentObject[]) => ObjectBounds = documentObjectInteractionBounds
 ): SelectionBounds | undefined {
   // Bounds are order-free, so walk the resolved ids rather than scanning the page for them.
   const objectById = objectByIdIndex(objects);
@@ -14190,7 +13843,7 @@ export function selectionBounds(
     if (!object) {
       continue;
     }
-    const bounds = documentObjectInteractionBounds(object, objects);
+    const bounds = boundsOf(object, objects);
     minX = Math.min(minX, bounds.x);
     minY = Math.min(minY, bounds.y);
     maxX = Math.max(maxX, bounds.x + bounds.width);
@@ -15185,14 +14838,36 @@ function groupMoveTranslatesArrowGeometry(object: DocumentObject, movedIds: Read
   );
 }
 
+/**
+ * The box the page-edge move limits hold on the page. A rotated object (picture, shape, arrow,
+ * bracket, text) is drawn turned about its frame centre, so after Rotate 90° its drawn box no
+ * longer matches its stored frame: limit the rotated frame, or it overhangs the page edge (and is
+ * clipped there) while the arrows already report the page edge. Molecules store rotated atom
+ * coordinates (their rotation stays 0); tables and mechanism arrows keep their own bounds.
+ */
+function documentObjectPageLimitBounds(object: DocumentObject, objects: readonly DocumentObject[]): ObjectBounds {
+  if (!pageLimitUsesRotatedFrame(object)) return documentObjectInteractionBounds(object, objects);
+  // Snap away float noise (cos 90° is 6e-17): an exact quarter turn must reach the edge exactly,
+  // or a nudge against it would move by 1e-13 px instead of reporting the page edge.
+  const snap = (value: number) => Math.round(value * 1e9) / 1e9;
+  const bounds = objectFrameBoundsForPageFit(object);
+  const x = snap(bounds.x), y = snap(bounds.y);
+  return { x, y, width: snap(bounds.x + bounds.width) - x, height: snap(bounds.y + bounds.height) - y };
+}
+
+function pageLimitUsesRotatedFrame(object: DocumentObject): boolean {
+  return object.type !== "molecule" && object.type !== "table" && object.type !== "mechanism-arrow" &&
+    Number.isFinite(object.rotation) && object.rotation % 360 !== 0;
+}
+
 function clampedObjectMovePosition(page: DocumentPage, object: DocumentObject, position: PagePoint): PagePoint {
   const attachedIds = withArrowAttachmentIds(page.objects, [object.id]);
-  if (attachedIds.length > 1) {
-    const bounds = selectionBounds(page.objects, attachedIds);
-    if (bounds) {
-      const delta = clampedSelectionMoveDelta(page, bounds, position.x - object.x, position.y - object.y);
-      return { x: object.x + delta.x, y: object.y + delta.y };
-    }
+  const bounds = attachedIds.length > 1
+    ? selectionBounds(page.objects, attachedIds, documentObjectPageLimitBounds)
+    : pageLimitUsesRotatedFrame(object) ? documentObjectPageLimitBounds(object, page.objects) : undefined;
+  if (bounds) {
+    const delta = clampedSelectionMoveDelta(page, bounds, position.x - object.x, position.y - object.y);
+    return { x: object.x + delta.x, y: object.y + delta.y };
   }
   return {
     x: clamp(position.x, 0, Math.max(0, page.width - object.width)),
@@ -15200,7 +14875,7 @@ function clampedObjectMovePosition(page: DocumentPage, object: DocumentObject, p
   };
 }
 
-function clampedSelectionMoveDelta(page: DocumentPage, bounds: SelectionBounds, dx: number, dy: number): PagePoint {
+function clampedSelectionMoveDelta(page: DocumentPage, bounds: ObjectBounds, dx: number, dy: number): PagePoint {
   return {
     x: clamp(dx, -bounds.x, Math.max(-bounds.x, page.width - (bounds.x + bounds.width))),
     y: clamp(dy, -bounds.y, Math.max(-bounds.y, page.height - (bounds.y + bounds.height)))
@@ -15218,7 +14893,7 @@ export function documentObjectMoveDeltaResolver(
   if (!page) return () => ({ x: 0, y: 0 });
   if (groupObjectIds && groupObjectIds.length > 1) {
     const ids = resolveGroupedDocumentObjectIds(page.objects, groupObjectIds);
-    const bounds = selectionBounds(page.objects, [...expandWithAnchoredMarkIds(page.objects, ids)]);
+    const bounds = selectionBounds(page.objects, [...expandWithAnchoredMarkIds(page.objects, ids)], documentObjectPageLimitBounds);
     return bounds ? (dx, dy) => clampedSelectionMoveDelta(page, bounds, dx, dy) : () => ({ x: 0, y: 0 });
   }
   const object = objectOnPage(page, objectId);
@@ -15241,7 +14916,7 @@ export function moveDocumentObjects(
   if (!page) return document;
   const objectIds = resolveGroupedDocumentObjectIds(page.objects, ids);
   const set = expandWithAnchoredMarkIds(page.objects, objectIds);
-  const bounds = selectionBounds(page.objects, [...set]);
+  const bounds = selectionBounds(page.objects, [...set], documentObjectPageLimitBounds);
   if (!bounds) {
     return document;
   }
@@ -20119,8 +19794,8 @@ export function flattenSpunMolecule(
   const patches: DocumentPatch[] = [{ op: "updateObject", objectId, changes: committed }];
   // Carry each mark with its atom (its offset kept, or turned to a free side when the projection
   // puts that spot on another atom, a bond or a label), in the same patch set so one undo restores
-  // it. The frame is the committed molecule's own, its rotation included: the live overlay places
-  // the marks in the same frame (`spinOverlayCarriedMarkPlacements`).
+  // it. The frame is the committed molecule's own, its rotation included; the live overlay places
+  // the marks by the same rule in the unturned frame it draws in (`spinOverlayCarriedMarkPlacements`).
   patches.push(...carriedElectronMarkPatches(page, molecule, { ...molecule, ...committed }));
   const pageId = page.id;
   for (const crossing of page.crossings) {
@@ -20176,8 +19851,10 @@ function isSpin3dStereoMarker(bond: MoleculeBond): boolean {
 /**
  * The charge/radical/lone-pair marks a Spin 3D session carries with molecule `objectId`, each with the
  * atom it follows, whether or not the mark itself is selected. Flatten and the live overlay place
- * them with the same rule (`carriedElectronMarkPlacements`), so the mark never lags the spin and is
- * committed where it was painted.
+ * them with the same rule (`carriedElectronMarkPlacements`), so the mark never lags the spin and always
+ * sits beside the atom it follows. For a molecule not turned on the page the mark is committed where it
+ * was painted; for a turned one the overlay draws unturned and release turns the molecule, so the live
+ * and committed page positions differ, each beside its displayed atom.
  */
 export function spin3dCarriedElectronMarks(
   page: DocumentPage, objectId: string
@@ -20198,8 +19875,10 @@ export interface CarriedElectronMarkPlacement extends ElectronMarkCarryPlacement
 /**
  * Where the marks molecule `before` owns on `page` go when it is redrawn as `after` (same atom ids,
  * new positions, `after`'s own frame and rotation): Spin 3D flatten and its live overlay, X/Y
- * rotation of a stored 3D model, and 3D clean-up all use this, so the overlay paints each mark where
- * the commit puts it. Which marks travel, and what they must keep off (`after`'s atoms, bonds and
+ * rotation of a stored 3D model, and 3D clean-up all use this, so each mark sits beside the atom it
+ * follows. For a molecule not turned on the page the overlay paints each mark where the commit puts
+ * it; for a turned one the overlay draws unturned and the commit uses the turned frame, so the live
+ * and committed page positions differ, each beside its displayed atom. Which marks travel, and what they must keep off (`after`'s atoms, bonds and
  * the labels it draws, and every other molecule on `page`), is gathered here; where they go is
  * layout-engine's `carryElectronMarksToRedrawnMolecule`, the one copy of that math. Positions only:
  * no chemistry.
@@ -20236,17 +19915,19 @@ export function spinFlattenedMoleculeFrame(molecule: MoleculeObject, atoms: Mole
 /**
  * Where the Spin 3D live overlay paints the marks of `source` for its projected atoms `atoms`: the
  * placement flatten commits for those atoms (`carriedElectronMarkPlacements` in
- * `spinFlattenedMoleculeFrame`), so each mark is painted at the page position release stores it at.
- * For a molecule turned on the page (rotation not 0) that is the turned position, while the overlay
- * itself draws the projection unturned (a mismatch of the overlay drawing, not of the marks).
- * Release still moves everything by the page clamp when flatten has to pull the molecule into the page.
+ * `spinFlattenedMoleculeFrame`), read in the frame the overlay draws them in. The overlay draws the
+ * projection unturned (its bonds at rotation 0, its atom labels at the projected points), so the
+ * marks are placed with rotation 0 too: each sits beside the live atom it belongs to. For a molecule
+ * not turned on the page that is exactly the page position release stores; a turned one is turned by
+ * release, and each mark goes with its atom. Release also moves everything by the page
+ * clamp when flatten has to pull the molecule into the page.
  */
 export function spinOverlayCarriedMarkPlacements(
   page: DocumentPage,
   source: MoleculeObject,
   atoms: MoleculeAtom[]
 ): Map<string, CarriedElectronMarkPlacement> {
-  return carriedElectronMarkPlacements(page, source, spinFlattenedMoleculeFrame(source, atoms));
+  return carriedElectronMarkPlacements(page, source, { ...spinFlattenedMoleculeFrame(source, atoms), rotation: 0 });
 }
 
 /** Patches that carry `before`'s marks to `after` (see `carriedElectronMarkPlacements`). Legacy atom
@@ -23446,32 +23127,6 @@ function nativeMoleculeAfterPartDelete(
   return refreshNativeSingleBondGraph(molecule, atoms, bonds);
 }
 
-export function refreshNativeSingleBondGraph(
-  molecule: MoleculeObject,
-  atoms: readonly MoleculeAtom[],
-  bonds: readonly MoleculeBond[]
-): MoleculeObject {
-  // Clear import hints before deriving labels, formula, validation and the stored structure.
-  atoms = clearChangedAtomHydrogenHints(molecule, atoms, bonds);
-  // Every label and bond edit passes here, and no layout change does: record the side each
-  // side-dependent label ("SCN") was written with, so later moves, rotations and flips keep it.
-  atoms = withNativeLabelBondSides({ atoms: [...atoms], bonds: [...bonds] }).atoms;
-  const storedSmiles = tryNativeSingleBondGraphSmiles(atoms, bonds);
-  return normalizeNativeMoleculeGeometry({
-    ...molecule,
-    // `structure` is re-derived as SMILES here, so the format must say so. Leaving an imported
-    // molfile format in place would hand SMILES text to a molfile parser — the plugin selection
-    // snapshot and the Ketcher adapter both choose their parser from this field.
-    structureFormat: "smiles",
-    // The schema requires a string. Empty means unavailable, never a stale or single-collapsed
-    // SMILES; export recomputes from the graph and reports the unknown bond ids.
-    structure: "smiles" in storedSmiles ? storedSmiles.smiles : "",
-    chemistry: nativeSingleBondGraphMetadata(atoms, bonds),
-    atoms: [...atoms],
-    bonds: [...bonds]
-  });
-}
-
 function syncMoleculePreviewFromEditorSave(
   previous: MoleculeObject,
   saved: MoleculeObject
@@ -23954,7 +23609,7 @@ function reorderMoleculeBonds(
   return reordered;
 }
 
-function atomChargeLabelSuffix(charge: number): string {
+export function atomChargeLabelSuffix(charge: number): string {
   if (charge === 0) {
     return "";
   }

@@ -6,7 +6,8 @@ import { Worker } from "node:worker_threads";
 import { build } from "esbuild";
 import { Resvg } from "@resvg/resvg-js";
 import { applyPatch, createEmptyDocument, DocumentObjectSchema, TextObjectSchema } from "@chemdraft/chem-core";
-import { createSmilesMolecule } from "@chemdraft/document-workflow-core";
+import { createSmilesMolecule, nativeTextObjectMinimumDimensions } from "@chemdraft/document-workflow-core";
+import { nativeTextObjectBoxHeight } from "@chemdraft/layout-engine";
 import { depictSmiles2D } from "@chemdraft/ocl-adapter";
 import { AssistantCapabilityPermissions, PluginApiVersion, type PluginWorkerHandle } from "@chemdraft/plugin-api";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
@@ -193,10 +194,16 @@ it("matches get_document, get_selection, get_structure and render on a mixed dra
     listener = undefined;
     toolsCommand = runtime.invokeCommand("plugin.requestWorker.openTools");
     await vi.waitFor(() => expect(listener).toBeTypeOf("function"));
-    await expect(call("insert_text", { text: "W".repeat(150) })).resolves.toMatchObject({ result: { structuredContent: {
-      objectIds: [expect.any(String)]
-    } } });
-    expect(pinned.pages[0]!.height).toBe(1500);
+    const inserted = await call("insert_text", { text: "W".repeat(150) }) as { result: { structuredContent: { objectIds: string[] } } };
+    expect(inserted).toMatchObject({ result: { structuredContent: { objectIds: [expect.any(String)] } } });
+    // Auto width never wraps, so this text is one line tall however long it is
+    // (docs/plans/textbox-behavior.md H3). The old estimate divided its capped width into many
+    // wrapped lines (a 1282 high box) that the SVG never draws, which grew this page to 1500.
+    const text = TextObjectSchema.parse(pinned.pages[0]!.objects.find(object => object.id === inserted.result.structuredContent.objectIds[0]));
+    expect(text.height).toBe(Math.max(nativeTextObjectMinimumDimensions.height,
+      nativeTextObjectBoxHeight({ text: text.text, spans: text.spans, style: text.style })));
+    expect(text.height).toBeLessThan(40);
+    expect(pinned.pages[0]!.height).toBeCloseTo(242.67, 2);
     runtime.host.closeRequestsForDocument(activeKey);
     expect(closed).toHaveBeenCalledTimes(2);
     await runtime.invokeCommand("plugin.requestWorker.finishTools");

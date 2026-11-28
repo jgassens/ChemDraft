@@ -71,23 +71,11 @@
   font-size: 12px;
 }
 
-.guided-tour fieldset {
-  margin: 16px 0 0;
-  border: 1px solid #a5b0bf;
-  border-radius: 5px;
-}
-
-.guided-tour label {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  padding: 5px 0;
-}
-
-.guided-tour small {
+.guided-tour-shortcuts {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 10px;
+  gap: 4px 14px;
+  margin: 12px 0 0;
 }
 
 .guided-tour kbd {

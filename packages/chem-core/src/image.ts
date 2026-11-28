@@ -1,5 +1,5 @@
 import { decodeImageBase64 } from "./imageBytes";
-import { GraphicObjectSchema, type GraphicObject, type ImageObjectData, type Point } from "./schemas";
+import { GraphicObjectSchema, parseWithValidatedImage, type GraphicObject, type ImageObjectData, type Point } from "./schemas";
 import { CSS_PX_PER_INCH } from "./page-layout";
 
 import { imagePixelLimitError, validatePngImage, validateSvgImage } from "./imageInfo";
@@ -40,8 +40,9 @@ export function createImageGraphicObject(options: CreateImageGraphicObjectOption
     ? image.pixelHeight / (image.pixelsPerMeter.y * 0.0254) * CSS_PX_PER_INCH : image.pixelHeight);
   // Like rect graphics, the frame is top-level x/y (top left), width/height and rotation.
   // No separate image geometry: moving, resizing and selecting reuse the ordinary graphic frame.
-  return GraphicObjectSchema.parse({
+  // The image was checked above, as the schema would check it: it is not decoded a second time.
+  return parseWithValidatedImage(image, () => GraphicObjectSchema.parse({
     id, type: "graphic", graphicKind: "image", x: center.x - width / 2, y: center.y - height / 2,
     width, height, rotation: 0, style: {}, data: { image }
-  });
+  }));
 }

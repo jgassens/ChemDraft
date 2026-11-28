@@ -69,7 +69,7 @@ describe.each(["macos", "windows"] as const)("label preview proofs (%s)", platfo
       configurable: true, value: name === "hasPointerCapture" ? () => false : () => {}
     });
     observation.renders.clear(); observation.objects.clear(); conformer.generate.mockClear(); clipboard.write.mockClear();
-    saveKeybindingSettings({ scheme: "chemdraft" });
+    saveKeybindingSettings({ scheme: "chemdraw" });
     window.history.replaceState(null, "", "/?agentBridge=1");
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   });
@@ -80,7 +80,7 @@ describe.each(["macos", "windows"] as const)("label preview proofs (%s)", platfo
       else Reflect.deleteProperty(HTMLElement.prototype, name);
     });
     Reflect.deleteProperty(navigator, "platform"); delete window.__CHEMDRAFT_AGENT__;
-    window.history.replaceState(null, "", "/"); saveKeybindingSettings({ scheme: "chemdraft" });
+    window.history.replaceState(null, "", "/"); saveKeybindingSettings({ scheme: "chemdraw" });
   });
   async function mount(d = ring(), tool = "tool.atom") {
     await act(async () => root.render(createElement(MainWindow, {

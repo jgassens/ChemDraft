@@ -1,7 +1,7 @@
 import { aboutCommand } from "../about/aboutCommand";
 import { TOUR_TITLE, type TourAction, type TourPluginCommand } from "../tour/tourCommands";
 import type { TourBondKeys } from "../tour/tourSteps";
-import type { KeybindingScheme } from "../keybindingSettings";
+import { KEYBINDING_SCHEME } from "../keybindingSettings";
 import { VIBE_CODE_GUIDE } from "./vibeCodeGuideText";
 import type { ConditionsSnapshot } from "./dialogProtocol";
 import type { ReactionConditionsDraft } from "@chemdraft/document-workflow-core";
@@ -144,8 +144,9 @@ export class DialogCoordinator {
   }
 
   /** `plugins` is the tour's plugin commands the menus offer now; the tour window has no plugin runtime of its own. */
-  async openGuidedTour(scheme: KeybindingScheme, automatic: boolean, plugins: readonly TourPluginCommand[] = [], bondKeys?: TourBondKeys): Promise<void> {
-    return this.open("guidedTour", "guidedTour", { title: TOUR_TITLE, scheme, automatic, plugins: [...plugins], ...(bondKeys ? { bondKeys: { ...bondKeys } } : {}) });
+  /** The snapshot still names the shortcut set: the native tour window's protocol requires it. */
+  async openGuidedTour(automatic: boolean, plugins: readonly TourPluginCommand[] = [], bondKeys?: TourBondKeys): Promise<void> {
+    return this.open("guidedTour", "guidedTour", { title: TOUR_TITLE, scheme: KEYBINDING_SCHEME, automatic, plugins: [...plugins], ...(bondKeys ? { bondKeys: { ...bondKeys } } : {}) });
   }
 
   async openVibeCodeGuide(): Promise<void> { return this.open("vibeCodeGuide", "vibeCodeGuide", { title: VIBE_CODE_GUIDE.title }); }
@@ -397,10 +398,6 @@ export class DialogCoordinator {
         if (endTour) {
           await this.settle(session, data.action === "finish" ? "apply" : "cancel");
           return;
-        }
-        if (data.action === "chooseShortcuts") {
-          session.snapshot = { ...session.snapshot, data: { ...session.snapshot.data, scheme: data.scheme } };
-          if (!session.settled) await this.transport.publish(session.registration.hostId, session.snapshot);
         }
       } catch (error) { receipt.data = { status: "error", error: String(error).slice(0, 1024) }; }
       if (!session.settled) await this.transport.publish(session.registration.hostId, receipt);

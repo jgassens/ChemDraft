@@ -1,6 +1,7 @@
 import {
   CSS_PX_PER_INCH,
   GraphicObjectSchema,
+  decodeBase64Bytes,
   validatePngImage,
   type ChemDraftDocument,
   type GraphicObject
@@ -11,9 +12,12 @@ import * as svg2pdfModule from "svg2pdf.js";
 import { getExportFormatDescriptor } from "./formats";
 import type { BinaryExportResult, ExportWarning } from "./results";
 import { ensureSvgFontsLoaded, exportDocumentToSvg } from "./svg";
+import { jpegPicturePlacement, pdfEmbeddableJpegFrame, readJpegPicture, type JpegOrientation } from "./jpegPicture";
 import { preparePdfFonts } from "./pdfFonts";
 import { preparePdfHaloPaint } from "./pdfHaloPaint";
 import { ensureHandwritingFontLoaded, handwritingFontFaceCss } from "./handwritingFont";
+
+export { pdfEmbeddableJpegFrame } from "./jpegPicture";
 
 const svg2pdf = resolveSvg2pdf(svg2pdfModule);
 const SVG_MARKUP_LIMIT_BYTES = 256 * 1024 * 1024;
@@ -157,6 +161,9 @@ export async function exportSvgToPdf(
       const children = [...svgElement.children];
       const rasterCache = new Map<string, Promise<Uint8Array>>();
       const rasterBudget = { pixels: 0 };
+      // One PDF image per distinct raster, named by its cache key: jsPDF's own alias hashes only the
+      // first half of the PNG bytes, so two different rasters alike in that half would share one image.
+      const rasterAliases = new Map<string, string>();
       let run: Element[] = [];
       const flush = async () => {
         if (!run.length) return;
@@ -165,18 +172,23 @@ export async function exportSvgToPdf(
         await render(part);
         run = [];
       };
-      for (const child of children) {
+      for (const [childIndex, child] of children.entries()) {
         const picture = pictures.get(child.getAttribute("data-object-id") ?? "");
         if (!picture || picture.type !== "graphic" || !picture.data.image) {
           if (child.tagName !== "defs") run.push(child);
           continue;
         }
         await flush();
+        // A kept JPEG is embedded as its own bytes (DCTDecode), turned upright by the placement below.
+        const jpeg = pdfJpegPicture(picture.data.image);
         let png: Uint8Array | string = `data:image/png;base64,${picture.data.image.dataBase64}`;
-        if (picture.data.image.mimeType === "image/svg+xml") {
+        let pngAlias: string | undefined;
+        if (!jpeg && picture.data.image.mimeType === "image/svg+xml") {
           const raster = await rasterizeSvgPicture(picture, options.rasterizeSvgPicture, rasterCache, rasterBudget);
           if ("warning" in raster) { warnings.push(raster.warning); continue; }
           png = raster.png;
+          pngAlias = rasterAliases.get(raster.key);
+          if (!pngAlias) rasterAliases.set(raster.key, pngAlias = `chemdraft-svg-raster-${rasterAliases.size}`);
         }
         const scale = Math.min(widthPt / page.width, heightPt / page.height);
         const offsetX = (widthPt - page.width * scale) / 2;
@@ -193,15 +205,25 @@ export async function exportSvgToPdf(
         if (opacity !== 1) pdf.setGState(new GState({ opacity }));
         pdf.setCurrentTransformationMatrix(pdf.Matrix(scale * cos, scale * sin, -scale * sin, scale * cos,
           offsetX + scale * (cx - cos * cx + sin * cy), offsetY + scale * (cy - sin * cx - cos * cy)));
+        const frame = { x: picture.x + (picture.width - width) / 2, y: picture.y + (picture.height - height) / 2, width, height };
         try {
-          pdf.addImage(png, "PNG",
-            picture.x + (picture.width - width) / 2, picture.y + (picture.height - height) / 2, width, height);
+          if (jpeg) {
+            // The same placement SVG export writes: the stored box, turned about the frame's centre.
+            const placement = jpegPicturePlacement(frame, jpeg.orientation);
+            if (placement.matrix) pdf.setCurrentTransformationMatrix(pdf.Matrix(...placement.matrix));
+            // An explicit alias, by position: jsPDF's own alias hashes only the first half of the bytes,
+            // so two JPEGs alike in that half would otherwise share one image.
+            pdf.addImage(jpeg.bytes, "JPEG", placement.box.x, placement.box.y, placement.box.width, placement.box.height,
+              `chemdraft-jpeg-${childIndex}`);
+          } else {
+            pdf.addImage(png, "PNG", frame.x, frame.y, frame.width, frame.height, pngAlias);
+          }
         } catch (error) {
           // A PNG jsPDF cannot embed (a bad rasteriser result, or a native PNG with a corrupt data chunk)
           // costs that one picture, not the export.
-          warnings.push(typeof png === "string"
+          warnings.push(jpeg || typeof png === "string"
             ? { code: "export.pdf.picture_not_drawn", severity: "warning", objectId: picture.id,
-              message: `PDF export: picture ${picture.id} was not drawn: the PNG could not be embedded (${errorReason(error)})` }
+              message: `PDF export: picture ${picture.id} was not drawn: the ${jpeg ? "JPEG" : "PNG"} could not be embedded (${errorReason(error)})` }
             : svgPictureNotDrawn(picture.id, `the rasterised PNG could not be embedded (${errorReason(error)})`));
         }
         pdf.restoreGraphicsState();
@@ -217,7 +239,24 @@ export async function exportSvgToPdf(
   return { bytes: new Uint8Array(pdf.output("arraybuffer")), warnings };
 }
 
-type SvgPictureRaster = { png: Uint8Array } | { warning: ExportWarning };
+type SvgPictureRaster = { png: Uint8Array; key: string } | { warning: ExportWarning };
+
+/**
+ * A kept JPEG picture (`jpegPicture.ts`) whose bytes the PDF can carry as they are, or undefined:
+ * such a picture (a malformed inner payload included) is then rasterised like any other SVG picture.
+ */
+function pdfJpegPicture(image: { mimeType: string; dataBase64: string }): { bytes: Uint8Array; orientation: JpegOrientation } | undefined {
+  const jpeg = readJpegPicture(image);
+  if (!jpeg) return undefined;
+  let bytes: Uint8Array;
+  try {
+    bytes = decodeBase64Bytes(jpeg.jpegBase64);
+  } catch {
+    return undefined;
+  }
+  const frame = pdfEmbeddableJpegFrame(bytes);
+  return frame && frame.width === jpeg.width && frame.height === jpeg.height ? { bytes, orientation: jpeg.orientation } : undefined;
+}
 
 function svgPictureNotDrawn(id: string, reason: string): ExportWarning {
   return { code: "export.pdf.svg_picture_not_drawn", severity: "warning", objectId: id,
@@ -273,7 +312,7 @@ async function rasterizeSvgPicture(
     budget.pixels += reserved;
     const size = { pixelWidth, pixelHeight };
     const render = async () => {
-      const bytes = Uint8Array.from(atob(image.dataBase64), (char) => char.charCodeAt(0));
+      const bytes = decodeBase64Bytes(image.dataBase64);
       const result = await rasterize({ svg: new TextDecoder().decode(bytes), width: picture.width, height: picture.height, ...size });
       if (!ArrayBuffer.isView(result)) throw new Error("the rasteriser did not return PNG bytes");
       const png = new Uint8Array(result.buffer, result.byteOffset, result.byteLength);
@@ -293,7 +332,7 @@ async function rasterizeSvgPicture(
     cache.set(key, pending);
   }
   try {
-    return { png: await pending };
+    return { png: await pending, key };
   } catch (error) {
     return { warning: svgPictureNotDrawn(picture.id, errorReason(error)) };
   }
@@ -311,7 +350,9 @@ function parseSvgElement(svg: string, domParser: DOMParser | undefined, pictures
     if (!result.success) throw new Error(`Cannot export PDF: ${result.error.issues[0]!.message}`);
     const image = result.data.graphicKind === "image" ? result.data.data.image : undefined;
     if (!image) continue;
-    const href = `data:${image.mimeType};base64,${image.dataBase64}`;
+    // SVG export writes a kept JPEG as the JPEG itself.
+    const jpeg = readJpegPicture(image);
+    const href = jpeg ? `data:image/jpeg;base64,${jpeg.jpegBase64}` : `data:${image.mimeType};base64,${image.dataBase64}`;
     pictureHrefs.set(id, href);
     pictureByteAllowance += href.length;
   }

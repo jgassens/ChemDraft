@@ -517,7 +517,7 @@ describe("object move retained SVG preview", () => {
       await mount(scenario("mixed grouped rotated tilted"));
       const drag = await start();
       const geometry = paintedSvg();
-      const transforms = [...container.querySelectorAll<HTMLElement>("[data-object-controls], .document-object")]
+      const transforms = [...container.querySelectorAll<HTMLElement>("[data-object-controls], [data-object-chrome], .document-object")]
         .map(element => element.getAttribute("style"));
       if (cancellation.includes("before frame")) {
         await act(async () => pointer(drag.target, "pointermove", { x: drag.point.x + 40, y: drag.point.y + 30 }));
@@ -543,7 +543,7 @@ describe("object move retained SVG preview", () => {
       expect(snapshot()).toEqual(drag.before);
       expect(paintedSvg()).toEqual(geometry);
       expect(container.querySelector("[data-object-move-preview]")).toBeNull();
-      expect([...container.querySelectorAll<HTMLElement>("[data-object-controls], .document-object")]
+      expect([...container.querySelectorAll<HTMLElement>("[data-object-controls], [data-object-chrome], .document-object")]
         .map(element => element.getAttribute("style"))).toEqual(transforms);
       expect(container.querySelector("main")?.getAttribute("data-can-undo")).toBe("false");
     }

@@ -22,7 +22,7 @@ import {
 import { detectShortcutPlatform, parseShortcutDisplay, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { isCompoundLayoutCommand, isCompoundLayoutCommandHidden, type CompoundLayoutSettings, loadCompoundLayoutSettings } from "./compoundLayoutSettings";
 import manifest from "./toolsets/desktop-toolsets.json";
-import { isGridWidgetItem, isToolbarWidgetItem, TOOLBAR_WIDGET_IDS } from "./toolbars/toolbarWidgets";
+import { DOCUMENT_ZOOM_GRID_SPAN, MAIN_STYLE_CONTROLS_GRID_SPAN, isGridWidgetItem, isToolbarWidgetItem, TOOLBAR_WIDGET_GRID_SPANS, TOOLBAR_WIDGET_IDS } from "./toolbars/toolbarWidgets";
 import { MAIN_TOOLBAR_DEFAULTS_REVISION, withCurrentMainToolbarDefaults } from "./toolbars/toolbarLayoutState";
 import type { CommandSpec } from "./commands";
 import { renamedCommandId } from "./renamedCommands";
@@ -68,6 +68,54 @@ export interface ToolbarPaletteItemModel {
   };
   disabledReason?: string;
   category?: string;
+}
+
+/**
+ * The Document Zoom widget's four-cell span (defined beside the other widget spans in
+ * toolbars/toolbarWidgets.tsx, and declared the same in Main's manifest). Re-exported here because
+ * this module applies it.
+ *
+ * Layouts saved by 1.2.2/RC5 still carry the earlier six-cell span: an `itemOverrides` layout on
+ * Main, a gallery `itemAdditions` entry, or the item inside a user toolbar. The item id is
+ * unchanged, so the read-time override below (WIDGET_GRID_SPAN_OVERRIDES, applied by
+ * toolsetItemToPaletteItem) is the migration: any saved layout holding the zoom item loads in the
+ * four-cell form, in its saved order, and nothing needs rewriting.
+ */
+export { DOCUMENT_ZOOM_GRID_SPAN };
+
+/**
+ * The Main style widget's eleven-cell by two-row span (defined beside the other widget spans in
+ * toolbars/toolbarWidgets.tsx, and declared the same in Main's manifest). Every layout of the widget
+ * (text, molecule, shape, arrow) draws exactly eleven cells per row (`MAIN_STYLE_ROW_CELLS` in
+ * toolbars/mainStyleWidget/cells.tsx, asserted equal in tests). Re-exported here because this module
+ * applies it.
+ *
+ * Layouts saved by 1.2.2/RC5 still carry the earlier twelve-cell span (an `itemOverrides` layout on
+ * Main, a gallery `itemAdditions` entry, or the item inside a user toolbar), which left a blank
+ * column beside the controls. The item id is unchanged, so the read-time override below is the
+ * migration: any saved layout holding the widget loads in the eleven-cell form, nothing rewritten.
+ */
+export { MAIN_STYLE_CONTROLS_GRID_SPAN };
+
+/** Spans that replace whatever a manifest, gallery or saved layout declares for these widgets. The
+ *  manifest and gallery already declare the zoom and style widgets' spans; the entries are there for
+ *  saved layouts (see DOCUMENT_ZOOM_GRID_SPAN, MAIN_STYLE_CONTROLS_GRID_SPAN). */
+const WIDGET_GRID_SPAN_OVERRIDES: Readonly<Record<string, { readonly colSpan: number; readonly rowSpan: number }>> = {
+  [TOOLBAR_WIDGET_IDS.documentZoom]: DOCUMENT_ZOOM_GRID_SPAN,
+  [TOOLBAR_WIDGET_IDS.mainStyleControls]: MAIN_STYLE_CONTROLS_GRID_SPAN
+};
+
+/** Grid span the customize gallery gives a widget it (re)adds, with the style widget's current span. */
+export function toolbarWidgetGridSpan(widgetId: string): { colSpan: number; rowSpan: number } | undefined {
+  const override = Object.hasOwn(WIDGET_GRID_SPAN_OVERRIDES, widgetId) ? WIDGET_GRID_SPAN_OVERRIDES[widgetId] : undefined;
+  return override ? { ...override } : TOOLBAR_WIDGET_GRID_SPANS[widgetId];
+}
+
+function paletteItemLayout(item: NormalizedToolsetItem): ToolbarPaletteItemModel["layout"] {
+  const override = item.primary.type === "control" && Object.hasOwn(WIDGET_GRID_SPAN_OVERRIDES, item.primary.controlId)
+    ? WIDGET_GRID_SPAN_OVERRIDES[item.primary.controlId]
+    : undefined;
+  return override ? { ...item.layout, ...override } : item.layout;
 }
 
 export const desktopToolsets = parseToolsetManifest<IconName, ToolbarAssetName>(manifest);
@@ -674,10 +722,11 @@ const HORIZONTAL_PALETTE_GROUP_GAP = 6;
 // The Text style section sits beside the tool grid. Its spacing row is the widest:
 // nine 34px buttons with eight 4px gaps. The three 24px rows have two 4px gaps.
 const TEXT_STYLE_SECTION_SIZE = { width: 9 * 34 + 8 * 4, height: 3 * 24 + 2 * 4 };
-// Floating palette chrome in App.css: grip, horizontal padding, and web frame border;
-// title strip and vertical padding.
-const HORIZONTAL_PALETTE_FRAME_WIDTH = 7 + 2 * 6 + 2;
-const HORIZONTAL_PALETTE_FRAME_HEIGHT = 22 + 3 + 4;
+// Native palette window chrome in App.css: the 14px grip rail beside the content and the toolbar's
+// 4px margin on each side; no title row, so only the 4px top and bottom margins add height. (The
+// browser in-window palette's grip, padding and border come to 21px, within a pixel of this.)
+const HORIZONTAL_PALETTE_FRAME_WIDTH = 14 + 2 * 4;
+const HORIZONTAL_PALETTE_FRAME_HEIGHT = 2 * 4;
 
 export function toolsetUsesResizableWindow(id: string): boolean {
   return id === "core.molecularInspector" || id === "core.drawnStructureSettings";
@@ -850,9 +899,9 @@ export function toolsetItemToPaletteItem(
   const liveCommand = preferCommandPresentation && primary.type === "command"
     ? primary.command
     : undefined;
-  // The merged command wins over the manifest tooltip text: a keybinding-scheme remap (or a
+  // The merged command wins over the manifest tooltip text: the shortcut set's remap (or a
   // plugin override) rewrites the command's shortcut while the manifest still carries the
-  // ChemDraft-native key. An empty-string shortcut is the scheme's "unbound" sentinel — it
+  // registry's own key. An empty-string shortcut is the set's "unbound" sentinel — it
   // survives the `override ?? base` merges above, and normalizes to null here so tooltips show
   // no shortcut at all.
   const tooltipShortcut = (liveCommand
@@ -888,7 +937,7 @@ export function toolsetItemToPaletteItem(
         ?? formatShortcutLabel(tooltipShortcut ?? undefined)
         ?? null
     },
-    layout: item.layout,
+    layout: paletteItemLayout(item),
     disabledReason: liveCommand ? liveCommand.disabledReason : item.disabledReason,
     category: liveCommand ? liveCommand.category : item.category
   };

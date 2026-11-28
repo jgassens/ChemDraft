@@ -63,7 +63,8 @@ describe.each(["macos", "windows"] as const)("native multiple-bond flyout on %s"
     const button = menu.querySelector<HTMLButtonElement>(`[data-command-id="${id}"]`)!;
     await act(async () => { button.click(); button.click(); });
     expect(native.command).toHaveBeenCalledExactlyOnceWith(id, {
-      flyoutOpening: expect.objectContaining({ toolsetId: "core.main", openedAt: expect.any(Number) })
+      flyoutOpening: expect.objectContaining({ toolsetId: "core.main", openedAt: expect.any(Number) }),
+      toolChoice: {}
     });
     expect(native.hide).toHaveBeenCalledTimes(1);
   });

@@ -39,7 +39,7 @@ describe("canvas context-menu presentation model", () => {
       "Use Default Bond Depth", "Layer 1 of 3", "Move Object Forward", "Move Object to Front", "Move Object Backward", "Move Object to Back"]);
   });
 
-  it.each(["Stereocentre: S", "Double bond: Z"])("puts the read-only %s readout at the top of the atom/bond menu", label => {
+  it.each(["Stereocenter: S", "Double bond: Z"])("puts the read-only %s readout at the top of the atom/bond menu", label => {
     const items = buildObjectCanvasMenu({ objectIndex: 0, objectCount: 1, targetKind: "atom", stereoReadout: label });
     expect(items.slice(0, 3)).toEqual([{ kind: "title", label }, { kind: "separator" },
       { kind: "command", commandId: "clipboard.cut", label: "Cut", enabled: true, disabledReason: undefined, checked: undefined }]);

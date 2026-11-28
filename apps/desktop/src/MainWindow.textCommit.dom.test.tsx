@@ -165,9 +165,13 @@ describe.each(["macos", "windows"] as const)("text commit click (%s)", platform 
     const textarea = editor()!;
     const event = await pointer(textarea, "pointerdown", 230, 208);
     await pointer(textarea, "pointerup", 230, 208);
-    expect(event.defaultPrevented).toBe(false);
+    // The editor itself places the caret from the rendered lines (docs/plans/textbox-behavior.md
+    // C2), so it prevents the browser's press on the textarea's hidden layout. The canvas never
+    // sees the press: the edit stays open and focused.
+    expect(event.defaultPrevented).toBe(true);
     expect(editor()).toBe(textarea);
     expect(document.activeElement).toBe(textarea);
+    expect(textarea.selectionStart).toBe(textarea.selectionEnd);
   });
 
   it.each(["composition", "composing-key"])("protects %s from a canvas commit press", async source => {

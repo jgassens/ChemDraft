@@ -102,7 +102,7 @@ describe.each(["macos", "windows"] as const)("ring label commits (%s)", platform
     Object.defineProperty(navigator, "platform", { configurable: true, value: platform === "macos" ? "MacIntel" : "Win32" });
     captureDescriptors = captureNames.map(name => Object.getOwnPropertyDescriptor(HTMLElement.prototype, name));
     for (const name of captureNames) Object.defineProperty(HTMLElement.prototype, name, { configurable: true, value: name === "hasPointerCapture" ? () => false : () => {} });
-    saveKeybindingSettings({ scheme: "chemdraft" });
+    saveKeybindingSettings({ scheme: "chemdraw" });
     window.history.replaceState(null, "", "/?agentBridge=1");
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   });
@@ -113,7 +113,7 @@ describe.each(["macos", "windows"] as const)("ring label commits (%s)", platform
       if (descriptor) Object.defineProperty(HTMLElement.prototype, name, descriptor); else Reflect.deleteProperty(HTMLElement.prototype, name);
     });
     Reflect.deleteProperty(navigator, "platform"); delete window.__CHEMDRAFT_AGENT__;
-    window.history.replaceState(null, "", "/"); saveKeybindingSettings({ scheme: "chemdraft" });
+    window.history.replaceState(null, "", "/"); saveKeybindingSettings({ scheme: "chemdraw" });
   });
   async function mount(d = ring(), tool = "tool.atom") {
     await act(async () => root.render(createElement(MainWindow, {
@@ -292,35 +292,6 @@ describe.each(["macos", "windows"] as const)("ring label commits (%s)", platform
   it("Escape adds nothing, restores carbon, and creates no history", async () => {
     await mount(); const before = molecule(); await edit(0, "OMe", "Escape");
     expect(molecule()).toEqual(before); check(6, 6); await history(); expect(molecule()).toEqual(before);
-  });
-  it.each(["CH3", "NH2"])("a no-op hover %s first key owns exactly one named entry and preserves the earlier entry", async label => {
-    const d = ring(), original = d.pages[0].objects[0] as MoleculeObject;
-    const source = { ...original.atoms[0]!, element: label[0]!, ...(label === "CH3" ? { labelVisible: true } : {}) };
-    await mount(applyPatches(d, [{ op: "updateObject", objectId: original.id, changes: { atoms: original.atoms.map(a => a.id === source.id ? source : a) } }]), "tool.bond");
-    const before = molecule();
-    const other = await insertOtherMolecule();
-    const priorStatus = status();
-    await history();
-    const priorUndoStatus = status();
-    expect(priorUndoStatus).toBe("Undid Label History Test: Insert other molecule");
-    expect(current().pages[0].objects).toHaveLength(1);
-    await history(true);
-    expect(current().pages[0].objects[1]).toEqual(other);
-    expect(priorStatus).toContain("inserted structure");
-    await pointer("pointermove", source);
-    await key(label[0]!);
-    expect(molecule()).toEqual(before); // The instant key really is a no-op.
-    for (const char of label.slice(1)) await key(char);
-    await key("Enter");
-    expect(molecule().atoms[6]).toMatchObject({ element: label });
-    await history();
-    expect(molecule()).toEqual(before);
-    expect(current().pages[0].objects[1]).toEqual(other);
-    expect(status()).toBe(`Undid Add ${label} substituent`);
-    await history();
-    expect(current().pages[0].objects).toHaveLength(1);
-    expect(molecule()).toEqual(before);
-    expect(status()).toBe(priorUndoStatus);
   });
   it.each(["Escape", "Enter"])("%s preserves an external plugin insertion and never records the live draft", async finish => {
     await mount(); const before = molecule();
@@ -507,28 +478,6 @@ describe.each(["macos", "windows"] as const)("ring label commits (%s)", platform
     expectFreshDerivedFields(molecule());
     if (finish === "Enter") { await history(true); expect(molecule()).toEqual(result); }
   });
-  it.each(["before editor", "during editor"])("a changed hover key keeps a plugin commit %s separate from the final label entry", async timing => {
-    await mount(ring(), "tool.bond"); const before = molecule();
-    await pointer("pointermove", before.atoms[0]!); await key("O");
-    const firstKey = molecule();
-    let other;
-    if (timing === "before editor") other = await insertOtherMolecule();
-    await key("M"); await key("e");
-    expect(editor()?.value).toBe("OMe");
-    if (timing === "during editor") other = await insertOtherMolecule();
-    await key("Enter");
-    expect(molecule().atoms[6]).toMatchObject({ element: "OMe" });
-    await history(); expect(molecule()).toEqual(firstKey);
-    expect(current().pages[0].objects[1]).toEqual(other);
-    expect(status()).toBe("Undid Add OMe substituent");
-    await history(); expect(molecule()).toEqual(firstKey);
-    expect(current().pages[0].objects).toHaveLength(1);
-    expect(status()).toBe("Undid Label History Test: Insert other molecule");
-    await history(); expect(molecule()).toEqual(before);
-    await history(true); expect(molecule()).toEqual(firstKey);
-    await history(true); expect(molecule()).toEqual(firstKey);
-    expect(current().pages[0].objects[1]).toEqual(other);
-  });
   it("previews the same attachment without adding draft atoms to history", async () => {
     await mount(); const source = molecule().atoms[0]!;
     await pointer("pointerdown", source, container.querySelector(`[data-object-id="${molecule().id}"]`)!);
@@ -556,17 +505,6 @@ describe.each(["macos", "windows"] as const)("ring label commits (%s)", platform
     await history(true); expect(molecule()).toEqual(first);
     await history(true); expect(molecule()).toEqual(second);
   });
-  it("hover continuation restores pre-O carbon, reusing the first key's one Undo entry", async () => {
-    await mount(ring("benzene"), "tool.bond"); const before = molecule();
-    await pointer("pointermove", before.atoms[0]!);
-    for (const char of "OMe") await key(char);
-    expect(editor()?.value).toBe("OMe");
-    // The uncommitted draft stays on the source in history; only the render preview is split.
-    expect(molecule().atoms).toHaveLength(6); expect(molecule().bonds).toHaveLength(6);
-    await key("Enter"); check(7, 7); expect(molecule().atoms.slice(0, 6)).toEqual(before.atoms);
-    expect(status()).toContain("already has 2"); const after = molecule();
-    await history(); expect(molecule()).toEqual(before); await history(true); expect(molecule()).toEqual(after);
-  });
 
   async function hoverRingBond(before: MoleculeObject) {
     const bond = before.bonds[0]!;
@@ -590,102 +528,6 @@ describe.each(["macos", "windows"] as const)("ring label commits (%s)", platform
     expect([attachment.fromAtomId, attachment.toAtomId].sort()).toEqual([atomId, substituent.id].sort());
   }
 
-  it("bond-hover O-M-e attaches OMe to the nearer ring carbon, restores bond hover and has one named Undo entry", async () => {
-    await mount(ring(), "tool.bond");
-    const before = molecule();
-    const { bond, near } = await hoverRingBond(before);
-    for (const char of "OMe") await key(char);
-    expect(editor()?.value).toBe("OMe");
-    await key("Enter");
-    expectAttachedOMe(before, near.id);
-    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond", bondId: bond.id });
-    const after = molecule();
-    await history();
-    expect(molecule()).toEqual(before);
-    expect(status()).toBe("Undid Add OMe substituent");
-    await history();
-    expect(molecule()).toEqual(before);
-    await history(true);
-    expect(molecule()).toEqual(after);
-    expect(status()).toBe("Redid Add OMe substituent");
-  });
-
-  it.each(["neighbour", "empty page"])("ring O-M-e stays one continuation after drifting to %s and commits a substituent", async drift => {
-    await mount(ring(), "tool.bond");
-    const before = molecule(), atom = before.atoms[0]!;
-    const destination = drift === "neighbour" ? before.atoms[1]! : { x: 40, y: 40 };
-    await pointer("pointermove", atom);
-    await key("O");
-    await pointer("pointermove", destination);
-    if (drift === "neighbour") expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom", atomId: before.atoms[1]!.id });
-    else expect(snapshot().hoveredNativeTarget).toBeUndefined();
-    await key("M");
-    expect(editor()?.value).toBe("OM");
-    await key("e");
-    expect(editor()?.value).toBe("OMe");
-    await key("Enter");
-    expectAttachedOMe(before, atom.id);
-    if (drift === "neighbour") expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom", atomId: before.atoms[1]!.id });
-    else expect(snapshot().hoveredNativeTarget).toBeUndefined();
-    await history();
-    expect(molecule()).toEqual(before);
-    expect(status()).toBe("Undid Add OMe substituent");
-  });
-
-  it("the substituent commit ends continuation and the next key acts freshly on the bond under the pointer", async () => {
-    await mount(ring(), "tool.bond");
-    const before = molecule();
-    const { bond, near, far } = await hoverRingBond(before);
-    for (const char of "OMe") await key(char);
-    await key("Enter");
-    expectAttachedOMe(before, near.id);
-    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond", bondId: bond.id });
-    const attached = molecule();
-    await key("e");
-    expect(editor()).toBeNull();
-    expect(snapshot().activeToolCommandId).toBe("tool.eraser");
-    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond", bondId: bond.id });
-    expect(molecule()).toEqual(attached);
-    await key("N");
-    expect(editor()).toBeNull();
-    expect(molecule().atoms.find(atom => atom.id === near.id)!.element).toBe("N");
-    expect(molecule().atoms.find(atom => atom.id === far.id)!.element).toBe("C");
-    expect(molecule().atoms[6]).toEqual(attached.atoms[6]);
-    await history();
-    expect(molecule()).toEqual(attached);
-    await history();
-    expect(molecule()).toEqual(before);
-    expect(status()).toBe("Undid Add OMe substituent");
-  });
-
-  it("names hover continuations for their final substituent or relabel result", async () => {
-    await mount(ring(), "tool.bond");
-    const ringBefore = molecule();
-    await pointer("pointermove", ringBefore.atoms[0]!);
-    for (const char of "OMe") await key(char);
-    await key("Enter");
-    const ringAfter = molecule();
-    await history();
-    expect(molecule()).toEqual(ringBefore);
-    expect(status()).toBe("Undid Add OMe substituent");
-    await history(true);
-    expect(molecule()).toEqual(ringAfter);
-    expect(status()).toBe("Redid Add OMe substituent");
-
-    const chain = insertNativeSingleBondMolecule(createPhase4Document("Terminal relabel"), { x: 300, y: 300 });
-    await mount(selectDocumentObjects(chain, chain.pages[0].id, []), "tool.bond");
-    const chainBefore = molecule();
-    await pointer("pointermove", chainBefore.atoms[0]!);
-    for (const char of "OMe") await key(char);
-    await key("Enter");
-    const chainAfter = molecule();
-    await history();
-    expect(molecule()).toEqual(chainBefore);
-    expect(status()).toBe("Undid Edit Atom Label");
-    await history(true);
-    expect(molecule()).toEqual(chainAfter);
-    expect(status()).toBe("Redid Edit Atom Label");
-  });
   it("names inline ring-label attachments for Undo and Redo", async () => {
     await mount();
     const before = molecule();
@@ -926,7 +768,7 @@ describe.each(["macos", "windows"] as const)("ring label commits (%s)", platform
       const after = molecule(); await history(); undo++; expect(molecule()).toEqual(before);
       await history(true); redo++; expect(molecule()).toEqual(after); check(7, 7);
     }
-    saveKeybindingSettings({ scheme: "chemdraft" });
+    saveKeybindingSettings({ scheme: "chemdraw" });
     const d = createPhase4Document("Long chain"), L = 24;
     const m: MoleculeObject = { id: "chain", type: "molecule", x: 30, y: 300, width: 610, height: 12, rotation: 0, style: {}, structure: "", structureFormat: "smiles", superatoms: [], rGroups: [],
       atoms: Array.from({ length: 30 }, (_, i) => ({ id: `chainA${i}`, element: "C", formalCharge: 0, x: 30 + i * L * Math.sqrt(3) / 2, y: 300 + i % 2 * L / 2 })),

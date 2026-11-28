@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   admitParsedDocument,
   adoptDerivedDocument,
@@ -11,7 +11,8 @@ import {
 } from "./patches";
 import { createEmptyDocument, deserializeDocument } from "./document";
 import { applyPatchWithHistory, createDocumentHistory, redo, undo } from "./history";
-import type { ChemDraftDocument, DocumentObject, ReactionObject } from "./schemas";
+import { GraphicObjectSchema, type ChemDraftDocument, type DocumentObject, type GraphicObject, type ReactionObject } from "./schemas";
+import { createImageGraphicObject } from "./image";
 
 const now = "2026-09-26T00:00:00.000Z";
 
@@ -435,5 +436,83 @@ describe("patch engine structural sharing", () => {
     expect(() =>
       applyPatch(document, { op: "updatePageLayout", pageId: page.id, layout: { ...page.layout, widthPx: -5 } }, { now })
     ).toThrow();
+  });
+});
+
+describe("picture data through an edit", () => {
+  /** A PNG of `dataBytes` image data (not inflated by the validator), as base64: a phone photo's size. */
+  function largePngBase64(dataBytes: number): string {
+    const bytes = new Uint8Array(33 + 12 + dataBytes + 12);
+    const view = new DataView(bytes.buffer);
+    bytes.set([137, 80, 78, 71, 13, 10, 26, 10]);
+    view.setUint32(8, 13);
+    bytes.set(new TextEncoder().encode("IHDR"), 12);
+    view.setUint32(16, 3264);
+    view.setUint32(20, 2448);
+    bytes.set([8, 6, 0, 0, 0], 24);
+    view.setUint32(33, dataBytes);
+    bytes.set(new TextEncoder().encode("IDAT"), 37);
+    for (let index = 0; index < dataBytes; index += 1) bytes[41 + index] = (index * 2654435761) >>> 24;
+    bytes.set(new TextEncoder().encode("IEND"), 41 + dataBytes + 8);
+    return Buffer.from(bytes).toString("base64");
+  }
+
+  function pictureDocument(): ChemDraftDocument {
+    const base = createEmptyDocument({ title: "t", now });
+    const picture = createImageGraphicObject({ id: "g1", mimeType: "image/png", dataBase64: largePngBase64(3_000_000), center: { x: 300, y: 300 } });
+    return applyPatch(base, { op: "addObject", pageId: base.pages[0]!.id, object: picture }, { now });
+  }
+
+  /** Every base64 decode the edit runs: the engine's own and `atob`. */
+  function countingDecodes() {
+    const atob = vi.spyOn(globalThis, "atob");
+    const fromBase64 = "fromBase64" in Uint8Array ? vi.spyOn(Uint8Array as unknown as { fromBase64: (value: string) => Uint8Array }, "fromBase64") : undefined;
+    return { count: () => atob.mock.calls.length + (fromBase64?.mock.calls.length ?? 0), restore: () => { atob.mockRestore(); fromBase64?.mockRestore(); } };
+  }
+
+  it("moves, nudges, resizes, turns and restyles a large picture without decoding it", () => {
+    const document = pictureDocument();
+    const picture = document.pages[0]!.objects[0] as GraphicObject;
+    const decodes = countingDecodes();
+    try {
+      const edited = applyPatches(document, [
+        { op: "moveObject", objectId: "g1", x: picture.x + 1, y: picture.y },
+        { op: "updateObject", objectId: "g1", changes: { x: picture.x + 2 } },
+        { op: "updateObject", objectId: "g1", changes: { width: picture.width / 2, height: picture.height / 2, rotation: 90 } },
+        // A whole-data change that keeps the picture, as a frame edit spreading the old data writes it.
+        { op: "updateObject", objectId: "g1", changes: { data: { ...picture.data } } as Partial<DocumentObject> },
+        { op: "updateObject", objectId: "g1", changes: { style: { opacity: 0.5 } } as Partial<DocumentObject> }
+      ], { now });
+      expect(decodes.count()).toBe(0);
+      const after = edited.pages[0]!.objects[0] as GraphicObject;
+      expect(after).toMatchObject({ x: picture.x + 2, width: picture.width / 2, rotation: 90 });
+      expect(after.data.image).toEqual(picture.data.image);
+      expect(after.data.image!.dataBase64).toBe(picture.data.image!.dataBase64);
+    } finally {
+      decodes.restore();
+    }
+  });
+
+  it("still checks picture data an edit replaces, and an image size it changes", () => {
+    const document = pictureDocument();
+    const picture = document.pages[0]!.objects[0] as GraphicObject;
+    const image = picture.data.image!;
+    const decodes = countingDecodes();
+    try {
+      // A new, valid picture is decoded and checked.
+      const replaced = applyPatch(document, { op: "updateObject", objectId: "g1",
+        changes: { data: { image: { ...image, dataBase64: largePngBase64(1000) } } } as Partial<DocumentObject> }, { now });
+      expect(decodes.count()).toBeGreaterThan(0);
+      expect((replaced.pages[0]!.objects[0] as GraphicObject).data.image!.dataBase64).not.toBe(image.dataBase64);
+    } finally {
+      decodes.restore();
+    }
+    expect(() => applyPatch(document, { op: "updateObject", objectId: "g1",
+      changes: { data: { image: { ...image, dataBase64: "AAA*" } } } as Partial<DocumentObject> }, { now }))
+      .toThrow("Image object g1 has invalid base64 image data.");
+    expect(() => applyPatch(document, { op: "updateObject", objectId: "g1",
+      changes: { data: { image: { ...image, pixelWidth: 40_000 } } } as Partial<DocumentObject> }, { now })).toThrow(DocumentPatchError);
+    // The trust lasts only for that one edit: a later object with the same data in a new document is checked again.
+    expect(() => GraphicObjectSchema.parse({ ...picture, data: { image: { ...image, dataBase64: `${image.dataBase64}*` } } })).toThrow();
   });
 });

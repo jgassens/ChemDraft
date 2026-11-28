@@ -179,7 +179,7 @@ describe.each(["macos", "windows"] as const)("inline editor app shortcuts (%s)",
 
     it.each([["b", "document.save"], ["i", "document.saveAs"]] as const)(
       "lets a Save shortcut configured on Mod+%s win over the editor's formatting chord", async (letter, commandId) => {
-        saveKeybindingSettings({ scheme: "chemdraft", overrides: { chemdraft: { commands: { [commandId]: [`Mod+${letter.toUpperCase()}`] } } } });
+        saveKeybindingSettings({ scheme: "chemdraw", overrides: { chemdraw: { commands: { [commandId]: [`Mod+${letter.toUpperCase()}`] } } } });
         await act(async () => { window.dispatchEvent(new StorageEvent("storage", { key: KEYBINDING_STORAGE_KEY })); });
         const draft = kind === "atom label" ? "OMe" : "abc";
         await type(draft);

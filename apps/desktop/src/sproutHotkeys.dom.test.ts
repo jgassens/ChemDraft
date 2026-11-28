@@ -21,9 +21,7 @@ class TestResizeObserver {
   disconnect() {}
 }
 
-describe.each([
-  ["windows", "chemdraft"], ["windows", "chemdraw"], ["macos", "chemdraft"], ["macos", "chemdraw"]
-] as const)("fragment keys (%s, %s)", (platform, scheme) => {
+describe.each(["windows", "macos"] as const)("fragment keys (%s)", platform => {
   let container: HTMLDivElement;
   let root: Root;
   let originalResizeObserver: typeof ResizeObserver | undefined;
@@ -32,7 +30,7 @@ describe.each([
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     vi.stubGlobal("localStorage", new MemoryStorage());
-    saveKeybindingSettings({ scheme });
+    saveKeybindingSettings({ scheme: "chemdraw" });
     originalPlatform = Object.getOwnPropertyDescriptor(navigator, "platform");
     Object.defineProperty(navigator, "platform", { value: platform === "windows" ? "Win32" : "MacIntel", configurable: true });
     originalResizeObserver = globalThis.ResizeObserver;
@@ -126,7 +124,6 @@ describe.each([
     expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond", bondId: bond.id });
     return bond;
   }
-
 
   async function press(key: string, modifiers: { metaKey?: boolean; ctrlKey?: boolean; shiftKey?: boolean } = {}) {
     const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, shiftKey: /^[A-Z]$/.test(key), ...modifiers });
@@ -416,17 +413,7 @@ describe.each([
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Undid Make bond wedge");
   });
 
-  it.skipIf(scheme !== "chemdraft")("V over an atom switches to the Selection tool without editing chemistry", async () => {
-    await renderEthane();
-    const before = molecule();
-    await hoverAtom(0);
-    expect(snapshot().activeToolCommandId).toBe("tool.bond");
-    await press("v");
-    expect(snapshot().activeToolCommandId).toBe("tool.select");
-    expect(molecule()).toEqual(before);
-  });
-
-  it.skipIf(scheme !== "chemdraw")("V adds cyclopropyl over an atom and fuses cyclopropane over a bond", async () => {
+  it("V adds cyclopropyl over an atom and fuses cyclopropane over a bond", async () => {
     await renderEthane();
     const before = molecule();
     await hoverAtom(0);
@@ -442,7 +429,7 @@ describe.each([
     await expectOneUndo(before);
   });
 
-  it.skipIf(scheme !== "chemdraw")("V over empty canvas leaves the tool and chemistry unchanged", async () => {
+  it("V over empty canvas leaves the tool and chemistry unchanged", async () => {
     await renderEthane();
     const before = snapshot().document;
     await hoverPoint({ x: 50, y: 50 });
@@ -453,7 +440,7 @@ describe.each([
   });
 
   it.each([
-    ["g", 1], ["u", 2], ["v", scheme === "chemdraw" ? 1 : 0],
+    ["g", 1], ["u", 2], ["v", 1],
     ["z", 3], ["G", 0], ["J", 0]
   ] as const)("key %s over empty canvas with a selected ethane bond (added atoms: %i)", async (key, added) => {
     await renderEthane();
@@ -514,39 +501,6 @@ describe.each([
     expect(molecule().bonds[0]).toEqual(before.bonds[0]);
     if (key === "z") expect(molecule().bonds.filter(bond => bond.order === "double")).toHaveLength(2);
     if (added) await expectOneUndo(before);
-  });
-
-  it.skipIf(scheme !== "chemdraft")("u fuses cyclobutane on the hovered C-C bond after labeling terminal propane oxygen", async () => {
-    const propane = "CCC";
-    const initial = insertSmilesMolecule(createPhase4Document("Bond key after atom label"), { x: 300, y: 300 }, depictSmiles2D(propane), propane);
-    await renderEthane(initial);
-    const before = molecule();
-    const includesAtom = (bond: MoleculeObject["bonds"][number], atomId: string) =>
-      bond.fromAtomId === atomId || bond.toAtomId === atomId;
-    const terminal = await hoverAtom(before.atoms.findIndex(atom =>
-      before.bonds.filter(bond => includesAtom(bond, atom.id)).length === 1));
-    await press("o");
-    expect(molecule().atoms.find(atom => atom.id === terminal.id)?.element).toBe("O");
-    expect(container.querySelector('[data-atom-label-editor="true"]')).toBeNull();
-
-    await hoverBond(molecule().bonds.find(bond => !includesAtom(bond, terminal.id))!);
-    await press("u");
-    expect(container.querySelector('[data-atom-label-editor="true"]')).toBeNull();
-    expect(molecule().atoms.find(atom => atom.id === terminal.id)?.element).toBe("O");
-    expect(Molecule.fromSmiles(molecule().structure).getIDCode()).toBe(Molecule.fromSmiles("OC1CCC1").getIDCode());
-  });
-
-  it.skipIf(scheme !== "chemdraft")("w edits the bond under a stationary pointer after o labels its nearer atom", async () => {
-    await renderEthane();
-    const bond = await hoverBond();
-    await press("o");
-    expect(molecule().atoms.filter(atom => atom.element === "O")).toHaveLength(1);
-    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom" });
-    expect(container.querySelector('[data-atom-label-editor="true"]')).toBeNull();
-
-    await press("w");
-    expect(container.querySelector('[data-atom-label-editor="true"]')).toBeNull();
-    expect(molecule().bonds[0]).toMatchObject({ id: bond.id, display: { bondStyle: "wedge" } });
   });
 
   it("adds one radical to the hovered carbon, replacing one implicit hydrogen and preserving charge in one undo step", async () => {

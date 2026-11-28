@@ -148,9 +148,14 @@ describe("Spin 3D flatten chemistry refusals", () => {
     });
     const handle = container.querySelector<HTMLButtonElement>("[data-selection-tilt3d-handle]")!;
     expect(handle).not.toBeNull();
-    const page = handle.closest<HTMLElement>(".page")!;
-    page.setPointerCapture = vi.fn();
-    page.hasPointerCapture = () => false;
+    // Handles are drawn in `.page-handle-layer`, a sibling of `.page`; a group handle drag captures
+    // the pointer on `.page` itself (pageRef), falling back to the handle.
+    const page = handle.closest(".document-board")!.querySelector<HTMLElement>(".page")!;
+    expect(page).not.toBeNull();
+    for (const element of [page, handle]) {
+      element.setPointerCapture = vi.fn();
+      element.hasPointerCapture = () => false;
+    }
     return { handle, page };
   }
 

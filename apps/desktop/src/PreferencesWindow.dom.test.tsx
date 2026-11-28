@@ -115,10 +115,10 @@ describe.each(["macos", "windows"] as const)("Keyboard Preferences (%s)", platfo
     await act(async () => { document.activeElement?.dispatchEvent(event); });
   };
 
-  it("searches, assigns, cancels and replaces conflicts, clears, resets and keeps separate schemes", async () => {
-    // The walk starts in ChemDraft's scheme (where Save and Open have menu chords) and switches away and back.
-    saveKeybindingSettings({ scheme: "chemdraft" });
+  it("searches, assigns, cancels and replaces conflicts, clears and resets custom keys", async () => {
     await mountKeyboard();
+    // One built-in set: nothing to choose between.
+    expect(container.querySelector('input[name="keybinding-scheme"]')).toBeNull();
     const search = container.querySelector<HTMLInputElement>('input[aria-label="Search shortcuts"]')!;
     const searchFor = async (query: string) => {
       await act(async () => {
@@ -150,18 +150,15 @@ describe.each(["macos", "windows"] as const)("Keyboard Preferences (%s)", platfo
     expect(keyButton("Save").textContent).toBe("Unassigned");
     await click(row("Save").querySelector<HTMLButtonElement>('[aria-label="Reset Save"]')!);
     expect(keyButton("Save").textContent).toBe(display("S"));
-    await click(container.querySelector<HTMLInputElement>('input[name="keybinding-scheme"][value="chemdraw"]')!);
-    expect(keyButton("Open…").textContent).toBe(display("O"));
-    await click(container.querySelector<HTMLInputElement>('input[name="keybinding-scheme"][value="chemdraft"]')!);
     expect(keyButton("Open…").textContent).toBe("Unassigned");
-    expect(loadKeybindingSettings().overrides?.chemdraft?.commands?.["document.open"]).toEqual([]);
+    expect(loadKeybindingSettings().overrides?.chemdraw?.commands?.["document.open"]).toEqual([]);
     await click(keyButton("Save"));
     await press({ key: "Backspace", code: "Backspace" });
     expect(container.querySelector('[aria-label="Shortcut conflict"]')?.textContent).toContain("Delete Selection");
     await click(button("Cancel"));
-    await click(button("Reset all to scheme defaults"));
+    await click(button("Reset all to defaults"));
     expect(keyButton("Open…").textContent).toBe(display("O"));
-    expect(loadKeybindingSettings().overrides?.chemdraft).toEqual({});
+    expect(loadKeybindingSettings().overrides?.chemdraw).toEqual({});
   });
 
   it.each([

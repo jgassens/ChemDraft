@@ -1,12 +1,13 @@
 import type { ChemDraftDocument, DocumentObject } from "@chemdraft/chem-core";
 import type { DocumentSessionEnvelope } from "./documentSession";
+import { IMPLIED_RADICAL_CACHE_NOT_REFRESHED_CODE } from "@chemdraft/document-workflow-core";
 
 /**
  * The open report's code for a molecule whose lone-H (H•) cache the refresh
- * (`withImpliedRadicalChemistryRederived`) declined to change. Kept here, so the session restore's
- * report merge below can name it without loading the document workflow, which re-exports it.
+ * (`withImpliedRadicalChemistryRederived`, document-workflow-core) declined to change, re-exported so
+ * the session restore's report merge below and its callers name it from here.
  */
-export const IMPLIED_RADICAL_CACHE_NOT_REFRESHED_CODE = "document.lone_hydrogen_cache_not_refreshed";
+export { IMPLIED_RADICAL_CACHE_NOT_REFRESHED_CODE };
 
 /** Opens and closes the current document's file warning list. */
 export const TOGGLE_OPEN_WARNINGS_COMMAND_ID = "view.toggleOpenWarnings";

@@ -280,7 +280,7 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
       onCopy={() => sendDialogMessage(hostId, { ...dialogEnvelope(snapshot), requestId: crypto.randomUUID(), type: "action", data: { action: "copyVersion" } })} />
   </Suspense>;
   if (snapshot.dialogKind === "guidedTour") return <Suspense fallback={<p>Opening tour…</p>}>
-    <TourForm scheme={snapshot.data.scheme} plugins={snapshot.data.plugins} bondKeys={snapshot.data.bondKeys} onReady={reportReady} busy={busy} error={error}
+    <TourForm plugins={snapshot.data.plugins} bondKeys={snapshot.data.bondKeys} onReady={reportReady} busy={busy} error={error}
       onAction={action => {
         if (action.action !== "openGuide") { sendAction(action); return; }
         // Rust opens the guide in the system browser. It is not a pending action and never reaches the owner.

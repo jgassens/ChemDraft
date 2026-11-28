@@ -381,7 +381,9 @@ describe.each(["macos", "windows"] as const)("canvas arrow nudge (%s)", platform
     await act(async () => editor.focus());
     const before = current(); editor.setSelectionRange(0, 0);
     expect((await key("ArrowRight")).defaultPrevented).toBe(false);
-    expect((await key("ArrowDown", { shiftKey: true })).defaultPrevented).toBe(false);
+    // The text editor moves vertically over its rendered lines itself (docs/plans/textbox-behavior.md
+    // K3), so it consumes ArrowDown; the atom label input leaves it to the browser. Neither nudges.
+    expect((await key("ArrowDown", { shiftKey: true })).defaultPrevented).toBe(kind === "text");
     expect(current()).toBe(before);
     expect(document.activeElement).toBe(editor);
     // jsdom has no native caret default action; unprevented real DOM events are the contract here.

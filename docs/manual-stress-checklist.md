@@ -14,6 +14,16 @@ Check center anchoring after scrolling, rulers on/off and scrollbar appearance, 
 layouts, old-session restore and display scaling. Molecules, undo history and exported page size
 must stay unchanged. Repeat with native palettes on Windows and both macOS builds.
 
+Zoom on the cell grid: on Main, Zoom Out sits exactly over Selection, the percentage menu exactly
+over Lasso and Eraser (its left edge on Lasso's, its right edge on Eraser's), and Zoom In exactly
+over Text, with the same gaps as the tools; the first divider follows straight after, spanning both
+rows, with no empty cells beside Text. "100%", "400%" and "850%" read in full with the arrow showing;
+note whether a smooth-zoom value such as "156.3%" clips. Pick presets and type a digit with the menu
+focused (type-ahead selects the preset). Customize Toolbar: the zoom shows three dashed boxes (one,
+two and one cells), not one wide box; drag it to a new place, drag it out, re-add it from the
+gallery (four cells again) and Restore Defaults. A layout saved by 1.2.2/RC5 loads with the
+four-cell zoom, and Main still fits its content. Windows and both macOS builds.
+
 Effect color popovers: select art or a molecule, enable Glow/Shadow/Sketch in Color Controls, then
 open Effect. The entire picker must fit in its owned window. Preview, commit, cancel and switch
 between effects, fill and text colors; only the intended target should change. Repeat at mixed
@@ -149,6 +159,42 @@ appears, click once on an empty part of another palette. The flyout's `_NET_WM_U
 long-press's time, not the later click's (`xev -root` or `xinput test-xi2 --root` shows both), and
 it still opens without an attention state.
 
+Floating Main toolbar fit (macOS, Windows and Linux): on first launch and after relaunch, check
+that the toolbar fits all its buttons and there is no empty gray space. It has no title row or
+empty strip above the buttons: it is as tall as its two button rows plus a thin (4 px) margin. On
+its left is a slim grip column (about 14 px) with the close control at its top (the red dot on
+macOS and Linux, a small × on Windows) and grip dots below; there is no wider grip column and no
+gap at the right edge after the last control. Drag the toolbar by the grip column: it moves, and
+pressing a tool button never moves it. Click the close control: the toolbar closes, and View ▸
+Toolbars brings it back the same size. Tab to the close control: it is announced as a button with
+its name, and the toolbar window keeps its name for VoiceOver/Narrator/Orca. Repeat for each other
+floating palette (Structure, Arrows, Annotations, Art, Orbitals, Layout, Style, Text, Rings) and the
+resizable inspectors (Drawn Structure Settings, Molecular Inspector): each has the same grip column
+and close control, no title row, and is dragged by the grip; the inspectors still resize from their
+edges and their content still scrolls. Fixed toolbars are never resizable, scaled, wrapped or given
+a scrollbar (Linux keeps its sideways scroller only when the screen is narrower than Main).
+
+Toolbar right-click menu (macOS, Windows and Linux): right-click the Main toolbar on its grip column,
+on a gap between buttons, and on a tool button (Single Bond, then Undo). Each time a native menu
+appears at the pointer with Customize Toolbar… and Hide Toolbar; it is a system menu, not a box drawn
+inside the toolbar or the document. The button under the pointer does not fire: the tool does not
+change, the button shows no pressed state, Undo undoes nothing, the toolbar does not move,
+no flyout opens, and a tooltip showing for that button hides rather than sitting over the menu. On
+macOS, Control-click does the same as a right-click (no drag, no command). Choose
+Customize Toolbar…: the Main toolbar's customize gallery opens (Done bar and gallery tray), the same
+as View ▸ Customize Main Toolbar…; press Done. Right-click again and choose Hide Toolbar: Main hides
+and View ▸ Toolbars shows it unchecked; bring it back from there. Press Escape or click away
+with the menu open: nothing runs. Repeat on another toolbar (Arrows, Style) and on an inspector
+(Molecular Inspector): the menu has Hide Toolbar only, because the gallery customizes Main only, and
+Hide hides that toolbar, not Main. Afterwards, left-click a tool and drag the grip: both still work,
+and the document keeps the keyboard (M switches tools). On Windows also check that the toolbar never
+takes the taskbar or the keyboard while its menu is open, with the toolbar on a second monitor at a
+different scale: the menu opens at the pointer on that monitor. Still on Windows, click another
+application (Notepad) so it is in front, then right-click a ChemDraft toolbar without clicking
+ChemDraft first: no menu opens and ChemDraft does not come forward; click the document, then
+right-click the toolbar again and the menu opens. With a plugin that contributes a toolbar
+installed, right-click that toolbar: the menu has Hide Toolbar only, and Hide hides that toolbar.
+
 Palette first paint (Windows): quit ChemDraft, then cold-launch it. The Main toolbar and the other
 open palettes appear with their content in the palette's light grey, with no black frame and no
 blank light frames first. Press and hold a flyout button and open a color picker: each popover, and
@@ -200,7 +246,7 @@ and a further Escape hands the keyboard back to the document.
 Tab out of the palette and a control finishing with no palette destination, on both platforms.
 Tab/click between palette controls keeps their keyboard lease. Switching apps, clicking another
 palette, or opening a native color/select chooser must never pull focus back to the document.
-Foreground after dragging: on Windows drag the Text toolbar by its title and background, release,
+Foreground after dragging: on Windows drag the Text toolbar by its grip column and background, release,
 then immediately press M. The document receives it and the toolbar stays where dropped. Repeat
 a press with no movement and a drag while a keyboard lease is held: dragging ends any lease,
 and the document has the keyboard afterwards. Switching apps during the gesture must not steal
@@ -208,8 +254,8 @@ focus. On macOS verify dragging still leaves the document key.
 Nested palette scrollbars: in Object Settings, drag the panel's vertical thumb and press its track,
 then on a tall palette that scrolls as a whole on a short display; contents scroll without moving the
 palette. Repeat with pointer and mouse input on Windows/WebView2 and both macOS builds (System
-Settings scroll bars both automatic/overlay and always shown), at mixed display scales. The title,
-content grip and palette background still move the window. The one exception is the own box of an
+Settings scroll bars both automatic/overlay and always shown), at mixed display scales. The grip
+column and palette background still move the window. The one exception is the own box of an
 element that is showing a scrollbar (it scrolls and its content overflows): a press anywhere on it,
 including its blank area beside or below the contents, stays with the webview and does not drag,
 since a macOS overlay scrollbar cannot be told apart from that area. Presses on non-interactive
@@ -634,15 +680,14 @@ or on a since-detached display.
 Keybinding and molecule-editing surfaces added since: the Chain tools flyout (Chain / Flexible
 Chain) opened cold and warm, with a flexible-chain drag that turns corners both free and
 atom-anchored while a straight drag still reproduces the straight planner exactly; the numeric
-hover hotkeys in both keybinding schemes (rings 3–0 attach/fuse over atoms and bonds, wedge/hash
+hover hotkeys (rings 3–0 attach/fuse over atoms and bonds, wedge/hash
 sprouts 4/5, carbonyl 2, gem-dimethyl 9, the 0-key cyclic bond closing a ring), `g` over an atom or bond
 for cyclopropyl or fused cyclopropane, `u` over a bond for fused cyclobutane, and `.` over an atom
-for a radical; each edit undoes in one step. In the compatibility scheme, `v` mirrors `g`; in the
-default scheme, `v` selects the Select tool even over an atom. Check these on both platforms, with tool keys
-following the selected scheme — `e` over an atom applies the Et nickname in the ChemDraw scheme,
-while ChemDraft's `e` arms the eraser; charge stacking
+for a radical; each edit undoes in one step. `v` mirrors `g`. Check these on both platforms — `e`
+over an atom applies the Et nickname, while `e` over empty canvas with nothing selected arms the
+arrow tool; charge stacking
 by hotkey and by the charge tool up to ±9 and back down to mark removal;
-hover an atom of a selected and an unselected ring and press + (Shift+= and numpad +) and then -; a PHYSICAL main-keyboard Shift+= must be pressed by a person, because automation tools inject "=" with code NumpadEqual and do not prove the physical path; holding the pointer still after Shift raises the rotation handles: each charges that atom, in both schemes; with nothing hovered (including after moving off the canvas) and no atom selected, + and - pick the charge tools in the ChemDraft scheme, while with one atom selected and nothing hovered, + and - charge the selected atom (as a literal + did before);
+hover an atom of a selected and an unselected ring and press + (Shift+= and numpad +) and then -; a PHYSICAL main-keyboard Shift+= must be pressed by a person, because automation tools inject "=" with code NumpadEqual and do not prove the physical path; holding the pointer still after Shift raises the rotation handles: each charges that atom; with nothing hovered (including after moving off the canvas) and no atom selected, + and - do nothing (the charge tools have no default key), while with one atom selected and nothing hovered, + and - charge the selected atom (as a literal + did before);
 with **Direct electron-mark editing** off (the default), check radical/lone-pair painted-ink-only picking over
 atoms, bonds and filled rings, repeated radical/lone-pair tool placement on existing ink, and
 absence of mark resize/rotation handles.
@@ -682,8 +727,8 @@ stripping a labeled atom back to skeleton carbon before the second press deletes
 dragged onto another molecule object's atom merging the two objects into one; magnetic
 canonical-geometry snap during atom drags, partial-selection drags, and fragment rotations — a
 release outside the capture window must land exactly at the pointer; junction-pivot rotation
-holding the junction and attachment bond fixed; and switching the keybinding scheme live with the
-main window, detached palettes, and the native menu accelerators all following.
+holding the junction and attachment bond fixed; and changing a key in Preferences ▸ Keyboard live
+with the main window, detached palettes, and the native menu accelerators all following.
 
 File open: with ChemDraft quit, double-click a `.chemdraft` in Finder (macOS) / Explorer (Windows); the app opens with that document and does not crash.
 
@@ -1455,6 +1500,7 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
 - Drag from the node to aim freely; hold Shift for 15-degree steps. Preview and release must match. Cancel a page-started and object-started drag; the pre-gesture document must return. Undo/Redo each placement once.
 - Select an orbital: its rotation handle should be visible without Shift or a double-click on its body. Rotate to an arbitrary angle about its node; Shift snaps and double-clicking the handle permits exact numeric entry. Direct Edit must still expose path nodes.
 - Verify existing orbitals and molecules do not move or change chemistry, and native save/reopen plus SVG/PDF export retain all overlapping shapes. Test zoomed and mixed-DPI configurations.
+- Orbital size (1.2.3): on a small chain drawn in the default style, place each orbital tool on a carbon. One lobe reaches about 0.8 of a bond length from the atom, a p orbital about 1.6 bond lengths tip to tip, and an s orbital's diameter matches one p lobe. Change the document style's bond length (for example to an ACS style) and place them again: they scale with the new bonds. Reopen a document saved by 1.2.2 or earlier that has orbitals: they keep their old size, and the document is not marked edited. SVG, PDF and CDXML exports of the new orbitals match the canvas. The tunable is `ORBITAL_LOBE_LENGTH_IN_BOND_LENGTHS` in `apps/desktop/src/orbitalSize.ts`.
 
 2. **Fresh-document startup, on macOS and Windows:** with the preference OFF, create named and
    unsaved tabs, quit, and relaunch using the approved worktree launch command; confirm restoration.
@@ -1847,18 +1893,28 @@ whole-molecule cleanup with the existing behavior, and check save/reopen and exp
 
 ## Preferences > Keyboard
 
-- On macOS and Windows, use **Try it** on step 2 of the guided tour. Preferences should open or
+- On macOS and Windows, step 2 of the guided tour is "Keyboard shortcuts": it shows a few keys and
+  no choice of presets, and Preferences > Keyboard has no preset chooser either. Use **Try it** on
+  that step. Preferences should open or
   raise with the Keyboard search field focused. Filter for Save and assign a new shortcut.
   Check the File menu label and trigger Save from the document window with the new shortcut.
 - Assign Save's shortcut to another action. Cancel first, then repeat and choose Replace.
   Check that only the replacement action runs. Clear and reset a menu, tool, and hover action,
-  then use **Reset all to scheme defaults**. Switch schemes and relaunch to verify each scheme
-  retains its own changes. Repeat with the Preferences window already open.
+  then use **Reset all to defaults**. Relaunch to verify custom keys persist. Repeat with the
+  Preferences window already open. Eraser, Lasso and Cyclopentane have no default key: assign one
+  each and use it.
 - While the recorder is active try F5, Ctrl+R, and Cmd/Ctrl+Q and W. Verify the reserved-key
   explanation for keys delivered to the recorder and that the document never reloads or closes.
   Try Escape to cancel and verify normal menu accelerators work again afterward.
-- In the Classic desktop-compatible scheme record and use B and Shift+B with Caps Lock both
+- Record and use B and Shift+B with Caps Lock both
   off and on. Only Shift changes the hover key. Lowercase b sets Br and uppercase B sets boron.
+- Upgrade check, on macOS and Windows: start from an install whose `preferences.json` has
+  `"shortcutScheme": "chemdraft"` and a custom key under `shortcutOverrides.chemdraft` (one free,
+  such as F6 for Eraser, and one taken, such as E). Launch the new build: the status line says once
+  "Keyboard shortcuts now use one standard set. You can change any key in Preferences ▸ Keyboard."
+  (the same words on Windows); F6 still erases, E is the arrow tool, and the
+  message does not come back on the next launch. A corrupt `preferences.json` must not stop the
+  app from starting on the one set.
 - Try the normal Cut, Copy and Paste menu items with focus on a text field and with canvas
   selection, before and after changing their shortcuts. Check that Windows utility windows
   stay menu-free and the macOS app menu restores its shortcuts if Preferences loses focus mid-recording.
@@ -1913,7 +1969,7 @@ Run under KDE Plasma (Wayland session, so the app uses XWayland) and on GNOME.
 - 1280-wide screen: set the display to 1280x800 and relaunch. The Main toolbar keeps its natural
   width (two rows of tools, about 1400 px with the zoom widget), stays where it was saved and runs
   off the right edge of the screen. It is not shrunk, does not wrap and shows no scrollbar. Drag it
-  left by its title until the last tool is on screen: it stays where it was dropped, and is still
+  left by its grip column until the last tool is on screen: it stays where it was dropped, and is still
   there after Shift+Ctrl+S then Esc and after quitting and relaunching. At 1680x1050 the Main
   toolbar also keeps its full width and saved position.
 - 1024-wide screen and 150% scale: set the display to 1024x768, relaunch, and repeat at
@@ -1933,13 +1989,14 @@ Run under KDE Plasma (Wayland session, so the app uses XWayland) and on GNOME.
   unchanged by the dialogs).
 - Work-area fits are not saved (B9, all three builds; on Linux run under XWayland): open Drawn
   Structure Settings at 1680x1050 and drag it to the right half, top edge about 160 px down.
-  Switch the display live to 1024x768. It is pulled onto the smaller screen, and its title strip
-  is below the Main toolbar, never under it: drag it by the title to prove it. Without touching it,
+  Switch the display live to 1024x768. It is pulled onto the smaller screen, and its top edge
+  is below the Main toolbar, never under it: look at the grip column to confirm it is fully visible and
+  clear of Main, but do not drag or click it, because a drag saves a new position. Without touching it,
   switch back to 1680x1050: within about a second it returns to the exact spot and size it had
   before (toolbar-state.json still holds that frame throughout). Repeat, but this time drag it a
   little while at 1024x768: back at 1680x1050 it stays where you dropped it. The same holds for
   the Main toolbar on Linux: at 1024 it keeps its natural width and stays at its saved spot while
-  at least 48 px of its title is still on the screen; only a Main saved farther right than that is
+  at least 48 px of its top edge is still on the screen; only a Main saved farther right than that is
   moved, to the work area's left edge (running off the right edge). Back at 1680 it returns to its
   saved position. Quit at 1024x768 and relaunch at 1680x1050: palettes open at their 1680
   positions, not the squeezed ones.
@@ -2012,6 +2069,23 @@ Run under KDE Plasma (Wayland session, so the app uses XWayland) and on GNOME.
   file, and with a new untitled document. Export (File ▸ Export) dialogs show their format name.
   macOS and Windows Save dialogs list their file types in the same order as before.
 
+## Linux paste from LibreOffice (1.2.3)
+
+Run under KDE Plasma (Wayland session, so the app uses XWayland), on GNOME, and on an X11 session.
+Use the LibreOffice your distribution ships.
+
+- Writer text: type "Hello benzene" in Writer, make it bold, copy it and press Ctrl+V on the
+  ChemDraft canvas. The status reads "Pasted editable text" and the text box says "Hello benzene",
+  never `{\rtf1\ansi…`. Repeat with plain text, a bulleted line, a heading, and
+  "Ångström β-lactam 日本語 ± 5 °C".
+- SMILES typed in Writer (`c1ccc(O)cc1`): the paste matches pasting the same text from a plain
+  text editor.
+- Two Writer lines with a tab between columns (`Name⇥MW`, `benzene⇥78.11`) paste as a 2×2 table,
+  as on macOS and Windows. A 2×2 Writer table and a Calc range A1:B2 paste as tables, as before.
+- Paste a Writer copy into a focused text field (a text box being edited, a table cell): the plain
+  text goes in.
+- Copy from a text editor (gedit or KWrite), a browser and ChemDraft itself: paste is unchanged.
+
 ## Image drag and drop (macOS and Windows, 1.2.3)
 
 Run on macOS (Retina and a 1x external display) and on Windows at 100%, 150% and 200% display
@@ -2022,7 +2096,9 @@ lossy and a lossless WebP, an SVG with gradients and `<use href="#id">`, a BMP, 
 
 - Each format: drag it from Finder / Explorer onto the page. It appears centred under the pointer,
   at its natural size, selected; the status names it. The JPEG stands upright (EXIF honoured); the
-  GIF and WebP show their first frame. A picture larger than the page is shrunk to fit inside it.
+  GIF and WebP show their first frame. A picture larger than 80% of the page in either direction is
+  shrunk to fit the centred 80% of the page, the status says "scaled to fit the page", and all eight
+  selection handles are on the canvas with page margin around them.
 - Drop point: drop a small picture with a sharp centre (a crosshair PNG): the pointer's tip is the
   picture's centre within 1-2 px, horizontally and vertically, never a title bar's height below it.
   Check it in a normal window, in full screen (macOS: no title bar shown, then again with the title
@@ -2091,6 +2167,55 @@ lossy and a lossless WebP, an SVG with gradients and `<use href="#id">`, a BMP, 
   they draw the same, and an SVG embedding a WebP bitmap warns that headless export leaves it out.
 - Mixed sizes: drop a page-sized picture together with two small ones: the small ones sit at their
   own cascaded positions, not on top of each other.
+- Phone photo speed and size (RC5 report: `IMG_0896.JPG`, 1.7 MB, 3264 × 2448, EXIF orientation 6,
+  took 4.2-4.5 s to appear on an Intel iMac and grew the session to 49.9 MB after two drops). Use a
+  portrait phone JPEG of 1.5-3 MB with EXIF orientation 6, and another with orientation 8 or 3. Quit
+  with no document open, note the size of `document-session.json` in the app data folder (macOS
+  `~/Library/Application Support/org.chemdraft.desktop/`, Windows `%APPDATA%\org.chemdraft.desktop\`),
+  relaunch, and record on each machine:
+  - drop to visible: from releasing the mouse to the picture showing, by stopwatch or screen
+    recording; well under 1 s on Apple silicon, and record the Intel and Windows times;
+  - drop to idle: until a 1 px arrow-key nudge of another object moves at once (no beach ball or
+    busy cursor), and peak memory in Activity Monitor / Task Manager;
+  - each later edit: nudge the photo 1 px with an arrow key and resize it by a corner, ten times: each
+    responds at once, with no core pinned after it (Activity Monitor / Task Manager CPU);
+  - after a second drop of the same photo and a one-second pause, `document-session.json` holds each
+    photo once, as the tab's native JSON: under twice the two photos' bytes (about 6 MB for two
+    1.7 MB photos), never tens of MB. Open it in a text editor: there is no `contents` field at the
+    top level (only `version`, `savedAt`, `tabs`, `activeTabIndex` and, if any, `unrestoredTabs`),
+    and each tab's `contents` starts with `{`, not `<?xml`.
+  The photo stands upright on the canvas, in File ▸ Export as SVG, PDF, PNG and JPEG, in Copy then
+  Paste into Word or PowerPoint and Preview / Paint, after Save and reopen as `.chemdraft`, and after
+  quit and relaunch from the session. Its status says only "Inserted picture …; scaled to fit the
+  page: …" (no "stored at … pixels" note: the JPEG keeps its own bytes). A GIF or WebP over 4096
+  pixels on a side says "stored at … pixels (from …), the most a picture converted to PNG keeps".
+- The photo in other apps. SVG export writes the JPEG itself (`<image href="data:image/jpeg;base64,…">`
+  with a `transform` that turns it upright), not an SVG picture: open the exported SVG in a browser,
+  Inkscape and Illustrator (and place it in Word / PowerPoint): the photo shows, upright, in each;
+  record any that does not. PDF export carries the JPEG's own bytes: the PDF is about the photo's
+  size (not several times it), and the photo is upright and sharp at 400% in Preview, Acrobat and
+  Edge. Edit ▸ Copy with the photo selected, then paste into Word / PowerPoint, Preview ▸ New from
+  Clipboard (macOS) and Paint (Windows): a visible, upright photo each time. Repeat with an
+  orientation-3 (upside-down) or orientation-8 photo.
+- Camera photo over 4096 px: drop a full-resolution camera JPEG (6000 × 4000 or larger, 5-15 MB,
+  ideally a portrait with EXIF orientation 6). The status says "…: scaled down to 4096 px (from
+  4000 × 6000 pixels)" (the upright size), the picture is upright and drawn at the same size a
+  4096 px version would be scaled to on the page, and `document-session.json` grows by about the
+  scaled JPEG's size (a few MB), not the original's. A JPEG of exactly 4096 px on its longest side
+  is kept as it is, with no note.
+- Damaged JPEG: make two copies of a phone JPEG, one cut to half its length and one with only its
+  last two bytes (the FF D9 end marker) removed (macOS: `head -c <bytes> photo.jpg > cut.jpg`;
+  Windows PowerShell: `$b = [IO.File]::ReadAllBytes("photo.jpg"); [IO.File]::WriteAllBytes("cut.jpg",
+  $b[0..($b.Length / 2)])`). Drop each: the status says "…: its image data is cut short or damaged,
+  so it was converted to PNG as decoded; part of it may be missing", the picture shows what the
+  webview could decode (the cut one grey or smeared at the bottom) and stands upright, and an SVG
+  export of it holds `data:image/png`, never `data:image/jpeg`. A JPEG the webview cannot decode at
+  all is refused by name ("the JPEG could not be converted: …"). The intact photo still drops with no
+  note.
+- Old sessions: with a session written by 1.2.3 RC5 or 1.2.2 that holds a dropped picture (copy
+  `document-session.json` before upgrading), launch the new build: every tab restores with its
+  pictures, and the next autosave rewrites the file in the smaller form. Then relaunch 1.2.2 on that
+  new session file: its tabs restore too.
 - Stalled disk: drop a picture from a network share, then disconnect it mid-read: after 30 seconds
   the status names the file, and a later drop works.
 - Tabs and guards: start a drop of the large JPEG and switch tabs before it appears: it is not
@@ -2109,6 +2234,18 @@ lossy and a lossless WebP, an SVG with gradients and `<use href="#id">`, a BMP, 
   moving, rotating and drawing) another object; hold the gesture past the moment the picture would
   appear, then finish it. The picture appears once the gesture ends, the gesture's result is kept,
   and Undo removes the picture first, then the gesture.
+- Handles at the page edge (owner rule: handles are never hidden off canvas): place each of a
+  picture, a rectangle, a molecule, a text box, a reaction arrow, a bracket, a charge mark (with
+  direct electron-mark editing on) and a two-object group flush against each page edge and corner,
+  at 50%, 100% and 400% zoom. Select it: every resize, rotate (hold Shift) and 3D-tilt handle, the
+  text box's four edge bars and the group frame draw in full over the pasteboard past the edge, and
+  each one drags. Enlarge a page-filling picture from a corner and choose Keep Page Size: its handles
+  stay visible and grabbable beyond the page. Content itself is still cut at the page edge. On a
+  small molecule with an unspecified double bond (draw CC=CC; its badge shows), click that bond so
+  the fragment frame's corner handle overlaps the badge: the badge draws above the handle and a click
+  on it opens the bond-stereo popover without starting a resize. Select the whole molecule and
+  double-click a corner for the typed size entry: the entry draws above the badge. Deselect after
+  each: no handle pixels are left on the pasteboard.
 - Resize: drag every corner handle of a picture, with and without Shift, rotated, and inside a
   group: the aspect ratio never changes. Move, Delete, Cut/Paste still work. Double-click a corner
   handle of a picture for the stretch entry: typing in X fills Y with the same value (and the other
@@ -2121,6 +2258,14 @@ lossy and a lossless WebP, an SVG with gradients and `<use href="#id">`, a BMP, 
   in the page. The app never replaces itself with the file or URL; text can still be dropped into a
   text field, but a link dropped on a read-only part inside an editable area does not navigate.
 
+Phone photo timings (see "Phone photo speed and size" above), one row per machine:
+
+| Machine | Drop to visible | Drop to idle | Each later edit | Session after two drops | Peak memory |
+| --- | --- | --- | --- | --- | --- |
+| Apple silicon macOS | | | | | |
+| Intel macOS | | | | | |
+| Windows x64 | | | | | |
+
 ## Status line over the rulers (macOS and Windows, 1.2.3)
 
 Status line clear of the rulers: with rulers on, drop a picture (status "Inserted picture …") and
@@ -2130,3 +2275,32 @@ each sits on a panel-coloured background that reads over the page. Turn rulers o
 back to the window's left margin with no gap. Shrink the window to its narrowest: a long status ends
 in an ellipsis inside the window, still right of the ruler and never over the top ruler. With no
 status, no empty chip shows. Check on Windows and both macOS builds, at 100% and 150% display scale.
+
+## Typed element symbols become atoms (macOS and Windows, 1.2.3)
+
+Beside a drawn ligand, take the Text tool, click empty canvas, type `Zn`, click away: it becomes a
+selectable zinc atom. Repeat with `Zn2+`, `Zn+2`, `Fe3+`, `Cl-`, `Na+`, and with `Zn` followed by a
+superscript `2+` (Superscript Text on the selected `2+`): each becomes one atom of that element with
+that charge, the charge drawn as on any charged atom, and the status reads "Placed naked Zn2+ atom".
+One Undo removes the atom (no text box left behind); Redo brings it back. Draw a bond from the zinc
+to a ligand N with the Bond tool, and another from an N to the zinc: both connect and the charge
+stays. `H2O`, `CO2`, `hello`, `Xx`, `zn`, `Zn 2+`, two lines, or bold/coloured text stay text; a box
+finished with Esc stays text. Open a saved document holding a text `Zn`, paste a text `Zn`, and
+import a CDXML with a `Zn` caption: none of them turns into an atom, even after opening it for
+editing and clicking away unchanged. Check on Windows and both macOS builds.
+
+## Relabelling an atom with an element and its charge (macOS and Windows, 1.2.3)
+
+Draw a short chain. With the Text tool, click its end carbon and type `Zn2+` key by key, then
+Enter: the atom becomes zinc with charge +2, the charge drawn as on any charged atom, and the
+inspector or a SMILES copy shows `[Zn+2]`, never an element named `Zn2+`. One Undo puts back the
+carbon with no charge; Redo brings the zinc back. Repeat with `Zn+2`, `Fe3+`, `Cl-`, `Na+`, and with
+`Zn²⁺` typed as superscript characters: the same element and charge each time, and the same atom the
+text gives typed in empty canvas. Relabel an N to `N+`: nitrogen with charge +1. Type `Zn2+` on a
+carbon and press Esc: the carbon and its zero charge come back, with nothing to undo. Type `Zn2+`,
+delete back to `Zn`, Enter: zinc with no charge. On an N+ (from `C[N+](C)(C)C`), type `O`: O keeps
+the +1, as before. `NH4+`, `OH-`, `Xx2+` and lower-case `zn2+` behave as they did before this change.
+Finish a Text-tool box reading `Zn2+` on an existing atom: that atom becomes Zn2+, and the box goes.
+A document saved before this change with an atom whose element reads `Zn2+` opens unchanged, and
+clicking that atom with the Text tool, then Esc or Enter with nothing typed, leaves it unchanged;
+typing `Zn2+` there makes it zinc with charge +2. Check on Windows and both macOS builds.

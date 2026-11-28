@@ -6,14 +6,18 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
-import { currentWindowLogicalWorkArea, fitCurrentPaletteWindow, monitorLogicalBoundsAt } from "./index";
+import { clearMocks, mockIPC, mockWindows } from "@tauri-apps/api/mocks";
+import { broadcastToolsetZoom, currentWindowLogicalWorkArea, fitCurrentPaletteWindow, monitorLogicalBoundsAt, monitorLogicalWorkAreaAt, type ToolsetWindowSize } from "./index";
 import { PaletteWindow } from "../PaletteWindow";
+import { createDesktopToolsetRegistry, desktopToolsetRegistry, getToolsetItemGroups, initialToolsetWindowSize } from "../toolsets";
+import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 
 const native = vi.hoisted(() => ({
   invoke: vi.fn(),
   workArea: vi.fn(),
   boundsAt: vi.fn(),
+  resize: vi.fn(),
+  clientSize: vi.fn(),
   workAreaEvents: new Map<string, () => void>()
 }));
 vi.mock("./tauriEvents", async original => ({
@@ -32,15 +36,20 @@ describe("palette work-area sizing", () => {
     native.workAreaEvents.clear();
     native.workArea.mockReset().mockResolvedValue(null);
     native.boundsAt.mockReset().mockResolvedValue(null);
+    native.resize.mockReset().mockImplementation((size: ToolsetWindowSize) => size);
+    native.clientSize.mockReset();
     native.invoke.mockReset().mockImplementation(async (command, payload) => {
       if (command === "current_window_logical_work_area") return native.workArea();
       if (command === "monitor_logical_bounds_at") return native.boundsAt(payload);
-      if (command === "resize_toolset_window") return true;
+      if (command === "resize_toolset_window") return native.resize(payload);
+      if (command === "plugin:window|inner_size") return native.clientSize();
     });
+    mockWindows("toolset-core-main");
     mockIPC(native.invoke);
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     clearMocks();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
@@ -71,6 +80,24 @@ describe("palette work-area sizing", () => {
     expect(await monitorLogicalBoundsAt(9000, 0)).toBeUndefined();
     native.boundsAt.mockRejectedValue(new Error("no runtime"));
     expect(await monitorLogicalBoundsAt(0, 0)).toBeUndefined();
+  });
+
+  it("reads the work area of the monitor under a point, and keeps the bounds to the whole monitor", async () => {
+    const bounds = { left: 1920, top: 0, right: 4480, bottom: 1440 };
+    const workArea = { left: 1920, top: 24, right: 4480, bottom: 1400 };
+    native.boundsAt.mockResolvedValue({ ...bounds, workArea });
+    expect(await monitorLogicalWorkAreaAt(2000, 1430)).toEqual(workArea);
+    expect(native.boundsAt).toHaveBeenCalledWith({ x: 2000, y: 1430 });
+    expect(await monitorLogicalBoundsAt(2000, 1430)).toEqual(bounds);
+    // An older native side without the work area: the whole monitor is the fallback.
+    native.boundsAt.mockResolvedValue(bounds);
+    expect(await monitorLogicalWorkAreaAt(2000, 100)).toEqual(bounds);
+    native.boundsAt.mockResolvedValue({ ...bounds, workArea: { left: 1920 } });
+    expect(await monitorLogicalWorkAreaAt(2000, 100)).toEqual(bounds);
+    native.boundsAt.mockResolvedValue(null);
+    expect(await monitorLogicalWorkAreaAt(9000, 0)).toBeUndefined();
+    native.boundsAt.mockRejectedValue(new Error("no runtime"));
+    expect(await monitorLogicalWorkAreaAt(0, 0)).toBeUndefined();
   });
 
   it("caps an oversized inspector without supplying a replacement origin", async () => {
@@ -132,7 +159,7 @@ describe("palette work-area sizing", () => {
     expect(generated).toContain(`commands.allow = ["${command}"]`);
   });
 
-  it("uses the calling palette's live position and native work area for title-strip recovery", () => {
+  it("uses the calling palette's live position and native work area for grip-rail recovery", () => {
     const nativeSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/lib.rs"), "utf8");
     const resize = nativeSource.split("fn resize_toolset_window(")[1]!.split("/// Pre-build")[0]!;
     expect(resize).toMatch(
@@ -143,16 +170,25 @@ describe("palette work-area sizing", () => {
     expect(resize.match(/let area = /g)).toHaveLength(1);
     expect(resize).toContain("toolset_position_in_work_area(position, width, height, area)");
     const recover = nativeSource.split("fn toolset_position_in_work_area(")[1]!.split("/// Pull a palette")[0]!;
-    expect(recover).toContain("area.contains_title_strip(position.x, position.y, width, TOOLSET_TITLE_HEIGHT)");
+    // Palettes have no title row: recovery judges the 14 pt left grip rail, not a title strip.
+    expect(recover).toContain("area.contains_grip_rail(position.x, position.y)");
+    expect(recover).not.toContain("contains_title_strip");
+    // Inspectors (resizable) still recover by full-frame clamp into the work area.
+    const inspector = nativeSource.split("fn inspector_frame_in_work_area(")[1]!.split("fn clamp_toolset_frame<")[0]!;
+    // The slice must isolate just this function: a wrong end marker runs to end of file.
+    expect(inspector.length).toBeGreaterThan(0);
+    expect(inspector.length).toBeLessThan(4000);
+    expect(inspector).toContain("position.x.clamp(area.x, area.x + (area.width - width))");
+    expect(inspector).toContain("position.y.clamp(area.y, area.y + (area.height - height))");
     const reopen = nativeSource.split("fn clamp_toolset_frame<")[1]!.split("fn toolset_frame_in_work_area")[0]!;
-    expect(reopen).toMatch(/toolset_work_area_for_origin\([\s\S]*area\.contains_title_strip\(/);
+    expect(reopen).toMatch(/toolset_work_area_for_origin\([\s\S]*toolset_frame_in_work_area\(/);
   });
 
-  it("checks full display bounds before title visibility when restoring a logical inspector frame", () => {
+  it("checks full display bounds before grip-rail visibility when restoring a logical inspector frame", () => {
     const nativeSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/lib.rs"), "utf8");
     const restore = nativeSource.split("fn clamp_toolset_frame<")[1]!.split("fn toolset_frame_in_work_area")[0]!;
     expect(restore).toMatch(/monitor_logical_bounds\(monitor\)[\s\S]*toolset_work_area_for_origin\(/);
-    expect(restore).toMatch(/\.find\(\|\(bounds, _\)\|[\s\S]*\.contains\(&position\.y\)[\s\S]*\.or_else\([\s\S]*contains_title_strip\(/);
+    expect(restore).toMatch(/\.find\(\|\(bounds, _\)\|[\s\S]*\.contains\(&position\.y\)[\s\S]*\.or_else\([\s\S]*contains_grip_rail\(/);
   });
 
   it("recovers the Windows inspector from its native physical origin and applies the destination frame", () => {
@@ -200,33 +236,36 @@ describe("palette work-area sizing", () => {
     // The Main toolbar's natural content is 1311 px wide; on a 1024x768 screen Rust caps the window
     // at the work area. jsdom has no layout, so the shell and content body report a model of what
     // WebKitGTK lays out: the body capped at its inline max-width once it scrolls sideways, with a
-    // 15 px classic horizontal scrollbar added to its auto height.
+    // 15 px classic horizontal scrollbar added to its auto height. The 14 px grip rail sits beside
+    // the body (no title row above it), so the shell is the rail plus the body, as tall as the body.
     const NATURAL_WIDTH = 1311;
-    const TITLE_HEIGHT = 22;
+    const GRIP_WIDTH = 14;
+    const BODY_WIDTH = NATURAL_WIDTH - GRIP_WIDTH;
     const ROW_HEIGHT = 58;
     const SCROLLBAR = 15;
 
     const scrollerOf = (element: Element) =>
       (element.classList.contains("palette-window-content") ? element : element.querySelector(".palette-window-content")) as HTMLElement | null;
     const scrolling = (scroller: HTMLElement | null) => scroller?.style.overflowX === "auto";
-    const cappedWidth = (scroller: HTMLElement) => Math.min(NATURAL_WIDTH, Number.parseFloat(scroller.style.maxWidth) || NATURAL_WIDTH);
+    const cappedWidth = (scroller: HTMLElement) => Math.min(BODY_WIDTH, Number.parseFloat(scroller.style.maxWidth) || BODY_WIDTH);
     const rect = (width: number, height: number) =>
       ({ x: 0, y: 0, left: 0, top: 0, width, height, right: width, bottom: height, toJSON: () => ({}) }) as DOMRect;
 
     const installLayoutModel = (scrollbar: number) => {
       vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+        if (this.classList.contains("palette-title")) return rect(GRIP_WIDTH, ROW_HEIGHT);
         if (!this.classList.contains("palette-window-shell")) return rect(0, 0);
         const scroller = scrollerOf(this);
-        if (!scroller || !scrolling(scroller)) return rect(NATURAL_WIDTH, TITLE_HEIGHT + ROW_HEIGHT);
-        return rect(cappedWidth(scroller), TITLE_HEIGHT + ROW_HEIGHT + scrollbar);
+        if (!scroller || !scrolling(scroller)) return rect(NATURAL_WIDTH, ROW_HEIGHT);
+        return rect(GRIP_WIDTH + cappedWidth(scroller), ROW_HEIGHT + scrollbar);
       });
       const isScroller = (element: Element) => element.classList.contains("palette-window-content");
       vi.spyOn(Element.prototype, "scrollWidth", "get").mockImplementation(function (this: Element) {
-        return isScroller(this) ? NATURAL_WIDTH : 0;
+        return isScroller(this) ? BODY_WIDTH : 0;
       });
       vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(function (this: Element) {
         if (!isScroller(this)) return 0;
-        return scrolling(this as HTMLElement) ? cappedWidth(this as HTMLElement) : NATURAL_WIDTH;
+        return scrolling(this as HTMLElement) ? cappedWidth(this as HTMLElement) : BODY_WIDTH;
       });
       vi.spyOn(Element.prototype, "scrollHeight", "get").mockImplementation(function (this: Element) {
         return isScroller(this) ? ROW_HEIGHT : 0;
@@ -257,14 +296,22 @@ describe("palette work-area sizing", () => {
       vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => window.setTimeout(() => callback(0), 0));
       vi.stubGlobal("cancelAnimationFrame", (handle: number) => window.clearTimeout(handle));
       native.workArea.mockResolvedValue({ left: 0, top: 0, right: windowWidth, bottom: 768 });
+      let liveSize: ToolsetWindowSize;
+      native.clientSize.mockImplementation(() => liveSize);
+      native.resize.mockImplementation(async (size: ToolsetWindowSize) => {
+        // Native readback sees the applied frame before the test delivers the webview resize.
+        const area = await native.workArea.mock.results.at(-1)!.value;
+        const width = platform === "linux" ? Math.min(size.width, area.right - area.left) : size.width;
+        const scale = window.devicePixelRatio;
+        liveSize = { width: width * scale, height: size.height * scale };
+        return liveSize;
+      });
       installLayoutModel(scrollbar);
       const container = document.createElement("div");
       document.body.append(container);
       const root = createRoot(container);
       const settle = async () => {
-        for (let turn = 0; turn < 6; turn += 1) {
-          await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 0)); });
-        }
+        await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 75)); });
       };
       await act(async () => root.render(createElement(PaletteWindow, { toolsetId: "core.main", platform })));
       await settle();
@@ -281,6 +328,7 @@ describe("palette work-area sizing", () => {
       };
       // Rust applied a frame of this width; the webview reports the resize.
       const nativeResizeTo = async (width: number) => {
+        if (platform !== "linux") liveSize = { ...liveSize, width: width * window.devicePixelRatio };
         vi.stubGlobal("innerWidth", width);
         await nativeResize();
       };
@@ -304,18 +352,20 @@ describe("palette work-area sizing", () => {
       const { shell, scroller, nativeResize, unmount } = await mountMain("linux", 1024);
       try {
         expect(scroller.style.overflowX).toBe("auto");
-        expect(scroller.style.maxWidth).toBe("1024px");
+        // The window less the 14 px grip rail beside the scroller (was the full 1024px).
+        expect(scroller.style.maxWidth).toBe("1010px");
         expect(scroller.dataset.paletteHorizontalOverflow).toBe("true");
         // Every tool sits inside the scroller, and its scroll range reaches the natural right edge.
         const tools = shell.querySelectorAll<HTMLElement>("[data-command-id]");
         expect(tools.length).toBeGreaterThan(0);
         for (const tool of Array.from(tools)) expect(scroller.contains(tool)).toBe(true);
-        expect(scroller.clientWidth).toBe(1024);
+        // The scroller is the 1024 px window less the 14 px grip rail beside it (was the full 1024).
+        expect(scroller.clientWidth).toBe(1010);
         expect(scroller.scrollWidth - scroller.clientWidth).toBe(NATURAL_WIDTH - 1024);
         // Width stays the natural width; only the height gains the measured scrollbar.
         expect(distinctSizes()).toEqual([
-          { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT },
-          { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT + SCROLLBAR }
+          { width: NATURAL_WIDTH, height: ROW_HEIGHT },
+          { width: NATURAL_WIDTH, height: ROW_HEIGHT + SCROLLBAR }
         ]);
         // No resize loop: the resizes that follow the height fit ask for nothing new.
         const settled = resizeRequests().length;
@@ -335,7 +385,7 @@ describe("palette work-area sizing", () => {
         expect(scroller.style.overflowX).toBe("");
         expect(scroller.style.maxWidth).toBe("");
         expect(scroller.dataset.paletteHorizontalOverflow).toBeUndefined();
-        expect(distinctSizes()).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }]);
+        expect(distinctSizes()).toEqual([{ width: NATURAL_WIDTH, height: ROW_HEIGHT }]);
       } finally {
         await unmount();
       }
@@ -349,13 +399,13 @@ describe("palette work-area sizing", () => {
         await moveToWorkArea(1680, 1050);
         // The natural size did not change, but the monitor did: the size is re-sent once so Rust
         // re-runs its placement against the new work area (no cap there).
-        expect(resizeRequests().slice(before)).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT + SCROLLBAR }]);
+        expect(resizeRequests().slice(before)).toEqual([{ width: NATURAL_WIDTH, height: ROW_HEIGHT + SCROLLBAR }]);
         // Rust gave the window its natural width: the scroller and the scrollbar's height go away.
         await nativeResizeTo(NATURAL_WIDTH);
         expectNoOverflow(scroller);
         expect(resizeRequests().slice(before)).toEqual([
-          { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT + SCROLLBAR },
-          { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }
+          { width: NATURAL_WIDTH, height: ROW_HEIGHT + SCROLLBAR },
+          { width: NATURAL_WIDTH, height: ROW_HEIGHT }
         ]);
         // Settled: the resize after the height fit, and further moves on the same monitor, send nothing.
         await nativeResize();
@@ -374,14 +424,15 @@ describe("palette work-area sizing", () => {
         const before = resizeRequests().length;
         await moveToWorkArea(1024, 768);
         // Re-sent even though the viewport still has the old width, so Rust caps the window.
-        expect(resizeRequests().slice(before)).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }]);
+        expect(resizeRequests().slice(before)).toEqual([{ width: NATURAL_WIDTH, height: ROW_HEIGHT }]);
         await nativeResizeTo(1024);
         expect(scroller.style.overflowX).toBe("auto");
-        expect(scroller.style.maxWidth).toBe("1024px");
+        // The window less the 14 px grip rail beside the scroller (was the full 1024px).
+        expect(scroller.style.maxWidth).toBe("1010px");
         expect(scroller.dataset.paletteHorizontalOverflow).toBe("true");
         expect(resizeRequests().slice(before)).toEqual([
-          { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT },
-          { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT + SCROLLBAR }
+          { width: NATURAL_WIDTH, height: ROW_HEIGHT },
+          { width: NATURAL_WIDTH, height: ROW_HEIGHT + SCROLLBAR }
         ]);
         await nativeResize();
         await nativeResize();
@@ -397,10 +448,10 @@ describe("palette work-area sizing", () => {
       vi.spyOn(document, "hidden", "get").mockReturnValue(false);
       vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
       const pollTick = async () => {
-        await act(async () => { vi.advanceTimersByTime(1000); });
-        for (let turn = 0; turn < 6; turn += 1) {
-          await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 0)); });
-        }
+        await act(async () => {
+          vi.advanceTimersByTime(1000);
+          await new Promise(resolve => window.setTimeout(resolve, 75));
+        });
       };
       try {
         await run(pollTick);
@@ -421,20 +472,20 @@ describe("palette work-area sizing", () => {
           // A panel went away: the work area widens, but the window neither moves nor resizes.
           native.workArea.mockResolvedValue({ left: 0, top: 0, right: 1680, bottom: 1050 });
           await pollTick();
-          expect(resizeRequests().slice(before)).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT + SCROLLBAR }]);
+          expect(resizeRequests().slice(before)).toEqual([{ width: NATURAL_WIDTH, height: ROW_HEIGHT + SCROLLBAR }]);
           await nativeResizeTo(NATURAL_WIDTH);
           expectNoOverflow(scroller);
           // No loop: later polls of the same work area re-send nothing.
           await pollTick();
           await pollTick();
           expect(resizeRequests().slice(before)).toEqual([
-            { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT + SCROLLBAR },
-            { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }
+            { width: NATURAL_WIDTH, height: ROW_HEIGHT + SCROLLBAR },
+            { width: NATURAL_WIDTH, height: ROW_HEIGHT }
           ]);
           // A panel came back: the palette is capped again without being moved.
           native.workArea.mockResolvedValue({ left: 0, top: 0, right: 1024, bottom: 768 });
           await pollTick();
-          expect(resizeRequests().slice(before + 2)).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }]);
+          expect(resizeRequests().slice(before + 2)).toEqual([{ width: NATURAL_WIDTH, height: ROW_HEIGHT }]);
         } finally {
           await unmount();
         }
@@ -464,13 +515,14 @@ describe("palette work-area sizing", () => {
             expect(resizeRequests()).toHaveLength(before);
             await pollTick();
             // Re-sent with the viewport still 1680 wide, so Rust caps the window to the work area.
-            expect(resizeRequests().slice(before)).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }]);
+            expect(resizeRequests().slice(before)).toEqual([{ width: NATURAL_WIDTH, height: ROW_HEIGHT }]);
             await nativeResizeTo(1024);
             expect(scroller.style.overflowX).toBe("auto");
-            expect(scroller.style.maxWidth).toBe("1024px");
+            // The window less the 14 px grip rail beside the scroller (was the full 1024px).
+            expect(scroller.style.maxWidth).toBe("1010px");
             expect(resizeRequests().slice(before)).toEqual([
-              { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT },
-              { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT + SCROLLBAR }
+              { width: NATURAL_WIDTH, height: ROW_HEIGHT },
+              { width: NATURAL_WIDTH, height: ROW_HEIGHT + SCROLLBAR }
             ]);
             // Settled: further polls on the same work area and the resize after the height fit send nothing.
             await nativeResize();
@@ -481,12 +533,12 @@ describe("palette work-area sizing", () => {
             await changeResolution(settle, 1680, 1050);
             expect(resizeRequests()).toHaveLength(before + 2);
             await pollTick();
-            expect(resizeRequests().slice(before + 2)).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT + SCROLLBAR }]);
+            expect(resizeRequests().slice(before + 2)).toEqual([{ width: NATURAL_WIDTH, height: ROW_HEIGHT + SCROLLBAR }]);
             await nativeResizeTo(NATURAL_WIDTH);
             expectNoOverflow(scroller);
             expect(resizeRequests().slice(before + 2)).toEqual([
-              { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT + SCROLLBAR },
-              { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }
+              { width: NATURAL_WIDTH, height: ROW_HEIGHT + SCROLLBAR },
+              { width: NATURAL_WIDTH, height: ROW_HEIGHT }
             ]);
             await nativeResize();
             await pollTick();
@@ -508,7 +560,7 @@ describe("palette work-area sizing", () => {
             vi.stubGlobal("requestAnimationFrame", frames);
             await changeResolution(settle, 1024, 768);
             await pollTick();
-            expect(resizeRequests().slice(before)).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }]);
+            expect(resizeRequests().slice(before)).toEqual([{ width: NATURAL_WIDTH, height: ROW_HEIGHT }]);
             expect(frames).not.toHaveBeenCalled();
             // Accepted: later polls on the same work area send nothing.
             await pollTick();
@@ -531,7 +583,7 @@ describe("palette work-area sizing", () => {
             native.invoke.mockImplementation(async (command, payload) => {
               if (command === "resize_toolset_window" && refusals > 0) {
                 refusals -= 1;
-                return false;
+                return null;
               }
               return answer(command, payload);
             });
@@ -539,7 +591,7 @@ describe("palette work-area sizing", () => {
             await pollTick();
             expect(refusals).toBe(0);
             await pollTick();
-            const refit = { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT };
+            const refit = { width: NATURAL_WIDTH, height: ROW_HEIGHT };
             expect(resizeRequests().slice(before)).toEqual([refit, refit]);
             // Accepted now: later polls on the same work area send nothing.
             await pollTick();
@@ -566,7 +618,7 @@ describe("palette work-area sizing", () => {
             expect(resizeRequests()).toHaveLength(afterMove);
             // The poll's earlier read was 1680, but the last accepted fit was for 1024: refit.
             await pollTick();
-            expect(resizeRequests().slice(afterMove)).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT + SCROLLBAR }]);
+            expect(resizeRequests().slice(afterMove)).toEqual([{ width: NATURAL_WIDTH, height: ROW_HEIGHT + SCROLLBAR }]);
           } finally {
             await unmount();
           }
@@ -584,7 +636,7 @@ describe("palette work-area sizing", () => {
               .mockResolvedValueOnce({ left: 0, top: 0, right: 1024, bottom: 768 })
               .mockResolvedValueOnce({ left: 0, top: 0, right: 1280, bottom: 768 });
             await pollTick();
-            const refit = { width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT };
+            const refit = { width: NATURAL_WIDTH, height: ROW_HEIGHT };
             expect(resizeRequests().slice(before)).toEqual([refit]);
             // That fit was for 1280, so the 1024 read on the next poll is still a change.
             await pollTick();
@@ -609,7 +661,7 @@ describe("palette work-area sizing", () => {
             // Same work area, new scale, and no tauri://scale-change reached the fit.
             vi.stubGlobal("devicePixelRatio", (window.devicePixelRatio || 1) * 2);
             await pollTick();
-            expect(resizeRequests().slice(before)).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }]);
+            expect(resizeRequests().slice(before)).toEqual([{ width: NATURAL_WIDTH, height: ROW_HEIGHT }]);
             expect(frames).not.toHaveBeenCalled();
             await pollTick();
             await pollTick();
@@ -632,7 +684,7 @@ describe("palette work-area sizing", () => {
             expect(resizeRequests()).toHaveLength(before);
             hidden.mockReturnValue(false);
             await pollTick();
-            expect(resizeRequests().slice(before)).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }]);
+            expect(resizeRequests().slice(before)).toEqual([{ width: NATURAL_WIDTH, height: ROW_HEIGHT }]);
           } finally {
             await unmount();
           }
@@ -662,17 +714,17 @@ describe("palette work-area sizing", () => {
       try {
         expect(scroller.style.overflowX).toBe("auto");
         expect(scroller.dataset.paletteHorizontalOverflow).toBe("true");
-        expect(distinctSizes()).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }]);
+        expect(distinctSizes()).toEqual([{ width: NATURAL_WIDTH, height: ROW_HEIGHT }]);
         await moveToWorkArea(1680, 1050);
         await nativeResizeTo(NATURAL_WIDTH);
         expectNoOverflow(scroller);
-        expect(distinctSizes()).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }]);
+        expect(distinctSizes()).toEqual([{ width: NATURAL_WIDTH, height: ROW_HEIGHT }]);
       } finally {
         await unmount();
       }
     });
 
-    it.each(["macos", "windows"] as const)("does not re-send on monitor moves, scale changes or resizes on %s", async platform => {
+    it.each(["macos", "windows"] as const)("only re-sends when a native resize changes the verified size on %s", async platform => {
       const { scroller, nativeResize, moveToWorkArea, nativeResizeTo, unmount } = await mountMain(platform, 1024);
       try {
         const before = resizeRequests().length;
@@ -680,9 +732,11 @@ describe("palette work-area sizing", () => {
         native.workAreaEvents.get("tauri://scale-change")?.();
         await nativeResizeTo(NATURAL_WIDTH);
         await moveToWorkArea(1024, 768);
+        expect(resizeRequests()).toHaveLength(before);
         await nativeResizeTo(1024);
         await nativeResize();
-        expect(resizeRequests()).toHaveLength(before);
+        // The overwritten native client width no longer matches the verified fit.
+        expect(resizeRequests()).toHaveLength(before + 1);
         expectNoOverflow(scroller);
       } finally {
         await unmount();
@@ -696,19 +750,237 @@ describe("palette work-area sizing", () => {
         expect(scroller.style.overflowX).toBe("");
         expect(scroller.style.maxWidth).toBe("");
         expect(scroller.dataset.paletteHorizontalOverflow).toBeUndefined();
-        expect(distinctSizes()).toEqual([{ width: NATURAL_WIDTH, height: TITLE_HEIGHT + ROW_HEIGHT }]);
+        expect(distinctSizes()).toEqual([{ width: NATURAL_WIDTH, height: ROW_HEIGHT }]);
       } finally {
         await unmount();
       }
     });
   });
 
+  describe("fixed palette fit", () => {
+    const main = desktopToolsetRegistry.require("core.main");
+    // Main's shell with the grip-rail chrome (was 1423x85 with the title row): 22px shorter for the
+    // removed title row and 3px for the top margin (7px -> 4px); 39px narrower for the left grip
+    // column (23px -> 18px to the first tool) and the right edge (the trailing divider cell, its gap
+    // and 10px padding, 38px, -> a 4px margin). Then 56px narrower (1384 -> 1328, derived, not
+    // re-measured): Document Zoom spans four cells, not six, so its block before the first divider
+    // loses two 24px columns and their 4px gaps. Then 28px narrower (1328 -> 1300, derived): the
+    // style widget spans the 11 cells it draws, not 12, so one 24px column and its 4px gap go.
+    const MAIN_FIT = { width: 1300, height: 60 };
+
+    async function mountMain({
+      platform = "macos",
+      registry = desktopToolsetRegistry,
+      initial,
+      measured = MAIN_FIT,
+      shouldApply = (_attempt: number) => true,
+      appliedTarget = (target: ToolsetWindowSize) => target
+    }: {
+      platform?: ShortcutPlatform;
+      registry?: ReturnType<typeof createDesktopToolsetRegistry>;
+      initial: ToolsetWindowSize;
+      measured?: ToolsetWindowSize;
+      shouldApply?: (attempt: number) => boolean;
+      appliedTarget?: (target: ToolsetWindowSize) => ToolsetWindowSize;
+    }) {
+      // Load the native API before advancing fake time through the resize/readback sequence.
+      await import("@tauri-apps/api/window");
+      const physical = ({ width, height }: ToolsetWindowSize) => ({
+        width: width * window.devicePixelRatio, height: height * window.devicePixelRatio
+      });
+      vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+      vi.stubGlobal("devicePixelRatio", 2);
+      vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+      native.workArea.mockResolvedValue({ left: 0, top: 0, right: 2560, bottom: 1440 });
+      // jsdom has no layout. Use the shell dimensions measured in WebKit for these layouts.
+      vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+        return this.matches(".palette-window-shell") ? new DOMRect(0, 0, measured.width, measured.height) : new DOMRect();
+      });
+      let live = physical(initial);
+      vi.spyOn(window, "innerWidth", "get").mockImplementation(() => live.width / window.devicePixelRatio);
+      vi.spyOn(window, "innerHeight", "get").mockImplementation(() => live.height / window.devicePixelRatio);
+      native.clientSize.mockImplementation(() => live);
+      native.resize.mockImplementation((size: ToolsetWindowSize) => {
+        const target = physical(size);
+        if (shouldApply(native.resize.mock.calls.length)) {
+          live = appliedTarget(target);
+          window.dispatchEvent(new Event("resize"));
+        }
+        return target;
+      });
+      const container = document.createElement("div");
+      document.body.append(container);
+      const root = createRoot(container);
+      const settle = (ms = 250) => act(async () => vi.advanceTimersByTimeAsync(ms));
+      const unmount = async () => {
+        await act(async () => root.unmount());
+        container.remove();
+      };
+      vi.useFakeTimers();
+      await act(async () => root.render(createElement(PaletteWindow, {
+        toolsetId: main.id, platform, initialRegistry: registry
+      })));
+      return {
+        container,
+        settle,
+        unmount,
+        live: () => live,
+        overwriteFrame: (size: ToolsetWindowSize) => {
+          live = physical(size);
+          native.workAreaEvents.get("tauri://resize")?.();
+        }
+      };
+    }
+
+    it("converges from the shipped Main startup frame and holds its fit when zoom settles at 100%", async () => {
+      const initial = initialToolsetWindowSize(main, getToolsetItemGroups(main.id));
+      // One counted column (24px + 2px) fewer than 1254 now that Document Zoom spans four cells, and
+      // one more (1228 -> 1202) now that the style widget spans eleven, not twelve.
+      expect(initial).toEqual({ width: 1202, height: 58 });
+      const { container, live, settle, unmount } = await mountMain({ initial, shouldApply: attempt => attempt > 1 });
+      try {
+        const select = container.querySelector<HTMLSelectElement>(".document-zoom-controls select")!;
+        expect(select.value).toBe("current");
+        expect(container.querySelector(".palette-title-label")?.textContent).toBe("Main");
+        expect(container.querySelector('[data-toolbar-item-id="structure.spin3d"]')).not.toBeNull();
+        expect(live()).toEqual({ width: 2404, height: 116 });
+        await settle();
+        // Twice MAIN_FIT at devicePixelRatio 2 (was 2846x170 with the title row).
+        expect(live()).toEqual({ width: 2600, height: 120 });
+        expect(native.resize.mock.calls).toEqual([[MAIN_FIT], [MAIN_FIT]]);
+        await act(async () => broadcastToolsetZoom({ scale: 1, minZoom: 0.25, maxZoom: 8.5 }));
+        expect(select.selectedOptions[0].textContent).toBe("100%");
+        // Model a follow-up layout or resize notification with unchanged intrinsic dimensions.
+        window.dispatchEvent(new Event("resize"));
+        await settle();
+        expect(live()).toEqual({ width: 2600, height: 120 });
+        expect(native.resize).toHaveBeenCalledTimes(2);
+      } finally {
+        await unmount();
+      }
+    });
+
+    it.each(["macos", "windows", "linux"] as const)("replaces Main's stale 860x124 client frame on %s", async platform => {
+      const visibleItems = new Set(["widget.core.documentZoom", "tool.select", "tool.lasso", "tool.eraser", "tool.text"]);
+      const registry = createDesktopToolsetRegistry({
+        version: 1,
+        mainToolbarDefaultsRevision: 2,
+        toolsetOverrides: [{
+          toolsetId: main.id,
+          hiddenCommandIds: getToolsetItemGroups(main.id).flat().map(item => item.id).filter(id => !visibleItems.has(id))
+        }]
+      });
+      const { container, live, settle, unmount } = await mountMain({
+        // 180x60 (was 195x85): no 22px title row, a 4px top margin (was 7px), 5px less to the left of
+        // the first tool, and a 4px right margin where the last group's 7px padding, divider and 6px
+        // palette padding were. Then 124x60 (derived): the four-cell zoom is two 28px columns narrower.
+        platform, registry, initial: { width: 860, height: 124 }, measured: { width: 124, height: 60 },
+        shouldApply: attempt => attempt > 1
+      });
+      try {
+        expect(new Set(Array.from(container.querySelectorAll("[data-toolbar-item-id]"),
+          element => element.getAttribute("data-toolbar-item-id")))).toEqual(visibleItems);
+        await settle();
+        expect(live()).toEqual({ width: 248, height: 120 });
+        expect(native.resize.mock.calls).toEqual([
+          [{ width: 124, height: 60 }],
+          [{ width: 124, height: 60 }]
+        ]);
+      } finally {
+        await unmount();
+      }
+    });
+
+    it("rechecks both dimensions and recovers after a verified native fit is later overwritten", async () => {
+      const { live, overwriteFrame, settle, unmount } = await mountMain({
+        initial: { width: 200, height: 400 },
+        // An integer conversion may round one physical pixel away from the platform target.
+        appliedTarget: target => ({ width: target.width, height: target.height + 1 })
+      });
+      try {
+        await settle();
+        expect(native.resize).toHaveBeenCalledTimes(1);
+        // MAIN_FIT at 2x plus the one-pixel rounding (was 2846x171 with the title row).
+        expect(live()).toEqual({ width: 2600, height: 121 });
+        overwriteFrame({ width: MAIN_FIT.width, height: 400 });
+        await settle();
+        expect(live()).toEqual({ width: 2600, height: 121 });
+        expect(native.resize).toHaveBeenCalledTimes(2);
+      } finally {
+        await unmount();
+      }
+    });
+
+    it("logs one error and stops after three unapplied fits, even after resize events and Linux polls", async () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      const { live, overwriteFrame, settle, unmount } = await mountMain({
+        platform: "linux", initial: { width: 200, height: 400 }, shouldApply: () => false
+      });
+      try {
+        await settle();
+        expect(live()).toEqual({ width: 400, height: 800 });
+        expect(native.resize).toHaveBeenCalledTimes(3);
+        expect(error).toHaveBeenCalledExactlyOnceWith(
+          "[palette-size] core.main failed to fit after 3 attempts (target 2600x120 physical px, live 400x800 physical px)"
+        );
+        for (let event = 0; event < 3; event += 1) {
+          overwriteFrame({ width: 200, height: 400 });
+          window.dispatchEvent(new Event("resize"));
+          await settle(1000);
+        }
+        expect(native.resize).toHaveBeenCalledTimes(3);
+        expect(error).toHaveBeenCalledTimes(1);
+      } finally {
+        await unmount();
+      }
+    });
+
+    it.each(["macos", "windows", "linux"] as const)(
+      "gives an exhausted fit three fresh attempts after a scale or work-area change on %s", async platform => {
+        const error = vi.spyOn(console, "error").mockImplementation(() => {});
+        let apply = false;
+        const { live, settle, unmount } = await mountMain({
+          platform, initial: { width: 200, height: 400 }, shouldApply: () => apply
+        });
+        try {
+          await settle();
+          expect(native.resize).toHaveBeenCalledTimes(3);
+          expect(error).toHaveBeenCalledTimes(1);
+          // Same content size, same monitor and scale: still no fourth attempt.
+          native.workAreaEvents.get("tauri://resize")?.();
+          window.dispatchEvent(new Event("resize"));
+          await settle(1000);
+          expect(native.resize).toHaveBeenCalledTimes(3);
+          // A new display scale with the same natural content size gets three fresh attempts.
+          vi.stubGlobal("devicePixelRatio", 3);
+          native.workAreaEvents.get("tauri://scale-change")?.();
+          await settle(1000);
+          expect(native.resize).toHaveBeenCalledTimes(6);
+          expect(error).toHaveBeenCalledTimes(2);
+          native.workAreaEvents.get("tauri://scale-change")?.();
+          await settle(1000);
+          expect(native.resize).toHaveBeenCalledTimes(6);
+          // Moving to another monitor (a new work area) tries again, and this time the frame takes.
+          apply = true;
+          native.workArea.mockResolvedValue({ left: 2560, top: 0, right: 4480, bottom: 1080 });
+          native.workAreaEvents.get("tauri://move")?.();
+          await settle(1000);
+          expect(native.resize).toHaveBeenCalledTimes(7);
+          expect(live()).toEqual({ width: MAIN_FIT.width * 3, height: MAIN_FIT.height * 3 });
+          expect(error).toHaveBeenCalledTimes(2);
+        } finally {
+          await unmount();
+        }
+      });
+  });
+
   it("reports a skipped native resize so the caller can retry the same measurement", async () => {
-    native.invoke.mockResolvedValueOnce(false);
+    native.invoke.mockResolvedValueOnce(null);
     const size = { width: 520, height: 600 };
     const area = { left: 0, top: 24, right: 1920, bottom: 1040 };
-    await expect(fitCurrentPaletteWindow(size, area)).resolves.toBe(false);
-    await expect(fitCurrentPaletteWindow(size, area)).resolves.toBe(true);
+    // Native now returns null for a skipped fit and a physical target for verification otherwise.
+    await expect(fitCurrentPaletteWindow(size, area)).resolves.toBeNull();
+    await expect(fitCurrentPaletteWindow(size, area)).resolves.toEqual(size);
     expect(native.invoke.mock.calls).toEqual([
       ["resize_toolset_window", size],
       ["resize_toolset_window", size]

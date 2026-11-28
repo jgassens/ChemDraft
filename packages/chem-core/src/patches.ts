@@ -3,6 +3,7 @@ import {
   ChemDraftDocumentSchema,
   DocumentObjectSchema,
   PageLayoutSchema,
+  parseWithValidatedImage,
   type AnnotationObject,
   type BondRef,
   type BracketObject,
@@ -10,6 +11,8 @@ import {
   type CrossingOverride,
   type DocumentObject,
   type DocumentPage,
+  type GraphicObject,
+  type ImageObjectData,
   type MoleculeBond,
   type MoleculeObject,
   type PageLayout,
@@ -1126,6 +1129,22 @@ function sameBondIdentity(previous: MoleculeBond, updated: MoleculeBond): boolea
 }
 
 /**
+ * The picture data `object` keeps through `changes`: its own, when the change does not touch it
+ * (a move, resize, rotation or restyle). It was validated when it entered the document, so the
+ * merged object's parse does not decode it again (`parseWithValidatedImage`). Undefined when the
+ * change replaces or clears the picture, which is then validated as before.
+ */
+function unchangedImage(object: DocumentObject, changes: Partial<DocumentObject>): ImageObjectData | undefined {
+  if (object.type !== "graphic" || !object.data.image) return undefined;
+  if (!("data" in changes)) return object.data.image;
+  const data = (changes as Partial<GraphicObject>).data;
+  const image = data?.image;
+  const kept = object.data.image;
+  return image === kept || (image !== undefined && image.dataBase64 === kept.dataBase64 && image.mimeType === kept.mimeType &&
+    image.pixelWidth === kept.pixelWidth && image.pixelHeight === kept.pixelHeight) ? kept : undefined;
+}
+
+/**
  * Merge `changes` onto an object, treating an explicit `undefined` by what the schema does with it.
  *
  * A plain spread let `undefined` overwrite a real value; where the schema supplies a default
@@ -1139,6 +1158,14 @@ function sameBondIdentity(previous: MoleculeBond, updated: MoleculeBond): boolea
  * chemistry after an editor save, for one — so it is honoured.
  */
 function mergeObjectChanges(
+  object: DocumentObject,
+  changes: Partial<DocumentObject>,
+  objectId: string
+): DocumentObject {
+  return parseWithValidatedImage(unchangedImage(object, changes), () => mergeObjectChangesValidated(object, changes, objectId));
+}
+
+function mergeObjectChangesValidated(
   object: DocumentObject,
   changes: Partial<DocumentObject>,
   objectId: string

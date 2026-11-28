@@ -28,7 +28,7 @@ describe.each(["macos", "windows"] as const)("isotope relabel history (%s)", pla
   beforeEach(async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
-    saveKeybindingSettings({ scheme: "chemdraft" });
+    saveKeybindingSettings({ scheme: "chemdraw" });
     Object.defineProperty(navigator, "platform", {
       configurable: true, value: platform === "macos" ? "MacIntel" : "Win32"
     });
@@ -73,7 +73,7 @@ describe.each(["macos", "windows"] as const)("isotope relabel history (%s)", pla
     container.remove();
     vi.restoreAllMocks();
     vi.useRealTimers();
-    saveKeybindingSettings({ scheme: "chemdraft" });
+    saveKeybindingSettings({ scheme: "chemdraw" });
     window.history.replaceState(null, "", "/");
     delete window.__CHEMDRAFT_AGENT__;
     Object.defineProperty(navigator, "platform", { configurable: true, value: "MacIntel" });
@@ -231,7 +231,8 @@ describe.each(["macos", "windows"] as const)("isotope relabel history (%s)", pla
       container.querySelector<HTMLElement>(".page")!.dispatchEvent(event);
     });
     expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom", atomId: atom.id });
-    await press("N");
+    // "n" is nitrogen over an atom; "N" places the NO2 label.
+    await press("n");
     const after = molecule(0);
     expect(after.atoms[0]).toMatchObject({ element: "N" });
     expect(after.atoms[0]).not.toHaveProperty("isotope");

@@ -1,8 +1,8 @@
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { createEmptyDocument } from "@chemdraft/chem-core";
 import { createQuickActions, numericAtomDrawingHotkeys, KEYBOARD_PREFERENCES_COMMAND_ID, PREFERENCES_COMMAND_ID, viewActions } from "../commands";
-import { chemDrawHoveredTargetHotkeyCommand, createHoverShortcutTables } from "../keybindingScheme";
-import { KEYBINDING_SCHEME_LABELS, type KeybindingScheme, type KeybindingSettings } from "../keybindingSettings";
+import { defaultHoverHotkeyCommand, createHoverShortcutTables } from "../keybindingScheme";
+import { KEYBINDING_SCHEME, type KeybindingScheme, type KeybindingSettings } from "../keybindingSettings";
 import { createMainWindowShortcutCommands, detectDesktopShortcutPlatform } from "../keyboardShortcuts";
 import { PLUGINS_MENU_LABELS, preferencesMenuPlacement } from "../appMenu";
 import { formatShortcutLabel, getToolsetCommandSpecs } from "../toolsets";
@@ -18,47 +18,37 @@ const shortcutExamples = [
   ["document.save", "Save"]
 ] as const;
 
-export function tourShortcutChoices(platform: ShortcutPlatform = detectDesktopShortcutPlatform()) {
-  const state = {
+/** A few of the built-in set's keys, for the tour's shortcuts step. The user's custom keys are not
+ *  applied: the step introduces the set, and Try it opens Preferences > Keyboard. */
+export function tourShortcutExamples(platform: ShortcutPlatform = detectDesktopShortcutPlatform()) {
+  const commands = createMainWindowShortcutCommands({
     quickActions: createQuickActions(createEmptyDocument(), undefined),
     layerActions: [],
     toolCommandSpecs: getToolsetCommandSpecs()
-  };
-  return (Object.keys(KEYBINDING_SCHEME_LABELS) as KeybindingScheme[]).map(scheme => {
-    const commands = createMainWindowShortcutCommands(state, scheme);
-    return {
-      scheme,
-      label: KEYBINDING_SCHEME_LABELS[scheme],
-      examples: shortcutExamples.flatMap(([id, label]) => {
-        const spec = commands.find(command => command.id === id);
-        const key = formatShortcutLabel(spec?.shortcut || spec?.defaultShortcut, platform);
-        return key ? [{ label, key }] : [];
-      })
-    };
+  });
+  return shortcutExamples.flatMap(([id, label]) => {
+    const spec = commands.find(command => command.id === id);
+    const key = formatShortcutLabel(spec?.shortcut || spec?.defaultShortcut, platform);
+    return key ? [{ label, key }] : [];
   });
 }
 
 const SINGLE_BOND_HOVER_COMMAND = "atom.addSingleBondToHoveredAtom";
 
-function defaultTourBondKey(scheme: KeybindingScheme): string | undefined {
-  return Object.keys(numericAtomDrawingHotkeys).find(key => (
-    scheme === "chemdraw" ? chemDrawHoveredTargetHotkeyCommand("atom", key) : numericAtomDrawingHotkeys[key]
-  ) === SINGLE_BOND_HOVER_COMMAND);
+function defaultTourBondKey(): string | undefined {
+  return Object.keys(numericAtomDrawingHotkeys).find(key => defaultHoverHotkeyCommand("atom", key) === SINGLE_BOND_HOVER_COMMAND);
 }
 
-/** Per scheme, the hover key the canvas uses for Add Single Bond to Hovered Atom, or null when the
- *  user cleared it in Preferences > Keyboard. Every scheme is listed, so choosing another scheme in
- *  the tour shows that scheme's key. */
+/** The hover key the canvas uses for Add Single Bond to Hovered Atom, or null when the user cleared it
+ *  in Preferences > Keyboard. Keyed by the set's id, the shape the tour's dialog protocol carries. */
 export type TourBondKeys = Partial<Record<KeybindingScheme, string | null>>;
 
 export function tourBondKeys(overrides?: KeybindingSettings["overrides"]): TourBondKeys {
-  return Object.fromEntries((Object.keys(KEYBINDING_SCHEME_LABELS) as KeybindingScheme[]).map(scheme => {
-    // The same table the canvas reads (createHoverShortcutTables), so the tour never names a dead key.
-    const keys = [...createHoverShortcutTables(scheme, overrides?.[scheme]).atom]
-      .filter(([, id]) => id === SINGLE_BOND_HOVER_COMMAND).map(([key]) => key);
-    const preferred = defaultTourBondKey(scheme);
-    return [scheme, preferred && keys.includes(preferred) ? preferred : keys[0] ?? null] as const;
-  }));
+  // The same table the canvas reads (createHoverShortcutTables), so the tour never names a dead key.
+  const keys = [...createHoverShortcutTables(overrides?.[KEYBINDING_SCHEME]).atom]
+    .filter(([, id]) => id === SINGLE_BOND_HOVER_COMMAND).map(([key]) => key);
+  const preferred = defaultTourBondKey();
+  return { [KEYBINDING_SCHEME]: preferred && keys.includes(preferred) ? preferred : keys[0] ?? null };
 }
 
 interface TourStep {
@@ -82,13 +72,12 @@ interface TourStep {
  * tour explains plugins before it demonstrates one.
  */
 export function tourSteps(
-  scheme: KeybindingScheme,
   platform: ShortcutPlatform = detectDesktopShortcutPlatform(),
   plugins: readonly TourPluginCommand[] = [],
-  /** The effective hover key (`tourBondKeys`): null names no key; undefined uses the scheme default. */
+  /** The effective hover key (`tourBondKeys`): null names no key; undefined uses the built-in key. */
   singleBondKey?: string | null
 ): readonly TourStep[] {
-  const bondKey = singleBondKey === undefined ? defaultTourBondKey(scheme) : singleBondKey;
+  const bondKey = singleBondKey === undefined ? defaultTourBondKey() : singleBondKey;
   const preferencesShortcut = formatShortcutLabel(viewActions.find(command => command.id === PREFERENCES_COMMAND_ID)?.shortcut, platform);
   const preferences = preferencesMenuPlacement(platform);
   const menu = PLUGINS_MENU_LABELS;
@@ -98,8 +87,8 @@ export function tourSteps(
       text: "ChemDraft is a free, open-source chemical drawing app for Mac, Windows and Linux. Open Help > Take the Tour to revisit these steps."
     },
     {
-      title: "Choose your shortcuts",
-      text: "If you’ve used other drawing programs, try Classic desktop-compatible shortcuts. Your choice applies right away. ChemDraft opens CDX and CDXML files. You can change any assignable shortcut in Preferences > Keyboard.",
+      title: "Keyboard shortcuts",
+      text: "ChemDraft has one set of keyboard shortcuts; a few are below. ChemDraft opens CDX and CDXML files. You can change any assignable shortcut in Preferences > Keyboard.",
       shortcuts: true,
       tryCommand: KEYBOARD_PREFERENCES_COMMAND_ID
     },

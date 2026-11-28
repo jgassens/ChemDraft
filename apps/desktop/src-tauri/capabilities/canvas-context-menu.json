@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "canvas-context-menu",
-  "description": "Only the document window can present its native canvas and object popup menus on macOS and Windows.",
+  "description": "The document window presents its native canvas and object popup menus on macOS, Windows and Linux. Only the document window may send a menu's items; floating toolbars use toolbar-context-menu, popovers and the tooltip get none.",
   "windows": ["main"],
   "permissions": ["allow-popup-canvas-context-menu"]
 }

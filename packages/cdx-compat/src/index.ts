@@ -4787,8 +4787,19 @@ function importFragment(
       atomIdByCdxmlId.set(abbreviationCdxmlId, atomId);
     }
   });
+  // A source id shared by two nodes names neither: keep it out so no reference resolves to one.
+  // Count once: rescanning every node per id made large fragments quadratic.
+  const nodeCountBySourceId = new Map<string, number>();
+  for (const atomElement of atomElements) {
+    const sourceId = atomElement.attributes.id;
+    if (sourceId !== undefined) nodeCountBySourceId.set(sourceId, (nodeCountBySourceId.get(sourceId) ?? 0) + 1);
+  }
+  const duplicatedNodeId = (cdxmlId: string | undefined) => cdxmlId !== undefined && (nodeCountBySourceId.get(cdxmlId) ?? 0) > 1;
+  // A bond naming such an id could mean any of those nodes, and the file cannot say which, so it is
+  // joined to none of them and skipped with a warning, as an ambiguous alias is (never the last node).
   const bondEndpoint = (cdxmlId: string | undefined) =>
-    cdxmlId !== undefined && ambiguousAliasIds.has(cdxmlId) ? "" : atomIdByCdxmlId.get(cdxmlId ?? "") ?? cdxmlId ?? "";
+    cdxmlId !== undefined && (ambiguousAliasIds.has(cdxmlId) || duplicatedNodeId(cdxmlId))
+      ? "" : atomIdByCdxmlId.get(cdxmlId ?? "") ?? cdxmlId ?? "";
   const atomByCdxmlId = new Map<string, MoleculeAtom>(
     atomElements.map((atomElement, atomIndex) => [atomElement.attributes.id ?? atoms[atomIndex].id, atoms[atomIndex]])
   );
@@ -4814,6 +4825,11 @@ function importFragment(
     if (ambiguousEnd !== undefined) warnings.push({ code: "cdxml.bond_alias_id_ambiguous", sourceObjectId: objectId,
       message: `${context.sourceFormat} bond ${bondElement.attributes.id ?? bondId} names node ${ambiguousEnd}, an id carried by an ` +
         "expanded abbreviation and by another node; it was not joined to either and was skipped." });
+    const duplicatedEnd = ambiguousEnd === undefined
+      ? [bondElement.attributes.B, bondElement.attributes.E].find(duplicatedNodeId) : undefined;
+    if (duplicatedEnd !== undefined) warnings.push({ code: "cdxml.bond_node_id_duplicated", sourceObjectId: objectId,
+      message: `${context.sourceFormat} bond ${bondElement.attributes.id ?? bondId} names node ${duplicatedEnd}, an id carried by ` +
+        `${nodeCountBySourceId.get(duplicatedEnd)} nodes of its fragment; it was not joined to any of them and was skipped.` });
     const cdxmlBondId = bondElement.attributes.id ?? bondId;
     const ref = { objectId, bondId };
     context.bondRefsByCdxmlId.set(cdxmlBondId, ref);
@@ -5025,13 +5041,7 @@ function importFragment(
       attachmentPoints: attachmentAtomId ? [{ kind: "atom" as const, objectId, atomId: attachmentAtomId }] : [], warnings: [] }];
   });
 
-  // A source id shared by two nodes names neither: keep it out so no reference resolves to one.
-  // Count once: rescanning every node per id made large fragments quadratic.
-  const nodeCountBySourceId = new Map<string, number>();
-  for (const atomElement of atomElements) {
-    const sourceId = atomElement.attributes.id;
-    if (sourceId !== undefined) nodeCountBySourceId.set(sourceId, (nodeCountBySourceId.get(sourceId) ?? 0) + 1);
-  }
+  // A source id shared by two nodes names neither (`nodeCountBySourceId`, counted above).
   const uniqueSourceIds = [...atomIdByCdxmlId].filter(([sourceId]) => (nodeCountBySourceId.get(sourceId) ?? 0) < 2);
   if (context.preserveReactionIds) {
     // Lone pairs resolve through every id, so an expanded abbreviation node (an alias) and its nested

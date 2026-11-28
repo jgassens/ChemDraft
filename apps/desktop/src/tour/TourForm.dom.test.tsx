@@ -5,7 +5,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TourForm } from "./TourForm";
-import { tourShortcutChoices, tourSteps } from "./tourSteps";
+import { tourShortcutExamples, tourSteps } from "./tourSteps";
 import { PLUGIN_AUTHORING_GUIDE_URL, TOUR_PLUGIN_COMMANDS } from "./tourCommands";
 import { parseDialogMessage } from "../dialogs/dialogProtocol";
 import { buildAppMenuModel, flattenAppMenuCommands } from "../appMenu";
@@ -13,7 +13,6 @@ import { buildAppMenuModel, flattenAppMenuCommands } from "../appMenu";
 let container: HTMLDivElement;
 let root: Root;
 const platforms = ["macos", "windows"] as const;
-const schemes = ["chemdraft", "chemdraw"] as const;
 // Every plugin a step can demonstrate, installed and enabled.
 const allPlugins = TOUR_PLUGIN_COMMANDS;
 
@@ -35,7 +34,7 @@ describe.each(platforms)("guided tour on %s", platform => {
 
   it("offers a one-click Skip on every step and Finish on the last step", () => {
     const onAction = vi.fn();
-    act(() => root.render(<TourForm scheme="chemdraft" platform={platform} plugins={allPlugins} onAction={onAction} />));
+    act(() => root.render(<TourForm platform={platform} plugins={allPlugins} onAction={onAction} />));
     expect(button("Back").disabled).toBe(true);
     for (let step = 1; step <= 9; step++) {
       expect(container.textContent).toContain(`Step ${step} of 9`);
@@ -56,17 +55,18 @@ describe.each(platforms)("guided tour on %s", platform => {
 
   it("offers real commands and displays platform-specific shortcut examples", () => {
     const onAction = vi.fn();
-    act(() => root.render(<TourForm scheme="chemdraft" platform={platform} plugins={allPlugins} onAction={onAction} />));
+    act(() => root.render(<TourForm platform={platform} plugins={allPlugins} onAction={onAction} />));
     click("Next");
-    const radios = container.querySelectorAll<HTMLInputElement>("input[type=radio]");
-    expect(radios[0].checked).toBe(true);
-    act(() => radios[1].click());
-    expect(onAction).toHaveBeenLastCalledWith({ action: "chooseShortcuts", scheme: "chemdraw" });
-    expect(container.textContent).toContain("Classic desktop-compatible");
-    const choices = tourShortcutChoices(platform);
-    expect(choices.map(choice => choice.examples.length)).toEqual([5, 5]);
-    expect(choices.map(choice => choice.examples[0].key)).toEqual(["M", "X"]);
-    expect(choices.map(choice => choice.examples.at(-1)?.key)).toEqual(platform === "macos" ? ["⌘S", "⌘S"] : ["Ctrl+S", "Ctrl+S"]);
+    // One shortcut set: the step shows a few of its keys and offers no preset to choose.
+    expect(container.querySelector("h1")!.textContent).toBe("Keyboard shortcuts");
+    expect(container.querySelectorAll("input[type=radio], fieldset")).toHaveLength(0);
+    expect(container.textContent).not.toMatch(/classic|desktop-compatible|choose your shortcuts/i);
+    const examples = tourShortcutExamples(platform);
+    expect(examples).toHaveLength(5);
+    expect(examples[0]).toEqual({ label: "Single Bond", key: "X" });
+    expect(examples.find(example => example.label === "Rulers")?.key).toBe(platform === "macos" ? "⌘;" : "Ctrl+;");
+    expect(examples.at(-1)?.key).toBe(platform === "macos" ? "⌘S" : "Ctrl+S");
+    expect([...container.querySelectorAll(".guided-tour-shortcuts kbd")].map(kbd => kbd.textContent)).toEqual(examples.map(example => example.key));
 
     expect(container.textContent).toContain("Preferences > Keyboard");
     click("Try it");
@@ -92,7 +92,7 @@ describe.each(platforms)("guided tour on %s", platform => {
 
   it("opens the plugin authoring guide from a real link, by click or Enter, without navigating the tour", () => {
     const onAction = vi.fn();
-    act(() => root.render(<TourForm scheme="chemdraft" platform={platform} plugins={allPlugins} onAction={onAction} />));
+    act(() => root.render(<TourForm platform={platform} plugins={allPlugins} onAction={onAction} />));
     while (container.querySelector("h1")!.textContent !== "Add features with plugins") click("Next");
     const links = container.querySelectorAll<HTMLAnchorElement>(".guided-tour-url a");
     expect(links).toHaveLength(1);
@@ -132,7 +132,7 @@ describe.each(platforms)("guided tour on %s", platform => {
 
   it("opens the guide only through the host for modified clicks, middle-clicks and drags", () => {
     const onAction = vi.fn();
-    act(() => root.render(<TourForm scheme="chemdraft" platform={platform} plugins={allPlugins} onAction={onAction} />));
+    act(() => root.render(<TourForm platform={platform} plugins={allPlugins} onAction={onAction} />));
     while (container.querySelector("h1")!.textContent !== "Add features with plugins") click("Next");
     const link = container.querySelector<HTMLAnchorElement>(".guided-tour-url a")!;
     const location = window.location.href;
@@ -173,9 +173,7 @@ describe.each(platforms)("guided tour on %s", platform => {
     const owner = sections.find(section => section.items.some(item => item.kind === "command" && item.commandId === "view.togglePreferences"))!;
     const item = flattenAppMenuCommands([owner]).find(command => command.commandId === "view.togglePreferences")!;
     expect([owner.label, item.label, item.shortcut]).toEqual(platform === "macos" ? ["ChemDraft", "Settings…", "⌘,"] : ["File", "Preferences…", "Ctrl+,"]);
-    for (const scheme of schemes) {
-      expect(tourSteps(scheme, platform).at(-1)!.text).toContain(`Choose ${owner.label} > ${item.label} (${item.shortcut}) to open Preferences.`);
-    }
+    expect(tourSteps(platform).at(-1)!.text).toContain(`Choose ${owner.label} > ${item.label} (${item.shortcut}) to open Preferences.`);
     if (platform !== "macos") {
       // Off macOS the native File menu shows the native item's own title.
       const source = readFileSync(resolve("apps", "desktop", "src-tauri", "src", "lib.rs"), "utf8");
@@ -186,7 +184,7 @@ describe.each(platforms)("guided tour on %s", platform => {
 
   it("clears a step's error when the step changes, forward or back", () => {
     const onAction = vi.fn();
-    const render = (error?: string) => act(() => root.render(<TourForm scheme="chemdraft" platform={platform} plugins={allPlugins} onAction={onAction} error={error} />));
+    const render = (error?: string) => act(() => root.render(<TourForm platform={platform} plugins={allPlugins} onAction={onAction} error={error} />));
     const alert = () => container.querySelector('[role="alert"]')?.textContent;
     const missing = "Add Name to Structure from Plugins > Add or Remove Plugins, then try again.";
     render();
@@ -227,11 +225,10 @@ describe.each(platforms)("guided tour on %s", platform => {
 
   it("keeps public copy free of other drawing product names", () => {
     const banned = /chemdraw|marvin(?:sketch)?|isischem|isis\/draw|acd\/chemsketch|chemsketch|ketcher|chemwindow|bkchem/i;
-    for (const scheme of schemes) {
-      for (const step of [...tourSteps(scheme, platform), ...tourSteps(scheme, platform, allPlugins)]) {
-        expect(step.title + step.text).not.toMatch(banned);
-      }
+    for (const step of [...tourSteps(platform), ...tourSteps(platform, allPlugins)]) {
+      expect(step.title + step.text).not.toMatch(banned);
     }
+    for (const example of tourShortcutExamples(platform)) expect(example.label).not.toMatch(banned);
   });
 });
 
@@ -245,7 +242,7 @@ it("keeps TypeScript tour commands in sync with the native allowlist", () => {
   const nativeEnum = source.match(/enum GuidedTourCommand\s*\{([^}]*)\}/)?.[1] ?? "";
   const nativeCommands = new Set([...nativeEnum.matchAll(/#\[serde\(rename = "([^"]+)"\)\]/g)].map(match => match[1]!));
   const tourCommands = new Set(platforms
-    .flatMap(platform => schemes.flatMap(scheme => tourSteps(scheme, platform, TOUR_PLUGIN_COMMANDS)))
+    .flatMap(platform => tourSteps(platform, TOUR_PLUGIN_COMMANDS))
     .map(step => step.tryCommand)
     .filter(command => command !== undefined));
   expect(nativeCommands).toEqual(tourCommands);
@@ -259,9 +256,9 @@ it("keeps the plugin authoring guide address the same in TypeScript and in the n
   const native = [...source.matchAll(/const GUIDED_TOUR_GUIDE_URL: &str =\s*"([^"]+)";/g)].map(match => match[1]);
   expect(native).toEqual([PLUGIN_AUTHORING_GUIDE_URL]);
   // The step that shows a link shows exactly this address.
-  const urls = new Set(platforms.flatMap(platform => schemes.flatMap(scheme => [
-    ...tourSteps(scheme, platform), ...tourSteps(scheme, platform, TOUR_PLUGIN_COMMANDS)
-  ])).flatMap(step => step.url ? [step.url] : []));
+  const urls = new Set(platforms.flatMap(platform => [
+    ...tourSteps(platform), ...tourSteps(platform, TOUR_PLUGIN_COMMANDS)
+  ]).flatMap(step => step.url ? [step.url] : []));
   expect([...urls]).toEqual([PLUGIN_AUTHORING_GUIDE_URL]);
 });
 
@@ -281,9 +278,13 @@ it("lets the tour window send the guide link to the native host, which checks th
 });
 
 it("rejects invalid tour actions in the TypeScript dialog protocol", () => {
-  expect(parseDialogMessage({ ...envelope, type: "snapshot", data: { title: "Take the Tour", scheme: "chemdraft", automatic: true } })).toBeDefined();
+  expect(parseDialogMessage({ ...envelope, type: "snapshot", data: { title: "Take the Tour", scheme: "chemdraw", automatic: true } })).toBeDefined();
+  // The retired preset is not a shortcut set any more.
+  expect(parseDialogMessage({ ...envelope, type: "snapshot", data: { title: "Take the Tour", scheme: "chemdraft", automatic: true } })).toBeUndefined();
   for (const data of [
     { action: "tryTourCommand", command: "document.save" },
+    // The tour has no shortcut chooser, so the action it used to send is refused.
+    { action: "chooseShortcuts", scheme: "chemdraw" },
     { action: "chooseShortcuts", scheme: "other" },
     { action: "cancel", command: "document.save" }
   ]) {
@@ -321,36 +322,34 @@ describe.each(["macos", "windows", "linux"] as const)("tour actions above the fo
       return rect(0, 0);
     });
   }
-  const tallestTitle = "Choose your shortcuts";
+  const tallestTitle = "Keyboard shortcuts";
   const stepHeight = (title: string) => title === tallestTitle ? 330 : 120 + title.length;
 
   for (const plugins of [[], allPlugins] as const) {
-    for (const scheme of schemes) {
-      it(`keeps Try it outside the scrolling text on every step (${scheme}, ${plugins.length ? "plugins" : "no plugins"})`, () => {
-        act(() => root.render(<TourForm scheme={scheme} platform={platform} plugins={plugins} onAction={vi.fn()} />));
-        const steps = tourSteps(scheme, platform, plugins);
-        for (const [index, step] of steps.entries()) {
-          expect(container.querySelector("h1")!.textContent).toBe(step.title);
-          const tryIt = button("Try it");
-          expect(Boolean(tryIt)).toBe(Boolean(step.tryCommand));
-          if (tryIt) {
-            expect(tryIt.closest(".guided-tour-content")).toBeNull();
-            expect(tryIt.closest(".guided-tour-actions")!.parentElement!.matches(".guided-tour")).toBe(true);
-          }
-          // Back, Next and Finish never scroll either; the hidden sizer is gone after measuring.
-          for (const action of container.querySelectorAll("footer button")) expect(action.closest(".guided-tour-content")).toBeNull();
-          expect(container.querySelector(".guided-tour-sizer")).toBeNull();
-          if (index < steps.length - 1) click("Next");
+    it(`keeps Try it outside the scrolling text on every step (${plugins.length ? "plugins" : "no plugins"})`, () => {
+      act(() => root.render(<TourForm platform={platform} plugins={plugins} onAction={vi.fn()} />));
+      const steps = tourSteps(platform, plugins);
+      for (const [index, step] of steps.entries()) {
+        expect(container.querySelector("h1")!.textContent).toBe(step.title);
+        const tryIt = button("Try it");
+        expect(Boolean(tryIt)).toBe(Boolean(step.tryCommand));
+        if (tryIt) {
+          expect(tryIt.closest(".guided-tour-content")).toBeNull();
+          expect(tryIt.closest(".guided-tour-actions")!.parentElement!.matches(".guided-tour")).toBe(true);
         }
-      });
-    }
+        // Back, Next and Finish never scroll either; the hidden sizer is gone after measuring.
+        for (const action of container.querySelectorAll("footer button")) expect(action.closest(".guided-tour-content")).toBeNull();
+        expect(container.querySelector(".guided-tour-sizer")).toBeNull();
+        if (index < steps.length - 1) click("Next");
+      }
+    });
   }
 
   it("reports a content height that covers the tallest step, the same on every step", async () => {
     const { measureDialogContent } = await import("../dialogs/dialogContentFit");
     mockLayout(() => 520, stepHeight);
     const onReady = vi.fn();
-    act(() => root.render(<TourForm scheme="chemdraft" platform={platform} plugins={allPlugins} onAction={vi.fn()} onReady={onReady} />));
+    act(() => root.render(<TourForm platform={platform} plugins={allPlugins} onAction={vi.fn()} onReady={onReady} />));
     expect(onReady).toHaveBeenCalledTimes(1);
     const tour = onReady.mock.calls[0]![0] as HTMLElement;
     expect(tour).toBe(container.querySelector(".guided-tour"));
@@ -375,7 +374,7 @@ describe.each(["macos", "windows", "linux"] as const)("tour actions above the fo
     const overCap = "Add features with plugins";
     mockLayout(() => 520, title => title === overCap ? TOUR_STEP_MAX_RESERVED_HEIGHT + 300 : stepHeight(title));
     const onReady = vi.fn();
-    act(() => root.render(<TourForm scheme="chemdraft" platform={platform} plugins={allPlugins} onAction={vi.fn()} onReady={onReady} />));
+    act(() => root.render(<TourForm platform={platform} plugins={allPlugins} onAction={vi.fn()} onReady={onReady} />));
     const tour = onReady.mock.calls[0]![0] as HTMLElement;
     const content = tour.querySelector<HTMLElement>(".guided-tour-content")!;
     expect(content.style.getPropertyValue("--guided-tour-step-reserve")).toBe(`${TOUR_STEP_MAX_RESERVED_HEIGHT}px`);
@@ -410,7 +409,7 @@ describe.each(["macos", "windows", "linux"] as const)("tour actions above the fo
       disconnect() {}
     });
     mockLayout(() => width, title => narrow ? 900 : stepHeight(title));
-    act(() => root.render(<TourForm scheme="chemdraft" platform={platform} plugins={allPlugins} onAction={vi.fn()} />));
+    act(() => root.render(<TourForm platform={platform} plugins={allPlugins} onAction={vi.fn()} />));
     const content = () => container.querySelector<HTMLElement>(".guided-tour-content")!.style.getPropertyValue("--guided-tour-step-reserve");
     expect(content()).toBe("330px");
     act(() => resized!());

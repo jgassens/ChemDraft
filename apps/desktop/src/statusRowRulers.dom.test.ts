@@ -58,7 +58,7 @@ describe("status row and the rulers", () => {
   let originalInnerWidth = window.innerWidth;
 
   async function render(options: { rulers: boolean; platform: ShortcutPlatform; width?: number }) {
-    saveKeybindingSettings({ scheme: "chemdraft" });
+    saveKeybindingSettings({ scheme: "chemdraw" });
     originalResizeObserver = globalThis.ResizeObserver;
     globalThis.ResizeObserver = TestResizeObserver as unknown as typeof ResizeObserver;
     originalInnerWidth = window.innerWidth;

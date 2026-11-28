@@ -254,8 +254,8 @@ describe.each<ShortcutPlatform>(["macos", "windows"])("native badge popover (%s)
       const molecules = current.pages[0].objects.filter((o): o is MoleculeObject => o.type === "molecule");
       const expected = molecules.map(o => ({ id: o.id, atoms: o.atoms.map(a => a.id).sort(), bonds: o.bonds.map(b => b.id).sort() }));
       // Read the painted selection, including atom/bond highlights, independently of app state.
-      const visible = [...container.querySelectorAll<HTMLElement>("[data-object-controls]")].map(node => ({
-        id: node.dataset.objectControls!,
+      const visible = [...container.querySelectorAll<HTMLElement>("[data-object-chrome]")].map(node => ({
+        id: node.dataset.objectChrome!,
         atoms: [...node.querySelectorAll<SVGElement>("[data-selected-atom-id]")].map(a => a.dataset.selectedAtomId!).sort(),
         bonds: [...node.querySelectorAll<SVGElement>("[data-selected-bond-id]")].map(b => b.dataset.selectedBondId!).sort()
       })).filter(o => o.atoms.length || o.bonds.length);
@@ -303,7 +303,7 @@ describe.each<ShortcutPlatform>(["macos", "windows"])("native badge popover (%s)
       expect(molecule().bonds.find(b => b.id === bond.id)?.order).toBe(order);
       expect.soft(window.__CHEMDRAFT_AGENT__!.snapshot().selectedNativeMoleculePart, stage).toMatchObject({ kind: "bond", objectId: mol.id, bondId: bond.id });
       expect.soft(container.querySelector(`[data-object-id="${mol.id}"]`)?.getAttribute("data-selected-native-bond-id"), stage).toBe(bond.id);
-      expect.soft(container.querySelector(`[data-object-controls="${mol.id}"] [data-selected-bond-id="${bond.id}"]`), stage).not.toBeNull();
+      expect.soft(container.querySelector(`[data-object-chrome="${mol.id}"] [data-selected-bond-id="${bond.id}"]`), stage).not.toBeNull();
     }
   });
   async function openBadge(keyboard?: "Enter" | " ") {

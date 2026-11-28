@@ -1,5 +1,5 @@
 /**
- * PNG pictures for native raster export (PNG, JPEG, BMP, GIF, TIFF, Copy as PNG, plugin renders).
+ * PNG and JPEG pictures for native raster export (PNG, JPEG, BMP, GIF, TIFF, Copy as PNG, plugin renders).
  *
  * The native renderer has no bitmap decoder, by design: pictures are decoded HERE, by the webview's
  * own image decoder (WKWebView on macOS, WebView2 on Windows), and Rust receives straight-alpha
@@ -12,7 +12,9 @@
  *
  * SVG pictures that embed a bitmap become PNGs here: `svgPicture/rasterEmbeddedBitmaps.ts` rasterises
  * each one as this pass reaches it (`beforeDecode`), so they take the same path and the same budget.
- * Pure-vector SVG pictures draw natively.
+ * Pure-vector SVG pictures draw natively. A dropped JPEG kept as its own bytes reaches this pass as a
+ * JPEG `<image>` (SVG export unwraps it, `export-engine/jpegPicture.ts`) and is decoded like a PNG;
+ * the transform that turns it upright stays on its `<image>`.
  *
  * Limits, enforced before decoding and re-checked in Rust: 16384 px a side, 256 MiB of decoded
  * pixels (width × height × 4) across one export call, and 1024 pictures per call. A picture over a
@@ -23,6 +25,8 @@
  * Memory: pictures are processed one at a time; each ImageBitmap and canvas is released as soon as
  * its pixels are read back, and each picture's RGBA is dropped once it is base64-encoded.
  */
+
+import { readRasterHeaderSize } from "@chemdraft/export-engine";
 
 export const RasterPictureMaxSidePx = 16384;
 export const RasterPictureDecodedBudgetBytes = 256 * 1024 * 1024;
@@ -35,7 +39,7 @@ const RasterPictureIdPrefix = "chemdraft-raster-picture-";
 
 const SvgNamespace = "http://www.w3.org/2000/svg";
 const XlinkNamespace = "http://www.w3.org/1999/xlink";
-const PngDataUri = /^data:image\/png;base64,([A-Za-z0-9+/]*={0,2})$/i;
+const BitmapDataUri = /^data:(image\/(?:png|jpeg));base64,([A-Za-z0-9+/]*={0,2})$/i;
 const PngSignature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 // Signature (8) + IHDR length and type (8) + width and height (8): 24 bytes, 32 base64 characters.
 const PngSizeHeaderBase64Length = 32;
@@ -54,7 +58,9 @@ export interface DecodedPicturePixels {
   rgba: Uint8Array | Uint8ClampedArray;
 }
 
-export type PicturePixelDecoder = (png: Uint8Array<ArrayBuffer>) => Promise<DecodedPicturePixels>;
+export type PictureMimeType = "image/png" | "image/jpeg";
+
+export type PicturePixelDecoder = (bytes: Uint8Array<ArrayBuffer>, mimeType: PictureMimeType) => Promise<DecodedPicturePixels>;
 
 /**
  * Runs on each `<image>` this call may still take, in drawing order, before it is read, with the
@@ -98,9 +104,9 @@ export function readPngSize(bytes: Uint8Array): { width: number; height: number 
 }
 
 /**
- * Decodes the SVG's top-level PNG pictures for one native raster export. Pictures nested inside SVG
- * pictures, other bitmap types, and `<image>` elements that already carry an id or more than one
- * href are left untouched, so Rust keeps its general omitted-picture warning for them.
+ * Decodes the SVG's top-level PNG and JPEG pictures for one native raster export. Pictures nested
+ * inside SVG pictures, other bitmap types, and `<image>` elements that already carry an id or more
+ * than one href are left untouched, so Rust keeps its general omitted-picture warning for them.
  *
  * One ledger: a picture is charged its decoded bytes only once it has decoded, and `beforeDecode`
  * sizes each SVG picture against what is truly left at that point in drawing order.
@@ -109,7 +115,7 @@ export async function prepareRasterPictures(
   svg: string,
   { decode = decodePngPixels, budgetBytes = RasterPictureDecodedBudgetBytes, beforeDecode }: PrepareRasterPicturesOptions = {}
 ): Promise<PreparedRasterPictures> {
-  if (!/data:image\/png;base64,/i.test(svg) && !(beforeDecode && /data:image\/svg\+xml/i.test(svg))) return { svg, pictures: [] };
+  if (!/data:image\/(?:png|jpeg);base64,/i.test(svg) && !(beforeDecode && /data:image\/svg\+xml/i.test(svg))) return { svg, pictures: [] };
   const parsed = new DOMParser().parseFromString(svg, "image/svg+xml");
   if (parsed.getElementsByTagName("parsererror").length > 0) return { svg, pictures: [] };
 
@@ -123,7 +129,7 @@ export async function prepareRasterPictures(
   for (const image of Array.from(parsed.getElementsByTagNameNS(SvgNamespace, "image"))) {
     const admitted = beforeDecode && pictures.length + failedSlots < RasterPictureMaxCount
       ? (await beforeDecode(image, remainingBytes)) === true : false;
-    const href = pngHref(image);
+    const href = bitmapHref(image);
     if (!href) {
       if (admitted) failedSlots += 1;
       continue;
@@ -136,7 +142,7 @@ export async function prepareRasterPictures(
     }
     const id = `${prefix}${pictures.length}`;
     // One picture at a time: its RGBA exists only inside encodeWithinLimits.
-    const outcome = await encodeWithinLimits(href.base64, remainingBytes, decode);
+    const outcome = await encodeWithinLimits(href.base64, href.mimeType, remainingBytes, decode);
     if ("refused" in outcome) {
       pictures.push({ id, refused: outcome.refused });
       href.attribute.value = rasterPicturePlaceholderHref(1, 1, id);
@@ -157,20 +163,43 @@ function pngSizeOfBase64(base64: string): { width: number; height: number } | un
   return base64.length % 4 === 0 ? readPngSize(base64ToBytes(base64.slice(0, PngSizeHeaderBase64Length))) : undefined;
 }
 
+/**
+ * The picture's bytes, once its header says what it may cost: a PNG's size is in its first bytes,
+ * read before anything else is decoded; a JPEG's frame header can follow tables and a colour profile,
+ * so the JPEG is decoded from base64 first (still not into pixels).
+ */
+function pictureHeader(base64: string, mimeType: PictureMimeType):
+  { size: { width: number; height: number }; bytes: () => Uint8Array<ArrayBuffer> } | undefined {
+  if (mimeType === "image/png") {
+    const size = pngSizeOfBase64(base64);
+    return size && { size, bytes: () => base64ToBytes(base64) };
+  }
+  if (base64.length % 4 !== 0) return undefined;
+  const bytes = base64ToBytes(base64);
+  const size = readRasterHeaderSize("jpeg", bytes);
+  return size && { size, bytes: () => bytes };
+}
+
 /** Decodes one picture within the limits and returns its pixels as base64, or why it was refused. */
 async function encodeWithinLimits(
   base64: string,
+  mimeType: PictureMimeType,
   remainingBytes: number,
   decode: PicturePixelDecoder
 ): Promise<{ width: number; height: number; rgbaBase64: string } | { refused: RasterPictureRefusal }> {
   try {
-    const size = pngSizeOfBase64(base64);
-    if (!size) return { refused: "decodeFailed" };
+    const header = pictureHeader(base64, mimeType);
+    if (!header) return { refused: "decodeFailed" };
+    const { size } = header;
     if (size.width > RasterPictureMaxSidePx || size.height > RasterPictureMaxSidePx) return { refused: "tooLarge" };
     if (size.width * size.height * 4 > remainingBytes) return { refused: "overBudget" };
-    const { width, height, rgba } = await decode(base64ToBytes(base64));
-    // A decoder that disagrees with the IHDR (or returns the wrong amount of data) is not trusted.
-    if (width !== size.width || height !== size.height || rgba.length !== width * height * 4) return { refused: "decodeFailed" };
+    const { width, height, rgba } = await decode(header.bytes(), mimeType);
+    // A decoder that disagrees with the header (or returns the wrong amount of data) is not trusted.
+    // A JPEG may come out turned by its own EXIF orientation, which browsers apply to an SVG `<image>`
+    // too (the kept JPEGs ChemDraft writes carry none); its sides are then swapped.
+    const matches = (width === size.width && height === size.height) ||
+      (mimeType === "image/jpeg" && width === size.height && height === size.width);
+    if (!matches || rgba.length !== width * height * 4) return { refused: "decodeFailed" };
     // Nothing keeps the RGBA once this returns, so it can be collected before the next picture.
     return { width, height, rgbaBase64: bytesToBase64(rgba) };
   } catch {
@@ -178,14 +207,14 @@ async function encodeWithinLimits(
   }
 }
 
-/** The PNG data URI of an `<image>` with exactly one href (in any namespace usvg reads) and no id. */
-function pngHref(image: Element): { attribute: Attr; base64: string } | undefined {
+/** The PNG or JPEG data URI of an `<image>` with exactly one href (in any namespace usvg reads) and no id. */
+function bitmapHref(image: Element): { attribute: Attr; base64: string; mimeType: PictureMimeType } | undefined {
   if (image.hasAttribute("id")) return undefined;
   const hrefs = Array.from(image.attributes).filter((attribute) => attribute.localName === "href");
   const [attribute] = hrefs;
   if (hrefs.length !== 1 || ![null, SvgNamespace, XlinkNamespace].includes(attribute.namespaceURI)) return undefined;
-  const match = PngDataUri.exec(attribute.value);
-  return match ? { attribute, base64: match[1] } : undefined;
+  const match = BitmapDataUri.exec(attribute.value);
+  return match ? { attribute, base64: match[2], mimeType: match[1].toLowerCase() as PictureMimeType } : undefined;
 }
 
 /** An id prefix no existing text in the SVG contains, so generated ids cannot collide. */
@@ -196,9 +225,9 @@ function unusedIdPrefix(svg: string): string {
   return `${RasterPictureIdPrefix}${index}-`;
 }
 
-/** Decodes one PNG with the webview's image decoder and reads it back as straight-alpha RGBA8. */
-export async function decodePngPixels(png: Uint8Array<ArrayBuffer>): Promise<DecodedPicturePixels> {
-  const source = await loadPicture(new Blob([png], { type: "image/png" }));
+/** Decodes one PNG or JPEG with the webview's image decoder and reads it back as straight-alpha RGBA8. */
+export async function decodePngPixels(bytes: Uint8Array<ArrayBuffer>, mimeType: PictureMimeType = "image/png"): Promise<DecodedPicturePixels> {
+  const source = await loadPicture(new Blob([bytes], { type: mimeType }));
   let canvas: OffscreenCanvas | HTMLCanvasElement | undefined;
   try {
     let context: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D | null;

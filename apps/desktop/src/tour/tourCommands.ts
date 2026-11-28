@@ -1,7 +1,6 @@
 import { KEYBOARD_PREFERENCES_COMMAND_ID } from "../commands";
 import { NAME_TO_STRUCTURE_COMMAND_ID } from "../plugins/officialPluginMenus";
 import type { PluginAppMenuItem } from "../appMenu";
-import type { KeybindingScheme } from "../keybindingSettings";
 
 export const SHOW_TOUR_COMMAND = "help.showTour";
 export const TOUR_SAMPLE_COMMAND = "help.tour.openSample";
@@ -34,7 +33,6 @@ export function availableTourPluginCommands(menuItems: readonly PluginAppMenuIte
 
 export type TourAction =
   | { action: "cancel" | "finish" }
-  | { action: "chooseShortcuts"; scheme: KeybindingScheme }
   | { action: "tryTourCommand"; command: TourTryCommand }
   /** Open the plugin authoring guide in the system browser. The native host handles this itself and
    *  never relays it to the document window. */

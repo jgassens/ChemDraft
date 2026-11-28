@@ -9,6 +9,7 @@ import { detectDesktopShortcutPlatform } from "./keyboardShortcuts";
 import { preventPaletteCommandPointerFocus } from "./paletteCommandPointerFocus";
 import { observePaletteHitBoxes } from "./commandHitBoxes";
 import { listenCurrentWindowEvent } from "./window-manager/tauriEvents";
+import { flyoutToolChoiceClaim } from "./window-manager/toolbarToolChoice";
 import {
   acceptFlyoutOpening, closeFlyoutOpening, currentFlyoutOpening, dismissFlyoutOpenings,
   matchesToolsetPopoverOpening, newFlyoutOpeningState, resolveFlyoutOpening, wasFlyoutOpeningDismissed
@@ -593,7 +594,14 @@ export function PalettePopoverWindow({
       if (current.flyout.variant === "bondStereo") {
         const action = command.id === "keep" ? "keep" : command.id === "molecule.bondStereo:flipped" ? "flipped" : "geometry";
         if (current.flyout.id) await sendBondStereoPopoverAction({ sessionId: current.flyout.id, action }, opening);
-      } else await sendPaletteCommand(command.id, { flyoutOpening: opening });
+      } else {
+        // A drawing tool is credited to the dropdown it was chosen from, so the owning toolbar updates
+        // that dropdown's variant and highlight and no other control's. The claim names no toolbar:
+        // Rust takes it from this popover's verified opening and tells the toolbars before the command
+        // lands. An action (align, arrange, ...) carries no claim and moves no highlight.
+        const toolChoice = flyoutToolChoiceClaim(command.id);
+        await sendPaletteCommand(command.id, { flyoutOpening: opening, ...(toolChoice ? { toolChoice } : {}) });
+      }
     } catch {
       // A failed dispatch still dismisses the chosen opening.
     } finally {

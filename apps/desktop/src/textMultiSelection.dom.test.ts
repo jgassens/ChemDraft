@@ -27,7 +27,7 @@ describe.each(["macos", "windows"] as const)("multiple selected text formatting 
     for (const name of captureMethods) {
       Object.defineProperty(Element.prototype, name, { configurable: true, value: () => false });
     }
-    saveKeybindingSettings({ scheme: "chemdraft" });
+    saveKeybindingSettings({ scheme: "chemdraw" });
     window.history.replaceState(null, "", "/?agentBridge=1");
     container = document.createElement("div");
     document.body.append(container);

@@ -17,7 +17,7 @@ import { Resvg } from "@resvg/resvg-js";
 import { jsPDF } from "jspdf";
 import { exportDocumentToCdxml } from "@chemdraft/cdx-compat";
 import { describe, expect, it } from "vitest";
-import { crc32 } from "node:zlib";
+import { crc32, deflateSync } from "node:zlib";
 import { exportDocumentToPdf, exportSvgToPdf, svgPictureRasterSize, SVG_PICTURE_MAX_RASTER_PIXELS, type SvgPictureRasterRequest } from "./pdf";
 import { exportDocumentToSvg } from "./svg";
 import { extractPdfPositionedTextRuns, extractPdfTextRuns, largePicturePng, pdfFontStreams, sfntName, sfntTable, standardFontTextWidth } from "./pdf.testUtils";
@@ -982,6 +982,42 @@ describe("SVG pictures in PDF export", () => {
     expect(result.warnings).toEqual([]);
     expect(requests.map(request => [request.width, request.pixelWidth])).toEqual([[96, 300], [192, 600]]);
     expect(pdfPictureFrames(Buffer.from(result.bytes).toString("latin1"))).toHaveLength(3);
+  });
+
+  it("gives different rasters different PDF images even when jsPDF's default alias would collide", async () => {
+    // Two 1x1 PNGs of one length whose first halves match (a padding text chunk) and whose pixels differ:
+    // jsPDF's default alias hashes only that first half, so it would draw the first picture twice.
+    const chunk = (type: string, data: Buffer) => {
+      const bytes = Buffer.alloc(data.length + 12);
+      bytes.writeUInt32BE(data.length, 0);
+      bytes.write(type, 4, "ascii");
+      data.copy(bytes, 8);
+      bytes.writeUInt32BE(crc32(bytes.subarray(4, -4)), bytes.length - 4);
+      return bytes;
+    };
+    const header = Buffer.alloc(13);
+    header.writeUInt32BE(1, 0);
+    header.writeUInt32BE(1, 4);
+    header[8] = 8;
+    header[9] = 2;
+    const pngOf = (rgb: number[]) => new Uint8Array(Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", header),
+      chunk("tEXt", Buffer.from(`Comment\0${"x".repeat(120)}`, "latin1")),
+      chunk("IDAT", deflateSync(Buffer.from([0, ...rgb]), { level: 0 })), chunk("IEND", Buffer.alloc(0))]));
+    const red = pngOf([255, 0, 0]), blue = pngOf([0, 0, 255]);
+    const sHashCode = (jsPDF.API as unknown as { __addimage__: { sHashCode(data: Uint8Array): number } }).__addimage__.sHashCode;
+    expect(Buffer.from(red).equals(Buffer.from(blue))).toBe(false);
+    expect(sHashCode(red)).toBe(sHashCode(blue));
+
+    const redSource = svgSource('<desc>red</desc>'), blueSource = svgSource('<desc>blue</desc>');
+    const document = documentOf(pictureOf("red", "image/svg+xml", { x: 50, rotation: 0 }, undefined, redSource),
+      pictureOf("blue", "image/svg+xml", { x: 300, rotation: 0 }, undefined, blueSource),
+      pictureOf("red-again", "image/svg+xml", { x: 550, rotation: 0 }, undefined, redSource));
+    const result = await pdfOf(document, async request => request.svg === redSource ? red : blue);
+    expect(result.warnings).toEqual([]);
+    const pdf = Buffer.from(result.bytes).toString("latin1");
+    // Two image resources, painted red, blue, red; identical pictures still share one image.
+    expect(pdf.match(/\/Subtype \/Image/g)).toHaveLength(2);
+    expect([...pdf.matchAll(/(\/I\d+) Do/g)].map(match => match[1])).toEqual(["/I0", "/I1", "/I0"]);
   });
 
   it("warns by picture and still exports the rest when the rasteriser fails", async () => {

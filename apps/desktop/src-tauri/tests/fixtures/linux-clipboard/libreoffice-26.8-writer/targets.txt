@@ -1,0 +1,16 @@
+TIMESTAMP
+TARGETS
+MULTIPLE
+SAVE_TARGETS
+application/x-openoffice-embed-source-xml;windows_formatname="Star Embed Source (XML)"
+text/rtf
+text/richtext
+text/html
+text/markdown
+text/plain;charset=utf-16
+application/x-openoffice-link;windows_formatname="Link"
+application/x-openoffice-objectdescriptor-xml;windows_formatname="Star Object Descriptor (XML)";classname="8BC6B165-B1B2-4EDD-aa47-dae2ee689dd6";typename="LibreOffice 26.8 Text Document";viewaspect="1";width="17000";height="3000";posx="0";posy="0"
+text/plain;charset=utf-8
+UTF8_STRING
+STRING
+application/x-libreoffice-internal-id-46

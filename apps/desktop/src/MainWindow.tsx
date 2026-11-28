@@ -3,14 +3,19 @@ import { interactive3dWorkspaceStatusText, Interactive3dWorkspaceStatus } from "
 import { CanvasContextMenu, NATIVE_CANVAS_MENU_CLOSED_EVENT } from "./CanvasContextMenu";
 import { PLUGIN_CHANGE_REFUSED, RECOGNITION_REFUSED, chemistryRefusalOf, refusalSentence } from "./plugins/requestWrites/chemistryRefusal";
 import { buildObjectCanvasMenu, pageCanvasMenu, SET_DEFAULT_ARROW_STYLE_COMMAND_ID } from "./canvasContextMenuModel";
-import { loadStereoEngine, stereoReadoutRequest } from "./stereoReadout";
+import { editRotationEntryField, rotationEntryKeyAction } from "./rotationEntryKeys";
+import {
+  effectiveTypedScriptAtCaret, pendingTypedScriptStatus, pendingTypedScriptSurvivesSelection, recordTextEditFormatting, stepTextEditFormatting,
+  toggledPendingTypedScript, typedScriptInsertion, type PendingTypedScript, type TextEditFormattingTimeline
+} from "./typedTextScript";
+import { CONTEXT_STEREO_DEADLINE_MS, loadStereoEngine, resolveContextStereo, stereoReadoutRequest } from "./stereoReadout";
 import { RequestWriteError } from "@chemdraft/plugin-host";
 import { createRequestHistory } from "./plugins/requestWrites/requestHistory";
 import { electronMarkInteractionFrames } from "./electronMarkInteraction";
 import { installPopoverEscapeRouting } from "./window-manager/popoverEscape";
 import { BracketLabelEditor, type BracketLabelEditorHandle } from "./BracketLabelEditor";
 import { createBracketCommands, selectedBracketPair, toggleBracketRepeatUnit, setBracketRepeatLabel, bracketRepeatUnitStatus, prepareCleanupRepeatUnits } from "./bracketCommands";
-import { bracketLabelPlan, bracketLabelContainsPoint, carriedElectronMarkSvgTransform, lonePairDragDirection, transformPointForObject } from "@chemdraft/layout-engine";
+import { bracketLabelPlan, bracketLabelContainsPoint, carriedElectronMarkSvgTransform, inverseTransformPointForObject, lonePairDragDirection, nativeElementWithChargeLabel, nativeRelabelElementAndCharge, transformPointForObject } from "@chemdraft/layout-engine";
 import { useCanvasHandwritingFont } from "./canvasHandwritingFont";
 import { nativeTemplateForToolCommand } from "./ringTemplates";
 import { ATOM_MAPS_REMOVED_STATUS, documentDrawingDefaults, stripSmilesAtomMaps } from "@chemdraft/document-workflow-core";
@@ -33,7 +38,7 @@ import { TableCellEditor, TableColumnResizers, type TableCellEditorHandle } from
 import { tableCellAtPoint, tableEditingContent, tableTextAtPoint, type TableEditingAction } from "./tableInteraction";
 import type { ActiveTableText } from "./tableCommands";
 import { tableValidationMessage } from "./tableCommands";
-import { tableCellElementId } from "@chemdraft/layout-engine";
+import { normalizeTextLineBreaks, tableCellElementId, textObjectWithNormalizedLineBreaks } from "@chemdraft/layout-engine";
 import { insertTableIntoDocument } from "./documentWorkflow";
 import { doubleBondGestureCycle } from "./doubleBondCycle";
 import { clearCustomSwatchSlot, customSwatchCommandId, loadCustomSwatches, parseCustomSwatchCommandId, setCustomSwatchSlot, type CustomSwatchNumber, type CustomSwatchSlot } from "./customColorSwatches";
@@ -79,7 +84,7 @@ import { planDisplayPage } from "./plannedDisplayPage";
 import { snapPlacementDegrees } from "./placementSnap";
 import { listenCurrentWindowEvent, listenTauriEvent } from "./window-manager/tauriEvents";
 import { reactionConditionsDraft, setReactionArrowConditions, type ReactionConditionsDraft } from "@chemdraft/document-workflow-core";
-import { arrowAttachmentFrame } from "@chemdraft/layout-engine";
+import { arrowAttachmentFrame, atomProblemBadgeCentre, atomProblemBadgePlacementZoom, moleculeLayoutLabelBoxes, type AtomProblemBadgeMark } from "@chemdraft/layout-engine";
 import { OpenWarningsList } from "./OpenWarningsList";
 import { useNativeFileWarnings } from "./useNativeFileWarnings";
 import { lastExportDirectory } from "./exportDirectory";
@@ -188,7 +193,7 @@ import {
 } from "@chemdraft/chem-core";
 import { tryNativeSingleBondGraphSmiles, setTableCell, formatTableCellFormula, insertTableRows,
   setTableCaption, setTableFootnotes } from "@chemdraft/document-workflow-core";
-import { createAtomLabelDraftRollback, documentOwnsAtomLabelDraft, recordAtomLabelDraftRollback, restoreAtomLabelDraft, type AtomLabelDraftState } from "./atomLabelDraft";
+import { atomLabelDraftChargeChangedOutside, atomLabelDraftChargeChangedStatus, createAtomLabelDraftRollback, documentOwnsAtomLabelDraft, recordAtomLabelDraftRollback, restoreAtomLabelDraft, type AtomLabelDraftState } from "./atomLabelDraft";
 import type { EditorSaveResult } from "@chemdraft/editor-adapter";
 import { sha256Utf8Hex } from "@chemdraft/cdx-compat";
 import {
@@ -229,11 +234,13 @@ import {
   DOCUMENT_SESSION_SAVE_DEBOUNCE_MS,
   buildDocumentSessionEnvelope,
   buildDocumentTabsSession,
+  createDocumentSessionSource,
   documentIsBlank,
   documentSessionRestoreCandidates,
   parseDocumentSessionEnvelope,
   restoredDocumentFileState,
   restoredSavePathNotice,
+  restoredSessionTabSourceLabel,
   shouldRestoreDocumentSession,
   strictSessionFlushRefusal,
   unrestoredTabContents,
@@ -295,8 +302,6 @@ import type { QueuedProposedPatch } from "@chemdraft/plugin-host";
 import { hoverKeyFromEvent, isBlockedByModalDialog, resolveHoverKey, shouldIgnoreShortcutTarget, subscribeToModalDialogChanges, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import {
   atomLabelAnchorOffset,
-  nativeHoverAtomLabelCompletion,
-  nativeHoverAtomLabelCanContinue,
   atomLabelHaloWidthPx,
   atomLabelLayout,
   atomLabelRunFontSize,
@@ -342,6 +347,10 @@ import {
   type ResolvedBondCrossing
 } from "@chemdraft/layout-engine";
 import { measureTextEditorMetrics, measureTextEditorViewport } from "./textEditorMetrics";
+import {
+  createTextEditorSession, dragTextEditor, moveTextEditorCaretForKey, paintTextEditorChrome, pressTextEditor,
+  selectTextEditorLineDeletion, textEditorLayout as textBoxEditorLayout, type TextEditorSession
+} from "./textBoxEditor";
 // `/adapter`, NOT the barrel: the barrel re-exports `./analysis`, which reaches the pKa network's
 // 4.2 MB of JSON. Measured with the repo's own vite build, that model was 4,042,470 characters of a
 // 7.43 MB startup chunk — parsed synchronously before the first frame, on the path this app's whole
@@ -537,6 +546,7 @@ import {
   applyImportedPageFitRecommendation,
   applyNativeArtBooleanOperationToSelection,
   applyNativeAtomElementTarget,
+  chargedAtomRelabelRefusal,
   commitNativeAtomLabelTarget,
   normalizeNativeAtomElementLabel,
   atomLabelEditKeepsStartingLabel,
@@ -784,10 +794,13 @@ import {
   setDocumentCustomPageSize,
   updateNativeTextObjectScript,
   updateNativeTextObjectScriptRange,
+  textScriptForTypingAt,
+  textObjectFormattingRuns,
   updateNativeTextObjectStyle,
   updateNativeTextObjectStyleRange,
   convertNativeTextObjectToAtom,
   canAutoConvertNativeTextObjectToAtom,
+  atomChargeLabelSuffix,
   convertNativeTextObjectToAtomLabel,
   selectedTextToAtomLabelDisabledReason,
   selectedTextToAtomLabelResult,
@@ -850,7 +863,6 @@ import { copyAsMolfileForExport as copyAsMolfile, exportStructureListSdf, export
 import { KetcherEditorHost } from "./KetcherEditorHost";
 import { DRAG_THRESHOLDS, initialInteractionState, interactionReducer, type InteractionState } from "./interaction/machine";
 import { APPENDABLE_TOOLBAR_WIDGETS, TOOLBAR_WIDGET_TITLES, ToolPalette } from "./ToolPalette";
-import { TOOLBAR_WIDGET_GRID_SPANS } from "./toolbars/toolbarWidgets";
 import {
   DEFAULT_TOOLSET_ID,
   broadcastToolsetActiveTool,
@@ -920,6 +932,7 @@ import {
   initialToolsetWindowSize,
   isDisabledPlaceholderCommand,
   migrateMainToolbarDefaultsLayoutState,
+  toolbarWidgetGridSpan,
   type DesktopToolsetDefinition,
   type DesktopToolsetRegistry,
   type ToolbarPaletteGroupModel
@@ -1020,9 +1033,10 @@ import { useDirectElectronMarkEditing } from "./useDirectElectronMarkEditing";
 import { ArrangementSpacingDialog, arrangementSpacingPreviewSvg, checkedArrangementSpacing } from "./ArrangementSpacingDialog";
 import { arrangeSelectedDocumentObjects, arrangementSpacingRange, selectedArrangementObjectIds } from "./documentWorkflow";
 import { arrangementLayoutForCommand, arrangementGridAlignmentForCommand } from "./commands";
-import type { KeybindingScheme } from "./keybindingSettings";
+import { KEYBINDING_SCHEME } from "./keybindingSettings";
 import { nativeMenuShortcutOverrides } from "./customKeyboardShortcuts";
 import { useShortcutPreference } from "./useShortcutPreference";
+import { confirmShortcutSetNoticeShown, peekShortcutSetNotice } from "./shortcutDefaultMigration";
 import { aboutCommand, openAbout } from "./about/aboutCommand";
 import { documentWindowTitle } from "./appVersionLabel";
 import packageInfo from "../package.json";
@@ -1073,6 +1087,7 @@ import {
 } from "./conformerDebug";
 import {
   BOND_HIT_CATCHER_STROKE_PX,
+  contextStereoHits,
   currentTemplateTargetFromHoverOrHit,
   hitToleranceForScale,
   nativeMoleculeCanvasHoverTarget,
@@ -1124,6 +1139,13 @@ export { nativeMoleculeCanvasHoverTarget };
 type PaletteMode = "floating" | "hidden";
 type PalettePosition = { x: number; y: number };
 type ClientPoint = { x: number; y: number };
+/** What the inline text editor knows about a change besides the new text. */
+type NativeTextEditorChange = {
+  /** The collapsed caret once the change landed; undefined while a range stays selected. */
+  caret?: number;
+  /** The browser's InputEvent.inputType ("insertText", "historyUndo", ...), when it has one. */
+  inputType?: string;
+};
 type ObjectPointerEvent = PointerEvent<Element>;
 type ObjectMouseEvent = ReactMouseEvent<Element>;
 type PaletteDragState = {
@@ -1587,8 +1609,6 @@ type AtomLabelEditState = AtomLabelDraftState & {
   beforeAtom: MoleculeAtom;
   beforeMolecule: MoleculeObject;
   continuesHotkey: boolean;
-  /** Hover typing selects the atom only for the editor, not for later canvas hotkeys. */
-  startedFromHover: boolean;
   hotkeyUndoDocument?: ChemDraftDocument;
   /** Shared between keys so a superseding external label also owns the close selection. */
   cancellation: { superseded?: boolean };
@@ -1599,6 +1619,11 @@ type AtomLabelEditState = AtomLabelDraftState & {
   atomId: string;
   initialElement: string;
   initialLiteral: boolean;
+  /**
+   * The atom's formal charge before the edit. A draft typed with a charge ("Zn2+") sets it; a draft
+   * with none (typed, or with its charge deleted again) puts this one back.
+   */
+  initialFormalCharge: number;
   /**
    * The label's recorded bond side before the edit. Each keystroke relabels the atom and so drops
    * it; cancelling puts it back with the label, so a cancelled edit changes nothing, even on a
@@ -1633,7 +1658,6 @@ type AtomLabelEditOptions = {
   beforeAtom?: MoleculeAtom;
   beforeMolecule?: MoleculeObject;
   hotkeyChanged?: boolean;
-  startedFromHover?: boolean;
   hotkeyUndoDocument?: ChemDraftDocument;
   saveRevision?: number;
 };
@@ -1641,13 +1665,20 @@ type AtomLabelEditOptions = {
 function documentHasAtomLabelDraft(document: ChemDraftDocument, state: AtomLabelEditState): boolean {
   const object = findDocumentObject(document, state.objectId);
   const atom = object?.type === "molecule" ? object.atoms.find(a => a.id === state.atomId) : undefined;
-  // An isotope refusal keeps the original atom as the preview while the editor still owns it.
-  return (atom?.labelLiteral === true && (!state.draft.trim() || atom.element === normalizeNativeAtomElementLabel(state.draft))) ||
-    (atom?.isotope !== undefined && documentOwnsAtomLabelDraft(document, state));
+  // An isotope refusal, or a refused charged label (`chargedAtomRelabelRefusal`), keeps the original
+  // atom as the preview while the editor still owns it; its close still reports the refusal.
+  const refusedDraft = atom?.isotope !== undefined ||
+    (atom !== undefined && object?.type === "molecule" && chargedAtomRelabelRefusal(atom, object, state.draft) !== undefined);
+  return (atom?.labelLiteral === true && (!state.draft.trim() || atom.element === normalizeNativeAtomElementLabel(state.draft) ||
+    atom.element === nativeRelabelElementAndCharge(state.draft, state.initialFormalCharge).element)) ||
+    (refusedDraft && documentOwnsAtomLabelDraft(document, state));
 }
 
 function atomLabelEditStart(state: AtomLabelEditState) {
-  return { element: state.initialElement, literal: state.initialLiteral, labelBondSide: state.initialLabelBondSide };
+  return {
+    element: state.initialElement, literal: state.initialLiteral, labelBondSide: state.initialLabelBondSide,
+    formalCharge: state.initialFormalCharge
+  };
 }
 
 function atomLabelEditKeepsStartingText(state: AtomLabelEditState): boolean {
@@ -1659,18 +1690,24 @@ function atomLabelEditKeepsStartingText(state: AtomLabelEditState): boolean {
 function finishedAtomLabelDraft(current: ChemDraftDocument, state: AtomLabelEditState) {
   const target = { objectId: state.objectId, kind: "atom" as const, atomId: state.atomId, distanceToPointer: 0 };
   const baseline = restoreAtomLabelDraft(current, state);
-  if (state.startedFromHover && state.draft.trim() && nativeHoverAtomLabelCompletion(state.draft) === undefined) {
-    return { baseline, document: baseline, target, refusal: true,
-      message: `Incomplete or unrecognized atom label "${state.draft}"; finish a known label or press Escape` };
-  }
   // The recorded/side-dependent starting label wins before considering an attachment.
   if (atomLabelEditKeepsStartingText(state)) {
     return { baseline, document: finishNativeAtomLabelEdit(baseline, target, atomLabelEditStart(state)), target };
   }
   // Ordinary labels still go through the typed relabel decision (C/N can become literal).
   const unchanged = !state.draft.trim();
+  // A charged draft ("Zn2+") never writes its charge over one another edit set on the atom since the
+  // draft last wrote it: the close is refused and the atom left as Cancel leaves it, its label as
+  // before the edit and the other edit's charge kept. Uncharged drafts keep the atom's charge anyway.
+  if (!unchanged && (nativeElementWithChargeLabel(state.draft.trim())?.charge ?? 0) !== 0 &&
+    atomLabelDraftChargeChangedOutside(current, state)) {
+    return {
+      baseline, document: baseline, target,
+      message: atomLabelDraftChargeChangedStatus, refusal: atomLabelDraftChargeChangedStatus
+    };
+  }
   return { baseline, ...(unchanged ? { document: baseline, target } : commitNativeAtomLabelTarget(baseline, target, state.draft, {
-    literal: true, beforeAtom: state.beforeAtom, beforeMolecule: state.beforeMolecule, replaceElement: !state.startedFromHover
+    literal: true, beforeAtom: state.beforeAtom, beforeMolecule: state.beforeMolecule, replaceElement: true
   })) };
 }
 
@@ -1700,16 +1737,11 @@ type ObjectContextMenuState = {
   bondDepthContext?: BondDepthContext;
   /** Present when the right-clicked scope carries (or has dismissed) valence warnings. */
   atomWarning?: { scope: readonly NativeWarningSuppressionScope[]; suppressed: boolean; count: number; problemCommandId?: string };
-  /** The single atom or bond the menu was opened on, for the read-only R/S or E/Z row. */
-  stereoPart?: ObjectContextMenuStereoPart;
+  loadStereoReadout?: () => Promise<string | undefined>;
   x: number;
   y: number;
 };
-type ObjectContextMenuStereoPart = Extract<NativeMoleculeSelectionPart, { kind: "atom" | "bond" }>;
-/** The part a stereo readout can describe: exactly one atom or one bond, nothing broader. */
-function objectContextMenuStereoPart(part: NativeMoleculeSelectionPart | undefined): ObjectContextMenuStereoPart | undefined {
-  return part?.kind === "atom" || part?.kind === "bond" ? part : undefined;
-}
+type ContextMenuSelection = { objectId: string; part?: NativeMoleculeSelectionPart };
 type BondDepthMenuCrossing = Pick<ResolvedBondCrossing, "key" | "bonds" | "front" | "back" | "hasOverride">;
 export type BondDepthCommandId = "bondDepth.bringInFront" | "bondDepth.sendBehind" | "bondDepth.useDefault";
 export interface BondDepthContext {
@@ -1918,7 +1950,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.25.15.40-opus";
+const CURRENT_BUILD_STAMP = "11.28.09.00-opus";
 
 const NUMERIC_ENTRY_DURING_DRAG_STATUS = "Finish the current drag, then enter a value";
 
@@ -2484,6 +2516,9 @@ export function MainWindow({
   }, []);
   const pageRef = useRef<HTMLDivElement | null>(null);
   const [interactionLayer, setInteractionLayer] = useState<HTMLDivElement | null>(null);
+  // Resize/rotate/tilt handles live beside the page, not inside it: `.page` keeps `contain: paint`
+  // (it clips content at the page edge), which also clipped any handle at or past that edge.
+  const [handleLayer, setHandleLayer] = useState<HTMLDivElement | null>(null);
   // Capture can belong to an object or a handle (even one later unmounted), not just the page.
   const pointerCaptureOwnersRef = useRef(new Map<number, Element>());
   const captureGesturePointer = useCallback((owner: Element | null | undefined, pointerId: number) => {
@@ -2836,8 +2871,10 @@ export function MainWindow({
   // Only the first committed edit of each box placed by the Text tool may become an atom label.
   // Existing captions always remain text when reopened; the explicit command remains available.
   // Keep the first placement point for each id. A second placement can end an earlier edit
-  // before React observes it.
-  const textPlacementsAwaitingAutoConversionRef = useRef(new Map<string, PagePoint>());
+  // before React observes it. `style` is the text style the box was created with: a typed
+  // element converts unless that box was styled differently afterwards. The current text
+  // defaults are no baseline, since formatting a selected box updates them too.
+  const textPlacementsAwaitingAutoConversionRef = useRef(new Map<string, { point: PagePoint; style: NativeTextStyle }>());
   // Only fresh insertions own a placeholder. Synchronous clearing also protects focus retries.
   const pendingTextPlaceholderObjectIdRef = useRef<string | undefined>(undefined);
   const isTextPlaceholderPending = useCallback((objectId: string) =>
@@ -2887,7 +2924,6 @@ export function MainWindow({
   const previousAtomLabelEditRef = useRef<AtomLabelEditState | undefined>(undefined);
   const cancelledAtomLabelEditRef = useRef<AtomLabelEditState | undefined>(undefined);
   const finalizedAtomLabelEditRef = useRef<AtomLabelEditState | undefined>(undefined);
-  const hoverLabelHandoffRef = useRef<{ result?: ReturnType<typeof finishedAtomLabelDraft> } | undefined>(undefined);
   const [textStyleDefaults, setTextStyleDefaults] = useState<NativeTextStyle>(DefaultNativeTextStyle);
   useEffect(() => {
     // Persisted insertion defaults follow preset application, file reopen and undo/redo.
@@ -3100,6 +3136,11 @@ export function MainWindow({
   const [objectContextMenu, setObjectContextMenu] = useState<ObjectContextMenuState | undefined>();
   /** Page (empty-canvas) right-click menu position; undefined when the menu is closed. */
   const [pageContextMenu, setPageContextMenu] = useState<ClientPoint | undefined>();
+  const pendingCanvasContextMenu = useRef<AbortController | undefined>(undefined);
+  const cancelPendingCanvasContextMenu = useCallback(() => {
+    pendingCanvasContextMenu.current?.abort();
+    pendingCanvasContextMenu.current = undefined;
+  }, []);
   const [freeformNativeBond, setFreeformNativeBond] = useState<FreeformNativeBondPreview | undefined>();
   const [nativeDoubleBondSidePreview, setNativeDoubleBondSidePreview] = useState<NativeDoubleBondSidePreview | undefined>();
   const nativeDoubleBondSidePreviewRef = useRef(nativeDoubleBondSidePreview);
@@ -3232,10 +3273,13 @@ export function MainWindow({
   const unrestoredSessionTabsRef = useRef<unknown[]>([]);
   const [unrestoredSessionTabCount, setUnrestoredSessionTabCount] = useState(0);
   const unrestoredTabFlowRunningRef = useRef(false);
-  const sessionPayloadCacheRef = useRef(new WeakMap<ChemDraftDocument, ReturnType<typeof createNativeSavePayload>>());
+  const savePayloadCacheRef = useRef(new WeakMap<ChemDraftDocument, ReturnType<typeof createNativeSavePayload>>());
   const statusRef = useRef(status);
   const lastExportDirectoryRef = lastExportDirectory;
   const rotationInputRef = useRef<RotationInputState | undefined>(undefined);
+  // The typed-rotation key guard (installed before these callbacks exist) calls them through refs.
+  const handleRotationInputKeepRef = useRef<(input?: RotationInputState) => boolean>(() => false);
+  const handleRotationInputCancelRef = useRef<(input?: RotationInputState) => void>(() => undefined);
   const objectResizeInputRef = useRef<ObjectResizeInputState | undefined>(undefined);
   const interactive3dWorkspaceRef = useRef<Interactive3dWorkspaceState | undefined>(undefined);
   const interactive3dCommandQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -3281,20 +3325,16 @@ export function MainWindow({
   const toolBeforeEyedropperRef = useRef<ActiveToolState | undefined>(undefined);
   const artPaintTargetCueTimerRef = useRef<number | undefined>(undefined);
   const hoveredNativeDeleteTargetRef = useRef<NativeMoleculeDeleteTarget | undefined>(undefined);
-  const hoverLabelAssignmentRef = useRef<HoverLabelAssignment | undefined>(undefined);
   // The page point the canvas hover was last resolved at: picks a hovered bond's nearer atom
   // when an element key is typed with the pointer resting on the bond.
   const hoverPagePointRef = useRef<ClientPoint | undefined>(undefined);
-  // Set while a label key has moved the hover onto the atom being labelled (from a bond, a drifted-to
-  // neighbour, or empty canvas). Once that label is no longer in progress, the hover goes back to
-  // whatever is under the pointer, so the next Delete or digit acts on what the user is pointing at.
-  const labelHoverRetargetRef = useRef<{ pointerTarget: NativeMoleculeDeleteTarget | undefined } | undefined>(undefined);
   // Latest binding of the pointermove hover derivation, re-invoked by hover keys after a
   // commit. The hotkeys are declared far above `updateNativeCanvasHover`, so a direct reference
   // would be a use-before-initialization in the deps array (same reason `invokeCommandRef`
   // exists); the render-body assignment keeps the binding current without a stale closure.
   const rederiveNativeCanvasHoverRef = useRef<(sourceDocument: ChemDraftDocument) => void>(() => undefined);
   const selectedNativeMoleculePartRef = useRef<NativeMoleculeSelectionPart | undefined>(undefined);
+  const displayedGroupSelectionBoundsRef = useRef<SelectionBounds | undefined>(undefined);
   const selectedNativeMoleculePartsRef = useRef<NativeMoleculeSelectionPart[]>([]);
   // Latest visible-toolset set, read synchronously in toggleToolset to decide whether a toggle is
   // closing the Rings toolbar (so we can clear the ring selection deliberately) without depending
@@ -3340,6 +3380,16 @@ export function MainWindow({
   const templatePreviewPlanRef = useRef<NativeTemplatePlacementPlan | undefined>(undefined);
   const activeTextSelectionRef = useRef<{ objectId: string; range: NativeTextSelectionRange } | undefined>(undefined);
   const toolbarStyleTargetRef = useRef<ToolbarStyleTargetSnapshot | undefined>(undefined);
+  /** Subscript/superscript toggled at a collapsed caret, for the next typed characters. */
+  const pendingTypedScriptRef = useRef<PendingTypedScript | undefined>(undefined);
+  // The same value as state, so the Text style script buttons re-render whenever it is set or dropped.
+  const [pendingTypedScript, setPendingTypedScriptState] = useState<PendingTypedScript | undefined>(undefined);
+  const setPendingTypedScript = useCallback((next: PendingTypedScript | undefined) => {
+    pendingTypedScriptRef.current = next;
+    setPendingTypedScriptState(next);
+  }, []);
+  /** The formatting runs of each text state in the open editor, for its native undo and redo. */
+  const textEditFormattingRef = useRef<TextEditFormattingTimeline | undefined>(undefined);
   const viewportRef = useRef(viewport);
 
   useEffect(() => {
@@ -3417,10 +3467,22 @@ export function MainWindow({
     activeTextSelection.range.start !== activeTextSelection.range.end
     ? activeTextSelection.range
     : undefined;
+  // A collapsed caret in the open editor shows what typing there will do: the script toggled at that
+  // caret while it is still pending, else the script the typed character takes. Any caret move that
+  // drops the pending script (an arrow, Home, End, a click) drops it from the buttons too.
+  const selectedTextCaret = selectedTextObject &&
+    activeTextEditObjectId === selectedTextObject.id &&
+    activeTextSelection?.objectId === selectedTextObject.id &&
+    activeTextSelection.range.start === activeTextSelection.range.end
+    ? activeTextSelection.range.start
+    : undefined;
   const selectedTextScript = selectedTextObject
     ? selectedTextRange
       ? textScriptForTextRange(selectedTextObject, selectedTextRange)
-      : textScriptForTextObject(selectedTextObject)
+      : selectedTextCaret !== undefined
+        ? effectiveTypedScriptAtCaret(pendingTypedScript, selectedTextObject.id, selectedTextCaret,
+          textScriptForTypingAt(selectedTextObject, selectedTextCaret))
+        : textScriptForTextObject(selectedTextObject)
     : "normal";
   const selectedNativePartObject = selectedNativeMoleculePart
     ? findDocumentObject(document, selectedNativeMoleculePart.objectId)
@@ -3654,7 +3716,7 @@ export function MainWindow({
       objectId: activeAtomLabelEdit.objectId, atomId: activeAtomLabelEdit.atomId, kind: "atom", distanceToPointer: 0
     }, activeAtomLabelEdit.draft, {
       literal: true, beforeAtom: activeAtomLabelEdit.beforeAtom, beforeMolecule: activeAtomLabelEdit.beforeMolecule,
-      replaceElement: !activeAtomLabelEdit.startedFromHover
+      replaceElement: true
     });
   }, [document, activeAtomLabelEdit]);
   const labelDisplayPage = useMemo(() => {
@@ -3662,6 +3724,25 @@ export function MainWindow({
     return tableResizePreview ? { ...page, objects: page.objects.map(object =>
       object.id === tableResizePreview.id ? tableResizePreview : object) } : page;
   }, [activePage, atomLabelPreview, tableResizePreview, gesturePagePreview, document]);
+  // Atom-problem badges keep clear of the electron marks beside their atoms (a carbocation's
+  // floating charge), by their frames and the ink they draw past them (a radical 2+'s dot). The list
+  // keeps its identity while no mark moves or changes its ink, so memoized molecule views do not
+  // re-render for an unrelated edit.
+  const previousElectronMarkFramesRef = useRef<readonly AtomProblemBadgeMark[]>([]);
+  const pageElectronMarkFrames = useMemo(() => {
+    const next = labelDisplayPage.objects.flatMap((object): AtomProblemBadgeMark[] => object.type === "electron-mark"
+      ? [{ id: object.id, x: object.x, y: object.y, width: object.width, height: object.height, rotation: object.rotation,
+        markKind: object.markKind, charge: object.charge, chargeStyle: object.chargeStyle, radical: object.radical,
+        style: object.style }] : []);
+    const previous = previousElectronMarkFramesRef.current;
+    const same = previous.length === next.length && next.every((frame, index) => frame.x === previous[index]!.x &&
+      frame.y === previous[index]!.y && frame.width === previous[index]!.width && frame.height === previous[index]!.height &&
+      frame.rotation === previous[index]!.rotation && frame.markKind === previous[index]!.markKind &&
+      frame.charge === previous[index]!.charge && frame.chargeStyle === previous[index]!.chargeStyle &&
+      frame.radical === previous[index]!.radical && frame.style?.strokeWidth === previous[index]!.style?.strokeWidth);
+    if (!same) previousElectronMarkFramesRef.current = next;
+    return previousElectronMarkFramesRef.current;
+  }, [labelDisplayPage]);
   // The double-bond hover plan changes SVG geometry only, as before label previews.
   // Object views keep real bond metadata for selection chrome and interaction.
   const plannedDisplayPage = useCanvasHandwritingFont(useMemo(() => planDisplayPage(labelDisplayPage, undefined, nativeDoubleBondSidePreview),
@@ -3763,9 +3844,8 @@ export function MainWindow({
     }
   }, [activeTool]);
   const shortcutSettings = useShortcutPreference();
-  const keybindingScheme = shortcutSettings.scheme;
-  const shortcutOverrides = shortcutSettings.overrides?.[keybindingScheme];
-  const hoverShortcuts = useMemo(() => createHoverShortcutTables(keybindingScheme, shortcutOverrides), [keybindingScheme, shortcutOverrides]);
+  const shortcutOverrides = shortcutSettings.overrides?.[KEYBINDING_SCHEME];
+  const hoverShortcuts = useMemo(() => createHoverShortcutTables(shortcutOverrides), [shortcutOverrides]);
   const hoverShortcutsRef = useRef(hoverShortcuts);
   hoverShortcutsRef.current = hoverShortcuts;
   useEffect(() => {
@@ -3778,18 +3858,32 @@ export function MainWindow({
     });
     return () => { disposed = true; unlisten?.(); };
   }, []);
-  const keybindingSchemeRef = useRef(keybindingScheme);
-  keybindingSchemeRef.current = keybindingScheme;
   useEffect(() => {
     // The native menu carries its own accelerators. Keep them in step with the canvas.
-    void pushKeybindingSchemeToNativeMenu(keybindingScheme, nativeMenuShortcutOverrides(shortcutOverrides, shortcutPlatform));
-  }, [keybindingScheme, shortcutOverrides, shortcutPlatform]);
+    void pushKeybindingSchemeToNativeMenu(nativeMenuShortcutOverrides(shortcutOverrides, shortcutPlatform));
+  }, [shortcutOverrides, shortcutPlatform]);
+  useEffect(() => {
+    // Announce the one-time move to the single shortcut set (shortcutDefaultMigration.ts, run before
+    // this window mounted). It is recorded as shown only in the callback that puts it in the status
+    // line, so a launch that quits first shows it next time. The cleanup cancels a delivery that has
+    // not happened yet; a StrictMode re-run peeks again and schedules the one that does.
+    const notice = peekShortcutSetNotice();
+    if (!notice) return;
+    const timer = window.setTimeout(() => {
+      // Another window may have confirmed it since the peek above (same stored marker): show only if not.
+      if (!peekShortcutSetNotice()) return;
+      setStatus(notice);
+      confirmShortcutSetNoticeShown();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- once per window, on mount
+  }, []);
   const toolCommandSpecs = useMemo(
     () => applyKeybindingSchemeToCommands(
       withStandaloneDrawingToolCommands(getToolsetCommandSpecs(toolsetRegistry)),
-      keybindingScheme, shortcutOverrides, shortcutPlatform
+      shortcutOverrides, shortcutPlatform
     ),
-    [keybindingScheme, shortcutOverrides, shortcutPlatform, toolsetRegistry]
+    [shortcutOverrides, shortcutPlatform, toolsetRegistry]
   );
   const hasSearchableStructure = useMemo(() => structureSearchDocument(
     document, nativeMoleculeFragmentSelections(selectedNativeMoleculeParts)
@@ -3815,9 +3909,9 @@ export function MainWindow({
         hasSearchableStructure,
         unavailableCommandIds
       }).map(command => customSwatchActions.find(action => action.id === command.id) ?? command).filter(command => command.id !== "arrow.conditions" || isDesktopRuntime()),
-      keybindingScheme, shortcutOverrides, shortcutPlatform
+      shortcutOverrides, shortcutPlatform
     ),
-    [shortcutOverrides, shortcutPlatform, baseToolbarCommands, customSwatches, customSwatchActions, activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId, canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, selectedNativeMoleculeParts, toolsetRegistry, compoundLayoutsEnabled, compoundLayoutSettings, structureSearchEnabled, hasSearchableStructure, unavailableCommandIds]
+    [shortcutOverrides, shortcutPlatform, baseToolbarCommands, customSwatches, customSwatchActions, activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId, canRedo, canUndo, document, documentTabs.length, openWarnings, selectedMolecule, selectedNativeMoleculeParts, toolsetRegistry, compoundLayoutsEnabled, compoundLayoutSettings, structureSearchEnabled, hasSearchableStructure, unavailableCommandIds]
   );
   const shellCommandsById = useMemo(
     () => createShellCommandMap(shellCommandSpecs),
@@ -3833,8 +3927,8 @@ export function MainWindow({
     void broadcastToolsetCommandSpecs(shellCommandSpecsRef.current).catch(() => undefined);
   }, [shellCommandSpecsSignature]);
   const shortcutCommands = useMemo(
-    () => createMainWindowShortcutCommands({ quickActions, layerActions, toolCommandSpecs }, keybindingScheme, shortcutOverrides, shortcutPlatform),
-    [keybindingScheme, shortcutOverrides, shortcutPlatform, layerActions, quickActions, toolCommandSpecs]
+    () => createMainWindowShortcutCommands({ quickActions, layerActions, toolCommandSpecs }, shortcutOverrides, shortcutPlatform),
+    [shortcutOverrides, shortcutPlatform, layerActions, quickActions, toolCommandSpecs]
   );
   const shortcutRegistry = useMemo(
     () => createDesktopShortcutRegistry(shortcutCommands, { platform: shortcutPlatform, overrides: shortcutOverrides }),
@@ -3844,19 +3938,8 @@ export function MainWindow({
     const stop = perfHook(() => onPerfStarted(() => { perfHook(() => perfProbe?.setShortcutRegistry(shortcutRegistry)); }));
     return () => { stop?.(); perfHook(() => perfProbe?.setShortcutRegistry(undefined)); };
   }, [shortcutRegistry]);
-  // The hover leaving the labelled atom (and its own bonds) does not end a hover-label continuation:
-  // a pointer drifting mid-word is common on small atoms, so the next key decides
-  // (`hoverLabelContinuesForKey`). After leaving, element keys and digits act on a different hovered
-  // atom. Over a bond or empty canvas, lowercase element-symbol completion still continues.
-  // Leaving keeps the instant assignment on cancellation. A committed continuation still
-  // coalesces with that assignment's undo entry.
-  // A click, a tool change or a key that cannot continue a label ends the continuation.
   const assignHoveredNativeDeleteTarget = useCallback((target: NativeMoleculeDeleteTarget | undefined) => {
     hoveredNativeDeleteTargetRef.current = target;
-    const assignment = hoverLabelAssignmentRef.current;
-    if (assignment && !assignment.leftAtom && !hoverTargetKeepsLabelContinuation(target, assignment)) {
-      hoverLabelAssignmentRef.current = { ...assignment, leftAtom: true };
-    }
     setHoveredNativeDeleteTarget(target);
   }, []);
   const flashArtPaintTargetControls = useCallback(() => {
@@ -7634,13 +7717,13 @@ export function MainWindow({
       draftBeforeMolecule: continuing?.draftBeforeMolecule ?? object,
       draftRollback: continuing?.draftRollback ?? createAtomLabelDraftRollback(object),
       continuesHotkey: continuing?.continuesHotkey ?? options.hotkeyChanged === true,
-      startedFromHover: continuing?.startedFromHover ?? options.startedFromHover === true,
       hotkeyUndoDocument: continuing?.hotkeyUndoDocument ?? options.hotkeyUndoDocument,
       cancellation: continuing?.cancellation ?? {},
       saveRevision: continuing?.saveRevision ?? options.saveRevision ??
         documentSaveRevisionsRef.current.get(activeDocumentTabIdRef.current) ?? 0,
       initialElement: continuing?.initialElement ?? atom.element,
       initialLiteral: continuing ? continuing.initialLiteral : atom.labelLiteral === true,
+      initialFormalCharge: continuing ? continuing.initialFormalCharge : atom.formalCharge,
       ...(continuing
         ? (continuing.initialLabelBondSide ? { initialLabelBondSide: continuing.initialLabelBondSide } : {})
         : (atom.labelBondSide ? { initialLabelBondSide: atom.labelBondSide } : {})),
@@ -7651,7 +7734,6 @@ export function MainWindow({
     };
     // Own the keyboard immediately, including before React mounts/focuses the input.
     activeAtomLabelEditRef.current = edit;
-    hoverLabelAssignmentRef.current = undefined;
     setActiveAtomLabelEdit(edit);
     setSelectedNativeMoleculePart({ objectId: target.objectId, kind: "atom", atomId: target.atomId });
     setHoveredNativeAtom(undefined);
@@ -7661,7 +7743,6 @@ export function MainWindow({
   }, [replacePresentDocument]);
 
   const updateAtomLabelDraft = useCallback((state: AtomLabelEditState, draft: string) => {
-    if (state.startedFromHover) draft = nativeHoverAtomLabelCompletion(draft) ?? draft;
     setActiveAtomLabelEdit((current) =>
       current && current.objectId === state.objectId && current.atomId === state.atomId
         ? { ...current, draft }
@@ -7681,7 +7762,7 @@ export function MainWindow({
         kind: "atom",
         atomId: state.atomId,
         distanceToPointer: 0
-      }, draft, { element: state.initialElement, literal: state.initialLiteral, labelBondSide: state.initialLabelBondSide });
+      }, draft, atomLabelEditStart(state));
       const molecule = findDocumentObject(current, state.objectId);
       const preview = findDocumentObject(next, state.objectId);
       if (molecule?.type === "molecule" && preview?.type === "molecule") {
@@ -7726,11 +7807,6 @@ export function MainWindow({
     // that no longer belongs to this edit.
     const active = activeAtomLabelEditRef.current;
     if (!active || active.objectId !== state.objectId || active.atomId !== state.atomId) {
-      return;
-    }
-    if (reason === "commit" && state.startedFromHover && state.draft.trim() &&
-      nativeHoverAtomLabelCompletion(state.draft) === undefined) {
-      setStatus(`Incomplete or unrecognized atom label "${state.draft}"; finish a known label or press Escape`);
       return;
     }
     if (reason === "commit") {
@@ -7779,10 +7855,9 @@ export function MainWindow({
    * the rest of the word lands on it as hotkeys ("O" relabels it, Backspace strips it). Anything
    * that has since replaced the edit's selection (a click on another object, Select All) wins, and
    * anything on the edited molecule is dropped from the blur restore, since that is exactly what
-   * stray keystrokes would hit. A deliberate hover close includes it: the user's selection predates
-   * the editor's temporary selection and must survive Enter or Escape.
+   * stray keystrokes would hit.
    */
-  const restoreSelectionAfterAtomLabelEdit = useCallback((state: AtomLabelEditState, includeEditedMolecule = false) => {
+  const restoreSelectionAfterAtomLabelEdit = useCallback((state: AtomLabelEditState) => {
     const parts = selectedNativeMoleculePartsRef.current;
     const stillEditSelection = parts.length === 1 &&
       parts[0]?.kind === "atom" &&
@@ -7809,12 +7884,12 @@ export function MainWindow({
       const existingIds = new Set(page.objects.map((object) => object.id));
       const editSelectedIds = new Set(current.selection.objectIds);
       const restoredIds = state.selectionBefore.objectIds.filter((objectId) =>
-        existingIds.has(objectId) && (includeEditedMolecule || !editSelectedIds.has(objectId))
+        existingIds.has(objectId) && !editSelectedIds.has(objectId)
       );
       return selectDocumentObjects(current, page.id, restoredIds);
     });
     setSelectedNativeMoleculeParts(
-      state.selectionBefore.nativeParts.filter((part) => includeEditedMolecule || part.objectId !== state.objectId)
+      state.selectionBefore.nativeParts.filter((part) => part.objectId !== state.objectId)
     );
   }, [replacePresentDocument]);
 
@@ -7901,7 +7976,7 @@ export function MainWindow({
 
   const focusTextObjectEditorDom = useCallback((objectId: string) => {
     const editor = pageRef.current?.querySelector<HTMLTextAreaElement>(
-      `:is([data-object-id="${cssEscapeIdentifier(objectId)}"], [data-object-controls="${cssEscapeIdentifier(objectId)}"]) .text-object-editor`
+      `:is([data-object-id="${cssEscapeIdentifier(objectId)}"], [data-object-chrome="${cssEscapeIdentifier(objectId)}"]) .text-object-editor`
     );
     if (!editor) {
       return;
@@ -7915,7 +7990,7 @@ export function MainWindow({
 
   const focusAtomLabelEditorDom = useCallback((objectId: string, atomId: string) => {
     const editor = pageRef.current?.querySelector<HTMLInputElement>(
-      `:is([data-object-id="${cssEscapeIdentifier(objectId)}"], [data-object-controls="${cssEscapeIdentifier(objectId)}"]) [data-atom-label-editor="true"][data-atom-id="${cssEscapeIdentifier(atomId)}"]`
+      `:is([data-object-id="${cssEscapeIdentifier(objectId)}"], [data-object-chrome="${cssEscapeIdentifier(objectId)}"]) [data-atom-label-editor="true"][data-atom-id="${cssEscapeIdentifier(atomId)}"]`
     );
     // Already focused: leave it, so a retry never moves the caret the user is typing at.
     if (!editor || editor.ownerDocument.activeElement === editor) {
@@ -7937,6 +8012,12 @@ export function MainWindow({
 
   const recordTextSelection = useCallback((objectId: string, range: NativeTextSelectionRange) => {
     const nextSelection = { objectId, range };
+    // The script toggled at a caret is for typing at that caret. A range selection (the next
+    // keystroke replaces text) or a caret moved anywhere else (End, an arrow, a click) drops it.
+    // A text change advances the pending caret before the editor reports where the caret went.
+    if (!pendingTypedScriptSurvivesSelection(pendingTypedScriptRef.current, objectId, range)) {
+      setPendingTypedScript(undefined);
+    }
     activeTextSelectionRef.current = nextSelection;
     setActiveTextSelection((current) =>
       current?.objectId === objectId &&
@@ -7945,11 +8026,18 @@ export function MainWindow({
         ? current
         : nextSelection
     );
-  }, []);
+  }, [setPendingTypedScript]);
 
   useEffect(() => () => {
     clearScheduledTextEditorFocus();
   }, [clearScheduledTextEditorFocus]);
+
+  // A script toggled at the caret, and the formatting of the editor's undo states, belong to one
+  // editing session.
+  useEffect(() => {
+    if (pendingTypedScriptRef.current?.objectId !== activeTextEditObjectId) setPendingTypedScript(undefined);
+    if (textEditFormattingRef.current?.objectId !== activeTextEditObjectId) textEditFormattingRef.current = undefined;
+  }, [activeTextEditObjectId, setPendingTypedScript]);
 
   const restoreToolAfterTextPlacement = useCallback(() => {
     const previousToolState = toolBeforeTextPlacementRef.current;
@@ -7998,7 +8086,7 @@ export function MainWindow({
     const inserted = getSelectedTextObject(nextDocument);
     commitDocumentChange(nextDocument);
     if (inserted) {
-      textPlacementsAwaitingAutoConversionRef.current.set(inserted.id, point);
+      textPlacementsAwaitingAutoConversionRef.current.set(inserted.id, { point, style: textStyleDefaults });
     }
     restoreToolAfterTextPlacement();
     setActiveEditorObjectId(undefined);
@@ -8779,26 +8867,66 @@ export function MainWindow({
       : "Couldn't paste: the clipboard contains no supported drawing or text content.");
   }, [applyDetectedClipboardPayload, applySelectionClipboardPayload, applyTableClipboardResult, captureClipboardPasteAnchor]);
 
-  const updateTextObjectContent = useCallback((objectId: string, text: string) => {
+  const updateTextObjectContent = useCallback((objectId: string, text: string, change?: NativeTextEditorChange) => {
     const edit = textEditHistorySnapshotRef.current;
     const original = edit?.objectId === objectId && edit.documentIdentity === documentIdentityRef.current
       ? findDocumentObject(edit.document, objectId) : undefined;
     const originalFrame = original?.type === "text" && original.text === text ? original : undefined;
-    if (replacePresentDocument((current) => updateNativeTextObjectText(current, objectId, text, originalFrame))) {
+    const previous = findDocumentObject(documentRef.current, objectId);
+    const previousText = previous?.type === "text" ? normalizeTextLineBreaks(previous.text) : undefined;
+    const nextText = normalizeTextLineBreaks(text);
+    const before = previous?.type === "text" && previousText !== undefined
+      ? { text: previousText, spans: textObjectFormattingRuns(previous), pending: pendingTypedScriptRef.current }
+      : undefined;
+    // The textarea's own undo and redo put back only characters. Return to the formatting runs
+    // (and the script pending at the caret) that state had when the edit left it.
+    const historyDirection = change?.inputType === "historyUndo" ? "undo"
+      : change?.inputType === "historyRedo" ? "redo" : undefined;
+    const historyStep = historyDirection && before
+      ? stepTextEditFormatting(textEditFormattingRef.current, objectId, historyDirection, before, nextText)
+      : undefined;
+    if (historyStep) {
+      textEditFormattingRef.current = historyStep.timeline;
+      setPendingTypedScript(historyStep.state.pending);
+      if (replacePresentDocument((current) =>
+        updateNativeTextObjectText(current, objectId, text, originalFrame, undefined, historyStep.state.spans))) {
+        reconcileSavedDocumentDirtyState();
+      }
+      return;
+    }
+    const insertion = previousText !== undefined
+      ? typedScriptInsertion(pendingTypedScriptRef.current, objectId, previousText, nextText, change?.caret)
+      : undefined;
+    // Any other change (a deletion, typing elsewhere) leaves the toggled caret behind.
+    setPendingTypedScript(insertion?.next);
+    const typedScript = insertion ? { range: insertion.range, script: insertion.next.script } : undefined;
+    const result: { edited?: DocumentObject } = {};
+    if (replacePresentDocument((current) => {
+      const next = updateNativeTextObjectText(current, objectId, text, originalFrame, typedScript);
+      result.edited = findDocumentObject(next, objectId);
+      return next;
+    })) {
       reconcileSavedDocumentDirtyState();
     }
-  }, [reconcileSavedDocumentDirtyState, replacePresentDocument]);
+    const { edited } = result;
+    if (before && edited?.type === "text" && nextText !== before.text) {
+      textEditFormattingRef.current = recordTextEditFormatting(textEditFormattingRef.current, objectId, before,
+        { text: nextText, spans: textObjectFormattingRuns(edited), pending: pendingTypedScriptRef.current });
+    }
+  }, [reconcileSavedDocumentDirtyState, replacePresentDocument, setPendingTypedScript]);
 
   const convertCommittedText = useCallback((objectId: string) => {
-    const placement = textPlacementsAwaitingAutoConversionRef.current.get(objectId);
-    if (!placement) return;
+    const awaiting = textPlacementsAwaitingAutoConversionRef.current.get(objectId);
+    if (!awaiting) return;
+    const { point: placement, style: baselineStyle } = awaiting;
     textPlacementsAwaitingAutoConversionRef.current.delete(objectId);
     // A previous box may convert after a second placement. Its untouched first edit still
     // belongs to that placement, rather than becoming an existing-text edit at conversion.
     textAutoConversionInProgressRef.current = true;
     try {
       const currentDocument = documentRef.current;
-      if (!canAutoConvertNativeTextObjectToAtom(currentDocument, objectId)) return;
+      if (!canAutoConvertNativeTextObjectToAtom(currentDocument, objectId, baselineStyle)) return;
+      // On an atom the text relabels it; a charged symbol ("Zn2+") sets its element and charge.
       const labelResult = convertNativeTextObjectToAtomLabel(currentDocument, objectId, undefined, placement);
       if (labelResult.target) {
         if (labelResult.document !== currentDocument) {
@@ -8817,16 +8945,26 @@ export function MainWindow({
         if (labelResult.message) setStatus(labelResult.message);
         return;
       }
-      // The label path above already performed the atom hit-test. Only its no-target path reaches
+      // The path above already performed the atom hit-test. Only its no-target path reaches
       // the open-space element conversion, so do not repeat that hit-test here.
-      const converted = convertNativeTextObjectToAtom(currentDocument, objectId, { skipAtomLabel: true });
+      const converted = convertNativeTextObjectToAtom(currentDocument, objectId, { skipAtomLabel: true, baselineStyle });
       if (converted !== currentDocument) {
-        commitDocumentChange(converted, undefined, false, undefined, CHEMISTRY_EDIT);
-        const atomElement = getSelectedMolecule(converted)?.atoms[0]?.element;
-        setStatus(atomElement ? `Placed naked ${atomElement} atom` : "Placed atom");
+        const placedFrom = documentHistoryRef.current.past.at(-1);
+        if (!commitDocumentChange(converted, undefined, false, undefined, CHEMISTRY_EDIT)) return;
+        // The new atom belongs to the box's placement entry, as its typing does: one undo removes
+        // both. Only when that entry is the one right before, the state without the box.
+        installDocumentHistory((history) => {
+          const typed = history.past.at(-1);
+          return placedFrom && history.past.at(-2) === placedFrom && !findDocumentObject(placedFrom, objectId) &&
+            typed !== undefined && findDocumentObject(typed, objectId)?.type === "text"
+            ? { ...history, past: history.past.slice(0, -1) }
+            : history;
+        });
+        const atom = getSelectedMolecule(converted)?.atoms[0];
+        setStatus(atom ? `Placed naked ${atom.element}${atomChargeLabelSuffix(atom.formalCharge)} atom` : "Placed atom");
       }
     } finally { textAutoConversionInProgressRef.current = false; }
-  }, [commitDocumentChange]);
+  }, [commitDocumentChange, installDocumentHistory]);
 
   const finalizeTextEditHistory = useCallback((objectId: string, current = documentRef.current) => {
     const snapshot = textEditHistorySnapshotRef.current;
@@ -9140,6 +9278,18 @@ export function MainWindow({
     );
     const textScript = textScriptForCommand(commandId);
     if (textScript) {
+      // A collapsed caret in the open editor: the script applies to what is typed next, as in a
+      // word processor. The text already there is left alone.
+      if (selected && selectedTextObjects.length <= 1 && selectedTextRange &&
+          selectedTextRange.start === selectedTextRange.end &&
+          activeTextEditObjectIdRef.current === selected.id) {
+        const caret = selectedTextRange.start;
+        const pending = toggledPendingTypedScript(pendingTypedScriptRef.current, selected.id, caret, textScript,
+          textScriptForTypingAt(selected, caret));
+        setPendingTypedScript(pending);
+        setStatus(pendingTypedScriptStatus(pending.script));
+        return true;
+      }
       if (selected) {
         const multiple = selectedTextObjects.length > 1;
         const currentScript = hasSelectedTextRange && selectedTextRange
@@ -9248,7 +9398,7 @@ export function MainWindow({
 
     setStatus("Updated text defaults");
     return true;
-  }, [activeTextEditObjectId, commitDocumentChange, replacePresentDocument, selectedNativeMoleculePart, textStyleDefaults]);
+  }, [activeTextEditObjectId, commitDocumentChange, replacePresentDocument, selectedNativeMoleculePart, setPendingTypedScript, textStyleDefaults]);
 
   const selectedMoleculeRingTargets = useCallback((): NativeMoleculeRingTarget[] => {
     return currentMoleculeInspector.rings.selectedRings.map((ring) => ({
@@ -10502,9 +10652,6 @@ export function MainWindow({
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
     assignHoveredNativeDeleteTarget(undefined);
-    // Undo/redo from the menu never passes the keydown clearing; redo could bring the label back.
-    hoverLabelAssignmentRef.current = undefined;
-    labelHoverRetargetRef.current = undefined;
     setFreeformNativeBond(undefined);
     // History restores chemistry, not a label key's temporary target. Resolve the current pointer
     // against the restored graph through the same path as pointermove, before another hover key.
@@ -10615,7 +10762,6 @@ export function MainWindow({
     setHoveredNativeAtom(undefined);
     setSelectedNativeMoleculePart(undefined);
     assignHoveredNativeDeleteTarget(undefined);
-    hoverLabelAssignmentRef.current = undefined;
     setFreeformNativeBond(undefined);
     setNativeDoubleBondSidePreview(undefined);
     setLastAnalysis(null);
@@ -11483,12 +11629,12 @@ export function MainWindow({
       ...route, insertImages, decoders: browserImageDecoders, setStatus: setDropStatus, showOutcome,
       insertRefusal: imageDropRefusal,
       documentBytes: () => {
-        // The session's cached payload when autosave has built one for this very document.
+        // What File > Save would write for this very document (the session keeps its native JSON instead).
         const current = documentRef.current;
-        let payload = sessionPayloadCacheRef.current.get(current);
+        let payload = savePayloadCacheRef.current.get(current);
         if (!payload) {
           payload = createNativeSavePayload(current);
-          sessionPayloadCacheRef.current.set(current, payload);
+          savePayloadCacheRef.current.set(current, payload);
         }
         return savedDocumentBytes(payload.contents);
       },
@@ -11702,7 +11848,9 @@ export function MainWindow({
                 admitParsedDocument(resolved.document), { preserveElectronMarks: true }
               ));
               const reports = restoreSessionWarningReports(session, {
-                displayName: session.displayName, sourceLabel: openSourceLabel(resolved.source, resolved.statusSourceLabel),
+                displayName: session.displayName,
+                sourceLabel: restoredSessionTabSourceLabel(resolved.source, resolved.statusSourceLabel) ??
+                  openSourceLabel(resolved.source, resolved.statusSourceLabel),
                 warnings: installedWarnings
               });
               restored.push({ session, opened, resolved, history, reports, candidateIndex, id: crypto.randomUUID() });
@@ -11846,13 +11994,10 @@ export function MainWindow({
           warnings: [...(snapshot.warnings?.warnings ?? []).filter(existing =>
             existing.code !== warning.code || existing.sourceObjectId !== warning.sourceObjectId), warning]
         } : snapshot.warnings;
-        let payload = sessionPayloadCacheRef.current.get(tabDocument);
-        if (!payload) {
-          payload = createNativeSavePayload(tabDocument);
-          sessionPayloadCacheRef.current.set(tabDocument, payload);
-        }
+        // Each tab's native JSON, built once per document: not the save payload, whose CDXML envelope
+        // carries that JSON base64-encoded again (every picture's data a second time).
         return {
-          ...buildDocumentSessionEnvelope(payload, file, displayName, documentIsBlank(tabDocument)),
+          ...buildDocumentSessionEnvelope(createDocumentSessionSource(tabDocument), file, displayName, documentIsBlank(tabDocument)),
           pristine: !nonPristineTabsRef.current.has(tab.id),
           view: { viewport: snapshot.viewport, scrollLeft: snapshot.scrollLeft, scrollTop: snapshot.scrollTop },
           openWarnings,
@@ -12839,7 +12984,6 @@ export function MainWindow({
       && !quitInteractionRef.current && !isSnapshotSessionActive()
       && !activeAtomLabelEditRef.current && !activeTextEditObjectIdRef.current
       && !tableCellEditorRef.current && !bracketLabelEditorRef.current,
-    scheme: keybindingScheme,
     shortcutOverrides: shortcutSettings.overrides,
     platform: shortcutPlatform,
     plugins: () => tourPluginCommandsRef.current,
@@ -15334,8 +15478,7 @@ export function MainWindow({
     const kept = atomLabelEditKeepsSelectionRef.current;
     atomLabelEditKeepsSelectionRef.current = undefined;
     const result = !cancelled && !finalized ? finalizeAtomLabelDraft(previous) : undefined;
-    if (hoverLabelHandoffRef.current) hoverLabelHandoffRef.current.result = result;
-    if (result && kept && !previous.startedFromHover && result.target.kind === "atom") setSelectedNativeMoleculePart(result.target);
+    if (result && kept && result.target.kind === "atom") setSelectedNativeMoleculePart(result.target);
     if (activeAtomLabelEdit) {
       if (result) {
         // The next editor was opened before the previous close ran. Its rollback baseline must
@@ -15353,19 +15496,12 @@ export function MainWindow({
       // A direct move to another atom's edit leaves selection owned by that edit.
       return;
     }
-    // A label typed with the pointer off its atom is done: hover what the pointer is on again.
-    if (labelHoverRetargetRef.current) {
-      labelHoverRetargetRef.current = undefined;
-      rederiveNativeCanvasHoverRef.current?.(documentRef.current);
-    }
-    // Enter/Escape keep label-tool targets. Hover typing restores the user's full pre-edit selection,
-    // including any part of this molecule, while discarding selection introduced only by the editor.
-    // With nothing selected beforehand, element keys over empty canvas have no atom to fall back to.
+    // Enter/Escape keep label-tool targets; any other close restores the pre-edit selection.
     const deliberateClose = kept?.objectId === previous.objectId && kept.atomId === previous.atomId;
     // A same-atom external label wins wholesale, including its document selection.
     if (cancelled?.cancellation.superseded) return;
-    if (deliberateClose && !previous.startedFromHover) return;
-    restoreSelectionAfterAtomLabelEdit(previous, deliberateClose && previous.startedFromHover);
+    if (deliberateClose) return;
+    restoreSelectionAfterAtomLabelEdit(previous);
   }, [activeAtomLabelEdit, finalizeAtomLabelDraft, restoreSelectionAfterAtomLabelEdit]);
 
   useEffect(() => {
@@ -15381,6 +15517,40 @@ export function MainWindow({
       textRange
     };
   }, [activeTextSelection, document.selection.objectIds, selectedNativeMoleculePart]);
+
+  // While a typed rotation is open, its keys belong to it even if focus was left on the canvas or
+  // the rotate handle: digits, sign and decimal point go into the field, Enter keeps, Esc cancels,
+  // and none of them reaches a canvas shortcut (a hover-key edit included). Keys typed in any other
+  // text field are left alone. A user's keystroke always targets an element (the focused one, or
+  // the body); a key dispatched at the window itself (automation) keeps its canvas meaning.
+  const rotationEntryOpen = rotationInput !== undefined;
+  useEffect(() => {
+    if (!rotationEntryOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      const popover = globalThis.document.querySelector<HTMLFormElement>("[data-rotation-input-popover='true']");
+      const field = popover?.querySelector<HTMLInputElement>("input");
+      if (!popover || !field || !(event.target instanceof Element) || popover.contains(event.target) ||
+          isEditableTarget(event.target) || isBlockedByModalDialog(event.target)) return;
+      const action = rotationEntryKeyAction(event);
+      if (!action) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const input = rotationInputRef.current;
+      if (!input) return;
+      if (action.kind === "keep") { handleRotationInputKeepRef.current(input); return; }
+      if (action.kind === "cancel") { handleRotationInputCancelRef.current(input); return; }
+      // Focus was outside the field: the key acts as on the freshly opened entry, whose angle is
+      // selected, so a typed digit replaces it rather than landing wherever the old caret was.
+      const edit = editRotationEntryField(field.value, 0, field.value.length, action);
+      field.focus({ preventScroll: true });
+      // The field's own change path: React reads the new value from the input event.
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, edit.value);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+      field.setSelectionRange(edit.caret, edit.caret);
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [rotationEntryOpen]);
 
   useEffect(() => {
     if (!rotationInput) {
@@ -15893,7 +16063,9 @@ export function MainWindow({
         }
         retainedObjectMoveRef.current ??= {
           pointerId: preview.pointerId,
-          targets: retainedObjectMoveTargets(pageRef.current, preview.objectIds, preview.arrowPreviewFragments)
+          // The board holds the page and the handle layer beside it; handles must ride along too.
+          targets: retainedObjectMoveTargets(pageRef.current?.closest<HTMLElement>(".document-board") ?? pageRef.current,
+            preview.objectIds, preview.arrowPreviewFragments)
         };
         translateRetainedObjectMoveTargets(retainedObjectMoveRef.current.targets, preview.translateX, preview.translateY);
         if (preview.arrowPreviewFragments) {
@@ -16028,62 +16200,6 @@ export function MainWindow({
     releaseGesturePointer(drag.pointerId);
   }, [releaseGesturePointer]);
 
-  useEffect(() => {
-    const handOffHoverLabelKey = (event: KeyboardEvent) => {
-      const edit = activeAtomLabelEditRef.current;
-      const target = hoveredNativeDeleteTargetRef.current;
-      const canvas = canvasRegionRef.current;
-      if (quitCommittedRef.current || !edit?.startedFromHover || !canvas ||
-          !(event.target instanceof HTMLInputElement) || !event.target.matches('[data-atom-label-editor="true"]') ||
-          event.defaultPrevented || event.isComposing || event.keyCode === 229 ||
-          event.metaKey || event.ctrlKey || event.altKey || !/^[a-z0-9]$/i.test(event.key) ||
-          isBlockedByModalDialog(event.target)) {
-        return;
-      }
-      const exhausted = !nativeHoverAtomLabelCanContinue(edit.draft);
-      const differentAtom = target?.kind === "atom" &&
-        (target.objectId !== edit.objectId || target.atomId !== edit.atomId);
-      const actsOnDifferentAtom = differentAtom &&
-        (nativeElementFromKeyboardKey(event.key) !== undefined || /^[0-9]$/.test(event.key));
-      if (!exhausted && !actsOnDifferentAtom) return;
-      // Only element keys (either case) and digits act on a different hovered atom, matching
-      // hoverLabelContinuesForKey. Other letters keep typing here ("M" and "e" in OMe).
-      // Exhausted text cancels to the committed first key before replaying a fresh hover key.
-      // Capture before the input stops propagation. Finish valid text exactly as Enter does, including its
-      // history/selection layout effect, before the new action gets its own undo entry. Prevent the
-      // input's text default and deliver this key once through the ordinary canvas shortcut path.
-      event.preventDefault();
-      event.stopPropagation();
-      const handoff: { result?: ReturnType<typeof finishedAtomLabelDraft> } = {};
-      hoverLabelHandoffRef.current = handoff;
-      flushSync(() => {
-        if (exhausted) cancelAtomLabelEdit(edit);
-        else finishAtomLabelEdit(edit, "commit");
-      });
-      hoverLabelHandoffRef.current = undefined;
-      const result = handoff.result;
-      if (activeAtomLabelEditRef.current) return;
-      if (result && "refusal" in result && result.refusal) return;
-      const warning = result && "message" in result && result.message && result.document !== result.baseline &&
-        result.target.kind === "atom" && result.target.atomId === edit.atomId ? result.message : undefined;
-      const statusBeforeReplay = statusRef.current;
-      flushSync(() => {
-        canvas.dispatchEvent(new KeyboardEvent("keydown", {
-          key: event.key, code: event.code, shiftKey: event.shiftKey, repeat: event.repeat,
-          location: event.location, bubbles: true, cancelable: true
-        }));
-      });
-      if (warning) {
-        const replayStatus = statusRef.current;
-        setStatus(replayStatus && replayStatus !== statusBeforeReplay && replayStatus !== warning
-          ? `${warning}. ${replayStatus}`
-          : warning);
-      }
-    };
-    window.addEventListener("keydown", handOffHoverLabelKey, true);
-    return () => window.removeEventListener("keydown", handOffHoverLabelKey, true);
-  }, [cancelAtomLabelEdit, finishAtomLabelEdit]);
-
   useEffect(() => installPopoverEscapeRouting(() => Boolean(
     activeAtomLabelEditRef.current || activeTextEditObjectIdRef.current || tableCellEditRef.current
   )), []);
@@ -16172,10 +16288,7 @@ export function MainWindow({
 
       // An open modal dialog owns the keyboard. MainWindow also has a capture-phase Escape listener, so
       // its global handlers must opt out explicitly; propagation control inside a dialog is too late.
-      // A key the canvas never sees (in a dialog or another text field) ends a hover-label
-      // continuation, so the next canvas key is not appended to the old label.
       if (isBlockedByModalDialog(event.target)) {
-        hoverLabelAssignmentRef.current = undefined;
         return;
       }
       // Tab navigation ends an inline edit, so it also works while that editor owns focus.
@@ -16187,14 +16300,12 @@ export function MainWindow({
       if (!event.defaultPrevented && (event.metaKey || event.ctrlKey || event.altKey) && tabCommand &&
           ["document.closeTab", "document.nextTab", "document.previousTab"].includes(tabCommand)) {
         event.preventDefault();
-        hoverLabelAssignmentRef.current = undefined;
         void invoke(tabCommand);
         return;
       }
       // The reload guard cancels only the browser default; registered canvas shortcuts still run.
       if (shouldIgnoreShortcutTarget(event.target, event.key) ||
           (event.defaultPrevented && !wasBrowserReloadPrevented(event))) {
-        hoverLabelAssignmentRef.current = undefined;
         return;
       }
       // Target-based shortcut filtering alone misses an editor waiting for native focus (or a
@@ -16205,10 +16316,6 @@ export function MainWindow({
       ) {
         return;
       }
-      if (event.metaKey || event.ctrlKey || event.altKey || (!/^[a-z0-9]$/i.test(event.key) && event.key !== "Shift")) {
-        hoverLabelAssignmentRef.current = undefined;
-      }
-
       // A menu opened by keyboard during a drag owns this Escape, even if the canvas's
       // window listener runs before the menu's listener. Leave the gesture armed.
       if (event.key === "Escape" &&
@@ -16344,104 +16451,24 @@ export function MainWindow({
 
       if (!event.metaKey && !event.ctrlKey && !event.altKey) {
         const tables = hoverShortcutsRef.current;
-        // The literal key decides the re-hit below; the shifted alternate ("+" for a Shift+= some
-        // input paths report as "=") is never a letter or digit, so it would decide the same way.
-        const literalKey = hoverKeyFromEvent(event);
-        const assignment = hoverLabelAssignmentRef.current;
-        // Over a different atom, element keys (either case) and digits act on that atom; other
-        // letters continue the original label ("M" and "e" in OMe), even after pointer drift.
-        // Bond shortcuts use the pointer's bond. Other keys follow hoverLabelContinuesForKey.
-        // An element key that doesn't continue over a bond labels its nearer end.
-        if (keybindingSchemeRef.current === "chemdraft") {
-          // Re-hit the pointer when a key ends continuation or belongs to the bond under the pointer.
-          const retarget = labelHoverRetargetRef.current;
-          const current = hoveredNativeDeleteTargetRef.current;
-          const continuingOnAtom = assignment !== undefined && current?.kind === "atom" &&
-            current.objectId === assignment.objectId && current.atomId === assignment.atomId &&
-            /^[a-z0-9]$/i.test(literalKey) && !Object.prototype.hasOwnProperty.call(numericBondDrawingHotkeys, literalKey);
-          if (retarget && !activeAtomLabelEditRef.current &&
-            (!continuingOnAtom || hasBondHoverShortcut(retarget.pointerTarget, literalKey, tables))) {
-            labelHoverRetargetRef.current = undefined;
-            rederiveNativeCanvasHoverRef.current?.(documentRef.current);
-          }
-        }
         // Each candidate key (the configured literal binding first, then the shifted alternate) runs
-        // the whole hover route, a label key over a bond moving to the nearer atom included, and the
-        // first that does something wins, before the global registry (which folds +/=) can claim it.
+        // the hover route, and the first that does something wins, before the global registry
+        // (which folds +/=) can claim it.
         const pointerTarget = hoveredNativeDeleteTargetRef.current;
-        const routeFor = (candidate: string) => hoverKeyRoute(
+        const routeFor = (candidate: string) => activeNativeTargetShortcutCommand(
           documentRef.current,
           selectedNativeMoleculePart,
           pointerTarget,
-          hoverPagePointRef.current,
-          assignment,
           candidate,
-          keybindingSchemeRef.current,
           tables
         );
-        const resolved = resolveHoverKey(event, (candidate) => {
-          const route = routeFor(candidate);
-          return route.labelContinues || route.commandId !== undefined ? route : undefined;
-        });
+        const resolved = resolveHoverKey(event, routeFor);
         const key = resolved.key;
-        const { labelContinues, labelAtom, commandId: hoveredTargetCommandId } = resolved.match ?? routeFor(key);
-        if (labelAtom) {
-          assignHoveredNativeDeleteTarget(labelAtom);
-          labelHoverRetargetRef.current ??= { pointerTarget };
-        }
-        const hoveredTarget = hoveredNativeDeleteTargetRef.current;
-        if (key !== "Shift") {
-          hoverLabelAssignmentRef.current = undefined;
-        }
-        if (
-          assignment && hoveredTarget?.kind === "atom" &&
-          hoveredTarget.objectId === assignment.objectId && hoveredTarget.atomId === assignment.atomId &&
-          labelContinues
-        ) {
-          const object = findDocumentObject(documentRef.current, assignment.objectId);
-          const atom = object?.type === "molecule" ? object.atoms.find((candidate) => candidate.id === assignment.atomId) : undefined;
-          const draft = `${assignment.label}${key}`;
-          if (atom?.element === assignment.label && startAtomLabelEdit(hoveredTarget, {
-            draft, beforeAtom: assignment.beforeAtom, beforeMolecule: assignment.beforeMolecule,
-            startedFromHover: true,
-            hotkeyChanged: assignment.hotkeyChanged, hotkeyUndoDocument: assignment.hotkeyUndoDocument,
-            // The original atom still informs the typed-label chemistry decision (for example,
-            // attaching OMe to a ring carbon). Keep its history entry for commit coalescing,
-            // while Escape cancels only the later text draft, including after pointer drift.
-            saveRevision: assignment.saveRevision
-          })) {
-            event.preventDefault();
-            updateAtomLabelDraft(activeAtomLabelEditRef.current!, draft);
-            return;
-          }
-        }
+        const hoveredTargetCommandId = resolved.match ?? routeFor(key);
         if (hoveredTargetCommandId) {
           event.preventDefault();
-          const beforeObject = hoveredTarget ? findDocumentObject(documentRef.current, hoveredTarget.objectId) : undefined;
-          const beforeAtom = beforeObject?.type === "molecule" && hoveredTarget?.kind === "atom"
-            ? beforeObject.atoms.find(a => a.id === hoveredTarget.atomId) : undefined;
-          const beforeHotkeyDocument = documentRef.current;
-          const saveRevision = documentSaveRevisionsRef.current.get(activeDocumentTabIdRef.current) ?? 0;
-          // A label key deliberately pins hover to its atom until continuation ends. Keep that
-          // existing handoff; all other hover edits re-hit as soon as their command returns.
-          invokeCanvasKeyCommand(hoveredTargetCommandId, !labelHoverRetargetRef.current);
-          // Only a label assignment made by a hover key starts continuation. Other keys and
-          // selected-atom assignments retain their existing shortcut behavior.
-          const assignedElement = nativeElementFromKeyboardKey(key);
-          if (
-            keybindingSchemeRef.current === "chemdraft" && hoveredTarget?.kind === "atom" &&
-            assignedElement && hoveredTargetCommandId === "atom.setHoveredElement." + assignedElement
-          ) {
-            const object = findDocumentObject(documentRef.current, hoveredTarget.objectId);
-            const atom = object?.type === "molecule" ? object.atoms.find((candidate) => candidate.id === hoveredTarget.atomId) : undefined;
-            if (atom?.element === assignedElement && beforeAtom && beforeObject?.type === "molecule") {
-              const hotkeyChanged = documentRef.current !== beforeHotkeyDocument;
-              hoverLabelAssignmentRef.current = { objectId: hoveredTarget.objectId, atomId: atom.id, label: atom.element,
-                beforeAtom, beforeMolecule: beforeObject, hotkeyChanged,
-                saveRevision,
-                hotkeyUndoDocument: hotkeyChanged ? documentHistoryRef.current.past.at(-1) : undefined };
-            }
-          }
+          // Hover edits re-hit the pointer as soon as their command returns.
+          invokeCanvasKeyCommand(hoveredTargetCommandId, true);
           return;
         }
       }
@@ -16511,23 +16538,6 @@ export function MainWindow({
     updateAtomLabelDraft
   ]);
 
-  // Any tool change ends a hover-label continuation, whichever way it arrives (palette, native menu,
-  // shortcut), so a letter typed after switching tools is never appended to the earlier label.
-  // A layout effect, so it lands before the browser can deliver the next key.
-  useLayoutEffect(() => {
-    hoverLabelAssignmentRef.current = undefined;
-  }, [activeToolState.activeCommandId]);
-
-  useEffect(() => {
-    // A pointer press ends the brief hover-key continuation window, even if the press stays on
-    // the same atom. Otherwise typing after a bond-tool click can append to a stale label edit.
-    const resetHoverLabelContinuation = () => {
-      hoverLabelAssignmentRef.current = undefined;
-    };
-    window.addEventListener("pointerdown", resetHoverLabelContinuation, true);
-    return () => window.removeEventListener("pointerdown", resetHoverLabelContinuation, true);
-  }, []);
-
   useEffect(() => {
     const setShiftPressed = (pressed: boolean) => {
       shiftKeyPressedRef.current = pressed;
@@ -16560,17 +16570,13 @@ export function MainWindow({
         setShiftPressed(false);
       }
     };
-    // Leaving the window (another app, a hidden window) also ends a hover-label continuation: the
-    // next key typed after coming back is a new action, not the rest of the old label.
     const handleVisibilityChange = () => {
       if (window.document.visibilityState !== "visible") {
         setShiftPressed(false);
-        hoverLabelAssignmentRef.current = undefined;
       }
     };
     const handleBlur = () => {
       setShiftPressed(false);
-      hoverLabelAssignmentRef.current = undefined;
     };
 
     window.addEventListener("keydown", handleKeyDown);
@@ -16658,23 +16664,31 @@ export function MainWindow({
   // configurations. Whenever chrome-driving state changes, flip the page background var
   // for one frame; the full-page repaint that forces erases anything stale regardless
   // of which interaction dropped it. The one-frame color delta (#fff → #fffefe) is
-  // imperceptible, and the page repaints on these transitions anyway.
+  // imperceptible, and the page repaints on these transitions anyway. Handles live in the
+  // handle layer beside the page and may overhang the page onto the canvas, so the canvas
+  // background flips too (#cbd3da → #cbd3db), repainting whatever lies around the page.
   const chromeScrubSelectionKey = document.selection.objectIds.join("|");
   useEffect(() => {
     const page = pageRef.current;
     if (!page) {
       return;
     }
+    const canvas = page.closest<HTMLElement>(".canvas-region");
     page.style.setProperty("--cd-bg-page", "#fffefe");
+    canvas?.style.setProperty("--cd-bg-canvas", "#cbd3db");
+    const unscrub = () => {
+      page.style.removeProperty("--cd-bg-page");
+      canvas?.style.removeProperty("--cd-bg-canvas");
+    };
     let scrubFrame: number | undefined = window.requestAnimationFrame(() => {
       scrubFrame = undefined;
-      page.style.removeProperty("--cd-bg-page");
+      unscrub();
     });
     return () => {
       if (scrubFrame !== undefined) {
         window.cancelAnimationFrame(scrubFrame);
       }
-      page.style.removeProperty("--cd-bg-page");
+      unscrub();
     };
   }, [
     chromeScrubSelectionKey,
@@ -17006,7 +17020,7 @@ export function MainWindow({
         commandIcon: (commandId) => commandByIdRef.current.get(commandId)?.icon,
         commandAssetName: (commandId) => commandByIdRef.current.get(commandId)?.assetName,
         widgetTitle: (widgetId) => TOOLBAR_WIDGET_TITLES[widgetId],
-        widgetLayout: (widgetId) => TOOLBAR_WIDGET_GRID_SPANS[widgetId],
+        widgetLayout: toolbarWidgetGridSpan,
         gridRows: registry.get(DEFAULT_TOOLSET_ID)?.gridLayout?.rows
       });
       if (next !== current) {
@@ -17560,7 +17574,6 @@ export function MainWindow({
     eventTarget?: EventTarget | null
   ) => {
     hoverPagePointRef.current = point;
-    labelHoverRetargetRef.current = undefined;
     if (!point) {
       setHoveredNativeAtom(undefined);
       setNativeDoubleBondSidePreview(undefined);
@@ -18874,6 +18887,8 @@ export function MainWindow({
       [changed ? "Rotation applied" : "Rotation unchanged", ...new Set(session.warnings ?? [])].join(" "));
     return changed;
   }, [commitLiveInputPreview, updateRotationInput]);
+  handleRotationInputKeepRef.current = handleRotationInputKeep;
+  handleRotationInputCancelRef.current = handleRotationInputCancel;
 
   const showObjectResizeReadout = useCallback((objectId: string, scale: ObjectResizeScale, hold = false) => {
     if (objectResizeReadoutTimeoutRef.current !== undefined) {
@@ -19068,9 +19083,17 @@ export function MainWindow({
       return false;
     }
 
-    return commitDocumentHistoryFrom(drag.startDocument, resized, findDocumentObject(drag.startDocument, drag.objectId)?.type === "electron-mark" ? "Resize electron mark" : undefined,
-      undefined, selectionTransformChemistry("resize", independentlyMovedMarkIds));
-  }, [clearObjectTransformPreview, commitDocumentHistoryFrom, objectResizeDocumentFromDrag, replacePresentDocument, showObjectResizeReadout]);
+    const undoLabel = findDocumentObject(drag.startDocument, drag.objectId)?.type === "electron-mark" ? "Resize electron mark" : undefined;
+    const chemistry = selectionTransformChemistry("resize", independentlyMovedMarkIds);
+    // Enlarging past the page edge asks the same Enlarge / Keep Page Size question as pasting or
+    // placing a large structure (owner rule 2026-11-27): the page grows (shifting content when
+    // the object crosses the top or left edge) instead of leaving it clipped. One undo entry.
+    if (planDocumentPageFit(drag.startDocument, resized).growth.length) {
+      commitInsertionHistoryWithPageFit(drag.startDocument, resized, undoLabel, chemistry);
+      return true;
+    }
+    return commitDocumentHistoryFrom(drag.startDocument, resized, undoLabel, undefined, chemistry);
+  }, [clearObjectTransformPreview, commitDocumentHistoryFrom, commitInsertionHistoryWithPageFit, objectResizeDocumentFromDrag, replacePresentDocument, showObjectResizeReadout]);
 
   const nativePartDocumentFromDrag = useCallback((drag: NativePartDragState, point: ClientPoint): ChemDraftDocument => {
     const rawDelta = {
@@ -19829,21 +19852,6 @@ export function MainWindow({
     startNativeArtLineDrawOrDefault,
     startNativePlacementDrag
   ]);
-
-  // Right-clicking bare page is still a right-click: it opens the page menu, whose whole point is
-  // Paste. Without it the only way to paste with the mouse was the Edit menu, because the object
-  // menu (the one with Paste in it) needs an object under the pointer.
-  const handlePageContextMenu = useCallback((event: ObjectMouseEvent) => {
-    if (isEditableTarget(event.target)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    setObjectContextMenu(undefined);
-    selectionClipboardPasteStateRef.current = undefined;
-    // Paste from this menu lands where the menu was opened, not where the mouse drifted while
-    // reading it.
-    lastCanvasPointerClientPointRef.current = { x: event.clientX, y: event.clientY };
-    setPageContextMenu({ x: event.clientX, y: event.clientY });
-  }, []);
 
   const handlePagePointerMove = useCallback((event: ObjectPointerEvent) => {
     const groupTransform = groupTransformDragRef.current;
@@ -20862,6 +20870,8 @@ export function MainWindow({
   }, [clearObjectDrag, clearGraphicCornerRadiusDrag, clearGraphicGradientDrag, clearGraphicPathEditDrag, clearGraphicMarkerDrag, clearNativeFreehandArtDrag, clearNativePathArtDraw, clearNativePartDrag, clearNativePlacementDrag, clearObjectResizeDrag, clearObjectRotateDrag, clearProjectedPlaneTiltDrag, clearTapeMeasureDrag, clearTextResize, replacePresentDocument]);
 
   const handlePagePointerLeave = useCallback(() => {
+    cancelPendingCanvasContextMenu();
+
     if (nativeBondDragRef.current) {
       return;
     }
@@ -20884,7 +20894,7 @@ export function MainWindow({
 
     setHoveredNativeAtom(undefined);
     assignHoveredNativeDeleteTarget(undefined);
-  }, []);
+  }, [cancelPendingCanvasContextMenu]);
 
   const handleObjectPointerDown = useCallback((objectId: string, event: ObjectPointerEvent) => {
     if (event.button !== 0) {
@@ -22735,52 +22745,18 @@ export function MainWindow({
     openObjectResizeInput(objectId, corner);
   }, [openObjectResizeInput]);
 
-  const handleObjectContextMenu = useCallback((objectId: string, event: ObjectMouseEvent) => {
-    if (isEditableTarget(event.target)) return;
+  const showObjectContextMenu = useCallback((
+    objectId: string,
+    position: ClientPoint,
+    point: ClientPoint | undefined,
+    nativeMoleculeHit: NativeMoleculeDeleteHit | undefined,
+    menuSelection: ContextMenuSelection | undefined,
+    loadStereoReadout?: () => Promise<string | undefined>
+  ) => {
     const currentDocument = documentRef.current;
-    const point = pagePointFromPointerEvent(event);
     const crossingHit = point ? findNearestCrossingHit(pageSvgRenderPlan.crossings, point) : undefined;
-
-    const clickedObject = findDocumentObject(currentDocument, objectId);
-    const nativeContext = clickedObject?.type === "molecule" && isNativeMoleculeGraph(clickedObject);
-    // Resolve by geometry before crossing actions, so a right-click at a weave still acts
-    // on the atom/bond under the pointer. Crossing state is secondary menu context.
-    const resolvedNativeHit = nativeContext && point
-      ? nativeMoleculeCanvasHoverTarget(
-          currentDocument,
-          point,
-          event.target,
-          hitToleranceForScale(viewportRef.current.scale)
-        )
-      : undefined;
-    let nativeMoleculeHit: NativeMoleculeDeleteHit | undefined;
-    if (resolvedNativeHit) {
-      objectId = resolvedNativeHit.objectId;
-      nativeMoleculeHit = resolvedNativeHit.kind === "atom"
-        ? {
-            kind: "atom",
-            atomId: resolvedNativeHit.atomId,
-            distanceToPointer: resolvedNativeHit.distanceToPointer
-          }
-        : {
-            kind: "bond",
-            bondId: resolvedNativeHit.bondId,
-            fromAtomId: resolvedNativeHit.fromAtomId,
-            toAtomId: resolvedNativeHit.toAtomId,
-            distanceToPointer: resolvedNativeHit.distanceToPointer
-          };
-    } else if (nativeContext && crossingHit) {
-      objectId = crossingHit.front.objectId;
-    }
     const object = findDocumentObject(currentDocument, objectId);
-    nativeMoleculeHit ??= object?.type === "molecule" && point
-      ? nativeMoleculeHitFromPointerTarget(
-          object,
-          point,
-          event.target,
-          hitToleranceForScale(viewportRef.current.scale)
-        )
-      : undefined;
+    if (!object || !shouldActivateDocumentObject(object, "selection")) return;
     let nextSelectedNativePart: NativeMoleculeSelectionPart | undefined;
     let targetKind: ObjectContextMenuState["targetKind"] = "object";
 
@@ -22793,42 +22769,22 @@ export function MainWindow({
       ? selectableDocumentObjectIdForSelection(menuPage.objects, objectId)
       : objectId;
     const preserveMultiSelection =
+      menuSelection !== undefined &&
       currentDocument.selection.objectIds.length > 1 &&
       currentDocument.selection.objectIds.includes(selectableObjectId);
 
-    // A precise atom/bond hit resolves the same way whether or not the broader selection is
-    // being preserved — preserveMultiSelection only decides whether the document SELECTION
-    // collapses to this one object below, not whether bond-depth/layer-part menu options are
-    // available for the exact thing the user right-clicked.
-    if (object?.type === "molecule" && nativeMoleculeHit) {
-      const selectionResolution = nativeContextMenuSelectionResolutionFromHit(
-        currentDocument,
-        objectId,
-        nativeMoleculeHit,
-        selectedNativeMoleculePart
+    if (menuSelection) {
+      nextSelectedNativePart = menuSelection.part;
+      targetKind = menuSelection.part?.kind ?? "object";
+    } else if (object.type === "molecule" && nativeMoleculeHit) {
+      const resolution = nativeContextMenuSelectionResolutionFromHit(
+        currentDocument, objectId, nativeMoleculeHit,
+        selectedNativeMoleculeParts.find(part => part.objectId === objectId)
       );
-      nextSelectedNativePart = selectionResolution.selectedPart;
-      targetKind = selectionResolution.targetKind;
-    } else if (!preserveMultiSelection && object?.type === "molecule" && isNativeMoleculeGraph(object) && !nativeMoleculeHit) {
-      return;
+      nextSelectedNativePart = resolution.selectedPart;
+      targetKind = resolution.targetKind;
     }
 
-    if (!object || !shouldActivateDocumentObject(object, "selection")) {
-      return;
-    }
-
-    // A right-click INSIDE a lassoed fragment keeps that fragment as the whole selection. The
-    // resolution above returns the very part object that was already selected when the hit lands
-    // inside it, and a lasso fragment holds no object ids at all — so promoting the molecule into
-    // the document selection here is what made right-click ▸ Copy copy the entire structure
-    // instead of the highlighted piece.
-    const preserveFragmentSelection =
-      currentDocument.selection.objectIds.length === 0 &&
-      nextSelectedNativePart !== undefined &&
-      selectedNativeMoleculeParts.includes(nextSelectedNativePart);
-
-    event.preventDefault();
-    event.stopPropagation();
     if (object.type === "table") {
       // Commit before changing cells: contextmenu can also arrive without a pointerdown/blur.
       const commit = tableCellEditorRef.current?.commit();
@@ -22843,21 +22799,14 @@ export function MainWindow({
       activeTableCellRef.current = cell;
       setActiveTableCell(cell);
     }
-    if (!preserveMultiSelection && !preserveFragmentSelection) {
+    if (!menuSelection) {
       replacePresentDocument((current) => selectDocumentObject(current, objectId));
+      setSelectedNativeMoleculePart(nextSelectedNativePart);
     }
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
-    // The resolved part drives the MENU (targetKind, bondDepthContext) either way, but only a
-    // single-object right-click promotes it to the persistent part selection — under a
-    // preserved multi-selection the document selection stays authoritative, so Delete and other
-    // selection-wide commands keep acting on everything selected, not the hit bond. A preserved
-    // fragment is left exactly as it was, across every molecule it covers.
-    if (!preserveFragmentSelection) {
-      setSelectedNativeMoleculePart(preserveMultiSelection ? undefined : nextSelectedNativePart);
-    }
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
     const atomWarning = (() => {
@@ -22897,19 +22846,15 @@ export function MainWindow({
       return { scope, suppressed: flagged === 0, count: flagged > 0 ? flagged : suppressedCount, problemCommandId };
     })();
     setPageContextMenu(undefined);
-    lastCanvasPointerClientPointRef.current = { x: event.clientX, y: event.clientY };
+    lastCanvasPointerClientPointRef.current = position;
     selectionClipboardPasteStateRef.current = undefined;
     setObjectContextMenu({
       objectId,
       targetKind,
       bondDepthContext: bondDepthContextFromNativeSelection(nextSelectedNativePart, pageSvgRenderPlan.crossings, currentDocument),
       ...(atomWarning ? { atomWarning } : {}),
-      // The readout describes what was right-clicked, not the (possibly broader or different)
-      // preserved selection: a selected bond or whole fragment must not hijack an atom's R/S.
-      stereoPart: object?.type === "molecule" && nativeMoleculeHit
-        ? objectContextMenuStereoPart(nativeSelectionFromHit(objectId, nativeMoleculeHit)) : undefined,
-      x: event.clientX,
-      y: event.clientY
+      loadStereoReadout,
+      ...position
     });
     setStatus(preserveMultiSelection
       ? (crossingHit && targetKind !== "object"
@@ -22922,12 +22867,138 @@ export function MainWindow({
         : targetKind === "object" ? "Layer options for selected object" : "Layer options for selected molecule part");
   }, [
     assignHoveredNativeDeleteTarget,
-    pagePointFromPointerEvent,
     pageSvgRenderPlan.crossings,
     replacePresentDocument,
-    selectedNativeMoleculePart,
     selectedNativeMoleculeParts
   ]);
+
+  useEffect(() => {
+    const cancelOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") cancelPendingCanvasContextMenu();
+    };
+    window.addEventListener("pointerdown", cancelPendingCanvasContextMenu, true);
+    window.addEventListener("keydown", cancelOnEscape, true);
+    return () => {
+      window.removeEventListener("pointerdown", cancelPendingCanvasContextMenu, true);
+      window.removeEventListener("keydown", cancelOnEscape, true);
+      cancelPendingCanvasContextMenu();
+    };
+  }, [cancelPendingCanvasContextMenu]);
+
+  const handleCanvasContextMenu = useCallback((clickedId: string | undefined, event: ObjectMouseEvent) => {
+    cancelPendingCanvasContextMenu();
+    if (isEditableTarget(event.target)) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    const currentDocument = documentRef.current;
+    const { objects } = currentDocument.pages[0];
+    const position = { x: event.clientX, y: event.clientY };
+    const point = pagePointFromPointerEvent(event);
+    const scale = viewportRef.current.scale;
+    const tolerance = hitToleranceForScale(scale);
+    let normalHit: { object: DocumentObject; layer: number; part?: NativeMoleculeDeleteHit } | undefined;
+    // Check the drawing front to back. Atom and bond geometry also works when a transparent
+    // control or an empty molecule wrapper receives the event.
+    for (let layer = objects.length - 1; layer >= 0; layer--) {
+      const object = objects[layer]!;
+      if (object.type === "molecule" && isNativeMoleculeGraph(object)) {
+        const part = point && nativeMoleculeHitFromPointerTarget(object, point, event.target, tolerance);
+        if (!part) continue;
+        normalHit = { object, layer, part };
+      } else {
+        if (object.id !== clickedId) continue;
+        normalHit = { object, layer };
+      }
+      break;
+    }
+    // Selection handles are the molecule's portaled chrome, so a press on one arrives with the
+    // molecule's id even where the handle lies over another object. Resolve the objects that
+    // occupy the point before falling back to the selection frame.
+    if (!normalHit && clickedId !== undefined && point) {
+      for (let layer = objects.length - 1; layer >= 0; layer--) {
+        const object = objects[layer]!;
+        if (object.type === "molecule" || object.type === "group" || !contextMenuObjectOccupiesPoint(object, objects, point)) continue;
+        normalHit = { object, layer };
+        break;
+      }
+    }
+    const wholeIds = new Set(resolveGroupedDocumentObjectIds(objects, currentDocument.selection.objectIds));
+    const partsByObjectId = new Map(selectedNativeMoleculeParts.map(part => [part.objectId, part]));
+    const selectionForHit = (object: DocumentObject, hit?: NativeMoleculeDeleteHit): ContextMenuSelection | undefined => {
+      const part = partsByObjectId.get(object.id);
+      if (part) {
+        if (object.type === "molecule" && hit && nativeSelectionContextContainsHit(object, part, hit)) {
+          return { objectId: object.id, part };
+        }
+      } else if (wholeIds.has(object.id)) {
+        return { objectId: object.id };
+      }
+      return undefined;
+    };
+    const candidates = point ? contextStereoHits(objects, point, scale) : [];
+    const normalSelection = normalHit && selectionForHit(normalHit.object, normalHit.part);
+    const layers = new Map(objects.map((object, layer) => [object.id, layer]));
+    // A front-layer descriptor can win the click. On the same layer, stereo reach also keeps a
+    // selected stereocenter when the ordinary hit falls on an incident bond.
+    const stereoTargets = candidates.filter(({ molecule, hit }) =>
+      layers.get(molecule.id)! > (normalHit?.layer ?? -1) ||
+      (normalHit?.object.id === molecule.id && !normalSelection &&
+        normalHit.part?.kind === "bond" && hit.kind === "atom" &&
+        (hit.atomId === normalHit.part.fromAtomId || hit.atomId === normalHit.part.toAtomId) &&
+        selectionForHit(molecule, hit))
+    ).sort((left, right) => layers.get(right.molecule.id)! - layers.get(left.molecule.id)!);
+
+    const openFallback = () => {
+      if (normalHit) {
+        const localCandidates = candidates.filter(({ molecule }) => molecule.id === normalHit.object.id);
+        showObjectContextMenu(normalHit.object.id, position, point, normalHit.part, normalSelection,
+          localCandidates.length > 0 ? async () => (await resolveContextStereo(localCandidates))?.label : undefined);
+        return;
+      }
+      const selection = point && contextMenuSelectionAtPoint(
+        objects, wholeIds, partsByObjectId, point, displayedGroupSelectionBoundsRef.current);
+      if (selection) {
+        showObjectContextMenu(selection.objectId, position, point, undefined, selection);
+        return;
+      }
+      setObjectContextMenu(undefined);
+      selectionClipboardPasteStateRef.current = undefined;
+      lastCanvasPointerClientPointRef.current = position;
+      setPageContextMenu(position);
+    };
+    if (stereoTargets.length === 0) {
+      openFallback();
+      return;
+    }
+    // Wait only when stereo reach can change the target. A new press, Escape, or leaving
+    // the drawing cancels the opening while the descriptor is pending. An engine that has not
+    // answered by the deadline gets the ordinary menu, and its late answer is dropped.
+    const request = new AbortController();
+    pendingCanvasContextMenu.current = request;
+    // The menu targets come from the selection read at the press. A part selection can
+    // change without a new document (closing the Rings toolbar clears a selected ring),
+    // and the menu's commands act on the live selection, so drop the opening then too.
+    const settle = () => {
+      if (request.signal.aborted) return false;
+      request.abort();
+      pendingCanvasContextMenu.current = undefined;
+      return !!pageRef.current && currentDocument === documentRef.current &&
+        selectedNativeMoleculeParts === selectedNativeMoleculePartsRef.current;
+    };
+    const deadline = setTimeout(() => {
+      if (settle()) openFallback();
+    }, CONTEXT_STEREO_DEADLINE_MS);
+    request.signal.addEventListener("abort", () => clearTimeout(deadline), { once: true });
+    void resolveContextStereo(stereoTargets).then(result => {
+      if (!settle()) return;
+      const hitObject = result && objects[layers.get(result.hit.objectId)!];
+      if (result && hitObject) {
+        showObjectContextMenu(hitObject.id, position, point, result.hit,
+          selectionForHit(hitObject, result.hit), async () => result.label);
+      } else openFallback();
+    });
+  }, [cancelPendingCanvasContextMenu, pagePointFromPointerEvent, selectedNativeMoleculeParts, showObjectContextMenu]);
 
   const handleObjectPointerMove = useCallback((objectId: string, event: ObjectPointerEvent) => {
     event.stopPropagation();
@@ -23823,9 +23894,9 @@ export function MainWindow({
   const spinCarriedMarkIds = useMemo(() => spinCarriedMarks.length > 0
     ? new Set(spinCarriedMarks.map(mark => mark.markId)) : undefined, [spinCarriedMarks]);
   // The same placement flatten commits (offset kept, or turned to a free side; layout-engine's
-  // carryElectronMarksToRedrawnMolecule), read for the projected atoms of each frame in the frame
-  // flatten commits them in, the molecule's own rotation included: each mark is painted at the page
-  // position release stores it at (spinOverlayCarriedMarkPlacements).
+  // carryElectronMarksToRedrawnMolecule), read for the projected atoms of each frame in the unturned
+  // frame the overlay draws its bonds and labels in, so each mark sits beside its live atom
+  // (spinOverlayCarriedMarkPlacements).
   const spinSourceMolecule = activeSpin3dState?.sourceMolecule;
   const placeSpinCarriedMarks = useMemo(() => spinSourceMolecule && spinCarriedMarks.length > 0
     ? (atoms: MoleculeAtom[]) => spinOverlayCarriedMarkPlacements(activePage, spinSourceMolecule, atoms)
@@ -23849,7 +23920,6 @@ export function MainWindow({
         toolbars: getToolbarsMenuModel(visibleToolsetIds, toolsetRegistry),
         pluginMenuItems: [...bracketMenuItems, ...pluginRuntime.pluginMenuItems],
         availablePluginUpdateCount,
-        keybindingScheme,
         keybindingOverrides: shortcutOverrides,
         platform: shortcutPlatform,
         unavailableCommandIds
@@ -23861,7 +23931,6 @@ export function MainWindow({
       canRedo,
       document.selection.objectIds.length,
       quickActions,
-      keybindingScheme,
       shortcutOverrides,
       shortcutPlatform,
       selectedMolecule,
@@ -23951,7 +24020,7 @@ export function MainWindow({
     onObjectResizeInputKeep: handleObjectResizeInputKeep,
     onObjectResizeInputHome: handleObjectResizeInputHome,
     onObjectResizeInputCancel: handleObjectResizeInputCancel,
-    onContextMenu: handleObjectContextMenu,
+    onContextMenu: handleCanvasContextMenu,
     onAtomProblemInvoke: (commandId: string) => { void invokeCommandRef.current(commandId); },
     onBondStereoBadgeOpen: openBondStereoPopover,
     onTextChange: updateTextObjectContent,
@@ -24033,6 +24102,7 @@ export function MainWindow({
   useEffect(() => { refreshModifierHintRef.current(); });
 
   const openCanvasKeyboardContextMenu = useCallback(() => {
+    cancelPendingCanvasContextMenu();
     const page = pageRef.current;
     if (!page) return;
     const rect = page.getBoundingClientRect();
@@ -24051,16 +24121,21 @@ export function MainWindow({
       lastCanvasPointerClientPointRef.current = anchor;
       setPageContextMenu(undefined);
       // A clicked atom or bond is the selected part even while its molecule is the selected object.
-      const stereoPart = selection.length <= 1 && selectedNativeMoleculePartsRef.current.length === 1 &&
-        part?.objectId === object.id ? objectContextMenuStereoPart(part) : undefined;
+      const loadStereoReadout = object.type === "molecule" && selection.length <= 1 &&
+        selectedNativeMoleculePartsRef.current.length === 1 && part?.objectId === object.id
+        ? stereoReadoutRequest(object, part) : undefined;
       setObjectContextMenu({ objectId: object.id, targetKind: part && selection.length === 0 ? "parts" : "object",
-        stereoPart, ...anchor });
+        loadStereoReadout, ...anchor });
       return;
     }
-    page.dispatchEvent(new MouseEvent("contextmenu", {
-      bubbles: true, cancelable: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2
-    }));
-  }, [activePage.objects]);
+    // Nothing is selected: open the page menu at the page centre directly. A synthetic
+    // contextmenu would hit-test molecules there and could open an object menu instead.
+    setObjectContextMenu(undefined);
+    selectionClipboardPasteStateRef.current = undefined;
+    const centre = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    lastCanvasPointerClientPointRef.current = centre;
+    setPageContextMenu(centre);
+  }, [activePage.objects, cancelPendingCanvasContextMenu]);
 
   useEffect(() => {
     const onContextMenu = (event: globalThis.MouseEvent) => {
@@ -24207,6 +24282,7 @@ export function MainWindow({
                 itemGroups={renderGroups.map((group) => group.items)}
                 gridLayout={toolset.gridLayout}
                 activeTool={activeTool}
+                toolsetId={toolset.id}
                 currentDistributeMode={distributeMode}
                 mode="floating"
                 orientation={toolset.gridLayout?.orientation ?? "vertical"}
@@ -24387,6 +24463,7 @@ export function MainWindow({
             if (event.target === event.currentTarget && event.key === "Tab" && !event.shiftKey) {
               const targets = currentMoleculeInspector.targets.bondTargets;
               if (targets.length === 1) {
+                // Badges draw in the element holding the molecule's controls (with its handles, if any).
                 const badge = event.currentTarget.querySelector<SVGGElement>(
                   `[data-object-controls="${targets[0].objectId}"] [data-unspecified-bond-id="${targets[0].bondId}"]`);
                 if (badge) { event.preventDefault(); event.stopPropagation(); badge.focus(); return; }
@@ -24398,7 +24475,11 @@ export function MainWindow({
           }}
           onPointerDownCapture={(event) => {
             const canvas = event.currentTarget;
-            if (event.button === 0 && event.isPrimary !== false) {
+            const macContextPress = event.button === 0 && event.ctrlKey &&
+              (shortcutPlatform ?? detectDesktopShortcutPlatform()) === "macos" &&
+              !isEditableTarget(event.target) && isCanvasDrawingPress(canvas, event);
+            const primaryPress = event.button === 0 && event.isPrimary !== false && !macContextPress;
+            if (primaryPress) {
               badgePressRef.current = undefined;
               const badge = bondStereoBadgeAtPointer(canvas, event);
               if (badge) {
@@ -24415,7 +24496,7 @@ export function MainWindow({
             // Leave editor controls alone. The edited glyph is pointer-transparent while its
             // HTML preview shows, so its second double-click press lands on the editor.
             const editingControl = target?.closest(".text-resize-handle")?.closest("[data-object-id]")?.getAttribute("data-object-id") === textEditId;
-            if (textEditId && event.button === 0 && event.isPrimary !== false
+            if (textEditId && primaryPress
               && !isEditableTarget(event.target) && !editingControl && isCanvasDrawingPress(canvas, event)) {
               event.preventDefault();
               event.stopPropagation();
@@ -24427,7 +24508,7 @@ export function MainWindow({
               return;
             }
             const bracketEditor = bracketLabelEditorRef.current;
-            if (bracketEditor && event.button === 0 && event.isPrimary !== false
+            if (bracketEditor && primaryPress
               && !isEditableTarget(event.target) && isCanvasDrawingPress(canvas, event)) {
               // Canvas tools cancel default focus, so finish the edit before they claim the press.
               event.preventDefault();
@@ -24448,12 +24529,16 @@ export function MainWindow({
             // Its document pointer listener has already cancelled action-focus recovery.
             if (overlay) {
               canvas.focus({ preventScroll: true });
-            } else if (event.button === 0
+            } else if (primaryPress
               && (globalThis.document.activeElement === globalThis.document.body || globalThis.document.activeElement === globalThis.document.documentElement)
               && !canvasFocusCompositionRef.current.active && !canvasFocusCompositionRef.current.recentKey
               && !isEditableTarget(event.target) && !isBlockedByModalDialog(event.target)) {
               // Page tools cancel default focus. Restore it only when no control owns it.
               canvas.focus({ preventScroll: true });
+            }
+            if (macContextPress) {
+              // Let WebKit emit contextmenu without starting a selection or drawing gesture.
+              event.stopPropagation();
             }
           }}
           onPointerMoveCapture={event => {
@@ -24486,8 +24571,9 @@ export function MainWindow({
             badgePressRef.current = undefined;
             event.preventDefault(); event.stopPropagation();
             if (bondStereoBadgeAtPointer(event.currentTarget, event) !== press.badge) return;
-            const objectId = press.badge.closest("[data-object-controls], [data-object-id]");
-            const ownerId = objectId?.getAttribute("data-object-controls") ?? objectId?.getAttribute("data-object-id");
+            const objectId = press.badge.closest("[data-object-chrome], [data-object-controls], [data-object-id]");
+            const ownerId = objectId?.getAttribute("data-object-chrome") ?? objectId?.getAttribute("data-object-controls") ??
+              objectId?.getAttribute("data-object-id");
             const bondId = press.badge.getAttribute("data-unspecified-bond-id");
             if (ownerId && bondId) openBondStereoPopover({ objectId: ownerId, bondId,
               rect: press.badge.getBoundingClientRect(), keyboard: false });
@@ -24527,7 +24613,7 @@ export function MainWindow({
                 onPointerUp={handlePagePointerUp}
                 onPointerCancel={handlePagePointerCancel}
                 onPointerLeave={handlePagePointerLeave}
-                onContextMenu={handlePageContextMenu}
+                onContextMenu={event => handleCanvasContextMenu(undefined, event)}
                 onDoubleClickCapture={handlePageDoubleClick}
               >
                 {crosshairsVisible ? (
@@ -24693,19 +24779,14 @@ export function MainWindow({
                     document.pages[0].objects,
                     document.selection.objectIds
                   );
-                  const groupSelectionActive = activeToolState.activeKind === "selection" &&
-                    resolvedSelectionObjectIds.length > 1 &&
-                    !selectedNativeMoleculePart;
-                  const rawGroupSelectionBounds = groupSelectionActive
-                    ? visualSelectionBounds(labelDisplayPage.objects, resolvedSelectionObjectIds)
-                    : undefined;
-                  const groupSelectionBounds = rawGroupSelectionBounds
-                    ? previewedGroupSelectionBounds(
-                        rawGroupSelectionBounds,
-                        resolvedSelectionObjectIds,
-                        objectTransformPreview
-                      )
-                    : undefined;
+                  const { raw: rawGroupSelectionBounds, shown: groupSelectionBounds } = displayedGroupSelectionBounds(
+                    labelDisplayPage.objects,
+                    resolvedSelectionObjectIds,
+                    activeToolState.activeKind === "selection" && !selectedNativeMoleculePart,
+                    objectTransformPreview
+                  );
+                  // The right-click menu reads the frame exactly as it is drawn.
+                  displayedGroupSelectionBoundsRef.current = groupSelectionBounds;
                   const groupProjectedPlaneTiltObjectIds = rawGroupSelectionBounds
                     ? nativeMoleculeObjectIdsForGroupProjectedPlaneTilt(document.pages[0].objects, resolvedSelectionObjectIds)
                     : [];
@@ -24756,6 +24837,10 @@ export function MainWindow({
                   return (
                     <DocumentObjectView
                       directElectronMarkEditing={directElectronMarkEditing}
+                      electronMarkFrames={object.type === "molecule" ? pageElectronMarkFrames : undefined}
+                      // A molecule's problem badges clear its labels by the ring's non-scaling stroke at
+                      // this zoom; bucketed so the memoized view re-renders only at 25%, 50% and 100%.
+                      atomProblemBadgeZoom={object.type === "molecule" ? atomProblemBadgePlacementZoom(viewport.scale) : undefined}
                       shortcutPlatform={shortcutPlatform}
                       key={objectRenderKey}
                       {...objectViewHandlers}
@@ -24766,6 +24851,7 @@ export function MainWindow({
                           : undefined)}
                       layerIndex={layerIndex}
                       interactionLayer={interactionLayer}
+                      handleLayer={handleLayer}
                       pageHeight={activePage.height}
                       pageWidth={activePage.width}
                       // Text, electron-mark targets/handles and the selected corner-radius handle use
@@ -24836,8 +24922,8 @@ export function MainWindow({
                     />
                   );
                 })}
-                <PageInteractionPortal target={interactionLayer}>
                 {groupSelectionBounds ? (
+                  <PageInteractionPortal target={handleLayer ?? interactionLayer}>
                   <GroupSelectionOverlay
                     bounds={groupSelectionBounds}
                     canProjectedPlaneTilt={groupProjectedPlaneTiltObjectIds.length > 1}
@@ -24846,7 +24932,9 @@ export function MainWindow({
                     onRotateStart={handleGroupRotatePointerDown}
                     onResizeStart={handleGroupResizePointerDown}
                   />
+                  </PageInteractionPortal>
                 ) : null}
+                <PageInteractionPortal target={interactionLayer}>
                 {activeSpin3dState ? (() => {
                   const spinObject = activePage.objects.find((object) => object.id === activeSpin3dState.objectId);
                   // The overlay renders with the molecule's OWN drawing style so the
@@ -24904,6 +24992,7 @@ export function MainWindow({
                   />
                 ) : null}
               </div>
+              <div className="page-handle-layer" data-page-handle-layer="true" ref={setHandleLayer} />
             </div>
           </div>
         </section>
@@ -25119,10 +25208,7 @@ export function MainWindow({
           targetKind={objectContextMenu.targetKind}
           bondDepthContext={objectContextMenu.bondDepthContext}
           atomWarning={objectContextMenu.atomWarning}
-          loadStereoReadout={(() => {
-            const menuObject = findDocumentObject(document, objectContextMenu.objectId);
-            return menuObject?.type === "molecule" ? stereoReadoutRequest(menuObject, objectContextMenu.stereoPart) : undefined;
-          })()}
+          loadStereoReadout={objectContextMenu.loadStereoReadout}
           arrowStyleSource={(() => {
             const menuObject = findDocumentObject(document, objectContextMenu.objectId);
             return menuObject ? nativeArrowStyleDefaultFromGraphic(menuObject) : undefined;
@@ -25883,12 +25969,14 @@ function retainedObjectMoveTargets(
   const ids = new Set(objectIds);
   // Collect once per gesture, scoped to this page. Descendant bond/atom catchers ride
   // with their paint wrapper; translating them individually would apply the delta twice.
+  // An object's chrome (in the page) and its handle copy (beside it) both ride along.
+  const owner = (element: Element) => element.getAttribute("data-object-controls") ?? element.getAttribute("data-object-chrome");
   return [...page.querySelectorAll<HTMLElement | SVGElement>(
-    ".document-object[data-object-id], [data-object-controls], [data-page-svg-object-visual], [data-group-selection]"
+    ".document-object[data-object-id], [data-object-controls], [data-object-chrome], [data-page-svg-object-visual], [data-group-selection]"
   )].filter(element => !arrowFragments?.has(element.getAttribute("data-page-svg-object-visual") ??
-    element.getAttribute("data-object-controls") ?? element.getAttribute("data-object-id") ?? "") &&
+    owner(element) ?? element.getAttribute("data-object-id") ?? "") &&
     (ids.has(element.getAttribute("data-object-id") ??
-    element.getAttribute("data-object-controls") ?? element.getAttribute("data-page-svg-object-visual") ?? "") ||
+    owner(element) ?? element.getAttribute("data-page-svg-object-visual") ?? "") ||
     (objectIds.length > 1 && element.hasAttribute("data-group-selection"))))
     .map(element => ({ element, svg: element.hasAttribute("data-page-svg-object-visual"),
       transform: element.getAttribute("transform"), translate: element.style.translate }));
@@ -26865,183 +26953,12 @@ export function shouldOpenMoleculeEditorFromObjectClick(
 export function hoveredNativeTargetShortcutCommand(
   target: NativeMoleculeDeleteTarget | undefined,
   key: string,
-  scheme: KeybindingScheme = "chemdraft",
   tables?: HoverShortcutTables
 ): string | undefined {
   if (target?.kind !== "atom" && target?.kind !== "bond") return undefined;
   if (tables) return tables[target.kind].get(key);
-  const defaults = defaultHoverShortcuts(scheme, target.kind);
+  const defaults = defaultHoverShortcuts(target.kind);
   return Object.hasOwn(defaults, key) ? defaults[key] : undefined;
-}
-
-function hasBondHoverShortcut(target: NativeMoleculeDeleteTarget | undefined, key: string, tables?: HoverShortcutTables): boolean {
-  return target?.kind === "bond" && hoveredNativeTargetShortcutCommand(target, key, "chemdraft", tables) !== undefined;
-}
-
-/**
- * A label typed by hovering an atom and pressing an element key, open for continuation. `leftAtom`
- * records that the pointer has since left the atom and its own bonds, limiting which keys continue
- * the label. Commits can still coalesce; cancellation restores only the later text draft.
- */
-type HoverLabelAssignment = {
-  objectId: string; atomId: string; label: string; leftAtom?: boolean;
-  beforeAtom: MoleculeAtom; beforeMolecule: MoleculeObject;
-  hotkeyChanged: boolean; hotkeyUndoDocument?: ChemDraftDocument;
-  saveRevision: number;
-};
-
-/**
- * Whether moving the hover to `target` keeps a hover-label continuation alive: still on the atom
- * being labelled, or on one of that atom's own bonds (the pointer drifting off a small atom mid-word).
- */
-export function hoverTargetKeepsLabelContinuation(
-  target: NativeMoleculeDeleteTarget | undefined,
-  assignment: HoverLabelAssignment | undefined
-): boolean {
-  if (!assignment || !target || target.objectId !== assignment.objectId) {
-    return false;
-  }
-  return target.kind === "atom"
-    ? target.atomId === assignment.atomId
-    : target.fromAtomId === assignment.atomId || target.toAtomId === assignment.atomId;
-}
-
-/** A drifted label may continue only as a recognized label or the start of an abbreviation. */
-function hoverLabelTextContinues(label: string, key: string): boolean {
-  const draft = label + key;
-  return nativeAtomLabelReading(draft, { bonded: true }).kind !== "unrecognized" ||
-    [...abbreviationSpellings, ...abbreviationBondedSpellings].some(spelling =>
-      spelling.startsWith(draft) ||
-      // A partial substituent also counts when the shared grammar recognizes its completion:
-      // "NM" can become NMe, and "OT" can become OTBS, without a separate composite-label table.
-      (spelling.startsWith(key) && nativeAtomLabelReading(label + spelling, { bonded: true }).kind === "group")
-    );
-}
-
-/**
- * Whether a letter or digit typed mid-label continues that label, wherever the pointer has drifted.
- * Bond hotkeys over a bond belong to that bond, including the labelled atom's own bonds.
- * An element key in either case continues while the pointer has stayed on the labelled atom.
- * On its own bonds or empty canvas, only recognized labels or abbreviation prefixes continue
- * ("CF3", not "Oo" or "Sv").
- * After leaving, element keys in either case and all digits act on a different
- * hovered atom. Over a bond or empty canvas, lowercase element-symbol completion ("i" in Si) still
- * continues; other element keys over a target start a new label, even on the same atom again.
- * Other letters ("M" in OMe, "e") continue after a drift. An element key over empty canvas cannot
- * reopen a committed relabel; there is no atom there to label. Repeating the starting element
- * (C in CF3) can still start a word, since that key did not change the element.
- * Nothing continues once the labelled atom no longer carries the label (undone, or changed some
- * other way).
- */
-export function hoverLabelContinuesForKey(
-  document: ChemDraftDocument,
-  target: NativeMoleculeDeleteTarget | undefined,
-  assignment: HoverLabelAssignment,
-  key: string
-): boolean {
-  if (!/^[a-z0-9]$/i.test(key)) {
-    return false;
-  }
-  if (hasBondHoverShortcut(target, key)) {
-    return false;
-  }
-  const molecule = findDocumentObject(document, assignment.objectId);
-  const atom = molecule?.type === "molecule" ? molecule.atoms.find((candidate) => candidate.id === assignment.atomId) : undefined;
-  if (atom?.element !== assignment.label) {
-    return false;
-  }
-  if (target?.kind === "bond" && hoverTargetKeepsLabelContinuation(target, assignment)) {
-    return hoverLabelTextContinues(assignment.label, key);
-  }
-  if (target === undefined && !hoverLabelTextContinues(assignment.label, key)) {
-    return false;
-  }
-  if (!assignment.leftAtom && hoverTargetKeepsLabelContinuation(target, assignment)) {
-    return true;
-  }
-  if (target?.kind === "atom" && (target.objectId !== assignment.objectId || target.atomId !== assignment.atomId) &&
-    (nativeElementFromKeyboardKey(key) !== undefined || /^[0-9]$/.test(key))) {
-    return false;
-  }
-  if (/^[a-z]$/.test(key) && elementSymbols.some(symbol => symbol === assignment.label + key)) {
-    return true;
-  }
-  const startsNewLabel = nativeElementFromKeyboardKey(key) !== undefined &&
-    (target !== undefined || assignment.beforeAtom.element !== assignment.label);
-  return !startsNewLabel;
-}
-
-/**
- * The atom a label key belongs to (ChemDraft scheme), or undefined to leave the hover as it is.
- * Over a different hovered atom, element keys (either case) and digits act on that atom; other
- * letters continue the original label, keeping "M" and "e" in OMe out of tool shortcuts.
- * Other continuations follow `hoverLabelContinuesForKey`. Over a hovered bond, an element key
- * that doesn't continue labels the nearer end. Bond shortcuts keep their meaning there;
- * letters that don't continue or label an atom keep their tool shortcuts.
- */
-export function hoverLabelAtomTargetForKey(
-  document: ChemDraftDocument,
-  target: NativeMoleculeDeleteTarget | undefined,
-  pointer: ClientPoint | undefined,
-  assignment: HoverLabelAssignment | undefined,
-  key: string,
-  tables?: HoverShortcutTables
-): NativeMoleculeDeleteTarget | undefined {
-  if (assignment && hoverLabelContinuesForKey(document, target, assignment, key)) {
-    const onLabelledAtom = target?.kind === "atom" && target.objectId === assignment.objectId && target.atomId === assignment.atomId;
-    return onLabelledAtom ? undefined : { objectId: assignment.objectId, kind: "atom", atomId: assignment.atomId, distanceToPointer: 0 };
-  }
-  if (target?.kind !== "bond") {
-    return undefined;
-  }
-  if (hasBondHoverShortcut(target, key, tables) ||
-      !(tables ? tables.atom.get(key)?.startsWith("atom.setHoveredElement.") : nativeElementFromKeyboardKey(key))) {
-    return undefined;
-  }
-  const molecule = findDocumentObject(document, target.objectId);
-  if (molecule?.type !== "molecule") {
-    return undefined;
-  }
-  const from = molecule.atoms.find((atom) => atom.id === target.fromAtomId);
-  const to = molecule.atoms.find((atom) => atom.id === target.toAtomId);
-  if (!from || !to) {
-    return undefined;
-  }
-  const distance = (atom: MoleculeAtom) => pointer ? Math.hypot(atom.x - pointer.x, atom.y - pointer.y) : 0;
-  const nearer = distance(to) < distance(from) ? to : from;
-  return { objectId: target.objectId, kind: "atom", atomId: nearer.id, distanceToPointer: distance(nearer) };
-}
-
-/**
- * Where a hover key goes, the same way for every candidate key: in the ChemDraft scheme a key may
- * continue a hover label or (an element key over a bond) move to the bond's nearer atom; then the
- * command it runs on that target, if any. Decided against the pointer's target before retargeting.
- */
-function hoverKeyRoute(
-  document: ChemDraftDocument,
-  selectedPart: NativeMoleculeSelectionPart | undefined,
-  pointerTarget: NativeMoleculeDeleteTarget | undefined,
-  pointer: ClientPoint | undefined,
-  assignment: HoverLabelAssignment | undefined,
-  key: string,
-  scheme: KeybindingScheme,
-  tables?: HoverShortcutTables
-): { labelContinues: boolean; labelAtom?: NativeMoleculeDeleteTarget; commandId?: string } {
-  if (scheme !== "chemdraft") {
-    return { labelContinues: false, commandId: activeNativeTargetShortcutCommand(document, selectedPart, pointerTarget, key, scheme, tables) };
-  }
-  // Element keys (either case) and digits act on a different atom; non-element letters continue the
-  // label there. A remapped key keeps its own meaning rather than continuing a label.
-  const followsSchemeDefault = hoveredNativeTargetShortcutCommand(pointerTarget, key, scheme, tables) ===
-    hoveredNativeTargetShortcutCommand(pointerTarget, key, scheme);
-  const labelContinues = assignment !== undefined && followsSchemeDefault &&
-    hoverLabelContinuesForKey(document, pointerTarget, assignment, key);
-  const labelAtom = hoverLabelAtomTargetForKey(document, pointerTarget, pointer, labelContinues ? assignment : undefined, key, tables);
-  return {
-    labelContinues,
-    labelAtom,
-    commandId: activeNativeTargetShortcutCommand(document, selectedPart, labelAtom ?? pointerTarget, key, scheme, tables)
-  };
 }
 
 export function activeNativeTargetShortcutCommand(
@@ -27049,14 +26966,12 @@ export function activeNativeTargetShortcutCommand(
   selectedPart: NativeMoleculeSelectionPart | undefined,
   hoveredTarget: NativeMoleculeDeleteTarget | undefined,
   key: string,
-  scheme: KeybindingScheme = "chemdraft",
   tables?: HoverShortcutTables
 ): string | undefined {
   if (key === "." && hoveredTarget?.kind !== "atom") return undefined;
   return hoveredNativeTargetShortcutCommand(
     hoveredTarget ?? nativeDeleteTargetFromSelectionPart(document, selectedPart),
     key,
-    scheme,
     tables
   );
 }
@@ -27854,8 +27769,8 @@ function SpinOverlay({
       {/* Each mark goes where flatten commits it (the ScreenPlacement contract): its offset from
           its projected atom kept, or turned about the atom to a free side when that spot lands on
           another atom, a bond or a label (its own molecule's or another's). A lone pair turns with
-          it. A molecule turned on the page has its marks painted where release stores them, turned
-          with it, though this overlay draws the projection itself unturned. */}
+          it. A molecule turned on the page is drawn unturned here, its marks with it, beside the
+          atoms this overlay draws; release turns the molecule, and each mark goes with its atom. */}
       {carriedMarks.map(({ markId, fragments, selected }) => {
         const placement = carriedMarkPlacements?.get(markId);
         if (!placement) return null;
@@ -28848,6 +28763,71 @@ export function visualSelectionBounds(
   };
 }
 
+/** Whether a non-molecule object's frame (text: its rotated box) covers the point. */
+function contextMenuObjectOccupiesPoint(
+  object: DocumentObject, objects: readonly DocumentObject[], point: ClientPoint
+): boolean {
+  return object.type === "text" ? textObjectAtPoint([object], point) !== undefined
+    : pointInRect(point, documentObjectVisualBounds(object, objects));
+}
+
+/** Use the selection frames from the topmost object down. */
+function contextMenuSelectionAtPoint(
+  objects: readonly DocumentObject[],
+  selectedIds: ReadonlySet<string>,
+  partsByObjectId: ReadonlyMap<string, NativeMoleculeSelectionPart>,
+  point: ClientPoint,
+  groupFrame?: SelectionBounds
+): ContextMenuSelection | undefined {
+  if (selectedIds.size === 0 && partsByObjectId.size === 0) return undefined;
+  for (let layer = objects.length - 1; layer >= 0; layer--) {
+    const object = objects[layer]!;
+    const part = partsByObjectId.get(object.id);
+    if (!part && !selectedIds.has(object.id)) continue;
+    if (object.type === "molecule" && isNativeMoleculeGraph(object)) {
+      const localPoint = inverseTransformPointForObject(object, point);
+      const rings = nativeRingSelectionItems(part);
+      if (rings.length > 0) {
+        if (rings.some(ring => {
+          const bounds = nativeMoleculePartBounds(object, { ...ring, objectId: object.id, kind: "parts" });
+          return bounds && pointInRect(localPoint, bounds);
+        })) return { objectId: object.id, part };
+        continue;
+      }
+      const target = nativeTransformableSelectionPart(part);
+      const bounds = target && nativeMoleculePartBounds(object, target);
+      if (part && !bounds) continue;
+      const atomIds = part && new Set(nativeSelectionCoveredAtomIds(object, part));
+      const frame = moleculeTransformFrameForSelection(object, bounds, atomIds);
+      if (pointInRect(localPoint, { ...frame, x: object.x + frame.x, y: object.y + frame.y })) {
+        return { objectId: object.id, part };
+      }
+    } else if (contextMenuObjectOccupiesPoint(object, objects, point)) {
+      return { objectId: object.id };
+    }
+  }
+  // Bare paper between whole-selected objects, inside the group frame that is drawn around them.
+  if (groupFrame && pointInRect(point, groupFrame)) {
+    for (let layer = objects.length - 1; layer >= 0; layer--) {
+      if (selectedIds.has(objects[layer]!.id)) return { objectId: objects[layer]!.id };
+    }
+  }
+  return undefined;
+}
+
+/** The group frame GroupSelectionOverlay draws, and its pre-preview bounds, for a multi-object selection. */
+function displayedGroupSelectionBounds(
+  objects: readonly DocumentObject[],
+  resolvedSelectionObjectIds: readonly string[],
+  selectionChromeActive: boolean,
+  preview: ObjectTransformPreviewState | undefined
+): { raw?: SelectionBounds; shown?: SelectionBounds } {
+  if (!selectionChromeActive || resolvedSelectionObjectIds.length <= 1) return {};
+  const raw = visualSelectionBounds(objects, resolvedSelectionObjectIds);
+  if (!raw) return {};
+  return { raw, shown: previewedGroupSelectionBounds(raw, resolvedSelectionObjectIds, preview) };
+}
+
 function previewedGroupSelectionBounds(
   bounds: SelectionBounds,
   selectedIds: readonly string[],
@@ -29434,8 +29414,8 @@ function nativeSelectionAtomIds(part: NativeMoleculeSelectionPart | undefined): 
   return part?.kind === "parts" ? [...part.atomIds] : [];
 }
 
-/** Every atom a selection part covers for warning actions — bond parts include their endpoints. */
-function nativeWarningScopeAtomIds(molecule: MoleculeObject, part: NativeMoleculeSelectionPart): string[] {
+/** Every atom a selection part covers, including the endpoints of selected bonds. */
+function nativeSelectionCoveredAtomIds(molecule: MoleculeObject, part: NativeMoleculeSelectionPart): string[] {
   const bondEndpointIds = (bondIds: readonly string[]): string[] =>
     bondIds.flatMap((bondId) => {
       const bond = molecule.bonds.find((candidate) => candidate.id === bondId);
@@ -29494,7 +29474,7 @@ export function nativeWarningSuppressionScopeForSelection(
       continue;
     }
 
-    const atomIds = [...new Set(selectedParts.flatMap((part) => nativeWarningScopeAtomIds(molecule, part)))];
+    const atomIds = [...new Set(selectedParts.flatMap((part) => nativeSelectionCoveredAtomIds(molecule, part)))];
     if (atomIds.length > 0) {
       scope.push({ objectId, atomIds });
     }
@@ -30028,6 +30008,10 @@ function nativeSelectionContextContainsHit(
   part: NativeMoleculeSelectionPart,
   hit: NativeMoleculeDeleteHit
 ): boolean {
+  if (part.kind === "ring" || part.kind === "rings") {
+    return nativeRingSelectionItems(part).some(ring =>
+      hit.kind === "atom" ? ring.atomIds.includes(hit.atomId) : ring.bondIds.includes(hit.bondId));
+  }
   if (nativeSelectionContainsHit(part, hit)) {
     return true;
   }
@@ -30146,9 +30130,9 @@ function selectionStatusLabel(selection: {
 
 function objectHoverOwner(target: EventTarget | null): string | undefined {
   if (!(target instanceof Element)) return undefined;
-  const owner = target.closest("[data-page-svg-object-visual], [data-object-controls], [data-object-id]");
+  const owner = target.closest("[data-page-svg-object-visual], [data-object-controls], [data-object-chrome], [data-object-id]");
   return owner?.getAttribute("data-page-svg-object-visual") ?? owner?.getAttribute("data-object-controls") ??
-    owner?.getAttribute("data-object-id") ?? undefined;
+    owner?.getAttribute("data-object-chrome") ?? owner?.getAttribute("data-object-id") ?? undefined;
 }
 
 function PageInteractionPortal({ target, children }: { target: HTMLDivElement | null; children: ReactNode }) {
@@ -30542,10 +30526,13 @@ const DocumentObjectView = memo(DocumentObjectViewContent);
 
 function DocumentObjectViewContent({
   directElectronMarkEditing = false,
+  electronMarkFrames,
+  atomProblemBadgeZoom,
   shortcutPlatform,
   object,
   layerIndex,
   interactionLayer,
+  handleLayer = null,
   pageWidth,
   pageHeight,
   pageScale,
@@ -30624,6 +30611,10 @@ function DocumentObjectViewContent({
   onAtomProblemInvoke
 }: {
   directElectronMarkEditing?: boolean;
+  /** The page's electron-mark frames, for a molecule: its atom-problem badges keep clear of them. */
+  electronMarkFrames?: readonly AtomProblemBadgeMark[];
+  /** The zoom a molecule's atom-problem badges are placed for (`atomProblemBadgePlacementZoom`). */
+  atomProblemBadgeZoom?: number;
   inlineEditorReadOnly: boolean;
   shortcutPlatform?: ShortcutPlatform;
   onBondStereoBadgeOpen(request: BondStereoBadgeRequest): void;
@@ -30631,6 +30622,8 @@ function DocumentObjectViewContent({
   object: DocumentObject;
   layerIndex: number;
   interactionLayer: HTMLDivElement | null;
+  /** Unclipped layer beside the page for transform handles; null keeps them in the chrome. */
+  handleLayer?: HTMLDivElement | null;
   pageWidth: number;
   pageHeight: number;
   pageScale?: number;
@@ -30695,7 +30688,7 @@ function DocumentObjectViewContent({
   onObjectResizeInputHome(input: ObjectResizeInputState): void;
   onObjectResizeInputCancel(input: ObjectResizeInputState): void;
   onContextMenu(objectId: string, event: ObjectMouseEvent): void;
-  onTextChange(objectId: string, text: string): void;
+  onTextChange(objectId: string, text: string, change?: NativeTextEditorChange): void;
   onTextEditFinish(objectId?: string, reason?: "commit" | "escape"): void;
   onTextSelectionChange(objectId: string, range: NativeTextSelectionRange): void;
   isTextPlaceholderPending(objectId: string): boolean;
@@ -30706,6 +30699,57 @@ function DocumentObjectViewContent({
   onAtomLabelFinish(state: AtomLabelEditState, reason: AtomLabelFinishReason): void;
 }) {
   const textEditorRef = useRef<HTMLTextAreaElement | null>(null);
+  // The editor's caret and highlight are painted from the layout engine's model of the lines
+  // the page SVG draws (docs/plans/textbox-behavior.md); the textarea is only an input sink.
+  const textCaretRef = useRef<HTMLDivElement | null>(null);
+  const textSelectionLayerRef = useRef<HTMLDivElement | null>(null);
+  const textEditorSessionRef = useRef<TextEditorSession>(createTextEditorSession());
+  const textEditorViewRef = useRef<{
+    object: TextObject; scale: number; originX: number; offset: { x: number; y: number };
+  } | undefined>(undefined);
+  const textEditorModelLayout = (current: TextObject) => textBoxEditorLayout(current,
+    interactionLayer?.closest(".page")?.querySelector<SVGTextContentElement>(
+      `.page-svg-visual-layer [data-page-svg-object-visual="${cssEscapeIdentifier(current.id)}"] text`));
+  const paintTextEditor = (applyPendingSelection = false) => {
+    const view = textEditorViewRef.current, editor = textEditorRef.current;
+    const caret = textCaretRef.current, selectionLayer = textSelectionLayerRef.current;
+    if (!view || !editor || !caret || !selectionLayer) return;
+    const session = textEditorSessionRef.current;
+    const pending = applyPendingSelection ? session.pendingSelection : undefined;
+    if (pending) {
+      session.pendingSelection = undefined;
+      if (editor.value === pending.text) {
+        editor.setSelectionRange(pending.start, pending.end);
+        onTextSelectionChange(view.object.id, { start: pending.start, end: pending.end });
+      }
+    }
+    paintTextEditorChrome({ editor, caret, selectionLayer, layout: textEditorModelLayout(view.object), session,
+      scale: view.scale, originX: view.originX });
+  };
+  const paintTextEditorRef = useRef(paintTextEditor);
+  paintTextEditorRef.current = paintTextEditor;
+  // Invert the same viewport (SVG CTM scale and offset) that places the editor chrome over the
+  // glyphs, then undo the object's rotation: object-relative, unrotated page units.
+  const textEditorPointFromClient = (clientX: number, clientY: number) => {
+    const view = textEditorViewRef.current;
+    if (!view || !interactionLayer || !(view.scale > 0)) return undefined;
+    const layerRect = interactionLayer.getBoundingClientRect();
+    const pagePoint = inverseTransformPointForObject(view.object, {
+      x: (clientX - layerRect.left - view.offset.x) / view.scale,
+      y: (clientY - layerRect.top - view.offset.y) / view.scale
+    });
+    return { x: pagePoint.x - view.object.x, y: pagePoint.y - view.object.y };
+  };
+  useLayoutEffect(() => {
+    if (editingText) paintTextEditorRef.current(true);
+  });
+  useEffect(() => {
+    if (!editingText) return;
+    // Caret moves inside the textarea (arrows, native undo) fire selectionchange on the document.
+    const repaint = () => paintTextEditorRef.current();
+    globalThis.document.addEventListener("selectionchange", repaint);
+    return () => globalThis.document.removeEventListener("selectionchange", repaint);
+  }, [editingText]);
   const textEditorStyle = object.type === "text" ? nativeTextStyleFromObjectStyle(object.style) : undefined;
   const [textEditorLayout, setTextEditorLayout] = useState<{
     metrics: NativeTextCssMetrics | undefined;
@@ -30757,6 +30801,7 @@ function DocumentObjectViewContent({
       return;
     }
 
+    textEditorSessionRef.current = createTextEditorSession();
     editor.focus();
     if (isTextPlaceholderPending(object.id)) {
       editor.select();
@@ -30766,6 +30811,7 @@ function DocumentObjectViewContent({
       const end = editor.value.length;
       editor.setSelectionRange(end, end);
     }
+    paintTextEditorRef.current();
   }, [editingText, object.id, isTextPlaceholderPending]);
 
   if (object.type === "group") {
@@ -30828,9 +30874,17 @@ function DocumentObjectViewContent({
   };
   const handleTextChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
     if (inlineEditorReadOnly) return;
+    textEditorSessionRef.current.affinity = "downstream";
+    textEditorSessionRef.current.goalX = undefined;
     onTextPlaceholderClear(object.id);
-    recordTextEditorSelection(event.currentTarget);
-    onTextChange(object.id, event.currentTarget.value);
+    const editor = event.currentTarget;
+    // The change first, so a script pending at the caret follows the typed text; then the caret,
+    // which by then sits where the pending script expects it.
+    onTextChange(object.id, editor.value, {
+      caret: editor.selectionStart === editor.selectionEnd ? editor.selectionEnd : undefined,
+      inputType: (event.nativeEvent as InputEvent).inputType
+    });
+    recordTextEditorSelection(editor);
   };
   const recordTextEditorSelection = (editor: HTMLTextAreaElement) => {
     onTextSelectionChange(object.id, {
@@ -30849,16 +30903,16 @@ function DocumentObjectViewContent({
     const currentValue = editor.value;
     const nextValue = `${currentValue.slice(0, start)}${text}${currentValue.slice(end)}`;
     const cursor = start + text.length;
-    onTextChange(object.id, nextValue);
-    window.requestAnimationFrame(() => {
-      editor.focus();
-      editor.setSelectionRange(cursor, cursor);
-      recordTextEditorSelection(editor);
-    });
+    // Placed by the next commit's layout effect, once the textarea holds the new text: no
+    // frame shows the caret at the end, and a later key cannot race a deferred move.
+    textEditorSessionRef.current.pendingSelection = { start: cursor, end: cursor, text: nextValue };
+    onTextChange(object.id, nextValue, { caret: cursor, inputType: "insertFromPaste" });
   };
   const handleTextPaste = (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
     if (inlineEditorReadOnly) { event.preventDefault(); event.stopPropagation(); return; }
-    const text = event.clipboardData.getData("text/plain");
+    // Text box text holds LF only: a Windows clipboard's CRLF would put the caret, and every
+    // later offset, one character per line break past the textarea's.
+    const text = normalizeTextLineBreaks(event.clipboardData.getData("text/plain"));
     if (text.length === 0) {
       return;
     }
@@ -30893,6 +30947,24 @@ function DocumentObjectViewContent({
       recordTextEditorSelection(event.currentTarget);
       return;
     }
+
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+    // Vertical moves and line start/end follow the rendered lines, not the hidden textarea's.
+    const session = textEditorSessionRef.current;
+    const view = textEditorViewRef.current;
+    const platform = shortcutPlatform ?? detectDesktopShortcutPlatform();
+    // Cmd+Backspace/Delete: the native delete then removes exactly the rendered line's span.
+    if (view) selectTextEditorLineDeletion(event.currentTarget, session, textEditorModelLayout(view.object), event, platform);
+    if (view && moveTextEditorCaretForKey(event.currentTarget, session, textEditorModelLayout(view.object), event, platform)) {
+      event.preventDefault();
+      recordTextEditorSelection(event.currentTarget);
+      paintTextEditor();
+      return;
+    }
+    session.goalX = undefined;
+    session.affinity = "downstream";
+    // Other keys move the caret by their default action, after this handler.
+    window.setTimeout(() => paintTextEditorRef.current(), 0);
 
     // Cmd/Ctrl+V is intentionally not intercepted here: preventing the default action would also
     // cancel the native `paste` event that handleTextPaste relies on. Let it through so the editor's
@@ -30942,27 +31014,60 @@ function DocumentObjectViewContent({
   } as CSSProperties;
   // The positioned copy carries only edit/preview chrome. Its own z-index is bounded
   // inside the page's interaction layer, independent of the object's paint index.
-  const chrome = (children: ReactNode, extraStyle?: CSSProperties) => interactionLayer ? createPortal(
-    <div
-      className={["document-object-chrome",
-        selected && object.type !== "graphic" && (object.type !== "molecule" || !isNativeMoleculeGraph(object))
-          ? "selected" : ""].filter(Boolean).join(" ")}
-      style={{ ...style, ...extraStyle, zIndex: 1 }}
-      data-object-controls={object.id}
-      data-object-id={object.type === "text" ? object.id : undefined}
-      onPointerLeave={handleObjectPointerLeave}
-    >
-      {(objectTransformPreview || spinning) && object.type !== "graphic" && nativeMoleculeSvgFragments ? (
-        <svg className="object-transform-preview-visual" viewBox={`0 0 ${object.width} ${object.height}`} aria-hidden="true"
-          data-spin3d-ghost={spinning ? "true" : undefined} style={spinning ? { opacity: 0.1 } : undefined}>
-          <g transform={`translate(${formatSvgNumber(-object.x)} ${formatSvgNumber(-object.y)})`}>
-            {nativeMoleculeSvgFragments.map(renderStaticPageSvgFragment)}
-          </g>
-        </svg>
+  //
+  // Transform handles (resize/rotate/tilt frames and their typed entry, text resize bars, charge,
+  // arrow and bracket frames) go to the handle layer beside the page instead, so `.page`'s paint
+  // containment never clips them at or past the page edge (owner rule: handles are never hidden
+  // off canvas). They get a second copy of the chrome box, with the same box and transform. Pass
+  // them as `handles`; inside `children`, `inlineHandles` keeps them in the chrome only when there
+  // is no handle layer (static rendering).
+  //
+  // Exactly one element per object carries data-object-controls: the handle copy when handles
+  // are drawn there (it also draws the selection outline, so that is not clipped either), else
+  // the chrome. The chrome always carries data-object-chrome: look there for editors, selection
+  // highlights, badges and previews. A text box's copies also carry data-object-id, as before.
+  const selectionOutline = selected && object.type !== "graphic" &&
+    (object.type !== "molecule" || !isNativeMoleculeGraph(object));
+  const inlineHandles = (children: ReactNode) => handleLayer && interactionLayer ? null : children;
+  const handlesDrawnApart = (handles: ReactNode) => Boolean(handleLayer && interactionLayer && handles);
+  const chrome = (children: ReactNode, extraStyle?: CSSProperties, handles?: ReactNode) => {
+    if (!interactionLayer) return <>{children}</>;
+    const handlesApart = handlesDrawnApart(handles);
+    return <>
+      {createPortal(
+        <div
+          className={["document-object-chrome", selectionOutline && !handlesApart ? "selected" : ""].filter(Boolean).join(" ")}
+          style={{ ...style, ...extraStyle, zIndex: 1 }}
+          data-object-controls={handlesApart ? undefined : object.id}
+          data-object-chrome={object.id}
+          data-object-id={object.type === "text" ? object.id : undefined}
+          onPointerLeave={handleObjectPointerLeave}
+        >
+          {(objectTransformPreview || spinning) && object.type !== "graphic" && nativeMoleculeSvgFragments ? (
+            <svg className="object-transform-preview-visual" viewBox={`0 0 ${object.width} ${object.height}`} aria-hidden="true"
+              data-spin3d-ghost={spinning ? "true" : undefined} style={spinning ? { opacity: 0.1 } : undefined}>
+              <g transform={`translate(${formatSvgNumber(-object.x)} ${formatSvgNumber(-object.y)})`}>
+                {nativeMoleculeSvgFragments.map(renderStaticPageSvgFragment)}
+              </g>
+            </svg>
+          ) : null}
+          {children}
+        </div>, interactionLayer
+      )}
+      {handlesApart && handleLayer ? createPortal(
+        <div
+          className={["document-object-chrome", "document-object-handles", selectionOutline ? "selected" : ""].filter(Boolean).join(" ")}
+          style={{ ...style, ...extraStyle, zIndex: 1 }}
+          data-object-controls={object.id}
+          data-object-handles="true"
+          data-object-id={object.type === "text" ? object.id : undefined}
+          onPointerLeave={handleObjectPointerLeave}
+        >
+          {handles}
+        </div>, handleLayer
       ) : null}
-      {children}
-    </div>, interactionLayer
-  ) : <>{children}</>;
+    </>;
+  };
   const artObjectTransformFrameStyle = documentObjectSupportsArtTransform(object, directElectronMarkEditing)
     ? documentObjectArtTransformFrameStyle(object, artObjectProjection, objectTransformPreview, pageScale)
     : undefined;
@@ -31069,12 +31174,11 @@ function DocumentObjectViewContent({
       const invalidAtomStates = nativeMoleculeInvalidAtomStates(object);
       const invalidAtomIds = new Set(invalidAtomStates.filter((state) => !state.warningSuppressed).map((state) => state.atomId));
       const invalidReasonByAtomId = new Map(invalidAtomStates.map((state) => [state.atomId, state.invalidReason]));
-      const invalidHoverLabel = editingAtomLabel?.startedFromHover && editingAtomLabel.draft.trim() &&
-        nativeHoverAtomLabelCompletion(editingAtomLabel.draft) === undefined;
-      if (invalidHoverLabel) {
-        invalidAtomIds.add(editingAtomLabel.atomId);
-        invalidReasonByAtomId.set(editingAtomLabel.atomId, `Incomplete or unrecognized atom label "${editingAtomLabel.draft}"`);
-      }
+      // Each badge sits clear of its atom's label (charge, isotope and hydrogen marks included) and
+      // of any electron mark beside it, on a side free of bonds where there is one.
+      const problemLabelBoxes = invalidAtomIds.size > 0 ? moleculeLayoutLabelBoxes(object) : [];
+      const problemBadgeCentreByAtomId = new Map([...invalidAtomIds].map((atomId) => [atomId,
+        atomProblemBadgeCentre(object, atomId, { marks: electronMarkFrames, labelBoxes: problemLabelBoxes, zoom: atomProblemBadgeZoom })]));
       const resolvedChargeAtomIds = object.atoms
         .filter((atom) => (atom.markCharge ?? 0) !== 0)
         .map((atom) => atom.id);
@@ -31227,6 +31331,103 @@ function DocumentObjectViewContent({
           />
         </>
       ) : null;
+      // Transform handles and their typed entry render in the unclipped handle layer.
+      const moleculeHandleChrome = transformFrame || (entryFrame && (rotationInput || resizeInput)) ? <>
+        {transformFrame ? (
+          <div
+            className="object-transform-frame"
+            data-molecule-transform-frame={selectedFragmentBounds ? "fragment" : "whole"}
+            data-has-tilt3d={canProjectedPlaneTilt ? "true" : undefined}
+            style={transformFrameStyle}
+          >
+            <ObjectResizeHandles
+              targetLabel={transformTargetLabel}
+              onResizeDoubleClick={handleObjectResizeDoubleClick}
+              onResizeStart={handleObjectResizePointerDown}
+            />
+            {resizeReadout && !resizeInput ? (
+              <ObjectResizeReadout
+                scaleXPercent={resizeReadout.scaleXPercent}
+                scaleYPercent={resizeReadout.scaleYPercent}
+              />
+            ) : null}
+            {zRotationHandleVisible ? (
+              <button
+                type="button"
+                className="object-rotate-handle"
+                aria-label={`Rotate ${transformTargetLabel}`}
+                data-selection-rotate-handle="true"
+                title={`Rotate ${transformTargetLabel}`}
+                onPointerDown={handleRotatePointerDown}
+                onDoubleClick={handleRotateDoubleClick}
+              >
+                <RotateSelectionIcon />
+                {rotateReadout ? (
+                  <RotateSelectionReadout degrees={rotateReadout.degrees} />
+                ) : null}
+              </button>
+            ) : null}
+            {canProjectedPlaneTilt && projectedPlaneTiltHandleVisible ? (
+              <button
+                type="button"
+                className="object-tilt3d-handle"
+                aria-label={`3D rotate ${transformTargetLabel}`}
+                data-selection-tilt3d-handle="true"
+                title={`3D rotate ${transformTargetLabel}`}
+                onPointerDown={handleProjectedPlaneTiltPointerDown}
+                onDoubleClick={handleProjectedPlaneTiltDoubleClick}
+              >
+                <ProjectedPlaneTiltIcon />
+                {projectedPlaneTiltReadout ? (
+                  <ProjectedPlaneTiltReadout
+                    label={projectedPlaneTiltReadout.label}
+                    limited={projectedPlaneTiltReadout.limited}
+                  />
+                ) : null}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+        {entryFrame && (rotationInput || resizeInput) ? (
+          <div
+            className="object-transform-input-layer"
+            data-has-tilt3d={canProjectedPlaneTilt ? "true" : undefined}
+            style={entryFrameStyle}
+          >
+            {rotationInput ? (
+              <RotationInputPopover
+                input={rotationInput}
+                onKeep={onRotationInputKeep}
+                onHome={onRotationInputHome}
+                onCancel={onRotationInputCancel}
+                onChange={onRotationInputChange}
+              />
+            ) : null}
+            {resizeInput ? (
+              <ObjectResizeInputPopover
+                input={resizeInput}
+                onKeep={onObjectResizeInputKeep}
+                onHome={onObjectResizeInputHome}
+                onCancel={onObjectResizeInputCancel}
+                onChange={onObjectResizeInputChange}
+              />
+            ) : null}
+          </div>
+        ) : null}
+      </> : null;
+      // Bond-stereo badges stack above the transform frame and below its typed entry (z-index 3 <
+      // 4 < 5, so a badge under a handle stays visible and claims the press). That order holds only
+      // in one stacking context, so the badges go with the handles when those draw beside the page.
+      const bondStereoBadgeLayer = (
+        <svg
+          className="native-molecule-overlay native-bond-stereo-badge-layer"
+          viewBox={`0 0 ${object.width} ${object.height}`}
+          style={spinning ? { opacity: 0.1 } : undefined}
+        >
+          <BondStereoBadges molecule={object} onOpen={onBondStereoBadgeOpen} />
+        </svg>
+      );
+      const moleculeHandles = moleculeHandleChrome ? <>{bondStereoBadgeLayer}{moleculeHandleChrome}</> : null;
       return (
         <div
           className={[
@@ -31313,7 +31514,8 @@ function DocumentObjectViewContent({
                   key={`invalid-${atom.id}`}
                   explanation={invalidReasonByAtomId.get(atom.id)}
                   platform={shortcutPlatform}
-                  x={atom.x - object.x + 9} y={atom.y - object.y - 9}
+                  x={(problemBadgeCentreByAtomId.get(atom.id)?.x ?? atom.x + 9) - object.x}
+                  y={(problemBadgeCentreByAtomId.get(atom.id)?.y ?? atom.y - 9) - object.y}
                   invoke={onAtomProblemInvoke}
                 />
               ))}
@@ -31371,95 +31573,9 @@ function DocumentObjectViewContent({
               />
             ))}
           </svg>
-          <svg
-            className="native-molecule-overlay native-bond-stereo-badge-layer"
-            viewBox={`0 0 ${object.width} ${object.height}`}
-            style={spinning ? { opacity: 0.1 } : undefined}
-          >
-            <BondStereoBadges molecule={object} onOpen={onBondStereoBadgeOpen} />
-          </svg>
+          {handlesDrawnApart(moleculeHandles) ? null : bondStereoBadgeLayer}
           {moleculeGradientHandles}
-          {transformFrame ? (
-            <div
-              className="object-transform-frame"
-              data-molecule-transform-frame={selectedFragmentBounds ? "fragment" : "whole"}
-              data-has-tilt3d={canProjectedPlaneTilt ? "true" : undefined}
-              style={transformFrameStyle}
-            >
-              <ObjectResizeHandles
-                targetLabel={transformTargetLabel}
-                onResizeDoubleClick={handleObjectResizeDoubleClick}
-                onResizeStart={handleObjectResizePointerDown}
-              />
-              {resizeReadout && !resizeInput ? (
-                <ObjectResizeReadout
-                  scaleXPercent={resizeReadout.scaleXPercent}
-                  scaleYPercent={resizeReadout.scaleYPercent}
-                />
-              ) : null}
-              {zRotationHandleVisible ? (
-                <button
-                  type="button"
-                  className="object-rotate-handle"
-                  aria-label={`Rotate ${transformTargetLabel}`}
-                  data-selection-rotate-handle="true"
-                  title={`Rotate ${transformTargetLabel}`}
-                  onPointerDown={handleRotatePointerDown}
-                  onDoubleClick={handleRotateDoubleClick}
-                >
-                  <RotateSelectionIcon />
-                  {rotateReadout ? (
-                    <RotateSelectionReadout degrees={rotateReadout.degrees} />
-                  ) : null}
-                </button>
-              ) : null}
-              {canProjectedPlaneTilt && projectedPlaneTiltHandleVisible ? (
-                <button
-                  type="button"
-                  className="object-tilt3d-handle"
-                  aria-label={`3D rotate ${transformTargetLabel}`}
-                  data-selection-tilt3d-handle="true"
-                  title={`3D rotate ${transformTargetLabel}`}
-                  onPointerDown={handleProjectedPlaneTiltPointerDown}
-                  onDoubleClick={handleProjectedPlaneTiltDoubleClick}
-                >
-                  <ProjectedPlaneTiltIcon />
-                  {projectedPlaneTiltReadout ? (
-                    <ProjectedPlaneTiltReadout
-                      label={projectedPlaneTiltReadout.label}
-                      limited={projectedPlaneTiltReadout.limited}
-                    />
-                  ) : null}
-                </button>
-              ) : null}
-            </div>
-          ) : null}
-          {entryFrame && (rotationInput || resizeInput) ? (
-            <div
-              className="object-transform-input-layer"
-              data-has-tilt3d={canProjectedPlaneTilt ? "true" : undefined}
-              style={entryFrameStyle}
-            >
-              {rotationInput ? (
-                <RotationInputPopover
-                  input={rotationInput}
-                  onKeep={onRotationInputKeep}
-                  onHome={onRotationInputHome}
-                  onCancel={onRotationInputCancel}
-                  onChange={onRotationInputChange}
-                />
-              ) : null}
-              {resizeInput ? (
-                <ObjectResizeInputPopover
-                  input={resizeInput}
-                  onKeep={onObjectResizeInputKeep}
-                  onHome={onObjectResizeInputHome}
-                  onCancel={onObjectResizeInputCancel}
-                  onChange={onObjectResizeInputChange}
-                />
-              ) : null}
-            </div>
-          ) : null}
+          {inlineHandles(moleculeHandleChrome)}
           {editingAtomLabel ? object.atoms
             .filter((atom) => atom.id === (editingAtomLabel.previewAtomId ?? editingAtomLabel.atomId))
             .map((atom) => {
@@ -31469,7 +31585,6 @@ function DocumentObjectViewContent({
               return (
                 <input
                   aria-label="Atom label"
-                  aria-invalid={invalidHoverLabel ? true : undefined}
                   autoCapitalize="none"
                   autoComplete="off"
                   autoCorrect="off"
@@ -31509,7 +31624,7 @@ function DocumentObjectViewContent({
                 />
               );
             }) : null}
-          </>)}
+          </>, undefined, moleculeHandles)}
         </div>
       );
     }
@@ -31588,7 +31703,7 @@ function DocumentObjectViewContent({
         onPointerCancel={handleObjectPointerCancel}
         onPointerLeave={handleObjectPointerLeave}
       >
-        {chrome(artObjectTransformFrame)}
+        {chrome(inlineHandles(artObjectTransformFrame), undefined, artObjectTransformFrame)}
       </div>
     );
   }
@@ -31603,6 +31718,11 @@ function DocumentObjectViewContent({
       // Replaced in the layout effect before paint. Non-layout hosts (jsdom) have
       // no measurable CSS font metrics; they can inject them through the reader.
       textEditorLayout?.metrics ?? { ascentPx: textStyle.fontSizePx * scale, descentPx: 0 }, textEditorLayout?.offset);
+    // Chrome-local x of object.x: the frame may grow around the alignment anchor.
+    textEditorViewRef.current = editingText ? {
+      object, scale, offset: textEditorLayout?.offset ?? { x: 0, y: 0 },
+      originX: (textEditorLayout?.offset.x ?? 0) + object.x * scale - editorPlacement.frame.left
+    } : undefined;
     // Editor chrome only; never rewrite old/undone stored frames on open.
     const editorFrameCss: CSSProperties = {};
     if (editingText) {
@@ -31631,7 +31751,8 @@ function DocumentObjectViewContent({
       ...textCss,
       ...editorPlacement.content,
       color: "transparent",
-      caretColor: textStyle.color,
+      // The textarea's own caret and highlight follow its browser wrap, not the SVG's lines.
+      caretColor: "transparent",
       ...(objectTextScript === "normal" ? {} : {
         fontSize: `calc(${textStyle.fontSizePx * nativeTextScriptFontScale}px * var(--page-scale))`,
         lineHeight: Math.max(1, textStyle.lineHeight),
@@ -31639,6 +31760,53 @@ function DocumentObjectViewContent({
         paddingBottom: objectTextScript === "superscript" ? `calc(${textStyle.fontSizePx * 0.28}px * var(--page-scale))` : 0
       })
     } as CSSProperties;
+    // Resize bars and the rotate button draw in the handle layer, outside the page's clip, with
+    // the editor frame's box; the editor itself stays in the chrome.
+    const textHandles = (selected && !inGroupSelection) || editingText ? <>
+      <button
+        type="button"
+        className="text-resize-handle text-resize-handle-left"
+        aria-label="Resize text box left"
+        data-text-resize-edge="left"
+        onPointerDown={handleTextResizeStart("left")}
+      />
+      <button
+        type="button"
+        className="text-resize-handle text-resize-handle-right"
+        aria-label="Resize text box right"
+        data-text-resize-edge="right"
+        onPointerDown={handleTextResizeStart("right")}
+      />
+      <button
+        type="button"
+        className="text-resize-handle text-resize-handle-top"
+        aria-label="Resize text box top"
+        data-text-resize-edge="top"
+        onPointerDown={handleTextResizeStart("top")}
+      />
+      <button
+        type="button"
+        className="text-resize-handle text-resize-handle-bottom"
+        aria-label="Resize text box bottom"
+        data-text-resize-edge="bottom"
+        onPointerDown={handleTextResizeStart("bottom")}
+      />
+      {selected && !inGroupSelection && !editingText && zRotationHandleVisible ? (
+        <button
+          type="button"
+          className="object-rotate-handle text-rotate-handle"
+          aria-label="Rotate selected text box"
+          data-selection-rotate-handle="true"
+          title="Rotate selected text box"
+          onPointerDown={handleRotatePointerDown}
+        >
+          <RotateSelectionIcon />
+          {rotateReadout ? (
+            <RotateSelectionReadout degrees={rotateReadout.degrees} />
+          ) : null}
+        </button>
+      ) : null}
+    </> : null;
 
     return (
       <div
@@ -31656,53 +31824,7 @@ function DocumentObjectViewContent({
         onPointerLeave={handleObjectPointerLeave}
       >
         {chrome(<>
-        {(selected && !inGroupSelection) || editingText ? (
-          <>
-            <button
-              type="button"
-              className="text-resize-handle text-resize-handle-left"
-              aria-label="Resize text box left"
-              data-text-resize-edge="left"
-              onPointerDown={handleTextResizeStart("left")}
-            />
-            <button
-              type="button"
-              className="text-resize-handle text-resize-handle-right"
-              aria-label="Resize text box right"
-              data-text-resize-edge="right"
-              onPointerDown={handleTextResizeStart("right")}
-            />
-            <button
-              type="button"
-              className="text-resize-handle text-resize-handle-top"
-              aria-label="Resize text box top"
-              data-text-resize-edge="top"
-              onPointerDown={handleTextResizeStart("top")}
-            />
-            <button
-              type="button"
-              className="text-resize-handle text-resize-handle-bottom"
-              aria-label="Resize text box bottom"
-              data-text-resize-edge="bottom"
-              onPointerDown={handleTextResizeStart("bottom")}
-            />
-          </>
-        ) : null}
-        {selected && !inGroupSelection && !editingText && zRotationHandleVisible ? (
-          <button
-            type="button"
-            className="object-rotate-handle text-rotate-handle"
-            aria-label="Rotate selected text box"
-            data-selection-rotate-handle="true"
-            title="Rotate selected text box"
-            onPointerDown={handleRotatePointerDown}
-          >
-            <RotateSelectionIcon />
-            {rotateReadout ? (
-              <RotateSelectionReadout degrees={rotateReadout.degrees} />
-            ) : null}
-          </button>
-        ) : null}
+        {inlineHandles(textHandles)}
         {editingText ? (
           <>
             <textarea
@@ -31714,7 +31836,8 @@ function DocumentObjectViewContent({
               spellCheck={false}
               data-text-script={objectTextScript}
               style={textEditorCss}
-              value={object.text}
+              // LF line breaks, as the textarea's own value reports them (an older file can store CR).
+              value={normalizeTextLineBreaks(object.text)}
               onChange={handleTextChange}
               onPaste={handleTextPaste}
               onFocus={(event) => {
@@ -31722,6 +31845,7 @@ function DocumentObjectViewContent({
                   event.currentTarget.select();
                 }
                 recordTextEditorSelection(event.currentTarget);
+                paintTextEditor();
               }}
               // Click-away commits (exact element-symbol text becomes an atom). The
               // explicit id matters: canvas pointer handlers clear the edit state before blur.
@@ -31729,22 +31853,70 @@ function DocumentObjectViewContent({
                 if (!inlineEditorReadOnly && inlineEditorBlurEndsEdit(event.currentTarget)) {
                   onTextEditFinish(object.id);
                 }
+                paintTextEditor();
               }}
               onKeyDown={handleTextKeyDown}
-              onKeyUp={(event) => recordTextEditorSelection(event.currentTarget)}
-              onSelect={(event) => recordTextEditorSelection(event.currentTarget)}
+              onKeyUp={(event) => {
+                recordTextEditorSelection(event.currentTarget);
+                paintTextEditor();
+              }}
+              onSelect={(event) => {
+                recordTextEditorSelection(event.currentTarget);
+                paintTextEditor();
+              }}
+              // Presses and drags hit-test the rendered lines, never the textarea's own layout,
+              // so the highlighted range is always the range typing replaces.
               onPointerDown={(event) => {
                 if (!inlineEditorReadOnly) onTextPlaceholderClear(object.id);
                 event.stopPropagation();
+                const view = textEditorViewRef.current;
+                const point = event.button === 0 ? textEditorPointFromClient(event.clientX, event.clientY) : undefined;
+                if (!view || !point) return;
+                event.preventDefault();
+                const editor = event.currentTarget;
+                if (editor.ownerDocument.activeElement !== editor) editor.focus({ preventScroll: true });
+                pressTextEditor(editor, textEditorSessionRef.current, textEditorModelLayout(view.object), point, {
+                  pointerId: event.pointerId, time: event.timeStamp, clientX: event.clientX, clientY: event.clientY,
+                  shiftKey: event.shiftKey
+                });
+                try { editor.setPointerCapture(event.pointerId); } catch { /* the pointer is already gone */ }
+                recordTextEditorSelection(editor);
+                paintTextEditor();
+              }}
+              onMouseDown={(event) => {
+                // The press above owns caret placement; the compatibility mousedown must not.
+                if (event.button === 0 && textEditorPointFromClient(event.clientX, event.clientY)) event.preventDefault();
+              }}
+              onPointerMove={(event) => {
+                const session = textEditorSessionRef.current, view = textEditorViewRef.current;
+                if (!session.drag || session.drag.pointerId !== event.pointerId || !view) return;
+                event.stopPropagation();
+                if ((event.buttons & 1) === 0) { session.drag = undefined; return; }
+                const point = textEditorPointFromClient(event.clientX, event.clientY);
+                if (!point) return;
+                dragTextEditor(event.currentTarget, session, textEditorModelLayout(view.object), point);
+                recordTextEditorSelection(event.currentTarget);
+                paintTextEditor();
               }}
               onPointerUp={(event) => {
                 event.stopPropagation();
+                const session = textEditorSessionRef.current, view = textEditorViewRef.current;
+                if (session.drag?.pointerId === event.pointerId && view) {
+                  const point = textEditorPointFromClient(event.clientX, event.clientY);
+                  if (point) dragTextEditor(event.currentTarget, session, textEditorModelLayout(view.object), point);
+                  session.drag = undefined;
+                  try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* already released */ }
+                }
                 recordTextEditorSelection(event.currentTarget);
+                paintTextEditor();
               }}
+              onPointerCancel={() => { textEditorSessionRef.current.drag = undefined; }}
             />
+            <div className="text-editor-selection-layer" ref={textSelectionLayerRef} aria-hidden="true" />
+            <div className="text-editor-caret" ref={textCaretRef} aria-hidden="true" style={{ backgroundColor: textStyle.color }} />
           </>
         ) : null}
-        </>, { ...textCss, ...editorFrameCss })}
+        </>, { ...textCss, ...editorFrameCss }, textHandles)}
       </div>
     );
   }
@@ -31806,7 +31978,7 @@ function DocumentObjectViewContent({
             />
           ))}
         </svg>
-        {chrome(artObjectTransformFrame)}
+        {chrome(inlineHandles(artObjectTransformFrame), undefined, artObjectTransformFrame)}
       </div>
     );
   }
@@ -31829,7 +32001,7 @@ function DocumentObjectViewContent({
         onContextMenu={handleObjectContextMenu}
       >
         <BracketGlyph object={object} projection={artObjectProjection} />
-        {chrome(artObjectTransformFrame)}
+        {chrome(inlineHandles(artObjectTransformFrame), undefined, artObjectTransformFrame)}
       </div>
     );
   }
@@ -31933,8 +32105,8 @@ function DocumentObjectViewContent({
             {graphicPathEditHandles}
           </div>
           {graphicEyedropperTargetOverlay}
-          {artObjectTransformFrame}
-        </>)}
+          {inlineHandles(artObjectTransformFrame)}
+        </>, undefined, artObjectTransformFrame)}
       </div>
     );
   }
@@ -31951,7 +32123,7 @@ function DocumentObjectViewContent({
       onPointerCancel={handleObjectPointerCancel}
       onPointerLeave={handleObjectPointerLeave}
     >
-      {chrome(artObjectTransformFrame)}
+      {chrome(inlineHandles(artObjectTransformFrame), undefined, artObjectTransformFrame)}
     </div>
   );
 }
@@ -34474,7 +34646,9 @@ function textScriptForTextObject(object: TextObject): TextSpan["script"] {
   return scripts.size === 1 ? [...scripts][0] ?? "normal" : "normal";
 }
 
-function textScriptForTextRange(object: TextObject, range: NativeTextSelectionRange): TextSpan["script"] {
+function textScriptForTextRange(stored: TextObject, range: NativeTextSelectionRange): TextSpan["script"] {
+  // The range is the editor's (LF line breaks); read an older CRLF object the same way.
+  const object = textObjectWithNormalizedLineBreaks(stored);
   const start = Math.max(0, Math.min(range.start, range.end, object.text.length));
   const end = Math.max(0, Math.min(Math.max(range.start, range.end), object.text.length));
   if (start === end) {
@@ -34495,7 +34669,9 @@ function textScriptForTextRange(object: TextObject, range: NativeTextSelectionRa
   return scripts.size === 1 ? [...scripts][0] ?? "normal" : "normal";
 }
 
-function textStyleForTextRange(object: TextObject, range: NativeTextSelectionRange): Record<string, unknown> {
+function textStyleForTextRange(stored: TextObject, range: NativeTextSelectionRange): Record<string, unknown> {
+  // The range is the editor's (LF line breaks); read an older CRLF object the same way.
+  const object = textObjectWithNormalizedLineBreaks(stored);
   const start = Math.max(0, Math.min(range.start, range.end, object.text.length));
   const end = Math.max(0, Math.min(Math.max(range.start, range.end), object.text.length));
   if (start === end) {
@@ -34659,6 +34835,29 @@ function RotationInputPopover({
   onCancel(input: RotationInputState): void;
   onChange(input: RotationInputState): void;
 }) {
+  const formRef = useRef<HTMLFormElement>(null);
+  // Each opening (a new start document) takes focus into its first field with the angle selected,
+  // so typing replaces it. A native context menu closing, or the rotate handle's own press, can
+  // move focus back to the canvas or the handle just after the entry mounts; reclaim it then, but
+  // never from another text field the user moved to.
+  useLayoutEffect(() => {
+    const claim = (opening: boolean) => {
+      const form = formRef.current;
+      const field = form?.querySelector<HTMLInputElement>("input");
+      if (!form || !field) return;
+      const active = form.ownerDocument.activeElement;
+      if (active && form.contains(active)) {
+        if (opening && active === field) field.select();
+        return;
+      }
+      if (active && active !== form.ownerDocument.body && isEditableTarget(active)) return;
+      field.focus({ preventScroll: true });
+      field.select();
+    };
+    claim(true);
+    const timers = [0, 16, 80, 250].map(delay => window.setTimeout(() => claim(false), delay));
+    return () => timers.forEach(timer => window.clearTimeout(timer));
+  }, [input.startDocument]);
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     event.stopPropagation();
@@ -34670,6 +34869,10 @@ function RotationInputPopover({
     if (event.key === "Escape") {
       event.preventDefault();
       onCancel(input);
+    } else if (event.key === "Enter" && !event.nativeEvent.isComposing && event.target instanceof HTMLInputElement) {
+      // Explicit: a form with two fields and no submit button (X/Y) has no implicit submission.
+      event.preventDefault();
+      onKeep(input);
     }
   };
   const stopPointerPropagation = (event: PointerEvent<HTMLFormElement>) => {
@@ -34678,6 +34881,7 @@ function RotationInputPopover({
 
   return (
     <form
+      ref={formRef}
       aria-label={`${input.targetLabel} rotation entry`}
       className="object-rotation-input-popover"
       data-rotation-input-popover="true"
