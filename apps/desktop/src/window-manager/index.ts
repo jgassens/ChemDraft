@@ -1755,10 +1755,41 @@ export async function monitorLogicalBoundsAt(
   if (!isDesktopRuntime()) {
     return undefined;
   }
+  const area = await monitorLogicalAreaAt(x, y);
+  return area && logicalBounds(area);
+}
+
+/** The work area (Dock, menu bar and taskbar excluded) of the attached monitor containing the
+ *  given global-logical point, or undefined when no monitor contains it (or outside the desktop
+ *  runtime). The monitor is found by its whole bounds, so a point over the Dock still has one. */
+export async function monitorLogicalWorkAreaAt(
+  x: number,
+  y: number
+): Promise<MonitorLogicalBounds | undefined> {
+  if (!isDesktopRuntime()) {
+    return undefined;
+  }
+  const area = await monitorLogicalAreaAt(x, y);
+  if (!area) return undefined;
+  // An older native side reports only the whole monitor; that is still better than nothing.
+  return isLogicalBounds(area.workArea) ? logicalBounds(area.workArea) : logicalBounds(area);
+}
+
+/** What `monitor_logical_bounds_at` returns: the whole monitor, plus its work area. */
+type MonitorLogicalArea = MonitorLogicalBounds & { workArea?: MonitorLogicalBounds };
+
+const logicalBounds = ({ left, top, right, bottom }: MonitorLogicalBounds): MonitorLogicalBounds =>
+  ({ left, top, right, bottom });
+
+const isLogicalBounds = (value: unknown): value is MonitorLogicalBounds =>
+  typeof value === "object" && value !== null &&
+  (["left", "top", "right", "bottom"] as const).every(key => typeof (value as Record<string, unknown>)[key] === "number");
+
+async function monitorLogicalAreaAt(x: number, y: number): Promise<MonitorLogicalArea | undefined> {
   // Native command, not `availableMonitors()`: see currentWindowLogicalWorkArea.
   const { invoke } = await import("@tauri-apps/api/core");
-  const bounds = await invoke<MonitorLogicalBounds | null>("monitor_logical_bounds_at", { x, y }).catch(() => null);
-  return bounds ?? undefined;
+  const area = await invoke<MonitorLogicalArea | null>("monitor_logical_bounds_at", { x, y }).catch(() => null);
+  return isLogicalBounds(area) ? area : undefined;
 }
 
 export async function hidePaletteFloatingTooltip(): Promise<void> {

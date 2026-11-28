@@ -2,7 +2,7 @@ import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { toNativeCanvasMenu, withStereoReadout, type CanvasMenuItem, type NativeCanvasMenuItem } from "./canvasContextMenuModel";
 import { detectDesktopShortcutPlatform } from "./keyboardShortcuts";
 import {
-  currentWindowLogicalPosition, currentWindowLogicalWorkArea, isDesktopRuntime, monitorLogicalBoundsAt,
+  currentWindowLogicalPosition, currentWindowLogicalWorkArea, isDesktopRuntime, monitorLogicalWorkAreaAt,
   type MonitorLogicalBounds
 } from "./window-manager";
 
@@ -25,7 +25,7 @@ export interface NativeCanvasMenuOptions {
   platform?: ShortcutPlatform;
 }
 
-/** Global logical coordinates (the space `monitorLogicalBoundsAt` reports in). */
+/** Global logical coordinates (the space `monitorLogicalWorkAreaAt` reports in). */
 export interface NativeMenuScreen {
   /** Top-left of the document window's content, where client coordinates start. */
   origin: { x: number; y: number };
@@ -81,7 +81,7 @@ export function placeNativeCanvasMenu(
 
 /** The document window's content origin and the work area under the pointer, read natively. The
  * window's own monitor is used unless the pointer is on another one (a window spanning screens);
- * then that monitor's bounds are the best the native side reports. */
+ * then that monitor's own work area, so its Dock or taskbar is left clear too. */
 export async function readNativeMenuScreen(position: { x: number; y: number }): Promise<NativeMenuScreen | undefined> {
   if (!isDesktopRuntime()) return undefined;
   const origin = await currentWindowLogicalPosition("inner");
@@ -91,8 +91,8 @@ export async function readNativeMenuScreen(position: { x: number; y: number }): 
     pointer.x >= area.left && pointer.x < area.right && pointer.y >= area.top && pointer.y < area.bottom;
   const windowArea = await currentWindowLogicalWorkArea();
   if (contains(windowArea)) return { origin, workArea: windowArea };
-  const pointerMonitor = await monitorLogicalBoundsAt(pointer.x, pointer.y);
-  return { origin, workArea: pointerMonitor ?? windowArea };
+  const pointerWorkArea = await monitorLogicalWorkAreaAt(pointer.x, pointer.y);
+  return { origin, workArea: pointerWorkArea ?? windowArea };
 }
 
 async function nativeMenuPosition(

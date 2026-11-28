@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { clearMocks, mockIPC, mockWindows } from "@tauri-apps/api/mocks";
-import { broadcastToolsetZoom, currentWindowLogicalWorkArea, fitCurrentPaletteWindow, monitorLogicalBoundsAt, type ToolsetWindowSize } from "./index";
+import { broadcastToolsetZoom, currentWindowLogicalWorkArea, fitCurrentPaletteWindow, monitorLogicalBoundsAt, monitorLogicalWorkAreaAt, type ToolsetWindowSize } from "./index";
 import { PaletteWindow } from "../PaletteWindow";
 import { createDesktopToolsetRegistry, desktopToolsetRegistry, getToolsetItemGroups, initialToolsetWindowSize } from "../toolsets";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
@@ -80,6 +80,24 @@ describe("palette work-area sizing", () => {
     expect(await monitorLogicalBoundsAt(9000, 0)).toBeUndefined();
     native.boundsAt.mockRejectedValue(new Error("no runtime"));
     expect(await monitorLogicalBoundsAt(0, 0)).toBeUndefined();
+  });
+
+  it("reads the work area of the monitor under a point, and keeps the bounds to the whole monitor", async () => {
+    const bounds = { left: 1920, top: 0, right: 4480, bottom: 1440 };
+    const workArea = { left: 1920, top: 24, right: 4480, bottom: 1400 };
+    native.boundsAt.mockResolvedValue({ ...bounds, workArea });
+    expect(await monitorLogicalWorkAreaAt(2000, 1430)).toEqual(workArea);
+    expect(native.boundsAt).toHaveBeenCalledWith({ x: 2000, y: 1430 });
+    expect(await monitorLogicalBoundsAt(2000, 1430)).toEqual(bounds);
+    // An older native side without the work area: the whole monitor is the fallback.
+    native.boundsAt.mockResolvedValue(bounds);
+    expect(await monitorLogicalWorkAreaAt(2000, 100)).toEqual(bounds);
+    native.boundsAt.mockResolvedValue({ ...bounds, workArea: { left: 1920 } });
+    expect(await monitorLogicalWorkAreaAt(2000, 100)).toEqual(bounds);
+    native.boundsAt.mockResolvedValue(null);
+    expect(await monitorLogicalWorkAreaAt(9000, 0)).toBeUndefined();
+    native.boundsAt.mockRejectedValue(new Error("no runtime"));
+    expect(await monitorLogicalWorkAreaAt(0, 0)).toBeUndefined();
   });
 
   it("caps an oversized inspector without supplying a replacement origin", async () => {

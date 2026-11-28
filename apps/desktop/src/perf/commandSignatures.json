@@ -853,7 +853,7 @@
     "async": false,
     "generics": "",
     "parameters": "window: tauri::WebviewWindow, x: f64, y: f64,",
-    "returnType": "Option<LogicalBounds>"
+    "returnType": "Option<MonitorLogicalArea>"
   },
   {
     "file": "naming_engine/mod.rs",

@@ -1,8 +1,8 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { estimateNativeMenuSize, placeNativeCanvasMenu, popupNativeCanvasMenu, type NativeMenuScreen } from "./nativeCanvasContextMenu";
+import { estimateNativeMenuSize, placeNativeCanvasMenu, popupNativeCanvasMenu, readNativeMenuScreen, type NativeMenuScreen } from "./nativeCanvasContextMenu";
 import { pageCanvasMenu, toNativeCanvasMenu, type CanvasMenuItem } from "./canvasContextMenuModel";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -113,6 +113,49 @@ describe.each(["macos", "windows"] as const)("native canvas menu placement (%s)"
     inside(position, estimateNativeMenuSize(items, platform));
     expect(position.y).toBeLessThan(750);
     expect(position.x).toBeLessThan(1320);
+  });
+
+  describe("a pointer on another monitor than the window's", () => {
+    // The window's own monitor is 1440x900 on the left; the pointer is on a 1920x1080 monitor to
+    // its right whose bottom 48 px are a Dock or taskbar.
+    const ownWorkArea = { left: 0, top: 25, right: 1440, bottom: 830 };
+    const otherMonitor = { left: 1440, top: 0, right: 3360, bottom: 1080 };
+    const otherWorkArea = { left: 1440, top: 0, right: 3360, bottom: 1032 };
+    const native = (monitorAt: unknown) => vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === "window_logical_position") return { x: 100, y: 60 } as never;
+      if (command === "current_window_logical_work_area") return ownWorkArea as never;
+      if (command === "monitor_logical_bounds_at") {
+        expect(args).toEqual({ x: 1600, y: 1010 });
+        return monitorAt as never;
+      }
+      return null as never;
+    });
+    beforeEach(() => { vi.stubGlobal("__TAURI_INTERNALS__", {}); });
+    afterEach(() => { vi.unstubAllGlobals(); });
+
+    it("fits the menu in that monitor's work area, clear of its Dock or taskbar", async () => {
+      native({ ...otherMonitor, workArea: otherWorkArea });
+      expect(await readNativeMenuScreen({ x: 1500, y: 950 })).toEqual({ origin: { x: 100, y: 60 }, workArea: otherWorkArea });
+      await popupNativeCanvasMenu(pageCanvasMenu, { x: 1500, y: 950 }, { platform });
+      const call = vi.mocked(invoke).mock.calls.find(([command]) => command === "popup_canvas_context_menu")!;
+      const { position, items } = call[1] as { position: { x: number; y: number }; items: [] };
+      const size = estimateNativeMenuSize(items, platform);
+      expect(60 + position.y + size.height).toBeLessThanOrEqual(otherWorkArea.bottom);
+      expect(100 + position.x).toBeGreaterThanOrEqual(otherWorkArea.left);
+    });
+
+    it("uses the window's own work area while the pointer is on its monitor", async () => {
+      native({ ...otherMonitor, workArea: otherWorkArea });
+      expect(await readNativeMenuScreen({ x: 300, y: 200 })).toEqual({ origin: { x: 100, y: 60 }, workArea: ownWorkArea });
+      expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "monitor_logical_bounds_at")).toBe(false);
+    });
+
+    it("falls back to the whole monitor, then the window's work area, when the native side says less", async () => {
+      native(otherMonitor);
+      expect((await readNativeMenuScreen({ x: 1500, y: 950 }))?.workArea).toEqual(otherMonitor);
+      native(null);
+      expect((await readNativeMenuScreen({ x: 1500, y: 950 }))?.workArea).toEqual(ownWorkArea);
+    });
   });
 
   it("opens at the pointer when the screen cannot be read", async () => {

@@ -165,16 +165,35 @@ impl MonitorGeometry {
     }
 }
 
-/// The logical bounds of the first monitor that contains the logical point (x, y).
-fn logical_bounds_containing(
+/// The monitor under a point: its whole bounds (the same four fields as before, at the top level,
+/// so callers that clamp to the full monitor keep working) and its work area, which leaves out the
+/// Dock and menu bar on macOS and the taskbar on Windows. Both come from the same `tauri::Monitor`
+/// on every platform, so neither side needs platform code here.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MonitorLogicalArea {
+    #[serde(flatten)]
+    bounds: LogicalBounds,
+    work_area: LogicalBounds,
+}
+
+/// The first monitor whose whole bounds contain the logical point (x, y). The whole bounds decide,
+/// so a point over the Dock or taskbar still finds its monitor.
+fn logical_area_containing(
     monitors: &[MonitorGeometry],
     x: f64,
     y: f64,
-) -> Option<LogicalBounds> {
+) -> Option<MonitorLogicalArea> {
     monitors
         .iter()
-        .map(MonitorGeometry::logical_bounds)
-        .find(|b| x >= b.left && x < b.right && y >= b.top && y < b.bottom)
+        .map(|monitor| MonitorLogicalArea {
+            bounds: monitor.logical_bounds(),
+            work_area: monitor.logical_work_area(),
+        })
+        .find(|area| {
+            let b = area.bounds;
+            x >= b.left && x < b.right && y >= b.top && y < b.bottom
+        })
 }
 
 /// The calling window's monitor work area, in logical coordinates. `None` when there is no monitor.
@@ -186,16 +205,16 @@ pub(crate) fn current_window_logical_work_area(
     Some(MonitorGeometry::of(&monitor).logical_work_area())
 }
 
-/// The logical bounds of the monitor under the logical point (x, y), if any.
+/// The logical bounds and work area of the monitor under the logical point (x, y), if any.
 #[tauri::command]
 pub(crate) fn monitor_logical_bounds_at(
     window: tauri::WebviewWindow,
     x: f64,
     y: f64,
-) -> Option<LogicalBounds> {
+) -> Option<MonitorLogicalArea> {
     let monitors = available_monitors(window.app_handle()).ok()?;
     let geometry: Vec<MonitorGeometry> = monitors.iter().map(MonitorGeometry::of).collect();
-    logical_bounds_containing(&geometry, x, y)
+    logical_area_containing(&geometry, x, y)
 }
 
 #[cfg(test)]
@@ -240,21 +259,57 @@ mod tests {
             monitor(1.0, 0.0, 0.0, 1920.0, 1080.0),
             monitor(2.0, 3840.0, 0.0, 5120.0, 2880.0),
         ];
-        let right = logical_bounds_containing(&monitors, 2000.0, 100.0).unwrap();
+        let right = logical_area_containing(&monitors, 2000.0, 100.0)
+            .unwrap()
+            .bounds;
         assert_eq!(
             (right.left, right.right, right.bottom),
             (1920.0, 4480.0, 1440.0)
         );
-        let left = logical_bounds_containing(&monitors, 0.0, 0.0).unwrap();
+        let left = logical_area_containing(&monitors, 0.0, 0.0).unwrap().bounds;
         assert_eq!(left.right, 1920.0);
         // Right and bottom edges belong to the next monitor, as in the frontend's old check.
         assert_eq!(
-            logical_bounds_containing(&monitors, 1920.0, 10.0)
+            logical_area_containing(&monitors, 1920.0, 10.0)
                 .unwrap()
+                .bounds
                 .left,
             1920.0
         );
-        assert_eq!(logical_bounds_containing(&monitors, 9000.0, 0.0), None);
-        assert_eq!(logical_bounds_containing(&[], 0.0, 0.0), None);
+        assert_eq!(logical_area_containing(&monitors, 9000.0, 0.0), None);
+        assert_eq!(logical_area_containing(&[], 0.0, 0.0), None);
+    }
+
+    #[test]
+    fn the_monitor_under_a_point_reports_its_work_area_in_its_own_scale() {
+        let monitors = [
+            monitor(1.0, 0.0, 0.0, 1920.0, 1080.0),
+            monitor(2.0, 3840.0, 0.0, 5120.0, 2880.0),
+        ];
+        // A point over the second monitor's Dock/taskbar strip still finds that monitor.
+        let area = logical_area_containing(&monitors, 2000.0, 1430.0).unwrap();
+        assert_eq!(
+            area.work_area,
+            LogicalBounds {
+                left: 1920.0,
+                top: 24.0,
+                right: 4480.0,
+                bottom: 1400.0
+            }
+        );
+        assert_eq!(area.bounds.bottom, 1440.0);
+    }
+
+    #[test]
+    fn the_monitor_area_keeps_the_bounds_at_the_top_level_and_adds_the_work_area() {
+        let area =
+            logical_area_containing(&[monitor(1.0, 0.0, 0.0, 800.0, 600.0)], 1.0, 1.0).unwrap();
+        assert_eq!(
+            serde_json::to_value(area).unwrap(),
+            serde_json::json!({
+                "left": 0.0, "top": 0.0, "right": 800.0, "bottom": 600.0,
+                "workArea": { "left": 0.0, "top": 24.0, "right": 800.0, "bottom": 560.0 }
+            })
+        );
     }
 }
