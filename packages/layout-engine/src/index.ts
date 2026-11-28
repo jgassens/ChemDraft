@@ -10365,8 +10365,11 @@ export interface ElectronMarkCarryPlacement {
 /**
  * The ONE placement rule for the marks a molecule carries when it is redrawn with new atom positions
  * (same atom ids): the Spin 3D live overlay and its flatten (and so a reopened model, a typed or
- * dragged X/Y rotation, and an Interactive 3D tug), and 3D clean-up. The overlay paints each mark
- * exactly where the commit stores it because both call this with the atoms they draw.
+ * dragged X/Y rotation, and an Interactive 3D tug), and 3D clean-up. Both call this with the atoms
+ * they draw, so each mark sits beside its displayed atom. For a molecule not turned on the page the
+ * overlay paints each mark exactly where the commit stores it; for a turned one the overlay draws
+ * unturned (rotation 0) and the commit in the turned frame, so the live and committed page positions
+ * differ, each beside its displayed atom.
  *
  * Each mark keeps the page offset from its atom it had in `before`, read in `after`'s frame, unless
  * that spot lands on another atom, a bond, or an atom label's letters (`after`'s labels, as it will

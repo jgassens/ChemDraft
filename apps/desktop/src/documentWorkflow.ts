@@ -19851,8 +19851,10 @@ function isSpin3dStereoMarker(bond: MoleculeBond): boolean {
 /**
  * The charge/radical/lone-pair marks a Spin 3D session carries with molecule `objectId`, each with the
  * atom it follows, whether or not the mark itself is selected. Flatten and the live overlay place
- * them with the same rule (`carriedElectronMarkPlacements`), so the mark never lags the spin and is
- * committed where it was painted.
+ * them with the same rule (`carriedElectronMarkPlacements`), so the mark never lags the spin and always
+ * sits beside the atom it follows. For a molecule not turned on the page the mark is committed where it
+ * was painted; for a turned one the overlay draws unturned and release turns the molecule, so the live
+ * and committed page positions differ, each beside its displayed atom.
  */
 export function spin3dCarriedElectronMarks(
   page: DocumentPage, objectId: string
