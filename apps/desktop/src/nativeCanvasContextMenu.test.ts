@@ -115,27 +115,40 @@ describe.each(["macos", "windows"] as const)("native canvas menu placement (%s)"
     expect(position.x).toBeLessThan(1320);
   });
 
+  it("scales the menu by the pointer monitor's menu scale before fitting it", () => {
+    // 200 px tall at screen y 600 fits above the Dock (800 <= 830).
+    const short = { width: 240, height: 200 };
+    expect(placeNativeCanvasMenu({ x: 300, y: 540 }, short, screen)).toEqual({ x: 300, y: 540 });
+    // Drawn half again as large, 300 px tall, it no longer fits below and flips above.
+    const placed = placeNativeCanvasMenu({ x: 300, y: 540 }, short, { ...screen, menuScale: 1.5 });
+    expect(placed).toEqual({ x: 300, y: 240 });
+    inside(placed, { width: 360, height: 300 });
+  });
+
   describe("a pointer on another monitor than the window's", () => {
     // The window's own monitor is 1440x900 on the left; the pointer is on a 1920x1080 monitor to
     // its right whose bottom 48 px are a Dock or taskbar.
     const ownWorkArea = { left: 0, top: 25, right: 1440, bottom: 830 };
     const otherMonitor = { left: 1440, top: 0, right: 3360, bottom: 1080 };
     const otherWorkArea = { left: 1440, top: 0, right: 3360, bottom: 1032 };
-    const native = (monitorAt: unknown) => vi.mocked(invoke).mockImplementation(async (command, args) => {
-      if (command === "window_logical_position") return { x: 100, y: 60 } as never;
-      if (command === "current_window_logical_work_area") return ownWorkArea as never;
-      if (command === "monitor_logical_bounds_at") {
-        expect(args).toEqual({ x: 1600, y: 1010 });
-        return monitorAt as never;
-      }
-      return null as never;
-    });
+    const native = (monitorAt: unknown, pointer = { x: 1600, y: 1010 }) =>
+      vi.mocked(invoke).mockImplementation(async (command, args) => {
+        if (command === "window_logical_position") return { x: 100, y: 60 } as never;
+        if (command === "current_window_logical_work_area") return ownWorkArea as never;
+        if (command === "monitor_logical_bounds_at") {
+          // Looked up in the window's own space, the one its origin and client coordinates are in.
+          expect(args).toEqual({ ...pointer, windowSpace: true });
+          return monitorAt as never;
+        }
+        return null as never;
+      });
     beforeEach(() => { vi.stubGlobal("__TAURI_INTERNALS__", {}); });
     afterEach(() => { vi.unstubAllGlobals(); });
 
     it("fits the menu in that monitor's work area, clear of its Dock or taskbar", async () => {
-      native({ ...otherMonitor, workArea: otherWorkArea });
-      expect(await readNativeMenuScreen({ x: 1500, y: 950 })).toEqual({ origin: { x: 100, y: 60 }, workArea: otherWorkArea });
+      native({ ...otherMonitor, workArea: otherWorkArea, unitsPerLogicalPixel: 1 });
+      expect(await readNativeMenuScreen({ x: 1500, y: 950 }))
+        .toEqual({ origin: { x: 100, y: 60 }, workArea: otherWorkArea, menuScale: 1 });
       await popupNativeCanvasMenu(pageCanvasMenu, { x: 1500, y: 950 }, { platform });
       const call = vi.mocked(invoke).mock.calls.find(([command]) => command === "popup_canvas_context_menu")!;
       const { position, items } = call[1] as { position: { x: number; y: number }; items: [] };
@@ -144,17 +157,42 @@ describe.each(["macos", "windows"] as const)("native canvas menu placement (%s)"
       expect(100 + position.x).toBeGreaterThanOrEqual(otherWorkArea.left);
     });
 
-    it("uses the window's own work area while the pointer is on its monitor", async () => {
-      native({ ...otherMonitor, workArea: otherWorkArea });
-      expect(await readNativeMenuScreen({ x: 300, y: 200 })).toEqual({ origin: { x: 100, y: 60 }, workArea: ownWorkArea });
-      expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "monitor_logical_bounds_at")).toBe(false);
+    it("uses the work area the native side finds for a pointer on the window's own monitor", async () => {
+      native({ left: 0, top: 0, right: 1440, bottom: 900, workArea: ownWorkArea, unitsPerLogicalPixel: 1 }, { x: 400, y: 260 });
+      expect(await readNativeMenuScreen({ x: 300, y: 200 }))
+        .toEqual({ origin: { x: 100, y: 60 }, workArea: ownWorkArea, menuScale: 1 });
     });
 
     it("falls back to the whole monitor, then the window's work area, when the native side says less", async () => {
       native(otherMonitor);
-      expect((await readNativeMenuScreen({ x: 1500, y: 950 }))?.workArea).toEqual(otherMonitor);
+      expect(await readNativeMenuScreen({ x: 1500, y: 950 }))
+        .toEqual({ origin: { x: 100, y: 60 }, workArea: otherMonitor, menuScale: 1 });
       native(null);
-      expect((await readNativeMenuScreen({ x: 1500, y: 950 }))?.workArea).toEqual(ownWorkArea);
+      expect(await readNativeMenuScreen({ x: 1500, y: 950 })).toEqual({ origin: { x: 100, y: 60 }, workArea: ownWorkArea });
+    });
+
+    it("keeps the menu by the pointer on a 150% monitor beside a 100% window", async () => {
+      // Windows: a 100% 1920x1080 primary holding the window, and a 150% 3840x2160 monitor to its
+      // right. The window's space is the physical desktop, so that monitor spans 1920..5760 there
+      // (each monitor divided by its own scale would put it at 1280..3840 x 0..1440 and miss a
+      // pointer low on it). Its taskbar takes the bottom 72 units, and a menu on it is drawn at 1.5x.
+      const bigWorkArea = { left: 1920, top: 0, right: 5760, bottom: 2088 };
+      const route = toNativeCanvasMenu(pageCanvasMenu, "size");
+      const size = estimateNativeMenuSize(route.items, platform);
+      // Low enough that the menu fits below at 1x but not at 1.5x.
+      const pointer = { x: 2000, y: Math.round(bigWorkArea.bottom - size.height * 1.2) };
+      const client = { x: pointer.x - 100, y: pointer.y - 60 };
+      native({ left: 1920, top: 0, right: 5760, bottom: 2160, workArea: bigWorkArea, unitsPerLogicalPixel: 1.5 }, pointer);
+      await popupNativeCanvasMenu(pageCanvasMenu, client, { platform });
+      const call = vi.mocked(invoke).mock.calls.find(([command]) => command === "popup_canvas_context_menu")!;
+      const { position } = call[1] as { position: { x: number; y: number } };
+      // Still at the pointer on the 150% monitor, not pulled back onto the window's own monitor,
+      // and flipped above it so the larger menu clears the taskbar.
+      expect(position.x).toBe(client.x);
+      expect(100 + position.x).toBeGreaterThanOrEqual(bigWorkArea.left);
+      expect(position.y).toBe(client.y - size.height * 1.5);
+      expect(60 + position.y + size.height * 1.5).toBeLessThanOrEqual(bigWorkArea.bottom);
+      expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "current_window_logical_work_area")).toBe(false);
     });
   });
 

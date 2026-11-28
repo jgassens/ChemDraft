@@ -852,7 +852,7 @@
     "name": "monitor_logical_bounds_at",
     "async": false,
     "generics": "",
-    "parameters": "window: tauri::WebviewWindow, x: f64, y: f64,",
+    "parameters": "window: tauri::WebviewWindow, x: f64, y: f64, window_space: Option<bool>,",
     "returnType": "Option<MonitorLogicalArea>"
   },
   {

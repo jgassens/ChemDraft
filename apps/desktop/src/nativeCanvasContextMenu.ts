@@ -2,7 +2,7 @@ import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { toNativeCanvasMenu, withStereoReadout, type CanvasMenuItem, type NativeCanvasMenuItem } from "./canvasContextMenuModel";
 import { detectDesktopShortcutPlatform } from "./keyboardShortcuts";
 import {
-  currentWindowLogicalPosition, currentWindowLogicalWorkArea, isDesktopRuntime, monitorLogicalWorkAreaAt,
+  currentWindowLogicalPosition, currentWindowLogicalWorkArea, isDesktopRuntime, monitorWorkAreaInWindowSpaceAt,
   type MonitorLogicalBounds
 } from "./window-manager";
 
@@ -25,12 +25,17 @@ export interface NativeCanvasMenuOptions {
   platform?: ShortcutPlatform;
 }
 
-/** Global logical coordinates (the space `monitorLogicalWorkAreaAt` reports in). */
+/** The document window's own logical space: its logical position plus client coordinates (the
+ * space `monitorWorkAreaInWindowSpaceAt` takes and reports in). On macOS that is the global space
+ * of points; on Windows the physical desktop divided by the window's scale. */
 export interface NativeMenuScreen {
   /** Top-left of the document window's content, where client coordinates start. */
   origin: { x: number; y: number };
   /** Work area of the monitor under the pointer: Dock, menu bar and taskbar excluded. */
   workArea: MonitorLogicalBounds;
+  /** Units of this space one logical pixel of the menu spans on that monitor (default 1): a menu
+   * opened from a 100% window onto a 150% Windows monitor is drawn half again as large. */
+  menuScale?: number;
 }
 
 /** Logical sizes of one native menu row, generous so the estimate errs on the large side: an
@@ -73,26 +78,26 @@ export function placeNativeCanvasMenu(
     return Math.max(start, end - extent) - origin;
   };
   const { origin, workArea } = screen;
+  const scale = screen.menuScale ?? 1;
   return {
-    x: axis(position.x, origin.x, size.width, workArea.left, workArea.right),
-    y: axis(position.y, origin.y, size.height, workArea.top, workArea.bottom)
+    x: axis(position.x, origin.x, size.width * scale, workArea.left, workArea.right),
+    y: axis(position.y, origin.y, size.height * scale, workArea.top, workArea.bottom)
   };
 }
 
-/** The document window's content origin and the work area under the pointer, read natively. The
- * window's own monitor is used unless the pointer is on another one (a window spanning screens);
- * then that monitor's own work area, so its Dock or taskbar is left clear too. */
+/** The document window's content origin and the work area of the monitor under the pointer, read
+ * natively, so a window spanning screens fits the menu on the pointer's screen, clear of its Dock
+ * or taskbar. The monitor is looked up in the window's own space: each monitor's global logical
+ * frame is divided by its own scale, which on Windows with mixed scales overlaps or leaves gaps
+ * that miss the pointer. Falls back to the window's own work area when no monitor is found. */
 export async function readNativeMenuScreen(position: { x: number; y: number }): Promise<NativeMenuScreen | undefined> {
   if (!isDesktopRuntime()) return undefined;
   const origin = await currentWindowLogicalPosition("inner");
   if (!origin) return undefined;
   const pointer = { x: origin.x + position.x, y: origin.y + position.y };
-  const contains = (area: MonitorLogicalBounds) =>
-    pointer.x >= area.left && pointer.x < area.right && pointer.y >= area.top && pointer.y < area.bottom;
-  const windowArea = await currentWindowLogicalWorkArea();
-  if (contains(windowArea)) return { origin, workArea: windowArea };
-  const pointerWorkArea = await monitorLogicalWorkAreaAt(pointer.x, pointer.y);
-  return { origin, workArea: pointerWorkArea ?? windowArea };
+  const area = await monitorWorkAreaInWindowSpaceAt(pointer.x, pointer.y);
+  if (area) return { origin, workArea: area.workArea, menuScale: area.unitsPerLogicalPixel };
+  return { origin, workArea: await currentWindowLogicalWorkArea() };
 }
 
 async function nativeMenuPosition(

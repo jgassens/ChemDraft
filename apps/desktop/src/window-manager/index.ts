@@ -1775,8 +1775,31 @@ export async function monitorLogicalWorkAreaAt(
   return isLogicalBounds(area.workArea) ? logicalBounds(area.workArea) : logicalBounds(area);
 }
 
+/** The work area of the monitor under a point given in the calling window's own logical space
+ *  (`currentWindowLogicalPosition` plus client coordinates), reported in that same space, and how
+ *  many units of it one logical pixel on that monitor spans. Unlike the global logical space, this
+ *  one stays one-to-one with the desktop on Windows when the monitors' scales differ. Undefined
+ *  when no monitor contains the point (or outside the desktop runtime). */
+export async function monitorWorkAreaInWindowSpaceAt(
+  x: number,
+  y: number
+): Promise<{ workArea: MonitorLogicalBounds; unitsPerLogicalPixel: number } | undefined> {
+  if (!isDesktopRuntime()) {
+    return undefined;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  const area = await invoke<MonitorLogicalArea | null>("monitor_logical_bounds_at", { x, y, windowSpace: true })
+    .catch(() => null);
+  if (!isLogicalBounds(area)) return undefined;
+  const units = area.unitsPerLogicalPixel;
+  return {
+    workArea: isLogicalBounds(area.workArea) ? logicalBounds(area.workArea) : logicalBounds(area),
+    unitsPerLogicalPixel: typeof units === "number" && Number.isFinite(units) && units > 0 ? units : 1
+  };
+}
+
 /** What `monitor_logical_bounds_at` returns: the whole monitor, plus its work area. */
-type MonitorLogicalArea = MonitorLogicalBounds & { workArea?: MonitorLogicalBounds };
+type MonitorLogicalArea = MonitorLogicalBounds & { workArea?: MonitorLogicalBounds; unitsPerLogicalPixel?: number };
 
 const logicalBounds = ({ left, top, right, bottom }: MonitorLogicalBounds): MonitorLogicalBounds =>
   ({ left, top, right, bottom });
