@@ -2069,7 +2069,7 @@ Run under KDE Plasma (Wayland session, so the app uses XWayland) and on GNOME.
   file, and with a new untitled document. Export (File ▸ Export) dialogs show their format name.
   macOS and Windows Save dialogs list their file types in the same order as before.
 
-## Linux paste from LibreOffice (1.2.4)
+## Linux paste from LibreOffice (1.2.3)
 
 Run under KDE Plasma (Wayland session, so the app uses XWayland), on GNOME, and on an X11 session.
 Use the LibreOffice your distribution ships.
