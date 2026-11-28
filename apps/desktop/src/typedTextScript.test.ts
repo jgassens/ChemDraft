@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createPhase4Document, insertNativeTextObject, textObjectFormattingRuns, textScriptForTypingAt, updateNativeTextObjectText } from "./documentWorkflow";
 import {
-  pendingTypedScriptSurvivesSelection, recordTextEditFormatting, stepTextEditFormatting, toggledPendingTypedScript,
+  effectiveTypedScriptAtCaret, pendingTypedScriptSurvivesSelection, recordTextEditFormatting, stepTextEditFormatting, toggledPendingTypedScript,
   typedScriptInsertion, type TextEditFormattingState
 } from "./typedTextScript";
 import type { TextObject } from "@chemdraft/chem-core";
@@ -124,5 +124,30 @@ describe("script toggled at a collapsed caret", () => {
       expect(text(restored).height).toBe(text(typed).height);
       expect(text(updateNativeTextObjectText(plain, id, "H3", undefined, undefined, runs)).spans).toEqual([normal("H3")]);
     });
+  });
+});
+
+describe("the script the toolbar shows at a collapsed caret", () => {
+  it("is the pending script at its caret, and what typing would take anywhere else", () => {
+    const pending = { objectId: "t", caret: 1, script: "subscript" as const };
+    expect(effectiveTypedScriptAtCaret(pending, "t", 1, "normal")).toBe("subscript");
+    // The caret moved (an arrow, Home, End, a click): the pending script no longer counts.
+    expect(effectiveTypedScriptAtCaret(pending, "t", 0, "normal")).toBe("normal");
+    expect(effectiveTypedScriptAtCaret(pending, "t", 2, "superscript")).toBe("superscript");
+    // Another box, or nothing pending: what typing there would take.
+    expect(effectiveTypedScriptAtCaret(pending, "other", 1, "normal")).toBe("normal");
+    expect(effectiveTypedScriptAtCaret(undefined, "t", 1, "subscript")).toBe("subscript");
+    // A script toggled back to normal at the caret shows normal there, even inside a subscript run.
+    expect(effectiveTypedScriptAtCaret({ ...pending, script: "normal" }, "t", 1, "subscript")).toBe("normal");
+  });
+
+  it("agrees with the toggle: one click from what it shows turns the other way", () => {
+    for (const scriptAtCaret of ["normal", "subscript", "superscript"] as const) {
+      for (const command of ["subscript", "superscript"] as const) {
+        const shown = effectiveTypedScriptAtCaret(undefined, "t", 3, scriptAtCaret);
+        const next = toggledPendingTypedScript(undefined, "t", 3, command, scriptAtCaret);
+        expect(effectiveTypedScriptAtCaret(next, "t", 3, scriptAtCaret)).toBe(shown === command ? "normal" : command);
+      }
+    }
   });
 });

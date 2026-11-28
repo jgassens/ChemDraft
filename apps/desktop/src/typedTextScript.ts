@@ -75,6 +75,25 @@ export function pendingTypedScriptSurvivesSelection(
   return !!pending && pending.objectId === objectId && range.start === range.end && range.start === pending.caret;
 }
 
+/**
+ * The script the Text style subscript and superscript buttons show for a collapsed caret in the
+ * open editor: the script pending at that caret when one survives there, else the script a
+ * character typed there would take (`scriptAtCaret`, the same choice `toggledPendingTypedScript`
+ * toggles from). So after any caret move (an arrow, Home, End, a click) that drops the pending
+ * script, the buttons show what typing will really do, and one click turns the script on with its
+ * button lit.
+ */
+export function effectiveTypedScriptAtCaret(
+  pending: PendingTypedScript | undefined,
+  objectId: string,
+  caret: number,
+  scriptAtCaret: TextSpan["script"]
+): TextSpan["script"] {
+  return pending && pendingTypedScriptSurvivesSelection(pending, objectId, { start: caret, end: caret })
+    ? pending.script
+    : scriptAtCaret;
+}
+
 /** One state of the text in an open editor: its text, its formatting runs, and the pending script. */
 export interface TextEditFormattingState {
   text: string;

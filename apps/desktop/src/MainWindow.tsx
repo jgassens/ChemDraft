@@ -5,7 +5,7 @@ import { PLUGIN_CHANGE_REFUSED, RECOGNITION_REFUSED, chemistryRefusalOf, refusal
 import { buildObjectCanvasMenu, pageCanvasMenu, SET_DEFAULT_ARROW_STYLE_COMMAND_ID } from "./canvasContextMenuModel";
 import { editRotationEntryField, rotationEntryKeyAction } from "./rotationEntryKeys";
 import {
-  pendingTypedScriptStatus, pendingTypedScriptSurvivesSelection, recordTextEditFormatting, stepTextEditFormatting,
+  effectiveTypedScriptAtCaret, pendingTypedScriptStatus, pendingTypedScriptSurvivesSelection, recordTextEditFormatting, stepTextEditFormatting,
   toggledPendingTypedScript, typedScriptInsertion, type PendingTypedScript, type TextEditFormattingTimeline
 } from "./typedTextScript";
 import { CONTEXT_STEREO_DEADLINE_MS, loadStereoEngine, resolveContextStereo, stereoReadoutRequest } from "./stereoReadout";
@@ -3382,6 +3382,12 @@ export function MainWindow({
   const toolbarStyleTargetRef = useRef<ToolbarStyleTargetSnapshot | undefined>(undefined);
   /** Subscript/superscript toggled at a collapsed caret, for the next typed characters. */
   const pendingTypedScriptRef = useRef<PendingTypedScript | undefined>(undefined);
+  // The same value as state, so the Text style script buttons re-render whenever it is set or dropped.
+  const [pendingTypedScript, setPendingTypedScriptState] = useState<PendingTypedScript | undefined>(undefined);
+  const setPendingTypedScript = useCallback((next: PendingTypedScript | undefined) => {
+    pendingTypedScriptRef.current = next;
+    setPendingTypedScriptState(next);
+  }, []);
   /** The formatting runs of each text state in the open editor, for its native undo and redo. */
   const textEditFormattingRef = useRef<TextEditFormattingTimeline | undefined>(undefined);
   const viewportRef = useRef(viewport);
@@ -3461,10 +3467,22 @@ export function MainWindow({
     activeTextSelection.range.start !== activeTextSelection.range.end
     ? activeTextSelection.range
     : undefined;
+  // A collapsed caret in the open editor shows what typing there will do: the script toggled at that
+  // caret while it is still pending, else the script the typed character takes. Any caret move that
+  // drops the pending script (an arrow, Home, End, a click) drops it from the buttons too.
+  const selectedTextCaret = selectedTextObject &&
+    activeTextEditObjectId === selectedTextObject.id &&
+    activeTextSelection?.objectId === selectedTextObject.id &&
+    activeTextSelection.range.start === activeTextSelection.range.end
+    ? activeTextSelection.range.start
+    : undefined;
   const selectedTextScript = selectedTextObject
     ? selectedTextRange
       ? textScriptForTextRange(selectedTextObject, selectedTextRange)
-      : textScriptForTextObject(selectedTextObject)
+      : selectedTextCaret !== undefined
+        ? effectiveTypedScriptAtCaret(pendingTypedScript, selectedTextObject.id, selectedTextCaret,
+          textScriptForTypingAt(selectedTextObject, selectedTextCaret))
+        : textScriptForTextObject(selectedTextObject)
     : "normal";
   const selectedNativePartObject = selectedNativeMoleculePart
     ? findDocumentObject(document, selectedNativeMoleculePart.objectId)
@@ -7993,7 +8011,7 @@ export function MainWindow({
     // keystroke replaces text) or a caret moved anywhere else (End, an arrow, a click) drops it.
     // A text change advances the pending caret before the editor reports where the caret went.
     if (!pendingTypedScriptSurvivesSelection(pendingTypedScriptRef.current, objectId, range)) {
-      pendingTypedScriptRef.current = undefined;
+      setPendingTypedScript(undefined);
     }
     activeTextSelectionRef.current = nextSelection;
     setActiveTextSelection((current) =>
@@ -8003,7 +8021,7 @@ export function MainWindow({
         ? current
         : nextSelection
     );
-  }, []);
+  }, [setPendingTypedScript]);
 
   useEffect(() => () => {
     clearScheduledTextEditorFocus();
@@ -8012,9 +8030,9 @@ export function MainWindow({
   // A script toggled at the caret, and the formatting of the editor's undo states, belong to one
   // editing session.
   useEffect(() => {
-    if (pendingTypedScriptRef.current?.objectId !== activeTextEditObjectId) pendingTypedScriptRef.current = undefined;
+    if (pendingTypedScriptRef.current?.objectId !== activeTextEditObjectId) setPendingTypedScript(undefined);
     if (textEditFormattingRef.current?.objectId !== activeTextEditObjectId) textEditFormattingRef.current = undefined;
-  }, [activeTextEditObjectId]);
+  }, [activeTextEditObjectId, setPendingTypedScript]);
 
   const restoreToolAfterTextPlacement = useCallback(() => {
     const previousToolState = toolBeforeTextPlacementRef.current;
@@ -8864,7 +8882,7 @@ export function MainWindow({
       : undefined;
     if (historyStep) {
       textEditFormattingRef.current = historyStep.timeline;
-      pendingTypedScriptRef.current = historyStep.state.pending;
+      setPendingTypedScript(historyStep.state.pending);
       if (replacePresentDocument((current) =>
         updateNativeTextObjectText(current, objectId, text, originalFrame, undefined, historyStep.state.spans))) {
         reconcileSavedDocumentDirtyState();
@@ -8875,7 +8893,7 @@ export function MainWindow({
       ? typedScriptInsertion(pendingTypedScriptRef.current, objectId, previousText, nextText, change?.caret)
       : undefined;
     // Any other change (a deletion, typing elsewhere) leaves the toggled caret behind.
-    pendingTypedScriptRef.current = insertion?.next;
+    setPendingTypedScript(insertion?.next);
     const typedScript = insertion ? { range: insertion.range, script: insertion.next.script } : undefined;
     const result: { edited?: DocumentObject } = {};
     if (replacePresentDocument((current) => {
@@ -8890,7 +8908,7 @@ export function MainWindow({
       textEditFormattingRef.current = recordTextEditFormatting(textEditFormattingRef.current, objectId, before,
         { text: nextText, spans: textObjectFormattingRuns(edited), pending: pendingTypedScriptRef.current });
     }
-  }, [reconcileSavedDocumentDirtyState, replacePresentDocument]);
+  }, [reconcileSavedDocumentDirtyState, replacePresentDocument, setPendingTypedScript]);
 
   const convertCommittedText = useCallback((objectId: string) => {
     const awaiting = textPlacementsAwaitingAutoConversionRef.current.get(objectId);
@@ -9263,7 +9281,7 @@ export function MainWindow({
         const caret = selectedTextRange.start;
         const pending = toggledPendingTypedScript(pendingTypedScriptRef.current, selected.id, caret, textScript,
           textScriptForTypingAt(selected, caret));
-        pendingTypedScriptRef.current = pending;
+        setPendingTypedScript(pending);
         setStatus(pendingTypedScriptStatus(pending.script));
         return true;
       }
@@ -9375,7 +9393,7 @@ export function MainWindow({
 
     setStatus("Updated text defaults");
     return true;
-  }, [activeTextEditObjectId, commitDocumentChange, replacePresentDocument, selectedNativeMoleculePart, textStyleDefaults]);
+  }, [activeTextEditObjectId, commitDocumentChange, replacePresentDocument, selectedNativeMoleculePart, setPendingTypedScript, textStyleDefaults]);
 
   const selectedMoleculeRingTargets = useCallback((): NativeMoleculeRingTarget[] => {
     return currentMoleculeInspector.rings.selectedRings.map((ring) => ({

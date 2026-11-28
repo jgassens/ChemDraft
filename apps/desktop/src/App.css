@@ -2496,16 +2496,22 @@ textarea:focus-visible,
   box-shadow: var(--cd-focus-ring), inset 0 0 0 2px rgb(255 255 255 / 72%);
 }
 
-.toolbar-align-button:hover,
 .toolbar-align-button.active,
 .toolbar-color-trigger:hover,
 .toolbar-color-trigger[aria-expanded="true"],
-.toolbar-text-button:hover,
 .toolbar-text-button.active {
   border-color: var(--cd-accent-border);
   background-color: var(--cd-bg-active);
   color: var(--cd-accent-text);
   box-shadow: var(--cd-focus-ring);
+}
+
+/* Hover on a toggle must not look like "on": the pointer often rests on x2 after a click, so a
+   hover drawn as the lit state hid whether the script was really on (RC7, Windows). */
+.toolbar-align-button:hover:not(.active),
+.toolbar-text-button:hover:not(.active) {
+  border-color: var(--cd-accent-border);
+  background-color: var(--cd-bg-hover);
 }
 
 .toolbar-color-swatch:hover,
@@ -3388,12 +3394,10 @@ textarea:focus-visible,
   background: var(--cd-bg-hover);
 }
 
-.toolbar-align-button.palette-synthetic-hover,
-.toolbar-text-button.palette-synthetic-hover {
+.toolbar-align-button.palette-synthetic-hover:not(.active),
+.toolbar-text-button.palette-synthetic-hover:not(.active) {
   border-color: var(--cd-accent-border);
-  background-color: var(--cd-bg-active);
-  color: var(--cd-accent-text);
-  box-shadow: var(--cd-focus-ring);
+  background-color: var(--cd-bg-hover);
 }
 
 .icon-button.active {
