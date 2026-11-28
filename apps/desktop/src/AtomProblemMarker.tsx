@@ -1,3 +1,4 @@
+import { atomProblemBadgeRadiusPx } from "@chemdraft/layout-engine";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { atomProblemCommandId, type AtomProblemTarget } from "./atomProblemCommands";
 import { detectDesktopShortcutPlatform } from "./keyboardShortcuts";
@@ -21,7 +22,7 @@ export function AtomProblemMarker({ target, x, y, explanation, invoke, platform 
       if (event.key === "Enter" || event.key === " ") { event.preventDefault(); if (!event.repeat) invoke(commandId); }
     }}>
     <title>{explanation}</title>
-    <circle className="native-atom-invalid-ring" cx={x} cy={y} r="6" />
+    <circle className="native-atom-invalid-ring" cx={x} cy={y} r={atomProblemBadgeRadiusPx} />
     <text className="native-atom-invalid-exclamation" x={x} y={y}>!</text>
   </g>;
 }

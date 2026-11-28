@@ -84,7 +84,7 @@ import { planDisplayPage } from "./plannedDisplayPage";
 import { snapPlacementDegrees } from "./placementSnap";
 import { listenCurrentWindowEvent, listenTauriEvent } from "./window-manager/tauriEvents";
 import { reactionConditionsDraft, setReactionArrowConditions, type ReactionConditionsDraft } from "@chemdraft/document-workflow-core";
-import { arrowAttachmentFrame } from "@chemdraft/layout-engine";
+import { arrowAttachmentFrame, atomProblemBadgeCentre, moleculeLayoutLabelBoxes, type ElectronMarkLabelClearanceFrame } from "@chemdraft/layout-engine";
 import { OpenWarningsList } from "./OpenWarningsList";
 import { useNativeFileWarnings } from "./useNativeFileWarnings";
 import { lastExportDirectory } from "./exportDirectory";
@@ -3706,6 +3706,20 @@ export function MainWindow({
     return tableResizePreview ? { ...page, objects: page.objects.map(object =>
       object.id === tableResizePreview.id ? tableResizePreview : object) } : page;
   }, [activePage, atomLabelPreview, tableResizePreview, gesturePagePreview, document]);
+  // Atom-problem badges keep clear of the electron marks beside their atoms (a carbocation's
+  // floating charge). The list keeps its identity while no mark moves, so memoized molecule
+  // views do not re-render for an unrelated edit.
+  const previousElectronMarkFramesRef = useRef<readonly ElectronMarkLabelClearanceFrame[]>([]);
+  const pageElectronMarkFrames = useMemo(() => {
+    const next = labelDisplayPage.objects.flatMap((object): ElectronMarkLabelClearanceFrame[] => object.type === "electron-mark"
+      ? [{ x: object.x, y: object.y, width: object.width, height: object.height, rotation: object.rotation }] : []);
+    const previous = previousElectronMarkFramesRef.current;
+    const same = previous.length === next.length && next.every((frame, index) => frame.x === previous[index]!.x &&
+      frame.y === previous[index]!.y && frame.width === previous[index]!.width && frame.height === previous[index]!.height &&
+      frame.rotation === previous[index]!.rotation);
+    if (!same) previousElectronMarkFramesRef.current = next;
+    return previousElectronMarkFramesRef.current;
+  }, [labelDisplayPage]);
   // The double-bond hover plan changes SVG geometry only, as before label previews.
   // Object views keep real bond metadata for selection chrome and interaction.
   const plannedDisplayPage = useCanvasHandwritingFont(useMemo(() => planDisplayPage(labelDisplayPage, undefined, nativeDoubleBondSidePreview),
@@ -24800,6 +24814,7 @@ export function MainWindow({
                   return (
                     <DocumentObjectView
                       directElectronMarkEditing={directElectronMarkEditing}
+                      electronMarkFrames={object.type === "molecule" ? pageElectronMarkFrames : undefined}
                       shortcutPlatform={shortcutPlatform}
                       key={objectRenderKey}
                       {...objectViewHandlers}
@@ -30485,6 +30500,7 @@ const DocumentObjectView = memo(DocumentObjectViewContent);
 
 function DocumentObjectViewContent({
   directElectronMarkEditing = false,
+  electronMarkFrames,
   shortcutPlatform,
   object,
   layerIndex,
@@ -30568,6 +30584,8 @@ function DocumentObjectViewContent({
   onAtomProblemInvoke
 }: {
   directElectronMarkEditing?: boolean;
+  /** The page's electron-mark frames, for a molecule: its atom-problem badges keep clear of them. */
+  electronMarkFrames?: readonly ElectronMarkLabelClearanceFrame[];
   inlineEditorReadOnly: boolean;
   shortcutPlatform?: ShortcutPlatform;
   onBondStereoBadgeOpen(request: BondStereoBadgeRequest): void;
@@ -31127,6 +31145,11 @@ function DocumentObjectViewContent({
       const invalidAtomStates = nativeMoleculeInvalidAtomStates(object);
       const invalidAtomIds = new Set(invalidAtomStates.filter((state) => !state.warningSuppressed).map((state) => state.atomId));
       const invalidReasonByAtomId = new Map(invalidAtomStates.map((state) => [state.atomId, state.invalidReason]));
+      // Each badge sits clear of its atom's label (charge, isotope and hydrogen marks included) and
+      // of any electron mark beside it, on a side free of bonds where there is one.
+      const problemLabelBoxes = invalidAtomIds.size > 0 ? moleculeLayoutLabelBoxes(object) : [];
+      const problemBadgeCentreByAtomId = new Map([...invalidAtomIds].map((atomId) => [atomId,
+        atomProblemBadgeCentre(object, atomId, { marks: electronMarkFrames, labelBoxes: problemLabelBoxes })]));
       const resolvedChargeAtomIds = object.atoms
         .filter((atom) => (atom.markCharge ?? 0) !== 0)
         .map((atom) => atom.id);
@@ -31462,7 +31485,8 @@ function DocumentObjectViewContent({
                   key={`invalid-${atom.id}`}
                   explanation={invalidReasonByAtomId.get(atom.id)}
                   platform={shortcutPlatform}
-                  x={atom.x - object.x + 9} y={atom.y - object.y - 9}
+                  x={(problemBadgeCentreByAtomId.get(atom.id)?.x ?? atom.x + 9) - object.x}
+                  y={(problemBadgeCentreByAtomId.get(atom.id)?.y ?? atom.y - 9) - object.y}
                   invoke={onAtomProblemInvoke}
                 />
               ))}

@@ -7026,6 +7026,97 @@ export function electronMarkCentreClearOfAtomLabel(
   return transformPointForObject(molecule, { x: atom.x + direction.x * reach, y: atom.y + direction.y * reach });
 }
 
+/** Radius of the atom-problem badge's ring (`AtomProblemMarker`), in page px. */
+export const atomProblemBadgeRadiusPx = 6;
+/** Room kept between the badge ring and the ink it must not cover, in page px. Covers half the ring's
+ * 1.5 px stroke down to about 40% zoom (the stroke does not scale) with a hairline to spare. */
+export const atomProblemBadgeClearancePx = 2;
+/** The badge's distance from an unlabelled atom (the historical 9 px right, 9 px up). */
+const atomProblemBadgeMinimumDistancePx = Math.hypot(9, 9);
+/** The direction the badge prefers when every side is equally free: upper right, as it always sat. */
+const atomProblemBadgePreferredRadians = -Math.PI / 4;
+
+export interface AtomProblemBadgeOptions {
+  /** The page's electron marks (charges, radical dots, lone pairs) as stored page frames. Any near
+   * the atom is kept clear like the label: a charge drawn by a floating mark is still the atom's charge. */
+  marks?: readonly ElectronMarkLabelClearanceFrame[];
+  /** Boxes `moleculeLayoutLabelBoxes` already measured for this molecule. */
+  labelBoxes?: readonly LayoutLabelBox[];
+  radius?: number;
+  clearancePx?: number;
+}
+
+function circleBoxDistance(centre: LayoutPoint, box: LayoutBounds): number {
+  const dx = Math.max(box.x - centre.x, 0, centre.x - (box.x + box.width));
+  const dy = Math.max(box.y - centre.y, 0, centre.y - (box.y + box.height));
+  return Math.hypot(dx, dy);
+}
+
+/**
+ * Where an atom's problem badge (the red "!" ring) is centred, in the molecule's unrotated frame (the
+ * frame `atom.x`/`atom.y` use); undefined for an atom the molecule does not have. The badge never
+ * covers the atom's label — its full glyph box from `moleculeLayoutLabelBoxes`, so a superscript
+ * charge, an isotope prefix, a hydrogen count and its subscript are all inside — nor an electron
+ * mark (`options.marks`) beside the atom, such as the floating ⊕ on a carbocation or a radical dot.
+ * Among the sides that clear those, it takes one free of bonds and of other atoms' labels where there
+ * is one, then the nearest, then the one closest to upper right, so an unlabelled atom with room
+ * there keeps the badge where it always sat. The badge is canvas chrome: no export draws it.
+ */
+export function atomProblemBadgeCentre(
+  molecule: MoleculeObject,
+  atomId: string,
+  options: AtomProblemBadgeOptions = {}
+): LayoutPoint | undefined {
+  const atomIndex = molecule.atoms.findIndex(atom => atom.id === atomId);
+  if (atomIndex < 0) return undefined;
+  const atom = molecule.atoms[atomIndex];
+  const keepOut = (options.radius ?? atomProblemBadgeRadiusPx) + (options.clearancePx ?? atomProblemBadgeClearancePx);
+  const labelBoxes = options.labelBoxes ?? moleculeLayoutLabelBoxes(molecule);
+  const ownLabel = labelBoxes.find(box => box.atom === atomIndex);
+  // Hard obstacles: the atom's own label (or, unlabelled, its vertex) and the marks near it.
+  const reach = keepOut * 2 + atomProblemBadgeMinimumDistancePx +
+    (ownLabel ? Math.max(Math.abs(ownLabel.x - atom.x), Math.abs(ownLabel.x + ownLabel.width - atom.x),
+      Math.abs(ownLabel.y - atom.y), Math.abs(ownLabel.y + ownLabel.height - atom.y)) : 0);
+  const hard: LayoutBounds[] = [ownLabel ?? { x: atom.x, y: atom.y, width: 0, height: 0 }];
+  for (const mark of options.marks ?? []) {
+    const centre = inverseTransformPointForObject(molecule, { x: mark.x + mark.width / 2, y: mark.y + mark.height / 2 });
+    const { halfWidth, halfHeight } = rotatedFrameHalfExtents(mark.width, mark.height,
+      degreesToRadians((mark.rotation ?? 0) - molecule.rotation));
+    const box = { x: centre.x - halfWidth, y: centre.y - halfHeight, width: halfWidth * 2, height: halfHeight * 2 };
+    if (circleBoxDistance(atom, box) <= reach) hard.push(box);
+  }
+  const farthest = Math.max(...hard.map(box => Math.max(
+    Math.hypot(box.x - atom.x, box.y - atom.y), Math.hypot(box.x + box.width - atom.x, box.y - atom.y),
+    Math.hypot(box.x - atom.x, box.y + box.height - atom.y), Math.hypot(box.x + box.width - atom.x, box.y + box.height - atom.y))));
+  const maximumDistance = Math.max(atomProblemBadgeMinimumDistancePx, farthest + keepOut) + 1;
+  // Soft obstacles: bonds and other atoms' labels; covering one is allowed only where every side does.
+  const atomById = new Map(molecule.atoms.map(candidate => [candidate.id, candidate]));
+  const segments = molecule.bonds.flatMap(bond => {
+    const from = atomById.get(bond.fromAtomId), to = atomById.get(bond.toAtomId);
+    return from && to ? [[from, to] as const] : [];
+  });
+  const otherLabels = labelBoxes.filter(box => box.atom !== atomIndex);
+  const directions = 24;
+  let best: { centre: LayoutPoint; score: number } | undefined;
+  for (let index = 0; index < directions; index += 1) {
+    const angle = atomProblemBadgePreferredRadians + (index * 2 * Math.PI) / directions;
+    const ux = Math.cos(angle), uy = Math.sin(angle);
+    let distanceAlong = atomProblemBadgeMinimumDistancePx;
+    let centre = { x: atom.x + ux * distanceAlong, y: atom.y + uy * distanceAlong };
+    while (distanceAlong < maximumDistance && hard.some(box => circleBoxDistance(centre, box) < keepOut)) {
+      distanceAlong += 0.25;
+      centre = { x: atom.x + ux * distanceAlong, y: atom.y + uy * distanceAlong };
+    }
+    if (hard.some(box => circleBoxDistance(centre, box) < keepOut)) continue;
+    const covered = segments.filter(([from, to]) => distanceToSegment(centre, from, to) < keepOut).length +
+      otherLabels.filter(box => circleBoxDistance(centre, box) < keepOut).length;
+    const turn = Math.abs(Math.atan2(Math.sin(angle - atomProblemBadgePreferredRadians), Math.cos(angle - atomProblemBadgePreferredRadians)));
+    const score = covered * 1000 + distanceAlong + turn * 4;
+    if (!best || score < best.score - 1e-9) best = { centre, score };
+  }
+  return best?.centre ?? { x: atom.x + 9, y: atom.y - 9 };
+}
+
 /** Selection frames are unrotated page coordinates, like the atoms. Handwriting labels
  * can overhang the stored atom frame; reserve their measured boxes before drawing chrome.
  * Other fonts retain their established selection geometry. */
