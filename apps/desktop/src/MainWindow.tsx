@@ -4,7 +4,10 @@ import { CanvasContextMenu, NATIVE_CANVAS_MENU_CLOSED_EVENT } from "./CanvasCont
 import { PLUGIN_CHANGE_REFUSED, RECOGNITION_REFUSED, chemistryRefusalOf, refusalSentence } from "./plugins/requestWrites/chemistryRefusal";
 import { buildObjectCanvasMenu, pageCanvasMenu, SET_DEFAULT_ARROW_STYLE_COMMAND_ID } from "./canvasContextMenuModel";
 import { editRotationEntryField, rotationEntryKeyAction } from "./rotationEntryKeys";
-import { pendingTypedScriptStatus, pendingTypedScriptSurvivesSelection, toggledPendingTypedScript, typedScriptInsertion, type PendingTypedScript } from "./typedTextScript";
+import {
+  pendingTypedScriptStatus, pendingTypedScriptSurvivesSelection, recordTextEditFormatting, stepTextEditFormatting,
+  toggledPendingTypedScript, typedScriptInsertion, type PendingTypedScript, type TextEditFormattingTimeline
+} from "./typedTextScript";
 import { CONTEXT_STEREO_DEADLINE_MS, loadStereoEngine, resolveContextStereo, stereoReadoutRequest } from "./stereoReadout";
 import { RequestWriteError } from "@chemdraft/plugin-host";
 import { createRequestHistory } from "./plugins/requestWrites/requestHistory";
@@ -792,6 +795,7 @@ import {
   updateNativeTextObjectScript,
   updateNativeTextObjectScriptRange,
   textScriptForTypingAt,
+  textObjectFormattingRuns,
   updateNativeTextObjectStyle,
   updateNativeTextObjectStyleRange,
   convertNativeTextObjectToAtom,
@@ -3378,6 +3382,8 @@ export function MainWindow({
   const toolbarStyleTargetRef = useRef<ToolbarStyleTargetSnapshot | undefined>(undefined);
   /** Subscript/superscript toggled at a collapsed caret, for the next typed characters. */
   const pendingTypedScriptRef = useRef<PendingTypedScript | undefined>(undefined);
+  /** The formatting runs of each text state in the open editor, for its native undo and redo. */
+  const textEditFormattingRef = useRef<TextEditFormattingTimeline | undefined>(undefined);
   const viewportRef = useRef(viewport);
 
   useEffect(() => {
@@ -7989,9 +7995,11 @@ export function MainWindow({
     clearScheduledTextEditorFocus();
   }, [clearScheduledTextEditorFocus]);
 
-  // A script toggled at the caret belongs to one editing session.
+  // A script toggled at the caret, and the formatting of the editor's undo states, belong to one
+  // editing session.
   useEffect(() => {
     if (pendingTypedScriptRef.current?.objectId !== activeTextEditObjectId) pendingTypedScriptRef.current = undefined;
+    if (textEditFormattingRef.current?.objectId !== activeTextEditObjectId) textEditFormattingRef.current = undefined;
   }, [activeTextEditObjectId]);
 
   const restoreToolAfterTextPlacement = useCallback(() => {
@@ -8828,15 +8836,45 @@ export function MainWindow({
       ? findDocumentObject(edit.document, objectId) : undefined;
     const originalFrame = original?.type === "text" && original.text === text ? original : undefined;
     const previous = findDocumentObject(documentRef.current, objectId);
-    const insertion = previous?.type === "text"
-      ? typedScriptInsertion(pendingTypedScriptRef.current, objectId, normalizeTextLineBreaks(previous.text),
-        normalizeTextLineBreaks(text), change?.caret)
+    const previousText = previous?.type === "text" ? normalizeTextLineBreaks(previous.text) : undefined;
+    const nextText = normalizeTextLineBreaks(text);
+    const before = previous?.type === "text" && previousText !== undefined
+      ? { text: previousText, spans: textObjectFormattingRuns(previous), pending: pendingTypedScriptRef.current }
+      : undefined;
+    // The textarea's own undo and redo put back only characters. Return to the formatting runs
+    // (and the script pending at the caret) that state had when the edit left it.
+    const historyDirection = change?.inputType === "historyUndo" ? "undo"
+      : change?.inputType === "historyRedo" ? "redo" : undefined;
+    const historyStep = historyDirection && before
+      ? stepTextEditFormatting(textEditFormattingRef.current, objectId, historyDirection, before, nextText)
+      : undefined;
+    if (historyStep) {
+      textEditFormattingRef.current = historyStep.timeline;
+      pendingTypedScriptRef.current = historyStep.state.pending;
+      if (replacePresentDocument((current) =>
+        updateNativeTextObjectText(current, objectId, text, originalFrame, undefined, historyStep.state.spans))) {
+        reconcileSavedDocumentDirtyState();
+      }
+      return;
+    }
+    const insertion = previousText !== undefined
+      ? typedScriptInsertion(pendingTypedScriptRef.current, objectId, previousText, nextText, change?.caret)
       : undefined;
     // Any other change (a deletion, typing elsewhere) leaves the toggled caret behind.
     pendingTypedScriptRef.current = insertion?.next;
     const typedScript = insertion ? { range: insertion.range, script: insertion.next.script } : undefined;
-    if (replacePresentDocument((current) => updateNativeTextObjectText(current, objectId, text, originalFrame, typedScript))) {
+    const result: { edited?: DocumentObject } = {};
+    if (replacePresentDocument((current) => {
+      const next = updateNativeTextObjectText(current, objectId, text, originalFrame, typedScript);
+      result.edited = findDocumentObject(next, objectId);
+      return next;
+    })) {
       reconcileSavedDocumentDirtyState();
+    }
+    const { edited } = result;
+    if (before && edited?.type === "text" && nextText !== before.text) {
+      textEditFormattingRef.current = recordTextEditFormatting(textEditFormattingRef.current, objectId, before,
+        { text: nextText, spans: textObjectFormattingRuns(edited), pending: pendingTypedScriptRef.current });
     }
   }, [reconcileSavedDocumentDirtyState, replacePresentDocument]);
 

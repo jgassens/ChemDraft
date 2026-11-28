@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { createPhase4Document, insertNativeTextObject, textScriptForTypingAt, updateNativeTextObjectText } from "./documentWorkflow";
-import { pendingTypedScriptSurvivesSelection, toggledPendingTypedScript, typedScriptInsertion } from "./typedTextScript";
+import { createPhase4Document, insertNativeTextObject, textObjectFormattingRuns, textScriptForTypingAt, updateNativeTextObjectText } from "./documentWorkflow";
+import {
+  pendingTypedScriptSurvivesSelection, recordTextEditFormatting, stepTextEditFormatting, toggledPendingTypedScript,
+  typedScriptInsertion, type TextEditFormattingState
+} from "./typedTextScript";
 import type { TextObject } from "@chemdraft/chem-core";
 
 describe("script toggled at a collapsed caret", () => {
@@ -63,5 +66,63 @@ describe("script toggled at a collapsed caret", () => {
     expect(textScriptForTypingAt(text(typed), 2)).toBe("subscript");
     expect(textScriptForTypingAt(text(typed), 1)).toBe("subscript");
     expect(textScriptForTypingAt(text(typed), 0)).toBe("normal");
+  });
+
+  describe("formatting of native undo states", () => {
+    const normal = (text: string) => ({ text, script: "normal" as const, style: {} });
+    const sub = (text: string) => ({ text, script: "subscript" as const, style: {} });
+    const pending = { objectId: "t", caret: 1, script: "subscript" as const };
+    const h: TextEditFormattingState = { text: "H", spans: [normal("H")], pending };
+    const h2: TextEditFormattingState = { text: "H2", spans: [normal("H"), sub("2")], pending: { ...pending, caret: 2 } };
+    const h23: TextEditFormattingState = { text: "H23", spans: [normal("H"), sub("23")], pending: { ...pending, caret: 3 } };
+
+    it("steps back and forward to the exact runs and pending script of each state", () => {
+      let timeline = recordTextEditFormatting(undefined, "t", h, h2);
+      timeline = recordTextEditFormatting(timeline, "t", h2, h23);
+      const undo = stepTextEditFormatting(timeline, "t", "undo", h23, "H2")!;
+      expect(undo.state).toEqual(h2);
+      const redo = stepTextEditFormatting(undo.timeline, "t", "redo", undo.state, "H23")!;
+      expect(redo.state).toEqual(h23);
+      // The browser merged both characters into one undo step: the undo passes over H2.
+      const merged = stepTextEditFormatting(timeline, "t", "undo", h23, "H")!;
+      expect(merged.state).toEqual(h);
+      expect(stepTextEditFormatting(merged.timeline, "t", "redo", merged.state, "H23")?.state).toEqual(h23);
+    });
+
+    it("refreshes the state being left and drops redo states after a new edit", () => {
+      const timeline = recordTextEditFormatting(undefined, "t", h, h2);
+      // H2 was restyled (all subscript) after it was recorded; a redo back to it keeps that.
+      const restyled = { ...h2, spans: [sub("H2")] };
+      const undo = stepTextEditFormatting(timeline, "t", "undo", restyled, "H")!;
+      expect(stepTextEditFormatting(undo.timeline, "t", "redo", undo.state, "H2")?.state).toEqual(restyled);
+      const branched = recordTextEditFormatting(undo.timeline, "t", h, { text: "HO", spans: [normal("HO")] });
+      expect(stepTextEditFormatting(branched, "t", "redo", branched.states[branched.index]!, "H2")).toBeUndefined();
+      expect(stepTextEditFormatting(branched, "t", "undo", branched.states[branched.index]!, "H")?.state).toEqual(h);
+    });
+
+    it("gives up when the timeline does not match the editor", () => {
+      const timeline = recordTextEditFormatting(undefined, "t", h, h2);
+      expect(stepTextEditFormatting(undefined, "t", "undo", h2, "H")).toBeUndefined();
+      expect(stepTextEditFormatting(timeline, "other", "undo", h2, "H")).toBeUndefined();
+      expect(stepTextEditFormatting(timeline, "t", "undo", h23, "H")).toBeUndefined();
+      expect(stepTextEditFormatting(timeline, "t", "undo", h2, "X")).toBeUndefined();
+      expect(recordTextEditFormatting(timeline, "other", h, h2)).toEqual({ objectId: "other", states: [h, h2], index: 1 });
+    });
+
+    it("puts back exact runs on the text object, and ignores runs that do not spell the text", () => {
+      const doc = insertNativeTextObject(createPhase4Document("Restored runs"), { x: 100, y: 100 }, "H");
+      const id = doc.pages[0].objects.find(object => object.type === "text")!.id;
+      const text = (d: typeof doc) => d.pages[0].objects.find(object => object.id === id) as TextObject;
+      const typed = updateNativeTextObjectText(doc, id, "H2", undefined, { range: { start: 1, end: 2 }, script: "subscript" });
+      const runs = textObjectFormattingRuns(text(typed));
+      expect(runs).toEqual([normal("H"), sub("2")]);
+      const plain = updateNativeTextObjectText(typed, id, "H");
+      // Without the runs, re-adding the 2 would take the normal H's run.
+      expect(text(updateNativeTextObjectText(plain, id, "H2")).spans).toEqual([normal("H2")]);
+      const restored = updateNativeTextObjectText(plain, id, "H2", undefined, undefined, runs);
+      expect(text(restored).spans).toEqual(runs);
+      expect(text(restored).height).toBe(text(typed).height);
+      expect(text(updateNativeTextObjectText(plain, id, "H3", undefined, undefined, runs)).spans).toEqual([normal("H3")]);
+    });
   });
 });

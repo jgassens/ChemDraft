@@ -112,6 +112,57 @@ describe.each(["macos", "windows"] as const)("script toggled at a collapsed care
     expect(runs()).toEqual([["H", "normal"], ["H", "subscript"], ["H", "normal"]]);
   }, TEXTBOX_TYPING_TEST_TIMEOUT);
 
+  /** A native textarea undo or redo restores value and caret, then fires input with its type. */
+  const nativeHistory = async (inputType: "historyUndo" | "historyRedo", value: string, caret: number) => {
+    await act(async () => {
+      const editor = h.editor();
+      h.setValue(editor, value);
+      editor.setSelectionRange(caret, caret);
+      editor.dispatchEvent(new InputEvent("input", { inputType, bubbles: true }));
+    });
+  };
+
+  it("native undo then redo of a typed subscript brings it back as subscript", async () => {
+    await h.mount("H", { width: 200, mode: "auto" });
+    await caretAtEnd();
+    await command("text.script.subscript");
+    await h.type("2");
+    expect(runs()).toEqual([["H", "normal"], ["2", "subscript"]]);
+    await nativeHistory("historyUndo", "H", 1);
+    expect(h.object().text).toBe("H");
+    expect(runs()).toEqual([["H", "normal"]]);
+    await nativeHistory("historyRedo", "H2", 2);
+    expect(h.object().text).toBe("H2");
+    expect(runs()).toEqual([["H", "normal"], ["2", "subscript"]]);
+    // The script toggled at that caret is back too, so typing on continues in subscript.
+    await h.type("3");
+    expect(runs()).toEqual([["H", "normal"], ["23", "subscript"]]);
+  }, TEXTBOX_TYPING_TEST_TIMEOUT);
+
+  it("native undo and redo keep a character typed normal after a subscript normal", async () => {
+    await h.mount("H", { width: 200, mode: "auto" });
+    await caretAtEnd();
+    await command("text.script.subscript");
+    await h.type("2");
+    await command("text.script.subscript");
+    await h.type("O");
+    const typed = [["H", "normal"], ["2", "subscript"], ["O", "normal"]];
+    expect(runs()).toEqual(typed);
+    await nativeHistory("historyUndo", "H2", 2);
+    expect(runs()).toEqual([["H", "normal"], ["2", "subscript"]]);
+    // Undo past the subscript, then redo both steps: each state comes back exactly.
+    await nativeHistory("historyUndo", "H", 1);
+    expect(runs()).toEqual([["H", "normal"]]);
+    await nativeHistory("historyRedo", "H2", 2);
+    expect(runs()).toEqual([["H", "normal"], ["2", "subscript"]]);
+    await nativeHistory("historyRedo", "H2O", 3);
+    expect(h.object().text).toBe("H2O");
+    expect(runs()).toEqual(typed);
+    // Typing after the redo follows the restored runs: normal after the O.
+    await h.type("H");
+    expect(runs()).toEqual([["H", "normal"], ["2", "subscript"], ["OH", "normal"]]);
+  }, TEXTBOX_TYPING_TEST_TIMEOUT);
+
   it("still changes the script of selected text, and turns it off again", async () => {
     await h.mount("H2O", { width: 200, mode: "auto" });
     await act(async () => {

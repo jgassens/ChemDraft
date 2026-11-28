@@ -5484,7 +5484,12 @@ export function updateNativeTextObjectText(
   editedText: string,
   originalFrame?: Pick<TextObject, "x" | "y" | "width" | "height">,
   /** Characters just typed after a script toggle at a collapsed caret take that script. */
-  typedScript?: { range: NativeTextSelectionRange; script: TextSpan["script"] }
+  typedScript?: { range: NativeTextSelectionRange; script: TextSpan["script"] },
+  /**
+   * The exact runs to give the edited text, as a native undo or redo inside the editor returns to
+   * an earlier state. Ignored unless they spell `editedText` exactly.
+   */
+  restoredSpans?: readonly TextSpan[]
 ): ChemDraftDocument {
   const location = findTextObjectLocation(document, objectId);
   if (!location) {
@@ -5494,9 +5499,12 @@ export function updateNativeTextObjectText(
   // Text box text holds LF only (docs/plans/textbox-behavior.md). Compare against the stored
   // runs with their line breaks normalized too, so an older CRLF object keeps its formatting.
   const text = normalizeTextLineBreaks(editedText);
-  const changedSpans = textObjectSpansForTextChange(textObjectWithNormalizedLineBreaks(object), text);
+  const restored = restoredSpans && restoredSpans.map((span) => span.text).join("") === text
+    ? normalizeTextSpans(restoredSpans.map((span) => ({ ...span, style: { ...span.style } })))
+    : undefined;
+  const changedSpans = restored ?? textObjectSpansForTextChange(textObjectWithNormalizedLineBreaks(object), text);
   // Applied before sizing, so the box is measured with the smaller script glyphs.
-  const spans = typedScript
+  const spans = typedScript && !restored
     ? updateTextObjectSpansInRange({ ...object, text, spans: changedSpans }, typedScript.range,
       (span) => ({ ...span, script: typedScript.script }))
     : changedSpans;
@@ -5677,6 +5685,15 @@ export function updateNativeTextObjectScript(
     },
     { now: phase4Timestamp }
   );
+}
+
+/**
+ * A copy of the formatting runs of a text object (LF line breaks), whole and exact, for putting
+ * back with `updateNativeTextObjectText(..., restoredSpans)`.
+ */
+export function textObjectFormattingRuns(stored: TextObject): TextSpan[] {
+  return textObjectSpansForWorkflow(textObjectWithNormalizedLineBreaks(stored))
+    .map((span) => ({ ...span, style: { ...span.style } }));
 }
 
 /**

@@ -75,6 +75,64 @@ export function pendingTypedScriptSurvivesSelection(
   return !!pending && pending.objectId === objectId && range.start === range.end && range.start === pending.caret;
 }
 
+/** One state of the text in an open editor: its text, its formatting runs, and the pending script. */
+export interface TextEditFormattingState {
+  text: string;
+  spans: TextSpan[];
+  pending?: PendingTypedScript;
+}
+
+/**
+ * The formatting of each text state seen in one editing session, in the order the native editor
+ * undo stack holds them. The textarea's own undo and redo restore only the characters; this lets
+ * the app put back the exact runs (and the script pending at the caret) that each state had.
+ */
+export interface TextEditFormattingTimeline {
+  objectId: string;
+  states: TextEditFormattingState[];
+  index: number;
+}
+
+/**
+ * Record an ordinary edit (typing, deleting, pasting). `before` is the state the edit left, read
+ * from the document so formatting applied since the last edit is kept; anything that could have
+ * been redone is discarded, as the native stack does.
+ */
+export function recordTextEditFormatting(
+  timeline: TextEditFormattingTimeline | undefined,
+  objectId: string,
+  before: TextEditFormattingState,
+  after: TextEditFormattingState
+): TextEditFormattingTimeline {
+  if (!timeline || timeline.objectId !== objectId) return { objectId, states: [before, after], index: 1 };
+  const states = [...timeline.states.slice(0, timeline.index), before, after];
+  return { objectId, states, index: states.length - 1 };
+}
+
+/**
+ * The state a native undo or redo returned to, found by its text: the nearest earlier state for an
+ * undo, the nearest later one for a redo. The browser may merge several typed characters into one
+ * undo step, so the step can pass over states. `current` refreshes the state being left, so a redo
+ * back to it restores formatting applied after it was recorded. Undefined when no recorded state
+ * has that text (the timeline no longer matches the native stack).
+ */
+export function stepTextEditFormatting(
+  timeline: TextEditFormattingTimeline | undefined,
+  objectId: string,
+  direction: "undo" | "redo",
+  current: TextEditFormattingState,
+  targetText: string
+): { timeline: TextEditFormattingTimeline; state: TextEditFormattingState } | undefined {
+  if (!timeline || timeline.objectId !== objectId || timeline.states[timeline.index]?.text !== current.text) return undefined;
+  const states = timeline.states.slice();
+  states[timeline.index] = current;
+  const step = direction === "undo" ? -1 : 1;
+  for (let index = timeline.index + step; index >= 0 && index < states.length; index += step) {
+    if (states[index]!.text === targetText) return { timeline: { objectId, states, index }, state: states[index]! };
+  }
+  return undefined;
+}
+
 /** The status line for a script toggled at a collapsed caret. */
 export function pendingTypedScriptStatus(script: TextSpan["script"]): string {
   return script === "normal" ? "Normal text for typing" : script === "subscript"
