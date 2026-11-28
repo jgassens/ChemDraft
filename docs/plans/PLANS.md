@@ -159,7 +159,7 @@ the student draws. Generic: any plugin can use it.
   `toolbars/toolbarPaletteFrame.dom.test.tsx`, `scripts/desktop-tauri.test.ts`. Remaining: the
   hands-on check in `docs/manual-stress-checklist.md`, and native palette windows on macOS and Windows.
 - **Game build startup command (no API change).** `CHEMDRAFT_WEB_STARTUP_COMMAND` (`--startup-command=`;
-  the game scripts set `plugin.nmrGame.nextPuzzle`) runs one preloaded plugin's command once after the
+  the game scripts set `plugin.nmrGame.play`) runs one preloaded plugin's command once after the
   preloaded plugins load, through MainWindow's ordinary `invoke`, and suppresses the automatic first-run
   tour. Core, bundled-plugin, unknown and malformed ids are refused with a diagnostic; refused in any
   Tauri build. `plugins/webStartupCommand{,Name}.ts`. Tests: `plugins/webStartupCommand{.dom,Name}.test.ts`,

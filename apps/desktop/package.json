@@ -13,8 +13,8 @@
     "build:web": "vite build",
     "dev:web:plugins": "node ../../scripts/vite-with-web-plugins.mjs --host 127.0.0.1 --strictPort",
     "build:web:plugins": "node ../../scripts/vite-with-web-plugins.mjs build",
-    "dev:web:game": "node ../../scripts/vite-with-web-plugins.mjs --toolbar-profile=molecule-drawing --startup-command=plugin.nmrGame.nextPuzzle --host 127.0.0.1 --strictPort",
-    "build:web:game": "node ../../scripts/vite-with-web-plugins.mjs --toolbar-profile=molecule-drawing --startup-command=plugin.nmrGame.nextPuzzle build",
+    "dev:web:game": "node ../../scripts/vite-with-web-plugins.mjs --toolbar-profile=molecule-drawing --startup-command=plugin.nmrGame.play --host 127.0.0.1 --strictPort",
+    "build:web:game": "node ../../scripts/vite-with-web-plugins.mjs --toolbar-profile=molecule-drawing --startup-command=plugin.nmrGame.play build",
     "stage:web-plugins": "node ../../scripts/stage-web-plugins.mjs",
     "tauri": "node ../../scripts/desktop-tauri.mjs",
     "preview": "vite preview"

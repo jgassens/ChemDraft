@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { parseWebStartupCommand, webStartupCommandForBuild } from "./webStartupCommandName";
 
-const BOARD_COMMAND = "plugin.nmrGame.nextPuzzle";
+const BOARD_COMMAND = "plugin.nmrGame.play";
 
 describe("CHEMDRAFT_WEB_STARTUP_COMMAND", () => {
   it("parses unset or blank as no startup command, and trims a value", () => {

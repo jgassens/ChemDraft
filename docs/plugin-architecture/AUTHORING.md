@@ -1377,7 +1377,7 @@ building, signing or packaging on macOS and Windows, and `vite.config.ts` throws
 build, so an inherited `CHEMDRAFT_TOOLBAR_PROFILE` can never ship the game toolbars in the app.
 
 The game scripts also set a build-time **startup command**, `CHEMDRAFT_WEB_STARTUP_COMMAND` (via
-`--startup-command=` on `scripts/vite-with-web-plugins.mjs`), to `plugin.nmrGame.nextPuzzle`, so the
+`--startup-command=` on `scripts/vite-with-web-plugins.mjs`), to `plugin.nmrGame.play`, so the
 page opens with the Spectrum Match board showing. Once the preloaded plugins have finished loading, the
 browser build invokes that command once, through the same command path a menu item uses (permissions,
 the plugin's command queue and the status line all apply). It runs only if a *preloaded* plugin

@@ -126,10 +126,10 @@ describe("web startup command refusal", () => {
     vi.spyOn(process, "argv", "get").mockReturnValue(["node", "desktop-tauri.mjs", "--package-build", "--bundles", platform === "darwin" ? "dmg" : "nsis"]);
     const exit = vi.spyOn(process, "exit").mockImplementation(() => { throw new Error("test exit"); });
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
-    vi.stubEnv("CHEMDRAFT_WEB_STARTUP_COMMAND", "plugin.nmrGame.nextPuzzle");
+    vi.stubEnv("CHEMDRAFT_WEB_STARTUP_COMMAND", "plugin.nmrGame.play");
     await expect(import("./desktop-tauri.mjs")).rejects.toThrow("test exit");
     expect(exit).toHaveBeenCalledWith(1);
-    expect(error).toHaveBeenCalledWith(expect.stringMatching(/CHEMDRAFT_WEB_STARTUP_COMMAND=plugin\.nmrGame\.nextPuzzle is set.*browser build only/));
+    expect(error).toHaveBeenCalledWith(expect.stringMatching(/CHEMDRAFT_WEB_STARTUP_COMMAND=plugin\.nmrGame\.play is set.*browser build only/));
     expect(vi.mocked(spawnSync)).not.toHaveBeenCalled();
   });
 
@@ -138,7 +138,7 @@ describe("web startup command refusal", () => {
     expect(() => assertNoWebStartupCommand({})).not.toThrow();
     expect(() => assertNoWebStartupCommand({ CHEMDRAFT_WEB_STARTUP_COMMAND: "" })).not.toThrow();
     expect(() => assertNoWebStartupCommand({ CHEMDRAFT_WEB_STARTUP_COMMAND: "  " })).not.toThrow();
-    expect(() => assertNoWebStartupCommand({ CHEMDRAFT_WEB_STARTUP_COMMAND: "plugin.nmrGame.nextPuzzle" })).toThrow(/browser build only/);
+    expect(() => assertNoWebStartupCommand({ CHEMDRAFT_WEB_STARTUP_COMMAND: "plugin.nmrGame.play" })).toThrow(/browser build only/);
     vi.resetModules();
     vi.stubEnv("CHEMDRAFT_WEB_STARTUP_COMMAND", "");
     const { args } = await build("win32", true);

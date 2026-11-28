@@ -34,7 +34,7 @@ import {
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const PRELOADED_ID = "org.example.spectrum-game";
-const BOARD_COMMAND = "plugin.nmrGame.nextPuzzle";
+const BOARD_COMMAND = "plugin.nmrGame.play";
 
 const manifest: PluginManifest = {
   id: PRELOADED_ID,
