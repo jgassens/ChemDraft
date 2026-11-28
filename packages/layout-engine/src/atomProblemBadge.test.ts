@@ -8,6 +8,8 @@ import type { MoleculeAtom, MoleculeBond, MoleculeObject } from "@chemdraft/chem
 import {
   atomProblemBadgeCentre,
   atomProblemBadgeClearancePx,
+  atomProblemBadgeKeepOutPx,
+  atomProblemBadgePlacementZoom,
   atomProblemBadgeRadiusPx,
   distanceToSegment,
   inverseTransformPointForObject,
@@ -68,10 +70,10 @@ describe("atomProblemBadgeCentre", () => {
       // Clear by the full clearance, not just a hair.
       const dx = Math.max(label.box.x - centre.x, 0, centre.x - (label.box.x + label.box.width));
       const dy = Math.max(label.box.y - centre.y, 0, centre.y - (label.box.y + label.box.height));
-      expect(Math.hypot(dx, dy)).toBeGreaterThanOrEqual(ring + atomProblemBadgeClearancePx - 1e-9);
+      expect(Math.hypot(dx, dy)).toBeGreaterThanOrEqual(atomProblemBadgeKeepOutPx() - 1e-9);
       // A terminal atom always has a bond-free side: the badge takes one.
       const bond = molecule.atoms[0]!;
-      expect(distanceToSegment(centre, bond, molecule.atoms[1]!)).toBeGreaterThanOrEqual(ring + atomProblemBadgeClearancePx);
+      expect(distanceToSegment(centre, bond, molecule.atoms[1]!)).toBeGreaterThanOrEqual(atomProblemBadgeKeepOutPx());
     }
   });
 
@@ -108,7 +110,7 @@ describe("atomProblemBadgeCentre", () => {
     expect(intersects(badgeBox({ x: 59, y: 41 }), mark)).toBe(true);
     // Bond-free sides exist between the four bonds: the badge takes one.
     for (const neighbour of neighbours) {
-      expect(distanceToSegment(centre, centreAtom, neighbour)).toBeGreaterThanOrEqual(ring + atomProblemBadgeClearancePx);
+      expect(distanceToSegment(centre, centreAtom, neighbour)).toBeGreaterThanOrEqual(atomProblemBadgeKeepOutPx());
     }
   });
 
@@ -144,6 +146,66 @@ describe("atomProblemBadgeCentre", () => {
     const centre = atomProblemBadgeCentre(molecule, "b", { marks: [mark] })!;
     expect(intersects(badgeBox(centre), { x: local.x - 5, y: local.y - 5, width: 10, height: 10 })).toBe(false);
     expect(intersects(badgeBox(centre), labelOf(molecule, "b").box)).toBe(false);
+  });
+
+  // Review of RC8: the ring's 1.5 px stroke does not scale, so at 25% its outer edge is 3 page px past
+  // the radius, not 0.75. The clearance follows the zoom so the stroke never reaches a label or mark.
+  describe.each([0.25, 1, 4])("at %s zoom", zoom => {
+    /** The ring's drawn reach at this zoom: radius plus the stroke's 0.75 screen px, in page px. */
+    const drawnReach = ring + 0.75 / zoom;
+    const gap = (centre: LayoutPoint, box: LayoutBounds) => Math.hypot(
+      Math.max(box.x - centre.x, 0, centre.x - (box.x + box.width)),
+      Math.max(box.y - centre.y, 0, centre.y - (box.y + box.height)));
+
+    it("keeps the stroke's outer edge plus the clearance off the label", () => {
+      expect(atomProblemBadgeKeepOutPx(zoom)).toBeCloseTo(ring + 0.75 / zoom + atomProblemBadgeClearancePx, 9);
+      for (const end of [{ element: "N", formalCharge: 1, labelLiteral: true }, { element: "O", formalCharge: -1 },
+        { element: "C", formalCharge: -1, isotope: 13 }] as const) {
+        for (const bondFrom of [{ x: 30, y: 50 }, { x: 82, y: 50 }, { x: 56, y: 61 }, { x: 56, y: 9 }]) {
+          const molecule = ethane(end, { bondFrom });
+          const label = labelOf(molecule, "b").box;
+          const centre = atomProblemBadgeCentre(molecule, "b", { zoom })!;
+          expect(gap(centre, label)).toBeGreaterThan(drawnReach);
+          expect(gap(centre, label)).toBeGreaterThanOrEqual(ring + 0.75 / zoom + atomProblemBadgeClearancePx - 1e-9);
+        }
+      }
+    });
+
+    it("keeps the stroke's outer edge plus the clearance off a floating charge mark", () => {
+      const centreAtom: MoleculeAtom = { id: "c", element: "C", x: 50, y: 50, formalCharge: 1, markCharge: 1 };
+      const neighbours: MoleculeAtom[] = [[50, 24], [72.5, 63], [27.5, 63], [76, 50]].map(([x, y], index) =>
+        ({ id: `n${index}`, element: "C", x: x!, y: y!, formalCharge: 0 }));
+      const molecule: MoleculeObject = {
+        id: "m", type: "molecule", x: 0, y: 0, width: 100, height: 100, rotation: 0,
+        style: {}, structureFormat: "smiles", structure: "", superatoms: [], rGroups: [],
+        atoms: [centreAtom, ...neighbours],
+        bonds: neighbours.map(neighbour => ({ id: `b-${neighbour.id}`, fromAtomId: "c", toAtomId: neighbour.id, order: "single" as const }))
+      };
+      const mark = { x: 55, y: 34, width: 10, height: 10 };
+      const centre = atomProblemBadgeCentre(molecule, "c", { marks: [mark], zoom })!;
+      expect(gap(centre, mark)).toBeGreaterThan(drawnReach);
+      expect(gap(centre, mark)).toBeGreaterThanOrEqual(ring + 0.75 / zoom + atomProblemBadgeClearancePx - 1e-9);
+    });
+  });
+
+  it("at 25% the 100% placement would let the stroke within the clearance of the label; the 25% one does not", () => {
+    const molecule = ethane({ element: "N", formalCharge: 1, labelLiteral: true });
+    const label = labelOf(molecule, "b").box;
+    const gap = (centre: LayoutPoint) => Math.hypot(
+      Math.max(label.x - centre.x, 0, centre.x - (label.x + label.width)),
+      Math.max(label.y - centre.y, 0, centre.y - (label.y + label.height)));
+    expect(gap(atomProblemBadgeCentre(molecule, "b")!)).toBeLessThan(atomProblemBadgeKeepOutPx(0.25));
+    expect(gap(atomProblemBadgeCentre(molecule, "b", { zoom: 0.25 })!)).toBeGreaterThanOrEqual(atomProblemBadgeKeepOutPx(0.25) - 1e-9);
+  });
+
+  it("places for a zoom no higher than the view's, changing only at 25%, 50% and 100%", () => {
+    expect([0.1, 0.25, 0.3, 0.49, 0.5, 0.75, 0.99, 1, 1.25, 4, 8.5].map(atomProblemBadgePlacementZoom))
+      .toEqual([0.1, 0.25, 0.25, 0.25, 0.5, 0.5, 0.5, 1, 1, 1, 1]);
+    for (const scale of [0.25, 0.3, 0.6, 1, 2, 4]) {
+      expect(atomProblemBadgeKeepOutPx(atomProblemBadgePlacementZoom(scale))).toBeGreaterThanOrEqual(atomProblemBadgeKeepOutPx(scale));
+    }
+    expect(atomProblemBadgePlacementZoom(Number.NaN)).toBe(1);
+    expect(atomProblemBadgeKeepOutPx(0)).toBe(atomProblemBadgeKeepOutPx(1));
   });
 
   it("is undefined for an atom the molecule does not have", () => {

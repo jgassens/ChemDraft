@@ -84,7 +84,7 @@ import { planDisplayPage } from "./plannedDisplayPage";
 import { snapPlacementDegrees } from "./placementSnap";
 import { listenCurrentWindowEvent, listenTauriEvent } from "./window-manager/tauriEvents";
 import { reactionConditionsDraft, setReactionArrowConditions, type ReactionConditionsDraft } from "@chemdraft/document-workflow-core";
-import { arrowAttachmentFrame, atomProblemBadgeCentre, moleculeLayoutLabelBoxes, type ElectronMarkLabelClearanceFrame } from "@chemdraft/layout-engine";
+import { arrowAttachmentFrame, atomProblemBadgeCentre, atomProblemBadgePlacementZoom, moleculeLayoutLabelBoxes, type ElectronMarkLabelClearanceFrame } from "@chemdraft/layout-engine";
 import { OpenWarningsList } from "./OpenWarningsList";
 import { useNativeFileWarnings } from "./useNativeFileWarnings";
 import { lastExportDirectory } from "./exportDirectory";
@@ -24833,6 +24833,9 @@ export function MainWindow({
                     <DocumentObjectView
                       directElectronMarkEditing={directElectronMarkEditing}
                       electronMarkFrames={object.type === "molecule" ? pageElectronMarkFrames : undefined}
+                      // A molecule's problem badges clear its labels by the ring's non-scaling stroke at
+                      // this zoom; bucketed so the memoized view re-renders only at 25%, 50% and 100%.
+                      atomProblemBadgeZoom={object.type === "molecule" ? atomProblemBadgePlacementZoom(viewport.scale) : undefined}
                       shortcutPlatform={shortcutPlatform}
                       key={objectRenderKey}
                       {...objectViewHandlers}
@@ -30519,6 +30522,7 @@ const DocumentObjectView = memo(DocumentObjectViewContent);
 function DocumentObjectViewContent({
   directElectronMarkEditing = false,
   electronMarkFrames,
+  atomProblemBadgeZoom,
   shortcutPlatform,
   object,
   layerIndex,
@@ -30604,6 +30608,8 @@ function DocumentObjectViewContent({
   directElectronMarkEditing?: boolean;
   /** The page's electron-mark frames, for a molecule: its atom-problem badges keep clear of them. */
   electronMarkFrames?: readonly ElectronMarkLabelClearanceFrame[];
+  /** The zoom a molecule's atom-problem badges are placed for (`atomProblemBadgePlacementZoom`). */
+  atomProblemBadgeZoom?: number;
   inlineEditorReadOnly: boolean;
   shortcutPlatform?: ShortcutPlatform;
   onBondStereoBadgeOpen(request: BondStereoBadgeRequest): void;
@@ -31167,7 +31173,7 @@ function DocumentObjectViewContent({
       // of any electron mark beside it, on a side free of bonds where there is one.
       const problemLabelBoxes = invalidAtomIds.size > 0 ? moleculeLayoutLabelBoxes(object) : [];
       const problemBadgeCentreByAtomId = new Map([...invalidAtomIds].map((atomId) => [atomId,
-        atomProblemBadgeCentre(object, atomId, { marks: electronMarkFrames, labelBoxes: problemLabelBoxes })]));
+        atomProblemBadgeCentre(object, atomId, { marks: electronMarkFrames, labelBoxes: problemLabelBoxes, zoom: atomProblemBadgeZoom })]));
       const resolvedChargeAtomIds = object.atoms
         .filter((atom) => (atom.markCharge ?? 0) !== 0)
         .map((atom) => atom.id);

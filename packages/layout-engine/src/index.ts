@@ -7028,9 +7028,42 @@ export function electronMarkCentreClearOfAtomLabel(
 
 /** Radius of the atom-problem badge's ring (`AtomProblemMarker`), in page px. */
 export const atomProblemBadgeRadiusPx = 6;
-/** Room kept between the badge ring and the ink it must not cover, in page px. Covers half the ring's
- * 1.5 px stroke down to about 40% zoom (the stroke does not scale) with a hairline to spare. */
-export const atomProblemBadgeClearancePx = 2;
+/** How far the ring's stroke reaches past its radius, in screen px: half its 1.5 px width. The stroke
+ * is non-scaling (`vector-effect: non-scaling-stroke` on `.native-atom-invalid-ring`), so in page px it
+ * reaches 0.75 / zoom: 3 page px at the 25% minimum zoom, 0.1875 at 400%. */
+export const atomProblemBadgeStrokeOverhangScreenPx = 0.75;
+/** Room kept between the outer edge of the ring's stroke and the ink it must not cover, in page px.
+ * With the stroke at 100% this is the historical 2 page px past the radius. */
+export const atomProblemBadgeClearancePx = 1.25;
+/** Lowest zoom the placement is computed for: the smallest document zoom (`documentZoom.ts`). */
+const atomProblemBadgeMinimumZoom = 0.25;
+
+/** How far from a badge's centre the ink it must not cover has to stay, in page px, at `zoom`
+ * (screen px per page px): the ring's radius, its non-scaling stroke's overhang at that zoom, and the
+ * clearance. A zoom that is not a positive number is read as 100%. */
+export function atomProblemBadgeKeepOutPx(
+  zoom = 1,
+  options: { radius?: number; clearancePx?: number } = {}
+): number {
+  const scale = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
+  return (options.radius ?? atomProblemBadgeRadiusPx) + atomProblemBadgeStrokeOverhangScreenPx / scale +
+    (options.clearancePx ?? atomProblemBadgeClearancePx);
+}
+
+/**
+ * The zoom a canvas should place its badges for when the view is at `scale`. Zooming changes only the
+ * stroke's page-px overhang, so the placement is computed for the next zoom down among 25%, 50% and
+ * 100% (100% for anything above): a conservative clearance at every zoom between them, and one that
+ * changes only when the view crosses one of those, so a memoized molecule view re-renders a handful of
+ * times across the zoom range rather than on every pinch frame. Below 25% the scale is used as given.
+ */
+export function atomProblemBadgePlacementZoom(scale: number): number {
+  if (!Number.isFinite(scale) || scale <= 0) return 1;
+  if (scale >= 1) return 1;
+  if (scale >= 0.5) return 0.5;
+  if (scale >= atomProblemBadgeMinimumZoom) return atomProblemBadgeMinimumZoom;
+  return scale;
+}
 /** The badge's distance from an unlabelled atom (the historical 9 px right, 9 px up). */
 const atomProblemBadgeMinimumDistancePx = Math.hypot(9, 9);
 /** The direction the badge prefers when every side is equally free: upper right, as it always sat. */
@@ -7043,7 +7076,11 @@ export interface AtomProblemBadgeOptions {
   /** Boxes `moleculeLayoutLabelBoxes` already measured for this molecule. */
   labelBoxes?: readonly LayoutLabelBox[];
   radius?: number;
+  /** Room past the outer edge of the ring's stroke, in page px (`atomProblemBadgeClearancePx`). */
   clearancePx?: number;
+  /** The view's zoom, screen px per page px (1 = 100%); the ring's non-scaling stroke reaches
+   * farther past its radius in page px the lower it is. Defaults to 100%. */
+  zoom?: number;
 }
 
 function circleBoxDistance(centre: LayoutPoint, box: LayoutBounds): number {
@@ -7060,7 +7097,9 @@ function circleBoxDistance(centre: LayoutPoint, box: LayoutBounds): number {
  * mark (`options.marks`) beside the atom, such as the floating ⊕ on a carbocation or a radical dot.
  * Among the sides that clear those, it takes one free of bonds and of other atoms' labels where there
  * is one, then the nearest, then the one closest to upper right, so an unlabelled atom with room
- * there keeps the badge where it always sat. The badge is canvas chrome: no export draws it.
+ * there keeps the badge where it always sat. Everything is kept `atomProblemBadgeKeepOutPx(options.zoom)`
+ * from the centre, so the ring's stroke, which does not scale with the view, clears it at that zoom.
+ * The badge is canvas chrome: no export draws it.
  */
 export function atomProblemBadgeCentre(
   molecule: MoleculeObject,
@@ -7070,7 +7109,7 @@ export function atomProblemBadgeCentre(
   const atomIndex = molecule.atoms.findIndex(atom => atom.id === atomId);
   if (atomIndex < 0) return undefined;
   const atom = molecule.atoms[atomIndex];
-  const keepOut = (options.radius ?? atomProblemBadgeRadiusPx) + (options.clearancePx ?? atomProblemBadgeClearancePx);
+  const keepOut = atomProblemBadgeKeepOutPx(options.zoom, options);
   const labelBoxes = options.labelBoxes ?? moleculeLayoutLabelBoxes(molecule);
   const ownLabel = labelBoxes.find(box => box.atom === atomIndex);
   // Hard obstacles: the atom's own label (or, unlabelled, its vertex) and the marks near it.
