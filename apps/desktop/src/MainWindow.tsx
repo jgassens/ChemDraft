@@ -23894,9 +23894,9 @@ export function MainWindow({
   const spinCarriedMarkIds = useMemo(() => spinCarriedMarks.length > 0
     ? new Set(spinCarriedMarks.map(mark => mark.markId)) : undefined, [spinCarriedMarks]);
   // The same placement flatten commits (offset kept, or turned to a free side; layout-engine's
-  // carryElectronMarksToRedrawnMolecule), read for the projected atoms of each frame in the frame
-  // flatten commits them in, the molecule's own rotation included: each mark is painted at the page
-  // position release stores it at (spinOverlayCarriedMarkPlacements).
+  // carryElectronMarksToRedrawnMolecule), read for the projected atoms of each frame in the unturned
+  // frame the overlay draws its bonds and labels in, so each mark sits beside its live atom
+  // (spinOverlayCarriedMarkPlacements).
   const spinSourceMolecule = activeSpin3dState?.sourceMolecule;
   const placeSpinCarriedMarks = useMemo(() => spinSourceMolecule && spinCarriedMarks.length > 0
     ? (atoms: MoleculeAtom[]) => spinOverlayCarriedMarkPlacements(activePage, spinSourceMolecule, atoms)
@@ -27769,8 +27769,8 @@ function SpinOverlay({
       {/* Each mark goes where flatten commits it (the ScreenPlacement contract): its offset from
           its projected atom kept, or turned about the atom to a free side when that spot lands on
           another atom, a bond or a label (its own molecule's or another's). A lone pair turns with
-          it. A molecule turned on the page has its marks painted where release stores them, turned
-          with it, though this overlay draws the projection itself unturned. */}
+          it. A molecule turned on the page is drawn unturned here, its marks with it, beside the
+          atoms this overlay draws; release turns the molecule, and each mark goes with its atom. */}
       {carriedMarks.map(({ markId, fragments, selected }) => {
         const placement = carriedMarkPlacements?.get(markId);
         if (!placement) return null;

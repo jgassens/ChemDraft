@@ -19794,8 +19794,8 @@ export function flattenSpunMolecule(
   const patches: DocumentPatch[] = [{ op: "updateObject", objectId, changes: committed }];
   // Carry each mark with its atom (its offset kept, or turned to a free side when the projection
   // puts that spot on another atom, a bond or a label), in the same patch set so one undo restores
-  // it. The frame is the committed molecule's own, its rotation included: the live overlay places
-  // the marks in the same frame (`spinOverlayCarriedMarkPlacements`).
+  // it. The frame is the committed molecule's own, its rotation included; the live overlay places
+  // the marks by the same rule in the unturned frame it draws in (`spinOverlayCarriedMarkPlacements`).
   patches.push(...carriedElectronMarkPatches(page, molecule, { ...molecule, ...committed }));
   const pageId = page.id;
   for (const crossing of page.crossings) {
@@ -19911,17 +19911,19 @@ export function spinFlattenedMoleculeFrame(molecule: MoleculeObject, atoms: Mole
 /**
  * Where the Spin 3D live overlay paints the marks of `source` for its projected atoms `atoms`: the
  * placement flatten commits for those atoms (`carriedElectronMarkPlacements` in
- * `spinFlattenedMoleculeFrame`), so each mark is painted at the page position release stores it at.
- * For a molecule turned on the page (rotation not 0) that is the turned position, while the overlay
- * itself draws the projection unturned (a mismatch of the overlay drawing, not of the marks).
- * Release still moves everything by the page clamp when flatten has to pull the molecule into the page.
+ * `spinFlattenedMoleculeFrame`), read in the frame the overlay draws them in. The overlay draws the
+ * projection unturned (its bonds at rotation 0, its atom labels at the projected points), so the
+ * marks are placed with rotation 0 too: each sits beside the live atom it belongs to. For a molecule
+ * not turned on the page that is exactly the page position release stores; a turned one is turned by
+ * release, and each mark goes with its atom. Release also moves everything by the page
+ * clamp when flatten has to pull the molecule into the page.
  */
 export function spinOverlayCarriedMarkPlacements(
   page: DocumentPage,
   source: MoleculeObject,
   atoms: MoleculeAtom[]
 ): Map<string, CarriedElectronMarkPlacement> {
-  return carriedElectronMarkPlacements(page, source, spinFlattenedMoleculeFrame(source, atoms));
+  return carriedElectronMarkPlacements(page, source, { ...spinFlattenedMoleculeFrame(source, atoms), rotation: 0 });
 }
 
 /** Patches that carry `before`'s marks to `after` (see `carriedElectronMarkPlacements`). Legacy atom

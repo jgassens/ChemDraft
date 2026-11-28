@@ -241,7 +241,9 @@ describe.each(["macos", "windows"] as const)("Spin 3D keeps the acid O's charge 
   it("a drag with only the molecule selected carries the unselected mark",
     () => spinRepro({ seed: esterReproSeed, drag: true, moleculeOnly: true }));
 
-  it.each([37, 90])("a molecule turned %d° on the page: release stores the '-' at the page position the overlay painted it", async degrees => {
+  // The overlay draws a turned molecule unturned, its marks beside the atoms it draws (B6;
+  // spinCarriedMarks.test.ts measures that); release turns the molecule and keeps the mark by its atom.
+  it.each([37, 90])("a molecule turned %d° on the page: release keeps the '-' beside its O, the turn kept", async degrees => {
     conformerSeed = esterReproSeed;
     // Aspirin with its '-', the molecule turned on the page (its object rotation) and the mark turned
     // with it, bound to the carboxylate O. Only the molecule is selected.
@@ -264,16 +266,12 @@ describe.each(["macos", "windows"] as const)("Spin 3D keeps the acid O's charge 
     await command("structure.spin3d");
     await act(async () => vi.waitFor(() => expect(overlay(), status()).not.toBeNull()));
     overlay()!.getBoundingClientRect = () => rect;
-    const painted = overlay()!.querySelector(`[data-spin3d-electron-mark="${mark.id}"]`)!;
-    const [dx, dy] = painted.getAttribute("data-spin3d-mark-offset")!.split(" ").map(Number);
+    expect(overlay()!.querySelector(`[data-spin3d-electron-mark="${mark.id}"]`), "the overlay paints the '-'").not.toBeNull();
     await act(async () => pointer(overlay()!, "pointerdown", 20, 20));
     await act(async () => vi.waitFor(() => expect(overlay(), status()).toBeNull()));
     expect(status()).toMatch(/^Flattened /);
     const flattened = snapshot();
     const committed = marksOf(flattened)[0]!;
-    // The page position the overlay painted is the one stored.
-    expect(committed.x).toBeCloseTo(mark.x + dx!, 6);
-    expect(committed.y).toBeCloseTo(mark.y + dy!, 6);
     // Still turned, the mark beside its O where the page draws it, chemistry unchanged.
     const flatMolecule = moleculeOf(flattened);
     expect(flatMolecule.rotation).toBe(degrees);
