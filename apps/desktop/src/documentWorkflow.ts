@@ -5502,7 +5502,13 @@ export function updateNativeTextObjectText(
   const restored = restoredSpans && restoredSpans.map((span) => span.text).join("") === text
     ? normalizeTextSpans(restoredSpans.map((span) => ({ ...span, style: { ...span.style } })))
     : undefined;
-  const changedSpans = restored ?? textObjectSpansForTextChange(textObjectWithNormalizedLineBreaks(object), text);
+  const normalizedObject = textObjectWithNormalizedLineBreaks(object);
+  // A caret-toggled script knows exactly where the characters went in, so splice the runs there:
+  // a prefix/suffix diff would place a repeated letter ("HH" to "HHH") after the run it matched.
+  const insertedSpans = typedScript && !restored
+    ? textObjectSpansForInsertionAt(normalizedObject, text, typedScript.range)
+    : undefined;
+  const changedSpans = restored ?? insertedSpans ?? textObjectSpansForTextChange(normalizedObject, text);
   // Applied before sizing, so the box is measured with the smaller script glyphs.
   const spans = typedScript && !restored
     ? updateTextObjectSpansInRange({ ...object, text, spans: changedSpans }, typedScript.range,
@@ -11126,6 +11132,37 @@ function textObjectSpansForTextChange(object: TextObject, nextText: string): Tex
       ? [{ text: insertedText, script: insertionSpan.script, style: { ...insertionSpan.style } }]
       : []),
     ...textSpansForRange(currentSpans, object.text.length - suffixLength, object.text.length)
+  ]);
+}
+
+/**
+ * The runs for `nextText` when it is `object.text` with characters inserted exactly at `range`,
+ * keeping every existing run on both sides of the insertion; undefined for any other change.
+ * The new characters take the formatting the diff path would give them, at the same offset.
+ */
+function textObjectSpansForInsertionAt(
+  object: TextObject,
+  nextText: string,
+  range: NativeTextSelectionRange
+): TextSpan[] | undefined {
+  const { start, end } = range;
+  const insertedLength = end - start;
+  if (start < 0 || insertedLength <= 0 || start > object.text.length ||
+      nextText.length !== object.text.length + insertedLength ||
+      nextText.slice(0, start) !== object.text.slice(0, start) ||
+      nextText.slice(end) !== object.text.slice(start)) {
+    return undefined;
+  }
+
+  const currentSpans = textObjectSpansForWorkflow(object);
+  const insertionSpan = textSpanAtOffset(currentSpans, start)
+    ?? textSpanAtOffset(currentSpans, Math.max(0, start - 1))
+    ?? { text: "", script: textObjectUniformScript(object), style: {} };
+
+  return normalizeTextSpans([
+    ...textSpansForRange(currentSpans, 0, start),
+    { text: nextText.slice(start, end), script: insertionSpan.script, style: { ...insertionSpan.style } },
+    ...textSpansForRange(currentSpans, start, object.text.length)
   ]);
 }
 
