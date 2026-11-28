@@ -19875,8 +19875,10 @@ export interface CarriedElectronMarkPlacement extends ElectronMarkCarryPlacement
 /**
  * Where the marks molecule `before` owns on `page` go when it is redrawn as `after` (same atom ids,
  * new positions, `after`'s own frame and rotation): Spin 3D flatten and its live overlay, X/Y
- * rotation of a stored 3D model, and 3D clean-up all use this, so the overlay paints each mark where
- * the commit puts it. Which marks travel, and what they must keep off (`after`'s atoms, bonds and
+ * rotation of a stored 3D model, and 3D clean-up all use this, so each mark sits beside the atom it
+ * follows. For a molecule not turned on the page the overlay paints each mark where the commit puts
+ * it; for a turned one the overlay draws unturned and the commit uses the turned frame, so the live
+ * and committed page positions differ, each beside its displayed atom. Which marks travel, and what they must keep off (`after`'s atoms, bonds and
  * the labels it draws, and every other molecule on `page`), is gathered here; where they go is
  * layout-engine's `carryElectronMarksToRedrawnMolecule`, the one copy of that math. Positions only:
  * no chemistry.
