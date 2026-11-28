@@ -147,9 +147,115 @@ describe("MenuBar keyboard interaction", () => {
       const rule = css.match(/\.menu-dropdown \{[^}]*\}/)![0];
       expect(rule).toContain("width: max-content");
       expect(rule).toContain("max-width: calc(100vw - 16px)");
-      expect(rule).toContain("min-width: 220px");
+      expect(rule).toContain("min-width: min(220px, calc(100vw - 16px))");
     } finally {
       spy.mockRestore();
     }
+  });
+
+  describe("placement", () => {
+    function mockLayout(opts: { menuLeft: number; menuWidth: number; parentLeft: number; parentWidth: number }) {
+      return vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+        let left = 0;
+        let width = 0;
+        if (this.matches("ul.menu-flyout")) {
+          left = opts.menuLeft;
+          width = opts.menuWidth;
+        } else if (this.matches("li.menu-has-submenu, li.menu-dropdown-item")) {
+          left = opts.parentLeft;
+          width = opts.parentWidth;
+        } else if (this.matches("ul[role='menu']")) {
+          left = opts.menuLeft;
+          width = opts.menuWidth;
+        }
+        return { left, right: left + width, top: 0, bottom: 0, width, height: 0, x: left, y: 0, toJSON: () => ({}) } as DOMRect;
+      });
+    }
+
+    async function openFlyout(): Promise<HTMLUListElement> {
+      mount();
+      await act(async () => {
+        container!.querySelector<HTMLButtonElement>('[data-menu-section="file"]')!.click();
+      });
+      const exportItem = container!.querySelector<HTMLButtonElement>("ul[role='menu'] button[aria-haspopup='menu']")!;
+      await act(async () => {
+        exportItem.click();
+      });
+      return container!.querySelector<HTMLUListElement>("ul.menu-flyout")!;
+    }
+
+    it("opens a flyout to the right when it fits", async () => {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 1000 });
+      const spy = mockLayout({ menuLeft: 300, menuWidth: 200, parentLeft: 100, parentWidth: 200 });
+      try {
+        const flyout = await openFlyout();
+        expect(flyout.style.right).toBe("");
+        expect(flyout.style.left).toBe("");
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("flips a flyout left when only the left side fits", async () => {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 600 });
+      const spy = mockLayout({ menuLeft: 502, menuWidth: 200, parentLeft: 300, parentWidth: 200 });
+      try {
+        const flyout = await openFlyout();
+        expect(flyout.style.right).toBe("100%");
+        expect(flyout.style.left).toBe("auto");
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("clamps a flyout inside the viewport when neither side fits", async () => {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 400 });
+      const spy = mockLayout({ menuLeft: 222, menuWidth: 300, parentLeft: 20, parentWidth: 200 });
+      try {
+        const flyout = await openFlyout();
+        expect(flyout.style.right).toBe("");
+        // Viewport left = max(8, min(222, 392 - 300)) = 92; relative to parent at 20 -> 72.
+        expect(flyout.style.left).toBe("72px");
+        expect(flyout.style.margin).toMatch(/^0(px)?$/);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("never shifts a dropdown's left edge below the margin on a narrow viewport", async () => {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 200 });
+      const spy = mockLayout({ menuLeft: 20, menuWidth: 220, parentLeft: 20, parentWidth: 40 });
+      try {
+        mount();
+        await act(async () => {
+          container!.querySelector<HTMLButtonElement>('[data-menu-section="file"]')!.click();
+        });
+        const menu = container!.querySelector<HTMLUListElement>("ul[role='menu']")!;
+        // Overflow shift would be -48; clamped so left edge stays at 8 (20 - 12).
+        expect(menu.style.left).toBe("-12px");
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("re-places an open dropdown when the window is resized", async () => {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 1000 });
+      const spy = mockLayout({ menuLeft: 500, menuWidth: 300, parentLeft: 500, parentWidth: 40 });
+      try {
+        mount();
+        await act(async () => {
+          container!.querySelector<HTMLButtonElement>('[data-menu-section="file"]')!.click();
+        });
+        const menu = container!.querySelector<HTMLUListElement>("ul[role='menu']")!;
+        expect(menu.style.left).toBe("");
+        Object.defineProperty(window, "innerWidth", { configurable: true, value: 700 });
+        await act(async () => {
+          window.dispatchEvent(new Event("resize"));
+        });
+        expect(menu.style.left).toBe("-108px");
+      } finally {
+        spy.mockRestore();
+      }
+    });
   });
 });

@@ -662,7 +662,7 @@ textarea:focus-visible,
   top: 100%;
   left: 0;
   z-index: 91;
-  min-width: 220px;
+  min-width: min(220px, calc(100vw - 16px));
   width: max-content;
   max-width: calc(100vw - 16px);
   margin: 2px 0 0;

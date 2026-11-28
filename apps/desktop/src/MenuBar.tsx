@@ -333,19 +333,39 @@ const VIEWPORT_MARGIN = 8;
 function MenuList({ flyout, children }: { flyout: boolean; children: ReactNode }) {
   const ref = useRef<HTMLUListElement | null>(null);
   useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const overflow = rect.right - (window.innerWidth - VIEWPORT_MARGIN);
-    if (overflow <= 0) return;
-    if (flyout) {
-      // Open to the left of the parent item instead.
-      el.style.left = "auto";
-      el.style.right = "100%";
-      el.style.margin = "0 2px 0 0";
-    } else {
-      el.style.left = `${-overflow}px`;
-    }
+    const place = () => {
+      const el = ref.current;
+      if (!el) return;
+      // Reset to the stylesheet placement so every measurement starts from the natural position.
+      el.style.left = "";
+      el.style.right = "";
+      el.style.margin = "";
+      const rect = el.getBoundingClientRect();
+      const limit = window.innerWidth - VIEWPORT_MARGIN;
+      if (rect.right <= limit) return;
+      if (flyout) {
+        const parent = (el.parentElement ?? el).getBoundingClientRect();
+        const width = rect.right - rect.left;
+        if (parent.left - 2 - width >= VIEWPORT_MARGIN) {
+          // Open to the left of the parent item instead.
+          el.style.left = "auto";
+          el.style.right = "100%";
+          el.style.margin = "0 2px 0 0";
+        } else {
+          // Neither side fits: clamp inside the viewport, overlapping the parent if needed.
+          const target = Math.max(VIEWPORT_MARGIN, Math.min(rect.left, limit - width));
+          el.style.margin = "0";
+          el.style.left = `${target - parent.left}px`;
+        }
+        return;
+      }
+      // Shift left to fit, but never push the left edge below the margin.
+      const shift = Math.max(limit - rect.right, VIEWPORT_MARGIN - rect.left);
+      if (shift < 0) el.style.left = `${shift}px`;
+    };
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
   }, [flyout]);
   return (
     <ul ref={ref} className={flyout ? "menu-dropdown menu-flyout" : "menu-dropdown"} role="menu">
