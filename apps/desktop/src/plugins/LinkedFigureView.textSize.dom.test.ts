@@ -142,11 +142,11 @@ const PAYLOAD_SEPARATOR = "\n<!-- next payload -->\n";
 const scenarios = [
   {
     name: "proton", spectrum: protonSpectrum, comparison: false,
-    sha256: "b0d6f1ada2b82e93583d5f4abf38de97998404abb4a8c94972bfe6593ef67a24", lengths: [30483, 30483, 54574, 54574]
+    sha256: "f0bae232c172b90cd9aca4b2b2e555acfd014eb4614bc89fa06c35bf9facd76c", lengths: [30433, 30433, 54524, 54524]
   },
   {
     name: "carbon-both", spectrum: carbonSpectrum, comparison: true,
-    sha256: "64a3ee1c2ef2e26ffd834444723f2c518d647f25650bc074f81353d5c0a70690", lengths: [31610, 31610, 55143, 55143]
+    sha256: "353acc1da18685667ba9cdf48fba523881467caa977bd4bd44c5e025bd18209c", lengths: [31560, 31560, 55093, 55093]
   }
 ] as const;
 
@@ -227,12 +227,15 @@ function expectReadableLayout(): void {
     expect(box.y + box.height).toBeLessThanOrEqual(axisY);
     for (const other of peaks.slice(index + 1)) expect(annotationLabelBoxesOverlap(box, other)).toBe(false);
   }
-  const note = svg().querySelector<SVGTextElement>(".lf-spectrum-note")!;
-  const noteFont = parseFloat(note.style.fontSize);
-  const lines = note.querySelectorAll("tspan").length > 0 ? [...note.querySelectorAll("tspan")] : [note];
-  for (const line of lines) {
-    expect(estimateAnnotationTextWidth(line.textContent!.trim(), noteFont)).toBeLessThanOrEqual(width);
-    expect(Number(line.getAttribute("y") ?? note.getAttribute("y"))).toBeLessThanOrEqual(Math.min(...peaks.map((box) => box.y)));
+  const note = svg().querySelector<SVGTextElement>(".lf-spectrum-note");
+  // The note appears only when there is a legend to show (estimated or comparison peaks).
+  if (note) {
+    const noteFont = parseFloat(note.style.fontSize);
+    const lines = note.querySelectorAll("tspan").length > 0 ? [...note.querySelectorAll("tspan")] : [note];
+    for (const line of lines) {
+      expect(estimateAnnotationTextWidth(line.textContent!.trim(), noteFont)).toBeLessThanOrEqual(width);
+      expect(Number(line.getAttribute("y") ?? note.getAttribute("y"))).toBeLessThanOrEqual(Math.min(...peaks.map((box) => box.y)));
+    }
   }
 }
 

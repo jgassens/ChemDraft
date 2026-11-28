@@ -248,10 +248,10 @@ describe("spectrumToJcampDx", () => {
 });
 
 describe("standaloneSpectrumSvg", () => {
-  // SHA-256 values captured from the exporter at HEAD before the estimate-disclosure change.
+  // SHA-256 values re-captured after the height note was removed (2026-11-27).
   it.each([
-    ["primary", "3da0ac9b75856fd3e82177993ae67758cfd9ab2960c9e6f73a3cec203aee2720"],
-    ["both", "d2091634b9bf7eae5f2f0e93b7a5d4cd28d7ae5ab3b8f8839217b5c25cad4534"]
+    ["primary", "4609f63281b10bc068ba3a2a46fbacffc69077705423783617da75252cdaa080"],
+    ["both", "61ea1eeb7dfaaf76f192d19cda70c41a5a168481b9ca928de37e5d9e0181e049"]
   ])("preserves the original %s SVG bytes without estimates", (mode, expectedHash) => {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("viewBox", "0 0 680 240");
@@ -301,8 +301,10 @@ describe("standaloneSpectrumSvg", () => {
     expect(out).toContain(".lf-curve.is-alternative{stroke:#b5651d");
     expect(out).toContain('class="lf-curve is-estimated"'); // original provenance class preserved
     expect(out).toContain('class="lf-curve is-alternative"');
-    expect(out).toContain("Height = predicted equivalent nuclei (not experimental integration)");
-    expect(out).toContain("gray dashed = rule-estimated");
+    expect(out).not.toContain("Height = ");
+    expect(out).not.toContain("not experimental integration");
+    expect(out).toContain("gray dashed = rough estimate (no database match)");
+    expect(out).not.toContain("rule-estimated");
     expect(out).toContain("dashed orange = increment");
     expect(out).not.toContain("HOSE"); // all primary peaks are rule estimates
     expect(out).toContain('data-comparison-mode="both"');
@@ -334,7 +336,7 @@ describe("standaloneSpectrumSvg", () => {
     const peaks = spectrum.peaks.map((peak, index) => ({ ...peak, estimated: mode === "all" || index === 0 }));
     const out = standaloneSpectrumSvg(svg, "increment", "HOSE", peaks);
     const exported = new DOMParser().parseFromString(out, "image/svg+xml").documentElement;
-    expect(exported.querySelector(".lf-spectrum-note")?.textContent).toContain("gray dashed = rule-estimated");
+    expect(exported.querySelector(".lf-spectrum-note")?.textContent).toContain("gray dashed = rough estimate (no database match)");
     expect(out).not.toContain("method = HOSE only");
     if (mode === "all") expect(out).not.toContain("HOSE");
     else expect(out).toContain("HOSE = non-estimated primary peaks only");
@@ -472,7 +474,7 @@ describe("spectrum picture exports", () => {
     const forwarded = format === "svg" ? dependencies.saveText.mock.calls[0]![1]
       : (format === "png" ? dependencies.rasterize : dependencies.pdf).mock.calls[0]![0];
     const exported = new DOMParser().parseFromString(forwarded, "image/svg+xml").documentElement;
-    expect(exported.querySelector(".lf-spectrum-note")?.textContent).toContain("rule-estimated");
+    expect(exported.querySelector(".lf-spectrum-note")?.textContent).toContain("gray dashed = rough estimate (no database match)");
     expect(forwarded).not.toContain("HOSE");
   });
   it("loads the export-engine main entry without the PDF pipeline", async () => {

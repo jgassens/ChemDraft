@@ -27,7 +27,8 @@ import {
   type DisplaySpectrumPeak,
   type SaveTextFileResult,
   type SpectrumFigureFormat,
-  type SpectrumComparisonMode
+  type SpectrumComparisonMode,
+  SPECTRUM_ESTIMATE_LEGEND
 } from "./spectrumExport";
 import { isDesktopRuntime } from "../window-manager";
 import { listenCurrentWindowEvent } from "../window-manager/tauriEvents";
@@ -123,7 +124,7 @@ function publicationSpectrumGeometry(note: string): SpectrumGeometry {
     tickLabelY: BASE_Y + 12,
     captionFont: 11,
     captionY: SPECTRUM_H - 3,
-    noteLines: [note],
+    noteLines: note ? [note] : [],
     noteY: 11,
     noteLineHeight: 0,
     peakFont: PEAK_LABEL_FONT_SIZE,
@@ -141,8 +142,8 @@ export function screenSpectrumGeometry(cssWidth: number, note: string): Spectrum
   const side = Math.max(MARGIN.left, SCREEN_SIDE_MARGIN_PX * k);
   const noteFont = SCREEN_CAPTION_FONT_PX * k;
   const noteLineHeight = noteFont * 1.25;
-  const noteLines = wrapText(note, noteFont, SPECTRUM_W - 2 * side);
-  const top = 4 * k + noteLines.length * noteLineHeight + 4 * k;
+  const noteLines = note ? wrapText(note, noteFont, SPECTRUM_W - 2 * side) : [];
+  const top = noteLines.length ? 4 * k + noteLines.length * noteLineHeight + 4 * k : 4 * k;
   const tickFont = SCREEN_TICK_FONT_PX * k;
   const captionFont = SCREEN_CAPTION_FONT_PX * k;
   const peakFont = SCREEN_PEAK_LABEL_FONT_PX * k;
@@ -230,9 +231,10 @@ export function LinkedFigureView({
     [spectrum.peaks, effectiveComparisonMode]
   );
   const spectrumIdentity = useMemo(() => spectrumViewportIdentity(spectrum), [spectrum]);
-  const spectrumNote = `Height = predicted equivalent nuclei (not experimental integration)${
-    renderPeaks.some((peak) => peak.estimated) ? " · gray dashed = rule-estimated" : ""
-  }${effectiveComparisonMode === "both" && hasAlternative ? ` · dashed orange = ${comparison.alternativeLabel}` : ""}`;
+  const spectrumNote = [
+    renderPeaks.some((peak) => peak.estimated) ? SPECTRUM_ESTIMATE_LEGEND : "",
+    effectiveComparisonMode === "both" && hasAlternative ? `dashed orange = ${comparison.alternativeLabel}` : ""
+  ].filter(Boolean).join(" · ");
   // Rendered CSS width of the spectrum, or undefined before layout and in hosts without layout.
   const [screenWidth, setScreenWidth] = useState<number | undefined>(undefined);
   // Copy and Export briefly re-render the publication geometry so their output never depends on the panel.
@@ -958,7 +960,7 @@ export function LinkedFigureView({
         >
           <line className="lf-axis" x1={plotLeft} y1={geometry.baseY} x2={plotRight} y2={geometry.baseY} />
           {/* Keyed so the publication layout gets a fresh node: React would leave an empty style="". */}
-          <text key={geometry.noteFont === undefined ? "publication-note" : "screen-note"}
+          {geometry.noteLines.length > 0 && <text key={geometry.noteFont === undefined ? "publication-note" : "screen-note"}
             className="lf-spectrum-note" x={plotLeft} y={geometry.noteY}
             style={geometry.noteFont === undefined ? undefined : { fontSize: geometry.noteFont }}>
             {geometry.noteLines.length === 1 ? geometry.noteLines[0] : geometry.noteLines.map((line, index) => (
@@ -966,7 +968,7 @@ export function LinkedFigureView({
                 {index < geometry.noteLines.length - 1 ? `${line} ` : line}
               </tspan>
             ))}
-          </text>
+          </text>}
           {ticks.map((tick, index) => {
             const x = xOf(tick);
             if (x < plotLeft - 1 || x > plotRight + 1) return null;

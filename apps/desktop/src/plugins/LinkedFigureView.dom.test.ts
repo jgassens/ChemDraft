@@ -349,7 +349,7 @@ describe("LinkedFigureView", () => {
       expect(line.getAttribute("stroke-width")).toBe("0.6");
     }
     expect(exported.querySelector<SVGTextElement>(".lf-peak-label")!.style.fontSize).toBe("13px");
-    expect(exported.querySelector(".lf-spectrum-note")!.textContent).toBe(svg.querySelector(".lf-spectrum-note")!.textContent);
+    expect(exported.querySelector(".lf-spectrum-note")?.textContent).toBe(svg.querySelector(".lf-spectrum-note")?.textContent);
   });
 
   it("breaks equal-height overflow ties by ppm independently of report order", () => {
@@ -551,7 +551,7 @@ describe("LinkedFigureView", () => {
     expect(container!.querySelector("path.lf-curve")).not.toBeNull();
     expect(container!.querySelector("path.lf-curve.is-low-confidence")).toBeNull();
     expect(container!.querySelector('[data-atom-index="0"] .lf-shift-label')!.textContent).toBe("2.00");
-    expect(container!.querySelector(".lf-spectrum-note")!.textContent).not.toContain("orange");
+    expect((container!.querySelector(".lf-spectrum-note")?.textContent ?? "")).not.toContain("orange");
 
     const uncertain = [...container!.querySelectorAll<HTMLSelectElement>(".lf-select")].find((select) =>
       [...select.options].some((option) => option.value === "both")
@@ -586,7 +586,7 @@ describe("LinkedFigureView", () => {
     expect(comparisonSelect.disabled).toBe(true);
     expect(comparisonSelect.value).toBe("primary");
     expect(comparisonSelect.selectedOptions[0].textContent).toContain("HOSE only — increment not applicable");
-    expect(container!.querySelector(".lf-spectrum-note")!.textContent).not.toContain("orange");
+    expect((container!.querySelector(".lf-spectrum-note")?.textContent ?? "")).not.toContain("orange");
   });
 
   it("resets a stale show-both choice when a rerun loses comparisons and does not restore it later", () => {
@@ -665,6 +665,10 @@ describe("LinkedFigureView", () => {
     mount(createElement(LinkedFigureView, { spectrum: estimatedSpectrum }));
     expect(container!.querySelector('[data-peak-id="e"] .lf-peak-label.is-estimated')).not.toBeNull();
     expect(container!.querySelector("path.lf-curve.is-estimated")).not.toBeNull();
+    const note = container!.querySelector(".lf-spectrum-note")!.textContent;
+    expect(note).toBe("gray dashed = rough estimate (no database match)");
+    expect(container!.textContent).not.toContain("Height =");
+    expect(container!.textContent).not.toContain("rule-estimated");
   });
 
   it("renders a low-confidence peak exactly like any other in the spectrum (confidence lives in structure labels/table)", () => {
@@ -690,7 +694,7 @@ describe("LinkedFigureView", () => {
     expect(container!.querySelector("path.lf-curve.is-low-confidence")).toBeNull();
     expect(container!.querySelector('[data-atom-index="0"] .lf-shift-label.is-rough')).not.toBeNull();
     expect(container!.querySelector('[data-atom-index="1"] .lf-shift-label.is-good')).not.toBeNull();
-    expect(container!.querySelector(".lf-spectrum-note")!.textContent).not.toContain("lower confidence");
+    expect((container!.querySelector(".lf-spectrum-note")?.textContent ?? "")).not.toContain("lower confidence");
   });
 
   it("places a multiplet label above the true line apex rather than in the center valley", () => {
@@ -720,9 +724,8 @@ describe("LinkedFigureView", () => {
     expect(container!.textContent).toContain("Proton-rated field");
     expect(container!.textContent).toContain("Observe ¹³C: 75.43 MHz");
     expect(container!.querySelector(".lf-spectrum")!.getAttribute("data-observe-frequency-mhz")).toBe("75.43");
-    expect(container!.querySelector(".lf-spectrum-note")!.textContent).toContain(
-      "predicted equivalent nuclei (not experimental integration)"
-    );
+    expect(container!.textContent).not.toContain("not experimental integration");
+    expect((container!.querySelector(".lf-spectrum-note")?.textContent ?? "")).not.toContain("Height =");
   });
 
   it("fills the web panel from Full size, and closes it", async () => {
@@ -1166,7 +1169,7 @@ describe("LinkedFigureView", () => {
     } else {
       const markup = vi.mocked(exportSpectrumFigure).mock.calls[0]![1];
       const exported = new DOMParser().parseFromString(markup, "image/svg+xml").documentElement;
-      expect(exported.querySelector(".lf-spectrum-note")?.textContent).toContain("rule-estimated");
+      expect(exported.querySelector(".lf-spectrum-note")?.textContent).toContain("gray dashed = rough estimate (no database match)");
       expect(markup).toContain("HOSE = non-estimated primary peaks only");
       expect(markup).not.toContain("method = HOSE only");
     }

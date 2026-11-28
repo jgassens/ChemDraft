@@ -191,6 +191,8 @@ export function spectrumToJcampDx(
   return `${lines.map(jcampAscii).join("\n")}\n`;
 }
 
+export const SPECTRUM_ESTIMATE_LEGEND = "gray dashed = rough estimate (no database match)";
+
 function spectrumNote(
   alternativeLabel: string,
   hasVisibleAlternative: boolean,
@@ -198,19 +200,16 @@ function spectrumNote(
   hasEstimated: boolean,
   hasOtherPrimary: boolean
 ): string {
-  return `Height = predicted equivalent nuclei (not experimental integration)${
-    hasEstimated ? " · gray dashed = rule-estimated" : ""
-  }${
-    hasVisibleAlternative ? ` · dashed orange = ${alternativeLabel}` : ""
-  }${
-    primaryLabel
-      ? hasEstimated
-        ? hasOtherPrimary ? ` · ${primaryLabel} = non-estimated primary peaks only` : ""
-        : hasVisibleAlternative
-        ? ` · methods = ${primaryLabel} + ${alternativeLabel}`
-        : ` · method = ${primaryLabel} only`
-      : ""
-  }`;
+  const parts: string[] = [];
+  if (hasEstimated) parts.push(SPECTRUM_ESTIMATE_LEGEND);
+  if (hasVisibleAlternative) parts.push(`dashed orange = ${alternativeLabel}`);
+  if (primaryLabel) {
+    if (hasEstimated) {
+      if (hasOtherPrimary) parts.push(`${primaryLabel} = non-estimated primary peaks only`);
+    } else if (hasVisibleAlternative) parts.push(`methods = ${primaryLabel} + ${alternativeLabel}`);
+    else parts.push(`method = ${primaryLabel} only`);
+  }
+  return parts.join(" · ");
 }
 
 /**
@@ -254,14 +253,16 @@ export function standaloneSpectrumSvg(
     clone.setAttribute("data-alternative-method", alternativeLabel);
   }
   let note = clone.querySelector<SVGTextElement>(".lf-spectrum-note");
-  if (!note) {
+  const noteText = spectrumNote(alternativeLabel, hasVisibleAlternative, primaryLabel, hasEstimated, hasOtherPrimary);
+  if (!noteText) note?.remove();
+  else if (!note) {
     note = document.createElementNS("http://www.w3.org/2000/svg", "text");
     note.setAttribute("class", "lf-spectrum-note");
     note.setAttribute("x", "18");
     note.setAttribute("y", "11");
     clone.appendChild(note);
   }
-  note.textContent = spectrumNote(alternativeLabel, hasVisibleAlternative, primaryLabel, hasEstimated, hasOtherPrimary);
+  if (noteText && note) note.textContent = noteText;
   clone.insertBefore(rect, clone.firstChild);
   clone.insertBefore(style, clone.firstChild);
   return `<?xml version="1.0" encoding="UTF-8"?>\n${new XMLSerializer().serializeToString(clone)}`;
