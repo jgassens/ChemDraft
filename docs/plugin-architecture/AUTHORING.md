@@ -463,12 +463,23 @@ or detached before schema parsing.
 ## Plugin storage
 
 Declare `plugin.storage` to use `context.storage`, a per-plugin key/value store. Desktop builds
-persist it in `app_data_dir/plugins/<pluginId>/storage.json`; the web build keeps it in memory.
+persist it in `app_data_dir/plugins/<pluginId>/storage.json`. The browser build persists the same
+JSON document in the page's `localStorage`, one key per plugin (`chemdraft.pluginStorage.<pluginId>`),
+so values survive a reload. Both write through a 250 ms debounce (the browser build also saves a
+pending change when the page is hidden or reloaded), and both cap a plugin's serialized document at
+5 MiB (5,242,880 UTF-8 bytes): a larger save is refused with the diagnostic "Plugin storage payload
+exceeds 5242880 bytes.", the values stay readable in memory, and later smaller saves go through.
+Browser storage is per origin and shared by every plugin on it, so the browser's own quota may be
+reached first. If the browser blocks `localStorage` (site data disabled), refuses a save (quota
+exceeded), or the stored document cannot be read, storage keeps working in memory for the rest of the
+session and the host logs one diagnostic; `context.storage` never throws those errors at the plugin.
+Clearing the site's data in the browser clears plugin storage too.
 Explicit **Uninstall clears the plugin's stored settings**, including cached values in the current
 session. **Updates keep storage**, as does handing an installed plugin's id back to its bundled copy.
 Uninstall stops the plugin and removes its catalog entry before clearing storage, so pending saves
 cannot recreate it. If deletion fails, uninstall still completes and reports that the stored settings
-could not be deleted; those settings may remain on disk.
+could not be deleted; those settings may remain on disk. In the browser build, preloaded plugins
+cannot be uninstalled, so their stored values are kept; turning a plugin off does not clear them.
 Plugin ids cannot end in a dot (Windows strips trailing dots). If another installed or bundled
 plugin has the same id ignoring letter case, uninstall preserves their shared settings and logs why.
 Removing an empty storage folder is best-effort; a folder cleanup failure does not make deletion of
@@ -1383,8 +1394,9 @@ index's id and version against the manifest, `apiVersion`, refusal of permission
 provide (such as `network.fetch`), and the worker's `ready` handshake. A package that fails is named
 in the status line and in plugin diagnostics, and the app and the other plugins still start. The
 Plugin Manager lists preloaded plugins with a **Preloaded** badge. You can turn them on and off, but
-you cannot uninstall or update them from the app; re-stage a newer release instead. Like every plugin
-in the browser build, a preloaded plugin's `context.storage` lives in memory only.
+you cannot uninstall or update them from the app; re-stage a newer release instead. A preloaded plugin's
+`context.storage` persists in the browser's `localStorage` (see [Plugin storage](#plugin-storage)), and
+turning it off keeps its stored values.
 
 **The host must send the worker CSP.** A plugin worker's Content-Security-Policy comes from its own
 script response, not from the page, and that header is what confines the plugin to the network

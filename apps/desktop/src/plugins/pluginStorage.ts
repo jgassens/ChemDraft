@@ -3,6 +3,47 @@ import { isDesktopRuntime } from "../window-manager";
 
 const WRITE_DEBOUNCE_MS = 250;
 
+/**
+ * Largest serialized document one plugin may persist, in UTF-8 bytes. Mirrors
+ * `PLUGIN_STORAGE_MAX_BYTES` in `src-tauri/src/lib.rs`, which refuses a larger desktop write; the
+ * browser build enforces the same limit itself and reports the same message.
+ */
+export const PLUGIN_STORAGE_MAX_BYTES = 5 * 1024 * 1024;
+
+/** Browser build: the localStorage key holding one plugin's JSON document. */
+export function webPluginStorageKey(pluginId: string): string {
+  return `chemdraft.pluginStorage.${pluginId}`;
+}
+
+/**
+ * The browser's localStorage, or `undefined` outside a browser (no `window`, so nothing could ever
+ * persist and there is nothing to report). Throws when the browser blocks it (a SecurityError with
+ * site data disabled) and returns `null` where a webview exposes none; callers treat both as
+ * "unavailable" and degrade to in-memory.
+ */
+function browserLocalStorage(): Storage | null | undefined {
+  if (typeof window === "undefined") return undefined;
+  return window.localStorage;
+}
+
+function utf8ByteLength(text: string): number {
+  return new TextEncoder().encode(text).byteLength;
+}
+
+/**
+ * Pending debounced browser saves, flushed on `pagehide` so a reload inside the debounce window
+ * (dismissing a card, then reloading at once) does not lose the last change.
+ */
+const pendingWebFlushes = new Set<() => void>();
+let pageHideFlushInstalled = false;
+function installPageHideFlush(): void {
+  if (pageHideFlushInstalled || typeof window === "undefined") return;
+  pageHideFlushInstalled = true;
+  window.addEventListener("pagehide", () => {
+    [...pendingWebFlushes].forEach((flush) => flush());
+  });
+}
+
 interface StorageCache {
   prepareDelete: () => Promise<void>;
   finishDelete: () => void;
@@ -22,6 +63,12 @@ export async function deletePersistentPluginStorage(pluginId: string): Promise<v
     if (isDesktopRuntime()) {
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("plugin_storage_delete", { pluginId });
+    } else {
+      try {
+        browserLocalStorage()?.removeItem(webPluginStorageKey(pluginId));
+      } catch {
+        // Blocked storage: nothing was ever persisted for this plugin, so there is nothing to remove.
+      }
     }
   } finally {
     // Also invalidate after a disk failure: a subsequent install must read what is actually on disk.
@@ -36,8 +83,10 @@ export type PluginStorageDiagnostic = (message: string) => void;
 /**
  * Disk-backed PluginStorage: one JSON file per plugin under
  * app_data_dir/plugins/<pluginId>/storage.json, loaded once into memory and written
- * through with a short debounce. In the browser build it degrades to in-memory behind the
- * same interface, so plugin code never branches on platform.
+ * through with a short debounce. In the browser build the same JSON document lives in
+ * localStorage under `webPluginStorageKey(pluginId)`, with the same debounce and size limit; if the
+ * browser blocks localStorage or refuses a save (quota), it degrades to in-memory for the session
+ * with one diagnostic. Plugin code never branches on platform and never sees those errors.
  *
  * Read and write failures are distinguished from ordinary absence and reported. A read that
  * *fails* is not an empty file: flattening the two let the first `set()` persist an empty map over
@@ -83,6 +132,7 @@ export function createPersistentPluginStorage(
     if (!loaded) {
       loaded = (async () => {
         if (!isDesktopRuntime()) {
+          loadFromBrowser();
           return;
         }
         try {
@@ -115,12 +165,78 @@ export function createPersistentPluginStorage(
     return loaded;
   };
 
+  /** Browser build: read this plugin's document from localStorage. Never throws. */
+  const loadFromBrowser = (): void => {
+    let contents: string | null;
+    try {
+      const storage = browserLocalStorage();
+      if (storage === undefined) {
+        // Not a browser at all (no window): in-memory, silently, as before.
+        persistDisabled = true;
+        return;
+      }
+      if (!storage) throw new Error("localStorage is not available");
+      contents = storage.getItem(webPluginStorageKey(pluginId));
+    } catch (error) {
+      persistDisabled = true;
+      report("browser storage is unavailable, so changes will not be saved this session", error);
+      return;
+    }
+    if (!contents) return;
+    try {
+      const parsed: unknown = JSON.parse(contents);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        throw new Error("stored value is not a JSON object");
+      }
+      Object.entries(parsed).forEach(([key, value]) => values.set(key, value));
+    } catch (error) {
+      report("could not be parsed and will be overwritten by the next save", error);
+    }
+  };
+
+  /** Browser build: write this plugin's document to localStorage now. Never throws. */
+  const flushToBrowser = (): void => {
+    pendingWebFlushes.delete(flushToBrowser);
+    if (writeTimer !== undefined) {
+      clearTimeout(writeTimer);
+      writeTimer = undefined;
+    }
+    if (persistDisabled || deleting) return;
+    let contents: string;
+    try {
+      contents = JSON.stringify(Object.fromEntries(values.entries()));
+      if (utf8ByteLength(contents) > PLUGIN_STORAGE_MAX_BYTES) {
+        // Same refusal and message as the desktop command; later, smaller saves still go through.
+        throw new Error(`Plugin storage payload exceeds ${PLUGIN_STORAGE_MAX_BYTES} bytes.`);
+      }
+    } catch (error) {
+      report("could not be saved", error);
+      return;
+    }
+    try {
+      const storage = browserLocalStorage();
+      if (!storage) throw new Error("localStorage is not available");
+      storage.setItem(webPluginStorageKey(pluginId), contents);
+    } catch (error) {
+      // QuotaExceededError, SecurityError, or storage withdrawn mid-session: stop trying, so the
+      // plugin gets one diagnostic rather than one per save. Values stay readable in memory.
+      persistDisabled = true;
+      report("browser storage refused the save, so changes will not be saved this session", error);
+    }
+  };
+
   const scheduleWrite = (): void => {
-    if (!isDesktopRuntime() || persistDisabled || deleting) {
+    if (persistDisabled || deleting) {
       return;
     }
     if (writeTimer !== undefined) {
       clearTimeout(writeTimer);
+    }
+    if (!isDesktopRuntime()) {
+      installPageHideFlush();
+      pendingWebFlushes.add(flushToBrowser);
+      writeTimer = setTimeout(flushToBrowser, WRITE_DEBOUNCE_MS);
+      return;
     }
     writeTimer = setTimeout(() => {
       writeTimer = undefined;
@@ -145,6 +261,7 @@ export function createPersistentPluginStorage(
   const cache: StorageCache = {
     async prepareDelete() {
       deleting = true;
+      pendingWebFlushes.delete(flushToBrowser);
       if (writeTimer !== undefined) {
         clearTimeout(writeTimer);
         writeTimer = undefined;
