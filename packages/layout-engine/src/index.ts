@@ -7069,10 +7069,28 @@ const atomProblemBadgeMinimumDistancePx = Math.hypot(9, 9);
 /** The direction the badge prefers when every side is equally free: upper right, as it always sat. */
 const atomProblemBadgePreferredRadians = -Math.PI / 4;
 
+/**
+ * An electron mark as the atom-problem badge keeps clear of it: its stored page frame, and, when
+ * `markKind` is given, what its drawn ink depends on (`electronMarkInkRadius`), since some marks draw
+ * past their frame (a radical 2+ puts its dot outside it).
+ */
+export type AtomProblemBadgeMark = ElectronMarkLabelClearanceFrame &
+  Partial<Pick<ElectronMarkObject, "id" | "markKind" | "charge" | "chargeStyle" | "radical" | "style">>;
+
+/** How far a mark's drawn ink reaches from its frame centre, or 0 for a bare frame. The renderer turns
+ * a mark about that centre, so the reach holds at any angle. */
+function atomProblemBadgeMarkInkRadius(mark: AtomProblemBadgeMark): number {
+  if (!mark.markKind) return 0;
+  const { rotation: _rotation, style, ...shape } = mark;
+  return electronMarkInkRadius({ id: mark.id ?? "", ...shape, markKind: mark.markKind,
+    ...(style ? { style } : {}) });
+}
+
 export interface AtomProblemBadgeOptions {
   /** The page's electron marks (charges, radical dots, lone pairs) as stored page frames. Any near
-   * the atom is kept clear like the label: a charge drawn by a floating mark is still the atom's charge. */
-  marks?: readonly ElectronMarkLabelClearanceFrame[];
+   * the atom is kept clear like the label: a charge drawn by a floating mark is still the atom's charge.
+   * Each keeps its frame clear and, given its `markKind`, all of its drawn ink too. */
+  marks?: readonly AtomProblemBadgeMark[];
   /** Boxes `moleculeLayoutLabelBoxes` already measured for this molecule. */
   labelBoxes?: readonly LayoutLabelBox[];
   radius?: number;
@@ -7089,12 +7107,30 @@ function circleBoxDistance(centre: LayoutPoint, box: LayoutBounds): number {
   return Math.hypot(dx, dy);
 }
 
+/** Something the badge must keep clear of: a box, or a disc (a mark's ink) in the same frame. */
+type AtomProblemBadgeObstacle = LayoutBounds | { cx: number; cy: number; r: number };
+
+function badgeObstacleDistance(centre: LayoutPoint, obstacle: AtomProblemBadgeObstacle): number {
+  return "r" in obstacle ? Math.max(0, Math.hypot(centre.x - obstacle.cx, centre.y - obstacle.cy) - obstacle.r)
+    : circleBoxDistance(centre, obstacle);
+}
+
+/** How far the farthest point of an obstacle lies from `point`. */
+function badgeObstacleFarthest(point: LayoutPoint, obstacle: AtomProblemBadgeObstacle): number {
+  if ("r" in obstacle) return Math.hypot(obstacle.cx - point.x, obstacle.cy - point.y) + obstacle.r;
+  return Math.max(
+    Math.hypot(obstacle.x - point.x, obstacle.y - point.y), Math.hypot(obstacle.x + obstacle.width - point.x, obstacle.y - point.y),
+    Math.hypot(obstacle.x - point.x, obstacle.y + obstacle.height - point.y),
+    Math.hypot(obstacle.x + obstacle.width - point.x, obstacle.y + obstacle.height - point.y));
+}
+
 /**
  * Where an atom's problem badge (the red "!" ring) is centred, in the molecule's unrotated frame (the
  * frame `atom.x`/`atom.y` use); undefined for an atom the molecule does not have. The badge never
  * covers the atom's label — its full glyph box from `moleculeLayoutLabelBoxes`, so a superscript
  * charge, an isotope prefix, a hydrogen count and its subscript are all inside — nor an electron
- * mark (`options.marks`) beside the atom, such as the floating ⊕ on a carbocation or a radical dot.
+ * mark (`options.marks`) beside the atom, such as the floating ⊕ on a carbocation or a radical dot —
+ * its frame and, for a mark that says its kind, all its drawn ink, which can reach past the frame.
  * Among the sides that clear those, it takes one free of bonds and of other atoms' labels where there
  * is one, then the nearest, then the one closest to upper right, so an unlabelled atom with room
  * there keeps the badge where it always sat. Everything is kept `atomProblemBadgeKeepOutPx(options.zoom)`
@@ -7116,17 +7152,21 @@ export function atomProblemBadgeCentre(
   const reach = keepOut * 2 + atomProblemBadgeMinimumDistancePx +
     (ownLabel ? Math.max(Math.abs(ownLabel.x - atom.x), Math.abs(ownLabel.x + ownLabel.width - atom.x),
       Math.abs(ownLabel.y - atom.y), Math.abs(ownLabel.y + ownLabel.height - atom.y)) : 0);
-  const hard: LayoutBounds[] = [ownLabel ?? { x: atom.x, y: atom.y, width: 0, height: 0 }];
+  const hard: AtomProblemBadgeObstacle[] = [ownLabel ?? { x: atom.x, y: atom.y, width: 0, height: 0 }];
   for (const mark of options.marks ?? []) {
     const centre = inverseTransformPointForObject(molecule, { x: mark.x + mark.width / 2, y: mark.y + mark.height / 2 });
     const { halfWidth, halfHeight } = rotatedFrameHalfExtents(mark.width, mark.height,
       degreesToRadians((mark.rotation ?? 0) - molecule.rotation));
     const box = { x: centre.x - halfWidth, y: centre.y - halfHeight, width: halfWidth * 2, height: halfHeight * 2 };
-    if (circleBoxDistance(atom, box) <= reach) hard.push(box);
+    // The frame, and the disc the mark's ink reaches: whichever is larger in a direction decides there.
+    const inkRadius = atomProblemBadgeMarkInkRadius(mark);
+    const ink = inkRadius > 0 ? { cx: centre.x, cy: centre.y, r: inkRadius } : undefined;
+    if (circleBoxDistance(atom, box) <= reach || (ink && badgeObstacleDistance(atom, ink) <= reach)) {
+      hard.push(box);
+      if (ink) hard.push(ink);
+    }
   }
-  const farthest = Math.max(...hard.map(box => Math.max(
-    Math.hypot(box.x - atom.x, box.y - atom.y), Math.hypot(box.x + box.width - atom.x, box.y - atom.y),
-    Math.hypot(box.x - atom.x, box.y + box.height - atom.y), Math.hypot(box.x + box.width - atom.x, box.y + box.height - atom.y))));
+  const farthest = Math.max(...hard.map(obstacle => badgeObstacleFarthest(atom, obstacle)));
   const maximumDistance = Math.max(atomProblemBadgeMinimumDistancePx, farthest + keepOut) + 1;
   // Soft obstacles: bonds and other atoms' labels; covering one is allowed only where every side does.
   const atomById = new Map(molecule.atoms.map(candidate => [candidate.id, candidate]));
@@ -7142,11 +7182,11 @@ export function atomProblemBadgeCentre(
     const ux = Math.cos(angle), uy = Math.sin(angle);
     let distanceAlong = atomProblemBadgeMinimumDistancePx;
     let centre = { x: atom.x + ux * distanceAlong, y: atom.y + uy * distanceAlong };
-    while (distanceAlong < maximumDistance && hard.some(box => circleBoxDistance(centre, box) < keepOut)) {
+    while (distanceAlong < maximumDistance && hard.some(obstacle => badgeObstacleDistance(centre, obstacle) < keepOut)) {
       distanceAlong += 0.25;
       centre = { x: atom.x + ux * distanceAlong, y: atom.y + uy * distanceAlong };
     }
-    if (hard.some(box => circleBoxDistance(centre, box) < keepOut)) continue;
+    if (hard.some(obstacle => badgeObstacleDistance(centre, obstacle) < keepOut)) continue;
     const covered = segments.filter(([from, to]) => distanceToSegment(centre, from, to) < keepOut).length +
       otherLabels.filter(box => circleBoxDistance(centre, box) < keepOut).length;
     const turn = Math.abs(Math.atan2(Math.sin(angle - atomProblemBadgePreferredRadians), Math.cos(angle - atomProblemBadgePreferredRadians)));

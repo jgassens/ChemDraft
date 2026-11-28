@@ -84,7 +84,7 @@ import { planDisplayPage } from "./plannedDisplayPage";
 import { snapPlacementDegrees } from "./placementSnap";
 import { listenCurrentWindowEvent, listenTauriEvent } from "./window-manager/tauriEvents";
 import { reactionConditionsDraft, setReactionArrowConditions, type ReactionConditionsDraft } from "@chemdraft/document-workflow-core";
-import { arrowAttachmentFrame, atomProblemBadgeCentre, atomProblemBadgePlacementZoom, moleculeLayoutLabelBoxes, type ElectronMarkLabelClearanceFrame } from "@chemdraft/layout-engine";
+import { arrowAttachmentFrame, atomProblemBadgeCentre, atomProblemBadgePlacementZoom, moleculeLayoutLabelBoxes, type AtomProblemBadgeMark } from "@chemdraft/layout-engine";
 import { OpenWarningsList } from "./OpenWarningsList";
 import { useNativeFileWarnings } from "./useNativeFileWarnings";
 import { lastExportDirectory } from "./exportDirectory";
@@ -1950,7 +1950,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.27.23.10-opus";
+const CURRENT_BUILD_STAMP = "11.27.23.30-opus";
 
 const NUMERIC_ENTRY_DURING_DRAG_STATUS = "Finish the current drag, then enter a value";
 
@@ -3725,16 +3725,21 @@ export function MainWindow({
       object.id === tableResizePreview.id ? tableResizePreview : object) } : page;
   }, [activePage, atomLabelPreview, tableResizePreview, gesturePagePreview, document]);
   // Atom-problem badges keep clear of the electron marks beside their atoms (a carbocation's
-  // floating charge). The list keeps its identity while no mark moves, so memoized molecule
-  // views do not re-render for an unrelated edit.
-  const previousElectronMarkFramesRef = useRef<readonly ElectronMarkLabelClearanceFrame[]>([]);
+  // floating charge), by their frames and the ink they draw past them (a radical 2+'s dot). The list
+  // keeps its identity while no mark moves or changes its ink, so memoized molecule views do not
+  // re-render for an unrelated edit.
+  const previousElectronMarkFramesRef = useRef<readonly AtomProblemBadgeMark[]>([]);
   const pageElectronMarkFrames = useMemo(() => {
-    const next = labelDisplayPage.objects.flatMap((object): ElectronMarkLabelClearanceFrame[] => object.type === "electron-mark"
-      ? [{ x: object.x, y: object.y, width: object.width, height: object.height, rotation: object.rotation }] : []);
+    const next = labelDisplayPage.objects.flatMap((object): AtomProblemBadgeMark[] => object.type === "electron-mark"
+      ? [{ id: object.id, x: object.x, y: object.y, width: object.width, height: object.height, rotation: object.rotation,
+        markKind: object.markKind, charge: object.charge, chargeStyle: object.chargeStyle, radical: object.radical,
+        style: object.style }] : []);
     const previous = previousElectronMarkFramesRef.current;
     const same = previous.length === next.length && next.every((frame, index) => frame.x === previous[index]!.x &&
       frame.y === previous[index]!.y && frame.width === previous[index]!.width && frame.height === previous[index]!.height &&
-      frame.rotation === previous[index]!.rotation);
+      frame.rotation === previous[index]!.rotation && frame.markKind === previous[index]!.markKind &&
+      frame.charge === previous[index]!.charge && frame.chargeStyle === previous[index]!.chargeStyle &&
+      frame.radical === previous[index]!.radical && frame.style?.strokeWidth === previous[index]!.style?.strokeWidth);
     if (!same) previousElectronMarkFramesRef.current = next;
     return previousElectronMarkFramesRef.current;
   }, [labelDisplayPage]);
@@ -30607,7 +30612,7 @@ function DocumentObjectViewContent({
 }: {
   directElectronMarkEditing?: boolean;
   /** The page's electron-mark frames, for a molecule: its atom-problem badges keep clear of them. */
-  electronMarkFrames?: readonly ElectronMarkLabelClearanceFrame[];
+  electronMarkFrames?: readonly AtomProblemBadgeMark[];
   /** The zoom a molecule's atom-problem badges are placed for (`atomProblemBadgePlacementZoom`). */
   atomProblemBadgeZoom?: number;
   inlineEditorReadOnly: boolean;
