@@ -191,6 +191,34 @@ describe("a launch whose native write fails", () => {
     expect(latest?.overrides?.chemdraw).toEqual(combined);
   });
 
+  // Audit B5 (1.2.3 RC8): the native file already names the set, so a window took its older map over
+  // the cache and dropped the custom key only the cache held, for good.
+  it("keeps a cache-only key when the native file already names the set, and the next launch saves it", async () => {
+    const before = { preferences: JSON.parse(JSON.stringify(native.preferences)) as unknown, cache: storage.getItem(KEYBINDING_STORAGE_KEY) };
+    native.failWrite = true;
+    expect((await launch()).kind).toBe("current");
+    expect(native.preferences).toEqual(before.preferences);
+    expect(storage.getItem(KEYBINDING_STORAGE_KEY)).toBe(before.cache);
+
+    const writes = native.writes.length;
+    await openWindow();
+    expect(latest?.overrides?.chemdraw).toEqual(cacheOnly);
+    native.failWrite = false;
+    await openWindow();
+    expect(latest?.overrides?.chemdraw).toEqual(cacheOnly);
+    expect(cachedSetKeys()).toEqual(cacheOnly);
+    expect(native.writes.length).toBe(writes);
+
+    expect((await launch()).kind).toBe("current");
+    expect(nativeSetKeys()).toEqual(cacheOnly);
+    expect(cachedSetKeys()).toEqual(cacheOnly);
+    // The stores agree again, so a window takes the native file's keys as before.
+    const changed: ShortcutOverrides = { commands: { "document.save": ["Mod+F11"] } };
+    native.preferences = { shortcutScheme: "chemdraw", shortcutOverrides: { chemdraw: changed } };
+    await openWindow();
+    expect(latest?.overrides?.chemdraw).toEqual(changed);
+  });
+
   it("never brings back a key the user removed in Preferences meanwhile", async () => {
     retiredInstall();
     native.failWrite = true;

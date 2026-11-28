@@ -55,6 +55,7 @@ import {
   KEYBINDING_SCHEME,
   KEYBINDING_STORAGE_KEY,
   LEGACY_KEYBINDING_SCHEME,
+  setUnsavedShortcuts,
   type KeybindingSettings,
   type StoredKeybindingScheme,
   type StoredShortcutOverrides,
@@ -231,11 +232,18 @@ async function resolveShortcutSet(host: ShortcutDefaultMigrationHost): Promise<S
  * Write the patch (if any) to the native file, then the combined custom keys to the cache. The cache is
  * written only once the native file has taken the patch: when that write fails, both stores are left
  * exactly as they were, so the cache never holds keys the native file lacks because of this move, and
- * the next launch combines the same stores again.
+ * the next launch combines the same stores again. Until then the cache may hold custom keys the native
+ * file lacks, so that is recorded (`setUnsavedShortcuts`): a window then keeps the cache's keys instead
+ * of replacing them with the native file's (useShortcutPreference.ts). A launch whose stores end up
+ * agreeing clears the record.
  */
 async function recordSet(host: ShortcutDefaultMigrationHost, patch: DesktopPreferences, overrides: StoredShortcutOverrides): Promise<void> {
-  if (Object.keys(patch).length > 0 && !await writeNative(host, patch)) return;
+  if (Object.keys(patch).length > 0 && !await writeNative(host, patch)) {
+    if (host.storage) setUnsavedShortcuts(true, host.storage);
+    return;
+  }
   mirrorCache(host.storage, overrides);
+  if (host.storage) setUnsavedShortcuts(false, host.storage);
 }
 
 /**

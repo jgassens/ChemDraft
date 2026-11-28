@@ -81,8 +81,9 @@ export function saveKeybindingSettings(settings: KeybindingSettings): void {
  * Set while the webview cache holds custom keys for the set that the native preferences file has not
  * saved: the move to the single set (shortcutDefaultMigration.ts) sets it when it combined the two
  * stores but could not write the result to the native file. While it is set the cache's keys are the
- * user's, so a window saves them to the native file rather than replacing them with the file's
- * (useShortcutPreference.ts); a saved edit in Preferences, or a launch whose stores agree, clears it.
+ * user's, so a window keeps them rather than replacing them with the file's, and never writes the file
+ * in the background (useShortcutPreference.ts); a saved edit in Preferences, or a launch whose stores
+ * agree, clears it.
  */
 export const UNSAVED_SHORTCUTS_STORAGE_KEY = "chemdraft.keybindings.unsavedInPreferencesFile";
 

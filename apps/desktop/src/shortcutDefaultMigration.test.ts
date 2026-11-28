@@ -2,7 +2,7 @@ import type { ShortcutOverrides, ShortcutPlatform } from "@chemdraft/shortcut-en
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mergeLegacyShortcutOverrides, mergeStoredShortcutOverrides } from "./customKeyboardShortcuts";
 import type { DesktopPreferences } from "./desktopPreferences";
-import { KEYBINDING_STORAGE_KEY, loadKeybindingSettings, type StoredShortcutOverrides } from "./keybindingSettings";
+import { KEYBINDING_STORAGE_KEY, loadKeybindingSettings, UNSAVED_SHORTCUTS_STORAGE_KEY, type StoredShortcutOverrides } from "./keybindingSettings";
 import {
   confirmShortcutSetNoticeShown,
   migrateShortcutDefault,
@@ -459,9 +459,11 @@ describe("keeping every valid custom key when the two stores disagree", () => {
       expect(fake.writePreferences).toHaveBeenCalled();
       expect(error).toHaveBeenCalled();
       expect(fake.preferences()).toEqual(preferences);
-      // Only the message's own marker may be added; the custom keys and the set's id are untouched.
-      const { [SHORTCUT_SET_NOTICE_PENDING_KEY]: _notice, ...cacheAfter } = snapshot(fake.storage);
+      // Only the message's own marker and the record of unsaved custom keys may be added; the custom
+      // keys and the set's id are untouched.
+      const { [SHORTCUT_SET_NOTICE_PENDING_KEY]: _notice, [UNSAVED_SHORTCUTS_STORAGE_KEY]: unsaved, ...cacheAfter } = snapshot(fake.storage);
       expect(cacheAfter).toEqual(cacheBefore);
+      expect(unsaved, "the cache's keys are recorded as not saved in the native file").toBeDefined();
 
       // The next launch can write: it ends exactly where a launch that never failed would have.
       fake.heal();
@@ -476,6 +478,7 @@ describe("keeping every valid custom key when the two stores disagree", () => {
         commands: { ...nativeKeys.commands, ...cacheOnly.commands, ...(kind === "migrated" ? legacy.commands : {}) }
       });
       expect(fake.cache()?.overrides?.chemdraw).toEqual(fake.preferences().shortcutOverrides?.chemdraw);
+      expect(fake.storage.getItem(UNSAVED_SHORTCUTS_STORAGE_KEY)).toBeNull();
     });
 
     it("keeps leaving both stores alone for as long as the write keeps failing", async () => {
